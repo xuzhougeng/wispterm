@@ -915,6 +915,14 @@ fn hitTestSidebarTabCloseButton(xpos: f64, ypos: f64, tab_idx: usize) bool {
     return xpos >= close_x and xpos < close_x + @as(f64, tab.TAB_CLOSE_BTN_W);
 }
 
+fn shouldStartSidebarTabRename(xpos: f64, ypos: f64, tab_idx: usize) bool {
+    if (tab_idx >= tab.g_tab_count) return false;
+    if (hitTestSidebarPlusButton(xpos, ypos)) return false;
+    if (hitTestSidebarResizeHandle(xpos, ypos)) return false;
+    if (hitTestSidebarTabCloseButton(xpos, ypos, tab_idx)) return false;
+    return true;
+}
+
 fn hitTestSidebarResizeHandle(xpos: f64, ypos: f64) bool {
     if (!tab.g_sidebar_visible) return false;
     if (ypos < titlebarHeight()) return false;
@@ -1380,7 +1388,6 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
     // Double-click on tab text to rename, elsewhere to maximize
     if (ev.button == .left and ev.action == .double_click) {
         const xpos: f64 = @floatFromInt(ev.x);
-        const xf: f32 = @floatFromInt(ev.x);
         const titlebar_h: f64 = titlebarHeight();
         const ypos: f64 = @floatFromInt(ev.y);
         if (ypos < titlebar_h) {
@@ -1390,12 +1397,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                 toggleMaximize();
             }
         } else if (hitTestSidebarTab(xpos, ypos)) |tab_idx| {
-            // Only rename if clicking on the rendered title text itself.
-            if (tab_idx < AppWindow.MAX_TABS and
-                xf >= tab.g_tab_text_x_start[tab_idx] and xf <= tab.g_tab_text_x_end[tab_idx] and
-                ypos >= @as(f64, @floatCast(tab.g_tab_text_y_start[tab_idx])) and
-                ypos <= @as(f64, @floatCast(tab.g_tab_text_y_end[tab_idx])))
-            {
+            if (shouldStartSidebarTabRename(xpos, ypos, tab_idx)) {
                 tab.startTabRename(tab_idx);
             }
         }

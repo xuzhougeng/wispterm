@@ -118,6 +118,7 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
         if (AppWindow.input.g_selecting) break :blk true;
         // Cursor position changed — need to rebuild so cursor bg is at the right cell
         if (screen.cursor.x != rend.last_cursor_x or
+            screen.cursor.y != rend.last_cursor_y or
             @as(?*anyopaque, screen.cursor.page_pin.node) != rend.last_cursor_node or
             screen.cursor.page_pin.y != rend.last_cursor_pin_y) break :blk true;
         // Viewport pin changed — scroll happened (matches Ghostty's RenderState viewport_pin comparison)
@@ -185,6 +186,7 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
         rend.last_cursor_node = screen.cursor.page_pin.node;
         rend.last_cursor_pin_y = screen.cursor.page_pin.y;
         rend.last_cursor_x = screen.cursor.x;
+        rend.last_cursor_y = screen.cursor.y;
         rend.last_rows = terminal.rows;
         rend.last_cols = terminal.cols;
         rend.last_selection_active = selection_active;
