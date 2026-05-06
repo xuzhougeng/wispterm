@@ -123,6 +123,8 @@ fn initPostShader(allocator: std.mem.Allocator, shader_path: []const u8) bool {
         var info_log: [512]u8 = undefined;
         gl.GetProgramInfoLog.?(g_post_program, 512, null, &info_log);
         std.debug.print("Post shader linking failed: {s}\n", .{&info_log});
+        gl.DeleteProgram.?(g_post_program);
+        g_post_program = 0;
         return false;
     }
 
@@ -183,11 +185,18 @@ fn ensurePostFBO(width: c_int, height: c_int) void {
     // Attach to FBO
     gl.FramebufferTexture2D.?(c.GL_FRAMEBUFFER, c.GL_COLOR_ATTACHMENT0, c.GL_TEXTURE_2D, g_post_texture, 0);
 
-    if (gl.CheckFramebufferStatus.?(c.GL_FRAMEBUFFER) != c.GL_FRAMEBUFFER_COMPLETE) {
-        std.debug.print("Post-processing FBO is incomplete!\n", .{});
+    const status = gl.CheckFramebufferStatus.?(c.GL_FRAMEBUFFER);
+    gl.BindFramebuffer.?(c.GL_FRAMEBUFFER, 0);
+
+    if (status != c.GL_FRAMEBUFFER_COMPLETE) {
+        std.debug.print("Post-processing FBO is incomplete: 0x{X}, cleaning up\n", .{status});
+        gl.DeleteTextures.?(1, &g_post_texture);
+        gl.DeleteFramebuffers.?(1, &g_post_fbo);
+        g_post_texture = 0;
+        g_post_fbo = 0;
+        return;
     }
 
-    gl.BindFramebuffer.?(c.GL_FRAMEBUFFER, 0);
     g_post_fb_width = width;
     g_post_fb_height = height;
 }

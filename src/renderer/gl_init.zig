@@ -202,6 +202,7 @@ pub fn compileShader(shader_type: c.GLenum, source: [*c]const u8) ?c.GLuint {
         } else {
             std.debug.print("Shader compilation failed (no error log, shader={})\n", .{shader});
         }
+        gl.DeleteShader.?(shader);
         return null;
     }
     return shader;
@@ -225,6 +226,7 @@ fn linkProgram(vs_src: [*c]const u8, fs_src: [*c]const u8) c.GLuint {
         gl.GetProgramInfoLog.?(prog, 512, &log_len, &info_log);
         const len: usize = if (log_len > 0) @intCast(log_len) else 0;
         if (len > 0) std.debug.print("Shader link failed: {s}\n", .{info_log[0..len]});
+        gl.DeleteProgram.?(prog);
         return 0;
     }
     return prog;
@@ -259,6 +261,8 @@ pub fn initShaders() bool {
         } else {
             std.debug.print("Shader linking failed (no error log available)\n", .{});
         }
+        gl.DeleteProgram.?(shader_program);
+        shader_program = 0;
         return false;
     }
 

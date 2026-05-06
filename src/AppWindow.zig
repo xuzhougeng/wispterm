@@ -1390,5 +1390,8 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
         }
     }
 
+    // Clean up file explorer async state (join background thread, free job)
+    file_explorer.deinit();
+
     // Tab cleanup is handled by AppWindow.deinit()
 }

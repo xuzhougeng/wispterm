@@ -342,6 +342,7 @@ pub fn init(
 
     // Initialize mailbox for main thread → IO writer communication
     surface.mailbox = termio.Mailbox.init() catch |err| {
+        surface.command.deinit();
         surface.pty.deinit();
         surface.terminal.deinit(allocator);
         return err;
@@ -392,6 +393,7 @@ pub fn init(
     // Initialize IO writer thread state (xev loop, async handles)
     const thread_state = allocator.create(termio.Thread) catch |err| {
         surface.mailbox.deinit();
+        surface.command.deinit();
         surface.pty.deinit();
         surface.terminal.deinit(allocator);
         return err;
@@ -399,6 +401,7 @@ pub fn init(
     thread_state.* = termio.Thread.init() catch |err| {
         allocator.destroy(thread_state);
         surface.mailbox.deinit();
+        surface.command.deinit();
         surface.pty.deinit();
         surface.terminal.deinit(allocator);
         return err;
@@ -411,6 +414,7 @@ pub fn init(
         thread_state.deinit();
         allocator.destroy(thread_state);
         surface.mailbox.deinit();
+        surface.command.deinit();
         surface.pty.deinit();
         surface.terminal.deinit(allocator);
         return err;
@@ -425,6 +429,7 @@ pub fn init(
         thread_state.deinit();
         allocator.destroy(thread_state);
         surface.mailbox.deinit();
+        surface.command.deinit();
         surface.pty.deinit();
         surface.terminal.deinit(allocator);
         return err;

@@ -18,6 +18,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ghostty_vt = @import("ghostty-vt");
 const Surface = @import("../Surface.zig");
+const AppWindow = @import("../AppWindow.zig");
 const c = @cImport({
     @cInclude("glad/gl.h");
 });
@@ -269,6 +270,10 @@ pub fn deinit(self: *Renderer) void {
 }
 
 fn deinitKittyResources(self: *Renderer) void {
+    const gl = &AppWindow.gl;
+    for (self.kitty_textures.items) |*tex| {
+        if (tex.texture != 0) gl.DeleteTextures.?(1, &tex.texture);
+    }
     self.kitty_textures.deinit(self.surface.allocator);
 
     for (self.kitty_pending_uploads.items) |pending| {

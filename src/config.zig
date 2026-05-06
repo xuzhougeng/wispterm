@@ -330,6 +330,7 @@ pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
 /// Order: defaults → config file → CLI flags (last wins).
 pub fn load(allocator: std.mem.Allocator) !Config {
     var self = Config{};
+    errdefer self.deinit(allocator);
 
     // 1. Try loading from config file
     if (configFilePath(allocator)) |path| {
@@ -951,7 +952,10 @@ pub fn openConfigInEditor(allocator: std.mem.Allocator) void {
         std.debug.print("[config] ERROR: failed to spawn notepad.exe: {}\n", .{err});
         return;
     };
-    // Don't call wait() — let notepad run independently
+    // Close our handles — let notepad run independently.
+    // Without this the process/thread handles leak until our process exits.
+    std.os.windows.CloseHandle(child.id);
+    std.os.windows.CloseHandle(child.thread_handle);
 
     std.debug.print("[config] notepad.exe spawned successfully\n", .{});
 }

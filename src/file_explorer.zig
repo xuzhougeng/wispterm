@@ -528,6 +528,19 @@ fn destroyAsyncJob(job: *AsyncListJob) void {
     allocator.destroy(job);
 }
 
+/// Clean up any in-flight async job. Call on window close to avoid leaking
+/// the job allocation and its thread.
+pub fn deinit() void {
+    if (g_async_job) |job| {
+        // Wait for the background thread to finish
+        if (job.thread) |thread| thread.join();
+        destroyAsyncJob(job);
+        g_async_job = null;
+    }
+    g_pending_async_list = null;
+    g_loading = false;
+}
+
 fn setLoading(msg: []const u8) void {
     g_loading = true;
     g_loading_msg_len = @intCast(@min(msg.len, g_loading_msg.len));

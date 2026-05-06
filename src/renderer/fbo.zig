@@ -54,13 +54,17 @@ pub fn ensureRendererFBO(rend: *Renderer, width: u32, height: u32) void {
 
     // Check framebuffer completeness
     const status = gl.CheckFramebufferStatus.?(c.GL_FRAMEBUFFER);
-    if (status != c.GL_FRAMEBUFFER_COMPLETE) {
-        std.debug.print("FBO incomplete: 0x{X}\n", .{status});
-    }
 
     // Unbind
     gl.BindFramebuffer.?(c.GL_FRAMEBUFFER, 0);
     gl.BindTexture.?(c.GL_TEXTURE_2D, 0);
+
+    if (status != c.GL_FRAMEBUFFER_COMPLETE) {
+        std.debug.print("FBO incomplete: 0x{X}, cleaning up\n", .{status});
+        gl.DeleteTextures.?(1, &texture);
+        gl.DeleteFramebuffers.?(1, &fbo);
+        return;
+    }
 
     // Store handles in renderer
     rend.setFBOHandles(fbo, texture, width, height);

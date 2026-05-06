@@ -709,6 +709,10 @@ pub const FontDiscovery = struct {
         const count = self.system_collection.getFontFamilyCount();
         var families = try allocator.alloc([]const u8, count);
         var added: usize = 0;
+        errdefer {
+            for (families[0..added]) |s| allocator.free(s);
+            allocator.free(families);
+        }
 
         for (0..count) |i| {
             const family = self.system_collection.getFontFamily(@intCast(i)) catch continue;
@@ -734,7 +738,18 @@ pub const FontDiscovery = struct {
             }
         }
 
-        return families[0..added];
+        // Shrink to actual size so caller's free matches the allocation
+        if (added == 0) {
+            allocator.free(families);
+            return try allocator.alloc([]const u8, 0);
+        }
+        if (added < count) {
+            const result = try allocator.alloc([]const u8, added);
+            @memcpy(result, families[0..added]);
+            allocator.free(families);
+            return result;
+        }
+        return families;
     }
 
     /// Result of font discovery including file path and face index

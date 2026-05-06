@@ -60,6 +60,7 @@ modified: std.atomic.Value(usize),
 pub fn init(allocator: std.mem.Allocator, size: u32, format: Format) !Atlas {
     const depth = format.depth();
     const data = try allocator.alloc(u8, @as(usize, size) * size * depth);
+    errdefer allocator.free(data);
     @memset(data, 0);
 
     // Start with a single node spanning the usable area (1px border on each side).

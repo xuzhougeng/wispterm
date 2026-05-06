@@ -280,6 +280,7 @@ fn ensurePendingTexture(
     }
 
     const rgba = try convertToRgba(alloc, image);
+    errdefer alloc.free(rgba);
     try rend.kitty_pending_uploads.append(alloc, .{
         .image_id = image.id,
         .width = image.width,

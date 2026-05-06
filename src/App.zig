@@ -71,27 +71,50 @@ next_window_cwd_len: usize = 0,
 // Initialization
 // ============================================================================
 
+fn dupeStr(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    return allocator.dupe(u8, s);
+}
+
+fn dupeOptStr(allocator: std.mem.Allocator, s: ?[]const u8) !?[]const u8 {
+    return if (s) |v| try allocator.dupe(u8, v) else null;
+}
+
+fn freeOptStr(allocator: std.mem.Allocator, s: ?[]const u8) void {
+    if (s) |v| allocator.free(v);
+}
+
 /// Initialize the App with configuration.
 pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
+    const font_family = try dupeStr(allocator, cfg.@"font-family");
+    errdefer allocator.free(font_family);
+    const font_family_cjk = try dupeOptStr(allocator, cfg.@"font-family-cjk");
+    errdefer freeOptStr(allocator, font_family_cjk);
+    const font_family_fallback = try dupeOptStr(allocator, cfg.@"font-family-fallback");
+    errdefer freeOptStr(allocator, font_family_fallback);
+    const shader_path = try dupeOptStr(allocator, cfg.@"custom-shader");
+    errdefer freeOptStr(allocator, shader_path);
+    const title = try dupeOptStr(allocator, cfg.title);
+    errdefer freeOptStr(allocator, title);
+
     var app = App{
         .allocator = allocator,
         .shell_cmd_buf = undefined,
         .shell_cmd_len = 0,
         .scrollback_limit = cfg.@"scrollback-limit",
-        .font_family = cfg.@"font-family",
-        .font_family_cjk = cfg.@"font-family-cjk",
-        .font_family_fallback = cfg.@"font-family-fallback",
+        .font_family = font_family,
+        .font_family_cjk = font_family_cjk,
+        .font_family_fallback = font_family_fallback,
         .font_weight = cfg.@"font-style".toDwriteWeight(),
         .font_size = cfg.@"font-size",
         .cursor_style = cfg.@"cursor-style",
         .cursor_blink = cfg.@"cursor-style-blink",
         .theme = cfg.resolved_theme,
-        .shader_path = cfg.@"custom-shader",
+        .shader_path = shader_path,
         .initial_cols = if (cfg.@"window-width" > 0) cfg.@"window-width" else 80,
         .initial_rows = if (cfg.@"window-height" > 0) cfg.@"window-height" else 24,
         .maximize = cfg.maximize,
         .fullscreen = cfg.fullscreen,
-        .title = cfg.title,
+        .title = title,
         .debug_fps = cfg.@"phantty-debug-fps",
         .debug_draw_calls = cfg.@"phantty-debug-draw-calls",
         .unfocused_split_opacity = cfg.@"unfocused-split-opacity",
@@ -154,6 +177,19 @@ pub fn takeInitialCwd(self: *App, out_buf: *[260]u16) usize {
     return len;
 }
 
+/// Replace an owned string field with a new dupe. Frees the old value.
+fn replaceStr(self: *App, old: *[]const u8, new: []const u8) void {
+    const duped = self.allocator.dupe(u8, new) catch return;
+    self.allocator.free(old.*);
+    old.* = duped;
+}
+
+fn replaceOptStr(self: *App, old: *?[]const u8, new: ?[]const u8) void {
+    const duped = if (new) |v| (self.allocator.dupe(u8, v) catch return) else null;
+    freeOptStr(self.allocator, old.*);
+    old.* = duped;
+}
+
 /// Update cached config values from a reloaded config.
 /// Called by windows when they detect a config change via hot-reload.
 pub fn updateConfig(self: *App, cfg: *const Config) void {
@@ -161,15 +197,15 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     defer self.mutex.unlock();
 
     self.scrollback_limit = cfg.@"scrollback-limit";
-    self.font_family = cfg.@"font-family";
-    self.font_family_cjk = cfg.@"font-family-cjk";
-    self.font_family_fallback = cfg.@"font-family-fallback";
+    self.replaceStr(&self.font_family, cfg.@"font-family");
+    self.replaceOptStr(&self.font_family_cjk, cfg.@"font-family-cjk");
+    self.replaceOptStr(&self.font_family_fallback, cfg.@"font-family-fallback");
     self.font_weight = cfg.@"font-style".toDwriteWeight();
     self.font_size = cfg.@"font-size";
     self.cursor_style = cfg.@"cursor-style";
     self.cursor_blink = cfg.@"cursor-style-blink";
     self.theme = cfg.resolved_theme;
-    self.shader_path = cfg.@"custom-shader";
+    self.replaceOptStr(&self.shader_path, cfg.@"custom-shader");
     self.initial_cols = if (cfg.@"window-width" > 0) cfg.@"window-width" else 80;
     self.initial_rows = if (cfg.@"window-height" > 0) cfg.@"window-height" else 24;
     self.debug_fps = cfg.@"phantty-debug-fps";
@@ -177,6 +213,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.unfocused_split_opacity = cfg.@"unfocused-split-opacity";
     self.split_divider_color = cfg.@"split-divider-color";
     self.focus_follows_mouse = cfg.@"focus-follows-mouse";
+    self.replaceOptStr(&self.title, cfg.title);
 }
 
 // ============================================================================
@@ -261,8 +298,8 @@ pub fn requestNewWindow(self: *App, parent_hwnd: ?win32_backend.HWND, cwd: ?[]co
     self.mutex.lock();
     defer self.mutex.unlock();
     self.window_threads.append(self.allocator, thread) catch {
-        std.debug.print("Failed to track window thread\n", .{});
-        // Thread will still run, just won't be joined properly
+        std.debug.print("Failed to track window thread, detaching\n", .{});
+        thread.detach();
     };
 }
 
@@ -367,6 +404,13 @@ pub fn requestShutdown(self: *App) void {
 pub fn deinit(self: *App) void {
     // Join any remaining threads
     self.joinAllWindowThreads();
+
+    // Free owned string copies
+    self.allocator.free(self.font_family);
+    freeOptStr(self.allocator, self.font_family_cjk);
+    freeOptStr(self.allocator, self.font_family_fallback);
+    freeOptStr(self.allocator, self.shader_path);
+    freeOptStr(self.allocator, self.title);
 
     self.windows.deinit(self.allocator);
     self.window_threads.deinit(self.allocator);

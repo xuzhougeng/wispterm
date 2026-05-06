@@ -112,9 +112,18 @@ fn startWatch(self: *ConfigWatcher) void {
         &self.overlapped,
         null, // no completion routine, we use the event
     );
-    self.active = (result != 0);
-    if (!self.active) {
-        std.debug.print("ConfigWatcher: ReadDirectoryChangesW failed\n", .{});
+    if (result != 0) {
+        self.active = true;
+    } else {
+        // For overlapped I/O, FALSE with ERROR_IO_PENDING means the operation
+        // was successfully queued and is still active.
+        const err = kernel32.GetLastError();
+        if (err == .IO_PENDING) {
+            self.active = true;
+        } else {
+            self.active = false;
+            std.debug.print("ConfigWatcher: ReadDirectoryChangesW failed: {}\n", .{err});
+        }
     }
 }
 
@@ -134,9 +143,8 @@ pub fn hasChanged(self: *ConfigWatcher) bool {
 }
 
 pub fn deinit(self: *ConfigWatcher) void {
-    if (self.active) {
-        _ = kernel32.CancelIo(self.dir_handle);
-    }
+    // Always cancel pending IO before closing the handle
+    _ = kernel32.CancelIo(self.dir_handle);
     windows.CloseHandle(self.event);
     windows.CloseHandle(self.dir_handle);
 }
