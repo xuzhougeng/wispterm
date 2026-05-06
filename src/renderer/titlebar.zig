@@ -26,6 +26,7 @@ pub const SIDEBAR_ROW_H: f32 = 42;
 pub const SIDEBAR_HEADER_H: f32 = 46;
 pub const TITLEBAR_TOGGLE_W: f32 = 46;
 pub const TITLEBAR_CONFIG_W: f32 = 46;
+pub const TITLEBAR_HELP_W: f32 = 46;
 pub threadlocal var g_sidebar_width: f32 = SIDEBAR_WIDTH;
 
 pub fn sidebarWidth() f32 {
@@ -117,6 +118,17 @@ fn renderFallbackGearIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     gl_init.renderQuad(cx - stroke / 2, cy + ring / 2, stroke, tooth, color);
     gl_init.renderQuad(cx - ring / 2 - tooth, cy - stroke / 2, tooth, stroke, color);
     gl_init.renderQuad(cx + ring / 2, cy - stroke / 2, tooth, stroke, color);
+}
+
+fn renderFallbackHelpIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
+    const ch: u32 = '?';
+    if (font.g_titlebar_cell_width > 0) {
+        const gw = titlebarGlyphAdvance(ch);
+        const gh = font.g_titlebar_cell_height;
+        const tx = x + (w - gw) / 2;
+        const ty = y + (h - gh) / 2;
+        renderTitlebarChar(ch, tx, ty, color);
+    }
 }
 
 fn renderPlusIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
@@ -421,10 +433,29 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             renderFallbackGearIcon(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
         }
 
+        const help_x = config_x - TITLEBAR_HELP_W;
+        const help_hovered = blk: {
+            const win = AppWindow.g_window orelse break :blk false;
+            if (win.mouse_y < 0 or win.mouse_y >= @as(i32, @intFromFloat(titlebar_h))) break :blk false;
+            break :blk @as(f32, @floatFromInt(win.mouse_x)) >= help_x and @as(f32, @floatFromInt(win.mouse_x)) < help_x + TITLEBAR_HELP_W;
+        };
+        if (help_hovered) {
+            gl_init.renderQuad(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, hover_bg);
+        }
+        if (font.icon_face != null) {
+            if (font.loadIconGlyph(0xEDA7)) |ch| {
+                renderIconGlyph(ch, help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color, 1.0);
+            } else {
+                renderFallbackHelpIcon(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color);
+            }
+        } else {
+            renderFallbackHelpIcon(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color);
+        }
+
         if (tab.activeTab()) |active_tab| {
             const title = active_tab.getTitle();
             const text_y = tb_top + (titlebar_h - font.g_titlebar_cell_height) / 2;
-            _ = renderTextLimited(title, TITLEBAR_TOGGLE_W + 10, text_y, blend(bg, fg, 0.90), config_x - TITLEBAR_TOGGLE_W - 22);
+            _ = renderTextLimited(title, TITLEBAR_TOGGLE_W + 10, text_y, blend(bg, fg, 0.90), help_x - TITLEBAR_TOGGLE_W - 22);
         }
 
         renderCaptionButton(top_caption_start, tb_top, top_caption_btn_w, top_btn_h, .minimize, top_hovered == .minimize);

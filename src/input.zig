@@ -1168,9 +1168,27 @@ fn hitTestConfigButton(xpos: f64, ypos: f64) bool {
     return xpos >= config_x and xpos < config_x + config_w;
 }
 
+fn hitTestHelpButton(xpos: f64, ypos: f64) bool {
+    const titlebar_h = titlebarHeight();
+    if (ypos < 0 or ypos >= titlebar_h) return false;
+
+    const win = AppWindow.g_window orelse return false;
+    const window_width: f64 = @floatFromInt(win.width);
+    const caption_w: f64 = 46 * 3;
+    const config_w: f64 = @floatCast(titlebar.TITLEBAR_CONFIG_W);
+    const help_w: f64 = @floatCast(titlebar.TITLEBAR_HELP_W);
+    const help_x = window_width - caption_w - config_w - help_w;
+    return xpos >= help_x and xpos < help_x + help_w;
+}
+
 fn handleTopbarPress(xpos: f64) void {
     if (xpos >= 0 and xpos < @as(f64, titlebar.TITLEBAR_TOGGLE_W)) {
         toggleSidebar();
+        return;
+    }
+
+    if (hitTestHelpButton(xpos, titlebarHeight() / 2)) {
+        overlays.startupShortcutsToggle();
         return;
     }
 
@@ -1403,7 +1421,8 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
 }
 
 fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
-    overlays.startupShortcutsDismiss();
+    if (!hitTestHelpButton(@floatFromInt(ev.x), @floatFromInt(ev.y)))
+        overlays.startupShortcutsDismiss();
     if (overlays.sessionLauncherVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;

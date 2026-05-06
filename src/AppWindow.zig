@@ -649,25 +649,25 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     font.g_cjk_font_family = cfg.@"font-family-cjk";
     font.g_fallback_font_families = cfg.@"font-family-fallback";
 
-    // Reload font: clear caches, load new face, recalculate metrics
-    if (reloadFontFaces(allocator, new_family, new_weight, new_font_size, ft_lib)) {
-        // --- Window size ---
-        // In normal windowed mode, preserve the current grid size and resize
-        // the window around the new cell metrics. In maximized/fullscreen mode,
-        // keep the OS-managed window bounds stable and recompute the grid from
-        // the current client size instead.
-        if (g_window) |w| {
-            const is_os_sized = w.is_fullscreen or win32_backend.IsZoomed(w.hwnd) != 0;
-            if (is_os_sized) {
-                onWin32Resize(w.width, w.height);
-            } else {
-                if (cfg.@"window-width" > 0) term_cols = cfg.@"window-width";
-                if (cfg.@"window-height" > 0) term_rows = cfg.@"window-height";
-                resizeWindowToGrid();
+    const font_changed = new_font_size != font.g_font_size;
+
+    // Only reload font faces when font parameters actually changed.
+    // Theme-only changes must not trigger a font reload + window resize.
+    if (font_changed) {
+        if (reloadFontFaces(allocator, new_family, new_weight, new_font_size, ft_lib)) {
+            if (g_window) |w| {
+                const is_os_sized = w.is_fullscreen or win32_backend.IsZoomed(w.hwnd) != 0;
+                if (is_os_sized) {
+                    onWin32Resize(w.width, w.height);
+                } else {
+                    if (cfg.@"window-width" > 0) term_cols = cfg.@"window-width";
+                    if (cfg.@"window-height" > 0) term_rows = cfg.@"window-height";
+                    resizeWindowToGrid();
+                }
             }
+        } else {
+            std.debug.print("Reload: failed to load font, keeping current font\n", .{});
         }
-    } else {
-        std.debug.print("Reload: failed to load font, keeping current font\n", .{});
     }
 
     std.debug.print("Config reloaded successfully\n", .{});
@@ -822,9 +822,21 @@ fn rebuildTitlebarFont(
 }
 
 /// Check if the config file has changed (via ReadDirectoryChangesW) and reload if so.
-fn checkConfigReload(allocator: std.mem.Allocator, watcher: *ConfigWatcher) void {
-    if (!watcher.hasChanged()) return;
+/// Debounces rapid changes (e.g. settings page writing multiple keys) into a single reload.
+threadlocal var g_config_change_time: i64 = 0;
+const CONFIG_DEBOUNCE_MS: i64 = 250;
 
+fn checkConfigReload(allocator: std.mem.Allocator, watcher: *ConfigWatcher) void {
+    if (watcher.hasChanged()) {
+        g_config_change_time = std.time.milliTimestamp();
+        return;
+    }
+
+    if (g_config_change_time == 0) return;
+    const elapsed = std.time.milliTimestamp() - g_config_change_time;
+    if (elapsed < CONFIG_DEBOUNCE_MS) return;
+
+    g_config_change_time = 0;
     std.debug.print("Config file changed, reloading...\n", .{});
 
     const cfg = Config.load(allocator) catch |err| {
@@ -1244,7 +1256,6 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
 
     // Initialize FPS timer
     overlays.g_fps_last_time = std.time.milliTimestamp();
-    overlays.startupShortcutsShow();
 
     // Apply fullscreen if requested (after all initialization is complete)
     std.debug.print("g_start_fullscreen = {}\n", .{g_start_fullscreen});

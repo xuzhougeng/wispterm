@@ -120,6 +120,13 @@ pub fn startupShortcutsDismiss() void {
     g_startup_shortcuts_visible = false;
 }
 
+pub fn startupShortcutsToggle() void {
+    g_startup_shortcuts_visible = !g_startup_shortcuts_visible;
+    if (g_startup_shortcuts_visible) {
+        g_startup_shortcuts_started_at = std.time.milliTimestamp();
+    }
+}
+
 // ============================================================================
 // Command center
 // ============================================================================
@@ -1499,6 +1506,8 @@ const SettingsLayout = struct {
 
 pub threadlocal var g_settings_visible: bool = false;
 threadlocal var g_settings_focus: usize = SETTINGS_THEME_ROW;
+threadlocal var g_settings_cfg_dirty: bool = true;
+threadlocal var g_settings_cfg_cache: Config = .{};
 
 pub fn settingsPageVisible() bool {
     return g_settings_visible;
@@ -1509,10 +1518,30 @@ pub fn settingsPageOpen() void {
     g_settings_focus = SETTINGS_THEME_ROW;
     g_command_palette_visible = false;
     g_startup_shortcuts_visible = false;
+    g_settings_cfg_dirty = true;
+}
+
+fn settingsPageReloadCfg() void {
+    g_settings_cfg_dirty = true;
+}
+
+fn settingsCfg(allocator: std.mem.Allocator) *Config {
+    if (g_settings_cfg_dirty) {
+        g_settings_cfg_cache.deinit(allocator);
+        g_settings_cfg_cache = Config.load(allocator) catch Config{};
+        g_settings_cfg_dirty = false;
+    }
+    return &g_settings_cfg_cache;
 }
 
 pub fn settingsPageClose() void {
     g_settings_visible = false;
+    if (g_settings_cfg_dirty == false) {
+        const allocator = AppWindow.g_allocator orelse return;
+        g_settings_cfg_cache.deinit(allocator);
+        g_settings_cfg_cache = .{};
+        g_settings_cfg_dirty = true;
+    }
 }
 
 pub fn settingsPageHandleKey(ev: win32_backend.KeyEvent) void {
@@ -1624,6 +1653,7 @@ fn executeSettingsAction(action: SettingsAction) void {
         .open_raw_config => Config.openConfigInEditor(allocator),
         .close => settingsPageClose(),
     }
+    settingsPageReloadCfg();
 }
 
 fn writeConfigInt(key: []const u8, value: u32) void {
@@ -1703,6 +1733,7 @@ fn cycleThemePreset(delta: i32) void {
     const current: i32 = @intCast(activeThemePresetIndex(&cfg) orelse 0);
     const next = @mod(current + delta, count);
     applyThemePreset(@intCast(next));
+    settingsPageReloadCfg();
 }
 
 fn themePresetIsActive(cfg: *const Config, preset: ThemePreset) bool {
@@ -1803,8 +1834,7 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     if (!g_settings_visible) return;
     const allocator = AppWindow.g_allocator orelse return;
 
-    var cfg = Config.load(allocator) catch Config{};
-    defer cfg.deinit(allocator);
+    const cfg = settingsCfg(allocator);
 
     const gl = &AppWindow.gl;
     const layout = settingsLayout(window_width, window_height, top_offset);
@@ -1838,8 +1868,8 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     renderSettingsRow(layout, window_height, 0, "Font size", font_value, "Left / Right", true, g_settings_focus == 0);
 
     var theme_buf: [96]u8 = undefined;
-    const theme_value = std.fmt.bufPrint(&theme_buf, "< {s} >", .{currentThemePresetLabel(&cfg)}) catch currentThemePresetLabel(&cfg);
-    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, "Theme", theme_value, currentThemePresetDetail(&cfg), true, g_settings_focus == SETTINGS_THEME_ROW);
+    const theme_value = std.fmt.bufPrint(&theme_buf, "< {s} >", .{currentThemePresetLabel(cfg)}) catch currentThemePresetLabel(cfg);
+    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, "Theme", theme_value, currentThemePresetDetail(cfg), true, g_settings_focus == SETTINGS_THEME_ROW);
 
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, "Cursor style", cursorStyleText(cfg.@"cursor-style"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, "Cursor blink", boolText(cfg.@"cursor-style-blink"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
@@ -2230,24 +2260,6 @@ fn renderResizeOverlayText(cols: u16, rows: u16, window_width: f32, window_heigh
 }
 fn startupShortcutsOpacity() f32 {
     if (!g_startup_shortcuts_visible) return 0;
-
-    if (g_startup_shortcuts_started_at == 0) {
-        g_startup_shortcuts_started_at = std.time.milliTimestamp();
-    }
-
-    const now = std.time.milliTimestamp();
-    const elapsed = now - g_startup_shortcuts_started_at;
-    if (elapsed >= STARTUP_SHORTCUTS_DURATION_MS) {
-        g_startup_shortcuts_visible = false;
-        return 0;
-    }
-
-    const fade_start = STARTUP_SHORTCUTS_DURATION_MS - STARTUP_SHORTCUTS_FADE_MS;
-    if (elapsed > fade_start) {
-        const fade_elapsed = elapsed - fade_start;
-        return 1.0 - @as(f32, @floatFromInt(fade_elapsed)) / @as(f32, @floatFromInt(STARTUP_SHORTCUTS_FADE_MS));
-    }
-
     return 1.0;
 }
 
