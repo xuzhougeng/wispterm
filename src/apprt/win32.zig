@@ -718,6 +718,9 @@ pub const MouseWheelEvent = struct {
     delta: i16, // positive = up, negative = down
     xpos: i32, // mouse x position in window coordinates
     ypos: i32, // mouse y position in window coordinates
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
 };
 
 // Fixed-size ring buffers for events (avoids allocation in WndProc)
@@ -1603,6 +1606,7 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
         },
         WM_MOUSEWHEEL => {
             const delta: i16 = @bitCast(@as(u16, @intCast((wParam >> 16) & 0xFFFF)));
+            const mods = getModifiers();
             // WM_MOUSEWHEEL gives screen coordinates in lParam, convert to client
             const screen_x: i16 = @bitCast(@as(u16, @intCast(lParam & 0xFFFF)));
             const screen_y: i16 = @bitCast(@as(u16, @intCast((lParam >> 16) & 0xFFFF)));
@@ -1612,6 +1616,9 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
                 .delta = delta,
                 .xpos = pt.x,
                 .ypos = pt.y,
+                .ctrl = mods.ctrl,
+                .shift = mods.shift,
+                .alt = mods.alt,
             });
             return 0;
         },

@@ -507,6 +507,20 @@ fn mouseToSurfaceCell(surface: *Surface, xpos: f64, ypos: f64) CellPos {
     return .{ .col = col, .row = row };
 }
 
+fn mouseToSurfacePixel(surface: *Surface, xpos: i32, ypos: i32) struct { x: i32, y: i32 } {
+    if (splitRectForSurface(surface)) |rect| {
+        const pad = surface.getPadding();
+        return .{
+            .x = xpos - rect.x - @as(i32, @intCast(pad.left)),
+            .y = ypos - rect.y - @as(i32, @intCast(pad.top)),
+        };
+    }
+    return .{
+        .x = xpos - @as(i32, @intFromFloat(titlebar.sidebarWidth())) - 10,
+        .y = ypos - @as(i32, @intFromFloat(titlebarHeight())) - 10,
+    };
+}
+
 /// Update split focus based on mouse position (focus follows mouse).
 pub fn updateFocusFromMouse(mouse_x: i32, mouse_y: i32) void {
     const t = tab.activeTab() orelse return;
@@ -1870,6 +1884,76 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     }
 }
 
+fn appendBytes(out: *[512]u8, len: *usize, bytes: []const u8) bool {
+    if (len.* + bytes.len > out.len) return false;
+    @memcpy(out[len.* .. len.* + bytes.len], bytes);
+    len.* += bytes.len;
+    return true;
+}
+
+fn appendByte(out: *[512]u8, len: *usize, byte: u8) bool {
+    if (len.* >= out.len) return false;
+    out[len.*] = byte;
+    len.* += 1;
+    return true;
+}
+
+fn appendFmt(out: *[512]u8, len: *usize, comptime fmt: []const u8, args: anytype) bool {
+    const written = std.fmt.bufPrint(out[len.*..], fmt, args) catch return false;
+    len.* += written.len;
+    return true;
+}
+
+fn mouseWheelUnits(delta: i16) usize {
+    const notches = @abs(@as(i32, delta));
+    return @max(@as(usize, 1), @as(usize, @intCast((notches * 3 + 119) / 120)));
+}
+
+fn appendMouseWheelReport(surface: *Surface, ev: win32_backend.MouseWheelEvent, out: *[512]u8, len: *usize) bool {
+    if (surface.terminal.flags.mouse_event == .none or surface.terminal.flags.mouse_event == .x10) return false;
+
+    var button_code: u8 = if (ev.delta > 0) 64 else 65; // xterm wheel up/down buttons 4/5
+    if (ev.shift) button_code += 4;
+    if (ev.alt) button_code += 8;
+    if (ev.ctrl) button_code += 16;
+
+    const cell = mouseToSurfaceCell(surface, @floatFromInt(ev.xpos), @floatFromInt(ev.ypos));
+    const x = cell.col + 1;
+    const y = cell.row + 1;
+
+    switch (surface.terminal.flags.mouse_format) {
+        .sgr => return appendFmt(out, len, "\x1b[<{d};{d};{d}M", .{ button_code, x, y }),
+        .urxvt => return appendFmt(out, len, "\x1b[{d};{d};{d}M", .{ 32 + @as(u16, button_code), x, y }),
+        .sgr_pixels => {
+            const pixel = mouseToSurfacePixel(surface, ev.xpos, ev.ypos);
+            return appendFmt(out, len, "\x1b[<{d};{d};{d}M", .{ button_code, @max(0, pixel.x), @max(0, pixel.y) });
+        },
+        .x10, .utf8 => {
+            if (cell.col > 222 or cell.row > 222) return false;
+            if (!appendBytes(out, len, "\x1b[M")) return false;
+            if (!appendByte(out, len, 32 + button_code)) return false;
+            if (!appendByte(out, len, 32 + @as(u8, @intCast(cell.col)) + 1)) return false;
+            if (!appendByte(out, len, 32 + @as(u8, @intCast(cell.row)) + 1)) return false;
+            return true;
+        },
+    }
+}
+
+fn appendAlternateScrollKeys(surface: *Surface, ev: win32_backend.MouseWheelEvent, out: *[512]u8, len: *usize) bool {
+    if (surface.terminal.screens.active_key != .alternate) return false;
+    if (surface.terminal.flags.mouse_event != .none) return false;
+    if (!surface.terminal.modes.get(.mouse_alternate_scroll)) return false;
+
+    const seq = if (surface.terminal.modes.get(.cursor_keys))
+        if (ev.delta > 0) "\x1bOA" else "\x1bOB"
+    else if (ev.delta > 0) "\x1b[A" else "\x1b[B";
+
+    for (0..mouseWheelUnits(ev.delta)) |_| {
+        if (!appendBytes(out, len, seq)) return false;
+    }
+    return true;
+}
+
 fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
@@ -1887,16 +1971,33 @@ fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
     // Fall back to focused surface if mouse is not over any split.
     const surface = split_layout.surfaceAtPoint(ev.xpos, ev.ypos) orelse AppWindow.activeSurface() orelse return;
 
-    surface.render_state.mutex.lock();
-    defer surface.render_state.mutex.unlock();
-    // WHEEL_DELTA is 120 per notch. Convert to lines (3 lines per notch, like GLFW).
-    const notches = @as(f64, @floatFromInt(ev.delta)) / 120.0;
-    const delta: isize = @intFromFloat(-notches * 3);
-    surface.terminal.scrollViewport(.{ .delta = delta });
+    var terminal_input_buf: [512]u8 = undefined;
+    var terminal_input_len: usize = 0;
+    var sent_to_terminal = false;
 
-    // Show scrollbar for the scrolled surface
-    surface.scrollbar_opacity = 1.0;
-    surface.scrollbar_show_time = std.time.milliTimestamp();
+    surface.render_state.mutex.lock();
+    if (surface.terminal.flags.mouse_event != .none) {
+        for (0..mouseWheelUnits(ev.delta)) |_| {
+            if (!appendMouseWheelReport(surface, ev, &terminal_input_buf, &terminal_input_len)) break;
+        }
+        sent_to_terminal = terminal_input_len > 0;
+    } else if (appendAlternateScrollKeys(surface, ev, &terminal_input_buf, &terminal_input_len)) {
+        sent_to_terminal = true;
+    } else {
+        // WHEEL_DELTA is 120 per notch. Convert to lines (3 lines per notch, like GLFW).
+        const notches = @as(f64, @floatFromInt(ev.delta)) / 120.0;
+        const delta: isize = @intFromFloat(-notches * 3);
+        surface.terminal.scrollViewport(.{ .delta = delta });
+
+        // Show scrollbar for the scrolled surface
+        surface.scrollbar_opacity = 1.0;
+        surface.scrollbar_show_time = std.time.milliTimestamp();
+    }
+    surface.render_state.mutex.unlock();
+
+    if (sent_to_terminal) {
+        writeToPty(surface, terminal_input_buf[0..terminal_input_len]);
+    }
 }
 
 // --- Clipboard (Win32 native) ---
