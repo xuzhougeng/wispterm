@@ -194,10 +194,12 @@ fn splitSshCommand(
     const conn = surface.ssh_connection orelse return null;
 
     var command_buf: [512]u8 = undefined;
+    // Keep this in sync with overlays.connectSshProfile — see comment there
+    // for why ServerAlive* is mandatory for split-inherited SSH sessions too.
     const auth_flags = if (conn.password_auth)
-        "-o StrictHostKeyChecking=accept-new -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "
+        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "
     else
-        "-o StrictHostKeyChecking=accept-new ";
+        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ";
     const command = if (conn.port().len > 0)
         std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}-p {s} {s}@{s}", .{ auth_flags, conn.port(), conn.user(), conn.host() }) catch return null
     else

@@ -1054,10 +1054,13 @@ fn connectSshProfile(idx: usize) void {
     if (port.len > 0 and !isPortTokenSafe(port)) return;
 
     var command_buf: [512]u8 = undefined;
+    // ServerAlive* sends an encrypted keepalive every 60s and gives up after 3
+    // misses (~3 min). Defeats NAT/firewall idle drops that hang interactive
+    // sessions (e.g. Codex over SSH) after ~10 min of silence.
     const auth_flags = if (password.len > 0)
-        "-o StrictHostKeyChecking=accept-new -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "
+        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "
     else
-        "-o StrictHostKeyChecking=accept-new ";
+        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ";
     const command = if (port.len > 0)
         std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}-p {s} {s}@{s}", .{ auth_flags, port, user, ip }) catch return
     else
