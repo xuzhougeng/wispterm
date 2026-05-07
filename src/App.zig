@@ -9,6 +9,7 @@ const Config = @import("config.zig");
 const AppWindow = @import("AppWindow.zig");
 const directwrite = @import("directwrite.zig");
 const win32_backend = @import("apprt/win32.zig");
+const remote = @import("remote_client.zig");
 
 extern "user32" fn MonitorFromPoint(pt: win32_backend.POINT, dwFlags: u32) callconv(.winapi) ?win32_backend.HMONITOR;
 
@@ -54,6 +55,13 @@ unfocused_split_opacity: f32,
 split_divider_color: ?Config.Color,
 focus_follows_mouse: bool,
 
+// Remote access config
+remote_enabled: bool,
+remote_server_url: ?[]const u8,
+remote_server_fingerprint: ?[]const u8,
+remote_device_name: ?[]const u8,
+remote_client: ?*remote.Client,
+
 // Window management
 windows: std.ArrayListUnmanaged(*AppWindow),
 mutex: std.Thread.Mutex,
@@ -95,6 +103,14 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     errdefer freeOptStr(allocator, shader_path);
     const title = try dupeOptStr(allocator, cfg.title);
     errdefer freeOptStr(allocator, title);
+    const remote_server_url = try dupeOptStr(allocator, cfg.@"remote-server-url");
+    errdefer freeOptStr(allocator, remote_server_url);
+    const remote_server_fingerprint = try dupeOptStr(allocator, cfg.@"remote-server-fingerprint");
+    errdefer freeOptStr(allocator, remote_server_fingerprint);
+    const remote_device_name = try dupeOptStr(allocator, cfg.@"remote-device-name");
+    errdefer freeOptStr(allocator, remote_device_name);
+    const remote_client_ptr = startRemoteClient(allocator, cfg.@"remote-enabled", remote_server_url, remote_device_name);
+    errdefer if (remote_client_ptr) |client| client.destroy();
 
     var app = App{
         .allocator = allocator,
@@ -120,6 +136,11 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .unfocused_split_opacity = cfg.@"unfocused-split-opacity",
         .split_divider_color = cfg.@"split-divider-color",
         .focus_follows_mouse = cfg.@"focus-follows-mouse",
+        .remote_enabled = cfg.@"remote-enabled",
+        .remote_server_url = remote_server_url,
+        .remote_server_fingerprint = remote_server_fingerprint,
+        .remote_device_name = remote_device_name,
+        .remote_client = remote_client_ptr,
         .windows = .empty,
         .mutex = .{},
         .window_threads = .empty,
@@ -153,8 +174,31 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         app.shell_cmd_len = len;
     }
     std.debug.print("Shell command resolved: '{s}'\n", .{cfg.shell});
+    if (app.remote_client) |client| {
+        std.debug.print("Remote session key: {s}\n", .{client.sessionKey()});
+    }
 
     return app;
+}
+
+fn startRemoteClient(
+    allocator: std.mem.Allocator,
+    enabled: bool,
+    server_url: ?[]const u8,
+    device_name: ?[]const u8,
+) ?*remote.Client {
+    if (!enabled) return null;
+    const raw_url = server_url orelse return null;
+    const url = std.mem.trim(u8, raw_url, " \t\r\n");
+    if (url.len == 0) return null;
+
+    return remote.Client.create(allocator, .{
+        .server_url = url,
+        .device_name = device_name,
+    }) catch |err| {
+        std.debug.print("Remote client disabled: {}\n", .{err});
+        return null;
+    };
 }
 
 /// Get the shell command as a null-terminated UTF-16 slice.
@@ -213,6 +257,10 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.unfocused_split_opacity = cfg.@"unfocused-split-opacity";
     self.split_divider_color = cfg.@"split-divider-color";
     self.focus_follows_mouse = cfg.@"focus-follows-mouse";
+    self.remote_enabled = cfg.@"remote-enabled";
+    self.replaceOptStr(&self.remote_server_url, cfg.@"remote-server-url");
+    self.replaceOptStr(&self.remote_server_fingerprint, cfg.@"remote-server-fingerprint");
+    self.replaceOptStr(&self.remote_device_name, cfg.@"remote-device-name");
     self.replaceOptStr(&self.title, cfg.title);
 }
 
@@ -405,12 +453,20 @@ pub fn deinit(self: *App) void {
     // Join any remaining threads
     self.joinAllWindowThreads();
 
+    if (self.remote_client) |client| {
+        client.destroy();
+        self.remote_client = null;
+    }
+
     // Free owned string copies
     self.allocator.free(self.font_family);
     freeOptStr(self.allocator, self.font_family_cjk);
     freeOptStr(self.allocator, self.font_family_fallback);
     freeOptStr(self.allocator, self.shader_path);
     freeOptStr(self.allocator, self.title);
+    freeOptStr(self.allocator, self.remote_server_url);
+    freeOptStr(self.allocator, self.remote_server_fingerprint);
+    freeOptStr(self.allocator, self.remote_device_name);
 
     self.windows.deinit(self.allocator);
     self.window_threads.deinit(self.allocator);

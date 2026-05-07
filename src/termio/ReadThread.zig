@@ -11,7 +11,6 @@
 /// pipe from filling up and deadlocking ResizePseudoConsole.
 ///
 /// Shutdown via CancelIoEx from Surface.deinit().
-
 const std = @import("std");
 const windows = std.os.windows;
 const Surface = @import("../Surface.zig");
@@ -55,6 +54,11 @@ pub fn threadMain(surface: *Surface) void {
             return;
         }
 
+        const data = buf[0..@intCast(bytes_read)];
+        if (surface.remote_client) |client| {
+            client.sendOutput(data);
+        }
+
         // Process VT data under render lock
         surface.render_state.mutex.lock();
         defer surface.render_state.mutex.unlock();
@@ -62,7 +66,6 @@ pub fn threadMain(surface: *Surface) void {
         surface.resetOscBatch();
         var stream = surface.vtStream();
         defer stream.handler.deinit();
-        const data = buf[0..@intCast(bytes_read)];
         stream.nextSlice(data);
         surface.scanForOscTitle(data);
         surface.dirty.store(true, .release);

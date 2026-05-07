@@ -14,6 +14,7 @@ const app: HTMLElement = appRoot;
 
 let socket: WebSocket | null = null;
 let term: Terminal | null = null;
+let outputDecoder = new TextDecoder();
 
 function api(path: string, init?: RequestInit): Promise<Response> {
   return fetch(path, {
@@ -139,6 +140,7 @@ function connect(sessionKey: string): void {
 
   socket.addEventListener("open", () => {
     setStatus("online", "Connected read-only");
+    outputDecoder = new TextDecoder();
     term?.reset();
     term?.write("Connected. Waiting for Phantty output...\r\n");
   });
@@ -153,6 +155,13 @@ function connect(sessionKey: string): void {
     if (!message) return;
     if (message.type === "output" && typeof message.data === "string") {
       term?.write(message.data);
+    } else if (
+      message.type === "output-bytes" &&
+      message.encoding === "hex" &&
+      typeof message.data === "string"
+    ) {
+      const bytes = decodeHex(message.data);
+      if (bytes) term?.write(outputDecoder.decode(bytes, { stream: true }));
     } else if (message.type === "notice" && typeof message.message === "string") {
       term?.write(`\r\n[relay] ${message.message}\r\n`);
     }
@@ -166,12 +175,23 @@ function setStatus(kind: "offline" | "connecting" | "online", text: string): voi
   if (label) label.textContent = text;
 }
 
-function safeJson(data: string): { type?: unknown; data?: unknown; message?: unknown } | null {
+function safeJson(data: string): { type?: unknown; data?: unknown; encoding?: unknown; message?: unknown } | null {
   try {
-    return JSON.parse(data) as { type?: unknown; data?: unknown; message?: unknown };
+    return JSON.parse(data) as { type?: unknown; data?: unknown; encoding?: unknown; message?: unknown };
   } catch {
     return null;
   }
+}
+
+function decodeHex(hex: string): Uint8Array | null {
+  if (hex.length % 2 !== 0) return null;
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i += 1) {
+    const value = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    if (Number.isNaN(value)) return null;
+    bytes[i] = value;
+  }
+  return bytes;
 }
 
 function escapeText(value: string): string {

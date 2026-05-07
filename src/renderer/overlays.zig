@@ -2529,6 +2529,19 @@ pub fn renderDebugOverlay(window_width: f32) void {
     const line_h = font.g_titlebar_cell_height + pad_v * 2;
     var overlay_y: f32 = margin;
 
+    if (AppWindow.g_app) |app| {
+        if (app.remote_client) |client| {
+            renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
+                var buf: [96]u8 = undefined;
+                break :blk std.fmt.bufPrint(
+                    &buf,
+                    "Remote {s} key {s}",
+                    .{ remoteStateLabel(client.loadState()), client.sessionKey() },
+                ) catch break :blk "";
+            }, remoteStateColor(client.loadState()));
+        }
+    }
+
     if (g_debug_fps) {
         renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
             var buf: [32]u8 = undefined;
@@ -2543,6 +2556,26 @@ pub fn renderDebugOverlay(window_width: f32) void {
             break :blk std.fmt.bufPrint(&buf, "{d} draws", .{gl_init.g_draw_call_count}) catch break :blk "";
         }, .{ 1.0, 1.0, 0.0 });
     }
+}
+
+fn remoteStateLabel(state: @import("../remote_client.zig").State) []const u8 {
+    return switch (state) {
+        .disabled => "off",
+        .connecting => "connecting",
+        .connected => "connected",
+        .disconnected => "offline",
+        .failed => "retrying",
+    };
+}
+
+fn remoteStateColor(state: @import("../remote_client.zig").State) [3]f32 {
+    return switch (state) {
+        .disabled => .{ 0.55, 0.55, 0.55 },
+        .connecting => .{ 1.0, 0.78, 0.22 },
+        .connected => .{ 0.24, 1.0, 0.44 },
+        .disconnected => .{ 1.0, 0.58, 0.24 },
+        .failed => .{ 1.0, 0.28, 0.24 },
+    };
 }
 
 fn renderDebugLine(window_width: f32, y_pos: *f32, margin: f32, pad_h: f32, pad_v: f32, line_h: f32, text: []const u8, text_color: [3]f32) void {

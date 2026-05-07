@@ -16,6 +16,7 @@ type LoginBody = {
 type RelayMessage = {
   type?: string;
   data?: string;
+  encoding?: string;
   message?: string;
 };
 
@@ -63,6 +64,8 @@ export class RemoteSession extends DurableObject<Env> {
 
       if (message.type === "output" && typeof message.data === "string") {
         this.broadcast({ type: "output", data: message.data });
+      } else if (message.type === "output-bytes" && typeof message.data === "string") {
+        this.broadcast({ type: "output-bytes", encoding: message.encoding, data: message.data });
       } else if (message.type === "control-granted") {
         this.controlEnabled = true;
         this.broadcast({ type: "notice", message: "Remote control granted locally" });

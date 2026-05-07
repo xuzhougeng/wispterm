@@ -77,6 +77,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     term_rows = app.initial_rows;
 
     tab.g_scrollback_limit = app.scrollback_limit;
+    tab.g_remote_client = app.remote_client;
 
     // Copy shell command from App
     @memcpy(tab.g_shell_cmd_buf[0..app.shell_cmd_len], app.shell_cmd_buf[0..app.shell_cmd_len]);
@@ -128,6 +129,7 @@ pub fn deinit(self: *AppWindow) void {
         }
     }
     tab.g_tab_count = 0;
+    tab.g_remote_client = null;
 }
 
 // ============================================================================

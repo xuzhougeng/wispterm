@@ -2,12 +2,12 @@
 
 Cloudflare Worker scaffold for Phantty remote access.
 
-This is a Phase 1 foundation. It provides:
+This is the Cloudflare relay for Phantty remote access. It provides:
 
 - Single-user login API.
 - Signed login cookie.
 - Static `xterm.js` browser console.
-- Durable Object WebSocket relay skeleton.
+- Durable Object WebSocket relay.
 - Read-only default behavior.
 
 It does not provide production-ready device authentication or local control
@@ -72,7 +72,21 @@ wrangler deploy
 - `POST /api/logout` clears the login cookie.
 - `GET /api/me` checks login state.
 - `GET /ws/browser?session=<key>` connects the browser after login.
-- `GET /ws/phantty?session=<key>` is a scaffold route for the future Phantty client.
+- `GET /ws/phantty?session=<key>` connects the shared Phantty RemoteClient.
+
+## Relay Messages
+
+The Phantty client sends PTY bytes as:
+
+```json
+{ "type": "output-bytes", "encoding": "hex", "data": "..." }
+```
+
+The browser also accepts the older mock format:
+
+```json
+{ "type": "output", "data": "hello from mock Phantty\r\n" }
+```
 
 ## Security Notes
 

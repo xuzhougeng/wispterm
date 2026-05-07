@@ -9,6 +9,7 @@ const Config = @import("../config.zig");
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
 const win32_backend = @import("../apprt/win32.zig");
+const remote_client = @import("../remote_client.zig");
 
 const CursorStyle = Config.CursorStyle;
 const Selection = Surface.Selection;
@@ -70,6 +71,7 @@ pub threadlocal var g_active_tab: usize = 0;
 pub threadlocal var g_shell_cmd_buf: [256]u16 = undefined;
 pub threadlocal var g_shell_cmd_len: usize = 0;
 pub threadlocal var g_scrollback_limit: u32 = 10_000_000;
+pub threadlocal var g_remote_client: ?*remote_client.Client = null;
 
 // Forced title from config (overrides all tab titles)
 pub threadlocal var g_forced_title: ?[]const u8 = null;
@@ -251,6 +253,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
         std.debug.print("Failed to create Surface for new tab\n", .{});
         return false;
     };
+    surface.remote_client = g_remote_client;
 
     const tree = SplitTree.init(allocator, surface) catch {
         std.debug.print("Failed to create SplitTree for new tab\n", .{});
@@ -425,6 +428,7 @@ fn splitFocusedSurfaceWithCommand(
         std.debug.print("Failed to create Surface for split\n", .{});
         return null;
     };
+    new_surface.remote_client = g_remote_client;
 
     if (inherit_ssh_connection) {
         if (focused_surface.ssh_connection) |conn| {

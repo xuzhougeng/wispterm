@@ -215,10 +215,15 @@ remote-device-name = Workstation
 | `window-width` | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80×24) |
 | `scrollback-limit` | `10000000` | Scrollback buffer limit in bytes |
 | `config-file` | *(none)* | Include another config file (prefix with `?` to make optional) |
-| `remote-enabled` | `false` | Enable the opt-in remote access foundation (no control is enabled in Phase 1) |
-| `remote-server-url` | *(none)* | Cloudflare relay URL used by the future outbound remote client |
+| `remote-enabled` | `false` | Start the shared outbound RemoteClient for this Phantty instance |
+| `remote-server-url` | *(none)* | Cloudflare relay URL, for example `https://remote.example.com` |
 | `remote-server-fingerprint` | *(none)* | Expected relay fingerprint for server identity pinning |
-| `remote-device-name` | *(none)* | Friendly device name shown by the future remote access UI |
+| `remote-device-name` | *(none)* | Friendly device name sent with the Phantty WebSocket pairing |
+
+When `remote-enabled = true`, Phantty creates one RemoteClient for the running
+instance. All tabs and splits publish PTY output through that shared client, and
+the generated session key is printed in the debug console and shown in the
+in-window remote status pill.
 
 ## License
 

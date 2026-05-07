@@ -18,6 +18,7 @@ const termio = @import("termio.zig");
 const Config = @import("config.zig");
 const Renderer = @import("renderer/Renderer.zig");
 const RendererThread = @import("RendererThread.zig");
+const remote = @import("remote_client.zig");
 
 const windows = std.os.windows;
 
@@ -152,6 +153,7 @@ selection: Selection,
 render_state: renderer.State,
 launch_kind: LaunchKind,
 ssh_connection: ?SshConnection,
+remote_client: ?*remote.Client,
 
 /// Size information for this surface (screen size, cell size, padding).
 /// Used by the renderer to position content correctly.
@@ -337,6 +339,7 @@ pub fn init(
     surface.render_state = renderer.State.init(&surface.terminal);
     surface.launch_kind = detectLaunchKind(shell_cmd);
     surface.ssh_connection = null;
+    surface.remote_client = null;
     surface.dirty = std.atomic.Value(bool).init(true);
     surface.exited = std.atomic.Value(bool).init(false);
 
