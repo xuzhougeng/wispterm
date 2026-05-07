@@ -1,0 +1,16 @@
+node_modules
+dist
+dist-server
+.wrangler
+.env
+.env.*
+!.env.example
+*.log
+.git
+.gitignore
+.codex
+README.md
+nginx.conf
+nginx.conf.example
+docker-compose.yml
+wrangler.toml

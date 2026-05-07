@@ -1,19 +1,35 @@
 # Phantty Remote Console
 
-Cloudflare Worker scaffold for Phantty remote access.
-
-This is the Cloudflare relay for Phantty remote access. It provides:
+Relay server for Phantty remote access. Provides:
 
 - Single-user login API.
 - Signed login cookie.
 - Static `xterm.js` browser console.
-- Durable Object WebSocket relay.
+- WebSocket relay between Phantty and one or more browsers.
 - Browser input forwarding after the session is paired.
 
 The browser mirrors Phantty tabs and split panels from layout snapshots, then
 routes input back to the selected surface.
 
-## Setup
+## Deployment Options
+
+Two parallel deployment targets are supported. Pick either one — they share
+the same client (`src/client/`), the same routes, and the same on-the-wire
+protocol, so the Phantty client and browser behave identically.
+
+| Option            | Runtime                | TLS / Routing                                        | State                           |
+|-------------------|------------------------|------------------------------------------------------|---------------------------------|
+| Cloudflare        | Cloudflare Workers     | Cloudflare-managed domain                            | Durable Object per session key  |
+| Docker            | Node.js in a container | Platform-managed HTTPS, *or* your own nginx in front | In-memory map per session key   |
+
+Both can be served on the same domain — just point DNS at whichever one you
+want active. The Docker variant does **not** persist relay state across
+container restarts; the Phantty client reconnects and re-sends layout, so
+this is harmless in practice.
+
+---
+
+## Option A — Cloudflare Workers
 
 Install dependencies:
 
@@ -65,7 +81,98 @@ npm run build
 wrangler deploy
 ```
 
-## Routes
+---
+
+## Option B — Docker
+
+Same login/relay logic as the Cloudflare Worker, packaged as a Node.js
+container. TLS is **not** done in-process — something in front of the
+container has to terminate HTTPS.
+
+At runtime the container needs three secrets — same format as the Worker:
+
+| Variable                  | Format / how to generate                                                |
+|---------------------------|-------------------------------------------------------------------------|
+| `ADMIN_USERNAME`          | plain string                                                            |
+| `ADMIN_PASSWORD_HASH`     | `sha256:<hex>` — `printf '%s' "$PW" \| sha256sum`                       |
+| `SESSION_SIGNING_SECRET`  | random — `openssl rand -hex 32`                                         |
+
+How those reach the container depends on which sub-path you take.
+
+### B1 — Build locally, push to a registry, host pulls
+
+For container hosts that pull images from Docker Hub / GHCR / etc. and provide
+their own HTTPS + port forwarding. The build runs on your machine; the host
+only sees the published image.
+
+```bash
+# Replace <user>/<image> with your registry path.
+docker build -t <user>/phantty-remote:0.1.0 -t <user>/phantty-remote:latest .
+
+docker push <user>/phantty-remote:0.1.0
+docker push <user>/phantty-remote:latest
+```
+
+If your host architecture might differ from your build machine, build
+multi-arch instead:
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t <user>/phantty-remote:0.1.0 \
+  --push .
+```
+
+Then in the host's control panel:
+
+- Point the service at `<user>/phantty-remote:<tag>`.
+- Set the env vars from the table above (in the host's secret/env UI — do
+  **not** bake them into the image).
+- Forward the host's public HTTPS port to container port `8787`.
+
+The image already exposes `8787` and listens on `0.0.0.0`, so no extra
+configuration is needed.
+
+### B2 — VPS / self-hosted with docker compose + nginx
+
+For when you run the box yourself. `docker-compose.yml` and
+`nginx.conf.example` are wired up for this:
+
+```bash
+cp .env.example .env && $EDITOR .env   # fill in the three secrets
+docker compose up -d --build           # binds 127.0.0.1:8787
+```
+
+Then put nginx in front (see `nginx.conf.example` — covers HTTP→HTTPS
+redirect, TLS, and the WebSocket upgrade headers needed for `/ws/*`):
+
+```bash
+sudo cp nginx.conf.example /etc/nginx/sites-available/phantty-remote
+sudo $EDITOR /etc/nginx/sites-available/phantty-remote   # set server_name + cert paths
+sudo ln -s /etc/nginx/sites-available/phantty-remote /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Update with `git pull && docker compose up -d --build`.
+
+### Local development without Docker
+
+```bash
+npm install
+npm run dev          # static client (Vite, port 5173)
+ADMIN_USERNAME=admin \
+ADMIN_PASSWORD_HASH=sha256:... \
+SESSION_SIGNING_SECRET=$(openssl rand -hex 32) \
+REMOTE_COOKIE_SECURE=false \
+npm run dev:server   # relay server, port 8787
+```
+
+Set `REMOTE_COOKIE_SECURE=false` only for plain-HTTP local testing —
+production must keep cookies marked `Secure` and front the server with HTTPS.
+
+---
+
+## Routes (both deployments)
 
 - `GET /` serves the browser app.
 - `POST /api/login` signs in the single configured user.
@@ -105,7 +212,11 @@ The browser also accepts the older mock format:
 
 ## Security Notes
 
-- Do not commit Worker secrets.
+- Do not commit Worker secrets or the Docker `.env` file.
 - Do not load third-party browser scripts into the console page.
 - Replace the Phase 1 password hash format with a slow KDF before production.
 - Add Phantty device challenge/response before trusting `/ws/phantty`.
+- The Docker container speaks plain HTTP — never expose its port to the public
+  internet directly. Always front it with a TLS terminator (your platform's
+  proxy, or your own nginx) so browsers see HTTPS and the `Secure` cookie flag
+  is honored.

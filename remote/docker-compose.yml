@@ -1,0 +1,16 @@
+services:
+  phantty-remote:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: phantty-remote:latest
+    container_name: phantty-remote
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Bound to loopback — this file is for the B2 self-hosted path where nginx
+    # on the host terminates TLS (see nginx.conf.example). For the B1 path
+    # (build → push → host pulls) you don't use compose at all; the host's
+    # own runner handles ports.
+    ports:
+      - "127.0.0.1:8787:8787"

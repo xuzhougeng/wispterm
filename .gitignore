@@ -23,5 +23,7 @@ __pycache__/
 # Node/Cloudflare remote console artifacts
 node_modules/
 remote/dist/
+remote/dist-server/
 remote/.wrangler/
 remote/wrangler.toml
+remote/.env

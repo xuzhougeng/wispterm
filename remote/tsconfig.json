@@ -11,5 +11,6 @@
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*.ts", "worker-configuration.d.ts"]
+  "include": ["src/**/*.ts", "worker-configuration.d.ts"],
+  "exclude": ["src/server/**/*", "dist", "dist-server", "node_modules"]
 }

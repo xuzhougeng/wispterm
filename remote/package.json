@@ -5,17 +5,25 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:docker": "npm run build && npm run build:server",
     "dev": "vite --host 127.0.0.1",
+    "dev:server": "tsx watch src/server/index.ts",
+    "start:server": "node dist-server/index.js",
     "preview": "vite preview --host 127.0.0.1",
     "deploy": "npm run build && wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0"
+    "@xterm/xterm": "^6.0.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260507.1",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.5.14",
+    "tsx": "^4.20.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.11",
     "wrangler": "^4.88.0"
