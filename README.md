@@ -25,12 +25,20 @@ A Windows terminal written in Zig, powered by [libghostty-vt](https://github.com
 
 ```powershell
 zig build                         # Debug build for development
+zig build -Dwebview2=true         # Debug build with optional WebView2 browser panes
+zig build -Dwebview2=true -Dwebview2-loader=C:\path\to\WebView2Loader.dll
 zig build -Doptimize=ReleaseFast  # ReleaseFast build for distribution
 Remove-Item -Recurse -Force .\zig-out, .\.zig-cache -ErrorAction SilentlyContinue
 ```
 
 The `Makefile` may still exist as a convenience wrapper, but normal Windows
 development should use PowerShell and direct `zig` commands.
+
+The WebView2 build is opt-in. It requires `WebView2Loader.dll` to be available
+next to `phantty.exe` or on `PATH`, and a Microsoft Edge WebView2 Runtime
+installed on the machine. Pass `-Dwebview2-loader=...` to copy the loader DLL
+into `zig-out\bin` during the build. The default `zig build` remains the
+no-WebView2 terminal build.
 
 ## Packaging
 
@@ -102,6 +110,7 @@ Default chords are implemented in [`src/input.zig`](src/input.zig). Some keys ar
 | **Ctrl+Shift+B** | Toggle tab sidebar |
 | **Ctrl+Shift+O** | Split to the right |
 | **Ctrl+Shift+E** | Toggle file explorer sidebar |
+| **Ctrl+Shift+Click** on a URL | Open URL in a right-side browser pane (WebView2 build only) |
 | **Ctrl+Shift+W** | Close focused panel, tab, or window |
 | **Ctrl+Enter** | Maximize or restore window |
 | **Ctrl++** / **Ctrl+-** | Increase / decrease font size |

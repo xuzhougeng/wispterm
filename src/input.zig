@@ -17,6 +17,7 @@ const win32_backend = @import("apprt/win32.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
+const webview2 = @import("webview2.zig");
 const windows = @import("std").os.windows;
 const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
@@ -92,6 +93,7 @@ fn mutatePasteData(data: []u8, bracketed: bool) void {
 
 /// Write data to the PTY's input pipe (us -> child stdin).
 fn writeToPty(surface: *Surface, data: []const u8) void {
+    if (surface.kind != .terminal) return;
     var bytes_written: windows.DWORD = 0;
     _ = windows.kernel32.WriteFile(
         surface.pty.in_pipe,
@@ -1362,6 +1364,77 @@ fn openUrlAtCell(surface: *Surface, cell_pos: CellPos) bool {
     return openUrl(url);
 }
 
+const BrowserTarget = struct {
+    url: []u8,
+    tunnel: ?webview2.Tunnel = null,
+
+    fn deinit(self: *BrowserTarget, allocator: std.mem.Allocator) void {
+        if (self.tunnel) |*tunnel| tunnel.deinit();
+        allocator.free(self.url);
+        self.tunnel = null;
+    }
+};
+
+fn normalizeUrlForBrowser(allocator: std.mem.Allocator, url: []const u8) ?[]u8 {
+    if (std.mem.startsWith(u8, url, "www.")) {
+        return std.fmt.allocPrint(allocator, "https://{s}", .{url}) catch null;
+    }
+    return allocator.dupe(u8, url) catch null;
+}
+
+fn browserTargetForSurface(allocator: std.mem.Allocator, surface: *const Surface, url: []const u8) ?BrowserTarget {
+    var normalized = normalizeUrlForBrowser(allocator, url) orelse return null;
+    errdefer allocator.free(normalized);
+
+    if (surface.launch_kind == .ssh and webview2.isLocalhostUrl(normalized)) {
+        const conn = surface.ssh_connection orelse return .{ .url = normalized };
+        const remote_port = webview2.defaultPortForUrl(normalized) orelse return .{ .url = normalized };
+        const tunnel = webview2.startSshTunnel(allocator, .{
+            .user = conn.user(),
+            .host = conn.host(),
+            .port = conn.port(),
+            .password = conn.password(),
+            .password_auth = conn.password_auth,
+        }, remote_port) orelse {
+            std.debug.print("Browser pane SSH tunnel failed for {s}\n", .{normalized});
+            return null;
+        };
+
+        const local_url = webview2.makeLocalhostUrl(allocator, normalized, tunnel.local_port) orelse {
+            var t = tunnel;
+            t.deinit();
+            return null;
+        };
+        allocator.free(normalized);
+        normalized = local_url;
+        return .{ .url = normalized, .tunnel = tunnel };
+    }
+
+    return .{ .url = normalized };
+}
+
+fn openBrowserPaneUrl(surface: *Surface, url: []const u8) bool {
+    if (!webview2.enabled) {
+        std.debug.print("Browser pane support is disabled; build with -Dwebview2=true\n", .{});
+        return false;
+    }
+
+    const allocator = AppWindow.g_allocator orelse return false;
+    var target = browserTargetForSurface(allocator, surface, url) orelse return false;
+    defer target.deinit(allocator);
+
+    const tunnel = target.tunnel;
+    target.tunnel = null;
+    return AppWindow.splitBrowserReturningSurface(.right, target.url, tunnel) != null;
+}
+
+fn openBrowserPaneAtCell(surface: *Surface, cell_pos: CellPos) bool {
+    const allocator = AppWindow.g_allocator orelse return false;
+    const url = extractUrlAtCell(allocator, surface, cell_pos) orelse return false;
+    defer allocator.free(url);
+    return openBrowserPaneUrl(surface, url);
+}
+
 fn appendShellQuoted(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, text: []const u8) !void {
     try list.append(allocator, '\'');
     for (text) |ch| {
@@ -1600,7 +1673,12 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                 }
             }
 
+            if (clicked_surface.kind != .terminal) return;
+
             const cell_pos = mouseToSurfaceCell(clicked_surface, xpos, ypos);
+            if (ev.ctrl and ev.shift and !ev.alt) {
+                if (openBrowserPaneAtCell(clicked_surface, cell_pos)) return;
+            }
             if (ev.ctrl and !ev.shift and !ev.alt) {
                 if (openUrlAtCell(clicked_surface, cell_pos)) return;
                 if (openPreviewPanelForCell(clicked_surface, cell_pos)) return;
@@ -2222,6 +2300,30 @@ pub fn pasteFromClipboard() void {
     clipboard_open = false;
 
     _ = pasteSavedClipboardImage(surface, allocator, image_path);
+}
+
+pub fn openClipboardUrlInBrowserPane() void {
+    const surface = AppWindow.activeSurface() orelse return;
+    if (surface.kind != .terminal) return;
+    const win = AppWindow.g_window orelse return;
+    const allocator = AppWindow.g_allocator orelse return;
+
+    if (win32_backend.OpenClipboard(win.hwnd) == 0) return;
+    defer _ = win32_backend.CloseClipboard();
+
+    var text: ?[]u8 = null;
+    if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
+        text = readClipboardUnicodeText(allocator, hmem);
+    } else if (win32_backend.GetClipboardData(CF_TEXT)) |hmem| {
+        text = readClipboardAnsiText(allocator, hmem);
+    }
+
+    const owned = text orelse return;
+    defer allocator.free(owned);
+
+    const trimmed = std.mem.trim(u8, owned, " \t\r\n");
+    if (!looksLikeUrl(trimmed)) return;
+    _ = openBrowserPaneUrl(surface, trimmed);
 }
 
 pub fn pasteImageFromClipboard() void {

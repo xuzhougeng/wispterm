@@ -22,6 +22,17 @@ const WindowsPty = struct {
     pseudo_console: win32.HPCON,
     size: winsize,
 
+    pub fn invalid(size: winsize) Pty {
+        return .{
+            .out_pipe = INVALID_HANDLE_VALUE,
+            .in_pipe = INVALID_HANDLE_VALUE,
+            .out_pipe_pty = INVALID_HANDLE_VALUE,
+            .in_pipe_pty = INVALID_HANDLE_VALUE,
+            .pseudo_console = INVALID_HANDLE_VALUE,
+            .size = size,
+        };
+    }
+
     pub fn open(size: winsize) !Pty {
         var self: Pty = undefined;
         self.size = size;
@@ -66,11 +77,11 @@ const WindowsPty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
-        win32.ClosePseudoConsole(self.pseudo_console);
+        if (self.pseudo_console != INVALID_HANDLE_VALUE) win32.ClosePseudoConsole(self.pseudo_console);
         if (self.out_pipe != INVALID_HANDLE_VALUE) windows.CloseHandle(self.out_pipe);
         if (self.in_pipe != INVALID_HANDLE_VALUE) windows.CloseHandle(self.in_pipe);
-        windows.CloseHandle(self.out_pipe_pty);
-        windows.CloseHandle(self.in_pipe_pty);
+        if (self.out_pipe_pty != INVALID_HANDLE_VALUE) windows.CloseHandle(self.out_pipe_pty);
+        if (self.in_pipe_pty != INVALID_HANDLE_VALUE) windows.CloseHandle(self.in_pipe_pty);
     }
 
     pub fn getSize(self: *const Pty) winsize {

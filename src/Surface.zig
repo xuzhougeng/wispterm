@@ -18,6 +18,7 @@ const termio = @import("termio.zig");
 const Config = @import("config.zig");
 const Renderer = @import("renderer/Renderer.zig");
 const RendererThread = @import("RendererThread.zig");
+const webview2 = @import("webview2.zig");
 
 const windows = std.os.windows;
 
@@ -46,6 +47,11 @@ pub const LaunchKind = enum {
     windows,
     wsl,
     ssh,
+};
+
+pub const SurfaceKind = enum {
+    terminal,
+    browser,
 };
 
 pub const SshConnection = struct {
@@ -145,6 +151,7 @@ fn detectLaunchKind(command: []const u16) LaunchKind {
 // ============================================================================
 
 allocator: std.mem.Allocator,
+kind: SurfaceKind,
 terminal: ghostty_vt.Terminal,
 pty: Pty,
 command: Command,
@@ -152,6 +159,7 @@ selection: Selection,
 render_state: renderer.State,
 launch_kind: LaunchKind,
 ssh_connection: ?SshConnection,
+browser: ?*webview2.BrowserPane,
 
 /// Size information for this surface (screen size, cell size, padding).
 /// Used by the renderer to position content correctly.
@@ -333,10 +341,12 @@ pub fn init(
 
     // Init remaining fields
     surface.allocator = allocator;
+    surface.kind = .terminal;
     surface.selection = .{};
     surface.render_state = renderer.State.init(&surface.terminal);
     surface.launch_kind = detectLaunchKind(shell_cmd);
     surface.ssh_connection = null;
+    surface.browser = null;
     surface.dirty = std.atomic.Value(bool).init(true);
     surface.exited = std.atomic.Value(bool).init(false);
 
@@ -445,9 +455,109 @@ pub fn init(
     return surface;
 }
 
+/// Initialize a browser surface hosted by WebView2.
+/// Browser surfaces live in the split tree like terminal surfaces, but they do
+/// not own a PTY or IO threads.
+pub fn initBrowser(
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    parent_hwnd: win32.HWND,
+    url: []const u8,
+    initial_bounds: win32.RECT,
+    tunnel: ?webview2.Tunnel,
+    scrollback_limit: u32,
+    cursor_style: Config.CursorStyle,
+    cursor_blink: bool,
+) !*Surface {
+    if (!webview2.enabled) return error.WebView2Disabled;
+
+    const surface = try allocator.create(Surface);
+    errdefer allocator.destroy(surface);
+
+    surface.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = cols,
+        .rows = rows,
+        .max_scrollback = scrollback_limit,
+        .default_modes = .{ .grapheme_cluster = true },
+        .kitty_image_storage_limit = 50 * 1024 * 1024,
+        .kitty_image_loading_limits = .all,
+    });
+    errdefer surface.terminal.deinit(allocator);
+
+    surface.terminal.screens.active.cursor.cursor_style = switch (cursor_style) {
+        .bar => .bar,
+        .block => .block,
+        .underline => .underline,
+        .block_hollow => .block_hollow,
+    };
+    surface.terminal.modes.set(.cursor_blinking, cursor_blink);
+
+    surface.allocator = allocator;
+    surface.kind = .browser;
+    surface.pty = Pty.invalid(.{ .ws_col = cols, .ws_row = rows });
+    surface.command = .{};
+    surface.selection = .{};
+    surface.render_state = renderer.State.init(&surface.terminal);
+    surface.launch_kind = .windows;
+    surface.ssh_connection = null;
+    surface.browser = try webview2.BrowserPane.init(allocator, parent_hwnd, url, initial_bounds, tunnel);
+    errdefer if (surface.browser) |browser| browser.deinit();
+    surface.dirty = std.atomic.Value(bool).init(true);
+    surface.exited = std.atomic.Value(bool).init(false);
+    surface.mailbox = try termio.Mailbox.init();
+    errdefer surface.mailbox.deinit();
+    surface.io_thread_state = null;
+    surface.io_writer_thread = null;
+    surface.io_reader_thread = null;
+    surface.size.grid.cols = cols;
+    surface.size.grid.rows = rows;
+    surface.surface_renderer = Renderer.init(surface);
+    surface.renderer_thread = RendererThread.init(&surface.surface_renderer, surface);
+
+    surface.window_title_len = 0;
+    surface.title_override_len = 0;
+    surface.setTitleOverride(url);
+    surface.osc_state = .ground;
+    surface.osc_is_title = false;
+    surface.osc_num = 0;
+    surface.osc_buf_len = 0;
+    surface.osc7_title_len = 0;
+    surface.got_osc7_this_batch = false;
+    surface.cwd_path_len = 0;
+    surface.initial_cwd_path_len = 0;
+
+    surface.bell_pending = std.atomic.Value(bool).init(false);
+    surface.last_bell_time = 0;
+    surface.bell_opacity = 0;
+    surface.bell_indicator = false;
+    surface.bell_indicator_time = 0;
+    surface.scrollbar_opacity = 0;
+    surface.scrollbar_show_time = 0;
+    surface.resize_overlay_active = false;
+    surface.resize_overlay_last_cols = cols;
+    surface.resize_overlay_last_rows = rows;
+    surface.ref_count = 1;
+
+    return surface;
+}
+
 /// Deinitialize and free a Surface.
 /// Stops the IO thread first, then cleans up PTY and terminal.
 pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
+    if (self.kind == .browser) {
+        if (self.browser) |browser| {
+            webview2.deinitPaneIfLive(browser);
+            self.browser = null;
+        }
+        self.renderer_thread.stop();
+        self.surface_renderer.deinit();
+        self.mailbox.deinit();
+        self.terminal.deinit(allocator);
+        allocator.destroy(self);
+        return;
+    }
+
     // 1. Stop the renderer thread first (it accesses terminal state)
     self.renderer_thread.stop();
     self.surface_renderer.deinit();
@@ -578,6 +688,8 @@ pub fn setScreenSize(
     const changed = (self.size.grid.cols != new_cols or self.size.grid.rows != new_rows);
     self.size.grid.cols = new_cols;
     self.size.grid.rows = new_rows;
+    if (self.kind == .browser) return false;
+
     self.terminal.width_px = @intFromFloat(@as(f32, @floatFromInt(new_cols)) * cell_width);
     self.terminal.height_px = @intFromFloat(@as(f32, @floatFromInt(new_rows)) * cell_height);
 
@@ -592,6 +704,7 @@ pub fn setScreenSize(
 
 /// Send a message to the IO writer thread via the mailbox.
 pub fn queueIo(self: *Surface, msg: termio.Message) void {
+    if (self.kind != .terminal) return;
     self.mailbox.send(msg);
     self.mailbox.notify();
 }

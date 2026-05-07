@@ -645,8 +645,10 @@ pub const FLASHW_TIMERNOFG: DWORD = 12; // Flash until window comes to foregroun
 pub const MB_OK: UINT = 0x00000000; // Default system sound
 
 // kernel32 for GetModuleHandle and GetProcAddress
-extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*:0]const WCHAR) callconv(.winapi) ?HINSTANCE;
-extern "kernel32" fn GetProcAddress(hModule: HINSTANCE, lpProcName: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
+pub extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*:0]const WCHAR) callconv(.winapi) ?HINSTANCE;
+pub extern "kernel32" fn LoadLibraryW(lpLibFileName: [*:0]const WCHAR) callconv(.winapi) ?HINSTANCE;
+pub extern "kernel32" fn FreeLibrary(hLibModule: HINSTANCE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetProcAddress(hModule: HINSTANCE, lpProcName: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 
 // System metrics
 pub extern "user32" fn GetSystemMetrics(nIndex: INT) callconv(.winapi) INT;

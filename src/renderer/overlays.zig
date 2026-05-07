@@ -98,6 +98,7 @@ const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
     .{ .keys = "Ctrl+Shift+B", .action = "Toggle sidebar" },
     .{ .keys = "Ctrl+Shift+O", .action = "Split right" },
     .{ .keys = "Ctrl+Shift+E", .action = "File explorer" },
+    .{ .keys = "Ctrl+Shift+Click", .action = "Browser pane" },
     .{ .keys = "Ctrl+Shift+[ / ]", .action = "Previous / next panel" },
     .{ .keys = "Alt+Arrows", .action = "Focus panel" },
     .{ .keys = "Ctrl+Shift+Z", .action = "Equalize panels" },
@@ -125,6 +126,10 @@ pub fn startupShortcutsToggle() void {
     if (g_startup_shortcuts_visible) {
         g_startup_shortcuts_started_at = std.time.milliTimestamp();
     }
+}
+
+pub fn startupShortcutsVisible() bool {
+    return g_startup_shortcuts_visible;
 }
 
 // ============================================================================
@@ -156,6 +161,7 @@ const CommandAction = enum {
     close_split_or_tab,
     toggle_sidebar,
     toggle_file_explorer,
+    open_clipboard_url_browser,
     show_shortcuts,
     open_config,
     font_size_decrease,
@@ -182,6 +188,7 @@ const COMMAND_ENTRIES = [_]CommandEntry{
     .{ .title = "Close Panel / Tab", .detail = "Close the focused panel, tab, or window", .shortcut = "Ctrl+Shift+W", .action = .close_split_or_tab },
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "Ctrl+Shift+B", .action = .toggle_sidebar },
     .{ .title = "Toggle File Explorer", .detail = "Show or hide the right-side file browser", .shortcut = "Ctrl+Shift+E", .action = .toggle_file_explorer },
+    .{ .title = "Open Clipboard URL in Browser Pane", .detail = "Open a copied URL beside the terminal", .shortcut = "", .action = .open_clipboard_url_browser },
     .{ .title = "Keyboard Shortcuts", .detail = "Show the shortcut reference overlay", .shortcut = "Ctrl+Shift+P", .action = .show_shortcuts },
     .{ .title = "Open Config", .detail = "Open the Phantty config file", .shortcut = "Ctrl+,", .action = .open_config },
     .{ .title = "Decrease Font Size", .detail = "Make terminal text smaller", .shortcut = "Ctrl+-", .action = .font_size_decrease },
@@ -314,6 +321,7 @@ fn executeCommand(action: CommandAction) void {
         .close_split_or_tab => AppWindow.closeFocusedSplit(),
         .toggle_sidebar => AppWindow.input.toggleSidebar(),
         .toggle_file_explorer => AppWindow.input.toggleFileExplorer(),
+        .open_clipboard_url_browser => AppWindow.input.openClipboardUrlInBrowserPane(),
         .show_shortcuts => startupShortcutsShow(),
         .open_config => if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc),
         .font_size_decrease => AppWindow.input.adjustFontSize(-1),

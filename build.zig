@@ -10,6 +10,11 @@ pub fn build(b: *std.Build) void {
         },
     });
     const optimize = b.standardOptimizeOption(.{});
+    const enable_webview2 = b.option(bool, "webview2", "Enable the optional WebView2 browser pane") orelse false;
+    const webview2_loader_path = b.option([]const u8, "webview2-loader", "Path to WebView2Loader.dll to copy next to phantty.exe");
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "webview2", enable_webview2);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -17,6 +22,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    exe_mod.addOptions("build_options", build_options);
 
     // Add ghostty-vt dependency with SIMD disabled for cross-compilation
     if (b.lazyDependency("ghostty", .{
@@ -50,6 +56,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.linkSystemLibrary("comdlg32", .{});
     exe_mod.linkSystemLibrary("shell32", .{});
     exe_mod.linkSystemLibrary("imm32", .{});
+    exe_mod.linkSystemLibrary("ole32", .{});
 
     // Add FreeType dependency (shared between main and harfbuzz)
     const freetype_dep = b.lazyDependency("freetype", .{
@@ -131,6 +138,12 @@ pub fn build(b: *std.Build) void {
     exe.subsystem = if (optimize == .Debug) .Console else .Windows;
 
     b.installArtifact(exe);
+    if (enable_webview2) {
+        if (webview2_loader_path) |path| {
+            const install_loader = b.addInstallBinFile(.{ .cwd_relative = path }, "WebView2Loader.dll");
+            b.getInstallStep().dependOn(&install_loader.step);
+        }
+    }
 
     // Unit tests (zig build test)
     const test_mod = b.createModule(.{
@@ -138,6 +151,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    test_mod.addOptions("build_options", build_options);
 
     if (b.lazyDependency("ghostty", .{
         .target = target,

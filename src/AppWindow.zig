@@ -29,6 +29,7 @@ pub const window_state = @import("apprt/window_state.zig");
 pub const fbo = @import("renderer/fbo.zig");
 pub const file_explorer = @import("file_explorer.zig");
 pub const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
+pub const webview2 = @import("webview2.zig");
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -126,6 +127,7 @@ pub fn deinit(self: *AppWindow) void {
         }
     }
     tab.g_tab_count = 0;
+    webview2.deinitProcessGlobals();
 }
 
 // ============================================================================
@@ -202,7 +204,8 @@ pub fn activeSelection() *Selection {
 }
 
 pub fn isActiveTabTerminal() bool {
-    return tab.isActiveTabTerminal();
+    const surface = activeSurface() orelse return false;
+    return surface.kind == .terminal;
 }
 
 /// Clear UI state after tab creation or switch.
@@ -317,6 +320,86 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
         g_cells_valid = false;
     }
     return surface;
+}
+
+pub fn splitBrowserReturningSurface(direction: SplitTree.Split.Direction, url: []const u8, tunnel: ?webview2.Tunnel) ?*Surface {
+    const allocator = g_allocator orelse return null;
+    const win = g_window orelse return null;
+    const active = activeSurface() orelse return null;
+
+    const pad = active.getPadding();
+    const screen_w = active.size.screen.width;
+    const screen_h = active.size.screen.height;
+    const pad_w = pad.left + pad.right;
+    const pad_h = pad.top + pad.bottom;
+    const split_w: u32 = switch (direction) {
+        .left, .right => @max(1, screen_w / 2),
+        .up, .down => screen_w,
+    };
+    const split_h: u32 = switch (direction) {
+        .left, .right => screen_h,
+        .up, .down => @max(1, screen_h / 2),
+    };
+    const avail_w = @as(i32, @intCast(split_w)) - @as(i32, @intCast(pad_w));
+    const avail_h = @as(i32, @intCast(split_h)) - @as(i32, @intCast(pad_h));
+    const cols: u16 = if (avail_w > 0) @intFromFloat(@max(1, @as(f32, @floatFromInt(avail_w)) / font.cell_width)) else 20;
+    const rows: u16 = if (avail_h > 0) @intFromFloat(@max(1, @as(f32, @floatFromInt(avail_h)) / font.cell_height)) else 5;
+    const initial_bounds = initialBrowserBounds(active, direction);
+
+    const surface = Surface.initBrowser(
+        allocator,
+        cols,
+        rows,
+        win.hwnd,
+        url,
+        initial_bounds,
+        tunnel,
+        tab.g_scrollback_limit,
+        g_cursor_style,
+        g_cursor_blink,
+    ) catch |err| {
+        std.debug.print("Failed to create browser surface: {}\n", .{err});
+        return null;
+    };
+
+    if (tab.splitFocusedWithSurface(allocator, direction, font.cell_width, font.cell_height, surface)) |inserted| {
+        overlays.g_resize_active = false;
+        g_force_rebuild = true;
+        g_cells_valid = false;
+        return inserted;
+    }
+
+    surface.deinit(allocator);
+    return null;
+}
+
+fn initialBrowserBounds(active: *Surface, direction: SplitTree.Split.Direction) win32_backend.RECT {
+    var base_x: i32 = 0;
+    var base_y: i32 = 0;
+    var base_w: i32 = @intCast(active.size.screen.width);
+    var base_h: i32 = @intCast(active.size.screen.height);
+
+    for (0..split_layout.g_split_rect_count) |i| {
+        const rect = split_layout.g_split_rects[i];
+        if (rect.surface == active) {
+            base_x = rect.x;
+            base_y = rect.y;
+            base_w = rect.width;
+            base_h = rect.height;
+            break;
+        }
+    }
+
+    const half_div = @divTrunc(tab.SPLIT_DIVIDER_WIDTH, 2);
+    const half_w = @max(1, @divTrunc(base_w, 2) - half_div);
+    const half_h = @max(1, @divTrunc(base_h, 2) - half_div);
+
+    return switch (direction) {
+        .right => .{ .left = base_x + base_w - half_w, .top = base_y, .right = base_x + base_w, .bottom = base_y + base_h },
+        .left => .{ .left = base_x, .top = base_y, .right = base_x + half_w, .bottom = base_y + base_h },
+        .down => .{ .left = base_x, .top = base_y + base_h - half_h, .right = base_x + base_w, .bottom = base_y + base_h },
+        .up => .{ .left = base_x, .top = base_y, .right = base_x + base_w, .bottom = base_y + half_h },
+    };
 }
 
 pub fn closeFocusedSplit() void {
@@ -927,6 +1010,30 @@ fn renderImePreedit(win: *win32_backend.Window, fb_width: i32, fb_height: i32) v
     gl.BindTexture.?(c.GL_TEXTURE_2D, 0);
 }
 
+fn browserPanesBlockedByOverlay() bool {
+    return overlays.commandPaletteVisible() or
+        overlays.sessionLauncherVisible() or
+        overlays.settingsPageVisible() or
+        overlays.startupShortcutsVisible();
+}
+
+fn hideAllBrowserPanes() void {
+    if (!webview2.enabled) return;
+    // Temporarily no-op: WebView2 panes are currently applied once from the
+    // async controller callback. Touching pane pointers from the render loop
+    // exposed a lifetime hazard while the controller is initializing.
+}
+
+fn syncBrowserPaneLayout(split_count: usize) void {
+    _ = split_count;
+    if (!webview2.enabled) return;
+    // WebView2 callbacks are asynchronous. Avoid touching BrowserPane pointers
+    // from the hot render loop; the pane applies its initial bounds once the
+    // controller becomes ready. Dynamic resize can be reintroduced after the
+    // pane lifetime model is made fully event-driven.
+    _ = browserPanesBlockedByOverlay();
+}
+
 /// Handle a bell notification from the terminal.
 /// Rate-limited to once per 100ms (matching Ghostty).
 fn handleBell(surface: *Surface, win: *win32_backend.Window, is_active_tab: bool) void {
@@ -1355,10 +1462,11 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
             const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_height)) - top_padding - padding);
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
             syncImeCaretPosition(win, split_count);
+            syncBrowserPaneLayout(split_count);
 
             // Debug: print split count on first few frames
             // GL rendering
-            if (post_process.g_post_enabled) {
+            if (post_process.g_post_enabled and (if (activeSurface()) |surface| surface.kind == .terminal else false)) {
                 // Post-processing path: only render focused surface for now
                 if (activeSurface()) |surface| {
                     var needs_rebuild: bool = false;
@@ -1378,34 +1486,45 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
                 // Single surface (no splits): use original simple rendering path
                 // The surface padding is set by computeSplitLayout, so we use it here
                 if (activeSurface()) |surface| {
-                    const rend = &surface.surface_renderer;
-                    var needs_rebuild: bool = false;
-                    {
-                        surface.render_state.mutex.lock();
-                        defer surface.render_state.mutex.unlock();
-                        updateCursorBlinkForRenderer(rend);
-                        cell_renderer.g_current_render_surface = surface;
-                        rend.is_focused = true; // Single surface is always focused
-                        needs_rebuild = cell_renderer.updateTerminalCells(rend, &surface.terminal);
+                    if (surface.kind == .browser) {
+                        gl.Viewport.?(0, 0, fb_width, fb_height);
+                        gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                        gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
+                        gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+                        titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                        titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                        file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                        overlays.renderResizeOverlayWithOffset(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                    } else {
+                        const rend = &surface.surface_renderer;
+                        var needs_rebuild: bool = false;
+                        {
+                            surface.render_state.mutex.lock();
+                            defer surface.render_state.mutex.unlock();
+                            updateCursorBlinkForRenderer(rend);
+                            cell_renderer.g_current_render_surface = surface;
+                            rend.is_focused = true; // Single surface is always focused
+                            needs_rebuild = cell_renderer.updateTerminalCells(rend, &surface.terminal);
+                        }
+                        if (needs_rebuild) cell_renderer.rebuildCells(rend);
+
+                        gl.Viewport.?(0, 0, fb_width, fb_height);
+                        gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                        gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
+                        gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+
+                        // Use surface's computed padding (includes titlebar offset from content_y)
+                        const pad = surface.getPadding();
+                        const pad_top = @as(f32, @floatFromInt(pad.top)) + titlebar_offset;
+                        titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                        titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                        file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+                        cell_renderer.drawCells(rend, @floatFromInt(fb_height), sidebar_w + @as(f32, @floatFromInt(pad.left)), pad_top);
+                        overlays.renderScrollbar(@floatFromInt(fb_width), @floatFromInt(fb_height), pad_top);
+
+                        // Render resize overlay centered in content area (offset for titlebar)
+                        overlays.renderResizeOverlayWithOffset(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                     }
-                    if (needs_rebuild) cell_renderer.rebuildCells(rend);
-
-                    gl.Viewport.?(0, 0, fb_width, fb_height);
-                    gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-                    gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
-                    gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
-
-                    // Use surface's computed padding (includes titlebar offset from content_y)
-                    const pad = surface.getPadding();
-                    const pad_top = @as(f32, @floatFromInt(pad.top)) + titlebar_offset;
-                    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-                    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-                    file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-                    cell_renderer.drawCells(rend, @floatFromInt(fb_height), sidebar_w + @as(f32, @floatFromInt(pad.left)), pad_top);
-                    overlays.renderScrollbar(@floatFromInt(fb_width), @floatFromInt(fb_height), pad_top);
-
-                    // Render resize overlay centered in content area (offset for titlebar)
-                    overlays.renderResizeOverlayWithOffset(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                 }
             } else {
                 // Multiple splits: render with scissor/viewport per surface
@@ -1423,6 +1542,7 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
                     for (0..split_count) |i| {
                         const rect = split_layout.g_split_rects[i];
                         const is_focused = (rect.handle == active_tab.focused);
+                        if (rect.surface.kind == .browser) continue;
                         const rend = &rect.surface.surface_renderer;
 
                         // Set viewport to this split's region
@@ -1476,6 +1596,7 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
                 }
             }
         } else if (!post_process.g_post_enabled) {
+            hideAllBrowserPanes();
             gl.Viewport.?(0, 0, fb_width, fb_height);
             gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);

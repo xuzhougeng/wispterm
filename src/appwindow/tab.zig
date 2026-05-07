@@ -440,6 +440,73 @@ pub fn splitFocusedReturningSurface(
     return new_surface;
 }
 
+/// Insert an already-created surface next to the focused surface.
+/// Used for non-terminal panes such as the optional browser surface.
+pub fn splitFocusedWithSurface(
+    allocator: std.mem.Allocator,
+    direction: SplitTree.Split.Direction,
+    cell_w: f32,
+    cell_h: f32,
+    new_surface: *Surface,
+) ?*Surface {
+    const t = activeTab() orelse return null;
+    const focused_surface = t.focusedSurface() orelse return null;
+
+    const screen_w = focused_surface.size.screen.width;
+    const screen_h = focused_surface.size.screen.height;
+    const pad = focused_surface.getPadding();
+    const pad_w = pad.left + pad.right;
+    const pad_h = pad.top + pad.bottom;
+
+    const half_div = @divTrunc(SPLIT_DIVIDER_WIDTH, 2);
+    const new_screen_w: u32 = switch (direction) {
+        .left, .right => @max(1, (screen_w / 2) -| half_div),
+        .up, .down => screen_w,
+    };
+    const new_screen_h: u32 = switch (direction) {
+        .left, .right => screen_h,
+        .up, .down => @max(1, (screen_h / 2) -| half_div),
+    };
+
+    const avail_w = @as(i32, @intCast(new_screen_w)) - @as(i32, @intCast(pad_w));
+    const avail_h = @as(i32, @intCast(new_screen_h)) - @as(i32, @intCast(pad_h));
+    new_surface.size.grid.cols = if (avail_w > 0) @intFromFloat(@max(1, @as(f32, @floatFromInt(avail_w)) / cell_w)) else 10;
+    new_surface.size.grid.rows = if (avail_h > 0) @intFromFloat(@max(1, @as(f32, @floatFromInt(avail_h)) / cell_h)) else 5;
+    new_surface.size.screen.width = new_screen_w;
+    new_surface.size.screen.height = new_screen_h;
+    new_surface.size.cell.width = cell_w;
+    new_surface.size.cell.height = cell_h;
+    new_surface.size.padding = pad;
+
+    var insert_tree = SplitTree.init(allocator, new_surface) catch {
+        std.debug.print("Failed to create SplitTree for inserted surface\n", .{});
+        return null;
+    };
+    new_surface.unref(allocator);
+    defer insert_tree.deinit();
+
+    const new_tree = t.tree.split(
+        allocator,
+        t.focused,
+        direction,
+        0.5,
+        &insert_tree,
+    ) catch {
+        std.debug.print("Failed to split tree for inserted surface\n", .{});
+        return null;
+    };
+
+    const new_handle: SplitTree.Node.Handle = @enumFromInt(t.tree.nodes.len);
+
+    var old_tree = t.tree;
+    t.tree = new_tree;
+    old_tree.deinit();
+    t.focused = new_handle;
+
+    std.debug.print("Surface inserted as split, handle: {}, tree nodes: {}\n", .{ @intFromEnum(new_handle), t.tree.nodes.len });
+    return new_surface;
+}
+
 /// Result of closing the focused split.
 pub const CloseResult = enum {
     /// A split was removed from the tree. Caller should set rebuild flags.
