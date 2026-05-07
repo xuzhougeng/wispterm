@@ -15,6 +15,7 @@ const renderer = @import("renderer.zig");
 const win32_backend = @import("apprt/win32.zig");
 const App = @import("App.zig");
 const Renderer = @import("renderer/Renderer.zig");
+const remote = @import("remote_client.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
@@ -149,6 +150,7 @@ threadlocal var g_requested_weight: directwrite.DWRITE_FONT_WEIGHT = .NORMAL;
 threadlocal var g_shader_path: ?[]const u8 = null;
 threadlocal var g_start_maximize: bool = false;
 threadlocal var g_start_fullscreen: bool = false;
+threadlocal var g_remote_layout_last_ms: i64 = 0;
 
 // Global theme (set at startup via config)
 pub threadlocal var g_theme: Theme = Theme.default();
@@ -495,6 +497,7 @@ fn onWin32Resize(width: i32, height: i32) void {
         const content_w: i32 = @intFromFloat(@as(f32, @floatFromInt(width)) - sidebar_w - right_panels_w - render_padding * 2);
         const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(height)) - (render_padding + tb) - render_padding);
         const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
+        if (g_allocator) |alloc| syncRemoteLayout(alloc);
 
         if (split_count <= 1) {
             // Single surface: simple render path
@@ -682,6 +685,81 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     }
 
     std.debug.print("Config reloaded successfully\n", .{});
+}
+
+fn syncRemoteLayout(allocator: std.mem.Allocator) void {
+    const app = g_app orelse return;
+    const client = app.remote_client orelse return;
+
+    const now = std.time.milliTimestamp();
+    if (now - g_remote_layout_last_ms < 250) return;
+    g_remote_layout_last_ms = now;
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+
+    buildRemoteLayoutJson(allocator, &out) catch return;
+    client.sendLayout(out.items);
+}
+
+fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
+    try out.appendSlice(allocator, "{\"type\":\"layout\",\"activeTab\":");
+    try out.print(allocator, "{d}", .{tab.g_active_tab});
+    try out.appendSlice(allocator, ",\"tabs\":[");
+
+    var wrote_tab = false;
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (wrote_tab) try out.append(allocator, ',');
+        wrote_tab = true;
+
+        try out.appendSlice(allocator, "{\"index\":");
+        try out.print(allocator, "{d}", .{tab_index});
+        try out.appendSlice(allocator, ",\"title\":\"");
+        try remote.appendJsonString(out, allocator, tab_state.getTitle());
+        try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
+        if (tab_state.focusedSurface()) |focused| {
+            try remote.appendJsonString(out, allocator, focused.remote_id[0..]);
+        }
+        try out.appendSlice(allocator, "\",\"surfaces\":[");
+
+        var spatial = tab_state.tree.spatial(allocator) catch null;
+        defer if (spatial) |*sp| sp.deinit(allocator);
+
+        var wrote_surface = false;
+        var it = tab_state.tree.iterator();
+        while (it.next()) |entry| {
+            if (wrote_surface) try out.append(allocator, ',');
+            wrote_surface = true;
+
+            try out.appendSlice(allocator, "{\"id\":\"");
+            try remote.appendJsonString(out, allocator, entry.surface.remote_id[0..]);
+            try out.appendSlice(allocator, "\",\"title\":\"");
+            try remote.appendJsonString(out, allocator, entry.surface.getTitle());
+            try out.appendSlice(allocator, "\",\"focused\":");
+            try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
+
+            if (spatial) |sp| {
+                const slot = sp.slots[entry.handle.idx()];
+                try out.appendSlice(allocator, ",\"x\":");
+                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.x))});
+                try out.appendSlice(allocator, ",\"y\":");
+                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.y))});
+                try out.appendSlice(allocator, ",\"w\":");
+                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.width))});
+                try out.appendSlice(allocator, ",\"h\":");
+                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.height))});
+            } else {
+                try out.appendSlice(allocator, ",\"x\":0,\"y\":0,\"w\":1,\"h\":1");
+            }
+
+            try out.append(allocator, '}');
+        }
+
+        try out.appendSlice(allocator, "]}");
+    }
+
+    try out.appendSlice(allocator, "]}");
 }
 
 fn uiFontSize(term_font_size: u32) u32 {
@@ -1367,6 +1445,7 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
             const content_w: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_width)) - sidebar_w - right_panels_w - padding * 2);
             const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_height)) - top_padding - padding);
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
+            syncRemoteLayout(allocator);
             syncImeCaretPosition(win, split_count);
 
             // Debug: print split count on first few frames

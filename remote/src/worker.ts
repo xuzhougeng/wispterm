@@ -17,6 +17,7 @@ type RelayMessage = {
   type?: string;
   data?: string;
   encoding?: string;
+  surfaceId?: string;
   message?: string;
 };
 
@@ -26,7 +27,7 @@ const SESSION_TTL_SECONDS = 8 * 60 * 60;
 export class RemoteSession extends DurableObject<Env> {
   private phantty: WebSocket | null = null;
   private browsers = new Set<WebSocket>();
-  private controlEnabled = false;
+  private lastLayout: RelayMessage | null = null;
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -65,19 +66,20 @@ export class RemoteSession extends DurableObject<Env> {
       if (message.type === "output" && typeof message.data === "string") {
         this.broadcast({ type: "output", data: message.data });
       } else if (message.type === "output-bytes" && typeof message.data === "string") {
-        this.broadcast({ type: "output-bytes", encoding: message.encoding, data: message.data });
-      } else if (message.type === "control-granted") {
-        this.controlEnabled = true;
-        this.broadcast({ type: "notice", message: "Remote control granted locally" });
-      } else if (message.type === "control-revoked") {
-        this.controlEnabled = false;
-        this.broadcast({ type: "notice", message: "Remote control revoked locally" });
+        this.broadcast({
+          type: "output-bytes",
+          surfaceId: message.surfaceId,
+          encoding: message.encoding,
+          data: message.data,
+        });
+      } else if (message.type === "layout") {
+        this.lastLayout = message;
+        this.broadcast(message);
       }
     });
 
     socket.addEventListener("close", () => {
       if (this.phantty === socket) this.phantty = null;
-      this.controlEnabled = false;
       this.broadcast({ type: "notice", message: "Phantty disconnected" });
     });
   }
@@ -85,21 +87,27 @@ export class RemoteSession extends DurableObject<Env> {
   private attachBrowser(socket: WebSocket): void {
     this.browsers.add(socket);
     socket.send(JSON.stringify({ type: "notice", message: "Browser paired in read-only mode" }));
+    if (this.phantty) socket.send(JSON.stringify({ type: "notice", message: "Phantty connected" }));
+    if (this.lastLayout) socket.send(JSON.stringify(this.lastLayout));
 
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") return;
       const message = safeJson(event.data);
       if (!message) return;
 
-      if (message.type === "request-control") {
-        this.phantty?.send(JSON.stringify({ type: "request-control" }));
-        socket.send(JSON.stringify({ type: "notice", message: "Control request sent to Phantty" }));
-      } else if (message.type === "input" && typeof message.data === "string") {
-        if (!this.controlEnabled) {
-          socket.send(JSON.stringify({ type: "notice", message: "Remote input denied: control is not granted" }));
-          return;
-        }
-        this.phantty?.send(JSON.stringify({ type: "input", data: message.data }));
+      if (
+        message.type === "input-bytes" &&
+        typeof message.surfaceId === "string" &&
+        typeof message.data === "string"
+      ) {
+        this.phantty?.send(
+          JSON.stringify({
+            type: "input-bytes",
+            surfaceId: message.surfaceId,
+            encoding: message.encoding,
+            data: message.data,
+          }),
+        );
       }
     });
 

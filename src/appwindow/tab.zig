@@ -253,7 +253,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
         std.debug.print("Failed to create Surface for new tab\n", .{});
         return false;
     };
-    surface.remote_client = g_remote_client;
+    surface.attachRemoteClient(g_remote_client);
 
     const tree = SplitTree.init(allocator, surface) catch {
         std.debug.print("Failed to create SplitTree for new tab\n", .{});
@@ -428,7 +428,7 @@ fn splitFocusedSurfaceWithCommand(
         std.debug.print("Failed to create Surface for split\n", .{});
         return null;
     };
-    new_surface.remote_client = g_remote_client;
+    new_surface.attachRemoteClient(g_remote_client);
 
     if (inherit_ssh_connection) {
         if (focused_surface.ssh_connection) |conn| {

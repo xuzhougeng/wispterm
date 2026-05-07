@@ -154,6 +154,7 @@ render_state: renderer.State,
 launch_kind: LaunchKind,
 ssh_connection: ?SshConnection,
 remote_client: ?*remote.Client,
+remote_id: [16]u8,
 
 /// Size information for this surface (screen size, cell size, padding).
 /// Used by the renderer to position content correctly.
@@ -340,6 +341,7 @@ pub fn init(
     surface.launch_kind = detectLaunchKind(shell_cmd);
     surface.ssh_connection = null;
     surface.remote_client = null;
+    remote.nextSurfaceId(&surface.remote_id);
     surface.dirty = std.atomic.Value(bool).init(true);
     surface.exited = std.atomic.Value(bool).init(false);
 
@@ -455,6 +457,10 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
     self.renderer_thread.stop();
     self.surface_renderer.deinit();
 
+    if (self.remote_client) |client| {
+        client.unregisterSurface(self.remote_id);
+    }
+
     // 2. Signal both IO threads to stop.
     self.exited.store(true, .release);
 
@@ -477,6 +483,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
         thread.join();
         self.io_reader_thread = null;
     }
+    self.remote_client = null;
 
     // Clean up writer thread state and mailbox
     if (self.io_thread_state) |state| {
@@ -605,6 +612,18 @@ pub fn queueIo(self: *Surface, msg: termio.Message) void {
 pub fn queuePtyWrite(self: *Surface, data: []const u8) void {
     const msg = termio.Message.writeReq(self.allocator, data) catch return;
     self.queueIo(msg);
+}
+
+pub fn attachRemoteClient(self: *Surface, client: ?*remote.Client) void {
+    self.remote_client = client;
+    if (client) |remote_client| {
+        remote_client.registerSurface(self.remote_id, self, remoteWrite);
+    }
+}
+
+fn remoteWrite(ctx: *anyopaque, data: []const u8) void {
+    const surface: *Surface = @ptrCast(@alignCast(ctx));
+    surface.queuePtyWrite(data);
 }
 
 /// Get the padding for rendering. Returns the computed padding

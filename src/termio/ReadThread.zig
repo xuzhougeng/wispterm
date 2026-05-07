@@ -56,7 +56,7 @@ pub fn threadMain(surface: *Surface) void {
 
         const data = buf[0..@intCast(bytes_read)];
         if (surface.remote_client) |client| {
-            client.sendOutput(data);
+            client.sendOutput(surface.remote_id[0..], data);
         }
 
         // Process VT data under render lock

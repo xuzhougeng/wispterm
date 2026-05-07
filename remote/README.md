@@ -79,7 +79,20 @@ wrangler deploy
 The Phantty client sends PTY bytes as:
 
 ```json
-{ "type": "output-bytes", "encoding": "hex", "data": "..." }
+{ "type": "output-bytes", "surfaceId": "0000000000000001", "encoding": "hex", "data": "..." }
+```
+
+Phantty also sends layout snapshots so the browser can render tabs and split
+panels separately:
+
+```json
+{ "type": "layout", "activeTab": 0, "tabs": [] }
+```
+
+Browser input is routed back to the selected surface:
+
+```json
+{ "type": "input-bytes", "surfaceId": "0000000000000001", "encoding": "hex", "data": "0d" }
 ```
 
 The browser also accepts the older mock format:

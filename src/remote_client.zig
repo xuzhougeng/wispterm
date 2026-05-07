@@ -1,8 +1,7 @@
 //! Outbound remote relay client shared by one Phantty instance.
 //!
-//! Surfaces do not own network state. They only publish PTY output into this
-//! shared client, so every tab/split in a started Phantty instance uses one
-//! RemoteClient and one session key.
+//! Surfaces do not own network state. They register as sinks on this shared
+//! client, then publish PTY output with their own stable surface id.
 
 const std = @import("std");
 const windows = std.os.windows;
@@ -68,6 +67,14 @@ extern "winhttp" fn WinHttpWebSocketSend(
     dwBufferLength: windows.DWORD,
 ) callconv(.winapi) windows.DWORD;
 
+extern "winhttp" fn WinHttpWebSocketReceive(
+    hWebSocket: HINTERNET,
+    pvBuffer: ?*anyopaque,
+    dwBufferLength: windows.DWORD,
+    pdwBytesRead: *windows.DWORD,
+    peBufferType: *windows.DWORD,
+) callconv(.winapi) windows.DWORD;
+
 extern "winhttp" fn WinHttpWebSocketClose(
     hWebSocket: HINTERNET,
     usStatus: u16,
@@ -81,10 +88,15 @@ const WINHTTP_ACCESS_TYPE_DEFAULT_PROXY: windows.DWORD = 0;
 const WINHTTP_FLAG_SECURE: windows.DWORD = 0x00800000;
 const WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET: windows.DWORD = 114;
 const WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE: windows.DWORD = 2;
+const WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE: windows.DWORD = 3;
+const WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE: windows.DWORD = 4;
 const WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS: u16 = 1000;
 
 const QUEUE_LIMIT = 512;
 const RETRY_DELAY_NS = 2 * std.time.ns_per_s;
+const INPUT_BUF_SIZE = 16 * 1024;
+
+var next_surface_counter = std.atomic.Value(u64).init(1);
 
 pub const State = enum(u8) {
     disabled,
@@ -97,6 +109,14 @@ pub const State = enum(u8) {
 pub const Options = struct {
     server_url: []const u8,
     device_name: ?[]const u8 = null,
+};
+
+pub const SurfaceWriteFn = *const fn (ctx: *anyopaque, data: []const u8) void;
+
+const SurfaceSink = struct {
+    id: [16]u8,
+    ctx: *anyopaque,
+    write_fn: SurfaceWriteFn,
 };
 
 const Endpoint = struct {
@@ -147,6 +167,8 @@ pub const Client = struct {
     mutex: std.Thread.Mutex = .{},
     condition: std.Thread.Condition = .{},
     queue: std.ArrayListUnmanaged([]u8) = .empty,
+    surface_sinks: std.ArrayListUnmanaged(SurfaceSink) = .empty,
+    last_layout: ?[]u8 = null,
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     state: std.atomic.Value(State) = std.atomic.Value(State).init(.disconnected),
     thread: ?std.Thread = null,
@@ -187,8 +209,11 @@ pub const Client = struct {
         while (self.queue.pop()) |message| {
             self.allocator.free(message);
         }
+        self.queue.deinit(self.allocator);
+        self.surface_sinks.deinit(self.allocator);
         self.mutex.unlock();
 
+        if (self.last_layout) |layout| self.allocator.free(layout);
         self.endpoint.deinit(self.allocator);
         if (self.device_name) |name| self.allocator.free(name);
     }
@@ -207,14 +232,77 @@ pub const Client = struct {
         return self.state.load(.acquire);
     }
 
-    pub fn sendOutput(self: *Client, data: []const u8) void {
+    pub fn sendOutput(self: *Client, surface_id: []const u8, data: []const u8) void {
         if (data.len == 0 or self.stop_requested.load(.acquire)) return;
 
-        const message = buildOutputMessage(self.allocator, data) catch return;
+        const message = buildOutputMessage(self.allocator, surface_id, data) catch return;
+        self.enqueueOwnedMessage(message);
+    }
+
+    pub fn sendLayout(self: *Client, layout_json: []const u8) void {
+        if (layout_json.len == 0 or self.stop_requested.load(.acquire)) return;
 
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        if (self.last_layout) |last| {
+            if (std.mem.eql(u8, last, layout_json)) return;
+        }
+
+        const next_layout = self.allocator.dupe(u8, layout_json) catch return;
+        const queued = self.allocator.dupe(u8, layout_json) catch {
+            self.allocator.free(next_layout);
+            return;
+        };
+
+        if (self.last_layout) |last| self.allocator.free(last);
+        self.last_layout = next_layout;
+        self.enqueueOwnedMessageLocked(queued);
+    }
+
+    pub fn registerSurface(
+        self: *Client,
+        surface_id: [16]u8,
+        ctx: *anyopaque,
+        write_fn: SurfaceWriteFn,
+    ) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.surface_sinks.items) |*sink| {
+            if (std.mem.eql(u8, sink.id[0..], surface_id[0..])) {
+                sink.ctx = ctx;
+                sink.write_fn = write_fn;
+                return;
+            }
+        }
+
+        self.surface_sinks.append(self.allocator, .{
+            .id = surface_id,
+            .ctx = ctx,
+            .write_fn = write_fn,
+        }) catch {};
+    }
+
+    pub fn unregisterSurface(self: *Client, surface_id: [16]u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.surface_sinks.items, 0..) |sink, i| {
+            if (std.mem.eql(u8, sink.id[0..], surface_id[0..])) {
+                _ = self.surface_sinks.swapRemove(i);
+                return;
+            }
+        }
+    }
+
+    fn enqueueOwnedMessage(self: *Client, message: []u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.enqueueOwnedMessageLocked(message);
+    }
+
+    fn enqueueOwnedMessageLocked(self: *Client, message: []u8) void {
         while (self.queue.items.len >= QUEUE_LIMIT) {
             const dropped = self.queue.orderedRemove(0);
             self.allocator.free(dropped);
@@ -226,6 +314,15 @@ pub const Client = struct {
         self.condition.signal();
     }
 
+    fn replayLastLayout(self: *Client) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const last = self.last_layout orelse return;
+        const queued = self.allocator.dupe(u8, last) catch return;
+        self.enqueueOwnedMessageLocked(queued);
+    }
+
     fn popMessage(self: *Client) ?[]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -233,14 +330,29 @@ pub const Client = struct {
         return self.queue.orderedRemove(0);
     }
 
-    fn waitForMessageOrStop(self: *Client) bool {
+    fn waitForMessageOrStop(self: *Client, connection_alive: *std.atomic.Value(bool)) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        while (self.queue.items.len == 0 and !self.stop_requested.load(.acquire)) {
+        while (self.queue.items.len == 0 and
+            !self.stop_requested.load(.acquire) and
+            connection_alive.load(.acquire))
+        {
             self.condition.timedWait(&self.mutex, std.time.ns_per_s) catch {};
         }
-        return !self.stop_requested.load(.acquire);
+        return !self.stop_requested.load(.acquire) and connection_alive.load(.acquire);
+    }
+
+    fn dispatchInput(self: *Client, surface_id: []const u8, data: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.surface_sinks.items) |sink| {
+            if (std.mem.eql(u8, sink.id[0..], surface_id)) {
+                sink.write_fn(sink.ctx, data);
+                return;
+            }
+        }
     }
 };
 
@@ -255,12 +367,19 @@ fn threadMain(client: *Client) void {
         };
         defer handles.close();
 
+        var connection_alive = std.atomic.Value(bool).init(true);
+        const receive_thread = if (handles.websocket) |websocket|
+            std.Thread.spawn(.{}, receiveThreadMain, .{ client, websocket, &connection_alive }) catch null
+        else
+            null;
+
         client.state.store(.connected, .release);
         std.debug.print("Remote client connected\n", .{});
+        client.replayLastLayout();
 
-        while (!client.stop_requested.load(.acquire)) {
+        while (!client.stop_requested.load(.acquire) and connection_alive.load(.acquire)) {
             const message = client.popMessage() orelse {
-                if (!client.waitForMessageOrStop()) break;
+                if (!client.waitForMessageOrStop(&connection_alive)) break;
                 continue;
             };
             defer client.allocator.free(message);
@@ -272,12 +391,16 @@ fn threadMain(client: *Client) void {
                 @constCast(message.ptr),
                 @intCast(message.len),
             ) != 0) {
+                connection_alive.store(false, .release);
                 client.state.store(.disconnected, .release);
                 break;
             }
         }
 
         handles.close();
+        if (receive_thread) |thread| {
+            thread.join();
+        }
         if (!client.stop_requested.load(.acquire)) {
             client.state.store(.disconnected, .release);
             sleepUntilRetryOrStop(client);
@@ -285,6 +408,34 @@ fn threadMain(client: *Client) void {
     }
 
     client.state.store(.disabled, .release);
+}
+
+fn receiveThreadMain(client: *Client, websocket: HINTERNET, connection_alive: *std.atomic.Value(bool)) void {
+    var buf: [INPUT_BUF_SIZE]u8 = undefined;
+
+    while (!client.stop_requested.load(.acquire)) {
+        var bytes_read: windows.DWORD = 0;
+        var buffer_type: windows.DWORD = 0;
+        const rc = WinHttpWebSocketReceive(
+            websocket,
+            &buf,
+            @intCast(buf.len),
+            &bytes_read,
+            &buffer_type,
+        );
+        if (rc != 0 or buffer_type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) {
+            connection_alive.store(false, .release);
+            client.condition.broadcast();
+            return;
+        }
+        if (bytes_read == 0) continue;
+
+        if (buffer_type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE or
+            buffer_type == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE)
+        {
+            handleIncomingMessage(client, buf[0..@intCast(bytes_read)]);
+        }
+    }
 }
 
 fn sleepUntilRetryOrStop(client: *Client) void {
@@ -334,6 +485,16 @@ fn fillSessionKey(out: *[32]u8) void {
     for (random, 0..) |byte, i| {
         out[i * 2] = hex[byte >> 4];
         out[i * 2 + 1] = hex[byte & 0x0f];
+    }
+}
+
+pub fn nextSurfaceId(out: *[16]u8) void {
+    const value = next_surface_counter.fetchAdd(1, .monotonic);
+    const hex = "0123456789abcdef";
+    for (0..16) |i| {
+        const shift: u6 = @intCast((15 - i) * 4);
+        const nibble: u8 = @intCast((value >> shift) & 0x0f);
+        out[i] = hex[nibble];
     }
 }
 
@@ -399,14 +560,69 @@ fn appendQueryEscaped(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Alloc
     }
 }
 
-fn buildOutputMessage(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+fn buildOutputMessage(allocator: std.mem.Allocator, surface_id: []const u8, data: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    try out.appendSlice(allocator, "{\"type\":\"output-bytes\",\"encoding\":\"hex\",\"data\":\"");
+    try out.appendSlice(allocator, "{\"type\":\"output-bytes\",\"surfaceId\":\"");
+    try appendJsonString(&out, allocator, surface_id);
+    try out.appendSlice(allocator, "\",\"encoding\":\"hex\",\"data\":\"");
     try appendHex(&out, allocator, data);
     try out.appendSlice(allocator, "\"}");
     return out.toOwnedSlice(allocator);
+}
+
+fn handleIncomingMessage(client: *Client, message: []const u8) void {
+    if (std.mem.indexOf(u8, message, "\"type\":\"input-bytes\"") == null) return;
+    const surface_id = extractJsonString(message, "surfaceId") orelse return;
+    const hex_data = extractJsonString(message, "data") orelse return;
+
+    const decoded = decodeHexAlloc(client.allocator, hex_data) catch return;
+    defer client.allocator.free(decoded);
+    client.dispatchInput(surface_id, decoded);
+}
+
+fn extractJsonString(message: []const u8, field: []const u8) ?[]const u8 {
+    var needle_buf: [64]u8 = undefined;
+    if (field.len + 4 > needle_buf.len) return null;
+
+    needle_buf[0] = '"';
+    @memcpy(needle_buf[1..][0..field.len], field);
+    needle_buf[field.len + 1] = '"';
+    needle_buf[field.len + 2] = ':';
+    needle_buf[field.len + 3] = '"';
+    const needle = needle_buf[0 .. field.len + 4];
+
+    const start = std.mem.indexOf(u8, message, needle) orelse return null;
+    var i = start + needle.len;
+    const value_start = i;
+    while (i < message.len) : (i += 1) {
+        if (message[i] == '"') return message[value_start..i];
+        if (message[i] == '\\') return null;
+    }
+    return null;
+}
+
+fn decodeHexAlloc(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
+    if (hex.len % 2 != 0) return error.InvalidHex;
+    const out = try allocator.alloc(u8, hex.len / 2);
+    errdefer allocator.free(out);
+
+    for (out, 0..) |*byte, i| {
+        const high = try hexValue(hex[i * 2]);
+        const low = try hexValue(hex[i * 2 + 1]);
+        byte.* = (high << 4) | low;
+    }
+    return out;
+}
+
+fn hexValue(ch: u8) !u8 {
+    return switch (ch) {
+        '0'...'9' => ch - '0',
+        'a'...'f' => ch - 'a' + 10,
+        'A'...'F' => ch - 'A' + 10,
+        else => error.InvalidHex,
+    };
 }
 
 fn appendHex(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, data: []const u8) !void {
@@ -414,6 +630,28 @@ fn appendHex(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, dat
     for (data) |ch| {
         try out.append(allocator, hex[ch >> 4]);
         try out.append(allocator, hex[ch & 0x0f]);
+    }
+}
+
+pub fn appendJsonString(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, data: []const u8) !void {
+    for (data) |ch| {
+        switch (ch) {
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            else => {
+                if (ch < 0x20) {
+                    const hex = "0123456789abcdef";
+                    try out.appendSlice(allocator, "\\u00");
+                    try out.append(allocator, hex[ch >> 4]);
+                    try out.append(allocator, hex[ch & 0x0f]);
+                } else {
+                    try out.append(allocator, ch);
+                }
+            },
+        }
     }
 }
 
@@ -432,11 +670,19 @@ test "buildEndpoint maps relay URL to Phantty websocket route" {
 
 test "buildOutputMessage preserves PTY bytes as hex" {
     const allocator = std.testing.allocator;
-    const message = try buildOutputMessage(allocator, "\x1b[31mhi\r\n");
+    const message = try buildOutputMessage(allocator, "0000000000000001", "\x1b[31mhi\r\n");
     defer allocator.free(message);
 
     try std.testing.expectEqualStrings(
-        "{\"type\":\"output-bytes\",\"encoding\":\"hex\",\"data\":\"1b5b33316d68690d0a\"}",
+        "{\"type\":\"output-bytes\",\"surfaceId\":\"0000000000000001\",\"encoding\":\"hex\",\"data\":\"1b5b33316d68690d0a\"}",
         message,
     );
+}
+
+test "decode input message bytes" {
+    const allocator = std.testing.allocator;
+    const bytes = try decodeHexAlloc(allocator, "0d1b5b41");
+    defer allocator.free(bytes);
+
+    try std.testing.expectEqualSlices(u8, "\r\x1b[A", bytes);
 }
