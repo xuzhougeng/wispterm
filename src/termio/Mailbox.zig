@@ -44,7 +44,8 @@ pub fn send(self: *Mailbox, msg: Message) void {
     defer self.mutex.unlock();
 
     if (self.count == CAPACITY) {
-        // Drop oldest: advance head
+        // Drop oldest: advance head and release any owned payload.
+        self.queue[self.head].deinit();
         self.head = (self.head + 1) % CAPACITY;
         self.count -= 1;
     }

@@ -1,0 +1,22 @@
+{
+  "name": "phantty-remote",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "preview": "vite preview --host 127.0.0.1",
+    "deploy": "npm run build && wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xterm/xterm": "^6.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260507.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.11",
+    "wrangler": "^4.88.0"
+  }
+}

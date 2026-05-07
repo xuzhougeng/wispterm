@@ -21,6 +21,7 @@ const std = @import("std");
 const xev = @import("xev");
 const Surface = @import("../Surface.zig");
 const renderer = @import("../renderer.zig");
+const windows = std.os.windows;
 
 const Thread = @This();
 
@@ -97,9 +98,34 @@ fn stopCallback(
 fn drainMailbox(self: *Thread) void {
     const surface = self.surface orelse return;
     while (surface.mailbox.pop()) |msg| {
+        defer msg.deinit();
+
         switch (msg) {
             .resize => |grid| self.handleResize(grid),
+            .write_small => |payload| writeToPty(surface, payload.data[0..payload.len]),
+            .write_alloc => |payload| writeToPty(surface, payload.data),
         }
+    }
+}
+
+fn writeToPty(surface: *Surface, data: []const u8) void {
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const remaining = data.len - offset;
+        const chunk_len: windows.DWORD = @intCast(@min(remaining, std.math.maxInt(windows.DWORD)));
+        var bytes_written: windows.DWORD = 0;
+
+        if (windows.kernel32.WriteFile(
+            surface.pty.in_pipe,
+            data[offset..].ptr,
+            chunk_len,
+            &bytes_written,
+            null,
+        ) == 0) {
+            return;
+        }
+        if (bytes_written == 0) return;
+        offset += @intCast(bytes_written);
     }
 }
 

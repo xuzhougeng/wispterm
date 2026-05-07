@@ -596,6 +596,14 @@ pub fn queueIo(self: *Surface, msg: termio.Message) void {
     self.mailbox.notify();
 }
 
+/// Queue bytes to the PTY input pipe through the IO writer thread.
+/// This mirrors Ghostty's write-message boundary and gives future remote
+/// control one central permission gate instead of direct pipe writes.
+pub fn queuePtyWrite(self: *Surface, data: []const u8) void {
+    const msg = termio.Message.writeReq(self.allocator, data) catch return;
+    self.queueIo(msg);
+}
+
 /// Get the padding for rendering. Returns the computed padding
 /// which includes both explicit padding and balanced centering.
 pub fn getPadding(self: *const Surface) renderer.size.Padding {

@@ -21,7 +21,6 @@ const win32_backend = @import("apprt/win32.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
-const windows = @import("std").os.windows;
 const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
 
@@ -96,14 +95,7 @@ fn mutatePasteData(data: []u8, bracketed: bool) void {
 
 /// Write data to the PTY's input pipe (us -> child stdin).
 fn writeToPty(surface: *Surface, data: []const u8) void {
-    var bytes_written: windows.DWORD = 0;
-    _ = windows.kernel32.WriteFile(
-        surface.pty.in_pipe,
-        data.ptr,
-        @intCast(data.len),
-        &bytes_written,
-        null,
-    );
+    surface.queuePtyWrite(data);
 }
 
 fn writePasteToPty(surface: *Surface, allocator: std.mem.Allocator, data: []const u8) void {

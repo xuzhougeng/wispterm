@@ -19,3 +19,8 @@ __pycache__/
 
 # Pi coding agent
 .pi/
+
+# Node/Cloudflare remote console artifacts
+node_modules/
+remote/dist/
+remote/.wrangler/

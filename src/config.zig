@@ -224,6 +224,23 @@ theme: ?[]const u8 = null,
 ///   - Any other value is treated as a raw command path
 shell: []const u8 = "cmd",
 
+// ============================================================================
+// Remote Access (opt-in foundations)
+// ============================================================================
+
+/// Enables outbound remote access connection attempts. Phase 1 only parses
+/// this config; no remote control is enabled by this flag yet.
+@"remote-enabled": bool = false,
+
+/// Cloudflare-hosted relay URL, for example https://remote.example.com.
+@"remote-server-url": ?[]const u8 = null,
+
+/// Expected server public key or certificate fingerprint for pinning.
+@"remote-server-fingerprint": ?[]const u8 = null,
+
+/// Optional friendly name shown on the remote access page.
+@"remote-device-name": ?[]const u8 = null,
+
 /// Show a debug FPS overlay in the bottom-right corner.
 @"phantty-debug-fps": bool = false,
 @"phantty-debug-draw-calls": bool = false,
@@ -501,6 +518,20 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         };
     } else if (std.mem.eql(u8, key, "shell")) {
         self.shell = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "remote-enabled")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"remote-enabled" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"remote-enabled" = false;
+        } else {
+            log.warn("invalid remote-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "remote-server-url")) {
+        self.@"remote-server-url" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "remote-server-fingerprint")) {
+        self.@"remote-server-fingerprint" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "remote-device-name")) {
+        self.@"remote-device-name" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "phantty-debug-fps")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"phantty-debug-fps" = true;
@@ -819,6 +850,10 @@ pub fn printHelp() void {
         \\  --window-width <cols>        Initial width in cells (default: 0=auto, min: 10)
         \\  --scrollback-limit <bytes>   Scrollback buffer size (default: 10000000)
         \\  --config-file <path>         Load additional config file (prefix ? for optional)
+        \\  --remote-enabled <bool>      Enable opt-in remote access foundation
+        \\  --remote-server-url <url>    Cloudflare relay URL
+        \\  --remote-server-fingerprint <fp> Expected relay fingerprint
+        \\  --remote-device-name <name>  Friendly device name for remote access
         \\
         \\Color Options (override theme):
         \\  --background <color>         Background color (#RRGGBB or RRGGBB)
@@ -1091,6 +1126,13 @@ const default_config_template =
     \\
     \\# Shell (cmd, powershell, pwsh, wsl, or a custom path)
     \\# shell = cmd
+    \\
+    \\# Remote access foundation (disabled by default)
+    \\# The web admin password and device private key must not be stored here.
+    \\# remote-enabled = false
+    \\# remote-server-url =
+    \\# remote-server-fingerprint =
+    \\# remote-device-name =
     \\
     \\# Scrollback buffer size in bytes (default: 10MB)
     \\# scrollback-limit = 10000000

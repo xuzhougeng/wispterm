@@ -194,6 +194,10 @@ window-width = 120
 scrollback-limit = 10000000
 custom-shader = path/to/shader.glsl
 config-file = extra.conf
+remote-enabled = false
+remote-server-url = https://remote.example.com
+remote-server-fingerprint = sha256:...
+remote-device-name = Workstation
 ```
 
 ### Available keys
@@ -211,6 +215,10 @@ config-file = extra.conf
 | `window-width` | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80×24) |
 | `scrollback-limit` | `10000000` | Scrollback buffer limit in bytes |
 | `config-file` | *(none)* | Include another config file (prefix with `?` to make optional) |
+| `remote-enabled` | `false` | Enable the opt-in remote access foundation (no control is enabled in Phase 1) |
+| `remote-server-url` | *(none)* | Cloudflare relay URL used by the future outbound remote client |
+| `remote-server-fingerprint` | *(none)* | Expected relay fingerprint for server identity pinning |
+| `remote-device-name` | *(none)* | Friendly device name shown by the future remote access UI |
 
 ## License
 

@@ -1,0 +1,22 @@
+name = "phantty-remote"
+main = "src/worker.ts"
+compatibility_date = "2026-05-07"
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/ws/*"]
+
+[[durable_objects.bindings]]
+name = "REMOTE_SESSION"
+class_name = "RemoteSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RemoteSession"]
+
+# Configure these as Worker secrets, not committed vars:
+# wrangler secret put ADMIN_USERNAME
+# wrangler secret put ADMIN_PASSWORD_HASH
+# wrangler secret put SESSION_SIGNING_SECRET
