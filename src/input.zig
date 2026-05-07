@@ -149,11 +149,6 @@ fn quotePathForPaste(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
     return std.fmt.allocPrint(allocator, "\"{s}\"", .{path}) catch null;
 }
 
-fn clipboardHasImage() bool {
-    return win32_backend.IsClipboardFormatAvailable(CF_DIBV5) != 0 or
-        win32_backend.IsClipboardFormatAvailable(CF_DIB) != 0;
-}
-
 fn windowsPathToWslPath(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
     if (path.len < 3 or path[1] != ':' or (path[2] != '\\' and path[2] != '/')) return null;
     const drive = std.ascii.toLower(path[0]);
@@ -757,14 +752,13 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         copySelectionToClipboard();
         return;
     }
-    // Ctrl+Shift+V = paste
-    if (ev.ctrl and ev.shift and ev.vk == 0x56) { // 'V'
+    // Ctrl+V = paste text
+    if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x56) { // 'V'
         pasteFromClipboard();
         return;
     }
-    // Ctrl+V is normally forwarded to terminal apps. For image clipboards, take
-    // the terminal-side paste path so WSL/remote TUIs don't try to read X11.
-    if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x56 and clipboardHasImage()) { // 'V'
+    // Ctrl+Shift+V = paste image
+    if (ev.ctrl and ev.shift and !ev.alt and ev.vk == 0x56) { // 'V'
         pasteImageFromClipboard();
         return;
     }
@@ -871,7 +865,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         else => blk: {
             // Ctrl+A through Ctrl+Z
             if (ev.ctrl and ev.vk >= 0x41 and ev.vk <= 0x5A) {
-                // Don't send Ctrl+C/V when shift is held (those are copy/paste)
+                // Shifted Ctrl+letter chords are application shortcuts above.
                 if (!ev.shift) {
                     const ctrl_char: u8 = @intCast(ev.vk - 0x41 + 1);
                     writeToPty(surface, &[_]u8{ctrl_char});
@@ -2191,10 +2185,9 @@ pub fn pasteFromClipboard() void {
     const allocator = AppWindow.g_allocator orelse return;
 
     if (win32_backend.OpenClipboard(win.hwnd) == 0) return;
-    var clipboard_open = true;
-    defer if (clipboard_open) {
+    defer {
         _ = win32_backend.CloseClipboard();
-    };
+    }
 
     if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
         const text = readClipboardUnicodeText(allocator, hmem) orelse return;
@@ -2215,13 +2208,6 @@ pub fn pasteFromClipboard() void {
         }
         return;
     }
-
-    const image_path = saveClipboardImageToTemp(allocator) orelse return;
-    defer allocator.free(image_path);
-    _ = win32_backend.CloseClipboard();
-    clipboard_open = false;
-
-    _ = pasteSavedClipboardImage(surface, allocator, image_path);
 }
 
 pub fn pasteImageFromClipboard() void {
