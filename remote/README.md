@@ -88,7 +88,7 @@ so a newly opened browser can show the latest terminal content without replaying
 scrollback history:
 
 ```json
-{ "type": "layout", "activeTab": 0, "tabs": [{ "surfaces": [{ "snapshot": "..." }] }] }
+{ "type": "layout", "activeTab": 0, "tabs": [{ "surfaces": [{ "cols": 120, "rows": 32, "cursorX": 0, "cursorY": 31, "snapshot": "..." }] }] }
 ```
 
 Browser input is routed back to the selected surface:

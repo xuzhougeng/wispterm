@@ -10,6 +10,10 @@ type LayoutSurface = {
   title?: string;
   focused?: boolean;
   snapshot?: string;
+  cols?: number;
+  rows?: number;
+  cursorX?: number;
+  cursorY?: number;
   x?: number;
   y?: number;
   w?: number;
@@ -47,6 +51,9 @@ type SurfaceView = {
   hasLiveOutput: boolean;
   snapshotApplied: boolean;
   opened: boolean;
+  pendingOutput: string;
+  remoteCols: number | null;
+  remoteRows: number | null;
 };
 
 type ControlState = "idle" | "pending" | "granted";
@@ -341,6 +348,8 @@ function renderRemotePanels(): void {
     view.panel.dataset.surfaceId = surface.id;
     view.title.textContent = surface.title || shortSurfaceId(surface.id);
     view.meta.textContent = surface.focused ? "focused" : shortSurfaceId(surface.id);
+    view.remoteCols = validPositiveInteger(surface.cols);
+    view.remoteRows = validPositiveInteger(surface.rows);
 
     if (view.panel.parentElement !== panelsRoot) {
       panelsRoot.appendChild(view.panel);
@@ -351,9 +360,10 @@ function renderRemotePanels(): void {
       view.opened = true;
       view.resizeObserver = new ResizeObserver(() => scheduleFit(view));
       view.resizeObserver.observe(view.host);
+      flushPendingOutput(view);
     }
     updateSurfaceCursor(view, surface.id);
-    applyInitialSnapshot(view, surface.snapshot);
+    applyInitialSnapshot(view, surface);
     scheduleFit(view);
 
     if (surface.id === selectedSurfaceId && document.activeElement && view.panel.contains(document.activeElement)) {
@@ -432,6 +442,9 @@ function ensureSurfaceView(surfaceId: string): SurfaceView {
     hasLiveOutput: false,
     snapshotApplied: false,
     opened: false,
+    pendingOutput: "",
+    remoteCols: null,
+    remoteRows: null,
   };
   surfaceViews.set(surfaceId, view);
   return view;
@@ -462,14 +475,14 @@ function disposeSurfaceViews(): void {
 function writeSurfaceBytes(surfaceId: string, bytes: Uint8Array): void {
   const view = ensureSurfaceView(surfaceId);
   view.hasLiveOutput = true;
-  view.term.write(view.decoder.decode(bytes, { stream: true }));
+  writeSurfaceText(view, view.decoder.decode(bytes, { stream: true }));
 }
 
 function writeLegacyOutput(data: string): void {
   const surfaceId = selectedSurfaceId ?? currentTab()?.surfaces[0]?.id ?? "legacy";
   const view = ensureSurfaceView(surfaceId);
   view.hasLiveOutput = true;
-  view.term.write(data);
+  writeSurfaceText(view, data);
 }
 
 function sendInputBytes(surfaceId: string, data: string): void {
@@ -543,7 +556,13 @@ function scheduleFit(view: SurfaceView): void {
     view.fitQueued = false;
     if (!view.host.isConnected) return;
     try {
-      view.fit.fit();
+      if (view.remoteCols && view.remoteRows) {
+        if (view.term.cols !== view.remoteCols || view.term.rows !== view.remoteRows) {
+          view.term.resize(view.remoteCols, view.remoteRows);
+        }
+      } else {
+        view.fit.fit();
+      }
       view.term.refresh(0, Math.max(0, view.term.rows - 1));
     } catch {
       // xterm can briefly report zero-sized panels while layout is settling.
@@ -551,20 +570,64 @@ function scheduleFit(view: SurfaceView): void {
   });
 }
 
-function applyInitialSnapshot(view: SurfaceView, snapshot?: string): void {
-  if (view.snapshotApplied || view.hasLiveOutput || !snapshot) return;
+function applyInitialSnapshot(view: SurfaceView, surface: LayoutSurface): void {
+  if (view.snapshotApplied || view.hasLiveOutput || !surface.snapshot) return;
   view.snapshotApplied = true;
   requestAnimationFrame(() => {
     if (!view.host.isConnected || view.hasLiveOutput) return;
     try {
-      view.fit.fit();
+      if (view.remoteCols && view.remoteRows) {
+        view.term.resize(view.remoteCols, view.remoteRows);
+      } else {
+        view.fit.fit();
+      }
     } catch {
       // xterm can briefly report zero-sized panels while layout is settling.
     }
     view.term.reset();
-    view.term.write(snapshot);
+    view.term.write(surface.snapshot + cursorMoveSequence(surface));
     view.term.refresh(0, Math.max(0, view.term.rows - 1));
   });
+}
+
+function writeSurfaceText(view: SurfaceView, text: string): void {
+  if (!text) return;
+  if (!view.opened) {
+    view.pendingOutput = capPendingOutput(view.pendingOutput + text);
+    return;
+  }
+  flushPendingOutput(view);
+  view.term.write(text);
+}
+
+function flushPendingOutput(view: SurfaceView): void {
+  if (!view.opened || !view.pendingOutput) return;
+  const pending = view.pendingOutput;
+  view.pendingOutput = "";
+  view.term.write(pending);
+}
+
+function capPendingOutput(value: string): string {
+  const limit = 128 * 1024;
+  return value.length > limit ? value.slice(value.length - limit) : value;
+}
+
+function cursorMoveSequence(surface: LayoutSurface): string {
+  const x = validNonNegativeInteger(surface.cursorX);
+  const y = validNonNegativeInteger(surface.cursorY);
+  if (x === null || y === null) return "";
+  return `\x1b[${y + 1};${x + 1}H`;
+}
+
+function validPositiveInteger(value: unknown): number | null {
+  const next = validNonNegativeInteger(value);
+  return next !== null && next > 0 ? next : null;
+}
+
+function validNonNegativeInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const next = Math.floor(value);
+  return next >= 0 ? next : null;
 }
 
 function readSavedSessionKey(): string {
@@ -647,6 +710,10 @@ function normalizeSurface(raw: unknown): LayoutSurface | null {
     title: typeof surface.title === "string" ? surface.title : shortSurfaceId(surface.id),
     focused: surface.focused === true,
     snapshot: typeof surface.snapshot === "string" ? surface.snapshot : "",
+    cols: numberOr(surface.cols, 0),
+    rows: numberOr(surface.rows, 0),
+    cursorX: numberOr(surface.cursorX, 0),
+    cursorY: numberOr(surface.cursorY, 0),
     x: numberOr(surface.x, 0),
     y: numberOr(surface.y, 0),
     w: numberOr(surface.w, 1),

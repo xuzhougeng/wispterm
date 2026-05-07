@@ -738,6 +738,22 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
             try remote.appendJsonString(out, allocator, entry.surface.getTitle());
             try out.appendSlice(allocator, "\",\"focused\":");
             try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
+            try out.appendSlice(allocator, ",\"cols\":");
+            try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
+            try out.appendSlice(allocator, ",\"rows\":");
+            try out.print(allocator, "{d}", .{entry.surface.size.grid.rows});
+            var cursor_x: usize = 0;
+            var cursor_y: usize = 0;
+            {
+                entry.surface.render_state.mutex.lock();
+                defer entry.surface.render_state.mutex.unlock();
+                cursor_x = entry.surface.terminal.screens.active.cursor.x;
+                cursor_y = entry.surface.terminal.screens.active.cursor.y;
+            }
+            try out.appendSlice(allocator, ",\"cursorX\":");
+            try out.print(allocator, "{d}", .{cursor_x});
+            try out.appendSlice(allocator, ",\"cursorY\":");
+            try out.print(allocator, "{d}", .{cursor_y});
             try out.appendSlice(allocator, ",\"snapshot\":\"");
             const snapshot = buildRemoteSurfaceSnapshot(allocator, entry.surface) catch null;
             defer if (snapshot) |text| allocator.free(text);
