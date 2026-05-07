@@ -464,6 +464,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
     }
 
     image_renderer.draw(rend, window_height, offset_x, offset_y, .above_text);
+    drawUrlUnderline(rend, window_height, offset_x, offset_y);
 
     // --- Cursor overlay from cached state ---
     if (rend.cached_cursor_in_viewport and rend.cached_cursor_visible) {
@@ -499,6 +500,34 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
 
     gl.BindVertexArray.?(0);
     gl.BindTexture.?(c.GL_TEXTURE_2D, 0);
+}
+
+fn drawUrlUnderline(rend: *const Renderer, window_height: f32, offset_x: f32, offset_y: f32) void {
+    const gl = AppWindow.gl;
+    const thickness: f32 = @max(1.0, @as(f32, @floatFromInt(font.box_thickness)));
+    const underline_y_offset: f32 = @max(2.0, thickness);
+    const color = AppWindow.g_theme.cursor_color;
+
+    gl.UseProgram.?(gl_init.shader_program);
+    gl.BindVertexArray.?(gl_init.vao);
+
+    for (0..rend.snap_rows) |row| {
+        var col: usize = 0;
+        while (col < rend.snap_cols) {
+            if (!AppWindow.input.isUrlUnderlineCell(rend.surface, col, row)) {
+                col += 1;
+                continue;
+            }
+
+            const start = col;
+            while (col < rend.snap_cols and AppWindow.input.isUrlUnderlineCell(rend.surface, col, row)) : (col += 1) {}
+
+            const x = offset_x + @as(f32, @floatFromInt(start)) * font.cell_width;
+            const y = window_height - offset_y - ((@as(f32, @floatFromInt(row)) + 1) * font.cell_height) + underline_y_offset;
+            const width = @as(f32, @floatFromInt(col - start)) * font.cell_width;
+            gl_init.renderQuad(x, y, width, thickness, color);
+        }
+    }
 }
 
 /// Check if a cell is within the current selection.

@@ -335,6 +335,30 @@ pub threadlocal var g_selecting: bool = false; // True while mouse button is hel
 pub threadlocal var g_click_x: f64 = 0; // X position of initial click (for threshold calculation)
 pub threadlocal var g_click_y: f64 = 0; // Y position of initial click
 
+const UrlUnderline = struct {
+    surface: ?*Surface = null,
+    row_abs: usize = 0,
+    start_col: usize = 0,
+    end_col: usize = 0,
+
+    fn active(self: UrlUnderline) bool {
+        return self.surface != null;
+    }
+};
+
+threadlocal var g_url_underline: UrlUnderline = .{};
+
+const TokenAtCell = struct {
+    text: []u8,
+    row: usize,
+    start_col: usize,
+    end_col: usize,
+
+    fn deinit(self: TokenAtCell, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+    }
+};
+
 pub const SPLIT_DIVIDER_HIT_WIDTH: f32 = 8; // Larger hit area for easier grabbing
 
 pub threadlocal var g_divider_hover: bool = false; // Mouse is over a divider
@@ -483,7 +507,7 @@ fn splitRectForSurface(surface: *Surface) ?split_layout.SplitRect {
     return null;
 }
 
-fn viewportOffsetForSurface(surface: *Surface) usize {
+pub fn viewportOffsetForSurface(surface: *Surface) usize {
     return surface.terminal.screens.active.pages.scrollbar().offset;
 }
 
@@ -1239,6 +1263,22 @@ fn trimPreviewToken(token: []const u8) []const u8 {
     return token[start..end];
 }
 
+fn utf8CodepointCount(text: []const u8) usize {
+    const view = std.unicode.Utf8View.init(text) catch return text.len;
+    var it = view.iterator();
+    var count: usize = 0;
+    while (it.nextCodepoint() != null) count += 1;
+    return count;
+}
+
+fn trimPreviewTokenSpan(token: []const u8) struct { start: usize, end: usize } {
+    var start: usize = 0;
+    var end: usize = token.len;
+    while (start < end and (token[start] == '\'' or token[start] == '"' or token[start] == '`')) : (start += 1) {}
+    while (end > start and isPreviewTokenTrimByte(token[end - 1])) : (end -= 1) {}
+    return .{ .start = start, .end = end };
+}
+
 fn endsWithIgnoreCase(text: []const u8, suffix: []const u8) bool {
     if (text.len < suffix.len) return false;
     return std.ascii.eqlIgnoreCase(text[text.len - suffix.len ..], suffix);
@@ -1263,7 +1303,7 @@ fn looksLikePreviewPath(path: []const u8) bool {
     return endsWithIgnoreCase(path, ".pdf") or isPreviewImagePath(path);
 }
 
-fn extractTokenAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
+fn extractTokenRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?TokenAtCell {
     const cols = @as(usize, @intCast(surface.size.grid.cols));
     const rows = @as(usize, @intCast(surface.size.grid.rows));
     if (cols == 0 or rows == 0 or cell_pos.row >= rows) return null;
@@ -1298,8 +1338,27 @@ fn extractTokenAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos:
         token.appendSlice(allocator, buf[0..len]) catch return null;
     }
 
-    const trimmed = trimPreviewToken(token.items);
-    return allocator.dupe(u8, trimmed) catch null;
+    const span = trimPreviewTokenSpan(token.items);
+    if (span.start >= span.end) return null;
+
+    const leading_cols = utf8CodepointCount(token.items[0..span.start]);
+    const trailing_cols = utf8CodepointCount(token.items[span.end..]);
+    const start_col = @min(start + leading_cols, cols - 1);
+    const end_exclusive = if (end > trailing_cols) end - trailing_cols else start_col + 1;
+    const end_col = @max(start_col, @min(end_exclusive - 1, cols - 1));
+    const text = allocator.dupe(u8, token.items[span.start..span.end]) catch return null;
+
+    return .{
+        .text = text,
+        .row = cell_pos.row,
+        .start_col = start_col,
+        .end_col = end_col,
+    };
+}
+
+fn extractTokenAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
+    const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
+    return token.text;
 }
 
 fn looksLikeUrl(text: []const u8) bool {
@@ -1308,13 +1367,59 @@ fn looksLikeUrl(text: []const u8) bool {
         std.mem.startsWith(u8, text, "www.");
 }
 
-fn extractUrlAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
-    const token = extractTokenAtCell(allocator, surface, cell_pos) orelse return null;
-    if (!looksLikeUrl(token)) {
-        allocator.free(token);
+fn extractUrlRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?TokenAtCell {
+    const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
+    if (!looksLikeUrl(token.text)) {
+        token.deinit(allocator);
         return null;
     }
     return token;
+}
+
+fn extractUrlAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
+    const token = extractUrlRangeAtCell(allocator, surface, cell_pos) orelse return null;
+    return token.text;
+}
+
+fn markUrlUnderlineDirty(surface: ?*Surface) void {
+    const s = surface orelse return;
+    s.surface_renderer.markDirty();
+    AppWindow.g_force_rebuild = true;
+}
+
+fn setUrlUnderline(surface: *Surface, row_abs: usize, start_col: usize, end_col: usize) void {
+    const old_surface = g_url_underline.surface;
+    if (g_url_underline.surface == surface and
+        g_url_underline.row_abs == row_abs and
+        g_url_underline.start_col == start_col and
+        g_url_underline.end_col == end_col)
+    {
+        return;
+    }
+
+    g_url_underline = .{
+        .surface = surface,
+        .row_abs = row_abs,
+        .start_col = start_col,
+        .end_col = end_col,
+    };
+    markUrlUnderlineDirty(old_surface);
+    markUrlUnderlineDirty(surface);
+}
+
+fn clearUrlUnderline() void {
+    if (!g_url_underline.active()) return;
+    const old_surface = g_url_underline.surface;
+    g_url_underline = .{};
+    markUrlUnderlineDirty(old_surface);
+}
+
+pub fn isUrlUnderlineCell(surface: *Surface, col: usize, row: usize) bool {
+    if (g_url_underline.surface != surface) return false;
+    const abs_row = viewportOffsetForSurface(surface) + row;
+    return abs_row == g_url_underline.row_abs and
+        col >= g_url_underline.start_col and
+        col <= g_url_underline.end_col;
 }
 
 fn extractPreviewPathAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
@@ -1351,9 +1456,39 @@ fn openUrl(url: []const u8) bool {
 
 fn openUrlAtCell(surface: *Surface, cell_pos: CellPos) bool {
     const allocator = AppWindow.g_allocator orelse return false;
-    const url = extractUrlAtCell(allocator, surface, cell_pos) orelse return false;
-    defer allocator.free(url);
-    return openUrl(url);
+    const token = extractUrlRangeAtCell(allocator, surface, cell_pos) orelse return false;
+    defer token.deinit(allocator);
+    setUrlUnderline(surface, viewportOffsetForSurface(surface) + token.row, token.start_col, token.end_col);
+    return openUrl(token.text);
+}
+
+fn updateUrlUnderlineAtMouse(xpos: f64, ypos: f64) void {
+    if (g_selecting or overlays.g_scrollbar_dragging or g_divider_dragging) {
+        clearUrlUnderline();
+        return;
+    }
+    if (ypos < titlebarHeight() or hitTestFileExplorer(xpos, ypos)) {
+        clearUrlUnderline();
+        return;
+    }
+    if (tab.g_sidebar_visible and xpos < @as(f64, @floatCast(titlebar.sidebarWidth()))) {
+        clearUrlUnderline();
+        return;
+    }
+
+    const surface = split_layout.surfaceAtPoint(@intFromFloat(xpos), @intFromFloat(ypos)) orelse {
+        clearUrlUnderline();
+        return;
+    };
+    const allocator = AppWindow.g_allocator orelse return;
+    const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
+    const token = extractUrlRangeAtCell(allocator, surface, cell_pos) orelse {
+        clearUrlUnderline();
+        return;
+    };
+    defer token.deinit(allocator);
+
+    setUrlUnderline(surface, viewportOffsetForSurface(surface) + token.row, token.start_col, token.end_col);
 }
 
 fn appendShellQuoted(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, text: []const u8) !void {
@@ -1606,6 +1741,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                 if (openPreviewPanelForCell(clicked_surface, cell_pos)) return;
             }
 
+            clearUrlUnderline();
             const abs_row = viewportOffsetForSurface(clicked_surface) + cell_pos.row;
             // Start selection on the clicked surface
             clicked_surface.selection.start_col = cell_pos.col;
@@ -1889,6 +2025,7 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     if (AppWindow.g_focus_follows_mouse) {
         updateFocusFromMouse(@intFromFloat(xpos), @intFromFloat(ypos));
     }
+    updateUrlUnderlineAtMouse(xpos, ypos);
 
     // Update scrollbar hover state
     const win = AppWindow.g_window orelse return;
