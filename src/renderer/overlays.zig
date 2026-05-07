@@ -92,6 +92,16 @@ const StartupShortcut = struct {
     action: []const u8,
 };
 
+const DebugLineRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+threadlocal var g_remote_key_copy_rect: ?DebugLineRect = null;
+threadlocal var g_remote_key_copied_until_ms: i64 = 0;
+
 const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
     .{ .keys = "Ctrl+Shift+P", .action = "Command center" },
     .{ .keys = "Ctrl+Shift+T", .action = "New session" },
@@ -167,6 +177,7 @@ const CommandAction = enum {
     toggle_maximize,
     remote_control_grant,
     remote_control_revoke,
+    copy_remote_key,
 };
 
 const CommandEntry = struct {
@@ -195,6 +206,7 @@ const COMMAND_ENTRIES = [_]CommandEntry{
     .{ .title = "Toggle Maximize", .detail = "Maximize or restore the window", .shortcut = "Ctrl+Enter", .action = .toggle_maximize },
     .{ .title = "Grant Remote Input", .detail = "Allow the paired browser to type into panels", .shortcut = "Ctrl+Shift+Y", .action = .remote_control_grant },
     .{ .title = "Revoke Remote Input", .detail = "Return the paired browser to read-only mode", .shortcut = "Ctrl+Shift+R", .action = .remote_control_revoke },
+    .{ .title = "Copy Remote Key", .detail = "Copy the active Phantty remote session key", .shortcut = "click Remote key", .action = .copy_remote_key },
 };
 
 const PaletteItem = union(enum) {
@@ -332,6 +344,9 @@ fn executeCommand(action: CommandAction) void {
         },
         .remote_control_revoke => {
             _ = AppWindow.input.revokeRemoteControl();
+        },
+        .copy_remote_key => {
+            _ = AppWindow.input.copyRemoteSessionKeyToClipboard();
         },
     }
 }
@@ -2539,20 +2554,24 @@ pub fn renderDebugOverlay(window_width: f32) void {
     const pad_v: f32 = 2;
     const line_h = font.g_titlebar_cell_height + pad_v * 2;
     var overlay_y: f32 = margin;
+    g_remote_key_copy_rect = null;
 
     if (AppWindow.g_app) |app| {
         if (app.remote_client) |client| {
-            renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
-                var buf: [96]u8 = undefined;
+            g_remote_key_copy_rect = renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
+                var buf: [128]u8 = undefined;
+                if (std.time.milliTimestamp() < g_remote_key_copied_until_ms) {
+                    break :blk "Remote key copied";
+                }
                 break :blk std.fmt.bufPrint(
                     &buf,
-                    "Remote {s} key {s}",
+                    "Remote {s} key {s}  click to copy",
                     .{ remoteStateLabel(client.loadState()), client.sessionKey() },
                 ) catch break :blk "";
             }, remoteStateColor(client.loadState()));
 
             if (client.hasControlRequest()) {
-                renderDebugLine(
+                _ = renderDebugLine(
                     window_width,
                     &overlay_y,
                     margin,
@@ -2563,7 +2582,7 @@ pub fn renderDebugOverlay(window_width: f32) void {
                     .{ 1.0, 0.78, 0.22 },
                 );
             } else if (client.controlGranted()) {
-                renderDebugLine(
+                _ = renderDebugLine(
                     window_width,
                     &overlay_y,
                     margin,
@@ -2578,7 +2597,7 @@ pub fn renderDebugOverlay(window_width: f32) void {
     }
 
     if (g_debug_fps) {
-        renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
+        _ = renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
             var buf: [32]u8 = undefined;
             const fps_int: u32 = @intFromFloat(@round(g_fps_value));
             break :blk std.fmt.bufPrint(&buf, "{d} fps", .{fps_int}) catch break :blk "";
@@ -2586,11 +2605,23 @@ pub fn renderDebugOverlay(window_width: f32) void {
     }
 
     if (g_debug_draw_calls) {
-        renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
+        _ = renderDebugLine(window_width, &overlay_y, margin, pad_h, pad_v, line_h, blk: {
             var buf: [32]u8 = undefined;
             break :blk std.fmt.bufPrint(&buf, "{d} draws", .{gl_init.g_draw_call_count}) catch break :blk "";
         }, .{ 1.0, 1.0, 0.0 });
     }
+}
+
+pub fn remoteKeyCopiedFlash() void {
+    g_remote_key_copied_until_ms = std.time.milliTimestamp() + 1600;
+}
+
+pub fn remoteKeyCopyHitTest(xpos: f64, ypos: f64, window_height: f32) bool {
+    const rect = g_remote_key_copy_rect orelse return false;
+    const x: f32 = @floatCast(xpos);
+    const y_from_bottom = window_height - @as(f32, @floatCast(ypos));
+    return x >= rect.x and x <= rect.x + rect.w and
+        y_from_bottom >= rect.y and y_from_bottom <= rect.y + rect.h;
 }
 
 fn remoteStateLabel(state: @import("../remote_client.zig").State) []const u8 {
@@ -2613,9 +2644,9 @@ fn remoteStateColor(state: @import("../remote_client.zig").State) [3]f32 {
     };
 }
 
-fn renderDebugLine(window_width: f32, y_pos: *f32, margin: f32, pad_h: f32, pad_v: f32, line_h: f32, text: []const u8, text_color: [3]f32) void {
+fn renderDebugLine(window_width: f32, y_pos: *f32, margin: f32, pad_h: f32, pad_v: f32, line_h: f32, text: []const u8, text_color: [3]f32) ?DebugLineRect {
     const gl = &AppWindow.gl;
-    if (text.len == 0) return;
+    if (text.len == 0) return null;
 
     gl.UseProgram.?(gl_init.shader_program);
     gl.ActiveTexture.?(c.GL_TEXTURE0);
@@ -2639,5 +2670,7 @@ fn renderDebugLine(window_width: f32, y_pos: *f32, margin: f32, pad_h: f32, pad_
         x += titlebar.titlebarGlyphAdvance(@intCast(ch));
     }
 
+    const rect: DebugLineRect = .{ .x = bg_x, .y = bg_y, .w = bg_w, .h = line_h };
     y_pos.* += line_h + 2; // spacing between lines
+    return rect;
 }

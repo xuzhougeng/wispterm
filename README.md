@@ -225,7 +225,8 @@ remote-device-name = Workstation
 When `remote-enabled = true`, Phantty creates one RemoteClient for the running
 instance. All tabs and splits publish PTY output through that shared client, and
 the generated session key is printed in the debug console and shown in the
-in-window remote status pill.
+in-window remote status pill. Click the remote status pill to copy the active
+session key, or use `Copy Remote Key` from the command center.
 
 ## License
 

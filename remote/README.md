@@ -83,10 +83,12 @@ The Phantty client sends PTY bytes as:
 ```
 
 Phantty also sends layout snapshots so the browser can render tabs and split
-panels separately:
+panels separately. Each surface may include the current visible screen snapshot
+so a newly opened browser can show the latest terminal content without replaying
+scrollback history:
 
 ```json
-{ "type": "layout", "activeTab": 0, "tabs": [] }
+{ "type": "layout", "activeTab": 0, "tabs": [{ "surfaces": [{ "snapshot": "..." }] }] }
 ```
 
 Browser input is routed back to the selected surface:

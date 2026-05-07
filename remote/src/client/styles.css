@@ -22,8 +22,10 @@
 html,
 body,
 #app {
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
@@ -123,6 +125,19 @@ button:disabled {
   opacity: 0.5;
 }
 
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.secondary-button {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
 .ghost-button {
   width: 100%;
   background: transparent;
@@ -138,16 +153,20 @@ button:disabled {
 }
 
 .console-shell {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .sidebar {
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 18px;
   padding: 28px;
+  overflow-y: auto;
   border-right: 1px solid var(--line);
   background: rgba(8, 13, 19, 0.72);
   backdrop-filter: blur(20px);
@@ -242,6 +261,8 @@ button:disabled {
 
 .terminal-panel {
   min-width: 0;
+  min-height: 0;
+  height: 100vh;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   padding: 24px;
@@ -273,6 +294,7 @@ button:disabled {
   justify-content: flex-end;
   gap: 10px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .control-state {
@@ -301,7 +323,7 @@ button:disabled {
 .panels-stage {
   position: relative;
   min-height: 0;
-  height: calc(100vh - 92px);
+  height: auto;
   border: 1px solid var(--line);
   border-radius: 0 0 20px 20px;
   overflow: hidden;
@@ -370,6 +392,7 @@ button:disabled {
 .terminal-mount {
   position: relative;
   z-index: 1;
+  display: grid;
   min-height: 0;
   padding: 8px;
   border-radius: 0 0 14px 14px;
@@ -379,18 +402,51 @@ button:disabled {
 
 .terminal-host,
 .terminal-host .xterm {
+  min-width: 0;
+  min-height: 0;
   width: 100%;
   height: 100%;
 }
 
+.terminal-host {
+  overflow: hidden;
+}
+
+.terminal-host .xterm {
+  display: block;
+}
+
+.terminal-host .xterm-viewport {
+  overflow-y: hidden !important;
+  scrollbar-width: none;
+}
+
+.terminal-host .xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
 @media (max-width: 860px) {
+  html,
+  body,
+  #app {
+    overflow: auto;
+  }
+
   .console-shell {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
   }
 
   .sidebar {
+    overflow: visible;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  .terminal-panel {
+    height: auto;
   }
 
   .panels-stage {

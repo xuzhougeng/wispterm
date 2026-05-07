@@ -493,6 +493,17 @@ pub fn revokeRemoteControl() bool {
     return true;
 }
 
+pub fn copyRemoteSessionKeyToClipboard() bool {
+    const app = AppWindow.g_app orelse return false;
+    const client = app.remote_client orelse return false;
+    if (!copyTextToClipboard(client.sessionKey())) return false;
+    overlays.remoteKeyCopiedFlash();
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+    std.debug.print("Remote session key copied to clipboard\n", .{});
+    return true;
+}
+
 // ============================================================================
 // Shared helpers (used by input + cell_renderer)
 // ============================================================================
@@ -1826,6 +1837,16 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
         }
         return;
     }
+    if (ev.button == .left and ev.action == .press) {
+        const win = AppWindow.g_window orelse return;
+        const fb = win.getFramebufferSize();
+        const xpos: f64 = @floatFromInt(ev.x);
+        const ypos: f64 = @floatFromInt(ev.y);
+        if (overlays.remoteKeyCopyHitTest(xpos, ypos, @floatFromInt(fb.height))) {
+            _ = copyRemoteSessionKeyToClipboard();
+            return;
+        }
+    }
     // Double-click on tab text to rename, elsewhere to maximize
     if (ev.button == .left and ev.action == .double_click) {
         const xpos: f64 = @floatFromInt(ev.x);
@@ -2498,10 +2519,33 @@ fn selectionSurfaceForClipboard() ?*Surface {
     return AppWindow.activeSurface();
 }
 
+fn copyTextToClipboard(text: []const u8) bool {
+    const allocator = AppWindow.g_allocator orelse return false;
+    const win = AppWindow.g_window orelse return false;
+    if (text.len == 0) return false;
+
+    const utf16 = std.unicode.utf8ToUtf16LeAllocZ(allocator, text) catch return false;
+    defer allocator.free(utf16);
+
+    // Win32 clipboard takes ownership of the moveable global handle after SetClipboardData.
+    if (win32_backend.OpenClipboard(win.hwnd) == 0) return false;
+    defer _ = win32_backend.CloseClipboard();
+    _ = win32_backend.EmptyClipboard();
+
+    const size = (utf16.len + 1) * @sizeOf(u16);
+    const hmem = win32_backend.GlobalAlloc(0x0002, size) orelse return false; // GMEM_MOVEABLE
+    const ptr = win32_backend.GlobalLock(hmem) orelse return false;
+    const dest: [*]u16 = @ptrCast(@alignCast(ptr));
+    @memcpy(dest[0..utf16.len], utf16);
+    dest[utf16.len] = 0;
+    _ = win32_backend.GlobalUnlock(hmem);
+
+    return win32_backend.SetClipboardData(CF_UNICODETEXT, hmem) != null;
+}
+
 pub fn copySelectionToClipboard() void {
     const surface = selectionSurfaceForClipboard() orelse return;
     const allocator = AppWindow.g_allocator orelse return;
-    const win = AppWindow.g_window orelse return;
 
     if (!surface.selection.active) return;
 
@@ -2571,25 +2615,9 @@ pub fn copySelectionToClipboard() void {
 
     if (text.items.len == 0) return;
 
-    const utf16 = std.unicode.utf8ToUtf16LeAllocZ(allocator, text.items) catch return;
-    defer allocator.free(utf16);
-
-    // Win32 clipboard: OpenClipboard → EmptyClipboard → SetClipboardData → CloseClipboard
-    if (win32_backend.OpenClipboard(win.hwnd) == 0) return;
-    defer _ = win32_backend.CloseClipboard();
-    _ = win32_backend.EmptyClipboard();
-
-    // Clipboard wants a GlobalAlloc'd GMEM_MOVEABLE buffer with null-terminated data
-    const size = (utf16.len + 1) * @sizeOf(u16);
-    const hmem = win32_backend.GlobalAlloc(0x0002, size) orelse return; // GMEM_MOVEABLE
-    const ptr = win32_backend.GlobalLock(hmem) orelse return;
-    const dest: [*]u16 = @ptrCast(@alignCast(ptr));
-    @memcpy(dest[0..utf16.len], utf16);
-    dest[utf16.len] = 0;
-    _ = win32_backend.GlobalUnlock(hmem);
-
-    _ = win32_backend.SetClipboardData(13, hmem); // CF_UNICODETEXT = 13
-    std.debug.print("Copied {} bytes to clipboard\n", .{text.items.len});
+    if (copyTextToClipboard(text.items)) {
+        std.debug.print("Copied {} bytes to clipboard\n", .{text.items.len});
+    }
 }
 
 pub fn pasteFromClipboard() void {
