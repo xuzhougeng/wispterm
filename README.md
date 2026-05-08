@@ -7,16 +7,26 @@
 
 A Windows terminal written in Zig, powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
 
+> [!NOTE]
+> This repository is a fork of [arya-s/phantty](https://github.com/arya-s/phantty),
+> with additional features layered on top: an embedded WebView2 browser panel,
+> a file explorer with Markdown/text preview, an opt-in remote-access client,
+> Kitty Graphics image protocol support, and a configurable background image.
+
 ## Features
 
-- **Ghostty's terminal emulation** - Uses libghostty-vt for VT parsing and terminal state
-- **DirectWrite font discovery** - Find system fonts by name
-- **FreeType rendering** - High-quality glyph rasterization
-- **Per-glyph font fallback** - Automatic fallback for missing characters
-- **Sprite rendering** - Box drawing, block elements, braille patterns, powerline symbols
-- **Ghostty-style font metrics** - Proper ascent/descent/line_gap from hhea/OS2 tables
-- **Theme support** - Ghostty-compatible theme files (default: Poimandres)
-- **File Explorer and previews** - Browse local, WSL, and SSH files, then preview Markdown/text without leaving the terminal
+- **Ghostty's terminal emulation** — uses libghostty-vt for VT parsing and terminal state
+- **DirectWrite font discovery** — find system fonts by name, with per-glyph fallback for missing characters
+- **FreeType rendering** — high-quality glyph rasterization with Ghostty-style font metrics
+- **Sprite rendering** — box drawing, block elements, braille patterns, powerline symbols
+- **Theme support** — Ghostty-compatible theme files, 450+ themes built in (default: Poimandres)
+- **Background image** — render a wallpaper behind the terminal with per-cell opacity blending and four scaling modes (`fill` / `fit` / `center` / `tile`)
+- **Splits and tabs** — vertical/horizontal splits, tab strip, focus-follows-mouse, equalize sizes
+- **File Explorer and previews** — browse local, WSL, and SSH files; preview Markdown/text without leaving the terminal
+- **Embedded browser panel** — open `http://` / `https://` URLs in a side WebView2 panel; SSH sessions tunnel loopback URLs automatically
+- **Kitty Graphics protocol** — display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
+- **Custom post-processing shaders** — Ghostty-compatible GLSL post-processing (CRT, glitch, etc.); the wallpaper is rendered inside the same FBO so effects apply uniformly
+- **Opt-in remote access** — share a session key over a Cloudflare-hosted relay (disabled by default)
 
 > [!NOTE]
 > Phantty is **Windows-only**. On macOS and Linux, use [Ghostty](https://ghostty.org/) instead.
@@ -93,6 +103,9 @@ Options:
                                 Options: block, bar, underline, block_hollow
   --cursor-style-blink <bool>  Enable cursor blinking (default: true)
   --theme <path>               Load a Ghostty theme file
+  --background-image <path>    Image file to render behind the terminal
+  --background-opacity <0..1>  Opacity of theme/cell backgrounds (default: 1.0)
+  --background-image-mode <m>  fill | fit | center | tile (default: fill)
   --window-height <rows>       Initial window height in cells (default: 0=auto, min: 4)
   --window-width <cols>        Initial window width in cells (default: 0=auto, min: 10)
   --list-fonts                 List available system fonts
@@ -162,6 +175,46 @@ the built-in SSH launcher are supported. Manually typing `ssh user@host` inside
 a local shell is still treated as that local shell and cannot use remote file
 preview yet.
 
+## Background Image
+
+Set `background-image` in the config (or pass `--background-image`) to render a
+wallpaper behind the terminal. PNG, JPG, BMP, GIF, and TGA are supported.
+
+`background-opacity` controls how strongly the theme background tints the
+wallpaper:
+
+| Value | Effect |
+|------:|--------|
+| `1.0` (default) | Theme background is fully opaque — image is hidden, terminal looks the same as without one |
+| `0.85` | Faint watermark (image shows through ~15%) |
+| `0.5` | Equal blend |
+| `0.15` | Image dominates with a light theme tint |
+| `0.0` | Theme tint is skipped — image at full strength |
+
+The opacity also applies to per-cell backgrounds (selections, ANSI-colored
+backgrounds), so the wallpaper shows through them at the same ratio.
+
+`background-image-mode` selects how the image is sized to the window:
+
+| Mode | Behavior |
+|------|----------|
+| `fill` (default) | Cover the window, cropping the longer axis |
+| `fit` | Letterbox so the whole image is visible (edges may stretch) |
+| `center` | 1:1 pixel scale, centered |
+| `tile` | Repeat at native size with `GL_REPEAT` |
+
+The wallpaper is drawn inside the post-process framebuffer, so a custom shader
+set with `--custom-shader` distorts it together with the terminal content.
+
+```text
+background-image = C:\Users\me\Pictures\wallpaper.png
+background-opacity = 0.85
+background-image-mode = fill
+```
+
+Save the config (or hot-reload via `Ctrl+,`) to apply changes without
+restarting. Clearing the value removes the wallpaper.
+
 ## Remote Image Viewing
 
 Phantty now accepts Kitty Graphics protocol image output, so remote shells can
@@ -208,6 +261,9 @@ window-height = 32
 window-width = 120
 scrollback-limit = 10000000
 custom-shader = path/to/shader.glsl
+background-image = C:\Users\me\Pictures\wallpaper.png
+background-opacity = 0.85
+background-image-mode = fill
 config-file = extra.conf
 remote-enabled = false
 remote-server-url = https://remote.example.com
@@ -226,6 +282,9 @@ remote-device-name = Workstation
 | `cursor-style-blink` | `true` | Enable cursor blinking |
 | `theme` | *(none)* | Theme name or absolute path (453 Ghostty themes built-in) |
 | `custom-shader` | *(none)* | Path to a GLSL post-processing shader |
+| `background-image` | *(none)* | Path to an image (PNG/JPG/BMP/GIF/TGA) rendered behind the terminal |
+| `background-opacity` | `1.0` | Opacity of the theme tint over the wallpaper (0.0 = image only, 1.0 = image hidden) |
+| `background-image-mode` | `fill` | Image scaling: `fill`, `fit`, `center`, or `tile` |
 | `window-height` | `0` (auto) | Initial height in cells (min: 4, 0 = auto 80×24) |
 | `window-width` | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80×24) |
 | `scrollback-limit` | `10000000` | Scrollback buffer limit in bytes |
@@ -240,6 +299,15 @@ instance. All tabs and splits publish PTY output through that shared client, and
 the generated session key is printed in the debug console and shown in the
 in-window remote status pill. Click the remote status pill to copy the active
 session key, or use `Copy Remote Key` from the command center.
+
+## Credits
+
+- Original project: [arya-s/phantty](https://github.com/arya-s/phantty) — the
+  Zig + libghostty-vt foundation and the Windows terminal core.
+- Terminal emulation: [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)
+  via `libghostty-vt`.
+- Image decoding: [stb_image](https://github.com/nothings/stb) (vendored
+  through the ghostty dependency).
 
 ## License
 
