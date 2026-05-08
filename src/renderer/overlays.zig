@@ -173,6 +173,7 @@ const CommandAction = enum {
     close_split_or_tab,
     toggle_sidebar,
     toggle_file_explorer,
+    toggle_browser_panel,
     show_shortcuts,
     open_config,
     font_size_decrease,
@@ -199,7 +200,8 @@ const COMMAND_ENTRIES = [_]CommandEntry{
     .{ .title = "Equalize Panels", .detail = "Reset split sizes in the current tab", .shortcut = "Ctrl+Shift+Z", .action = .equalize_splits },
     .{ .title = "Close Panel / Tab", .detail = "Close the focused panel, tab, or window", .shortcut = "Ctrl+Shift+W", .action = .close_split_or_tab },
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "Ctrl+Shift+B", .action = .toggle_sidebar },
-    .{ .title = "Toggle File Explorer", .detail = "Show or hide the right-side file browser", .shortcut = "Ctrl+Shift+E", .action = .toggle_file_explorer },
+    .{ .title = "Toggle File Explorer", .detail = "Show or hide the right-side file explorer", .shortcut = "Ctrl+Shift+E", .action = .toggle_file_explorer },
+    .{ .title = "Toggle Browser", .detail = "Show or hide the right-side WebView2 browser", .shortcut = "", .action = .toggle_browser_panel },
     .{ .title = "Keyboard Shortcuts", .detail = "Show the shortcut reference overlay", .shortcut = "Ctrl+Shift+P", .action = .show_shortcuts },
     .{ .title = "Open Config", .detail = "Open the Phantty config file", .shortcut = "Ctrl+,", .action = .open_config },
     .{ .title = "Decrease Font Size", .detail = "Make terminal text smaller", .shortcut = "Ctrl+-", .action = .font_size_decrease },
@@ -330,9 +332,10 @@ fn executeCommand(action: CommandAction) void {
         .focus_previous => AppWindow.gotoSplit(.previous_wrapped),
         .focus_next => AppWindow.gotoSplit(.next_wrapped),
         .equalize_splits => AppWindow.equalizeSplits(),
-        .close_split_or_tab => AppWindow.closeFocusedSplit(),
+        .close_split_or_tab => AppWindow.input.closePanelOrTab(),
         .toggle_sidebar => AppWindow.input.toggleSidebar(),
         .toggle_file_explorer => AppWindow.input.toggleFileExplorer(),
+        .toggle_browser_panel => AppWindow.input.toggleBrowserPanel(),
         .show_shortcuts => startupShortcutsShow(),
         .open_config => if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc),
         .font_size_decrease => AppWindow.input.adjustFontSize(-1),
@@ -373,8 +376,15 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 fn commandEntryMatches(entry: CommandEntry) bool {
     const filter = commandPaletteFilter();
     if (filter.len == 0) return true;
-    return containsIgnoreCase(entry.title, filter) or
-        containsIgnoreCase(entry.detail, filter) or
+    return commandEntryTitleMatches(entry, filter) or commandEntrySecondaryMatches(entry, filter);
+}
+
+fn commandEntryTitleMatches(entry: CommandEntry, filter: []const u8) bool {
+    return containsIgnoreCase(entry.title, filter);
+}
+
+fn commandEntrySecondaryMatches(entry: CommandEntry, filter: []const u8) bool {
+    return containsIgnoreCase(entry.detail, filter) or
         containsIgnoreCase(entry.shortcut, filter);
 }
 
@@ -393,7 +403,14 @@ fn rebuildPaletteScratch() void {
     }
 
     for (COMMAND_ENTRIES, 0..) |entry, idx| {
-        if (!commandEntryMatches(entry)) continue;
+        if (!commandEntryTitleMatches(entry, filter)) continue;
+        if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
+        g_palette_scratch[g_palette_scratch_len] = .{ .command = idx };
+        g_palette_scratch_len += 1;
+    }
+    for (COMMAND_ENTRIES, 0..) |entry, idx| {
+        if (commandEntryTitleMatches(entry, filter)) continue;
+        if (!commandEntrySecondaryMatches(entry, filter)) continue;
         if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
         g_palette_scratch[g_palette_scratch_len] = .{ .command = idx };
         g_palette_scratch_len += 1;

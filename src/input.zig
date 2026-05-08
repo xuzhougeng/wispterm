@@ -16,6 +16,7 @@ const file_explorer = AppWindow.file_explorer;
 const file_backend = @import("file_backend.zig");
 const markdown_preview = @import("markdown_preview.zig");
 const markdown_preview_panel = AppWindow.markdown_preview_panel;
+const browser_panel = AppWindow.browser_panel;
 const scp = @import("scp.zig");
 const win32_backend = @import("apprt/win32.zig");
 const Config = @import("config.zig");
@@ -381,7 +382,7 @@ fn syncGridFromWindowSize(width: i32, height: i32) void {
     const render_padding: f32 = 10;
     const tb_offset: f32 = @floatCast(titlebarHeight());
     const sidebar_w = titlebar.sidebarWidth();
-    const right_panels_w = file_explorer.width() + markdown_preview_panel.width();
+    const right_panels_w = AppWindow.rightPanelsWidth();
     const explicit_left: f32 = @floatFromInt(split_layout.DEFAULT_PADDING);
     const explicit_right: f32 = @as(f32, @floatFromInt(split_layout.DEFAULT_PADDING)) + overlays.SCROLLBAR_WIDTH;
     const explicit_top: f32 = @floatFromInt(split_layout.DEFAULT_PADDING);
@@ -457,6 +458,34 @@ pub fn toggleFileExplorer() void {
     }
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
+}
+
+pub fn toggleBrowserPanel() void {
+    const parent = if (AppWindow.g_window) |win| win.hwnd else null;
+    browser_panel.toggle(parent);
+    if (AppWindow.g_window) |win| {
+        syncGridFromWindowSize(win.width, win.height);
+    }
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
+pub fn closePanelOrTab() void {
+    if (markdown_preview_panel.g_visible) {
+        markdown_preview_panel.close();
+        if (AppWindow.g_window) |win| syncGridFromWindowSize(win.width, win.height);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
+    if (browser_panel.g_visible) {
+        browser_panel.close();
+        if (AppWindow.g_window) |win| syncGridFromWindowSize(win.width, win.height);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
+    AppWindow.closeFocusedSplit();
 }
 
 pub fn adjustFontSize(delta: i32) void {
@@ -758,14 +787,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     // Ctrl+Shift+W = close focused panel/tab/window
     if (ev.ctrl and ev.shift and ev.vk == 0x57) { // 'W'
         if (tab.g_tab_rename_active) tab.commitTabRename();
-        if (markdown_preview_panel.g_visible) {
-            markdown_preview_panel.close();
-            if (AppWindow.g_window) |win| syncGridFromWindowSize(win.width, win.height);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-            return;
-        }
-        AppWindow.closeFocusedSplit();
+        closePanelOrTab();
         return;
     }
     // Alt+Enter = maximize / restore window
@@ -1006,6 +1028,16 @@ fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
     const preview_w: f64 = @floatCast(markdown_preview_panel.width());
     const panel_x: f64 = @as(f64, @floatFromInt(win.width)) - explorer_w - preview_w;
     return xpos >= panel_x and xpos < panel_x + preview_w;
+}
+
+fn hitTestBrowserPanel(xpos: f64, ypos: f64) bool {
+    if (!browser_panel.g_visible) return false;
+    if (ypos < titlebarHeight()) return false;
+    const win = AppWindow.g_window orelse return false;
+    const right_offset: f64 = @floatCast(AppWindow.browserPanelRightOffset());
+    const browser_w: f64 = @floatCast(browser_panel.width());
+    const panel_x: f64 = @as(f64, @floatFromInt(win.width)) - right_offset - browser_w;
+    return xpos >= panel_x and xpos < panel_x + browser_w;
 }
 
 fn hitTestMarkdownPreviewResizeHandle(xpos: f64, ypos: f64) bool {
@@ -1523,7 +1555,7 @@ fn updateUrlUnderlineAtMouse(xpos: f64, ypos: f64) void {
         clearUrlUnderline();
         return;
     }
-    if (ypos < titlebarHeight() or hitTestFileExplorer(xpos, ypos) or hitTestMarkdownPreviewPanel(xpos, ypos)) {
+    if (ypos < titlebarHeight() or hitTestFileExplorer(xpos, ypos) or hitTestMarkdownPreviewPanel(xpos, ypos) or hitTestBrowserPanel(xpos, ypos)) {
         clearUrlUnderline();
         return;
     }
@@ -1890,6 +1922,13 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                 return;
             }
 
+            if (hitTestBrowserPanel(xpos, ypos)) {
+                file_explorer.g_focused = false;
+                if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+                browser_panel.focus();
+                return;
+            }
+
             // File explorer right sidebar click
             if (hitTestFileExplorer(xpos, ypos)) {
                 handleFileExplorerPress(xpos, ypos, ev.ctrl, ev.shift, ev.alt);
@@ -2208,7 +2247,7 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
             const win = AppWindow.g_window orelse return;
             const fb = win.getFramebufferSize();
             const sidebar_w = titlebar.sidebarWidth();
-            const right_panels_w = file_explorer.width() + markdown_preview_panel.width();
+            const right_panels_w = AppWindow.rightPanelsWidth();
             const content_x: f32 = sidebar_w + @as(f32, @floatFromInt(split_layout.DEFAULT_PADDING));
             const content_y: f32 = @floatCast(titlebarHeight());
             const content_w: f32 = @as(f32, @floatFromInt(fb.width)) - sidebar_w - right_panels_w - @as(f32, @floatFromInt(2 * split_layout.DEFAULT_PADDING));
@@ -2271,6 +2310,11 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
             _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
             g_markdown_preview_resize_hover = false;
         }
+    }
+
+    if (hitTestBrowserPanel(xpos, ypos)) {
+        clearUrlUnderline();
+        return;
     }
 
     // Focus follows mouse: check if mouse is over a different split
@@ -2421,6 +2465,7 @@ fn appendAlternateScrollKeys(surface: *Surface, ev: win32_backend.MouseWheelEven
 fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
+    if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
     if (markdown_preview_panel.g_visible) {
         const win = AppWindow.g_window orelse return;
         const panel_x = @as(i32, @intFromFloat(@as(f32, @floatFromInt(win.width)) - file_explorer.width() - markdown_preview_panel.width()));

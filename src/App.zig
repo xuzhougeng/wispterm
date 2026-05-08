@@ -353,14 +353,15 @@ pub fn requestNewWindow(self: *App, parent_hwnd: ?win32_backend.HWND, cwd: ?[]co
 
 /// Thread entry point for spawned windows.
 fn windowThreadMain(app: *App) void {
-    // Initialize COM for this thread (required for DirectWrite)
+    // Initialize COM as STA for this UI thread. WebView2 requires STA, and
+    // DirectWrite is fine with the same apartment choice.
     const ole32 = std.os.windows.kernel32.GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("ole32.dll"));
     var co_initialized = false;
     if (ole32) |h| {
         const CoInit = std.os.windows.kernel32.GetProcAddress(h, "CoInitializeEx");
         if (CoInit) |f| {
             const coInitFn: *const fn (?*anyopaque, u32) callconv(.winapi) i32 = @ptrCast(f);
-            const hr = coInitFn(null, 0x0); // COINIT_MULTITHREADED
+            const hr = coInitFn(null, 0x2); // COINIT_APARTMENTTHREADED
             co_initialized = (hr >= 0);
         }
     }

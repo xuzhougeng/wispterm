@@ -139,6 +139,11 @@ Explorer to open the right-side preview panel. Markdown previews render
 headings, lists, blockquotes, code blocks, inline code, links, and horizontal
 rules. Text files are shown as plain text.
 
+Open the command center with `Ctrl+Shift+P` and run `Toggle Browser` to open
+the embedded WebView2 browser panel. The first implementation opens
+`http://localhost:3000` in a native child WebView2 window docked to the right
+side of the terminal.
+
 The preview panel can be resized by dragging its left edge and scrolled with the
 mouse wheel. `Ctrl+Shift+W` closes the preview panel before closing a split.
 

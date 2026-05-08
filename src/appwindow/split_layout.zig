@@ -69,7 +69,7 @@ pub fn hitTestDivider(x: i32, y: i32) ?DividerHit {
     const win = AppWindow.g_window orelse return null;
     const fb = win.getFramebufferSize();
     const sidebar_w = AppWindow.titlebar.sidebarWidth();
-    const right_panels_w = AppWindow.file_explorer.width() + AppWindow.markdown_preview_panel.width();
+    const right_panels_w = AppWindow.rightPanelsWidth();
     const content_x: f32 = sidebar_w + @as(f32, @floatFromInt(DEFAULT_PADDING));
     const content_y = AppWindow.currentTitlebarHeight();
     const content_w: f32 = @as(f32, @floatFromInt(fb.width)) - sidebar_w - right_panels_w - @as(f32, @floatFromInt(2 * DEFAULT_PADDING));

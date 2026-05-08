@@ -51,6 +51,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.linkSystemLibrary("shell32", .{});
     exe_mod.linkSystemLibrary("imm32", .{});
     exe_mod.linkSystemLibrary("winhttp", .{});
+    exe_mod.linkSystemLibrary("ole32", .{});
 
     // Add FreeType dependency (shared between main and harfbuzz)
     const freetype_dep = b.lazyDependency("freetype", .{
@@ -110,6 +111,10 @@ pub fn build(b: *std.Build) void {
     exe_mod.addIncludePath(b.path("vendor/glad/include"));
     exe_mod.addCSourceFile(.{
         .file = b.path("vendor/glad/src/gl.c"),
+        .flags = &.{},
+    });
+    exe_mod.addCSourceFile(.{
+        .file = b.path("src/webview2_bridge.c"),
         .flags = &.{},
     });
 
