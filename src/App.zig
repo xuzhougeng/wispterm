@@ -55,6 +55,11 @@ unfocused_split_opacity: f32,
 split_divider_color: ?Config.Color,
 focus_follows_mouse: bool,
 
+// Background image
+background_image: ?[]const u8,
+background_opacity: f32,
+background_image_mode: Config.BackgroundImageMode,
+
 // Remote access config
 remote_enabled: bool,
 remote_server_url: ?[]const u8,
@@ -111,6 +116,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     errdefer freeOptStr(allocator, remote_device_name);
     const remote_client_ptr = startRemoteClient(allocator, cfg.@"remote-enabled", remote_server_url, remote_device_name);
     errdefer if (remote_client_ptr) |client| client.destroy();
+    const background_image = try dupeOptStr(allocator, cfg.@"background-image");
+    errdefer freeOptStr(allocator, background_image);
 
     var app = App{
         .allocator = allocator,
@@ -136,6 +143,9 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .unfocused_split_opacity = cfg.@"unfocused-split-opacity",
         .split_divider_color = cfg.@"split-divider-color",
         .focus_follows_mouse = cfg.@"focus-follows-mouse",
+        .background_image = background_image,
+        .background_opacity = cfg.@"background-opacity",
+        .background_image_mode = cfg.@"background-image-mode",
         .remote_enabled = cfg.@"remote-enabled",
         .remote_server_url = remote_server_url,
         .remote_server_fingerprint = remote_server_fingerprint,
@@ -257,6 +267,9 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.unfocused_split_opacity = cfg.@"unfocused-split-opacity";
     self.split_divider_color = cfg.@"split-divider-color";
     self.focus_follows_mouse = cfg.@"focus-follows-mouse";
+    self.replaceOptStr(&self.background_image, cfg.@"background-image");
+    self.background_opacity = cfg.@"background-opacity";
+    self.background_image_mode = cfg.@"background-image-mode";
     self.remote_enabled = cfg.@"remote-enabled";
     self.replaceOptStr(&self.remote_server_url, cfg.@"remote-server-url");
     self.replaceOptStr(&self.remote_server_fingerprint, cfg.@"remote-server-fingerprint");
@@ -468,6 +481,7 @@ pub fn deinit(self: *App) void {
     freeOptStr(self.allocator, self.remote_server_url);
     freeOptStr(self.allocator, self.remote_server_fingerprint);
     freeOptStr(self.allocator, self.remote_device_name);
+    freeOptStr(self.allocator, self.background_image);
 
     self.windows.deinit(self.allocator);
     self.window_threads.deinit(self.allocator);

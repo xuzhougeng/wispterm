@@ -14,6 +14,7 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const gl_init = AppWindow.gl_init;
 const cell_renderer = AppWindow.cell_renderer;
+const background_image = AppWindow.background_image;
 const Renderer = @import("Renderer.zig");
 
 const c = @cImport({
@@ -262,6 +263,7 @@ pub fn renderFrameWithPostFromCells(rend: *const Renderer, width: c_int, height:
     gl_init.setProjection(@floatFromInt(width), @floatFromInt(height));
     gl.ClearColor.?(AppWindow.g_theme.background[0], AppWindow.g_theme.background[1], AppWindow.g_theme.background[2], 1.0);
     gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+    background_image.drawFullscreen(@floatFromInt(width), @floatFromInt(height));
     cell_renderer.drawCells(rend, @floatFromInt(height), padding, padding);
 
     // 2. Apply post-processing shader to screen

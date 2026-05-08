@@ -133,6 +133,25 @@ pub const CursorStyle = enum {
 };
 
 // ============================================================================
+// Background Image
+// ============================================================================
+
+pub const BackgroundImageMode = enum {
+    fill, // cover the window, may crop
+    fit, // scale to fit, may letterbox
+    center, // 1:1, centered, may be cropped or surrounded by clear color
+    tile, // repeat at native size
+
+    pub fn parse(s: []const u8) ?BackgroundImageMode {
+        if (std.mem.eql(u8, s, "fill")) return .fill;
+        if (std.mem.eql(u8, s, "fit")) return .fit;
+        if (std.mem.eql(u8, s, "center")) return .center;
+        if (std.mem.eql(u8, s, "tile")) return .tile;
+        return null;
+    }
+};
+
+// ============================================================================
 // Font Weight
 // ============================================================================
 
@@ -295,6 +314,24 @@ foreground: ?Color = null,
 /// Palette color overrides. Indexed 0-15 for the 16 ANSI colors.
 /// Use syntax: palette = N=#RRGGBB (e.g., palette = 0=#000000)
 palette_overrides: [16]?Color = .{null} ** 16,
+
+// ============================================================================
+// Background Image
+// ============================================================================
+
+/// Path to an image file (PNG/JPG/BMP/GIF/...) to draw behind the terminal.
+/// When set, the theme background color and per-cell background colors are
+/// rendered with `background-opacity` so the image shows through.
+@"background-image": ?[]const u8 = null,
+
+/// Opacity applied to the theme background and per-cell background colors
+/// (0.0 = fully transparent, 1.0 = fully opaque). Lower values reveal more of
+/// the background image. Has no visible effect when `background-image` is unset.
+@"background-opacity": f32 = 1.0,
+
+/// How the background image is sized relative to the window.
+/// Values: fill (default, cover), fit (letterbox), center, tile.
+@"background-image-mode": BackgroundImageMode = .fill,
 
 // ============================================================================
 // Window Options
@@ -627,6 +664,24 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid palette syntax, expected N=COLOR: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "background-image")) {
+        if (value.len == 0) {
+            self.@"background-image" = null;
+        } else {
+            self.@"background-image" = self.dupeString(allocator, value) orelse return;
+        }
+    } else if (std.mem.eql(u8, key, "background-opacity")) {
+        if (std.fmt.parseFloat(f32, value)) |opacity| {
+            self.@"background-opacity" = @max(0.0, @min(1.0, opacity));
+        } else |_| {
+            log.warn("invalid background-opacity: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "background-image-mode")) {
+        if (BackgroundImageMode.parse(value)) |m| {
+            self.@"background-image-mode" = m;
+        } else {
+            log.warn("invalid background-image-mode (expected fill|fit|center|tile): {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "title")) {
         self.title = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "maximize")) {
@@ -863,6 +918,9 @@ pub fn printHelp() void {
         \\  --selection-background <color>  Selection background color
         \\  --selection-foreground <color>  Selection text color
         \\  --palette <N=color>          Set ANSI color N (0-15), e.g. --palette 1=#ff0000
+        \\  --background-image <path>    Image file to render behind the terminal
+        \\  --background-opacity <0..1>  Opacity of theme/cell backgrounds (default: 1.0)
+        \\  --background-image-mode <m>  fill | fit | center | tile (default: fill)
         \\
         \\Window Options:
         \\  --title <text>               Force window title (programs cannot override)
@@ -1113,6 +1171,11 @@ const default_config_template =
     \\# selection-foreground = #f3f4f5
     \\# palette = 0=#191e2a
     \\# palette = 1=#ff3333
+    \\
+    \\# Background image (PNG/JPG/BMP/GIF). Lower background-opacity to reveal it.
+    \\# background-image = C:\Users\me\wallpapers\dunes.jpg
+    \\# background-opacity = 0.7
+    \\# background-image-mode = fill   # fill | fit | center | tile
     \\
     \\# Custom post-processing shader (GLSL)
     \\# custom-shader =

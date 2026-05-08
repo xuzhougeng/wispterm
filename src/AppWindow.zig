@@ -28,6 +28,7 @@ pub const split_layout = @import("appwindow/split_layout.zig");
 pub const wsl_paths = @import("apprt/wsl_paths.zig");
 pub const window_state = @import("apprt/window_state.zig");
 pub const fbo = @import("renderer/fbo.zig");
+pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
 pub const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
 pub const markdown_preview_panel = @import("markdown_preview_panel.zig");
@@ -95,6 +96,8 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_shader_path = app.shader_path;
     g_start_maximize = app.maximize;
     g_start_fullscreen = app.fullscreen;
+    background_image.g_mode = app.background_image_mode;
+    gl_init.g_bg_opacity = app.background_opacity;
     tab.g_forced_title = app.title;
 
     // Get initial CWD for this window (if any) - copy into thread-local buffer
@@ -185,6 +188,15 @@ pub const MAX_TABS = tab.MAX_TABS;
 // ============================================================================
 // Tab/split operation wrappers — delegate to tab module, handle UI side effects
 // ============================================================================
+
+/// Clear the framebuffer with the theme background color, then draw the
+/// background image (if any) over the cleared color. The current viewport
+/// must already cover (0,0)..(fb_w,fb_h).
+fn clearWithBackground(fb_w: c_int, fb_h: c_int) void {
+    gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
+    gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+    background_image.drawFullscreen(@floatFromInt(fb_w), @floatFromInt(fb_h));
+}
 
 pub fn activeTab() ?*TabState {
     return tab.activeTab();
@@ -529,8 +541,7 @@ fn onWin32Resize(width: i32, height: i32) void {
 
                 gl.Viewport.?(0, 0, fb_width, fb_height);
                 gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-                gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
-                gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+                clearWithBackground(fb_width, fb_height);
 
                 const pad = surface.getPadding();
                 const pad_top = @as(f32, @floatFromInt(pad.top)) + titlebar_offset;
@@ -546,8 +557,7 @@ fn onWin32Resize(width: i32, height: i32) void {
             // Multiple splits: render each surface in its own viewport
             gl.Viewport.?(0, 0, fb_width, fb_height);
             gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-            gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
-            gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+            clearWithBackground(fb_width, fb_height);
 
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
             titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -594,8 +604,7 @@ fn onWin32Resize(width: i32, height: i32) void {
     } else {
         gl.Viewport.?(0, 0, fb_width, fb_height);
         gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-        gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
-        gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+        clearWithBackground(fb_width, fb_height);
         titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, explorer_w);
@@ -653,6 +662,18 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     overlays.g_unfocused_split_opacity = cfg.@"unfocused-split-opacity";
     g_focus_follows_mouse = cfg.@"focus-follows-mouse";
     overlays.g_split_divider_color = cfg.@"split-divider-color";
+
+    // --- Background image ---
+    {
+        const mode_changed = background_image.g_mode != cfg.@"background-image-mode";
+        background_image.g_mode = cfg.@"background-image-mode";
+        gl_init.g_bg_opacity = cfg.@"background-opacity";
+        if (!background_image.isLoaded(cfg.@"background-image")) {
+            background_image.load(allocator, cfg.@"background-image");
+        } else if (mode_changed) {
+            background_image.refreshWrapMode();
+        }
+    }
 
     // Sync cursor style to all tabs' terminals (rendering reads from terminal state)
     for (0..tab.g_tab_count) |ti| {
@@ -1359,7 +1380,19 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
 
     // Initialize custom post-processing shader if requested
     post_process.init(allocator, shader_path);
+    if (g_app) |app| {
+        // Dupe the path under app.mutex so a concurrent updateConfig from
+        // another window cannot free it out from under us.
+        app.mutex.lock();
+        const initial_path: ?[]u8 = if (app.background_image) |p| (allocator.dupe(u8, p) catch null) else null;
+        app.mutex.unlock();
+        if (initial_path) |p| {
+            defer allocator.free(p);
+            background_image.load(allocator, p);
+        }
+    }
     defer {
+        background_image.deinit();
         post_process.deinit();
         gl_init.deinitInstancedResources();
     }
@@ -1615,8 +1648,7 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
 
                     gl.Viewport.?(0, 0, fb_width, fb_height);
                     gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-                    gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
-                    gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+                    clearWithBackground(fb_width, fb_height);
 
                     // Use surface's computed padding (includes titlebar offset from content_y)
                     const pad = surface.getPadding();
@@ -1635,8 +1667,7 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
                 // Multiple splits: render with scissor/viewport per surface
                 gl.Viewport.?(0, 0, fb_width, fb_height);
                 gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-                gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
-                gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+                clearWithBackground(fb_width, fb_height);
 
                 titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                 titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -1703,8 +1734,7 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
         } else if (!post_process.g_post_enabled) {
             gl.Viewport.?(0, 0, fb_width, fb_height);
             gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
-            gl.ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
-            gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+            clearWithBackground(fb_width, fb_height);
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
             titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
             markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, explorer_w);
