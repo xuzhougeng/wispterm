@@ -148,6 +148,8 @@ the embedded WebView2 browser panel. `Ctrl`-clicking an `http://` or `https://`
 URL in terminal output opens it in the same right-side WebView2 panel. In SSH
 profile sessions, loopback URLs such as `http://127.0.0.1:4232` and
 `http://localhost:43455` are opened through an automatic local SSH tunnel;
+the tunnel prefers the same local port and only increments when that port is
+already occupied.
 non-loopback URLs such as `https://10.10.x.x` or public websites open directly.
 Click the browser panel's URL bar to type a new address; press `Enter` to
 navigate. Drag the browser panel's left edge to resize it.

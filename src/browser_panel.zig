@@ -449,7 +449,7 @@ fn ensureSshTunnel(allocator: std.mem.Allocator, conn: *const Surface.SshConnect
 
     stopTunnel();
 
-    const local_port = reserveLocalPort() orelse return null;
+    const local_port = reservePreferredLocalPort(remote_port) orelse return null;
     var local_spec_buf: [MAX_TUNNEL_SPEC_BYTES]u8 = undefined;
     const local_spec = std.fmt.bufPrint(
         &local_spec_buf,
@@ -580,6 +580,22 @@ fn childHasExited(child: *const std.process.Child) bool {
     return win32.WaitForSingleObject(child.id, 0) == win32.WAIT_OBJECT_0;
 }
 
+fn reservePreferredLocalPort(preferred_port: u16) ?u16 {
+    var port: u32 = if (preferred_port == 0) 1 else preferred_port;
+    while (port <= std.math.maxInt(u16)) : (port += 1) {
+        const candidate: u16 = @intCast(port);
+        if (isLocalPortAvailable(candidate)) return candidate;
+    }
+    return null;
+}
+
+fn isLocalPortAvailable(port: u16) bool {
+    const address = std.net.Address.parseIp4("127.0.0.1", port) catch return false;
+    var server = address.listen(.{}) catch return false;
+    server.deinit();
+    return true;
+}
+
 fn reserveLocalPort() ?u16 {
     const address = std.net.Address.parseIp4("127.0.0.1", 0) catch return null;
     var server = address.listen(.{}) catch return null;
@@ -631,4 +647,22 @@ fn ensureAskPassScript(allocator: std.mem.Allocator) ?[]u8 {
             "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Out.Write($env:PHANTTY_SSH_PASSWORD)\"\r\n",
     ) catch return null;
     return path;
+}
+
+test "reservePreferredLocalPort returns the preferred port when it is free" {
+    const preferred = reserveLocalPort() orelse return error.SkipZigTest;
+    const selected = reservePreferredLocalPort(preferred) orelse return error.SkipZigTest;
+    try std.testing.expectEqual(preferred, selected);
+}
+
+test "reservePreferredLocalPort skips an occupied preferred port" {
+    const preferred = reserveLocalPort() orelse return error.SkipZigTest;
+    if (preferred == std.math.maxInt(u16)) return error.SkipZigTest;
+
+    const address = std.net.Address.parseIp4("127.0.0.1", preferred) catch return error.SkipZigTest;
+    var server = address.listen(.{}) catch return error.SkipZigTest;
+    defer server.deinit();
+
+    const selected = reservePreferredLocalPort(preferred) orelse return error.SkipZigTest;
+    try std.testing.expect(selected > preferred);
 }
