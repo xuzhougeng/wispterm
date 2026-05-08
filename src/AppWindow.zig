@@ -232,6 +232,7 @@ fn clearUiStateOnTabChange() void {
     input.g_markdown_preview_resize_dragging = false;
     input.g_browser_resize_hover = false;
     input.g_browser_resize_dragging = false;
+    browser_panel.blurUrlBar();
     input.g_divider_dragging = false;
     input.g_divider_drag_handle = null;
     input.g_divider_drag_layout = null;
@@ -601,6 +602,7 @@ fn onWin32Resize(width: i32, height: i32) void {
         file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     }
 
+    overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -1711,6 +1713,7 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
 
         gl.Viewport.?(0, 0, fb_width, fb_height);
         gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderStartupShortcutsOverlay(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);

@@ -407,6 +407,17 @@ fn syncGridFromWindowSize(width: i32, height: i32) void {
     }
 }
 
+fn markBrowserUrlBarDirty() void {
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
+fn blurBrowserUrlBarIfFocused() void {
+    if (!browser_panel.urlBarFocused()) return;
+    browser_panel.blurUrlBar();
+    markBrowserUrlBarDirty();
+}
+
 pub fn toggleSidebar() void {
     tab.g_sidebar_visible = !tab.g_sidebar_visible;
     if (AppWindow.g_window) |win| {
@@ -697,6 +708,13 @@ fn handleChar(ev: win32_backend.CharEvent) void {
         if (!ev.ctrl and !ev.alt) overlays.commandPaletteInsertChar(ev.codepoint);
         return;
     }
+    if (browser_panel.urlBarFocused()) {
+        if (!ev.ctrl and !ev.alt) {
+            browser_panel.insertUrlBarChar(ev.codepoint);
+            markBrowserUrlBarDirty();
+        }
+        return;
+    }
     // File explorer inline editing
     if (file_explorer.g_focused and file_explorer.g_visible and file_explorer.g_op_mode != .none and file_explorer.g_op_mode != .confirm_delete) {
         if (!ev.ctrl and !ev.alt) file_explorer.inputChar(ev.codepoint);
@@ -843,6 +861,10 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         tab.handleRenameKey(ev);
         return;
     }
+    if (browser_panel.urlBarFocused()) {
+        handleBrowserUrlBarKey(ev);
+        return;
+    }
     // Ctrl+Shift+C = copy
     if (ev.ctrl and ev.shift and ev.vk == 0x43) { // 'C'
         copySelectionToClipboard();
@@ -986,6 +1008,40 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     }
 }
 
+fn handleBrowserUrlBarKey(ev: win32_backend.KeyEvent) void {
+    if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x41) { // Ctrl+A
+        browser_panel.selectAllUrlBar();
+        markBrowserUrlBarDirty();
+        return;
+    }
+    if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x56) { // Ctrl+V
+        if (pasteClipboardIntoBrowserUrlBar()) markBrowserUrlBarDirty();
+        return;
+    }
+
+    switch (ev.vk) {
+        win32_backend.VK_ESCAPE => {
+            browser_panel.blurUrlBar();
+            markBrowserUrlBarDirty();
+        },
+        win32_backend.VK_RETURN => {
+            const allocator = AppWindow.g_allocator orelse return;
+            const parent = if (AppWindow.g_window) |win| win.hwnd else null;
+            _ = browser_panel.submitUrlBar(allocator, parent, AppWindow.activeSurface());
+            markBrowserUrlBarDirty();
+        },
+        win32_backend.VK_BACK => {
+            browser_panel.backspaceUrlBar();
+            markBrowserUrlBarDirty();
+        },
+        win32_backend.VK_DELETE => {
+            browser_panel.clearUrlBar();
+            markBrowserUrlBarDirty();
+        },
+        else => {},
+    }
+}
+
 fn hitTestSidebarTab(xpos: f64, ypos: f64) ?usize {
     if (!tab.g_sidebar_visible) return null;
     if (xpos < 0 or xpos >= @as(f64, @floatCast(titlebar.sidebarWidth()))) return null;
@@ -1059,14 +1115,32 @@ fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
     return xpos >= panel_x and xpos < panel_x + preview_w;
 }
 
+fn browserPanelBounds() ?browser_panel.Bounds {
+    if (!browser_panel.g_visible) return null;
+    const win = AppWindow.g_window orelse return null;
+    return browser_panel.boundsForWindow(
+        win.width,
+        win.height,
+        @floatCast(titlebarHeight()),
+        AppWindow.browserPanelRightOffset(),
+    );
+}
+
 fn hitTestBrowserPanel(xpos: f64, ypos: f64) bool {
-    if (!browser_panel.g_visible) return false;
-    if (ypos < titlebarHeight()) return false;
-    const win = AppWindow.g_window orelse return false;
-    const right_offset: f64 = @floatCast(AppWindow.browserPanelRightOffset());
-    const browser_w: f64 = @floatCast(browser_panel.width());
-    const panel_x: f64 = @as(f64, @floatFromInt(win.width)) - right_offset - browser_w;
-    return xpos >= panel_x and xpos < panel_x + browser_w;
+    const bounds = browserPanelBounds() orelse return false;
+    return xpos >= @as(f64, @floatFromInt(bounds.left)) and
+        xpos < @as(f64, @floatFromInt(bounds.right)) and
+        ypos >= @as(f64, @floatFromInt(bounds.top)) and
+        ypos < @as(f64, @floatFromInt(bounds.bottom));
+}
+
+fn hitTestBrowserUrlBar(xpos: f64, ypos: f64) bool {
+    const bounds = browserPanelBounds() orelse return false;
+    const url_bar = browser_panel.urlBarBounds(bounds) orelse return false;
+    return xpos >= @as(f64, @floatFromInt(url_bar.left)) and
+        xpos < @as(f64, @floatFromInt(url_bar.right)) and
+        ypos >= @as(f64, @floatFromInt(url_bar.top)) and
+        ypos < @as(f64, @floatFromInt(url_bar.bottom));
 }
 
 fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
@@ -1949,9 +2023,12 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
 
             // Check if click is in the titlebar (tab bar area)
             if (ypos < titlebar_h) {
+                blurBrowserUrlBarIfFocused();
                 handleTopbarPress(xpos);
                 return;
             }
+            const over_browser_url_bar = hitTestBrowserUrlBar(xpos, ypos);
+            if (!over_browser_url_bar) blurBrowserUrlBarIfFocused();
             if (hitTestSidebarResizeHandle(xpos, ypos)) {
                 g_sidebar_resize_dragging = true;
                 g_sidebar_resize_hover = true;
@@ -1971,6 +2048,14 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                 return;
             }
 
+            if (over_browser_url_bar) {
+                file_explorer.g_focused = false;
+                if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+                browser_panel.focusUrlBar();
+                markBrowserUrlBarDirty();
+                return;
+            }
+
             if (tab.g_sidebar_visible and xpos < @as(f64, @floatCast(titlebar.sidebarWidth()))) {
                 handleSidebarPress(xpos, ypos);
                 return;
@@ -1979,6 +2064,8 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
             if (hitTestBrowserPanel(xpos, ypos)) {
                 file_explorer.g_focused = false;
                 if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+                browser_panel.blurUrlBar();
+                markBrowserUrlBarDirty();
                 browser_panel.focus();
                 return;
             }
@@ -2741,6 +2828,32 @@ pub fn pasteFromClipboard() void {
         }
         return;
     }
+}
+
+fn pasteClipboardIntoBrowserUrlBar() bool {
+    const win = AppWindow.g_window orelse return false;
+    const allocator = AppWindow.g_allocator orelse return false;
+
+    if (win32_backend.OpenClipboard(win.hwnd) == 0) return false;
+    defer {
+        _ = win32_backend.CloseClipboard();
+    }
+
+    if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
+        const text = readClipboardUnicodeText(allocator, hmem) orelse return false;
+        defer allocator.free(text);
+        browser_panel.appendUrlBarText(text);
+        return text.len > 0;
+    }
+
+    if (win32_backend.GetClipboardData(CF_TEXT)) |hmem| {
+        const text = readClipboardAnsiText(allocator, hmem) orelse return false;
+        defer allocator.free(text);
+        browser_panel.appendUrlBarText(text);
+        return text.len > 0;
+    }
+
+    return false;
 }
 
 pub fn pasteImageFromClipboard() void {

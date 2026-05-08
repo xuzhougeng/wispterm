@@ -10,6 +10,8 @@ pub const MIN_WIDTH: f32 = 360;
 pub const MAX_WIDTH: f32 = 1280;
 pub const MIN_CONTENT_WIDTH: f32 = 320;
 pub const RESIZE_HIT_WIDTH: f32 = 12;
+pub const URL_BAR_HEIGHT: f32 = 42;
+pub const URL_BAR_MARGIN: f32 = 8;
 pub const DEFAULT_URL = "http://localhost:3000";
 
 const MAX_URL_BYTES = 2048;
@@ -36,20 +38,34 @@ extern fn phantty_webview2_is_ready(browser: *BrowserHandle) callconv(.c) c_int;
 extern fn phantty_webview2_last_error(browser: *BrowserHandle) callconv(.c) win32.HRESULT;
 extern fn phantty_webview2_destroy(browser: *BrowserHandle) callconv(.c) void;
 
-const Bounds = struct {
+pub const Bounds = struct {
     left: i32,
     top: i32,
     right: i32,
     bottom: i32,
 };
 
-fn contentBounds(bounds: Bounds) ?Bounds {
+pub fn urlBarBounds(bounds: Bounds) ?Bounds {
     const grip: i32 = @intFromFloat(@round(RESIZE_HIT_WIDTH));
     const left = @min(bounds.right, bounds.left + grip);
-    if (bounds.right <= left or bounds.bottom <= bounds.top) return null;
+    const bottom = @min(bounds.bottom, bounds.top + @as(i32, @intFromFloat(@round(URL_BAR_HEIGHT))));
+    if (bounds.right <= left or bottom <= bounds.top) return null;
     return .{
         .left = left,
         .top = bounds.top,
+        .right = bounds.right,
+        .bottom = bottom,
+    };
+}
+
+pub fn contentBounds(bounds: Bounds) ?Bounds {
+    const grip: i32 = @intFromFloat(@round(RESIZE_HIT_WIDTH));
+    const left = @min(bounds.right, bounds.left + grip);
+    const top = @min(bounds.bottom, bounds.top + @as(i32, @intFromFloat(@round(URL_BAR_HEIGHT))));
+    if (bounds.right <= left or bounds.bottom <= top) return null;
+    return .{
+        .left = left,
+        .top = top,
         .right = bounds.right,
         .bottom = bounds.bottom,
     };
@@ -61,6 +77,10 @@ pub threadlocal var g_last_error: win32.HRESULT = 0;
 threadlocal var g_browser: ?*BrowserHandle = null;
 threadlocal var g_url_buf: [MAX_URL_BYTES]u8 = undefined;
 threadlocal var g_url_len: usize = 0;
+threadlocal var g_url_bar_focused: bool = false;
+threadlocal var g_url_edit_buf: [MAX_URL_BYTES]u8 = undefined;
+threadlocal var g_url_edit_len: usize = 0;
+threadlocal var g_url_edit_select_all: bool = false;
 threadlocal var g_tunnel: ?SshTunnel = null;
 
 const SshTunnel = struct {
@@ -192,6 +212,8 @@ pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, surfa
 
 pub fn close() void {
     g_visible = false;
+    g_url_bar_focused = false;
+    g_url_edit_select_all = false;
     stopTunnel();
     if (g_browser) |browser| {
         phantty_webview2_set_visible(browser, 0);
@@ -224,7 +246,7 @@ pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_
         return;
     }
 
-    const bounds = panelBounds(window_width, window_height, titlebar_height, right_offset);
+    const bounds = boundsForWindow(window_width, window_height, titlebar_height, right_offset);
     if (bounds.right <= bounds.left or bounds.bottom <= bounds.top) return;
 
     const webview_bounds = contentBounds(bounds) orelse return;
@@ -252,6 +274,8 @@ pub fn deinit() void {
     }
     stopTunnel();
     g_visible = false;
+    g_url_bar_focused = false;
+    g_url_edit_select_all = false;
 }
 
 fn setUrl(url: []const u8) void {
@@ -260,9 +284,88 @@ fn setUrl(url: []const u8) void {
     g_url_len = n;
 }
 
-fn currentUrl() []const u8 {
+pub fn currentUrl() []const u8 {
     if (g_url_len == 0) return DEFAULT_URL;
     return g_url_buf[0..g_url_len];
+}
+
+pub fn urlBarFocused() bool {
+    return g_url_bar_focused;
+}
+
+pub fn urlBarText() []const u8 {
+    if (g_url_bar_focused) return g_url_edit_buf[0..g_url_edit_len];
+    return currentUrl();
+}
+
+pub fn urlBarSelectAll() bool {
+    return g_url_bar_focused and g_url_edit_select_all and g_url_edit_len > 0;
+}
+
+pub fn focusUrlBar() void {
+    g_url_bar_focused = true;
+    g_url_edit_len = copyBounded(g_url_edit_buf[0 .. g_url_edit_buf.len - 1], currentUrl());
+    g_url_edit_select_all = g_url_edit_len > 0;
+}
+
+pub fn blurUrlBar() void {
+    g_url_bar_focused = false;
+    g_url_edit_select_all = false;
+}
+
+pub fn insertUrlBarChar(codepoint: u21) void {
+    if (!g_url_bar_focused) return;
+    if (codepoint <= 0x20 or codepoint == 0x7F or codepoint > 0x7E) return;
+    replaceSelectedUrlBeforeEdit();
+    if (g_url_edit_len >= g_url_edit_buf.len - 1) return;
+    g_url_edit_buf[g_url_edit_len] = @intCast(codepoint);
+    g_url_edit_len += 1;
+}
+
+pub fn appendUrlBarText(text: []const u8) void {
+    for (text) |ch| {
+        if (ch <= 0x20 or ch == 0x7F) continue;
+        replaceSelectedUrlBeforeEdit();
+        if (g_url_edit_len >= g_url_edit_buf.len - 1) return;
+        g_url_edit_buf[g_url_edit_len] = ch;
+        g_url_edit_len += 1;
+    }
+}
+
+pub fn backspaceUrlBar() void {
+    if (!g_url_bar_focused or g_url_edit_len == 0) return;
+    if (g_url_edit_select_all) {
+        g_url_edit_len = 0;
+        g_url_edit_select_all = false;
+        return;
+    }
+    g_url_edit_len -= 1;
+}
+
+pub fn clearUrlBar() void {
+    if (!g_url_bar_focused) return;
+    g_url_edit_len = 0;
+    g_url_edit_select_all = false;
+}
+
+pub fn submitUrlBar(allocator: std.mem.Allocator, parent: ?win32.HWND, surface: ?*const Surface) bool {
+    const target = normalizeUrlInput(allocator, g_url_edit_buf[0..g_url_edit_len]) orelse return false;
+    defer allocator.free(target);
+
+    if (!openForSurface(allocator, parent, target, surface)) return false;
+    g_url_bar_focused = false;
+    return true;
+}
+
+pub fn selectAllUrlBar() void {
+    if (!g_url_bar_focused) return;
+    g_url_edit_select_all = g_url_edit_len > 0;
+}
+
+fn replaceSelectedUrlBeforeEdit() void {
+    if (!g_url_edit_select_all) return;
+    g_url_edit_len = 0;
+    g_url_edit_select_all = false;
 }
 
 fn navigateCurrentUrl(browser: *BrowserHandle) void {
@@ -280,7 +383,7 @@ fn urlToWide(url: []const u8, out: *[MAX_URL_BYTES]u16) ?[*:0]const u16 {
     return out[0..len :0].ptr;
 }
 
-fn panelBounds(window_width: i32, window_height: i32, titlebar_height: f32, right_offset: f32) Bounds {
+pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f32, right_offset: f32) Bounds {
     const win_w: f32 = @floatFromInt(window_width);
     const win_h: f32 = @floatFromInt(window_height);
     const max_width = @max(MIN_WIDTH, @min(MAX_WIDTH, win_w - right_offset - MIN_CONTENT_WIDTH));
@@ -296,6 +399,28 @@ fn panelBounds(window_width: i32, window_height: i32, titlebar_height: f32, righ
         .right = @intFromFloat(@round(right)),
         .bottom = @intFromFloat(@round(bottom)),
     };
+}
+
+fn normalizeUrlInput(allocator: std.mem.Allocator, input: []const u8) ?[]u8 {
+    const trimmed = std.mem.trim(u8, input, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    if (std.mem.indexOf(u8, trimmed, "://") != null) return allocator.dupe(u8, trimmed) catch null;
+
+    const scheme = if (defaultsToHttp(trimmed)) "http" else "https";
+    return std.fmt.allocPrint(allocator, "{s}://{s}", .{ scheme, trimmed }) catch null;
+}
+
+fn defaultsToHttp(input: []const u8) bool {
+    return startsWithIgnoreCase(input, "localhost") or
+        startsWithIgnoreCase(input, "127.") or
+        startsWithIgnoreCase(input, "0.0.0.0") or
+        startsWithIgnoreCase(input, "[::1]") or
+        std.mem.indexOfScalar(u8, input, ':') != null;
+}
+
+fn startsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
+    if (text.len < prefix.len) return false;
+    return std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
 }
 
 const SshLoopbackUrl = struct {
