@@ -40,6 +40,10 @@ threadlocal var solid_texture: c.GLuint = 0;
 // Draw call counter (reset each frame)
 pub threadlocal var g_draw_call_count: u32 = 0;
 
+// Opacity for cell background quads (0..1). Set from config
+// `background-opacity`; lower values reveal the background image underneath.
+pub threadlocal var g_bg_opacity: f32 = 1.0;
+
 // ============================================================================
 // Shader sources
 // ============================================================================
@@ -92,9 +96,13 @@ const bg_vertex_source: [*c]const u8 =
 const bg_fragment_source: [*c]const u8 =
     \\#version 330 core
     \\flat in vec3 vColor;
+    \\uniform float uBgOpacity;
     \\out vec4 fragColor;
     \\void main() {
-    \\    fragColor = vec4(vColor, 1.0);
+    \\    // The pipeline blend func is (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA),
+    \\    // so an alpha of uBgOpacity correctly reveals the framebuffer (the
+    \\    // background image) underneath proportionally to (1 - uBgOpacity).
+    \\    fragColor = vec4(vColor, uBgOpacity);
     \\}
 ;
 
