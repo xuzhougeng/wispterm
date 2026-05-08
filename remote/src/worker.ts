@@ -22,7 +22,7 @@ type RelayMessage = {
 };
 
 const COOKIE_NAME = "phantty_remote";
-const SESSION_TTL_SECONDS = 8 * 60 * 60;
+const SESSION_TTL_SECONDS = 24 * 60 * 60;
 
 export class RemoteSession extends DurableObject<Env> {
   private phantty: WebSocket | null = null;

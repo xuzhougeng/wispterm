@@ -25,7 +25,7 @@ type LoginBody = {
 };
 
 const COOKIE_NAME = "phantty_remote";
-const SESSION_TTL_SECONDS = 8 * 60 * 60;
+const SESSION_TTL_SECONDS = 24 * 60 * 60;
 const HEARTBEAT_INTERVAL_MS = 25_000;
 
 const PORT = Number(process.env.PORT ?? 8787);

@@ -95,6 +95,9 @@ const WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS: u16 = 1000;
 const QUEUE_LIMIT = 512;
 const RETRY_DELAY_NS = 2 * std.time.ns_per_s;
 const INPUT_BUF_SIZE = 16 * 1024;
+const HEARTBEAT_INTERVAL_MS: i64 = 25 * 1000;
+const PING_MESSAGE = "{\"type\":\"ping\"}";
+const PONG_MESSAGE = "{\"type\":\"pong\"}";
 
 var next_surface_counter = std.atomic.Value(u64).init(1);
 
@@ -379,24 +382,32 @@ fn threadMain(client: *Client) void {
         std.debug.print("Remote client connected\n", .{});
         client.replayLastLayout();
 
+        var next_heartbeat_ms = std.time.milliTimestamp() + HEARTBEAT_INTERVAL_MS;
         while (!client.stop_requested.load(.acquire) and connection_alive.load(.acquire)) {
+            const websocket = handles.websocket orelse break;
             const message = client.popMessage() orelse {
+                const now = std.time.milliTimestamp();
+                if (now >= next_heartbeat_ms) {
+                    if (!sendWebSocketUtf8(websocket, PING_MESSAGE)) {
+                        connection_alive.store(false, .release);
+                        client.state.store(.disconnected, .release);
+                        break;
+                    }
+                    next_heartbeat_ms = now + HEARTBEAT_INTERVAL_MS;
+                    continue;
+                }
+
                 if (!client.waitForMessageOrStop(&connection_alive)) break;
                 continue;
             };
             defer client.allocator.free(message);
 
-            const websocket = handles.websocket orelse break;
-            if (WinHttpWebSocketSend(
-                websocket,
-                WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
-                @constCast(message.ptr),
-                @intCast(message.len),
-            ) != 0) {
+            if (!sendWebSocketUtf8(websocket, message)) {
                 connection_alive.store(false, .release);
                 client.state.store(.disconnected, .release);
                 break;
             }
+            next_heartbeat_ms = std.time.milliTimestamp() + HEARTBEAT_INTERVAL_MS;
         }
 
         handles.close();
@@ -435,9 +446,25 @@ fn receiveThreadMain(client: *Client, websocket: HINTERNET, connection_alive: *s
         if (buffer_type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE or
             buffer_type == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE)
         {
-            handleIncomingMessage(client, buf[0..@intCast(bytes_read)]);
+            const message = buf[0..@intCast(bytes_read)];
+            if (isJsonMessageType(message, "ping")) {
+                _ = sendWebSocketUtf8(websocket, PONG_MESSAGE);
+                continue;
+            }
+            if (isJsonMessageType(message, "pong")) continue;
+
+            handleIncomingMessage(client, message);
         }
     }
+}
+
+fn sendWebSocketUtf8(websocket: HINTERNET, message: []const u8) bool {
+    return WinHttpWebSocketSend(
+        websocket,
+        WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+        @constCast(message.ptr),
+        @intCast(message.len),
+    ) == 0;
 }
 
 fn sleepUntilRetryOrStop(client: *Client) void {
@@ -575,13 +602,17 @@ fn buildOutputMessage(allocator: std.mem.Allocator, surface_id: []const u8, data
 }
 
 fn handleIncomingMessage(client: *Client, message: []const u8) void {
-    if (std.mem.indexOf(u8, message, "\"type\":\"input-bytes\"") == null) return;
+    if (!isJsonMessageType(message, "input-bytes")) return;
     const surface_id = extractJsonString(message, "surfaceId") orelse return;
     const hex_data = extractJsonString(message, "data") orelse return;
 
     const decoded = decodeHexAlloc(client.allocator, hex_data) catch return;
     defer client.allocator.free(decoded);
     client.dispatchInput(surface_id, decoded);
+}
+
+fn isJsonMessageType(message: []const u8, comptime kind: []const u8) bool {
+    return std.mem.indexOf(u8, message, "\"type\":\"" ++ kind ++ "\"") != null;
 }
 
 fn extractJsonString(message: []const u8, field: []const u8) ?[]const u8 {
