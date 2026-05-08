@@ -691,6 +691,7 @@ function renderRemotePanels(): void {
   if (mobileTitleRoot) mobileTitleRoot.textContent = tabTitle;
   panelsRoot.className = "panels-stage";
   panelsRoot.dataset.mobileMode = "single";
+  panelsRoot.querySelectorAll(".empty-state").forEach((node) => node.remove());
   const visible = new Set(tab.surfaces.map((surface) => surface.id));
 
   for (const surface of tab.surfaces) {
