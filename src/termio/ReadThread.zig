@@ -64,9 +64,7 @@ pub fn threadMain(surface: *Surface) void {
         defer surface.render_state.mutex.unlock();
 
         surface.resetOscBatch();
-        var stream = surface.vtStream();
-        defer stream.handler.deinit();
-        stream.nextSlice(data);
+        surface.vt_stream.nextSlice(data);
         surface.scanForOscTitle(data);
         surface.dirty.store(true, .release);
     }

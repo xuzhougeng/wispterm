@@ -269,9 +269,11 @@ initial_cwd_path_len: usize = 0,
 // VT stream
 // ============================================================================
 
-/// Create a VT stream that processes terminal output and intercepts bell events.
-/// Use this instead of terminal.vtStream() to get bell notifications.
-pub fn vtStream(self: *Surface) VtStream {
+/// Persistent VT stream for terminal output. This must live across PTY reads so
+/// split UTF-8 sequences and escape sequences keep their parser state.
+vt_stream: VtStream,
+
+fn initVtStream(self: *Surface) VtStream {
     return VtStream.initAlloc(
         self.terminal.screens.active.alloc,
         VtHandler.init(&self.terminal, self),
@@ -342,6 +344,8 @@ pub fn init(
     surface.ssh_connection = null;
     surface.remote_client = null;
     remote.nextSurfaceId(&surface.remote_id);
+    surface.vt_stream = surface.initVtStream();
+    errdefer surface.vt_stream.deinit();
     surface.dirty = std.atomic.Value(bool).init(true);
     surface.exited = std.atomic.Value(bool).init(false);
 
@@ -494,6 +498,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
     self.mailbox.deinit();
 
     // 3. Now safe to tear down everything — no other thread is accessing.
+    self.vt_stream.deinit();
     self.command.deinit();
     self.pty.deinit();
     self.terminal.deinit(allocator);
