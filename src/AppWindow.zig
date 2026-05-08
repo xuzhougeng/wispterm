@@ -96,7 +96,6 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_shader_path = app.shader_path;
     g_start_maximize = app.maximize;
     g_start_fullscreen = app.fullscreen;
-    g_background_image_path = app.background_image;
     background_image.g_mode = app.background_image_mode;
     gl_init.g_bg_opacity = app.background_opacity;
     tab.g_forced_title = app.title;
@@ -154,7 +153,6 @@ threadlocal var g_initial_cwd_len: usize = 0;
 threadlocal var g_requested_font: []const u8 = "";
 threadlocal var g_requested_weight: directwrite.DWRITE_FONT_WEIGHT = .NORMAL;
 threadlocal var g_shader_path: ?[]const u8 = null;
-threadlocal var g_background_image_path: ?[]const u8 = null;
 threadlocal var g_start_maximize: bool = false;
 threadlocal var g_start_fullscreen: bool = false;
 threadlocal var g_remote_layout_last_ms: i64 = 0;
@@ -190,12 +188,6 @@ pub const MAX_TABS = tab.MAX_TABS;
 // ============================================================================
 // Tab/split operation wrappers — delegate to tab module, handle UI side effects
 // ============================================================================
-
-fn optStringsEqual(a: ?[]const u8, b: ?[]const u8) bool {
-    if (a == null and b == null) return true;
-    if (a == null or b == null) return false;
-    return std.mem.eql(u8, a.?, b.?);
-}
 
 /// Clear the framebuffer with the theme background color, then draw the
 /// background image (if any) over the cleared color. The current viewport
@@ -673,15 +665,11 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
 
     // --- Background image ---
     {
-        const new_path = cfg.@"background-image";
-        const path_changed = !optStringsEqual(g_background_image_path, new_path);
         const mode_changed = background_image.g_mode != cfg.@"background-image-mode";
         background_image.g_mode = cfg.@"background-image-mode";
         gl_init.g_bg_opacity = cfg.@"background-opacity";
-        if (path_changed) {
-            // App owns the duped string; read it back (already replaced by updateConfig above).
-            g_background_image_path = if (g_app) |a| a.background_image else new_path;
-            background_image.load(g_background_image_path);
+        if (!background_image.isLoaded(cfg.@"background-image")) {
+            background_image.load(allocator, cfg.@"background-image");
         } else if (mode_changed) {
             background_image.refreshWrapMode();
         }
@@ -1392,7 +1380,17 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
 
     // Initialize custom post-processing shader if requested
     post_process.init(allocator, shader_path);
-    background_image.load(g_background_image_path);
+    if (g_app) |app| {
+        // Dupe the path under app.mutex so a concurrent updateConfig from
+        // another window cannot free it out from under us.
+        app.mutex.lock();
+        const initial_path: ?[]u8 = if (app.background_image) |p| (allocator.dupe(u8, p) catch null) else null;
+        app.mutex.unlock();
+        if (initial_path) |p| {
+            defer allocator.free(p);
+            background_image.load(allocator, p);
+        }
+    }
     defer {
         background_image.deinit();
         post_process.deinit();

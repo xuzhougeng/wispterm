@@ -22,11 +22,35 @@ pub threadlocal var g_mode: Mode = .fill;
 threadlocal var g_texture: c.GLuint = 0;
 threadlocal var g_width: c_int = 0;
 threadlocal var g_height: c_int = 0;
+/// Owned copy of the currently-loaded image path. The module owns this slice
+/// (allocated via `g_path_allocator`) so callers cannot pass in stale aliases
+/// from sources whose lifetime is independent of the loaded texture.
+threadlocal var g_loaded_path: ?[]u8 = null;
+threadlocal var g_path_allocator: ?std.mem.Allocator = null;
+
+/// Whether the currently loaded path matches `path`. Returns true for the
+/// "no image" case as well (both null/empty).
+pub fn isLoaded(path: ?[]const u8) bool {
+    const want = if (path) |p| (if (p.len == 0) null else p) else null;
+    if (want == null and g_loaded_path == null) return true;
+    if (want == null or g_loaded_path == null) return false;
+    return std.mem.eql(u8, g_loaded_path.?, want.?);
+}
+
+fn freeLoadedPath() void {
+    if (g_loaded_path) |buf| {
+        if (g_path_allocator) |alloc| alloc.free(buf);
+    }
+    g_loaded_path = null;
+}
 
 /// Load an image from `path` and upload it as a GL texture. Replaces any
-/// previously loaded image. Call with `null` to disable. Safe to call again
-/// for hot-reload.
-pub fn load(path: ?[]const u8) void {
+/// previously loaded image. Call with `null` (or empty) to disable. Safe to
+/// call repeatedly for hot-reload — duplicate loads of the same path are a
+/// no-op.
+pub fn load(allocator: std.mem.Allocator, path: ?[]const u8) void {
+    if (isLoaded(path)) return;
+
     const gl = AppWindow.gl;
 
     // Reset existing state
@@ -37,6 +61,7 @@ pub fn load(path: ?[]const u8) void {
     g_enabled = false;
     g_width = 0;
     g_height = 0;
+    freeLoadedPath();
 
     const p = path orelse return;
     if (p.len == 0) return;
@@ -72,6 +97,13 @@ pub fn load(path: ?[]const u8) void {
     g_width = w;
     g_height = h;
     g_enabled = true;
+
+    // Take an owned copy only after the texture is fully usable. If the dupe
+    // fails, leave g_loaded_path null so the next call retries the load.
+    if (allocator.dupe(u8, p)) |owned| {
+        g_loaded_path = owned;
+        g_path_allocator = allocator;
+    } else |_| {}
     std.debug.print("background-image loaded: {s} ({}x{})\n", .{ p, w, h });
 }
 
@@ -86,19 +118,23 @@ pub fn refreshWrapMode() void {
 }
 
 pub fn deinit() void {
-    if (g_texture == 0) return;
-    const gl = AppWindow.gl;
-    gl.DeleteTextures.?(1, &g_texture);
-    g_texture = 0;
+    if (g_texture != 0) {
+        const gl = AppWindow.gl;
+        gl.DeleteTextures.?(1, &g_texture);
+        g_texture = 0;
+    }
     g_enabled = false;
+    freeLoadedPath();
 }
 
 /// Compute UVs for a fullscreen quad given the chosen mode.
 /// For fill/fit/center we keep the quad covering the whole framebuffer and
 /// adjust UVs so the image aspect is preserved. For tile we set UVs > 1 and
 /// rely on GL_REPEAT wrap.
-fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) struct { u0: f32, v0: f32, u1: f32, v1: f32 } {
-    if (g_width <= 0 or g_height <= 0) return .{ .u0 = 0, .v0 = 0, .u1 = 1, .v1 = 1 };
+const Uv = struct { u_min: f32, v_min: f32, u_max: f32, v_max: f32 };
+
+fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) Uv {
+    if (g_width <= 0 or g_height <= 0) return .{ .u_min = 0, .v_min = 0, .u_max = 1, .v_max = 1 };
     const iw: f32 = @floatFromInt(g_width);
     const ih: f32 = @floatFromInt(g_height);
 
@@ -112,12 +148,12 @@ fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) struct { u0: f32, v0: f32, u1: f3
                 // image is wider than the window — crop sides
                 const visible = win_aspect / img_aspect;
                 const offset = (1.0 - visible) * 0.5;
-                return .{ .u0 = offset, .v0 = 0, .u1 = 1.0 - offset, .v1 = 1 };
+                return .{ .u_min = offset, .v_min = 0, .u_max = 1.0 - offset, .v_max = 1 };
             } else {
                 // image is taller — crop top/bottom
                 const visible = img_aspect / win_aspect;
                 const offset = (1.0 - visible) * 0.5;
-                return .{ .u0 = 0, .v0 = offset, .u1 = 1, .v1 = 1.0 - offset };
+                return .{ .u_min = 0, .v_min = offset, .u_max = 1, .v_max = 1.0 - offset };
             }
         },
         .fit => {
@@ -130,11 +166,11 @@ fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) struct { u0: f32, v0: f32, u1: f3
             if (img_aspect > win_aspect) {
                 const extra = img_aspect / win_aspect;
                 const offset = (1.0 - extra) * 0.5;
-                return .{ .u0 = 0, .v0 = offset, .u1 = 1, .v1 = 1.0 - offset };
+                return .{ .u_min = 0, .v_min = offset, .u_max = 1, .v_max = 1.0 - offset };
             } else {
                 const extra = win_aspect / img_aspect;
                 const offset = (1.0 - extra) * 0.5;
-                return .{ .u0 = offset, .v0 = 0, .u1 = 1.0 - offset, .v1 = 1 };
+                return .{ .u_min = offset, .v_min = 0, .u_max = 1.0 - offset, .v_max = 1 };
             }
         },
         .center => {
@@ -143,15 +179,15 @@ fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) struct { u0: f32, v0: f32, u1: f3
             // CLAMP_TO_EDGE wrap shows the edge row — close enough.
             const u_range = fb_w / iw;
             const v_range = fb_h / ih;
-            const u0 = (1.0 - u_range) * 0.5;
-            const v0 = (1.0 - v_range) * 0.5;
-            return .{ .u0 = u0, .v0 = v0, .u1 = u0 + u_range, .v1 = v0 + v_range };
+            const u_off = (1.0 - u_range) * 0.5;
+            const v_off = (1.0 - v_range) * 0.5;
+            return .{ .u_min = u_off, .v_min = v_off, .u_max = u_off + u_range, .v_max = v_off + v_range };
         },
         .tile => {
             // Repeat the image at native size. UVs equal window / image.
             const u_range = fb_w / iw;
             const v_range = fb_h / ih;
-            return .{ .u0 = 0, .v0 = 0, .u1 = u_range, .v1 = v_range };
+            return .{ .u_min = 0, .v_min = 0, .u_max = u_range, .v_max = v_range };
         },
     }
 }
@@ -177,17 +213,17 @@ pub fn drawFullscreen(viewport_width: f32, viewport_height: f32) void {
 
     // Two triangles covering the whole viewport in pixel coords.
     // setProjectionForProgram maps [0..w] x [0..h] to NDC.
-    const x0: f32 = 0;
-    const y0: f32 = 0;
-    const x1: f32 = viewport_width;
-    const y1: f32 = viewport_height;
+    const x_lo: f32 = 0;
+    const y_lo: f32 = 0;
+    const x_hi: f32 = viewport_width;
+    const y_hi: f32 = viewport_height;
     const vertices = [6][4]f32{
-        .{ x0, y1, uv.u0, uv.v0 }, // top-left
-        .{ x0, y0, uv.u0, uv.v1 }, // bottom-left
-        .{ x1, y0, uv.u1, uv.v1 }, // bottom-right
-        .{ x0, y1, uv.u0, uv.v0 },
-        .{ x1, y0, uv.u1, uv.v1 },
-        .{ x1, y1, uv.u1, uv.v0 }, // top-right
+        .{ x_lo, y_hi, uv.u_min, uv.v_min }, // top-left
+        .{ x_lo, y_lo, uv.u_min, uv.v_max }, // bottom-left
+        .{ x_hi, y_lo, uv.u_max, uv.v_max }, // bottom-right
+        .{ x_lo, y_hi, uv.u_min, uv.v_min },
+        .{ x_hi, y_lo, uv.u_max, uv.v_max },
+        .{ x_hi, y_hi, uv.u_max, uv.v_min }, // top-right
     };
 
     gl.ActiveTexture.?(c.GL_TEXTURE0);
