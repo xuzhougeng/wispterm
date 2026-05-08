@@ -172,6 +172,13 @@ fn applyResize(surface: *Surface, grid: renderer.size.GridSize) void {
     defer surface.render_state.mutex.unlock();
 
     surface.terminal.resize(surface.allocator, grid.cols, grid.rows) catch {};
+    surface.terminal.width_px = @intFromFloat(@as(f32, @floatFromInt(grid.cols)) * surface.size.cell.width);
+    surface.terminal.height_px = @intFromFloat(@as(f32, @floatFromInt(grid.rows)) * surface.size.cell.height);
+
+    // Match Ghostty's Termio.resize behavior: a resize is allowed to break
+    // synchronized output mode so TUI redraws become visible immediately.
+    surface.terminal.modes.set(.synchronized_output, false);
+
     surface.terminal.scrollViewport(.{ .bottom = {} });
     surface.dirty.store(true, .release);
 }

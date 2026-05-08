@@ -566,8 +566,6 @@ pub fn setScreenSize(
     self.size.screen.height = screen_height;
     self.size.cell.width = cell_width;
     self.size.cell.height = cell_height;
-    self.terminal.width_px = @intFromFloat(@as(f32, @floatFromInt(self.size.grid.cols)) * cell_width);
-    self.terminal.height_px = @intFromFloat(@as(f32, @floatFromInt(self.size.grid.rows)) * cell_height);
 
     // Store explicit padding (used for rendering offset)
     self.size.padding = explicit_padding;
@@ -588,11 +586,11 @@ pub fn setScreenSize(
     const changed = (self.size.grid.cols != new_cols or self.size.grid.rows != new_rows);
     self.size.grid.cols = new_cols;
     self.size.grid.rows = new_rows;
-    self.terminal.width_px = @intFromFloat(@as(f32, @floatFromInt(new_cols)) * cell_width);
-    self.terminal.height_px = @intFromFloat(@as(f32, @floatFromInt(new_rows)) * cell_height);
 
     // Queue resize to IO thread if grid dimensions changed
     if (changed) {
+        // Terminal rows/cols and pixel dimensions are updated together in
+        // the IO thread, under the render-state lock.
         self.queueIo(.{ .resize = .{ .cols = new_cols, .rows = new_rows } });
         return true;
     }
