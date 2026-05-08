@@ -145,6 +145,7 @@ URL in terminal output opens it in the same right-side WebView2 panel. In SSH
 profile sessions, loopback URLs such as `http://127.0.0.1:4232` and
 `http://localhost:43455` are opened through an automatic local SSH tunnel;
 non-loopback URLs such as `https://10.10.x.x` or public websites open directly.
+Drag the browser panel's left edge to resize it.
 
 The preview panel can be resized by dragging its left edge and scrolled with the
 mouse wheel. `Ctrl+Shift+W` closes the preview panel before closing a split.

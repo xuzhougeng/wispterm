@@ -9,6 +9,7 @@ pub const DEFAULT_WIDTH: f32 = 720;
 pub const MIN_WIDTH: f32 = 360;
 pub const MAX_WIDTH: f32 = 1280;
 pub const MIN_CONTENT_WIDTH: f32 = 320;
+pub const RESIZE_HIT_WIDTH: f32 = 12;
 pub const DEFAULT_URL = "http://localhost:3000";
 
 const MAX_URL_BYTES = 2048;
@@ -39,6 +40,18 @@ const Bounds = struct {
     right: i32,
     bottom: i32,
 };
+
+fn contentBounds(bounds: Bounds) ?Bounds {
+    const grip: i32 = @intFromFloat(@round(RESIZE_HIT_WIDTH));
+    const left = @min(bounds.right, bounds.left + grip);
+    if (bounds.right <= left or bounds.bottom <= bounds.top) return null;
+    return .{
+        .left = left,
+        .top = bounds.top,
+        .right = bounds.right,
+        .bottom = bounds.bottom,
+    };
+}
 
 pub threadlocal var g_visible: bool = false;
 pub threadlocal var g_width: f32 = DEFAULT_WIDTH;
@@ -101,6 +114,17 @@ const SshTunnel = struct {
 
 pub fn width() f32 {
     return if (g_visible) g_width else 0;
+}
+
+pub fn maxWidthForWindow(window_width: f32) f32 {
+    return @max(MIN_WIDTH, @min(MAX_WIDTH, window_width - MIN_CONTENT_WIDTH));
+}
+
+pub fn setWidth(w: f32, window_width: f32) bool {
+    const next = @max(MIN_WIDTH, @min(maxWidthForWindow(window_width), w));
+    if (next == g_width) return false;
+    g_width = next;
+    return true;
 }
 
 pub fn open(parent: ?win32.HWND, url: []const u8) void {
@@ -187,17 +211,19 @@ pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_
     const bounds = panelBounds(window_width, window_height, titlebar_height, right_offset);
     if (bounds.right <= bounds.left or bounds.bottom <= bounds.top) return;
 
+    const webview_bounds = contentBounds(bounds) orelse return;
+
     if (g_browser == null) {
         var wide_buf: [MAX_URL_BYTES]u16 = undefined;
         const wide_url = urlToWide(currentUrl(), &wide_buf) orelse return;
-        g_browser = phantty_webview2_create(parent, bounds.left, bounds.top, bounds.right, bounds.bottom, wide_url);
+        g_browser = phantty_webview2_create(parent, webview_bounds.left, webview_bounds.top, webview_bounds.right, webview_bounds.bottom, wide_url);
         if (g_browser) |browser| {
             g_last_error = phantty_webview2_last_error(browser);
         }
     }
 
     if (g_browser) |browser| {
-        phantty_webview2_set_bounds(browser, bounds.left, bounds.top, bounds.right, bounds.bottom);
+        phantty_webview2_set_bounds(browser, webview_bounds.left, webview_bounds.top, webview_bounds.right, webview_bounds.bottom);
         phantty_webview2_set_visible(browser, 1);
         g_last_error = phantty_webview2_last_error(browser);
     }

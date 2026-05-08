@@ -367,6 +367,8 @@ pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the 
 pub threadlocal var g_explorer_resize_dragging: bool = false; // Currently dragging the file explorer edge
 pub threadlocal var g_markdown_preview_resize_hover: bool = false; // Mouse is over the preview resize edge
 pub threadlocal var g_markdown_preview_resize_dragging: bool = false; // Currently dragging the preview edge
+pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the WebView2 browser edge
+pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
 
 // Internal state (moved from win32_input struct)
 threadlocal var plus_btn_pressed: bool = false;
@@ -1040,6 +1042,28 @@ fn hitTestBrowserPanel(xpos: f64, ypos: f64) bool {
     const browser_w: f64 = @floatCast(browser_panel.width());
     const panel_x: f64 = @as(f64, @floatFromInt(win.width)) - right_offset - browser_w;
     return xpos >= panel_x and xpos < panel_x + browser_w;
+}
+
+fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
+    if (!browser_panel.g_visible) return false;
+    if (ypos < titlebarHeight()) return false;
+    const win = AppWindow.g_window orelse return false;
+    const right_offset: f64 = @floatCast(AppWindow.browserPanelRightOffset());
+    const browser_w: f64 = @floatCast(browser_panel.width());
+    const panel_x: f64 = @as(f64, @floatFromInt(win.width)) - right_offset - browser_w;
+    const half_hit: f64 = @as(f64, @floatCast(browser_panel.RESIZE_HIT_WIDTH)) / 2;
+    return xpos >= panel_x - half_hit and xpos <= panel_x + half_hit;
+}
+
+fn applyBrowserWidthFromMouse(xpos: f64) void {
+    const win = AppWindow.g_window orelse return;
+    const right_edge = @as(f64, @floatFromInt(win.width)) - @as(f64, @floatCast(AppWindow.browserPanelRightOffset()));
+    const new_width = right_edge - xpos;
+    const available_width: f32 = @as(f32, @floatFromInt(win.width)) - AppWindow.browserPanelRightOffset();
+    if (!browser_panel.setWidth(@floatCast(new_width), available_width)) return;
+    syncGridFromWindowSize(win.width, win.height);
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
 }
 
 fn hitTestMarkdownPreviewResizeHandle(xpos: f64, ypos: f64) bool {
@@ -1913,6 +1937,12 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                 _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
                 return;
             }
+            if (hitTestBrowserResizeHandle(xpos, ypos)) {
+                g_browser_resize_dragging = true;
+                g_browser_resize_hover = true;
+                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+                return;
+            }
 
             if (tab.g_sidebar_visible and xpos < @as(f64, @floatCast(titlebar.sidebarWidth()))) {
                 handleSidebarPress(xpos, ypos);
@@ -2040,6 +2070,13 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                 g_markdown_preview_resize_dragging = false;
                 g_markdown_preview_resize_hover = hitTestMarkdownPreviewResizeHandle(xpos, ypos);
                 const cursor_id = if (g_markdown_preview_resize_hover) win32_backend.IDC_SIZEWE else win32_backend.IDC_ARROW;
+                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, cursor_id));
+                return;
+            }
+            if (g_browser_resize_dragging) {
+                g_browser_resize_dragging = false;
+                g_browser_resize_hover = hitTestBrowserResizeHandle(xpos, ypos);
+                const cursor_id = if (g_browser_resize_hover) win32_backend.IDC_SIZEWE else win32_backend.IDC_ARROW;
                 _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, cursor_id));
                 return;
             }
@@ -2229,6 +2266,11 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
         _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
         return;
     }
+    if (g_browser_resize_dragging) {
+        applyBrowserWidthFromMouse(xpos);
+        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+        return;
+    }
 
     // Handle divider dragging
     if (g_divider_dragging) {
@@ -2306,6 +2348,15 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
         } else if (g_markdown_preview_resize_hover) {
             _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
             g_markdown_preview_resize_hover = false;
+        }
+        const over_browser_resize = hitTestBrowserResizeHandle(xpos, ypos);
+        if (over_browser_resize) {
+            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+            g_browser_resize_hover = true;
+            return;
+        } else if (g_browser_resize_hover) {
+            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+            g_browser_resize_hover = false;
         }
     }
 
