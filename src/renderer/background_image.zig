@@ -239,4 +239,25 @@ pub fn drawFullscreen(viewport_width: f32, viewport_height: f32) void {
     gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
     gl.Enable.?(c.GL_BLEND);
     gl_init.g_draw_call_count += 1;
+
+    // Tint pass: blend the theme background color over the image at
+    // `g_bg_opacity`. Without this, default-bg cells (which emit no per-cell
+    // bg quad) would show the image at 100% regardless of opacity. With it,
+    // default cells end up as `(1-opacity)*image + opacity*theme_bg`, which
+    // is what users actually expect from "background-opacity = 0.85".
+    if (gl_init.g_bg_opacity < 1.0 and gl_init.overlay_shader != 0) {
+        const theme = AppWindow.g_theme.background;
+        gl.UseProgram.?(gl_init.overlay_shader);
+        gl_init.setProjectionForProgram(gl_init.overlay_shader, viewport_height);
+        gl.Uniform4f.?(
+            gl.GetUniformLocation.?(gl_init.overlay_shader, "overlayColor"),
+            theme[0],
+            theme[1],
+            theme[2],
+            gl_init.g_bg_opacity,
+        );
+        // Reuse the same fullscreen vertices (overlay shader ignores texcoords).
+        gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
+        gl_init.g_draw_call_count += 1;
+    }
 }

@@ -407,7 +407,12 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         gl.Uniform2f.?(gl.GetUniformLocation.?(gl_init.bg_shader, "cellSize"), font.cell_width, font.cell_height);
         gl.Uniform2f.?(gl.GetUniformLocation.?(gl_init.bg_shader, "gridOffset"), offset_x, offset_y);
         gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.bg_shader, "windowHeight"), window_height);
-        gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.bg_shader, "uBgOpacity"), gl_init.g_bg_opacity);
+        // Only thin out cell backgrounds when a wallpaper is actually loaded —
+        // otherwise lowering background-opacity would make selections / colored
+        // cells translucent over an opaque theme bg, which is just a darkening
+        // effect with no useful visual.
+        const bg_opacity: f32 = if (AppWindow.background_image.g_enabled) gl_init.g_bg_opacity else 1.0;
+        gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.bg_shader, "uBgOpacity"), bg_opacity);
         gl_init.setProjectionForProgram(gl_init.bg_shader, window_height);
 
         gl.BindVertexArray.?(gl_init.bg_vao);
