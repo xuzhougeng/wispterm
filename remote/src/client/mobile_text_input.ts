@@ -26,6 +26,7 @@ export function renderMobileTextInputMarkup(): string {
       autocapitalize="off"
       autocorrect="off"
       spellcheck="false"
+      tabindex="-1"
       rows="1"
     ></textarea>
   `;
@@ -39,7 +40,7 @@ export function bindMobileTextInput(): void {
 
   inputEl.addEventListener("beforeinput", (event) => {
     const inputEvent = event as InputEvent;
-    if (isComposing || inputEvent.isComposing) return;
+    if (!shouldHandleMobileInput() || isComposing || inputEvent.isComposing) return;
     if (inputEvent.inputType === "insertLineBreak") {
       event.preventDefault();
       dispatchText("\r");
@@ -54,7 +55,7 @@ export function bindMobileTextInput(): void {
   });
 
   inputEl.addEventListener("keydown", (event) => {
-    if (isComposing || event.isComposing) return;
+    if (!shouldHandleMobileInput() || isComposing || event.isComposing) return;
     if (event.key === "Enter") {
       event.preventDefault();
       dispatchText("\r");
@@ -68,12 +69,13 @@ export function bindMobileTextInput(): void {
   });
 
   inputEl.addEventListener("compositionstart", () => {
+    if (!shouldHandleMobileInput()) return;
     isComposing = true;
     clearPendingCommittedComposition();
   });
 
   inputEl.addEventListener("input", () => {
-    if (isComposing) return;
+    if (!shouldHandleMobileInput() || isComposing) return;
     if (!inputEl?.value) return;
     if (pendingCommittedComposition === inputEl.value) {
       clearPendingCommittedComposition();
@@ -87,6 +89,10 @@ export function bindMobileTextInput(): void {
 
   inputEl.addEventListener("compositionend", () => {
     isComposing = false;
+    if (!shouldHandleMobileInput()) {
+      clearPendingCommittedComposition();
+      return;
+    }
     if (!inputEl?.value) return;
     const committedText = inputEl.value;
     armPendingCommittedComposition(committedText);
@@ -105,6 +111,7 @@ export function focusMobileTextInput(): boolean {
 }
 
 function dispatchText(text: string): void {
+  if (!shouldHandleMobileInput()) return;
   const surfaceId = activeSurfaceIdForInput();
   if (!surfaceId || !text) return;
   sender(surfaceId, text);
@@ -129,4 +136,8 @@ function clearPendingCommittedComposition(): void {
     clearTimeout(pendingCommittedCompositionTimer);
     pendingCommittedCompositionTimer = null;
   }
+}
+
+function shouldHandleMobileInput(): boolean {
+  return isMobileRemoteShell();
 }

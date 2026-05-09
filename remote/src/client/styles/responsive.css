@@ -189,6 +189,10 @@
     grid-row: 2;
   }
 
+  .console-shell[data-kbd-visible="true"] .panels-stage[data-mobile-mode="single"] .remote-panel {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
   .console-shell[data-kbd-visible="true"] .panels-stage[data-mobile-mode="single"] .panel-header {
     display: none;
   }

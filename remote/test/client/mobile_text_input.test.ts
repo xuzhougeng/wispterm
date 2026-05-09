@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   bindMobileTextInput,
   focusMobileTextInput,
+  renderMobileTextInputMarkup,
   setMobileTextInputSender,
 } from "../../src/client/mobile_text_input";
 import { state } from "../../src/client/state";
@@ -74,6 +75,23 @@ test("focusMobileTextInput does not focus the hidden textarea on desktop", () =>
   assert.equal(focusMobileTextInput(), false);
   assert.equal(textarea.focusCalls, 0);
   assert.equal(fakeDocument.activeElement, null);
+});
+
+test("mobile text input is excluded from tab order", () => {
+  assert.match(renderMobileTextInputMarkup(), /tabindex="-1"/);
+});
+
+test("desktop hidden text input events do not dispatch terminal bytes", () => {
+  const { textarea, sent } = setup(false);
+
+  textarea.value = "abc";
+  textarea.dispatch("input");
+  textarea.dispatch("beforeinput", preventableEvent({ inputType: "insertLineBreak" }));
+  textarea.dispatch("beforeinput", preventableEvent({ inputType: "deleteContentBackward" }));
+  textarea.dispatch("keydown", preventableEvent({ key: "Enter" }));
+  textarea.dispatch("keydown", preventableEvent({ key: "Backspace" }));
+
+  assert.deepEqual(sent, []);
 });
 
 test("focusMobileTextInput focuses the hidden textarea on mobile", () => {

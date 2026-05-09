@@ -112,7 +112,10 @@ function dispatchVirtualKey(button: HTMLButtonElement, onHide: () => void): void
 
   if (button.dataset.vkKey) {
     const seq = keyToSequence(button.dataset.vkKey);
-    if (seq) sender(surfaceId, seq);
+    if (seq) {
+      sender(surfaceId, seq);
+      clearStickyMods();
+    }
   }
 }
 
