@@ -22,6 +22,7 @@ const win32_backend = @import("apprt/win32.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
+const selection_unit = @import("selection_unit.zig");
 const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
 
@@ -330,6 +331,12 @@ fn pasteSavedClipboardImage(surface: *Surface, allocator: std.mem.Allocator, ima
 pub threadlocal var g_selecting: bool = false; // True while mouse button is held
 pub threadlocal var g_click_x: f64 = 0; // X position of initial click (for threshold calculation)
 pub threadlocal var g_click_y: f64 = 0; // Y position of initial click
+threadlocal var g_left_click_count: u8 = 0;
+threadlocal var g_left_click_time_ms: i64 = 0;
+threadlocal var g_left_click_x: f64 = 0;
+threadlocal var g_left_click_y: f64 = 0;
+const MULTI_CLICK_INTERVAL_MS: i64 = 500;
+const MAX_SELECTION_COLS: usize = 4096;
 
 const UrlUnderline = struct {
     surface: ?*Surface = null,
@@ -1462,6 +1469,115 @@ fn viewportCellCodepoint(surface: *Surface, col: usize, row: usize) u21 {
     return @intCast(cell_data.cell.codepoint());
 }
 
+fn markSelectionChanged() void {
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
+fn nextLeftClickCount(xpos: f64, ypos: f64) u8 {
+    const now = std.time.milliTimestamp();
+    const max_distance: f64 = @floatCast(@max(font.cell_width, font.cell_height));
+    const dx = xpos - g_left_click_x;
+    const dy = ypos - g_left_click_y;
+    const distance = @sqrt(dx * dx + dy * dy);
+    const within_interval = g_left_click_count > 0 and now - g_left_click_time_ms <= MULTI_CLICK_INTERVAL_MS;
+    const within_distance = g_left_click_count > 0 and distance <= max_distance;
+
+    if (!within_interval or !within_distance) g_left_click_count = 0;
+
+    g_left_click_count += 1;
+    if (g_left_click_count > 4) g_left_click_count = 1;
+    g_left_click_time_ms = now;
+    g_left_click_x = xpos;
+    g_left_click_y = ypos;
+    return g_left_click_count;
+}
+
+fn readViewportRowLocked(surface: *Surface, row: usize, buf: *[MAX_SELECTION_COLS]u21) []const u21 {
+    const cols = @min(@as(usize, @intCast(surface.size.grid.cols)), buf.len);
+    if (row >= @as(usize, @intCast(surface.size.grid.rows))) return buf[0..0];
+    for (0..cols) |col| {
+        buf[col] = viewportCellCodepoint(surface, col, row);
+    }
+    return buf[0..cols];
+}
+
+fn viewportRowIsBlankLocked(surface: *Surface, row: usize, buf: *[MAX_SELECTION_COLS]u21) bool {
+    return selection_unit.rowIsBlank(readViewportRowLocked(surface, row, buf));
+}
+
+fn activateSelection(surface: *Surface, start_col: usize, start_row: usize, end_col: usize, end_row: usize) void {
+    surface.selection.start_col = start_col;
+    surface.selection.start_row = start_row;
+    surface.selection.end_col = end_col;
+    surface.selection.end_row = end_row;
+    surface.selection.active = true;
+    markSelectionChanged();
+}
+
+fn clearSelectionAtCell(surface: *Surface, cell_pos: CellPos) void {
+    const abs_row = viewportOffsetForSurface(surface) + cell_pos.row;
+    surface.selection.start_col = cell_pos.col;
+    surface.selection.start_row = abs_row;
+    surface.selection.end_col = cell_pos.col;
+    surface.selection.end_row = abs_row;
+    surface.selection.active = false;
+    markSelectionChanged();
+}
+
+fn selectWordAtCell(surface: *Surface, cell_pos: CellPos) bool {
+    var row_buf: [MAX_SELECTION_COLS]u21 = undefined;
+
+    surface.render_state.mutex.lock();
+    defer surface.render_state.mutex.unlock();
+
+    const row = readViewportRowLocked(surface, cell_pos.row, &row_buf);
+    if (cell_pos.col >= row.len) return false;
+    const range = selection_unit.wordRange(row, cell_pos.col) orelse return false;
+    const abs_row = viewportOffsetForSurfaceLocked(surface) + cell_pos.row;
+    activateSelection(surface, range.start, abs_row, range.end, abs_row);
+    return true;
+}
+
+fn selectSentenceAtCell(surface: *Surface, cell_pos: CellPos) bool {
+    var row_buf: [MAX_SELECTION_COLS]u21 = undefined;
+
+    surface.render_state.mutex.lock();
+    defer surface.render_state.mutex.unlock();
+
+    const row = readViewportRowLocked(surface, cell_pos.row, &row_buf);
+    if (cell_pos.col >= row.len) return false;
+    const range = selection_unit.sentenceRange(row, cell_pos.col) orelse return false;
+    const abs_row = viewportOffsetForSurfaceLocked(surface) + cell_pos.row;
+    activateSelection(surface, range.start, abs_row, range.end, abs_row);
+    return true;
+}
+
+fn selectParagraphAtCell(surface: *Surface, cell_pos: CellPos) bool {
+    var row_buf: [MAX_SELECTION_COLS]u21 = undefined;
+
+    surface.render_state.mutex.lock();
+    defer surface.render_state.mutex.unlock();
+
+    const rows = @as(usize, @intCast(surface.size.grid.rows));
+    if (cell_pos.row >= rows or viewportRowIsBlankLocked(surface, cell_pos.row, &row_buf)) return false;
+
+    var start_row = cell_pos.row;
+    while (start_row > 0 and !viewportRowIsBlankLocked(surface, start_row - 1, &row_buf)) : (start_row -= 1) {}
+
+    var end_row = cell_pos.row;
+    while (end_row + 1 < rows and !viewportRowIsBlankLocked(surface, end_row + 1, &row_buf)) : (end_row += 1) {}
+
+    const start_cols = readViewportRowLocked(surface, start_row, &row_buf);
+    const start_col = selection_unit.firstNonBlankCol(start_cols) orelse 0;
+    const end_cols = readViewportRowLocked(surface, end_row, &row_buf);
+    const end_col = selection_unit.lastNonBlankCol(end_cols) orelse 0;
+    const vp_off = viewportOffsetForSurfaceLocked(surface);
+
+    activateSelection(surface, start_col, vp_off + start_row, end_col, vp_off + end_row);
+    return true;
+}
+
 fn isPreviewTokenDelimiter(cp: u21) bool {
     if (cp == 0 or cp <= 0x20) return true;
     return switch (cp) {
@@ -2164,15 +2280,33 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
 
             clearUrlUnderline();
             const abs_row = viewportOffsetForSurface(clicked_surface) + cell_pos.row;
-            // Start selection on the clicked surface
-            clicked_surface.selection.start_col = cell_pos.col;
-            clicked_surface.selection.start_row = abs_row;
-            clicked_surface.selection.end_col = cell_pos.col;
-            clicked_surface.selection.end_row = abs_row;
-            clicked_surface.selection.active = false;
-            g_selecting = true;
-            g_click_x = xpos;
-            g_click_y = ypos;
+            switch (nextLeftClickCount(xpos, ypos)) {
+                1 => {
+                    // Start selection on the clicked surface.
+                    clicked_surface.selection.start_col = cell_pos.col;
+                    clicked_surface.selection.start_row = abs_row;
+                    clicked_surface.selection.end_col = cell_pos.col;
+                    clicked_surface.selection.end_row = abs_row;
+                    clicked_surface.selection.active = false;
+                    g_selecting = true;
+                    g_click_x = xpos;
+                    g_click_y = ypos;
+                    markSelectionChanged();
+                },
+                2 => {
+                    g_selecting = false;
+                    if (!selectWordAtCell(clicked_surface, cell_pos)) clearSelectionAtCell(clicked_surface, cell_pos);
+                },
+                3 => {
+                    g_selecting = false;
+                    if (!selectSentenceAtCell(clicked_surface, cell_pos)) clearSelectionAtCell(clicked_surface, cell_pos);
+                },
+                4 => {
+                    g_selecting = false;
+                    if (!selectParagraphAtCell(clicked_surface, cell_pos)) clearSelectionAtCell(clicked_surface, cell_pos);
+                },
+                else => unreachable,
+            }
         } else {
             // Mouse up
             overlays.g_scrollbar_dragging = false;

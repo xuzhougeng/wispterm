@@ -1757,7 +1757,9 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
                 pushMouseButtonEvent(w, .left, .double_click, x, y);
                 return 0;
             }
-            return DefWindowProcW(hwnd, msg, wParam, lParam);
+            pushMouseButtonEvent(w, .left, .press, x, y);
+            _ = SetCapture(hwnd);
+            return 0;
         },
         WM_LBUTTONUP => {
             const x: i32 = @as(i16, @bitCast(@as(u16, @intCast(lParam & 0xFFFF))));
