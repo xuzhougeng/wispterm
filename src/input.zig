@@ -666,23 +666,33 @@ pub fn updateFocusFromMouse(mouse_x: i32, mouse_y: i32) void {
 
 /// Process all queued Win32 input events. Called once per frame from the main loop.
 pub fn processEvents(win: *win32_backend.Window) void {
-    processKeyEvents(win);
-    processCharEvents(win);
+    processKeyAndCharEvents(win);
     processMouseButtonEvents(win);
     processMouseMoveEvents(win);
     processMouseWheelEvents(win);
     processSizeChange(win);
 }
 
-fn processKeyEvents(win: *win32_backend.Window) void {
-    while (win.key_events.pop()) |ev| {
-        handleKey(ev);
-    }
-}
-
-fn processCharEvents(win: *win32_backend.Window) void {
-    while (win.char_events.pop()) |ev| {
-        handleChar(ev);
+// Interleave key and char events so they fire in the order Windows
+// generated them. WM_KEYDOWN is dispatched before its matching WM_CHAR
+// (TranslateMessage posts the char), so popping one event from each
+// queue per iteration replays the original temporal order. Draining
+// keys fully before chars meant a focus-shifting key (Enter, Tab,
+// Down) typed right after a character changed focus before the queued
+// char was inserted, dropping the last password byte into the Port
+// field and silently breaking SSH connect via the form.
+fn processKeyAndCharEvents(win: *win32_backend.Window) void {
+    while (true) {
+        var did_anything = false;
+        if (win.key_events.pop()) |ev| {
+            handleKey(ev);
+            did_anything = true;
+        }
+        if (win.char_events.pop()) |ev| {
+            handleChar(ev);
+            did_anything = true;
+        }
+        if (!did_anything) break;
     }
 }
 
