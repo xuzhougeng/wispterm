@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   CANVAS_PAN_TAP_THRESHOLD,
   clampCanvasPan,
+  defaultCanvasPan,
   isCanvasDrag,
   panCanvasBy,
 } from "../../src/client/mobile_canvas";
@@ -23,6 +24,13 @@ test("clampCanvasPan disables panning when the canvas fits", () => {
   assert.deepEqual(
     clampCanvasPan({ x: -20, y: -20 }, { width: 900, height: 900 }, { width: 390, height: 500 }),
     { x: 0, y: 0 },
+  );
+});
+
+test("defaultCanvasPan starts at the bottom-left of an oversized terminal canvas", () => {
+  assert.deepEqual(
+    defaultCanvasPan({ width: 390, height: 500 }, { width: 900, height: 900 }),
+    { x: 0, y: -400 },
   );
 });
 

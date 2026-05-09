@@ -53,7 +53,7 @@ export type SurfaceView = {
   resizeObserver: ResizeObserver | null;
   fitQueued: boolean;
   canvasPan: CanvasPoint;
-  wasSelected: boolean;
+  needsDefaultCanvasPan: boolean;
   hasLiveOutput: boolean;
   snapshotApplied: boolean;
   opened: boolean;

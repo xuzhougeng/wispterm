@@ -19,6 +19,10 @@ export function clampCanvasPan(pan: CanvasPoint, viewport: CanvasSize, canvas: C
   };
 }
 
+export function defaultCanvasPan(viewport: CanvasSize, canvas: CanvasSize): CanvasPoint {
+  return clampCanvasPan({ x: 0, y: viewport.height - canvas.height }, viewport, canvas);
+}
+
 export function panCanvasBy(
   startPan: CanvasPoint,
   delta: CanvasPoint,

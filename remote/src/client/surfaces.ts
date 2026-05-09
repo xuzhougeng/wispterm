@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { LayoutSurface, SurfaceView } from "./types";
 import {
   clampCanvasPan,
+  defaultCanvasPan,
   isCanvasDrag,
   panCanvasBy,
   type CanvasPoint,
@@ -96,7 +97,7 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
     resizeObserver: null,
     fitQueued: false,
     canvasPan: { x: 0, y: 0 },
-    wasSelected: false,
+    needsDefaultCanvasPan: false,
     hasLiveOutput: false,
     snapshotApplied: false,
     opened: false,
@@ -151,8 +152,7 @@ export function renderRemotePanels(): void {
     const gridChanged = view.remoteCols !== nextRemoteCols || view.remoteRows !== nextRemoteRows;
     view.remoteCols = nextRemoteCols;
     view.remoteRows = nextRemoteRows;
-    if (gridChanged || (selected && !view.wasSelected)) resetCanvasPan(view);
-    view.wasSelected = selected;
+    if (gridChanged) view.needsDefaultCanvasPan = true;
     const grid = view.remoteCols && view.remoteRows ? `${view.remoteCols}×${view.remoteRows}` : null;
     const stateLabel = surface.focused ? "focused" : shortSurfaceId(surface.id);
     view.meta.textContent = grid ? `${grid} · ${stateLabel}` : stateLabel;
@@ -400,10 +400,19 @@ function resetCanvasPan(view: SurfaceView): void {
 
 function updateCanvasPan(view: SurfaceView): void {
   if (!isMobileRemoteShell()) {
+    view.needsDefaultCanvasPan = false;
     resetCanvasPan(view);
     return;
   }
-  view.canvasPan = clampCanvasPan(view.canvasPan, canvasViewportSize(view), canvasContentSize(view));
+  const viewport = canvasViewportSize(view);
+  const canvas = canvasContentSize(view);
+  if (viewport.width <= 0 || viewport.height <= 0 || canvas.width <= 0 || canvas.height <= 0) return;
+  if (view.needsDefaultCanvasPan) {
+    view.canvasPan = defaultCanvasPan(viewport, canvas);
+    view.needsDefaultCanvasPan = false;
+  } else {
+    view.canvasPan = clampCanvasPan(view.canvasPan, viewport, canvas);
+  }
   applyCanvasPan(view);
 }
 
