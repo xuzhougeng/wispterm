@@ -24,6 +24,7 @@ __pycache__/
 .codex
 .playwright-mcp/
 .superpowers/
+.worktrees/
 
 # Node/Cloudflare remote console artifacts
 node_modules/
