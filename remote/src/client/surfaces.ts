@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 
 import type { LayoutSurface, SurfaceView } from "./types";
 import { isMobileRemoteShell, shouldUseViewportFit } from "./mobile_layout";
+import { focusMobileTextInput } from "./mobile_text_input";
 import { cursorMoveSequence, emptyState, shortSurfaceId, validPositiveInteger } from "./utils";
 import { activeSurfaceIdForInput, currentTab, resetSurfaceViews, state } from "./state";
 import { getTerminalPalette, subscribeToTheme } from "./theme";
@@ -55,7 +56,7 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
   panel.addEventListener("pointerdown", selectThis);
   panel.addEventListener("click", () => {
     selectThis();
-    ensureSurfaceView(surfaceId).term.focus();
+    if (!focusMobileTextInput()) ensureSurfaceView(surfaceId).term.focus();
   });
 
   const fit = new FitAddon();
@@ -170,7 +171,7 @@ export function focusAndFitSelectedSurface(): void {
   if (!id) return;
   const view = state.surfaceViews.get(id);
   if (!view) return;
-  view.term.focus();
+  if (!focusMobileTextInput()) view.term.focus();
   scheduleFit(view);
 }
 

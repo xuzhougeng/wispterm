@@ -1,4 +1,5 @@
 import { applyStickyMods, ctrlLetter, keyToSequence } from "./input_sequences";
+import { focusMobileTextInput } from "./mobile_text_input";
 import { activeSurfaceIdForInput, state } from "./state";
 
 const kbdMods = { ctrl: false, alt: false };
@@ -86,7 +87,7 @@ function dispatchVirtualKey(button: HTMLButtonElement, onHide: () => void): void
   if (!surfaceId) return;
 
   if (button.dataset.vkKey === "type") {
-    state.surfaceViews.get(surfaceId)?.term.focus();
+    if (!focusMobileTextInput()) state.surfaceViews.get(surfaceId)?.term.focus();
     return;
   }
 

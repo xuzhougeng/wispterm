@@ -3,6 +3,7 @@ import "./styles.css";
 
 import { setSurfaceInputHandler } from "./surfaces";
 import { kickReconnectIfIdle, loadMe, sendInputBytes, setTransportHooks } from "./transport";
+import { setMobileTextInputSender } from "./mobile_text_input";
 import { setVirtualKeyboardSender } from "./vkbd";
 import {
   renderConsole,
@@ -20,6 +21,7 @@ if (!appRoot) {
 const app: HTMLElement = appRoot;
 
 setSurfaceInputHandler(sendInputBytes);
+setMobileTextInputSender(sendInputBytes);
 setVirtualKeyboardSender(sendInputBytes);
 setTransportHooks({
   onWorkspaceChanged: renderRemoteWorkspace,

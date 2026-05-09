@@ -12,6 +12,7 @@ import {
   renderRemotePanels,
   updateSurfaceCursors,
 } from "../surfaces";
+import { bindMobileTextInput, renderMobileTextInputMarkup } from "../mobile_text_input";
 import { bindVirtualKeyboard, renderVirtualKeyboardMarkup } from "../vkbd";
 
 let viewportRefitBound = false;
@@ -87,6 +88,7 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
         </section>
       </section>
       ${renderVirtualKeyboardMarkup()}
+      ${renderMobileTextInputMarkup()}
     </section>
   `;
 
@@ -136,6 +138,7 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
   bindMobileChrome();
   bindViewportRefit();
   bindVirtualKeyboard(() => setKbdVisible(false));
+  bindMobileTextInput();
   bindThemeToggleButtons();
   updateInputUi();
   if (savedSessionKey) queueMicrotask(() => connect(savedSessionKey));

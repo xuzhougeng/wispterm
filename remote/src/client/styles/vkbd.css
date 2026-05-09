@@ -90,3 +90,22 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+.mobile-text-input {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  min-height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0.01;
+  color: transparent;
+  background: transparent;
+  caret-color: transparent;
+  resize: none;
+  pointer-events: none;
+  z-index: -1;
+}
