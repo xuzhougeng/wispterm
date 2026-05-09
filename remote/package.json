@@ -11,6 +11,7 @@
     "dev:server": "tsx watch src/server/index.ts",
     "start:server": "node dist-server/index.js",
     "preview": "vite preview --host 127.0.0.1",
+    "test:client": "node --import tsx --test test/client/*.test.ts",
     "deploy": "npm run build && wrangler deploy",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
