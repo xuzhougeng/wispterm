@@ -62,10 +62,35 @@ export function bindVirtualKeyboard(onHide: () => void): void {
   const keepFocus = (event: Event) => event.preventDefault();
 
   vkbd.querySelectorAll<HTMLButtonElement>(".vkbd-key").forEach((button) => {
+    let ignoreNextClick = false;
+    let ignoreClickTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const armClickSuppression = (): void => {
+      ignoreNextClick = true;
+      if (ignoreClickTimer !== null) clearTimeout(ignoreClickTimer);
+      ignoreClickTimer = setTimeout(() => {
+        ignoreNextClick = false;
+        ignoreClickTimer = null;
+      }, 700);
+    };
+
     button.addEventListener("mousedown", keepFocus);
     button.addEventListener("touchstart", keepFocus, { passive: false });
+    button.addEventListener("touchend", (event) => {
+      event.preventDefault();
+      armClickSuppression();
+      dispatchVirtualKey(button, onHide);
+    }, { passive: false });
     button.addEventListener("click", (event) => {
       event.preventDefault();
+      if (ignoreNextClick) {
+        ignoreNextClick = false;
+        if (ignoreClickTimer !== null) {
+          clearTimeout(ignoreClickTimer);
+          ignoreClickTimer = null;
+        }
+        return;
+      }
       dispatchVirtualKey(button, onHide);
     });
   });

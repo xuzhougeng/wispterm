@@ -22,6 +22,12 @@ class FakeButton {
     const event = { preventDefault() {} };
     for (const listener of this.listeners.get("click") ?? []) listener(event);
   }
+
+  touchTap(): void {
+    const event = { preventDefault() {} };
+    for (const listener of this.listeners.get("touchstart") ?? []) listener(event);
+    for (const listener of this.listeners.get("touchend") ?? []) listener(event);
+  }
 }
 
 class FakeKeyboard {
@@ -63,4 +69,51 @@ test("sticky modifiers clear after special keys", () => {
   assert.deepEqual(sent, ["\r", "c"]);
   assert.equal(keyboard.dataset.modCtrl, "false");
   assert.equal(ctrl.dataset.active, "false");
+});
+
+test("touch activation dispatches virtual keys without a synthesized click", () => {
+  const enter = new FakeButton({ vkKey: "enter" });
+  const keyboard = new FakeKeyboard([enter]);
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelector(selector: string): FakeKeyboard | null {
+        return selector === "#vkbd" ? keyboard : null;
+      },
+    },
+  });
+
+  const sent: string[] = [];
+  state.selectedSurfaceId = "surface-a";
+  setVirtualKeyboardSender((_surfaceId, data) => sent.push(data));
+  bindVirtualKeyboard(() => {});
+
+  enter.touchTap();
+
+  assert.deepEqual(sent, ["\r"]);
+});
+
+test("touch activation suppresses the following synthesized click", () => {
+  const enter = new FakeButton({ vkKey: "enter" });
+  const keyboard = new FakeKeyboard([enter]);
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelector(selector: string): FakeKeyboard | null {
+        return selector === "#vkbd" ? keyboard : null;
+      },
+    },
+  });
+
+  const sent: string[] = [];
+  state.selectedSurfaceId = "surface-a";
+  setVirtualKeyboardSender((_surfaceId, data) => sent.push(data));
+  bindVirtualKeyboard(() => {});
+
+  enter.touchTap();
+  enter.click();
+
+  assert.deepEqual(sent, ["\r"]);
 });
