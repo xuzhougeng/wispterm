@@ -109,3 +109,30 @@
   pointer-events: none;
   z-index: -1;
 }
+
+@media (max-width: 860px), (pointer: coarse) and (max-width: 1024px) {
+  .vkbd {
+    padding: 8px max(8px, var(--safe-right)) max(8px, var(--safe-bottom)) max(8px, var(--safe-left));
+  }
+
+  .vkbd-rows {
+    gap: 5px;
+  }
+
+  .vkbd-row {
+    gap: 4px;
+  }
+
+  .vkbd-key {
+    height: 38px;
+    min-width: 0;
+    border-radius: 9px;
+    padding: 0 4px;
+    font-size: 13px;
+  }
+
+  .vkbd-key.vkbd-wide {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+}
