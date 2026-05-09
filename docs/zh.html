@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phantty — 由 Ghostty 驱动的 Windows 终端</title>
+  <meta name="description" content="Phantty 是一款用 Zig 编写、由 libghostty-vt 驱动的现代 Windows 终端模拟器。支持分屏、标签、主题、背景图、内嵌浏览器等。">
+  <meta property="og:title" content="Phantty — 由 Ghostty 驱动的 Windows 终端">
+  <meta property="og:description" content="一款用 Zig 编写、由 libghostty-vt 驱动的现代 Windows 终端模拟器。">
+  <meta property="og:image" content="assets/phantty.png">
+  <meta property="og:type" content="website">
+  <meta name="theme-color" content="#1b1e28">
+  <link rel="icon" href="assets/favicon.ico">
+  <link rel="apple-touch-icon" href="assets/phantty.png">
+  <link rel="alternate" hreflang="en" href="./">
+  <link rel="alternate" hreflang="zh-CN" href="./zh.html">
+  <link rel="stylesheet" href="style.css?v=4">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container nav">
+      <a class="brand" href="#top">
+        <img src="assets/phantty.png" alt="" width="28" height="28">
+        <span>Phantty</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#features">特性</a>
+        <a href="#install">安装</a>
+        <a href="#config">配置</a>
+        <a href="#shortcuts">快捷键</a>
+        <span class="lang-switch" role="group" aria-label="语言">
+          <a class="lang" href="./">EN</a>
+          <a class="lang active" href="./zh.html" aria-current="page">中文</a>
+        </span>
+        <a class="github" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-inner">
+        <img class="hero-logo" src="assets/phantty.png" alt="Phantty Logo" width="128" height="128">
+        <h1>Phantty</h1>
+        <p class="tagline">一款用 Zig 编写、由 <a href="https://github.com/ghostty-org/ghostty" target="_blank" rel="noopener">libghostty-vt</a> 驱动的<strong>现代 Windows 终端</strong>。</p>
+        <div class="cta-row">
+          <a class="cta primary" href="https://github.com/xuzhougeng/phantty/releases/latest" target="_blank" rel="noopener">下载 Windows 版</a>
+          <a class="cta secondary" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">在 GitHub 查看</a>
+        </div>
+        <p class="platform-note">仅支持 Windows。macOS 与 Linux 用户请使用 <a href="https://ghostty.org/" target="_blank" rel="noopener">Ghostty</a>。</p>
+      </div>
+
+      <div class="container preview-wrap">
+        <div class="terminal-preview" aria-hidden="true">
+          <div class="tp-titlebar">
+            <span class="tp-dot red"></span>
+            <span class="tp-dot yellow"></span>
+            <span class="tp-dot green"></span>
+            <span class="tp-title">phantty — pwsh</span>
+          </div>
+          <div class="tp-tabs">
+            <div class="tp-tab active">pwsh</div>
+            <div class="tp-tab">wsl</div>
+            <div class="tp-tab">ssh: workstation</div>
+          </div>
+          <div class="tp-body">
+            <pre><span class="prompt">PS C:\Users\you&gt;</span> <span class="cmd">phantty --theme Poimandres</span>
+<span class="muted">  从 %APPDATA%\phantty\config 加载配置</span>
+<span class="muted">  字体：Cascadia Code（DirectWrite + FreeType）</span>
+<span class="muted">  主题：内置 453 款</span>
+<span class="ok">  就绪。</span>
+
+<span class="prompt">PS C:\Users\you&gt;</span> <span class="cmd">git status</span>
+<span class="branch">当前分支：</span><span class="ok">main</span>
+工作区干净，无可提交内容
+
+<span class="prompt">PS C:\Users\you&gt;</span> <span class="cursor">▌</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="section">
+      <div class="container">
+        <h2>为日常 Windows 工作而生</h2>
+        <p class="section-lead">Phantty 在 Ghostty 的终端核心之上叠加了实用功能：分屏、标签、内嵌浏览器、文件浏览器、主题、背景图，以及可选的远程访问客户端。</p>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>Ghostty 模拟内核</h3>
+            <p>使用 <code>libghostty-vt</code> 解析 VT 序列与维护终端状态，行为与 Ghostty 高度一致。</p>
+          </div>
+          <div class="feature">
+            <h3>原生字体栈</h3>
+            <p>DirectWrite 字体发现 + 逐字符回退，FreeType 渲染，沿用 Ghostty 的字体度量。</p>
+          </div>
+          <div class="feature">
+            <h3>分屏与标签</h3>
+            <p>横竖分屏、标签栏、焦点跟随鼠标、均分尺寸、空间方向焦点切换。</p>
+          </div>
+          <div class="feature">
+            <h3>内置 453 款主题</h3>
+            <p>兼容 Ghostty 主题文件，默认 Poimandres，可在命令面板中切换。</p>
+          </div>
+          <div class="feature">
+            <h3>背景图片</h3>
+            <p>支持 PNG/JPG/BMP/GIF/TGA 壁纸，带逐单元格透明度混合，四种缩放模式。</p>
+          </div>
+          <div class="feature">
+            <h3>文件浏览器与预览</h3>
+            <p>浏览本地、WSL 与 SSH 文件，无需离开终端即可预览 Markdown 与文本文件。</p>
+          </div>
+          <div class="feature">
+            <h3>内嵌浏览器</h3>
+            <p>WebView2 侧边面板打开 <code>http(s)</code> 链接。SSH 会话会自动建立 loopback 端口隧道。</p>
+          </div>
+          <div class="feature">
+            <h3>Kitty Graphics 协议</h3>
+            <p>通过 <code>imgcat.py</code> / <code>pdfcat.py</code> 在远程 Shell 中显示内嵌图片与 PDF。</p>
+          </div>
+          <div class="feature">
+            <h3>自定义 GLSL 着色器</h3>
+            <p>兼容 Ghostty 的后处理着色器，效果同时作用于终端内容与背景图。</p>
+          </div>
+          <div class="feature">
+            <h3>精灵图渲染</h3>
+            <p>任意尺寸下都清晰的方框绘制、块元素、盲文图案与 Powerline 符号。</p>
+          </div>
+          <div class="feature">
+            <h3>可选的远程访问</h3>
+            <p>通过 Cloudflare 中继分享会话密钥，默认关闭——Shell 始终保留在本地。</p>
+          </div>
+          <div class="feature">
+            <h3>配置热重载</h3>
+            <p>按 <kbd>Ctrl</kbd>+<kbd>,</kbd> 编辑配置；保存即生效，无需重启。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="install" class="section alt">
+      <div class="container">
+        <h2>安装</h2>
+        <p class="section-lead">每个版本提供三种 Windows 包，按需选择。</p>
+        <div class="install-grid">
+          <div class="install-card">
+            <span class="badge">推荐</span>
+            <h3>便携版</h3>
+            <p>单可执行文件——下载 zip，解压后直接运行 <code>phantty.exe</code>。</p>
+            <a class="cta primary small" href="https://github.com/xuzhougeng/phantty/releases/latest" target="_blank" rel="noopener">最新版本 →</a>
+          </div>
+          <div class="install-card">
+            <span class="badge">含浏览器</span>
+            <h3>便携版 + WebView2</h3>
+            <p>额外捆绑 <code>WebView2Loader.dll</code>，用于内嵌浏览器侧边面板。</p>
+            <a class="cta primary small" href="https://github.com/xuzhougeng/phantty/releases/latest" target="_blank" rel="noopener">最新版本 →</a>
+          </div>
+          <div class="install-card">
+            <span class="badge">源码</span>
+            <h3>从源码构建</h3>
+            <p>克隆仓库后用 Zig 构建，无需管理员权限。</p>
+<pre class="code-block"><code>git clone https://github.com/xuzhougeng/phantty
+cd phantty
+zig build -Doptimize=ReleaseFast</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="config" class="section">
+      <div class="container">
+        <h2>一个文件搞定配置</h2>
+        <p class="section-lead">Phantty 使用 Ghostty 兼容的 <code>key = value</code> 配置文件，路径为 <code>%APPDATA%\phantty\config</code>。按 <kbd>Ctrl</kbd>+<kbd>,</kbd> 打开编辑；命令行参数会覆盖文件内的值。</p>
+<pre class="code-block"><code>font-family            = Cascadia Code
+font-size              = 14
+cursor-style           = bar
+cursor-style-blink     = true
+theme                  = Poimandres
+
+window-width           = 120
+window-height          = 32
+scrollback-limit       = 10000000
+
+custom-shader          = path\to\shader.glsl
+background-image       = C:\Users\me\Pictures\wallpaper.png
+background-opacity     = 0.85
+background-image-mode  = fill
+
+# 可选的远程访问（默认关闭）
+remote-enabled         = false
+remote-server-url      = https://remote.example.com
+remote-device-name     = Workstation</code></pre>
+        <p class="section-foot">运行 <code>phantty.exe --help</code> 查看完整参数列表，或 <code>phantty.exe --show-config-path</code> 打印解析后的配置路径。</p>
+      </div>
+    </section>
+
+    <section id="shortcuts" class="section alt">
+      <div class="container">
+        <h2>键盘快捷键</h2>
+        <p class="section-lead">默认快捷键定义在 <code>src/input.zig</code>。模态浮层（命令面板、会话启动器、设置等）会优先拦截按键。</p>
+        <div class="shortcut-grid">
+          <div><span class="label">打开命令面板</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></span></div>
+          <div><span class="label">新建会话（启动器）</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
+          <div><span class="label">新建窗口</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>N</kbd></span></div>
+          <div><span class="label">切换标签侧栏</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>B</kbd></span></div>
+          <div><span class="label">切换文件浏览器</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>E</kbd></span></div>
+          <div><span class="label">向右分屏</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>O</kbd></span></div>
+          <div><span class="label">均分分屏尺寸</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd></span></div>
+          <div><span class="label">关闭面板 / 标签 / 窗口</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>W</kbd></span></div>
+          <div><span class="label">最大化 / 还原窗口</span><span class="keys"><kbd>Alt</kbd><kbd>Enter</kbd></span></div>
+          <div><span class="label">按方位移动焦点</span><span class="keys"><kbd>Alt</kbd><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></span></div>
+          <div><span class="label">上一个面板</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>[</kbd></span></div>
+          <div><span class="label">下一个面板</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>]</kbd></span></div>
+          <div><span class="label">上一个标签</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Tab</kbd></span></div>
+          <div><span class="label">下一个标签</span><span class="keys"><kbd>Ctrl</kbd><kbd>Tab</kbd></span></div>
+          <div><span class="label">跳转到第 1–9 个标签</span><span class="keys"><kbd>Alt</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
+          <div><span class="label">放大字号</span><span class="keys"><kbd>Ctrl</kbd><kbd>+</kbd></span></div>
+          <div><span class="label">缩小字号</span><span class="keys"><kbd>Ctrl</kbd><kbd>−</kbd></span></div>
+          <div><span class="label">复制选中内容</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd></span></div>
+          <div><span class="label">粘贴文本</span><span class="keys"><kbd>Ctrl</kbd><kbd>V</kbd></span></div>
+          <div><span class="label">粘贴剪贴板图片</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>V</kbd></span></div>
+          <div><span class="label">打开配置文件</span><span class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container credits">
+        <h2>致谢</h2>
+        <ul>
+          <li>原始项目：<a href="https://github.com/arya-s/phantty" target="_blank" rel="noopener">arya-s/phantty</a> — 基于 Zig 与 libghostty-vt 的 Windows 终端核心。</li>
+          <li>终端模拟：<a href="https://github.com/ghostty-org/ghostty" target="_blank" rel="noopener">ghostty-org/ghostty</a>，通过 <code>libghostty-vt</code>。</li>
+          <li>图像解码：<a href="https://github.com/nothings/stb" target="_blank" rel="noopener">stb_image</a>（随 Ghostty 依赖一并引入）。</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <img src="assets/phantty.png" alt="" width="20" height="20">
+        <span>Phantty · MIT 协议</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/xuzhougeng/phantty/releases" target="_blank" rel="noopener">发布版本</a>
+        <a href="https://github.com/xuzhougeng/phantty/issues" target="_blank" rel="noopener">问题反馈</a>
+        <a href="https://ghostty.org/" target="_blank" rel="noopener">Ghostty</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
