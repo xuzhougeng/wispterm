@@ -408,46 +408,33 @@ pub fn load(allocator: std.mem.Allocator) !Config {
     return self;
 }
 
-/// Return the default config file path: %APPDATA%\phantty\config
-pub fn configFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    // Use APPDATA on Windows (native build target)
-    // When cross-compiling from Linux, this won't resolve at build time,
-    // so we also support XDG_CONFIG_HOME / HOME fallbacks for testing.
+/// Resolve `<config-dir>/<basename>` using APPDATA on Windows (native build
+/// target). When cross-compiling from Linux, APPDATA won't resolve at build
+/// time, so we also support XDG_CONFIG_HOME / HOME fallbacks for testing.
+fn pathInConfigDir(allocator: std.mem.Allocator, basename: []const u8) ![]const u8 {
     if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
         defer allocator.free(appdata);
-        return std.fs.path.join(allocator, &.{ appdata, "phantty", "config" });
+        return std.fs.path.join(allocator, &.{ appdata, "phantty", basename });
     } else |_| {}
-
-    // XDG fallback (works on Linux/WSL for testing)
     if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
         defer allocator.free(xdg);
-        return std.fs.path.join(allocator, &.{ xdg, "phantty", "config" });
+        return std.fs.path.join(allocator, &.{ xdg, "phantty", basename });
     } else |_| {}
-
-    // HOME fallback
     if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
         defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".config", "phantty", "config" });
+        return std.fs.path.join(allocator, &.{ home, ".config", "phantty", basename });
     } else |_| {}
-
     return error.NoConfigPath;
 }
 
-/// Return the default session-state file path: <config-dir>/session.json
+/// Default config file path: `<config-dir>/config`. See `pathInConfigDir`.
+pub fn configFilePath(allocator: std.mem.Allocator) ![]const u8 {
+    return pathInConfigDir(allocator, "config");
+}
+
+/// Default session-state file path: `<config-dir>/session.json`. See `pathInConfigDir`.
 pub fn sessionFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        return std.fs.path.join(allocator, &.{ appdata, "phantty", "session.json" });
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        return std.fs.path.join(allocator, &.{ xdg, "phantty", "session.json" });
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".config", "phantty", "session.json" });
-    } else |_| {}
-    return error.NoConfigPath;
+    return pathInConfigDir(allocator, "session.json");
 }
 
 /// Print the path that would be used for the config file.
