@@ -431,15 +431,16 @@ test "session_persist: shellSingleQuoteEscape handles common paths" {
     }
 }
 
-/// Serialize and atomically write the session to `path`. Pattern: write to
-/// `path.tmp`, then rename over `path`. On any I/O failure, log a warning
+/// Serialize and atomically write the session to `path`. Uses
+/// std.fs.Dir.atomicFile so the write is replace-safe on both POSIX and
+/// Windows (NTFS) — std's AtomicFile passes replace_if_exists=TRUE on the
+/// Windows rename, unlike the bare std.fs.Dir.rename. Partial writes are
+/// auto-cleaned on error via AtomicFile.deinit (the temp uses an opaque
+/// random hex name, not `<path>.tmp`). On any I/O failure, log a warning
 /// and return the error; callers in the close path swallow the error.
 pub fn dumpSession(allocator: std.mem.Allocator, path: []const u8, session: Session) !void {
     const json = try dumpSessionToString(allocator, session);
     defer allocator.free(json);
-
-    const tmp_path = try std.mem.concat(allocator, u8, &.{ path, ".tmp" });
-    defer allocator.free(tmp_path);
 
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch |err| {
@@ -448,13 +449,14 @@ pub fn dumpSession(allocator: std.mem.Allocator, path: []const u8, session: Sess
         };
     }
 
-    {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(json);
-    }
-
-    try std.fs.cwd().rename(tmp_path, path);
+    // AtomicFileOptions.write_buffer is required in Zig 0.15.2; we pass an
+    // empty slice and bypass the buffered writer by calling writeAll on the
+    // underlying File directly (the JSON payload is already in memory).
+    var write_buffer: [0]u8 = .{};
+    var atomic = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buffer });
+    defer atomic.deinit();
+    try atomic.file_writer.file.writeAll(json);
+    try atomic.finish();
 }
 
 /// Read and parse the session file. Returns null on any failure (missing,
