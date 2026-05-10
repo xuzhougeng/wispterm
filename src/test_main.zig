@@ -11,4 +11,5 @@ comptime {
     _ = @import("markdown_preview.zig");
     _ = @import("remote_client.zig");
     _ = @import("selection_unit.zig");
+    _ = @import("session_persist.zig");
 }
