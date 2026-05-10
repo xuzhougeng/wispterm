@@ -288,6 +288,7 @@ remote-device-name = Workstation
 | `window-height` | `0` (auto) | Initial height in cells (min: 4, 0 = auto 80×24) |
 | `window-width` | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80×24) |
 | `scrollback-limit` | `10000000` | Scrollback buffer limit in bytes |
+| `restore-tabs-on-startup` | `false` | Persist tab/split layout to `%APPDATA%\phantty\session.json` on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--cwd`) take precedence and skip restore. |
 | `config-file` | *(none)* | Include another config file (prefix with `?` to make optional) |
 | `remote-enabled` | `false` | Start the shared outbound RemoteClient for this Phantty instance |
 | `remote-server-url` | *(none)* | Cloudflare relay URL, for example `https://remote.example.com` |
