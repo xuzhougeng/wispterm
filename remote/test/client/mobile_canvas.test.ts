@@ -11,6 +11,7 @@ import {
   panCanvasByWheel,
   resizeCanvasPan,
   CANVAS_WHEEL_EVENT_OPTIONS,
+  canvasPanRenderState,
   canvasPanToScrollOffset,
   panYFromVerticalScrollbarThumb,
   shouldConsumeCanvasWheel,
@@ -129,6 +130,27 @@ test("canvasPanToScrollOffset maps canvas pan to fixed host scroll offsets", () 
   assert.deepEqual(canvasPanToScrollOffset({ x: -120, y: -170 }), { x: 120, y: 170 });
   assert.deepEqual(canvasPanToScrollOffset({ x: 0, y: 0 }), { x: 0, y: 0 });
   assert.deepEqual(canvasPanToScrollOffset({ x: 40, y: 25 }), { x: 0, y: 0 });
+});
+
+test("canvasPanRenderState preserves mobile touch panning with transform", () => {
+  assert.deepEqual(canvasPanRenderState({ x: -120, y: -170 }, "transform"), {
+    transform: "translate3d(-120px, -170px, 0)",
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
+  assert.deepEqual(canvasPanRenderState({ x: 0, y: 0 }, "transform"), {
+    transform: "",
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
+});
+
+test("canvasPanRenderState keeps desktop panning inside host scroll offsets", () => {
+  assert.deepEqual(canvasPanRenderState({ x: -120, y: -170 }, "scroll"), {
+    transform: "",
+    scrollLeft: 120,
+    scrollTop: 170,
+  });
 });
 
 test("isCanvasDrag distinguishes tap jitter from canvas drag", () => {

@@ -43,6 +43,14 @@ export type CanvasScrollbarMetrics = {
   thumbHeight: number;
 };
 
+export type CanvasPanRenderMode = "transform" | "scroll";
+
+export type CanvasPanRenderState = {
+  transform: string;
+  scrollLeft: number;
+  scrollTop: number;
+};
+
 export type MeaningfulTerminalCanvasHeightInput = {
   measuredHeight: number;
   rows: number;
@@ -118,6 +126,26 @@ export function canvasPanToScrollOffset(pan: CanvasPoint): CanvasPoint {
   return {
     x: Math.max(0, -pan.x),
     y: Math.max(0, -pan.y),
+  };
+}
+
+export function canvasPanRenderState(
+  pan: CanvasPoint,
+  mode: CanvasPanRenderMode,
+): CanvasPanRenderState {
+  if (mode === "transform") {
+    return {
+      transform: pan.x === 0 && pan.y === 0 ? "" : `translate3d(${pan.x}px, ${pan.y}px, 0)`,
+      scrollLeft: 0,
+      scrollTop: 0,
+    };
+  }
+
+  const offset = canvasPanToScrollOffset(pan);
+  return {
+    transform: "",
+    scrollLeft: offset.x,
+    scrollTop: offset.y,
   };
 }
 
