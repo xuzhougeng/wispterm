@@ -615,9 +615,9 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             log.warn("invalid focus-follows-mouse: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "restore-tabs-on-startup")) {
-        if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1")) {
+        if (std.mem.eql(u8, value, "true")) {
             self.@"restore-tabs-on-startup" = true;
-        } else if (std.mem.eql(u8, value, "false") or std.mem.eql(u8, value, "0")) {
+        } else if (std.mem.eql(u8, value, "false")) {
             self.@"restore-tabs-on-startup" = false;
         } else {
             log.warn("invalid restore-tabs-on-startup: {s}", .{value});
@@ -1277,14 +1277,6 @@ test "config: restore-tabs-on-startup parses true/false" {
 
     // Set back to false.
     cfg.applyKeyValue(allocator, "restore-tabs-on-startup", "false", ".");
-    try std.testing.expectEqual(false, cfg.@"restore-tabs-on-startup");
-
-    // "1" alias.
-    cfg.applyKeyValue(allocator, "restore-tabs-on-startup", "1", ".");
-    try std.testing.expectEqual(true, cfg.@"restore-tabs-on-startup");
-
-    // "0" alias.
-    cfg.applyKeyValue(allocator, "restore-tabs-on-startup", "0", ".");
     try std.testing.expectEqual(false, cfg.@"restore-tabs-on-startup");
 
     // Invalid value leaves the previous state untouched (still false).
