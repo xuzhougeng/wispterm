@@ -1016,3 +1016,49 @@ fn findLeafHandle(
         },
     };
 }
+
+/// Walk all live tabs and build a complete Session POD. Caller owns the
+/// returned ArenaAllocator; deinit it after the Session is no longer needed.
+pub fn collectSessionSnapshot(arena: *std.heap.ArenaAllocator) !session_persist.Session {
+    const alloc = arena.allocator();
+    if (g_tab_count == 0) return error.NoTabs;
+
+    const tabs = try alloc.alloc(session_persist.TabSnap, g_tab_count);
+    var i: usize = 0;
+    var written: usize = 0;
+    while (i < g_tab_count) : (i += 1) {
+        if (g_tabs[i]) |t| {
+            tabs[written] = snapshotTab(alloc, t) catch continue;
+            written += 1;
+        }
+    }
+    if (written == 0) return error.NoTabs;
+
+    return .{
+        .version = session_persist.SCHEMA_VERSION,
+        .active_tab = @intCast(@min(g_active_tab, written - 1)),
+        .tabs = tabs[0..written],
+    };
+}
+
+/// One-shot: collect the current session and write it atomically. Errors are
+/// logged but not propagated — close path must not be blocked.
+pub fn dumpSessionToFile(allocator: std.mem.Allocator) void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const session = collectSessionSnapshot(&arena) catch |err| {
+        std.debug.print("dumpSessionToFile: collect failed: {}\n", .{err});
+        return;
+    };
+
+    const path = Config.sessionFilePath(allocator) catch |err| {
+        std.debug.print("dumpSessionToFile: sessionFilePath failed: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(path);
+
+    session_persist.dumpSession(allocator, path, session) catch |err| {
+        std.debug.print("dumpSessionToFile: dumpSession failed: {}\n", .{err});
+    };
+}
