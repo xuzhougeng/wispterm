@@ -914,7 +914,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         return;
     }
     // Ctrl+Shift+T and Ctrl+Shift+N are handled above (before rename guard)
-    // Ctrl+Shift+Arrows = goto split (spatial navigation)
+    // Alt+Arrows = goto split (spatial navigation)
     if (input_shortcuts.spatialFocusDirection(ev)) |dir| {
         AppWindow.gotoSplit(.{ .spatial = dir });
         return;

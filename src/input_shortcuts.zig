@@ -4,7 +4,7 @@ const SplitTree = @import("split_tree.zig");
 const win32_backend = @import("apprt/win32.zig");
 
 pub fn spatialFocusDirection(ev: win32_backend.KeyEvent) ?SplitTree.Spatial.Direction {
-    if (!ev.ctrl or !ev.shift or ev.alt) return null;
+    if (!ev.alt or ev.ctrl or ev.shift) return null;
 
     return switch (ev.vk) {
         win32_backend.VK_LEFT => .left,
@@ -42,26 +42,26 @@ const terminal_arrow_sequences = [_]TerminalArrowSequence{
     .{ .vk = win32_backend.VK_LEFT, .plain = "\x1b[D", .modified = .{ "\x1b[1;2D", "\x1b[1;3D", "\x1b[1;4D", "\x1b[1;5D", "\x1b[1;6D", "\x1b[1;7D", "\x1b[1;8D" } },
 };
 
-test "spatial focus uses Ctrl+Shift+Arrow and not Alt+Arrow" {
+test "spatial focus uses Alt+Arrow and not Ctrl+Shift+Arrow" {
     try std.testing.expectEqual(
         @as(?SplitTree.Spatial.Direction, .up),
-        spatialFocusDirection(.{ .vk = win32_backend.VK_UP, .ctrl = true, .shift = true, .alt = false }),
+        spatialFocusDirection(.{ .vk = win32_backend.VK_UP, .ctrl = false, .shift = false, .alt = true }),
     );
     try std.testing.expectEqual(
         @as(?SplitTree.Spatial.Direction, .down),
-        spatialFocusDirection(.{ .vk = win32_backend.VK_DOWN, .ctrl = true, .shift = true, .alt = false }),
+        spatialFocusDirection(.{ .vk = win32_backend.VK_DOWN, .ctrl = false, .shift = false, .alt = true }),
     );
     try std.testing.expectEqual(
         @as(?SplitTree.Spatial.Direction, .left),
-        spatialFocusDirection(.{ .vk = win32_backend.VK_LEFT, .ctrl = true, .shift = true, .alt = false }),
+        spatialFocusDirection(.{ .vk = win32_backend.VK_LEFT, .ctrl = false, .shift = false, .alt = true }),
     );
     try std.testing.expectEqual(
         @as(?SplitTree.Spatial.Direction, .right),
-        spatialFocusDirection(.{ .vk = win32_backend.VK_RIGHT, .ctrl = true, .shift = true, .alt = false }),
+        spatialFocusDirection(.{ .vk = win32_backend.VK_RIGHT, .ctrl = false, .shift = false, .alt = true }),
     );
     try std.testing.expectEqual(
         @as(?SplitTree.Spatial.Direction, null),
-        spatialFocusDirection(.{ .vk = win32_backend.VK_UP, .ctrl = false, .shift = false, .alt = true }),
+        spatialFocusDirection(.{ .vk = win32_backend.VK_UP, .ctrl = true, .shift = true, .alt = false }),
     );
 }
 
