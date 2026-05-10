@@ -909,8 +909,9 @@ fn surfaceFromSnapImpl(
             // Build SSH command equivalent to splitSshCommand, with optional
             // trailing `cd <cwd>` argument when cwd is present. Mirrors the
             // password_auth=false (key-auth) branch since persisted SSH snaps
-            // do not carry the password_auth flag — empty password + the
-            // existing prompt flow handles auth on first use.
+            // do not carry the password_auth flag. SSH password is never
+            // persisted (security invariant I1); ssh.exe -tt handles any
+            // password prompt interactively in the cmd.exe window.
             var stack_buf: [1024]u8 = undefined;
             const auth_flags = "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ";
 
@@ -937,7 +938,10 @@ fn surfaceFromSnapImpl(
             defer gpa.free(command_w);
             const surface = try Surface.init(gpa, cols, rows, command_w, g_scrollback_limit, cursor_style, cursor_blink, null);
             surface.attachRemoteClient(g_remote_client);
-            // Empty password + password_auth=false triggers the existing prompt flow.
+            // SSH password is never persisted (security invariant I1). On restore,
+            // ssh.exe -tt prompts interactively in cmd.exe if key auth fails;
+            // the in-app password-autofill flow (which requires password_auth=true)
+            // does not engage here.
             surface.setSshConnection(s.user, s.host, port_slice, "", false);
             return surface;
         },
@@ -971,7 +975,6 @@ pub fn restoreTab(
         std.debug.print("restoreTab: fromSnapshot failed: {}\n", .{err});
         return false;
     };
-    errdefer tree.deinit();
 
     const t = allocator.create(TabState) catch {
         tree.deinit();
