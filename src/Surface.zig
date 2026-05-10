@@ -700,6 +700,11 @@ pub fn getInitialCwd(self: *const Surface) ?[]const u8 {
     return null;
 }
 
+/// Coarse classification for session persistence. Distinct from `LaunchKind`
+/// (which separates `windows` from `wsl` for path translation) because v1
+/// session restore only cares about local-vs-remote — WSL surfaces are
+/// classified as `local_shell` and are not faithfully restored. v2 may
+/// reuse `LaunchKind` directly when WSL restoration is supported.
 pub const SurfaceKind = enum { local_shell, ssh };
 
 /// Classify the surface for session persistence. Currently distinguishes
