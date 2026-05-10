@@ -395,3 +395,36 @@ test "session_persist: indexOfLeafBySurfaceAddress finds leaf in pre-order" {
     try std.testing.expectEqual(@as(?u32, 0), indexOfLeaf(&root, &l1));
     try std.testing.expectEqual(@as(?u32, 1), indexOfLeaf(&root, &l2));
 }
+
+/// Escape a path so that wrapping it in single quotes (`'...'`) produces a
+/// single shell argument. Inside single quotes, only the closing quote needs
+/// special handling: `'` becomes `'\''` (close, escape, reopen).
+/// The caller is responsible for adding the surrounding single quotes.
+pub fn shellSingleQuoteEscape(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out = std.ArrayList(u8){};
+    defer out.deinit(allocator);
+    for (input) |c| {
+        if (c == '\'') {
+            try out.appendSlice(allocator, "'\\''");
+        } else {
+            try out.append(allocator, c);
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+test "session_persist: shellSingleQuoteEscape handles common paths" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { in: []const u8, want: []const u8 }{
+        .{ .in = "/var/log",         .want = "/var/log" },
+        .{ .in = "/home/x'z",        .want = "/home/x'\\''z" },
+        .{ .in = "/tmp/with space",  .want = "/tmp/with space" },
+        .{ .in = "/p/with\"$\\back", .want = "/p/with\"$\\back" },
+        .{ .in = "",                 .want = "" },
+    };
+    for (cases) |c| {
+        const got = try shellSingleQuoteEscape(allocator, c.in);
+        defer allocator.free(got);
+        try std.testing.expectEqualStrings(c.want, got);
+    }
+}
