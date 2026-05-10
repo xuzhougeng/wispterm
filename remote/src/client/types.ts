@@ -44,6 +44,8 @@ export type SurfaceView = {
   meta: HTMLElement;
   mount: HTMLDivElement;
   host: HTMLDivElement;
+  scrollbar: HTMLDivElement;
+  scrollbarThumb: HTMLDivElement;
   term: Terminal;
   fit: FitAddon;
   decoder: TextDecoder;

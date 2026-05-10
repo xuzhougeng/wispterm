@@ -27,6 +27,27 @@ export type CanvasPanDragInput = {
   button: number;
 };
 
+export type CanvasWheelInput = {
+  mobile: boolean;
+  useCanvasPan: boolean;
+};
+
+export type CanvasScrollbarOptions = CanvasPanOptions & {
+  minThumbHeight?: number;
+};
+
+export type CanvasScrollbarMetrics = {
+  visible: boolean;
+  trackHeight: number;
+  thumbTop: number;
+  thumbHeight: number;
+};
+
+export const CANVAS_WHEEL_EVENT_OPTIONS: AddEventListenerOptions = {
+  capture: true,
+  passive: false,
+};
+
 const BOTTOM_ANCHOR_EPSILON = 2;
 
 export function clampCanvasPan(
@@ -93,6 +114,63 @@ export function isCanvasDrag(delta: CanvasPoint): boolean {
 export function shouldStartCanvasPanDrag(input: CanvasPanDragInput): boolean {
   if (!input.isPrimary) return false;
   return input.mobile ? input.button === 0 : input.button === 1;
+}
+
+export function shouldConsumeCanvasWheel(input: CanvasWheelInput): boolean {
+  return !input.mobile && input.useCanvasPan;
+}
+
+export function verticalScrollbarMetrics(
+  pan: CanvasPoint,
+  viewport: CanvasSize,
+  canvas: CanvasSize,
+  trackHeight: number,
+  options: CanvasScrollbarOptions = {},
+): CanvasScrollbarMetrics {
+  const normalizedTrackHeight = Math.max(0, Math.round(trackHeight));
+  const bottomGutter = Math.max(0, options.bottomGutter ?? 0);
+  const contentHeight = canvas.height + bottomGutter;
+  const minPanY = bottomPanLimit(viewport, canvas, options);
+  const scrollRange = Math.abs(minPanY);
+  const minThumbHeight = Math.max(8, options.minThumbHeight ?? 32);
+
+  if (normalizedTrackHeight <= 0 || contentHeight <= viewport.height || scrollRange <= 0) {
+    return {
+      visible: false,
+      trackHeight: normalizedTrackHeight,
+      thumbTop: 0,
+      thumbHeight: normalizedTrackHeight,
+    };
+  }
+
+  const thumbHeight = Math.min(
+    normalizedTrackHeight,
+    Math.max(minThumbHeight, Math.round((viewport.height / contentHeight) * normalizedTrackHeight)),
+  );
+  const thumbTravel = Math.max(0, normalizedTrackHeight - thumbHeight);
+  const progress = clamp(-clampCanvasPan(pan, viewport, canvas, options).y / scrollRange, 0, 1);
+
+  return {
+    visible: true,
+    trackHeight: normalizedTrackHeight,
+    thumbTop: Math.round(progress * thumbTravel),
+    thumbHeight,
+  };
+}
+
+export function panYFromVerticalScrollbarThumb(
+  thumbTop: number,
+  trackHeight: number,
+  viewport: CanvasSize,
+  canvas: CanvasSize,
+  options: CanvasScrollbarOptions = {},
+): number {
+  const metrics = verticalScrollbarMetrics({ x: 0, y: 0 }, viewport, canvas, trackHeight, options);
+  if (!metrics.visible) return 0;
+
+  const thumbTravel = Math.max(1, metrics.trackHeight - metrics.thumbHeight);
+  const progress = clamp(thumbTop / thumbTravel, 0, 1);
+  return Math.round(bottomPanLimit(viewport, canvas, options) * progress);
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -3,12 +3,16 @@ import { FitAddon } from "@xterm/addon-fit";
 
 import type { LayoutSurface, SurfaceView } from "./types";
 import {
+  CANVAS_WHEEL_EVENT_OPTIONS,
   defaultCanvasPan,
   isCanvasDrag,
+  panYFromVerticalScrollbarThumb,
   panCanvasBy,
   panCanvasByWheel,
   resizeCanvasPan,
+  shouldConsumeCanvasWheel,
   shouldStartCanvasPanDrag,
+  verticalScrollbarMetrics,
   type CanvasPoint,
   type CanvasSize,
 } from "./mobile_canvas";
@@ -20,6 +24,8 @@ import { getTerminalPalette, subscribeToTheme } from "./theme";
 
 const PENDING_OUTPUT_LIMIT = 128 * 1024;
 const MOBILE_CANVAS_BOTTOM_GUTTER = 12;
+const DESKTOP_SCROLLBAR_MIN_THUMB_HEIGHT = 32;
+const DESKTOP_SCROLLBAR_VERTICAL_INSET = 10;
 
 type InputHandler = (surfaceId: string, data: string) => void;
 let inputHandler: InputHandler = () => {
@@ -56,7 +62,15 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
   header.appendChild(meta);
   const mount = document.createElement("div");
   mount.className = "terminal-mount";
+  const scrollbar = document.createElement("div");
+  scrollbar.className = "canvas-scrollbar";
+  scrollbar.dataset.visible = "false";
+  scrollbar.setAttribute("aria-hidden", "true");
+  const scrollbarThumb = document.createElement("div");
+  scrollbarThumb.className = "canvas-scrollbar-thumb";
+  scrollbar.appendChild(scrollbarThumb);
   mount.appendChild(host);
+  mount.appendChild(scrollbar);
   panel.appendChild(header);
   panel.appendChild(mount);
 
@@ -91,6 +105,8 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
     meta,
     mount,
     host,
+    scrollbar,
+    scrollbarThumb,
     term,
     fit,
     decoder: new TextDecoder(),
@@ -327,12 +343,16 @@ function capPendingOutput(value: string): string {
 
 function bindCanvasPan(view: SurfaceView): () => void {
   const mount = view.mount;
+  const scrollbar = view.scrollbar;
+  const scrollbarThumb = view.scrollbarThumb;
   let activePointerId: number | null = null;
   let startClient: CanvasPoint = { x: 0, y: 0 };
   let startPan: CanvasPoint = { x: 0, y: 0 };
   let dragged = false;
   let suppressClick = false;
   let suppressClickButton: number | null = null;
+  let scrollbarPointerId: number | null = null;
+  let scrollbarGrabOffset = 0;
 
   const onPointerDown = (event: PointerEvent): void => {
     if (
@@ -367,14 +387,20 @@ function bindCanvasPan(view: SurfaceView): () => void {
     event.preventDefault();
     view.canvasPan = panCanvasBy(startPan, delta, canvasViewportSize(view), canvasContentSize(view));
     applyCanvasPan(view);
+    updateCanvasScrollbar(view);
   };
 
   const onWheel = (event: WheelEvent): void => {
     const hasRemoteGridDimensions = view.remoteCols !== null && view.remoteRows !== null;
-    if (isMobileRemoteShell() || !shouldUseCanvasPan(hasRemoteGridDimensions)) return;
+    const mobile = isMobileRemoteShell();
+    const useCanvasPan = shouldUseCanvasPan(hasRemoteGridDimensions);
+    if (!shouldConsumeCanvasWheel({ mobile, useCanvasPan })) return;
+
     updateCanvasPan(view);
     const viewport = canvasViewportSize(view);
     const canvas = canvasContentSize(view);
+    event.preventDefault();
+    event.stopPropagation();
     if (canvas.width <= viewport.width && canvas.height <= viewport.height) return;
 
     const nextPan = panCanvasByWheel(
@@ -385,9 +411,9 @@ function bindCanvasPan(view: SurfaceView): () => void {
     );
     if (nextPan.x === view.canvasPan.x && nextPan.y === view.canvasPan.y) return;
 
-    event.preventDefault();
     view.canvasPan = nextPan;
     applyCanvasPan(view);
+    updateCanvasScrollbar(view, viewport, canvas);
   };
 
   const finishPointer = (event: PointerEvent): void => {
@@ -421,13 +447,67 @@ function bindCanvasPan(view: SurfaceView): () => void {
     event.stopPropagation();
   };
 
+  const applyScrollbarPointer = (event: PointerEvent): void => {
+    const viewport = canvasViewportSize(view);
+    const canvas = canvasContentSize(view);
+    const trackRect = scrollbar.getBoundingClientRect();
+    const nextThumbTop = event.clientY - trackRect.top - scrollbarGrabOffset;
+    view.canvasPan = {
+      x: view.canvasPan.x,
+      y: panYFromVerticalScrollbarThumb(nextThumbTop, trackRect.height, viewport, canvas),
+    };
+    applyCanvasPan(view);
+    updateCanvasScrollbar(view, viewport, canvas);
+  };
+
+  const onScrollbarPointerDown = (event: PointerEvent): void => {
+    if (isMobileRemoteShell() || scrollbar.dataset.visible !== "true" || !event.isPrimary) return;
+    event.preventDefault();
+    event.stopPropagation();
+    scrollbarPointerId = event.pointerId;
+    const thumbRect = scrollbarThumb.getBoundingClientRect();
+    scrollbarGrabOffset =
+      event.target === scrollbarThumb
+        ? event.clientY - thumbRect.top
+        : thumbRect.height / 2;
+    applyScrollbarPointer(event);
+    try {
+      scrollbar.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail if the browser cancels during layout changes.
+    }
+  };
+
+  const onScrollbarPointerMove = (event: PointerEvent): void => {
+    if (scrollbarPointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    applyScrollbarPointer(event);
+  };
+
+  const finishScrollbarPointer = (event: PointerEvent): void => {
+    if (scrollbarPointerId !== event.pointerId) return;
+    scrollbarPointerId = null;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      scrollbar.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be gone after pointercancel.
+    }
+  };
+
   mount.addEventListener("pointerdown", onPointerDown);
   mount.addEventListener("pointermove", onPointerMove);
   mount.addEventListener("pointerup", finishPointer);
   mount.addEventListener("pointercancel", finishPointer);
   mount.addEventListener("click", onClick, true);
   mount.addEventListener("auxclick", onAuxClick, true);
-  mount.addEventListener("wheel", onWheel, { passive: false });
+  mount.addEventListener("wheel", onWheel, CANVAS_WHEEL_EVENT_OPTIONS);
+  scrollbar.addEventListener("pointerdown", onScrollbarPointerDown);
+  scrollbar.addEventListener("pointermove", onScrollbarPointerMove);
+  scrollbar.addEventListener("pointerup", finishScrollbarPointer);
+  scrollbar.addEventListener("pointercancel", finishScrollbarPointer);
 
   return () => {
     mount.removeEventListener("pointerdown", onPointerDown);
@@ -436,7 +516,11 @@ function bindCanvasPan(view: SurfaceView): () => void {
     mount.removeEventListener("pointercancel", finishPointer);
     mount.removeEventListener("click", onClick, true);
     mount.removeEventListener("auxclick", onAuxClick, true);
-    mount.removeEventListener("wheel", onWheel);
+    mount.removeEventListener("wheel", onWheel, CANVAS_WHEEL_EVENT_OPTIONS);
+    scrollbar.removeEventListener("pointerdown", onScrollbarPointerDown);
+    scrollbar.removeEventListener("pointermove", onScrollbarPointerMove);
+    scrollbar.removeEventListener("pointerup", finishScrollbarPointer);
+    scrollbar.removeEventListener("pointercancel", finishScrollbarPointer);
   };
 }
 
@@ -444,6 +528,7 @@ function resetCanvasPan(view: SurfaceView): void {
   view.canvasPan = { x: 0, y: 0 };
   view.lastCanvasViewport = null;
   applyCanvasPan(view);
+  hideCanvasScrollbar(view);
 }
 
 function updateCanvasPan(view: SurfaceView): void {
@@ -471,11 +556,49 @@ function updateCanvasPan(view: SurfaceView): void {
   }
   view.lastCanvasViewport = viewport;
   applyCanvasPan(view);
+  updateCanvasScrollbar(view, viewport, canvas, bottomGutter);
 }
 
 function applyCanvasPan(view: SurfaceView): void {
   const pan = view.canvasPan;
   view.host.style.transform = pan.x === 0 && pan.y === 0 ? "" : `translate3d(${pan.x}px, ${pan.y}px, 0)`;
+}
+
+function updateCanvasScrollbar(
+  view: SurfaceView,
+  viewport: CanvasSize = canvasViewportSize(view),
+  canvas: CanvasSize = canvasContentSize(view),
+  bottomGutter: number = isMobileRemoteShell() ? MOBILE_CANVAS_BOTTOM_GUTTER : 0,
+): void {
+  const hasRemoteGridDimensions = view.remoteCols !== null && view.remoteRows !== null;
+  if (isMobileRemoteShell() || !shouldUseCanvasPan(hasRemoteGridDimensions)) {
+    hideCanvasScrollbar(view);
+    return;
+  }
+
+  const trackHeight =
+    view.scrollbar.clientHeight ||
+    Math.max(0, view.mount.clientHeight - DESKTOP_SCROLLBAR_VERTICAL_INSET * 2);
+  const metrics = verticalScrollbarMetrics(view.canvasPan, viewport, canvas, trackHeight, {
+    bottomGutter,
+    minThumbHeight: DESKTOP_SCROLLBAR_MIN_THUMB_HEIGHT,
+  });
+  if (!metrics.visible) {
+    hideCanvasScrollbar(view);
+    return;
+  }
+
+  view.scrollbar.dataset.visible = "true";
+  view.scrollbar.setAttribute("aria-hidden", "false");
+  view.scrollbarThumb.style.height = `${metrics.thumbHeight}px`;
+  view.scrollbarThumb.style.transform = `translateY(${metrics.thumbTop}px)`;
+}
+
+function hideCanvasScrollbar(view: SurfaceView): void {
+  view.scrollbar.dataset.visible = "false";
+  view.scrollbar.setAttribute("aria-hidden", "true");
+  view.scrollbarThumb.style.height = "";
+  view.scrollbarThumb.style.transform = "";
 }
 
 function canvasViewportSize(view: SurfaceView): CanvasSize {

@@ -183,6 +183,10 @@
     touch-action: none;
   }
 
+  .canvas-scrollbar[data-visible="true"] {
+    display: none;
+  }
+
   .console-shell[data-kbd-visible="true"] {
     grid-template-rows: minmax(0, 1fr) auto;
   }

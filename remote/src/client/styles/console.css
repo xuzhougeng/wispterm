@@ -361,3 +361,38 @@
 .terminal-host .xterm-viewport::-webkit-scrollbar {
   display: none;
 }
+
+.canvas-scrollbar {
+  position: absolute;
+  top: 10px;
+  right: 6px;
+  bottom: 10px;
+  z-index: 4;
+  display: none;
+  width: 12px;
+  border-radius: 999px;
+  background: var(--surface-overlay-soft);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.canvas-scrollbar[data-visible="true"] {
+  display: block;
+}
+
+.canvas-scrollbar-thumb {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 0;
+  min-height: 32px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+  cursor: grab;
+}
+
+.canvas-scrollbar-thumb:active {
+  cursor: grabbing;
+}

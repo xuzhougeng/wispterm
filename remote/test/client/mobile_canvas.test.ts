@@ -9,7 +9,11 @@ import {
   panCanvasBy,
   panCanvasByWheel,
   resizeCanvasPan,
+  CANVAS_WHEEL_EVENT_OPTIONS,
+  panYFromVerticalScrollbarThumb,
+  shouldConsumeCanvasWheel,
   shouldStartCanvasPanDrag,
+  verticalScrollbarMetrics,
 } from "../../src/client/mobile_canvas";
 
 test("clampCanvasPan keeps an oversized canvas inside the viewport", () => {
@@ -107,4 +111,43 @@ test("shouldStartCanvasPanDrag uses touch primary drag on mobile and middle drag
   assert.equal(shouldStartCanvasPanDrag({ mobile: false, isPrimary: true, button: 0 }), false);
   assert.equal(shouldStartCanvasPanDrag({ mobile: false, isPrimary: true, button: 1 }), true);
   assert.equal(shouldStartCanvasPanDrag({ mobile: false, isPrimary: false, button: 1 }), false);
+});
+
+test("desktop remote-grid wheel events are consumed before xterm history handling", () => {
+  assert.equal(shouldConsumeCanvasWheel({ mobile: false, useCanvasPan: true }), true);
+  assert.equal(shouldConsumeCanvasWheel({ mobile: false, useCanvasPan: false }), false);
+  assert.equal(shouldConsumeCanvasWheel({ mobile: true, useCanvasPan: true }), false);
+  assert.equal(CANVAS_WHEEL_EVENT_OPTIONS.capture, true);
+  assert.equal(CANVAS_WHEEL_EVENT_OPTIONS.passive, false);
+});
+
+test("verticalScrollbarMetrics hides the scrollbar when the canvas fits", () => {
+  assert.equal(
+    verticalScrollbarMetrics(
+      { x: 0, y: 0 },
+      { width: 500, height: 500 },
+      { width: 500, height: 480 },
+      400,
+    ).visible,
+    false,
+  );
+});
+
+test("vertical scrollbar maps thumb bottom to canvas bottom", () => {
+  const viewport = { width: 390, height: 500 };
+  const canvas = { width: 900, height: 900 };
+  const metrics = verticalScrollbarMetrics(
+    { x: 0, y: -412 },
+    viewport,
+    canvas,
+    400,
+    { bottomGutter: 12 },
+  );
+
+  assert.equal(metrics.visible, true);
+  assert.equal(metrics.thumbTop + metrics.thumbHeight, 400);
+  assert.equal(
+    panYFromVerticalScrollbarThumb(metrics.thumbTop, 400, viewport, canvas, { bottomGutter: 12 }),
+    -412,
+  );
 });
