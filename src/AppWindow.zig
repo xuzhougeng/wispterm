@@ -149,6 +149,11 @@ pub threadlocal var g_app: ?*App = null;
 threadlocal var g_initial_cwd_buf: [260]u16 = undefined;
 threadlocal var g_initial_cwd_len: usize = 0;
 
+// Tracks whether session restore has been attempted this process. We only
+// try to restore tabs from session.json once — for the first window. New
+// windows spawned via Ctrl+Shift+N still get a fresh default tab.
+var g_session_restore_attempted: std.atomic.Value(bool) = .init(false);
+
 // Stored config values for deferred initialization
 threadlocal var g_requested_font: []const u8 = "";
 threadlocal var g_requested_weight: directwrite.DWRITE_FONT_WEIGHT = .NORMAL;
@@ -1500,9 +1505,30 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
         else
             null;
         g_initial_cwd_len = 0; // Clear after use
-        if (!spawnTabWithCwd(allocator, initial_cwd)) {
-            std.debug.print("Failed to spawn initial tab\n", .{});
-            return error.SpawnFailed;
+
+        // Try to restore the previous session, but only:
+        //   - once per process (first window only),
+        //   - if config.restore-tabs-on-startup is true,
+        //   - if no CWD override was provided (CLI/spawn).
+        // TODO: also detect --command CLI override once a structured CLI
+        // arg parser exists (today CLI args are merged into Config keys
+        // and there is no positional/--command flag).
+        const restore_once = !g_session_restore_attempted.swap(true, .seq_cst);
+        const restore_enabled = if (g_app) |app| app.restore_tabs_on_startup else false;
+        const should_try_restore = restore_once and restore_enabled and initial_cwd == null;
+        const restored = should_try_restore and tab.restoreSessionFromFile(
+            allocator,
+            term_cols,
+            term_rows,
+            g_cursor_style,
+            g_cursor_blink,
+        );
+
+        if (!restored) {
+            if (!spawnTabWithCwd(allocator, initial_cwd)) {
+                std.debug.print("Failed to spawn initial tab\n", .{});
+                return error.SpawnFailed;
+            }
         }
     }
 

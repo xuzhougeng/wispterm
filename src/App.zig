@@ -67,6 +67,9 @@ remote_server_fingerprint: ?[]const u8,
 remote_device_name: ?[]const u8,
 remote_client: ?*remote.Client,
 
+// Session persistence
+restore_tabs_on_startup: bool,
+
 // Window management
 windows: std.ArrayListUnmanaged(*AppWindow),
 mutex: std.Thread.Mutex,
@@ -151,6 +154,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .remote_server_fingerprint = remote_server_fingerprint,
         .remote_device_name = remote_device_name,
         .remote_client = remote_client_ptr,
+        .restore_tabs_on_startup = cfg.@"restore-tabs-on-startup",
         .windows = .empty,
         .mutex = .{},
         .window_threads = .empty,
@@ -275,6 +279,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.replaceOptStr(&self.remote_server_fingerprint, cfg.@"remote-server-fingerprint");
     self.replaceOptStr(&self.remote_device_name, cfg.@"remote-device-name");
     self.replaceOptStr(&self.title, cfg.title);
+    self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
 }
 
 // ============================================================================
