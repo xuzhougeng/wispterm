@@ -71,6 +71,48 @@ pub fn loadSessionFromString(
     });
 }
 
+pub const RATIO_MIN: f64 = 0.05;
+pub const RATIO_MAX: f64 = 0.95;
+
+/// Clamp ratios into a usable range and clamp out-of-range indices to safe
+/// defaults. Apply once after JSON parsing, before handing the Session to
+/// the rebuild path. Idempotent.
+pub fn normalize(session: *Session) void {
+    if (session.tabs.len == 0) return;
+    if (session.active_tab >= session.tabs.len) {
+        session.active_tab = 0;
+    }
+    for (session.tabs) |*tab| {
+        const leaf_count = countLeaves(&tab.tree);
+        if (leaf_count == 0) continue;
+        if (tab.focused_leaf >= leaf_count) tab.focused_leaf = 0;
+        if (tab.zoomed_leaf) |zl| {
+            if (zl >= leaf_count) tab.zoomed_leaf = null;
+        }
+        clampRatios(&tab.tree);
+    }
+}
+
+fn clampRatios(node: *NodeSnap) void {
+    switch (node.*) {
+        .leaf => {},
+        .split => |*sp| {
+            if (sp.ratio < RATIO_MIN) sp.ratio = RATIO_MIN;
+            if (sp.ratio > RATIO_MAX) sp.ratio = RATIO_MAX;
+            if (std.math.isNan(sp.ratio)) sp.ratio = 0.5;
+            clampRatios(sp.left);
+            clampRatios(sp.right);
+        },
+    }
+}
+
+pub fn countLeaves(node: *const NodeSnap) u32 {
+    return switch (node.*) {
+        .leaf => 1,
+        .split => |sp| countLeaves(sp.left) + countLeaves(sp.right),
+    };
+}
+
 test "session_persist: empty Session compiles and has expected defaults" {
     const empty: Session = .{ .tabs = &.{} };
     try std.testing.expectEqual(@as(u32, 1), empty.version);
@@ -232,4 +274,59 @@ test "session_persist: I1 — serialized SSH leaf contains no 'password' substri
         return error.PasswordSerialized;
     }
     if (std.mem.indexOf(u8, json, "secret") != null) return error.SecretSerialized;
+}
+
+test "session_persist: normalize() clamps ratios and indices" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "active_tab": 999,
+        \\  "tabs": [
+        \\    {
+        \\      "focused_leaf": 999,
+        \\      "zoomed_leaf": 999,
+        \\      "tree": {
+        \\        "split": {
+        \\          "layout": "horizontal",
+        \\          "ratio": -0.5,
+        \\          "left":  { "leaf": { "surface": { "local_shell": { "cwd": null, "command": null } } } },
+        \\          "right": { "leaf": { "surface": { "local_shell": { "cwd": null, "command": null } } } }
+        \\        }
+        \\      }
+        \\    }
+        \\  ]
+        \\}
+    ;
+    var parsed = try loadSessionFromString(allocator, json);
+    defer parsed.deinit();
+
+    normalize(&parsed.value);
+
+    try std.testing.expectEqual(@as(u32, 0), parsed.value.active_tab);
+    const tab0 = parsed.value.tabs[0];
+    try std.testing.expectEqual(@as(u32, 0), tab0.focused_leaf);
+    try std.testing.expect(tab0.zoomed_leaf == null);
+    const sp = switch (tab0.tree) {
+        .split => |s| s,
+        .leaf => return error.UnexpectedLeaf,
+    };
+    try std.testing.expect(sp.ratio >= 0.05 and sp.ratio <= 0.95);
+}
+
+test "session_persist: normalize() clamps ratio above 1" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{ "version": 1, "active_tab": 0, "tabs": [
+        \\  { "focused_leaf": 0, "zoomed_leaf": null, "tree": {
+        \\    "split": { "layout": "vertical", "ratio": 5.0,
+        \\      "left":  { "leaf": { "surface": { "local_shell": {} } } },
+        \\      "right": { "leaf": { "surface": { "local_shell": {} } } }
+        \\  } } } ] }
+    ;
+    var parsed = try loadSessionFromString(allocator, json);
+    defer parsed.deinit();
+    normalize(&parsed.value);
+    const sp = switch (parsed.value.tabs[0].tree) { .split => |s| s, else => return error.UnexpectedLeaf };
+    try std.testing.expect(sp.ratio <= 0.95);
 }
