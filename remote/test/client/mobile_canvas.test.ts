@@ -9,6 +9,7 @@ import {
   panCanvasBy,
   panCanvasByWheel,
   resizeCanvasPan,
+  shouldStartCanvasPanDrag,
 } from "../../src/client/mobile_canvas";
 
 test("clampCanvasPan keeps an oversized canvas inside the viewport", () => {
@@ -98,4 +99,12 @@ test("panCanvasByWheel maps wheel deltas to terminal canvas movement", () => {
 test("isCanvasDrag distinguishes tap jitter from canvas drag", () => {
   assert.equal(isCanvasDrag({ x: CANVAS_PAN_TAP_THRESHOLD - 1, y: 0 }), false);
   assert.equal(isCanvasDrag({ x: CANVAS_PAN_TAP_THRESHOLD + 1, y: 0 }), true);
+});
+
+test("shouldStartCanvasPanDrag uses touch primary drag on mobile and middle drag on desktop", () => {
+  assert.equal(shouldStartCanvasPanDrag({ mobile: true, isPrimary: true, button: 0 }), true);
+  assert.equal(shouldStartCanvasPanDrag({ mobile: true, isPrimary: true, button: 1 }), false);
+  assert.equal(shouldStartCanvasPanDrag({ mobile: false, isPrimary: true, button: 0 }), false);
+  assert.equal(shouldStartCanvasPanDrag({ mobile: false, isPrimary: true, button: 1 }), true);
+  assert.equal(shouldStartCanvasPanDrag({ mobile: false, isPrimary: false, button: 1 }), false);
 });

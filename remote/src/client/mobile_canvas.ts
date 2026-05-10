@@ -21,6 +21,12 @@ export type ResizeCanvasPanOptions = CanvasPanOptions & {
   canvas: CanvasSize;
 };
 
+export type CanvasPanDragInput = {
+  mobile: boolean;
+  isPrimary: boolean;
+  button: number;
+};
+
 const BOTTOM_ANCHOR_EPSILON = 2;
 
 export function clampCanvasPan(
@@ -82,6 +88,11 @@ export function panCanvasByWheel(
 
 export function isCanvasDrag(delta: CanvasPoint): boolean {
   return Math.hypot(delta.x, delta.y) > CANVAS_PAN_TAP_THRESHOLD;
+}
+
+export function shouldStartCanvasPanDrag(input: CanvasPanDragInput): boolean {
+  if (!input.isPrimary) return false;
+  return input.mobile ? input.button === 0 : input.button === 1;
 }
 
 function clamp(value: number, min: number, max: number): number {

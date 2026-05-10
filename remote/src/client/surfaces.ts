@@ -8,6 +8,7 @@ import {
   panCanvasBy,
   panCanvasByWheel,
   resizeCanvasPan,
+  shouldStartCanvasPanDrag,
   type CanvasPoint,
   type CanvasSize,
 } from "./mobile_canvas";
@@ -331,14 +332,22 @@ function bindCanvasPan(view: SurfaceView): () => void {
   let startPan: CanvasPoint = { x: 0, y: 0 };
   let dragged = false;
   let suppressClick = false;
+  let suppressClickButton: number | null = null;
 
   const onPointerDown = (event: PointerEvent): void => {
-    if (!isMobileRemoteShell() || !event.isPrimary || event.button !== 0) return;
+    if (
+      !shouldStartCanvasPanDrag({
+        mobile: isMobileRemoteShell(),
+        isPrimary: event.isPrimary,
+        button: event.button,
+      })
+    ) return;
     updateCanvasPan(view);
     const viewport = canvasViewportSize(view);
     const canvas = canvasContentSize(view);
     if (canvas.width <= viewport.width && canvas.height <= viewport.height) return;
 
+    event.preventDefault();
     activePointerId = event.pointerId;
     startClient = { x: event.clientX, y: event.clientY };
     startPan = view.canvasPan;
@@ -386,6 +395,7 @@ function bindCanvasPan(view: SurfaceView): () => void {
     activePointerId = null;
     if (dragged) {
       suppressClick = true;
+      suppressClickButton = event.button;
       event.preventDefault();
     }
     try {
@@ -398,6 +408,15 @@ function bindCanvasPan(view: SurfaceView): () => void {
   const onClick = (event: MouseEvent): void => {
     if (!suppressClick) return;
     suppressClick = false;
+    suppressClickButton = null;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const onAuxClick = (event: MouseEvent): void => {
+    if (!suppressClick || event.button !== suppressClickButton) return;
+    suppressClick = false;
+    suppressClickButton = null;
     event.preventDefault();
     event.stopPropagation();
   };
@@ -407,6 +426,7 @@ function bindCanvasPan(view: SurfaceView): () => void {
   mount.addEventListener("pointerup", finishPointer);
   mount.addEventListener("pointercancel", finishPointer);
   mount.addEventListener("click", onClick, true);
+  mount.addEventListener("auxclick", onAuxClick, true);
   mount.addEventListener("wheel", onWheel, { passive: false });
 
   return () => {
@@ -415,6 +435,7 @@ function bindCanvasPan(view: SurfaceView): () => void {
     mount.removeEventListener("pointerup", finishPointer);
     mount.removeEventListener("pointercancel", finishPointer);
     mount.removeEventListener("click", onClick, true);
+    mount.removeEventListener("auxclick", onAuxClick, true);
     mount.removeEventListener("wheel", onWheel);
   };
 }
