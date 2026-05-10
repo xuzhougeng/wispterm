@@ -11,6 +11,7 @@ import {
   panCanvasByWheel,
   resizeCanvasPan,
   CANVAS_WHEEL_EVENT_OPTIONS,
+  canvasPanToScrollOffset,
   panYFromVerticalScrollbarThumb,
   shouldConsumeCanvasWheel,
   shouldStartCanvasPanDrag,
@@ -122,6 +123,12 @@ test("panCanvasByWheel maps wheel deltas to terminal canvas movement", () => {
     panCanvasByWheel({ x: -480, y: -350 }, { x: 80, y: 100 }, { width: 390, height: 500 }, { width: 900, height: 900 }),
     { x: -510, y: -400 },
   );
+});
+
+test("canvasPanToScrollOffset maps canvas pan to fixed host scroll offsets", () => {
+  assert.deepEqual(canvasPanToScrollOffset({ x: -120, y: -170 }), { x: 120, y: 170 });
+  assert.deepEqual(canvasPanToScrollOffset({ x: 0, y: 0 }), { x: 0, y: 0 });
+  assert.deepEqual(canvasPanToScrollOffset({ x: 40, y: 25 }), { x: 0, y: 0 });
 });
 
 test("isCanvasDrag distinguishes tap jitter from canvas drag", () => {

@@ -114,6 +114,13 @@ export function panCanvasByWheel(
   return panCanvasBy(startPan, { x: -delta.x, y: -delta.y }, viewport, canvas);
 }
 
+export function canvasPanToScrollOffset(pan: CanvasPoint): CanvasPoint {
+  return {
+    x: Math.max(0, -pan.x),
+    y: Math.max(0, -pan.y),
+  };
+}
+
 export function isCanvasDrag(delta: CanvasPoint): boolean {
   return Math.hypot(delta.x, delta.y) > CANVAS_PAN_TAP_THRESHOLD;
 }

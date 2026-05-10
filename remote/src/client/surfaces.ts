@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { LayoutSurface, SurfaceView } from "./types";
 import {
   CANVAS_WHEEL_EVENT_OPTIONS,
+  canvasPanToScrollOffset,
   defaultCanvasPan,
   isCanvasDrag,
   meaningfulTerminalCanvasHeight,
@@ -561,8 +562,14 @@ function updateCanvasPan(view: SurfaceView): void {
 }
 
 function applyCanvasPan(view: SurfaceView): void {
-  const pan = view.canvasPan;
-  view.host.style.transform = pan.x === 0 && pan.y === 0 ? "" : `translate3d(${pan.x}px, ${pan.y}px, 0)`;
+  const offset = canvasPanToScrollOffset(view.canvasPan);
+  view.host.style.transform = "";
+  view.host.scrollLeft = offset.x;
+  view.host.scrollTop = offset.y;
+  view.canvasPan = {
+    x: -view.host.scrollLeft,
+    y: -view.host.scrollTop,
+  };
 }
 
 function updateCanvasScrollbar(
