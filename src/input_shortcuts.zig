@@ -35,11 +35,13 @@ const TerminalArrowSequence = struct {
     modified: [7][]const u8,
 };
 
+// Index 1 (Alt-only) is unreachable: spatialFocusDirection intercepts pure Alt+Arrow
+// for split focus before the PTY input path. Kept as plain sequence as a defensive fallback.
 const terminal_arrow_sequences = [_]TerminalArrowSequence{
-    .{ .vk = win32_backend.VK_UP, .plain = "\x1b[A", .modified = .{ "\x1b[1;2A", "\x1b[1;3A", "\x1b[1;4A", "\x1b[1;5A", "\x1b[1;6A", "\x1b[1;7A", "\x1b[1;8A" } },
-    .{ .vk = win32_backend.VK_DOWN, .plain = "\x1b[B", .modified = .{ "\x1b[1;2B", "\x1b[1;3B", "\x1b[1;4B", "\x1b[1;5B", "\x1b[1;6B", "\x1b[1;7B", "\x1b[1;8B" } },
-    .{ .vk = win32_backend.VK_RIGHT, .plain = "\x1b[C", .modified = .{ "\x1b[1;2C", "\x1b[1;3C", "\x1b[1;4C", "\x1b[1;5C", "\x1b[1;6C", "\x1b[1;7C", "\x1b[1;8C" } },
-    .{ .vk = win32_backend.VK_LEFT, .plain = "\x1b[D", .modified = .{ "\x1b[1;2D", "\x1b[1;3D", "\x1b[1;4D", "\x1b[1;5D", "\x1b[1;6D", "\x1b[1;7D", "\x1b[1;8D" } },
+    .{ .vk = win32_backend.VK_UP, .plain = "\x1b[A", .modified = .{ "\x1b[1;2A", "\x1b[A", "\x1b[1;4A", "\x1b[1;5A", "\x1b[1;6A", "\x1b[1;7A", "\x1b[1;8A" } },
+    .{ .vk = win32_backend.VK_DOWN, .plain = "\x1b[B", .modified = .{ "\x1b[1;2B", "\x1b[B", "\x1b[1;4B", "\x1b[1;5B", "\x1b[1;6B", "\x1b[1;7B", "\x1b[1;8B" } },
+    .{ .vk = win32_backend.VK_RIGHT, .plain = "\x1b[C", .modified = .{ "\x1b[1;2C", "\x1b[C", "\x1b[1;4C", "\x1b[1;5C", "\x1b[1;6C", "\x1b[1;7C", "\x1b[1;8C" } },
+    .{ .vk = win32_backend.VK_LEFT, .plain = "\x1b[D", .modified = .{ "\x1b[1;2D", "\x1b[D", "\x1b[1;4D", "\x1b[1;5D", "\x1b[1;6D", "\x1b[1;7D", "\x1b[1;8D" } },
 };
 
 test "spatial focus uses Alt+Arrow and not Ctrl+Shift+Arrow" {
@@ -65,18 +67,19 @@ test "spatial focus uses Alt+Arrow and not Ctrl+Shift+Arrow" {
     );
 }
 
-test "terminal arrow sequence preserves Alt modifiers" {
+test "terminal arrow sequence handles modifiers" {
     try std.testing.expectEqualStrings(
         "\x1b[A",
         terminalArrowSequence(.{ .vk = win32_backend.VK_UP, .ctrl = false, .shift = false, .alt = false }).?,
     );
+    // Pure Alt+Arrow is owned by spatial focus; if it ever reaches here, fall back to plain.
     try std.testing.expectEqualStrings(
-        "\x1b[1;3D",
+        "\x1b[D",
         terminalArrowSequence(.{ .vk = win32_backend.VK_LEFT, .ctrl = false, .shift = false, .alt = true }).?,
     );
     try std.testing.expectEqualStrings(
-        "\x1b[1;3C",
-        terminalArrowSequence(.{ .vk = win32_backend.VK_RIGHT, .ctrl = false, .shift = false, .alt = true }).?,
+        "\x1b[1;5C",
+        terminalArrowSequence(.{ .vk = win32_backend.VK_RIGHT, .ctrl = true, .shift = false, .alt = false }).?,
     );
     try std.testing.expect(terminalArrowSequence(.{ .vk = 0x41, .ctrl = false, .shift = false, .alt = true }) == null);
 }
