@@ -10,7 +10,7 @@ This spec adds the standard "Shift+click extends current selection" behavior, pl
 
 ## Goals
 
-- `Shift+left-click` extends an active selection from its existing anchor to the clicked cell, preserving the original anchor.
+- `Shift+left-click` extends from the **last click position** (already stored as `selection.start_col/row` because every click writes it, even a plain single click that hasn't dragged yet) to the cell of this click. The user's primary use case is: click character A, hold Shift, click character B → highlight A..B.
 - `Shift+left-drag` extends continuously while the mouse moves with Shift held (auto-falls-out of the click case — no extra wiring).
 - Be a strict superset of current behavior: no scenario without Shift behaves differently.
 - Zero new state on the `Selection` struct. Zero new globals beyond what already exists for click tracking.
@@ -38,16 +38,21 @@ This spec adds the standard "Shift+click extends current selection" behavior, pl
 
 The full matrix of input → behavior. Rows in **bold** are new; everything else is unchanged.
 
-| Input | Shift held | Current `selection.active` | Behavior |
-|---|---|---|---|
-| Left-click | no | any | Unchanged: `start=end=clicked`, `active=false`, `g_selecting=true`, increment click count |
-| Left-drag | no | dragging | Unchanged: `end` follows mouse; `active=true` once movement exceeds threshold |
-| Double / triple / quad-click | no | any | Unchanged: select word / sentence / paragraph |
-| **Shift+left-click** | **yes** | **`active=true`** | **`end=clicked`, `start` unchanged, `g_selecting=true`, click count reset to 1, last-click position updated to current, `markSelectionChanged()`** |
-| **Shift+left-click** | **yes** | **`active=false`** | **Degrades to plain left-click (no extension; new selection at click point)** |
-| **Shift+left-drag** | **yes** | **any** | **Automatic: Shift+click sets `g_selecting=true`, then existing `handleMouseMove` carries `end` to mouse position even after Shift is released mid-drag** |
-| Shift+double/triple-click | yes | any | Degrades to plain double/triple-click (select word/sentence at click point) |
-| Ctrl+Shift+click | yes | any | Treated as Shift+click; Ctrl ignored |
+| Input | Shift held | Behavior |
+|---|---|---|
+| Left-click | no | Unchanged: `start=end=clicked`, `active=false`, `g_selecting=true`, increment click count |
+| Left-drag | no | Unchanged: `end` follows mouse; `active=true` once movement exceeds threshold |
+| Double / triple / quad-click | no | Unchanged: select word / sentence / paragraph |
+| **Shift+left-click** | **yes** | **`end=clicked`, `start` unchanged (it's the last click position — the anchor), `active=true`, `g_selecting=true`, click count reset to 1, last-click position updated to current, `markSelectionChanged()`. The active selection is now `start..clicked`.** |
+| **Shift+left-drag** | **yes** | **Automatic: Shift+click sets `g_selecting=true`, then existing `handleMouseMove` carries `end` to mouse position even after Shift is released mid-drag** |
+| Shift+double/triple-click | yes | Degrades to plain double/triple-click (select word/sentence at click point) |
+| Ctrl+Shift+click | yes | Treated as Shift+click; Ctrl ignored |
+
+**The pure user flow this enables**: plain click on `H`, then plain Shift+click on `d`. Step 1 writes `start=H, end=H, active=false`. Step 2 sets `end=d, active=true` while leaving `start=H` alone. Highlight is `Hello world`. No drag needed at any step.
+
+### Edge case: Shift+click as the very first interaction with a fresh surface
+
+A fresh `Selection` initializes `start_col=0, start_row=0` (Zig zero-init for `u32` fields). If the user's first ever interaction is Shift+click — never having clicked — the resulting selection extends from cell (0, 0) to the click point. This produces a visually surprising selection but does not crash or corrupt state. The user can recover by clicking elsewhere (which resets `start`). YAGNI: not gating on "has any prior click happened" because it would require a new `Selection.anchor_set: bool` field, and no real user flow leads here in practice.
 
 ### Why click count resets to 1 on Shift+click
 
@@ -66,13 +71,15 @@ Not special-cased. The renderer already normalizes min/max for highlight extent 
 Single insertion in `src/input.zig` `handleMouseButton`, before the existing left-down dispatch on click count:
 
 ```zig
-// Shift+left-click extends an existing selection without creating a new one.
+// Shift+left-click extends from the last click position (already in
+// selection.start_*, since every prior click writes it) to this click.
 // See spec docs/superpowers/specs/2026-05-11-shift-extend-selection-design.md
-if (ev.shift and surface.selection.active) {
+if (ev.shift) {
     surface.selection.end_col = clicked_col;
     surface.selection.end_row = clicked_row;
-    g_selecting = true;            // allow follow-up Shift+drag to keep extending
-    g_left_click_count = 1;        // don't let this count toward a double-click
+    surface.selection.active = true;   // make the highlight visible
+    g_selecting = true;                // allow follow-up Shift+drag to keep extending
+    g_left_click_count = 1;            // don't let this count toward a double-click
     g_last_left_click_ms = std.time.milliTimestamp();
     g_last_left_click_xpos = xpos;
     g_last_left_click_ypos = ypos;
@@ -97,7 +104,7 @@ The `Selection` struct is not modified. No new fields, no new globals.
 | # | Invariant | Enforcement |
 |---|---|---|
 | I1 | A non-Shift mouse interaction behaves identically to before this change | The new branch returns early; the old path is untouched |
-| I2 | A Shift+click on an inactive selection never crashes or corrupts state | `surface.selection.active` is checked first; the false case falls through to plain-click handling |
+| I2 | A Shift+click before any prior click never crashes or corrupts state | Worst case is a selection from cell (0, 0) — visually surprising but well-formed. Recoverable with one click elsewhere |
 | I3 | After Shift+click, a follow-up plain click in the same area is not misread as a double-click | Click count reset to 1 + last-click position updated to current |
 | I4 | Reverse selections (`end` before `start`) keep working | We only write `end_*`; renderer already handles min/max |
 | I5 | PTY mouse passthrough (vim/tmux) keeps working | Shift branch is inserted after the existing passthrough check |
@@ -114,12 +121,13 @@ Tester: user, on Windows. Failing any step blocks merge.
 
 1. Launch `phantty.exe`, shell prompts, run `echo "Hello world"`.
 2. **Baseline.** Plain drag from `H` to `d` → highlights `Hello world`. (Confirms existing drag still works.)
-3. **Shift+click extends.** Plain drag from `H` to `o` to select `Hello`. Release. Hold Shift and click on `d` → highlight grows to `Hello world`.
-4. **Shift+drag extends.** Same setup as 3. Hold Shift and **drag** from outside the selection to `d` → highlight grows to `Hello world`. Release Shift mid-drag and continue moving → highlight keeps following the mouse.
-5. **No-active-selection degrade.** Open a fresh tab, no prior selection. Hold Shift and click on `H` → behaves like a plain click (no crash; `selection.start=end=H`, `active=false`).
-6. **Multi-click not poisoned.** Do a Shift+click anywhere, immediately do a plain double-click on a word elsewhere → that word is selected (not misinterpreted as the second click of a sequence).
-7. **Reverse selection extends.** Drag from `d` backward to `o` (end is left of start). Release. Shift+click on `H` → highlight is `Hello world` (renderer normalizes min/max).
-8. **Clipboard sanity.** After any of steps 3, 4, 7, press `Ctrl+Shift+C` → clipboard contents exactly equal the highlighted text.
+3. **Shift+click extends from a plain click (the headline use case).** Plain click on `H` (no drag). Hold Shift and click on `d` → highlight is `Hello world`.
+4. **Shift+click extends from a drag.** Plain drag from `H` to `o`, release. Hold Shift and click on `d` → highlight is `Hello world`.
+5. **Shift+drag extends.** Plain click on `H`, then hold Shift and drag from anywhere to `d` → highlight is `Hello world`. Release Shift mid-drag and continue moving → highlight keeps following the mouse.
+6. **No-prior-click edge case.** Open a fresh tab, no prior interaction. Hold Shift and click on `H` → no crash; selection extends from cell (0, 0) to `H`. Click elsewhere to recover.
+7. **Multi-click not poisoned.** Do a Shift+click anywhere, immediately do a plain double-click on a word elsewhere → that word is selected (not misinterpreted as the second click of a sequence).
+8. **Reverse selection extends.** Drag from `d` backward to `o` (end is left of start). Release. Shift+click on `H` → highlight is `Hello world` (renderer normalizes min/max).
+9. **Clipboard sanity.** After any of steps 3, 4, 5, 8, press `Ctrl+Shift+C` → clipboard contents exactly equal the highlighted text.
 
 ### Out of scope for verification
 
