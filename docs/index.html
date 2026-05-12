@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Phantty — A Windows terminal, powered by Ghostty</title>
-  <meta name="description" content="Phantty is a fast, modern Windows-only terminal emulator written in Zig and powered by libghostty-vt. Splits, tabs, themes, background images, embedded browser, and more.">
+  <meta name="description" content="Phantty is a fast, modern Windows-only terminal emulator written in Zig and powered by libghostty-vt. Splits, tabs, AI agent tools, themes, embedded browser, and more.">
   <meta property="og:title" content="Phantty — A Windows terminal, powered by Ghostty">
   <meta property="og:description" content="A fast, modern Windows-only terminal emulator written in Zig, powered by libghostty-vt.">
   <meta property="og:image" content="assets/phantty.png">
@@ -83,7 +83,7 @@ nothing to commit, working tree clean
     <section id="features" class="section">
       <div class="container">
         <h2>Built for daily Windows work</h2>
-        <p class="section-lead">Phantty layers practical features on top of Ghostty's terminal core — splits, tabs, an embedded browser, a file explorer, themes, background images, and an opt-in remote-access client.</p>
+        <p class="section-lead">Phantty layers practical features on top of Ghostty's terminal core — splits, tabs, AI agent tools, an embedded browser, a file explorer, themes, background images, and an opt-in remote-access client.</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>Ghostty's emulation</h3>
@@ -96,6 +96,10 @@ nothing to commit, working tree clean
           <div class="feature">
             <h3>Splits &amp; tabs</h3>
             <p>Vertical/horizontal splits, tab strip, focus-follows-mouse, equalize sizes, spatial focus movement.</p>
+          </div>
+          <div class="feature">
+            <h3>AI agent tabs</h3>
+            <p>Chat tabs can act as local agents: read terminal snapshots, run PowerShell, and type into opened SSH sessions with an approval card.</p>
           </div>
           <div class="feature">
             <h3>453 themes built-in</h3>
@@ -188,7 +192,12 @@ background-image-mode  = fill
 # Opt-in remote access (disabled by default)
 remote-enabled         = false
 remote-server-url      = https://remote.example.com
-remote-device-name     = Workstation</code></pre>
+remote-device-name     = Workstation
+
+# AI Chat agent tools
+ai-agent-enabled       = true
+ai-agent-permission    = confirm   # confirm | full
+ai-agent-output-limit  = 16384</code></pre>
         <p class="section-foot">Run <code>phantty.exe --help</code> for the full flag list, or <code>phantty.exe --show-config-path</code> to print the resolved config path.</p>
       </div>
     </section>

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Phantty — 由 Ghostty 驱动的 Windows 终端</title>
-  <meta name="description" content="Phantty 是一款用 Zig 编写、由 libghostty-vt 驱动的现代 Windows 终端模拟器。支持分屏、标签、主题、背景图、内嵌浏览器等。">
+  <meta name="description" content="Phantty 是一款用 Zig 编写、由 libghostty-vt 驱动的现代 Windows 终端模拟器。支持分屏、标签、AI Agent 工具、主题、背景图、内嵌浏览器等。">
   <meta property="og:title" content="Phantty — 由 Ghostty 驱动的 Windows 终端">
   <meta property="og:description" content="一款用 Zig 编写、由 libghostty-vt 驱动的现代 Windows 终端模拟器。">
   <meta property="og:image" content="assets/phantty.png">
@@ -83,7 +83,7 @@
     <section id="features" class="section">
       <div class="container">
         <h2>为日常 Windows 工作而生</h2>
-        <p class="section-lead">Phantty 在 Ghostty 的终端核心之上叠加了实用功能：分屏、标签、内嵌浏览器、文件浏览器、主题、背景图，以及可选的远程访问客户端。</p>
+        <p class="section-lead">Phantty 在 Ghostty 的终端核心之上叠加了实用功能：分屏、标签、AI Agent 工具、内嵌浏览器、文件浏览器、主题、背景图，以及可选的远程访问客户端。</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>Ghostty 模拟内核</h3>
@@ -96,6 +96,10 @@
           <div class="feature">
             <h3>分屏与标签</h3>
             <p>横竖分屏、标签栏、焦点跟随鼠标、均分尺寸、空间方向焦点切换。</p>
+          </div>
+          <div class="feature">
+            <h3>AI Agent 标签</h3>
+            <p>AI Chat 可以变成桌面 Agent：读取终端快照、运行本地 PowerShell，并在确认后向已打开的 SSH 会话输入命令。</p>
           </div>
           <div class="feature">
             <h3>内置 453 款主题</h3>
@@ -188,7 +192,12 @@ background-image-mode  = fill
 # 可选的远程访问（默认关闭）
 remote-enabled         = false
 remote-server-url      = https://remote.example.com
-remote-device-name     = Workstation</code></pre>
+remote-device-name     = Workstation
+
+# AI Chat Agent 工具
+ai-agent-enabled       = true
+ai-agent-permission    = confirm   # confirm | full
+ai-agent-output-limit  = 16384</code></pre>
         <p class="section-foot">运行 <code>phantty.exe --help</code> 查看完整参数列表，或 <code>phantty.exe --show-config-path</code> 打印解析后的配置路径。</p>
       </div>
     </section>

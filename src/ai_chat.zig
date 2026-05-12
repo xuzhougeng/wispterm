@@ -433,7 +433,6 @@ pub const Session = struct {
         self.approval_allowed = false;
         self.approval_mutex.unlock();
 
-        appendProgressMessage(self, "Approval required: press Enter/Y to run, Esc/N to deny.") catch {};
         self.setStatus("Approval needed");
 
         self.approval_mutex.lock();
@@ -1540,7 +1539,9 @@ fn applyApiStreamLineToSession(
 fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
     const hex = "0123456789abcdef";
     try out.append(allocator, '"');
-    for (value) |ch| {
+    var i: usize = 0;
+    while (i < value.len) {
+        const ch = value[i];
         switch (ch) {
             '"' => try out.appendSlice(allocator, "\\\""),
             '\\' => try out.appendSlice(allocator, "\\\\"),
@@ -1551,8 +1552,30 @@ fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u
                 try out.appendSlice(allocator, "\\u00");
                 try out.append(allocator, hex[ch >> 4]);
                 try out.append(allocator, hex[ch & 0x0f]);
-            } else try out.append(allocator, ch),
+            } else if (ch < 0x80) {
+                try out.append(allocator, ch);
+            } else {
+                const len = std.unicode.utf8ByteSequenceLength(ch) catch {
+                    try out.appendSlice(allocator, "\\ufffd");
+                    i += 1;
+                    continue;
+                };
+                if (i + len > value.len) {
+                    try out.appendSlice(allocator, "\\ufffd");
+                    i += 1;
+                    continue;
+                }
+                _ = std.unicode.utf8Decode(value[i .. i + len]) catch {
+                    try out.appendSlice(allocator, "\\ufffd");
+                    i += 1;
+                    continue;
+                };
+                try out.appendSlice(allocator, value[i .. i + len]);
+                i += len;
+                continue;
+            },
         }
+        i += 1;
     }
     try out.append(allocator, '"');
 }
@@ -1649,6 +1672,16 @@ test "ai chat request json replays assistant reasoning content" {
     const json = try buildRequestJson(allocator, &request);
     defer allocator.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"reasoning_content\":\"Need system info before answering.\"") != null);
+}
+
+test "ai chat request json replaces invalid utf8 bytes" {
+    const allocator = std.testing.allocator;
+    const bad = [_]u8{ 'o', 'k', ' ', 0xff, ' ', 0xc3 };
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+
+    try appendJsonString(allocator, &out, bad[0..]);
+    try std.testing.expectEqualStrings("\"ok \\ufffd \\ufffd\"", out.items);
 }
 
 test "ai chat parses OpenAI tool calls" {

@@ -17,7 +17,8 @@ pub const INPUT_H: f32 = 92;
 const BUBBLE_PAD_X: f32 = 14;
 const BUBBLE_PAD_Y: f32 = 10;
 const BUBBLE_GAP: f32 = 12;
-const APPROVAL_H: f32 = 92;
+const APPROVAL_H: f32 = 128;
+const APPROVAL_GAP: f32 = 12;
 const REASONING_PAD_Y: f32 = 6;
 const REASONING_LEFT: f32 = 22;
 const REASONING_RIGHT: f32 = 12;
@@ -93,10 +94,7 @@ pub fn render(
     }
 
     const approval = session.approvalView();
-    const approval_h: f32 = if (approval != null) APPROVAL_H else 0;
-    if (approval) |view| {
-        renderApprovalCard(view, x + LINE_PAD_X, INPUT_H + 10, w - LINE_PAD_X * 2, APPROVAL_H, window_height);
-    }
+    const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
 
     const transcript_top = top + HEADER_H + 18;
     const transcript_bottom = INPUT_H + approval_h + 18;
@@ -113,7 +111,7 @@ pub fn render(
     const max_scroll = @max(0.0, content_h - transcript_h);
     session.scroll_px = @min(session.scroll_px, max_scroll);
 
-    const scissor_y: c.GLint = @intFromFloat(@round(INPUT_H + 18));
+    const scissor_y: c.GLint = @intFromFloat(@round(transcript_bottom));
     const scissor_h: c.GLsizei = @intFromFloat(@round(transcript_h));
     gl.Enable.?(c.GL_SCISSOR_TEST);
     gl.Scissor.?(
@@ -152,25 +150,32 @@ pub fn render(
     }
 
     gl.Disable.?(c.GL_SCISSOR_TEST);
+
+    if (approval) |view| {
+        renderApprovalCard(view, x + LINE_PAD_X, INPUT_H + APPROVAL_GAP, w - LINE_PAD_X * 2, APPROVAL_H);
+    }
 }
 
-fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32, window_height: f32) void {
-    _ = window_height;
+fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
-    const danger = [3]f32{ 0.95, 0.26, 0.30 };
-    gl_init.renderQuadAlpha(x, y, w, h, mixColor(bg, accent, 0.10), 0.98);
-    gl_init.renderQuadAlpha(x, y + h - 2, w, 2, accent, 0.85);
-    gl_init.renderQuadAlpha(x, y, 3, h, danger, 0.9);
+    const card_bg = mixColor(bg, accent, 0.08);
+    gl_init.renderQuadAlpha(x, y, w, h, card_bg, 0.98);
+    gl_init.renderQuadAlpha(x, y + h - 1, w, 1, accent, 0.65);
+    gl_init.renderQuadAlpha(x, y, w, 1, mixColor(bg, fg, 0.18), 0.8);
+    gl_init.renderQuadAlpha(x, y, 4, h, accent, 0.85);
 
     var title_buf: [256]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "Approve {s}?  Enter/Y approve, Esc/N deny", .{view.tool}) catch "Approve tool?  Enter/Y approve, Esc/N deny";
-    _ = titlebar.renderTextLimited(title, x + 14, y + h - 26, mixColor(fg, accent, 0.18), w - 28);
+    const title = std.fmt.bufPrint(&title_buf, "Approve {s}?", .{view.tool}) catch "Approve tool?";
+    _ = titlebar.renderTextLimited(title, x + 16, y + h - 26, mixColor(fg, accent, 0.20), w - 32);
+    _ = titlebar.renderTextLimited("Enter/Y to run, Esc/N to deny", x + 16, y + h - 50, mixColor(bg, fg, 0.62), w - 32);
     if (view.reason.len > 0) {
-        _ = titlebar.renderTextLimited(view.reason, x + 14, y + h - 50, mixColor(bg, fg, 0.72), w - 28);
+        _ = titlebar.renderTextLimited(view.reason, x + 16, y + h - 74, mixColor(bg, fg, 0.70), w - 32);
     }
-    _ = titlebar.renderTextLimited(view.command, x + 14, y + 14, fg, w - 28);
+    const command_bg = mixColor(bg, fg, 0.065);
+    gl_init.renderQuadAlpha(x + 12, y + 10, w - 24, 34, command_bg, 0.95);
+    _ = titlebar.renderTextLimited(view.command, x + 20, y + 18, fg, w - 40);
 }
 
 fn renderMessageBubble(role: ai_chat.Role, text: []const u8, x: f32, top_px: f32, w: f32, h: f32, window_height: f32) void {
