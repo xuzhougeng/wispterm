@@ -16,6 +16,7 @@ const win32_backend = @import("apprt/win32.zig");
 const App = @import("App.zig");
 const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
+pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
@@ -34,6 +35,7 @@ pub const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig"
 pub const markdown_preview_panel = @import("markdown_preview_panel.zig");
 pub const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
 pub const browser_panel = @import("browser_panel.zig");
+pub const ai_chat_renderer = @import("renderer/ai_chat_renderer.zig");
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -224,12 +226,36 @@ fn clearWithBackground(fb_w: c_int, fb_h: c_int) void {
     background_image.drawFullscreen(@floatFromInt(fb_w), @floatFromInt(fb_h));
 }
 
+fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gl.Viewport.?(0, 0, fb_width, fb_height);
+    gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
+    file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    if (activeAiChat()) |session| {
+        ai_chat_renderer.render(
+            session,
+            @floatFromInt(fb_width),
+            @floatFromInt(fb_height),
+            titlebar_offset,
+            left_panels_w,
+            right_panels_w,
+        );
+    }
+}
+
 pub fn activeTab() ?*TabState {
     return tab.activeTab();
 }
 
 pub fn activeSurface() ?*Surface {
     return tab.activeSurface();
+}
+
+pub fn activeAiChat() ?*ai_chat.Session {
+    return tab.activeAiChat();
 }
 
 pub fn currentTitlebarHeight() f32 {
@@ -358,6 +384,19 @@ pub fn spawnTabWithCommandUtf8ReturningSurface(command: []const u8) ?*Surface {
     return activeSurface();
 }
 
+pub fn spawnAiChatTab(
+    name: []const u8,
+    base_url: []const u8,
+    api_key: []const u8,
+    model: []const u8,
+    system_prompt: []const u8,
+) bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.spawnAiChatTab(allocator, name, base_url, api_key, model, system_prompt)) return false;
+    clearUiStateOnTabChange();
+    return true;
+}
+
 pub fn closeTab(idx: usize) void {
     const allocator = g_allocator orelse return;
     tab.closeTab(idx, allocator);
@@ -369,6 +408,7 @@ pub fn closeTab(idx: usize) void {
 
 pub fn closeFocusedSplitWouldCloseWindow() bool {
     const active_tab = activeTab() orelse return false;
+    if (active_tab.kind == .ai_chat) return tab.g_tab_count <= 1;
     return tab.g_tab_count <= 1 and !active_tab.tree.isSplit();
 }
 
@@ -597,8 +637,10 @@ fn onWin32Resize(width: i32, height: i32) void {
         if (g_allocator) |alloc| syncRemoteLayout(alloc);
 
         if (split_count <= 1) {
-            // Single surface: simple render path
-            if (activeSurface()) |surface| {
+            if (active_tab.kind == .ai_chat) {
+                renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (activeSurface()) |surface| {
+                // Single surface: simple render path
                 const rend = &surface.surface_renderer;
                 var needs_rebuild: bool = false;
                 {
@@ -1156,6 +1198,11 @@ fn syncImeCaretPosition(win: *win32_backend.Window, split_count: usize) void {
     // composition started, doesn't drift onto another line as the cursor moves.
     if (win.ime_composing) return;
 
+    if (activeAiChat()) |session| {
+        syncAiChatImeCaret(win, session);
+        return;
+    }
+
     const surface = activeSurface() orelse return;
 
     var cursor_x: usize = 0;
@@ -1203,6 +1250,26 @@ fn syncImeCaretPosition(win: *win32_backend.Window, split_count: usize) void {
         @intFromFloat(@round(x)),
         @intFromFloat(@round(y)),
         @intFromFloat(@max(1.0, @round(cell_h))),
+    );
+}
+
+fn syncAiChatImeCaret(win: *win32_backend.Window, session: *ai_chat.Session) void {
+    const wh: f32 = @floatFromInt(win.height);
+    const ww: f32 = @floatFromInt(win.width);
+    const left_panels_w = titlebar.sidebarWidth();
+    const panel_w = @max(1.0, ww - left_panels_w);
+    const field_x = left_panels_w + ai_chat_renderer.LINE_PAD_X + 12;
+    const field_w = panel_w - ai_chat_renderer.LINE_PAD_X * 2 - 24;
+    session.mutex.lock();
+    const input_text = session.input();
+    const cursor_x = ai_chat_renderer.inputCursorX(input_text, field_x, field_w);
+    session.mutex.unlock();
+    const cursor_y = wh - ai_chat_renderer.INPUT_H + 16 + 14;
+    const h = ai_chat_renderer.INPUT_H - 32 - 28;
+    win.setImeCaret(
+        @intFromFloat(@round(cursor_x)),
+        @intFromFloat(@round(cursor_y)),
+        @intFromFloat(@max(1.0, @round(h))),
     );
 }
 
@@ -1718,7 +1785,9 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
 
             // Debug: print split count on first few frames
             // GL rendering
-            if (post_process.g_post_enabled) {
+            if (active_tab.kind == .ai_chat) {
+                renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (post_process.g_post_enabled) {
                 // Post-processing path: only render focused surface for now
                 if (activeSurface()) |surface| {
                     var needs_rebuild: bool = false;

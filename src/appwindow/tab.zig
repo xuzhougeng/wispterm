@@ -11,6 +11,7 @@ const SplitTree = @import("../split_tree.zig");
 const win32_backend = @import("../apprt/win32.zig");
 const remote_client = @import("../remote_client.zig");
 const session_persist = @import("../session_persist.zig");
+const ai_chat = @import("../ai_chat.zig");
 
 const CursorStyle = Config.CursorStyle;
 const Selection = Surface.Selection;
@@ -33,11 +34,19 @@ pub const TAB_CLOSE_FADE_SPEED: f32 = 6.0;
 // ============================================================================
 
 pub const TabState = struct {
+    kind: Kind = .terminal,
     tree: SplitTree,
     focused: SplitTree.Node.Handle = .root,
+    ai_chat_session: ?*ai_chat.Session = null,
+
+    pub const Kind = enum {
+        terminal,
+        ai_chat,
+    };
 
     /// Get the focused surface in this tab, or null if tree is empty
     pub fn focusedSurface(self: *const TabState) ?*Surface {
+        if (self.kind != .terminal) return null;
         if (self.tree.isEmpty()) return null;
         if (self.focused.idx() >= self.tree.nodes.len) return null;
         return switch (self.tree.nodes[self.focused.idx()]) {
@@ -51,13 +60,26 @@ pub const TabState = struct {
         if (g_forced_title) |forced| {
             return forced;
         }
+        if (self.kind == .ai_chat) {
+            const chat = self.ai_chat_session orelse return "AI Chat";
+            const chat_title = chat.title();
+            return if (chat_title.len > 0) chat_title else "AI Chat";
+        }
         const surface = self.focusedSurface() orelse return "phantty";
         return surface.getTitle();
     }
 
     pub fn deinit(self: *TabState, allocator: std.mem.Allocator) void {
         _ = allocator;
-        self.tree.deinit();
+        switch (self.kind) {
+            .terminal => self.tree.deinit(),
+            .ai_chat => {
+                if (self.ai_chat_session) |session| {
+                    session.deinit();
+                    self.ai_chat_session = null;
+                }
+            },
+        }
     }
 };
 
@@ -130,6 +152,13 @@ pub fn activeSurface() ?*Surface {
     if (g_tab_count == 0) return null;
     const t = g_tabs[g_active_tab] orelse return null;
     return t.focusedSurface();
+}
+
+pub fn activeAiChat() ?*ai_chat.Session {
+    if (g_tab_count == 0) return null;
+    const t = g_tabs[g_active_tab] orelse return null;
+    if (t.kind != .ai_chat) return null;
+    return t.ai_chat_session;
 }
 
 fn splitSpawnCommand(
@@ -214,6 +243,12 @@ fn splitSshCommand(
 pub fn activeSelection() *Selection {
     if (g_tab_count > 0) {
         if (g_tabs[g_active_tab]) |t| {
+            if (t.kind != .terminal) {
+                const S = struct {
+                    var dummy: Selection = .{};
+                };
+                return &S.dummy;
+            }
             if (t.focusedSurface()) |surface| {
                 return &surface.selection;
             }
@@ -227,7 +262,8 @@ pub fn activeSelection() *Selection {
 
 pub fn isActiveTabTerminal() bool {
     if (g_tab_count == 0) return false;
-    return g_tabs[g_active_tab] != null;
+    const t = g_tabs[g_active_tab] orelse return false;
+    return t.kind == .terminal;
 }
 
 // ============================================================================
@@ -272,14 +308,55 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
         tree_mut.deinit();
         return false;
     };
+    t.kind = .terminal;
     t.tree = tree;
     t.focused = .root;
+    t.ai_chat_session = null;
 
     g_tabs[g_tab_count] = t;
     g_active_tab = g_tab_count;
     g_tab_count += 1;
 
     std.debug.print("New tab spawned (count={}), active: {}\n", .{ g_tab_count, g_active_tab });
+    return true;
+}
+
+pub fn spawnAiChatTab(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    base_url: []const u8,
+    api_key: []const u8,
+    model: []const u8,
+    system_prompt: []const u8,
+) bool {
+    if (g_tab_count >= MAX_TABS) return false;
+
+    const session = ai_chat.Session.init(
+        allocator,
+        name,
+        base_url,
+        api_key,
+        model,
+        system_prompt,
+    ) catch {
+        std.debug.print("Failed to create AI Chat session\n", .{});
+        return false;
+    };
+
+    const t = allocator.create(TabState) catch {
+        session.deinit();
+        return false;
+    };
+    t.kind = .ai_chat;
+    t.tree = .empty;
+    t.focused = .root;
+    t.ai_chat_session = session;
+
+    g_tabs[g_tab_count] = t;
+    g_active_tab = g_tab_count;
+    g_tab_count += 1;
+
+    std.debug.print("New AI Chat tab spawned (count={}), active: {}\n", .{ g_tab_count, g_active_tab });
     return true;
 }
 
@@ -320,6 +397,7 @@ pub fn switchTab(idx: usize) void {
     g_active_tab = idx;
     // Clear bell indicator and force rebuild for surfaces in this tab
     if (g_tabs[idx]) |t| {
+        if (t.kind != .terminal) return;
         var it = t.tree.iterator();
         while (it.next()) |entry| {
             entry.surface.bell_indicator = false;
@@ -359,6 +437,7 @@ pub fn splitFocusedReturningSurface(
     cwd: ?[*:0]const u16,
 ) ?*Surface {
     const t = activeTab() orelse return null;
+    if (t.kind != .terminal) return null;
     const focused_surface = t.focusedSurface() orelse return null;
     const split_command = splitSpawnCommand(allocator, focused_surface);
     defer if (split_command) |command| allocator.free(command);
@@ -494,6 +573,11 @@ pub const CloseResult = enum {
 /// Close the focused split. Returns what happened so the caller can handle side effects.
 pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
     const t = activeTab() orelse return .no_op;
+    if (t.kind == .ai_chat) {
+        if (g_tab_count <= 1) return .close_window;
+        closeTab(g_active_tab, allocator);
+        return .closed_tab;
+    }
 
     if (!t.tree.isSplit()) {
         if (g_tab_count <= 1) {
@@ -547,6 +631,7 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
 /// Navigate to a split in the given direction. Returns true if focus changed.
 pub fn gotoSplit(allocator: std.mem.Allocator, direction: SplitTree.Goto) bool {
     const t = activeTab() orelse return false;
+    if (t.kind != .terminal) return false;
     const new_focus = t.tree.goto(allocator, t.focused, direction) catch return false;
     if (new_focus) |handle| {
         t.focused = handle;
@@ -558,6 +643,7 @@ pub fn gotoSplit(allocator: std.mem.Allocator, direction: SplitTree.Goto) bool {
 /// Equalize all split ratios. Returns true if equalization was performed.
 pub fn equalizeSplits(allocator: std.mem.Allocator) bool {
     const t = activeTab() orelse return false;
+    if (t.kind != .terminal) return false;
 
     var it = t.tree.iterator();
     while (it.next()) |entry| {
@@ -599,8 +685,13 @@ pub fn commitTabRename() void {
             const changed = g_tab_rename_len != g_tab_rename_orig_len or
                 !std.mem.eql(u8, g_tab_rename_buf[0..g_tab_rename_len], g_tab_rename_orig_buf[0..g_tab_rename_orig_len]);
             if (changed) {
-                if (t.focusedSurface()) |surface| {
-                    surface.setTitleOverride(g_tab_rename_buf[0..g_tab_rename_len]);
+                switch (t.kind) {
+                    .terminal => if (t.focusedSurface()) |surface| {
+                        surface.setTitleOverride(g_tab_rename_buf[0..g_tab_rename_len]);
+                    },
+                    .ai_chat => if (t.ai_chat_session) |session| {
+                        session.setTitle(g_tab_rename_buf[0..g_tab_rename_len]);
+                    },
                 }
             }
         }
@@ -752,6 +843,7 @@ pub fn handleRenameChar(codepoint: u21) void {
 /// is the caller's responsibility to free (via Session.deinit pattern, or
 /// shared across all tabs in a session).
 pub fn snapshotTab(arena: std.mem.Allocator, t: *const TabState) !session_persist.TabSnap {
+    if (t.kind != .terminal) return error.NotTerminalTab;
     if (t.tree.isEmpty()) return error.EmptyTree;
 
     // 1. Build NodeSnap tree.
@@ -981,10 +1073,12 @@ pub fn restoreTab(
         tree.deinit();
         return false;
     };
+    t.kind = .terminal;
     t.tree = tree;
 
     // Resolve focused_leaf from pre-order index back to a Handle.
     t.focused = handleOfNthLeaf(&t.tree, snap.focused_leaf) orelse .root;
+    t.ai_chat_session = null;
 
     g_tabs[g_tab_count] = t;
     g_active_tab = g_tab_count;

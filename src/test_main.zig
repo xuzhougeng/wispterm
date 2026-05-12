@@ -2,6 +2,7 @@
 //! Run with: zig build test
 
 comptime {
+    _ = @import("ai_chat.zig");
     _ = @import("scp.zig");
     _ = @import("browser_panel.zig");
     _ = @import("browser_url.zig");

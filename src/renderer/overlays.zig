@@ -218,7 +218,7 @@ const CommandEntry = struct {
 };
 
 const COMMAND_ENTRIES = [_]CommandEntry{
-    .{ .title = "New Session", .detail = "Choose PowerShell, SSH, or WSL", .shortcut = "Ctrl+Shift+T", .action = .new_tab },
+    .{ .title = "New Session", .detail = "Choose PowerShell, SSH, WSL, or AI Chat", .shortcut = "Ctrl+Shift+T", .action = .new_tab },
     .{ .title = "Split Right", .detail = "Create a panel to the right", .shortcut = "Ctrl+Shift+O", .action = .split_right },
     .{ .title = "Split Down", .detail = "Create a panel below", .shortcut = "", .action = .split_down },
     .{ .title = "Split Left", .detail = "Create a panel to the left", .shortcut = "", .action = .split_left },
@@ -860,7 +860,11 @@ const SSH_FIELD_COUNT = 5;
 const SSH_FIELD_MAX = 128;
 const SSH_PROFILE_MAX = 16;
 const SSH_PROFILE_NONE = std.math.maxInt(usize);
-const SESSION_LAUNCHER_ROW_COUNT = 3;
+const AI_FIELD_COUNT = 5;
+const AI_FIELD_MAX = 512;
+const AI_PROFILE_MAX = 16;
+const AI_PROFILE_NONE = std.math.maxInt(usize);
+const SESSION_LAUNCHER_ROW_COUNT = 4;
 
 const SshField = enum(usize) {
     name = 0,
@@ -870,16 +874,31 @@ const SshField = enum(usize) {
     port = 4,
 };
 
+const AiField = enum(usize) {
+    name = 0,
+    base_url = 1,
+    api_key = 2,
+    model = 3,
+    system_prompt = 4,
+};
+
 const SessionAction = enum {
     powershell,
     ssh,
     wsl,
+    ai_chat,
     connect_selected,
     new_ssh,
     edit_selected,
     delete_selected,
+    connect_ai_selected,
+    new_ai,
+    edit_ai_selected,
+    delete_ai_selected,
     connect,
     save,
+    connect_ai,
+    save_ai,
     cancel,
 };
 
@@ -889,9 +908,20 @@ const SshListMode = enum {
     delete_select,
 };
 
+const AiListMode = enum {
+    manage,
+    edit_select,
+    delete_select,
+};
+
 const SshProfile = struct {
     fields: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined,
     lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT,
+};
+
+const AiProfile = struct {
+    fields: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
+    lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT,
 };
 
 const SessionLayout = struct {
@@ -908,6 +938,8 @@ pub threadlocal var g_session_launcher_visible: bool = false;
 threadlocal var g_session_launcher_selected: usize = 0;
 threadlocal var g_ssh_list_visible: bool = false;
 threadlocal var g_ssh_form_visible: bool = false;
+threadlocal var g_ai_list_visible: bool = false;
+threadlocal var g_ai_form_visible: bool = false;
 threadlocal var g_ssh_focus: usize = @intFromEnum(SshField.name);
 threadlocal var g_ssh_bufs: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined;
 threadlocal var g_ssh_lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT;
@@ -917,13 +949,22 @@ threadlocal var g_ssh_profiles_loaded: bool = false;
 threadlocal var g_ssh_list_selected: usize = 0;
 threadlocal var g_ssh_list_mode: SshListMode = .manage;
 threadlocal var g_ssh_edit_index: usize = SSH_PROFILE_NONE;
+threadlocal var g_ai_focus: usize = @intFromEnum(AiField.name);
+threadlocal var g_ai_bufs: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined;
+threadlocal var g_ai_lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT;
+threadlocal var g_ai_profiles: [AI_PROFILE_MAX]AiProfile = undefined;
+threadlocal var g_ai_profile_count: usize = 0;
+threadlocal var g_ai_profiles_loaded: bool = false;
+threadlocal var g_ai_list_selected: usize = 0;
+threadlocal var g_ai_list_mode: AiListMode = .manage;
+threadlocal var g_ai_edit_index: usize = AI_PROFILE_NONE;
 threadlocal var g_pending_ssh_password: [SSH_FIELD_MAX + 1]u8 = undefined;
 threadlocal var g_pending_ssh_password_len: usize = 0;
 threadlocal var g_pending_ssh_password_due_ms: i64 = 0;
 threadlocal var g_pending_ssh_surface: ?*Surface = null;
 
 pub fn sessionLauncherVisible() bool {
-    return g_session_launcher_visible or g_ssh_list_visible or g_ssh_form_visible;
+    return g_session_launcher_visible or g_ssh_list_visible or g_ssh_form_visible or g_ai_list_visible or g_ai_form_visible;
 }
 
 pub fn sessionLauncherOpen() void {
@@ -931,7 +972,10 @@ pub fn sessionLauncherOpen() void {
     g_session_launcher_selected = 0;
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
+    g_ai_list_visible = false;
+    g_ai_form_visible = false;
     g_ssh_list_mode = .manage;
+    g_ai_list_mode = .manage;
     g_command_palette_visible = false;
     g_settings_visible = false;
     g_startup_shortcuts_visible = false;
@@ -941,17 +985,41 @@ pub fn sessionLauncherClose() void {
     g_session_launcher_visible = false;
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
+    g_ai_list_visible = false;
+    g_ai_form_visible = false;
     g_ssh_list_mode = .manage;
+    g_ai_list_mode = .manage;
 }
 
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
-    if (!g_ssh_form_visible) return;
-    if (g_ssh_focus >= SSH_FIELD_COUNT) return;
-    if (codepoint < 0x20 or codepoint == 0x7f or codepoint > 0x7f) return;
-    const field = g_ssh_focus;
-    if (g_ssh_lens[field] >= SSH_FIELD_MAX) return;
-    g_ssh_bufs[field][g_ssh_lens[field]] = @intCast(codepoint);
-    g_ssh_lens[field] += 1;
+    if (codepoint < 0x20 or codepoint == 0x7f) return;
+    if (g_ssh_form_visible) {
+        if (codepoint > 0x7f) return;
+        if (g_ssh_focus >= SSH_FIELD_COUNT) return;
+        const field = g_ssh_focus;
+        if (g_ssh_lens[field] >= SSH_FIELD_MAX) return;
+        g_ssh_bufs[field][g_ssh_lens[field]] = @intCast(codepoint);
+        g_ssh_lens[field] += 1;
+        return;
+    }
+    if (g_ai_form_visible) {
+        if (g_ai_focus >= AI_FIELD_COUNT) return;
+        appendAiFormCodepoint(g_ai_focus, codepoint);
+    }
+}
+
+pub fn sessionLauncherPasteText(text: []const u8) bool {
+    if (g_ai_form_visible) {
+        if (g_ai_focus >= AI_FIELD_COUNT) return false;
+        appendAiFormText(g_ai_focus, text);
+        return true;
+    }
+    if (g_ssh_form_visible) {
+        if (g_ssh_focus >= SSH_FIELD_COUNT) return false;
+        appendSshFormText(g_ssh_focus, text);
+        return true;
+    }
+    return false;
 }
 
 pub fn sessionLauncherHandleKey(ev: win32_backend.KeyEvent) void {
@@ -960,9 +1028,13 @@ pub fn sessionLauncherHandleKey(ev: win32_backend.KeyEvent) void {
         return;
     }
 
-    if (!g_ssh_form_visible) {
+    if (!g_ssh_form_visible and !g_ai_form_visible) {
         if (g_ssh_list_visible) {
             handleSshListKey(ev);
+            return;
+        }
+        if (g_ai_list_visible) {
+            handleAiListKey(ev);
             return;
         }
         switch (ev.vk) {
@@ -981,6 +1053,23 @@ pub fn sessionLauncherHandleKey(ev: win32_backend.KeyEvent) void {
                 g_session_launcher_selected = 2;
                 runSessionLauncherRow(g_session_launcher_selected);
             },
+            0x41 => {
+                g_session_launcher_selected = 3;
+                runSessionLauncherRow(g_session_launcher_selected);
+            },
+            else => {},
+        }
+        return;
+    }
+
+    if (g_ai_form_visible) {
+        switch (ev.vk) {
+            win32_backend.VK_TAB, win32_backend.VK_DOWN => g_ai_focus = (g_ai_focus + 1) % (AI_FIELD_COUNT + 3),
+            win32_backend.VK_UP => g_ai_focus = if (g_ai_focus == 0) AI_FIELD_COUNT + 2 else g_ai_focus - 1,
+            win32_backend.VK_BACK => {
+                if (g_ai_focus < AI_FIELD_COUNT) backspaceAiFormField(g_ai_focus);
+            },
+            win32_backend.VK_RETURN => runAiFormFocusAction(),
             else => {},
         }
         return;
@@ -1011,12 +1100,19 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
         .powershell => openPowerShellSession(),
         .ssh => openSshList(),
         .wsl => openWslSession(),
+        .ai_chat => openAiList(),
         .connect_selected => runSshListRow(g_ssh_list_selected),
         .new_ssh => openSshFormNew(),
         .edit_selected => openSshEditPicker(),
         .delete_selected => openSshDeletePicker(),
+        .connect_ai_selected => runAiListRow(g_ai_list_selected),
+        .new_ai => openAiFormNew(),
+        .edit_ai_selected => openAiEditPicker(),
+        .delete_ai_selected => openAiDeletePicker(),
         .connect => connectSshFromForm(),
         .save => saveSshFormOnly(),
+        .connect_ai => connectAiFromForm(),
+        .save_ai => saveAiFormOnly(),
         .cancel => sessionLauncherClose(),
     }
     return true;
@@ -1037,6 +1133,7 @@ fn runSessionLauncherRow(row: usize) void {
         0 => openPowerShellSession(),
         1 => openSshList(),
         2 => openWslSession(),
+        3 => openAiList(),
         else => {},
     }
 }
@@ -1305,6 +1402,335 @@ pub fn tickSessionLauncher() void {
     g_pending_ssh_surface = null;
 }
 
+fn openAiList() void {
+    loadAiProfiles();
+    g_session_launcher_visible = false;
+    g_ssh_list_visible = false;
+    g_ssh_form_visible = false;
+    g_ai_list_visible = true;
+    g_ai_form_visible = false;
+    g_ai_list_mode = .manage;
+    g_ai_list_selected = @min(g_ai_list_selected, aiListRowCount() - 1);
+}
+
+fn openAiEditPicker() void {
+    openAiProfilePicker(.edit_select);
+}
+
+fn openAiDeletePicker() void {
+    openAiProfilePicker(.delete_select);
+}
+
+fn openAiProfilePicker(mode: AiListMode) void {
+    if (g_ai_profile_count == 0) return;
+    g_session_launcher_visible = false;
+    g_ssh_list_visible = false;
+    g_ssh_form_visible = false;
+    g_ai_list_visible = true;
+    g_ai_form_visible = false;
+    g_ai_list_mode = mode;
+    g_ai_list_selected = if (g_ai_list_selected < g_ai_profile_count) g_ai_list_selected else 0;
+}
+
+fn openAiFormNew() void {
+    clearAiForm();
+    g_ai_edit_index = AI_PROFILE_NONE;
+    openAiForm();
+}
+
+fn openAiFormEdit(index: usize) void {
+    if (index >= g_ai_profile_count) return;
+    clearAiForm();
+    for (0..AI_FIELD_COUNT) |i| {
+        g_ai_lens[i] = @min(g_ai_profiles[index].lens[i], AI_FIELD_MAX);
+        @memcpy(g_ai_bufs[i][0..g_ai_lens[i]], g_ai_profiles[index].fields[i][0..g_ai_lens[i]]);
+    }
+    g_ai_edit_index = index;
+    openAiForm();
+}
+
+fn openAiForm() void {
+    g_ssh_list_visible = false;
+    g_ssh_form_visible = false;
+    g_ai_list_visible = false;
+    g_session_launcher_visible = false;
+    g_ai_form_visible = true;
+    g_ai_focus = @intFromEnum(AiField.name);
+}
+
+fn setAiDefault(field: AiField, value: []const u8) void {
+    const idx: usize = @intFromEnum(field);
+    const len = @min(value.len, AI_FIELD_MAX);
+    @memcpy(g_ai_bufs[idx][0..len], value[0..len]);
+    g_ai_lens[idx] = len;
+}
+
+fn clearAiForm() void {
+    g_ai_lens = .{0} ** AI_FIELD_COUNT;
+    setAiDefault(.name, AppWindow.ai_chat.DEFAULT_NAME);
+    setAiDefault(.base_url, AppWindow.ai_chat.DEFAULT_BASE_URL);
+    setAiDefault(.model, AppWindow.ai_chat.DEFAULT_MODEL);
+    setAiDefault(.system_prompt, AppWindow.ai_chat.DEFAULT_SYSTEM_PROMPT);
+}
+
+fn appendAiFormCodepoint(field: usize, codepoint: u21) void {
+    if (field >= AI_FIELD_COUNT) return;
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
+    if (g_ai_lens[field] + len > AI_FIELD_MAX) return;
+    @memcpy(g_ai_bufs[field][g_ai_lens[field]..][0..len], buf[0..len]);
+    g_ai_lens[field] += len;
+}
+
+fn appendAiFormText(field: usize, text: []const u8) void {
+    if (field >= AI_FIELD_COUNT) return;
+    var i: usize = 0;
+    while (i < text.len) {
+        const len = std.unicode.utf8ByteSequenceLength(text[i]) catch {
+            i += 1;
+            continue;
+        };
+        if (i + len > text.len) break;
+        const codepoint = std.unicode.utf8Decode(text[i .. i + len]) catch {
+            i += 1;
+            continue;
+        };
+        if (codepoint >= 0x20 and codepoint != 0x7f) {
+            appendAiFormCodepoint(field, codepoint);
+        }
+        i += len;
+    }
+}
+
+fn appendSshFormText(field: usize, text: []const u8) void {
+    if (field >= SSH_FIELD_COUNT) return;
+    for (text) |ch| {
+        if (ch < 0x20 or ch >= 0x7f) continue;
+        if (g_ssh_lens[field] >= SSH_FIELD_MAX) return;
+        g_ssh_bufs[field][g_ssh_lens[field]] = ch;
+        g_ssh_lens[field] += 1;
+    }
+}
+
+fn backspaceAiFormField(field: usize) void {
+    if (field >= AI_FIELD_COUNT or g_ai_lens[field] == 0) return;
+    g_ai_lens[field] -= 1;
+    while (g_ai_lens[field] > 0 and (g_ai_bufs[field][g_ai_lens[field]] & 0xC0) == 0x80) {
+        g_ai_lens[field] -= 1;
+    }
+}
+
+fn handleAiListKey(ev: win32_backend.KeyEvent) void {
+    const row_count = aiListRowCount();
+    switch (ev.vk) {
+        win32_backend.VK_DOWN, win32_backend.VK_TAB => g_ai_list_selected = (g_ai_list_selected + 1) % row_count,
+        win32_backend.VK_UP => g_ai_list_selected = if (g_ai_list_selected == 0) row_count - 1 else g_ai_list_selected - 1,
+        win32_backend.VK_RETURN => runAiListRow(g_ai_list_selected),
+        else => {},
+    }
+}
+
+fn aiListRowCount() usize {
+    return switch (g_ai_list_mode) {
+        .manage => g_ai_profile_count + 4,
+        .edit_select, .delete_select => g_ai_profile_count + 1,
+    };
+}
+
+fn aiField(field: AiField) []const u8 {
+    const idx: usize = @intFromEnum(field);
+    return g_ai_bufs[idx][0..g_ai_lens[idx]];
+}
+
+fn aiProfileField(profile: *const AiProfile, field: AiField) []const u8 {
+    const idx: usize = @intFromEnum(field);
+    return profile.fields[idx][0..profile.lens[idx]];
+}
+
+fn runAiListRow(row: usize) void {
+    switch (g_ai_list_mode) {
+        .manage => {
+            if (row < g_ai_profile_count) {
+                connectAiProfile(row);
+                return;
+            }
+            const action_row = row - g_ai_profile_count;
+            switch (action_row) {
+                0 => openAiFormNew(),
+                1 => openAiEditPicker(),
+                2 => openAiDeletePicker(),
+                else => sessionLauncherClose(),
+            }
+        },
+        .edit_select => {
+            if (row < g_ai_profile_count) {
+                openAiFormEdit(row);
+            } else {
+                openAiList();
+            }
+        },
+        .delete_select => {
+            if (row < g_ai_profile_count) {
+                deleteAiProfile(row);
+                openAiList();
+            } else {
+                openAiList();
+            }
+        },
+    }
+}
+
+fn deleteAiProfile(idx: usize) void {
+    if (g_ai_profile_count == 0) return;
+    if (idx >= g_ai_profile_count) return;
+    var i = idx;
+    while (i + 1 < g_ai_profile_count) : (i += 1) {
+        g_ai_profiles[i] = g_ai_profiles[i + 1];
+    }
+    g_ai_profile_count -= 1;
+    g_ai_list_selected = @min(g_ai_list_selected, aiListRowCount() - 1);
+    if (AppWindow.g_allocator) |allocator| saveAiProfiles(allocator);
+}
+
+fn connectAiFromForm() void {
+    const idx = saveAiFormProfile() orelse return;
+    connectAiProfile(idx);
+}
+
+fn saveAiFormOnly() void {
+    _ = saveAiFormProfile() orelse return;
+    openAiList();
+}
+
+fn runAiFormFocusAction() void {
+    if (g_ai_focus < AI_FIELD_COUNT) {
+        g_ai_focus = (g_ai_focus + 1) % (AI_FIELD_COUNT + 3);
+        return;
+    }
+    switch (g_ai_focus - AI_FIELD_COUNT) {
+        0 => connectAiFromForm(),
+        1 => saveAiFormOnly(),
+        else => openAiList(),
+    }
+}
+
+fn saveAiFormProfile() ?usize {
+    const allocator = AppWindow.g_allocator orelse return null;
+    const base_url = aiField(.base_url);
+    const model = aiField(.model);
+    if (base_url.len == 0 or model.len == 0) return null;
+    if (!isHttpUrlish(base_url)) return null;
+
+    const idx = if (g_ai_edit_index != AI_PROFILE_NONE)
+        g_ai_edit_index
+    else blk: {
+        if (g_ai_profile_count >= AI_PROFILE_MAX) return null;
+        const next = g_ai_profile_count;
+        g_ai_profile_count += 1;
+        break :blk next;
+    };
+
+    for (0..AI_FIELD_COUNT) |i| {
+        g_ai_profiles[idx].lens[i] = g_ai_lens[i];
+        @memcpy(g_ai_profiles[idx].fields[i][0..g_ai_lens[i]], g_ai_bufs[i][0..g_ai_lens[i]]);
+    }
+    if (g_ai_profiles[idx].lens[@intFromEnum(AiField.name)] == 0) {
+        const len = @min(model.len, AI_FIELD_MAX);
+        @memcpy(g_ai_profiles[idx].fields[@intFromEnum(AiField.name)][0..len], model[0..len]);
+        g_ai_profiles[idx].lens[@intFromEnum(AiField.name)] = len;
+    }
+
+    saveAiProfiles(allocator);
+    g_ai_edit_index = idx;
+    return idx;
+}
+
+fn connectAiProfile(idx: usize) void {
+    if (idx >= g_ai_profile_count) return;
+    const profile = &g_ai_profiles[idx];
+    const name = aiProfileField(profile, .name);
+    const base_url = aiProfileField(profile, .base_url);
+    const api_key = aiProfileField(profile, .api_key);
+    const model = aiProfileField(profile, .model);
+    const system_prompt = aiProfileField(profile, .system_prompt);
+    if (base_url.len == 0 or model.len == 0) return;
+    if (!isHttpUrlish(base_url)) return;
+
+    sessionLauncherClose();
+    _ = AppWindow.spawnAiChatTab(name, base_url, api_key, model, system_prompt);
+}
+
+fn isHttpUrlish(value: []const u8) bool {
+    return std.mem.startsWith(u8, value, "https://") or std.mem.startsWith(u8, value, "http://");
+}
+
+fn aiProfilesPath(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
+        defer allocator.free(appdata);
+        return std.fs.path.join(allocator, &.{ appdata, "phantty", "ai_profiles" });
+    } else |_| {}
+    return std.fs.path.join(allocator, &.{ ".", "ai_profiles" });
+}
+
+fn loadAiProfiles() void {
+    if (g_ai_profiles_loaded) return;
+    g_ai_profiles_loaded = true;
+    g_ai_profile_count = 0;
+    const allocator = AppWindow.g_allocator orelse return;
+    const path = aiProfilesPath(allocator) catch return;
+    defer allocator.free(path);
+    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return;
+    defer allocator.free(content);
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line_raw| {
+        if (g_ai_profile_count >= AI_PROFILE_MAX) break;
+        const line = std.mem.trimRight(u8, line_raw, "\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        var profile = AiProfile{};
+        var parts = std.mem.splitScalar(u8, line, '\t');
+        var field_idx: usize = 0;
+        var ok = true;
+        while (field_idx < AI_FIELD_COUNT) : (field_idx += 1) {
+            const part = parts.next() orelse {
+                ok = false;
+                break;
+            };
+            const decoded = decodeHexFieldToSlice(part, profile.fields[field_idx][0..]) orelse {
+                ok = false;
+                break;
+            };
+            profile.lens[field_idx] = decoded;
+        }
+        if (!ok) continue;
+        g_ai_profiles[g_ai_profile_count] = profile;
+        g_ai_profile_count += 1;
+    }
+}
+
+fn saveAiProfiles(allocator: std.mem.Allocator) void {
+    const path = aiProfilesPath(allocator) catch return;
+    defer allocator.free(path);
+    if (std.fs.path.dirname(path)) |dir| {
+        std.fs.cwd().makePath(dir) catch return;
+    }
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+    out.appendSlice(allocator, "# Phantty AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt.\n") catch return;
+    for (g_ai_profiles[0..g_ai_profile_count]) |profile| {
+        for (0..AI_FIELD_COUNT) |i| {
+            if (i > 0) out.append(allocator, '\t') catch return;
+            appendHexField(allocator, &out, profile.fields[i][0..profile.lens[i]]) catch return;
+        }
+        out.append(allocator, '\n') catch return;
+    }
+
+    const file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch return;
+    defer file.close();
+    file.writeAll(out.items) catch {};
+}
+
 fn sshProfilesPath(allocator: std.mem.Allocator) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
         defer allocator.free(appdata);
@@ -1381,8 +1807,12 @@ fn appendHexField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)
 }
 
 fn decodeHexField(value: []const u8, out: *[SSH_FIELD_MAX]u8) ?usize {
+    return decodeHexFieldToSlice(value, out[0..]);
+}
+
+fn decodeHexFieldToSlice(value: []const u8, out: []u8) ?usize {
     if (value.len % 2 != 0) return null;
-    const len = @min(value.len / 2, SSH_FIELD_MAX);
+    const len = @min(value.len / 2, out.len);
     var i: usize = 0;
     while (i < len) : (i += 1) {
         const hi = hexValue(value[i * 2]) orelse return null;
@@ -1405,6 +1835,14 @@ fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
 }
 
 fn sessionLauncherTitle() []const u8 {
+    if (g_ai_form_visible) return "AI Chat";
+    if (g_ai_list_visible) {
+        return switch (g_ai_list_mode) {
+            .manage => "AI Chats",
+            .edit_select => "Edit AI Chat",
+            .delete_select => "Delete AI Chat",
+        };
+    }
     if (g_ssh_form_visible) return "SSH Server";
     if (g_ssh_list_visible) {
         return switch (g_ssh_list_mode) {
@@ -1417,6 +1855,14 @@ fn sessionLauncherTitle() []const u8 {
 }
 
 fn sessionLauncherHint() []const u8 {
+    if (g_ai_form_visible) return "Tab changes field, Enter connects";
+    if (g_ai_list_visible) {
+        return switch (g_ai_list_mode) {
+            .manage => "Enter opens, New/Edit/Delete manage",
+            .edit_select => "Choose a profile to edit",
+            .delete_select => "Choose a profile to delete",
+        };
+    }
     if (g_ssh_form_visible) return "Tab changes field, Enter connects";
     if (g_ssh_list_visible) {
         return switch (g_ssh_list_mode) {
@@ -1433,6 +1879,18 @@ fn sessionDesiredBoxWidth() f32 {
     const hint = sessionLauncherHint();
     var desired = @max(measureTitlebarText(title), measureTitlebarText(hint)) + 48.0;
 
+    if (g_ai_form_visible) {
+        desired = @max(desired, sessionTwoColumnWidth("Profile name", aiField(.name)));
+        desired = @max(desired, sessionTwoColumnWidth("Base URL", aiField(.base_url)));
+        desired = @max(desired, sessionTwoColumnWidth("API key", aiField(.api_key)));
+        desired = @max(desired, sessionTwoColumnWidth("Model", aiField(.model)));
+        desired = @max(desired, sessionTwoColumnWidth("System prompt", aiField(.system_prompt)));
+        desired = @max(desired, sessionTwoColumnWidth("Save & Open", "chat"));
+        desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
+        desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
+        return desired;
+    }
+
     if (g_ssh_form_visible) {
         desired = @max(desired, sessionTwoColumnWidth("Server name", sshField(.name)));
         desired = @max(desired, sessionTwoColumnWidth("IP / host", sshField(.ip)));
@@ -1442,6 +1900,33 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("Save & Connect", "ssh.exe"));
         desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
         desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
+        return desired;
+    }
+
+    if (g_ai_list_visible) {
+        var row: usize = 0;
+        while (row < g_ai_profile_count) : (row += 1) {
+            var detail_buf: [AI_FIELD_MAX]u8 = undefined;
+            const profile = &g_ai_profiles[row];
+            const model = aiProfileField(profile, .model);
+            const base_url = aiProfileField(profile, .base_url);
+            const detail = if (model.len > 0)
+                model
+            else
+                std.fmt.bufPrint(&detail_buf, "{s}", .{base_url}) catch "";
+            desired = @max(desired, sessionTwoColumnWidth(aiProfileField(profile, .name), detail));
+        }
+        switch (g_ai_list_mode) {
+            .manage => {
+                desired = @max(desired, sessionTwoColumnWidth("New AI Chat", "add"));
+                desired = @max(desired, sessionTwoColumnWidth("Edit AI Chat", if (g_ai_profile_count > 0) "choose" else "no profile"));
+                desired = @max(desired, sessionTwoColumnWidth("Delete AI Chat", if (g_ai_profile_count > 0) "choose" else "no profile"));
+                desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
+            },
+            .edit_select, .delete_select => {
+                desired = @max(desired, sessionTwoColumnWidth("Back", "manage"));
+            },
+        }
         return desired;
     }
 
@@ -1476,18 +1961,28 @@ fn sessionDesiredBoxWidth() f32 {
     desired = @max(desired, sessionTwoColumnWidth("PowerShell", "new terminal"));
     desired = @max(desired, sessionTwoColumnWidth("SSH", "connect server"));
     desired = @max(desired, sessionTwoColumnWidth("WSL", "wsl.exe ~"));
+    desired = @max(desired, sessionTwoColumnWidth("AI Chat", "DeepSeek"));
     return desired;
 }
 
 fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) SessionLayout {
     const content_height = @max(1, window_height - top_offset);
-    const min_box_w: f32 = if (g_ssh_form_visible or g_ssh_list_visible) 460 else 360;
+    const min_box_w: f32 = if (g_ssh_form_visible or g_ssh_list_visible or g_ai_form_visible or g_ai_list_visible) 460 else 360;
     const max_box_w = @max(260.0, @min(760.0, window_width - 48.0));
     const box_w: f32 = @round(@min(@max(min_box_w, sessionDesiredBoxWidth()), max_box_w));
     const row_h = overlayRowHeight(38);
     const header_h = @round(18 + overlayLineHeight() * 2 + 12);
     const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
-    const row_count: usize = if (g_ssh_form_visible) SSH_FIELD_COUNT + 3 else if (g_ssh_list_visible) sshListRowCount() else SESSION_LAUNCHER_ROW_COUNT;
+    const row_count: usize = if (g_ai_form_visible)
+        AI_FIELD_COUNT + 3
+    else if (g_ai_list_visible)
+        aiListRowCount()
+    else if (g_ssh_form_visible)
+        SSH_FIELD_COUNT + 3
+    else if (g_ssh_list_visible)
+        sshListRowCount()
+    else
+        SESSION_LAUNCHER_ROW_COUNT;
     const box_h = @round(header_h + row_h * @as(f32, @floatFromInt(row_count)) + bottom_pad);
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
@@ -1523,13 +2018,41 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         };
     }
 
-    if (!g_ssh_form_visible) {
+    if (g_ai_list_visible) {
+        if (row >= aiListRowCount()) return null;
+        g_ai_list_selected = row;
+        if (row < g_ai_profile_count) return .connect_ai_selected;
+        if (g_ai_list_mode != .manage) return .connect_ai_selected;
+        return switch (row - g_ai_profile_count) {
+            0 => .new_ai,
+            1 => .edit_ai_selected,
+            2 => .delete_ai_selected,
+            else => .cancel,
+        };
+    }
+
+    if (!g_ssh_form_visible and !g_ai_form_visible) {
         if (row >= SESSION_LAUNCHER_ROW_COUNT) return null;
         g_session_launcher_selected = row;
         return switch (row) {
             0 => .powershell,
             1 => .ssh,
             2 => .wsl,
+            3 => .ai_chat,
+            else => null,
+        };
+    }
+
+    if (g_ai_form_visible) {
+        if (row < AI_FIELD_COUNT) {
+            g_ai_focus = row;
+            return null;
+        }
+        g_ai_focus = row;
+        return switch (row) {
+            AI_FIELD_COUNT => .connect_ai,
+            AI_FIELD_COUNT + 1 => .save_ai,
+            AI_FIELD_COUNT + 2 => .cancel,
             else => null,
         };
     }
@@ -1576,13 +2099,21 @@ fn renderSessionRow(layout: SessionLayout, window_height: f32, row: usize, left:
 }
 
 fn renderSessionField(layout: SessionLayout, window_height: f32, row: usize, label: []const u8, value: []const u8, masked: bool) void {
-    var display_buf: [SSH_FIELD_MAX]u8 = undefined;
+    renderSessionFieldValue(layout, window_height, row, label, value, masked, g_ssh_focus == row);
+}
+
+fn renderAiSessionField(layout: SessionLayout, window_height: f32, row: usize, label: []const u8, value: []const u8, masked: bool) void {
+    renderSessionFieldValue(layout, window_height, row, label, value, masked, g_ai_focus == row);
+}
+
+fn renderSessionFieldValue(layout: SessionLayout, window_height: f32, row: usize, label: []const u8, value: []const u8, masked: bool, selected: bool) void {
+    var display_buf: [AI_FIELD_MAX]u8 = undefined;
     const display = if (masked) blk: {
         const len = @min(value.len, display_buf.len);
         @memset(display_buf[0..len], '*');
         break :blk display_buf[0..len];
     } else value;
-    renderSessionRow(layout, window_height, row, label, display, g_ssh_focus == row);
+    renderSessionRow(layout, window_height, row, label, display, selected);
 }
 
 fn renderSshProfileRow(layout: SessionLayout, window_height: f32, row: usize, profile: *const SshProfile, selected: bool) void {
@@ -1595,6 +2126,14 @@ fn renderSshProfileRow(layout: SessionLayout, window_height: f32, row: usize, pr
     else
         std.fmt.bufPrint(&target_buf, "{s}@{s}", .{ user, host }) catch "";
     renderSessionRow(layout, window_height, row, profileField(profile, .name), target, selected);
+}
+
+fn renderAiProfileRow(layout: SessionLayout, window_height: f32, row: usize, profile: *const AiProfile, selected: bool) void {
+    const name = aiProfileField(profile, .name);
+    const model = aiProfileField(profile, .model);
+    const base_url = aiProfileField(profile, .base_url);
+    const detail = if (model.len > 0) model else base_url;
+    renderSessionRow(layout, window_height, row, name, detail, selected);
 }
 
 pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: f32) void {
@@ -1628,7 +2167,28 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderTitlebarTextStrong(title, layout.box_x + 24, title_y, title_color);
     renderTitlebarTextStrongLimited(hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
 
-    if (!g_ssh_form_visible) {
+    if (!g_ssh_form_visible and !g_ai_form_visible) {
+        if (g_ai_list_visible) {
+            var row: usize = 0;
+            while (row < g_ai_profile_count) : (row += 1) {
+                renderAiProfileRow(layout, window_height, row, &g_ai_profiles[row], g_ai_list_selected == row);
+            }
+            switch (g_ai_list_mode) {
+                .manage => {
+                    renderSessionRow(layout, window_height, row, "New AI Chat", "add", g_ai_list_selected == row);
+                    row += 1;
+                    renderSessionRow(layout, window_height, row, "Edit AI Chat", if (g_ai_profile_count > 0) "choose" else "no profile", g_ai_list_selected == row);
+                    row += 1;
+                    renderSessionRow(layout, window_height, row, "Delete AI Chat", if (g_ai_profile_count > 0) "choose" else "no profile", g_ai_list_selected == row);
+                    row += 1;
+                    renderSessionRow(layout, window_height, row, "Cancel", "Esc", g_ai_list_selected == row);
+                },
+                .edit_select, .delete_select => {
+                    renderSessionRow(layout, window_height, row, "Back", "manage", g_ai_list_selected == row);
+                },
+            }
+            return;
+        }
         if (g_ssh_list_visible) {
             var row: usize = 0;
             while (row < g_ssh_profile_count) : (row += 1) {
@@ -1653,6 +2213,19 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderSessionRow(layout, window_height, 0, "PowerShell", "new terminal", g_session_launcher_selected == 0);
         renderSessionRow(layout, window_height, 1, "SSH", "connect server", g_session_launcher_selected == 1);
         renderSessionRow(layout, window_height, 2, "WSL", "wsl.exe ~", g_session_launcher_selected == 2);
+        renderSessionRow(layout, window_height, 3, "AI Chat", "DeepSeek", g_session_launcher_selected == 3);
+        return;
+    }
+
+    if (g_ai_form_visible) {
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.name), "Profile name", aiField(.name), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.base_url), "Base URL", aiField(.base_url), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.api_key), "API key", aiField(.api_key), true);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.model), "Model", aiField(.model), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.system_prompt), "System prompt", aiField(.system_prompt), false);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT, "Save & Open", "chat", g_ai_focus == AI_FIELD_COUNT);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, "Save", "profile", g_ai_focus == AI_FIELD_COUNT + 1);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, "Cancel", "Esc", g_ai_focus == AI_FIELD_COUNT + 2);
         return;
     }
 

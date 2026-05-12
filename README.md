@@ -1,16 +1,15 @@
-<h1>
-  <p align="center">
-    <img src="assets/phantty.png" alt="Phantty logo" width="128">
-    <br>Phantty
-  </p>
-</h1>
+
+
+  
+Phantty
 
 A Windows terminal written in Zig, powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
 
 > [!NOTE]
 > This repository is a fork of [arya-s/phantty](https://github.com/arya-s/phantty),
 > with additional features layered on top: an embedded WebView2 browser panel,
-> a file explorer with Markdown/text preview, an opt-in remote-access client,
+> a file explorer with Markdown/text preview, AI Chat sessions,
+> an opt-in remote-access client,
 > Kitty Graphics image protocol support, and a configurable background image.
 
 ## Features
@@ -24,13 +23,13 @@ A Windows terminal written in Zig, powered by [libghostty-vt](https://github.com
 - **Splits and tabs** — vertical/horizontal splits, tab strip, focus-follows-mouse, equalize sizes
 - **File Explorer and previews** — browse local, WSL, and SSH files; preview Markdown/text without leaving the terminal
 - **Embedded browser panel** — open `http://` / `https://` URLs in a side WebView2 panel; SSH sessions tunnel loopback URLs automatically
+- **AI Chat sessions** — launch an OpenAI-compatible chat tab from saved profiles; DeepSeek is the default provider/model
 - **Kitty Graphics protocol** — display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
 - **Custom post-processing shaders** — Ghostty-compatible GLSL post-processing (CRT, glitch, etc.); the wallpaper is rendered inside the same FBO so effects apply uniformly
 - **Opt-in remote access** — share a session key over a Cloudflare-hosted relay (disabled by default)
 
 > [!NOTE]
 > Phantty is **Windows-only**. On macOS and Linux, use [Ghostty](https://ghostty.org/) instead.
-
 
 ## Building
 
@@ -115,32 +114,34 @@ Options:
 
 ## Keyboard shortcuts
 
-Default chords are implemented in [`src/input.zig`](src/input.zig). Some keys are handled first when a modal overlay is open (command center, session launcher, settings, and similar).
+Default chords are implemented in `[src/input.zig](src/input.zig)`. Some keys are handled first when a modal overlay is open (command center, session launcher, settings, and similar).
 
-| Shortcut | Action |
-|----------|--------|
-| **Ctrl+Shift+P** | Open command center |
-| **Ctrl+Shift+T** | New session (session launcher) |
-| **Ctrl+Shift+N** | New window |
-| **Ctrl+Shift+B** | Toggle tab sidebar |
-| **Ctrl+Shift+O** | Split to the right |
-| **Ctrl+Shift+E** | Toggle file explorer sidebar |
-| Ctrl-click `.md` / `.txt` in terminal output, or double-click in File Explorer | Preview local, WSL, or SSH Markdown/text in the right preview panel |
-| **Ctrl+Shift+W** | Close focused panel, tab, or window; press again to confirm closing the last panel |
-| **Alt+Enter** | Maximize or restore window |
-| **Ctrl++** / **Ctrl+-** | Increase / decrease font size |
-| **Ctrl+Shift+C** | Copy selection |
-| Right-click a selection | Copy selection |
-| **Ctrl+V** | Paste text |
-| **Ctrl+Shift+V** | Paste clipboard image |
-| **Alt** + arrow keys | Move focus to adjacent panel (spatial) |
-| **Ctrl+Shift+[** | Focus previous panel (cycle) |
-| **Ctrl+Shift+]** | Focus next panel (cycle) |
-| **Ctrl+Shift+Z** | Equalize split sizes |
-| **Ctrl+Tab** | Next tab |
-| **Ctrl+Shift+Tab** | Previous tab |
-| **Alt+1**–**9** | Switch to tab 1–9 (when that tab exists) |
-| **Ctrl+,** | Open config file in the default editor |
+
+| Shortcut                                                                       | Action                                                                             |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| **Ctrl+Shift+P**                                                               | Open command center                                                                |
+| **Ctrl+Shift+T**                                                               | New session (session launcher)                                                     |
+| **Ctrl+Shift+N**                                                               | New window                                                                         |
+| **Ctrl+Shift+B**                                                               | Toggle tab sidebar                                                                 |
+| **Ctrl+Shift+O**                                                               | Split to the right                                                                 |
+| **Ctrl+Shift+E**                                                               | Toggle file explorer sidebar                                                       |
+| Ctrl-click `.md` / `.txt` in terminal output, or double-click in File Explorer | Preview local, WSL, or SSH Markdown/text in the right preview panel                |
+| **Ctrl+Shift+W**                                                               | Close focused panel, tab, or window; press again to confirm closing the last panel |
+| **Alt+Enter**                                                                  | Maximize or restore window                                                         |
+| **Ctrl++** / **Ctrl+-**                                                        | Increase / decrease font size                                                      |
+| **Ctrl+Shift+C**                                                               | Copy selection                                                                     |
+| Right-click a selection                                                        | Copy selection                                                                     |
+| **Ctrl+V**                                                                     | Paste text                                                                         |
+| **Ctrl+Shift+V**                                                               | Paste clipboard image                                                              |
+| **Alt** + arrow keys                                                           | Move focus to adjacent panel (spatial)                                             |
+| **Ctrl+Shift+[**                                                               | Focus previous panel (cycle)                                                       |
+| **Ctrl+Shift+]**                                                               | Focus next panel (cycle)                                                           |
+| **Ctrl+Shift+Z**                                                               | Equalize split sizes                                                               |
+| **Ctrl+Tab**                                                                   | Next tab                                                                           |
+| **Ctrl+Shift+Tab**                                                             | Previous tab                                                                       |
+| **Alt+1**–**9**                                                                | Switch to tab 1–9 (when that tab exists)                                           |
+| **Ctrl+,**                                                                     | Open config file in the default editor                                             |
+
 
 ## File Explorer and Markdown Preview
 
@@ -176,6 +177,27 @@ the built-in SSH launcher are supported. Manually typing `ssh user@host` inside
 a local shell is still treated as that local shell and cannot use remote file
 preview yet.
 
+## AI Chat Sessions
+
+Open the session launcher with `Ctrl+Shift+T`, choose `AI Chat`, then create or
+select a saved AI profile. AI profiles are managed in the launcher the same way
+SSH profiles are: profile data is stored under `%APPDATA%\phantty\ai_profiles`,
+with fields hex encoded on disk.
+
+The first AI Chat implementation targets OpenAI-compatible chat completions.
+The built-in defaults are:
+
+- Base URL: `https://api.deepseek.com`
+- Model: `deepseek-v4-pro`
+- System prompt: `You are a helpful assistant.`
+- Request mode: DeepSeek thinking enabled, `reasoning_effort = high`, non-streaming
+
+If an AI profile does not include an API key and its base URL points at
+DeepSeek, Phantty also checks `DEEPSEEK_API_KEY` in the process environment.
+Responses with `reasoning_content` are shown as a muted reasoning block above
+the assistant reply. This follows DeepSeek's
+[thinking mode guide](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode).
+
 ## Background Image
 
 Set `background-image` in the config (or pass `--background-image`) to render a
@@ -184,25 +206,29 @@ wallpaper behind the terminal. PNG, JPG, BMP, GIF, and TGA are supported.
 `background-opacity` controls how strongly the theme background tints the
 wallpaper:
 
-| Value | Effect |
-|------:|--------|
+
+| Value           | Effect                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------ |
 | `1.0` (default) | Theme background is fully opaque — image is hidden, terminal looks the same as without one |
-| `0.85` | Faint watermark (image shows through ~15%) |
-| `0.5` | Equal blend |
-| `0.15` | Image dominates with a light theme tint |
-| `0.0` | Theme tint is skipped — image at full strength |
+| `0.85`          | Faint watermark (image shows through ~15%)                                                 |
+| `0.5`           | Equal blend                                                                                |
+| `0.15`          | Image dominates with a light theme tint                                                    |
+| `0.0`           | Theme tint is skipped — image at full strength                                             |
+
 
 The opacity also applies to per-cell backgrounds (selections, ANSI-colored
 backgrounds), so the wallpaper shows through them at the same ratio.
 
 `background-image-mode` selects how the image is sized to the window:
 
-| Mode | Behavior |
-|------|----------|
-| `fill` (default) | Cover the window, cropping the longer axis |
-| `fit` | Letterbox so the whole image is visible (edges may stretch) |
-| `center` | 1:1 pixel scale, centered |
-| `tile` | Repeat at native size with `GL_REPEAT` |
+
+| Mode             | Behavior                                                    |
+| ---------------- | ----------------------------------------------------------- |
+| `fill` (default) | Cover the window, cropping the longer axis                  |
+| `fit`            | Letterbox so the whole image is visible (edges may stretch) |
+| `center`         | 1:1 pixel scale, centered                                   |
+| `tile`           | Repeat at native size with `GL_REPEAT`                      |
+
 
 The wallpaper is drawn inside the post-process framebuffer, so a custom shader
 set with `--custom-shader` distorts it together with the terminal content.
@@ -274,27 +300,29 @@ remote-device-name = Workstation
 
 ### Available keys
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `font-family` | *(none)* | Font family name (falls back to embedded font if unset) |
-| `font-style` | `regular` | Font weight: `thin`, `extra-light`, `light`, `regular`, `medium`, `semi-bold`, `bold`, `extra-bold`, `black` |
-| `font-size` | `12` | Font size in points |
-| `cursor-style` | `block` | Cursor shape: `block`, `bar`, `underline`, `block_hollow` |
-| `cursor-style-blink` | `true` | Enable cursor blinking |
-| `theme` | *(none)* | Theme name or absolute path (453 Ghostty themes built-in) |
-| `custom-shader` | *(none)* | Path to a GLSL post-processing shader |
-| `background-image` | *(none)* | Path to an image (PNG/JPG/BMP/GIF/TGA) rendered behind the terminal |
-| `background-opacity` | `1.0` | Opacity of the theme tint over the wallpaper (0.0 = image only, 1.0 = image hidden) |
-| `background-image-mode` | `fill` | Image scaling: `fill`, `fit`, `center`, or `tile` |
-| `window-height` | `0` (auto) | Initial height in cells (min: 4, 0 = auto 80×24) |
-| `window-width` | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80×24) |
-| `scrollback-limit` | `10000000` | Scrollback buffer limit in bytes |
-| `restore-tabs-on-startup` | `false` | Persist tab/split layout to `%APPDATA%\phantty\session.json` on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--cwd`) take precedence and skip restore. |
-| `config-file` | *(none)* | Include another config file (prefix with `?` to make optional) |
-| `remote-enabled` | `false` | Start the shared outbound RemoteClient for this Phantty instance |
-| `remote-server-url` | *(none)* | Cloudflare relay URL, for example `https://remote.example.com` |
-| `remote-server-fingerprint` | *(none)* | Expected relay fingerprint for server identity pinning |
-| `remote-device-name` | *(none)* | Friendly device name sent with the Phantty WebSocket pairing |
+
+| Key                         | Default    | Description                                                                                                                                                                                                             |
+| --------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `font-family`               | *(none)*   | Font family name (falls back to embedded font if unset)                                                                                                                                                                 |
+| `font-style`                | `regular`  | Font weight: `thin`, `extra-light`, `light`, `regular`, `medium`, `semi-bold`, `bold`, `extra-bold`, `black`                                                                                                            |
+| `font-size`                 | `12`       | Font size in points                                                                                                                                                                                                     |
+| `cursor-style`              | `block`    | Cursor shape: `block`, `bar`, `underline`, `block_hollow`                                                                                                                                                               |
+| `cursor-style-blink`        | `true`     | Enable cursor blinking                                                                                                                                                                                                  |
+| `theme`                     | *(none)*   | Theme name or absolute path (453 Ghostty themes built-in)                                                                                                                                                               |
+| `custom-shader`             | *(none)*   | Path to a GLSL post-processing shader                                                                                                                                                                                   |
+| `background-image`          | *(none)*   | Path to an image (PNG/JPG/BMP/GIF/TGA) rendered behind the terminal                                                                                                                                                     |
+| `background-opacity`        | `1.0`      | Opacity of the theme tint over the wallpaper (0.0 = image only, 1.0 = image hidden)                                                                                                                                     |
+| `background-image-mode`     | `fill`     | Image scaling: `fill`, `fit`, `center`, or `tile`                                                                                                                                                                       |
+| `window-height`             | `0` (auto) | Initial height in cells (min: 4, 0 = auto 80×24)                                                                                                                                                                        |
+| `window-width`              | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80×24)                                                                                                                                                                        |
+| `scrollback-limit`          | `10000000` | Scrollback buffer limit in bytes                                                                                                                                                                                        |
+| `restore-tabs-on-startup`   | `false`    | Persist tab/split layout to `%APPDATA%\phantty\session.json` on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--cwd`) take precedence and skip restore. |
+| `config-file`               | *(none)*   | Include another config file (prefix with `?` to make optional)                                                                                                                                                          |
+| `remote-enabled`            | `false`    | Start the shared outbound RemoteClient for this Phantty instance                                                                                                                                                        |
+| `remote-server-url`         | *(none)*   | Cloudflare relay URL, for example `https://remote.example.com`                                                                                                                                                          |
+| `remote-server-fingerprint` | *(none)*   | Expected relay fingerprint for server identity pinning                                                                                                                                                                  |
+| `remote-device-name`        | *(none)*   | Friendly device name sent with the Phantty WebSocket pairing                                                                                                                                                            |
+
 
 When `remote-enabled = true`, Phantty creates one RemoteClient for the running
 instance. All tabs and splits publish PTY output through that shared client, and
@@ -305,11 +333,11 @@ session key, or use `Copy Remote Key` from the command center.
 ## Credits
 
 - Original project: [arya-s/phantty](https://github.com/arya-s/phantty) — the
-  Zig + libghostty-vt foundation and the Windows terminal core.
+Zig + libghostty-vt foundation and the Windows terminal core.
 - Terminal emulation: [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)
-  via `libghostty-vt`.
+via `libghostty-vt`.
 - Image decoding: [stb_image](https://github.com/nothings/stb) (vendored
-  through the ghostty dependency).
+through the ghostty dependency).
 
 ## License
 
