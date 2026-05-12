@@ -28,6 +28,7 @@
         <a href="#install">安装</a>
         <a href="#config">配置</a>
         <a href="#shortcuts">快捷键</a>
+        <a href="#faq">常见问题</a>
         <span class="lang-switch" role="group" aria-label="语言">
           <a class="lang" href="./">EN</a>
           <a class="lang active" href="./zh.html" aria-current="page">中文</a>
@@ -228,6 +229,22 @@ ai-agent-output-limit  = 16384</code></pre>
           <div><span class="label">粘贴文本</span><span class="keys"><kbd>Ctrl</kbd><kbd>V</kbd></span></div>
           <div><span class="label">粘贴剪贴板图片</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>V</kbd></span></div>
           <div><span class="label">打开配置文件</span><span class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="section">
+      <div class="container">
+        <h2>常见问题</h2>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>默认 PowerShell 为什么不是管理员？</h3>
+            <p>子 Shell 会继承 Phantty 进程的权限级别。普通双击或开始菜单启动通常是<strong>非提升</strong>令牌（即使用户在 Administrators 组，UAC 下也是如此）。Phantty 不会自动为新标签提权。</p>
+          </div>
+          <div class="feature">
+            <h3>如何以管理员身份使用终端？</h3>
+            <p>右键 <code>phantty.exe</code> 或快捷方式，选择<strong>以管理员身份运行</strong>，该窗口内新建标签会继承提升后的令牌。若只需临时开一个提升的控制台，可在任意 Shell 中执行 <code>Start-Process pwsh -Verb RunAs</code>（会弹 UAC，且是新窗口，不会替换当前标签）。</p>
+          </div>
         </div>
       </div>
     </section>

@@ -28,6 +28,7 @@
         <a href="#install">Install</a>
         <a href="#config">Config</a>
         <a href="#shortcuts">Shortcuts</a>
+        <a href="#faq">FAQ</a>
         <span class="lang-switch" role="group" aria-label="Language">
           <a class="lang active" href="./" aria-current="page">EN</a>
           <a class="lang" href="./zh.html">中文</a>
@@ -228,6 +229,22 @@ ai-agent-output-limit  = 16384</code></pre>
           <div><span class="label">Paste text</span><span class="keys"><kbd>Ctrl</kbd><kbd>V</kbd></span></div>
           <div><span class="label">Paste clipboard image</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>V</kbd></span></div>
           <div><span class="label">Open config file</span><span class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="section">
+      <div class="container">
+        <h2>FAQ</h2>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>Why isn’t my default PowerShell Administrator?</h3>
+            <p>Shells inherit Phantty’s privilege level. A normal launch uses a standard token (even for admin accounts under UAC). Phantty does not auto-elevate new tabs.</p>
+          </div>
+          <div class="feature">
+            <h3>How do I get an elevated shell?</h3>
+            <p>Right-click <code>phantty.exe</code> or your shortcut and choose <strong>Run as administrator</strong>; new tabs in that window stay elevated. For a one-off elevated console elsewhere, use <code>Start-Process pwsh -Verb RunAs</code> (UAC prompt).</p>
+          </div>
         </div>
       </div>
     </section>

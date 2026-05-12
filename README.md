@@ -330,6 +330,28 @@ the generated session key is printed in the debug console and shown in the
 in-window remote status pill. Click the remote status pill to copy the active
 session key, or use `Copy Remote Key` from the command center.
 
+## FAQ
+
+### Why isn't my default PowerShell running as Administrator?
+
+Phantty does not elevate shells on its own. Shells inherit the same privilege
+level as the running `phantty.exe` process. Starting Phantty normally (for
+example double-click or a non-elevated shortcut) gives you a standard token, even
+if your account is in the Administrators group (UAC split token).
+
+### How do I run an elevated (Administrator) shell?
+
+- **Run Phantty elevated:** Right-click `phantty.exe` or its shortcut and choose
+  **Run as administrator**. New tabs in that instance inherit the elevated
+  token, so the default profile should show Administrator-level access after UAC
+  approval.
+- **Separate elevated window only:** From any shell,
+  `Start-Process pwsh -Verb RunAs` (or `powershell`) starts a new elevated
+  process after UAC; it does not replace the current Phantty tab.
+
+There is no supported way to promote an existing non-elevated shell to elevated
+without a new process and UAC consent.
+
 ## Credits
 
 - Original project: [arya-s/phantty](https://github.com/arya-s/phantty) — the
