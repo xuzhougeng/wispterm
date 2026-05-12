@@ -11,6 +11,9 @@ pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
 pub const DEFAULT_MODEL = "deepseek-v4-pro";
 pub const DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant.";
+pub const DEFAULT_THINKING = "enabled";
+pub const DEFAULT_REASONING_EFFORT = "high";
+pub const DEFAULT_STREAM = "false";
 
 pub const Role = enum {
     user,
@@ -50,12 +53,16 @@ const ChatRequest = struct {
     model: []u8,
     system_prompt: []u8,
     messages: []RequestMessage,
+    thinking_enabled: bool,
+    reasoning_effort: []u8,
+    stream: bool,
 
     fn deinit(self: *ChatRequest) void {
         self.allocator.free(self.base_url);
         self.allocator.free(self.api_key);
         self.allocator.free(self.model);
         self.allocator.free(self.system_prompt);
+        self.allocator.free(self.reasoning_effort);
         for (self.messages) |msg| self.allocator.free(msg.content);
         self.allocator.free(self.messages);
         self.allocator.destroy(self);
@@ -90,10 +97,18 @@ pub const Session = struct {
     model_len: usize = 0,
     system_prompt_buf: [512]u8 = undefined,
     system_prompt_len: usize = 0,
+    thinking_enabled: bool = true,
+    reasoning_effort_buf: [16]u8 = undefined,
+    reasoning_effort_len: usize = 0,
+    stream: bool = false,
     request_inflight: bool = false,
     request_thread: ?std.Thread = null,
     closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     scroll_px: f32 = 0,
+
+    pub fn reasoningEffort(self: *const Session) []const u8 {
+        return self.reasoning_effort_buf[0..self.reasoning_effort_len];
+    }
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -102,6 +117,9 @@ pub const Session = struct {
         api_key: []const u8,
         model_name: []const u8,
         system_prompt: []const u8,
+        thinking: []const u8,
+        reasoning_effort: []const u8,
+        stream_val: []const u8,
     ) !*Session {
         const session = try allocator.create(Session);
         session.* = .{
@@ -111,6 +129,9 @@ pub const Session = struct {
         session.copyBaseUrl(if (base_url.len > 0) base_url else DEFAULT_BASE_URL);
         session.copyModel(if (model_name.len > 0) model_name else DEFAULT_MODEL);
         session.copySystemPrompt(if (system_prompt.len > 0) system_prompt else DEFAULT_SYSTEM_PROMPT);
+        session.thinking_enabled = !std.mem.eql(u8, thinking, "disabled");
+        session.copyReasoningEffort(if (reasoning_effort.len > 0) reasoning_effort else DEFAULT_REASONING_EFFORT);
+        session.stream = std.mem.eql(u8, stream_val, "true");
         session.copyApiKey(api_key);
         if (session.api_key_len == 0 and isDeepSeekBaseUrl(session.baseUrl())) {
             if (std.process.getEnvVarOwned(allocator, "DEEPSEEK_API_KEY")) |env_key| {
@@ -335,6 +356,9 @@ pub const Session = struct {
             .model = try self.allocator.dupe(u8, self.model()),
             .system_prompt = try self.allocator.dupe(u8, self.systemPrompt()),
             .messages = messages,
+            .thinking_enabled = self.thinking_enabled,
+            .reasoning_effort = try self.allocator.dupe(u8, self.reasoningEffort()),
+            .stream = self.stream,
         };
         return req;
     }
@@ -362,6 +386,11 @@ pub const Session = struct {
     fn copySystemPrompt(self: *Session, value: []const u8) void {
         self.system_prompt_len = @min(value.len, self.system_prompt_buf.len);
         @memcpy(self.system_prompt_buf[0..self.system_prompt_len], value[0..self.system_prompt_len]);
+    }
+
+    fn copyReasoningEffort(self: *Session, value: []const u8) void {
+        self.reasoning_effort_len = @min(value.len, self.reasoning_effort_buf.len);
+        @memcpy(self.reasoning_effort_buf[0..self.reasoning_effort_len], value[0..self.reasoning_effort_len]);
     }
 
     fn setStatus(self: *Session, value: []const u8) void {
@@ -493,7 +522,13 @@ fn buildRequestJson(allocator: std.mem.Allocator, request: *const ChatRequest) !
         try appendJsonString(allocator, &out, msg.content);
         try out.append(allocator, '}');
     }
-    try out.appendSlice(allocator, "],\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"high\",\"stream\":false}");
+    try out.appendSlice(allocator, "],\"thinking\":{\"type\":");
+    try appendJsonString(allocator, &out, if (request.thinking_enabled) "enabled" else "disabled");
+    try out.appendSlice(allocator, "},\"reasoning_effort\":");
+    try appendJsonString(allocator, &out, if (request.reasoning_effort.len > 0) request.reasoning_effort else "high");
+    try out.appendSlice(allocator, ",\"stream\":");
+    try out.appendSlice(allocator, if (request.stream) "true" else "false");
+    try out.append(allocator, '}');
 
     return out.toOwnedSlice(allocator);
 }
@@ -588,6 +623,9 @@ test "ai chat request json includes deepseek thinking mode" {
         .model = @constCast(DEFAULT_MODEL),
         .system_prompt = @constCast(DEFAULT_SYSTEM_PROMPT),
         .messages = messages[0..],
+        .thinking_enabled = true,
+        .reasoning_effort = @constCast("high"),
+        .stream = false,
     };
     const json = try buildRequestJson(allocator, &request);
     defer allocator.free(json);

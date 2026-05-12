@@ -860,7 +860,7 @@ const SSH_FIELD_COUNT = 5;
 const SSH_FIELD_MAX = 128;
 const SSH_PROFILE_MAX = 16;
 const SSH_PROFILE_NONE = std.math.maxInt(usize);
-const AI_FIELD_COUNT = 5;
+const AI_FIELD_COUNT = 8;
 const AI_FIELD_MAX = 512;
 const AI_PROFILE_MAX = 16;
 const AI_PROFILE_NONE = std.math.maxInt(usize);
@@ -880,6 +880,9 @@ const AiField = enum(usize) {
     api_key = 2,
     model = 3,
     system_prompt = 4,
+    thinking = 5,
+    reasoning_effort = 6,
+    stream = 7,
 };
 
 const SessionAction = enum {
@@ -1465,12 +1468,22 @@ fn setAiDefault(field: AiField, value: []const u8) void {
     g_ai_lens[idx] = len;
 }
 
+fn setProfileDefault(profile: *AiProfile, field: AiField, value: []const u8) void {
+    const idx: usize = @intFromEnum(field);
+    const len = @min(value.len, AI_FIELD_MAX);
+    @memcpy(profile.fields[idx][0..len], value[0..len]);
+    profile.lens[idx] = len;
+}
+
 fn clearAiForm() void {
     g_ai_lens = .{0} ** AI_FIELD_COUNT;
     setAiDefault(.name, AppWindow.ai_chat.DEFAULT_NAME);
     setAiDefault(.base_url, AppWindow.ai_chat.DEFAULT_BASE_URL);
     setAiDefault(.model, AppWindow.ai_chat.DEFAULT_MODEL);
     setAiDefault(.system_prompt, AppWindow.ai_chat.DEFAULT_SYSTEM_PROMPT);
+    setAiDefault(.thinking, AppWindow.ai_chat.DEFAULT_THINKING);
+    setAiDefault(.reasoning_effort, AppWindow.ai_chat.DEFAULT_REASONING_EFFORT);
+    setAiDefault(.stream, AppWindow.ai_chat.DEFAULT_STREAM);
 }
 
 fn appendAiFormCodepoint(field: usize, codepoint: u21) void {
@@ -1653,11 +1666,14 @@ fn connectAiProfile(idx: usize) void {
     const api_key = aiProfileField(profile, .api_key);
     const model = aiProfileField(profile, .model);
     const system_prompt = aiProfileField(profile, .system_prompt);
+    const thinking = aiProfileField(profile, .thinking);
+    const reasoning_effort = aiProfileField(profile, .reasoning_effort);
+    const stream_val = aiProfileField(profile, .stream);
     if (base_url.len == 0 or model.len == 0) return;
     if (!isHttpUrlish(base_url)) return;
 
     sessionLauncherClose();
-    _ = AppWindow.spawnAiChatTab(name, base_url, api_key, model, system_prompt);
+    _ = AppWindow.spawnAiChatTab(name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream_val);
 }
 
 fn isHttpUrlish(value: []const u8) bool {
@@ -1692,17 +1708,17 @@ fn loadAiProfiles() void {
         var field_idx: usize = 0;
         var ok = true;
         while (field_idx < AI_FIELD_COUNT) : (field_idx += 1) {
-            const part = parts.next() orelse {
-                ok = false;
-                break;
-            };
+            const part = parts.next() orelse break;
             const decoded = decodeHexFieldToSlice(part, profile.fields[field_idx][0..]) orelse {
                 ok = false;
                 break;
             };
             profile.lens[field_idx] = decoded;
         }
-        if (!ok) continue;
+        if (!ok or field_idx < 5) continue;
+        if (profile.lens[@intFromEnum(AiField.thinking)] == 0) setProfileDefault(&profile, .thinking, AppWindow.ai_chat.DEFAULT_THINKING);
+        if (profile.lens[@intFromEnum(AiField.reasoning_effort)] == 0) setProfileDefault(&profile, .reasoning_effort, AppWindow.ai_chat.DEFAULT_REASONING_EFFORT);
+        if (profile.lens[@intFromEnum(AiField.stream)] == 0) setProfileDefault(&profile, .stream, AppWindow.ai_chat.DEFAULT_STREAM);
         g_ai_profiles[g_ai_profile_count] = profile;
         g_ai_profile_count += 1;
     }
@@ -1717,7 +1733,7 @@ fn saveAiProfiles(allocator: std.mem.Allocator) void {
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
-    out.appendSlice(allocator, "# Phantty AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt.\n") catch return;
+    out.appendSlice(allocator, "# Phantty AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream.\n") catch return;
     for (g_ai_profiles[0..g_ai_profile_count]) |profile| {
         for (0..AI_FIELD_COUNT) |i| {
             if (i > 0) out.append(allocator, '\t') catch return;
@@ -1884,7 +1900,10 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("Base URL", aiField(.base_url)));
         desired = @max(desired, sessionTwoColumnWidth("API key", aiField(.api_key)));
         desired = @max(desired, sessionTwoColumnWidth("Model", aiField(.model)));
-        desired = @max(desired, sessionTwoColumnWidth("System prompt", aiField(.system_prompt)));
+        desired = @max(desired, sessionTwoColumnWidth("System", aiField(.system_prompt)));
+        desired = @max(desired, sessionTwoColumnWidth("Thinking", aiField(.thinking)));
+        desired = @max(desired, sessionTwoColumnWidth("Effort", aiField(.reasoning_effort)));
+        desired = @max(desired, sessionTwoColumnWidth("Stream", aiField(.stream)));
         desired = @max(desired, sessionTwoColumnWidth("Save & Open", "chat"));
         desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
         desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
@@ -2222,7 +2241,10 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.base_url), "Base URL", aiField(.base_url), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.api_key), "API key", aiField(.api_key), true);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.model), "Model", aiField(.model), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.system_prompt), "System prompt", aiField(.system_prompt), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.system_prompt), "System", aiField(.system_prompt), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.thinking), "Thinking", aiField(.thinking), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.reasoning_effort), "Effort", aiField(.reasoning_effort), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.stream), "Stream", aiField(.stream), false);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT, "Save & Open", "chat", g_ai_focus == AI_FIELD_COUNT);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, "Save", "profile", g_ai_focus == AI_FIELD_COUNT + 1);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, "Cancel", "Esc", g_ai_focus == AI_FIELD_COUNT + 2);
