@@ -14,7 +14,7 @@ pub const DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant.";
 pub const DEFAULT_THINKING = "enabled";
 pub const DEFAULT_REASONING_EFFORT = "high";
 pub const DEFAULT_STREAM = "false";
-pub const DEFAULT_AGENT = "false";
+pub const DEFAULT_AGENT = "true";
 
 const MAX_AGENT_ITERATIONS = 12;
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
@@ -991,6 +991,7 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Type a command into an already-open SSH terminal surface and observe the resulting terminal snapshot.", "{\"surface_id\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ']');
+    try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
 
 fn toolSchema(comptime name: []const u8, comptime description: []const u8, comptime properties: []const u8) []const u8 {
@@ -1514,6 +1515,7 @@ test "ai chat agent request json includes tool schemas" {
     const json = try buildRequestJson(allocator, &request);
     defer allocator.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_choice\":\"auto\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
 }

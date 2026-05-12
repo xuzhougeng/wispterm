@@ -62,7 +62,8 @@ pub fn render(
     _ = titlebar.renderTextLimited(session.title(), x + LINE_PAD_X, header_y + 10, mixColor(fg, accent, 0.12), w * 0.45);
 
     var meta_buf: [256]u8 = undefined;
-    const meta = std.fmt.bufPrint(&meta_buf, "{s}  {s}", .{ session.model(), session.status() }) catch session.status();
+    const mode = if (session.agent_enabled) "Agent" else "Chat";
+    const meta = std.fmt.bufPrint(&meta_buf, "{s}  {s}  {s}", .{ session.model(), mode, session.status() }) catch session.status();
     const meta_w = measureText(meta);
     _ = titlebar.renderTextLimited(meta, x + w - LINE_PAD_X - @min(meta_w, w * 0.42), header_y + 10, muted, w * 0.42);
 
@@ -80,7 +81,8 @@ pub fn render(
 
     const input_text = session.input();
     if (input_text.len == 0) {
-        _ = titlebar.renderTextLimited("Ask AI Chat", field_x + 12, field_y + (field_h - font.g_titlebar_cell_height) / 2, mixColor(bg, fg, 0.42), field_w - 24);
+        const placeholder = if (session.agent_enabled) "Ask Agent" else "Ask AI Chat";
+        _ = titlebar.renderTextLimited(placeholder, field_x + 12, field_y + (field_h - font.g_titlebar_cell_height) / 2, mixColor(bg, fg, 0.42), field_w - 24);
     } else {
         _ = renderWrappedText(input_text, field_x + 12, window_height - field_y - field_h + 10, field_w - 24, lineHeight(), fg, window_height, window_height);
     }
