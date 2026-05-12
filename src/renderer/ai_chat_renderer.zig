@@ -17,6 +17,7 @@ pub const INPUT_H: f32 = 92;
 const BUBBLE_PAD_X: f32 = 14;
 const BUBBLE_PAD_Y: f32 = 10;
 const BUBBLE_GAP: f32 = 12;
+const APPROVAL_H: f32 = 92;
 const REASONING_PAD_Y: f32 = 6;
 const REASONING_LEFT: f32 = 22;
 const REASONING_RIGHT: f32 = 12;
@@ -91,8 +92,14 @@ pub fn render(
         gl_init.renderQuad(cursor_x, field_y + 14, 1, field_h - 28, accent);
     }
 
+    const approval = session.approvalView();
+    const approval_h: f32 = if (approval != null) APPROVAL_H else 0;
+    if (approval) |view| {
+        renderApprovalCard(view, x + LINE_PAD_X, INPUT_H + 10, w - LINE_PAD_X * 2, APPROVAL_H, window_height);
+    }
+
     const transcript_top = top + HEADER_H + 18;
-    const transcript_bottom = INPUT_H + 18;
+    const transcript_bottom = INPUT_H + approval_h + 18;
     const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
     const content_w = w - LINE_PAD_X * 2;
     const content_x = x + LINE_PAD_X;
@@ -145,6 +152,25 @@ pub fn render(
     }
 
     gl.Disable.?(c.GL_SCISSOR_TEST);
+}
+
+fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32, window_height: f32) void {
+    _ = window_height;
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const danger = [3]f32{ 0.95, 0.26, 0.30 };
+    gl_init.renderQuadAlpha(x, y, w, h, mixColor(bg, accent, 0.10), 0.98);
+    gl_init.renderQuadAlpha(x, y + h - 2, w, 2, accent, 0.85);
+    gl_init.renderQuadAlpha(x, y, 3, h, danger, 0.9);
+
+    var title_buf: [256]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "Approve {s}?  Enter/Y approve, Esc/N deny", .{view.tool}) catch "Approve tool?  Enter/Y approve, Esc/N deny";
+    _ = titlebar.renderTextLimited(title, x + 14, y + h - 26, mixColor(fg, accent, 0.18), w - 28);
+    if (view.reason.len > 0) {
+        _ = titlebar.renderTextLimited(view.reason, x + 14, y + h - 50, mixColor(bg, fg, 0.72), w - 28);
+    }
+    _ = titlebar.renderTextLimited(view.command, x + 14, y + 14, fg, w - 28);
 }
 
 fn renderMessageBubble(role: ai_chat.Role, text: []const u8, x: f32, top_px: f32, w: f32, h: f32, window_height: f32) void {

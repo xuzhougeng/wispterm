@@ -1128,7 +1128,7 @@ fn isModifierKey(vk: win32_backend.WPARAM) bool {
 }
 
 fn isAiChatKey(ev: win32_backend.KeyEvent) bool {
-    if (ev.vk == win32_backend.VK_RETURN or ev.vk == win32_backend.VK_BACK) return true;
+    if (ev.vk == win32_backend.VK_RETURN or ev.vk == win32_backend.VK_BACK or ev.vk == win32_backend.VK_ESCAPE) return true;
     if (ev.ctrl and !ev.alt and (ev.vk == 0x55 or ev.vk == 0x4C)) return true; // Ctrl+U / Ctrl+L
     return false;
 }

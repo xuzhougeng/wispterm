@@ -51,11 +51,13 @@ pub const Message = struct {
 const RequestMessage = struct {
     role: Role,
     content: []u8,
+    reasoning: ?[]u8 = null,
     tool_call_id: ?[]u8 = null,
     tool_calls: ?[]ToolCall = null,
 
     fn deinit(self: RequestMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
+        if (self.reasoning) |reasoning| allocator.free(reasoning);
         if (self.tool_call_id) |id| allocator.free(id);
         if (self.tool_calls) |calls| {
             for (calls) |call| call.deinit(allocator);
@@ -179,6 +181,12 @@ const ApiResult = struct {
     }
 };
 
+pub const ApprovalView = struct {
+    tool: []const u8,
+    command: []const u8,
+    reason: []const u8,
+};
+
 var g_agent_mutex: std.Thread.Mutex = .{};
 var g_agent_settings: AgentSettings = .{};
 var g_tool_host: ?ToolHost = null;
@@ -234,6 +242,17 @@ pub const Session = struct {
     request_thread: ?std.Thread = null,
     closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     scroll_px: f32 = 0,
+    approval_mutex: std.Thread.Mutex = .{},
+    approval_cond: std.Thread.Condition = .{},
+    approval_pending: bool = false,
+    approval_resolved: bool = false,
+    approval_allowed: bool = false,
+    approval_tool_buf: [64]u8 = undefined,
+    approval_tool_len: usize = 0,
+    approval_command_buf: [1024]u8 = undefined,
+    approval_command_len: usize = 0,
+    approval_reason_buf: [256]u8 = undefined,
+    approval_reason_len: usize = 0,
 
     pub fn reasoningEffort(self: *const Session) []const u8 {
         return self.reasoning_effort_buf[0..self.reasoning_effort_len];
@@ -276,6 +295,7 @@ pub const Session = struct {
 
     pub fn deinit(self: *Session) void {
         self.closing.store(true, .release);
+        self.approval_cond.broadcast();
         if (self.request_thread) |thread| {
             thread.join();
             self.request_thread = null;
@@ -323,6 +343,12 @@ pub const Session = struct {
     }
 
     pub fn handleChar(self: *Session, codepoint: u21) void {
+        if (codepoint == 'y' or codepoint == 'Y') {
+            if (self.resolveApproval(true)) return;
+        }
+        if (codepoint == 'n' or codepoint == 'N') {
+            if (self.resolveApproval(false)) return;
+        }
         if (codepoint < 0x20 or codepoint == 0x7f) return;
         var buf: [4]u8 = undefined;
         const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
@@ -344,6 +370,8 @@ pub const Session = struct {
     }
 
     pub fn handleKey(self: *Session, ev: win32_backend.KeyEvent) void {
+        if (self.handleApprovalKey(ev)) return;
+
         if (ev.ctrl and !ev.alt and ev.vk == 0x55) {
             self.mutex.lock();
             self.input_len = 0;
@@ -366,6 +394,67 @@ pub const Session = struct {
             },
             else => {},
         }
+    }
+
+    pub fn approvalView(self: *Session) ?ApprovalView {
+        self.approval_mutex.lock();
+        defer self.approval_mutex.unlock();
+        if (!self.approval_pending or self.approval_resolved) return null;
+        return .{
+            .tool = self.approval_tool_buf[0..self.approval_tool_len],
+            .command = self.approval_command_buf[0..self.approval_command_len],
+            .reason = self.approval_reason_buf[0..self.approval_reason_len],
+        };
+    }
+
+    fn handleApprovalKey(self: *Session, ev: win32_backend.KeyEvent) bool {
+        const approve = ev.vk == win32_backend.VK_RETURN or ev.vk == 0x59; // Y
+        const reject = ev.vk == win32_backend.VK_ESCAPE or ev.vk == 0x4E; // N
+        if (!approve and !reject) return false;
+        return self.resolveApproval(approve);
+    }
+
+    fn resolveApproval(self: *Session, approve: bool) bool {
+        self.approval_mutex.lock();
+        defer self.approval_mutex.unlock();
+        if (!self.approval_pending or self.approval_resolved) return false;
+        self.approval_allowed = approve;
+        self.approval_resolved = true;
+        self.approval_pending = false;
+        self.approval_cond.signal();
+        return true;
+    }
+
+    fn requestApproval(self: *Session, tool: []const u8, command: []const u8, reason: []const u8) bool {
+        self.approval_mutex.lock();
+        self.copyApprovalLocked(tool, command, reason);
+        self.approval_pending = true;
+        self.approval_resolved = false;
+        self.approval_allowed = false;
+        self.approval_mutex.unlock();
+
+        appendProgressMessage(self, "Approval required: press Enter/Y to run, Esc/N to deny.") catch {};
+        self.setStatus("Approval needed");
+
+        self.approval_mutex.lock();
+        defer self.approval_mutex.unlock();
+        while (!self.approval_resolved and !self.closing.load(.acquire)) {
+            self.approval_cond.wait(&self.approval_mutex);
+        }
+        const allowed = self.approval_resolved and self.approval_allowed and !self.closing.load(.acquire);
+        self.approval_pending = false;
+        self.approval_resolved = false;
+        self.approval_allowed = false;
+        return allowed;
+    }
+
+    fn copyApprovalLocked(self: *Session, tool: []const u8, command: []const u8, reason: []const u8) void {
+        self.approval_tool_len = @min(tool.len, self.approval_tool_buf.len);
+        @memcpy(self.approval_tool_buf[0..self.approval_tool_len], tool[0..self.approval_tool_len]);
+        self.approval_command_len = @min(command.len, self.approval_command_buf.len);
+        @memcpy(self.approval_command_buf[0..self.approval_command_len], command[0..self.approval_command_len]);
+        self.approval_reason_len = @min(reason.len, self.approval_reason_buf.len);
+        @memcpy(self.approval_reason_buf[0..self.approval_reason_len], reason[0..self.approval_reason_len]);
     }
 
     pub fn submit(self: *Session) void {
@@ -481,6 +570,7 @@ pub const Session = struct {
             messages[written] = .{
                 .role = msg.role,
                 .content = try self.allocator.dupe(u8, msg.content),
+                .reasoning = if (msg.reasoning) |reasoning| try self.allocator.dupe(u8, reasoning) else null,
             };
             written += 1;
         }
@@ -606,7 +696,7 @@ fn runAgentRequest(request: *const ChatRequest) !ApiResult {
             appendProgressMessage(request.session, result.content) catch {};
         }
 
-        try transcript.append(request.allocator, try assistantToolCallMessage(request.allocator, result.content, result.tool_calls.?));
+        try transcript.append(request.allocator, try assistantToolCallMessage(request.allocator, result.content, result.reasoning, result.tool_calls.?));
         for (result.tool_calls.?) |call| {
             const progress = try std.fmt.allocPrint(request.allocator, "running {s} {s}", .{ call.name, call.arguments });
             defer request.allocator.free(progress);
@@ -630,6 +720,7 @@ fn cloneRequestMessage(allocator: std.mem.Allocator, msg: RequestMessage) !Reque
     return .{
         .role = msg.role,
         .content = try allocator.dupe(u8, msg.content),
+        .reasoning = if (msg.reasoning) |reasoning| try allocator.dupe(u8, reasoning) else null,
         .tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null,
         .tool_calls = if (msg.tool_calls) |calls| try cloneToolCalls(allocator, calls) else null,
     };
@@ -653,10 +744,11 @@ fn cloneToolCalls(allocator: std.mem.Allocator, calls: []const ToolCall) ![]Tool
     return out;
 }
 
-fn assistantToolCallMessage(allocator: std.mem.Allocator, content: []const u8, calls: []const ToolCall) !RequestMessage {
+fn assistantToolCallMessage(allocator: std.mem.Allocator, content: []const u8, reasoning: ?[]const u8, calls: []const ToolCall) !RequestMessage {
     return .{
         .role = .assistant,
         .content = try allocator.dupe(u8, content),
+        .reasoning = if (reasoning) |text| try allocator.dupe(u8, text) else null,
         .tool_calls = try cloneToolCalls(allocator, calls),
     };
 }
@@ -965,6 +1057,14 @@ fn buildRequestJsonForMessages(
             }
             try out.append(allocator, ']');
         }
+        if (msg.role == .assistant) {
+            if (msg.reasoning) |reasoning| {
+                if (reasoning.len > 0) {
+                    try out.appendSlice(allocator, ",\"reasoning_content\":");
+                    try appendJsonString(allocator, &out, reasoning);
+                }
+            }
+        }
         try out.append(allocator, '}');
     }
     try out.appendSlice(allocator, "],\"thinking\":{\"type\":");
@@ -1092,7 +1192,9 @@ fn terminalSnapshotTool(request: *const ChatRequest, surface_id: ?[]const u8) ![
 fn powershellExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]const u8) ![]u8 {
     const settings = currentAgentSettings();
     if (settings.permission != .full) {
-        return deniedResult(request.allocator, command, "local PowerShell execution requires ai-agent-permission = full");
+        if (!request.session.requestApproval("powershell_exec", command, "Run local PowerShell command")) {
+            return deniedResult(request.allocator, command, "operator rejected local PowerShell command");
+        }
     }
     const warning = if (isDangerousCommand(command)) "warning: command matched a dangerous-command pattern; full-permission allowed it.\n" else "";
     const result = runShellCommand(request.allocator, command, cwd, settings.output_limit) catch |err| {
@@ -1141,7 +1243,9 @@ fn runArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const
 fn sshSessionExecTool(request: *const ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     const settings = currentAgentSettings();
     if (settings.permission != .full) {
-        return deniedResult(request.allocator, command, "SSH PTY injection requires ai-agent-permission = full");
+        if (!request.session.requestApproval("ssh_session_exec", command, "Type command into opened SSH terminal")) {
+            return deniedResult(request.allocator, command, "operator rejected SSH PTY command");
+        }
     }
     const snapshot = request.tool_snapshot orelse return request.allocator.dupe(u8, "No terminal snapshot host is available.");
     const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
@@ -1518,6 +1622,33 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_choice\":\"auto\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
+}
+
+test "ai chat request json replays assistant reasoning content" {
+    const allocator = std.testing.allocator;
+    var messages = [_]RequestMessage{.{
+        .role = .assistant,
+        .content = @constCast("I will inspect the system."),
+        .reasoning = @constCast("Need system info before answering."),
+    }};
+    const request = ChatRequest{
+        .allocator = allocator,
+        .session = undefined,
+        .base_url = @constCast("https://api.deepseek.com"),
+        .api_key = @constCast("key"),
+        .model = @constCast(DEFAULT_MODEL),
+        .system_prompt = @constCast(DEFAULT_SYSTEM_PROMPT),
+        .messages = messages[0..],
+        .thinking_enabled = true,
+        .reasoning_effort = @constCast("high"),
+        .stream = false,
+        .agent_enabled = true,
+        .tool_host = null,
+        .tool_snapshot = null,
+    };
+    const json = try buildRequestJson(allocator, &request);
+    defer allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"reasoning_content\":\"Need system info before answering.\"") != null);
 }
 
 test "ai chat parses OpenAI tool calls" {
