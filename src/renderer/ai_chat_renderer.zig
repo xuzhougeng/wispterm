@@ -14,6 +14,9 @@ const c = @cImport({
 pub const LINE_PAD_X: f32 = 18;
 const HEADER_H: f32 = 54;
 pub const INPUT_H: f32 = 92;
+const PERMISSION_CHIP_W: f32 = 112;
+const PERMISSION_CHIP_H: f32 = 24;
+const STATUS_SLOT_W: f32 = 92;
 const BUBBLE_PAD_X: f32 = 14;
 const BUBBLE_PAD_Y: f32 = 10;
 const BUBBLE_GAP: f32 = 12;
@@ -65,9 +68,23 @@ pub fn render(
 
     var meta_buf: [256]u8 = undefined;
     const mode = if (session.agent_enabled) "Agent" else "Chat";
-    const meta = std.fmt.bufPrint(&meta_buf, "{s}  {s}  {s}", .{ session.model(), mode, session.status() }) catch session.status();
+    const meta = std.fmt.bufPrint(&meta_buf, "{s}  {s}", .{ session.model(), mode }) catch session.model();
     const meta_w = measureText(meta);
-    _ = titlebar.renderTextLimited(meta, x + w - LINE_PAD_X - @min(meta_w, w * 0.42), header_y + 10, muted, w * 0.42);
+    const permission = ai_chat.agentPermission();
+    const chip_x = permissionChipX(x, w);
+    const meta_right = chip_x - 10;
+    const meta_limit = @max(80.0, meta_right - (x + LINE_PAD_X + w * 0.28));
+    _ = titlebar.renderTextLimited(meta, meta_right - @min(meta_w, meta_limit), header_y + 10, muted, meta_limit);
+
+    var perm_buf: [48]u8 = undefined;
+    const perm_text = std.fmt.bufPrint(&perm_buf, "perm: {s}", .{permission.name()}) catch permission.name();
+    const perm_color = if (permission == .full) mixColor(fg, accent, 0.25) else mixColor(bg, fg, 0.66);
+    _ = titlebar.renderTextLimited(perm_text, chip_x, header_y + 10, perm_color, PERMISSION_CHIP_W);
+    gl_init.renderQuadAlpha(chip_x, header_y + 8, PERMISSION_CHIP_W - 10, 1, accent, if (permission == .full) 0.38 else 0.16);
+
+    const status_w = measureText(session.status());
+    const status_limit = STATUS_SLOT_W;
+    _ = titlebar.renderTextLimited(session.status(), x + w - LINE_PAD_X - @min(status_w, status_limit), header_y + 10, muted, status_limit);
 
     const input_y: f32 = 0;
     gl_init.renderQuadAlpha(x, input_y, w, INPUT_H, panel, 0.98);
@@ -154,6 +171,28 @@ pub fn render(
     if (approval) |view| {
         renderApprovalCard(view, x + LINE_PAD_X, INPUT_H + APPROVAL_GAP, w - LINE_PAD_X * 2, APPROVAL_H);
     }
+}
+
+pub fn permissionChipHitTest(
+    xpos: f64,
+    ypos: f64,
+    window_width: f32,
+    titlebar_offset: f32,
+    left_panels_w: f32,
+    right_panels_w: f32,
+) bool {
+    const x = @round(left_panels_w);
+    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    const chip_x = permissionChipX(x, w);
+    const chip_top = titlebar_offset + 12;
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+    return px >= chip_x and px <= chip_x + PERMISSION_CHIP_W and
+        py >= chip_top and py <= chip_top + PERMISSION_CHIP_H;
+}
+
+fn permissionChipX(x: f32, w: f32) f32 {
+    return x + w - LINE_PAD_X - STATUS_SLOT_W - PERMISSION_CHIP_W;
 }
 
 fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32) void {

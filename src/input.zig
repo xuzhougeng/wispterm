@@ -2311,6 +2311,23 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
             file_explorer.g_focused = false;
             if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
 
+            if (AppWindow.activeAiChat() != null) {
+                const win = AppWindow.g_window orelse return;
+                const fb = win.getFramebufferSize();
+                if (AppWindow.ai_chat_renderer.permissionChipHitTest(
+                    xpos,
+                    ypos,
+                    @floatFromInt(fb.width),
+                    @floatCast(titlebarHeight()),
+                    AppWindow.leftPanelsWidth(),
+                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                )) {
+                    toggleAiAgentPermission();
+                    return;
+                }
+                return;
+            }
+
             // Click in terminal content area: update split focus
             updateFocusFromMouse(@intFromFloat(xpos), @intFromFloat(ypos));
 
@@ -3172,6 +3189,21 @@ fn pasteFromClipboardIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
         AppWindow.g_cells_valid = false;
         return;
     }
+}
+
+fn toggleAiAgentPermission() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    var cfg = Config.load(allocator) catch Config{};
+    defer cfg.deinit(allocator);
+
+    const next = switch (cfg.@"ai-agent-permission") {
+        .confirm => "full",
+        .full => "confirm",
+    };
+    Config.setConfigValue(allocator, "ai-agent-permission", next) catch return;
+    AppWindow.reloadConfigImmediate(allocator);
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
 }
 
 pub fn pasteImageFromClipboard() void {

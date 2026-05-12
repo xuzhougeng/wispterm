@@ -215,6 +215,10 @@ fn currentToolHost() ?ToolHost {
     return g_tool_host;
 }
 
+pub fn agentPermission() AgentPermission {
+    return currentAgentSettings().permission;
+}
+
 pub const Session = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
