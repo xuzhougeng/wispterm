@@ -808,6 +808,15 @@ fn handleChar(ev: win32_backend.CharEvent) void {
         tab.handleRenameChar(ev.codepoint);
         return;
     }
+    if (AppWindow.activeAiChat()) |chat| {
+        if (!ev.ctrl and !ev.alt) {
+            AppWindow.resetCursorBlink();
+            chat.handleChar(ev.codepoint);
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        }
+        return;
+    }
     if (!AppWindow.isActiveTabTerminal()) return;
     // Skip chars when Alt is held without Ctrl — those are part of Alt+key
     // combos (e.g. Shift+Alt+4) and shouldn't produce text input.
@@ -838,6 +847,13 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     const is_close_shortcut = ev.ctrl and ev.shift and ev.vk == 0x57;
     if (!is_close_shortcut and !isModifierKey(ev.vk)) g_close_shortcut_confirm_until_ms = 0;
     if (overlays.sessionLauncherVisible()) {
+        if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x56) { // Ctrl+V
+            if (pasteClipboardIntoSessionLauncher()) {
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+            }
+            return;
+        }
         overlays.sessionLauncherHandleKey(ev);
         return;
     }
@@ -961,7 +977,11 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     }
     // Ctrl+V = paste text
     if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x56) { // 'V'
-        pasteFromClipboard();
+        if (AppWindow.activeAiChat()) |chat| {
+            pasteFromClipboardIntoAiChat(chat);
+        } else {
+            pasteFromClipboard();
+        }
         return;
     }
     // Ctrl+Shift+V = paste image
@@ -1013,6 +1033,16 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         return;
     }
     // Alt+Enter handled above as maximize/restore.
+
+    if (AppWindow.activeAiChat()) |chat| {
+        if (isAiChatKey(ev)) {
+            AppWindow.resetCursorBlink();
+            chat.handleKey(ev);
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+            return;
+        }
+    }
 
     // Don't send input to PTY if active tab isn't the terminal
     if (!AppWindow.isActiveTabTerminal()) return;
@@ -1095,6 +1125,12 @@ fn isModifierKey(vk: win32_backend.WPARAM) bool {
         vk == win32_backend.VK_RCONTROL or
         vk == win32_backend.VK_LMENU or
         vk == win32_backend.VK_RMENU;
+}
+
+fn isAiChatKey(ev: win32_backend.KeyEvent) bool {
+    if (ev.vk == win32_backend.VK_RETURN or ev.vk == win32_backend.VK_BACK) return true;
+    if (ev.ctrl and !ev.alt and (ev.vk == 0x55 or ev.vk == 0x4C)) return true; // Ctrl+U / Ctrl+L
+    return false;
 }
 
 fn handleBrowserUrlBarKey(ev: win32_backend.KeyEvent) void {
@@ -2858,6 +2894,17 @@ fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
             return;
         }
     }
+    if (AppWindow.activeAiChat()) |chat| {
+        const win = AppWindow.g_window orelse return;
+        const left = @as(i32, @intFromFloat(AppWindow.leftPanelsWidth()));
+        const right = win.width - @as(i32, @intFromFloat(AppWindow.rightPanelsWidthForWindow(win.width)));
+        if (ev.xpos >= left and ev.xpos < right) {
+            const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
+            chat.scrollBy(delta);
+            AppWindow.g_force_rebuild = true;
+            return;
+        }
+    }
     // Scroll the surface under the mouse cursor (like Ghostty), not the focused surface.
     // Fall back to focused surface if mouse is not over any split.
     const surface = split_layout.surfaceAtPoint(ev.xpos, ev.ypos) orelse AppWindow.activeSurface() orelse return;
@@ -3073,6 +3120,58 @@ fn pasteClipboardIntoBrowserUrlBar() bool {
     }
 
     return false;
+}
+
+fn pasteClipboardIntoSessionLauncher() bool {
+    const win = AppWindow.g_window orelse return false;
+    const allocator = AppWindow.g_allocator orelse return false;
+
+    if (win32_backend.OpenClipboard(win.hwnd) == 0) return false;
+    defer {
+        _ = win32_backend.CloseClipboard();
+    }
+
+    if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
+        const text = readClipboardUnicodeText(allocator, hmem) orelse return false;
+        defer allocator.free(text);
+        return overlays.sessionLauncherPasteText(text);
+    }
+
+    if (win32_backend.GetClipboardData(CF_TEXT)) |hmem| {
+        const text = readClipboardAnsiText(allocator, hmem) orelse return false;
+        defer allocator.free(text);
+        return overlays.sessionLauncherPasteText(text);
+    }
+
+    return false;
+}
+
+fn pasteFromClipboardIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
+    const win = AppWindow.g_window orelse return;
+    const allocator = AppWindow.g_allocator orelse return;
+
+    if (win32_backend.OpenClipboard(win.hwnd) == 0) return;
+    defer {
+        _ = win32_backend.CloseClipboard();
+    }
+
+    if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
+        const text = readClipboardUnicodeText(allocator, hmem) orelse return;
+        defer allocator.free(text);
+        chat.appendInputText(text);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
+
+    if (win32_backend.GetClipboardData(CF_TEXT)) |hmem| {
+        const text = readClipboardAnsiText(allocator, hmem) orelse return;
+        defer allocator.free(text);
+        chat.appendInputText(text);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
 }
 
 pub fn pasteImageFromClipboard() void {
