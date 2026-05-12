@@ -581,11 +581,6 @@ pub const Session = struct {
         const settings = currentAgentSettings();
         const agent_enabled = self.agent_enabled or settings.enabled;
         const tool_host = if (agent_enabled) currentToolHost() else null;
-        var tool_snapshot: ?ToolSnapshot = null;
-        if (tool_host) |host| {
-            tool_snapshot = host.collectSnapshot(host.ctx, self.allocator) catch null;
-        }
-        errdefer if (tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
 
         req.* = .{
             .allocator = self.allocator,
@@ -600,7 +595,7 @@ pub const Session = struct {
             .stream = self.stream and !agent_enabled,
             .agent_enabled = agent_enabled,
             .tool_host = tool_host,
-            .tool_snapshot = tool_snapshot,
+            .tool_snapshot = null,
         };
         return req;
     }
@@ -1116,7 +1111,8 @@ fn executeToolCall(request: *const ChatRequest, call: ToolCall) ![]u8 {
         defer args.deinit();
         const command = jsonStringArg(args.value, "command") orelse return request.allocator.dupe(u8, "Missing command");
         const cwd = jsonStringArg(args.value, "cwd");
-        return powershellExecTool(request, command, cwd);
+        const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
+        return powershellExecTool(request, command, cwd, timeout_ms);
     }
     if (std.mem.eql(u8, call.name, "ssh_session_exec")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
@@ -1153,7 +1149,8 @@ fn jsonIntArg(root: std.json.Value, name: []const u8) ?u32 {
 }
 
 fn terminalListTool(request: *const ChatRequest) ![]u8 {
-    const snapshot = request.tool_snapshot orelse return request.allocator.dupe(u8, "No terminal snapshot host is available.");
+    const snapshot = collectToolSnapshot(request) catch return request.allocator.dupe(u8, "No terminal snapshot host is available.");
+    defer snapshot.deinit(request.allocator);
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(request.allocator);
     try out.print(request.allocator, "active_tab={d}\n", .{snapshot.active_tab});
@@ -1171,7 +1168,8 @@ fn terminalListTool(request: *const ChatRequest) ![]u8 {
 }
 
 fn terminalSnapshotTool(request: *const ChatRequest, surface_id: ?[]const u8) ![]u8 {
-    const snapshot = request.tool_snapshot orelse return request.allocator.dupe(u8, "No terminal snapshot host is available.");
+    const snapshot = collectToolSnapshot(request) catch return request.allocator.dupe(u8, "No terminal snapshot host is available.");
+    defer snapshot.deinit(request.allocator);
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(request.allocator);
 
@@ -1192,7 +1190,12 @@ fn terminalSnapshotTool(request: *const ChatRequest, surface_id: ?[]const u8) ![
     return truncateOwned(request.allocator, try out.toOwnedSlice(request.allocator));
 }
 
-fn powershellExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]const u8) ![]u8 {
+fn collectToolSnapshot(request: *const ChatRequest) !ToolSnapshot {
+    const host = request.tool_host orelse return error.NoTerminalSnapshotHost;
+    return host.collectSnapshot(host.ctx, request.allocator);
+}
+
+fn powershellExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
     const settings = currentAgentSettings();
     if (settings.permission != .full) {
         if (!request.session.requestApproval("powershell_exec", command, "Run local PowerShell command")) {
@@ -1200,7 +1203,7 @@ fn powershellExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]
         }
     }
     const warning = if (isDangerousCommand(command)) "warning: command matched a dangerous-command pattern; full-permission allowed it.\n" else "";
-    const result = runShellCommand(request.allocator, command, cwd, settings.output_limit) catch |err| {
+    const result = runShellCommand(request.allocator, command, cwd, settings.output_limit, timeout_ms) catch |err| {
         return std.fmt.allocPrint(request.allocator, "{s}PowerShell failed: {}", .{ warning, err });
     };
     defer request.allocator.free(result.stdout);
@@ -1208,6 +1211,7 @@ fn powershellExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(request.allocator);
     try out.appendSlice(request.allocator, warning);
+    if (result.timed_out) try out.appendSlice(request.allocator, "timed_out=true\n");
     try out.print(request.allocator, "exit_code={d}\nstdout:\n{s}\nstderr:\n{s}", .{ result.exit_code, result.stdout, result.stderr });
     return truncateOwned(request.allocator, try out.toOwnedSlice(request.allocator));
 }
@@ -1216,31 +1220,121 @@ const ShellResult = struct {
     exit_code: i32,
     stdout: []u8,
     stderr: []u8,
+    timed_out: bool = false,
 };
 
-fn runShellCommand(allocator: std.mem.Allocator, command: []const u8, cwd: ?[]const u8, output_limit: u32) !ShellResult {
+fn runShellCommand(allocator: std.mem.Allocator, command: []const u8, cwd: ?[]const u8, output_limit: u32, timeout_ms: u32) !ShellResult {
     const pwsh_argv = [_][]const u8{ "pwsh.exe", "-NoProfile", "-Command", command };
-    if (runArgv(allocator, pwsh_argv[0..], cwd, output_limit)) |result| return result else |_| {}
+    if (runArgv(allocator, pwsh_argv[0..], cwd, output_limit, timeout_ms)) |result| return result else |_| {}
     const powershell_argv = [_][]const u8{ "powershell.exe", "-NoProfile", "-Command", command };
-    if (runArgv(allocator, powershell_argv[0..], cwd, output_limit)) |result| return result else |_| {}
+    if (runArgv(allocator, powershell_argv[0..], cwd, output_limit, timeout_ms)) |result| return result else |_| {}
     const cmd_argv = [_][]const u8{ "cmd.exe", "/C", command };
-    return runArgv(allocator, cmd_argv[0..], cwd, output_limit);
+    return runArgv(allocator, cmd_argv[0..], cwd, output_limit, timeout_ms);
 }
 
-fn runArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8, output_limit: u32) !ShellResult {
-    const result = try std.process.Child.run(.{
+const CaptureOutput = struct {
+    allocator: std.mem.Allocator,
+    file: std.fs.File,
+    max_bytes: usize,
+    data: []u8 = &.{},
+    truncated: bool = false,
+    failed: bool = false,
+
+    fn deinit(self: *CaptureOutput) void {
+        self.allocator.free(self.data);
+        self.data = &.{};
+    }
+};
+
+fn runArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8, output_limit: u32, timeout_ms: u32) !ShellResult {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.cwd = cwd;
+    try child.spawn();
+
+    var stdout_capture = CaptureOutput{
         .allocator = allocator,
-        .argv = argv,
-        .cwd = cwd,
-        .max_output_bytes = output_limit,
-    });
-    const exit_code: i32 = switch (result.term) {
-        .Exited => |code| @intCast(code),
-        .Signal => |sig| -@as(i32, @intCast(sig)),
-        .Stopped => |sig| -@as(i32, @intCast(sig)),
-        .Unknown => |code| @intCast(code),
+        .file = child.stdout.?,
+        .max_bytes = output_limit,
     };
-    return .{ .exit_code = exit_code, .stdout = result.stdout, .stderr = result.stderr };
+    errdefer stdout_capture.deinit();
+    var stderr_capture = CaptureOutput{
+        .allocator = allocator,
+        .file = child.stderr.?,
+        .max_bytes = output_limit,
+    };
+    errdefer stderr_capture.deinit();
+
+    const stdout_thread = try std.Thread.spawn(.{}, captureOutputThread, .{&stdout_capture});
+    const stderr_thread = try std.Thread.spawn(.{}, captureOutputThread, .{&stderr_capture});
+
+    const wait_ms = @max(timeout_ms, 1);
+    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(wait_ms));
+    var timed_out = false;
+    while (true) {
+        const rc = win32_backend.WaitForSingleObject(child.id, 25);
+        if (rc == win32_backend.WAIT_OBJECT_0) break;
+        if (std.time.milliTimestamp() >= deadline) {
+            timed_out = true;
+            _ = child.kill() catch {};
+            break;
+        }
+    }
+
+    stdout_thread.join();
+    stderr_thread.join();
+
+    const exit_code: i32 = if (timed_out) 124 else blk: {
+        const term = try child.wait();
+        break :blk switch (term) {
+            .Exited => |code| @intCast(code),
+            .Signal => |sig| -@as(i32, @intCast(sig)),
+            .Stopped => |sig| -@as(i32, @intCast(sig)),
+            .Unknown => |code| @intCast(code),
+        };
+    };
+    return .{
+        .exit_code = exit_code,
+        .stdout = stdout_capture.data,
+        .stderr = stderr_capture.data,
+        .timed_out = timed_out,
+    };
+}
+
+fn captureOutputThread(capture: *CaptureOutput) void {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer {
+        if (capture.failed) out.deinit(capture.allocator);
+    }
+
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = capture.file.read(&buf) catch {
+            break;
+        };
+        if (n == 0) break;
+        if (out.items.len < capture.max_bytes) {
+            const remaining = capture.max_bytes - out.items.len;
+            const take = @min(remaining, n);
+            out.appendSlice(capture.allocator, buf[0..take]) catch {
+                capture.failed = true;
+                return;
+            };
+            if (take < n) capture.truncated = true;
+        } else {
+            capture.truncated = true;
+        }
+    }
+
+    if (capture.truncated) {
+        out.appendSlice(capture.allocator, "\n...[truncated]\n") catch {};
+    }
+    capture.data = out.toOwnedSlice(capture.allocator) catch blk: {
+        capture.failed = true;
+        break :blk &.{};
+    };
 }
 
 fn sshSessionExecTool(request: *const ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
@@ -1250,7 +1344,8 @@ fn sshSessionExecTool(request: *const ChatRequest, surface_id: []const u8, comma
             return deniedResult(request.allocator, command, "operator rejected SSH PTY command");
         }
     }
-    const snapshot = request.tool_snapshot orelse return request.allocator.dupe(u8, "No terminal snapshot host is available.");
+    const snapshot = collectToolSnapshot(request) catch return request.allocator.dupe(u8, "No terminal snapshot host is available.");
+    defer snapshot.deinit(request.allocator);
     const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
     const surface = findSurface(snapshot, surface_id) orelse return request.allocator.dupe(u8, "No matching terminal surface.");
     if (!surface.is_ssh) return request.allocator.dupe(u8, "Target surface is not an opened SSH session.");
