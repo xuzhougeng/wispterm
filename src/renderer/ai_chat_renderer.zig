@@ -92,8 +92,8 @@ pub fn render(
     const transcript_top = top + HEADER_H + 18;
     const transcript_bottom = INPUT_H + 18;
     const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
-    const content_w = @min(920.0, w - LINE_PAD_X * 2);
-    const content_x = x + @round((w - content_w) / 2);
+    const content_w = w - LINE_PAD_X * 2;
+    const content_x = x + LINE_PAD_X;
 
     var content_h: f32 = 0;
     for (session.messages.items) |msg| {
@@ -114,7 +114,8 @@ pub fn render(
         scissor_h,
     );
 
-    var cursor_top = transcript_top - session.scroll_px;
+    const gravity_offset = @max(0.0, transcript_h - content_h);
+    var cursor_top = transcript_top + gravity_offset - session.scroll_px;
     for (session.messages.items) |msg| {
         const bubble_h = messageHeight(msg.content, content_w);
         const visible = cursor_top + bubble_h >= transcript_top and cursor_top <= window_height - transcript_bottom;
@@ -149,7 +150,7 @@ fn renderMessageBubble(role: ai_chat.Role, text: []const u8, x: f32, top_px: f32
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
     const is_user = role == .user;
-    const bubble_w = @min(w, if (is_user) w * 0.78 else w * 0.88);
+    const bubble_w = @min(w, if (is_user) w * 0.82 else w);
     const bubble_x = if (is_user) x + w - bubble_w else x;
     const bubble_y = window_height - top_px - h;
     const bubble_bg = if (is_user) mixColor(bg, accent, 0.20) else mixColor(bg, fg, 0.07);
