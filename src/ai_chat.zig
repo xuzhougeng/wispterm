@@ -409,13 +409,26 @@ fn requestThreadMain(request: *ChatRequest) void {
     const allocator = request.allocator;
     defer request.deinit();
 
+    if (request.stream) {
+        runChatRequestStreaming(request) catch |err| {
+            const text = std.fmt.allocPrint(allocator, "AI stream failed: {}", .{err}) catch return;
+            defer allocator.free(text);
+            appendAssistantResult(request.session, .{ .content = text });
+        };
+        return;
+    }
+
     const result = runChatRequest(request) catch |err| blk: {
         const text = std.fmt.allocPrint(allocator, "AI request failed: {}", .{err}) catch return;
         break :blk ApiResult{ .content = text };
     };
     defer result.deinit(allocator);
 
-    const session = request.session;
+    appendAssistantResult(request.session, result);
+}
+
+fn appendAssistantResult(session: *Session, result: ApiResult) void {
+    const allocator = session.allocator;
     if (session.closing.load(.acquire)) return;
 
     session.mutex.lock();
@@ -445,6 +458,84 @@ fn requestThreadMain(request: *ChatRequest) void {
     session.request_inflight = false;
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Ready");
+}
+
+fn beginAssistantStream(session: *Session) !usize {
+    const allocator = session.allocator;
+    if (session.closing.load(.acquire)) return error.Closing;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.closing.load(.acquire)) return error.Closing;
+
+    const content = try allocator.dupe(u8, "");
+    errdefer allocator.free(content);
+    try session.messages.append(allocator, .{
+        .role = .assistant,
+        .content = content,
+        .reasoning = null,
+    });
+    session.scroll_px = 1_000_000;
+    session.setStatusLocked("Streaming...");
+    return session.messages.items.len - 1;
+}
+
+fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content_delta: []const u8, reasoning_delta: []const u8) !void {
+    if (content_delta.len == 0 and reasoning_delta.len == 0) return;
+    const allocator = session.allocator;
+    if (session.closing.load(.acquire)) return;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.closing.load(.acquire)) return;
+    if (message_idx >= session.messages.items.len) return error.StreamMessageMissing;
+
+    var msg = &session.messages.items[message_idx];
+    if (content_delta.len > 0) {
+        const old_len = msg.content.len;
+        msg.content = try allocator.realloc(msg.content, old_len + content_delta.len);
+        @memcpy(msg.content[old_len..], content_delta);
+    }
+    if (reasoning_delta.len > 0) {
+        if (msg.reasoning) |old_reasoning| {
+            const old_len = old_reasoning.len;
+            const resized = try allocator.realloc(old_reasoning, old_len + reasoning_delta.len);
+            @memcpy(resized[old_len..], reasoning_delta);
+            msg.reasoning = resized;
+        } else {
+            msg.reasoning = try allocator.dupe(u8, reasoning_delta);
+        }
+    }
+    session.scroll_px = 1_000_000;
+    session.setStatusLocked("Streaming...");
+}
+
+fn finishAssistantStream(session: *Session, message_idx: usize) void {
+    if (session.closing.load(.acquire)) return;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.closing.load(.acquire)) return;
+    if (message_idx < session.messages.items.len) {
+        const msg = &session.messages.items[message_idx];
+        if (msg.content.len == 0 and msg.reasoning == null) {
+            msg.content = session.allocator.realloc(msg.content, "No response".len) catch msg.content;
+            if (msg.content.len == "No response".len) @memcpy(msg.content, "No response");
+        }
+    }
+    session.request_inflight = false;
+    session.scroll_px = 1_000_000;
+    session.setStatusLocked("Ready");
+}
+
+fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const u8) void {
+    if (message_idx) |idx| {
+        appendAssistantStreamDelta(session, idx, text, "") catch {};
+        finishAssistantStream(session, idx);
+        return;
+    }
+
+    appendAssistantResult(session, .{ .content = @constCast(text) });
 }
 
 fn runChatRequest(request: *const ChatRequest) !ApiResult {
@@ -487,7 +578,76 @@ fn runChatRequest(request: *const ChatRequest) !ApiResult {
         return ApiResult{ .content = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(result.status)}) };
     }
 
-    return parseApiResponse(allocator, resp_list.items);
+    return if (request.stream)
+        parseApiStreamResponse(allocator, resp_list.items)
+    else
+        parseApiResponse(allocator, resp_list.items);
+}
+
+fn runChatRequestStreaming(request: *const ChatRequest) !void {
+    const allocator = request.allocator;
+    const endpoint = try chatEndpoint(allocator, request.base_url);
+    defer allocator.free(endpoint);
+
+    const body = try buildRequestJson(allocator, request);
+    defer allocator.free(body);
+
+    const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{request.api_key});
+    defer allocator.free(bearer);
+
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .write_buffer_size = 16384,
+    };
+    defer client.deinit();
+
+    const uri = try std.Uri.parse(endpoint);
+    var req = try client.request(.POST, uri, .{
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .authorization = .{ .override = bearer },
+        },
+        .keep_alive = false,
+    });
+    defer req.deinit();
+
+    try req.sendBodyComplete(body);
+
+    var redirect_buffer: [8 * 1024]u8 = undefined;
+    var response = try req.receiveHead(&redirect_buffer);
+    var transfer_buffer: [16 * 1024]u8 = undefined;
+    const reader = response.reader(&transfer_buffer);
+
+    if (response.head.status != .ok) {
+        var err_buf: std.Io.Writer.Allocating = .init(allocator);
+        defer err_buf.deinit();
+        _ = reader.streamRemaining(&err_buf.writer) catch {};
+        var err_list = err_buf.toArrayList();
+        defer err_list.deinit(allocator);
+        const trimmed = std.mem.trim(u8, err_list.items, " \t\r\n");
+        if (trimmed.len > 0) {
+            failAssistantStream(request.session, null, trimmed);
+        } else {
+            const msg = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(response.head.status)});
+            defer allocator.free(msg);
+            failAssistantStream(request.session, null, msg);
+        }
+        return;
+    }
+
+    const message_idx = try beginAssistantStream(request.session);
+    while (true) {
+        if (request.session.closing.load(.acquire)) return;
+        const line = reader.takeDelimiter('\n') catch |err| {
+            const msg = std.fmt.allocPrint(allocator, "Stream read failed: {}", .{err}) catch return err;
+            defer allocator.free(msg);
+            failAssistantStream(request.session, message_idx, msg);
+            return;
+        } orelse break;
+
+        if (try applyApiStreamLineToSession(allocator, request.session, message_idx, line)) break;
+    }
+    finishAssistantStream(request.session, message_idx);
 }
 
 fn chatEndpoint(allocator: std.mem.Allocator, base_url_raw: []const u8) ![]u8 {
@@ -578,6 +738,122 @@ fn parseApiResponse(allocator: std.mem.Allocator, body: []const u8) !ApiResult {
     };
 }
 
+fn parseApiStreamResponse(allocator: std.mem.Allocator, body: []const u8) !ApiResult {
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer content.deinit(allocator);
+    var reasoning: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer reasoning.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (!std.mem.startsWith(u8, line, "data:")) continue;
+
+        const data = std.mem.trim(u8, line["data:".len..], " \t");
+        if (data.len == 0) continue;
+        if (std.mem.eql(u8, data, "[DONE]")) break;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch continue;
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) continue;
+        const obj = root.object;
+
+        if (obj.get("error")) |err_value| {
+            if (err_value == .object) {
+                if (err_value.object.get("message")) |message_value| {
+                    if (message_value == .string) {
+                        return ApiResult{ .content = try allocator.dupe(u8, message_value.string) };
+                    }
+                }
+            }
+            return ApiResult{ .content = try allocator.dupe(u8, "API returned an error") };
+        }
+
+        const choices_value = obj.get("choices") orelse continue;
+        if (choices_value != .array or choices_value.array.items.len == 0) continue;
+        const choice = choices_value.array.items[0];
+        if (choice != .object) continue;
+        const delta_value = choice.object.get("delta") orelse continue;
+        if (delta_value != .object) continue;
+
+        if (delta_value.object.get("content")) |content_value| {
+            if (content_value == .string and content_value.string.len > 0) {
+                try content.appendSlice(allocator, content_value.string);
+            }
+        }
+        if (delta_value.object.get("reasoning_content")) |reasoning_value| {
+            if (reasoning_value == .string and reasoning_value.string.len > 0) {
+                try reasoning.appendSlice(allocator, reasoning_value.string);
+            }
+        }
+    }
+
+    if (content.items.len == 0 and reasoning.items.len == 0) {
+        const trimmed = std.mem.trim(u8, body, " \t\r\n");
+        if (trimmed.len == 0) return error.EmptyResponse;
+        return ApiResult{ .content = try allocator.dupe(u8, trimmed) };
+    }
+
+    return .{
+        .content = try content.toOwnedSlice(allocator),
+        .reasoning = if (reasoning.items.len > 0) try reasoning.toOwnedSlice(allocator) else null,
+    };
+}
+
+fn applyApiStreamLineToSession(
+    allocator: std.mem.Allocator,
+    session: *Session,
+    message_idx: usize,
+    line_raw: []const u8,
+) !bool {
+    const line = std.mem.trim(u8, line_raw, " \t\r");
+    if (!std.mem.startsWith(u8, line, "data:")) return false;
+
+    const data = std.mem.trim(u8, line["data:".len..], " \t");
+    if (data.len == 0) return false;
+    if (std.mem.eql(u8, data, "[DONE]")) return true;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return false;
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) return false;
+    const obj = root.object;
+
+    if (obj.get("error")) |err_value| {
+        if (err_value == .object) {
+            if (err_value.object.get("message")) |message_value| {
+                if (message_value == .string) {
+                    try appendAssistantStreamDelta(session, message_idx, message_value.string, "");
+                    return true;
+                }
+            }
+        }
+        try appendAssistantStreamDelta(session, message_idx, "API returned an error", "");
+        return true;
+    }
+
+    const choices_value = obj.get("choices") orelse return false;
+    if (choices_value != .array or choices_value.array.items.len == 0) return false;
+    const choice = choices_value.array.items[0];
+    if (choice != .object) return false;
+    const delta_value = choice.object.get("delta") orelse return false;
+    if (delta_value != .object) return false;
+
+    const content_delta = if (delta_value.object.get("content")) |content_value|
+        if (content_value == .string) content_value.string else ""
+    else
+        "";
+    const reasoning_delta = if (delta_value.object.get("reasoning_content")) |reasoning_value|
+        if (reasoning_value == .string) reasoning_value.string else ""
+    else
+        "";
+    try appendAssistantStreamDelta(session, message_idx, content_delta, reasoning_delta);
+    return false;
+}
+
 fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
     const hex = "0123456789abcdef";
     try out.append(allocator, '"');
@@ -631,4 +907,20 @@ test "ai chat request json includes deepseek thinking mode" {
     defer allocator.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"thinking\":{\"type\":\"enabled\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"reasoning_effort\":\"high\"") != null);
+}
+
+test "ai chat stream response aggregates content and reasoning chunks" {
+    const allocator = std.testing.allocator;
+    const body =
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Think\"}}]}\n\n" ++
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"ing\",\"content\":null}}]}\n\n" ++
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" ++
+        "data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}\n\n" ++
+        "data: [DONE]\n\n";
+
+    const result = try parseApiStreamResponse(allocator, body);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("Hello!", result.content);
+    try std.testing.expect(result.reasoning != null);
+    try std.testing.expectEqualStrings("Thinking", result.reasoning.?);
 }
