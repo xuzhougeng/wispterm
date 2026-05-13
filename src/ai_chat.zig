@@ -16,7 +16,6 @@ pub const DEFAULT_REASONING_EFFORT = "high";
 pub const DEFAULT_STREAM = "false";
 pub const DEFAULT_AGENT = "true";
 
-const MAX_AGENT_ITERATIONS = 12;
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
 const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
 
@@ -943,7 +942,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
         try transcript.append(request.allocator, try cloneRequestMessage(request.allocator, msg));
     }
 
-    for (0..MAX_AGENT_ITERATIONS) |_| {
+    while (true) {
         if (requestCancelled(request)) return error.Canceled;
         const result = try runChatRequestForMessages(request, transcript.items, true);
         if (requestCancelled(request)) {
@@ -975,8 +974,6 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
         }
         result.deinit(request.allocator);
     }
-
-    return ApiResult{ .content = try request.allocator.dupe(u8, "Agent stopped after reaching the max tool-iteration limit.") };
 }
 
 fn cloneRequestMessage(allocator: std.mem.Allocator, msg: RequestMessage) !RequestMessage {
