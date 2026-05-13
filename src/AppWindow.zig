@@ -55,6 +55,7 @@ pub const AppWindow = @This();
 
 allocator: std.mem.Allocator,
 app: *App,
+hwnd_bits: std.atomic.Value(usize) = .init(0),
 
 /// Initialize an AppWindow with the given App.
 pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
@@ -89,13 +90,6 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
         .command_timeout_ms = app.ai_agent_command_timeout_ms,
         .output_limit = app.ai_agent_output_limit,
     });
-    ai_chat.setToolHost(.{
-        .ctx = @ptrCast(app),
-        .collectSnapshot = collectAgentToolSnapshot,
-        .surfaceSnapshot = agentSurfaceSnapshot,
-        .writeSurface = agentWriteSurface,
-    });
-
     // Copy shell command from App
     @memcpy(tab.g_shell_cmd_buf[0..app.shell_cmd_len], app.shell_cmd_buf[0..app.shell_cmd_len]);
     tab.g_shell_cmd_buf[app.shell_cmd_len] = 0;
@@ -125,16 +119,15 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
 
 /// Run the window's main loop. Blocks until the window is closed.
 pub fn run(self: *AppWindow) void {
-    runMainLoop(self.allocator) catch |err| {
+    runMainLoop(self) catch |err| {
         std.debug.print("AppWindow run failed: {}\n", .{err});
     };
 }
 
 /// Get the Win32 HWND for this window (for cross-thread communication).
 pub fn getHwnd(self: *AppWindow) ?win32_backend.HWND {
-    _ = self;
-    if (g_window) |w| return w.hwnd;
-    return null;
+    const bits = self.hwnd_bits.load(.acquire);
+    return if (bits == 0) null else @ptrFromInt(bits);
 }
 
 /// Clean up resources.
@@ -224,6 +217,34 @@ pub const hitTestDivider = split_layout.hitTestDivider;
 const computeSplitLayout = split_layout.computeSplitLayout;
 
 pub const MAX_TABS = tab.MAX_TABS;
+
+const WM_PHANTTY_AGENT_SSH_CONNECT = win32_backend.WM_APP + 0x51;
+const WM_PHANTTY_AGENT_TAB_NEW = win32_backend.WM_APP + 0x52;
+const WM_PHANTTY_AGENT_TAB_CLOSE = win32_backend.WM_APP + 0x53;
+
+const AgentSshConnectRequest = struct {
+    allocator: std.mem.Allocator,
+    profile_name: []const u8,
+    result: ?ai_chat.ToolSurface = null,
+    err: ?anyerror = null,
+};
+
+const AgentTabNewRequest = struct {
+    allocator: std.mem.Allocator,
+    kind: []const u8,
+    command: ?[]const u8,
+    result: ?ai_chat.ToolSurface = null,
+    err: ?anyerror = null,
+};
+
+const AgentTabCloseRequest = struct {
+    allocator: std.mem.Allocator,
+    tab_index: ?usize,
+    surface_id: ?[]const u8,
+    title: ?[]const u8,
+    result: ?ai_chat.ToolClosedTab = null,
+    err: ?anyerror = null,
+};
 
 // ============================================================================
 // Tab/split operation wrappers — delegate to tab module, handle UI side effects
@@ -1026,6 +1047,46 @@ fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface) !
     return out.toOwnedSlice(allocator);
 }
 
+const AgentSurfaceLocation = struct {
+    tab_index: usize,
+    focused: bool,
+};
+
+fn findAgentSurfaceLocation(surface: *const Surface) ?AgentSurfaceLocation {
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (tab_state.kind != .terminal) continue;
+        var it = tab_state.tree.iterator();
+        while (it.next()) |entry| {
+            if (entry.surface == surface) {
+                return .{
+                    .tab_index = tab_index,
+                    .focused = tab_index == tab.g_active_tab and entry.handle == tab_state.focused,
+                };
+            }
+        }
+    }
+    return null;
+}
+
+fn makeAgentToolSurface(
+    allocator: std.mem.Allocator,
+    surface: *Surface,
+    tab_index: usize,
+    focused: bool,
+) anyerror!ai_chat.ToolSurface {
+    return .{
+        .id = try allocator.dupe(u8, surface.remote_id[0..]),
+        .title = try allocator.dupe(u8, surface.getTitle()),
+        .cwd = try allocator.dupe(u8, surface.getCwd() orelse surface.getInitialCwd() orelse ""),
+        .snapshot = buildRemoteSurfaceSnapshot(allocator, surface) catch try allocator.dupe(u8, ""),
+        .tab_index = tab_index,
+        .focused = focused,
+        .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
+        .ptr = @ptrCast(surface),
+    };
+}
+
 fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!ai_chat.ToolSnapshot {
     _ = ctx;
     var surfaces: std.ArrayListUnmanaged(ai_chat.ToolSurface) = .empty;
@@ -1039,17 +1100,12 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
         if (tab_state.kind != .terminal) continue;
         var it = tab_state.tree.iterator();
         while (it.next()) |entry| {
-            const surface = entry.surface;
-            try surfaces.append(allocator, .{
-                .id = try allocator.dupe(u8, surface.remote_id[0..]),
-                .title = try allocator.dupe(u8, surface.getTitle()),
-                .cwd = try allocator.dupe(u8, surface.getCwd() orelse surface.getInitialCwd() orelse ""),
-                .snapshot = buildRemoteSurfaceSnapshot(allocator, surface) catch try allocator.dupe(u8, ""),
-                .tab_index = tab_index,
-                .focused = tab_index == tab.g_active_tab and entry.handle == tab_state.focused,
-                .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
-                .ptr = @ptrCast(surface),
-            });
+            try surfaces.append(allocator, try makeAgentToolSurface(
+                allocator,
+                entry.surface,
+                tab_index,
+                tab_index == tab.g_active_tab and entry.handle == tab_state.focused,
+            ));
         }
     }
 
@@ -1070,6 +1126,298 @@ fn agentWriteSurface(ctx: *anyopaque, surface_ptr: *anyopaque, data: []const u8)
     const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
     surface.queuePtyWrite(data);
     return true;
+}
+
+fn postAgentTabNew(hwnd: win32_backend.HWND, request: *AgentTabNewRequest) void {
+    _ = win32_backend.SendMessageW(
+        hwnd,
+        WM_PHANTTY_AGENT_TAB_NEW,
+        0,
+        @as(win32_backend.LPARAM, @bitCast(@intFromPtr(request))),
+    );
+}
+
+fn postAgentTabClose(hwnd: win32_backend.HWND, request: *AgentTabCloseRequest) void {
+    _ = win32_backend.SendMessageW(
+        hwnd,
+        WM_PHANTTY_AGENT_TAB_CLOSE,
+        0,
+        @as(win32_backend.LPARAM, @bitCast(@intFromPtr(request))),
+    );
+}
+
+fn postAgentSshConnect(hwnd: win32_backend.HWND, request: *AgentSshConnectRequest) void {
+    _ = win32_backend.SendMessageW(
+        hwnd,
+        WM_PHANTTY_AGENT_SSH_CONNECT,
+        0,
+        @as(win32_backend.LPARAM, @bitCast(@intFromPtr(request))),
+    );
+}
+
+fn agentSpawnTab(ctx: *anyopaque, allocator: std.mem.Allocator, kind: []const u8, command: ?[]const u8) anyerror!ai_chat.ToolSurface {
+    const window: *AppWindow = @ptrCast(@alignCast(ctx));
+    const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
+
+    var request = AgentTabNewRequest{
+        .allocator = allocator,
+        .kind = kind,
+        .command = command,
+    };
+
+    if (g_window) |current| {
+        if (current.hwnd == hwnd) {
+            handleAgentTabNewRequest(&request);
+        } else {
+            postAgentTabNew(hwnd, &request);
+        }
+    } else {
+        postAgentTabNew(hwnd, &request);
+    }
+
+    if (request.err) |err| return err;
+    return request.result orelse error.SpawnFailed;
+}
+
+fn agentCloseTab(ctx: *anyopaque, allocator: std.mem.Allocator, tab_index: ?usize, surface_id: ?[]const u8, title_text: ?[]const u8) anyerror!ai_chat.ToolClosedTab {
+    const window: *AppWindow = @ptrCast(@alignCast(ctx));
+    const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
+
+    var request = AgentTabCloseRequest{
+        .allocator = allocator,
+        .tab_index = tab_index,
+        .surface_id = surface_id,
+        .title = title_text,
+    };
+
+    if (g_window) |current| {
+        if (current.hwnd == hwnd) {
+            handleAgentTabCloseRequest(&request);
+        } else {
+            postAgentTabClose(hwnd, &request);
+        }
+    } else {
+        postAgentTabClose(hwnd, &request);
+    }
+
+    if (request.err) |err| return err;
+    return request.result orelse error.TabNotFound;
+}
+
+fn agentConnectSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, profile_name: []const u8) anyerror!ai_chat.ToolSurface {
+    const window: *AppWindow = @ptrCast(@alignCast(ctx));
+    const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
+
+    var request = AgentSshConnectRequest{
+        .allocator = allocator,
+        .profile_name = profile_name,
+    };
+
+    if (g_window) |current| {
+        if (current.hwnd == hwnd) {
+            handleAgentSshConnectRequest(&request);
+        } else {
+            postAgentSshConnect(hwnd, &request);
+        }
+    } else {
+        postAgentSshConnect(hwnd, &request);
+    }
+
+    if (request.err) |err| return err;
+    return request.result orelse error.ConnectFailed;
+}
+
+fn agentTabCommand(kind_raw: []const u8, command_raw: ?[]const u8) anyerror!?[]const u8 {
+    if (command_raw) |command| {
+        const trimmed = std.mem.trim(u8, command, " \t\r\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+
+    const kind = std.mem.trim(u8, kind_raw, " \t\r\n");
+    if (kind.len == 0 or std.ascii.eqlIgnoreCase(kind, "default")) return null;
+    if (std.ascii.eqlIgnoreCase(kind, "powershell")) return "powershell.exe -NoLogo -NoProfile";
+    if (std.ascii.eqlIgnoreCase(kind, "pwsh")) return "pwsh.exe -NoLogo -NoProfile";
+    if (std.ascii.eqlIgnoreCase(kind, "cmd")) return "cmd.exe";
+    if (std.ascii.eqlIgnoreCase(kind, "wsl")) return "wsl.exe ~";
+    if (std.ascii.eqlIgnoreCase(kind, "command") or std.ascii.eqlIgnoreCase(kind, "custom")) return error.CommandRequired;
+    return error.InvalidTabKind;
+}
+
+fn handleAgentTabNewRequest(request: *AgentTabNewRequest) void {
+    const command = agentTabCommand(request.kind, request.command) catch |err| {
+        request.err = err;
+        return;
+    };
+
+    const surface = if (command) |cmd|
+        spawnTabWithCommandUtf8ReturningSurface(cmd)
+    else blk: {
+        const allocator = g_allocator orelse {
+            request.err = error.SpawnFailed;
+            return;
+        };
+        if (!spawnTab(allocator)) {
+            request.err = error.SpawnFailed;
+            return;
+        }
+        break :blk activeSurface();
+    };
+
+    const new_surface = surface orelse {
+        request.err = error.SpawnFailed;
+        return;
+    };
+
+    const location = findAgentSurfaceLocation(new_surface) orelse {
+        request.err = error.SpawnFailed;
+        return;
+    };
+    request.result = makeAgentToolSurface(
+        request.allocator,
+        new_surface,
+        location.tab_index,
+        location.focused,
+    ) catch |err| {
+        request.err = err;
+        return;
+    };
+}
+
+fn findTabIndexBySurfaceId(surface_id: []const u8) ?usize {
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (tab_state.kind != .terminal) continue;
+        var it = tab_state.tree.iterator();
+        while (it.next()) |entry| {
+            if (std.mem.eql(u8, entry.surface.remote_id[0..], surface_id)) return tab_index;
+        }
+    }
+    return null;
+}
+
+fn findTabIndexByTitle(title_text: []const u8) ?usize {
+    const title_trimmed = std.mem.trim(u8, title_text, " \t\r\n");
+    if (title_trimmed.len == 0) return null;
+
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (std.ascii.eqlIgnoreCase(tab_state.getTitle(), title_trimmed)) return tab_index;
+    }
+
+    var partial: ?usize = null;
+    var partial_count: usize = 0;
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (std.ascii.indexOfIgnoreCase(tab_state.getTitle(), title_trimmed) != null) {
+            partial = tab_index;
+            partial_count += 1;
+        }
+    }
+    return if (partial_count == 1) partial else null;
+}
+
+fn resolveAgentCloseTabIndex(request: *const AgentTabCloseRequest) ?usize {
+    if (request.tab_index) |idx| return idx;
+    if (request.surface_id) |surface_id| {
+        if (findTabIndexBySurfaceId(surface_id)) |idx| return idx;
+    }
+    if (request.title) |title_text| {
+        if (findTabIndexByTitle(title_text)) |idx| return idx;
+    }
+    return tab.g_active_tab;
+}
+
+fn handleAgentTabCloseRequest(request: *AgentTabCloseRequest) void {
+    if (tab.g_tab_count <= 1) {
+        request.err = error.LastTab;
+        return;
+    }
+
+    const idx = resolveAgentCloseTabIndex(request) orelse {
+        request.err = error.TabNotFound;
+        return;
+    };
+    if (idx >= tab.g_tab_count) {
+        request.err = error.TabNotFound;
+        return;
+    }
+
+    const tab_state = tab.g_tabs[idx] orelse {
+        request.err = error.TabNotFound;
+        return;
+    };
+    if (tab_state.kind != .terminal) {
+        request.err = error.CannotCloseAiChatTab;
+        return;
+    }
+
+    const title_copy = request.allocator.dupe(u8, tab_state.getTitle()) catch |err| {
+        request.err = err;
+        return;
+    };
+
+    closeTab(idx);
+    request.result = .{
+        .tab_index = idx,
+        .active_tab = tab.g_active_tab,
+        .title = title_copy,
+    };
+}
+
+fn handleAgentSshConnectRequest(request: *AgentSshConnectRequest) void {
+    switch (overlays.agentConnectSshProfile(request.profile_name)) {
+        .connected => |surface| {
+            const location = findAgentSurfaceLocation(surface) orelse {
+                request.err = error.ConnectFailed;
+                return;
+            };
+            request.result = makeAgentToolSurface(
+                request.allocator,
+                surface,
+                location.tab_index,
+                location.focused,
+            ) catch |err| {
+                request.err = err;
+                return;
+            };
+        },
+        .not_found => request.err = error.ProfileNotFound,
+        .failed => request.err = error.ConnectFailed,
+    }
+}
+
+fn onWin32Message(msg: win32_backend.UINT, wParam: win32_backend.WPARAM, lParam: win32_backend.LPARAM) ?win32_backend.LRESULT {
+    _ = wParam;
+    switch (msg) {
+        WM_PHANTTY_AGENT_SSH_CONNECT => {
+            const request: *AgentSshConnectRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            handleAgentSshConnectRequest(request);
+            return 1;
+        },
+        WM_PHANTTY_AGENT_TAB_NEW => {
+            const request: *AgentTabNewRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            handleAgentTabNewRequest(request);
+            return 1;
+        },
+        WM_PHANTTY_AGENT_TAB_CLOSE => {
+            const request: *AgentTabCloseRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            handleAgentTabCloseRequest(request);
+            return 1;
+        },
+        else => return null,
+    }
+}
+
+fn installAgentToolHost(self: *AppWindow) void {
+    ai_chat.setToolHost(.{
+        .ctx = @ptrCast(self),
+        .collectSnapshot = collectAgentToolSnapshot,
+        .surfaceSnapshot = agentSurfaceSnapshot,
+        .writeSurface = agentWriteSurface,
+        .spawnTab = agentSpawnTab,
+        .closeTab = agentCloseTab,
+        .connectSshProfile = agentConnectSshProfile,
+    });
 }
 
 fn uiFontSize(term_font_size: u32) u32 {
@@ -1394,7 +1742,9 @@ fn handleBell(surface: *Surface, win: *win32_backend.Window, is_active_tab: bool
 }
 
 /// Internal main loop - called by AppWindow.run() after init() has set up globals.
-fn runMainLoop(allocator: std.mem.Allocator) !void {
+fn runMainLoop(self: *AppWindow) !void {
+    const allocator = self.allocator;
+
     // Use stored config values from init()
     const requested_font = g_requested_font;
     const requested_weight = g_requested_weight;
@@ -1448,6 +1798,10 @@ fn runMainLoop(allocator: std.mem.Allocator) !void {
     defer win32_window.deinit();
     win32_backend.setGlobalWindow(&win32_window);
     g_window = &win32_window;
+    self.hwnd_bits.store(@intFromPtr(win32_window.hwnd), .release);
+    defer self.hwnd_bits.store(0, .release);
+    win32_window.on_message = &onWin32Message;
+    installAgentToolHost(self);
     font.g_dpi = win32_window.dpi;
 
     // --- Load OpenGL via GLAD ---

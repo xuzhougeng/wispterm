@@ -172,6 +172,7 @@ pub const PFD_TYPE_RGBA: BYTE = 0;
 pub const PFD_MAIN_PLANE: BYTE = 0;
 
 // Window messages
+pub const WM_APP: UINT = 0x8000;
 pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_SIZE: UINT = 0x0005;
@@ -347,7 +348,7 @@ pub extern "user32" fn GetDpiForWindow(hWnd: HWND) callconv(.winapi) UINT;
 extern "user32" fn GetDpiForSystem() callconv(.winapi) UINT;
 extern "user32" fn SetProcessDpiAwarenessContext(value: DPI_AWARENESS_CONTEXT) callconv(.winapi) BOOL;
 extern "user32" fn SetProcessDPIAware() callconv(.winapi) BOOL;
-extern "user32" fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
+pub extern "user32" fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
 extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.winapi) BOOL;
 extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.winapi) ?HDC;
 extern "user32" fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.winapi) BOOL;
@@ -840,6 +841,8 @@ pub const Window = struct {
     /// this, newly exposed pixels show as black until the main loop
     /// renders the next frame.
     on_resize: ?*const fn (width: i32, height: i32) void = null,
+    /// Optional callback for application-owned custom messages.
+    on_message: ?*const fn (msg: UINT, wParam: WPARAM, lParam: LPARAM) ?LRESULT = null,
 
     pub fn setImeCaret(self: *Window, x: i32, y: i32, height: i32) void {
         self.ime_caret_x = @max(0, x);
@@ -1446,6 +1449,10 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
     }
 
     const w = g_win32_window orelse return DefWindowProcW(hwnd, msg, wParam, lParam);
+
+    if (w.on_message) |cb| {
+        if (cb(msg, wParam, lParam)) |result| return result;
+    }
 
     switch (msg) {
         WM_CLOSE => {

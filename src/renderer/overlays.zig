@@ -924,6 +924,11 @@ const SshProfile = struct {
     fields: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined,
     lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT,
 };
+pub const AgentSshConnectResult = union(enum) {
+    connected: *Surface,
+    not_found,
+    failed,
+};
 
 const AiProfile = struct {
     fields: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
@@ -1233,6 +1238,26 @@ fn profileField(profile: *const SshProfile, field: SshField) []const u8 {
     return profile.fields[idx][0..profile.lens[idx]];
 }
 
+fn findSshProfileIndex(identifier_raw: []const u8) ?usize {
+    loadSshProfiles();
+    const identifier = std.mem.trim(u8, identifier_raw, " \t\r\n");
+    if (identifier.len == 0) return null;
+
+    for (0..g_ssh_profile_count) |idx| {
+        if (std.ascii.eqlIgnoreCase(identifier, profileField(&g_ssh_profiles[idx], .name))) return idx;
+    }
+    for (0..g_ssh_profile_count) |idx| {
+        if (std.ascii.eqlIgnoreCase(identifier, profileField(&g_ssh_profiles[idx], .ip))) return idx;
+    }
+    return null;
+}
+
+pub fn agentConnectSshProfile(identifier: []const u8) AgentSshConnectResult {
+    const idx = findSshProfileIndex(identifier) orelse return .not_found;
+    const surface = connectSshProfileReturningSurface(idx) orelse return .failed;
+    return .{ .connected = surface };
+}
+
 fn runSshListRow(row: usize) void {
     switch (g_ssh_list_mode) {
         .manage => {
@@ -1335,16 +1360,20 @@ fn saveSshFormProfile() ?usize {
 }
 
 fn connectSshProfile(idx: usize) void {
-    if (idx >= g_ssh_profile_count) return;
+    _ = connectSshProfileReturningSurface(idx);
+}
+
+fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
+    if (idx >= g_ssh_profile_count) return null;
     const profile = &g_ssh_profiles[idx];
     const ip = profileField(profile, .ip);
     const user = profileField(profile, .user);
     const port = profileField(profile, .port);
     const password = profileField(profile, .password);
     const server_name = profileField(profile, .name);
-    if (ip.len == 0 or user.len == 0) return;
-    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return;
-    if (port.len > 0 and !isPortTokenSafe(port)) return;
+    if (ip.len == 0 or user.len == 0) return null;
+    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
+    if (port.len > 0 and !isPortTokenSafe(port)) return null;
 
     var command_buf: [512]u8 = undefined;
     // ServerAlive* sends an encrypted keepalive every 60s and gives up after 3
@@ -1355,9 +1384,9 @@ fn connectSshProfile(idx: usize) void {
     else
         "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ";
     const command = if (port.len > 0)
-        std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}-p {s} {s}@{s}", .{ auth_flags, port, user, ip }) catch return
+        std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}-p {s} {s}@{s}", .{ auth_flags, port, user, ip }) catch return null
     else
-        std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}{s}@{s}", .{ auth_flags, user, ip }) catch return;
+        std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}{s}@{s}", .{ auth_flags, user, ip }) catch return null;
 
     sessionLauncherClose();
     if (AppWindow.spawnTabWithCommandUtf8ReturningSurface(command)) |surface| {
@@ -1368,7 +1397,9 @@ fn connectSshProfile(idx: usize) void {
         if (password.len > 0) {
             scheduleSshPasswordForSurface(surface, password);
         }
+        return surface;
     }
+    return null;
 }
 
 fn isSshTokenSafe(value: []const u8) bool {

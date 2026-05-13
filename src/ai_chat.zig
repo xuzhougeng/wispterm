@@ -173,11 +173,24 @@ pub const ToolSnapshot = struct {
     }
 };
 
+pub const ToolClosedTab = struct {
+    tab_index: usize,
+    active_tab: usize,
+    title: []u8,
+
+    pub fn deinit(self: ToolClosedTab, allocator: std.mem.Allocator) void {
+        allocator.free(self.title);
+    }
+};
+
 pub const ToolHost = struct {
     ctx: *anyopaque,
     collectSnapshot: *const fn (*anyopaque, std.mem.Allocator) anyerror!ToolSnapshot,
     surfaceSnapshot: *const fn (*anyopaque, std.mem.Allocator, *anyopaque) anyerror![]u8,
     writeSurface: *const fn (*anyopaque, *anyopaque, []const u8) bool,
+    spawnTab: *const fn (*anyopaque, std.mem.Allocator, []const u8, ?[]const u8) anyerror!ToolSurface,
+    closeTab: *const fn (*anyopaque, std.mem.Allocator, ?usize, ?[]const u8, ?[]const u8) anyerror!ToolClosedTab,
+    connectSshProfile: *const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!ToolSurface,
 };
 
 const ChatRequest = struct {
@@ -231,7 +244,7 @@ pub const ApprovalView = struct {
 
 var g_agent_mutex: std.Thread.Mutex = .{};
 var g_agent_settings: AgentSettings = .{};
-var g_tool_host: ?ToolHost = null;
+threadlocal var g_tool_host: ?ToolHost = null;
 
 pub fn configureAgent(settings: AgentSettings) void {
     g_agent_mutex.lock();
@@ -240,8 +253,6 @@ pub fn configureAgent(settings: AgentSettings) void {
 }
 
 pub fn setToolHost(host: ?ToolHost) void {
-    g_agent_mutex.lock();
-    defer g_agent_mutex.unlock();
     g_tool_host = host;
 }
 
@@ -252,8 +263,6 @@ fn currentAgentSettings() AgentSettings {
 }
 
 fn currentToolHost() ?ToolHost {
-    g_agent_mutex.lock();
-    defer g_agent_mutex.unlock();
     return g_tool_host;
 }
 
@@ -921,7 +930,7 @@ fn finishStoppedRequest(session: *Session) void {
     session.setStatusLocked("Stopped");
 }
 
-fn runAgentRequest(request: *const ChatRequest) !ApiResult {
+fn runAgentRequest(request: *ChatRequest) !ApiResult {
     var transcript: std.ArrayListUnmanaged(RequestMessage) = .empty;
     defer {
         for (transcript.items) |msg| msg.deinit(request.allocator);
@@ -1385,6 +1394,12 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.appendSlice(allocator, toolSchema("powershell_exec", "Run a local PowerShell command on Windows and return stdout, stderr, and exit status.", "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Type a command into an already-open SSH terminal surface and observe the resulting terminal snapshot.", "{\"surface_id\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("ssh_profile_connect", "Create a new tab connected to a saved Phantty SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}"));
+    try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("tab_new", "Create a new local terminal tab. Use kind=default, powershell, pwsh, cmd, wsl, or command with an explicit command line.", "{\"kind\":{\"type\":\"string\",\"description\":\"default, powershell, pwsh, cmd, wsl, or command.\"},\"command\":{\"type\":\"string\",\"description\":\"Optional explicit Windows command line; used when kind is command or to override kind.\"}}"));
+    try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}"));
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
@@ -1393,7 +1408,7 @@ fn toolSchema(comptime name: []const u8, comptime description: []const u8, compt
     return "{\"type\":\"function\",\"function\":{\"name\":\"" ++ name ++ "\",\"description\":\"" ++ description ++ "\",\"parameters\":{\"type\":\"object\",\"properties\":" ++ properties ++ ",\"additionalProperties\":false}}}";
 }
 
-fn executeToolCall(request: *const ChatRequest, call: ToolCall) ![]u8 {
+fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
     if (std.mem.eql(u8, call.name, "terminal_list")) {
         return terminalListTool(request);
@@ -1420,6 +1435,32 @@ fn executeToolCall(request: *const ChatRequest, call: ToolCall) ![]u8 {
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
         return sshSessionExecTool(request, surface_id, command, timeout_ms);
     }
+    if (std.mem.eql(u8, call.name, "ssh_profile_connect")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const profile_name = jsonStringArg(args.value, "profile_name") orelse return request.allocator.dupe(u8, "Missing profile_name");
+        return sshProfileConnectTool(request, profile_name);
+    }
+    if (std.mem.eql(u8, call.name, "tab_new")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const kind = jsonStringArg(args.value, "kind") orelse "default";
+        const command = jsonStringArg(args.value, "command");
+        return tabNewTool(request, kind, command);
+    }
+    if (std.mem.eql(u8, call.name, "tab_close")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        var tab_index = jsonIndexArg(args.value, "tab_index");
+        if (tab_index == null) {
+            if (jsonIndexArg(args.value, "tab_number")) |tab_number| {
+                if (tab_number > 0) tab_index = tab_number - 1;
+            }
+        }
+        const surface_id = jsonStringArg(args.value, "surface_id");
+        const title = jsonStringArg(args.value, "title");
+        return tabCloseTool(request, tab_index, surface_id, title);
+    }
     return std.fmt.allocPrint(request.allocator, "Unknown tool: {s}", .{call.name});
 }
 
@@ -1442,6 +1483,16 @@ fn jsonIntArg(root: std.json.Value, name: []const u8) ?u32 {
     return switch (value) {
         .integer => |v| if (v > 0 and v <= std.math.maxInt(u32)) @intCast(v) else null,
         .float => |v| if (v > 0 and v <= @as(f64, @floatFromInt(std.math.maxInt(u32)))) @intFromFloat(v) else null,
+        else => null,
+    };
+}
+
+fn jsonIndexArg(root: std.json.Value, name: []const u8) ?usize {
+    if (root != .object) return null;
+    const value = root.object.get(name) orelse return null;
+    return switch (value) {
+        .integer => |v| if (v >= 0 and v <= std.math.maxInt(usize)) @intCast(v) else null,
+        .float => |v| if (v >= 0 and v <= @as(f64, @floatFromInt(std.math.maxInt(usize)))) @intFromFloat(v) else null,
         else => null,
     };
 }
@@ -1494,6 +1545,63 @@ fn collectToolSnapshot(request: *const ChatRequest) !ToolSnapshot {
     }
     const host = request.tool_host orelse return error.NoTerminalSnapshotHost;
     return host.collectSnapshot(host.ctx, request.allocator);
+}
+
+fn rememberConnectedSurface(request: *ChatRequest, surface: ToolSurface) !void {
+    if (request.tool_snapshot) |*snapshot| {
+        for (snapshot.surfaces) |*existing| {
+            existing.focused = false;
+        }
+        const prev_len = snapshot.surfaces.len;
+        snapshot.surfaces = try request.allocator.realloc(snapshot.surfaces, prev_len + 1);
+        snapshot.surfaces[prev_len] = surface;
+        snapshot.active_tab = surface.tab_index;
+        return;
+    }
+
+    const surfaces = try request.allocator.alloc(ToolSurface, 1);
+    surfaces[0] = surface;
+    request.tool_snapshot = .{
+        .surfaces = surfaces,
+        .active_tab = surface.tab_index,
+    };
+}
+
+fn rememberClosedTab(request: *ChatRequest, closed: ToolClosedTab) !void {
+    if (request.tool_snapshot) |*snapshot| {
+        var write: usize = 0;
+        const closed_active = snapshot.active_tab == closed.tab_index;
+        for (snapshot.surfaces) |*surface| {
+            if (surface.tab_index == closed.tab_index) {
+                surface.deinit(request.allocator);
+                continue;
+            }
+            if (surface.tab_index > closed.tab_index) {
+                surface.tab_index -= 1;
+            }
+            snapshot.surfaces[write] = surface.*;
+            write += 1;
+        }
+
+        snapshot.surfaces = try request.allocator.realloc(snapshot.surfaces, write);
+        snapshot.active_tab = closed.active_tab;
+
+        if (closed_active) {
+            var focused_set = false;
+            for (snapshot.surfaces) |*surface| {
+                if (surface.tab_index == snapshot.active_tab and !focused_set) {
+                    surface.focused = true;
+                    focused_set = true;
+                } else {
+                    surface.focused = false;
+                }
+            }
+        } else {
+            for (snapshot.surfaces) |*surface| {
+                surface.focused = surface.focused and surface.tab_index == snapshot.active_tab;
+            }
+        }
+    }
 }
 
 fn powershellExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
@@ -1698,6 +1806,122 @@ fn sshSessionExecTool(request: *const ChatRequest, surface_id: []const u8, comma
         return std.fmt.allocPrint(request.allocator, "Timed out waiting for SSH command sentinel.\nLatest snapshot:\n{s}", .{text});
     }
     return request.allocator.dupe(u8, "Timed out waiting for SSH command sentinel.");
+}
+
+fn sshProfileConnectTool(request: *ChatRequest, profile_name: []const u8) ![]u8 {
+    const settings = currentAgentSettings();
+    if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
+    if (settings.permission != .full) {
+        if (!request.session.requestApproval("ssh_profile_connect", profile_name, "Open saved SSH server in a new tab")) {
+            return deniedResult(request.allocator, profile_name, "operator rejected saved SSH profile connection");
+        }
+    }
+
+    const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
+    var surface = host.connectSshProfile(host.ctx, request.allocator, profile_name) catch |err| switch (err) {
+        error.ProfileNotFound => return std.fmt.allocPrint(request.allocator, "No saved SSH profile matched \"{s}\".", .{profile_name}),
+        else => return std.fmt.allocPrint(request.allocator, "Failed to connect saved SSH profile \"{s}\": {}", .{ profile_name, err }),
+    };
+    var surface_owned = true;
+    errdefer if (surface_owned) surface.deinit(request.allocator);
+
+    const out = try std.fmt.allocPrint(
+        request.allocator,
+        "connected profile=\"{s}\" surface_id={s} tab={d} focused={} kind={s} title=\"{s}\" cwd=\"{s}\"",
+        .{
+            profile_name,
+            surface.id,
+            surface.tab_index,
+            surface.focused,
+            if (surface.is_ssh) "ssh" else "terminal",
+            surface.title,
+            surface.cwd,
+        },
+    );
+    errdefer request.allocator.free(out);
+
+    try rememberConnectedSurface(request, surface);
+    surface_owned = false;
+    return truncateOwned(request.allocator, out);
+}
+
+fn tabNewTool(request: *ChatRequest, kind: []const u8, command: ?[]const u8) ![]u8 {
+    const settings = currentAgentSettings();
+    if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
+
+    const trimmed_kind = std.mem.trim(u8, kind, " \t\r\n");
+    const command_for_approval = command orelse trimmed_kind;
+    if (settings.permission != .full) {
+        if (!request.session.requestApproval("tab_new", command_for_approval, "Open a new local terminal tab")) {
+            return deniedResult(request.allocator, command_for_approval, "operator rejected new tab creation");
+        }
+    }
+
+    const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
+    var surface = host.spawnTab(host.ctx, request.allocator, trimmed_kind, command) catch |err| switch (err) {
+        error.CommandRequired => return request.allocator.dupe(u8, "tab_new kind=command requires a non-empty command."),
+        error.InvalidTabKind => return std.fmt.allocPrint(request.allocator, "Unsupported tab kind \"{s}\". Use default, powershell, pwsh, cmd, wsl, or command.", .{trimmed_kind}),
+        else => return std.fmt.allocPrint(request.allocator, "Failed to create new tab: {}", .{err}),
+    };
+    var surface_owned = true;
+    errdefer if (surface_owned) surface.deinit(request.allocator);
+
+    const out = try std.fmt.allocPrint(
+        request.allocator,
+        "created tab kind={s} surface_id={s} tab={d} focused={} title=\"{s}\" cwd=\"{s}\"",
+        .{
+            if (trimmed_kind.len > 0) trimmed_kind else "default",
+            surface.id,
+            surface.tab_index,
+            surface.focused,
+            surface.title,
+            surface.cwd,
+        },
+    );
+    errdefer request.allocator.free(out);
+
+    try rememberConnectedSurface(request, surface);
+    surface_owned = false;
+    return truncateOwned(request.allocator, out);
+}
+
+fn tabCloseTool(request: *ChatRequest, tab_index: ?usize, surface_id: ?[]const u8, title: ?[]const u8) ![]u8 {
+    const settings = currentAgentSettings();
+    if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
+
+    var selector_buf: [256]u8 = undefined;
+    const selector = if (surface_id) |id|
+        std.fmt.bufPrint(&selector_buf, "surface_id={s}", .{id}) catch "surface_id"
+    else if (title) |text|
+        std.fmt.bufPrint(&selector_buf, "title={s}", .{text}) catch "title"
+    else if (tab_index) |idx|
+        std.fmt.bufPrint(&selector_buf, "tab_index={d}", .{idx}) catch "tab_index"
+    else
+        "active terminal tab";
+
+    if (settings.permission != .full) {
+        if (!request.session.requestApproval("tab_close", selector, "Close a terminal tab")) {
+            return deniedResult(request.allocator, selector, "operator rejected tab close");
+        }
+    }
+
+    const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
+    var closed = host.closeTab(host.ctx, request.allocator, tab_index, surface_id, title) catch |err| switch (err) {
+        error.TabNotFound => return request.allocator.dupe(u8, "No matching terminal tab was found."),
+        error.CannotCloseAiChatTab => return request.allocator.dupe(u8, "Refusing to close an AI Chat tab from the agent."),
+        error.LastTab => return request.allocator.dupe(u8, "Refusing to close the last remaining tab."),
+        else => return std.fmt.allocPrint(request.allocator, "Failed to close tab: {}", .{err}),
+    };
+    defer closed.deinit(request.allocator);
+
+    try rememberClosedTab(request, closed);
+
+    const out = try std.fmt.allocPrint(
+        request.allocator,
+        "closed tab={d} title=\"{s}\" active_tab={d}",
+        .{ closed.tab_index, closed.title, closed.active_tab },
+    );
+    return truncateOwned(request.allocator, out);
 }
 
 fn findSurface(snapshot: ToolSnapshot, surface_id: []const u8) ?ToolSurface {
@@ -2056,6 +2280,9 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_choice\":\"auto\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_close\"") != null);
 }
 
 test "ai chat request json replays assistant reasoning content" {
