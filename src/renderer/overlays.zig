@@ -16,6 +16,7 @@ const SplitTree = @import("../split_tree.zig");
 const Config = @import("../config.zig");
 const themes_embed = @import("../themes.zig");
 const win32_backend = @import("../apprt/win32.zig");
+const ssh_prompt = @import("../ssh_prompt.zig");
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -972,7 +973,12 @@ threadlocal var g_ai_edit_index: usize = AI_PROFILE_NONE;
 threadlocal var g_pending_ssh_password: [SSH_FIELD_MAX + 1]u8 = undefined;
 threadlocal var g_pending_ssh_password_len: usize = 0;
 threadlocal var g_pending_ssh_password_due_ms: i64 = 0;
+threadlocal var g_pending_ssh_password_deadline_ms: i64 = 0;
 threadlocal var g_pending_ssh_surface: ?*Surface = null;
+
+const SSH_PASSWORD_PROMPT_MIN_WAIT_MS: i64 = 250;
+const SSH_PASSWORD_PROMPT_TIMEOUT_MS: i64 = 60_000;
+const SSH_PROMPT_SCAN_MAX_COLS: usize = 4096;
 
 pub fn sessionLauncherVisible() bool {
     return g_session_launcher_visible or g_ssh_list_visible or g_ssh_form_visible or g_ai_list_visible or g_ai_form_visible;
@@ -1419,24 +1425,114 @@ fn isPortTokenSafe(value: []const u8) bool {
     return true;
 }
 
-/// Queue password entry for a new SSH surface (delayed PTY inject), same path as launcher connect.
+/// Queue password entry for a new SSH surface.
+///
+/// OpenSSH only consumes the password after it has printed the password prompt.
+/// A fixed startup delay races slow networks, so the main-loop tick waits until
+/// the prompt is visible in terminal state before injecting the stored password.
 pub fn scheduleSshPasswordForSurface(surface: *Surface, password: []const u8) void {
     const len = @min(password.len, SSH_FIELD_MAX);
+    const now = std.time.milliTimestamp();
     @memcpy(g_pending_ssh_password[0..len], password[0..len]);
     g_pending_ssh_password[len] = '\r';
     g_pending_ssh_password_len = len + 1;
-    g_pending_ssh_password_due_ms = std.time.milliTimestamp() + 1800;
+    g_pending_ssh_password_due_ms = now + SSH_PASSWORD_PROMPT_MIN_WAIT_MS;
+    g_pending_ssh_password_deadline_ms = now + SSH_PASSWORD_PROMPT_TIMEOUT_MS;
     g_pending_ssh_surface = surface;
 }
 
 pub fn tickSessionLauncher() void {
     if (g_pending_ssh_password_len == 0) return;
-    if (std.time.milliTimestamp() < g_pending_ssh_password_due_ms) return;
-    if (g_pending_ssh_surface) |surface| {
-        AppWindow.input.writeTextToSurfacePty(surface, g_pending_ssh_password[0..g_pending_ssh_password_len]);
+    const now = std.time.milliTimestamp();
+    if (now < g_pending_ssh_password_due_ms) return;
+
+    const surface = g_pending_ssh_surface orelse {
+        clearPendingSshPassword();
+        return;
+    };
+    if (!surfaceIsOpen(surface)) {
+        clearPendingSshPassword();
+        return;
     }
+    if (now > g_pending_ssh_password_deadline_ms) {
+        clearPendingSshPassword();
+        return;
+    }
+    if (!surfaceHasSshPasswordPrompt(surface)) return;
+
+    AppWindow.input.writeTextToSurfacePty(surface, g_pending_ssh_password[0..g_pending_ssh_password_len]);
+    clearPendingSshPassword();
+}
+
+fn clearPendingSshPassword() void {
     g_pending_ssh_password_len = 0;
+    g_pending_ssh_password_due_ms = 0;
+    g_pending_ssh_password_deadline_ms = 0;
     g_pending_ssh_surface = null;
+}
+
+fn surfaceIsOpen(surface: *const Surface) bool {
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (tab_state.kind != .terminal) continue;
+        var it = tab_state.tree.iterator();
+        while (it.next()) |entry| {
+            if (@intFromPtr(entry.surface) == @intFromPtr(surface)) return true;
+        }
+    }
+    return false;
+}
+
+fn surfaceHasSshPasswordPrompt(surface: *Surface) bool {
+    var line_buf: [SSH_PROMPT_SCAN_MAX_COLS]u8 = undefined;
+
+    surface.render_state.mutex.lock();
+    defer surface.render_state.mutex.unlock();
+
+    const rows: usize = @intCast(surface.size.grid.rows);
+    const cols: usize = @min(@as(usize, @intCast(surface.size.grid.cols)), line_buf.len);
+    const screen = surface.terminal.screens.active;
+
+    for (0..rows) |row| {
+        var last_col: ?usize = null;
+        for (0..cols) |col| {
+            const cell_data = screen.pages.getCell(.{ .viewport = .{
+                .x = @intCast(col),
+                .y = @intCast(row),
+            } }) orelse continue;
+            const cp = cell_data.cell.codepoint();
+            if (cp != 0 and cp != ' ') last_col = col;
+        }
+
+        const end_col = last_col orelse continue;
+        var len: usize = 0;
+        for (0..end_col + 1) |col| {
+            const cell_data = screen.pages.getCell(.{ .viewport = .{
+                .x = @intCast(col),
+                .y = @intCast(row),
+            } }) orelse {
+                line_buf[len] = ' ';
+                len += 1;
+                continue;
+            };
+
+            const wide_val: u2 = @intFromEnum(cell_data.cell.wide);
+            if (wide_val == 2 or wide_val == 3) continue;
+
+            const cp = cell_data.cell.codepoint();
+            if (cp == 0 or cp == ' ' or cp > 0x7f) {
+                line_buf[len] = ' ';
+                len += 1;
+            } else {
+                line_buf[len] = @intCast(cp);
+                len += 1;
+            }
+        }
+
+        if (ssh_prompt.containsPasswordPromptText(line_buf[0..len])) return true;
+    }
+
+    return false;
 }
 
 fn openAiList() void {

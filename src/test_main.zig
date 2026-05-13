@@ -17,5 +17,6 @@ comptime {
     _ = @import("remote_client.zig");
     _ = @import("selection_unit.zig");
     _ = @import("session_persist.zig");
+    _ = @import("ssh_prompt.zig");
     _ = @import("split_tree.zig");
 }
