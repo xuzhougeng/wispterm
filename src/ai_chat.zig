@@ -115,6 +115,7 @@ pub const ToolSurface = struct {
     tab_index: usize,
     focused: bool,
     is_ssh: bool,
+    is_wsl: bool,
     ptr: *anyopaque,
 
     pub fn deinit(self: ToolSurface, allocator: std.mem.Allocator) void {
@@ -141,6 +142,7 @@ pub const ToolSurface = struct {
             .tab_index = self.tab_index,
             .focused = self.focused,
             .is_ssh = self.is_ssh,
+            .is_wsl = self.is_wsl,
             .ptr = self.ptr,
         };
     }
@@ -1395,6 +1397,8 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Type a command into an already-open SSH terminal surface and observe the resulting terminal snapshot.", "{\"surface_id\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("wsl_session_exec", "Type a command into an already-open WSL terminal surface and observe the resulting terminal snapshot.", "{\"surface_id\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_profile_connect", "Create a new tab connected to a saved Phantty SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("tab_new", "Create a new local terminal tab. Use kind=default, powershell, pwsh, cmd, wsl, or command with an explicit command line.", "{\"kind\":{\"type\":\"string\",\"description\":\"default, powershell, pwsh, cmd, wsl, or command.\"},\"command\":{\"type\":\"string\",\"description\":\"Optional explicit Windows command line; used when kind is command or to override kind.\"}}"));
@@ -1434,6 +1438,14 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
         const command = jsonStringArg(args.value, "command") orelse return request.allocator.dupe(u8, "Missing command");
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
         return sshSessionExecTool(request, surface_id, command, timeout_ms);
+    }
+    if (std.mem.eql(u8, call.name, "wsl_session_exec")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const surface_id = jsonStringArg(args.value, "surface_id") orelse return request.allocator.dupe(u8, "Missing surface_id");
+        const command = jsonStringArg(args.value, "command") orelse return request.allocator.dupe(u8, "Missing command");
+        const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
+        return wslSessionExecTool(request, surface_id, command, timeout_ms);
     }
     if (std.mem.eql(u8, call.name, "ssh_profile_connect")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
@@ -1497,6 +1509,12 @@ fn jsonIndexArg(root: std.json.Value, name: []const u8) ?usize {
     };
 }
 
+fn toolSurfaceKind(surface: ToolSurface) []const u8 {
+    if (surface.is_ssh) return "ssh";
+    if (surface.is_wsl) return "wsl";
+    return "terminal";
+}
+
 fn terminalListTool(request: *const ChatRequest) ![]u8 {
     const snapshot = collectToolSnapshot(request) catch return request.allocator.dupe(u8, "No terminal snapshot host is available.");
     defer snapshot.deinit(request.allocator);
@@ -1508,7 +1526,7 @@ fn terminalListTool(request: *const ChatRequest) ![]u8 {
             surface.id,
             surface.tab_index,
             surface.focused,
-            if (surface.is_ssh) "ssh" else "terminal",
+            toolSurfaceKind(surface),
             surface.title,
             surface.cwd,
         });
@@ -1529,7 +1547,7 @@ fn terminalSnapshotTool(request: *const ChatRequest, surface_id: ?[]const u8) ![
         try out.print(request.allocator, "surface={s} title=\"{s}\" kind={s} focused={}\n", .{
             surface.id,
             surface.title,
-            if (surface.is_ssh) "ssh" else "terminal",
+            toolSurfaceKind(surface),
             surface.focused,
         });
         try out.appendSlice(request.allocator, surface.snapshot);
@@ -1755,19 +1773,57 @@ fn captureOutputThread(capture: *CaptureOutput) void {
     };
 }
 
+const UnixSessionKind = enum {
+    ssh,
+    wsl,
+
+    fn toolName(self: UnixSessionKind) []const u8 {
+        return switch (self) {
+            .ssh => "ssh_session_exec",
+            .wsl => "wsl_session_exec",
+        };
+    }
+
+    fn label(self: UnixSessionKind) []const u8 {
+        return switch (self) {
+            .ssh => "SSH",
+            .wsl => "WSL",
+        };
+    }
+
+    fn matches(self: UnixSessionKind, surface: ToolSurface) bool {
+        return switch (self) {
+            .ssh => surface.is_ssh,
+            .wsl => surface.is_wsl,
+        };
+    }
+};
+
 fn sshSessionExecTool(request: *const ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
+    return unixSessionExecTool(request, .ssh, surface_id, command, timeout_ms);
+}
+
+fn wslSessionExecTool(request: *const ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
+    return unixSessionExecTool(request, .wsl, surface_id, command, timeout_ms);
+}
+
+fn unixSessionExecTool(request: *const ChatRequest, kind: UnixSessionKind, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     const settings = currentAgentSettings();
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
     if (settings.permission != .full) {
-        if (!request.session.requestApproval("ssh_session_exec", command, "Type command into opened SSH terminal")) {
-            return deniedResult(request.allocator, command, "operator rejected SSH PTY command");
+        var reason_buf: [64]u8 = undefined;
+        const reason = std.fmt.bufPrint(&reason_buf, "Type command into opened {s} terminal", .{kind.label()}) catch "Type command into terminal";
+        if (!request.session.requestApproval(kind.toolName(), command, reason)) {
+            return deniedResult(request.allocator, command, if (kind == .ssh) "operator rejected SSH PTY command" else "operator rejected WSL PTY command");
         }
     }
     const snapshot = collectToolSnapshot(request) catch return request.allocator.dupe(u8, "No terminal snapshot host is available.");
     defer snapshot.deinit(request.allocator);
     const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
     const surface = findSurface(snapshot, surface_id) orelse return request.allocator.dupe(u8, "No matching terminal surface.");
-    if (!surface.is_ssh) return request.allocator.dupe(u8, "Target surface is not an opened SSH session.");
+    if (!kind.matches(surface)) {
+        return std.fmt.allocPrint(request.allocator, "Target surface is not an opened {s} session.", .{kind.label()});
+    }
 
     const nonce = std.time.milliTimestamp();
     const wrapped = try std.fmt.allocPrint(
@@ -1778,7 +1834,7 @@ fn sshSessionExecTool(request: *const ChatRequest, surface_id: []const u8, comma
     defer request.allocator.free(wrapped);
 
     if (!host.writeSurface(host.ctx, surface.ptr, wrapped)) {
-        return request.allocator.dupe(u8, "Failed to write to SSH terminal surface.");
+        return std.fmt.allocPrint(request.allocator, "Failed to write to {s} terminal surface.", .{kind.label()});
     }
 
     const start_marker = try std.fmt.allocPrint(request.allocator, "__PHANTTY_AGENT_START_{d}__", .{nonce});
@@ -1796,16 +1852,16 @@ fn sshSessionExecTool(request: *const ChatRequest, surface_id: []const u8, comma
         last = host.surfaceSnapshot(host.ctx, request.allocator, surface.ptr) catch null;
         if (last) |text| {
             if (std.mem.indexOf(u8, text, end_marker) != null) {
-                return extractSshCommandResult(request.allocator, text, start_marker, end_marker);
+                return extractUnixCommandResult(request.allocator, text, start_marker, end_marker);
             }
         }
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
 
     if (last) |text| {
-        return std.fmt.allocPrint(request.allocator, "Timed out waiting for SSH command sentinel.\nLatest snapshot:\n{s}", .{text});
+        return std.fmt.allocPrint(request.allocator, "Timed out waiting for {s} command sentinel.\nLatest snapshot:\n{s}", .{ kind.label(), text });
     }
-    return request.allocator.dupe(u8, "Timed out waiting for SSH command sentinel.");
+    return std.fmt.allocPrint(request.allocator, "Timed out waiting for {s} command sentinel.", .{kind.label()});
 }
 
 fn sshProfileConnectTool(request: *ChatRequest, profile_name: []const u8) ![]u8 {
@@ -1833,7 +1889,7 @@ fn sshProfileConnectTool(request: *ChatRequest, profile_name: []const u8) ![]u8 
             surface.id,
             surface.tab_index,
             surface.focused,
-            if (surface.is_ssh) "ssh" else "terminal",
+            toolSurfaceKind(surface),
             surface.title,
             surface.cwd,
         },
@@ -1868,12 +1924,13 @@ fn tabNewTool(request: *ChatRequest, kind: []const u8, command: ?[]const u8) ![]
 
     const out = try std.fmt.allocPrint(
         request.allocator,
-        "created tab kind={s} surface_id={s} tab={d} focused={} title=\"{s}\" cwd=\"{s}\"",
+        "created tab kind={s} surface_id={s} tab={d} focused={} surface_kind={s} title=\"{s}\" cwd=\"{s}\"",
         .{
             if (trimmed_kind.len > 0) trimmed_kind else "default",
             surface.id,
             surface.tab_index,
             surface.focused,
+            toolSurfaceKind(surface),
             surface.title,
             surface.cwd,
         },
@@ -1931,7 +1988,7 @@ fn findSurface(snapshot: ToolSnapshot, surface_id: []const u8) ?ToolSurface {
     return null;
 }
 
-fn extractSshCommandResult(allocator: std.mem.Allocator, text: []const u8, start_marker: []const u8, end_marker: []const u8) ![]u8 {
+fn extractUnixCommandResult(allocator: std.mem.Allocator, text: []const u8, start_marker: []const u8, end_marker: []const u8) ![]u8 {
     const start = std.mem.indexOf(u8, text, start_marker) orelse return allocator.dupe(u8, text);
     const body_start = start + start_marker.len;
     const end = std.mem.indexOfPos(u8, text, body_start, end_marker) orelse return allocator.dupe(u8, text[body_start..]);
@@ -2280,6 +2337,7 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_choice\":\"auto\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_close\"") != null);
@@ -2347,6 +2405,7 @@ test "ai chat tools prefer request-local terminal snapshot" {
         .tab_index = 1,
         .focused = true,
         .is_ssh = false,
+        .is_wsl = false,
         .ptr = @ptrFromInt(1),
     };
     const cached_snapshot = ToolSnapshot{

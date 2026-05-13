@@ -1083,6 +1083,7 @@ fn makeAgentToolSurface(
         .tab_index = tab_index,
         .focused = focused,
         .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
+        .is_wsl = surface.launch_kind == .wsl,
         .ptr = @ptrCast(surface),
     };
 }
