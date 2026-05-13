@@ -467,7 +467,13 @@ pub const Session = struct {
 
         switch (ev.vk) {
             win32_backend.VK_BACK => self.backspaceInput(),
-            win32_backend.VK_ESCAPE => self.clearSelection(),
+            win32_backend.VK_ESCAPE => {
+                if (self.request_inflight) {
+                    self.stopRequest();
+                } else {
+                    self.clearSelection();
+                }
+            },
             win32_backend.VK_RETURN => {
                 if (ev.shift) {
                     self.appendInputText("\n");
@@ -1399,9 +1405,11 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("powershell_exec", "Run a local PowerShell command on Windows and return stdout, stderr, and exit status.", "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Type a command into an already-open SSH terminal surface and observe the resulting terminal snapshot.", "{\"surface_id\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Run a POSIX shell command in an already-open SSH terminal surface. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("wsl_session_exec", "Type a command into an already-open WSL terminal surface and observe the resulting terminal snapshot.", "{\"surface_id\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try out.appendSlice(allocator, toolSchema("wsl_session_exec", "Run a POSIX shell command in an already-open WSL terminal surface. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("terminal_repl_exec", "Send code or text to an already-open interactive REPL/app terminal without shell syntax. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input.", "{\"surface_id\":{\"type\":\"string\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit.\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_profile_connect", "Create a new tab connected to a saved Phantty SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}"));
     try out.append(allocator, ',');
@@ -1450,6 +1458,15 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
         const command = jsonStringArg(args.value, "command") orelse return request.allocator.dupe(u8, "Missing command");
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
         return wslSessionExecTool(request, surface_id, command, timeout_ms);
+    }
+    if (std.mem.eql(u8, call.name, "terminal_repl_exec")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const surface_id = jsonStringArg(args.value, "surface_id") orelse return request.allocator.dupe(u8, "Missing surface_id");
+        const repl = jsonStringArg(args.value, "repl") orelse return request.allocator.dupe(u8, "Missing repl");
+        const code = jsonStringArg(args.value, "code") orelse return request.allocator.dupe(u8, "Missing code");
+        const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
+        return terminalReplExecTool(request, surface_id, repl, code, timeout_ms);
     }
     if (std.mem.eql(u8, call.name, "ssh_profile_connect")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
@@ -1827,6 +1844,160 @@ fn wslSessionExecTool(request: *const ChatRequest, surface_id: []const u8, comma
     return unixSessionExecTool(request, .wsl, surface_id, command, timeout_ms);
 }
 
+const ReplKind = enum {
+    r,
+    python,
+    codex,
+    claude_code,
+    plain,
+
+    fn parse(value: []const u8) ?ReplKind {
+        if (std.ascii.eqlIgnoreCase(value, "r") or std.ascii.eqlIgnoreCase(value, "R")) return .r;
+        if (std.ascii.eqlIgnoreCase(value, "python") or std.ascii.eqlIgnoreCase(value, "py")) return .python;
+        if (std.ascii.eqlIgnoreCase(value, "codex")) return .codex;
+        if (std.ascii.eqlIgnoreCase(value, "claude") or
+            std.ascii.eqlIgnoreCase(value, "claude_code") or
+            std.ascii.eqlIgnoreCase(value, "claude-code"))
+        {
+            return .claude_code;
+        }
+        if (std.ascii.eqlIgnoreCase(value, "plain") or std.ascii.eqlIgnoreCase(value, "text")) return .plain;
+        return null;
+    }
+
+    fn label(self: ReplKind) []const u8 {
+        return switch (self) {
+            .r => "R",
+            .python => "Python",
+            .codex => "Codex",
+            .claude_code => "Claude Code",
+            .plain => "plain",
+        };
+    }
+};
+
+fn terminalReplExecTool(request: *const ChatRequest, surface_id: []const u8, repl_name: []const u8, code: []const u8, timeout_ms: u32) ![]u8 {
+    const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(request.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, or plain.", .{repl_name});
+    const settings = currentAgentSettings();
+    if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
+    if (settings.permission != .full) {
+        var reason_buf: [96]u8 = undefined;
+        const reason = std.fmt.bufPrint(&reason_buf, "Type input into opened {s} REPL/app terminal", .{repl.label()}) catch "Type input into terminal";
+        if (!request.session.requestApproval("terminal_repl_exec", code, reason)) {
+            return deniedResult(request.allocator, code, "operator rejected REPL terminal input");
+        }
+    }
+
+    const snapshot = collectToolSnapshot(request) catch return request.allocator.dupe(u8, "No terminal snapshot host is available.");
+    defer snapshot.deinit(request.allocator);
+    const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
+    const surface = findSurface(snapshot, surface_id) orelse return request.allocator.dupe(u8, "No matching terminal surface.");
+
+    return switch (repl) {
+        .r => rSessionEvalTool(request, host, surface, code, timeout_ms),
+        .python => pythonSessionEvalTool(request, host, surface, code, timeout_ms),
+        .codex, .claude_code => plainReplInputTool(request, host, surface, code, timeout_ms),
+        .plain => plainReplInputTool(request, host, surface, code, timeout_ms),
+    };
+}
+
+fn plainReplInputTool(request: *const ChatRequest, host: ToolHost, surface: ToolSurface, text: []const u8, timeout_ms: u32) ![]u8 {
+    const input = try std.fmt.allocPrint(request.allocator, "{s}\r", .{text});
+    defer request.allocator.free(input);
+
+    if (!host.writeSurface(host.ctx, surface.ptr, input)) {
+        return request.allocator.dupe(u8, "Failed to write to terminal surface.");
+    }
+
+    const wait_ms = @min(@max(timeout_ms, 500), 5000);
+    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(wait_ms));
+    while (std.time.milliTimestamp() < deadline) {
+        if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+    }
+
+    const latest = host.surfaceSnapshot(host.ctx, request.allocator, surface.ptr) catch return request.allocator.dupe(u8, "Input sent; failed to read terminal snapshot.");
+    return truncateOwned(request.allocator, latest);
+}
+
+fn rSessionEvalTool(request: *const ChatRequest, host: ToolHost, surface: ToolSurface, code: []const u8, timeout_ms: u32) ![]u8 {
+    const nonce = std.time.milliTimestamp();
+    const code_literal = try rStringLiteral(request.allocator, code);
+    defer request.allocator.free(code_literal);
+
+    const wrapped = try std.fmt.allocPrint(
+        request.allocator,
+        "cat(\"\\n__PHANTTY_AGENT_START_{d}__\\n\", sep=\"\")\n.phantty_agent_status <- 0L\n.phantty_agent_code <- {s}\ntryCatch({{\n  eval(parse(text=.phantty_agent_code), envir=.GlobalEnv)\n}}, error=function(e) {{\n  .phantty_agent_status <<- 1L\n  message(\"Error: \", conditionMessage(e))\n}})\ncat(\"\\n__PHANTTY_AGENT_END_{d}__:\", .phantty_agent_status, \"\\n\", sep=\"\")\nrm(.phantty_agent_status, .phantty_agent_code)\r",
+        .{ nonce, code_literal, nonce },
+    );
+    defer request.allocator.free(wrapped);
+
+    if (!host.writeSurface(host.ctx, surface.ptr, wrapped)) {
+        return request.allocator.dupe(u8, "Failed to write to R terminal surface.");
+    }
+
+    const start_marker = try std.fmt.allocPrint(request.allocator, "__PHANTTY_AGENT_START_{d}__", .{nonce});
+    defer request.allocator.free(start_marker);
+    const end_marker = try std.fmt.allocPrint(request.allocator, "__PHANTTY_AGENT_END_{d}__", .{nonce});
+    defer request.allocator.free(end_marker);
+    return waitForSentinelResult(request, host, surface, "R", start_marker, end_marker, timeout_ms);
+}
+
+fn pythonSessionEvalTool(request: *const ChatRequest, host: ToolHost, surface: ToolSurface, code: []const u8, timeout_ms: u32) ![]u8 {
+    const nonce = std.time.milliTimestamp();
+    const code_literal = try pythonStringLiteral(request.allocator, code);
+    defer request.allocator.free(code_literal);
+
+    const wrapper = try std.fmt.allocPrint(
+        request.allocator,
+        "print(\"\\\\n__PHANTTY_AGENT_START_{d}__\")\n__phantty_agent_status = 0\n__phantty_agent_code = {s}\ntry:\n    exec(__phantty_agent_code, globals())\nexcept Exception:\n    __phantty_agent_status = 1\n    import traceback\n    traceback.print_exc()\nprint(\"\\\\n__PHANTTY_AGENT_END_{d}__:%s\" % __phantty_agent_status)\ndel __phantty_agent_status, __phantty_agent_code",
+        .{ nonce, code_literal, nonce },
+    );
+    defer request.allocator.free(wrapper);
+
+    const wrapper_literal = try pythonStringLiteral(request.allocator, wrapper);
+    defer request.allocator.free(wrapper_literal);
+    const wrapped = try std.fmt.allocPrint(request.allocator, "exec({s})\r", .{wrapper_literal});
+    defer request.allocator.free(wrapped);
+
+    if (!host.writeSurface(host.ctx, surface.ptr, wrapped)) {
+        return request.allocator.dupe(u8, "Failed to write to Python terminal surface.");
+    }
+
+    const start_marker = try std.fmt.allocPrint(request.allocator, "__PHANTTY_AGENT_START_{d}__", .{nonce});
+    defer request.allocator.free(start_marker);
+    const end_marker = try std.fmt.allocPrint(request.allocator, "__PHANTTY_AGENT_END_{d}__", .{nonce});
+    defer request.allocator.free(end_marker);
+    return waitForSentinelResult(request, host, surface, "Python", start_marker, end_marker, timeout_ms);
+}
+
+fn rStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    return doubleQuotedStringLiteral(allocator, text);
+}
+
+fn pythonStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    return doubleQuotedStringLiteral(allocator, text);
+}
+
+fn doubleQuotedStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.append(allocator, '"');
+    for (text) |ch| {
+        switch (ch) {
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            else => try out.append(allocator, ch),
+        }
+    }
+    try out.append(allocator, '"');
+    return out.toOwnedSlice(allocator);
+}
+
 fn unixSessionExecTool(request: *const ChatRequest, kind: UnixSessionKind, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     const settings = currentAgentSettings();
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
@@ -1861,7 +2032,18 @@ fn unixSessionExecTool(request: *const ChatRequest, kind: UnixSessionKind, surfa
     defer request.allocator.free(start_marker);
     const end_marker = try std.fmt.allocPrint(request.allocator, "__PHANTTY_AGENT_END_{d}__", .{nonce});
     defer request.allocator.free(end_marker);
+    return waitForSentinelResult(request, host, surface, kind.label(), start_marker, end_marker, timeout_ms);
+}
 
+fn waitForSentinelResult(
+    request: *const ChatRequest,
+    host: ToolHost,
+    surface: ToolSurface,
+    label: []const u8,
+    start_marker: []const u8,
+    end_marker: []const u8,
+    timeout_ms: u32,
+) ![]u8 {
     const deadline = std.time.milliTimestamp() + @as(i64, @intCast(@max(timeout_ms, 1000)));
     var last: ?[]u8 = null;
     defer if (last) |text| request.allocator.free(text);
@@ -1879,9 +2061,9 @@ fn unixSessionExecTool(request: *const ChatRequest, kind: UnixSessionKind, surfa
     }
 
     if (last) |text| {
-        return std.fmt.allocPrint(request.allocator, "Timed out waiting for {s} command sentinel.\nLatest snapshot:\n{s}", .{ kind.label(), text });
+        return std.fmt.allocPrint(request.allocator, "Timed out waiting for {s} command sentinel.\nLatest snapshot:\n{s}", .{ label, text });
     }
-    return std.fmt.allocPrint(request.allocator, "Timed out waiting for {s} command sentinel.", .{kind.label()});
+    return std.fmt.allocPrint(request.allocator, "Timed out waiting for {s} command sentinel.", .{label});
 }
 
 fn sshProfileConnectTool(request: *ChatRequest, profile_name: []const u8) ![]u8 {
@@ -2358,6 +2540,7 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_repl_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_close\"") != null);
@@ -2465,6 +2648,30 @@ test "ai chat tools prefer request-local terminal snapshot" {
     try std.testing.expect(snapshot.surfaces[0].id.ptr != cached_snapshot.surfaces[0].id.ptr);
 }
 
+test "ai chat R string literal escapes code for REPL eval" {
+    const allocator = std.testing.allocator;
+    const literal = try rStringLiteral(allocator, "print(\"hello\")\npath <- \"C:\\\\tmp\"");
+    defer allocator.free(literal);
+
+    try std.testing.expectEqualStrings("\"print(\\\"hello\\\")\\npath <- \\\"C:\\\\\\\\tmp\\\"\"", literal);
+}
+
+test "ai chat REPL kind parses Python Codex and Claude Code aliases" {
+    try std.testing.expectEqual(ReplKind.python, ReplKind.parse("python").?);
+    try std.testing.expectEqual(ReplKind.python, ReplKind.parse("py").?);
+    try std.testing.expectEqual(ReplKind.codex, ReplKind.parse("codex").?);
+    try std.testing.expectEqual(ReplKind.claude_code, ReplKind.parse("claude").?);
+    try std.testing.expectEqual(ReplKind.claude_code, ReplKind.parse("claude-code").?);
+}
+
+test "ai chat Python string literal escapes code for REPL eval" {
+    const allocator = std.testing.allocator;
+    const literal = try pythonStringLiteral(allocator, "print(\"hello\")\npath = \"C:\\\\tmp\"");
+    defer allocator.free(literal);
+
+    try std.testing.expectEqualStrings("\"print(\\\"hello\\\")\\npath = \\\"C:\\\\\\\\tmp\\\"\"", literal);
+}
+
 test "ai chat ctrl a selects input and replacement clears selection" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
@@ -2562,6 +2769,17 @@ test "ai chat stop request suppresses late assistant result" {
     try std.testing.expect(!session.stop_requested.load(.acquire));
     try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
     try std.testing.expectEqualStrings("Stopped", session.status());
+}
+
+test "ai chat escape stops in-flight request" {
+    var session = Session{ .allocator = std.testing.allocator };
+    session.request_inflight = true;
+
+    session.handleKey(.{ .vk = win32_backend.VK_ESCAPE, .ctrl = false, .shift = false, .alt = false });
+
+    try std.testing.expect(session.request_stopping);
+    try std.testing.expect(session.stop_requested.load(.acquire));
+    try std.testing.expectEqualStrings("Stopping...", session.status());
 }
 
 test "ai chat detects dangerous shell commands" {

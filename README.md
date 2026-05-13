@@ -133,6 +133,7 @@ Default chords are implemented in `[src/input.zig](src/input.zig)`. Some keys ar
 | Shift-click terminal text                                                      | Select from the last terminal click anchor                                        |
 | **Ctrl+A** in AI Chat                                                          | Select the input text; when the input is empty, select the transcript             |
 | **Ctrl+C** in AI Chat                                                          | Copy the selected AI Chat text, or copy the transcript when nothing is selected   |
+| **Esc** in AI Chat while working                                               | Stop the in-flight AI Chat or Agent request                                      |
 | Right-click a selection                                                        | Copy selection                                                                     |
 | **Ctrl+V**                                                                     | Paste text                                                                         |
 | **Ctrl+Shift+V**                                                               | Paste clipboard image                                                              |

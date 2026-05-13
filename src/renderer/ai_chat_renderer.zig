@@ -17,7 +17,7 @@ pub const INPUT_H: f32 = 92;
 const PERMISSION_CHIP_W: f32 = 104;
 const PERMISSION_CHIP_H: f32 = 24;
 const STATUS_SLOT_W: f32 = 120;
-const STOP_BUTTON_W: f32 = 86;
+const STOP_BUTTON_W: f32 = 104;
 const STOP_BUTTON_H: f32 = 28;
 const MODE_SLOT_W: f32 = 112;
 const BUBBLE_PAD_X: f32 = 14;
@@ -600,7 +600,7 @@ fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) 
     const icon_y = y + @round((rect.h - icon_size) / 2);
     gl_init.renderQuad(icon_x, icon_y, icon_size, icon_size, if (stopping) mixColor(bg, fg, 0.62) else mixColor(fg, accent, 0.10));
 
-    const label = if (stopping) "Stopping" else "Stop";
+    const label = if (stopping) "Stopping" else "Esc Stop";
     _ = titlebar.renderTextLimited(label, rect.x + 28, y + @round((rect.h - font.g_titlebar_cell_height) / 2), if (stopping) mixColor(bg, fg, 0.72) else fg, rect.w - 34);
 }
 
