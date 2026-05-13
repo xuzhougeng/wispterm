@@ -18,6 +18,7 @@ const App = @import("App.zig");
 const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
 const memory_debug = @import("memory_debug.zig");
+const agent_detector = @import("agent_detector.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
@@ -1116,6 +1117,22 @@ fn syncRemoteLayout(allocator: std.mem.Allocator) void {
     client.sendLayout(out.items);
 }
 
+fn appendAgentDetectionJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    surface: ?*const Surface,
+) !void {
+    const detection: agent_detector.Detection = if (surface) |s| s.agent_detection else .{};
+    try out.appendSlice(allocator, ",\"agentApp\":\"");
+    try remote.appendJsonString(out, allocator, detection.appLabel());
+    try out.appendSlice(allocator, "\",\"agentState\":\"");
+    try remote.appendJsonString(out, allocator, detection.stateLabel());
+    try out.appendSlice(allocator, "\",\"agentBadge\":\"");
+    try remote.appendJsonString(out, allocator, detection.badge());
+    try out.appendSlice(allocator, "\",\"agentConfidence\":");
+    try out.print(allocator, "{d}", .{detection.confidence});
+}
+
 fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
     try out.appendSlice(allocator, "{\"type\":\"layout\",\"activeTab\":");
     try out.print(allocator, "{d}", .{tab.g_active_tab});
@@ -1132,10 +1149,14 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
         try out.appendSlice(allocator, ",\"title\":\"");
         try remote.appendJsonString(out, allocator, tab_state.getTitle());
         try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
+        var focused_surface: ?*Surface = null;
         if (tab_state.focusedSurface()) |focused| {
+            focused_surface = focused;
             try remote.appendJsonString(out, allocator, focused.remote_id[0..]);
         }
-        try out.appendSlice(allocator, "\",\"surfaces\":[");
+        try out.append(allocator, '"');
+        try appendAgentDetectionJson(allocator, out, focused_surface);
+        try out.appendSlice(allocator, ",\"surfaces\":[");
 
         var spatial = tab_state.tree.spatial(allocator) catch null;
         defer if (spatial) |*sp| sp.deinit(allocator);
@@ -1152,6 +1173,7 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
             try remote.appendJsonString(out, allocator, entry.surface.getTitle());
             try out.appendSlice(allocator, "\",\"focused\":");
             try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
+            try appendAgentDetectionJson(allocator, out, entry.surface);
             try out.appendSlice(allocator, ",\"cols\":");
             try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
             try out.appendSlice(allocator, ",\"rows\":");
@@ -1302,6 +1324,9 @@ fn makeAgentToolSurface(
         .focused = focused,
         .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
         .is_wsl = surface.launch_kind == .wsl,
+        .agent_app = surface.agent_detection.app,
+        .agent_state = surface.agent_detection.state,
+        .agent_confidence = surface.agent_detection.confidence,
         .ptr = @ptrCast(surface),
     };
 }

@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const win32_backend = @import("apprt/win32.zig");
+const agent_detector = @import("agent_detector.zig");
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -115,6 +116,9 @@ pub const ToolSurface = struct {
     focused: bool,
     is_ssh: bool,
     is_wsl: bool,
+    agent_app: agent_detector.App = .none,
+    agent_state: agent_detector.State = .none,
+    agent_confidence: u8 = 0,
     ptr: *anyopaque,
 
     pub fn deinit(self: ToolSurface, allocator: std.mem.Allocator) void {
@@ -142,6 +146,9 @@ pub const ToolSurface = struct {
             .focused = self.focused,
             .is_ssh = self.is_ssh,
             .is_wsl = self.is_wsl,
+            .agent_app = self.agent_app,
+            .agent_state = self.agent_state,
+            .agent_confidence = self.agent_confidence,
             .ptr = self.ptr,
         };
     }
@@ -1519,7 +1526,7 @@ fn terminalListTool(request: *const ChatRequest) ![]u8 {
     errdefer out.deinit(request.allocator);
     try out.print(request.allocator, "active_tab={d}\n", .{snapshot.active_tab});
     for (snapshot.surfaces) |surface| {
-        try out.print(request.allocator, "- id={s} tab={d} focused={} kind={s} title=\"{s}\" cwd=\"{s}\"\n", .{
+        try out.print(request.allocator, "- id={s} tab={d} focused={} kind={s} title=\"{s}\" cwd=\"{s}\"", .{
             surface.id,
             surface.tab_index,
             surface.focused,
@@ -1527,6 +1534,14 @@ fn terminalListTool(request: *const ChatRequest) ![]u8 {
             surface.title,
             surface.cwd,
         });
+        if (surface.agent_app != .none) {
+            try out.print(request.allocator, " agent={s}:{s} confidence={d}", .{
+                surface.agent_app.label(),
+                surface.agent_state.label(),
+                surface.agent_confidence,
+            });
+        }
+        try out.append(request.allocator, '\n');
     }
     return truncateOwned(request.allocator, try out.toOwnedSlice(request.allocator));
 }
@@ -1541,12 +1556,20 @@ fn terminalSnapshotTool(request: *const ChatRequest, surface_id: ?[]const u8) ![
         if (surface_id) |id| {
             if (!std.mem.eql(u8, surface.id, id)) continue;
         }
-        try out.print(request.allocator, "surface={s} title=\"{s}\" kind={s} focused={}\n", .{
+        try out.print(request.allocator, "surface={s} title=\"{s}\" kind={s} focused={}", .{
             surface.id,
             surface.title,
             toolSurfaceKind(surface),
             surface.focused,
         });
+        if (surface.agent_app != .none) {
+            try out.print(request.allocator, " agent={s}:{s} confidence={d}", .{
+                surface.agent_app.label(),
+                surface.agent_state.label(),
+                surface.agent_confidence,
+            });
+        }
+        try out.append(request.allocator, '\n');
         try out.appendSlice(request.allocator, surface.snapshot);
         try out.appendSlice(request.allocator, "\n---\n");
     }
@@ -2403,6 +2426,9 @@ test "ai chat tools prefer request-local terminal snapshot" {
         .focused = true,
         .is_ssh = false,
         .is_wsl = false,
+        .agent_app = .none,
+        .agent_state = .none,
+        .agent_confidence = 0,
         .ptr = @ptrFromInt(1),
     };
     const cached_snapshot = ToolSnapshot{

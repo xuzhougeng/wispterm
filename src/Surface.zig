@@ -20,6 +20,7 @@ const Renderer = @import("renderer/Renderer.zig");
 const RendererThread = @import("RendererThread.zig");
 const remote = @import("remote_client.zig");
 const threading = @import("threading.zig");
+const agent_detector = @import("agent_detector.zig");
 
 const windows = std.os.windows;
 
@@ -274,6 +275,12 @@ cwd_path_len: usize = 0,
 initial_cwd_path: [512]u8 = undefined,
 initial_cwd_path_len: usize = 0,
 
+// Lightweight app/agent detection state. Updated by the PTY reader from recent
+// output and OSC title changes, then read by chrome/remote/AI tooling.
+agent_detection: agent_detector.Detection = .{},
+agent_recent_output: [4096]u8 = undefined,
+agent_recent_output_len: usize = 0,
+
 // ============================================================================
 // VT stream
 // ============================================================================
@@ -393,6 +400,8 @@ pub fn init(
     surface.got_osc7_this_batch = false;
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
+    surface.agent_detection = .{};
+    surface.agent_recent_output_len = 0;
     surface.captureInitialCwd(cwd);
 
     // Init bell state
@@ -685,6 +694,34 @@ pub fn setTitleOverride(self: *Surface, title: []const u8) void {
     const len = @min(title.len, self.title_override.len);
     @memcpy(self.title_override[0..len], title[0..len]);
     self.title_override_len = len;
+    self.refreshAgentDetection();
+}
+
+pub fn noteAgentOutput(self: *Surface, data: []const u8) void {
+    if (data.len == 0) return;
+
+    if (data.len >= self.agent_recent_output.len) {
+        const start = data.len - self.agent_recent_output.len;
+        @memcpy(self.agent_recent_output[0..], data[start..]);
+        self.agent_recent_output_len = self.agent_recent_output.len;
+    } else {
+        const keep_existing = @min(self.agent_recent_output_len, self.agent_recent_output.len - data.len);
+        if (keep_existing > 0 and keep_existing < self.agent_recent_output_len) {
+            const start = self.agent_recent_output_len - keep_existing;
+            std.mem.copyForwards(u8, self.agent_recent_output[0..keep_existing], self.agent_recent_output[start..self.agent_recent_output_len]);
+        }
+        @memcpy(self.agent_recent_output[keep_existing .. keep_existing + data.len], data);
+        self.agent_recent_output_len = keep_existing + data.len;
+    }
+
+    self.refreshAgentDetection();
+}
+
+fn refreshAgentDetection(self: *Surface) void {
+    self.agent_detection = agent_detector.detect(
+        self.getTitle(),
+        self.agent_recent_output[0..self.agent_recent_output_len],
+    );
 }
 
 /// Get the current working directory path (from OSC 7), or null if not set.
@@ -872,4 +909,6 @@ fn updateTitle(self: *Surface, title: []const u8, osc_num: u8) void {
         @memcpy(self.window_title[0..friendly_len], friendly[0..friendly_len]);
         self.window_title_len = friendly_len;
     }
+
+    self.refreshAgentDetection();
 }

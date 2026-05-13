@@ -144,5 +144,6 @@ fn processOutput(surface: *Surface, data: []const u8) void {
     surface.resetOscBatch();
     surface.vt_stream.nextSlice(data);
     surface.scanForOscTitle(data);
+    surface.noteAgentOutput(data);
     surface.dirty.store(true, .release);
 }

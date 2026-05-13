@@ -11,6 +11,7 @@ const tab = AppWindow.tab;
 const cell_renderer = AppWindow.cell_renderer;
 const gl_init = AppWindow.gl_init;
 const win32_backend = @import("../apprt/win32.zig");
+const agent_detector = @import("../agent_detector.zig");
 const c = @cImport({
     @cInclude("glad/gl.h");
 });
@@ -67,6 +68,42 @@ fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
         a[1] + (b[1] - a[1]) * clamped,
         a[2] + (b[2] - a[2]) * clamped,
     };
+}
+
+fn titlebarTextWidth(text: []const u8) f32 {
+    var codepoints: [128]u32 = undefined;
+    var width: f32 = 0;
+    _ = collectTextCodepoints(text, &codepoints, &width);
+    return width;
+}
+
+fn agentBadgeColor(state: agent_detector.State) [3]f32 {
+    return switch (state) {
+        .running => .{ 0.22, 0.72, 0.40 },
+        .waiting_approval => .{ 0.95, 0.64, 0.20 },
+        .needs_input => .{ 0.95, 0.45, 0.28 },
+        .halted, .failed => .{ 0.90, 0.22, 0.30 },
+        .done => .{ 0.34, 0.58, 0.95 },
+        .none => .{ 0.45, 0.45, 0.45 },
+    };
+}
+
+fn renderAgentBadge(detection: agent_detector.Detection, x: f32, text_y: f32, active: bool) f32 {
+    const text = detection.badge();
+    if (text.len == 0) return x;
+
+    const pad_x: f32 = 5;
+    const badge_h = @max(@as(f32, 18), font.g_titlebar_cell_height + 4);
+    const text_w = titlebarTextWidth(text);
+    const badge_w = @max(@as(f32, 18), text_w + pad_x * 2);
+    const badge_y = text_y - 2;
+    const base = agentBadgeColor(detection.state);
+    const bg = blend(AppWindow.g_theme.background, base, if (active) 0.46 else 0.34);
+    const fg = blend(.{ 1.0, 1.0, 1.0 }, base, 0.08);
+
+    gl_init.renderQuad(x, badge_y, badge_w, badge_h, bg);
+    _ = renderTextLimited(text, x + (badge_w - text_w) / 2, text_y, fg, badge_w - pad_x * 2);
+    return x + badge_w;
 }
 
 fn fallbackCodepoint(byte: u8) u32 {
@@ -1150,7 +1187,29 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         const close_opacity = tab.g_tab_close_opacity[tab_idx];
         const close_btn_x = sidebar_w - tab.TAB_CLOSE_BTN_W - 4;
         const title_x: f32 = 42;
-        const title_max_w = close_btn_x - title_x - 8;
+        var right_content_x = close_btn_x - 4;
+        const detection = if (!tab.g_tab_rename_active) blk: {
+            if (tab.g_tabs[tab_idx]) |t| {
+                if (t.focusedSurface()) |surface| break :blk surface.agent_detection;
+            }
+            break :blk agent_detector.Detection{};
+        } else agent_detector.Detection{};
+        const show_agent_badge = detection.visible();
+        var agent_badge_x: f32 = 0;
+        var agent_badge_w: f32 = 0;
+        if (show_agent_badge) {
+            const badge_text_w = titlebarTextWidth(detection.badge());
+            agent_badge_w = @max(@as(f32, 18), badge_text_w + 10);
+            agent_badge_x = right_content_x - agent_badge_w;
+            right_content_x = agent_badge_x - 6;
+        }
+
+        const bell_opacity: f32 = if (tab.g_tabs[tab_idx]) |t| (if (t.focusedSurface()) |s| s.bell_opacity else 0) else 0;
+        const show_bell = bell_opacity > 0.01;
+        const bell_x = right_content_x - 20;
+        if (show_bell) right_content_x = bell_x - 4;
+
+        const title_max_w = right_content_x - title_x - 8;
         const title_color = if (is_active) text_active else text_inactive;
         const text_end = renderTextLimited(title, title_x, text_y, title_color, title_max_w);
 
@@ -1158,9 +1217,11 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             gl_init.renderQuad(@min(text_end + 1, title_x + title_max_w), text_y, 1, font.g_titlebar_cell_height, text_active);
         }
 
-        const bell_opacity: f32 = if (tab.g_tabs[tab_idx]) |t| (if (t.focusedSurface()) |s| s.bell_opacity else 0) else 0;
-        if (bell_opacity > 0.01) {
-            renderBellEmoji(close_btn_x - 20, text_y, bell_opacity);
+        if (show_bell) {
+            renderBellEmoji(bell_x, text_y, bell_opacity);
+        }
+        if (show_agent_badge) {
+            _ = renderAgentBadge(detection, agent_badge_x, text_y, is_active);
         }
 
         if (close_opacity > 0.01 and tab.g_tab_count > 1) {
