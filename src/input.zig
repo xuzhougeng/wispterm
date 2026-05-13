@@ -2879,32 +2879,7 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     if (!g_selecting) return;
 
     const surface = AppWindow.activeSurface() orelse return;
-    const selection = &surface.selection;
-    const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
-    const abs_row = viewportOffsetForSurface(surface) + cell_pos.row;
-    selection.has_anchor = true;
-    selection.end_col = cell_pos.col;
-    selection.end_row = abs_row;
-
-    const threshold = font.cell_width * 0.6;
-    const grid_left = blk: {
-        if (splitRectForSurface(surface)) |rect| {
-            const pad = surface.getPadding();
-            break :blk @as(f64, @floatFromInt(rect.x)) + @as(f64, @floatFromInt(pad.left));
-        }
-        break :blk @as(f64, @floatCast(titlebar.sidebarWidth())) + 10;
-    };
-    const click_cell_x = g_click_x - grid_left - @as(f64, @floatFromInt(selection.start_col)) * @as(f64, @floatCast(font.cell_width));
-    const drag_cell_x = xpos - grid_left - @as(f64, @floatFromInt(cell_pos.col)) * @as(f64, @floatCast(font.cell_width));
-
-    const same_cell = (selection.start_col == cell_pos.col and selection.start_row == abs_row);
-    if (same_cell) {
-        const moved_right = drag_cell_x >= threshold and click_cell_x < threshold;
-        const moved_left = drag_cell_x < threshold and click_cell_x >= threshold;
-        selection.active = moved_right or moved_left;
-    } else {
-        selection.active = true;
-    }
+    updateDragSelection(surface, xpos, ypos);
 }
 
 fn appendBytes(out: *[512]u8, len: *usize, bytes: []const u8) bool {
@@ -3041,9 +3016,44 @@ fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
     }
     surface.render_state.mutex.unlock();
 
+    if (g_selecting and !sent_to_terminal) {
+        updateDragSelection(surface, @floatFromInt(ev.xpos), @floatFromInt(ev.ypos));
+    }
+
     if (sent_to_terminal) {
         writeToPty(surface, terminal_input_buf[0..terminal_input_len]);
     }
+}
+
+fn updateDragSelection(surface: *Surface, xpos: f64, ypos: f64) void {
+    const selection = &surface.selection;
+    const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
+    const abs_row = viewportOffsetForSurface(surface) + cell_pos.row;
+    selection.has_anchor = true;
+    selection.end_col = cell_pos.col;
+    selection.end_row = abs_row;
+
+    const threshold = font.cell_width * 0.6;
+    const grid_left = blk: {
+        if (splitRectForSurface(surface)) |rect| {
+            const pad = surface.getPadding();
+            break :blk @as(f64, @floatFromInt(rect.x)) + @as(f64, @floatFromInt(pad.left));
+        }
+        break :blk @as(f64, @floatCast(titlebar.sidebarWidth())) + 10;
+    };
+    const click_cell_x = g_click_x - grid_left - @as(f64, @floatFromInt(selection.start_col)) * @as(f64, @floatCast(font.cell_width));
+    const drag_cell_x = xpos - grid_left - @as(f64, @floatFromInt(cell_pos.col)) * @as(f64, @floatCast(font.cell_width));
+
+    const same_cell = (selection.start_col == cell_pos.col and selection.start_row == abs_row);
+    if (same_cell) {
+        const moved_right = drag_cell_x >= threshold and click_cell_x < threshold;
+        const moved_left = drag_cell_x < threshold and click_cell_x >= threshold;
+        selection.active = moved_right or moved_left;
+    } else {
+        selection.active = true;
+    }
+
+    markSelectionChanged();
 }
 
 // --- Clipboard (Win32 native) ---
@@ -3134,15 +3144,9 @@ pub fn copySelectionToClipboard() void {
     // Lock while reading terminal cells
     surface.render_state.mutex.lock();
     const screen = surface.terminal.screens.active;
-    const vp_off = viewportOffsetForSurfaceLocked(surface);
     const grid_cols = @max(@as(usize, 1), @as(usize, @intCast(surface.size.grid.cols)));
-    const grid_rows = @max(@as(usize, 1), @as(usize, @intCast(surface.size.grid.rows)));
     var row: usize = start_row;
     while (row <= end_row) : (row += 1) {
-        // Convert absolute row to viewport-relative for getCell
-        const vp_row = if (row >= vp_off) row - vp_off else continue;
-        if (vp_row >= grid_rows) continue;
-
         const row_start_col = if (row == start_row) start_col else 0;
         var row_end_col = if (row == end_row) end_col else grid_cols - 1;
         if (row_start_col >= grid_cols) continue;
@@ -3152,9 +3156,9 @@ pub fn copySelectionToClipboard() void {
         const row_text_start = text.items.len;
         var col: usize = row_start_col;
         while (col <= row_end_col) : (col += 1) {
-            const cell_data = screen.pages.getCell(.{ .viewport = .{
+            const cell_data = screen.pages.getCell(.{ .screen = .{
                 .x = @intCast(col),
-                .y = @intCast(vp_row),
+                .y = @intCast(row),
             } }) orelse continue;
 
             // Skip spacer cells for wide characters — the actual codepoint
