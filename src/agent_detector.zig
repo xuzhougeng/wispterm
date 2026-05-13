@@ -97,6 +97,39 @@ fn containsAnyIgnoreCase(haystack: []const u8, needles: []const []const u8) bool
     return false;
 }
 
+fn lastIndexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return haystack.len;
+    if (needle.len > haystack.len) return null;
+
+    var start = haystack.len - needle.len;
+    while (true) {
+        var matched = true;
+        for (needle, 0..) |needle_ch, i| {
+            if (lowerAscii(haystack[start + i]) != lowerAscii(needle_ch)) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return start;
+        if (start == 0) return null;
+        start -= 1;
+    }
+}
+
+fn lastAnyIgnoreCase(haystack: []const u8, needles: []const []const u8) ?usize {
+    var latest: ?usize = null;
+    for (needles) |needle| {
+        if (lastIndexOfIgnoreCase(haystack, needle)) |idx| {
+            if (latest == null or idx > latest.?) latest = idx;
+        }
+    }
+    return latest;
+}
+
+fn newerThan(idx: usize, other: ?usize) bool {
+    return other == null or idx > other.?;
+}
+
 fn titleHasAttentionMarker(title: []const u8) bool {
     return containsIgnoreCase(title, "[ ! ]") or
         containsIgnoreCase(title, "[!]") or
@@ -117,26 +150,73 @@ pub fn detect(title: []const u8, recent_output: []const u8) Detection {
             "transcript)",
             "background terminal",
             "approved codex",
+            "would you like to make the following edits",
+            "press enter to confirm or esc to cancel",
+            "retry without sandbox",
         });
     if (!codex_seen) return .{};
 
-    if (containsIgnoreCase(recent_output, "execution halted")) {
-        return .{ .app = .codex, .state = .halted, .confidence = 96 };
+    const approval_idx = lastAnyIgnoreCase(recent_output, &.{
+        "do you want codex",
+        "approve codex",
+        "approval required",
+        "would you like to make the following edits",
+        "press enter to confirm or esc to cancel",
+        "yes, proceed",
+        "don't ask again",
+        "retry without sandbox",
+    });
+    const approved_idx = lastAnyIgnoreCase(recent_output, &.{
+        "you approved codex",
+        "you approved",
+    });
+    const active_approval = if (approval_idx) |prompt_idx|
+        approved_idx == null or prompt_idx > approved_idx.?
+    else
+        false;
+
+    if (active_approval) {
+        return .{ .app = .codex, .state = .waiting_approval, .confidence = 90 };
     }
-    if (containsAnyIgnoreCase(recent_output, &.{ "permission denied", "command failed" })) {
-        return .{ .app = .codex, .state = .failed, .confidence = 78 };
+
+    const halted_idx = lastAnyIgnoreCase(recent_output, &.{
+        "execution halted",
+    });
+    const done_idx = lastAnyIgnoreCase(recent_output, &.{
+        "worked for ",
+    });
+    const running_idx = lastAnyIgnoreCase(recent_output, &.{
+        "working (",
+        "esc to interrupt",
+        "waited for background terminal",
+    });
+    const failure_idx = lastAnyIgnoreCase(recent_output, &.{ "permission denied", "command failed" });
+
+    if (halted_idx) |idx| {
+        if (newerThan(idx, done_idx)) {
+            return .{ .app = .codex, .state = .halted, .confidence = 96 };
+        }
     }
-    if (containsAnyIgnoreCase(recent_output, &.{ "do you want codex", "approve codex", "approval required" }) and
-        !containsIgnoreCase(recent_output, "you approved codex"))
-    {
-        return .{ .app = .codex, .state = .waiting_approval, .confidence = 88 };
+    if (failure_idx) |idx| {
+        const is_after_approval = approved_idx == null or idx > approved_idx.?;
+        if (is_after_approval and newerThan(idx, done_idx) and newerThan(idx, running_idx) and newerThan(idx, halted_idx)) {
+            return .{ .app = .codex, .state = .failed, .confidence = 78 };
+        }
+    }
+    if (done_idx) |idx| {
+        if (newerThan(idx, running_idx) and newerThan(idx, halted_idx) and newerThan(idx, failure_idx)) {
+            return .{ .app = .codex, .state = .done, .confidence = 82 };
+        }
     }
     if (titleHasAttentionMarker(title)) {
         return .{ .app = .codex, .state = .needs_input, .confidence = 72 };
     }
-    if (containsAnyIgnoreCase(recent_output, &.{ "working (", "esc to interrupt", "waited for background terminal" }) or
-        titleHasRunningMarker(title))
-    {
+    if (running_idx) |idx| {
+        if (newerThan(idx, done_idx) and newerThan(idx, halted_idx)) {
+            return .{ .app = .codex, .state = .running, .confidence = 82 };
+        }
+    }
+    if (titleHasRunningMarker(title)) {
         return .{ .app = .codex, .state = .running, .confidence = 82 };
     }
 
@@ -152,6 +232,61 @@ test "agent detector recognizes Codex halted output" {
 
 test "agent detector recognizes Codex running output" {
     const detection = detect("codex", "Working (12s - esc to interrupt)");
+    try std.testing.expectEqual(App.codex, detection.app);
+    try std.testing.expectEqual(State.running, detection.state);
+}
+
+test "agent detector treats Codex sandbox retry prompt as approval" {
+    const output =
+        \\Would you like to make the following edits?
+        \\
+        \\Reason: command failed; retry without sandbox?
+        \\
+        \\> 1. Yes, proceed (y)
+        \\  2. Yes, and don't ask again for these files (a)
+        \\  3. No, and tell codex what to do differently (esc)
+        \\
+        \\Press enter to confirm or esc to cancel
+    ;
+    const detection = detect("[ ! ]", output);
+    try std.testing.expectEqual(App.codex, detection.app);
+    try std.testing.expectEqual(State.waiting_approval, detection.state);
+    try std.testing.expectEqualStrings("ask", detection.badge());
+}
+
+test "agent detector ignores stale approval prompt after Codex approval" {
+    const output =
+        \\Would you like to make the following edits?
+        \\Reason: command failed; retry without sandbox?
+        \\Press enter to confirm or esc to cancel
+        \\You approved codex to run python3 this time
+        \\Working (3s - esc to interrupt)
+    ;
+    const detection = detect("codex", output);
+    try std.testing.expectEqual(App.codex, detection.app);
+    try std.testing.expectEqual(State.running, detection.state);
+}
+
+test "agent detector marks Codex completion after running output as done" {
+    const output =
+        \\Working (12s - esc to interrupt)
+        \\You approved codex to run zsh this time
+        \\Ran zsh -lc 'node /data1/home/xzg/hell.js'
+        \\Worked for 2m 14s
+        \\› use /skills to list available skills
+    ;
+    const detection = detect("codex", output);
+    try std.testing.expectEqual(App.codex, detection.app);
+    try std.testing.expectEqual(State.done, detection.state);
+    try std.testing.expectEqualStrings("done", detection.badge());
+}
+
+test "agent detector prefers newer running marker after old completion" {
+    const output =
+        \\Worked for 2m 14s
+        \\Working (3s - esc to interrupt)
+    ;
+    const detection = detect("codex", output);
     try std.testing.expectEqual(App.codex, detection.app);
     try std.testing.expectEqual(State.running, detection.state);
 }
