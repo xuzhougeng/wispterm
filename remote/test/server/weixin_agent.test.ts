@@ -58,6 +58,19 @@ test("/term routes to writable terminal with carriage return", async () => {
   assert.equal((sent[0] as { data: string }).data, "7077640d");
 });
 
+test("targeted commands with empty args return usage and send nothing", async () => {
+  for (const command of ["/term", "/ai", "/keys"]) {
+    sent = [];
+    const reply = await routeWeixinText({
+      text: command,
+      settings: { enabled: true, target_session: "alpha-secret", reply_timeout_ms: 10000 },
+      sessions: [{ key: "alpha-secret", session: sessionWithLayout() }],
+    });
+    assert.match(reply.text, /用法：/);
+    assert.equal(sent.length, 0);
+  }
+});
+
 test("router asks user to choose session when multiple sessions exist and no target is configured", async () => {
   const reply = await routeWeixinText({
     text: "hello",
@@ -68,6 +81,33 @@ test("router asks user to choose session when multiple sessions exist and no tar
     ],
   });
   assert.match(reply.text, /请先发送 `\/use/);
+});
+
+test("/status reports connected session count", async () => {
+  const reply = await routeWeixinText({
+    text: "/status",
+    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
+    sessions: [
+      { key: "alpha-secret", session: sessionWithLayout() },
+      { key: "beta-secret", session: offlineSessionWithLayout() },
+    ],
+  });
+  assert.match(reply.text, /在线 session：1/);
+});
+
+test("/sessions lists all remote sessions without claiming only online sessions", async () => {
+  const reply = await routeWeixinText({
+    text: "/sessions",
+    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
+    sessions: [
+      { key: "alpha-secret", session: sessionWithLayout() },
+      { key: "beta-secret", session: offlineSessionWithLayout() },
+    ],
+  });
+  assert.match(reply.text, /Remote session：/);
+  assert.doesNotMatch(reply.text, /在线 Remote session/);
+  assert.match(reply.text, /alph\*\*\*\* online/);
+  assert.match(reply.text, /beta\*\*\*\* offline/);
 });
 
 test("unknown slash command returns help before resolving a target session", async () => {

@@ -18,11 +18,12 @@ export async function routeWeixinText(input: WeixinRouteInput): Promise<WeixinRo
   const [cmd, arg] = splitCommand(text);
   if (cmd === "/help") return { text: helpText() };
   if (cmd === "/sessions") return { text: sessionsText(input.sessions) };
-  if (cmd === "/status") return { text: statusText(input.settings, input.sessions) };
+  if (cmd === "/status") return { text: statusText(input.settings, activeSessions) };
   if (cmd === "/use") return useSession(arg, input, activeSessions);
   if (cmd && cmd !== "/term" && cmd !== "/keys" && cmd !== "/ai") {
     return { text: `未知命令：${cmd}\n\n${helpText()}` };
   }
+  if (cmd && !arg) return { text: usageText(cmd) };
 
   const target = resolveTargetSession(input.settings, activeSessions);
   if (!target.session) return { text: target.error };
@@ -84,7 +85,10 @@ function sendTerminal(session: RemoteSession, text: string, enter: boolean): Wei
 
 function sessionsText(sessions: RoutedSession[]): string {
   if (sessions.length === 0) return "当前没有在线 Remote session。";
-  return sessions.map(({ key, session }) => `- ${maskSessionKey(key)} ${session.isPhanttyConnected() ? "online" : "offline"}`).join("\n");
+  return [
+    "Remote session：",
+    ...sessions.map(({ key, session }) => `- ${maskSessionKey(key)} ${session.isPhanttyConnected() ? "online" : "offline"}`),
+  ].join("\n");
 }
 
 function statusText(settings: WeixinSettings, sessions: RoutedSession[]): string {
@@ -106,4 +110,11 @@ function helpText(): string {
     "/keys <文本> 显式发送原始文本到终端",
     "普通文本默认发送给 AI Agent。",
   ].join("\n");
+}
+
+function usageText(cmd: string): string {
+  if (cmd === "/term") return "用法：/term <命令>\n显式发送到终端并回车。";
+  if (cmd === "/keys") return "用法：/keys <文本>\n显式发送原始文本到终端，不自动回车。";
+  if (cmd === "/ai") return "用法：/ai <内容>\n发送给 AI Agent。";
+  return helpText();
 }
