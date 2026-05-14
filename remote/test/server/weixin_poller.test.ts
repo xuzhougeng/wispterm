@@ -425,6 +425,51 @@ test("WeixinPoller ignores stale session-expired scheduling after restart", asyn
   assert.deepEqual(scheduler.delays(), [0, 0]);
 });
 
+test("WeixinPoller cancels stale session-expired settings save after restart", async () => {
+  const savedEnabledValues: boolean[] = [];
+  const warnings: unknown[][] = [];
+  let releaseSave!: () => void;
+  let saveStartedResolve!: () => void;
+  const saveStarted = new Promise<void>((resolve) => {
+    saveStartedResolve = resolve;
+  });
+  const scheduler = fakeManualScheduler();
+  const poller = new WeixinPoller(
+    fakeStore({
+      saveSettings: async (settings, shouldContinue) => {
+        saveStartedResolve();
+        await new Promise<void>((resolve) => {
+          releaseSave = resolve;
+        });
+        if (shouldContinue?.() === false) return false;
+        savedEnabledValues.push(settings.enabled);
+        return true;
+      },
+    }),
+    () => [],
+    { warn: (...args: unknown[]) => warnings.push(args) },
+    {
+      createClient: () => ({
+        getUpdates: async () => ({ ret: 0, errcode: WEIXIN_SESSION_EXPIRED_ERRCODE }),
+        sendTextMessage: async () => {},
+      }),
+      scheduler,
+    },
+  );
+
+  poller.start();
+  scheduler.fire(0);
+  await saveStarted;
+  poller.stop();
+  poller.start();
+  releaseSave();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(savedEnabledValues, []);
+  assert.equal(warnings.length, 0);
+  assert.deepEqual(scheduler.delays(), [0, 0]);
+});
+
 test("WeixinPoller starts new generation poll while old generation is still running", async () => {
   let getUpdatesCalls = 0;
   let releaseOldUpdates!: () => void;
@@ -533,9 +578,68 @@ test("WeixinPoller does not save stale route target session after restart", asyn
   assert.deepEqual(savedTargets, []);
 });
 
+test("WeixinPoller cancels stale route target session save after restart", async () => {
+  const savedTargets: string[] = [];
+  let saveStartedResolve!: () => void;
+  let releaseSave!: () => void;
+  const saveStarted = new Promise<void>((resolve) => {
+    saveStartedResolve = resolve;
+  });
+  const scheduler = fakeManualScheduler();
+  const poller = new WeixinPoller(
+    fakeStore({
+      saveSettings: async (settings, shouldContinue) => {
+        if (settings.target_session === "beta") {
+          saveStartedResolve();
+          await new Promise<void>((resolve) => {
+            releaseSave = resolve;
+          });
+        }
+        if (shouldContinue?.() === false) return false;
+        savedTargets.push(settings.target_session);
+        return true;
+      },
+    }),
+    () => [{
+      key: "beta",
+      session: {
+        isPhanttyConnected: () => true,
+        findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        sendInput: () => true,
+      },
+    }] as never,
+    { warn: () => {} },
+    {
+      createClient: () => ({
+        getUpdates: async () => ({
+          ret: 0,
+          msgs: [{
+            from_user_id: "user@im.wechat",
+            to_user_id: "bot@im.bot",
+            context_token: "ctx",
+            item_list: [{ type: 1, text_item: { text: "/use beta" } }],
+          }],
+        }),
+        sendTextMessage: async () => {},
+      }),
+      scheduler,
+    },
+  );
+
+  poller.start();
+  scheduler.fire(0);
+  await saveStarted;
+  poller.stop();
+  poller.start();
+  releaseSave();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(savedTargets, []);
+});
+
 function fakeStore(overrides: {
   loadSettings?: () => Promise<WeixinSettings>;
-  saveSettings?: (settings: WeixinSettings) => Promise<void>;
+  saveSettings?: (settings: WeixinSettings, shouldContinue?: () => boolean) => Promise<boolean | void>;
   saveSyncBuf?: (value: string) => Promise<void>;
 } = {}) {
   const settings: WeixinSettings = { enabled: true, target_session: "alpha", reply_timeout_ms: 10000 };
@@ -543,7 +647,7 @@ function fakeStore(overrides: {
     loadSettings: overrides.loadSettings ?? (async () => settings),
     loadBinding: async () => binding,
     loadSyncBuf: async () => "current-cursor",
-    saveSettings: overrides.saveSettings ?? (async () => {}),
+    saveSettings: overrides.saveSettings ?? (async () => true),
     saveSyncBuf: overrides.saveSyncBuf ?? (async () => {}),
   } as never;
 }

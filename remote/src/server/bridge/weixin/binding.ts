@@ -67,8 +67,8 @@ export class WeixinBindingStore {
     return normalizeSettings(parsed);
   }
 
-  async saveSettings(settings: WeixinSettings): Promise<void> {
-    await writeAtomicJson(this.settingsPath, normalizeSettings(settings), 0o600);
+  async saveSettings(settings: WeixinSettings, shouldContinue?: () => boolean): Promise<boolean> {
+    return writeAtomicJson(this.settingsPath, normalizeSettings(settings), 0o600, shouldContinue);
   }
 
   async loadSyncBuf(): Promise<string> {
@@ -100,16 +100,22 @@ async function readOptional(path: string): Promise<string> {
   }
 }
 
-async function writeAtomicJson(path: string, value: unknown, mode: number): Promise<void> {
-  await writeAtomicText(path, `${JSON.stringify(value, null, 2)}\n`, mode);
+async function writeAtomicJson(path: string, value: unknown, mode: number, shouldContinue?: () => boolean): Promise<boolean> {
+  return writeAtomicText(path, `${JSON.stringify(value, null, 2)}\n`, mode, shouldContinue);
 }
 
-async function writeAtomicText(path: string, value: string, mode: number): Promise<void> {
+async function writeAtomicText(path: string, value: string, mode: number, shouldContinue?: () => boolean): Promise<boolean> {
+  if (shouldContinue?.() === false) return false;
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, value, { mode });
+    if (shouldContinue?.() === false) {
+      await rm(tmp, { force: true });
+      return false;
+    }
     await rename(tmp, path);
+    return true;
   } catch (err) {
     await rm(tmp, { force: true });
     throw err;

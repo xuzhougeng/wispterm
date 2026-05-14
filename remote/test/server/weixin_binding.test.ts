@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -49,6 +49,31 @@ test("WeixinBindingStore public summary hides token", async () => {
     account_id: "bot@im.bot",
     bound_at: "2026-05-14T00:00:00Z",
   });
+});
+
+test("WeixinBindingStore saveSettings returns true and preserves existing caller behavior without guard", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const store = new WeixinBindingStore(dir);
+
+  const saved = await store.saveSettings({ enabled: true, target_session: "alpha", reply_timeout_ms: 45000 });
+
+  assert.equal(saved, true);
+  assert.deepEqual(await store.loadSettings(), { enabled: true, target_session: "alpha", reply_timeout_ms: 45000 });
+});
+
+test("WeixinBindingStore saveSettings cancels before writing when guard is false", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const store = new WeixinBindingStore(dir);
+  await store.saveSettings({ enabled: true, target_session: "alpha", reply_timeout_ms: 45000 });
+
+  const saved = await store.saveSettings(
+    { enabled: true, target_session: "beta", reply_timeout_ms: 45000 },
+    () => false,
+  );
+
+  assert.equal(saved, false);
+  assert.deepEqual(await store.loadSettings(), { enabled: true, target_session: "alpha", reply_timeout_ms: 45000 });
+  assert.deepEqual((await readdir(join(dir, "weixin"))).filter((name) => name.endsWith(".tmp")), []);
 });
 
 test("WeixinBindingStore unbind removes binding and sync buffer", async () => {

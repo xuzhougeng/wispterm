@@ -148,13 +148,13 @@ export class WeixinPoller {
       if (this.isStale(generation)) return;
       const updates = await client.getUpdates(buf);
       if (this.isStale(generation)) return;
+      const shouldContinue = () => !this.isStale(generation);
       if (updates.errcode === WEIXIN_SESSION_EXPIRED_ERRCODE) {
-        await this.store.saveSettings({ ...settings, enabled: false });
+        await this.store.saveSettings({ ...settings, enabled: false }, shouldContinue);
         if (this.isStale(generation)) return;
         this.logger.warn("weixin session expired; bridge disabled");
         return this.schedule(30000);
       }
-      const shouldContinue = () => !this.isStale(generation);
       await processWeixinUpdates({
         binding,
         messages: updates.msgs ?? [],
@@ -168,7 +168,7 @@ export class WeixinPoller {
             if (!shouldContinue()) return;
             const currentSettings = await this.store.loadSettings();
             if (!shouldContinue()) return;
-            await this.store.saveSettings({ ...currentSettings, target_session: key });
+            await this.store.saveSettings({ ...currentSettings, target_session: key }, shouldContinue);
           },
         }),
         sendText: (to, text, contextToken) => client.sendTextMessage(to, text, contextToken),
