@@ -111,16 +111,10 @@
     padding: 12px 10px;
   }
 
-  .remote-tabs-panel {
-    flex: 0 0 auto;
-    min-width: 0;
-  }
-
+  .remote-tabs-panel,
   .remote-tabs {
     min-width: 0;
-    max-height: min(320px, 42dvh);
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;
   }
 
   .tab-chip {
