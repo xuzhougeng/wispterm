@@ -100,7 +100,8 @@ const WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS: u16 = 1000;
 
 const QUEUE_LIMIT = 512;
 const RETRY_DELAY_NS = 2 * std.time.ns_per_s;
-const INPUT_BUF_SIZE = 16 * 1024;
+const WEBSOCKET_IO_CHUNK_SIZE = 16 * 1024;
+const MAX_INCOMING_MESSAGE_BYTES = 1024 * 1024;
 const HEARTBEAT_INTERVAL_MS: i64 = 25 * 1000;
 const PING_MESSAGE = "{\"type\":\"ping\"}";
 const PONG_MESSAGE = "{\"type\":\"pong\"}";
@@ -450,7 +451,9 @@ fn threadMain(client: *Client) void {
 }
 
 fn receiveThreadMain(client: *Client, websocket: HINTERNET, connection_alive: *std.atomic.Value(bool)) void {
-    var buf: [INPUT_BUF_SIZE]u8 = undefined;
+    var buf: [WEBSOCKET_IO_CHUNK_SIZE]u8 = undefined;
+    var incoming: IncomingMessageAssembler = .{};
+    defer incoming.deinit(client.allocator);
 
     while (!client.stop_requested.load(.acquire)) {
         var bytes_read: windows.DWORD = 0;
@@ -472,7 +475,14 @@ fn receiveThreadMain(client: *Client, websocket: HINTERNET, connection_alive: *s
         if (buffer_type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE or
             buffer_type == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE)
         {
-            const message = buf[0..@intCast(bytes_read)];
+            const maybe_message = incoming.push(
+                client.allocator,
+                buf[0..@intCast(bytes_read)],
+                buffer_type,
+            ) catch continue;
+            const message = maybe_message orelse continue;
+            defer client.allocator.free(message);
+
             if (isJsonMessageType(message, "ping")) {
                 _ = sendWebSocketUtf8(websocket, PONG_MESSAGE);
                 continue;
@@ -485,9 +495,29 @@ fn receiveThreadMain(client: *Client, websocket: HINTERNET, connection_alive: *s
 }
 
 fn sendWebSocketUtf8(websocket: HINTERNET, message: []const u8) bool {
+    if (message.len <= WEBSOCKET_IO_CHUNK_SIZE) {
+        return sendWebSocketUtf8Chunk(websocket, message, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE);
+    }
+
+    var offset: usize = 0;
+    while (offset < message.len) {
+        const remaining = message.len - offset;
+        const take = @min(WEBSOCKET_IO_CHUNK_SIZE, remaining);
+        const end = offset + take;
+        const buffer_type: windows.DWORD = if (end == message.len)
+            WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE
+        else
+            WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE;
+        if (!sendWebSocketUtf8Chunk(websocket, message[offset..end], buffer_type)) return false;
+        offset = end;
+    }
+    return true;
+}
+
+fn sendWebSocketUtf8Chunk(websocket: HINTERNET, message: []const u8, buffer_type: windows.DWORD) bool {
     return WinHttpWebSocketSend(
         websocket,
-        WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+        buffer_type,
         @constCast(message.ptr),
         @intCast(message.len),
     ) == 0;
@@ -701,6 +731,42 @@ fn handleIncomingMessage(client: *Client, message: []const u8) void {
     client.dispatchInput(surface_id, decoded);
 }
 
+const IncomingMessageAssembler = struct {
+    pending: std.ArrayListUnmanaged(u8) = .empty,
+
+    fn deinit(self: *IncomingMessageAssembler, allocator: std.mem.Allocator) void {
+        self.pending.deinit(allocator);
+    }
+
+    fn push(
+        self: *IncomingMessageAssembler,
+        allocator: std.mem.Allocator,
+        chunk: []const u8,
+        buffer_type: windows.DWORD,
+    ) !?[]u8 {
+        switch (buffer_type) {
+            WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE => {
+                try self.append(allocator, chunk);
+                return null;
+            },
+            WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE => {
+                if (self.pending.items.len == 0) return try allocator.dupe(u8, chunk);
+                try self.append(allocator, chunk);
+                return try self.pending.toOwnedSlice(allocator);
+            },
+            else => return null,
+        }
+    }
+
+    fn append(self: *IncomingMessageAssembler, allocator: std.mem.Allocator, chunk: []const u8) !void {
+        if (self.pending.items.len + chunk.len > MAX_INCOMING_MESSAGE_BYTES) {
+            self.pending.clearRetainingCapacity();
+            return error.MessageTooLarge;
+        }
+        try self.pending.appendSlice(allocator, chunk);
+    }
+};
+
 fn isJsonMessageType(message: []const u8, comptime kind: []const u8) bool {
     return std.mem.indexOf(u8, message, "\"type\":\"" ++ kind ++ "\"") != null;
 }
@@ -824,4 +890,23 @@ test "decode input message bytes" {
     defer allocator.free(bytes);
 
     try std.testing.expectEqualSlices(u8, "\r\x1b[A", bytes);
+}
+
+test "incoming websocket fragments are reassembled before handling JSON" {
+    const allocator = std.testing.allocator;
+    var assembler: IncomingMessageAssembler = .{};
+    defer assembler.deinit(allocator);
+
+    const prefix = "{\"type\":\"input-bytes\",\"surfaceId\":\"aichat0000000000\",\"encoding\":\"hex\",\"data\":\"";
+    const suffix = "68656c6c6f0d\"}";
+
+    const first = try assembler.push(allocator, prefix, WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE);
+    try std.testing.expect(first == null);
+
+    const second = try assembler.push(allocator, suffix, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE);
+    defer if (second) |message| allocator.free(message);
+    try std.testing.expect(second != null);
+
+    const expected = "{\"type\":\"input-bytes\",\"surfaceId\":\"aichat0000000000\",\"encoding\":\"hex\",\"data\":\"68656c6c6f0d\"}";
+    try std.testing.expectEqualStrings(expected, second.?);
 }
