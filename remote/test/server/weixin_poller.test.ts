@@ -295,6 +295,55 @@ test("WeixinPoller does not save cursor after stop during an in-flight send", as
   assert.equal(scheduler.scheduledCount(), 0);
 });
 
+test("WeixinPoller start is idempotent while getUpdates is in flight", async () => {
+  const events: string[] = [];
+  let releaseUpdates!: () => void;
+  let updatesStartedResolve!: () => void;
+  const updatesStarted = new Promise<void>((resolve) => {
+    updatesStartedResolve = resolve;
+  });
+  const scheduler = fakeManualScheduler();
+  const poller = new WeixinPoller(
+    fakeStore({
+      saveSyncBuf: async (value) => {
+        events.push(`save:${value}`);
+      },
+    }),
+    () => [],
+    { warn: () => {} },
+    {
+      createClient: () => ({
+        getUpdates: async () => {
+          updatesStartedResolve();
+          await new Promise<void>((resolve) => {
+            releaseUpdates = resolve;
+          });
+          return {
+            ret: 0,
+            get_updates_buf: "next-cursor",
+            longpolling_timeout_ms: 1234,
+            msgs: [],
+          };
+        },
+        sendTextMessage: async () => {},
+      }),
+      scheduler,
+    },
+  );
+
+  poller.start();
+  assert.equal(scheduler.scheduledCount(), 1);
+  scheduler.fire(0);
+  await updatesStarted;
+  poller.start();
+  releaseUpdates();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(events, ["save:next-cursor"]);
+  assert.equal(scheduler.scheduledCount(), 2);
+  assert.deepEqual(scheduler.delays(), [0, 1234]);
+});
+
 function fakeStore(overrides: {
   saveSettings?: (settings: WeixinSettings) => Promise<void>;
   saveSyncBuf?: (value: string) => Promise<void>;
@@ -318,5 +367,21 @@ function fakeScheduler() {
     },
     clearTimeout: () => {},
     scheduledCount: () => scheduled,
+  };
+}
+
+function fakeManualScheduler() {
+  const callbacks: Array<() => void> = [];
+  const delayValues: number[] = [];
+  return {
+    setTimeout: (callback: () => void, ms: number) => {
+      callbacks.push(callback);
+      delayValues.push(ms);
+      return callbacks.length;
+    },
+    clearTimeout: () => {},
+    fire: (index: number) => callbacks[index]?.(),
+    scheduledCount: () => callbacks.length,
+    delays: () => delayValues,
   };
 }

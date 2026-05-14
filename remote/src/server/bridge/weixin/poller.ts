@@ -99,10 +99,14 @@ export class WeixinPoller {
   }
 
   start(): void {
+    if (this.active) return;
     this.active = true;
     this.generation += 1;
     if (this.timer) return;
-    this.timer = this.scheduler.setTimeout(() => void this.tick(), 0);
+    this.timer = this.scheduler.setTimeout(() => {
+      this.timer = null;
+      void this.tick();
+    }, 0);
   }
 
   stop(): void {
@@ -121,7 +125,10 @@ export class WeixinPoller {
   private schedule(ms: number): void {
     if (!this.active) return;
     if (this.timer) this.scheduler.clearTimeout(this.timer);
-    this.timer = this.scheduler.setTimeout(() => void this.tick(), ms);
+    this.timer = this.scheduler.setTimeout(() => {
+      this.timer = null;
+      void this.tick();
+    }, ms);
   }
 
   private async tick(): Promise<void> {
