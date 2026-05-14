@@ -29,7 +29,7 @@ test("bridgeStatusText describes binding and target state", () => {
       { enabled: true, target_session: "abcdef", reply_timeout_ms: 60000 },
       { bound: true, user_id: "user@im.wechat" },
     ),
-    "Ready · user@im.wechat · target abcd**** · send /ping to test",
+    "Bound · abcd**** · /ping to test",
   );
 });
 
@@ -39,7 +39,7 @@ test("bridgeStatusText points disabled bound users to the bridge switch", () => 
       { enabled: false, target_session: "abcdef", reply_timeout_ms: 60000 },
       { bound: true, user_id: "user@im.wechat" },
     ),
-    "Disabled · bound to user@im.wechat · turn on Bridge",
+    "Bound · turn on Bridge",
   );
 });
 
