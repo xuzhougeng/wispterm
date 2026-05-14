@@ -309,7 +309,7 @@ git commit -m "Refactor remote session helpers"
 - Create: `remote/src/server/bridge/weixin/client.ts`
 - Test: `remote/test/server/weixin_client.test.ts`
 
-- [ ] **Step 1: Write failing iLink client tests**
+- [x] **Step 1: Write failing iLink client tests**
 
 Create `remote/test/server/weixin_client.test.ts`:
 
@@ -393,7 +393,7 @@ test("WeixinClient sends text messages through sendmessage", async () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -404,7 +404,7 @@ npm run test:server
 
 Expected: FAIL because `client.ts` and `types.ts` do not exist.
 
-- [ ] **Step 3: Add iLink types**
+- [x] **Step 3: Add iLink types**
 
 Create `remote/src/server/bridge/weixin/types.ts`:
 
@@ -479,7 +479,7 @@ export type WeixinSettings = {
 };
 ```
 
-- [ ] **Step 4: Add iLink client**
+- [x] **Step 4: Add iLink client**
 
 Create `remote/src/server/bridge/weixin/client.ts`:
 
@@ -576,7 +576,7 @@ export class WeixinClient {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -588,7 +588,7 @@ npm run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add remote/src/server/bridge/weixin/types.ts remote/src/server/bridge/weixin/client.ts remote/test/server/weixin_client.test.ts
