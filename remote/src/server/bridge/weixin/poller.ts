@@ -1,7 +1,7 @@
 import { routeWeixinText, type RoutedSession } from "./agent.js";
 import type { WeixinBindingStore } from "./binding.js";
 import { WeixinClient } from "./client.js";
-import type { WeixinBindingRecord, WeixinMessage } from "./types.js";
+import type { WeixinBindingRecord, WeixinGetUpdatesResponse, WeixinMessage } from "./types.js";
 
 export const WEIXIN_SESSION_EXPIRED_ERRCODE = -14;
 
@@ -12,6 +12,24 @@ export type ProcessUpdatesInput = {
   messages: WeixinMessage[];
   routeText: (text: string) => Promise<{ text: string }>;
   sendText: (toUserId: string, text: string, contextToken: string) => Promise<void>;
+  logger?: Logger;
+};
+
+export type Logger = Pick<Console, "warn">;
+
+export type WeixinPollerClient = {
+  getUpdates: (buf: string) => Promise<WeixinGetUpdatesResponse>;
+  sendTextMessage: (toUserId: string, text: string, contextToken: string) => Promise<void>;
+};
+
+export type WeixinPollerScheduler = {
+  setTimeout: (callback: () => void, ms: number) => unknown;
+  clearTimeout: (timer: unknown) => void;
+};
+
+export type WeixinPollerOptions = {
+  createClient?: (binding: WeixinBindingRecord) => WeixinPollerClient;
+  scheduler?: WeixinPollerScheduler;
 };
 
 export function shouldHandleWeixinMessage(binding: WeixinBindingRecord, message: WeixinMessage): HandleDecision {
@@ -38,39 +56,66 @@ export async function processWeixinUpdates(input: ProcessUpdatesInput): Promise<
     if (!shouldHandleWeixinMessage(input.binding, message).ok) continue;
     const text = extractWeixinText(message);
     if (!text) continue;
-    const reply = await input.routeText(text);
-    if (reply.text.trim()) {
-      await input.sendText(message.from_user_id ?? "", reply.text.trim(), message.context_token ?? "");
+    try {
+      const reply = await input.routeText(text);
+      if (reply.text.trim()) {
+        await input.sendText(message.from_user_id ?? "", reply.text.trim(), message.context_token ?? "");
+      }
+    } catch (err) {
+      input.logger?.warn("weixin message processing failed", {
+        from_user_id: message.from_user_id ?? "",
+        to_user_id: message.to_user_id ?? "",
+        has_context_token: Boolean(message.context_token),
+      }, err);
     }
   }
 }
 
 export class WeixinPoller {
-  private timer: NodeJS.Timeout | null = null;
+  private timer: unknown = null;
   private running = false;
+  private active = false;
+  private readonly createClient: (binding: WeixinBindingRecord) => WeixinPollerClient;
+  private readonly scheduler: WeixinPollerScheduler;
 
   constructor(
     private readonly store: WeixinBindingStore,
     private readonly sessions: () => RoutedSession[],
-    private readonly logger: Pick<Console, "log" | "warn" | "error"> = console,
-  ) {}
+    private readonly logger: Logger = console,
+    options: WeixinPollerOptions = {},
+  ) {
+    this.createClient = options.createClient ?? ((binding) => new WeixinClient({ baseUrl: binding.base_url, token: binding.token }));
+    this.scheduler = options.scheduler ?? {
+      setTimeout: (callback, ms) => setTimeout(callback, ms),
+      clearTimeout: (timer) => clearTimeout(timer as NodeJS.Timeout),
+    };
+  }
 
   start(): void {
+    this.active = true;
     if (this.timer) return;
-    this.timer = setTimeout(() => void this.tick(), 0);
+    this.timer = this.scheduler.setTimeout(() => void this.tick(), 0);
   }
 
   stop(): void {
-    if (this.timer) clearTimeout(this.timer);
+    this.active = false;
+    if (this.timer) this.scheduler.clearTimeout(this.timer);
     this.timer = null;
   }
 
+  async runOnceForTest(): Promise<void> {
+    this.active = true;
+    await this.tick();
+  }
+
   private schedule(ms: number): void {
-    this.stop();
-    this.timer = setTimeout(() => void this.tick(), ms);
+    if (!this.active) return;
+    if (this.timer) this.scheduler.clearTimeout(this.timer);
+    this.timer = this.scheduler.setTimeout(() => void this.tick(), ms);
   }
 
   private async tick(): Promise<void> {
+    if (!this.active) return;
     if (this.running) return this.schedule(1000);
     this.running = true;
     try {
@@ -78,7 +123,7 @@ export class WeixinPoller {
       const binding = await this.store.loadBinding();
       if (!settings.enabled || !binding?.token) return this.schedule(5000);
 
-      const client = new WeixinClient({ baseUrl: binding.base_url, token: binding.token });
+      const client = this.createClient(binding);
       const buf = await this.store.loadSyncBuf();
       const updates = await client.getUpdates(buf);
       if (updates.errcode === WEIXIN_SESSION_EXPIRED_ERRCODE) {
@@ -86,10 +131,10 @@ export class WeixinPoller {
         this.logger.warn("weixin session expired; bridge disabled");
         return this.schedule(30000);
       }
-      if (typeof updates.get_updates_buf === "string") await this.store.saveSyncBuf(updates.get_updates_buf);
       await processWeixinUpdates({
         binding,
         messages: updates.msgs ?? [],
+        logger: this.logger,
         routeText: async (text) => routeWeixinText({
           text,
           settings,
@@ -100,6 +145,7 @@ export class WeixinPoller {
         }),
         sendText: (to, text, contextToken) => client.sendTextMessage(to, text, contextToken),
       });
+      if (typeof updates.get_updates_buf === "string") await this.store.saveSyncBuf(updates.get_updates_buf);
       return this.schedule(Math.max(1000, updates.longpolling_timeout_ms ?? 1000));
     } catch (err) {
       this.logger.warn("weixin poll failed", err);
