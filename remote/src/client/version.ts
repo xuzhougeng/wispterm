@@ -1,4 +1,4 @@
-export const WEB_VERSION = "v0.16.0";
+export const WEB_VERSION = "v0.19.4";
 export const WEB_BUILD_TIME = normalizedBuildTime(import.meta.env?.VITE_PHANTTY_WEB_BUILD_TIME);
 
 export function webVersionLabel(buildTime: string | null = WEB_BUILD_TIME): string {
