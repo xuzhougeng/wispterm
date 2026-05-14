@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  bindActionText,
   bridgeStatusText,
   normalizeWeixinSettings,
   pollWeixinBindStatus,
@@ -40,6 +41,11 @@ test("bridgeStatusText points disabled bound users to the bridge switch", () => 
     ),
     "Disabled · bound to user@im.wechat · turn on Bridge",
   );
+});
+
+test("bindActionText switches between bind and unbind from binding state", () => {
+  assert.equal(bindActionText({ bound: false }), "Bind");
+  assert.equal(bindActionText({ bound: true, user_id: "user@im.wechat" }), "Unbind");
 });
 
 test("saveWeixinSettings returns the PUT response shape", async () => {

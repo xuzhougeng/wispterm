@@ -25,6 +25,7 @@ import { bindMobileTextInput, renderMobileTextInputMarkup } from "../mobile_text
 import { bindVirtualKeyboard, renderVirtualKeyboardMarkup } from "../vkbd";
 import { selectedMobileSurfaceKind, shouldShowMobileVirtualKeyboard } from "../mobile_surface_mode";
 import {
+  bindActionText,
   bridgeStatusText,
   fetchWeixinSettings,
   normalizeWeixinSettings,
@@ -97,8 +98,7 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
           </label>
           <div class="form-actions">
             <button type="button" class="secondary-button" id="weixin-save">Save</button>
-            <button type="button" class="secondary-button" id="weixin-bind">Bind</button>
-            <button type="button" class="secondary-button" id="weixin-unbind">Unbind</button>
+            <button type="button" class="secondary-button weixin-bind-toggle" id="weixin-bind-toggle" data-mode="bind">Bind</button>
           </div>
           <div id="weixin-qr" class="weixin-qr" hidden></div>
         </div>
@@ -375,11 +375,12 @@ function bindWeixinPanel(): void {
   document.querySelector<HTMLButtonElement>("#weixin-save")?.addEventListener("click", () => {
     void saveWeixinPanel();
   });
-  document.querySelector<HTMLButtonElement>("#weixin-bind")?.addEventListener("click", () => {
-    void startWeixinPanelBind();
-  });
-  document.querySelector<HTMLButtonElement>("#weixin-unbind")?.addEventListener("click", () => {
-    void unbindWeixinPanel();
+  document.querySelector<HTMLButtonElement>("#weixin-bind-toggle")?.addEventListener("click", () => {
+    if (weixinState?.binding.bound) {
+      void unbindWeixinPanel();
+    } else {
+      void startWeixinPanelBind();
+    }
   });
   void refreshWeixinPanel(weixinBindGeneration);
 }
@@ -431,6 +432,7 @@ function renderWeixinPanel(): void {
   const pill = document.querySelector<HTMLSpanElement>("#weixin-state-pill");
   const enabled = document.querySelector<HTMLInputElement>("#weixin-enabled");
   const enabledCopy = document.querySelector<HTMLElement>("#weixin-enabled-copy");
+  const bindToggle = document.querySelector<HTMLButtonElement>("#weixin-bind-toggle");
   const target = document.querySelector("#weixin-target-session") as HTMLSelectElement | null;
   const state = weixinPanelState(weixinState);
 
@@ -441,6 +443,11 @@ function renderWeixinPanel(): void {
   }
   if (enabled) enabled.checked = weixinState.settings.enabled;
   if (enabledCopy) enabledCopy.textContent = weixinState.settings.enabled ? "On" : "Off";
+  if (bindToggle) {
+    const bound = weixinState.binding.bound;
+    bindToggle.textContent = bindActionText(weixinState.binding);
+    bindToggle.dataset.mode = bound ? "unbind" : "bind";
+  }
   if (target) {
     const selected = weixinState.settings.target_session;
     const sessions = [...weixinState.sessions];

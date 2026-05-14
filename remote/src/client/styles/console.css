@@ -312,8 +312,14 @@
 }
 
 .weixin-panel .form-actions button {
+  flex: 1 1 96px;
   min-height: 40px;
   padding: 9px 14px;
+}
+
+.weixin-bind-toggle[data-mode="unbind"] {
+  border-color: rgba(255, 105, 120, 0.46);
+  color: var(--danger);
 }
 
 .weixin-qr {

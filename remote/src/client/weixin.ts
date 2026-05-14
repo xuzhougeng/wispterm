@@ -81,6 +81,10 @@ export function bridgeStatusText(settings: WeixinSettings, binding: WeixinBindin
   return parts.join(" · ");
 }
 
+export function bindActionText(binding: WeixinBindingSummary): "Bind" | "Unbind" {
+  return binding.bound ? "Unbind" : "Bind";
+}
+
 export async function fetchWeixinSettings(): Promise<WeixinSettingsResponse> {
   const res = await weixinApi("/api/weixin/settings");
   return weixinApiJson<WeixinSettingsResponse>(res, "Failed to load Weixin settings");
