@@ -344,6 +344,87 @@ test("WeixinPoller start is idempotent while getUpdates is in flight", async () 
   assert.deepEqual(scheduler.delays(), [0, 1234]);
 });
 
+test("WeixinPoller ignores stale getUpdates rejection after restart", async () => {
+  const warnings: unknown[][] = [];
+  let rejectUpdates!: (err: Error) => void;
+  let updatesStartedResolve!: () => void;
+  const updatesStarted = new Promise<void>((resolve) => {
+    updatesStartedResolve = resolve;
+  });
+  const scheduler = fakeManualScheduler();
+  const poller = new WeixinPoller(
+    fakeStore(),
+    () => [],
+    { warn: (...args: unknown[]) => warnings.push(args) },
+    {
+      createClient: () => ({
+        getUpdates: async () => {
+          updatesStartedResolve();
+          await new Promise<void>((_resolve, reject) => {
+            rejectUpdates = reject;
+          });
+          return { ret: 0, msgs: [] };
+        },
+        sendTextMessage: async () => {},
+      }),
+      scheduler,
+    },
+  );
+
+  poller.start();
+  scheduler.fire(0);
+  await updatesStarted;
+  poller.stop();
+  poller.start();
+  rejectUpdates(new Error("old poll failed"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(warnings.length, 0);
+  assert.equal(scheduler.scheduledCount(), 2);
+  assert.deepEqual(scheduler.delays(), [0, 0]);
+});
+
+test("WeixinPoller ignores stale session-expired scheduling after restart", async () => {
+  const warnings: unknown[][] = [];
+  let releaseSave!: () => void;
+  let saveStartedResolve!: () => void;
+  const saveStarted = new Promise<void>((resolve) => {
+    saveStartedResolve = resolve;
+  });
+  const scheduler = fakeManualScheduler();
+  const poller = new WeixinPoller(
+    fakeStore({
+      saveSettings: async () => {
+        saveStartedResolve();
+        await new Promise<void>((resolve) => {
+          releaseSave = resolve;
+        });
+      },
+    }),
+    () => [],
+    { warn: (...args: unknown[]) => warnings.push(args) },
+    {
+      createClient: () => ({
+        getUpdates: async () => ({ ret: 0, errcode: WEIXIN_SESSION_EXPIRED_ERRCODE }),
+        sendTextMessage: async () => {},
+      }),
+      scheduler,
+    },
+  );
+
+  poller.start();
+  scheduler.fire(0);
+  await saveStarted;
+  poller.stop();
+  poller.start();
+  releaseSave();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(warnings.length, 0);
+  assert.equal(scheduler.scheduledCount(), 2);
+  assert.deepEqual(scheduler.delays(), [0, 0]);
+});
+
 function fakeStore(overrides: {
   saveSettings?: (settings: WeixinSettings) => Promise<void>;
   saveSyncBuf?: (value: string) => Promise<void>;

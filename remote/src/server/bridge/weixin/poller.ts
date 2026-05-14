@@ -150,6 +150,7 @@ export class WeixinPoller {
       if (this.isStale(generation)) return;
       if (updates.errcode === WEIXIN_SESSION_EXPIRED_ERRCODE) {
         await this.store.saveSettings({ ...settings, enabled: false });
+        if (this.isStale(generation)) return;
         this.logger.warn("weixin session expired; bridge disabled");
         return this.schedule(30000);
       }
@@ -174,6 +175,7 @@ export class WeixinPoller {
       if (!shouldContinue()) return;
       return this.schedule(Math.max(1000, updates.longpolling_timeout_ms ?? 1000));
     } catch (err) {
+      if (this.isStale(generation)) return;
       this.logger.warn("weixin poll failed", err);
       return this.schedule(5000);
     } finally {
