@@ -20,6 +20,11 @@ export type WeixinSettingsResponse = {
   sessions: Array<{ key: string; connected: boolean }>;
 };
 
+export type WeixinSaveSettingsResponse = {
+  success: boolean;
+  settings: WeixinSettings;
+};
+
 export type WeixinBindStartResponse = {
   qrcode: string;
   qrcode_content: string;
@@ -27,9 +32,34 @@ export type WeixinBindStartResponse = {
   status: string;
 };
 
-async function weixinApi(path: string, init?: RequestInit): Promise<Response> {
-  const { api } = await import("./transport");
-  return api(path, init);
+function weixinApi(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(path, {
+    credentials: "same-origin",
+    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    ...init,
+  });
+}
+
+async function weixinApiJson<T>(res: Response, fallback: string): Promise<T> {
+  if (res.ok) return (await res.json()) as T;
+
+  let errorMessage = "";
+  try {
+    const body = (await res.json()) as { error?: unknown };
+    if (typeof body.error === "string" && body.error.length > 0) {
+      errorMessage = body.error;
+    }
+  } catch {
+    // Ignore invalid or empty error bodies and use the endpoint-specific fallback.
+  }
+
+  if (errorMessage) throw new Error(errorMessage);
+  throw new Error(fallback);
+}
+
+async function throwWeixinApiError(res: Response, fallback: string): Promise<never> {
+  await weixinApiJson<unknown>(res, fallback);
+  throw new Error(fallback);
 }
 
 export function normalizeWeixinSettings(input: Partial<WeixinSettings>): WeixinSettings {
@@ -49,31 +79,30 @@ export function bridgeStatusText(settings: WeixinSettings, binding: WeixinBindin
 
 export async function fetchWeixinSettings(): Promise<WeixinSettingsResponse> {
   const res = await weixinApi("/api/weixin/settings");
-  if (!res.ok) throw new Error("Failed to load Weixin settings");
-  return (await res.json()) as WeixinSettingsResponse;
+  return weixinApiJson<WeixinSettingsResponse>(res, "Failed to load Weixin settings");
 }
 
-export async function saveWeixinSettings(settings: WeixinSettings): Promise<WeixinSettingsResponse> {
+export async function saveWeixinSettings(settings: WeixinSettings): Promise<WeixinSaveSettingsResponse> {
   const res = await weixinApi("/api/weixin/settings", { method: "PUT", body: JSON.stringify(settings) });
-  if (!res.ok) throw new Error("Failed to save Weixin settings");
-  return (await res.json()) as WeixinSettingsResponse;
+  return weixinApiJson<WeixinSaveSettingsResponse>(res, "Failed to save Weixin settings");
 }
 
 export async function startWeixinBind(): Promise<WeixinBindStartResponse> {
   const res = await weixinApi("/api/weixin/bind/start", { method: "POST" });
-  if (!res.ok) throw new Error("Failed to start Weixin binding");
-  return (await res.json()) as WeixinBindStartResponse;
+  return weixinApiJson<WeixinBindStartResponse>(res, "Failed to start Weixin binding");
 }
 
 export async function pollWeixinBindStatus(
   qrcode: string,
 ): Promise<{ status: string; message?: string; binding: WeixinBindingSummary }> {
   const res = await weixinApi(`/api/weixin/bind/status?qrcode=${encodeURIComponent(qrcode)}`);
-  if (!res.ok) throw new Error("Failed to poll Weixin binding");
-  return (await res.json()) as { status: string; message?: string; binding: WeixinBindingSummary };
+  return weixinApiJson<{ status: string; message?: string; binding: WeixinBindingSummary }>(
+    res,
+    "Failed to poll Weixin binding",
+  );
 }
 
 export async function unbindWeixin(): Promise<void> {
   const res = await weixinApi("/api/weixin/bind", { method: "DELETE" });
-  if (!res.ok) throw new Error("Failed to unbind Weixin");
+  if (!res.ok) await throwWeixinApiError(res, "Failed to unbind Weixin");
 }

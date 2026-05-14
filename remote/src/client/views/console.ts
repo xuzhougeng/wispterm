@@ -37,9 +37,12 @@ import {
 
 let viewportRefitBound = false;
 let weixinBindTimer: ReturnType<typeof setTimeout> | null = null;
+let weixinBindGeneration = 0;
 let weixinState: WeixinSettingsResponse | null = null;
 
 export function renderConsole(app: HTMLElement, onLogout: () => void): void {
+  cleanupWeixinPanel();
+
   const savedSessionKey = readSavedSessionKey();
   const hasSavedSessionKey = savedSessionKey.length > 0;
   let sessionKeyMasked = hasSavedSessionKey;
@@ -138,6 +141,7 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
   `;
 
   document.querySelector<HTMLButtonElement>("#logout-button")?.addEventListener("click", async () => {
+    cleanupWeixinPanel();
     await api("/api/logout", { method: "POST" });
     disconnect();
     disposeSurfaceViews();
@@ -366,19 +370,45 @@ function bindWeixinPanel(): void {
   document.querySelector<HTMLButtonElement>("#weixin-unbind")?.addEventListener("click", () => {
     void unbindWeixinPanel();
   });
-  void refreshWeixinPanel();
+  void refreshWeixinPanel(weixinBindGeneration);
 }
 
-async function refreshWeixinPanel(): Promise<void> {
+function nextWeixinBindGeneration(): number {
+  weixinBindGeneration += 1;
+  return weixinBindGeneration;
+}
+
+function isCurrentWeixinBindGeneration(generation: number): boolean {
+  return generation === weixinBindGeneration;
+}
+
+function cleanupWeixinPanel(): void {
+  nextWeixinBindGeneration();
+  if (weixinBindTimer) {
+    clearTimeout(weixinBindTimer);
+    weixinBindTimer = null;
+  }
+  weixinState = null;
+
+  const qr = document.querySelector<HTMLDivElement>("#weixin-qr");
+  if (qr) {
+    qr.hidden = true;
+    qr.replaceChildren();
+  }
+}
+
+async function refreshWeixinPanel(generation = weixinBindGeneration): Promise<void> {
   const status = document.querySelector<HTMLDivElement>("#weixin-status");
   try {
     const next = await fetchWeixinSettings();
+    if (!isCurrentWeixinBindGeneration(generation)) return;
     weixinState = {
       ...next,
       settings: normalizeWeixinSettings(next.settings),
     };
     renderWeixinPanel();
   } catch (error) {
+    if (!isCurrentWeixinBindGeneration(generation)) return;
     if (status) status.textContent = error instanceof Error ? error.message : "Failed to load Weixin settings";
   }
 }
@@ -416,19 +446,18 @@ async function saveWeixinPanel(): Promise<void> {
   if (!enabled || !target) return;
 
   if (status) status.textContent = "Saving Weixin bridge...";
+  const generation = weixinBindGeneration;
   try {
     const settings = normalizeWeixinSettings({
       enabled: enabled.checked,
       target_session: target.value,
       reply_timeout_ms: weixinState?.settings.reply_timeout_ms ?? 60000,
     });
-    const next = await saveWeixinSettings(settings);
-    weixinState = {
-      ...next,
-      settings: normalizeWeixinSettings(next.settings),
-    };
-    renderWeixinPanel();
+    await saveWeixinSettings(settings);
+    if (!isCurrentWeixinBindGeneration(generation)) return;
+    await refreshWeixinPanel(generation);
   } catch (error) {
+    if (!isCurrentWeixinBindGeneration(generation)) return;
     if (status) status.textContent = error instanceof Error ? error.message : "Failed to save Weixin settings";
   }
 }
@@ -436,6 +465,7 @@ async function saveWeixinPanel(): Promise<void> {
 async function startWeixinPanelBind(): Promise<void> {
   const status = document.querySelector<HTMLDivElement>("#weixin-status");
   const qr = document.querySelector<HTMLDivElement>("#weixin-qr");
+  const generation = nextWeixinBindGeneration();
   if (weixinBindTimer) {
     clearTimeout(weixinBindTimer);
     weixinBindTimer = null;
@@ -444,33 +474,38 @@ async function startWeixinPanelBind(): Promise<void> {
   if (status) status.textContent = "Starting Weixin binding...";
   try {
     const binding = await startWeixinBind();
+    if (!isCurrentWeixinBindGeneration(generation)) return;
     if (qr) {
       qr.hidden = false;
       qr.innerHTML = `<img src="${escapeText(binding.qrcode_data_url)}" alt="Weixin bind QR code" /><div>${escapeText(binding.status)}</div>`;
     }
     if (status) status.textContent = "Waiting for Weixin binding...";
-    scheduleWeixinBindPoll(binding.qrcode);
+    scheduleWeixinBindPoll(binding.qrcode, generation);
   } catch (error) {
+    if (!isCurrentWeixinBindGeneration(generation)) return;
     if (status) status.textContent = error instanceof Error ? error.message : "Failed to start Weixin binding";
   }
 }
 
-function scheduleWeixinBindPoll(qrcode: string): void {
+function scheduleWeixinBindPoll(qrcode: string, generation: number): void {
+  if (!isCurrentWeixinBindGeneration(generation)) return;
   const status = document.querySelector<HTMLDivElement>("#weixin-status");
   if (weixinBindTimer) clearTimeout(weixinBindTimer);
 
   weixinBindTimer = setTimeout(() => {
+    if (!isCurrentWeixinBindGeneration(generation)) return;
     weixinBindTimer = null;
     void (async () => {
       try {
         const next = await pollWeixinBindStatus(qrcode);
+        if (!isCurrentWeixinBindGeneration(generation)) return;
         if (next.binding.bound || next.status === "bound") {
           const qr = document.querySelector<HTMLDivElement>("#weixin-qr");
           if (qr) {
             qr.hidden = true;
             qr.replaceChildren();
           }
-          await refreshWeixinPanel();
+          await refreshWeixinPanel(generation);
           return;
         }
 
@@ -480,8 +515,9 @@ function scheduleWeixinBindPoll(qrcode: string): void {
         }
 
         if (status) status.textContent = next.message ?? "Waiting for Weixin binding...";
-        scheduleWeixinBindPoll(qrcode);
+        scheduleWeixinBindPoll(qrcode, generation);
       } catch (error) {
+        if (!isCurrentWeixinBindGeneration(generation)) return;
         if (status) status.textContent = error instanceof Error ? error.message : "Failed to poll Weixin binding";
       }
     })();
@@ -491,6 +527,7 @@ function scheduleWeixinBindPoll(qrcode: string): void {
 async function unbindWeixinPanel(): Promise<void> {
   const status = document.querySelector<HTMLDivElement>("#weixin-status");
   const qr = document.querySelector<HTMLDivElement>("#weixin-qr");
+  const generation = nextWeixinBindGeneration();
   if (weixinBindTimer) {
     clearTimeout(weixinBindTimer);
     weixinBindTimer = null;
@@ -503,8 +540,10 @@ async function unbindWeixinPanel(): Promise<void> {
   if (status) status.textContent = "Unbinding Weixin...";
   try {
     await unbindWeixin();
-    await refreshWeixinPanel();
+    if (!isCurrentWeixinBindGeneration(generation)) return;
+    await refreshWeixinPanel(generation);
   } catch (error) {
+    if (!isCurrentWeixinBindGeneration(generation)) return;
     if (status) status.textContent = error instanceof Error ? error.message : "Failed to unbind Weixin";
   }
 }
