@@ -41,9 +41,36 @@ test("plain text routes to ai chat with carriage return", async () => {
     settings: { enabled: true, target_session: "alpha-secret", reply_timeout_ms: 10000 },
     sessions: [{ key: "alpha-secret", session: sessionWithLayout() }],
   });
-  assert.match(reply.text, /已发送给 Phantty AI Agent/);
+  assert.equal(reply.text, "信息已收到，开始处理。");
+  assert.equal(reply.ai?.baselineTranscript, "AI\nready");
   assert.equal((sent[0] as { surfaceId: string }).surfaceId, "aichat0000000000");
   assert.equal((sent[0] as { data: string }).data, "73756d6d6172697a652063757272656e7420776f726b0d");
+});
+
+test("/ping replies pong without resolving a target session", async () => {
+  sent = [];
+  const reply = await routeWeixinText({
+    text: "/ping",
+    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
+    sessions: [],
+  });
+
+  assert.equal(reply.text, "pong");
+  assert.equal(reply.ai, undefined);
+  assert.equal(sent.length, 0);
+});
+
+test("plain ping replies pong for quick binding checks", async () => {
+  sent = [];
+  const reply = await routeWeixinText({
+    text: "ping",
+    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
+    sessions: [],
+  });
+
+  assert.equal(reply.text, "pong");
+  assert.equal(reply.ai, undefined);
+  assert.equal(sent.length, 0);
 });
 
 test("/term routes to writable terminal with carriage return", async () => {

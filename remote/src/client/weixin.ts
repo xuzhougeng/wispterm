@@ -71,9 +71,13 @@ export function normalizeWeixinSettings(input: Partial<WeixinSettings>): WeixinS
 }
 
 export function bridgeStatusText(settings: WeixinSettings, binding: WeixinBindingSummary): string {
-  const parts = [settings.enabled ? "Weixin bridge enabled" : "Weixin bridge disabled"];
-  parts.push(binding.bound ? `bound to ${binding.user_id || binding.account_id || "Weixin"}` : "not bound");
+  const identity = binding.user_id || binding.account_id || "Weixin";
+  if (!binding.bound) return "Not bound · scan to bind Weixin";
+  if (!settings.enabled) return `Disabled · bound to ${identity} · turn on Bridge`;
+
+  const parts = ["Ready", identity];
   if (settings.target_session) parts.push(`target ${maskSessionKey(settings.target_session)}`);
+  parts.push("send /ping to test");
   return parts.join(" · ");
 }
 

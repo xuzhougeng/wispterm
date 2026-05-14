@@ -8,11 +8,19 @@ export type WeixinRouteInput = {
   sessions: RoutedSession[];
   saveTargetSession?: (key: string) => Promise<void>;
 };
-export type WeixinRouteReply = { text: string };
+export type WeixinAiFollowup = {
+  session: RemoteSession;
+  baselineTranscript: string;
+};
+export type WeixinRouteReply = {
+  text: string;
+  ai?: WeixinAiFollowup;
+};
 
 export async function routeWeixinText(input: WeixinRouteInput): Promise<WeixinRouteReply> {
   const text = input.text.trim();
   if (!text) return { text: "" };
+  if (isPing(text)) return { text: "pong" };
 
   const activeSessions = input.sessions.filter(({ session }) => session.isPhanttyConnected());
   const [cmd, arg] = splitCommand(text);
@@ -71,8 +79,15 @@ async function useSession(arg: string, input: WeixinRouteInput, activeSessions: 
 function sendAi(session: RemoteSession, text: string): WeixinRouteReply {
   const ai = session.findAiChatSurface();
   if (!ai) return { text: "当前 Remote session 没有 AI Chat tab。请先在 Phantty 打开 AI Chat，或使用 `/term <命令>` 显式发送到终端。" };
+  const baselineTranscript = session.latestAiChatTranscript();
   if (!session.sendInput(ai.id, `${text}\r`)) return { text: "Phantty 当前离线，无法发送给 AI Agent。" };
-  return { text: "已发送给 Phantty AI Agent，等待结果中。" };
+  return {
+    text: "信息已收到，开始处理。",
+    ai: {
+      session,
+      baselineTranscript,
+    },
+  };
 }
 
 function sendTerminal(session: RemoteSession, text: string, enter: boolean): WeixinRouteReply {
@@ -102,6 +117,7 @@ function statusText(settings: WeixinSettings, sessions: RoutedSession[]): string
 function helpText(): string {
   return [
     "Phantty Weixin Bridge 命令：",
+    "/ping 验证微信绑定",
     "/status 查看状态",
     "/sessions 查看 Remote session",
     "/use <session> 选择目标 session",
@@ -110,6 +126,11 @@ function helpText(): string {
     "/keys <文本> 显式发送原始文本到终端",
     "普通文本默认发送给 AI Agent。",
   ].join("\n");
+}
+
+function isPing(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return normalized === "ping" || normalized === "/ping" || normalized === "／ping";
 }
 
 function usageText(cmd: string): string {

@@ -199,7 +199,35 @@
 }
 
 .weixin-panel {
+  gap: 12px;
+}
+
+.weixin-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
+}
+
+.weixin-state-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.weixin-state-pill[data-state="ready"] {
+  border-color: rgba(100, 214, 154, 0.48);
+  color: var(--ok);
+  background: rgba(100, 214, 154, 0.1);
+}
+
+.weixin-state-pill[data-state="disabled"],
+.weixin-state-pill[data-state="unbound"] {
+  background: var(--ghost-bg);
 }
 
 .weixin-status {
@@ -208,10 +236,84 @@
   line-height: 1.4;
 }
 
-.weixin-toggle {
+.weixin-switch {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: var(--ghost-bg);
+}
+
+.weixin-switch-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.weixin-switch-copy strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.weixin-switch-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.weixin-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+
+.weixin-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(143, 160, 181, 0.22);
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.weixin-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--text);
+  transition: transform 160ms ease;
+}
+
+.weixin-switch input:checked + .weixin-switch-track {
+  border-color: rgba(100, 214, 154, 0.64);
+  background: rgba(100, 214, 154, 0.34);
+}
+
+.weixin-switch input:checked + .weixin-switch-track::after {
+  transform: translateX(18px);
+  background: var(--ok);
+}
+
+.weixin-switch input:focus + .weixin-switch-track {
+  box-shadow: 0 0 0 4px var(--input-focus-ring);
+}
+
+.weixin-panel .form-actions button {
+  min-height: 40px;
+  padding: 9px 14px;
 }
 
 .weixin-qr {

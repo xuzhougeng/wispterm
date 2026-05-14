@@ -127,6 +127,7 @@ test("WeixinPoller discards updates after stop during an in-flight poll", async 
       session: {
         isPhanttyConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        latestAiChatTranscript: () => "Status:\r\nReady",
         sendInput: () => true,
       },
     }] as never,
@@ -202,6 +203,7 @@ test("WeixinPoller stops message processing before send when stopped during rout
       session: {
         isPhanttyConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        latestAiChatTranscript: () => "Status:\r\nReady",
         sendInput: () => true,
       },
     }] as never,
@@ -256,6 +258,7 @@ test("WeixinPoller does not save cursor after stop during an in-flight send", as
       session: {
         isPhanttyConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        latestAiChatTranscript: () => "Status:\r\nReady",
         sendInput: () => true,
       },
     }] as never,
@@ -291,8 +294,111 @@ test("WeixinPoller does not save cursor after stop during an in-flight send", as
   releaseSend();
   await run;
 
-  assert.deepEqual(events, ["send:已发送给 Phantty AI Agent，等待结果中。"]);
+  assert.deepEqual(events, ["send:信息已收到，开始处理。"]);
   assert.equal(scheduler.scheduledCount(), 0);
+});
+
+test("WeixinPoller replies pong to /ping without routing to AI chat", async () => {
+  const events: string[] = [];
+  const poller = new WeixinPoller(
+    fakeStore(),
+    () => [{
+      key: "alpha",
+      session: {
+        isPhanttyConnected: () => true,
+        findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        latestAiChatTranscript: () => "Status:\r\nReady",
+        sendInput: () => {
+          events.push("input");
+          return true;
+        },
+      },
+    }] as never,
+    { warn: () => {} },
+    {
+      createClient: () => ({
+        getUpdates: async () => ({
+          ret: 0,
+          msgs: [{
+            from_user_id: "user@im.wechat",
+            to_user_id: "bot@im.bot",
+            context_token: "ctx",
+            item_list: [{ type: 1, text_item: { text: "/ping" } }],
+          }],
+        }),
+        sendTextMessage: async (_to, text) => {
+          events.push(`send:${text}`);
+        },
+      }),
+      scheduler: fakeManualScheduler(),
+    },
+  );
+
+  await poller.runOnceForTest();
+
+  assert.deepEqual(events, ["send:pong"]);
+});
+
+test("WeixinPoller sends AI progress checkpoints and stops after the final assistant reply", async () => {
+  const events: string[] = [];
+  let transcript = "Model:\r\nDeepSeek\r\n\r\nStatus:\r\nReady\r\n\r\nAI:\r\nready";
+  const scheduler = fakeManualScheduler();
+  const poller = new WeixinPoller(
+    fakeStore({
+      loadSettings: async () => ({ enabled: true, target_session: "alpha", reply_timeout_ms: 60000 }),
+    }),
+    () => [{
+      key: "alpha",
+      session: {
+        isPhanttyConnected: () => true,
+        findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        latestAiChatTranscript: () => transcript,
+        sendInput: (_surfaceId: string, text: string) => {
+          events.push(`input:${text}`);
+          transcript = `${transcript}\r\n\r\nYou:\r\n${text.trim()}`;
+          return true;
+        },
+      },
+    }] as never,
+    { warn: () => {} },
+    {
+      createClient: () => ({
+        getUpdates: async () => ({
+          ret: 0,
+          get_updates_buf: "next-cursor",
+          longpolling_timeout_ms: 1000,
+          msgs: [{
+            from_user_id: "user@im.wechat",
+            to_user_id: "bot@im.bot",
+            context_token: "ctx",
+            item_list: [{ type: 1, text_item: { text: "hello" } }],
+          }],
+        }),
+        sendTextMessage: async (_to, text) => {
+          events.push(`send:${text}`);
+        },
+      }),
+      scheduler,
+    },
+  );
+
+  await poller.runOnceForTest();
+  assert.deepEqual(events, ["input:hello\r", "send:信息已收到，开始处理。"]);
+  assert.deepEqual(scheduler.delays().slice(0, 4), [5000, 10000, 30000, 60000]);
+
+  transcript = `${transcript}\r\n\r\nStatus:\r\nRunning tools...\r\n\r\nTool:\r\nterminal_snapshot`;
+  scheduler.fire(0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(events.at(-1), "send:还在处理中，工具调用仍在执行。");
+
+  transcript = `${transcript}\r\n\r\nStatus:\r\nReady\r\n\r\nAI:\r\nhi from agent`;
+  scheduler.fire(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(events.at(-1), "send:hi from agent");
+
+  scheduler.fire(2);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(events.filter((event) => event === "send:hi from agent").length, 1);
 });
 
 test("WeixinPoller start is idempotent while getUpdates is in flight", async () => {

@@ -78,11 +78,18 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
           <span id="status-text">Not connected</span>
         </div>
         <div class="panel weixin-panel">
-          <div class="panel-label">Weixin</div>
+          <div class="weixin-head">
+            <div class="panel-label">Weixin</div>
+            <span id="weixin-state-pill" class="weixin-state-pill" data-state="loading">Loading</span>
+          </div>
           <div id="weixin-status" class="weixin-status">Loading Weixin bridge...</div>
-          <label class="weixin-toggle">
+          <label class="weixin-switch">
+            <span class="weixin-switch-copy">
+              <strong>Bridge</strong>
+              <small id="weixin-enabled-copy">Off</small>
+            </span>
             <input id="weixin-enabled" type="checkbox" />
-            Enable bridge
+            <span class="weixin-switch-track" aria-hidden="true"></span>
           </label>
           <label>
             Target session
@@ -361,6 +368,10 @@ function bindViewportRefit(): void {
 }
 
 function bindWeixinPanel(): void {
+  document.querySelector<HTMLInputElement>("#weixin-enabled")?.addEventListener("change", (event) => {
+    const copy = document.querySelector<HTMLElement>("#weixin-enabled-copy");
+    if (copy) copy.textContent = (event.currentTarget as HTMLInputElement).checked ? "On" : "Off";
+  });
   document.querySelector<HTMLButtonElement>("#weixin-save")?.addEventListener("click", () => {
     void saveWeixinPanel();
   });
@@ -417,11 +428,19 @@ function renderWeixinPanel(): void {
   if (!weixinState) return;
 
   const status = document.querySelector<HTMLDivElement>("#weixin-status");
+  const pill = document.querySelector<HTMLSpanElement>("#weixin-state-pill");
   const enabled = document.querySelector<HTMLInputElement>("#weixin-enabled");
+  const enabledCopy = document.querySelector<HTMLElement>("#weixin-enabled-copy");
   const target = document.querySelector("#weixin-target-session") as HTMLSelectElement | null;
+  const state = weixinPanelState(weixinState);
 
   if (status) status.textContent = bridgeStatusText(weixinState.settings, weixinState.binding);
+  if (pill) {
+    pill.dataset.state = state;
+    pill.textContent = state === "ready" ? "Ready" : state === "disabled" ? "Disabled" : "Not bound";
+  }
   if (enabled) enabled.checked = weixinState.settings.enabled;
+  if (enabledCopy) enabledCopy.textContent = weixinState.settings.enabled ? "On" : "Off";
   if (target) {
     const selected = weixinState.settings.target_session;
     const sessions = [...weixinState.sessions];
@@ -437,6 +456,12 @@ function renderWeixinPanel(): void {
       }),
     ].join("");
   }
+}
+
+function weixinPanelState(next: WeixinSettingsResponse): "ready" | "disabled" | "unbound" {
+  if (!next.binding.bound) return "unbound";
+  if (!next.settings.enabled) return "disabled";
+  return "ready";
 }
 
 async function saveWeixinPanel(): Promise<void> {
