@@ -12,6 +12,7 @@ export type ProcessUpdatesInput = {
   messages: WeixinMessage[];
   routeText: (text: string) => Promise<{ text: string }>;
   sendText: (toUserId: string, text: string, contextToken: string) => Promise<void>;
+  shouldContinue?: () => boolean;
   logger?: Logger;
 };
 
@@ -52,16 +53,21 @@ export function extractWeixinText(message: WeixinMessage): string {
 }
 
 export async function processWeixinUpdates(input: ProcessUpdatesInput): Promise<void> {
+  const shouldStop = () => input.shouldContinue ? !input.shouldContinue() : false;
   for (const message of input.messages) {
+    if (shouldStop()) return;
     if (!shouldHandleWeixinMessage(input.binding, message).ok) continue;
     const text = extractWeixinText(message);
     if (!text) continue;
     try {
       const reply = await input.routeText(text);
+      if (shouldStop()) return;
       if (reply.text.trim()) {
         await input.sendText(message.from_user_id ?? "", reply.text.trim(), message.context_token ?? "");
+        if (shouldStop()) return;
       }
     } catch (err) {
+      if (shouldStop()) return;
       input.logger?.warn("weixin message processing failed", {
         from_user_id: message.from_user_id ?? "",
         to_user_id: message.to_user_id ?? "",
@@ -140,10 +146,12 @@ export class WeixinPoller {
         this.logger.warn("weixin session expired; bridge disabled");
         return this.schedule(30000);
       }
+      const shouldContinue = () => !this.isStale(generation);
       await processWeixinUpdates({
         binding,
         messages: updates.msgs ?? [],
         logger: this.logger,
+        shouldContinue,
         routeText: async (text) => routeWeixinText({
           text,
           settings,
@@ -154,7 +162,9 @@ export class WeixinPoller {
         }),
         sendText: (to, text, contextToken) => client.sendTextMessage(to, text, contextToken),
       });
+      if (!shouldContinue()) return;
       if (typeof updates.get_updates_buf === "string") await this.store.saveSyncBuf(updates.get_updates_buf);
+      if (!shouldContinue()) return;
       return this.schedule(Math.max(1000, updates.longpolling_timeout_ms ?? 1000));
     } catch (err) {
       this.logger.warn("weixin poll failed", err);

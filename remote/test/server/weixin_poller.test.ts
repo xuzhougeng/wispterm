@@ -176,6 +176,125 @@ test("WeixinPoller discards updates after stop during an in-flight poll", async 
   assert.equal(scheduler.scheduledCount(), 0);
 });
 
+test("WeixinPoller stops message processing before send when stopped during routing", async () => {
+  const events: string[] = [];
+  let releaseRoute!: () => void;
+  let routeStartedResolve!: () => void;
+  const routeStarted = new Promise<void>((resolve) => {
+    routeStartedResolve = resolve;
+  });
+  const scheduler = fakeScheduler();
+  const poller = new WeixinPoller(
+    fakeStore({
+      saveSettings: async () => {
+        events.push("route:save-target");
+        await new Promise<void>((resolve) => {
+          releaseRoute = resolve;
+          routeStartedResolve();
+        });
+      },
+      saveSyncBuf: async (value) => {
+        events.push(`save:${value}`);
+      },
+    }),
+    () => [{
+      key: "alpha",
+      session: {
+        isPhanttyConnected: () => true,
+        findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        sendInput: () => true,
+      },
+    }] as never,
+    { warn: () => {} },
+    {
+      createClient: () => ({
+        getUpdates: async () => ({
+          ret: 0,
+          get_updates_buf: "next-cursor",
+          longpolling_timeout_ms: 1000,
+          msgs: [{
+            from_user_id: "user@im.wechat",
+            to_user_id: "bot@im.bot",
+            context_token: "ctx1",
+            item_list: [{ type: 1, text_item: { text: "/use alpha" } }],
+          }],
+        }),
+        sendTextMessage: async (_to, text) => {
+          events.push(`send:${text}`);
+        },
+      }),
+      scheduler,
+    },
+  );
+
+  const run = poller.runOnceForTest();
+  await routeStarted;
+  poller.stop();
+  releaseRoute();
+  await run;
+
+  assert.deepEqual(events, ["route:save-target"]);
+  assert.equal(scheduler.scheduledCount(), 0);
+});
+
+test("WeixinPoller does not save cursor after stop during an in-flight send", async () => {
+  const events: string[] = [];
+  let releaseSend!: () => void;
+  let sendStartedResolve!: () => void;
+  const sendStarted = new Promise<void>((resolve) => {
+    sendStartedResolve = resolve;
+  });
+  const scheduler = fakeScheduler();
+  const poller = new WeixinPoller(
+    fakeStore({
+      saveSyncBuf: async (value) => {
+        events.push(`save:${value}`);
+      },
+    }),
+    () => [{
+      key: "alpha",
+      session: {
+        isPhanttyConnected: () => true,
+        findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        sendInput: () => true,
+      },
+    }] as never,
+    { warn: () => {} },
+    {
+      createClient: () => ({
+        getUpdates: async () => ({
+          ret: 0,
+          get_updates_buf: "next-cursor",
+          longpolling_timeout_ms: 1000,
+          msgs: [{
+            from_user_id: "user@im.wechat",
+            to_user_id: "bot@im.bot",
+            context_token: "ctx1",
+            item_list: [{ type: 1, text_item: { text: "hello" } }],
+          }],
+        }),
+        sendTextMessage: async (_to, text) => {
+          events.push(`send:${text}`);
+          sendStartedResolve();
+          await new Promise<void>((resolve) => {
+            releaseSend = resolve;
+          });
+        },
+      }),
+      scheduler,
+    },
+  );
+
+  const run = poller.runOnceForTest();
+  await sendStarted;
+  poller.stop();
+  releaseSend();
+  await run;
+
+  assert.deepEqual(events, ["send:已发送给 Phantty AI Agent，等待结果中。"]);
+  assert.equal(scheduler.scheduledCount(), 0);
+});
+
 function fakeStore(overrides: {
   saveSettings?: (settings: WeixinSettings) => Promise<void>;
   saveSyncBuf?: (value: string) => Promise<void>;
