@@ -22,8 +22,11 @@ export type RelayMessage = {
 };
 
 export type RemoteSurfaceRef = { id: string; title: string };
+type LayoutTab = NonNullable<RelayMessage["tabs"]>[number];
+type LayoutSurface = LayoutTab["surfaces"][number];
 
 const HEARTBEAT_INTERVAL_MS = 25_000;
+const SOCKET_OPEN = 1;
 
 const sessions = new Map<string, RemoteSession>();
 const heartbeatState = new WeakMap<WebSocket, { alive: boolean }>();
@@ -56,7 +59,7 @@ export class RemoteSession {
   }
 
   isPhanttyConnected(): boolean {
-    return this.phantty !== null;
+    return isSocketOpen(this.phantty);
   }
 
   applyLayout(message: RelayMessage): void {
@@ -71,13 +74,24 @@ export class RemoteSession {
   }
 
   findDefaultWritableSurface(): RemoteSurfaceRef | null {
-    const focused = this.layoutSurfaces().find(
-      (surface) => surface.focused && surface.kind !== "ai_chat" && surface.readOnly !== true,
+    const activeTab = this.activeTab();
+    const activeSurfaces = activeTab?.surfaces ?? [];
+    const byFocusedSurfaceId = activeSurfaces.find(
+      (surface) => surface.id === activeTab?.focusedSurfaceId && isWritableTerminalSurface(surface),
+    );
+    if (byFocusedSurfaceId) {
+      return { id: byFocusedSurfaceId.id, title: byFocusedSurfaceId.title ?? byFocusedSurfaceId.id };
+    }
+
+    const focused = activeSurfaces.find(
+      (surface) => surface.focused && isWritableTerminalSurface(surface),
     );
     if (focused) return { id: focused.id, title: focused.title ?? focused.id };
-    const first = this.layoutSurfaces().find(
-      (surface) => surface.kind !== "ai_chat" && surface.readOnly !== true,
-    );
+
+    const firstActive = activeSurfaces.find(isWritableTerminalSurface);
+    if (firstActive) return { id: firstActive.id, title: firstActive.title ?? firstActive.id };
+
+    const first = this.layoutSurfaces().find(isWritableTerminalSurface);
     return first ? { id: first.id, title: first.title ?? first.id } : null;
   }
 
@@ -89,14 +103,13 @@ export class RemoteSession {
   }
 
   sendInput(surfaceId: string, text: string): boolean {
-    if (!this.phantty) return false;
-    safeSend(this.phantty, {
+    if (!isSocketOpen(this.phantty)) return false;
+    return safeSend(this.phantty, {
       type: "input-bytes",
       surfaceId,
       encoding: "hex",
       data: Buffer.from(text, "utf8").toString("hex"),
     });
-    return true;
   }
 
   sendNotice(message: string): void {
@@ -105,6 +118,12 @@ export class RemoteSession {
 
   private layoutSurfaces(): NonNullable<NonNullable<RelayMessage["tabs"]>[number]["surfaces"]> {
     return this.lastLayout?.tabs?.flatMap((tab) => tab.surfaces ?? []) ?? [];
+  }
+
+  private activeTab(): LayoutTab | null {
+    const tabs = this.lastLayout?.tabs ?? [];
+    if (tabs.length === 0) return null;
+    return tabs.find((tab) => tab.index === this.lastLayout?.activeTab) ?? tabs[0] ?? null;
   }
 
   attachPhantty(socket: WebSocket): void {
@@ -151,7 +170,7 @@ export class RemoteSession {
     this.browsers.add(socket);
     trackHeartbeat(socket);
     safeSend(socket, { type: "notice", message: "Browser paired; input enabled" });
-    if (this.phantty) safeSend(socket, { type: "notice", message: "Phantty connected" });
+    if (this.isPhanttyConnected()) safeSend(socket, { type: "notice", message: "Phantty connected" });
     if (this.lastLayout) safeSend(socket, this.lastLayout);
 
     socket.on("message", (raw) => {
@@ -195,12 +214,22 @@ export class RemoteSession {
   }
 }
 
-export function safeSend(socket: WebSocket, message: unknown): void {
+export function safeSend(socket: WebSocket, message: unknown): boolean {
+  if (!isSocketOpen(socket)) return false;
   try {
     socket.send(JSON.stringify(message));
+    return true;
   } catch {
-    // ignore
+    return false;
   }
+}
+
+function isSocketOpen(socket: WebSocket | null): socket is WebSocket {
+  return socket?.readyState === SOCKET_OPEN;
+}
+
+function isWritableTerminalSurface(surface: LayoutSurface): boolean {
+  return surface.kind !== "ai_chat" && surface.readOnly !== true;
 }
 
 export function safeJson(data: string): RelayMessage | null {

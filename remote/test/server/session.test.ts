@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { RemoteSession } from "../../src/server/session";
 
 class FakeSocket {
+  readyState = 1;
   sent: string[] = [];
   listeners = new Map<string, Array<(raw?: unknown) => void>>();
   send(payload: string): void {
@@ -17,6 +18,12 @@ class FakeSocket {
   }
   emit(event: string, raw?: unknown): void {
     for (const fn of this.listeners.get(event) ?? []) fn(raw);
+  }
+}
+
+class ThrowingSocket extends FakeSocket {
+  send(_payload: string): void {
+    throw new Error("send failed");
   }
 }
 
@@ -42,6 +49,42 @@ test("RemoteSession finds ai chat and writable terminal surfaces from latest lay
   assert.equal(session.latestAiChatTranscript(), "You\nhello\n\nAI\nhi");
 });
 
+test("RemoteSession prefers writable terminal surfaces in the active tab", () => {
+  const session = new RemoteSession("alpha");
+  session.applyLayout({
+    type: "layout",
+    activeTab: 1,
+    tabs: [
+      {
+        index: 0,
+        focusedSurfaceId: "inactive-focused",
+        surfaces: [
+          {
+            id: "inactive-focused",
+            title: "Inactive Focused",
+            focused: true,
+            kind: "terminal",
+            readOnly: false,
+          },
+        ],
+      },
+      {
+        index: 1,
+        focusedSurfaceId: "active-terminal",
+        surfaces: [
+          { id: "active-ai", title: "Active AI", focused: true, kind: "ai_chat", readOnly: false },
+          { id: "active-terminal", title: "Active Terminal", kind: "terminal", readOnly: false },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(session.findDefaultWritableSurface(), {
+    id: "active-terminal",
+    title: "Active Terminal",
+  });
+});
+
 test("RemoteSession sends utf8 input bytes to connected Phantty socket", () => {
   const session = new RemoteSession("alpha");
   const phantty = new FakeSocket();
@@ -59,5 +102,19 @@ test("RemoteSession sends utf8 input bytes to connected Phantty socket", () => {
 
 test("RemoteSession refuses input when Phantty socket is disconnected", () => {
   const session = new RemoteSession("alpha");
+  assert.equal(session.sendInput("surface1", "pwd\r"), false);
+});
+
+test("RemoteSession refuses input when Phantty socket is not open or send fails", () => {
+  const session = new RemoteSession("alpha");
+  const closedPhantty = new FakeSocket();
+  closedPhantty.readyState = 3;
+  session.attachPhantty(closedPhantty as never);
+
+  assert.equal(session.sendInput("surface1", "pwd\r"), false);
+
+  const throwingPhantty = new ThrowingSocket();
+  session.attachPhantty(throwingPhantty as never);
+
   assert.equal(session.sendInput("surface1", "pwd\r"), false);
 });
