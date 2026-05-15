@@ -250,6 +250,14 @@ ai-agent-output-limit  = 16384</code></pre>
             <h3>如何实现选中即复制、右键即粘贴？</h3>
             <p>在 <code>%APPDATA%\phantty\config</code> 中设置 <code>copy-on-select = true</code> 和 <code>right-click-action = paste</code> 即可。如果你希望“有选区时右键复制、没选区时右键粘贴”，则把它改成 <code>right-click-action = copy-or-paste</code>。</p>
           </div>
+          <div class="feature">
+            <h3>如何兼容老堡垒机或老 SSH 服务器？</h3>
+            <p>在 <code>%APPDATA%\phantty\config</code> 中设置 <code>ssh-legacy-algorithms = true</code>。它会为仍依赖 <code>ssh-rsa</code>、<code>ssh-dss</code>、旧版 Diffie-Hellman KEX 或 CBC cipher 的主机补上兼容选项。</p>
+          </div>
+          <div class="feature">
+            <h3>AI Chat / Agent 的 prompt 长度上限是多少？</h3>
+            <p>Phantty 现在允许 AI Chat / Agent 输入框中的单次草稿最长达到 <code>65536 bytes</code>。这是你按 Enter 发送前的单条输入上限，不是整段对话上下文的总长度上限。</p>
+          </div>
         </div>
       </div>
     </section>

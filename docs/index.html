@@ -250,6 +250,14 @@ ai-agent-output-limit  = 16384</code></pre>
             <h3>How do I enable copy on select and paste on right-click?</h3>
             <p>Set <code>copy-on-select = true</code> and <code>right-click-action = paste</code> in <code>%APPDATA%\phantty\config</code>. If you want right-click to copy when a selection is active and paste otherwise, use <code>right-click-action = copy-or-paste</code> instead.</p>
           </div>
+          <div class="feature">
+            <h3>How do I connect to older bastions or SSH servers?</h3>
+            <p>Set <code>ssh-legacy-algorithms = true</code> in <code>%APPDATA%\phantty\config</code>. This enables compatibility options for older hosts that still require <code>ssh-rsa</code>, <code>ssh-dss</code>, legacy Diffie-Hellman key exchange, or CBC ciphers.</p>
+          </div>
+          <div class="feature">
+            <h3>What is the AI Chat / Agent prompt length limit?</h3>
+            <p>Phantty now allows up to <code>65536 bytes</code> for one draft in the AI Chat / Agent input box. This is the per-message input limit before you press Enter, not the full conversation context limit.</p>
+          </div>
         </div>
       </div>
     </section>

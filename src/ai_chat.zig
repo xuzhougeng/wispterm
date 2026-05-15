@@ -20,6 +20,7 @@ pub const DEFAULT_AGENT = "true";
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
 const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
 const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
+const INPUT_PROMPT_MAX_BYTES: usize = 64 * 1024;
 
 pub const Role = enum {
     user,
@@ -302,7 +303,7 @@ pub const Session = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
     messages: std.ArrayListUnmanaged(Message) = .empty,
-    input_buf: [8192]u8 = undefined,
+    input_buf: [INPUT_PROMPT_MAX_BYTES]u8 = undefined,
     input_len: usize = 0,
     input_cursor: usize = 0,
     input_scroll_row: usize = 0,
@@ -3296,6 +3297,21 @@ test "ai chat input cursor supports insertion and deletion in the middle" {
     session.handleKey(.{ .vk = win32_backend.VK_DELETE, .ctrl = false, .shift = false, .alt = false });
     try std.testing.expectEqualStrings("helo", session.input());
     try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
+}
+
+test "ai chat input accepts prompts longer than the old 8 KiB limit" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+
+    const prompt = try allocator.alloc(u8, 16 * 1024);
+    defer allocator.free(prompt);
+    @memset(prompt, 'a');
+
+    session.appendInputText(prompt);
+
+    try std.testing.expectEqual(prompt.len, session.input().len);
+    try std.testing.expectEqualStrings(prompt, session.input());
+    try std.testing.expectEqual(prompt.len, session.inputCursor());
 }
 
 test "ai chat input cursor moves by utf8 codepoint boundaries" {
