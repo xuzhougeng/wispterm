@@ -375,6 +375,9 @@ threadlocal var g_scrollbar_drag_surface: ?*Surface = null;
 threadlocal var g_scrollbar_drag_view_y: f32 = 0;
 threadlocal var g_scrollbar_drag_view_h: f32 = 0;
 threadlocal var g_scrollbar_drag_top_pad: f32 = 0;
+threadlocal var g_ai_input_scroll_dragging: bool = false;
+threadlocal var g_ai_input_scroll_chat: ?*AppWindow.ai_chat.Session = null;
+threadlocal var g_ai_input_scroll_drag_offset: f32 = 0;
 pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
 pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
@@ -458,6 +461,8 @@ pub fn cancelTransientMouseState(win: ?*win32_backend.Window) void {
     tab.g_tab_close_pressed = null;
     overlays.g_scrollbar_dragging = false;
     g_scrollbar_drag_surface = null;
+    g_ai_input_scroll_dragging = false;
+    g_ai_input_scroll_chat = null;
     if (win) |w| w.clearTransientInputQueues();
 }
 
@@ -2501,6 +2506,23 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                     toggleAiAgentPermission();
                     return;
                 }
+                if (AppWindow.ai_chat_renderer.inputScrollbarHitTest(
+                    chat,
+                    xpos,
+                    ypos,
+                    @floatFromInt(fb.width),
+                    @floatFromInt(fb.height),
+                    AppWindow.leftPanelsWidth(),
+                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                )) |hit| {
+                    g_ai_input_scroll_dragging = true;
+                    g_ai_input_scroll_chat = chat;
+                    g_ai_input_scroll_drag_offset = hit.drag_offset_px;
+                    applyAiInputScrollbarDrag(chat, ypos);
+                    AppWindow.g_force_rebuild = true;
+                    AppWindow.g_cells_valid = false;
+                    return;
+                }
                 chat.clearSelection();
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
@@ -2612,6 +2634,8 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
             // Mouse up
             overlays.g_scrollbar_dragging = false;
             g_scrollbar_drag_surface = null;
+            g_ai_input_scroll_dragging = false;
+            g_ai_input_scroll_chat = null;
             if (g_sidebar_resize_dragging) {
                 g_sidebar_resize_dragging = false;
                 g_sidebar_resize_hover = hitTestSidebarResizeHandle(xpos, ypos);
@@ -2812,6 +2836,23 @@ fn hitTestPlusButton(xpos: f64) bool {
     return xpos >= plus_x and xpos < plus_x + plus_btn_w;
 }
 
+fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
+    const win = AppWindow.g_window orelse return;
+    if (AppWindow.ai_chat_renderer.inputScrollbarDragRowAt(
+        chat,
+        ypos,
+        @floatFromInt(win.width),
+        @floatFromInt(win.height),
+        AppWindow.leftPanelsWidth(),
+        AppWindow.rightPanelsWidthForWindow(win.width),
+        g_ai_input_scroll_drag_offset,
+    )) |drag| {
+        _ = chat.setInputScrollRow(drag.row, drag.max_cols, drag.visible_rows);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+    }
+}
+
 fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     const xpos: f64 = @floatFromInt(ev.x);
     const ypos: f64 = @floatFromInt(ev.y);
@@ -2833,6 +2874,10 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     if (g_browser_resize_dragging) {
         applyBrowserWidthFromMouse(xpos);
         _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+        return;
+    }
+    if (g_ai_input_scroll_dragging) {
+        if (g_ai_input_scroll_chat) |chat| applyAiInputScrollbarDrag(chat, ypos);
         return;
     }
 

@@ -1988,15 +1988,19 @@ fn syncAiChatImeCaret(win: *win32_backend.Window, session: *ai_chat.Session) voi
     const layout = ai_chat_renderer.inputLayout(left_panels_w, panel_w, input_text);
     const cursor = ai_chat_renderer.inputCursorRect(input_text, session.input_cursor, layout.text_x, layout.text_w);
     const scrolled_row = session.input_scroll_row;
+    const follow_cursor = session.input_scroll_follow_cursor;
     session.mutex.unlock();
     const input_line_h = @round(@max(23.0, font.g_titlebar_cell_height + 8.0));
     const visible_rows = ai_chat_renderer.inputVisibleRowsForField(layout.field_h);
     var first_row = scrolled_row;
-    if (cursor.row < first_row) {
-        first_row = cursor.row;
-    } else if (cursor.row >= first_row + visible_rows) {
-        first_row = cursor.row - visible_rows + 1;
+    if (follow_cursor) {
+        if (cursor.row < first_row) {
+            first_row = cursor.row;
+        } else if (cursor.row >= first_row + visible_rows) {
+            first_row = cursor.row - visible_rows + 1;
+        }
     }
+    if (cursor.row < first_row) return;
     const row = cursor.row - first_row;
     const field_top_px = wh - layout.field_y - layout.field_h;
     const cursor_top_px = field_top_px + ai_chat_renderer.INPUT_FIELD_PAD_TOP + @as(f32, @floatFromInt(row)) * input_line_h;

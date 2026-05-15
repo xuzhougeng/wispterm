@@ -306,6 +306,7 @@ pub const Session = struct {
     input_len: usize = 0,
     input_cursor: usize = 0,
     input_scroll_row: usize = 0,
+    input_scroll_follow_cursor: bool = true,
     input_select_all: bool = false,
     transcript_select_all: bool = false,
     status_buf: [512]u8 = undefined,
@@ -455,6 +456,7 @@ pub const Session = struct {
             self.input_len = 0;
             self.input_cursor = 0;
             self.input_scroll_row = 0;
+            self.input_scroll_follow_cursor = true;
             self.input_select_all = false;
         }
         self.transcript_select_all = false;
@@ -468,6 +470,7 @@ pub const Session = struct {
             self.input_len = 0;
             self.input_cursor = 0;
             self.input_scroll_row = 0;
+            self.input_scroll_follow_cursor = true;
             self.input_select_all = false;
         }
         self.transcript_select_all = false;
@@ -520,6 +523,7 @@ pub const Session = struct {
             self.input_len = 0;
             self.input_cursor = 0;
             self.input_scroll_row = 0;
+            self.input_scroll_follow_cursor = true;
             self.clearSelectionLocked();
             self.mutex.unlock();
             return;
@@ -757,6 +761,7 @@ pub const Session = struct {
         self.input_len = 0;
         self.input_cursor = 0;
         self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
         self.clearSelectionLocked();
         self.scroll_px = 1_000_000;
 
@@ -828,7 +833,19 @@ pub const Session = struct {
             next = @min(max_row, next +| amount);
         }
         self.input_scroll_row = next;
+        if (before != next) self.input_scroll_follow_cursor = false;
         return before != next;
+    }
+
+    pub fn setInputScrollRow(self: *Session, row: usize, max_cols_raw: usize, visible_rows_raw: usize) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const before = self.input_scroll_row;
+        const max_row = self.maxInputScrollRowLocked(max_cols_raw, visible_rows_raw);
+        self.input_scroll_row = @min(row, max_row);
+        if (max_row > 0) self.input_scroll_follow_cursor = false;
+        return before != self.input_scroll_row;
     }
 
     fn backspaceInput(self: *Session) void {
@@ -838,6 +855,7 @@ pub const Session = struct {
             self.input_len = 0;
             self.input_cursor = 0;
             self.input_scroll_row = 0;
+            self.input_scroll_follow_cursor = true;
             self.clearSelectionLocked();
             return;
         }
@@ -847,6 +865,7 @@ pub const Session = struct {
         const start = previousUtf8Boundary(self.input(), self.input_cursor);
         self.deleteInputRangeLocked(start, self.input_cursor);
         self.input_cursor = start;
+        self.input_scroll_follow_cursor = true;
     }
 
     fn deleteInput(self: *Session) void {
@@ -856,6 +875,7 @@ pub const Session = struct {
             self.input_len = 0;
             self.input_cursor = 0;
             self.input_scroll_row = 0;
+            self.input_scroll_follow_cursor = true;
             self.clearSelectionLocked();
             return;
         }
@@ -864,6 +884,7 @@ pub const Session = struct {
         if (self.input_cursor >= self.input_len) return;
         const end = nextUtf8Boundary(self.input(), self.input_cursor);
         self.deleteInputRangeLocked(self.input_cursor, end);
+        self.input_scroll_follow_cursor = true;
     }
 
     fn moveInputCursorLeft(self: *Session) void {
@@ -871,6 +892,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.clearSelectionLocked();
         self.input_cursor = previousUtf8Boundary(self.input(), self.input_cursor);
+        self.input_scroll_follow_cursor = true;
     }
 
     fn moveInputCursorRight(self: *Session) void {
@@ -878,6 +900,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.clearSelectionLocked();
         self.input_cursor = nextUtf8Boundary(self.input(), self.input_cursor);
+        self.input_scroll_follow_cursor = true;
     }
 
     fn moveInputCursorHome(self: *Session) void {
@@ -885,6 +908,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.clearSelectionLocked();
         self.input_cursor = 0;
+        self.input_scroll_follow_cursor = true;
     }
 
     fn moveInputCursorEnd(self: *Session) void {
@@ -892,6 +916,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.clearSelectionLocked();
         self.input_cursor = self.input_len;
+        self.input_scroll_follow_cursor = true;
     }
 
     fn moveInputCursorVertical(self: *Session, max_cols_raw: usize, delta: i32) void {
@@ -906,6 +931,7 @@ pub const Session = struct {
         if (delta < 0 and current.row == 0) return;
         const target_row = if (delta < 0) current.row - 1 else current.row + 1;
         self.input_cursor = byteOffsetForVisualPosition(text, target_row, current.col, max_cols) orelse return;
+        self.input_scroll_follow_cursor = true;
     }
 
     fn insertInputBytesLocked(self: *Session, text: []const u8) void {
@@ -925,6 +951,7 @@ pub const Session = struct {
         @memcpy(self.input_buf[self.input_cursor..][0..len], text[0..len]);
         self.input_len += len;
         self.input_cursor += len;
+        self.input_scroll_follow_cursor = true;
     }
 
     fn deleteInputRangeLocked(self: *Session, start: usize, end: usize) void {
@@ -3352,6 +3379,32 @@ test "ai chat input scroll clamps to wrapped rows" {
     try std.testing.expect(session.scrollInputRows(10, 5, 3));
     try std.testing.expectEqual(@as(usize, 0), session.inputScrollRow());
     try std.testing.expect(!session.scrollInputRows(10, 5, 3));
+}
+
+test "ai chat manual input scroll pauses cursor following until cursor moves" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "Test",
+        DEFAULT_BASE_URL,
+        "key",
+        DEFAULT_MODEL,
+        DEFAULT_SYSTEM_PROMPT,
+        DEFAULT_THINKING,
+        DEFAULT_REASONING_EFFORT,
+        DEFAULT_STREAM,
+        "false",
+    );
+    defer session.deinit();
+
+    session.appendInputText("abcdefghijkl");
+    try std.testing.expect(session.input_scroll_follow_cursor);
+
+    _ = session.scrollInputRows(1, 5, 1);
+    try std.testing.expect(!session.input_scroll_follow_cursor);
+
+    session.handleKeyWithWrapCols(.{ .vk = win32_backend.VK_RIGHT, .ctrl = false, .shift = false, .alt = false }, 5);
+    try std.testing.expect(session.input_scroll_follow_cursor);
 }
 
 test "ai chat remote snapshot omits local draft input" {

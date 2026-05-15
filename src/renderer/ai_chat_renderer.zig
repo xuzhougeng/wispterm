@@ -26,6 +26,7 @@ const MODE_SLOT_W: f32 = 112;
 const INPUT_SCROLLBAR_GUTTER: f32 = 10;
 const INPUT_SCROLLBAR_W: f32 = 4;
 const INPUT_SCROLLBAR_PAD: f32 = 7;
+const INPUT_SCROLLBAR_HIT_PAD: f32 = 5;
 const BUBBLE_PAD_X: f32 = 14;
 const BUBBLE_PAD_Y: f32 = 10;
 const BUBBLE_GAP: f32 = 12;
@@ -66,6 +67,25 @@ pub const InputLayout = struct {
 pub const InputFieldMetrics = struct {
     max_cols: usize,
     visible_rows: usize,
+};
+
+pub const InputScrollbarHit = struct {
+    drag_offset_px: f32,
+};
+
+pub const InputScrollbarDrag = struct {
+    row: usize,
+    max_cols: usize,
+    visible_rows: usize,
+};
+
+const InputScrollbarGeometry = struct {
+    track_x: f32,
+    track_top_px: f32,
+    track_h: f32,
+    thumb_top_px: f32,
+    thumb_h: f32,
+    max_scroll_row: usize,
 };
 
 pub fn render(
@@ -169,10 +189,12 @@ pub fn render(
         const total_rows = countWrappedLines(input_text, layout.text_w);
         const max_first_row = if (total_rows > visible_rows) total_rows - visible_rows else 0;
         var first_row = @min(session.input_scroll_row, max_first_row);
-        if (cursor.row < first_row) {
-            first_row = cursor.row;
-        } else if (cursor.row >= first_row + visible_rows) {
-            first_row = cursor.row - visible_rows + 1;
+        if (session.input_scroll_follow_cursor) {
+            if (cursor.row < first_row) {
+                first_row = cursor.row;
+            } else if (cursor.row >= first_row + visible_rows) {
+                first_row = cursor.row - visible_rows + 1;
+            }
         }
         first_row = @min(first_row, max_first_row);
         session.input_scroll_row = first_row;
@@ -195,12 +217,14 @@ pub fn render(
         const total_rows = countWrappedLines(input_text, layout.text_w);
         const max_first_row = if (total_rows > visible_rows) total_rows - visible_rows else 0;
         const first_row = @min(session.input_scroll_row, max_first_row);
-        const row = cursor.row - first_row;
-        if (row < visible_rows) {
-            const field_top_px = window_height - layout.field_y - layout.field_h;
-            const cursor_top_px = field_top_px + composer_layout.Field.pad_top + @as(f32, @floatFromInt(row)) * lineHeight();
-            const cursor_y = window_height - cursor_top_px - font.g_titlebar_cell_height;
-            gl_init.renderQuad(cursor.x, cursor_y, 1, font.g_titlebar_cell_height, accent);
+        if (cursor.row >= first_row) {
+            const row = cursor.row - first_row;
+            if (row < visible_rows) {
+                const field_top_px = window_height - layout.field_y - layout.field_h;
+                const cursor_top_px = field_top_px + composer_layout.Field.pad_top + @as(f32, @floatFromInt(row)) * lineHeight();
+                const cursor_y = window_height - cursor_top_px - font.g_titlebar_cell_height;
+                gl_init.renderQuad(cursor.x, cursor_y, 1, font.g_titlebar_cell_height, accent);
+            }
         }
     }
     gl.Disable.?(c.GL_SCISSOR_TEST);
@@ -428,6 +452,75 @@ pub fn inputFieldMetricsAt(
     return .{
         .max_cols = inputWrapColumns(w),
         .visible_rows = inputVisibleRowsForField(layout.field_h),
+    };
+}
+
+pub fn inputScrollbarHitTest(
+    session: *ai_chat.Session,
+    xpos: f64,
+    ypos: f64,
+    window_width: f32,
+    window_height: f32,
+    left_panels_w: f32,
+    right_panels_w: f32,
+) ?InputScrollbarHit {
+    const x = @round(left_panels_w);
+    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    if (w <= 1) return null;
+
+    session.mutex.lock();
+    const layout = inputLayout(x, w, session.input());
+    const total_rows = countWrappedLines(session.input(), layout.text_w);
+    const visible_rows = inputVisibleRowsForField(layout.field_h);
+    const first_row = session.input_scroll_row;
+    session.mutex.unlock();
+
+    const geo = inputScrollbarGeometry(layout, window_height, total_rows, visible_rows, first_row) orelse return null;
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+    if (px < geo.track_x - INPUT_SCROLLBAR_HIT_PAD or px > geo.track_x + INPUT_SCROLLBAR_W + INPUT_SCROLLBAR_HIT_PAD) return null;
+    if (py < geo.track_top_px or py > geo.track_top_px + geo.track_h) return null;
+
+    const drag_offset = if (py >= geo.thumb_top_px and py <= geo.thumb_top_px + geo.thumb_h)
+        py - geo.thumb_top_px
+    else
+        geo.thumb_h / 2.0;
+
+    return .{
+        .drag_offset_px = drag_offset,
+    };
+}
+
+pub fn inputScrollbarDragRowAt(
+    session: *ai_chat.Session,
+    ypos: f64,
+    window_width: f32,
+    window_height: f32,
+    left_panels_w: f32,
+    right_panels_w: f32,
+    drag_offset_px: f32,
+) ?InputScrollbarDrag {
+    const x = @round(left_panels_w);
+    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    if (w <= 1) return null;
+
+    session.mutex.lock();
+    const layout = inputLayout(x, w, session.input());
+    const total_rows = countWrappedLines(session.input(), layout.text_w);
+    const visible_rows = inputVisibleRowsForField(layout.field_h);
+    const first_row = session.input_scroll_row;
+    session.mutex.unlock();
+
+    const geo = inputScrollbarGeometry(layout, window_height, total_rows, visible_rows, first_row) orelse return null;
+    const usable_h = @max(1.0, geo.track_h - geo.thumb_h);
+    const py: f32 = @floatCast(ypos);
+    const ratio = std.math.clamp((py - geo.track_top_px - drag_offset_px) / usable_h, 0.0, 1.0);
+    const row_f = ratio * @as(f32, @floatFromInt(geo.max_scroll_row));
+
+    return .{
+        .row = @intFromFloat(@round(row_f)),
+        .max_cols = inputWrapColumns(w),
+        .visible_rows = visible_rows,
     };
 }
 
@@ -661,23 +754,42 @@ fn renderUsageFooter(text: []const u8, x: f32, top_px: f32, w: f32, h: f32, wind
 }
 
 fn renderInputScrollbar(layout: InputLayout, total_rows: usize, visible_rows_raw: usize, first_row: usize) void {
-    const visible_rows = @max(@as(usize, 1), visible_rows_raw);
-    if (total_rows <= visible_rows) return;
+    const geo = inputScrollbarGeometry(layout, 0, total_rows, visible_rows_raw, first_row) orelse return;
 
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
+    const track_y = @round(layout.field_y + INPUT_SCROLLBAR_PAD);
+    const thumb_y = track_y + (geo.track_h - geo.thumb_h) * (1.0 - @as(f32, @floatFromInt(@min(first_row, geo.max_scroll_row))) / @as(f32, @floatFromInt(geo.max_scroll_row)));
+
+    gl_init.renderQuadAlpha(geo.track_x, track_y, INPUT_SCROLLBAR_W, geo.track_h, mixColor(bg, fg, 0.24), 0.35);
+    gl_init.renderQuadAlpha(geo.track_x, @round(thumb_y), INPUT_SCROLLBAR_W, geo.thumb_h, mixColor(fg, accent, 0.18), 0.72);
+}
+
+fn inputScrollbarGeometry(layout: InputLayout, window_height: f32, total_rows: usize, visible_rows_raw: usize, first_row_raw: usize) ?InputScrollbarGeometry {
+    const visible_rows = @max(@as(usize, 1), visible_rows_raw);
+    if (total_rows <= visible_rows) return null;
+
     const track_x = @round(layout.field_x + layout.field_w - INPUT_SCROLLBAR_PAD - INPUT_SCROLLBAR_W);
     const track_y = @round(layout.field_y + INPUT_SCROLLBAR_PAD);
     const track_h = @round(@max(1.0, layout.field_h - INPUT_SCROLLBAR_PAD * 2));
     const max_scroll = total_rows - visible_rows;
+    const first_row = @min(first_row_raw, max_scroll);
     const ratio = @as(f32, @floatFromInt(first_row)) / @as(f32, @floatFromInt(max_scroll));
     const visible_ratio = @as(f32, @floatFromInt(visible_rows)) / @as(f32, @floatFromInt(total_rows));
     const thumb_h = @round(@min(track_h, @max(18.0, track_h * visible_ratio)));
     const thumb_y = @round(track_y + (track_h - thumb_h) * (1.0 - ratio));
+    const track_top_px = if (window_height > 0) window_height - track_y - track_h else 0;
+    const thumb_top_px = if (window_height > 0) window_height - thumb_y - thumb_h else 0;
 
-    gl_init.renderQuadAlpha(track_x, track_y, INPUT_SCROLLBAR_W, track_h, mixColor(bg, fg, 0.24), 0.35);
-    gl_init.renderQuadAlpha(track_x, thumb_y, INPUT_SCROLLBAR_W, thumb_h, mixColor(fg, accent, 0.18), 0.72);
+    return .{
+        .track_x = track_x,
+        .track_top_px = track_top_px,
+        .track_h = track_h,
+        .thumb_top_px = thumb_top_px,
+        .thumb_h = thumb_h,
+        .max_scroll_row = max_scroll,
+    };
 }
 
 fn sectionVisible(top_px: f32, h: f32, viewport_top: f32, viewport_bottom_top_px: f32) bool {
