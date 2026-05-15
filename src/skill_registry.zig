@@ -327,20 +327,30 @@ test "skill_registry: snapshot is deterministic and includes hash" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    const skill_md = "---\nname: pdf\ndescription: PDF skill.\n---\n# PDF Body";
     try tmp.dir.makePath("skills/pdf");
     try tmp.dir.writeFile(.{
         .sub_path = "skills/pdf/SKILL.md",
-        .data = "---\nname: pdf\ndescription: PDF skill.\n---\n# PDF Body",
+        .data = skill_md,
     });
 
     var snapshot = try loadSkillSnapshot(std.testing.allocator, tmp.dir, "skills", "pdf");
     defer snapshot.deinit(std.testing.allocator);
+    var second_snapshot = try loadSkillSnapshot(std.testing.allocator, tmp.dir, "skills", "pdf");
+    defer second_snapshot.deinit(std.testing.allocator);
+
+    const expected_content = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "# Skill: pdf\nsource: skills/pdf\nhash: {s}\n\n{s}",
+        .{ snapshot.hash_hex[0..], skill_md },
+    );
+    defer std.testing.allocator.free(expected_content);
 
     try std.testing.expectEqualStrings("pdf", snapshot.name);
     try std.testing.expectEqualStrings("skills/pdf", snapshot.source);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot.content, "# Skill: pdf") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot.content, "hash: ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot.content, "# PDF Body") != null);
+    try std.testing.expectEqualStrings(expected_content, snapshot.content);
+    try std.testing.expectEqualSlices(u8, snapshot.hash_hex[0..], second_snapshot.hash_hex[0..]);
+    try std.testing.expectEqualStrings(snapshot.content, second_snapshot.content);
 }
 
 test "skill_registry: duplicate names fail deterministically" {
