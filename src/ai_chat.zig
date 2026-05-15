@@ -343,20 +343,26 @@ fn parseSlashCommand(input: []const u8) ?SlashCommand {
     if (std.mem.eql(u8, trimmed, "/skills")) return .skills;
     if (std.mem.eql(u8, trimmed, "/commands")) return .commands;
     if (std.mem.eql(u8, trimmed, "/reload-skills")) return .reload_skills;
+    if (std.mem.indexOfAny(u8, trimmed[1..], "/ \t\r\n") != null) return null;
+    if (trimmed.len < "/help".len) return null;
     return .unknown;
 }
 
 fn parseSkillInvocation(input: []const u8) ?SkillInvocation {
     const trimmed = std.mem.trim(u8, input, " \t\r\n");
     if (!std.mem.startsWith(u8, trimmed, "$") or trimmed.len < 2) return null;
+    if (!(std.ascii.isAlphabetic(trimmed[1]) or trimmed[1] == '_')) return null;
 
     var end: usize = 1;
+    var has_lower = false;
     while (end < trimmed.len) : (end += 1) {
         const ch = trimmed[end];
         if (!(std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_')) break;
+        if (std.ascii.isLower(ch)) has_lower = true;
     }
 
     if (end == 1) return null;
+    if (!has_lower) return null;
     const rest = std.mem.trim(u8, trimmed[end..], " \t\r\n");
     if (rest.len == 0) return null;
     return .{ .skill_name = trimmed[1..end], .prompt = rest };
@@ -386,6 +392,19 @@ fn listSkillsForDisplay(allocator: std.mem.Allocator) ![]u8 {
         }
     }
     return out.toOwnedSlice(allocator);
+}
+
+fn loadSkillPreloadContent(allocator: std.mem.Allocator, skill_name: []const u8) !?[]u8 {
+    var snapshot = skill_registry.loadSkillSnapshot(allocator, std.fs.cwd(), "skills", skill_name) catch |err| switch (err) {
+        skill_registry.LookupError.SkillNotFound,
+        skill_registry.LookupError.DuplicateSkillName,
+        skill_registry.LookupError.InvalidSkillMarkdown,
+        skill_registry.LookupError.SkillTooLarge,
+        => return null,
+        else => |e| return e,
+    };
+    defer snapshot.deinit(allocator);
+    return try allocator.dupe(u8, snapshot.content);
 }
 
 pub fn agentPermission() AgentPermission {
@@ -941,27 +960,34 @@ pub const Session = struct {
         }
 
         const invocation = parseSkillInvocation(prompt_raw);
-        const prompt_for_history = if (invocation) |parsed| parsed.prompt else prompt_raw;
+        var skill_preload_content: ?[]u8 = null;
+        if (invocation) |parsed| {
+            skill_preload_content = loadSkillPreloadContent(self.allocator, parsed.skill_name) catch {
+                self.setStatusLocked("Could not load skill");
+                self.mutex.unlock();
+                return;
+            };
+        }
+
+        const prompt_for_history = if (invocation) |parsed|
+            if (skill_preload_content != null) parsed.prompt else prompt_raw
+        else
+            prompt_raw;
         const prompt = self.allocator.dupe(u8, prompt_for_history) catch {
+            if (skill_preload_content) |content| self.allocator.free(content);
             self.setStatusLocked("Out of memory");
             self.mutex.unlock();
             return;
         };
         self.messages.append(self.allocator, .{ .role = .user, .content = prompt }) catch {
+            if (skill_preload_content) |content| self.allocator.free(content);
             self.allocator.free(prompt);
             self.setStatusLocked("Out of memory");
             self.mutex.unlock();
             return;
         };
 
-        if (invocation) |parsed| {
-            const skill_content = skillInfoTool(self.allocator, parsed.skill_name) catch {
-                var user_msg = self.messages.pop().?;
-                user_msg.deinit(self.allocator);
-                self.setStatusLocked("Could not load skill");
-                self.mutex.unlock();
-                return;
-            };
+        if (invocation) |parsed| if (skill_preload_content) |skill_content| {
             const tool_call_id = std.fmt.allocPrint(self.allocator, "skill-preload-{s}", .{parsed.skill_name}) catch {
                 self.allocator.free(skill_content);
                 var user_msg = self.messages.pop().?;
@@ -979,6 +1005,7 @@ pub const Session = struct {
                 self.mutex.unlock();
                 return;
             };
+            skill_preload_content = null;
             self.messages.append(self.allocator, .{
                 .role = .tool,
                 .content = skill_content,
@@ -997,7 +1024,7 @@ pub const Session = struct {
                 self.mutex.unlock();
                 return;
             };
-        }
+        };
 
         history_change = self.captureHistoryChangeLocked();
         self.input_len = 0;
@@ -3488,12 +3515,23 @@ test "ai chat parses explicit dollar skill invocation" {
     try std.testing.expect(parseSkillInvocation("$ missing") == null);
 }
 
+test "ai chat avoids obvious dollar skill false positives" {
+    try std.testing.expect(parseSkillInvocation("$100 budget") == null);
+    try std.testing.expect(parseSkillInvocation("$PATH is broken") == null);
+}
+
 test "ai chat recognizes local slash commands" {
     try std.testing.expect(parseSlashCommand("/skills").? == .skills);
     try std.testing.expect(parseSlashCommand("/commands").? == .commands);
     try std.testing.expect(parseSlashCommand("/reload-skills").? == .reload_skills);
     try std.testing.expect(parseSlashCommand("/unknown").? == .unknown);
     try std.testing.expect(parseSlashCommand("hello") == null);
+}
+
+test "ai chat avoids slash command false positives" {
+    try std.testing.expect(parseSlashCommand("/api") == null);
+    try std.testing.expect(parseSlashCommand("/usr/bin") == null);
+    try std.testing.expect(parseSlashCommand("/help me") == null);
 }
 
 test "ai_chat: session serializes to history record" {
