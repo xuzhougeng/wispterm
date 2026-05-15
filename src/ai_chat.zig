@@ -363,9 +363,14 @@ fn parseSkillInvocation(input: []const u8) ?SkillInvocation {
 
     if (end == 1) return null;
     if (!has_lower) return null;
+    if (end >= trimmed.len or !isAsciiWhitespace(trimmed[end])) return null;
     const rest = std.mem.trim(u8, trimmed[end..], " \t\r\n");
     if (rest.len == 0) return null;
     return .{ .skill_name = trimmed[1..end], .prompt = rest };
+}
+
+fn isAsciiWhitespace(ch: u8) bool {
+    return ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n';
 }
 
 fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8 {
@@ -929,11 +934,6 @@ pub const Session = struct {
                 self.mutex.unlock();
                 return;
             };
-            self.input_len = 0;
-            self.input_cursor = 0;
-            self.input_scroll_row = 0;
-            self.input_scroll_follow_cursor = true;
-            self.clearSelectionLocked();
             self.messages.append(self.allocator, .{
                 .role = .tool,
                 .content = output,
@@ -947,6 +947,7 @@ pub const Session = struct {
                 self.mutex.unlock();
                 return;
             };
+            self.clearSubmittedInputLocked();
             self.setStatusLocked("Ready");
             history_change = null;
             self.mutex.unlock();
@@ -959,6 +960,7 @@ pub const Session = struct {
             return;
         }
 
+        const message_start = self.messages.items.len;
         const invocation = parseSkillInvocation(prompt_raw);
         var skill_preload_content: ?[]u8 = null;
         if (invocation) |parsed| {
@@ -987,6 +989,7 @@ pub const Session = struct {
             return;
         };
 
+        var skill_preload_appended = false;
         if (invocation) |parsed| if (skill_preload_content) |skill_content| {
             const tool_call_id = std.fmt.allocPrint(self.allocator, "skill-preload-{s}", .{parsed.skill_name}) catch {
                 self.allocator.free(skill_content);
@@ -1024,17 +1027,22 @@ pub const Session = struct {
                 self.mutex.unlock();
                 return;
             };
+            skill_preload_appended = true;
         };
 
-        history_change = self.captureHistoryChangeLocked();
-        self.input_len = 0;
-        self.input_cursor = 0;
-        self.input_scroll_row = 0;
-        self.input_scroll_follow_cursor = true;
-        self.clearSelectionLocked();
-        self.scroll_px = 1_000_000;
+        if (!skill_preload_appended) {
+            history_change = self.captureHistoryChangeLocked();
+            self.clearSubmittedInputLocked();
+            self.scroll_px = 1_000_000;
+        }
 
         const request = self.buildRequestLocked() catch {
+            if (skill_preload_appended) {
+                self.rollbackMessagesFromLocked(message_start);
+                self.setStatusLocked("Could not prepare request");
+                self.mutex.unlock();
+                return;
+            }
             self.setStatusLocked("Could not prepare request");
             self.mutex.unlock();
             self.notifyHistoryChange(history_change);
@@ -1046,12 +1054,15 @@ pub const Session = struct {
         self.request_inflight = true;
         self.setStatusLocked("Thinking...");
         self.mutex.unlock();
-        self.notifyHistoryChange(history_change);
+        if (!skill_preload_appended) self.notifyHistoryChange(history_change);
 
         const thread = std.Thread.spawn(.{}, requestThreadMain, .{request}) catch {
             request.deinit();
             self.mutex.lock();
             self.request_inflight = false;
+            if (skill_preload_appended) {
+                self.rollbackMessagesFromLocked(message_start);
+            }
             self.setStatusLocked("Failed to start request thread");
             self.mutex.unlock();
             return;
@@ -1059,7 +1070,13 @@ pub const Session = struct {
 
         self.mutex.lock();
         self.request_thread = thread;
+        if (skill_preload_appended) {
+            self.clearSubmittedInputLocked();
+            self.scroll_px = 1_000_000;
+            history_change = self.captureHistoryChangeLocked();
+        }
         self.mutex.unlock();
+        if (skill_preload_appended) self.notifyHistoryChange(history_change);
     }
 
     fn clearMessages(self: *Session) void {
@@ -1257,6 +1274,21 @@ pub const Session = struct {
     fn clearSelectionLocked(self: *Session) void {
         self.input_select_all = false;
         self.transcript_select_all = false;
+    }
+
+    fn clearSubmittedInputLocked(self: *Session) void {
+        self.input_len = 0;
+        self.input_cursor = 0;
+        self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
+        self.clearSelectionLocked();
+    }
+
+    fn rollbackMessagesFromLocked(self: *Session, start: usize) void {
+        while (self.messages.items.len > start) {
+            var msg = self.messages.pop().?;
+            msg.deinit(self.allocator);
+        }
     }
 
     fn collapseAutoExpandedDetailsLocked(self: *Session) void {
@@ -3518,6 +3550,7 @@ test "ai chat parses explicit dollar skill invocation" {
 test "ai chat avoids obvious dollar skill false positives" {
     try std.testing.expect(parseSkillInvocation("$100 budget") == null);
     try std.testing.expect(parseSkillInvocation("$PATH is broken") == null);
+    try std.testing.expect(parseSkillInvocation("$env:PATH is broken") == null);
 }
 
 test "ai chat recognizes local slash commands" {
