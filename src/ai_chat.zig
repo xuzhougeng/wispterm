@@ -50,10 +50,21 @@ pub const Message = struct {
     content: []u8,
     reasoning: ?[]u8 = null,
     usage_footer: ?[]u8 = null,
+    tool_call_id: ?[]u8 = null,
+    tool_name: ?[]u8 = null,
+    replay_to_model: bool = false,
     content_collapsed: bool = false,
     content_auto_expand: bool = false,
     reasoning_collapsed: bool = true,
     reasoning_auto_expand: bool = false,
+
+    fn deinit(self: Message, allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
+        if (self.reasoning) |reasoning| allocator.free(reasoning);
+        if (self.usage_footer) |footer| allocator.free(footer);
+        if (self.tool_call_id) |id| allocator.free(id);
+        if (self.tool_name) |name| allocator.free(name);
+    }
 };
 
 const RequestMessage = struct {
@@ -454,6 +465,9 @@ pub const Session = struct {
                 .content = try allocator.dupe(u8, msg.content),
                 .reasoning = if (msg.reasoning) |reasoning| try allocator.dupe(u8, reasoning) else null,
                 .usage_footer = if (msg.usage_footer) |footer| try allocator.dupe(u8, footer) else null,
+                .tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null,
+                .tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null,
+                .replay_to_model = msg.replay_to_model,
             });
         }
         return session;
@@ -467,9 +481,7 @@ pub const Session = struct {
             self.request_thread = null;
         }
         for (self.messages.items) |msg| {
-            self.allocator.free(msg.content);
-            if (msg.reasoning) |reasoning| self.allocator.free(reasoning);
-            if (msg.usage_footer) |footer| self.allocator.free(footer);
+            msg.deinit(self.allocator);
         }
         self.messages.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -887,11 +899,7 @@ pub const Session = struct {
             self.mutex.unlock();
             return;
         }
-        for (self.messages.items) |msg| {
-            self.allocator.free(msg.content);
-            if (msg.reasoning) |reasoning| self.allocator.free(reasoning);
-            if (msg.usage_footer) |footer| self.allocator.free(footer);
-        }
+        for (self.messages.items) |msg| msg.deinit(self.allocator);
         self.messages.clearRetainingCapacity();
         self.scroll_px = 0;
         self.clearSelectionLocked();
@@ -1188,6 +1196,9 @@ pub const Session = struct {
                 .content = try allocator.dupe(u8, msg.content),
                 .reasoning = if (msg.reasoning) |reasoning| try allocator.dupe(u8, reasoning) else null,
                 .usage_footer = if (msg.usage_footer) |footer| try allocator.dupe(u8, footer) else null,
+                .tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null,
+                .tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null,
+                .replay_to_model = msg.replay_to_model,
             };
             initialized += 1;
         }
@@ -3486,11 +3497,7 @@ test "ai chat appends usage footer to completed assistant message" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items) |msg| {
-            allocator.free(msg.content);
-            if (msg.reasoning) |reasoning| allocator.free(reasoning);
-            if (msg.usage_footer) |footer| allocator.free(footer);
-        }
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -3806,11 +3813,7 @@ test "ai chat clipboard text exports transcript when input is empty" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items) |msg| {
-            allocator.free(msg.content);
-            if (msg.reasoning) |reasoning| allocator.free(reasoning);
-            if (msg.usage_footer) |footer| allocator.free(footer);
-        }
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -3839,11 +3842,7 @@ test "ai chat message clipboard exports one bubble" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items) |msg| {
-            allocator.free(msg.content);
-            if (msg.reasoning) |reasoning| allocator.free(reasoning);
-            if (msg.usage_footer) |footer| allocator.free(footer);
-        }
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -3867,11 +3866,7 @@ test "ai chat stop request suppresses late assistant result" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items) |msg| {
-            allocator.free(msg.content);
-            if (msg.reasoning) |reasoning| allocator.free(reasoning);
-            if (msg.usage_footer) |footer| allocator.free(footer);
-        }
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -3930,11 +3925,7 @@ test "ai chat collapse helper only closes auto-expanded details" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items) |msg| {
-            allocator.free(msg.content);
-            if (msg.reasoning) |reasoning| allocator.free(reasoning);
-            if (msg.usage_footer) |footer| allocator.free(footer);
-        }
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
