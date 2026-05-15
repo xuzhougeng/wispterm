@@ -107,6 +107,7 @@ Options:
   --background-image-mode <m>  fill | fit | center | tile (default: fill)
   --window-height <rows>       Initial window height in cells (default: 0=auto, min: 4)
   --window-width <cols>        Initial window width in cells (default: 0=auto, min: 10)
+  --version, -v                Print the Phantty version and exit
   --list-fonts                 List available system fonts
   --test-font-discovery        Test DirectWrite font discovery
   --help                       Show help
@@ -115,6 +116,8 @@ Options:
 ## Keyboard shortcuts
 
 Default chords are implemented in `[src/input.zig](src/input.zig)`. Some keys are handled first when a modal overlay is open (command center, session launcher, settings, and similar).
+
+To confirm the running desktop version, open the command center with `Ctrl+Shift+P`, type `version`, and press Enter.
 
 
 | Shortcut                                                                       | Action                                                                             |

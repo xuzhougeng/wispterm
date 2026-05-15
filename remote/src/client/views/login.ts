@@ -2,13 +2,13 @@ import { themeToggleMarkup } from "../icons";
 import { bindThemeToggleButtons } from "../theme";
 import { api } from "../transport";
 import { escapeText } from "../utils";
-import { webVersionLabel } from "../version";
+import { remoteBrandMarkup } from "../version";
 
 export function renderLogin(app: HTMLElement, onSuccess: () => void, message = ""): void {
   app.innerHTML = `
     <section class="shell auth-shell">
       ${themeToggleMarkup("theme-toggle-floating")}
-      <div class="brand">Phantty Remote <span class="web-version">${webVersionLabel()}</span></div>
+      <div class="brand">${remoteBrandMarkup()}</div>
       <form class="panel auth-panel" id="login-form">
         <h1>Sign in to your relay</h1>
         <p>Single-user access is required before any local session key can be used.</p>

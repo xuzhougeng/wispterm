@@ -35,7 +35,7 @@ export type WeixinPollerOptions = {
   aiReplyCheckpointsMs?: number[];
 };
 
-const DEFAULT_AI_REPLY_CHECKPOINTS_MS = [5000, 10000, 30000, 60000];
+const DEFAULT_AI_REPLY_CHECKPOINTS_MS = [10000, 30000, 60000, 120000];
 
 export function shouldHandleWeixinMessage(binding: WeixinBindingRecord, message: WeixinMessage): HandleDecision {
   const from = (message.from_user_id ?? "").trim();
@@ -224,8 +224,10 @@ export class WeixinPoller {
     },
   ): void {
     if (!options.toUserId || this.isStale(options.generation)) return;
+    const maxCheckpointMs = Math.max(0, ...this.aiReplyCheckpointsMs);
+    const effectiveReplyTimeoutMs = Math.max(options.replyTimeoutMs, maxCheckpointMs);
     const checkpoints = this.aiReplyCheckpointsMs
-      .filter((ms) => ms > 0 && ms <= options.replyTimeoutMs)
+      .filter((ms) => ms > 0 && ms <= effectiveReplyTimeoutMs)
       .sort((a, b) => a - b);
     if (checkpoints.length === 0) return;
 

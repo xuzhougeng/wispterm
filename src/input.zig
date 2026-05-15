@@ -2429,23 +2429,24 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
             const h_f: f32 = @floatFromInt(fb.height);
             const tb_f: f32 = @floatCast(titlebarHeight());
             const top_pad: f32 = 10 + tb_f;
-            const sb_opacity = if (AppWindow.activeSurface()) |s| s.scrollbar_opacity else 0;
-            if (sb_opacity > 0 and overlays.scrollbarHitTest(xpos, ypos, w_f, h_f, top_pad)) {
-                overlays.g_scrollbar_dragging = true;
-                overlays.scrollbarShow();
-                // Calculate drag offset within thumb
-                if (overlays.scrollbarThumbHitTest(ypos, h_f, top_pad)) {
-                    // Clicked on thumb — offset from top of thumb
-                    const geo = overlays.scrollbarGeometry(h_f, top_pad) orelse return;
+            if (overlays.scrollbarHitTest(xpos, ypos, w_f, h_f, top_pad)) {
+                if (overlays.scrollbarGeometry(h_f, top_pad)) |geo| {
+                    overlays.g_scrollbar_dragging = true;
+                    overlays.scrollbarShow();
+
+                    const y_f: f32 = @floatCast(ypos);
                     const thumb_top_px = h_f - (geo.thumb_y + geo.thumb_h); // convert GL→pixel
-                    overlays.g_scrollbar_drag_offset = @as(f32, @floatCast(ypos)) - thumb_top_px;
-                } else {
-                    // Clicked on track — jump thumb center to click position
-                    const geo = overlays.scrollbarGeometry(h_f, top_pad) orelse return;
-                    overlays.g_scrollbar_drag_offset = geo.thumb_h / 2;
-                    overlays.scrollbarDrag(ypos, h_f, top_pad);
+                    const thumb_bottom_px = h_f - geo.thumb_y;
+                    if (y_f >= thumb_top_px and y_f <= thumb_bottom_px) {
+                        // Clicked on thumb — offset from top of thumb
+                        overlays.g_scrollbar_drag_offset = y_f - thumb_top_px;
+                    } else {
+                        // Clicked on track — jump thumb center to click position
+                        overlays.g_scrollbar_drag_offset = geo.thumb_h / 2;
+                        overlays.scrollbarDrag(ypos, h_f, top_pad);
+                    }
+                    return;
                 }
-                return;
             }
 
             // Check if click is on a split divider
@@ -2846,9 +2847,11 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     const top_pad: f32 = 10 + tb_f;
 
     const was_hover = overlays.g_scrollbar_hover;
-    overlays.g_scrollbar_hover = overlays.scrollbarHitTest(xpos, ypos, w_f, h_f, top_pad);
-    const sb_opacity2 = if (AppWindow.activeSurface()) |s| s.scrollbar_opacity else 0;
-    if (overlays.g_scrollbar_hover and !was_hover and sb_opacity2 > 0) {
+    overlays.g_scrollbar_hover = false;
+    if (overlays.scrollbarHitTest(xpos, ypos, w_f, h_f, top_pad)) {
+        overlays.g_scrollbar_hover = overlays.scrollbarGeometry(h_f, top_pad) != null;
+    }
+    if (overlays.g_scrollbar_hover and !was_hover) {
         overlays.scrollbarShow(); // Reset fade timer when entering scrollbar area
     }
 

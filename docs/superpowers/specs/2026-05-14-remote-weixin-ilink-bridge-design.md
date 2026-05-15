@@ -232,7 +232,7 @@ be owner-readable where the platform supports it. The token is not logged.
 {
   "enabled": false,
   "target_session": "",
-  "reply_timeout_ms": 60000
+  "reply_timeout_ms": 120000
 }
 ```
 

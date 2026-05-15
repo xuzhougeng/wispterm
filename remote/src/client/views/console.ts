@@ -12,7 +12,7 @@ import {
 } from "../storage";
 import { escapeText, shortSurfaceId } from "../utils";
 import { api, connect, disconnect } from "../transport";
-import { webVersionLabel } from "../version";
+import { remoteBrandMarkup } from "../version";
 import {
   disposeSurfaceViews,
   focusAndFitSelectedSurface,
@@ -54,7 +54,7 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
       <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-head">
-          <div class="brand">Phantty Remote <span class="web-version">${webVersionLabel()}</span></div>
+          <div class="brand">${remoteBrandMarkup()}</div>
           <div class="sidebar-head-actions">
             ${themeToggleMarkup()}
             <button type="button" class="icon-button" id="drawer-close" aria-label="Close menu" title="Close menu">
@@ -483,7 +483,7 @@ async function saveWeixinPanel(): Promise<void> {
     const settings = normalizeWeixinSettings({
       enabled: enabled.checked,
       target_session: target.value,
-      reply_timeout_ms: weixinState?.settings.reply_timeout_ms ?? 60000,
+      reply_timeout_ms: weixinState?.settings.reply_timeout_ms ?? 120000,
     });
     await saveWeixinSettings(settings);
     if (!isCurrentWeixinBindGeneration(generation)) return;

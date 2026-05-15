@@ -826,15 +826,7 @@ fn loadCliArgs(self: *Config, allocator: std.mem.Allocator) !void {
         const flag = stripDashes(arg);
 
         // Special commands (not config keys, handled by main)
-        if (std.mem.eql(u8, flag, "list-fonts") or
-            std.mem.eql(u8, flag, "list-themes") or
-            std.mem.eql(u8, flag, "test-font-discovery") or
-            std.mem.eql(u8, flag, "help") or
-            std.mem.eql(u8, flag, "h") or
-            std.mem.eql(u8, flag, "show-config-path"))
-        {
-            continue;
-        }
+        if (isSpecialCommand(flag)) continue;
 
         // Short aliases and backward-compatible renames
         const resolved_flag = if (std.mem.eql(u8, flag, "f") or std.mem.eql(u8, flag, "font"))
@@ -852,6 +844,17 @@ fn loadCliArgs(self: *Config, allocator: std.mem.Allocator) !void {
             log.warn("flag --{s} requires a value", .{flag});
         }
     }
+}
+
+pub fn isSpecialCommand(flag: []const u8) bool {
+    return std.mem.eql(u8, flag, "list-fonts") or
+        std.mem.eql(u8, flag, "list-themes") or
+        std.mem.eql(u8, flag, "test-font-discovery") or
+        std.mem.eql(u8, flag, "help") or
+        std.mem.eql(u8, flag, "h") or
+        std.mem.eql(u8, flag, "version") or
+        std.mem.eql(u8, flag, "v") or
+        std.mem.eql(u8, flag, "show-config-path");
 }
 
 /// Check if CLI args contain a specific command flag (e.g. --list-fonts).
@@ -1007,6 +1010,7 @@ pub fn printHelp() void {
         \\  --phantty-debug-memory <bool> Print periodic memory attribution (default: false)
         \\
         \\Commands:
+        \\  --version, -v                Print the Phantty version and exit
         \\  --show-config-path           Print the config file path and exit
         \\  --list-fonts                 List all available system fonts
         \\  --list-themes                List all available themes
@@ -1377,4 +1381,9 @@ test "config: remote session key parses" {
 
     cfg.applyKeyValue(allocator, "remote-session-key", "fixed-password", ".");
     try std.testing.expectEqualStrings("fixed-password", cfg.@"remote-session-key".?);
+}
+
+test "config: version flags are special commands" {
+    try std.testing.expect(isSpecialCommand("version"));
+    try std.testing.expect(isSpecialCommand("v"));
 }

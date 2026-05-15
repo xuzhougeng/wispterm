@@ -339,7 +339,7 @@ test("WeixinPoller replies pong to /ping without routing to AI chat", async () =
   assert.deepEqual(events, ["send:pong"]);
 });
 
-test("WeixinPoller sends AI progress checkpoints and stops after the final assistant reply", async () => {
+test("WeixinPoller sends AI progress checkpoints at 10, 30, 60, and 120 seconds with legacy timeout settings", async () => {
   const events: string[] = [];
   let transcript = "Model:\r\nDeepSeek\r\n\r\nStatus:\r\nReady\r\n\r\nAI:\r\nready";
   const scheduler = fakeManualScheduler();
@@ -384,21 +384,15 @@ test("WeixinPoller sends AI progress checkpoints and stops after the final assis
 
   await poller.runOnceForTest();
   assert.deepEqual(events, ["input:hello\r", "send:信息已收到，开始处理。"]);
-  assert.deepEqual(scheduler.delays().slice(0, 4), [5000, 10000, 30000, 60000]);
+  assert.deepEqual(scheduler.delays().slice(0, 4), [10000, 30000, 60000, 120000]);
 
   transcript = `${transcript}\r\n\r\nStatus:\r\nRunning tools...\r\n\r\nTool:\r\nterminal_snapshot`;
-  scheduler.fire(0);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(events.at(-1), "send:还在处理中，工具调用仍在执行。");
+  for (const index of [0, 1, 2, 3]) {
+    scheduler.fire(index);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 
-  transcript = `${transcript}\r\n\r\nStatus:\r\nReady\r\n\r\nAI:\r\nhi from agent`;
-  scheduler.fire(1);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(events.at(-1), "send:hi from agent");
-
-  scheduler.fire(2);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(events.filter((event) => event === "send:hi from agent").length, 1);
+  assert.equal(events.filter((event) => event === "send:还在处理中，工具调用仍在执行。").length, 4);
 });
 
 test("WeixinPoller sends the final AI reply when it completes after all progress checkpoints", async () => {
@@ -408,7 +402,7 @@ test("WeixinPoller sends the final AI reply when it completes after all progress
   const scheduler = fakeManualScheduler();
   const poller = new WeixinPoller(
     fakeStore({
-      loadSettings: async () => ({ enabled: true, target_session: "alpha", reply_timeout_ms: 10000 }),
+      loadSettings: async () => ({ enabled: true, target_session: "alpha", reply_timeout_ms: 30000 }),
     }),
     () => [{
       key: "alpha",
@@ -431,7 +425,7 @@ test("WeixinPoller sends the final AI reply when it completes after all progress
     }] as never,
     { warn: () => {} },
     {
-      aiReplyCheckpointsMs: [5000, 10000],
+      aiReplyCheckpointsMs: [10000, 30000],
       createClient: () => ({
         getUpdates: async () => ({
           ret: 0,

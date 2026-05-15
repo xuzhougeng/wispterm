@@ -1,6 +1,6 @@
 //! Overlay rendering for AppWindow.
 //!
-//! Scrollbar (macOS-style overlay with fade), resize overlay ("cols x rows"),
+//! Scrollbar (virtual overlay with idle visibility), resize overlay ("cols x rows"),
 //! debug overlays (FPS, draw calls), split dividers, and unfocused split overlays.
 
 const std = @import("std");
@@ -17,6 +17,8 @@ const Config = @import("../config.zig");
 const themes_embed = @import("../themes.zig");
 const win32_backend = @import("../apprt/win32.zig");
 const ssh_prompt = @import("../ssh_prompt.zig");
+const app_metadata = @import("../app_metadata.zig");
+const scrollbar_model = @import("../scrollbar_model.zig");
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -26,7 +28,7 @@ const TabState = tab.TabState;
 const SplitRect = split_layout.SplitRect;
 
 // ============================================================================
-// Scrollbar — macOS-style overlay scrollbar with fade
+// Scrollbar — virtual overlay scrollbar with fade-to-idle
 // ============================================================================
 
 pub const SCROLLBAR_WIDTH: f32 = 12; // Width of the scrollbar track
@@ -211,6 +213,7 @@ const CommandAction = enum {
     font_size_increase,
     toggle_maximize,
     copy_remote_key,
+    show_version,
 };
 
 const CommandEntry = struct {
@@ -239,6 +242,7 @@ const COMMAND_ENTRIES = [_]CommandEntry{
     .{ .title = "Increase Font Size", .detail = "Make terminal text larger", .shortcut = "Ctrl++", .action = .font_size_increase },
     .{ .title = "Toggle Maximize", .detail = "Maximize or restore the window", .shortcut = "Alt+Enter", .action = .toggle_maximize },
     .{ .title = "Copy Remote Key", .detail = "Copy the active Phantty remote session key", .shortcut = "click Remote key", .action = .copy_remote_key },
+    .{ .title = "Version", .detail = "Show Phantty version", .shortcut = app_metadata.version, .action = .show_version },
 };
 
 const PaletteItem = union(enum) {
@@ -412,6 +416,7 @@ fn executeCommand(action: CommandAction) void {
         .copy_remote_key => {
             _ = AppWindow.input.copyRemoteSessionKeyToClipboard();
         },
+        .show_version => showVersionToast(),
     }
 }
 
@@ -3005,10 +3010,11 @@ fn scrollbarUpdateFade(surface: *Surface) void {
 /// top_padding is the padding from the top of the viewport to the terminal content.
 pub fn renderScrollbarForSurface(surface: *Surface, view_width: f32, view_height: f32, top_padding: f32) void {
     const gl = &AppWindow.gl;
-    scrollbarUpdateFade(surface);
-    if (surface.scrollbar_opacity <= 0.01) return;
-
     const geo = scrollbarGeometryForSurface(surface, view_height, top_padding) orelse return;
+
+    scrollbarUpdateFade(surface);
+    const fade = scrollbar_model.effectiveOpacity(surface.scrollbar_opacity, true);
+    if (fade <= 0.01) return;
 
     const bar_x = view_width - SCROLLBAR_WIDTH;
     const bar_w = SCROLLBAR_WIDTH;
@@ -3017,15 +3023,16 @@ pub fn renderScrollbarForSurface(surface: *Surface, view_width: f32, view_height
     gl.UseProgram.?(gl_init.shader_program);
     gl.BindVertexArray.?(gl_init.vao);
 
-    const fade = surface.scrollbar_opacity;
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
 
-    // Track background: black at low alpha to subtly lift it from the terminal bg
-    const track_alpha = fade * 0.08;
-    gl_init.renderQuadAlpha(bar_x, geo.track_y, bar_w, geo.track_h, .{ 0, 0, 0 }, track_alpha);
+    const track_color = mixColor(bg, fg, 0.18);
+    const track_alpha = fade * 0.20;
+    gl_init.renderQuadAlpha(bar_x, geo.track_y, bar_w, geo.track_h, track_color, track_alpha);
 
-    // Thumb: black at 45% opacity
-    const thumb_alpha = fade * 0.45;
-    gl_init.renderQuadAlpha(bar_x, geo.thumb_y, bar_w, geo.thumb_h, .{ 0, 0, 0 }, thumb_alpha);
+    const thumb_color = mixColor(bg, fg, 0.46);
+    const thumb_alpha = fade * 0.62;
+    gl_init.renderQuadAlpha(bar_x, geo.thumb_y, bar_w, geo.thumb_h, thumb_color, thumb_alpha);
 }
 
 /// Render the scrollbar overlay (uses active surface at full window size).
@@ -3599,6 +3606,12 @@ pub fn remoteKeyCopiedFlash() void {
 
 pub fn showCopyToast(byte_count: usize) void {
     const msg = std.fmt.bufPrint(&g_copy_toast_buf, "Copied ({d} bytes)", .{byte_count}) catch return;
+    g_copy_toast_len = msg.len;
+    g_copy_toast_until_ms = std.time.milliTimestamp() + COPY_TOAST_DURATION_MS;
+}
+
+fn showVersionToast() void {
+    const msg = app_metadata.versionLine(&g_copy_toast_buf) catch return;
     g_copy_toast_len = msg.len;
     g_copy_toast_until_ms = std.time.milliTimestamp() + COPY_TOAST_DURATION_MS;
 }

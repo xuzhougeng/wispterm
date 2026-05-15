@@ -15,7 +15,7 @@ export type WeixinBindingSummary = {
 export const DEFAULT_WEIXIN_SETTINGS: WeixinSettings = {
   enabled: false,
   target_session: "",
-  reply_timeout_ms: 60000,
+  reply_timeout_ms: 120000,
 };
 
 export class WeixinBindingStore {

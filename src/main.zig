@@ -9,6 +9,7 @@ const Config = @import("config.zig");
 const directwrite = @import("directwrite.zig");
 const App = @import("App.zig");
 const image_decoder = @import("image_decoder.zig");
+const app_metadata = @import("app_metadata.zig");
 
 // ============================================================================
 // Font Discovery Test Functions (use --list-fonts or --test-font-discovery)
@@ -75,9 +76,6 @@ fn testFontDiscovery(allocator: std.mem.Allocator) !void {
 }
 
 pub fn main() !void {
-    std.debug.print("Phantty starting...\n", .{});
-    image_decoder.install();
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -85,6 +83,10 @@ pub fn main() !void {
     // Handle special commands before loading full config
     if (Config.hasCommand(allocator, "help") or Config.hasCommand(allocator, "h")) {
         Config.printHelp();
+        return;
+    }
+    if (Config.hasCommand(allocator, "version") or Config.hasCommand(allocator, "v")) {
+        try app_metadata.printVersion(std.fs.File.stdout().deprecatedWriter());
         return;
     }
     if (Config.hasCommand(allocator, "list-fonts")) {
@@ -103,6 +105,9 @@ pub fn main() !void {
         Config.printConfigPath(allocator);
         return;
     }
+
+    std.debug.print("Phantty starting...\n", .{});
+    image_decoder.install();
 
     // Load configuration: defaults → config file → CLI flags
     const cfg = try Config.load(allocator);

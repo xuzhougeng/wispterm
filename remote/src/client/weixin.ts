@@ -66,7 +66,7 @@ export function normalizeWeixinSettings(input: Partial<WeixinSettings>): WeixinS
   return {
     enabled: input.enabled === true,
     target_session: String(input.target_session ?? "").trim(),
-    reply_timeout_ms: Number.isFinite(input.reply_timeout_ms) ? Number(input.reply_timeout_ms) : 60000,
+    reply_timeout_ms: Number.isFinite(input.reply_timeout_ms) ? Number(input.reply_timeout_ms) : 120000,
   };
 }
 

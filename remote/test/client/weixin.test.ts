@@ -19,14 +19,14 @@ test("normalizeWeixinSettings applies defaults", () => {
   assert.deepEqual(normalizeWeixinSettings({}), {
     enabled: false,
     target_session: "",
-    reply_timeout_ms: 60000,
+    reply_timeout_ms: 120000,
   });
 });
 
 test("bridgeStatusText describes binding and target state", () => {
   assert.equal(
     bridgeStatusText(
-      { enabled: true, target_session: "abcdef", reply_timeout_ms: 60000 },
+      { enabled: true, target_session: "abcdef", reply_timeout_ms: 120000 },
       { bound: true, user_id: "user@im.wechat" },
     ),
     "Bound · abcd**** · /ping to test",
@@ -36,7 +36,7 @@ test("bridgeStatusText describes binding and target state", () => {
 test("bridgeStatusText points disabled bound users to the bridge switch", () => {
   assert.equal(
     bridgeStatusText(
-      { enabled: false, target_session: "abcdef", reply_timeout_ms: 60000 },
+      { enabled: false, target_session: "abcdef", reply_timeout_ms: 120000 },
       { bound: true, user_id: "user@im.wechat" },
     ),
     "Bound · turn on Bridge",

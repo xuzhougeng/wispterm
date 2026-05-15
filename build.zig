@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
     const webview = b.option(bool, "webview", "Enable the WebView2 browser panel") orelse true;
+    const app_version = packageVersion(b);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -20,6 +21,7 @@ pub fn build(b: *std.Build) void {
     });
     const app_options = b.addOptions();
     app_options.addOption(bool, "webview", webview);
+    app_options.addOption([]const u8, "app_version", app_version);
     exe_mod.addOptions("build_options", app_options);
 
     // Add ghostty-vt dependency with SIMD disabled for cross-compilation
@@ -153,6 +155,7 @@ pub fn build(b: *std.Build) void {
     });
     const test_options = b.addOptions();
     test_options.addOption(bool, "webview", webview);
+    test_options.addOption([]const u8, "app_version", app_version);
     test_mod.addOptions("build_options", test_options);
 
     if (b.lazyDependency("ghostty", .{
@@ -177,6 +180,31 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+}
+
+fn packageVersion(b: *std.Build) []const u8 {
+    const Manifest = struct {
+        version: []const u8,
+    };
+
+    const source = b.build_root.handle.readFileAllocOptions(
+        b.allocator,
+        "build.zig.zon",
+        64 * 1024,
+        null,
+        .of(u8),
+        0,
+    ) catch @panic("failed to read build.zig.zon");
+
+    const manifest = std.zon.parse.fromSlice(
+        Manifest,
+        b.allocator,
+        source,
+        null,
+        .{ .ignore_unknown_fields = true },
+    ) catch @panic("failed to parse package version from build.zig.zon");
+
+    return manifest.version;
 }
 
 /// Build HarfBuzz as a static C library, linking against our shared FreeType.

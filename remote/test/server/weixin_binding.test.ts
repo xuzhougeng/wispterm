@@ -11,7 +11,7 @@ test("WeixinBindingStore persists binding, settings, and sync buffer", async () 
   const store = new WeixinBindingStore(dir);
 
   assert.equal(await store.loadBinding(), null);
-  assert.deepEqual(await store.loadSettings(), { enabled: false, target_session: "", reply_timeout_ms: 60000 });
+  assert.deepEqual(await store.loadSettings(), { enabled: false, target_session: "", reply_timeout_ms: 120000 });
 
   await store.saveBinding({
     token: "secret-token",

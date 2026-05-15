@@ -10,6 +10,8 @@ This is a **Windows-only** project. Development is expected to happen on Windows
 
 When changing application **keyboard shortcuts** (bindings in `src/input.zig` and related input paths), **update `README.md`** so the [Keyboard shortcuts](README.md#keyboard-shortcuts) section stays accurate. Also update user-visible shortcut text in `src/renderer/overlays.zig` (startup overlay, command palette entries) when those strings describe the same bindings.
 
+When publishing a new **version**, keep all version surfaces synchronized before tagging or releasing: `build.zig.zon`, `remote/package.json`, `remote/package-lock.json`, `remote/src/client/version.ts`, matching tests, release notes under `release-notes/`, package `version.txt` output, `phantty.exe --version`, the command center `Version` entry, and the Phantty Remote web UI version label. The compiled desktop app reads its version from `build.zig.zon` through `build_options.app_version`; do not hard-code a second desktop version constant. The web UI must render its release version via `remoteBrandMarkup()`/`webVersionLabel()` on both login and console shells, even when a build-time label is injected.
+
 When working on implementing a plan from the plans directory:
  * never deviate from the plan without asking for clear consent
  * never deem something too big and choosing not to do it in the name of pragmatism

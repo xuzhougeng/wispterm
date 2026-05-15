@@ -111,7 +111,7 @@ test("PUT /api/weixin/settings persists normalized settings and restarts poller"
   assert.equal(handled, true);
   assert.equal(res.statusCode, 200);
   assert.equal(restarts, 1);
-  assert.deepEqual(await store.loadSettings(), { enabled: true, target_session: "alpha", reply_timeout_ms: 60000 });
+  assert.deepEqual(await store.loadSettings(), { enabled: true, target_session: "alpha", reply_timeout_ms: 120000 });
 });
 
 test("PUT /api/weixin/settings returns JSON 400 for bad JSON", async () => {
