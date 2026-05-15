@@ -1127,7 +1127,7 @@ pub const Session = struct {
 
         var visible_count: usize = 0;
         for (self.messages.items) |msg| {
-            if (msg.role != .tool) visible_count += 1;
+            if (msg.role != .tool or msg.replay_to_model) visible_count += 1;
         }
 
         const messages = try self.allocator.alloc(RequestMessage, visible_count);
@@ -1139,11 +1139,14 @@ pub const Session = struct {
         }
 
         for (self.messages.items) |msg| {
-            if (msg.role == .tool) continue;
+            if (msg.role == .tool and !msg.replay_to_model) continue;
             messages[written] = .{
                 .role = msg.role,
                 .content = try self.allocator.dupe(u8, msg.content),
                 .reasoning = if (msg.reasoning) |reasoning| try self.allocator.dupe(u8, reasoning) else null,
+                .tool_call_id = if (msg.role == .tool) blk: {
+                    break :blk if (msg.tool_call_id) |id| try self.allocator.dupe(u8, id) else null;
+                } else null,
             };
             written += 1;
         }
@@ -3502,6 +3505,51 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_close\"") != null);
+}
+
+test "ai chat request json replays durable tool messages and skips progress tools" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "Test",
+        DEFAULT_BASE_URL,
+        "test-key",
+        DEFAULT_MODEL,
+        DEFAULT_SYSTEM_PROMPT,
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    session.mutex.lock();
+    try session.messages.append(allocator, .{
+        .role = .user,
+        .content = try allocator.dupe(u8, "Use the skill."),
+    });
+    try session.messages.append(allocator, .{
+        .role = .tool,
+        .content = try allocator.dupe(u8, "# Skill: pdf"),
+        .tool_call_id = try allocator.dupe(u8, "skill-preload-pdf"),
+        .tool_name = try allocator.dupe(u8, "skill_info"),
+        .replay_to_model = true,
+    });
+    try session.messages.append(allocator, .{
+        .role = .tool,
+        .content = try allocator.dupe(u8, "running terminal_list {}"),
+        .replay_to_model = false,
+    });
+    const request = try session.buildRequestLocked();
+    session.mutex.unlock();
+    defer request.deinit();
+
+    const json = try buildRequestJsonForMessages(allocator, request, request.messages, true);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "# Skill: pdf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_call_id\":\"skill-preload-pdf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "running terminal_list") == null);
 }
 
 test "ai chat request json replays assistant reasoning content" {
