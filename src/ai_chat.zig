@@ -1127,7 +1127,14 @@ pub const Session = struct {
 
         var visible_count: usize = 0;
         for (self.messages.items) |msg| {
-            if (msg.role != .tool or msg.replay_to_model) visible_count += 1;
+            if (msg.role != .tool) {
+                visible_count += 1;
+            } else if (msg.replay_to_model) {
+                const id = msg.tool_call_id orelse continue;
+                const name = msg.tool_name orelse continue;
+                if (id.len == 0 or name.len == 0) continue;
+                visible_count += 2;
+            }
         }
 
         const messages = try self.allocator.alloc(RequestMessage, visible_count);
@@ -1139,15 +1146,20 @@ pub const Session = struct {
         }
 
         for (self.messages.items) |msg| {
-            if (msg.role == .tool and !msg.replay_to_model) continue;
-            messages[written] = .{
-                .role = msg.role,
-                .content = try self.allocator.dupe(u8, msg.content),
-                .reasoning = if (msg.reasoning) |reasoning| try self.allocator.dupe(u8, reasoning) else null,
-                .tool_call_id = if (msg.role == .tool) blk: {
-                    break :blk if (msg.tool_call_id) |id| try self.allocator.dupe(u8, id) else null;
-                } else null,
-            };
+            if (msg.role == .tool) {
+                if (!msg.replay_to_model) continue;
+                const id = msg.tool_call_id orelse continue;
+                const name = msg.tool_name orelse continue;
+                if (id.len == 0 or name.len == 0) continue;
+
+                messages[written] = try durableToolAssistantRequestMessage(self.allocator, id, name);
+                written += 1;
+                messages[written] = try requestMessageWithClonedFields(self.allocator, .tool, msg.content, null, id, null);
+                written += 1;
+                continue;
+            }
+
+            messages[written] = try requestMessageWithClonedFields(self.allocator, msg.role, msg.content, msg.reasoning, null, null);
             written += 1;
         }
 
@@ -1637,13 +1649,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
 }
 
 fn cloneRequestMessage(allocator: std.mem.Allocator, msg: RequestMessage) !RequestMessage {
-    return .{
-        .role = msg.role,
-        .content = try allocator.dupe(u8, msg.content),
-        .reasoning = if (msg.reasoning) |reasoning| try allocator.dupe(u8, reasoning) else null,
-        .tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null,
-        .tool_calls = if (msg.tool_calls) |calls| try cloneToolCalls(allocator, calls) else null,
-    };
+    return requestMessageWithClonedFields(allocator, msg.role, msg.content, msg.reasoning, msg.tool_call_id, msg.tool_calls);
 }
 
 fn cloneToolCalls(allocator: std.mem.Allocator, calls: []const ToolCall) ![]ToolCall {
@@ -1654,22 +1660,89 @@ fn cloneToolCalls(allocator: std.mem.Allocator, calls: []const ToolCall) ![]Tool
         for (out[0..written]) |call| call.deinit(allocator);
     }
     for (calls, 0..) |call, i| {
-        out[i] = .{
-            .id = try allocator.dupe(u8, call.id),
-            .name = try allocator.dupe(u8, call.name),
-            .arguments = try allocator.dupe(u8, call.arguments),
-        };
+        {
+            const id = try allocator.dupe(u8, call.id);
+            errdefer allocator.free(id);
+            const name = try allocator.dupe(u8, call.name);
+            errdefer allocator.free(name);
+            const arguments = try allocator.dupe(u8, call.arguments);
+            errdefer allocator.free(arguments);
+            out[i] = .{
+                .id = id,
+                .name = name,
+                .arguments = arguments,
+            };
+        }
         written += 1;
     }
     return out;
 }
 
 fn assistantToolCallMessage(allocator: std.mem.Allocator, content: []const u8, reasoning: ?[]const u8, calls: []const ToolCall) !RequestMessage {
+    return requestMessageWithClonedFields(allocator, .assistant, content, reasoning, null, calls);
+}
+
+fn requestMessageWithClonedFields(
+    allocator: std.mem.Allocator,
+    role: Role,
+    content: []const u8,
+    reasoning: ?[]const u8,
+    tool_call_id: ?[]const u8,
+    tool_calls: ?[]const ToolCall,
+) !RequestMessage {
+    const content_copy = try allocator.dupe(u8, content);
+    errdefer allocator.free(content_copy);
+
+    var reasoning_copy: ?[]u8 = null;
+    errdefer if (reasoning_copy) |text| allocator.free(text);
+    if (reasoning) |text| reasoning_copy = try allocator.dupe(u8, text);
+
+    var tool_call_id_copy: ?[]u8 = null;
+    errdefer if (tool_call_id_copy) |id| allocator.free(id);
+    if (tool_call_id) |id| tool_call_id_copy = try allocator.dupe(u8, id);
+
+    var tool_calls_copy: ?[]ToolCall = null;
+    errdefer if (tool_calls_copy) |calls| {
+        for (calls) |call| call.deinit(allocator);
+        allocator.free(calls);
+    };
+    if (tool_calls) |calls| tool_calls_copy = try cloneToolCalls(allocator, calls);
+
+    return .{
+        .role = role,
+        .content = content_copy,
+        .reasoning = reasoning_copy,
+        .tool_call_id = tool_call_id_copy,
+        .tool_calls = tool_calls_copy,
+    };
+}
+
+fn durableToolAssistantRequestMessage(allocator: std.mem.Allocator, id: []const u8, name: []const u8) !RequestMessage {
+    const content = try allocator.dupe(u8, "");
+    errdefer allocator.free(content);
+
+    const calls = try allocator.alloc(ToolCall, 1);
+    errdefer allocator.free(calls);
+
+    {
+        const id_copy = try allocator.dupe(u8, id);
+        errdefer allocator.free(id_copy);
+        const name_copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(name_copy);
+        const arguments = try allocator.dupe(u8, "{}");
+        errdefer allocator.free(arguments);
+
+        calls[0] = .{
+            .id = id_copy,
+            .name = name_copy,
+            .arguments = arguments,
+        };
+    }
+
     return .{
         .role = .assistant,
-        .content = try allocator.dupe(u8, content),
-        .reasoning = if (reasoning) |text| try allocator.dupe(u8, text) else null,
-        .tool_calls = try cloneToolCalls(allocator, calls),
+        .content = content,
+        .tool_calls = calls,
     };
 }
 
@@ -3547,9 +3620,55 @@ test "ai chat request json replays durable tool messages and skips progress tool
     const json = try buildRequestJsonForMessages(allocator, request, request.messages, true);
     defer allocator.free(json);
 
-    try std.testing.expect(std.mem.indexOf(u8, json, "# Skill: pdf") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_call_id\":\"skill-preload-pdf\"") != null);
+    const assistant_tool_call =
+        \\{"role":"assistant","content":"","tool_calls":[{"id":"skill-preload-pdf","type":"function","function":{"name":"skill_info","arguments":"{}"}}]}
+    ;
+    const tool_result =
+        \\{"role":"tool","content":"# Skill: pdf","tool_call_id":"skill-preload-pdf"}
+    ;
+    const assistant_index = std.mem.indexOf(u8, json, assistant_tool_call) orelse return error.MissingAssistantToolCall;
+    const tool_index = std.mem.indexOf(u8, json, tool_result) orelse return error.MissingToolResult;
+    try std.testing.expect(assistant_index < tool_index);
     try std.testing.expect(std.mem.indexOf(u8, json, "running terminal_list") == null);
+}
+
+test "ai chat request skips replayable tool messages missing identity" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "Test",
+        DEFAULT_BASE_URL,
+        "test-key",
+        DEFAULT_MODEL,
+        DEFAULT_SYSTEM_PROMPT,
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    session.mutex.lock();
+    try session.messages.append(allocator, .{
+        .role = .user,
+        .content = try allocator.dupe(u8, "Use the skill."),
+    });
+    try session.messages.append(allocator, .{
+        .role = .tool,
+        .content = try allocator.dupe(u8, "# Skill without metadata"),
+        .replay_to_model = true,
+    });
+    const request = try session.buildRequestLocked();
+    session.mutex.unlock();
+    defer request.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), request.messages.len);
+
+    const json = try buildRequestJsonForMessages(allocator, request, request.messages, true);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "# Skill without metadata") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"role\":\"tool\"") == null);
 }
 
 test "ai chat request json replays assistant reasoning content" {
