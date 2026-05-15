@@ -54,6 +54,7 @@ pub const Message = struct {
     tool_call_id: ?[]u8 = null,
     tool_name: ?[]u8 = null,
     replay_to_model: bool = false,
+    persist_to_history: bool = true,
     content_collapsed: bool = false,
     content_auto_expand: bool = false,
     reasoning_collapsed: bool = true,
@@ -327,6 +328,64 @@ fn currentAgentSettings() AgentSettings {
 
 fn currentToolHost() ?ToolHost {
     return g_tool_host;
+}
+
+const SlashCommand = enum { skills, commands, reload_skills, unknown };
+
+const SkillInvocation = struct {
+    skill_name: []const u8,
+    prompt: []const u8,
+};
+
+fn parseSlashCommand(input: []const u8) ?SlashCommand {
+    const trimmed = std.mem.trim(u8, input, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "/")) return null;
+    if (std.mem.eql(u8, trimmed, "/skills")) return .skills;
+    if (std.mem.eql(u8, trimmed, "/commands")) return .commands;
+    if (std.mem.eql(u8, trimmed, "/reload-skills")) return .reload_skills;
+    return .unknown;
+}
+
+fn parseSkillInvocation(input: []const u8) ?SkillInvocation {
+    const trimmed = std.mem.trim(u8, input, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "$") or trimmed.len < 2) return null;
+
+    var end: usize = 1;
+    while (end < trimmed.len) : (end += 1) {
+        const ch = trimmed[end];
+        if (!(std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_')) break;
+    }
+
+    if (end == 1) return null;
+    const rest = std.mem.trim(u8, trimmed[end..], " \t\r\n");
+    if (rest.len == 0) return null;
+    return .{ .skill_name = trimmed[1..end], .prompt = rest };
+}
+
+fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8 {
+    return switch (command) {
+        .commands => allocator.dupe(u8, "Available commands:\n/skills - list available skills\n/commands - list slash commands\n/reload-skills - rescan skills for future calls"),
+        .reload_skills => allocator.dupe(u8, "Skills will be re-read from disk on the next skill call."),
+        .unknown => allocator.dupe(u8, "Unknown command. Use /commands to list commands."),
+        .skills => listSkillsForDisplay(allocator),
+    };
+}
+
+fn listSkillsForDisplay(allocator: std.mem.Allocator) ![]u8 {
+    const list = try skill_registry.listSkills(allocator, std.fs.cwd(), "skills");
+    defer skill_registry.freeSkillList(allocator, list);
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    if (list.len == 0) {
+        try out.appendSlice(allocator, "No skills found under ./skills.");
+    } else {
+        try out.appendSlice(allocator, "Available skills:\n");
+        for (list) |meta| {
+            try out.print(allocator, "- ${s}: {s}\n", .{ meta.name, meta.description });
+        }
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 pub fn agentPermission() AgentPermission {
@@ -844,13 +903,46 @@ pub const Session = struct {
             self.mutex.unlock();
             return;
         }
+
+        if (parseSlashCommand(prompt_raw)) |command| {
+            const output = slashCommandOutput(self.allocator, command) catch {
+                self.setStatusLocked("Could not run command");
+                self.mutex.unlock();
+                return;
+            };
+            self.input_len = 0;
+            self.input_cursor = 0;
+            self.input_scroll_row = 0;
+            self.input_scroll_follow_cursor = true;
+            self.clearSelectionLocked();
+            self.messages.append(self.allocator, .{
+                .role = .tool,
+                .content = output,
+                .replay_to_model = false,
+                .persist_to_history = false,
+                .content_collapsed = false,
+                .content_auto_expand = false,
+            }) catch {
+                self.allocator.free(output);
+                self.setStatusLocked("Out of memory");
+                self.mutex.unlock();
+                return;
+            };
+            self.setStatusLocked("Ready");
+            history_change = null;
+            self.mutex.unlock();
+            return;
+        }
+
         if (self.api_key_len == 0) {
             self.setStatusLocked("Missing API key. Edit the AI Chat profile or set DEEPSEEK_API_KEY.");
             self.mutex.unlock();
             return;
         }
 
-        const prompt = self.allocator.dupe(u8, prompt_raw) catch {
+        const invocation = parseSkillInvocation(prompt_raw);
+        const prompt_for_history = if (invocation) |parsed| parsed.prompt else prompt_raw;
+        const prompt = self.allocator.dupe(u8, prompt_for_history) catch {
             self.setStatusLocked("Out of memory");
             self.mutex.unlock();
             return;
@@ -861,6 +953,52 @@ pub const Session = struct {
             self.mutex.unlock();
             return;
         };
+
+        if (invocation) |parsed| {
+            const skill_content = skillInfoTool(self.allocator, parsed.skill_name) catch {
+                var user_msg = self.messages.pop().?;
+                user_msg.deinit(self.allocator);
+                self.setStatusLocked("Could not load skill");
+                self.mutex.unlock();
+                return;
+            };
+            const tool_call_id = std.fmt.allocPrint(self.allocator, "skill-preload-{s}", .{parsed.skill_name}) catch {
+                self.allocator.free(skill_content);
+                var user_msg = self.messages.pop().?;
+                user_msg.deinit(self.allocator);
+                self.setStatusLocked("Out of memory");
+                self.mutex.unlock();
+                return;
+            };
+            const tool_name = self.allocator.dupe(u8, "skill_info") catch {
+                self.allocator.free(tool_call_id);
+                self.allocator.free(skill_content);
+                var user_msg = self.messages.pop().?;
+                user_msg.deinit(self.allocator);
+                self.setStatusLocked("Out of memory");
+                self.mutex.unlock();
+                return;
+            };
+            self.messages.append(self.allocator, .{
+                .role = .tool,
+                .content = skill_content,
+                .tool_call_id = tool_call_id,
+                .tool_name = tool_name,
+                .replay_to_model = true,
+                .content_collapsed = true,
+                .content_auto_expand = false,
+            }) catch {
+                self.allocator.free(tool_name);
+                self.allocator.free(tool_call_id);
+                self.allocator.free(skill_content);
+                var user_msg = self.messages.pop().?;
+                user_msg.deinit(self.allocator);
+                self.setStatusLocked("Out of memory");
+                self.mutex.unlock();
+                return;
+            };
+        }
+
         history_change = self.captureHistoryChangeLocked();
         self.input_len = 0;
         self.input_cursor = 0;
@@ -1217,7 +1355,12 @@ pub const Session = struct {
     }
 
     fn toHistoryRecordLocked(self: *Session, allocator: std.mem.Allocator) !agent_history.SessionRecord {
-        const messages = try allocator.alloc(agent_history.MessageRecord, self.messages.items.len);
+        var persist_count: usize = 0;
+        for (self.messages.items) |msg| {
+            if (msg.persist_to_history) persist_count += 1;
+        }
+
+        const messages = try allocator.alloc(agent_history.MessageRecord, persist_count);
         var initialized: usize = 0;
         errdefer {
             while (initialized > 0) {
@@ -1227,7 +1370,9 @@ pub const Session = struct {
             allocator.free(messages);
         }
 
-        for (self.messages.items, 0..) |msg, i| {
+        for (self.messages.items) |msg| {
+            if (!msg.persist_to_history) continue;
+
             var record_msg = agent_history.MessageRecord{
                 .role = switch (msg.role) {
                     .user => .user,
@@ -1244,7 +1389,7 @@ pub const Session = struct {
             record_msg.tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null;
             record_msg.replay_to_model = msg.replay_to_model;
 
-            messages[i] = record_msg;
+            messages[initialized] = record_msg;
             initialized += 1;
         }
 
@@ -3332,6 +3477,23 @@ fn testHistoryHookCaptureCallback(event: HistoryChangeEvent) void {
     }
     capture.event = owned;
     capture.calls += 1;
+}
+
+test "ai chat parses explicit dollar skill invocation" {
+    const parsed = parseSkillInvocation("$pdf summarize this file").?;
+    try std.testing.expectEqualStrings("pdf", parsed.skill_name);
+    try std.testing.expectEqualStrings("summarize this file", parsed.prompt);
+
+    try std.testing.expect(parseSkillInvocation("normal prompt") == null);
+    try std.testing.expect(parseSkillInvocation("$ missing") == null);
+}
+
+test "ai chat recognizes local slash commands" {
+    try std.testing.expect(parseSlashCommand("/skills").? == .skills);
+    try std.testing.expect(parseSlashCommand("/commands").? == .commands);
+    try std.testing.expect(parseSlashCommand("/reload-skills").? == .reload_skills);
+    try std.testing.expect(parseSlashCommand("/unknown").? == .unknown);
+    try std.testing.expect(parseSlashCommand("hello") == null);
 }
 
 test "ai_chat: session serializes to history record" {
