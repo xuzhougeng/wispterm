@@ -278,12 +278,16 @@ fn parseSkillMeta(
 }
 
 fn frontmatterSlice(bytes: []const u8) ?[]const u8 {
-    const start = "---\n";
-    const end = "\n---\n";
-    if (!std.mem.startsWith(u8, bytes, start)) return null;
+    const rest = if (std.mem.startsWith(u8, bytes, "---\r\n"))
+        bytes["---\r\n".len..]
+    else if (std.mem.startsWith(u8, bytes, "---\n"))
+        bytes["---\n".len..]
+    else
+        return null;
 
-    const rest = bytes[start.len..];
-    const end_idx = std.mem.indexOf(u8, rest, end) orelse return null;
+    const end_idx = std.mem.indexOf(u8, rest, "\n---\n") orelse
+        std.mem.indexOf(u8, rest, "\n---\r\n") orelse
+        return null;
     return rest[0..end_idx];
 }
 
@@ -328,6 +332,24 @@ test "skill_registry: parses SKILL frontmatter and lists sorted skills" {
     try std.testing.expectEqualStrings("pdf", skills[0].name);
     try std.testing.expectEqualStrings("Work with PDF files.", skills[0].description);
     try std.testing.expectEqualStrings("pdf", skills[0].dir_name);
+}
+
+test "skill_registry: parses CRLF SKILL frontmatter" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("skills/pdf");
+    try tmp.dir.writeFile(.{
+        .sub_path = "skills/pdf/SKILL.md",
+        .data = "---\r\nname: pdf\r\ndescription: Work with PDF files.\r\n---\r\n# PDF\r\n",
+    });
+
+    const skills = try listSkills(std.testing.allocator, tmp.dir, "skills");
+    defer freeSkillList(std.testing.allocator, skills);
+
+    try std.testing.expectEqual(@as(usize, 1), skills.len);
+    try std.testing.expectEqualStrings("pdf", skills[0].name);
+    try std.testing.expectEqualStrings("Work with PDF files.", skills[0].description);
 }
 
 test "skill_registry: listSkills cleans up appended metadata on later error" {

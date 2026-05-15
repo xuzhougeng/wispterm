@@ -1873,6 +1873,9 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
             const tool_result = try executeToolCall(request, call);
             defer request.allocator.free(tool_result);
             if (requestCancelled(request)) return error.Canceled;
+            if (std.mem.eql(u8, call.name, "skill_info")) {
+                appendReplayableToolMessage(request.session, call.id, call.name, tool_result) catch {};
+            }
 
             var tool_msg = try requestMessageWithClonedFields(request.allocator, .tool, tool_result, null, call.id, null);
             var tool_msg_owned = true;
@@ -2047,6 +2050,54 @@ fn appendProgressMessage(session: *Session, text: []const u8) !void {
     const content = try allocator.dupe(u8, text);
     errdefer allocator.free(content);
 
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (sessionCancelled(session)) return error.Canceled;
+    try session.messages.append(allocator, .{
+        .role = .tool,
+        .content = content,
+        .reasoning = null,
+        .persist_to_history = false,
+        .content_collapsed = false,
+        .content_auto_expand = true,
+    });
+    session.scroll_px = 1_000_000;
+    session.setStatusLocked("Running tools...");
+}
+
+fn appendReplayableToolMessage(
+    session: *Session,
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    text: []const u8,
+) !void {
+    if (sessionCancelled(session)) return error.Canceled;
+    const allocator = session.allocator;
+    const content = try allocator.dupe(u8, text);
+    var content_owned = true;
+    errdefer if (content_owned) allocator.free(content);
+    const id = try allocator.dupe(u8, tool_call_id);
+    var id_owned = true;
+    errdefer if (id_owned) allocator.free(id);
+    const name = try allocator.dupe(u8, tool_name);
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+
+    var msg = Message{
+        .role = .tool,
+        .content = content,
+        .tool_call_id = id,
+        .tool_name = name,
+        .replay_to_model = true,
+        .content_collapsed = true,
+        .content_auto_expand = false,
+    };
+    content_owned = false;
+    id_owned = false;
+    name_owned = false;
+    var msg_owned = true;
+    errdefer if (msg_owned) msg.deinit(allocator);
+
     var history_change: ?PendingHistoryChange = null;
     session.mutex.lock();
     defer {
@@ -2054,15 +2105,8 @@ fn appendProgressMessage(session: *Session, text: []const u8) !void {
         session.notifyHistoryChange(history_change);
     }
     if (sessionCancelled(session)) return error.Canceled;
-    try session.messages.append(allocator, .{
-        .role = .tool,
-        .content = content,
-        .reasoning = null,
-        .content_collapsed = false,
-        .content_auto_expand = true,
-    });
-    session.scroll_px = 1_000_000;
-    session.setStatusLocked("Running tools...");
+    try session.messages.append(allocator, msg);
+    msg_owned = false;
     history_change = session.captureHistoryChangeLocked();
 }
 
@@ -3731,11 +3775,11 @@ test "ai_chat: serializing history record cleans up partial message clone on all
     try std.testing.expect(saw_oom);
 }
 
-test "ai_chat: history hook receives self-owning snapshot event" {
+test "ai_chat: progress tool messages are ui-only history" {
     const allocator = std.testing.allocator;
     const session = try Session.init(
         allocator,
-        "History Hook",
+        "Progress",
         "https://api.example.com",
         "secret",
         "model-a",
@@ -3755,11 +3799,52 @@ test "ai_chat: history hook receives self-owning snapshot event" {
     session.setHistoryChangeHook(testHistoryHookCaptureCallback);
     try appendProgressMessage(session, "running tool");
 
+    try std.testing.expectEqual(@as(usize, 0), capture.calls);
+    try std.testing.expect(capture.event == null);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expect(!session.messages.items[0].persist_to_history);
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    var record = try session.toHistoryRecordLocked(allocator);
+    defer agent_history.freeOwnedRecord(allocator, &record);
+
+    try std.testing.expectEqual(@as(usize, 0), record.messages.len);
+}
+
+test "ai_chat: replayable skill tool messages emit history snapshots" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "Skill Tool",
+        "https://api.example.com",
+        "secret",
+        "model-a",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    var capture = TestHistoryHookCapture{};
+    defer capture.deinit();
+    g_test_history_hook_capture = &capture;
+    defer g_test_history_hook_capture = null;
+
+    session.setHistoryChangeHook(testHistoryHookCaptureCallback);
+    try appendReplayableToolMessage(session, "call-1", "skill_info", "# Skill: pdf");
+
     try std.testing.expectEqual(@as(usize, 1), capture.calls);
     try std.testing.expect(capture.event != null);
     try std.testing.expectEqual(@as(usize, 1), capture.event.?.record.messages.len);
-    try std.testing.expectEqualStrings("running tool", capture.event.?.record.messages[0].content);
-    try std.testing.expect(capture.event.?.record.messages[0].content.ptr != session.messages.items[0].content.ptr);
+    const message = capture.event.?.record.messages[0];
+    try std.testing.expectEqual(.tool, message.role);
+    try std.testing.expectEqualStrings("# Skill: pdf", message.content);
+    try std.testing.expectEqualStrings("call-1", message.tool_call_id.?);
+    try std.testing.expectEqualStrings("skill_info", message.tool_name.?);
+    try std.testing.expect(message.replay_to_model);
 
     capture.deinit();
     try std.testing.expect(capture.event == null);
