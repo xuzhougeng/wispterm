@@ -370,6 +370,10 @@ pub threadlocal var g_divider_hover: bool = false; // Mouse is over a divider
 pub threadlocal var g_divider_dragging: bool = false; // Currently dragging a divider
 pub threadlocal var g_divider_drag_handle: ?SplitTree.Node.Handle = null; // Handle of the split node being resized
 pub threadlocal var g_divider_drag_layout: ?SplitTree.Split.Layout = null; // horizontal or vertical
+threadlocal var g_scrollbar_drag_surface: ?*Surface = null;
+threadlocal var g_scrollbar_drag_view_y: f32 = 0;
+threadlocal var g_scrollbar_drag_view_h: f32 = 0;
+threadlocal var g_scrollbar_drag_top_pad: f32 = 0;
 pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
 pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
@@ -452,6 +456,7 @@ pub fn cancelTransientMouseState(win: ?*win32_backend.Window) void {
     plus_btn_pressed = false;
     tab.g_tab_close_pressed = null;
     overlays.g_scrollbar_dragging = false;
+    g_scrollbar_drag_surface = null;
     if (win) |w| w.clearTransientInputQueues();
 }
 
@@ -623,6 +628,52 @@ fn splitRectForSurface(surface: *Surface) ?split_layout.SplitRect {
         if (rect.surface == surface) return rect;
     }
     return null;
+}
+
+const ScrollbarTarget = struct {
+    surface: *Surface,
+    view_x: f32,
+    view_y: f32,
+    view_w: f32,
+    view_h: f32,
+    top_pad: f32,
+};
+
+fn scrollbarTargetAt(xpos: f64, ypos: f64, window_w: f32, window_h: f32, top_pad: f32) ?ScrollbarTarget {
+    if (split_layout.g_split_rect_count > 1) {
+        for (0..split_layout.g_split_rect_count) |i| {
+            const rect = split_layout.g_split_rects[i];
+            if (!split_layout.cachedRectIsLive(rect)) continue;
+            const pad = rect.surface.getPadding();
+            const view_x: f32 = @floatFromInt(rect.x);
+            const view_y: f32 = @floatFromInt(rect.y);
+            const view_w: f32 = @floatFromInt(rect.width);
+            const view_h: f32 = @floatFromInt(rect.height);
+            const local_top_pad: f32 = @floatFromInt(pad.top);
+            if (overlays.scrollbarHitTestForSurface(rect.surface, xpos, ypos, view_x, view_y, view_w, view_h, local_top_pad)) {
+                return .{
+                    .surface = rect.surface,
+                    .view_x = view_x,
+                    .view_y = view_y,
+                    .view_w = view_w,
+                    .view_h = view_h,
+                    .top_pad = local_top_pad,
+                };
+            }
+        }
+        return null;
+    }
+
+    const surface = AppWindow.activeSurface() orelse return null;
+    if (!overlays.scrollbarHitTestForSurface(surface, xpos, ypos, 0, 0, window_w, window_h, top_pad)) return null;
+    return .{
+        .surface = surface,
+        .view_x = 0,
+        .view_y = 0,
+        .view_w = window_w,
+        .view_h = window_h,
+        .top_pad = top_pad,
+    };
 }
 
 pub fn viewportOffsetForSurface(surface: *Surface) usize {
@@ -2429,21 +2480,25 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
             const h_f: f32 = @floatFromInt(fb.height);
             const tb_f: f32 = @floatCast(titlebarHeight());
             const top_pad: f32 = 10 + tb_f;
-            if (overlays.scrollbarHitTest(xpos, ypos, w_f, h_f, top_pad)) {
-                if (overlays.scrollbarGeometry(h_f, top_pad)) |geo| {
+            if (scrollbarTargetAt(xpos, ypos, w_f, h_f, top_pad)) |target| {
+                if (overlays.scrollbarGeometryForSurface(target.surface, target.view_h, target.top_pad)) |geo| {
                     overlays.g_scrollbar_dragging = true;
-                    overlays.scrollbarShow();
+                    g_scrollbar_drag_surface = target.surface;
+                    g_scrollbar_drag_view_y = target.view_y;
+                    g_scrollbar_drag_view_h = target.view_h;
+                    g_scrollbar_drag_top_pad = target.top_pad;
+                    overlays.scrollbarShowForSurface(target.surface);
 
-                    const y_f: f32 = @floatCast(ypos);
-                    const thumb_top_px = h_f - (geo.thumb_y + geo.thumb_h); // convert GL→pixel
-                    const thumb_bottom_px = h_f - geo.thumb_y;
+                    const y_f: f32 = @as(f32, @floatCast(ypos)) - target.view_y;
+                    const thumb_top_px = target.view_h - (geo.thumb_y + geo.thumb_h); // convert GL→pixel
+                    const thumb_bottom_px = target.view_h - geo.thumb_y;
                     if (y_f >= thumb_top_px and y_f <= thumb_bottom_px) {
                         // Clicked on thumb — offset from top of thumb
                         overlays.g_scrollbar_drag_offset = y_f - thumb_top_px;
                     } else {
                         // Clicked on track — jump thumb center to click position
                         overlays.g_scrollbar_drag_offset = geo.thumb_h / 2;
-                        overlays.scrollbarDrag(ypos, h_f, top_pad);
+                        overlays.scrollbarDragForSurface(target.surface, ypos, target.view_y, target.view_h, target.top_pad);
                     }
                     return;
                 }
@@ -2519,6 +2574,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
         } else {
             // Mouse up
             overlays.g_scrollbar_dragging = false;
+            g_scrollbar_drag_surface = null;
             if (g_sidebar_resize_dragging) {
                 g_sidebar_resize_dragging = false;
                 g_sidebar_resize_hover = hitTestSidebarResizeHandle(xpos, ypos);
@@ -2848,16 +2904,18 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
 
     const was_hover = overlays.g_scrollbar_hover;
     overlays.g_scrollbar_hover = false;
-    if (overlays.scrollbarHitTest(xpos, ypos, w_f, h_f, top_pad)) {
-        overlays.g_scrollbar_hover = overlays.scrollbarGeometry(h_f, top_pad) != null;
-    }
-    if (overlays.g_scrollbar_hover and !was_hover) {
-        overlays.scrollbarShow(); // Reset fade timer when entering scrollbar area
+    if (scrollbarTargetAt(xpos, ypos, w_f, h_f, top_pad)) |target| {
+        overlays.g_scrollbar_hover = true;
+        if (!was_hover) overlays.scrollbarShowForSurface(target.surface);
     }
 
     // Handle scrollbar drag
     if (overlays.g_scrollbar_dragging) {
-        overlays.scrollbarDrag(ypos, h_f, top_pad);
+        if (g_scrollbar_drag_surface) |surface| {
+            overlays.scrollbarDragForSurface(surface, ypos, g_scrollbar_drag_view_y, g_scrollbar_drag_view_h, g_scrollbar_drag_top_pad);
+        } else {
+            overlays.scrollbarDrag(ypos, h_f, top_pad);
+        }
         return;
     }
 

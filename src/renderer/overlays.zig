@@ -2978,6 +2978,11 @@ pub fn scrollbarGeometry(window_height: f32, top_padding: f32) ?ScrollbarGeometr
 /// Show the scrollbar on the active surface (reset fade timer).
 pub fn scrollbarShow() void {
     const surface = AppWindow.activeSurface() orelse return;
+    scrollbarShowForSurface(surface);
+}
+
+/// Show a specific surface's scrollbar (reset fade timer).
+pub fn scrollbarShowForSurface(surface: *Surface) void {
     surface.scrollbar_opacity = 1.0;
     surface.scrollbar_show_time = std.time.milliTimestamp();
 }
@@ -3043,15 +3048,34 @@ pub fn renderScrollbar(window_width: f32, window_height: f32, top_padding: f32) 
 
 /// Check if a point (in client pixel coords, origin top-left) is over the scrollbar.
 pub fn scrollbarHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, top_padding: f32) bool {
-    const bar_right = window_width;
-    const bar_left = window_width - SCROLLBAR_HOVER_WIDTH;
-    const track_top_px = top_padding; // in pixel coords (top-left origin)
-    const track_bottom_px = window_height;
+    return scrollbar_model.hitTest(
+        .{ .x = 0, .y = 0, .width = window_width, .height = window_height },
+        top_padding,
+        SCROLLBAR_HOVER_WIDTH,
+        @floatCast(xpos),
+        @floatCast(ypos),
+    );
+}
 
-    return @as(f32, @floatCast(xpos)) >= bar_left and
-        @as(f32, @floatCast(xpos)) <= bar_right and
-        @as(f32, @floatCast(ypos)) >= track_top_px and
-        @as(f32, @floatCast(ypos)) <= track_bottom_px;
+/// Check if a point is over a specific surface scrollbar in a viewport.
+pub fn scrollbarHitTestForSurface(
+    surface: *Surface,
+    xpos: f64,
+    ypos: f64,
+    view_x: f32,
+    view_y: f32,
+    view_width: f32,
+    view_height: f32,
+    top_padding: f32,
+) bool {
+    if (scrollbarGeometryForSurface(surface, view_height, top_padding) == null) return false;
+    return scrollbar_model.hitTest(
+        .{ .x = view_x, .y = view_y, .width = view_width, .height = view_height },
+        top_padding,
+        SCROLLBAR_HOVER_WIDTH,
+        @floatCast(xpos),
+        @floatCast(ypos),
+    );
 }
 
 /// Check if a point is over the scrollbar thumb specifically.
@@ -3065,26 +3089,23 @@ pub fn scrollbarThumbHitTest(ypos: f64, window_height: f32, top_padding: f32) bo
 /// Handle scrollbar drag: convert pixel y to scroll position.
 pub fn scrollbarDrag(ypos: f64, window_height: f32, top_padding: f32) void {
     const surface = AppWindow.activeSurface() orelse return;
+    scrollbarDragForSurface(surface, ypos, 0, window_height, top_padding);
+}
+
+/// Handle scrollbar drag for a specific surface viewport.
+pub fn scrollbarDragForSurface(surface: *Surface, ypos: f64, view_y: f32, view_height: f32, top_padding: f32) void {
     const sb = AppWindow.input.scrollbarForSurface(surface);
     if (sb.total <= sb.len) return;
 
-    const padding: f32 = 10;
-    const track_top_px = top_padding;
-    const track_bottom_px = window_height - padding;
-    const track_h = track_bottom_px - track_top_px;
-    if (track_h <= 0) return;
-
-    const ratio = @as(f32, @floatFromInt(sb.len)) / @as(f32, @floatFromInt(sb.total));
-    const thumb_h = @max(SCROLLBAR_MIN_THUMB, track_h * ratio);
-    const scrollable_h = track_h - thumb_h;
-    if (scrollable_h <= 0) return;
-
-    // ypos is in top-left coords; track_top_px is the top of the track
-    const y_in_track = @as(f32, @floatCast(ypos)) - track_top_px - g_scrollbar_drag_offset;
-    const frac = std.math.clamp(y_in_track / scrollable_h, 0, 1);
-
-    const max_offset = sb.total - sb.len;
-    const target_offset: isize = @intFromFloat(frac * @as(f32, @floatFromInt(max_offset)));
+    const target_offset_usize = scrollbar_model.dragTargetOffset(
+        .{ .total = sb.total, .offset = sb.offset, .len = sb.len },
+        @as(f32, @floatCast(ypos)) - view_y,
+        top_padding,
+        view_height,
+        g_scrollbar_drag_offset,
+        SCROLLBAR_MIN_THUMB,
+    ) orelse return;
+    const target_offset: isize = @intCast(target_offset_usize);
     const current_offset: isize = @intCast(sb.offset);
     const delta = target_offset - current_offset;
 
