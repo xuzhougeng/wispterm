@@ -3,6 +3,7 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
+const composer_layout = @import("../ai_chat_composer_layout.zig");
 const font = AppWindow.font;
 const gl_init = AppWindow.gl_init;
 const titlebar = AppWindow.titlebar;
@@ -13,8 +14,9 @@ const c = @cImport({
 
 pub const LINE_PAD_X: f32 = 18;
 const HEADER_H: f32 = 54;
-pub const INPUT_H: f32 = 92;
-pub const INPUT_MAX_H: f32 = 220;
+pub const INPUT_H: f32 = composer_layout.input_min_h;
+pub const INPUT_MAX_H: f32 = composer_layout.input_max_h;
+pub const INPUT_FIELD_PAD_TOP: f32 = composer_layout.Field.pad_top;
 const PERMISSION_CHIP_W: f32 = 104;
 const PERMISSION_CHIP_H: f32 = 24;
 const STATUS_SLOT_W: f32 = 280;
@@ -45,6 +47,16 @@ pub const HitTarget = union(enum) {
 pub const InputCursorRect = struct {
     x: f32,
     row: usize,
+};
+
+pub const InputLayout = struct {
+    input_h: f32,
+    field_x: f32,
+    field_y: f32,
+    field_w: f32,
+    field_h: f32,
+    text_x: f32,
+    text_w: f32,
 };
 
 pub fn render(
@@ -103,42 +115,61 @@ pub fn render(
         _ = titlebar.renderTextLimited(session.status(), x + w - LINE_PAD_X - @min(status_w, STATUS_SLOT_W), header_y + 10, muted, STATUS_SLOT_W);
     }
 
-    const field_x = x + LINE_PAD_X;
-    const field_w = w - LINE_PAD_X * 2;
     const input_text = session.input();
-    const input_h = inputHeightForText(input_text, field_w - 24);
+    const layout = inputLayout(x, w, input_text);
+    const input_h = layout.input_h;
     const input_y: f32 = 0;
     gl_init.renderQuadAlpha(x, input_y, w, input_h, panel, 0.98);
-    gl_init.renderQuadAlpha(x, input_y + input_h - 1, w, 1, line, 0.8);
+    gl_init.renderQuadAlpha(x, input_y + input_h - 1, w, 1, line, 0.72);
 
-    const field_y = input_y + 16;
-    const field_h = input_h - 32;
-    const field_bg = mixColor(bg, fg, 0.075);
-    gl_init.renderQuadAlpha(field_x, field_y, field_w, field_h, field_bg, 0.95);
-    gl_init.renderQuadAlpha(field_x, field_y, field_w, 1, mixColor(bg, accent, 0.38), 0.6);
+    const field_bg = mixColor(bg, fg, 0.105);
+    const field_border = mixColor(bg, fg, 0.28);
+    gl_init.renderQuadAlpha(layout.field_x, layout.field_y, layout.field_w, layout.field_h, field_border, 0.82);
+    gl_init.renderQuadAlpha(layout.field_x + 1, layout.field_y + 1, @max(1.0, layout.field_w - 2), @max(1.0, layout.field_h - 2), field_bg, 0.98);
+    gl_init.renderQuadAlpha(layout.field_x + 1, layout.field_y + layout.field_h - 2, @max(1.0, layout.field_w - 2), 1, mixColor(bg, accent, 0.42), 0.48);
 
     if (input_text.len == 0) {
         const placeholder = if (session.agent_enabled) "Ask Agent" else "Ask AI Chat";
-        _ = titlebar.renderTextLimited(placeholder, field_x + 12, field_y + (field_h - font.g_titlebar_cell_height) / 2, mixColor(bg, fg, 0.42), field_w - 24);
+        _ = titlebar.renderTextLimited(
+            placeholder,
+            layout.text_x,
+            layout.field_y + layout.field_h - composer_layout.Field.pad_top - font.g_titlebar_cell_height,
+            mixColor(bg, fg, 0.46),
+            layout.text_w,
+        );
     } else {
         if (session.input_select_all) {
-            gl_init.renderQuadAlpha(field_x + 8, field_y + 8, field_w - 16, field_h - 16, accent, 0.22);
+            gl_init.renderQuadAlpha(
+                layout.field_x + composer_layout.Field.pad_x - 6,
+                layout.field_y + composer_layout.Field.pad_bottom - 6,
+                @max(1.0, layout.field_w - composer_layout.Field.pad_x * 2 + 12),
+                @max(1.0, layout.field_h - composer_layout.Field.pad_top - composer_layout.Field.pad_bottom + 12),
+                accent,
+                0.22,
+            );
         }
-        const max_text_w = field_w - 24;
-        const cursor = inputCursorRect(input_text, session.input_cursor, field_x + 12, max_text_w);
-        const visible_rows = inputVisibleRows(field_h);
+        const cursor = inputCursorRect(input_text, session.input_cursor, layout.text_x, layout.text_w);
+        const visible_rows = inputVisibleRowsForField(layout.field_h);
         const first_row = if (cursor.row >= visible_rows) cursor.row - visible_rows + 1 else 0;
-        const text_start = wrappedByteOffsetForLine(input_text, max_text_w, first_row);
-        _ = renderWrappedText(input_text[text_start..], field_x + 12, window_height - field_y - field_h + 10, max_text_w, lineHeight(), fg, window_height, window_height);
+        const text_start = wrappedByteOffsetForLine(input_text, layout.text_w, first_row);
+        _ = renderWrappedText(
+            input_text[text_start..],
+            layout.text_x,
+            window_height - layout.field_y - layout.field_h + composer_layout.Field.pad_top,
+            layout.text_w,
+            lineHeight(),
+            fg,
+            window_height,
+            window_height,
+        );
     }
     if (!session.request_inflight and AppWindow.g_cursor_blink_visible) {
-        const max_text_w = field_w - 24;
-        const cursor = inputCursorRect(input_text, session.input_cursor, field_x + 12, max_text_w);
-        const visible_rows = inputVisibleRows(field_h);
+        const cursor = inputCursorRect(input_text, session.input_cursor, layout.text_x, layout.text_w);
+        const visible_rows = inputVisibleRowsForField(layout.field_h);
         const first_row = if (cursor.row >= visible_rows) cursor.row - visible_rows + 1 else 0;
         const row = cursor.row - first_row;
-        const field_top_px = window_height - field_y - field_h;
-        const cursor_top_px = field_top_px + 10 + @as(f32, @floatFromInt(row)) * lineHeight();
+        const field_top_px = window_height - layout.field_y - layout.field_h;
+        const cursor_top_px = field_top_px + composer_layout.Field.pad_top + @as(f32, @floatFromInt(row)) * lineHeight();
         const cursor_y = window_height - cursor_top_px - font.g_titlebar_cell_height;
         gl_init.renderQuad(cursor.x, cursor_y, 1, font.g_titlebar_cell_height, accent);
     }
@@ -228,7 +259,7 @@ pub fn interactionHitTest(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
-    const input_h = inputHeightForText(session.input(), w - LINE_PAD_X * 2 - 24);
+    const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + 18;
     const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
@@ -1228,18 +1259,28 @@ fn countWrappedLines(text: []const u8, max_w: f32) usize {
     return lines;
 }
 
-pub fn inputHeightForText(text: []const u8, max_w: f32) f32 {
-    const rows = countWrappedLines(text, @max(1.0, max_w));
-    const max_field_h = INPUT_MAX_H - 32;
-    const min_field_h = INPUT_H - 32;
-    const wanted_field_h = @as(f32, @floatFromInt(rows)) * lineHeight() + 20;
-    const field_h = @min(max_field_h, @max(min_field_h, wanted_field_h));
-    return field_h + 32;
+pub fn inputLayout(panel_x: f32, panel_w: f32, text: []const u8) InputLayout {
+    const field_w = composer_layout.fieldWidth(panel_w);
+    const field_x = composer_layout.fieldX(panel_x, panel_w);
+    const field_h = inputHeightForText(text, composer_layout.textWidth(field_w)) - composer_layout.Panel.pad_y * 2;
+    return .{
+        .input_h = field_h + composer_layout.Panel.pad_y * 2,
+        .field_x = field_x,
+        .field_y = composer_layout.Panel.pad_y,
+        .field_w = field_w,
+        .field_h = field_h,
+        .text_x = field_x + composer_layout.Field.pad_x,
+        .text_w = composer_layout.textWidth(field_w),
+    };
 }
 
-fn inputVisibleRows(field_h: f32) usize {
-    const rows_f = @max(1.0, @floor((field_h - 20) / lineHeight()));
-    return @max(@as(usize, 1), @as(usize, @intFromFloat(rows_f)));
+pub fn inputHeightForText(text: []const u8, max_w: f32) f32 {
+    const rows = countWrappedLines(text, @max(1.0, max_w));
+    return composer_layout.inputHeightForRows(rows, lineHeight());
+}
+
+pub fn inputVisibleRowsForField(field_h: f32) usize {
+    return composer_layout.visibleRows(field_h, lineHeight());
 }
 
 pub fn inputCursorRect(text: []const u8, cursor_raw: usize, x: f32, max_w_raw: f32) InputCursorRect {
