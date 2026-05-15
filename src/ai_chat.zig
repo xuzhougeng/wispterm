@@ -2196,7 +2196,7 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}"));
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("skill_info", "Load a Phantty skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name, such as \\u0070df.\"}}"));
+    try out.appendSlice(allocator, toolSchema("skill_info", "Load a Phantty skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}"));
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
@@ -3650,6 +3650,7 @@ test "ai chat agent request json includes stable skill_info tool schema" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"skill_info\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "skill_name") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "pdf") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\\u0070df") == null);
 }
 
 test "ai chat request json replays durable tool messages and skips progress tools" {
