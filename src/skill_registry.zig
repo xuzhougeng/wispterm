@@ -66,8 +66,10 @@ pub fn listSkills(
         defer allocator.free(bytes);
 
         var meta = try parseSkillMeta(allocator, bytes, skills_rel, dir_name);
-        errdefer meta.deinit(allocator);
-        try skills.append(allocator, meta);
+        skills.append(allocator, meta) catch |err| {
+            meta.deinit(allocator);
+            return err;
+        };
     }
 
     std.sort.insertion(SkillMeta, skills.items, {}, skillLessThan);
@@ -321,6 +323,27 @@ test "skill_registry: parses SKILL frontmatter and lists sorted skills" {
     try std.testing.expectEqualStrings("pdf", skills[0].name);
     try std.testing.expectEqualStrings("Work with PDF files.", skills[0].description);
     try std.testing.expectEqualStrings("pdf", skills[0].dir_name);
+}
+
+test "skill_registry: listSkills cleans up appended metadata on later error" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("skills/a");
+    try tmp.dir.makePath("skills/b");
+    try tmp.dir.writeFile(.{
+        .sub_path = "skills/a/SKILL.md",
+        .data = "---\nname: first\n---\n# First\n",
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "skills/b/SKILL.md",
+        .data = "# Missing frontmatter",
+    });
+
+    try std.testing.expectError(
+        LookupError.InvalidSkillMarkdown,
+        listSkills(std.testing.allocator, tmp.dir, "skills"),
+    );
 }
 
 test "skill_registry: snapshot is deterministic and includes hash" {
