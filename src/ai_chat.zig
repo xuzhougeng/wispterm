@@ -8,6 +8,7 @@ const std = @import("std");
 const win32_backend = @import("apprt/win32.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
+const skill_registry = @import("skill_registry.zig");
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -2194,6 +2195,8 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.appendSlice(allocator, toolSchema("tab_new", "Create a new local terminal tab. Use kind=default, powershell, pwsh, cmd, wsl, or command with an explicit command line.", "{\"kind\":{\"type\":\"string\",\"description\":\"default, powershell, pwsh, cmd, wsl, or command.\"},\"command\":{\"type\":\"string\",\"description\":\"Optional explicit Windows command line; used when kind is command or to override kind.\"}}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}"));
+    try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("skill_info", "Load a Phantty skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name, such as \\u0070df.\"}}"));
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
@@ -2272,6 +2275,12 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
         const title = jsonStringArg(args.value, "title");
         return tabCloseTool(request, tab_index, surface_id, title);
     }
+    if (std.mem.eql(u8, call.name, "skill_info")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const skill_name = jsonStringArg(args.value, "skill_name") orelse return request.allocator.dupe(u8, "Missing skill_name");
+        return skillInfoTool(request.allocator, skill_name);
+    }
     return std.fmt.allocPrint(request.allocator, "Unknown tool: {s}", .{call.name});
 }
 
@@ -2306,6 +2315,18 @@ fn jsonIndexArg(root: std.json.Value, name: []const u8) ?usize {
         .float => |v| if (v >= 0 and v <= @as(f64, @floatFromInt(std.math.maxInt(usize)))) @intFromFloat(v) else null,
         else => null,
     };
+}
+
+fn skillInfoTool(allocator: std.mem.Allocator, skill_name: []const u8) ![]u8 {
+    var snapshot = skill_registry.loadSkillSnapshot(allocator, std.fs.cwd(), "skills", skill_name) catch |err| switch (err) {
+        skill_registry.LookupError.SkillNotFound => return std.fmt.allocPrint(allocator, "Skill not found: {s}", .{skill_name}),
+        skill_registry.LookupError.DuplicateSkillName => return std.fmt.allocPrint(allocator, "Duplicate skill name: {s}", .{skill_name}),
+        skill_registry.LookupError.InvalidSkillMarkdown => return std.fmt.allocPrint(allocator, "Invalid SKILL.md for skill: {s}", .{skill_name}),
+        skill_registry.LookupError.SkillTooLarge => return std.fmt.allocPrint(allocator, "SKILL.md too large for skill: {s}", .{skill_name}),
+        else => |e| return std.fmt.allocPrint(allocator, "Failed to load skill {s}: {}", .{ skill_name, e }),
+    };
+    defer snapshot.deinit(allocator);
+    return allocator.dupe(u8, snapshot.content);
 }
 
 fn toolSurfaceKind(surface: ToolSurface) []const u8 {
@@ -3599,6 +3620,36 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_close\"") != null);
+}
+
+test "ai chat agent request json includes stable skill_info tool schema" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "Test",
+        DEFAULT_BASE_URL,
+        "test-key",
+        DEFAULT_MODEL,
+        DEFAULT_SYSTEM_PROMPT,
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    session.mutex.lock();
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "hello") });
+    const request = try session.buildRequestLocked();
+    session.mutex.unlock();
+    defer request.deinit();
+
+    const json = try buildRequestJson(allocator, request);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"skill_info\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "skill_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "pdf") == null);
 }
 
 test "ai chat request json replays durable tool messages and skips progress tools" {
