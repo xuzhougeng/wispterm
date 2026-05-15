@@ -456,19 +456,23 @@ pub const Session = struct {
         session.created_at_ms = record.created_at;
         session.updated_at_ms = record.updated_at;
         for (record.messages) |msg| {
-            try session.messages.append(allocator, .{
+            var cloned_msg = Message{
                 .role = switch (msg.role) {
                     .user => .user,
                     .assistant => .assistant,
                     .tool => .tool,
                 },
                 .content = try allocator.dupe(u8, msg.content),
-                .reasoning = if (msg.reasoning) |reasoning| try allocator.dupe(u8, reasoning) else null,
-                .usage_footer = if (msg.usage_footer) |footer| try allocator.dupe(u8, footer) else null,
-                .tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null,
-                .tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null,
-                .replay_to_model = msg.replay_to_model,
-            });
+            };
+            errdefer cloned_msg.deinit(allocator);
+
+            cloned_msg.reasoning = if (msg.reasoning) |reasoning| try allocator.dupe(u8, reasoning) else null;
+            cloned_msg.usage_footer = if (msg.usage_footer) |footer| try allocator.dupe(u8, footer) else null;
+            cloned_msg.tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null;
+            cloned_msg.tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null;
+            cloned_msg.replay_to_model = msg.replay_to_model;
+
+            try session.messages.append(allocator, cloned_msg);
         }
         return session;
     }
@@ -1187,19 +1191,23 @@ pub const Session = struct {
         }
 
         for (self.messages.items, 0..) |msg, i| {
-            messages[i] = .{
+            var record_msg = agent_history.MessageRecord{
                 .role = switch (msg.role) {
                     .user => .user,
                     .assistant => .assistant,
                     .tool => .tool,
                 },
                 .content = try allocator.dupe(u8, msg.content),
-                .reasoning = if (msg.reasoning) |reasoning| try allocator.dupe(u8, reasoning) else null,
-                .usage_footer = if (msg.usage_footer) |footer| try allocator.dupe(u8, footer) else null,
-                .tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null,
-                .tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null,
-                .replay_to_model = msg.replay_to_model,
             };
+            errdefer agent_history.freeOwnedMessage(allocator, &record_msg);
+
+            record_msg.reasoning = if (msg.reasoning) |reasoning| try allocator.dupe(u8, reasoning) else null;
+            record_msg.usage_footer = if (msg.usage_footer) |footer| try allocator.dupe(u8, footer) else null;
+            record_msg.tool_call_id = if (msg.tool_call_id) |id| try allocator.dupe(u8, id) else null;
+            record_msg.tool_name = if (msg.tool_name) |name| try allocator.dupe(u8, name) else null;
+            record_msg.replay_to_model = msg.replay_to_model;
+
+            messages[i] = record_msg;
             initialized += 1;
         }
 
@@ -3262,6 +3270,104 @@ test "ai_chat: session loads from history record" {
 
     try std.testing.expectEqualStrings("session-1", session.sessionId());
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+}
+
+test "ai_chat: loading history record cleans up partial message clone on allocation failure" {
+    const allocator = std.testing.allocator;
+    var record = try agent_history.cloneRecord(allocator, .{
+        .session_id = "session-tool",
+        .title = "Saved",
+        .base_url = "https://api.example.com",
+        .api_key = "secret",
+        .model = "model-a",
+        .system_prompt = "system",
+        .thinking_enabled = true,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 2,
+        .messages = &.{
+            .{
+                .role = .tool,
+                .content = "# Skill: pdf",
+                .reasoning = "reason",
+                .usage_footer = "usage",
+                .tool_call_id = "skill-preload-pdf",
+                .tool_name = "skill_info",
+                .replay_to_model = true,
+            },
+        },
+    });
+    defer agent_history.freeOwnedRecord(allocator, &record);
+
+    var saw_oom = false;
+    var fail_index: usize = 0;
+    while (fail_index < 128) : (fail_index += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+
+        const result = Session.initFromHistoryRecord(failing_allocator.allocator(), record);
+        if (result) |session| {
+            session.deinit();
+            if (!failing_allocator.has_induced_failure) break;
+        } else |err| switch (err) {
+            error.OutOfMemory => saw_oom = true,
+            else => return err,
+        }
+    }
+
+    try std.testing.expect(saw_oom);
+}
+
+test "ai_chat: serializing history record cleans up partial message clone on allocation failure" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "History Test",
+        "https://api.example.com",
+        "secret",
+        "model-a",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try session.messages.append(allocator, .{
+        .role = .tool,
+        .content = try allocator.dupe(u8, "# Skill: pdf"),
+        .reasoning = try allocator.dupe(u8, "reason"),
+        .usage_footer = try allocator.dupe(u8, "usage"),
+        .tool_call_id = try allocator.dupe(u8, "skill-preload-pdf"),
+        .tool_name = try allocator.dupe(u8, "skill_info"),
+        .replay_to_model = true,
+    });
+
+    var saw_oom = false;
+    var fail_index: usize = 0;
+    while (fail_index < 128) : (fail_index += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+
+        const result = session.toHistoryRecordLocked(failing_allocator.allocator());
+        if (result) |record| {
+            var owned_record = record;
+            agent_history.freeOwnedRecord(failing_allocator.allocator(), &owned_record);
+            if (!failing_allocator.has_induced_failure) break;
+        } else |err| switch (err) {
+            error.OutOfMemory => saw_oom = true,
+            else => return err,
+        }
+    }
+
+    try std.testing.expect(saw_oom);
 }
 
 test "ai_chat: history hook receives self-owning snapshot event" {
