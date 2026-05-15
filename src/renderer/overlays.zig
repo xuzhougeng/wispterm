@@ -405,7 +405,7 @@ pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, wind
 fn executeCommand(action: CommandAction) void {
     switch (action) {
         .new_tab => sessionLauncherOpen(),
-        .new_agent => sessionLauncherOpenAgentDefault(),
+        .new_agent => openDefaultAgentSessionFromCommandCenter(),
         .select_agent_history => commandPaletteOpenAgentHistory(),
         .split_right => AppWindow.splitFocused(.right),
         .split_down => AppWindow.splitFocused(.down),
@@ -1055,8 +1055,6 @@ const AI_FIELD_MAX = 512;
 const AI_PROFILE_MAX = 16;
 const AI_PROFILE_NONE = std.math.maxInt(usize);
 const SESSION_LAUNCHER_ROW_COUNT = 4;
-const SESSION_LAUNCHER_ROW_AI_AGENT = command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT;
-
 const SshField = enum(usize) {
     name = 0,
     ip = 1,
@@ -1114,8 +1112,6 @@ const AiFormMode = enum {
     settings,
 };
 
-const SessionLauncherAiIntent = command_center_state.SessionLauncherAiIntent;
-
 const SshProfile = struct {
     fields: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined,
     lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT,
@@ -1166,7 +1162,6 @@ threadlocal var g_ai_list_selected: usize = 0;
 threadlocal var g_ai_list_mode: AiListMode = .manage;
 threadlocal var g_ai_edit_index: usize = AI_PROFILE_NONE;
 threadlocal var g_ai_form_mode: AiFormMode = .session_setup;
-threadlocal var g_session_launcher_ai_intent: SessionLauncherAiIntent = .default;
 threadlocal var g_pending_ssh_password: [SSH_FIELD_MAX + 1]u8 = undefined;
 threadlocal var g_pending_ssh_password_len: usize = 0;
 threadlocal var g_pending_ssh_password_due_ms: i64 = 0;
@@ -1191,7 +1186,6 @@ fn commandCenterStateSnapshot() command_center_state.State {
         .startup_shortcuts_visible = g_startup_shortcuts_visible,
         .session_launcher_visible = g_session_launcher_visible,
         .session_launcher_selected = g_session_launcher_selected,
-        .session_launcher_ai_intent = g_session_launcher_ai_intent,
         .ssh_list_visible = g_ssh_list_visible,
         .ssh_form_visible = g_ssh_form_visible,
         .ai_list_visible = g_ai_list_visible,
@@ -1217,7 +1211,6 @@ fn commandCenterStateApply(state: command_center_state.State) void {
     g_startup_shortcuts_visible = state.startup_shortcuts_visible;
     g_session_launcher_visible = state.session_launcher_visible;
     g_session_launcher_selected = state.session_launcher_selected;
-    g_session_launcher_ai_intent = state.session_launcher_ai_intent;
     g_ssh_list_visible = state.ssh_list_visible;
     g_ssh_form_visible = state.ssh_form_visible;
     g_ai_list_visible = state.ai_list_visible;
@@ -1228,14 +1221,6 @@ fn commandCenterStateApply(state: command_center_state.State) void {
 pub fn sessionLauncherOpen() void {
     var state = commandCenterStateSnapshot();
     state.sessionLauncherOpen();
-    commandCenterStateCommit(state);
-    g_ssh_list_mode = .manage;
-    g_ai_list_mode = .manage;
-}
-
-pub fn sessionLauncherOpenAgentDefault() void {
-    var state = commandCenterStateSnapshot();
-    state.sessionLauncherOpenAgentDefault();
     commandCenterStateCommit(state);
     g_ssh_list_mode = .manage;
     g_ai_list_mode = .manage;
@@ -1359,7 +1344,7 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
         .powershell => openPowerShellSession(),
         .ssh => openSshList(),
         .wsl => openWslSession(),
-        .ai_chat => openDefaultAiSessionForIntent(),
+        .ai_chat => openDefaultAiSession(),
         .connect_selected => runSshListRow(g_ssh_list_selected),
         .new_ssh => openSshFormNew(),
         .edit_selected => openSshEditPicker(),
@@ -1392,7 +1377,7 @@ fn runSessionLauncherRow(row: usize) void {
         0 => openPowerShellSession(),
         1 => openSshList(),
         2 => openWslSession(),
-        SESSION_LAUNCHER_ROW_AI_AGENT => openDefaultAiSessionForIntent(),
+        command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT => openDefaultAiSession(),
         else => {},
     }
 }
@@ -1801,11 +1786,10 @@ fn openDefaultAiSession() void {
     connectAiProfile(0);
 }
 
-fn openDefaultAiSessionForIntent() void {
+fn openDefaultAgentSessionFromCommandCenter() void {
     loadAiProfiles();
-    switch (command_center_state.resolveDefaultAiLaunch(g_session_launcher_ai_intent, g_ai_profile_count != 0)) {
+    switch (command_center_state.resolveNewAgentLaunch(g_ai_profile_count != 0)) {
         .open_form => openAiFormNewWithMode(.session_setup),
-        .connect_default_profile => connectAiProfile(0),
         .connect_default_profile_as_agent => connectAiProfileWithAgentOverride(0, "true"),
     }
 }
@@ -2421,7 +2405,7 @@ fn sessionDesiredBoxWidth() f32 {
     desired = @max(desired, sessionTwoColumnWidth("PowerShell", "new terminal"));
     desired = @max(desired, sessionTwoColumnWidth("SSH", "connect server"));
     desired = @max(desired, sessionTwoColumnWidth("WSL", "wsl.exe ~"));
-    desired = @max(desired, sessionTwoColumnWidth("AI Agent", sessionLauncherAiModeLabel()));
+    desired = @max(desired, sessionTwoColumnWidth("AI Agent", defaultAiModeLabel()));
     return desired;
 }
 
@@ -2609,13 +2593,6 @@ fn defaultAiModeLabel() []const u8 {
     return aiModeText(AppWindow.ai_chat.DEFAULT_AGENT);
 }
 
-fn sessionLauncherAiModeLabel() []const u8 {
-    return switch (g_session_launcher_ai_intent) {
-        .default => defaultAiModeLabel(),
-        .agent => "Agent",
-    };
-}
-
 pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: f32) void {
     if (!sessionLauncherVisible()) return;
 
@@ -2693,7 +2670,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderSessionRow(layout, window_height, 0, "PowerShell", "new terminal", g_session_launcher_selected == 0);
         renderSessionRow(layout, window_height, 1, "SSH", "connect server", g_session_launcher_selected == 1);
         renderSessionRow(layout, window_height, 2, "WSL", "wsl.exe ~", g_session_launcher_selected == 2);
-        renderSessionRow(layout, window_height, 3, "AI Agent", sessionLauncherAiModeLabel(), g_session_launcher_selected == 3);
+        renderSessionRow(layout, window_height, 3, "AI Agent", defaultAiModeLabel(), g_session_launcher_selected == 3);
         return;
     }
 

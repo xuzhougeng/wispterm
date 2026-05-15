@@ -34,7 +34,7 @@ pub const CommandEntry = struct {
 
 pub const command_entries = [_]CommandEntry{
     .{ .title = "New Session", .detail = "Choose PowerShell, SSH, WSL, or AI Agent", .shortcut = "Ctrl+Shift+T", .action = .new_tab },
-    .{ .title = "New Agent", .detail = "Open the AI launcher with Agent selected", .shortcut = "", .action = .new_agent },
+    .{ .title = "New Agent", .detail = "Open a new Agent tab with the default AI config", .shortcut = "", .action = .new_agent },
     .{ .title = "Select Agent History", .detail = "Open the command-center agent history picker", .shortcut = "", .action = .select_agent_history },
     .{ .title = "Split Right", .detail = "Create a panel to the right", .shortcut = "Ctrl+Shift+O", .action = .split_right },
     .{ .title = "Split Down", .detail = "Create a panel below", .shortcut = "", .action = .split_down },
@@ -61,14 +61,8 @@ pub const CommandPaletteMode = enum {
     agent_history,
 };
 
-pub const SessionLauncherAiIntent = enum {
-    default,
-    agent,
-};
-
-pub const DefaultAiLaunchAction = enum {
+pub const NewAgentLaunchAction = enum {
     open_form,
-    connect_default_profile,
     connect_default_profile_as_agent,
 };
 
@@ -83,7 +77,6 @@ pub const State = struct {
     startup_shortcuts_visible: bool = false,
     session_launcher_visible: bool = false,
     session_launcher_selected: usize = 0,
-    session_launcher_ai_intent: SessionLauncherAiIntent = .default,
     ssh_list_visible: bool = false,
     ssh_form_visible: bool = false,
     ai_list_visible: bool = false,
@@ -187,16 +180,9 @@ pub const State = struct {
         self.ssh_form_visible = false;
         self.ai_list_visible = false;
         self.ai_form_visible = false;
-        self.session_launcher_ai_intent = .default;
         self.command_palette_visible = false;
         self.settings_visible = false;
         self.startup_shortcuts_visible = false;
-    }
-
-    pub fn sessionLauncherOpenAgentDefault(self: *State) void {
-        self.sessionLauncherOpen();
-        self.session_launcher_selected = SESSION_LAUNCHER_ROW_AI_AGENT;
-        self.session_launcher_ai_intent = .agent;
     }
 
     pub fn sessionLauncherClose(self: *State) void {
@@ -205,7 +191,6 @@ pub const State = struct {
         self.ssh_form_visible = false;
         self.ai_list_visible = false;
         self.ai_form_visible = false;
-        self.session_launcher_ai_intent = .default;
     }
 
     pub fn settingsPageOpen(self: *State) void {
@@ -228,12 +213,8 @@ pub fn findCommandAction(title: []const u8) ?CommandAction {
     return null;
 }
 
-pub fn resolveDefaultAiLaunch(intent: SessionLauncherAiIntent, has_profiles: bool) DefaultAiLaunchAction {
-    if (!has_profiles) return .open_form;
-    return switch (intent) {
-        .default => .connect_default_profile,
-        .agent => .connect_default_profile_as_agent,
-    };
+pub fn resolveNewAgentLaunch(has_profiles: bool) NewAgentLaunchAction {
+    return if (has_profiles) .connect_default_profile_as_agent else .open_form;
 }
 
 test "command center includes New Agent action" {
@@ -244,29 +225,17 @@ test "command center includes Select Agent History action" {
     try std.testing.expectEqual(CommandAction.select_agent_history, findCommandAction("Select Agent History"));
 }
 
-test "command center New Agent opens the AI launcher in agent-oriented mode" {
-    var state = State{ .command_palette_visible = true };
-
-    state.sessionLauncherOpenAgentDefault();
-
-    try std.testing.expect(state.sessionLauncherVisible());
-    try std.testing.expect(state.session_launcher_visible);
-    try std.testing.expectEqual(SESSION_LAUNCHER_ROW_AI_AGENT, state.session_launcher_selected);
-    try std.testing.expectEqual(SessionLauncherAiIntent.agent, state.session_launcher_ai_intent);
-    try std.testing.expect(!state.command_palette_visible);
-}
-
-test "command center New Agent launch path forces agent intent even when default profile is chat" {
+test "command center New Agent launch path forces agent mode when profiles exist" {
     try std.testing.expectEqual(
-        DefaultAiLaunchAction.connect_default_profile_as_agent,
-        resolveDefaultAiLaunch(.agent, true),
+        NewAgentLaunchAction.connect_default_profile_as_agent,
+        resolveNewAgentLaunch(true),
     );
 }
 
-test "command center agent intent opens the AI form when no profiles exist" {
+test "command center New Agent opens the AI form when no profiles exist" {
     try std.testing.expectEqual(
-        DefaultAiLaunchAction.open_form,
-        resolveDefaultAiLaunch(.agent, false),
+        NewAgentLaunchAction.open_form,
+        resolveNewAgentLaunch(false),
     );
 }
 
