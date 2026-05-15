@@ -378,6 +378,7 @@ extern "user32" fn ReleaseDC(hWnd: ?HWND, hDC: HDC) callconv(.winapi) INT;
 pub extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetDpiForWindow(hWnd: HWND) callconv(.winapi) UINT;
 extern "user32" fn GetDpiForSystem() callconv(.winapi) UINT;
+extern "user32" fn GetSystemMetricsForDpi(nIndex: INT, dpi: UINT) callconv(.winapi) INT;
 extern "user32" fn SetProcessDpiAwarenessContext(value: DPI_AWARENESS_CONTEXT) callconv(.winapi) BOOL;
 extern "user32" fn SetProcessDPIAware() callconv(.winapi) BOOL;
 pub extern "user32" fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
@@ -1216,8 +1217,13 @@ pub const Window = struct {
         };
     }
 
-    pub fn nativeScrollbarWidth(_: *const Window) i32 {
-        return @max(12, GetSystemMetrics(SM_CXVSCROLL));
+    pub fn nativeScrollbarWidth(self: *const Window) i32 {
+        const dpi = if (self.dpi == 0) @as(u32, 96) else self.dpi;
+        const width_for_dpi = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi);
+        if (width_for_dpi > 0) return width_for_dpi;
+
+        const system_width = @max(12, GetSystemMetrics(SM_CXVSCROLL));
+        return @max(12, scaleFrom96(system_width, dpi));
     }
 
     pub fn hideNativeScrollbar(self: *Window) void {

@@ -6,6 +6,13 @@ pub const State = struct {
     offset: usize,
 };
 
+pub const Rect = struct {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+};
+
 pub const Command = enum {
     line_up,
     line_down,
@@ -53,6 +60,24 @@ pub fn deltaToTarget(state: State, target: usize) isize {
     return @intCast(wanted - current);
 }
 
+pub fn rightPadding(scrollbar_width: i32, default_padding: i32) u32 {
+    const width = @max(0, scrollbar_width);
+    const padding = @max(0, default_padding);
+    return @intCast(width + padding);
+}
+
+pub fn trackRect(view_x: i32, view_y: i32, view_width: i32, view_height: i32, scrollbar_width: i32) ?Rect {
+    if (view_width <= 0 or view_height <= 0 or scrollbar_width <= 0) return null;
+
+    const width = @min(scrollbar_width, view_width);
+    return .{
+        .x = view_x + view_width - width,
+        .y = view_y,
+        .width = width,
+        .height = view_height,
+    };
+}
+
 test "native scrollbar commands clamp to scrollback range" {
     const state = State{ .total = 200, .len = 40, .offset = 30 };
 
@@ -66,4 +91,18 @@ test "native scrollbar delta is relative to current viewport offset" {
 
     try std.testing.expectEqual(@as(isize, -30), deltaToTarget(state, 0));
     try std.testing.expectEqual(@as(isize, 130), deltaToTarget(state, 160));
+}
+
+test "native scrollbar reserves padding from native control width" {
+    try std.testing.expectEqual(@as(u32, 27), rightPadding(17, 10));
+    try std.testing.expectEqual(@as(u32, 10), rightPadding(0, 10));
+}
+
+test "native scrollbar track sits on viewport right edge" {
+    const rect = trackRect(20, 40, 800, 600, 17).?;
+
+    try std.testing.expectEqual(@as(i32, 803), rect.x);
+    try std.testing.expectEqual(@as(i32, 40), rect.y);
+    try std.testing.expectEqual(@as(i32, 17), rect.width);
+    try std.testing.expectEqual(@as(i32, 600), rect.height);
 }

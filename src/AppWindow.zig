@@ -20,6 +20,7 @@ const remote = @import("remote_client.zig");
 const remote_snapshot = @import("remote_snapshot.zig");
 const memory_debug = @import("memory_debug.zig");
 const agent_detector = @import("agent_detector.zig");
+const native_scrollbar = @import("native_scrollbar.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
@@ -344,14 +345,35 @@ fn syncWindowTitlebarHeight(win: *win32_backend.Window) f32 {
     return @floatFromInt(next);
 }
 
+pub fn scrollbarWidthForLayout(active_tab: *const TabState) i32 {
+    if (g_native_scrollbar and active_tab.kind == .terminal and !active_tab.tree.isSplit()) {
+        if (g_window) |win| return win.nativeScrollbarWidth();
+    }
+    return @intFromFloat(overlays.SCROLLBAR_WIDTH);
+}
+
+pub fn scrollbarRightPaddingForLayout(active_tab: *const TabState) u32 {
+    return native_scrollbar.rightPadding(scrollbarWidthForLayout(active_tab), @intCast(DEFAULT_PADDING));
+}
+
+fn scrollbarRightPaddingForActiveTab() u32 {
+    const active_tab = activeTab() orelse return native_scrollbar.rightPadding(@intFromFloat(overlays.SCROLLBAR_WIDTH), @intCast(DEFAULT_PADDING));
+    return scrollbarRightPaddingForLayout(active_tab);
+}
+
+fn splitRectForSurface(surface: *Surface) ?SplitRect {
+    for (0..split_layout.g_split_rect_count) |i| {
+        const rect = split_layout.g_split_rects[i];
+        if (!split_layout.cachedRectIsLive(rect)) continue;
+        if (rect.surface == surface) return rect;
+    }
+    return null;
+}
+
 fn syncNativeScrollbarForFrame(
     win: *win32_backend.Window,
     active_tab: *TabState,
     split_count: usize,
-    content_x: i32,
-    content_y: i32,
-    content_w: i32,
-    content_h: i32,
 ) bool {
     if (!g_native_scrollbar or active_tab.kind != .terminal or split_count != 1) {
         win.hideNativeScrollbar();
@@ -363,23 +385,27 @@ fn syncNativeScrollbarForFrame(
         return false;
     };
 
+    const rect = splitRectForSurface(surface) orelse {
+        win.hideNativeScrollbar();
+        return false;
+    };
+
     const sb = input.scrollbarForSurface(surface);
     if (sb.total <= sb.len) {
         win.hideNativeScrollbar();
         return false;
     }
 
-    const bar_w = @min(win.nativeScrollbarWidth(), @max(0, content_w));
-    if (bar_w <= 0 or content_h <= 0) {
+    const track = native_scrollbar.trackRect(rect.x, rect.y, rect.width, rect.height, win.nativeScrollbarWidth()) orelse {
         win.hideNativeScrollbar();
         return false;
-    }
+    };
 
     return win.syncNativeScrollbar(
-        content_x + content_w - bar_w,
-        content_y,
-        bar_w,
-        content_h,
+        track.x,
+        track.y,
+        track.width,
+        track.height,
         sb.total,
         sb.len,
         sb.offset,
@@ -691,7 +717,7 @@ fn onWin32Resize(width: i32, height: i32) void {
     // Height: render-loop subtracts (render_padding+TB) top and render_padding
     //         bottom, then setScreenSize subtracts explicit T+B on top of that.
     const padding_left: f32 = @floatFromInt(DEFAULT_PADDING);
-    const padding_right: f32 = @as(f32, @floatFromInt(DEFAULT_PADDING)) + overlays.SCROLLBAR_WIDTH;
+    const padding_right: f32 = @floatFromInt(scrollbarRightPaddingForActiveTab());
     const padding_top: f32 = @floatFromInt(DEFAULT_PADDING);
     const padding_bottom: f32 = @floatFromInt(DEFAULT_PADDING);
     const render_padding: f32 = 10;
@@ -738,7 +764,7 @@ fn onWin32Resize(width: i32, height: i32) void {
         const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(height)) - (render_padding + tb) - render_padding);
         const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
         const native_scrollbar_visible = if (g_window) |w|
-            syncNativeScrollbarForFrame(w, active_tab, split_count, content_x, content_y, content_w, content_h)
+            syncNativeScrollbarForFrame(w, active_tab, split_count)
         else
             false;
         if (g_allocator) |alloc| syncRemoteLayout(alloc);
@@ -2339,7 +2365,7 @@ fn runMainLoop(self: *AppWindow) !void {
     //   avail_h = (fb_height - 54) - 10 - 10 = fb_height - 74
     const titlebar_height = currentTitlebarHeight();
     const explicit_left: f32 = @floatFromInt(DEFAULT_PADDING);
-    const explicit_right: f32 = @as(f32, @floatFromInt(DEFAULT_PADDING)) + overlays.SCROLLBAR_WIDTH;
+    const explicit_right: f32 = @floatFromInt(scrollbarRightPaddingForActiveTab());
     const explicit_top: f32 = @floatFromInt(DEFAULT_PADDING);
     const explicit_bottom: f32 = @floatFromInt(DEFAULT_PADDING);
     const render_padding: f32 = 10;
@@ -2549,7 +2575,7 @@ fn runMainLoop(self: *AppWindow) !void {
             const content_w: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w - padding * 2);
             const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_height)) - top_padding - padding);
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
-            const native_scrollbar_visible = syncNativeScrollbarForFrame(win, active_tab, split_count, content_x, content_y, content_w, content_h);
+            const native_scrollbar_visible = syncNativeScrollbarForFrame(win, active_tab, split_count);
             syncRemoteLayout(allocator);
             syncImeCaretPosition(win, split_count);
 

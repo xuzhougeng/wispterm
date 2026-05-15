@@ -221,12 +221,11 @@ pub fn computeSplitLayout(
         // The surface computes grid size and balanced padding internally.
         // Right padding must account for scrollbar width plus gap.
         const surface = entry.surface;
-        const scrollbar_padding: u32 = @intFromFloat(overlays.SCROLLBAR_WIDTH + DEFAULT_PADDING);
         const explicit_padding = renderer.size.Padding{
             .top = DEFAULT_PADDING,
             .bottom = DEFAULT_PADDING,
             .left = DEFAULT_PADDING,
-            .right = scrollbar_padding,
+            .right = AppWindow.scrollbarRightPaddingForLayout(active_tab),
         };
 
         const resized = surface.setScreenSizeWithPolicy(
