@@ -246,6 +246,10 @@ ai-agent-output-limit  = 16384</code></pre>
             <h3>如何以管理员身份使用终端？</h3>
             <p>右键 <code>phantty.exe</code> 或快捷方式，选择<strong>以管理员身份运行</strong>，该窗口内新建标签会继承提升后的令牌。若只需临时开一个提升的控制台，可在任意 Shell 中执行 <code>Start-Process pwsh -Verb RunAs</code>（会弹 UAC，且是新窗口，不会替换当前标签）。</p>
           </div>
+          <div class="feature">
+            <h3>如何实现选中即复制、右键即粘贴？</h3>
+            <p>在 <code>%APPDATA%\phantty\config</code> 中设置 <code>copy-on-select = true</code> 和 <code>right-click-action = paste</code> 即可。如果你希望“有选区时右键复制、没选区时右键粘贴”，则把它改成 <code>right-click-action = copy-or-paste</code>。</p>
+          </div>
         </div>
       </div>
     </section>

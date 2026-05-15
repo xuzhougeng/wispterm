@@ -246,6 +246,10 @@ ai-agent-output-limit  = 16384</code></pre>
             <h3>How do I get an elevated shell?</h3>
             <p>Right-click <code>phantty.exe</code> or your shortcut and choose <strong>Run as administrator</strong>; new tabs in that window stay elevated. For a one-off elevated console elsewhere, use <code>Start-Process pwsh -Verb RunAs</code> (UAC prompt).</p>
           </div>
+          <div class="feature">
+            <h3>How do I enable copy on select and paste on right-click?</h3>
+            <p>Set <code>copy-on-select = true</code> and <code>right-click-action = paste</code> in <code>%APPDATA%\phantty\config</code>. If you want right-click to copy when a selection is active and paste otherwise, use <code>right-click-action = copy-or-paste</code> instead.</p>
+          </div>
         </div>
       </div>
     </section>
