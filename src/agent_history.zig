@@ -67,8 +67,10 @@ pub const Store = struct {
 
     pub fn upsertRecord(self: *Store, input: anytype) !void {
         var cloned = try cloneRecord(self.allocator, input);
-        errdefer freeOwnedRecord(self.allocator, &cloned);
+        var cloned_owned = true;
+        errdefer if (cloned_owned) freeOwnedRecord(self.allocator, &cloned);
 
+        cloned_owned = false;
         try self.upsertOwnedRecord(cloned);
     }
 
@@ -633,6 +635,43 @@ test "agent_history: upsertOwnedRecord takes ownership and replaces existing rec
     try std.testing.expectEqual(@as(usize, 1), store.records.items.len);
     try std.testing.expectEqualStrings("New", store.records.items[0].title);
     try std.testing.expectEqualStrings("updated", store.records.items[0].messages[0].content);
+}
+
+test "agent_history: upsertRecord cleans owned clone when append fails" {
+    const allocator = std.testing.allocator;
+    var fail_index: usize = 0;
+    var saw_oom = false;
+    while (fail_index < 128) : (fail_index += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        var store = Store.init(failing_allocator.allocator());
+        defer store.deinit();
+
+        const result = store.upsertRecord(.{
+            .session_id = "s1",
+            .title = "OOM",
+            .base_url = "https://api.example.com",
+            .api_key = "secret",
+            .model = "m1",
+            .system_prompt = "system",
+            .thinking_enabled = true,
+            .reasoning_effort = "high",
+            .stream = false,
+            .agent_enabled = true,
+            .created_at = 10,
+            .updated_at = 20,
+            .messages = &.{},
+        });
+        if (result) |_| {
+            if (!failing_allocator.has_induced_failure) break;
+        } else |err| switch (err) {
+            error.OutOfMemory => saw_oom = true,
+            else => return err,
+        }
+    }
+
+    try std.testing.expect(saw_oom);
 }
 
 test "agent_history: upsert replaces existing session id instead of duplicating" {
