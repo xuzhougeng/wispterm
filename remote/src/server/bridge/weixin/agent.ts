@@ -64,16 +64,19 @@ function resolveTargetSession(settings: WeixinSettings, sessions: RoutedSession[
   }
   if (sessions.length === 1) return { session: sessions[0].session, error: "" };
   if (sessions.length === 0) return { session: null, error: "当前没有在线的 Phantty Remote session。请先在 Phantty 中启用 remote 并连接到该后台。" };
-  return { session: null, error: `当前有多个在线 session：\n${sessionsText(sessions)}\n\n请先发送 \`/use <session>\` 选择目标。` };
+  return { session: null, error: `当前有多个在线 session：\n${sessionsText(sessions)}\n\n请先发送 \`/use <编号>\` 选择目标。` };
 }
 
 async function useSession(arg: string, input: WeixinRouteInput, activeSessions: RoutedSession[]): Promise<WeixinRouteReply> {
-  const key = arg.trim();
-  if (!key) return { text: sessionsText(input.sessions) + "\n\n发送 `/use <完整 session>` 选择目标。" };
-  const matched = activeSessions.find((candidate) => candidate.key === key);
-  if (!matched) return { text: `未找到在线 session：${maskSessionKey(key)}。` };
-  await input.saveTargetSession?.(key);
-  return { text: `已选择 Remote session：${maskSessionKey(key)}` };
+  const selector = arg.trim();
+  if (!selector) return { text: sessionsText(input.sessions) + "\n\n发送 `/use <编号>` 选择目标，例如 `/use 1`。" };
+
+  const selected = findSelectedSession(selector, input.sessions);
+  if (!selected.session) return { text: `未找到 session：${selected.label}。发送 /sessions 查看可选项。` };
+  const matched = activeSessions.find((candidate) => candidate.key === selected.session?.key);
+  if (!matched) return { text: `该 session 不在线：${selected.label}。发送 /sessions 查看在线 session。` };
+  await input.saveTargetSession?.(matched.key);
+  return { text: `已选择 Remote session：${selected.label}` };
 }
 
 function sendAi(session: RemoteSession, text: string): WeixinRouteReply {
@@ -102,8 +105,27 @@ function sessionsText(sessions: RoutedSession[]): string {
   if (sessions.length === 0) return "当前没有在线 Remote session。";
   return [
     "Remote session：",
-    ...sessions.map(({ key, session }) => `- ${maskSessionKey(key)} ${session.isPhanttyConnected() ? "online" : "offline"}`),
+    ...sessions.map(({ key, session }, index) => `${index + 1}. ${maskSessionKey(key)} ${session.isPhanttyConnected() ? "online" : "offline"}`),
+    "",
+    "发送 `/use <编号>` 切换目标，例如 `/use 1`。",
   ].join("\n");
+}
+
+function findSelectedSession(selector: string, sessions: RoutedSession[]): { session: RoutedSession | null; label: string } {
+  const index = parseSessionIndex(selector);
+  if (index !== null) {
+    const session = sessions[index - 1] ?? null;
+    return { session, label: session ? `#${index} ${maskSessionKey(session.key)}` : `#${index}` };
+  }
+
+  const session = sessions.find((candidate) => candidate.key === selector) ?? null;
+  return { session, label: session ? maskSessionKey(session.key) : maskSessionKey(selector) };
+}
+
+function parseSessionIndex(value: string): number | null {
+  if (!/^[1-9]\d*$/.test(value)) return null;
+  const index = Number(value);
+  return Number.isSafeInteger(index) ? index : null;
 }
 
 function statusText(settings: WeixinSettings, sessions: RoutedSession[]): string {
@@ -120,7 +142,7 @@ function helpText(): string {
     "/ping 验证微信绑定",
     "/status 查看状态",
     "/sessions 查看 Remote session",
-    "/use <session> 选择目标 session",
+    "/use <编号> 选择目标 session，也支持完整 session key",
     "/ai <内容> 发送给 AI Agent",
     "/term <命令> 显式发送到终端并回车",
     "/keys <文本> 显式发送原始文本到终端",

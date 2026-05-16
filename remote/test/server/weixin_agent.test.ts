@@ -133,8 +133,9 @@ test("/sessions lists all remote sessions without claiming only online sessions"
   });
   assert.match(reply.text, /Remote session：/);
   assert.doesNotMatch(reply.text, /在线 Remote session/);
-  assert.match(reply.text, /alph\*\*\*\* online/);
-  assert.match(reply.text, /beta\*\*\*\* offline/);
+  assert.match(reply.text, /1\. alph\*\*\*\* online/);
+  assert.match(reply.text, /2\. beta\*\*\*\* offline/);
+  assert.match(reply.text, /\/use <编号>/);
 });
 
 test("/help describes sessions with neutral wording", async () => {
@@ -170,6 +171,72 @@ test("/use refuses offline sessions and does not save them", async () => {
       saved = key;
     },
   });
-  assert.match(reply.text, /未找到在线 session：alph\*\*\*\*/);
+  assert.match(reply.text, /该 session 不在线：alph\*\*\*\*/);
+  assert.equal(saved, "");
+});
+
+test("/use accepts a numbered session from /sessions output", async () => {
+  let saved = "";
+  const reply = await routeWeixinText({
+    text: "/use 2",
+    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
+    sessions: [
+      { key: "alpha-secret", session: sessionWithLayout() },
+      { key: "beta-secret", session: sessionWithLayout() },
+    ],
+    saveTargetSession: async (key) => {
+      saved = key;
+    },
+  });
+
+  assert.match(reply.text, /已选择 Remote session：#2 beta\*\*\*\*/);
+  assert.equal(saved, "beta-secret");
+});
+
+test("/use still accepts a full session key", async () => {
+  let saved = "";
+  const reply = await routeWeixinText({
+    text: "/use beta-secret",
+    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
+    sessions: [
+      { key: "alpha-secret", session: sessionWithLayout() },
+      { key: "beta-secret", session: sessionWithLayout() },
+    ],
+    saveTargetSession: async (key) => {
+      saved = key;
+    },
+  });
+
+  assert.match(reply.text, /已选择 Remote session：beta\*\*\*\*/);
+  assert.equal(saved, "beta-secret");
+});
+
+test("/use numbered session refuses offline and out-of-range targets", async () => {
+  let saved = "";
+  const offline = await routeWeixinText({
+    text: "/use 2",
+    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
+    sessions: [
+      { key: "alpha-secret", session: sessionWithLayout() },
+      { key: "beta-secret", session: offlineSessionWithLayout() },
+    ],
+    saveTargetSession: async (key) => {
+      saved = key;
+    },
+  });
+  assert.match(offline.text, /该 session 不在线：#2 beta\*\*\*\*/);
+
+  const missing = await routeWeixinText({
+    text: "/use 3",
+    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
+    sessions: [
+      { key: "alpha-secret", session: sessionWithLayout() },
+      { key: "beta-secret", session: sessionWithLayout() },
+    ],
+    saveTargetSession: async (key) => {
+      saved = key;
+    },
+  });
+  assert.match(missing.text, /未找到 session：#3/);
   assert.equal(saved, "");
 });
