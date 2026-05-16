@@ -625,8 +625,6 @@ pub const Session = struct {
     approval_command_len: usize = 0,
     approval_reason_buf: [256]u8 = undefined,
     approval_reason_len: usize = 0,
-    agent_target_surface_id: [16]u8 = undefined,
-    agent_target_surface_id_len: usize = 0,
 
     pub const RequestState = struct {
         inflight: bool,
@@ -782,14 +780,6 @@ pub const Session = struct {
             .inflight = self.request_inflight,
             .stopping = self.request_stopping,
         };
-    }
-
-    pub fn setAgentTargetSurface(self: *Session, surface_id: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const len = @min(surface_id.len, self.agent_target_surface_id.len);
-        @memcpy(self.agent_target_surface_id[0..len], surface_id[0..len]);
-        self.agent_target_surface_id_len = len;
     }
 
     pub fn setTitle(self: *Session, title_text: []const u8) void {
@@ -1554,7 +1544,6 @@ pub const Session = struct {
             // view before spawning the request worker so tools do not read an
             // empty thread-local copy from the background thread.
             tool_snapshot = host.collectSnapshot(host.ctx, self.allocator) catch null;
-            if (tool_snapshot) |*snapshot| self.applyAgentTargetToSnapshotLocked(snapshot);
         }
 
         const base_url = try self.allocator.dupe(u8, self.baseUrl());
@@ -1595,25 +1584,6 @@ pub const Session = struct {
         system_prompt_owned = false;
         reasoning_effort_owned = false;
         return req;
-    }
-
-    fn applyAgentTargetToSnapshotLocked(self: *const Session, snapshot: *ToolSnapshot) void {
-        if (self.agent_target_surface_id_len == 0) return;
-        const target = self.agent_target_surface_id[0..self.agent_target_surface_id_len];
-        var matched = false;
-        for (snapshot.surfaces) |*surface| {
-            const is_target = std.mem.eql(u8, surface.id, target);
-            surface.focused = is_target;
-            if (is_target) {
-                snapshot.active_tab = surface.tab_index;
-                matched = true;
-            }
-        }
-        if (!matched) {
-            for (snapshot.surfaces) |*surface| {
-                surface.focused = false;
-            }
-        }
     }
 
     fn toHistoryRecordLocked(self: *Session, allocator: std.mem.Allocator) !agent_history.SessionRecord {
@@ -4592,52 +4562,6 @@ test "ai chat tools prefer request-local terminal snapshot" {
     try std.testing.expectEqual(@as(usize, 1), snapshot.surfaces.len);
     try std.testing.expectEqualStrings("surface-1", snapshot.surfaces[0].id);
     try std.testing.expect(snapshot.surfaces[0].id.ptr != cached_snapshot.surfaces[0].id.ptr);
-}
-
-test "ai chat agent target marks captured terminal surface focused" {
-    const allocator = std.testing.allocator;
-    var surfaces = try allocator.alloc(ToolSurface, 2);
-    surfaces[0] = .{
-        .id = try allocator.dupe(u8, "surface-a"),
-        .title = try allocator.dupe(u8, "left"),
-        .cwd = try allocator.dupe(u8, ""),
-        .snapshot = try allocator.dupe(u8, ""),
-        .tab_index = 0,
-        .focused = false,
-        .is_ssh = false,
-        .is_wsl = false,
-        .agent_app = .none,
-        .agent_state = .none,
-        .agent_confidence = 0,
-        .ptr = @ptrFromInt(1),
-    };
-    surfaces[1] = .{
-        .id = try allocator.dupe(u8, "surface-b"),
-        .title = try allocator.dupe(u8, "right"),
-        .cwd = try allocator.dupe(u8, ""),
-        .snapshot = try allocator.dupe(u8, ""),
-        .tab_index = 0,
-        .focused = false,
-        .is_ssh = false,
-        .is_wsl = false,
-        .agent_app = .none,
-        .agent_state = .none,
-        .agent_confidence = 0,
-        .ptr = @ptrFromInt(2),
-    };
-    var snapshot = ToolSnapshot{
-        .surfaces = surfaces,
-        .active_tab = 3,
-    };
-    defer snapshot.deinit(allocator);
-
-    var session = Session{ .allocator = allocator };
-    session.setAgentTargetSurface("surface-b");
-    session.applyAgentTargetToSnapshotLocked(&snapshot);
-
-    try std.testing.expectEqual(@as(usize, 0), snapshot.active_tab);
-    try std.testing.expect(!snapshot.surfaces[0].focused);
-    try std.testing.expect(snapshot.surfaces[1].focused);
 }
 
 test "ai chat write tools reject non focused surface when target exists" {

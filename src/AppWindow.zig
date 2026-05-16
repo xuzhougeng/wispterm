@@ -369,7 +369,12 @@ pub fn isActiveTabTerminal() bool {
 /// Clear UI state after tab creation or switch.
 fn syncActiveSurfaceCaches() void {
     split_layout.invalidateCachedRects();
-    cell_renderer.g_current_render_surface = activeSurface();
+    const surface = activeSurface();
+    cell_renderer.g_current_render_surface = surface;
+    if (surface) |s| {
+        @memcpy(g_agent_context_surface_id[0..], s.remote_id[0..]);
+        g_agent_context_surface_id_len = s.remote_id.len;
+    }
 }
 
 pub fn handleActiveSurfaceChangeWithinTab() void {
@@ -841,6 +846,8 @@ const ConfigWatcher = @import("config_watcher.zig");
 
 /// Focus follows mouse - when true, moving mouse into a split pane focuses it
 pub threadlocal var g_focus_follows_mouse: bool = false;
+threadlocal var g_agent_context_surface_id: [16]u8 = undefined;
+threadlocal var g_agent_context_surface_id_len: usize = 0;
 pub threadlocal var g_copy_on_select: bool = false;
 pub threadlocal var g_right_click_action: Config.RightClickAction = .copy;
 pub threadlocal var g_ssh_legacy_algorithms: bool = false;
@@ -1641,23 +1648,27 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
         surfaces.deinit(allocator);
     }
 
+    var active_tab = tab.g_active_tab;
+    const context_surface_id = g_agent_context_surface_id[0..g_agent_context_surface_id_len];
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
         var it = tab_state.tree.iterator();
         while (it.next()) |entry| {
+            const is_context = context_surface_id.len > 0 and std.mem.eql(u8, entry.surface.remote_id[0..], context_surface_id);
+            if (is_context) active_tab = tab_index;
             try surfaces.append(allocator, try makeAgentToolSurface(
                 allocator,
                 entry.surface,
                 tab_index,
-                tab_index == tab.g_active_tab and entry.handle == tab_state.focused,
+                is_context,
             ));
         }
     }
 
     return .{
         .surfaces = try surfaces.toOwnedSlice(allocator),
-        .active_tab = tab.g_active_tab,
+        .active_tab = active_tab,
     };
 }
 
