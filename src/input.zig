@@ -172,6 +172,29 @@ fn clipboardImageBasename(path: []const u8) []const u8 {
     return path[start..];
 }
 
+fn joinUnixPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
+    if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return allocator.dupe(u8, name) catch null;
+    if (std.mem.eql(u8, dir, "/")) return std.fmt.allocPrint(allocator, "/{s}", .{name}) catch null;
+    const base = std.mem.trimRight(u8, dir, "/");
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, name }) catch null;
+}
+
+fn shellSingleQuoteForPaste(allocator: std.mem.Allocator, text: []const u8) ?[]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    out.append(allocator, '\'') catch return null;
+    for (text) |ch| {
+        if (ch == '\'') {
+            out.appendSlice(allocator, "'\\''") catch return null;
+        } else {
+            out.append(allocator, ch) catch return null;
+        }
+    }
+    out.append(allocator, '\'') catch return null;
+    return out.toOwnedSlice(allocator) catch null;
+}
+
 fn remoteClipboardImagePath(allocator: std.mem.Allocator, local_path: []const u8) ?[]u8 {
     const basename = clipboardImageBasename(local_path);
     if (basename.len == 0) return null;
@@ -325,6 +348,66 @@ fn pasteSavedClipboardImage(surface: *Surface, allocator: std.mem.Allocator, ima
     defer allocator.free(pasted);
 
     std.debug.print("Pasting clipboard image path: {s}\n", .{target_path});
+    writePasteToPty(surface, allocator, pasted);
+    return true;
+}
+
+pub fn handleFileDrop(local_path: []const u8, x: i32, _: i32) bool {
+    if (handleFileExplorerDrop(local_path, x)) return true;
+    return handleSshTerminalFileDrop(local_path);
+}
+
+fn handleFileExplorerDrop(local_path: []const u8, x: i32) bool {
+    const win = AppWindow.g_window orelse return false;
+    if (!file_explorer.g_visible or file_explorer.g_mode != .remote) return false;
+
+    const panel_x: i32 = win.sidebar_width;
+    const panel_right: i32 = panel_x + @as(i32, @intFromFloat(file_explorer.width()));
+    if (x < panel_x or x >= panel_right) return false;
+
+    file_explorer.uploadFile(local_path);
+    return true;
+}
+
+fn handleSshTerminalFileDrop(local_path: []const u8) bool {
+    const surface = AppWindow.activeSurface() orelse return false;
+    if (surface.launch_kind != .ssh) return false;
+    const conn = surface.ssh_connection orelse return false;
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const remote_dir = if (surface.getCwd()) |cwd|
+        allocator.dupe(u8, cwd) catch return true
+    else blk: {
+        const pwd = scp.sshExec(allocator, &conn, "pwd") orelse {
+            std.debug.print("SSH file drop upload skipped: no remote cwd for active SSH surface\n", .{});
+            return true;
+        };
+        defer allocator.free(pwd);
+        const trimmed = std.mem.trim(u8, pwd, " \t\r\n");
+        break :blk allocator.dupe(u8, trimmed) catch return true;
+    };
+    defer allocator.free(remote_dir);
+
+    const filename = clipboardImageBasename(local_path);
+    if (filename.len == 0) return true;
+
+    const remote_path = joinUnixPath(allocator, remote_dir, filename) orelse return true;
+    defer allocator.free(remote_path);
+
+    var spec_buf: [512]u8 = undefined;
+    const destination = scp.remoteSpec(&spec_buf, &conn, remote_dir);
+    std.debug.print("SSH file drop upload: {s} -> {s}\n", .{ local_path, destination });
+    const result = scp.transfer(allocator, &conn, local_path, destination);
+    if (result != .ok) {
+        std.debug.print("SSH file drop upload failed\n", .{});
+        return true;
+    }
+
+    const pasted = shellSingleQuoteForPaste(allocator, remote_path) orelse return true;
+    defer allocator.free(pasted);
     writePasteToPty(surface, allocator, pasted);
     return true;
 }

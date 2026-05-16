@@ -747,6 +747,8 @@ pub const MouseWheelEvent = struct {
     alt: bool = false,
 };
 
+pub const FileDropHandler = *const fn (path: []const u8, x: i32, y: i32) bool;
+
 // Fixed-size ring buffers for events (avoids allocation in WndProc)
 fn RingBuffer(comptime T: type, comptime N: usize) type {
     return struct {
@@ -843,6 +845,8 @@ pub const Window = struct {
     on_resize: ?*const fn (width: i32, height: i32) void = null,
     /// Optional callback for application-owned custom messages.
     on_message: ?*const fn (msg: UINT, wParam: WPARAM, lParam: LPARAM) ?LRESULT = null,
+    /// Optional callback for files dropped on the window. Called once per path.
+    on_file_drop: ?FileDropHandler = null,
 
     pub fn setImeCaret(self: *Window, x: i32, y: i32, height: i32) void {
         self.ime_caret_x = @max(0, x);
@@ -1899,13 +1903,8 @@ fn handleDropFiles(wParam: WPARAM, w: *Window) void {
     const hDrop: HDROP = @ptrFromInt(wParam);
     defer DragFinish(hDrop);
 
-    // Check if drop is in the file explorer panel
     var pt: POINT = undefined;
     _ = DragQueryPoint(hDrop, &pt);
-    const panel_x: i32 = w.sidebar_width;
-    const panel_right: i32 = panel_x + @as(i32, @intFromFloat(file_explorer.width()));
-    if (!file_explorer.g_visible or pt.x < panel_x or pt.x >= panel_right) return;
-    if (file_explorer.g_mode != .remote) return;
 
     const file_count = DragQueryFileW(hDrop, 0xFFFFFFFF, null, 0);
     if (file_count == 0) return;
@@ -1921,6 +1920,15 @@ fn handleDropFiles(wParam: WPARAM, w: *Window) void {
         const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, wpath[0..len]) catch continue;
         if (utf8_len == 0) continue;
 
+        if (w.on_file_drop) |handler| {
+            if (handler(utf8_buf[0..utf8_len], pt.x, pt.y)) continue;
+        }
+
+        // Fallback for callers that have not installed a drop callback.
+        const panel_x: i32 = w.sidebar_width;
+        const panel_right: i32 = panel_x + @as(i32, @intFromFloat(file_explorer.width()));
+        if (!file_explorer.g_visible or pt.x < panel_x or pt.x >= panel_right) continue;
+        if (file_explorer.g_mode != .remote) continue;
         file_explorer.uploadFile(utf8_buf[0..utf8_len]);
     }
 }

@@ -2379,6 +2379,7 @@ fn runMainLoop(self: *AppWindow) !void {
     self.hwnd_bits.store(@intFromPtr(win32_window.hwnd), .release);
     defer self.hwnd_bits.store(0, .release);
     win32_window.on_message = &onWin32Message;
+    win32_window.on_file_drop = &input.handleFileDrop;
     installAgentToolHost(self);
     font.g_dpi = win32_window.dpi;
 
