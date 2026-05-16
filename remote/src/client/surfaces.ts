@@ -24,6 +24,7 @@ import { shouldFocusTerminalElement } from "./focus_policy";
 import { parseAiChatTranscript, type AiChatMessage } from "./ai_chat_transcript";
 import { aiChatStopControlState } from "./ai_chat_controls";
 import { isMobileRemoteShell, shouldUseCanvasPan, shouldUseViewportFit } from "./mobile_layout";
+import { setNativeTerminalInputBlocked, shouldBlockNativeTerminalInput } from "./terminal_input_guard";
 import { cursorMoveSequence, emptyState, shortSurfaceId, validPositiveInteger } from "./utils";
 import { activeSurfaceIdForInput, currentTab, resetSurfaceViews, state } from "./state";
 import { getTerminalPalette, subscribeToTheme } from "./theme";
@@ -132,6 +133,7 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
     fit,
     decoder: new TextDecoder(),
     disposeInput: term.onData((data) => {
+      if (isViewModeInputBlocked()) return;
       const current = state.layoutState?.tabs
         .flatMap((tab) => tab.surfaces)
         .find((surface) => surface.id === surfaceId);
@@ -207,7 +209,7 @@ export function renderRemotePanels(): void {
     view.panel.dataset.surfaceId = surface.id;
     view.title.textContent = surface.title || shortSurfaceId(surface.id);
     view.copyButton.hidden = surface.kind === "ai_chat";
-    view.term.options.disableStdin = surface.kind === "ai_chat" || surface.readOnly === true;
+    applySurfaceInputPolicy(view, surface);
     const nextRemoteCols = validPositiveInteger(surface.cols);
     const nextRemoteRows = validPositiveInteger(surface.rows);
     const gridChanged = view.remoteCols !== nextRemoteCols || view.remoteRows !== nextRemoteRows;
@@ -232,6 +234,7 @@ export function renderRemotePanels(): void {
     if (!view.opened) {
       view.term.open(view.host);
       view.opened = true;
+      syncTerminalNativeInputGuard(view);
       view.resizeObserver = new ResizeObserver(() => scheduleFit(view));
       view.resizeObserver.observe(view.host);
       flushPendingOutput(view);
@@ -240,7 +243,12 @@ export function renderRemotePanels(): void {
     applyInitialSnapshot(view, surface);
     scheduleFit(view);
 
-    if (surface.id === state.selectedSurfaceId && document.activeElement && view.panel.contains(document.activeElement)) {
+    if (
+      surface.id === state.selectedSurfaceId &&
+      shouldFocusTerminalElement() &&
+      document.activeElement &&
+      view.panel.contains(document.activeElement)
+    ) {
       view.term.focus();
     }
   }
@@ -318,8 +326,14 @@ export function updateSurfaceCursors(): void {
     const surface = state.layoutState?.tabs
       .flatMap((tab) => tab.surfaces)
       .find((candidate) => candidate.id === surfaceId);
-    view.term.options.disableStdin = surface?.kind === "ai_chat" || surface?.readOnly === true;
+    applySurfaceInputPolicy(view, surface);
     updateSurfaceCursor(view, surfaceId);
+  }
+}
+
+export function syncTerminalNativeInputGuards(): void {
+  for (const view of state.surfaceViews.values()) {
+    syncTerminalNativeInputGuard(view);
   }
 }
 
@@ -544,6 +558,20 @@ function updateSurfaceCursor(view: SurfaceView, surfaceId: string): void {
   const selected = surfaceId === state.selectedSurfaceId;
   view.term.options.cursorBlink = selected;
   view.term.options.cursorInactiveStyle = selected ? "outline" : "none";
+}
+
+function applySurfaceInputPolicy(view: SurfaceView, surface: LayoutSurface | undefined): void {
+  view.term.options.disableStdin =
+    surface?.kind === "ai_chat" || surface?.readOnly === true || isViewModeInputBlocked();
+  syncTerminalNativeInputGuard(view);
+}
+
+function syncTerminalNativeInputGuard(view: SurfaceView): void {
+  setNativeTerminalInputBlocked(view.host, isViewModeInputBlocked(), document.activeElement);
+}
+
+function isViewModeInputBlocked(): boolean {
+  return shouldBlockNativeTerminalInput(isMobileRemoteShell(), state.mobileInputMode);
 }
 
 function fitOrResize(view: SurfaceView): void {

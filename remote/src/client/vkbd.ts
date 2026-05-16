@@ -1,6 +1,7 @@
 import { applyStickyMods, ctrlLetter, keyToSequence } from "./input_sequences";
 import { focusMobileTextInput, toggleMobileTextInput } from "./mobile_text_input";
 import { activeSurfaceIdForInput, state } from "./state";
+import { shouldFocusTerminalElement } from "./focus_policy";
 
 const kbdMods = { ctrl: false, alt: false };
 
@@ -110,7 +111,9 @@ function dispatchVirtualKey(button: HTMLButtonElement, onHide: () => void): void
   if (!surfaceId) return;
 
   if (button.dataset.vkKey === "type") {
-    if (!focusMobileTextInput()) state.surfaceViews.get(surfaceId)?.term.focus();
+    if (!focusMobileTextInput() && shouldFocusTerminalElement()) {
+      state.surfaceViews.get(surfaceId)?.term.focus();
+    }
     return;
   }
 

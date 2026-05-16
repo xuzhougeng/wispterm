@@ -413,6 +413,20 @@ if your account is in the Administrators group (UAC split token).
 There is no supported way to promote an existing non-elevated shell to elevated
 without a new process and UAC consent.
 
+### Why does Phantty Remote mirror the local terminal size on phones?
+
+Phantty Remote mirrors the local Phantty window because the desktop app is the
+source of truth for terminal state. The local PTY, Ghostty VT state, scrollback,
+cursor position, and split layout are captured there and sent to the browser as
+layout snapshots plus output bytes.
+
+The remote web UI can rearrange how panels are shown, for example focusing one
+surface on mobile instead of squeezing every split into the viewport. It does
+not currently create a separate mobile-sized terminal grid. Reflowing the
+terminal to the phone width would require either resizing the local terminal
+itself, which would disturb the desktop session, or adding a separate remote PTY
+or viewport model.
+
 ## Credits
 
 - Original project: [arya-s/phantty](https://github.com/arya-s/phantty) — the

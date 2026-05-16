@@ -280,6 +280,10 @@ ai-agent-output-limit  = 16384</code></pre>
             <h3>What is the AI Chat / Agent prompt length limit?</h3>
             <p>Phantty now allows up to <code>65536 bytes</code> for one draft in the AI Chat / Agent input box. This is the per-message input limit before you press Enter, not the full conversation context limit.</p>
           </div>
+          <div class="feature">
+            <h3>Why does Remote mirror the local terminal size on phones?</h3>
+            <p>The desktop Phantty app is the source of truth for PTY state, Ghostty VT state, scrollback, cursor position, and split layout. The browser receives layout snapshots and output bytes from that local session, so it can rearrange panels for mobile, but it does not create an independent phone-sized terminal grid. True mobile reflow would require resizing the local terminal itself or adding a separate remote PTY/viewport model.</p>
+          </div>
         </div>
       </div>
     </section>

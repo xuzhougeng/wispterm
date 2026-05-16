@@ -280,6 +280,10 @@ ai-agent-output-limit  = 16384</code></pre>
             <h3>AI Chat / Agent 的 prompt 长度上限是多少？</h3>
             <p>Phantty 现在允许 AI Chat / Agent 输入框中的单次草稿最长达到 <code>65536 bytes</code>。这是你按 Enter 发送前的单条输入上限，不是整段对话上下文的总长度上限。</p>
           </div>
+          <div class="feature">
+            <h3>为什么手机上的 Remote 会沿用本地终端大小？</h3>
+            <p>因为本地 Phantty 是终端状态的权威来源：PTY、Ghostty VT 状态、scrollback、光标位置和 split layout 都在本地维护，再以 layout snapshot 和 output bytes 同步给浏览器。Remote Web 可以把面板重新排成适合手机的显示方式，比如只显示当前 surface，但目前不会创建一套独立的手机端 terminal grid。真正按手机宽度重排，需要改成本地终端跟着 resize，或新增独立的 remote PTY / viewport 模型。</p>
+          </div>
         </div>
       </div>
     </section>

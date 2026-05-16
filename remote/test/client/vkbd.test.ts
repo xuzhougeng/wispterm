@@ -175,6 +175,35 @@ test("IME key is inert in view mode", () => {
   assert.equal(ime.dataset.active, "false");
 });
 
+test("type key does not focus terminal fallback in view mode", () => {
+  const type = new FakeButton({ vkKey: "type" });
+  const keyboard = new FakeKeyboard([type]);
+  let terminalFocusCalls = 0;
+
+  setupDocument(keyboard, true);
+
+  state.selectedSurfaceId = "surface-a";
+  state.mobileInputMode = "view";
+  state.surfaceViews = new Map([
+    [
+      "surface-a",
+      {
+        term: {
+          focus() {
+            terminalFocusCalls += 1;
+          },
+        },
+      } as never,
+    ],
+  ]);
+  bindVirtualKeyboard(() => {});
+
+  type.click();
+
+  assert.equal(fakeDocument.textarea.focusCalls, 0);
+  assert.equal(terminalFocusCalls, 0);
+});
+
 test("touch activation dispatches virtual keys without a synthesized click", () => {
   const enter = new FakeButton({ vkKey: "enter" });
   const keyboard = new FakeKeyboard([enter]);

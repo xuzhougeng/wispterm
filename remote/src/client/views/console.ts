@@ -19,6 +19,7 @@ import {
   focusAndFitSelectedSurface,
   refitAllSurfaces,
   renderRemotePanels,
+  syncTerminalNativeInputGuards,
   updateAiChatControls,
   updateSurfaceCursors,
 } from "../surfaces";
@@ -452,6 +453,8 @@ function setMobileInputMode(mode: MobileInputMode): void {
   } else {
     blurMobileTextInput();
   }
+  syncTerminalNativeInputGuards();
+  updateSurfaceCursors();
   syncMobileInputModeUi();
   updateMobileSurfaceMode();
 }
