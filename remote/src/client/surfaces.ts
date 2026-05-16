@@ -64,9 +64,17 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
   const header = document.createElement("div");
   header.className = "panel-header";
   const title = document.createElement("span");
+  title.className = "panel-title";
   const meta = document.createElement("small");
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.className = "panel-copy";
+  copyButton.textContent = "Copy";
+  copyButton.title = "Copy selected text, or visible terminal text when nothing is selected";
+  copyButton.setAttribute("aria-label", "Copy terminal text");
   header.appendChild(title);
   header.appendChild(meta);
+  header.appendChild(copyButton);
   const mount = document.createElement("div");
   mount.className = "terminal-mount";
   const scrollbar = document.createElement("div");
@@ -110,6 +118,7 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
     panel,
     title,
     meta,
+    copyButton,
     mount,
     host,
     scrollbar,
@@ -145,6 +154,14 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
     remoteCols: null,
     remoteRows: null,
   };
+  copyButton.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+  copyButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void copyTerminalText(view);
+  });
   view.disposeMiddleClickGesture = bindTwoFingerMiddleClick(view);
   view.disposeCanvasPan = bindCanvasPan(view);
   state.surfaceViews.set(surfaceId, view);
@@ -187,6 +204,7 @@ export function renderRemotePanels(): void {
     view.panel.style.height = `${Math.max(0.05, surface.h ?? 1) * 100}%`;
     view.panel.dataset.surfaceId = surface.id;
     view.title.textContent = surface.title || shortSurfaceId(surface.id);
+    view.copyButton.hidden = surface.kind === "ai_chat";
     view.term.options.disableStdin = surface.kind === "ai_chat" || surface.readOnly === true;
     const nextRemoteCols = validPositiveInteger(surface.cols);
     const nextRemoteRows = validPositiveInteger(surface.rows);
@@ -425,6 +443,65 @@ export function updateAiChatControls(): void {
     const view = state.surfaceViews.get(surface.id);
     if (view) updateAiChatControl(view, surface);
   }
+}
+
+async function copyTerminalText(view: SurfaceView): Promise<void> {
+  const text = terminalCopyText(view);
+  if (!text) {
+    flashCopyButton(view.copyButton, "Empty");
+    return;
+  }
+
+  try {
+    await writeClipboardText(text);
+    flashCopyButton(view.copyButton, "Copied");
+  } catch {
+    flashCopyButton(view.copyButton, "Failed");
+  }
+}
+
+function terminalCopyText(view: SurfaceView): string {
+  const selection = view.term.getSelection();
+  if (selection.length > 0) return selection;
+  return visibleTerminalText(view);
+}
+
+function visibleTerminalText(view: SurfaceView): string {
+  const buffer = view.term.buffer.active;
+  const lines: string[] = [];
+  const start = buffer.viewportY;
+  for (let row = 0; row < view.term.rows; row += 1) {
+    lines.push(buffer.getLine(start + row)?.translateToString(true) ?? "");
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines.join("\n");
+}
+
+async function writeClipboardText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const ok = document.execCommand("copy");
+  textarea.remove();
+  if (!ok) throw new Error("copy command failed");
+}
+
+function flashCopyButton(button: HTMLButtonElement, label: string): void {
+  const previous = button.textContent || "Copy";
+  button.textContent = label;
+  window.setTimeout(() => {
+    if (button.isConnected) button.textContent = previous;
+  }, 1200);
 }
 
 function renderAiChatTranscript(root: HTMLDivElement, snapshot: string): void {

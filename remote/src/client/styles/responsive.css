@@ -289,6 +289,12 @@
     display: none;
   }
 
+  .panels-stage[data-mobile-mode="single"] .panel-copy {
+    min-height: 24px;
+    padding: 0 10px;
+    font-size: 10px;
+  }
+
   .panels-stage[data-mobile-mode="single"] .terminal-mount {
     padding: 4px;
     border-radius: 0 0 10px 10px;
