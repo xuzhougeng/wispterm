@@ -233,6 +233,8 @@ const ChatRequest = struct {
     tool_host: ?ToolHost,
     tool_snapshot: ?ToolSnapshot,
     started_ms: i64,
+    write_context_surface_id: [64]u8 = undefined,
+    write_context_surface_id_len: usize = 0,
 
     fn deinit(self: *ChatRequest) void {
         self.allocator.free(self.base_url);
@@ -2839,6 +2841,7 @@ fn collectToolSnapshot(request: *const ChatRequest) !ToolSnapshot {
 }
 
 fn rememberConnectedSurface(request: *ChatRequest, surface: ToolSurface) !void {
+    setWriteContext(request, surface.id);
     if (request.tool_snapshot) |*snapshot| {
         for (snapshot.surfaces) |*existing| {
             existing.focused = false;
@@ -3073,11 +3076,11 @@ const UnixSessionKind = enum {
     }
 };
 
-fn sshSessionExecTool(request: *const ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
+fn sshSessionExecTool(request: *ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     return unixSessionExecTool(request, .ssh, surface_id, command, timeout_ms);
 }
 
-fn wslSessionExecTool(request: *const ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
+fn wslSessionExecTool(request: *ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     return unixSessionExecTool(request, .wsl, surface_id, command, timeout_ms);
 }
 
@@ -3113,7 +3116,7 @@ const ReplKind = enum {
     }
 };
 
-fn terminalReplExecTool(request: *const ChatRequest, surface_id: []const u8, repl_name: []const u8, code: []const u8, timeout_ms: u32) ![]u8 {
+fn terminalReplExecTool(request: *ChatRequest, surface_id: []const u8, repl_name: []const u8, code: []const u8, timeout_ms: u32) ![]u8 {
     const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(request.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, or plain.", .{repl_name});
     const settings = currentAgentSettings();
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
@@ -3129,9 +3132,7 @@ fn terminalReplExecTool(request: *const ChatRequest, surface_id: []const u8, rep
     defer snapshot.deinit(request.allocator);
     const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
     const surface = findSurface(snapshot, surface_id) orelse return request.allocator.dupe(u8, "No matching terminal surface.");
-    if (!isWritableTargetSurface(snapshot, surface)) {
-        return wrongWriteTargetResult(request.allocator, snapshot, surface);
-    }
+    if (try ensureWriteContext(request, surface)) |message| return message;
 
     return switch (repl) {
         .r => rSessionEvalTool(request, host, surface, code, timeout_ms),
@@ -3238,7 +3239,7 @@ fn doubleQuotedStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]
     return out.toOwnedSlice(allocator);
 }
 
-fn unixSessionExecTool(request: *const ChatRequest, kind: UnixSessionKind, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
+fn unixSessionExecTool(request: *ChatRequest, kind: UnixSessionKind, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     const settings = currentAgentSettings();
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
     if (settings.permission != .full) {
@@ -3252,9 +3253,7 @@ fn unixSessionExecTool(request: *const ChatRequest, kind: UnixSessionKind, surfa
     defer snapshot.deinit(request.allocator);
     const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
     const surface = findSurface(snapshot, surface_id) orelse return request.allocator.dupe(u8, "No matching terminal surface.");
-    if (!isWritableTargetSurface(snapshot, surface)) {
-        return wrongWriteTargetResult(request.allocator, snapshot, surface);
-    }
+    if (try ensureWriteContext(request, surface)) |message| return message;
     if (!kind.matches(surface)) {
         return std.fmt.allocPrint(request.allocator, "Target surface is not an opened {s} session.", .{kind.label()});
     }
@@ -3433,34 +3432,32 @@ fn findSurface(snapshot: ToolSnapshot, surface_id: []const u8) ?ToolSurface {
     return null;
 }
 
-fn focusedSurface(snapshot: ToolSnapshot) ?ToolSurface {
-    for (snapshot.surfaces) |surface| {
-        if (surface.focused) return surface;
+fn setWriteContext(request: *ChatRequest, surface_id: []const u8) void {
+    const len = @min(surface_id.len, request.write_context_surface_id.len);
+    @memcpy(request.write_context_surface_id[0..len], surface_id[0..len]);
+    request.write_context_surface_id_len = len;
+}
+
+fn ensureWriteContext(request: *ChatRequest, surface: ToolSurface) !?[]u8 {
+    if (request.write_context_surface_id_len == 0) {
+        setWriteContext(request, surface.id);
+        return null;
     }
-    return null;
-}
 
-fn isWritableTargetSurface(snapshot: ToolSnapshot, surface: ToolSurface) bool {
-    const focused = focusedSurface(snapshot) orelse return snapshot.surfaces.len <= 1;
-    return std.mem.eql(u8, focused.id, surface.id);
-}
+    const context = request.write_context_surface_id[0..request.write_context_surface_id_len];
+    if (std.mem.eql(u8, context, surface.id)) return null;
 
-fn wrongWriteTargetResult(allocator: std.mem.Allocator, snapshot: ToolSnapshot, surface: ToolSurface) ![]u8 {
-    const focused = focusedSurface(snapshot) orelse {
-        return std.fmt.allocPrint(allocator, "Refusing to write to surface_id={s}: no focused agent target is available.", .{surface.id});
-    };
-    return std.fmt.allocPrint(
-        allocator,
-        "Refusing to write to surface_id={s} tab={d} title=\"{s}\" because it is not the focused agent target. Focused target is surface_id={s} tab={d} title=\"{s}\". Ask the user to focus/select the intended panel before executing there.",
+    const message = try std.fmt.allocPrint(
+        request.allocator,
+        "Refusing to write to surface_id={s} tab={d} title=\"{s}\" because this agent turn is already bound to surface_id={s}. Start a new request before sending commands to another panel.",
         .{
             surface.id,
             surface.tab_index,
             surface.title,
-            focused.id,
-            focused.tab_index,
-            focused.title,
+            context,
         },
     );
+    return message;
 }
 
 fn extractUnixCommandResult(allocator: std.mem.Allocator, text: []const u8, start_marker: []const u8, end_marker: []const u8) ![]u8 {
@@ -4564,16 +4561,16 @@ test "ai chat tools prefer request-local terminal snapshot" {
     try std.testing.expect(snapshot.surfaces[0].id.ptr != cached_snapshot.surfaces[0].id.ptr);
 }
 
-test "ai chat write tools reject non focused surface when target exists" {
+test "ai chat write context locks to first selected surface" {
     const allocator = std.testing.allocator;
     var surfaces = try allocator.alloc(ToolSurface, 2);
     surfaces[0] = .{
         .id = try allocator.dupe(u8, "surface-a"),
-        .title = try allocator.dupe(u8, "target"),
+        .title = try allocator.dupe(u8, "panel1"),
         .cwd = try allocator.dupe(u8, ""),
         .snapshot = try allocator.dupe(u8, ""),
         .tab_index = 0,
-        .focused = true,
+        .focused = false,
         .is_ssh = false,
         .is_wsl = false,
         .agent_app = .none,
@@ -4583,7 +4580,7 @@ test "ai chat write tools reject non focused surface when target exists" {
     };
     surfaces[1] = .{
         .id = try allocator.dupe(u8, "surface-b"),
-        .title = try allocator.dupe(u8, "wrong"),
+        .title = try allocator.dupe(u8, "panel2"),
         .cwd = try allocator.dupe(u8, ""),
         .snapshot = try allocator.dupe(u8, ""),
         .tab_index = 0,
@@ -4601,54 +4598,30 @@ test "ai chat write tools reject non focused surface when target exists" {
     };
     defer snapshot.deinit(allocator);
 
-    try std.testing.expect(isWritableTargetSurface(snapshot, snapshot.surfaces[0]));
-    try std.testing.expect(!isWritableTargetSurface(snapshot, snapshot.surfaces[1]));
-    const message = try wrongWriteTargetResult(allocator, snapshot, snapshot.surfaces[1]);
-    defer allocator.free(message);
-    try std.testing.expect(std.mem.indexOf(u8, message, "Focused target is surface_id=surface-a") != null);
-}
+    var messages = [_]RequestMessage{};
+    var request = ChatRequest{
+        .allocator = allocator,
+        .session = undefined,
+        .base_url = @constCast(""),
+        .api_key = @constCast(""),
+        .model = @constCast(""),
+        .system_prompt = @constCast(""),
+        .messages = messages[0..],
+        .thinking_enabled = true,
+        .reasoning_effort = @constCast(""),
+        .stream = false,
+        .agent_enabled = true,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .started_ms = 0,
+    };
 
-test "ai chat write tools require focus when multiple surfaces have no target" {
-    const allocator = std.testing.allocator;
-    var surfaces = try allocator.alloc(ToolSurface, 2);
-    surfaces[0] = .{
-        .id = try allocator.dupe(u8, "surface-a"),
-        .title = try allocator.dupe(u8, "left"),
-        .cwd = try allocator.dupe(u8, ""),
-        .snapshot = try allocator.dupe(u8, ""),
-        .tab_index = 0,
-        .focused = false,
-        .is_ssh = false,
-        .is_wsl = false,
-        .agent_app = .none,
-        .agent_state = .none,
-        .agent_confidence = 0,
-        .ptr = @ptrFromInt(1),
-    };
-    surfaces[1] = .{
-        .id = try allocator.dupe(u8, "surface-b"),
-        .title = try allocator.dupe(u8, "right"),
-        .cwd = try allocator.dupe(u8, ""),
-        .snapshot = try allocator.dupe(u8, ""),
-        .tab_index = 1,
-        .focused = false,
-        .is_ssh = false,
-        .is_wsl = false,
-        .agent_app = .none,
-        .agent_state = .none,
-        .agent_confidence = 0,
-        .ptr = @ptrFromInt(2),
-    };
-    const snapshot = ToolSnapshot{
-        .surfaces = surfaces,
-        .active_tab = 2,
-    };
-    defer snapshot.deinit(allocator);
+    try std.testing.expect(try ensureWriteContext(&request, snapshot.surfaces[1]) == null);
+    try std.testing.expectEqualStrings("surface-b", request.write_context_surface_id[0..request.write_context_surface_id_len]);
 
-    try std.testing.expect(!isWritableTargetSurface(snapshot, snapshot.surfaces[0]));
-    const message = try wrongWriteTargetResult(allocator, snapshot, snapshot.surfaces[0]);
+    const message = (try ensureWriteContext(&request, snapshot.surfaces[0])).?;
     defer allocator.free(message);
-    try std.testing.expect(std.mem.indexOf(u8, message, "no focused agent target") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "already bound to surface_id=surface-b") != null);
 }
 
 test "ai chat R string literal escapes code for REPL eval" {
