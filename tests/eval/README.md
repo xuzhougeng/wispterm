@@ -39,6 +39,17 @@ loads `tests/eval/skill-load-cases.json` and reads skills from
    from the directory.
 4. Keep at least one no-match case to guard against over-matching.
 
+## Fixture provenance
+
+The default browser/web skill fixture is inspired by
+[GenericAgent](https://github.com/lsdefine/GenericAgent)'s browser-control
+design, especially its real-browser session model, compact HTML observation
+flow, JS execution loop, and CDP bridge notes in `TMWebDriver.py`,
+`simphtml.py`, `assets/tmwd_cdp_bridge/`, and `memory/tmwebdriver_sop.md`.
+Phantty adapts those ideas as skill guidance plus small Phantty-authored
+JavaScript snippets; the fixture does not vendor GenericAgent code or add a
+GenericAgent-compatible browser driver.
+
 ## Cache stability
 
 The loader renders a deterministic snapshot:

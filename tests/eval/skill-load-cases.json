@@ -12,7 +12,7 @@
     "skill": "browser",
     "expected_name": "web",
     "expected_source": "tests/eval/skills/browser",
-    "expected_contains": "Use browser tools only when live web interaction is required.",
+    "expected_contains": "function phanttyCompactSnapshot",
     "tags": ["alias", "browser"]
   },
   {
@@ -20,7 +20,7 @@
     "skill": "web",
     "expected_name": "web",
     "expected_source": "tests/eval/skills/browser",
-    "expected_contains": "Use browser tools only when live web interaction is required.",
+    "expected_contains": "function phanttyCompactSnapshot",
     "tags": ["clear-hit", "browser"]
   },
   {

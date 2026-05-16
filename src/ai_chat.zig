@@ -19,6 +19,8 @@ pub const DEFAULT_REASONING_EFFORT = "high";
 pub const DEFAULT_STREAM = "false";
 pub const DEFAULT_AGENT = "true";
 
+const TOOL_CALL_REASONING_FALLBACK = "Tool call is required before answering.";
+
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
 const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
 const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
@@ -2588,6 +2590,9 @@ fn buildRequestJsonForMessages(
                     try out.appendSlice(allocator, ",\"reasoning_content\":");
                     try appendJsonString(allocator, &out, reasoning);
                 }
+            } else if (request.thinking_enabled and msg.tool_calls != null) {
+                try out.appendSlice(allocator, ",\"reasoning_content\":");
+                try appendJsonString(allocator, &out, TOOL_CALL_REASONING_FALLBACK);
             }
         }
         try out.append(allocator, '}');
@@ -4322,7 +4327,7 @@ test "ai chat request json replays durable tool messages and skips progress tool
     defer allocator.free(json);
 
     const assistant_tool_call =
-        \\{"role":"assistant","content":"","tool_calls":[{"id":"skill-preload-pdf","type":"function","function":{"name":"skill_info","arguments":"{}"}}]}
+        \\{"role":"assistant","content":"","tool_calls":[{"id":"skill-preload-pdf","type":"function","function":{"name":"skill_info","arguments":"{}"}}],"reasoning_content":"Tool call is required before answering."}
     ;
     const tool_result =
         \\{"role":"tool","content":"# Skill: pdf","tool_call_id":"skill-preload-pdf"}
@@ -4430,6 +4435,41 @@ test "ai chat request json replays assistant reasoning content" {
     const json = try buildRequestJson(allocator, &request);
     defer allocator.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"reasoning_content\":\"Need system info before answering.\"") != null);
+}
+
+test "ai chat request json adds thinking fallback for assistant tool calls without reasoning" {
+    const allocator = std.testing.allocator;
+    var calls = [_]ToolCall{.{
+        .id = @constCast("call-1"),
+        .name = @constCast("skill_info"),
+        .arguments = @constCast("{}"),
+    }};
+    var messages = [_]RequestMessage{.{
+        .role = .assistant,
+        .content = @constCast(""),
+        .tool_calls = calls[0..],
+    }};
+    const request = ChatRequest{
+        .allocator = allocator,
+        .session = undefined,
+        .base_url = @constCast("https://api.deepseek.com"),
+        .api_key = @constCast("key"),
+        .model = @constCast(DEFAULT_MODEL),
+        .system_prompt = @constCast(DEFAULT_SYSTEM_PROMPT),
+        .messages = messages[0..],
+        .thinking_enabled = true,
+        .reasoning_effort = @constCast("high"),
+        .stream = false,
+        .agent_enabled = true,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .started_ms = 0,
+    };
+
+    const json = try buildRequestJson(allocator, &request);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"reasoning_content\":\"Tool call is required before answering.\"") != null);
 }
 
 test "ai chat request json replaces invalid utf8 bytes" {
