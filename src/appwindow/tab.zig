@@ -370,6 +370,9 @@ pub fn spawnAiChatTab(
         std.debug.print("Failed to create AI Chat session\n", .{});
         return false;
     };
+    if (activeSurface()) |surface| {
+        session.setAgentTargetSurface(surface.remote_id[0..]);
+    }
     installAiChatHistoryHook(session);
 
     const t = allocator.create(TabState) catch {
