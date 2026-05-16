@@ -2611,17 +2611,19 @@ fn buildRequestJsonForMessages(
 
 fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
     try out.appendSlice(allocator, ",\"tools\":[");
-    try out.appendSlice(allocator, toolSchema("terminal_list", "List Phantty terminal surfaces visible to the agent. For write tools, use the focused=true surface unless the user explicitly changes focus.", "{}"));
+    try out.appendSlice(allocator, toolSchema("terminal_list", "List Phantty terminal surfaces visible to the agent, including the current agent-selected write context. Before any terminal write, use terminal_select to choose the intended surface_id; use focused=true only as a default hint.", "{}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("terminal_snapshot", "Read a bounded text snapshot from one terminal surface or all surfaces.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Optional surface id from terminal_list.\"}}"));
     try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("terminal_select", "Select the terminal surface context for subsequent write tools. Call this before ssh_session_exec, wsl_session_exec, or terminal_repl_exec, and call it again when switching to another panel/tab.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list to make the current agent write context.\"}}"));
+    try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("powershell_exec", "Run a local PowerShell command on Windows and return stdout, stderr, and exit status.", "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Run a POSIX shell command in the focused already-open SSH terminal surface. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Focused surface id from terminal_list.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Run a POSIX shell command in the selected already-open SSH terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("wsl_session_exec", "Run a POSIX shell command in the focused already-open WSL terminal surface. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Focused surface id from terminal_list.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try out.appendSlice(allocator, toolSchema("wsl_session_exec", "Run a POSIX shell command in the selected already-open WSL terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("terminal_repl_exec", "Send code or text to the focused already-open interactive REPL/app terminal without shell syntax. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Focused surface id from terminal_list.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit.\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try out.appendSlice(allocator, toolSchema("terminal_repl_exec", "Send code or text to the selected already-open interactive REPL/app terminal without shell syntax. The surface_id must match the current terminal_select context. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit.\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_profile_connect", "Create a new tab connected to a saved Phantty SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}"));
     try out.append(allocator, ',');
@@ -2648,6 +2650,12 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
         defer if (args) |parsed| parsed.deinit();
         const surface_id = if (args) |parsed| jsonStringArg(parsed.value, "surface_id") else null;
         return terminalSnapshotTool(request, surface_id);
+    }
+    if (std.mem.eql(u8, call.name, "terminal_select")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const surface_id = jsonStringArg(args.value, "surface_id") orelse return request.allocator.dupe(u8, "Missing surface_id");
+        return terminalSelectTool(request, surface_id);
     }
     if (std.mem.eql(u8, call.name, "powershell_exec")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
@@ -2779,12 +2787,20 @@ fn terminalListTool(request: *const ChatRequest) ![]u8 {
     defer snapshot.deinit(request.allocator);
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(request.allocator);
+    const selected = selectedWriteContext(request);
     try out.print(request.allocator, "active_tab={d}\n", .{snapshot.active_tab});
+    if (selected) |id| {
+        try out.print(request.allocator, "selected_context={s}\n", .{id});
+    } else {
+        try out.appendSlice(request.allocator, "selected_context=none\n");
+    }
     for (snapshot.surfaces) |surface| {
-        try out.print(request.allocator, "- id={s} tab={d} focused={} kind={s} title=\"{s}\" cwd=\"{s}\"", .{
+        const is_selected = if (selected) |id| std.mem.eql(u8, id, surface.id) else false;
+        try out.print(request.allocator, "- id={s} tab={d} focused={} selected={} kind={s} title=\"{s}\" cwd=\"{s}\"", .{
             surface.id,
             surface.tab_index,
             surface.focused,
+            is_selected,
             toolSurfaceKind(surface),
             surface.title,
             surface.cwd,
@@ -2830,6 +2846,25 @@ fn terminalSnapshotTool(request: *const ChatRequest, surface_id: ?[]const u8) ![
     }
     if (out.items.len == 0) try out.appendSlice(request.allocator, "No matching terminal surface.");
     return truncateOwned(request.allocator, try out.toOwnedSlice(request.allocator));
+}
+
+fn terminalSelectTool(request: *ChatRequest, surface_id: []const u8) ![]u8 {
+    const snapshot = collectToolSnapshot(request) catch return request.allocator.dupe(u8, "No terminal snapshot host is available.");
+    defer snapshot.deinit(request.allocator);
+    const surface = findSurface(snapshot, surface_id) orelse return std.fmt.allocPrint(request.allocator, "No matching terminal surface for surface_id={s}.", .{surface_id});
+    setWriteContext(request, surface.id);
+    return std.fmt.allocPrint(
+        request.allocator,
+        "selected surface_id={s} tab={d} focused={} kind={s} title=\"{s}\" cwd=\"{s}\"",
+        .{
+            surface.id,
+            surface.tab_index,
+            surface.focused,
+            toolSurfaceKind(surface),
+            surface.title,
+            surface.cwd,
+        },
+    );
 }
 
 fn collectToolSnapshot(request: *const ChatRequest) !ToolSnapshot {
@@ -3432,6 +3467,11 @@ fn findSurface(snapshot: ToolSnapshot, surface_id: []const u8) ?ToolSurface {
     return null;
 }
 
+fn selectedWriteContext(request: *const ChatRequest) ?[]const u8 {
+    if (request.write_context_surface_id_len == 0) return null;
+    return request.write_context_surface_id[0..request.write_context_surface_id_len];
+}
+
 fn setWriteContext(request: *ChatRequest, surface_id: []const u8) void {
     const len = @min(surface_id.len, request.write_context_surface_id.len);
     @memcpy(request.write_context_surface_id[0..len], surface_id[0..len]);
@@ -3439,17 +3479,19 @@ fn setWriteContext(request: *ChatRequest, surface_id: []const u8) void {
 }
 
 fn ensureWriteContext(request: *ChatRequest, surface: ToolSurface) !?[]u8 {
-    if (request.write_context_surface_id_len == 0) {
-        setWriteContext(request, surface.id);
-        return null;
-    }
-
-    const context = request.write_context_surface_id[0..request.write_context_surface_id_len];
+    const context = selectedWriteContext(request) orelse {
+        const message = try std.fmt.allocPrint(
+            request.allocator,
+            "Refusing to write to surface_id={s} tab={d} title=\"{s}\" because no agent terminal context is selected. Call terminal_select with the intended surface_id before writing.",
+            .{ surface.id, surface.tab_index, surface.title },
+        );
+        return message;
+    };
     if (std.mem.eql(u8, context, surface.id)) return null;
 
     const message = try std.fmt.allocPrint(
         request.allocator,
-        "Refusing to write to surface_id={s} tab={d} title=\"{s}\" because this agent turn is already bound to surface_id={s}. Start a new request before sending commands to another panel.",
+        "Refusing to write to surface_id={s} tab={d} title=\"{s}\" because selected agent terminal context is surface_id={s}. Call terminal_select with the intended surface_id before writing to another panel.",
         .{
             surface.id,
             surface.tab_index,
@@ -4199,6 +4241,7 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tools\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_choice\":\"auto\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_list\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_select\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_repl_exec\"") != null);
@@ -4561,7 +4604,7 @@ test "ai chat tools prefer request-local terminal snapshot" {
     try std.testing.expect(snapshot.surfaces[0].id.ptr != cached_snapshot.surfaces[0].id.ptr);
 }
 
-test "ai chat write context locks to first selected surface" {
+test "ai chat write context requires explicit selection and can switch surfaces" {
     const allocator = std.testing.allocator;
     var surfaces = try allocator.alloc(ToolSurface, 2);
     surfaces[0] = .{
@@ -4616,12 +4659,24 @@ test "ai chat write context locks to first selected surface" {
         .started_ms = 0,
     };
 
-    try std.testing.expect(try ensureWriteContext(&request, snapshot.surfaces[1]) == null);
+    const missing = (try ensureWriteContext(&request, snapshot.surfaces[1])).?;
+    defer allocator.free(missing);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "no agent terminal context is selected") != null);
+
+    setWriteContext(&request, snapshot.surfaces[1].id);
     try std.testing.expectEqualStrings("surface-b", request.write_context_surface_id[0..request.write_context_surface_id_len]);
+    try std.testing.expect(try ensureWriteContext(&request, snapshot.surfaces[1]) == null);
 
     const message = (try ensureWriteContext(&request, snapshot.surfaces[0])).?;
     defer allocator.free(message);
-    try std.testing.expect(std.mem.indexOf(u8, message, "already bound to surface_id=surface-b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "selected agent terminal context is surface_id=surface-b") != null);
+
+    setWriteContext(&request, snapshot.surfaces[0].id);
+    try std.testing.expectEqualStrings("surface-a", request.write_context_surface_id[0..request.write_context_surface_id_len]);
+    try std.testing.expect(try ensureWriteContext(&request, snapshot.surfaces[0]) == null);
+    const switched = (try ensureWriteContext(&request, snapshot.surfaces[1])).?;
+    defer allocator.free(switched);
+    try std.testing.expect(std.mem.indexOf(u8, switched, "selected agent terminal context is surface_id=surface-a") != null);
 }
 
 test "ai chat R string literal escapes code for REPL eval" {
