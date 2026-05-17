@@ -1,4 +1,4 @@
-import type { DesktopPanelMode, MobileInputMode, MobileVisualZoom, StatusKind } from "../types";
+import type { DesktopPanelMode, LayoutSurface, MobileInputMode, MobileVisualZoom, StatusKind } from "../types";
 import { iconClose, iconKeyboard, iconMenu, iconPanelMode, themeToggleMarkup } from "../icons";
 import { bindThemeToggleButtons } from "../theme";
 import { activeSurfaceIdForInput, currentTab, state, pushNotice } from "../state";
@@ -48,6 +48,9 @@ import {
 } from "../weixin";
 
 let viewportRefitBound = false;
+let mobileSurfaceSelectorObserver: ResizeObserver | null = null;
+let mobileSurfaceSelectorResizeBound = false;
+let mobileSurfaceSelectorCollapseQueued = false;
 let weixinBindTimer: ReturnType<typeof setTimeout> | null = null;
 let weixinBindGeneration = 0;
 let weixinState: WeixinSettingsResponse | null = null;
@@ -194,7 +197,14 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
           <button type="button" class="icon-button" id="drawer-open" aria-label="Open menu">
             ${iconMenu()}
           </button>
-          <span class="mobile-bar-title" id="mobile-workspace-title">Phantty Remote</span>
+          <div class="mobile-bar-main">
+            <span class="mobile-bar-title" id="mobile-workspace-title">Phantty Remote</span>
+            <div class="mobile-surface-selector" id="mobile-surface-selector" data-collapsed="false" data-open="false" hidden>
+              <div class="mobile-surface-strip" id="mobile-surface-strip" aria-label="Surfaces"></div>
+              <button type="button" class="mobile-surface-menu-toggle" id="mobile-surface-menu-toggle" aria-expanded="false" aria-controls="mobile-surface-menu"></button>
+              <div class="mobile-surface-menu" id="mobile-surface-menu" hidden></div>
+            </div>
+          </div>
           <div class="mobile-chrome-controls" aria-label="Remote status controls">
             <span class="status-pip" id="mobile-status-pip" data-state="offline" title="Disconnected"></span>
             <button type="button" class="mobile-zoom-toggle" id="mobile-zoom-toggle" data-zoom="${mobileVisualZoomPercent(state.mobileVisualZoom)}" aria-label="${mobileVisualZoomToggleLabel(state.mobileVisualZoom)}" title="${mobileVisualZoomToggleLabel(state.mobileVisualZoom)}">
@@ -356,9 +366,14 @@ export function renderRemoteWorkspace(): void {
 
 function renderSurfaceStrip(): void {
   const strip = document.querySelector<HTMLDivElement>("#surface-strip");
-  if (!strip) return;
   const tab = currentTab();
   const surfaces = tab?.surfaces ?? [];
+  renderDesktopSurfaceStrip(strip, surfaces);
+  renderMobileSurfaceSelector(surfaces);
+}
+
+function renderDesktopSurfaceStrip(strip: HTMLDivElement | null, surfaces: LayoutSurface[]): void {
+  if (!strip) return;
   if (surfaces.length <= 1) {
     strip.replaceChildren();
     return;
@@ -370,13 +385,109 @@ function renderSurfaceStrip(): void {
       return `<button type="button" class="surface-chip${active}" data-surface-id="${escapeText(surface.id)}">${label}</button>`;
     })
     .join("");
-  strip.querySelectorAll<HTMLButtonElement>("[data-surface-id]").forEach((button) => {
+  bindSurfaceButtons(strip);
+}
+
+function renderMobileSurfaceSelector(surfaces: LayoutSurface[]): void {
+  const selector = document.querySelector<HTMLDivElement>("#mobile-surface-selector");
+  const strip = document.querySelector<HTMLDivElement>("#mobile-surface-strip");
+  const toggle = document.querySelector<HTMLButtonElement>("#mobile-surface-menu-toggle");
+  const menu = document.querySelector<HTMLDivElement>("#mobile-surface-menu");
+  if (!selector || !strip || !toggle || !menu) return;
+
+  if (surfaces.length <= 1) {
+    selector.hidden = true;
+    selector.dataset.open = "false";
+    selector.dataset.collapsed = "false";
+    strip.replaceChildren();
+    menu.replaceChildren();
+    menu.hidden = true;
+    toggle.textContent = "";
+    toggle.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  selector.hidden = false;
+  const activeSurface =
+    surfaces.find((surface) => surface.id === state.selectedSurfaceId) ?? surfaces[0] ?? null;
+  const activeLabel = activeSurface ? activeSurface.title || shortSurfaceId(activeSurface.id) : "Surfaces";
+  const activeLabelEscaped = escapeText(activeLabel);
+
+  strip.innerHTML = surfaces
+    .map((surface) => {
+      const active = surface.id === state.selectedSurfaceId ? " active" : "";
+      const label = escapeText(surface.title || shortSurfaceId(surface.id));
+      return `<button type="button" class="surface-chip mobile-surface-chip${active}" data-surface-id="${escapeText(surface.id)}">${label}</button>`;
+    })
+    .join("");
+  menu.innerHTML = surfaces
+    .map((surface) => {
+      const active = surface.id === state.selectedSurfaceId ? " active" : "";
+      const label = escapeText(surface.title || shortSurfaceId(surface.id));
+      return `<button type="button" class="mobile-surface-menu-item${active}" data-surface-id="${escapeText(surface.id)}">${label}</button>`;
+    })
+    .join("");
+  toggle.innerHTML = `<span>${activeLabelEscaped}</span><span aria-hidden="true">▾</span>`;
+  toggle.setAttribute("aria-label", `Choose surface, current surface ${activeLabel}`);
+  toggle.onclick = () => {
+    const open = selector.dataset.open === "true";
+    setMobileSurfaceMenuOpen(!open);
+  };
+
+  bindSurfaceButtons(strip);
+  bindSurfaceButtons(menu);
+  queueMobileSurfaceSelectorCollapse();
+}
+
+function bindSurfaceButtons(root: HTMLElement): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-surface-id]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedSurfaceId = button.dataset.surfaceId ?? state.selectedSurfaceId;
+      setMobileSurfaceMenuOpen(false);
       renderRemoteWorkspace();
       focusAndFitSelectedSurface();
     });
   });
+}
+
+function setMobileSurfaceMenuOpen(open: boolean): void {
+  const selector = document.querySelector<HTMLDivElement>("#mobile-surface-selector");
+  const toggle = document.querySelector<HTMLButtonElement>("#mobile-surface-menu-toggle");
+  const menu = document.querySelector<HTMLDivElement>("#mobile-surface-menu");
+  if (!selector || !toggle || !menu) return;
+  const nextOpen = open && selector.dataset.collapsed === "true" && !selector.hidden;
+  selector.dataset.open = String(nextOpen);
+  toggle.setAttribute("aria-expanded", String(nextOpen));
+  menu.hidden = !nextOpen;
+}
+
+function queueMobileSurfaceSelectorCollapse(): void {
+  if (mobileSurfaceSelectorCollapseQueued) return;
+  mobileSurfaceSelectorCollapseQueued = true;
+  requestAnimationFrame(() => {
+    mobileSurfaceSelectorCollapseQueued = false;
+    syncMobileSurfaceSelectorCollapse();
+  });
+}
+
+function syncMobileSurfaceSelectorCollapse(): void {
+  const selector = document.querySelector<HTMLDivElement>("#mobile-surface-selector");
+  const strip = document.querySelector<HTMLDivElement>("#mobile-surface-strip");
+  if (!selector || !strip || selector.hidden) {
+    setMobileSurfaceMenuOpen(false);
+    return;
+  }
+
+  const menuWasOpen = selector.dataset.open === "true";
+  selector.dataset.collapsed = "false";
+  const shouldCollapse = strip.scrollWidth > strip.clientWidth + 1;
+  selector.dataset.collapsed = String(shouldCollapse);
+
+  if (!shouldCollapse) {
+    setMobileSurfaceMenuOpen(false);
+  } else if (menuWasOpen) {
+    setMobileSurfaceMenuOpen(true);
+  }
 }
 
 export function updateInputUi(): void {
@@ -462,6 +573,38 @@ function bindMobileChrome(): void {
   document.querySelector<HTMLButtonElement>("#mobile-zoom-toggle")?.addEventListener("click", () => {
     setMobileVisualZoom(nextMobileVisualZoom(state.mobileVisualZoom));
   });
+  bindMobileSurfaceSelectorLayout();
+}
+
+function bindMobileSurfaceSelectorLayout(): void {
+  mobileSurfaceSelectorObserver?.disconnect();
+  mobileSurfaceSelectorObserver = null;
+
+  const selector = document.querySelector<HTMLDivElement>("#mobile-surface-selector");
+  const bar = document.querySelector<HTMLElement>(".mobile-bar");
+  if (selector && bar && "ResizeObserver" in window) {
+    mobileSurfaceSelectorObserver = new ResizeObserver(() => {
+      queueMobileSurfaceSelectorCollapse();
+    });
+    mobileSurfaceSelectorObserver.observe(selector);
+    mobileSurfaceSelectorObserver.observe(bar);
+  }
+
+  if (!mobileSurfaceSelectorResizeBound) {
+    mobileSurfaceSelectorResizeBound = true;
+    window.addEventListener("resize", queueMobileSurfaceSelectorCollapse);
+    document.addEventListener("pointerdown", (event) => {
+      const selectorNow = document.querySelector<HTMLDivElement>("#mobile-surface-selector");
+      if (!selectorNow || selectorNow.dataset.open !== "true") return;
+      if (event.target instanceof Node && selectorNow.contains(event.target)) return;
+      setMobileSurfaceMenuOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setMobileSurfaceMenuOpen(false);
+    });
+  }
+
+  queueMobileSurfaceSelectorCollapse();
 }
 
 function setMobileInputMode(mode: MobileInputMode): void {

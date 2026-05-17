@@ -159,7 +159,7 @@
   .workspace {
     grid-column: 1;
     grid-row: 1;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     min-height: 0;
   }
 
@@ -189,6 +189,18 @@
     width: 40px;
     height: 40px;
     min-width: 40px;
+  }
+
+  .mobile-bar-main {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .mobile-bar-main .mobile-bar-title {
+    flex: 0 1 auto;
+    max-width: min(92px, 34vw);
   }
 
   .mobile-chrome-controls {
@@ -274,7 +286,7 @@
   }
 
   .terminal-panel {
-    grid-row: 3;
+    grid-row: 2;
     grid-template-rows: minmax(0, 1fr);
     min-height: 0;
     padding: 6px;
@@ -288,29 +300,38 @@
     border-radius: var(--radius);
   }
 
-  .surface-strip {
-    grid-row: 2;
+  .mobile-surface-selector {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .mobile-surface-selector[hidden] {
+    display: none;
+  }
+
+  .mobile-surface-strip {
     display: flex;
-    min-height: 36px;
+    min-width: 0;
     gap: 6px;
-    padding: 4px max(10px, var(--safe-right)) 4px max(10px, var(--safe-left));
-    overflow-x: auto;
+    overflow: hidden;
     scrollbar-width: none;
-    border-bottom: 1px solid var(--line);
-    background: var(--surface-overlay);
   }
 
-  .surface-strip::-webkit-scrollbar {
+  .mobile-surface-strip::-webkit-scrollbar {
     display: none;
   }
 
-  .surface-strip:empty {
+  .mobile-surface-strip:empty {
     display: none;
   }
 
-  .surface-chip {
+  .mobile-surface-chip,
+  .mobile-surface-menu-toggle,
+  .mobile-surface-menu-item {
     flex: 0 0 auto;
-    max-width: 62vw;
+    max-width: 128px;
     min-height: 28px;
     padding: 5px 10px;
     border: 1px solid var(--line);
@@ -326,10 +347,60 @@
     font-family: "JetBrains Mono", ui-monospace, monospace;
   }
 
-  .surface-chip.active {
+  .mobile-surface-chip.active,
+  .mobile-surface-menu-item.active {
     color: var(--accent);
     border-color: var(--selected-ring);
     background: var(--accent-soft);
+  }
+
+  .mobile-surface-menu-toggle {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    width: min(128px, 100%);
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .mobile-surface-menu-toggle span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-surface-selector[data-collapsed="true"] .mobile-surface-strip {
+    display: none;
+  }
+
+  .mobile-surface-selector[data-collapsed="true"] .mobile-surface-menu-toggle {
+    display: inline-flex;
+  }
+
+  .mobile-surface-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    display: grid;
+    min-width: min(220px, 74vw);
+    max-width: min(260px, 78vw);
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-overlay-strong);
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.18);
+  }
+
+  .mobile-surface-menu[hidden] {
+    display: none;
+  }
+
+  .mobile-surface-menu-item {
+    width: 100%;
+    max-width: none;
+    text-align: left;
   }
 
   .panels-stage[data-mobile-mode="single"] .remote-panel {
@@ -400,7 +471,7 @@
     grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .console-shell[data-mobile-surface-kind="ai_chat"] .surface-strip,
+  .console-shell[data-mobile-surface-kind="ai_chat"] .mobile-surface-selector,
   .console-shell[data-mobile-surface-kind="ai_chat"] .vkbd {
     display: none;
   }

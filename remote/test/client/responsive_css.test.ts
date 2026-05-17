@@ -72,6 +72,45 @@ test("mobile top bar uses compact status controls instead of large mode buttons"
   }
 });
 
+test("mobile surface selector moves into the top bar and removes the second chrome row", async () => {
+  const css = await readFile(responsiveCssUrl, "utf8");
+  const markup = await readFile(consoleViewUrl, "utf8");
+  const workspaceRule = declarationsForSelector(css, ".workspace").join("\n");
+  const terminalPanelRule = declarationsForSelector(css, ".terminal-panel").join("\n");
+  const selectorRule = declarationsForSelector(css, ".mobile-surface-selector").join("\n");
+  const stripRule = declarationsForSelector(css, ".mobile-surface-strip").join("\n");
+
+  assert.match(markup, /class="mobile-bar-main"[\s\S]*id="mobile-surface-selector"[\s\S]*class="mobile-chrome-controls"/);
+  assert.match(markup, /id="mobile-surface-strip"/);
+  assert.match(markup, /id="mobile-surface-menu-toggle"/);
+  assert.match(markup, /id="mobile-surface-menu"/);
+  assert.match(workspaceRule, /grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s*;/);
+  assert.match(terminalPanelRule, /grid-row:\s*2\s*;/);
+  assert.match(selectorRule, /min-width:\s*0\s*;/);
+  assert.match(stripRule, /overflow:\s*hidden\s*;/);
+});
+
+test("mobile surface selector collapses into a menu before crowding right controls", async () => {
+  const css = await readFile(responsiveCssUrl, "utf8");
+  const markup = await readFile(consoleViewUrl, "utf8");
+  const collapsedStripRule = declarationsForSelector(
+    css,
+    '.mobile-surface-selector[data-collapsed="true"] .mobile-surface-strip',
+  ).join("\n");
+  const collapsedToggleRule = declarationsForSelector(
+    css,
+    '.mobile-surface-selector[data-collapsed="true"] .mobile-surface-menu-toggle',
+  ).join("\n");
+  const menuRule = declarationsForSelector(css, ".mobile-surface-menu").join("\n");
+
+  assert.match(markup, /syncMobileSurfaceSelectorCollapse/);
+  assert.match(markup, /scrollWidth/);
+  assert.match(markup, /clientWidth/);
+  assert.match(collapsedStripRule, /display:\s*none\s*;/);
+  assert.match(collapsedToggleRule, /display:\s*inline-flex\s*;/);
+  assert.match(menuRule, /position:\s*absolute\s*;/);
+});
+
 test("mobile view mode keeps the keyboard status control subdued", async () => {
   const css = await readFile(responsiveCssUrl, "utf8");
   const keyboardViewRule = declarationsForSelector(
