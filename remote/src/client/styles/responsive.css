@@ -325,25 +325,9 @@
     border-radius: var(--radius);
   }
 
-  .panels-stage[data-mobile-mode="single"] .panel-header {
-    min-height: 28px;
-    padding: 6px 10px;
-    border-radius: var(--radius) var(--radius) 0 0;
-  }
-
-  .panels-stage[data-mobile-mode="single"] .panel-header small {
-    display: none;
-  }
-
-  .panels-stage[data-mobile-mode="single"] .panel-copy {
-    min-height: 24px;
-    padding: 0 10px;
-    font-size: 10px;
-  }
-
   .panels-stage[data-mobile-mode="single"] .terminal-mount {
     padding: 4px;
-    border-radius: 0 0 var(--radius) var(--radius);
+    border-radius: var(--radius);
     overflow: hidden;
     touch-action: none;
   }
@@ -357,6 +341,16 @@
     touch-action: none;
   }
 
+  .console-shell[data-mobile-input-mode="view"] .panels-stage[data-mobile-mode="single"] .terminal-mount,
+  .console-shell[data-mobile-input-mode="view"] .panels-stage[data-mobile-mode="single"] .terminal-host {
+    touch-action: auto;
+  }
+
+  .console-shell[data-mobile-input-mode="view"] .terminal-host .xterm {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
   .canvas-scrollbar[data-visible="true"] {
     display: none;
   }
@@ -368,14 +362,6 @@
   .console-shell[data-mobile-vkbd-visible="true"] .vkbd {
     display: block;
     grid-row: 2;
-  }
-
-  .console-shell[data-mobile-vkbd-visible="true"] .panels-stage[data-mobile-mode="single"] .remote-panel {
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .console-shell[data-mobile-vkbd-visible="true"] .panels-stage[data-mobile-mode="single"] .panel-header {
-    display: none;
   }
 
   .console-shell[data-mobile-vkbd-visible="true"] .panels-stage[data-mobile-mode="single"] .terminal-mount {
@@ -407,7 +393,6 @@
   }
 
   .console-shell[data-mobile-surface-kind="ai_chat"] .panels-stage[data-mobile-mode="single"] .remote-panel::before,
-  .console-shell[data-mobile-surface-kind="ai_chat"] .panels-stage[data-mobile-mode="single"] .panel-header,
   .console-shell[data-mobile-surface-kind="ai_chat"] .panels-stage[data-mobile-mode="single"] .terminal-mount::after {
     display: none;
   }

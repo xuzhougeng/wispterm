@@ -44,9 +44,6 @@ export type RelayMessage = {
 
 export type SurfaceView = {
   panel: HTMLElement;
-  title: HTMLSpanElement;
-  meta: HTMLElement;
-  copyButton: HTMLButtonElement;
   mount: HTMLDivElement;
   host: HTMLDivElement;
   scrollbar: HTMLDivElement;

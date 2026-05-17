@@ -25,6 +25,7 @@ export type CanvasPanDragInput = {
   mobile: boolean;
   isPrimary: boolean;
   button: number;
+  nativeSelection?: boolean;
 };
 
 export type CanvasWheelInput = {
@@ -162,6 +163,7 @@ export function isCanvasDrag(delta: CanvasPoint): boolean {
 
 export function shouldStartCanvasPanDrag(input: CanvasPanDragInput): boolean {
   if (!input.isPrimary) return false;
+  if (input.mobile && input.nativeSelection) return false;
   return input.mobile ? input.button === 0 : input.button === 1;
 }
 

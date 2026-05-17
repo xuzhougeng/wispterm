@@ -168,6 +168,17 @@ test("shouldStartCanvasPanDrag uses touch primary drag on mobile and middle drag
   assert.equal(shouldStartCanvasPanDrag({ mobile: false, isPrimary: false, button: 1 }), false);
 });
 
+test("shouldStartCanvasPanDrag lets mobile view mode keep native text selection", () => {
+  assert.equal(
+    shouldStartCanvasPanDrag({ mobile: true, isPrimary: true, button: 0, nativeSelection: true }),
+    false,
+  );
+  assert.equal(
+    shouldStartCanvasPanDrag({ mobile: false, isPrimary: true, button: 1, nativeSelection: true }),
+    true,
+  );
+});
+
 test("desktop wheel lets xterm history scroll before canvas panning", () => {
   assert.equal(terminalCanScrollHistory({ baseY: 20, viewportY: 20, deltaY: -120 }), true);
   assert.equal(terminalCanScrollHistory({ baseY: 20, viewportY: 0, deltaY: -120 }), false);

@@ -32,7 +32,6 @@
   --terminal-fg: #dce7f3;
   --terminal-cursor: #ffd479;
   --terminal-selection: #334155;
-  --panel-header-bg: rgba(19, 28, 40, 0.92);
   --input-bg: #0b1119;
   --input-focus-ring: rgba(246, 199, 111, 0.14);
   --vkbd-bar-from: rgba(15, 23, 34, 0.96);
@@ -89,7 +88,6 @@
   --terminal-fg: #1c2330;
   --terminal-cursor: #b97a3d;
   --terminal-selection: #d6cdb8;
-  --panel-header-bg: rgba(236, 229, 211, 0.92);
   --input-bg: #fffdf7;
   --input-focus-ring: rgba(185, 122, 61, 0.18);
   --vkbd-bar-from: rgba(255, 253, 247, 0.96);

@@ -24,6 +24,32 @@ test("xterm viewport remains scrollable for remote history", async () => {
   assert.match(viewportRule, /scrollbar-width:\s*none\s*;/);
 });
 
+test("terminal panels do not reserve redundant per-panel headers", async () => {
+  const css = await readFile(consoleCssUrl, "utf8");
+  const panelRule = declarationsForSelector(css, ".remote-panel").join("\n");
+  const mountRule = declarationsForSelector(css, ".terminal-mount").join("\n");
+
+  assert.match(panelRule, /grid-template-rows:\s*minmax\(0,\s*1fr\)\s*;/);
+  assert.doesNotMatch(css, /\.panel-copy\b/);
+  assert.match(mountRule, /border-radius:\s*var\(--radius\)\s*;/);
+});
+
+test("mobile view mode allows native terminal text selection", async () => {
+  const css = await readFile(responsiveCssUrl, "utf8");
+  const hostRule = declarationsForSelector(
+    css,
+    '.console-shell[data-mobile-input-mode="view"] .panels-stage[data-mobile-mode="single"] .terminal-host',
+  ).join("\n");
+  const xtermRule = declarationsForSelector(
+    css,
+    '.console-shell[data-mobile-input-mode="view"] .terminal-host .xterm',
+  ).join("\n");
+
+  assert.match(hostRule, /touch-action:\s*auto\s*;/);
+  assert.match(xtermRule, /user-select:\s*text\s*;/);
+  assert.match(xtermRule, /-webkit-user-select:\s*text\s*;/);
+});
+
 function declarationsForSelector(css: string, selector: string): string[] {
   const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
   const matches: string[] = [];
