@@ -111,6 +111,15 @@ test("mobile surface selector collapses into a menu before crowding right contro
   assert.match(menuRule, /position:\s*absolute\s*;/);
 });
 
+test("mobile surface menu uses an opaque layer over terminal content", async () => {
+  const css = await readFile(responsiveCssUrl, "utf8");
+  const menuRule = declarationsForSelector(css, ".mobile-surface-menu").join("\n");
+
+  assert.match(menuRule, /z-index:\s*(?:[4-9][0-9]|[1-9][0-9]{2,})\s*;/);
+  assert.match(menuRule, /background:\s*var\(--panel-strong\)\s*;/);
+  assert.doesNotMatch(menuRule, /surface-overlay/);
+});
+
 test("mobile view mode keeps the keyboard status control subdued", async () => {
   const css = await readFile(responsiveCssUrl, "utf8");
   const keyboardViewRule = declarationsForSelector(

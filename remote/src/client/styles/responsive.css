@@ -381,7 +381,7 @@
     position: absolute;
     top: calc(100% + 6px);
     left: 0;
-    z-index: 30;
+    z-index: 60;
     display: grid;
     min-width: min(220px, 74vw);
     max-width: min(260px, 78vw);
@@ -389,8 +389,8 @@
     padding: 6px;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
-    background: var(--surface-overlay-strong);
-    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.18);
+    background: var(--panel-strong);
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
   }
 
   .mobile-surface-menu[hidden] {
