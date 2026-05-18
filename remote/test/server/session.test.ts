@@ -177,3 +177,126 @@ test("RemoteSession reports Phantty peer status to browsers", () => {
     phanttyConnected: false,
   });
 });
+
+test("RemoteSession requests AI Agent open and resolves the matching result", async () => {
+  const session = new RemoteSession("alpha");
+  const phantty = new FakeSocket();
+  session.attachPhantty(phantty as never);
+
+  const pending = session.requestAiAgentOpen("req-1", 50);
+  assert.deepEqual(JSON.parse(phantty.sent.at(-1) ?? "{}"), {
+    type: "open-ai-agent",
+    requestId: "req-1",
+  });
+
+  phantty.emit(
+    "message",
+    Buffer.from(
+      JSON.stringify({
+        type: "open-ai-agent-result",
+        requestId: "req-1",
+        status: "opened",
+      }),
+    ),
+  );
+
+  assert.equal(await pending, "opened");
+});
+
+test("RemoteSession ignores AI Agent open results with unknown statuses", async () => {
+  const session = new RemoteSession("alpha");
+  const phantty = new FakeSocket();
+  session.attachPhantty(phantty as never);
+
+  const pending = session.requestAiAgentOpen("req-invalid", 10);
+  phantty.emit(
+    "message",
+    Buffer.from(
+      JSON.stringify({
+        type: "open-ai-agent-result",
+        requestId: "req-invalid",
+        status: "bogus",
+      }),
+    ),
+  );
+
+  assert.equal(await pending, "timeout");
+});
+
+test("RemoteSession AI Agent open request times out without a matching result", async () => {
+  const session = new RemoteSession("alpha");
+  const phantty = new FakeSocket();
+  session.attachPhantty(phantty as never);
+
+  assert.equal(await session.requestAiAgentOpen("req-timeout", 5), "timeout");
+});
+
+test("RemoteSession AI Agent open request reports offline when Phantty is disconnected", async () => {
+  const session = new RemoteSession("alpha");
+
+  assert.equal(await session.requestAiAgentOpen("req-offline", 5), "offline");
+});
+
+test("RemoteSession AI Agent open request reports offline when send fails", async () => {
+  const session = new RemoteSession("alpha");
+  const phantty = new ThrowingSocket();
+  session.attachPhantty(phantty as never);
+
+  assert.equal(await session.requestAiAgentOpen("req-send-fails", 50), "offline");
+});
+
+test("RemoteSession consumes AI Agent open results without broadcasting them to browsers", () => {
+  const session = new RemoteSession("alpha");
+  const browser = new FakeSocket();
+  const phantty = new FakeSocket();
+  session.attachBrowser(browser as never);
+  session.attachPhantty(phantty as never);
+  const sentBefore = browser.sent.length;
+
+  phantty.emit(
+    "message",
+    Buffer.from(
+      JSON.stringify({
+        type: "open-ai-agent-result",
+        requestId: "req-unmatched",
+        status: "opened",
+      }),
+    ),
+  );
+
+  assert.equal(browser.sent.length, sentBefore);
+});
+
+test("RemoteSession resolves pending AI Agent open requests offline when Phantty closes", async () => {
+  const session = new RemoteSession("alpha");
+  const phantty = new FakeSocket();
+  session.attachPhantty(phantty as never);
+
+  const pending = session.requestAiAgentOpen("req-close", 50);
+  phantty.emit("close");
+
+  assert.equal(await pending, "offline");
+});
+
+test("RemoteSession resolves pending AI Agent open requests offline when Phantty errors", async () => {
+  const session = new RemoteSession("alpha");
+  const phantty = new FakeSocket();
+  session.attachPhantty(phantty as never);
+
+  const pending = session.requestAiAgentOpen("req-error", 50);
+  phantty.emit("error", new Error("socket failed"));
+
+  assert.equal(await pending, "offline");
+});
+
+test("RemoteSession resolves pending AI Agent open requests offline when Phantty is replaced", async () => {
+  const session = new RemoteSession("alpha");
+  const firstPhantty = new FakeSocket();
+  const nextPhantty = new FakeSocket();
+  session.attachPhantty(firstPhantty as never);
+
+  const pending = session.requestAiAgentOpen("req-replaced", 50);
+  session.attachPhantty(nextPhantty as never);
+
+  assert.equal(await pending, "offline");
+});
