@@ -99,7 +99,10 @@ async function sendAi(session: RemoteSession, text: string, timeoutMs = AI_AGENT
   if (result === "timeout") return { text: "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
 
   const openedAi = await waitForAiChatSurface(session, timeoutMs);
-  if (!openedAi) return { text: "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
+  if (!openedAi) {
+    if (!session.isPhanttyConnected()) return { text: "Phantty 当前离线，无法打开 AI Agent。" };
+    return { text: "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
+  }
   return sendAiToSurface(session, openedAi, text);
 }
 

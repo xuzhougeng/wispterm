@@ -420,6 +420,12 @@ pub const Client = struct {
         const open_fn = self.ai_agent_open_fn;
         self.mutex.unlock();
 
+        if (ctx == null or open_fn == null) {
+            const message = buildAiAgentOpenResultMessage(self.allocator, request_id, .failed) catch return;
+            self.enqueueOwnedMessage(message);
+            return;
+        }
+
         if (ctx) |callback_ctx| {
             if (open_fn) |callback| {
                 callback(callback_ctx, request_id);
@@ -1064,6 +1070,24 @@ test "open ai agent message dispatches request id" {
 
     try std.testing.expect(ctx.called);
     try std.testing.expectEqualStrings("remote-ai-1", ctx.request_id_buf[0..ctx.request_id_len]);
+}
+
+test "open ai agent without registered opener queues failed result" {
+    const allocator = std.testing.allocator;
+    var client = try initTestClient(allocator);
+    defer client.deinit();
+
+    handleIncomingMessage(&client, "{\"type\":\"open-ai-agent\",\"requestId\":\"remote-ai-1\"}");
+
+    const message = client.popMessage() orelse {
+        return error.ExpectedQueuedOpenAiAgentResult;
+    };
+    defer allocator.free(message);
+
+    try std.testing.expectEqualStrings(
+        "{\"type\":\"open-ai-agent-result\",\"requestId\":\"remote-ai-1\",\"status\":\"failed\"}",
+        message,
+    );
 }
 
 test "open ai agent result message escapes request id" {

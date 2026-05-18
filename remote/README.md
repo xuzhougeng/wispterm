@@ -220,11 +220,13 @@ working; the server replies `pong` without touching AI Chat. Plain Weixin text
 is routed to the selected Remote session's AI Chat surface. If that session has
 no AI Chat surface, the relay asks Phantty to open a default Agent tab first;
 Phantty uses the desktop `New Agent` default profile path and reports a setup
-message if no AI profile exists. The server confirms receipt immediately,
-checks the AI Chat snapshot at 10, 30, 60, and 120 seconds for progress, and
-also listens for later AI Chat snapshot updates. Tool activity returns a
-still-processing reply; a completed AI answer returns the latest assistant
-message. Direct terminal input requires `/term <command>` or `/keys <text>`.
+message if no AI profile exists. After the prompt is routed to an AI Chat
+surface, the server confirms receipt; setup, offline, or timeout errors can be
+returned instead. The server checks the AI Chat snapshot at 10, 30, 60, and 120
+seconds for progress, and also listens for later AI Chat snapshot updates. Tool
+activity returns a still-processing reply; a completed AI answer returns the
+latest assistant message. Direct terminal input requires `/term <command>` or
+`/keys <text>`.
 
 ## Relay Messages
 

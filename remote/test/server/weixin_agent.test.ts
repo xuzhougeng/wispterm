@@ -275,6 +275,30 @@ test("opened AI Agent result without later AI Chat layout returns layout timeout
   assert.equal(await pending.then((reply) => reply.text), "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。");
 });
 
+test("opened AI Agent result followed by Phantty disconnect returns offline message", async () => {
+  sent = [];
+  const session = sessionWithoutAiChat();
+  const pending = routeWeixinText({
+    text: "hello ai",
+    settings: { enabled: true, target_session: "alpha-secret", reply_timeout_ms: 10000 },
+    sessions: [{ key: "alpha-secret", session }],
+    aiAgentOpenTimeoutMs: 5,
+  });
+
+  const openRequest = await waitForSentType("open-ai-agent");
+  phanttySocket(session).emit(
+    "message",
+    Buffer.from(JSON.stringify({
+      type: "open-ai-agent-result",
+      requestId: openRequest.requestId,
+      status: "opened",
+    })),
+  );
+  phanttySocket(session).emit("close");
+
+  assert.equal(await pending.then((reply) => reply.text), "Phantty 当前离线，无法打开 AI Agent。");
+});
+
 test("AI Agent open request timeout returns layout timeout message", async () => {
   sent = [];
   const reply = await routeWeixinText({
