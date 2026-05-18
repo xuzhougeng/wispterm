@@ -72,6 +72,26 @@ test("mobile top bar uses compact status controls instead of large mode buttons"
   }
 });
 
+test("status lights expose clickable red green and yellow latency states", async () => {
+  const css = await readFile(consoleCssUrl, "utf8");
+  const markup = await readFile(consoleViewUrl, "utf8");
+  const dotRule = declarationsForSelector(css, ".status-dot").join("\n");
+  const pipRule = declarationsForSelector(css, ".status-pip").join("\n");
+  const onlineDotRule = declarationsForSelector(css, '.status-dot[data-state="online"]').join("\n");
+  const highLatencyDotRule = declarationsForSelector(css, '.status-dot[data-state="high-latency"]').join("\n");
+  const highLatencyPipRule = declarationsForSelector(css, '.status-pip[data-state="high-latency"]').join("\n");
+
+  assert.match(markup, /button type="button" class="status-dot" id="status-dot"/);
+  assert.match(markup, /button type="button" class="status-pip" id="mobile-status-pip"/);
+  assert.match(markup, /id="status-latency-detail"/);
+  assert.match(markup, /id="mobile-status-latency"/);
+  assert.match(dotRule, /background:\s*var\(--danger\)\s*;/);
+  assert.match(pipRule, /background:\s*var\(--danger\)\s*;/);
+  assert.match(onlineDotRule, /background:\s*var\(--ok\)\s*;/);
+  assert.match(highLatencyDotRule, /background:\s*var\(--warning\)\s*;/);
+  assert.match(highLatencyPipRule, /background:\s*var\(--warning\)\s*;/);
+});
+
 test("mobile surface selector moves into the top bar and removes the second chrome row", async () => {
   const css = await readFile(responsiveCssUrl, "utf8");
   const markup = await readFile(consoleViewUrl, "utf8");

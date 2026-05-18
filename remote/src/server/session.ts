@@ -2,10 +2,12 @@ import type { WebSocket } from "ws";
 
 export type RelayMessage = {
   type?: string;
+  at?: number;
   data?: string;
   encoding?: string;
   surfaceId?: string;
   message?: string;
+  phanttyConnected?: boolean;
   activeTab?: number;
   tabs?: Array<{
     index: number;
@@ -150,12 +152,14 @@ export class RemoteSession {
     this.phantty = socket;
     trackHeartbeat(socket);
     this.broadcast({ type: "notice", message: "Phantty connected" });
+    this.broadcastPeerStatus();
 
     socket.on("error", (err) => {
       if (this.phantty !== socket) return;
       console.warn(`[remote] Phantty websocket error: ${socketErrorMessage(err)}`);
       this.phantty = null;
       this.broadcast({ type: "notice", message: "Phantty disconnected" });
+      this.broadcastPeerStatus();
       terminateSocket(socket);
     });
 
@@ -163,7 +167,7 @@ export class RemoteSession {
       const message = safeJson(raw.toString());
       if (!message) return;
       if (message.type === "ping") {
-        safeSend(socket, { type: "pong" });
+        safeSend(socket, pongMessage(message));
         return;
       }
       if (message.type === "pong") return;
@@ -186,6 +190,7 @@ export class RemoteSession {
       if (this.phantty !== socket) return;
       this.phantty = null;
       this.broadcast({ type: "notice", message: "Phantty disconnected" });
+      this.broadcastPeerStatus();
     });
   }
 
@@ -193,6 +198,7 @@ export class RemoteSession {
     this.browsers.add(socket);
     trackHeartbeat(socket);
     safeSend(socket, { type: "notice", message: "Browser paired; input enabled" });
+    this.sendPeerStatus(socket);
     if (this.isPhanttyConnected()) safeSend(socket, { type: "notice", message: "Phantty connected" });
     if (this.lastLayout) safeSend(socket, this.lastLayout);
 
@@ -206,7 +212,7 @@ export class RemoteSession {
       const message = safeJson(raw.toString());
       if (!message) return;
       if (message.type === "ping") {
-        safeSend(socket, { type: "pong" });
+        safeSend(socket, pongMessage(message));
         return;
       }
       if (message.type === "pong") return;
@@ -241,6 +247,14 @@ export class RemoteSession {
       }
     }
   }
+
+  private sendPeerStatus(socket: WebSocket): void {
+    safeSend(socket, { type: "peer-status", phanttyConnected: this.isPhanttyConnected() });
+  }
+
+  private broadcastPeerStatus(): void {
+    this.broadcast({ type: "peer-status", phanttyConnected: this.isPhanttyConnected() });
+  }
 }
 
 export function safeSend(socket: WebSocket, message: unknown): boolean {
@@ -271,6 +285,10 @@ function terminateSocket(socket: WebSocket): void {
 
 function socketErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function pongMessage(message: RelayMessage): RelayMessage {
+  return typeof message.at === "number" ? { type: "pong", at: message.at } : { type: "pong" };
 }
 
 function isWritableTerminalSurface(surface: LayoutSurface): boolean {

@@ -11,6 +11,7 @@
   --accent-soft: rgba(246, 199, 111, 0.18);
   --accent-ink: #19130a;
   --danger: #ff6978;
+  --warning: #f6c76f;
   --ok: #64d69a;
   --bg-glow-1: rgba(246, 199, 111, 0.18);
   --bg-glow-2: rgba(83, 177, 255, 0.13);
@@ -67,6 +68,7 @@
   --accent-soft: rgba(185, 122, 61, 0.18);
   --accent-ink: #fffaf0;
   --danger: #c8344a;
+  --warning: #b97a3d;
   --ok: #2f9e6a;
   --bg-glow-1: rgba(185, 122, 61, 0.18);
   --bg-glow-2: rgba(70, 130, 200, 0.12);

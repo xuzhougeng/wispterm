@@ -1,8 +1,14 @@
-import type { MeResponse, StatusKind } from "./types";
+import type { ConnectionStatus, MeResponse } from "./types";
 import { state, currentTab, pushNotice } from "./state";
 import { isLayoutMessage, normalizeLayout } from "./layout";
 import { decodeHex, encodeHex, safeJson } from "./utils";
 import { saveSessionKey } from "./storage";
+import {
+  connectionStatusConnecting,
+  connectionStatusForLatency,
+  connectionStatusOffline,
+  connectionStatusWithoutPeer,
+} from "./connection_status";
 import {
   disposeSurfaceViews,
   reconcileSurfaceViews,
@@ -19,7 +25,7 @@ type TransportHooks = {
   onWorkspaceChanged: () => void;
   onNoticesChanged: () => void;
   onInputUiChanged: () => void;
-  setStatus: (kind: StatusKind, text: string) => void;
+  setStatus: (status: ConnectionStatus) => void;
 };
 
 let hooks: TransportHooks = {
@@ -47,6 +53,9 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let pingTimer: ReturnType<typeof setInterval> | null = null;
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 let lastMessageAt = 0;
+let lastPingSentAt = 0;
+let lastLatencyMs: number | null = null;
+let phanttyPeerConnected = false;
 
 export function api(path: string, init?: RequestInit): Promise<Response> {
   return fetch(path, {
@@ -76,6 +85,7 @@ export function connect(sessionKey: string): void {
   state.selectedSurfaceId = null;
   state.notices = [];
   state.hasSeenLayout = false;
+  resetConnectionHealth();
   saveSessionKey(sessionKey);
   hooks.onWorkspaceChanged();
   hooks.onNoticesChanged();
@@ -84,13 +94,13 @@ export function connect(sessionKey: string): void {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${protocol}//${location.host}/ws/browser?session=${encodeURIComponent(sessionKey)}`);
   state.socket = ws;
-  hooks.setStatus("connecting", "Connecting...");
+  hooks.setStatus(connectionStatusConnecting("Connecting..."));
   hooks.onInputUiChanged();
 
   ws.addEventListener("open", () => {
     if (state.socket !== ws) return;
     reconnectAttempts = 0;
-    hooks.setStatus("online", "Connected");
+    updateConnectionStatus();
     pushNotice("Connected. Waiting for Phantty layout...");
     hooks.onNoticesChanged();
     hooks.onInputUiChanged();
@@ -102,10 +112,11 @@ export function connect(sessionKey: string): void {
     if (!wasActive) return;
     stopHeartbeat();
     state.socket = null;
+    resetConnectionHealth();
     if (state.activeSessionKey === sessionKey) {
       scheduleReconnect();
     } else {
-      hooks.setStatus("offline", "Disconnected");
+      hooks.setStatus(connectionStatusOffline("Disconnected"));
     }
     hooks.onInputUiChanged();
   });
@@ -125,10 +136,20 @@ export function connect(sessionKey: string): void {
 
     if (message.type === "pong" || message.type === "ping") {
       if (message.type === "ping") safeSocketSend(ws, { type: "pong" });
+      else updateLatencyFromPong(message);
+      return;
+    }
+
+    if (message.type === "peer-status") {
+      phanttyPeerConnected = message.phanttyConnected === true;
+      updateConnectionStatus();
+      hooks.onInputUiChanged();
       return;
     }
 
     if (isLayoutMessage(message)) {
+      phanttyPeerConnected = true;
+      updateConnectionStatus();
       state.layoutState = normalizeLayout(message);
       if (!state.hasSeenLayout) {
         state.selectedTabIndex = state.layoutState.activeTab;
@@ -172,7 +193,8 @@ export function disconnect(): void {
     try { state.socket.close(); } catch { /* ignore */ }
     state.socket = null;
   }
-  hooks.setStatus("offline", "Disconnected");
+  resetConnectionHealth();
+  hooks.setStatus(connectionStatusOffline("Disconnected"));
 }
 
 export function sendInputBytes(surfaceId: string, data: string): void {
@@ -200,9 +222,10 @@ export function kickReconnectIfIdle(): void {
 function startHeartbeat(ws: WebSocket): void {
   stopHeartbeat();
   lastMessageAt = Date.now();
+  sendHeartbeatPing(ws);
   pingTimer = setInterval(() => {
     if (ws.readyState !== WebSocket.OPEN) return;
-    safeSocketSend(ws, { type: "ping", at: Date.now() });
+    sendHeartbeatPing(ws);
   }, HEARTBEAT_INTERVAL_MS);
   watchdogTimer = setInterval(() => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -229,7 +252,7 @@ function scheduleReconnect(): void {
   const exponent = Math.min(reconnectAttempts, 5);
   const delay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_MIN_DELAY_MS * 2 ** exponent);
   reconnectAttempts += 1;
-  hooks.setStatus("connecting", `Reconnecting in ${Math.round(delay / 1000)}s...`);
+  hooks.setStatus(connectionStatusConnecting(`Reconnecting in ${Math.round(delay / 1000)}s...`));
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     if (state.activeSessionKey) connect(state.activeSessionKey);
@@ -249,4 +272,39 @@ function safeSocketSend(ws: WebSocket, payload: unknown): void {
   } catch {
     // Ignore — close handler will retry via reconnect.
   }
+}
+
+function sendHeartbeatPing(ws: WebSocket): void {
+  lastPingSentAt = Date.now();
+  safeSocketSend(ws, { type: "ping", at: lastPingSentAt });
+}
+
+function updateLatencyFromPong(message: { at?: unknown }): void {
+  const sentAt = typeof message.at === "number" ? message.at : lastPingSentAt;
+  if (sentAt <= 0) return;
+  lastLatencyMs = Date.now() - sentAt;
+  updateConnectionStatus();
+}
+
+function updateConnectionStatus(): void {
+  const ws = state.socket;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    hooks.setStatus(connectionStatusOffline("Disconnected"));
+    return;
+  }
+  if (!phanttyPeerConnected) {
+    hooks.setStatus(connectionStatusWithoutPeer(lastLatencyMs));
+    return;
+  }
+  if (lastLatencyMs === null) {
+    hooks.setStatus(connectionStatusConnecting("Connected · measuring latency..."));
+    return;
+  }
+  hooks.setStatus(connectionStatusForLatency(lastLatencyMs));
+}
+
+function resetConnectionHealth(): void {
+  lastPingSentAt = 0;
+  lastLatencyMs = null;
+  phanttyPeerConnected = false;
 }

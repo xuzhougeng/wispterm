@@ -410,6 +410,7 @@
 }
 
 .status-panel {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -731,37 +732,82 @@
 }
 
 .status-dot {
+  display: inline-block;
   width: 10px;
   height: 10px;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
   background: var(--danger);
+  cursor: pointer;
 }
 
 .status-dot[data-state="connecting"] {
-  background: var(--accent);
+  background: var(--danger);
 }
 
 .status-dot[data-state="online"] {
   background: var(--ok);
 }
 
+.status-dot[data-state="high-latency"] {
+  background: var(--warning);
+}
+
 .status-pip {
+  display: inline-block;
   width: 10px;
   height: 10px;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
   background: var(--danger);
   box-shadow: 0 0 0 4px rgba(255, 105, 120, 0.16);
   flex-shrink: 0;
+  cursor: pointer;
 }
 
 .status-pip[data-state="connecting"] {
-  background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(246, 199, 111, 0.18);
+  background: var(--danger);
+  box-shadow: 0 0 0 4px rgba(255, 105, 120, 0.16);
 }
 
 .status-pip[data-state="online"] {
   background: var(--ok);
   box-shadow: 0 0 0 4px rgba(100, 214, 154, 0.18);
+}
+
+.status-pip[data-state="high-latency"] {
+  background: var(--warning);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.status-dot:focus-visible,
+.status-pip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.status-latency-detail {
+  margin-left: auto;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.status-latency-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 75;
+  min-width: max-content;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
 }
 
 .console-shell[data-drawer-open="true"] .sidebar-backdrop {

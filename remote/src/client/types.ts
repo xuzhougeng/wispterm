@@ -34,10 +34,12 @@ export type LayoutState = { activeTab: number; tabs: LayoutTab[] };
 
 export type RelayMessage = {
   type?: unknown;
+  at?: unknown;
   data?: unknown;
   encoding?: unknown;
   message?: unknown;
   surfaceId?: unknown;
+  phanttyConnected?: unknown;
   activeTab?: unknown;
   tabs?: unknown;
 };
@@ -75,7 +77,14 @@ export type SurfaceView = {
 
 export type ThemeMode = "dark" | "light";
 
-export type StatusKind = "offline" | "connecting" | "online";
+export type StatusKind = "offline" | "connecting" | "online" | "high-latency";
+
+export type ConnectionStatus = {
+  kind: StatusKind;
+  text: string;
+  latencyMs: number | null;
+  detail: string;
+};
 
 export type DesktopPanelMode = "layout" | "single";
 

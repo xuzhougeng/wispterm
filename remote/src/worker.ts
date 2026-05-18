@@ -15,10 +15,12 @@ type LoginBody = {
 
 type RelayMessage = {
   type?: string;
+  at?: number;
   data?: string;
   encoding?: string;
   surfaceId?: string;
   message?: string;
+  phanttyConnected?: boolean;
 };
 
 const COOKIE_NAME = "phantty_remote";
@@ -57,6 +59,7 @@ export class RemoteSession extends DurableObject<Env> {
     this.phantty?.close(1012, "replaced by a new Phantty connection");
     this.phantty = socket;
     this.broadcast({ type: "notice", message: "Phantty connected" });
+    this.broadcastPeerStatus();
 
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") return;
@@ -64,7 +67,7 @@ export class RemoteSession extends DurableObject<Env> {
       if (!message) return;
 
       if (message.type === "ping") {
-        try { socket.send(JSON.stringify({ type: "pong" })); } catch { /* ignore */ }
+        try { socket.send(JSON.stringify(pongMessage(message))); } catch { /* ignore */ }
         return;
       }
       if (message.type === "pong") return;
@@ -88,12 +91,14 @@ export class RemoteSession extends DurableObject<Env> {
       if (this.phantty !== socket) return;
       this.phantty = null;
       this.broadcast({ type: "notice", message: "Phantty disconnected" });
+      this.broadcastPeerStatus();
     });
   }
 
   private attachBrowser(socket: WebSocket): void {
     this.browsers.add(socket);
     socket.send(JSON.stringify({ type: "notice", message: "Browser paired; input enabled" }));
+    this.sendPeerStatus(socket);
     if (this.phantty) socket.send(JSON.stringify({ type: "notice", message: "Phantty connected" }));
     if (this.lastLayout) socket.send(JSON.stringify(this.lastLayout));
 
@@ -103,7 +108,7 @@ export class RemoteSession extends DurableObject<Env> {
       if (!message) return;
 
       if (message.type === "ping") {
-        try { socket.send(JSON.stringify({ type: "pong" })); } catch { /* ignore */ }
+        try { socket.send(JSON.stringify(pongMessage(message))); } catch { /* ignore */ }
         return;
       }
       if (message.type === "pong") return;
@@ -139,6 +144,18 @@ export class RemoteSession extends DurableObject<Env> {
       }
     }
   }
+
+  private sendPeerStatus(socket: WebSocket): void {
+    socket.send(JSON.stringify({ type: "peer-status", phanttyConnected: this.phantty !== null }));
+  }
+
+  private broadcastPeerStatus(): void {
+    this.broadcast({ type: "peer-status", phanttyConnected: this.phantty !== null });
+  }
+}
+
+function pongMessage(message: RelayMessage): RelayMessage {
+  return typeof message.at === "number" ? { type: "pong", at: message.at } : { type: "pong" };
 }
 
 export default {

@@ -1,4 +1,4 @@
-import type { DesktopPanelMode, LayoutSurface, MobileInputMode, MobileVisualZoom, StatusKind } from "../types";
+import type { ConnectionStatus, DesktopPanelMode, LayoutSurface, MobileInputMode, MobileVisualZoom } from "../types";
 import { iconClose, iconKeyboard, iconMenu, iconPanelMode, themeToggleMarkup } from "../icons";
 import { bindThemeToggleButtons } from "../theme";
 import { activeSurfaceIdForInput, currentTab, state, pushNotice } from "../state";
@@ -47,6 +47,7 @@ import {
   unbindWeixin,
   type WeixinSettingsResponse,
 } from "../weixin";
+import { connectionStatusOffline } from "../connection_status";
 
 let viewportRefitBound = false;
 let mobileSurfaceSelectorObserver: ResizeObserver | null = null;
@@ -57,6 +58,8 @@ let weixinBindGeneration = 0;
 let weixinState: WeixinSettingsResponse | null = null;
 type SidebarPage = "tabs" | "dashboard" | "settings";
 let sidebarPage: SidebarPage = "tabs";
+let currentConnectionStatus: ConnectionStatus = connectionStatusOffline("Not connected");
+let statusLatencyHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function renderConsole(app: HTMLElement, onLogout: () => void): void {
   cleanupWeixinPanel();
@@ -103,8 +106,9 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
             <div class="sidebar-section-title">Dashboard</div>
             <div class="panel dashboard-panel" id="dashboard-panel">
               <div class="status-panel dashboard-status">
-                <span class="status-dot" id="status-dot"></span>
+                <button type="button" class="status-dot" id="status-dot" data-state="offline" aria-label="Not connected. Latency unavailable" title="Not connected. Latency unavailable"></button>
                 <span id="status-text">Not connected</span>
+                <span class="status-latency-detail" id="status-latency-detail" hidden aria-live="polite">Latency unavailable</span>
               </div>
               <div class="dashboard-log">
                 <div class="panel-label">Activity</div>
@@ -207,7 +211,8 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
             </div>
           </div>
           <div class="mobile-chrome-controls" aria-label="Remote status controls">
-            <span class="status-pip" id="mobile-status-pip" data-state="offline" title="Disconnected"></span>
+            <button type="button" class="status-pip" id="mobile-status-pip" data-state="offline" aria-label="Not connected. Latency unavailable" title="Not connected. Latency unavailable"></button>
+            <span class="status-latency-popover" id="mobile-status-latency" hidden aria-live="polite">Latency unavailable</span>
             <button type="button" class="mobile-zoom-toggle" id="mobile-zoom-toggle" data-zoom="${mobileVisualZoomPercent(state.mobileVisualZoom)}" aria-label="${mobileVisualZoomToggleLabel(state.mobileVisualZoom)}" title="${mobileVisualZoomToggleLabel(state.mobileVisualZoom)}">
               ${mobileVisualZoomCompactLabel(state.mobileVisualZoom)}
             </button>
@@ -295,6 +300,7 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
   bindSidebarPages();
   bindDesktopPanelMode();
   bindWeixinPanel();
+  bindStatusLatencyDisclosure();
   updateMobileSurfaceMode();
   syncMobileInputModeUi();
   syncMobileVisualZoomUi();
@@ -302,16 +308,24 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
   if (savedSessionKey) queueMicrotask(() => connect(savedSessionKey));
 }
 
-export function setStatus(kind: StatusKind, text: string): void {
-  const dot = document.querySelector<HTMLSpanElement>("#status-dot");
+export function setStatus(status: ConnectionStatus): void {
+  currentConnectionStatus = status;
+  const dot = document.querySelector<HTMLButtonElement>("#status-dot");
   const label = document.querySelector<HTMLSpanElement>("#status-text");
-  const pip = document.querySelector<HTMLSpanElement>("#mobile-status-pip");
-  if (dot) dot.dataset.state = kind;
-  if (label) label.textContent = text;
-  if (pip) {
-    pip.dataset.state = kind;
-    pip.title = text;
+  const pip = document.querySelector<HTMLButtonElement>("#mobile-status-pip");
+  const accessibilityText = `${status.text}. ${status.detail}`;
+  if (dot) {
+    dot.dataset.state = status.kind;
+    dot.title = accessibilityText;
+    dot.setAttribute("aria-label", accessibilityText);
   }
+  if (label) label.textContent = status.text;
+  if (pip) {
+    pip.dataset.state = status.kind;
+    pip.title = accessibilityText;
+    pip.setAttribute("aria-label", accessibilityText);
+  }
+  syncVisibleStatusLatencyDisclosure();
 }
 
 export function renderNotices(): void {
@@ -815,6 +829,39 @@ function bindWeixinPanel(): void {
     }
   });
   void refreshWeixinPanel(weixinBindGeneration);
+}
+
+function bindStatusLatencyDisclosure(): void {
+  document.querySelector<HTMLButtonElement>("#status-dot")?.addEventListener("click", showStatusLatencyDisclosure);
+  document.querySelector<HTMLButtonElement>("#mobile-status-pip")?.addEventListener("click", showStatusLatencyDisclosure);
+}
+
+function showStatusLatencyDisclosure(): void {
+  const detail = currentConnectionStatus.detail;
+  const desktop = document.querySelector<HTMLSpanElement>("#status-latency-detail");
+  const mobile = document.querySelector<HTMLSpanElement>("#mobile-status-latency");
+  if (desktop) {
+    desktop.textContent = detail;
+    desktop.hidden = false;
+  }
+  if (mobile) {
+    mobile.textContent = detail;
+    mobile.hidden = false;
+  }
+  if (statusLatencyHideTimer !== null) clearTimeout(statusLatencyHideTimer);
+  statusLatencyHideTimer = setTimeout(() => {
+    document.querySelector<HTMLSpanElement>("#status-latency-detail")?.setAttribute("hidden", "");
+    document.querySelector<HTMLSpanElement>("#mobile-status-latency")?.setAttribute("hidden", "");
+    statusLatencyHideTimer = null;
+  }, 3500);
+}
+
+function syncVisibleStatusLatencyDisclosure(): void {
+  for (const selector of ["#status-latency-detail", "#mobile-status-latency"]) {
+    const target = document.querySelector<HTMLSpanElement>(selector);
+    if (!target || target.hidden) continue;
+    target.textContent = currentConnectionStatus.detail;
+  }
 }
 
 function nextWeixinBindGeneration(): number {

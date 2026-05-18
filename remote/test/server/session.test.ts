@@ -151,3 +151,29 @@ test("RemoteSession handles browser socket errors without throwing", () => {
 
   assert.doesNotThrow(() => browser.emit("error", new Error("invalid websocket frame")));
 });
+
+test("RemoteSession reports Phantty peer status to browsers", () => {
+  const session = new RemoteSession("alpha");
+  const browser = new FakeSocket();
+  session.attachBrowser(browser as never);
+
+  assert.deepEqual(JSON.parse(browser.sent.at(-1) ?? "{}"), {
+    type: "peer-status",
+    phanttyConnected: false,
+  });
+
+  const phantty = new FakeSocket();
+  session.attachPhantty(phantty as never);
+
+  assert.deepEqual(JSON.parse(browser.sent.at(-1) ?? "{}"), {
+    type: "peer-status",
+    phanttyConnected: true,
+  });
+
+  phantty.emit("close");
+
+  assert.deepEqual(JSON.parse(browser.sent.at(-1) ?? "{}"), {
+    type: "peer-status",
+    phanttyConnected: false,
+  });
+});
