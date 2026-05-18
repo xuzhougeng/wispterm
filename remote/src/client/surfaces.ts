@@ -31,6 +31,11 @@ import { cursorMoveSequence, emptyState, validPositiveInteger } from "./utils";
 import { activeSurfaceIdForInput, currentTab, resetSurfaceViews, state } from "./state";
 import { getTerminalPalette, subscribeToTheme } from "./theme";
 import { REMOTE_TERMINAL_SCROLLBACK } from "./terminal_options";
+import {
+  shouldBufferLiveOutputForInitialSnapshot,
+  shouldFlushBufferedOutput,
+  shouldScheduleInitialSnapshotReplay,
+} from "./snapshot_replay";
 
 const PENDING_OUTPUT_LIMIT = 128 * 1024;
 const MOBILE_CANVAS_BOTTOM_GUTTER = 12;
@@ -136,6 +141,7 @@ export function ensureSurfaceView(surfaceId: string): SurfaceView {
     needsDefaultCanvasPan: false,
     hasLiveOutput: false,
     snapshotApplied: false,
+    initialSnapshotPending: false,
     snapshotText: null,
     opened: false,
     pendingOutput: "",
@@ -211,10 +217,10 @@ export function renderRemotePanels(): void {
       syncTerminalNativeInputGuard(view);
       view.resizeObserver = new ResizeObserver(() => scheduleFit(view));
       view.resizeObserver.observe(view.host);
-      flushPendingOutput(view);
     }
     updateSurfaceCursor(view, surface.id);
     applyInitialSnapshot(view, surface);
+    flushPendingOutput(view);
     scheduleFit(view);
 
     if (
@@ -534,19 +540,28 @@ function scheduleFit(view: SurfaceView): void {
 }
 
 function applyInitialSnapshot(view: SurfaceView, surface: LayoutSurface): void {
-  if (!surface.snapshot) return;
+  const snapshot = surface.snapshot;
+  if (!snapshot) return;
   if (surface.kind === "ai_chat") {
-    if (view.snapshotText === surface.snapshot) return;
-    view.snapshotText = surface.snapshot;
+    if (view.snapshotText === snapshot) return;
+    view.snapshotText = snapshot;
     view.snapshotApplied = true;
     view.hasLiveOutput = false;
   } else {
-    if (view.snapshotApplied || view.hasLiveOutput) return;
-    view.snapshotApplied = true;
-    view.snapshotText = surface.snapshot;
+    if (!shouldScheduleInitialSnapshotReplay({
+      hasSnapshot: true,
+      snapshotApplied: view.snapshotApplied,
+      initialSnapshotPending: view.initialSnapshotPending,
+      hasLiveOutput: view.hasLiveOutput,
+    })) return;
+    view.initialSnapshotPending = true;
+    view.snapshotText = snapshot;
   }
   requestAnimationFrame(() => {
-    if (!view.host.isConnected || (surface.kind !== "ai_chat" && view.hasLiveOutput)) return;
+    if (!view.host.isConnected) {
+      view.initialSnapshotPending = false;
+      return;
+    }
     try {
       fitOrResize(view);
       updateCanvasPan(view);
@@ -554,14 +569,20 @@ function applyInitialSnapshot(view: SurfaceView, surface: LayoutSurface): void {
       // xterm can briefly report zero-sized panels while layout is settling.
     }
     view.term.reset();
-    view.term.write((surface.snapshot ?? "") + cursorMoveSequence(surface));
+    view.term.write(snapshot + cursorMoveSequence(surface));
+    view.snapshotApplied = true;
+    view.initialSnapshotPending = false;
+    flushPendingOutput(view);
     view.term.refresh(0, Math.max(0, view.term.rows - 1));
   });
 }
 
 function writeSurfaceText(view: SurfaceView, text: string): void {
   if (!text) return;
-  if (!view.opened) {
+  if (shouldBufferLiveOutputForInitialSnapshot({
+    opened: view.opened,
+    initialSnapshotPending: view.initialSnapshotPending,
+  })) {
     view.pendingOutput = capPendingOutput(view.pendingOutput + text);
     return;
   }
@@ -570,7 +591,11 @@ function writeSurfaceText(view: SurfaceView, text: string): void {
 }
 
 function flushPendingOutput(view: SurfaceView): void {
-  if (!view.opened || !view.pendingOutput) return;
+  if (!shouldFlushBufferedOutput({
+    opened: view.opened,
+    initialSnapshotPending: view.initialSnapshotPending,
+    hasPendingOutput: view.pendingOutput.length > 0,
+  })) return;
   const pending = view.pendingOutput;
   view.pendingOutput = "";
   view.term.write(pending);

@@ -68,6 +68,7 @@ export type SurfaceView = {
   needsDefaultCanvasPan: boolean;
   hasLiveOutput: boolean;
   snapshotApplied: boolean;
+  initialSnapshotPending: boolean;
   snapshotText: string | null;
   opened: boolean;
   pendingOutput: string;
