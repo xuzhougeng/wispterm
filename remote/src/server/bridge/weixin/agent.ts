@@ -7,6 +7,7 @@ export type WeixinRouteInput = {
   settings: WeixinSettings;
   sessions: RoutedSession[];
   saveTargetSession?: (key: string) => Promise<void>;
+  aiAgentOpenTimeoutMs?: number;
 };
 export type WeixinAiFollowup = {
   session: RemoteSession;
@@ -16,6 +17,9 @@ export type WeixinRouteReply = {
   text: string;
   ai?: WeixinAiFollowup;
 };
+
+const AI_AGENT_OPEN_TIMEOUT_MS = 2000;
+let nextAiAgentOpenSeq = 0;
 
 export async function routeWeixinText(input: WeixinRouteInput): Promise<WeixinRouteReply> {
   const text = input.text.trim();
@@ -38,8 +42,8 @@ export async function routeWeixinText(input: WeixinRouteInput): Promise<WeixinRo
 
   if (cmd === "/term") return sendTerminal(target.session, arg, true);
   if (cmd === "/keys") return sendTerminal(target.session, arg, false);
-  if (cmd === "/ai") return sendAi(target.session, arg);
-  return sendAi(target.session, text);
+  if (cmd === "/ai") return sendAi(target.session, arg, input.aiAgentOpenTimeoutMs);
+  return sendAi(target.session, text, input.aiAgentOpenTimeoutMs);
 }
 
 export function maskSessionKey(key: string): string {
@@ -79,9 +83,27 @@ async function useSession(arg: string, input: WeixinRouteInput, activeSessions: 
   return { text: `已选择 Remote session：${selected.label}` };
 }
 
-function sendAi(session: RemoteSession, text: string): WeixinRouteReply {
+function nextAiAgentOpenRequestId(): string {
+  nextAiAgentOpenSeq = (nextAiAgentOpenSeq + 1) % Number.MAX_SAFE_INTEGER;
+  return `weixin-ai-${Date.now().toString(36)}-${nextAiAgentOpenSeq}`;
+}
+
+async function sendAi(session: RemoteSession, text: string, timeoutMs = AI_AGENT_OPEN_TIMEOUT_MS): Promise<WeixinRouteReply> {
   const ai = session.findAiChatSurface();
-  if (!ai) return { text: "当前 Remote session 没有 AI Chat tab。请先在 Phantty 打开 AI Chat，或使用 `/term <命令>` 显式发送到终端。" };
+  if (ai) return sendAiToSurface(session, ai, text);
+
+  const result = await session.requestAiAgentOpen(nextAiAgentOpenRequestId(), timeoutMs);
+  if (result === "no-profile") return { text: "Phantty 尚未配置 AI Chat profile。请先在桌面端创建 AI Chat profile。" };
+  if (result === "failed") return { text: "Phantty 无法打开 AI Agent。请检查桌面端配置后重试。" };
+  if (result === "offline") return { text: "Phantty 当前离线，无法打开 AI Agent。" };
+  if (result === "timeout") return { text: "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
+
+  const openedAi = await waitForAiChatSurface(session, timeoutMs);
+  if (!openedAi) return { text: "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
+  return sendAiToSurface(session, openedAi, text);
+}
+
+function sendAiToSurface(session: RemoteSession, ai: { id: string; title: string }, text: string): WeixinRouteReply {
   const baselineTranscript = session.latestAiChatTranscript();
   if (!session.sendInput(ai.id, `${text}\r`)) return { text: "Phantty 当前离线，无法发送给 AI Agent。" };
   return {
@@ -91,6 +113,38 @@ function sendAi(session: RemoteSession, text: string): WeixinRouteReply {
       baselineTranscript,
     },
   };
+}
+
+async function waitForAiChatSurface(session: RemoteSession, timeoutMs: number): Promise<{ id: string; title: string } | null> {
+  const existing = session.findAiChatSurface();
+  if (existing) return existing;
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    let unsubscribe: () => void = () => {};
+    let timer: ReturnType<typeof setTimeout>;
+
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    };
+
+    const settle = (ai: { id: string; title: string } | null): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(ai);
+    };
+
+    const check = (): void => {
+      const ai = session.findAiChatSurface();
+      if (ai) settle(ai);
+    };
+
+    timer = setTimeout(() => settle(null), Math.max(0, timeoutMs));
+    unsubscribe = session.onLayout(check);
+    check();
+  });
 }
 
 function sendTerminal(session: RemoteSession, text: string, enter: boolean): WeixinRouteReply {
