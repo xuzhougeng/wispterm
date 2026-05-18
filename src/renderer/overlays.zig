@@ -1183,6 +1183,13 @@ threadlocal var g_ai_list_selected: usize = 0;
 threadlocal var g_ai_list_mode: AiListMode = .manage;
 threadlocal var g_ai_edit_index: usize = AI_PROFILE_NONE;
 threadlocal var g_ai_form_mode: AiFormMode = .session_setup;
+
+pub const RemoteAgentOpenResult = enum {
+    opened,
+    no_profile,
+    failed,
+};
+
 threadlocal var g_pending_ssh_password: [SSH_FIELD_MAX + 1]u8 = undefined;
 threadlocal var g_pending_ssh_password_len: usize = 0;
 threadlocal var g_pending_ssh_password_due_ms: i64 = 0;
@@ -1815,6 +1822,12 @@ fn openDefaultAgentSessionFromCommandCenter() void {
     }
 }
 
+pub fn openDefaultAgentSessionForRemote() RemoteAgentOpenResult {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) return .no_profile;
+    return if (spawnAiProfileWithAgentOverride(0, "true")) .opened else .failed;
+}
+
 fn openAiSettings() void {
     loadAiProfiles();
     if (g_ai_profile_count == 0) {
@@ -2093,7 +2106,11 @@ fn connectAiProfile(idx: usize) void {
 }
 
 fn connectAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) void {
-    if (idx >= g_ai_profile_count) return;
+    _ = spawnAiProfileWithAgentOverride(idx, agent_override);
+}
+
+fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool {
+    if (idx >= g_ai_profile_count) return false;
     const profile = &g_ai_profiles[idx];
     const name = aiProfileField(profile, .name);
     const base_url = aiProfileField(profile, .base_url);
@@ -2104,11 +2121,11 @@ fn connectAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) vo
     const reasoning_effort = aiProfileField(profile, .reasoning_effort);
     const stream_val = aiProfileField(profile, .stream);
     const agent_val = agent_override orelse aiProfileField(profile, .agent);
-    if (base_url.len == 0 or model.len == 0) return;
-    if (!isHttpUrlish(base_url)) return;
+    if (base_url.len == 0 or model.len == 0) return false;
+    if (!isHttpUrlish(base_url)) return false;
 
     sessionLauncherClose();
-    _ = AppWindow.spawnAiChatTab(name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream_val, agent_val);
+    return AppWindow.spawnAiChatTab(name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream_val, agent_val);
 }
 
 fn isHttpUrlish(value: []const u8) bool {

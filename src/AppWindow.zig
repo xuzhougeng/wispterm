@@ -249,6 +249,7 @@ const WM_PHANTTY_AGENT_SSH_CONNECT = win32_backend.WM_APP + 0x51;
 const WM_PHANTTY_AGENT_TAB_NEW = win32_backend.WM_APP + 0x52;
 const WM_PHANTTY_AGENT_TAB_CLOSE = win32_backend.WM_APP + 0x53;
 const WM_PHANTTY_REMOTE_AI_INPUT = win32_backend.WM_APP + 0x54;
+const WM_PHANTTY_REMOTE_OPEN_AI_AGENT = win32_backend.WM_APP + 0x55;
 
 const AgentSshConnectRequest = struct {
     allocator: std.mem.Allocator,
@@ -282,6 +283,11 @@ const RemoteAiInputSink = struct {
 const RemoteAiInputRequest = struct {
     tab_index: usize,
     data: []u8,
+};
+
+const RemoteAiAgentOpenRequest = struct {
+    client: *remote.Client,
+    request_id: []u8,
 };
 
 // ============================================================================
@@ -1548,6 +1554,43 @@ fn remoteAiWrite(ctx: *anyopaque, data: []const u8) void {
     }
 }
 
+fn remoteAiAgentOpen(ctx: *anyopaque, request_id: []const u8) void {
+    const window: *AppWindow = @ptrCast(@alignCast(ctx));
+    const client = window.app.remote_client orelse return;
+
+    const request = std.heap.page_allocator.create(RemoteAiAgentOpenRequest) catch {
+        client.sendAiAgentOpenResult(request_id, .failed);
+        return;
+    };
+    request.* = .{
+        .client = client,
+        .request_id = std.heap.page_allocator.dupe(u8, request_id) catch {
+            std.heap.page_allocator.destroy(request);
+            client.sendAiAgentOpenResult(request_id, .failed);
+            return;
+        },
+    };
+
+    const hwnd = window.getHwnd() orelse {
+        std.heap.page_allocator.free(request.request_id);
+        std.heap.page_allocator.destroy(request);
+        client.sendAiAgentOpenResult(request_id, .failed);
+        return;
+    };
+
+    const ok = win32_backend.PostMessageW(
+        hwnd,
+        WM_PHANTTY_REMOTE_OPEN_AI_AGENT,
+        0,
+        @bitCast(@as(isize, @intCast(@intFromPtr(request)))),
+    ) != 0;
+    if (!ok) {
+        std.heap.page_allocator.free(request.request_id);
+        std.heap.page_allocator.destroy(request);
+        client.sendAiAgentOpenResult(request_id, .failed);
+    }
+}
+
 fn appendRemoteAiChatTabJson(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
@@ -1598,6 +1641,25 @@ fn handleRemoteAiInputRequest(request: *RemoteAiInputRequest) void {
     const session = tab_state.ai_chat_session orelse return;
     session.applyRemoteInput(request.data);
     g_force_rebuild = true;
+}
+
+fn handleRemoteAiAgentOpenRequest(request: *RemoteAiAgentOpenRequest) void {
+    defer {
+        std.heap.page_allocator.free(request.request_id);
+        std.heap.page_allocator.destroy(request);
+    }
+
+    const status: remote.AiAgentOpenStatus = switch (overlays.openDefaultAgentSessionForRemote()) {
+        .opened => .opened,
+        .no_profile => .no_profile,
+        .failed => .failed,
+    };
+    request.client.sendAiAgentOpenResult(request.request_id, status);
+
+    if (status == .opened) {
+        g_remote_layout_last_ms = 0;
+        if (g_allocator) |alloc| syncRemoteLayout(alloc);
+    }
 }
 
 fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface) ![]u8 {
@@ -1980,6 +2042,11 @@ fn onWin32Message(msg: win32_backend.UINT, wParam: win32_backend.WPARAM, lParam:
             handleRemoteAiInputRequest(request);
             return 1;
         },
+        WM_PHANTTY_REMOTE_OPEN_AI_AGENT => {
+            const request: *RemoteAiAgentOpenRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            handleRemoteAiAgentOpenRequest(request);
+            return 1;
+        },
         else => return null,
     }
 }
@@ -1994,6 +2061,12 @@ fn installAgentToolHost(self: *AppWindow) void {
         .closeTab = agentCloseTab,
         .connectSshProfile = agentConnectSshProfile,
     });
+}
+
+fn installRemoteControlHandlers(self: *AppWindow) void {
+    if (self.app.remote_client) |client| {
+        client.registerAiAgentOpener(self, remoteAiAgentOpen);
+    }
 }
 
 fn uiFontSize(term_font_size: u32) u32 {
@@ -2395,6 +2468,7 @@ fn runMainLoop(self: *AppWindow) !void {
     win32_window.on_message = &onWin32Message;
     win32_window.on_file_drop = &input.handleFileDrop;
     installAgentToolHost(self);
+    installRemoteControlHandlers(self);
     font.g_dpi = win32_window.dpi;
 
     // --- Load OpenGL via GLAD ---
