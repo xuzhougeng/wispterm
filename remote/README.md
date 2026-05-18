@@ -217,12 +217,14 @@ Authenticated routes:
 
 Send `/ping` from Weixin to confirm that the binding and server reply path are
 working; the server replies `pong` without touching AI Chat. Plain Weixin text
-is routed to the selected Remote session's AI Chat surface. The server confirms
-receipt immediately, checks the AI Chat snapshot at 10, 30, 60, and 120 seconds
-for progress, and also listens for later AI Chat snapshot updates. Tool activity
-returns a still-processing reply; a completed AI answer returns the latest
-assistant message. Direct terminal input requires
-`/term <command>` or `/keys <text>`.
+is routed to the selected Remote session's AI Chat surface. If that session has
+no AI Chat surface, the relay asks Phantty to open a default Agent tab first;
+Phantty uses the desktop `New Agent` default profile path and reports a setup
+message if no AI profile exists. The server confirms receipt immediately,
+checks the AI Chat snapshot at 10, 30, 60, and 120 seconds for progress, and
+also listens for later AI Chat snapshot updates. Tool activity returns a
+still-processing reply; a completed AI answer returns the latest assistant
+message. Direct terminal input requires `/term <command>` or `/keys <text>`.
 
 ## Relay Messages
 
@@ -245,6 +247,20 @@ Browser input is routed back to the selected surface:
 
 ```json
 { "type": "input-bytes", "surfaceId": "0000000000000001", "encoding": "hex", "data": "0d" }
+```
+
+The relay can also ask Phantty to create an Agent tab when Weixin input has no
+AI Chat target:
+
+```json
+{ "type": "open-ai-agent", "requestId": "weixin-ai-1" }
+```
+
+Phantty replies with the matching request id and a status of `opened`,
+`no-profile`, or `failed`:
+
+```json
+{ "type": "open-ai-agent-result", "requestId": "weixin-ai-1", "status": "opened" }
 ```
 
 The browser also accepts the older mock format:
