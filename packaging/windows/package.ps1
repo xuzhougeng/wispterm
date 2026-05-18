@@ -87,9 +87,12 @@ function Copy-PortablePayload {
     Copy-Item -Path $BinaryPath -Destination (Join-Path $TargetDir 'phantty.exe') -Force
     Set-Content -Path (Join-Path $TargetDir 'version.txt') -Value $ReleaseVersion -Encoding ASCII
 
+    $targetSkillsDir = Join-Path $TargetDir 'skills'
+    New-Item -ItemType Directory -Path $targetSkillsDir -Force | Out-Null
+
     $sourceSkillsDir = Join-Path (Split-Path -Parent $BinaryPath) 'skills'
     if (Test-Path $sourceSkillsDir) {
-        Copy-Item -Path $sourceSkillsDir -Destination (Join-Path $TargetDir 'skills') -Recurse -Force
+        Get-ChildItem -LiteralPath $sourceSkillsDir -Force | Copy-Item -Destination $targetSkillsDir -Recurse -Force
     }
 
     if (-not [string]::IsNullOrWhiteSpace($WebView2LoaderPath)) {
