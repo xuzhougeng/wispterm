@@ -298,6 +298,14 @@ pub fn commandPaletteMoveAgentHistory(delta: i32) void {
     commandCenterStateCommit(state);
 }
 
+pub fn commandPaletteDeleteSelectedAgentHistory() bool {
+    if (!commandPaletteIsHistoryMode()) return false;
+    commandPaletteSyncAgentHistoryRows();
+    const state = commandCenterStateSnapshot();
+    const row_idx = state.commandPaletteSelectedAgentHistoryIndex(g_command_palette_history_rows.len) orelse return false;
+    return commandPaletteDeleteAgentHistoryIndex(row_idx);
+}
+
 pub fn commandPaletteLeaveAgentHistory() void {
     if (!commandPaletteIsHistoryMode()) return;
     var state = commandCenterStateSnapshot();
@@ -741,6 +749,19 @@ fn commandPaletteActivateAgentHistoryIndex(row_idx: usize) bool {
     return true;
 }
 
+fn commandPaletteDeleteAgentHistoryIndex(row_idx: usize) bool {
+    if (!commandPaletteIsHistoryMode()) return false;
+    if (row_idx >= g_command_palette_history_rows.len) return false;
+    if (!AppWindow.deleteAiChatHistorySessionId(g_command_palette_history_rows[row_idx].session_id)) return false;
+
+    commandPaletteRefreshAgentHistoryRows();
+
+    var state = commandCenterStateSnapshot();
+    state.commandPaletteClampAgentHistorySelection(g_command_palette_history_rows.len);
+    commandCenterStateCommit(state);
+    return true;
+}
+
 fn findAgentHistoryRowBySessionId(session_id: []const u8) ?usize {
     for (g_command_palette_history_rows, 0..) |row, idx| {
         if (std.mem.eql(u8, row.session_id, session_id)) return idx;
@@ -1038,7 +1059,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
         }
     }
 
-    const footer = if (commandPaletteIsHistoryMode()) "Up/Down selects, Enter reopens, Esc returns" else "Up/Down + Enter applies";
+    const footer = if (commandPaletteIsHistoryMode()) "Up/Down selects, Enter reopens, Delete removes, Esc returns" else "Up/Down + Enter applies";
     renderTitlebarTextLimited(footer, layout.box_x + pad_x, rowTextY(box_y, layout.footer_h), muted, layout.box_w - pad_x * 2);
 }
 

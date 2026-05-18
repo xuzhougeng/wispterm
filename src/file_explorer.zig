@@ -215,6 +215,7 @@ pub fn syncPanelForTerminalTarget(target: TerminalPanelTarget) void {
 
 pub fn syncAgentHistoryRows(store: *const agent_history.Store) void {
     const allocator = std.heap.page_allocator;
+    const selected_index_copy = g_history_selected;
     const selected_session_id_copy = if (g_history_selected) |selected|
         if (historySessionIdAt(selected)) |session_id|
             allocator.dupe(u8, session_id) catch null
@@ -251,6 +252,9 @@ pub fn syncAgentHistoryRows(store: *const agent_history.Store) void {
                 g_history_selected = idx;
                 break;
             }
+        }
+        if (g_history_selected == null and g_history_row_count > 0) {
+            g_history_selected = @min(selected_index_copy.?, g_history_row_count - 1);
         }
     }
 
@@ -1451,6 +1455,52 @@ test "file_explorer: history session ids preserve full utf8 ids" {
 
     try std.testing.expectEqual(@as(usize, 1), g_history_row_count);
     try std.testing.expectEqualStrings(long_session_id, historySessionIdAt(0).?);
+}
+
+test "file_explorer: history sync keeps nearest selection after selected session is deleted" {
+    const allocator = std.testing.allocator;
+    var store = agent_history.Store.init(allocator);
+    defer store.deinit();
+
+    try store.upsertRecord(.{
+        .session_id = "old",
+        .title = "Old",
+        .base_url = "https://api.example.com",
+        .api_key = "secret",
+        .model = "gpt-old",
+        .system_prompt = "system",
+        .thinking_enabled = true,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 1,
+        .messages = &.{},
+    });
+    try store.upsertRecord(.{
+        .session_id = "new",
+        .title = "New",
+        .base_url = "https://api.example.com",
+        .api_key = "secret",
+        .model = "gpt-new",
+        .system_prompt = "system",
+        .thinking_enabled = true,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = true,
+        .created_at = 2,
+        .updated_at = 2,
+        .messages = &.{},
+    });
+
+    syncAgentHistoryRows(&store);
+    g_history_selected = 0;
+
+    try std.testing.expect(store.deleteBySessionId("new"));
+    syncAgentHistoryRows(&store);
+
+    try std.testing.expectEqual(@as(?usize, 0), g_history_selected);
+    try std.testing.expectEqualStrings("old", historySessionIdAt(0).?);
 }
 
 test "file_explorer: history row text keeps valid utf8 when truncated" {

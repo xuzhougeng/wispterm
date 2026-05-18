@@ -148,6 +148,18 @@ pub const Store = struct {
         return try cloneRecord(allocator, self.records.items[idx]);
     }
 
+    pub fn deleteBySessionId(self: *Store, session_id: []const u8) bool {
+        const idx = self.findIndexBySessionId(session_id) orelse return false;
+        var removed = self.records.items[idx];
+        var i = idx;
+        while (i + 1 < self.records.items.len) : (i += 1) {
+            self.records.items[i] = self.records.items[i + 1];
+        }
+        self.records.items = self.records.items[0 .. self.records.items.len - 1];
+        freeOwnedRecord(self.allocator, &removed);
+        return true;
+    }
+
     pub fn saveToPath(self: *const Store, path: []const u8) !void {
         const json = try self.toJsonString(self.allocator);
         defer self.allocator.free(json);
@@ -712,6 +724,48 @@ test "agent_history: upsert replaces existing session id instead of duplicating"
 
     try std.testing.expectEqual(@as(usize, 1), store.records.items.len);
     try std.testing.expectEqualStrings("Second", store.records.items[0].title);
+}
+
+test "agent_history: deleteBySessionId removes the matching record" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+
+    try store.upsertRecord(.{
+        .session_id = "first",
+        .title = "First",
+        .base_url = "https://api.example.com",
+        .api_key = "a",
+        .model = "m1",
+        .system_prompt = "p1",
+        .thinking_enabled = true,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 1,
+        .messages = &.{},
+    });
+    try store.upsertRecord(.{
+        .session_id = "second",
+        .title = "Second",
+        .base_url = "https://api.example.com",
+        .api_key = "b",
+        .model = "m2",
+        .system_prompt = "p2",
+        .thinking_enabled = true,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = true,
+        .created_at = 2,
+        .updated_at = 2,
+        .messages = &.{},
+    });
+
+    try std.testing.expect(store.deleteBySessionId("first"));
+    try std.testing.expect(!store.deleteBySessionId("missing"));
+    try std.testing.expectEqual(@as(usize, 1), store.records.items.len);
+    try std.testing.expectEqualStrings("second", store.records.items[0].session_id);
 }
 
 test "agent_history: buildRows returns owned rows that survive store cleanup" {

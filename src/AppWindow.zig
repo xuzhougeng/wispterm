@@ -483,6 +483,10 @@ fn saveAiHistoryChangeEvent(event: ai_chat.HistoryChangeEvent) void {
         log.warn("failed to clone AI history update for session {s}: {}", .{ owned_event.record.session_id, err });
         return;
     };
+    markAgentHistoryDirtyLocked();
+}
+
+fn markAgentHistoryDirtyLocked() void {
     if (!g_agent_history_dirty) {
         g_agent_history_dirty = true;
         g_agent_history_next_flush_ms = std.time.milliTimestamp() + AGENT_HISTORY_FLUSH_DEBOUNCE_MS;
@@ -611,6 +615,16 @@ pub fn reopenAiChatTabFromHistorySessionId(session_id: []const u8) bool {
 
     if (!tab.spawnAiChatTabFromHistoryRecord(allocator, owned_record)) return false;
     clearUiStateOnTabChange();
+    return true;
+}
+
+pub fn deleteAiChatHistorySessionId(session_id: []const u8) bool {
+    g_agent_history_mutex.lock();
+    defer g_agent_history_mutex.unlock();
+
+    const store = g_agent_history orelse return false;
+    if (!store.deleteBySessionId(session_id)) return false;
+    markAgentHistoryDirtyLocked();
     return true;
 }
 

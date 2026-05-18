@@ -142,6 +142,7 @@ To confirm the running desktop version, open the command center with `Ctrl+Shift
 | Shift-click terminal text                                                      | Select from the last terminal click anchor                                        |
 | **Ctrl+A** in AI Chat                                                          | Select the input text; when the input is empty, select the transcript             |
 | **Ctrl+C** in AI Chat                                                          | Copy the selected AI Chat text, or copy the transcript when nothing is selected   |
+| **D** / **Delete** in Agent History                                            | Delete the selected saved Agent session                                          |
 | Left / Right / Home / End / Delete / Backspace in AI Chat                      | Edit the AI Chat input cursor without clearing the whole draft                    |
 | **Esc** in AI Chat while working                                               | Stop the in-flight AI Chat or Agent request                                      |
 | Right-click a selection                                                        | Copy selection by default; configurable with `right-click-action`                 |
