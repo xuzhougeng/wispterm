@@ -207,16 +207,19 @@ function Click-WindowCenter([IntPtr]$Hwnd) {
     [PhanttyUiAutomation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 }
 
-function Send-CtrlShiftE() {
+function Send-CtrlShiftAltE() {
     $keyUp = 0x0002
     [PhanttyUiAutomation]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl
     Start-Sleep -Milliseconds 80
     [PhanttyUiAutomation]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero) # Shift
     Start-Sleep -Milliseconds 80
+    [PhanttyUiAutomation]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero) # Alt
+    Start-Sleep -Milliseconds 80
     [PhanttyUiAutomation]::keybd_event(0x45, 0, 0, [UIntPtr]::Zero) # E
     Start-Sleep -Milliseconds 120
     [PhanttyUiAutomation]::keybd_event(0x45, 0, $keyUp, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 60
+    [PhanttyUiAutomation]::keybd_event(0x12, 0, $keyUp, [UIntPtr]::Zero)
     [PhanttyUiAutomation]::keybd_event(0x10, 0, $keyUp, [UIntPtr]::Zero)
     [PhanttyUiAutomation]::keybd_event(0x11, 0, $keyUp, [UIntPtr]::Zero)
 }
@@ -252,7 +255,7 @@ try {
     $beforeSize = Capture-Window $phanttyWindow $beforeFull
     Crop-LeftExplorerArea $beforeFull $beforeCrop $ExplorerCropWidth | Out-Null
 
-    Send-CtrlShiftE
+    Send-CtrlShiftAltE
     Start-Sleep -Milliseconds 1800
 
     $afterSize = Capture-Window $phanttyWindow $afterFull

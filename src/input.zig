@@ -1120,8 +1120,8 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         AppWindow.splitFocused(.right);
         return;
     }
-    // Ctrl+Shift+E = toggle file explorer sidebar
-    if (ev.ctrl and ev.shift and ev.vk == 0x45) { // 'E'
+    // Ctrl+Shift+Alt+E = toggle file explorer sidebar
+    if (ev.ctrl and ev.shift and ev.alt and ev.vk == 0x45) { // 'E'
         if (tab.g_tab_rename_active) tab.commitTabRename();
         toggleFileExplorer();
         return;

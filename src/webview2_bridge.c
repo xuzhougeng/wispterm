@@ -296,7 +296,6 @@ static BOOL should_forward_host_shortcut(UINT virtual_key, BOOL ctrl, BOOL shift
     if (ctrl && shift && !alt) {
         switch (virtual_key) {
             case 'B':
-            case 'E':
             case 'N':
             case 'O':
             case 'P':
@@ -305,6 +304,15 @@ static BOOL should_forward_host_shortcut(UINT virtual_key, BOOL ctrl, BOOL shift
             case 'Z':
             case VK_OEM_4: // [
             case VK_OEM_6: // ]
+                return TRUE;
+            default:
+                return FALSE;
+        }
+    }
+
+    if (ctrl && shift && alt) {
+        switch (virtual_key) {
+            case 'E':
                 return TRUE;
             default:
                 return FALSE;

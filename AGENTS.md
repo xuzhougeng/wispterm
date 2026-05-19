@@ -70,7 +70,7 @@ zig build
 powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-file-explorer-ui.ps1
 ```
 
-The script launches a real Phantty window, sets DPI awareness, fixes the window position and size, captures before/after screenshots, crops the right panel, sends `Ctrl+Shift+E`, performs a region-based pixel check, and writes screenshots plus JSON metrics under `zig-out\ui-test\`.
+The script launches a real Phantty window, sets DPI awareness, fixes the window position and size, captures before/after screenshots, crops the right panel, sends `Ctrl+Shift+Alt+E`, performs a region-based pixel check, and writes screenshots plus JSON metrics under `zig-out\ui-test\`.
 
 When adding more UI automation, follow the same pattern:
 - Wait until `MainWindowHandle` is non-zero, call `ShowWindow` and `SetForegroundWindow`, then click inside the client area before sending keys.
