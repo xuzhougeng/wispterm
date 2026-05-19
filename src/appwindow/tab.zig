@@ -446,6 +446,70 @@ pub fn closeTab(idx: usize, allocator: std.mem.Allocator) void {
     }
 }
 
+const TabVisualState = struct {
+    close_opacity: f32,
+    text_x_start: f32,
+    text_x_end: f32,
+    text_y_start: f32,
+    text_y_end: f32,
+};
+
+fn visualStateAt(idx: usize) TabVisualState {
+    return .{
+        .close_opacity = g_tab_close_opacity[idx],
+        .text_x_start = g_tab_text_x_start[idx],
+        .text_x_end = g_tab_text_x_end[idx],
+        .text_y_start = g_tab_text_y_start[idx],
+        .text_y_end = g_tab_text_y_end[idx],
+    };
+}
+
+fn setVisualStateAt(idx: usize, state: TabVisualState) void {
+    g_tab_close_opacity[idx] = state.close_opacity;
+    g_tab_text_x_start[idx] = state.text_x_start;
+    g_tab_text_x_end[idx] = state.text_x_end;
+    g_tab_text_y_start[idx] = state.text_y_start;
+    g_tab_text_y_end[idx] = state.text_y_end;
+}
+
+/// Move a tab from one index to another.
+/// Keeps g_active_tab attached to the same logical tab after the move.
+pub fn reorderTab(from_idx: usize, to_idx: usize) bool {
+    if (g_tab_count <= 1) return false;
+    if (from_idx >= g_tab_count or to_idx >= g_tab_count) return false;
+    if (from_idx == to_idx) return false;
+
+    const moved_tab = g_tabs[from_idx] orelse return false;
+    const moved_visual = visualStateAt(from_idx);
+
+    if (from_idx < to_idx) {
+        var idx = from_idx;
+        while (idx < to_idx) : (idx += 1) {
+            g_tabs[idx] = g_tabs[idx + 1];
+            setVisualStateAt(idx, visualStateAt(idx + 1));
+        }
+    } else {
+        var idx = from_idx;
+        while (idx > to_idx) : (idx -= 1) {
+            g_tabs[idx] = g_tabs[idx - 1];
+            setVisualStateAt(idx, visualStateAt(idx - 1));
+        }
+    }
+
+    g_tabs[to_idx] = moved_tab;
+    setVisualStateAt(to_idx, moved_visual);
+
+    if (g_active_tab == from_idx) {
+        g_active_tab = to_idx;
+    } else if (from_idx < to_idx and g_active_tab > from_idx and g_active_tab <= to_idx) {
+        g_active_tab -= 1;
+    } else if (from_idx > to_idx and g_active_tab >= to_idx and g_active_tab < from_idx) {
+        g_active_tab += 1;
+    }
+
+    return true;
+}
+
 /// Switch to the tab at the given index.
 /// The caller is responsible for clearing selection/divider/resize state and setting rebuild flags.
 pub fn switchTab(idx: usize) void {
@@ -1250,4 +1314,111 @@ pub fn restoreSessionFromFile(
     const target = @min(@as(usize, loaded.value.active_tab), rebuilt - 1);
     switchTab(target);
     return true;
+}
+
+fn resetTestTabGlobals() void {
+    for (0..MAX_TABS) |idx| {
+        g_tabs[idx] = null;
+        g_tab_close_opacity[idx] = 0;
+        g_tab_text_x_start[idx] = 0;
+        g_tab_text_x_end[idx] = 0;
+        g_tab_text_y_start[idx] = 0;
+        g_tab_text_y_end[idx] = 0;
+    }
+    g_tab_count = 0;
+    g_active_tab = 0;
+    g_tab_close_pressed = null;
+    g_last_frame_time_ms = 0;
+    g_tab_rename_active = false;
+    g_tab_rename_idx = 0;
+    g_tab_rename_len = 0;
+    g_tab_rename_cursor = 0;
+    g_tab_rename_select_all = false;
+}
+
+fn makeTestTabState() TabState {
+    return .{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+    };
+}
+
+test "tab: reorder moves active tab forward" {
+    resetTestTabGlobals();
+    var a = makeTestTabState();
+    var b = makeTestTabState();
+    var c = makeTestTabState();
+    g_tabs[0] = &a;
+    g_tabs[1] = &b;
+    g_tabs[2] = &c;
+    g_tab_count = 3;
+    g_active_tab = 0;
+    g_tab_close_opacity[0] = 0.1;
+    g_tab_close_opacity[1] = 0.2;
+    g_tab_close_opacity[2] = 0.3;
+
+    try std.testing.expect(reorderTab(0, 2));
+
+    try std.testing.expect(g_tabs[0].? == &b);
+    try std.testing.expect(g_tabs[1].? == &c);
+    try std.testing.expect(g_tabs[2].? == &a);
+    try std.testing.expectEqual(@as(usize, 2), g_active_tab);
+    try std.testing.expectEqual(@as(f32, 0.2), g_tab_close_opacity[0]);
+    try std.testing.expectEqual(@as(f32, 0.3), g_tab_close_opacity[1]);
+    try std.testing.expectEqual(@as(f32, 0.1), g_tab_close_opacity[2]);
+}
+
+test "tab: reorder moves active tab backward" {
+    resetTestTabGlobals();
+    var a = makeTestTabState();
+    var b = makeTestTabState();
+    var c = makeTestTabState();
+    g_tabs[0] = &a;
+    g_tabs[1] = &b;
+    g_tabs[2] = &c;
+    g_tab_count = 3;
+    g_active_tab = 2;
+
+    try std.testing.expect(reorderTab(2, 0));
+
+    try std.testing.expect(g_tabs[0].? == &c);
+    try std.testing.expect(g_tabs[1].? == &a);
+    try std.testing.expect(g_tabs[2].? == &b);
+    try std.testing.expectEqual(@as(usize, 0), g_active_tab);
+}
+
+test "tab: reorder preserves selected logical tab when another tab moves" {
+    resetTestTabGlobals();
+    var a = makeTestTabState();
+    var b = makeTestTabState();
+    var c = makeTestTabState();
+    g_tabs[0] = &a;
+    g_tabs[1] = &b;
+    g_tabs[2] = &c;
+    g_tab_count = 3;
+    g_active_tab = 1;
+
+    try std.testing.expect(reorderTab(0, 2));
+    try std.testing.expect(g_tabs[g_active_tab].? == &b);
+    try std.testing.expectEqual(@as(usize, 0), g_active_tab);
+
+    try std.testing.expect(reorderTab(2, 0));
+    try std.testing.expect(g_tabs[g_active_tab].? == &b);
+    try std.testing.expectEqual(@as(usize, 1), g_active_tab);
+}
+
+test "tab: reorder rejects invalid and no-op moves" {
+    resetTestTabGlobals();
+    var a = makeTestTabState();
+    g_tabs[0] = &a;
+    g_tab_count = 1;
+    g_active_tab = 0;
+
+    try std.testing.expect(!reorderTab(0, 0));
+    try std.testing.expect(!reorderTab(0, 1));
+    try std.testing.expect(!reorderTab(1, 0));
+    try std.testing.expect(g_tabs[0].? == &a);
+    try std.testing.expectEqual(@as(usize, 0), g_active_tab);
 }
