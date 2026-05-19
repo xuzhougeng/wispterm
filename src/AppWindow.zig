@@ -73,6 +73,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
 
     // Store app pointer globally for requestNewWindow
     g_app = app;
+    app.maybeStartStartupUpdateCheck();
 
     try ensureGlobalAgentHistoryStore(allocator);
     tab.g_ai_history_change_hook = saveAiHistoryChangeEvent;

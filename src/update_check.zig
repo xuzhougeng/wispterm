@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const latest_release_api_url = "https://api.github.com/repos/xuzhougeng/phantty/releases/latest";
+pub const latest_release_page_url = "https://github.com/xuzhougeng/phantty/releases/latest";
 
 pub const Order = enum { older, equal, newer, unknown };
 pub const State = enum { idle, checking, up_to_date, update_available, failed };
@@ -112,6 +113,66 @@ pub fn evaluateRelease(current_version: []const u8, release: ReleaseInfo) CheckR
     };
 }
 
+pub fn formatStatusMessage(buf: []u8, result: CheckResult) ![]const u8 {
+    return switch (result.state) {
+        .idle => std.fmt.bufPrint(buf, "", .{}),
+        .checking => std.fmt.bufPrint(buf, "Checking for updates...", .{}),
+        .up_to_date => std.fmt.bufPrint(buf, "Phantty is up to date", .{}),
+        .update_available => std.fmt.bufPrint(buf, "Update available: {s}", .{result.latest_version}),
+        .failed => std.fmt.bufPrint(buf, "Update check failed", .{}),
+    };
+}
+
+pub fn copyResult(result: CheckResult, latest_version_buf: []u8, release_url_buf: []u8) CheckResult {
+    return .{
+        .state = result.state,
+        .latest_version = copyBounded(latest_version_buf, result.latest_version),
+        .release_url = copyBounded(release_url_buf, result.release_url),
+    };
+}
+
+fn copyBounded(buf: []u8, value: []const u8) []const u8 {
+    if (buf.len == 0 or value.len == 0) return "";
+    const len = @min(buf.len, value.len);
+    @memcpy(buf[0..len], value[0..len]);
+    return buf[0..len];
+}
+
+pub fn fetchLatestRelease(
+    allocator: std.mem.Allocator,
+    current_version: []const u8,
+    latest_version_buf: []u8,
+    release_url_buf: []u8,
+) CheckResult {
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .write_buffer_size = 16 * 1024,
+    };
+    defer client.deinit();
+
+    var body: std.Io.Writer.Allocating = .init(allocator);
+    defer body.deinit();
+
+    const response = client.fetch(.{
+        .location = .{ .url = latest_release_api_url },
+        .method = .GET,
+        .keep_alive = false,
+        .headers = .{
+            .user_agent = .{ .override = "phantty" },
+        },
+        .response_writer = &body.writer,
+    }) catch return .{ .state = .failed };
+    if (response.status != .ok) return .{ .state = .failed };
+
+    var list = body.toArrayList();
+    defer list.deinit(allocator);
+
+    const release = parseLatestRelease(allocator, list.items) catch return .{ .state = .failed };
+    defer release.deinit(allocator);
+
+    return copyResult(evaluateRelease(current_version, release), latest_version_buf, release_url_buf);
+}
+
 test "update_check: compares semantic versions with optional v prefix" {
     try std.testing.expectEqual(Order.equal, compareVersions("0.23.2", "v0.23.2"));
     try std.testing.expectEqual(Order.newer, compareVersions("0.23.2", "v0.23.3"));
@@ -145,4 +206,34 @@ test "update_check: decides when update is available" {
     };
     const result = evaluateRelease("0.23.2", release);
     try std.testing.expectEqual(State.update_available, result.state);
+}
+
+test "update_check: formats update messages" {
+    var buf: [96]u8 = undefined;
+    const msg = try formatStatusMessage(&buf, .{
+        .state = .update_available,
+        .latest_version = "v0.23.3",
+        .release_url = "https://github.com/xuzhougeng/phantty/releases/tag/v0.23.3",
+    });
+    try std.testing.expectEqualStrings("Update available: v0.23.3", msg);
+}
+
+test "update_check: manual failure message is stable" {
+    var buf: [96]u8 = undefined;
+    const msg = try formatStatusMessage(&buf, .{ .state = .failed });
+    try std.testing.expectEqualStrings("Update check failed", msg);
+}
+
+test "update_check: copies result strings into caller buffers" {
+    var version_buf: [16]u8 = undefined;
+    var url_buf: [96]u8 = undefined;
+    const copied = copyResult(.{
+        .state = .update_available,
+        .latest_version = "v0.23.3",
+        .release_url = "https://github.com/xuzhougeng/phantty/releases/tag/v0.23.3",
+    }, &version_buf, &url_buf);
+
+    try std.testing.expectEqual(State.update_available, copied.state);
+    try std.testing.expectEqualStrings("v0.23.3", copied.latest_version);
+    try std.testing.expectEqualStrings("https://github.com/xuzhougeng/phantty/releases/tag/v0.23.3", copied.release_url);
 }

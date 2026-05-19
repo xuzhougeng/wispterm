@@ -8,9 +8,11 @@ const std = @import("std");
 const Config = @import("config.zig");
 const AppWindow = @import("AppWindow.zig");
 const ai_chat = @import("ai_chat.zig");
+const app_metadata = @import("app_metadata.zig");
 const directwrite = @import("directwrite.zig");
 const win32_backend = @import("apprt/win32.zig");
 const remote = @import("remote_client.zig");
+const update_check = @import("update_check.zig");
 
 extern "user32" fn MonitorFromPoint(pt: win32_backend.POINT, dwFlags: u32) callconv(.winapi) ?win32_backend.HMONITOR;
 
@@ -81,6 +83,16 @@ ai_agent_output_limit: u32,
 
 // Session persistence
 restore_tabs_on_startup: bool,
+
+// Update check state
+auto_update_check: bool,
+update_mutex: std.Thread.Mutex,
+update_result: update_check.CheckResult,
+update_latest_version_buf: [32]u8,
+update_release_url_buf: [256]u8,
+update_thread: ?std.Thread,
+update_check_in_flight: bool,
+startup_update_check_started: bool,
 
 // Window management
 windows: std.ArrayListUnmanaged(*AppWindow),
@@ -178,6 +190,14 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
         .ai_agent_output_limit = cfg.@"ai-agent-output-limit",
         .restore_tabs_on_startup = cfg.@"restore-tabs-on-startup",
+        .auto_update_check = cfg.@"auto-update-check",
+        .update_mutex = .{},
+        .update_result = .{ .state = .idle },
+        .update_latest_version_buf = undefined,
+        .update_release_url_buf = undefined,
+        .update_thread = null,
+        .update_check_in_flight = false,
+        .startup_update_check_started = false,
         .windows = .empty,
         .mutex = .{},
         .window_threads = .empty,
@@ -314,6 +334,134 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms";
     self.ai_agent_output_limit = cfg.@"ai-agent-output-limit";
     self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
+    self.auto_update_check = cfg.@"auto-update-check";
+}
+
+// ============================================================================
+// Update checks
+// ============================================================================
+
+pub fn maybeStartStartupUpdateCheck(self: *App) void {
+    var should_start = false;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        if (self.auto_update_check and !self.startup_update_check_started) {
+            self.startup_update_check_started = true;
+            should_start = true;
+        }
+    }
+    if (should_start) self.startUpdateCheck(false);
+}
+
+pub fn requestManualUpdateCheck(self: *App) void {
+    self.startUpdateCheck(true);
+}
+
+fn startUpdateCheck(self: *App, show_failures: bool) void {
+    self.joinFinishedUpdateThread();
+
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        if (self.update_check_in_flight) return;
+        self.update_check_in_flight = true;
+        self.update_result = .{ .state = if (show_failures) .checking else .idle };
+    }
+
+    const thread = std.Thread.spawn(.{}, updateCheckThreadMain, .{ self, show_failures }) catch |err| {
+        std.debug.print("Update check: failed to spawn thread: {}\n", .{err});
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        self.update_check_in_flight = false;
+        self.update_result = .{ .state = if (show_failures) .failed else .idle };
+        return;
+    };
+
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+    self.update_thread = thread;
+}
+
+fn updateCheckThreadMain(app: *App, show_failures: bool) void {
+    var latest_version_buf: [32]u8 = undefined;
+    var release_url_buf: [256]u8 = undefined;
+    var result = update_check.fetchLatestRelease(
+        app.allocator,
+        app_metadata.version,
+        &latest_version_buf,
+        &release_url_buf,
+    );
+    if (!show_failures and result.state != .update_available) {
+        result = .{ .state = .idle };
+    }
+    app.storeUpdateResult(result);
+}
+
+fn storeUpdateResult(self: *App, result: update_check.CheckResult) void {
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+    self.update_result = update_check.copyResult(
+        result,
+        &self.update_latest_version_buf,
+        &self.update_release_url_buf,
+    );
+    self.update_check_in_flight = false;
+}
+
+pub fn consumeUpdateResult(self: *App) update_check.CheckResult {
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+
+    if (self.update_result.state == .idle or self.update_result.state == .checking) {
+        return .{ .state = .idle };
+    }
+
+    const result = self.update_result;
+    self.update_result = .{ .state = .idle };
+    return result;
+}
+
+pub fn copyLatestReleaseUrl(self: *App, out: []u8) ?[]const u8 {
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+
+    const url = if (self.update_result.release_url.len > 0)
+        self.update_result.release_url
+    else
+        update_check.latest_release_page_url;
+    return copyBounded(out, url);
+}
+
+fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
+    if (out.len == 0 or value.len == 0) return null;
+    const len = @min(out.len, value.len);
+    @memcpy(out[0..len], value[0..len]);
+    return out[0..len];
+}
+
+fn joinFinishedUpdateThread(self: *App) void {
+    var thread: ?std.Thread = null;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        if (!self.update_check_in_flight) {
+            thread = self.update_thread;
+            self.update_thread = null;
+        }
+    }
+    if (thread) |t| t.join();
+}
+
+fn joinUpdateThread(self: *App) void {
+    var thread: ?std.Thread = null;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        thread = self.update_thread;
+        self.update_thread = null;
+    }
+    if (thread) |t| t.join();
 }
 
 // ============================================================================
@@ -505,6 +653,7 @@ pub fn requestShutdown(self: *App) void {
 pub fn deinit(self: *App) void {
     // Join any remaining threads
     self.joinAllWindowThreads();
+    self.joinUpdateThread();
 
     if (self.remote_client) |client| {
         client.destroy();
