@@ -358,6 +358,7 @@ background-image = C:\Users\me\Pictures\wallpaper.png
 background-opacity = 0.85
 background-image-mode = fill
 config-file = extra.conf
+auto-update-check = true
 remote-enabled = false
 remote-server-url = https://remote.example.com
 remote-server-fingerprint = sha256:...
@@ -384,6 +385,7 @@ remote-session-key = Workstation
 | `window-width`              | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80×24)                                                                                                                                                                        |
 | `scrollback-limit`          | `10000000` | Scrollback buffer limit in bytes                                                                                                                                                                                        |
 | `restore-tabs-on-startup`   | `false`    | Persist tab/split layout to `%APPDATA%\phantty\session.json` on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--cwd`) take precedence and skip restore. |
+| `auto-update-check`         | `true`     | Check GitHub Releases after startup and show a clickable prompt when a newer version is available. Set to `false` to disable startup checks.                                                                             |
 | `config-file`               | *(none)*   | Include another config file (prefix with `?` to make optional)                                                                                                                                                          |
 | `remote-enabled`            | `false`    | Start the shared outbound RemoteClient for this Phantty instance                                                                                                                                                        |
 | `remote-server-url`         | *(none)*   | Cloudflare relay URL, for example `https://remote.example.com`                                                                                                                                                          |

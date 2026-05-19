@@ -334,6 +334,9 @@ shell: []const u8 = "cmd",
 /// Default false: the file is neither written nor read when this is off.
 @"restore-tabs-on-startup": bool = false,
 
+/// Check GitHub Releases for a newer Phantty version after startup.
+@"auto-update-check": bool = true,
+
 /// Load an additional config file. Can be repeated. Relative paths are
 /// resolved relative to the file containing the directive. Prefix with
 /// `?` to make optional (missing file is silently ignored).
@@ -729,6 +732,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid restore-tabs-on-startup: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "auto-update-check")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"auto-update-check" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"auto-update-check" = false;
+        } else {
+            log.warn("invalid auto-update-check: {s}", .{value});
+        }
     } else if (std.mem.eql(u8, key, "config-file")) {
         self.loadConfigFileDirective(allocator, value, base_dir);
     } else if (std.mem.eql(u8, key, "background")) {
@@ -1038,6 +1049,7 @@ pub fn printHelp() void {
         \\  --ai-agent-permission <mode> Agent tool permission: confirm | full
         \\  --ai-agent-command-timeout-ms <ms> Agent command timeout budget
         \\  --ai-agent-output-limit <bytes> Max bytes returned by each tool
+        \\  --auto-update-check <bool>  Check GitHub Releases after startup
         \\  --config-file <path>         Load additional config file (prefix ? for optional)
         \\  --remote-enabled <bool>      Enable opt-in remote access foundation
         \\  --remote-server-url <url>    Cloudflare relay URL
@@ -1352,6 +1364,9 @@ const default_config_template =
     \\# ai-agent-command-timeout-ms = 60000
     \\# ai-agent-output-limit = 16384
     \\
+    \\# Updates
+    \\# auto-update-check = true
+    \\
     \\# Debug
     \\# phantty-debug-fps = false
     \\# phantty-debug-draw-calls = false
@@ -1418,6 +1433,22 @@ test "config: restore-tabs-on-startup parses true/false" {
     // Invalid value leaves the previous state untouched (still false).
     cfg.applyKeyValue(allocator, "restore-tabs-on-startup", "maybe", ".");
     try std.testing.expectEqual(false, cfg.@"restore-tabs-on-startup");
+}
+
+test "config: auto update check option parses true false" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(true, cfg.@"auto-update-check");
+
+    cfg.applyKeyValue(allocator, "auto-update-check", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"auto-update-check");
+
+    cfg.applyKeyValue(allocator, "auto-update-check", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"auto-update-check");
+
+    cfg.applyKeyValue(allocator, "auto-update-check", "maybe", ".");
+    try std.testing.expectEqual(true, cfg.@"auto-update-check");
 }
 
 test "config: ai agent options parse" {
