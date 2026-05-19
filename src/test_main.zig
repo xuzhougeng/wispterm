@@ -30,6 +30,7 @@ comptime {
     _ = @import("ssh_prompt.zig");
     _ = @import("system_browser.zig");
     _ = @import("split_tree.zig");
+    _ = @import("update_check.zig");
 }
 
 test "app version metadata is exposed for CLI and command center" {
