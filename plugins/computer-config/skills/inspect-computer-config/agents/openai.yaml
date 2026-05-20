@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inspect Computer Config"
+  short_description: "Summarize local system hardware and OS specs"
+  default_prompt: "Use $inspect-computer-config to summarize this computer configuration."
