@@ -867,6 +867,136 @@ pre.code-block code {
   }
 }
 
+/* AI page */
+.ai-hero {
+  padding: 76px 0 62px;
+  background:
+    linear-gradient(180deg, rgba(37, 43, 55, 0.62), rgba(27, 30, 40, 0)),
+    radial-gradient(ellipse 70% 48% at 72% 8%, rgba(93, 228, 199, 0.10), transparent 64%);
+}
+
+.ai-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.96fr) minmax(430px, 1.04fr);
+  gap: 42px;
+  align-items: center;
+}
+
+.ai-hero-copy h1 {
+  max-width: 720px;
+  margin-bottom: 18px;
+}
+
+.ai-hero-copy .tagline {
+  max-width: 660px;
+  margin-left: 0;
+  text-align: left;
+}
+
+.cta-row.left {
+  justify-content: flex-start;
+}
+
+.ai-preview {
+  max-width: none;
+  margin: 0;
+}
+
+.ai-setup-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.setup-panel {
+  min-width: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+}
+
+.setup-panel h3 {
+  margin: 0 0 16px;
+  color: var(--accent);
+  font-size: 1.04rem;
+}
+
+.setup-panel p {
+  margin: 0 0 16px;
+  color: var(--fg-muted);
+  font-size: 0.94rem;
+}
+
+.setup-panel .code-block {
+  margin-top: 12px;
+}
+
+.ai-setup-grid pre.code-block,
+#tools pre.code-block {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.config-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.94rem;
+}
+
+.config-table th,
+.config-table td {
+  padding: 11px 0;
+  border-top: 1px solid rgba(58, 66, 89, 0.72);
+  vertical-align: top;
+}
+
+.config-table tr:first-child th,
+.config-table tr:first-child td {
+  border-top: none;
+}
+
+.config-table th {
+  width: 150px;
+  padding-right: 18px;
+  color: var(--fg);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.config-table td {
+  color: var(--fg-muted);
+}
+
+@media (max-width: 900px) {
+  .ai-hero-grid,
+  .ai-setup-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .ai-hero {
+    padding: 54px 0 42px;
+  }
+  .config-table,
+  .config-table tbody,
+  .config-table tr,
+  .config-table th,
+  .config-table td {
+    display: block;
+  }
+  .config-table th {
+    width: auto;
+    padding: 12px 0 3px;
+  }
+  .config-table td {
+    padding: 0 0 12px;
+  }
+}
+
 /* Credits */
 .credits ul {
   margin: 0;

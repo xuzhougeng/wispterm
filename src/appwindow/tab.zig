@@ -21,7 +21,7 @@ const Selection = Surface.Selection;
 // Constants
 // ============================================================================
 
-pub const MAX_TABS = 16;
+pub const MAX_TABS = 32;
 pub const MAX_SPLITS_PER_TAB = 16;
 pub const SPLIT_DIVIDER_WIDTH: i32 = 2;
 pub const DEFAULT_PADDING: u32 = 10;

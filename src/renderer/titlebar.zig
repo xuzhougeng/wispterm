@@ -77,6 +77,12 @@ fn titlebarTextWidth(text: []const u8) f32 {
     return width;
 }
 
+fn sidebarTabNumberWidth() f32 {
+    var max_prefix_buf: [8]u8 = undefined;
+    const max_prefix = std.fmt.bufPrint(&max_prefix_buf, "{d}", .{tab.MAX_TABS}) catch "99";
+    return @max(@as(f32, 24), @ceil(titlebarTextWidth(max_prefix)) + 4);
+}
+
 fn agentBadgeColor(state: agent_detector.State) [3]f32 {
     return switch (state) {
         .running => .{ 0.22, 0.72, 0.40 },
@@ -1126,6 +1132,10 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         tab.g_tab_text_y_end[tab_idx] = 0;
     }
 
+    const number_x: f32 = 14;
+    const number_w = sidebarTabNumberWidth();
+    const title_x = number_x + number_w + 8;
+
     for (0..tab.g_tab_count) |tab_idx| {
         const row_top_px = list_top_px + @as(f32, @floatFromInt(tab_idx)) * row_h_full;
         if (row_top_px >= window_height) break;
@@ -1171,11 +1181,10 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             }
         }
 
-        var prefix_buf: [4]u8 = undefined;
+        var prefix_buf: [8]u8 = undefined;
         const prefix = std.fmt.bufPrint(&prefix_buf, "{d}", .{tab_idx + 1}) catch "";
         const text_y = row_y + (row_h - font.g_titlebar_cell_height) / 2;
-        const number_x: f32 = 14;
-        _ = renderTextLimited(prefix, number_x, text_y, if (is_active) text_active else muted, 24);
+        _ = renderTextLimited(prefix, number_x, text_y, if (is_active) text_active else muted, number_w);
 
         const title = if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx)
             tab.g_tab_rename_buf[0..tab.g_tab_rename_len]
@@ -1186,7 +1195,6 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
 
         const close_opacity = tab.g_tab_close_opacity[tab_idx];
         const close_btn_x = sidebar_w - tab.TAB_CLOSE_BTN_W - 4;
-        const title_x: f32 = 42;
         var right_content_x = close_btn_x - 4;
         const detection = if (!tab.g_tab_rename_active) blk: {
             if (tab.g_tabs[tab_idx]) |t| {
