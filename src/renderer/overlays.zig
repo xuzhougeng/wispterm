@@ -18,7 +18,6 @@ const themes_embed = @import("../themes.zig");
 const win32_backend = @import("../apprt/win32.zig");
 const ssh_prompt = @import("../ssh_prompt.zig");
 const app_metadata = @import("../app_metadata.zig");
-const scrollbar_model = @import("../scrollbar_model.zig");
 const command_center_state = @import("../command_center_state.zig");
 const agent_history = @import("../agent_history.zig");
 const system_browser = @import("../system_browser.zig");
@@ -30,23 +29,38 @@ const c = @cImport({
 
 const TabState = tab.TabState;
 const SplitRect = split_layout.SplitRect;
+const primitives = @import("overlays/primitives.zig");
+const mixColor = primitives.mixColor;
+pub const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
+pub const scrollbar = @import("overlays/scrollbar.zig");
+pub const resize = @import("overlays/resize.zig");
+pub const startup_shortcuts = @import("overlays/startup_shortcuts.zig");
 
-// ============================================================================
-// Scrollbar — virtual overlay scrollbar with fade-to-idle
-// ============================================================================
+pub const SCROLLBAR_WIDTH = scrollbar.SCROLLBAR_WIDTH;
+pub const ScrollbarGeometry = scrollbar.ScrollbarGeometry;
+pub const scrollbarGeometryForSurface = scrollbar.scrollbarGeometryForSurface;
+pub const scrollbarGeometry = scrollbar.scrollbarGeometry;
+pub const scrollbarShow = scrollbar.scrollbarShow;
+pub const scrollbarShowForSurface = scrollbar.scrollbarShowForSurface;
+pub const renderScrollbarForSurface = scrollbar.renderScrollbarForSurface;
+pub const renderScrollbar = scrollbar.renderScrollbar;
+pub const scrollbarHitTest = scrollbar.scrollbarHitTest;
+pub const scrollbarHitTestForSurface = scrollbar.scrollbarHitTestForSurface;
+pub const scrollbarThumbHitTest = scrollbar.scrollbarThumbHitTest;
+pub const scrollbarDrag = scrollbar.scrollbarDrag;
+pub const scrollbarDragForSurface = scrollbar.scrollbarDragForSurface;
 
-pub const SCROLLBAR_WIDTH: f32 = 12; // Width of the scrollbar track
-const SCROLLBAR_MARGIN: f32 = 2; // Margin from right edge
-const SCROLLBAR_MIN_THUMB: f32 = 20; // Minimum thumb height in pixels
-const SCROLLBAR_FADE_DELAY_MS: i64 = 800; // ms to wait before fading
-const SCROLLBAR_FADE_DURATION_MS: i64 = 400; // ms for fade-out animation
-const SCROLLBAR_HOVER_WIDTH: f32 = 12; // Wider hit area for hover/drag
-
-// Per-surface scrollbar opacity/timing lives in Surface.zig.
-// These are global interaction state (only one mouse):
-pub threadlocal var g_scrollbar_hover: bool = false; // Mouse is over scrollbar area
-pub threadlocal var g_scrollbar_dragging: bool = false; // Currently dragging the thumb
-pub threadlocal var g_scrollbar_drag_offset: f32 = 0; // Offset within thumb where drag started
+pub const RESIZE_OVERLAY_DURATION_MS = resize.RESIZE_OVERLAY_DURATION_MS;
+pub const resizeOverlayShow = resize.resizeOverlayShow;
+pub const renderResizeOverlay = resize.renderResizeOverlay;
+pub const renderResizeOverlayWithOffset = resize.renderResizeOverlayWithOffset;
+pub const renderResizeOverlayForSurface = resize.renderResizeOverlayForSurface;
+pub const STARTUP_SHORTCUTS_DURATION_MS = startup_shortcuts.STARTUP_SHORTCUTS_DURATION_MS;
+pub const STARTUP_SHORTCUTS_FADE_MS = startup_shortcuts.STARTUP_SHORTCUTS_FADE_MS;
+pub const startupShortcutsShow = startup_shortcuts.startupShortcutsShow;
+pub const startupShortcutsDismiss = startup_shortcuts.startupShortcutsDismiss;
+pub const startupShortcutsToggle = startup_shortcuts.startupShortcutsToggle;
+pub const renderStartupShortcutsOverlay = startup_shortcuts.renderStartupShortcutsOverlay;
 
 // ============================================================================
 // Split divider rendering
@@ -59,46 +73,6 @@ pub threadlocal var g_unfocused_split_opacity: f32 = 0.7;
 
 /// Split divider color (null = use scrollbar style with alpha)
 pub threadlocal var g_split_divider_color: ?[3]f32 = null;
-
-// Split resize overlay (for equalize/keyboard resize - shows overlay on all splits temporarily)
-pub threadlocal var g_split_resize_overlay_until: i64 = 0; // Timestamp when overlay should hide
-
-// ============================================================================
-// Resize overlay — shows terminal size during resize (like Ghostty)
-// ============================================================================
-
-pub const RESIZE_OVERLAY_DURATION_MS: i64 = 750; // How long to show after resize stops
-const RESIZE_OVERLAY_FADE_MS: i64 = 150; // Fade out duration
-const RESIZE_OVERLAY_FIRST_DELAY_MS: i64 = 500; // Delay before first overlay shows
-
-// Global resize overlay state
-pub threadlocal var g_resize_overlay_visible: bool = false; // Whether overlay should be showing
-threadlocal var g_resize_overlay_last_change: i64 = 0; // When size last changed
-threadlocal var g_resize_overlay_cols: u16 = 0; // Current cols being displayed
-threadlocal var g_resize_overlay_rows: u16 = 0; // Current rows being displayed
-threadlocal var g_resize_overlay_last_cols: u16 = 0; // Last "settled" cols (after timeout)
-threadlocal var g_resize_overlay_last_rows: u16 = 0; // Last "settled" rows (after timeout)
-threadlocal var g_resize_overlay_ready: bool = false; // Set after initial delay
-threadlocal var g_resize_overlay_init_time: i64 = 0; // When window was created
-pub threadlocal var g_resize_overlay_opacity: f32 = 0; // For fade out animation
-
-// Resize active state (for cursor hiding) - separate from overlay visibility
-const RESIZE_ACTIVE_TIMEOUT_MS: i64 = 50; // Consider resize "done" after this many ms of no changes
-pub threadlocal var g_resize_active: bool = false; // True while actively resizing
-
-// Suppress resize overlay briefly after tab switch/creation to avoid false triggers
-pub threadlocal var g_resize_overlay_suppress_until: i64 = 0;
-// ============================================================================
-// Startup shortcuts overlay
-// ============================================================================
-
-const STARTUP_SHORTCUTS_DURATION_MS: i64 = 12000;
-const STARTUP_SHORTCUTS_FADE_MS: i64 = 800;
-
-const StartupShortcut = struct {
-    keys: []const u8,
-    action: []const u8,
-};
 
 const DebugLineRect = struct {
     x: f32,
@@ -151,46 +125,6 @@ const WindowCloseConfirmLayout = struct {
     cancel_w: f32,
     cancel_h: f32,
 };
-
-const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
-    .{ .keys = "Ctrl+Shift+P", .action = "Command center" },
-    .{ .keys = "Ctrl+Shift+T", .action = "New session" },
-    .{ .keys = "Ctrl+Shift+B", .action = "Toggle sidebar" },
-    .{ .keys = "Ctrl+Shift+O", .action = "Split right" },
-    .{ .keys = "Ctrl+Shift+E", .action = "File explorer" },
-    .{ .keys = "Ctrl/double-click text", .action = "Preview file" },
-    .{ .keys = "Ctrl+Shift+[ / ]", .action = "Previous / next panel" },
-    .{ .keys = "Alt+Arrows", .action = "Focus panel" },
-    .{ .keys = "Ctrl+Shift+Z", .action = "Equalize panels" },
-    .{ .keys = "Ctrl+Shift+W", .action = "Close panel / tab; confirm last" },
-    .{ .keys = "Ctrl+Shift+C / Ctrl+V", .action = "Copy / paste text" },
-    .{ .keys = "Shift-click text", .action = "Select from anchor" },
-    .{ .keys = "Ctrl+A / Ctrl+C in AI", .action = "Select / copy chat" },
-    .{ .keys = "Right-click selection", .action = "Copy selection" },
-    .{ .keys = "Ctrl+Shift+V", .action = "Paste image" },
-    .{ .keys = "Ctrl+,", .action = "Open config" },
-    .{ .keys = "Ctrl++ / Ctrl+-", .action = "Font size" },
-    .{ .keys = "Alt+Enter", .action = "Maximize / restore" },
-};
-
-pub threadlocal var g_startup_shortcuts_visible: bool = false;
-threadlocal var g_startup_shortcuts_started_at: i64 = 0;
-
-pub fn startupShortcutsShow() void {
-    g_startup_shortcuts_visible = true;
-    g_startup_shortcuts_started_at = std.time.milliTimestamp();
-}
-
-pub fn startupShortcutsDismiss() void {
-    g_startup_shortcuts_visible = false;
-}
-
-pub fn startupShortcutsToggle() void {
-    g_startup_shortcuts_visible = !g_startup_shortcuts_visible;
-    if (g_startup_shortcuts_visible) {
-        g_startup_shortcuts_started_at = std.time.milliTimestamp();
-    }
-}
 
 // ============================================================================
 // Command center
@@ -823,6 +757,14 @@ fn pointInTopRect(xpos: f64, ypos: f64, x: f32, top_px: f32, w: f32, h: f32) boo
     return x_f >= x and x_f <= x + w and y_f >= top_px and y_f <= top_px + h;
 }
 
+fn measureTitlebarText(text: []const u8) f32 {
+    var text_width: f32 = 0;
+    for (text) |ch| {
+        text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
+    }
+    return text_width;
+}
+
 fn renderTitlebarText(text: []const u8, x_start: f32, y: f32, color: [3]f32) void {
     var x = @round(x_start);
     const y_aligned = @round(y);
@@ -1229,7 +1171,7 @@ fn commandCenterStateSnapshot() command_center_state.State {
         .command_palette_filter_len = g_command_palette_filter_len,
         .command_palette_mode = g_command_palette_mode,
         .command_palette_history_selected = g_command_palette_history_selected,
-        .startup_shortcuts_visible = g_startup_shortcuts_visible,
+        .startup_shortcuts_visible = startup_shortcuts.g_startup_shortcuts_visible,
         .session_launcher_visible = g_session_launcher_visible,
         .session_launcher_selected = g_session_launcher_selected,
         .ssh_list_visible = g_ssh_list_visible,
@@ -1254,7 +1196,7 @@ fn commandCenterStateApply(state: command_center_state.State) void {
     g_command_palette_filter_len = state.command_palette_filter_len;
     g_command_palette_mode = state.command_palette_mode;
     g_command_palette_history_selected = state.command_palette_history_selected;
-    g_startup_shortcuts_visible = state.startup_shortcuts_visible;
+    startup_shortcuts.g_startup_shortcuts_visible = state.startup_shortcuts_visible;
     g_session_launcher_visible = state.session_launcher_visible;
     g_session_launcher_selected = state.session_launcher_selected;
     g_ssh_list_visible = state.ssh_list_visible;
@@ -3201,509 +3143,6 @@ pub threadlocal var g_debug_draw_calls: bool = false; // Whether to show draw ca
 threadlocal var g_fps_frame_count: u32 = 0; // Frames since last FPS update
 pub threadlocal var g_fps_last_time: i64 = 0; // Timestamp of last FPS calculation
 threadlocal var g_fps_value: f32 = 0; // Current FPS value to display
-
-// ============================================================================
-// Scrollbar geometry
-// ============================================================================
-
-/// Scrollbar geometry result.
-pub const ScrollbarGeometry = struct {
-    track_x: f32,
-    track_y: f32, // bottom of track (GL coords, y=0 is bottom)
-    track_h: f32,
-    thumb_y: f32,
-    thumb_h: f32,
-};
-
-/// Compute scrollbar geometry for a specific surface.
-/// Returns null if there's no scrollback (nothing to scroll).
-pub fn scrollbarGeometryForSurface(surface: *Surface, view_height: f32, top_padding: f32) ?ScrollbarGeometry {
-    const sb = AppWindow.input.scrollbarForSurface(surface);
-    if (sb.total <= sb.len) return null; // No scrollback, no scrollbar
-
-    // Track spans the terminal content area (below top padding, all the way to bottom)
-    const track_top = view_height - top_padding; // top of terminal area in GL coords
-    const track_bottom: f32 = 0; // extend to bottom edge
-    const track_h = track_top - track_bottom;
-    if (track_h <= 0) return null;
-
-    // Thumb proportional to visible / total
-    const ratio = @as(f32, @floatFromInt(sb.len)) / @as(f32, @floatFromInt(sb.total));
-    const thumb_h = @max(SCROLLBAR_MIN_THUMB, track_h * ratio);
-
-    // Thumb position: offset=0 means top, offset=total-len means bottom
-    const max_offset = @as(f32, @floatFromInt(sb.total - sb.len));
-    const scroll_frac = if (max_offset > 0)
-        @as(f32, @floatFromInt(sb.offset)) / max_offset
-    else
-        0;
-    // In GL coords: top of track is higher y value
-    const thumb_top = track_top - scroll_frac * (track_h - thumb_h);
-    const thumb_y = thumb_top - thumb_h;
-
-    return .{
-        .track_x = 0, // placeholder — caller provides view_width
-        .track_y = track_bottom,
-        .track_h = track_h,
-        .thumb_y = thumb_y,
-        .thumb_h = thumb_h,
-    };
-}
-
-/// Compute scrollbar geometry from terminal state (uses active surface).
-/// Returns null if there's no scrollback (nothing to scroll).
-pub fn scrollbarGeometry(window_height: f32, top_padding: f32) ?ScrollbarGeometry {
-    const surface = AppWindow.activeSurface() orelse return null;
-    return scrollbarGeometryForSurface(surface, window_height, top_padding);
-}
-
-/// Show the scrollbar on the active surface (reset fade timer).
-pub fn scrollbarShow() void {
-    const surface = AppWindow.activeSurface() orelse return;
-    scrollbarShowForSurface(surface);
-}
-
-/// Show a specific surface's scrollbar (reset fade timer).
-pub fn scrollbarShowForSurface(surface: *Surface) void {
-    surface.scrollbar_opacity = 1.0;
-    surface.scrollbar_show_time = std.time.milliTimestamp();
-}
-
-/// Update scrollbar fade animation for a surface. Call once per frame.
-fn scrollbarUpdateFade(surface: *Surface) void {
-    if (g_scrollbar_hover or g_scrollbar_dragging) {
-        surface.scrollbar_opacity = 1.0;
-        return;
-    }
-    if (surface.scrollbar_opacity <= 0) return;
-
-    const now = std.time.milliTimestamp();
-    const elapsed = now - surface.scrollbar_show_time;
-
-    if (elapsed < SCROLLBAR_FADE_DELAY_MS) {
-        surface.scrollbar_opacity = 1.0;
-    } else {
-        const fade_elapsed = elapsed - SCROLLBAR_FADE_DELAY_MS;
-        if (fade_elapsed >= SCROLLBAR_FADE_DURATION_MS) {
-            surface.scrollbar_opacity = 0;
-        } else {
-            surface.scrollbar_opacity = 1.0 - @as(f32, @floatFromInt(fade_elapsed)) / @as(f32, @floatFromInt(SCROLLBAR_FADE_DURATION_MS));
-        }
-    }
-}
-
-/// Render the scrollbar overlay for a specific surface within the current viewport.
-/// view_width/view_height are the viewport dimensions (not full window).
-/// top_padding is the padding from the top of the viewport to the terminal content.
-pub fn renderScrollbarForSurface(surface: *Surface, view_width: f32, view_height: f32, top_padding: f32) void {
-    const gl = &AppWindow.gl;
-    const geo = scrollbarGeometryForSurface(surface, view_height, top_padding) orelse return;
-
-    scrollbarUpdateFade(surface);
-    const fade = scrollbar_model.effectiveOpacity(surface.scrollbar_opacity, true);
-    if (fade <= 0.01) return;
-
-    const bar_x = view_width - SCROLLBAR_WIDTH;
-    const bar_w = SCROLLBAR_WIDTH;
-
-    // Use the shader_program for quad rendering
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.BindVertexArray.?(gl_init.vao);
-
-    const bg = AppWindow.g_theme.background;
-    const fg = AppWindow.g_theme.foreground;
-
-    const track_color = mixColor(bg, fg, 0.18);
-    const track_alpha = fade * 0.20;
-    gl_init.renderQuadAlpha(bar_x, geo.track_y, bar_w, geo.track_h, track_color, track_alpha);
-
-    const thumb_color = mixColor(bg, fg, 0.46);
-    const thumb_alpha = fade * 0.62;
-    gl_init.renderQuadAlpha(bar_x, geo.thumb_y, bar_w, geo.thumb_h, thumb_color, thumb_alpha);
-}
-
-/// Render the scrollbar overlay (uses active surface at full window size).
-pub fn renderScrollbar(window_width: f32, window_height: f32, top_padding: f32) void {
-    const surface = AppWindow.activeSurface() orelse return;
-    renderScrollbarForSurface(surface, window_width, window_height, top_padding);
-}
-
-/// Check if a point (in client pixel coords, origin top-left) is over the scrollbar.
-pub fn scrollbarHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, top_padding: f32) bool {
-    return scrollbar_model.hitTest(
-        .{ .x = 0, .y = 0, .width = window_width, .height = window_height },
-        top_padding,
-        SCROLLBAR_HOVER_WIDTH,
-        @floatCast(xpos),
-        @floatCast(ypos),
-    );
-}
-
-/// Check if a point is over a specific surface scrollbar in a viewport.
-pub fn scrollbarHitTestForSurface(
-    surface: *Surface,
-    xpos: f64,
-    ypos: f64,
-    view_x: f32,
-    view_y: f32,
-    view_width: f32,
-    view_height: f32,
-    top_padding: f32,
-) bool {
-    if (scrollbarGeometryForSurface(surface, view_height, top_padding) == null) return false;
-    return scrollbar_model.hitTest(
-        .{ .x = view_x, .y = view_y, .width = view_width, .height = view_height },
-        top_padding,
-        SCROLLBAR_HOVER_WIDTH,
-        @floatCast(xpos),
-        @floatCast(ypos),
-    );
-}
-
-/// Check if a point is over the scrollbar thumb specifically.
-pub fn scrollbarThumbHitTest(ypos: f64, window_height: f32, top_padding: f32) bool {
-    const geo = scrollbarGeometry(window_height, top_padding) orelse return false;
-    // Convert ypos (top-left origin) to GL coords (bottom-left origin)
-    const gl_y = window_height - @as(f32, @floatCast(ypos));
-    return gl_y >= geo.thumb_y and gl_y <= geo.thumb_y + geo.thumb_h;
-}
-
-/// Handle scrollbar drag: convert pixel y to scroll position.
-pub fn scrollbarDrag(ypos: f64, window_height: f32, top_padding: f32) void {
-    const surface = AppWindow.activeSurface() orelse return;
-    scrollbarDragForSurface(surface, ypos, 0, window_height, top_padding);
-}
-
-/// Handle scrollbar drag for a specific surface viewport.
-pub fn scrollbarDragForSurface(surface: *Surface, ypos: f64, view_y: f32, view_height: f32, top_padding: f32) void {
-    const sb = AppWindow.input.scrollbarForSurface(surface);
-    if (sb.total <= sb.len) return;
-
-    const target_offset_usize = scrollbar_model.dragTargetOffset(
-        .{ .total = sb.total, .offset = sb.offset, .len = sb.len },
-        @as(f32, @floatCast(ypos)) - view_y,
-        top_padding,
-        view_height,
-        g_scrollbar_drag_offset,
-        SCROLLBAR_MIN_THUMB,
-    ) orelse return;
-    const target_offset: isize = @intCast(target_offset_usize);
-    const current_offset: isize = @intCast(sb.offset);
-    const delta = target_offset - current_offset;
-
-    if (delta != 0) {
-        surface.render_state.mutex.lock();
-        defer surface.render_state.mutex.unlock();
-        surface.terminal.scrollViewport(.{ .delta = delta });
-    }
-}
-
-// ============================================================================
-// Resize overlay
-// ============================================================================
-
-/// Trigger the resize overlay to show with the given dimensions.
-/// Called whenever the terminal size changes.
-pub fn resizeOverlayShow(cols: u16, rows: u16) void {
-    const now = std.time.milliTimestamp();
-
-    // Check if overlay is suppressed (e.g., after tab switch)
-    if (now < g_resize_overlay_suppress_until) {
-        // Still update last cols/rows so we don't flash when suppression ends
-        g_resize_overlay_last_cols = cols;
-        g_resize_overlay_last_rows = rows;
-        return;
-    }
-
-    // Mark resize as active (for cursor hiding)
-    g_resize_active = true;
-    g_resize_overlay_last_change = now;
-
-    // Check if we're past the initial delay (avoid showing during initial window setup)
-    if (!g_resize_overlay_ready) {
-        if (g_resize_overlay_init_time == 0) {
-            g_resize_overlay_init_time = now;
-        }
-        if (now - g_resize_overlay_init_time < RESIZE_OVERLAY_FIRST_DELAY_MS) {
-            // Still in initial delay - update last_cols/rows so we don't flash when ready
-            g_resize_overlay_last_cols = cols;
-            g_resize_overlay_last_rows = rows;
-            return;
-        }
-        g_resize_overlay_ready = true;
-    }
-
-    // Update current size
-    g_resize_overlay_cols = cols;
-    g_resize_overlay_rows = rows;
-
-    // Show overlay if size differs from last settled size
-    if (cols != g_resize_overlay_last_cols or rows != g_resize_overlay_last_rows) {
-        g_resize_overlay_visible = true;
-        g_resize_overlay_opacity = 1.0;
-    }
-}
-
-/// Update resize overlay state. Call once per frame.
-/// Handles the timeout logic and fade animation.
-fn resizeOverlayUpdate() void {
-    const now = std.time.milliTimestamp();
-    const elapsed = now - g_resize_overlay_last_change;
-
-    // Update resize active state (short timeout for cursor to reappear)
-    if (g_resize_active and elapsed >= RESIZE_ACTIVE_TIMEOUT_MS) {
-        g_resize_active = false;
-    }
-
-    if (!g_resize_overlay_visible and g_resize_overlay_opacity <= 0) return;
-
-    if (g_resize_overlay_visible) {
-        // Check if we should start hiding (size hasn't changed for DURATION_MS)
-        if (elapsed >= RESIZE_OVERLAY_DURATION_MS) {
-            // Timer completed - "settle" the size and start fade out
-            g_resize_overlay_last_cols = g_resize_overlay_cols;
-            g_resize_overlay_last_rows = g_resize_overlay_rows;
-            g_resize_overlay_visible = false;
-            // opacity stays at current value, will fade in next block
-        }
-    }
-
-    // Handle fade out when not visible
-    if (!g_resize_overlay_visible and g_resize_overlay_opacity > 0) {
-        const fade_start = g_resize_overlay_last_change + RESIZE_OVERLAY_DURATION_MS;
-        const fade_elapsed = now - fade_start;
-        if (fade_elapsed >= RESIZE_OVERLAY_FADE_MS) {
-            g_resize_overlay_opacity = 0;
-        } else if (fade_elapsed > 0) {
-            g_resize_overlay_opacity = 1.0 - @as(f32, @floatFromInt(fade_elapsed)) / @as(f32, @floatFromInt(RESIZE_OVERLAY_FADE_MS));
-        }
-    }
-}
-
-/// Render a rounded rectangle with the given color and alpha.
-/// Uses multiple quads to approximate rounded corners.
-pub fn renderRoundedQuadAlpha(x: f32, y: f32, w: f32, h: f32, radius: f32, color: [3]f32, alpha: f32) void {
-    const r = @min(radius, @min(w, h) / 2); // Clamp radius to half of smallest dimension
-
-    // Main body (center rectangle, full height minus corners)
-    gl_init.renderQuadAlpha(x + r, y, w - r * 2, h, color, alpha);
-
-    // Left strip (between corners)
-    gl_init.renderQuadAlpha(x, y + r, r, h - r * 2, color, alpha);
-
-    // Right strip (between corners)
-    gl_init.renderQuadAlpha(x + w - r, y + r, r, h - r * 2, color, alpha);
-
-    // Approximate corners with small quads (simple 2-step approximation)
-    // Bottom-left corner
-    const r2 = r * 0.7; // Inner radius approximation
-    gl_init.renderQuadAlpha(x + r - r2, y + r - r2, r2, r2, color, alpha);
-    gl_init.renderQuadAlpha(x, y + r - r2, r - r2, r2, color, alpha);
-    gl_init.renderQuadAlpha(x + r - r2, y, r2, r - r2, color, alpha);
-
-    // Bottom-right corner
-    gl_init.renderQuadAlpha(x + w - r, y + r - r2, r2, r2, color, alpha);
-    gl_init.renderQuadAlpha(x + w - r + r2, y + r - r2, r - r2, r2, color, alpha);
-    gl_init.renderQuadAlpha(x + w - r, y, r2, r - r2, color, alpha);
-
-    // Top-left corner
-    gl_init.renderQuadAlpha(x + r - r2, y + h - r, r2, r2, color, alpha);
-    gl_init.renderQuadAlpha(x, y + h - r, r - r2, r2, color, alpha);
-    gl_init.renderQuadAlpha(x + r - r2, y + h - r + r2, r2, r - r2, color, alpha);
-
-    // Top-right corner
-    gl_init.renderQuadAlpha(x + w - r, y + h - r, r2, r2, color, alpha);
-    gl_init.renderQuadAlpha(x + w - r + r2, y + h - r, r - r2, r2, color, alpha);
-    gl_init.renderQuadAlpha(x + w - r, y + h - r + r2, r2, r - r2, color, alpha);
-}
-
-/// Render the resize overlay centered on screen.
-pub fn renderResizeOverlay(window_width: f32, window_height: f32) void {
-    renderResizeOverlayWithOffset(window_width, window_height, 0);
-}
-
-/// Render the resize overlay centered in the content area (below titlebar).
-pub fn renderResizeOverlayWithOffset(window_width: f32, window_height: f32, top_offset: f32) void {
-    resizeOverlayUpdate();
-    if (g_resize_overlay_opacity <= 0.01) return;
-
-    renderResizeOverlayText(g_resize_overlay_cols, g_resize_overlay_rows, window_width, window_height, top_offset, g_resize_overlay_opacity);
-}
-
-/// Render the resize overlay for a specific surface (used during divider dragging or equalize).
-/// Shows the surface's current dimensions centered in the viewport.
-/// Only shows if this surface's size actually changed during the drag/equalize.
-pub fn renderResizeOverlayForSurface(surface: *Surface, window_width: f32, window_height: f32) void {
-    // Show during divider dragging OR during timed split resize overlay (equalize, keyboard resize)
-    const show_timed = std.time.milliTimestamp() < g_split_resize_overlay_until;
-    if (!AppWindow.input.g_divider_dragging and !show_timed) return;
-    if (!surface.resize_overlay_active) return;
-
-    const cols = surface.size.grid.cols;
-    const rows = surface.size.grid.rows;
-
-    renderResizeOverlayText(cols, rows, window_width, window_height, 0, 1.0);
-}
-
-/// Core function to render a resize overlay with specific dimensions.
-fn renderResizeOverlayText(cols: u16, rows: u16, window_width: f32, window_height: f32, top_offset: f32, alpha: f32) void {
-    const gl = &AppWindow.gl;
-    if (alpha <= 0.01) return;
-
-    // Format the size string: "cols x rows"
-    var buf: [32]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, "{d} x {d}", .{ cols, rows }) catch return;
-
-    // Measure text width using titlebar glyph system
-    var text_width: f32 = 0;
-    for (text) |ch| {
-        text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
-    }
-    const text_height = font.g_titlebar_cell_height;
-
-    // Padding around text (compact)
-    const pad_x: f32 = 10;
-    const pad_y: f32 = 6;
-
-    // Box dimensions
-    const box_width = text_width + pad_x * 2;
-    const box_height = text_height + pad_y * 2;
-
-    // Center horizontally, center vertically in content area (below top_offset)
-    const content_height = window_height - top_offset;
-    const box_x = (window_width - box_width) / 2;
-    const box_y = (content_height - box_height) / 2; // Centered in content area (GL coords)
-
-    // Enable blending
-    gl.Enable.?(c.GL_BLEND);
-    gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.BindVertexArray.?(gl_init.vao);
-
-    // Draw rounded background box (black with alpha, slightly more transparent than scrollbar)
-    const corner_radius: f32 = 6;
-    renderRoundedQuadAlpha(box_x, box_y, box_width, box_height, corner_radius, .{ 0.0, 0.0, 0.0 }, alpha * 0.35);
-
-    // Draw text using titlebar rendering system (dimmed gray text)
-    var x = box_x + pad_x;
-    const y = box_y + pad_y;
-    const text_gray: f32 = 0.6; // Dimmed gray
-    for (text) |ch| {
-        titlebar.renderTitlebarChar(@intCast(ch), x, y, .{ text_gray, text_gray, text_gray });
-        x += titlebar.titlebarGlyphAdvance(@intCast(ch));
-    }
-}
-fn startupShortcutsOpacity() f32 {
-    if (!g_startup_shortcuts_visible) return 0;
-    return 1.0;
-}
-
-fn mixColor(from: [3]f32, to: [3]f32, amount: f32) [3]f32 {
-    const inv = 1.0 - amount;
-    return .{
-        from[0] * inv + to[0] * amount,
-        from[1] * inv + to[1] * amount,
-        from[2] * inv + to[2] * amount,
-    };
-}
-
-fn measureTitlebarText(text: []const u8) f32 {
-    var text_width: f32 = 0;
-    for (text) |ch| {
-        text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
-    }
-    return text_width;
-}
-
-/// Render a centered startup overlay listing common keyboard shortcuts.
-pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_offset: f32) void {
-    const alpha = startupShortcutsOpacity();
-    if (alpha <= 0.01) return;
-
-    const gl = &AppWindow.gl;
-
-    var max_keys_width: f32 = 0;
-    var max_action_width: f32 = 0;
-    for (STARTUP_SHORTCUT_ENTRIES) |entry| {
-        max_keys_width = @max(max_keys_width, measureTitlebarText(entry.keys));
-        max_action_width = @max(max_action_width, measureTitlebarText(entry.action));
-    }
-
-    const pad_x: f32 = 24;
-    const pad_y: f32 = 18;
-    const pair_gap_base: f32 = 48;
-    const column_gap: f32 = 38;
-    const line_height = overlayLineHeight();
-    const heading_gap: f32 = 16;
-    const hint_gap: f32 = 12;
-    const hint = "Press any key or click to hide";
-    const heading = "Keyboard shortcuts";
-    const content_height = @max(1.0, window_height - top_offset);
-    const available_height = @max(line_height, content_height - 24.0);
-    const fixed_height = pad_y * 2 + overlayTextHeight() + heading_gap + hint_gap + overlayTextHeight();
-    const available_entry_height = @max(line_height, available_height - fixed_height);
-    const rows_fit: usize = @max(1, @as(usize, @intFromFloat(@floor(available_entry_height / line_height))));
-    var columns: usize = (STARTUP_SHORTCUT_ENTRIES.len + rows_fit - 1) / rows_fit;
-    columns = @min(@max(columns, 1), 3);
-    const rows_per_column = (STARTUP_SHORTCUT_ENTRIES.len + columns - 1) / columns;
-    const entries_height = line_height * @as(f32, @floatFromInt(rows_per_column));
-    const pair_width = max_keys_width + pair_gap_base + max_action_width;
-    const desired_box_width = @round(@max(
-        measureTitlebarText(heading) + pad_x * 2,
-        @max(measureTitlebarText(hint) + pad_x * 2, pair_width * @as(f32, @floatFromInt(columns)) + column_gap * @as(f32, @floatFromInt(columns - 1)) + pad_x * 2),
-    ));
-    const box_width = @round(@min(desired_box_width, @max(260.0, window_width - 24.0)));
-    const box_height = @round(fixed_height + entries_height);
-
-    const box_x = @round(@max(12, (window_width - box_width) / 2));
-    const box_y = @round(@max(12, (content_height - box_height) / 2));
-
-    gl.Enable.?(c.GL_BLEND);
-    gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.ActiveTexture.?(c.GL_TEXTURE0);
-    gl.BindVertexArray.?(gl_init.vao);
-
-    const panel_color = mixColor(AppWindow.g_theme.background, AppWindow.g_theme.foreground, 0.035);
-    const border_color = mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.24);
-    renderRoundedQuadAlpha(box_x - 1, box_y - 1, box_width + 2, box_height + 2, 11, border_color, alpha * 0.24);
-    renderRoundedQuadAlpha(box_x, box_y, box_width, box_height, 10, panel_color, alpha * 0.94);
-
-    const heading_base = mixColor(AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color, 0.18);
-    const keys_base = mixColor(AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color, 0.08);
-    const action_base = AppWindow.g_theme.foreground;
-    const hint_base = mixColor(AppWindow.g_theme.background, AppWindow.g_theme.foreground, 0.58);
-    const heading_color = mixColor(AppWindow.g_theme.background, heading_base, alpha);
-    const keys_color = mixColor(AppWindow.g_theme.background, keys_base, alpha);
-    const action_color = mixColor(AppWindow.g_theme.background, action_base, alpha);
-    const hint_color = mixColor(AppWindow.g_theme.background, hint_base, alpha);
-
-    const heading_w = measureTitlebarText(heading);
-    const heading_y = @round(box_y + box_height - pad_y - overlayTextHeight());
-    renderTitlebarText(heading, box_x + (box_width - heading_w) / 2, heading_y, heading_color);
-    gl_init.renderQuadAlpha(box_x + pad_x, heading_y - heading_gap / 2 - 1, box_width - pad_x * 2, 1, border_color, alpha * 0.36);
-
-    const inner_w = @max(1.0, box_width - pad_x * 2);
-    const total_column_gap = column_gap * @as(f32, @floatFromInt(columns - 1));
-    const column_w = @max(1.0, (inner_w - total_column_gap) / @as(f32, @floatFromInt(columns)));
-    const pair_gap = @min(pair_gap_base, @max(18.0, column_w * 0.08));
-    const keys_w = @min(max_keys_width, column_w * 0.48);
-    const action_w = @max(1.0, column_w - keys_w - pair_gap);
-
-    for (STARTUP_SHORTCUT_ENTRIES, 0..) |entry, idx| {
-        const col = idx / rows_per_column;
-        const row = idx % rows_per_column;
-        const col_x = @round(box_x + pad_x + @as(f32, @floatFromInt(col)) * (column_w + column_gap));
-        const action_x = @round(col_x + keys_w + pair_gap);
-        const y = @round(heading_y - heading_gap - line_height - @as(f32, @floatFromInt(row)) * line_height);
-        renderTitlebarTextLimited(entry.keys, col_x, y, keys_color, keys_w);
-        renderTitlebarTextLimited(entry.action, action_x, y, action_color, action_w);
-    }
-
-    const hint_w = measureTitlebarText(hint);
-    renderTitlebarTextLimited(hint, box_x + (box_width - @min(hint_w, box_width - pad_x * 2)) / 2, box_y + pad_y, hint_color, box_width - pad_x * 2);
-}
 
 // ============================================================================
 // Split rendering helpers

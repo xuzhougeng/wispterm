@@ -44,6 +44,7 @@ pub const browser_panel = if (build_options.webview)
 else
     @import("browser_panel_stub.zig");
 pub const ai_chat_renderer = @import("renderer/ai_chat_renderer.zig");
+pub const ui_perf = @import("ui_perf.zig");
 const log = std.log.scoped(.app_window);
 
 const c = @cImport({
@@ -404,9 +405,9 @@ fn clearUiStateOnTabChange() void {
     input.g_divider_dragging = false;
     input.g_divider_drag_handle = null;
     input.g_divider_drag_layout = null;
-    overlays.g_resize_overlay_visible = false;
-    overlays.g_resize_overlay_opacity = 0;
-    overlays.g_resize_overlay_suppress_until = std.time.milliTimestamp() + 100;
+    overlays.resize.g_resize_overlay_visible = false;
+    overlays.resize.g_resize_overlay_opacity = 0;
+    overlays.resize.g_resize_overlay_suppress_until = std.time.milliTimestamp() + 100;
     syncVisibleFileExplorerForActiveTab();
     syncActiveSurfaceCaches();
     requestImmediateLayoutResize();
@@ -773,7 +774,7 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
     }
     handleActiveSurfaceChangeWithinTab();
     {
-        overlays.g_resize_active = false;
+        overlays.resize.g_resize_active = false;
         requestImmediateLayoutResize();
     }
     return surface;
@@ -809,7 +810,7 @@ pub fn gotoSplit(direction: SplitTree.Goto) void {
 pub fn equalizeSplits() void {
     const allocator = g_allocator orelse return;
     if (tab.equalizeSplits(allocator)) {
-        overlays.g_split_resize_overlay_until = std.time.milliTimestamp() + overlays.RESIZE_OVERLAY_DURATION_MS;
+        overlays.resize.g_split_resize_overlay_until = std.time.milliTimestamp() + overlays.RESIZE_OVERLAY_DURATION_MS;
         requestImmediateLayoutResize();
         g_force_rebuild = true;
         g_cells_valid = false;
@@ -958,6 +959,8 @@ fn onWin32Resize(width: i32, height: i32) void {
     const fb_height: c_int = height;
     const titlebar_offset: f32 = tb;
     if (g_window) |w| {
+        const perf = ui_perf.begin("appwindow.browser_panel_sync_resize");
+        defer perf.end();
         browser_panel.sync(w.hwnd, width, height, titlebar_offset, left_panels_w, browserPanelRightOffset());
     }
 
@@ -2879,7 +2882,11 @@ fn runMainLoop(self: *AppWindow) !void {
         const left_panels_w = leftPanelsWidth();
         const right_panels_w = rightPanelsWidthForWindow(fb_width);
         const top_padding: f32 = padding + titlebar_offset;
-        browser_panel.sync(win.hwnd, fb_width, fb_height, titlebar_offset, left_panels_w, browserPanelRightOffset());
+        {
+            const perf = ui_perf.begin("appwindow.browser_panel_sync");
+            defer perf.end();
+            browser_panel.sync(win.hwnd, fb_width, fb_height, titlebar_offset, left_panels_w, browserPanelRightOffset());
+        }
 
         if (activeTab()) |active_tab| {
             // Compute split layout for the active tab
@@ -2996,7 +3003,7 @@ fn runMainLoop(self: *AppWindow) !void {
                         // Render resize overlay:
                         // - During divider dragging or timed overlay (equalize): show on ALL splits
                         // - Otherwise: show only on focused split (for window resize)
-                        const show_timed_overlay = std.time.milliTimestamp() < overlays.g_split_resize_overlay_until;
+                        const show_timed_overlay = std.time.milliTimestamp() < overlays.resize.g_split_resize_overlay_until;
                         if (input.g_divider_dragging or show_timed_overlay) {
                             overlays.renderResizeOverlayForSurface(rect.surface, @floatFromInt(rect.width), @floatFromInt(rect.height));
                         } else if (is_focused) {

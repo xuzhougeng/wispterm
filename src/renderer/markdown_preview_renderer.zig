@@ -4,6 +4,7 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const panel = @import("../markdown_preview_panel.zig");
 const markdown_preview = @import("../markdown_preview.zig");
+const ui_perf = @import("../ui_perf.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const gl_init = AppWindow.gl_init;
@@ -28,6 +29,9 @@ fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
 
 pub fn render(window_width: f32, window_height: f32, titlebar_h: f32, right_offset: f32) void {
     if (!panel.g_visible) return;
+    const perf = ui_perf.begin("markdown_preview_renderer.render");
+    defer perf.end();
+
     const panel_w = panel.width();
     if (panel_w <= 0) return;
 

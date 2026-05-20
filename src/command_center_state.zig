@@ -47,7 +47,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Equalize Panels", .detail = "Reset split sizes in the current tab", .shortcut = "Ctrl+Shift+Z", .action = .equalize_splits },
     .{ .title = "Close Panel / Tab", .detail = "Close focused panel or tab; press again for the last panel", .shortcut = "Ctrl+Shift+W", .action = .close_split_or_tab },
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "Ctrl+Shift+B", .action = .toggle_sidebar },
-    .{ .title = "Toggle File Explorer", .detail = "Show or hide the left-side file explorer", .shortcut = "Ctrl+Shift+E", .action = .toggle_file_explorer },
+    .{ .title = "Toggle File Explorer", .detail = "Show or hide the left-side file explorer", .shortcut = "Ctrl+Shift+Alt+E", .action = .toggle_file_explorer },
     .{ .title = "Toggle Browser", .detail = "Show WebView2 browser for local or SSH URLs", .shortcut = "", .action = .toggle_browser_panel },
     .{ .title = "Keyboard Shortcuts", .detail = "Show the shortcut reference overlay", .shortcut = "Ctrl+Shift+P", .action = .show_shortcuts },
     .{ .title = "Open Config", .detail = "Open the Phantty config file", .shortcut = "Ctrl+,", .action = .open_config },

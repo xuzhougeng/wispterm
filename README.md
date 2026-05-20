@@ -142,7 +142,7 @@ To confirm the running desktop version, open the command center with `Ctrl+Shift
 | **Ctrl+Shift+N**                                                               | New window                                                                         |
 | **Ctrl+Shift+B**                                                               | Toggle tab sidebar                                                                 |
 | **Ctrl+Shift+O**                                                               | Split to the right                                                                 |
-| **Ctrl+Shift+E**                                                               | Toggle file explorer sidebar                                                       |
+| **Ctrl+Shift+Alt+E**                                                           | Toggle file explorer sidebar                                                       |
 | Ctrl-click `.md` / `.txt` in terminal output, or double-click in File Explorer | Preview local, WSL, or SSH Markdown/text in the right preview panel                |
 | **Ctrl+Shift+W**                                                               | Close focused panel, tab, or window; press again to confirm closing the last panel |
 | **Alt+Enter**                                                                  | Maximize or restore window                                                         |
@@ -169,7 +169,7 @@ To confirm the running desktop version, open the command center with `Ctrl+Shift
 
 ## File Explorer and Markdown Preview
 
-Press `Ctrl+Shift+E` to open the left-side File Explorer. It follows the
+Press `Ctrl+Shift+Alt+E` to open the left-side File Explorer. It follows the
 active environment:
 
 - Windows shells browse local Windows paths.

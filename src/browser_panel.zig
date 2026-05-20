@@ -4,6 +4,7 @@ const std = @import("std");
 const win32 = @import("apprt/win32.zig");
 const Surface = @import("Surface.zig");
 const browser_url = @import("browser_url.zig");
+const ui_perf = @import("ui_perf.zig");
 
 pub const DEFAULT_WIDTH: f32 = 720;
 pub const MIN_WIDTH: f32 = 360;
@@ -195,6 +196,9 @@ pub fn open(parent: ?win32.HWND, url: []const u8) void {
 }
 
 pub fn openForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, url: []const u8, surface: ?*const Surface) bool {
+    const perf = ui_perf.begin("browser_panel.open_for_surface");
+    defer perf.end();
+
     if (!embeddedBrowserAvailable()) {
         close();
         return false;
@@ -266,6 +270,9 @@ pub fn lastError() win32.HRESULT {
 }
 
 pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) void {
+    const perf = ui_perf.begin("browser_panel.sync");
+    defer perf.end();
+
     if (window_width <= 0 or window_height <= 0) return;
 
     if (!g_visible) {
@@ -485,6 +492,9 @@ fn sshLoopbackUrl(surface: ?*const Surface, url: []const u8) ?SshLoopbackUrl {
 }
 
 fn ensureSshTunnel(allocator: std.mem.Allocator, conn: *const Surface.SshConnection, remote_port: u16, local_host: []const u8, remote_host: []const u8) ?u16 {
+    const perf = ui_perf.begin("browser_panel.ensure_ssh_tunnel");
+    defer perf.end();
+
     if (g_tunnel) |*tunnel| {
         if (tunnel.matches(conn, remote_port, local_host, remote_host) and
             !childHasExited(&tunnel.child) and
@@ -591,6 +601,9 @@ fn stopTunnel() void {
 }
 
 fn waitForTunnelReady(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) bool {
+    const perf = ui_perf.begin("browser_panel.wait_for_tunnel_ready");
+    defer perf.end();
+
     const deadline = std.time.milliTimestamp() + TUNNEL_READY_TIMEOUT_MS;
     while (std.time.milliTimestamp() < deadline) {
         if (canConnectToLocalPort(allocator, local_host, local_port)) return true;

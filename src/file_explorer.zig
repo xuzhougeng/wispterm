@@ -9,6 +9,7 @@ const Surface = @import("Surface.zig");
 const agent_history = @import("agent_history.zig");
 const scp = @import("scp.zig");
 const file_backend = @import("file_backend.zig");
+const ui_perf = @import("ui_perf.zig");
 
 pub const DEFAULT_WIDTH: f32 = 240;
 pub const MIN_WIDTH: f32 = 160;
@@ -504,6 +505,9 @@ pub fn tickAsync() void {
 }
 
 pub fn rescan() void {
+    const perf = ui_perf.begin("file_explorer.rescan");
+    defer perf.end();
+
     g_entry_count = 0;
     g_scroll_offset = 0;
     g_selected = null;
@@ -530,6 +534,9 @@ pub fn rescan() void {
 
 /// Scan remote directory via the configured SSH backend.
 pub fn rescanRemote() void {
+    const perf = ui_perf.begin("file_explorer.rescan_remote");
+    defer perf.end();
+
     g_entry_count = 0;
     g_scroll_offset = 0;
     g_selected = null;
@@ -556,6 +563,9 @@ fn loadBackendEntries(
     parent_path: []const u8,
     sep: u8,
 ) file_backend.ListStatus {
+    const perf = ui_perf.begin("file_explorer.load_backend_entries");
+    defer perf.end();
+
     const capacity = g_entries.len - g_entry_count;
     if (capacity == 0) return .ok;
 
