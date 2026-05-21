@@ -7,6 +7,12 @@ This folder is the source for the Phantty GitHub Pages site.
 - `index.html` — landing page (hero, features, install, config, shortcuts).
 - `ai.html` / `ai.zh.html` — DeepSeek-first AI Agent workflow pages.
 - `themes.html` — built-in theme gallery.
+- `configuration.md` — desktop app config reference.
+- `file-explorer.md` — File Explorer, preview panel, browser panel, and SSH cwd notes.
+- `ai-agent.md` — desktop AI Chat and Agent skill workflow notes.
+- `media.md` — background images, shaders, and Kitty Graphics helper scripts.
+- `development.md` — build, architecture, packaging, and GitHub release notes.
+- `faq.md` — desktop and remote FAQ entries that are too detailed for the root README.
 - `style.css` — Poimandres-inspired dark styling.
 - `assets/phantty.png` — logo (mirrored from repo `assets/phantty.png`).
 - `assets/favicon.ico` — favicon (mirrored from repo `assets/phantty.ico`).
