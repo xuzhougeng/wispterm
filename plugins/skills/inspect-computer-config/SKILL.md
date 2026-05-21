@@ -11,10 +11,10 @@ Collect a concise local computer configuration report without looking up externa
 
 ## Workflow
 
-1. Run the bundled script from the repository or plugin root:
+1. Run the bundled script from the directory that contains this `SKILL.md`:
 
 ```bash
-python3 plugins/computer-config/skills/inspect-computer-config/scripts/inspect_computer_config.py
+python3 scripts/inspect_computer_config.py
 ```
 
 On Windows, use `python` if `python3` is not available.
@@ -22,13 +22,13 @@ On Windows, use `python` if `python3` is not available.
 2. Use structured output when the result will feed another tool:
 
 ```bash
-python3 plugins/computer-config/skills/inspect-computer-config/scripts/inspect_computer_config.py --json
+python3 scripts/inspect_computer_config.py --json
 ```
 
 3. Include the hostname only when it is useful for local diagnostics:
 
 ```bash
-python3 plugins/computer-config/skills/inspect-computer-config/scripts/inspect_computer_config.py --include-hostname
+python3 scripts/inspect_computer_config.py --include-hostname
 ```
 
 4. Summarize the important facts for the user. Mention unavailable fields plainly instead of guessing.

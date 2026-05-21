@@ -81,14 +81,18 @@ jobs:
         run: |
           $portableExe = "zig-out\dist\portable\phantty.exe"
           $portableVersion = "zig-out\dist\portable\version.txt"
-          $portableSkills = "zig-out\dist\portable\skills"
+          $portablePluginSkills = "zig-out\dist\portable\plugins\skills"
           $portableWebView2Exe = "zig-out\dist\portable-webview2\phantty.exe"
           $portableWebView2Version = "zig-out\dist\portable-webview2\version.txt"
           $portableWebView2Loader = "zig-out\dist\portable-webview2\WebView2Loader.dll"
-          $portableWebView2Skills = "zig-out\dist\portable-webview2\skills"
+          $portableWebView2PluginSkills = "zig-out\dist\portable-webview2\plugins\skills"
           $portableNoWebViewExe = "zig-out\dist\portable-no-webview\phantty.exe"
           $portableNoWebViewVersion = "zig-out\dist\portable-no-webview\version.txt"
-          $portableNoWebViewSkills = "zig-out\dist\portable-no-webview\skills"
+          $portableNoWebViewPluginSkills = "zig-out\dist\portable-no-webview\plugins\skills"
+          $skillFiles = @(
+            "plugins\skills\inspect-computer-config\SKILL.md",
+            "plugins\skills\inspect-computer-config\scripts\inspect_computer_config.py"
+          )
 
           if (!(Test-Path $portableExe)) {
             throw "Portable executable not found: $portableExe"
@@ -98,8 +102,8 @@ jobs:
             throw "Portable version file not found: $portableVersion"
           }
 
-          if (!(Test-Path $portableSkills -PathType Container)) {
-            throw "Portable skills directory not found: $portableSkills"
+          if (!(Test-Path $portablePluginSkills -PathType Container)) {
+            throw "Portable plugin skills directory not found: $portablePluginSkills"
           }
 
           if (!(Test-Path $portableWebView2Exe)) {
@@ -114,8 +118,8 @@ jobs:
             throw "Portable WebView2 loader not found: $portableWebView2Loader"
           }
 
-          if (!(Test-Path $portableWebView2Skills -PathType Container)) {
-            throw "Portable WebView2 skills directory not found: $portableWebView2Skills"
+          if (!(Test-Path $portableWebView2PluginSkills -PathType Container)) {
+            throw "Portable WebView2 plugin skills directory not found: $portableWebView2PluginSkills"
           }
 
           if (!(Test-Path $portableNoWebViewExe)) {
@@ -126,8 +130,17 @@ jobs:
             throw "Portable no-WebView version file not found: $portableNoWebViewVersion"
           }
 
-          if (!(Test-Path $portableNoWebViewSkills -PathType Container)) {
-            throw "Portable no-WebView skills directory not found: $portableNoWebViewSkills"
+          if (!(Test-Path $portableNoWebViewPluginSkills -PathType Container)) {
+            throw "Portable no-WebView plugin skills directory not found: $portableNoWebViewPluginSkills"
+          }
+
+          foreach ($distDir in @("zig-out\dist\portable", "zig-out\dist\portable-webview2", "zig-out\dist\portable-no-webview")) {
+            foreach ($skillFile in $skillFiles) {
+              $path = Join-Path $distDir $skillFile
+              if (!(Test-Path $path)) {
+                throw "Bundled skill file not found: $path"
+              }
+            }
           }
 
       - name: Create release assets

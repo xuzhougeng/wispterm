@@ -516,14 +516,19 @@ fn defaultSkillRootPaths(allocator: std.mem.Allocator) ![][]u8 {
         defer allocator.free(appdata);
         const appdata_skills = try std.fs.path.join(allocator, &.{ appdata, "phantty", "skills" });
         try appendOwnedSkillRootPath(allocator, &roots, appdata_skills);
+        const appdata_plugin_skills = try std.fs.path.join(allocator, &.{ appdata, "phantty", "plugins", "skills" });
+        try appendOwnedSkillRootPath(allocator, &roots, appdata_plugin_skills);
     } else |_| {}
 
     try appendSkillRootPath(allocator, &roots, "skills");
+    try appendSkillRootPath(allocator, &roots, "plugins/skills");
 
     if (std.fs.selfExeDirPathAlloc(allocator)) |exe_dir| {
         defer allocator.free(exe_dir);
         const exe_skills = try std.fs.path.join(allocator, &.{ exe_dir, "skills" });
         try appendOwnedSkillRootPath(allocator, &roots, exe_skills);
+        const exe_plugin_skills = try std.fs.path.join(allocator, &.{ exe_dir, "plugins", "skills" });
+        try appendOwnedSkillRootPath(allocator, &roots, exe_plugin_skills);
     } else |_| {}
 
     return roots.toOwnedSlice(allocator);
@@ -3995,6 +4000,21 @@ test "ai chat skill_info loads from explicit root paths" {
 
     try std.testing.expect(std.mem.indexOf(u8, output, "# Skill: web") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "# Web Skill") != null);
+}
+
+test "ai chat default skill roots include plugin skills directory" {
+    const roots = try defaultSkillRootPaths(std.testing.allocator);
+    defer freeSkillRootPaths(std.testing.allocator, roots);
+
+    var found_plugins_skills = false;
+    for (roots) |root| {
+        if (std.mem.eql(u8, root, "plugins/skills")) {
+            found_plugins_skills = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(found_plugins_skills);
 }
 
 test "ai_chat: session serializes to history record" {

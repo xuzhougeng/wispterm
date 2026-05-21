@@ -288,9 +288,9 @@ local PowerShell/cmd tool calls do not flash a separate console window.
 
 ### Agent skills
 
-Agent chats can load local skills from `skills/<skill-name>/SKILL.md` under
-`%APPDATA%\phantty`, the current working directory, or the directory containing
-`phantty.exe`.
+Agent chats can load local skills from `skills/<skill-name>/SKILL.md` or
+`plugins/skills/<skill-name>/SKILL.md` under `%APPDATA%\phantty`, the current
+working directory, or the directory containing `phantty.exe`.
 Use `$skill-name your request` to explicitly load a skill for the next request.
 The loaded skill is stored as a replayable tool result in the chat history, so
 existing conversations stay reproducible even if the skill file changes later.
@@ -300,6 +300,10 @@ Local slash commands:
 - `/skills` lists discovered local skills without calling the model.
 - `/commands` lists local AI chat commands without calling the model.
 - `/reload-skills` confirms that future skill calls will read from disk again.
+
+Release packages include `plugins/skills/inspect-computer-config`, which can be
+loaded with `$inspect-computer-config` to summarize local OS, CPU, memory, GPU,
+disk, and runtime details.
 
 For Xshell-like terminal clipboard behavior, use:
 
