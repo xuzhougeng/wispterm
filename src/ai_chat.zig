@@ -337,6 +337,17 @@ fn currentToolHost() ?ToolHost {
 
 const SlashCommand = enum { skills, commands, reload_skills, unknown };
 
+pub const ComposerSuggestionKind = enum {
+    slash_command,
+    skill,
+};
+
+pub const ComposerSuggestion = struct {
+    kind: ComposerSuggestionKind,
+    text: []const u8,
+    description: []const u8,
+};
+
 pub const SlashCommandSuggestion = struct {
     command: []const u8,
     description: []const u8,
@@ -367,6 +378,17 @@ const SkillInvocation = struct {
     prompt: []const u8,
 };
 
+const ComposerSuggestionPrefix = struct {
+    kind: ComposerSuggestionKind,
+    prefix: []const u8,
+    token_end: usize,
+};
+
+const ComposerCompletionTrigger = enum {
+    tab,
+    enter,
+};
+
 fn parseSlashCommand(input: []const u8) ?SlashCommand {
     const trimmed = std.mem.trim(u8, input, " \t\r\n");
     if (!std.mem.startsWith(u8, trimmed, "/")) return null;
@@ -378,13 +400,28 @@ fn parseSlashCommand(input: []const u8) ?SlashCommand {
     return .unknown;
 }
 
-fn slashCommandSuggestionPrefix(input: []const u8, cursor_raw: usize) ?[]const u8 {
-    if (input.len == 0 or input[0] != '/') return null;
+fn composerSuggestionPrefix(input: []const u8, cursor_raw: usize) ?ComposerSuggestionPrefix {
+    if (input.len == 0) return null;
+    const kind: ComposerSuggestionKind = switch (input[0]) {
+        '/' => .slash_command,
+        '$' => .skill,
+        else => return null,
+    };
     const cursor = @min(cursor_raw, input.len);
     if (cursor == 0) return null;
     const token_end = slashCommandTokenEnd(input);
     if (cursor > token_end) return null;
-    return input[0..cursor];
+    return .{
+        .kind = kind,
+        .prefix = input[0..cursor],
+        .token_end = token_end,
+    };
+}
+
+fn slashCommandSuggestionPrefix(input: []const u8, cursor_raw: usize) ?[]const u8 {
+    const prefix = composerSuggestionPrefix(input, cursor_raw) orelse return null;
+    if (prefix.kind != .slash_command) return null;
+    return prefix.prefix;
 }
 
 fn slashCommandTokenEnd(input: []const u8) usize {
@@ -411,6 +448,75 @@ pub fn slashCommandSuggestionAtForInput(input: []const u8, cursor: usize, sugges
         match_index += 1;
     }
     return null;
+}
+
+pub fn composerSuggestionCountForInput(input: []const u8, cursor: usize, skills: []const skill_registry.SkillMeta) usize {
+    const prefix = composerSuggestionPrefix(input, cursor) orelse return 0;
+    return switch (prefix.kind) {
+        .slash_command => slashCommandSuggestionCountForInput(input, cursor),
+        .skill => skillSuggestionCountForPrefix(prefix.prefix, skills),
+    };
+}
+
+pub fn composerSuggestionAtForInput(
+    input: []const u8,
+    cursor: usize,
+    skills: []const skill_registry.SkillMeta,
+    suggestion_index: usize,
+) ?ComposerSuggestion {
+    const prefix = composerSuggestionPrefix(input, cursor) orelse return null;
+    return switch (prefix.kind) {
+        .slash_command => if (slashCommandSuggestionAtForInput(input, cursor, suggestion_index)) |suggestion| .{
+            .kind = .slash_command,
+            .text = suggestion.command,
+            .description = suggestion.description,
+        } else null,
+        .skill => skillSuggestionAtForPrefix(prefix.prefix, skills, suggestion_index),
+    };
+}
+
+fn skillSuggestionCountForPrefix(prefix: []const u8, skills: []const skill_registry.SkillMeta) usize {
+    if (prefix.len == 0 or prefix[0] != '$') return 0;
+    const skill_prefix = prefix[1..];
+    var count: usize = 0;
+    for (skills) |meta| {
+        if (std.mem.startsWith(u8, meta.name, skill_prefix)) count += 1;
+    }
+    return count;
+}
+
+fn skillSuggestionAtForPrefix(
+    prefix: []const u8,
+    skills: []const skill_registry.SkillMeta,
+    suggestion_index: usize,
+) ?ComposerSuggestion {
+    if (prefix.len == 0 or prefix[0] != '$') return null;
+    const skill_prefix = prefix[1..];
+    var match_index: usize = 0;
+    for (skills) |meta| {
+        if (!std.mem.startsWith(u8, meta.name, skill_prefix)) continue;
+        if (match_index == suggestion_index) return .{
+            .kind = .skill,
+            .text = meta.name,
+            .description = meta.description,
+        };
+        match_index += 1;
+    }
+    return null;
+}
+
+fn suggestionReplacementText(buf: []u8, suggestion: ComposerSuggestion, suffix: []const u8) ?[]const u8 {
+    return switch (suggestion.kind) {
+        .slash_command => suggestion.text,
+        .skill => blk: {
+            const needs_space = suffix.len == 0 or !isAsciiWhitespace(suffix[0]);
+            const text = if (needs_space)
+                std.fmt.bufPrint(buf, "${s} ", .{suggestion.text}) catch return null
+            else
+                std.fmt.bufPrint(buf, "${s}", .{suggestion.text}) catch return null;
+            break :blk text;
+        },
+    };
 }
 
 fn parseSkillInvocation(input: []const u8) ?SkillInvocation {
@@ -465,9 +571,31 @@ fn listSkillsForDisplay(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn listSkillsForDisplayFromRoots(allocator: std.mem.Allocator, root_paths: []const []const u8) ![]u8 {
+    const merged = try loadSkillSuggestionListFromRoots(allocator, root_paths);
+    defer {
+        freeOwnedSkillMetaList(allocator, merged);
+        allocator.free(merged);
+    }
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    if (merged.len == 0) {
+        try out.appendSlice(allocator, "No skills found under configured skill roots.");
+    } else {
+        try out.appendSlice(allocator, "Available skills:\n");
+        for (merged) |meta| {
+            try out.print(allocator, "- ${s}: {s}\n", .{ meta.name, meta.description });
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn loadSkillSuggestionListFromRoots(allocator: std.mem.Allocator, root_paths: []const []const u8) ![]skill_registry.SkillMeta {
     var merged: std.ArrayListUnmanaged(skill_registry.SkillMeta) = .empty;
-    defer merged.deinit(allocator);
-    defer freeOwnedSkillMetaList(allocator, merged.items);
+    errdefer {
+        freeOwnedSkillMetaList(allocator, merged.items);
+        merged.deinit(allocator);
+    }
 
     for (root_paths) |root_path| {
         var root = openSkillRoot(root_path) catch |err| switch (err) {
@@ -489,18 +617,7 @@ fn listSkillsForDisplayFromRoots(allocator: std.mem.Allocator, root_paths: []con
     }
 
     std.sort.insertion(skill_registry.SkillMeta, merged.items, {}, skillMetaNameLessThan);
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-    if (merged.items.len == 0) {
-        try out.appendSlice(allocator, "No skills found under configured skill roots.");
-    } else {
-        try out.appendSlice(allocator, "Available skills:\n");
-        for (merged.items) |meta| {
-            try out.print(allocator, "- ${s}: {s}\n", .{ meta.name, meta.description });
-        }
-    }
-    return out.toOwnedSlice(allocator);
+    return merged.toOwnedSlice(allocator);
 }
 
 fn loadSkillPreloadContent(allocator: std.mem.Allocator, skill_name: []const u8) !?[]u8 {
@@ -667,7 +784,10 @@ pub const Session = struct {
     input_scroll_row: usize = 0,
     input_scroll_follow_cursor: bool = true,
     input_select_all: bool = false,
-    slash_suggestion_selected: usize = 0,
+    suggestion_selected: usize = 0,
+    skill_suggestions: []skill_registry.SkillMeta = &.{},
+    skill_suggestions_loaded: bool = false,
+    skill_suggestions_owned: bool = false,
     transcript_select_all: bool = false,
     status_buf: [512]u8 = undefined,
     status_len: usize = 0,
@@ -817,6 +937,7 @@ pub const Session = struct {
             msg.deinit(self.allocator);
         }
         self.messages.deinit(self.allocator);
+        self.freeSkillSuggestions();
         self.allocator.destroy(self);
     }
 
@@ -867,7 +988,68 @@ pub const Session = struct {
         defer self.mutex.unlock();
         const count = slashCommandSuggestionCountForInput(self.input(), self.input_cursor);
         if (count == 0) return 0;
-        return @min(self.slash_suggestion_selected, count - 1);
+        return @min(self.suggestion_selected, count - 1);
+    }
+
+    pub fn composerSuggestionCount(self: *Session) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.ensureSkillSuggestionsForInputLocked();
+        return composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions);
+    }
+
+    pub fn composerSuggestionAt(self: *Session, index: usize) ?ComposerSuggestion {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.ensureSkillSuggestionsForInputLocked();
+        return composerSuggestionAtForInput(self.input(), self.input_cursor, self.skill_suggestions, index);
+    }
+
+    fn loadSkillSuggestionsFromRoots(self: *Session, root_paths: []const []const u8) !void {
+        const suggestions = try loadSkillSuggestionListFromRoots(self.allocator, root_paths);
+        errdefer {
+            freeOwnedSkillMetaList(self.allocator, suggestions);
+            self.allocator.free(suggestions);
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.replaceSkillSuggestionsLocked(suggestions);
+    }
+
+    fn ensureSkillSuggestionsForInputLocked(self: *Session) void {
+        const prefix = composerSuggestionPrefix(self.input(), self.input_cursor) orelse return;
+        if (prefix.kind != .skill or self.skill_suggestions_loaded) return;
+
+        const roots = defaultSkillRootPaths(self.allocator) catch {
+            self.skill_suggestions_loaded = true;
+            return;
+        };
+        defer freeSkillRootPaths(self.allocator, roots);
+
+        const suggestions = loadSkillSuggestionListFromRoots(self.allocator, roots) catch {
+            self.skill_suggestions_loaded = true;
+            return;
+        };
+        self.replaceSkillSuggestionsLocked(suggestions);
+    }
+
+    fn replaceSkillSuggestionsLocked(self: *Session, suggestions: []skill_registry.SkillMeta) void {
+        self.freeSkillSuggestions();
+        self.skill_suggestions = suggestions;
+        self.skill_suggestions_loaded = true;
+        self.skill_suggestions_owned = true;
+        self.suggestion_selected = 0;
+    }
+
+    fn freeSkillSuggestions(self: *Session) void {
+        if (self.skill_suggestions_owned) {
+            freeOwnedSkillMetaList(self.allocator, self.skill_suggestions);
+            self.allocator.free(self.skill_suggestions);
+        }
+        self.skill_suggestions = &.{};
+        self.skill_suggestions_loaded = false;
+        self.skill_suggestions_owned = false;
     }
 
     pub fn status(self: *const Session) []const u8 {
@@ -917,10 +1099,11 @@ pub const Session = struct {
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
             self.input_select_all = false;
-            self.slash_suggestion_selected = 0;
+            self.suggestion_selected = 0;
         }
         self.transcript_select_all = false;
         self.insertInputBytesLocked(buf[0..len]);
+        self.ensureSkillSuggestionsForInputLocked();
     }
 
     pub fn appendInputText(self: *Session, text: []const u8) void {
@@ -932,10 +1115,11 @@ pub const Session = struct {
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
             self.input_select_all = false;
-            self.slash_suggestion_selected = 0;
+            self.suggestion_selected = 0;
         }
         self.transcript_select_all = false;
         self.insertInputBytesLocked(text);
+        self.ensureSkillSuggestionsForInputLocked();
     }
 
     pub fn applyRemoteInput(self: *Session, data: []const u8) void {
@@ -985,7 +1169,7 @@ pub const Session = struct {
             self.input_cursor = 0;
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
-            self.slash_suggestion_selected = 0;
+            self.suggestion_selected = 0;
             self.clearSelectionLocked();
             self.mutex.unlock();
             return;
@@ -1000,11 +1184,11 @@ pub const Session = struct {
             win32_backend.VK_DELETE => self.deleteInput(),
             win32_backend.VK_LEFT => self.moveInputCursorLeft(),
             win32_backend.VK_RIGHT => self.moveInputCursorRight(),
-            win32_backend.VK_UP => if (!self.moveSlashSuggestionSelection(-1)) self.moveInputCursorVertical(max_cols, -1),
-            win32_backend.VK_DOWN => if (!self.moveSlashSuggestionSelection(1)) self.moveInputCursorVertical(max_cols, 1),
+            win32_backend.VK_UP => if (!self.moveComposerSuggestionSelection(-1)) self.moveInputCursorVertical(max_cols, -1),
+            win32_backend.VK_DOWN => if (!self.moveComposerSuggestionSelection(1)) self.moveInputCursorVertical(max_cols, 1),
             win32_backend.VK_HOME => self.moveInputCursorHome(),
             win32_backend.VK_END => self.moveInputCursorEnd(),
-            win32_backend.VK_TAB => _ = self.completeSlashSuggestion(),
+            win32_backend.VK_TAB => _ = self.completeComposerSuggestion(.tab),
             win32_backend.VK_ESCAPE => {
                 if (self.request_inflight) {
                     self.stopRequest();
@@ -1016,7 +1200,7 @@ pub const Session = struct {
                 if (ev.shift) {
                     self.appendInputText("\n");
                 } else {
-                    self.submit();
+                    if (!self.completeComposerSuggestion(.enter)) self.submit();
                 }
             },
             else => {},
@@ -1244,6 +1428,7 @@ pub const Session = struct {
                 return;
             };
             self.clearSubmittedInputLocked();
+            if (command == .reload_skills) self.freeSkillSuggestions();
             self.setStatusLocked("Ready");
             history_change = null;
             self.mutex.unlock();
@@ -1385,7 +1570,7 @@ pub const Session = struct {
         for (self.messages.items) |msg| msg.deinit(self.allocator);
         self.messages.clearRetainingCapacity();
         self.scroll_px = 0;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
         self.clearSelectionLocked();
         self.setStatusLocked("Cleared");
         history_change = self.captureHistoryChangeLocked();
@@ -1443,7 +1628,7 @@ pub const Session = struct {
             self.input_cursor = 0;
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
-            self.slash_suggestion_selected = 0;
+            self.suggestion_selected = 0;
             self.clearSelectionLocked();
             return;
         }
@@ -1464,7 +1649,7 @@ pub const Session = struct {
             self.input_cursor = 0;
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
-            self.slash_suggestion_selected = 0;
+            self.suggestion_selected = 0;
             self.clearSelectionLocked();
             return;
         }
@@ -1482,7 +1667,7 @@ pub const Session = struct {
         self.clearSelectionLocked();
         self.input_cursor = previousUtf8Boundary(self.input(), self.input_cursor);
         self.input_scroll_follow_cursor = true;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
     }
 
     fn moveInputCursorRight(self: *Session) void {
@@ -1491,7 +1676,7 @@ pub const Session = struct {
         self.clearSelectionLocked();
         self.input_cursor = nextUtf8Boundary(self.input(), self.input_cursor);
         self.input_scroll_follow_cursor = true;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
     }
 
     fn moveInputCursorHome(self: *Session) void {
@@ -1500,7 +1685,7 @@ pub const Session = struct {
         self.clearSelectionLocked();
         self.input_cursor = 0;
         self.input_scroll_follow_cursor = true;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
     }
 
     fn moveInputCursorEnd(self: *Session) void {
@@ -1509,7 +1694,7 @@ pub const Session = struct {
         self.clearSelectionLocked();
         self.input_cursor = self.input_len;
         self.input_scroll_follow_cursor = true;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
     }
 
     fn moveInputCursorVertical(self: *Session, max_cols_raw: usize, delta: i32) void {
@@ -1525,17 +1710,18 @@ pub const Session = struct {
         const target_row = if (delta < 0) current.row - 1 else current.row + 1;
         self.input_cursor = byteOffsetForVisualPosition(text, target_row, current.col, max_cols) orelse return;
         self.input_scroll_follow_cursor = true;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
     }
 
-    fn moveSlashSuggestionSelection(self: *Session, delta: i32) bool {
+    fn moveComposerSuggestionSelection(self: *Session, delta: i32) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.ensureSkillSuggestionsForInputLocked();
 
-        const count = slashCommandSuggestionCountForInput(self.input(), self.input_cursor);
+        const count = composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions);
         if (count == 0) return false;
-        const current = @min(self.slash_suggestion_selected, count - 1);
-        self.slash_suggestion_selected = if (delta < 0)
+        const current = @min(self.suggestion_selected, count - 1);
+        self.suggestion_selected = if (delta < 0)
             if (current == 0) count - 1 else current - 1
         else if (delta > 0)
             (current + 1) % count
@@ -1545,36 +1731,43 @@ pub const Session = struct {
         return true;
     }
 
-    fn completeSlashSuggestion(self: *Session) bool {
+    fn completeComposerSuggestion(self: *Session, trigger: ComposerCompletionTrigger) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.ensureSkillSuggestionsForInputLocked();
 
-        const count = slashCommandSuggestionCountForInput(self.input(), self.input_cursor);
+        const prefix = composerSuggestionPrefix(self.input(), self.input_cursor) orelse return false;
+        const count = composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions);
         if (count == 0) return false;
-        const selected = @min(self.slash_suggestion_selected, count - 1);
-        const suggestion = slashCommandSuggestionAtForInput(self.input(), self.input_cursor, selected) orelse return false;
-        const token_end = slashCommandTokenEnd(self.input());
-        const suffix_len = self.input_len - token_end;
-        if (suggestion.command.len + suffix_len > self.input_buf.len) return false;
+        const selected = @min(self.suggestion_selected, count - 1);
+        const suggestion = composerSuggestionAtForInput(self.input(), self.input_cursor, self.skill_suggestions, selected) orelse return false;
+        if (trigger == .enter and suggestion.kind == .slash_command and std.mem.eql(u8, prefix.prefix, suggestion.text)) {
+            return false;
+        }
 
-        if (suggestion.command.len > token_end) {
+        var replacement_buf: [256]u8 = undefined;
+        const replacement = suggestionReplacementText(&replacement_buf, suggestion, self.input()[prefix.token_end..]) orelse return false;
+        const suffix_len = self.input_len - prefix.token_end;
+        if (replacement.len + suffix_len > self.input_buf.len) return false;
+
+        if (replacement.len > prefix.token_end) {
             std.mem.copyBackwards(
                 u8,
-                self.input_buf[suggestion.command.len .. suggestion.command.len + suffix_len],
-                self.input_buf[token_end..self.input_len],
+                self.input_buf[replacement.len .. replacement.len + suffix_len],
+                self.input_buf[prefix.token_end..self.input_len],
             );
-        } else if (suggestion.command.len < token_end) {
+        } else if (replacement.len < prefix.token_end) {
             std.mem.copyForwards(
                 u8,
-                self.input_buf[suggestion.command.len .. suggestion.command.len + suffix_len],
-                self.input_buf[token_end..self.input_len],
+                self.input_buf[replacement.len .. replacement.len + suffix_len],
+                self.input_buf[prefix.token_end..self.input_len],
             );
         }
-        @memcpy(self.input_buf[0..suggestion.command.len], suggestion.command);
-        self.input_len = suggestion.command.len + suffix_len;
-        self.input_cursor = suggestion.command.len;
+        @memcpy(self.input_buf[0..replacement.len], replacement);
+        self.input_len = replacement.len + suffix_len;
+        self.input_cursor = replacement.len;
         self.input_scroll_follow_cursor = true;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
         self.clearSelectionLocked();
         return true;
     }
@@ -1597,7 +1790,7 @@ pub const Session = struct {
         self.input_len += len;
         self.input_cursor += len;
         self.input_scroll_follow_cursor = true;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
     }
 
     fn deleteInputRangeLocked(self: *Session, start: usize, end: usize) void {
@@ -1612,7 +1805,7 @@ pub const Session = struct {
         }
         self.input_len -= removed;
         if (self.input_cursor > self.input_len) self.input_cursor = self.input_len;
-        self.slash_suggestion_selected = 0;
+        self.suggestion_selected = 0;
     }
 
     fn clampInputCursorLocked(self: *Session) void {
@@ -1638,6 +1831,7 @@ pub const Session = struct {
         self.input_cursor = 0;
         self.input_scroll_row = 0;
         self.input_scroll_follow_cursor = true;
+        self.suggestion_selected = 0;
         self.clearSelectionLocked();
     }
 
@@ -4139,6 +4333,27 @@ test "ai chat slash command suggestions use arrows and tab completion" {
     try std.testing.expectEqual(@as(usize, "/commands".len), session.inputCursor());
 }
 
+test "ai chat enter completes selected slash suggestion before command submit" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    session.appendInputText("/");
+
+    session.handleKey(.{ .vk = win32_backend.VK_DOWN, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .vk = win32_backend.VK_RETURN, .ctrl = false, .shift = false, .alt = false });
+
+    try std.testing.expectEqualStrings("/commands", session.input());
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
+
+    session.handleKey(.{ .vk = win32_backend.VK_RETURN, .ctrl = false, .shift = false, .alt = false });
+
+    try std.testing.expectEqualStrings("", session.input());
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expectEqual(Role.tool, session.messages.items[0].role);
+
+    for (session.messages.items) |msg| msg.deinit(allocator);
+    session.messages.deinit(allocator);
+}
+
 test "ai chat enter submits slash commands instead of completing suggestions" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
@@ -4153,6 +4368,47 @@ test "ai chat enter submits slash commands instead of completing suggestions" {
 
     for (session.messages.items) |msg| msg.deinit(allocator);
     session.messages.deinit(allocator);
+}
+
+test "ai chat dollar skill suggestions filter and enter completes with trailing space" {
+    const allocator = std.testing.allocator;
+    const root = ".zig-cache/skill-suggestion-test";
+    std.fs.cwd().deleteTree(root) catch {};
+    defer std.fs.cwd().deleteTree(root) catch {};
+
+    try std.fs.cwd().makePath(root ++ "/skills/pdf");
+    try std.fs.cwd().writeFile(.{
+        .sub_path = root ++ "/skills/pdf/SKILL.md",
+        .data = "---\nname: pdf\ndescription: Work with PDF files.\n---\n# PDF\n",
+    });
+
+    const session = try Session.init(
+        allocator,
+        "Test",
+        DEFAULT_BASE_URL,
+        "key",
+        DEFAULT_MODEL,
+        DEFAULT_SYSTEM_PROMPT,
+        DEFAULT_THINKING,
+        DEFAULT_REASONING_EFFORT,
+        DEFAULT_STREAM,
+        "true",
+    );
+    defer session.deinit();
+
+    try session.loadSkillSuggestionsFromRoots(&.{root ++ "/skills"});
+    session.appendInputText("$p");
+
+    try std.testing.expectEqual(@as(usize, 1), session.composerSuggestionCount());
+    const suggestion = session.composerSuggestionAt(0).?;
+    try std.testing.expectEqual(ComposerSuggestionKind.skill, suggestion.kind);
+    try std.testing.expectEqualStrings("pdf", suggestion.text);
+
+    session.handleKey(.{ .vk = win32_backend.VK_RETURN, .ctrl = false, .shift = false, .alt = false });
+
+    try std.testing.expectEqualStrings("$pdf ", session.input());
+    try std.testing.expectEqual(@as(usize, "$pdf ".len), session.inputCursor());
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
 }
 
 test "ai chat lists skills from explicit root paths" {

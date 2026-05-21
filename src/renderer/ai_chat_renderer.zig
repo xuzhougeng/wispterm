@@ -311,7 +311,7 @@ pub fn render(
     if (approval) |view| {
         renderApprovalCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, APPROVAL_H);
     }
-    renderSlashSuggestions(session, layout);
+    renderComposerSuggestions(session, layout);
 }
 
 pub fn interactionHitTest(
@@ -904,9 +904,9 @@ fn permissionDisplayName(permission: ai_chat.AgentPermission) []const u8 {
     };
 }
 
-fn renderSlashSuggestions(session: *ai_chat.Session, layout: InputLayout) void {
+fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout) void {
     const input_text = session.input();
-    const count = ai_chat.slashCommandSuggestionCountForInput(input_text, session.input_cursor);
+    const count = ai_chat.composerSuggestionCountForInput(input_text, session.input_cursor, session.skill_suggestions);
     if (count == 0) return;
 
     const bg = AppWindow.g_theme.background;
@@ -918,7 +918,7 @@ fn renderSlashSuggestions(session: *ai_chat.Session, layout: InputLayout) void {
     const popup_h = SUGGESTION_PAD_Y * 2 + SUGGESTION_ROW_H * @as(f32, @floatFromInt(count));
     const popup_bg = mixColor(bg, fg, 0.085);
     const border = mixColor(bg, accent, 0.36);
-    const selected = @min(session.slash_suggestion_selected, count - 1);
+    const selected = @min(session.suggestion_selected, count - 1);
 
     gl_init.renderQuadAlpha(popup_x, popup_y, popup_w, popup_h, popup_bg, 0.98);
     gl_init.renderQuadAlpha(popup_x, popup_y + popup_h - 1, popup_w, 1, border, 0.78);
@@ -933,10 +933,12 @@ fn renderSlashSuggestions(session: *ai_chat.Session, layout: InputLayout) void {
             gl_init.renderQuadAlpha(popup_x + 4, row_y + 2, popup_w - 8, SUGGESTION_ROW_H - 4, mixColor(bg, accent, 0.18), 0.90);
             gl_init.renderQuadAlpha(popup_x + 4, row_y + 2, 3, SUGGESTION_ROW_H - 4, accent, 0.82);
         }
-        const suggestion = ai_chat.slashCommandSuggestionAtForInput(input_text, session.input_cursor, i) orelse continue;
+        const suggestion = ai_chat.composerSuggestionAtForInput(input_text, session.input_cursor, session.skill_suggestions, i) orelse continue;
         const text_y = row_y + @round((SUGGESTION_ROW_H - font.g_titlebar_cell_height) / 2);
+        var label_buf: [160]u8 = undefined;
+        const label = suggestionLabel(&label_buf, suggestion);
         _ = titlebar.renderTextLimited(
-            suggestion.command,
+            label,
             popup_x + 14,
             text_y,
             if (i == selected) mixColor(fg, accent, 0.14) else fg,
@@ -952,6 +954,13 @@ fn renderSlashSuggestions(session: *ai_chat.Session, layout: InputLayout) void {
             );
         }
     }
+}
+
+fn suggestionLabel(buf: []u8, suggestion: ai_chat.ComposerSuggestion) []const u8 {
+    return switch (suggestion.kind) {
+        .slash_command => suggestion.text,
+        .skill => std.fmt.bufPrint(buf, "${s}", .{suggestion.text}) catch suggestion.text,
+    };
 }
 
 fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32) void {
