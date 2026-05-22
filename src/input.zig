@@ -91,7 +91,7 @@ test "terminal path click action maps ctrl shift ssh to download" {
 fn interactiveUnderlineTokenKind(action: TerminalPathClickAction, text: []const u8) InteractiveUnderlineTokenKind {
     return switch (action) {
         .pass_through => .none,
-        .download_ssh_file => if (looksLikePreviewPath(text)) .preview_path else .none,
+        .download_ssh_file => if (looksLikeDownloadPath(text)) .preview_path else .none,
         .open_url_or_preview => if (looksLikeUrl(text))
             .url
         else if (looksLikePreviewPath(text))
@@ -99,6 +99,14 @@ fn interactiveUnderlineTokenKind(action: TerminalPathClickAction, text: []const 
         else
             .none,
     };
+}
+
+fn looksLikeDownloadPath(text: []const u8) bool {
+    if (text.len == 0 or looksLikeUrl(text)) return false;
+    if (looksLikePreviewPath(text)) return true;
+
+    const dot_idx = std.mem.lastIndexOfScalar(u8, text, '.') orelse return false;
+    return dot_idx > 0 and dot_idx + 1 < text.len;
 }
 
 test "interactive underline includes preview paths for ctrl hover" {
@@ -113,6 +121,13 @@ test "interactive underline includes preview paths for ctrl hover" {
     try std.testing.expectEqual(
         InteractiveUnderlineTokenKind.none,
         interactiveUnderlineTokenKind(.pass_through, "README.md"),
+    );
+}
+
+test "interactive underline includes plain filenames for ssh download hover" {
+    try std.testing.expectEqual(
+        InteractiveUnderlineTokenKind.preview_path,
+        interactiveUnderlineTokenKind(.download_ssh_file, "xx.h5ad"),
     );
 }
 
@@ -1881,9 +1896,23 @@ fn extractPreviewPathAtCell(allocator: std.mem.Allocator, surface: *Surface, cel
     return token.text;
 }
 
+fn extractDownloadPathAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
+    const token = extractDownloadPathRangeAtCell(allocator, surface, cell_pos) orelse return null;
+    return token.text;
+}
+
 fn extractPreviewPathRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?TokenAtCell {
     const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
     if (!looksLikePreviewPath(token.text)) {
+        token.deinit(allocator);
+        return null;
+    }
+    return token;
+}
+
+fn extractDownloadPathRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?TokenAtCell {
+    const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
+    if (!looksLikeDownloadPath(token.text)) {
         token.deinit(allocator);
         return null;
     }
@@ -2050,7 +2079,7 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
     const conn = surface.ssh_connection orelse return false;
     const allocator = AppWindow.g_allocator orelse return false;
 
-    const path = extractPreviewPathAtCell(allocator, surface, cell_pos) orelse return false;
+    const path = extractDownloadPathAtCell(allocator, surface, cell_pos) orelse return false;
     defer allocator.free(path);
 
     const resolved_path = resolveTerminalPreviewPath(allocator, surface, path) catch {
