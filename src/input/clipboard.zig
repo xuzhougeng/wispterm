@@ -452,9 +452,8 @@ fn handleSshTerminalFileDrop(local_path: []const u8) bool {
     var spec_buf: [512]u8 = undefined;
     const destination = scp.remoteSpec(&spec_buf, &conn, remote_dir);
     std.debug.print("SSH file drop upload: {s} -> {s}\n", .{ local_path, destination });
-    const result = scp.transfer(allocator, &conn, local_path, destination);
-    if (result != .ok) {
-        std.debug.print("SSH file drop upload failed\n", .{});
+    if (!file_explorer.uploadLocalFileToRemoteSpec(local_path, destination, filename, &conn)) {
+        std.debug.print("SSH file drop upload failed to start\n", .{});
         return true;
     }
 
