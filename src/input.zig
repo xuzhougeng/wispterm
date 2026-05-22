@@ -56,6 +56,7 @@ const basenameForPreview = preview_source.basenameForPreview;
 const buildPreviewCommand = preview_source.buildPreviewCommand;
 
 const LayoutResizeUrgency = enum { coalesced, immediate };
+const TerminalPathClickAction = enum { pass_through, open_url_or_preview, download_ssh_file };
 
 fn panelToggleResizeUrgency() LayoutResizeUrgency {
     return .coalesced;
@@ -63,6 +64,31 @@ fn panelToggleResizeUrgency() LayoutResizeUrgency {
 
 test "panel toggles request coalesced layout resize" {
     try std.testing.expectEqual(LayoutResizeUrgency.coalesced, panelToggleResizeUrgency());
+}
+
+fn terminalPathClickAction(launch_kind: Surface.LaunchKind, has_ssh_conn: bool, ctrl: bool, shift: bool, alt: bool) TerminalPathClickAction {
+    if (ctrl and shift and !alt and launch_kind == .ssh and has_ssh_conn) return .download_ssh_file;
+    if (ctrl and !shift and !alt) return .open_url_or_preview;
+    return .pass_through;
+}
+
+test "terminal path click action maps ctrl shift ssh to download" {
+    try std.testing.expectEqual(
+        TerminalPathClickAction.download_ssh_file,
+        terminalPathClickAction(.ssh, true, true, true, false),
+    );
+    try std.testing.expectEqual(
+        TerminalPathClickAction.pass_through,
+        terminalPathClickAction(.ssh, false, true, true, false),
+    );
+    try std.testing.expectEqual(
+        TerminalPathClickAction.pass_through,
+        terminalPathClickAction(.wsl, false, true, true, false),
+    );
+    try std.testing.expectEqual(
+        TerminalPathClickAction.open_url_or_preview,
+        terminalPathClickAction(.ssh, true, true, false, false),
+    );
 }
 
 // Selection + divider drag state (moved from AppWindow.zig)
@@ -1826,9 +1852,14 @@ pub fn isUrlUnderlineCell(surface: *Surface, col: usize, row: usize) bool {
 }
 
 fn extractPreviewPathAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
-    const token = extractTokenAtCell(allocator, surface, cell_pos) orelse return null;
-    if (!looksLikePreviewPath(token)) {
-        allocator.free(token);
+    const token = extractPreviewPathRangeAtCell(allocator, surface, cell_pos) orelse return null;
+    return token.text;
+}
+
+fn extractPreviewPathRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?TokenAtCell {
+    const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
+    if (!looksLikePreviewPath(token.text)) {
+        token.deinit(allocator);
         return null;
     }
     return token;
@@ -1867,7 +1898,7 @@ fn openUrlAtCell(surface: *Surface, cell_pos: CellPos) bool {
     return opened;
 }
 
-fn updateUrlUnderlineAtMouse(xpos: f64, ypos: f64) void {
+fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool) void {
     if (g_selecting or overlays.scrollbar.g_scrollbar_dragging or g_divider_dragging) {
         clearUrlUnderline();
         return;
@@ -1887,9 +1918,17 @@ fn updateUrlUnderlineAtMouse(xpos: f64, ypos: f64) void {
     };
     const allocator = AppWindow.g_allocator orelse return;
     const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
-    const token = extractUrlRangeAtCell(allocator, surface, cell_pos) orelse {
-        clearUrlUnderline();
-        return;
+
+    const action = terminalPathClickAction(surface.launch_kind, surface.ssh_connection != null, ctrl, shift, alt);
+    const token = switch (action) {
+        .download_ssh_file => extractPreviewPathRangeAtCell(allocator, surface, cell_pos) orelse {
+            clearUrlUnderline();
+            return;
+        },
+        else => extractUrlRangeAtCell(allocator, surface, cell_pos) orelse {
+            clearUrlUnderline();
+            return;
+        },
     };
     defer token.deinit(allocator);
 
@@ -1961,6 +2000,40 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
 
     const preview_surface = AppWindow.splitFocusedReturningSurface(.right) orelse return false;
     writeTextToSurfacePty(preview_surface, command);
+    return true;
+}
+
+fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
+    if (surface.launch_kind != .ssh) return false;
+    const conn = surface.ssh_connection orelse return false;
+    const allocator = AppWindow.g_allocator orelse return false;
+
+    const path = extractPreviewPathAtCell(allocator, surface, cell_pos) orelse return false;
+    defer allocator.free(path);
+
+    const resolved_path = resolveTerminalPreviewPath(allocator, surface, path) catch {
+        file_explorer.setTransferStatus(.failed, "Download failed");
+        return true;
+    };
+    defer allocator.free(resolved_path);
+
+    const name = basenameForPreview(resolved_path);
+    if (name.len == 0) return false;
+
+    var dl_buf: [260]u8 = undefined;
+    const dl_path = getDownloadsFolder(&dl_buf);
+    if (dl_path.len == 0) {
+        file_explorer.setTransferStatus(.failed, "Download folder missing");
+        return true;
+    }
+
+    var dst_buf: [512]u8 = undefined;
+    const dst = std.fmt.bufPrint(&dst_buf, "{s}\\{s}", .{ dl_path, name }) catch {
+        file_explorer.setTransferStatus(.failed, "Path too long");
+        return true;
+    };
+
+    _ = file_explorer.downloadRemoteFileToPath(resolved_path, dst, name, &conn);
     return true;
 }
 
@@ -2332,9 +2405,15 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
             }
 
             const cell_pos = mouseToSurfaceCell(clicked_surface, xpos, ypos);
-            if (ev.ctrl and !ev.shift and !ev.alt) {
-                if (openUrlAtCell(clicked_surface, cell_pos)) return;
-                if (openPreviewPanelForCell(clicked_surface, cell_pos)) return;
+            switch (terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, ev.ctrl, ev.shift, ev.alt)) {
+                .download_ssh_file => {
+                    if (downloadTerminalFileAtCell(clicked_surface, cell_pos)) return;
+                },
+                .open_url_or_preview => {
+                    if (openUrlAtCell(clicked_surface, cell_pos)) return;
+                    if (openPreviewPanelForCell(clicked_surface, cell_pos)) return;
+                },
+                .pass_through => {},
             }
 
             clearUrlUnderline();
@@ -2719,7 +2798,7 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     if (AppWindow.g_focus_follows_mouse) {
         updateFocusFromMouse(@intFromFloat(xpos), @intFromFloat(ypos));
     }
-    updateUrlUnderlineAtMouse(xpos, ypos);
+    updateInteractiveUnderlineAtMouse(xpos, ypos, ev.ctrl, ev.shift, ev.alt);
 
     // Update scrollbar hover state
     const win = AppWindow.g_window orelse return;

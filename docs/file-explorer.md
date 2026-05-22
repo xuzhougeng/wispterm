@@ -12,6 +12,10 @@ a supported text file in the File Explorer, to open the right-side preview panel
 Markdown previews render headings, lists, blockquotes, code blocks, inline code,
 links, and horizontal rules. Text files are shown as plain text.
 
+In SSH profile sessions, hold `Ctrl+Shift` over a file path in terminal output
+to underline it, then click to download that remote file to
+`%USERPROFILE%\Downloads`. Downloads run in the background.
+
 Open the command center with `Ctrl+Shift+P` and run `Toggle Browser` to open
 the embedded WebView2 browser panel when WebView2 support is available.
 `Ctrl`-clicking an `http://` or `https://` URL in terminal output opens it in

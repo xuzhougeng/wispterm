@@ -735,6 +735,9 @@ pub const MouseButtonEvent = struct {
 pub const MouseMoveEvent = struct {
     x: i32,
     y: i32,
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
 };
 
 /// Mouse wheel events
@@ -1835,9 +1838,16 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
         WM_MOUSEMOVE => {
             const x: i32 = @as(i16, @bitCast(@as(u16, @intCast(lParam & 0xFFFF))));
             const y: i32 = @as(i16, @bitCast(@as(u16, @intCast((lParam >> 16) & 0xFFFF))));
+            const mods = getModifiers();
             w.mouse_x = x;
             w.mouse_y = y;
-            w.mouse_move_events.push(.{ .x = x, .y = y });
+            w.mouse_move_events.push(.{
+                .x = x,
+                .y = y,
+                .ctrl = mods.ctrl,
+                .shift = mods.shift,
+                .alt = mods.alt,
+            });
             return 0;
         },
         WM_MOUSEWHEEL => {
