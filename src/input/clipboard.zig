@@ -403,6 +403,41 @@ fn pasteSavedClipboardImage(surface: *Surface, allocator: std.mem.Allocator, ima
     return true;
 }
 
+const DeferredSshDropPaste = struct {
+    allocator: std.mem.Allocator,
+    surface_allocator: std.mem.Allocator,
+    surface: *Surface,
+    text: []u8,
+};
+
+fn deferredSshDropPasteSuccess(ctx: ?*anyopaque) void {
+    const pending: *DeferredSshDropPaste = @ptrCast(@alignCast(ctx orelse return));
+    writePasteToPty(pending.surface, pending.allocator, pending.text);
+}
+
+fn deferredSshDropPasteDestroy(ctx: ?*anyopaque) void {
+    const pending: *DeferredSshDropPaste = @ptrCast(@alignCast(ctx orelse return));
+    pending.surface.unref(pending.surface_allocator);
+    pending.allocator.free(pending.text);
+    pending.allocator.destroy(pending);
+}
+
+fn createDeferredSshDropPaste(surface: *Surface, text: []const u8) ?*DeferredSshDropPaste {
+    const allocator = std.heap.page_allocator;
+    const pending = allocator.create(DeferredSshDropPaste) catch return null;
+    const owned_text = allocator.dupe(u8, text) catch {
+        allocator.destroy(pending);
+        return null;
+    };
+    pending.* = .{
+        .allocator = allocator,
+        .surface_allocator = surface.allocator,
+        .surface = surface.ref(),
+        .text = owned_text,
+    };
+    return pending;
+}
+
 pub fn handleFileDrop(local_path: []const u8, x: i32, _: i32) bool {
     if (handleFileExplorerDrop(local_path, x)) return true;
     return handleSshTerminalFileDrop(local_path);
@@ -452,14 +487,20 @@ fn handleSshTerminalFileDrop(local_path: []const u8) bool {
     var spec_buf: [512]u8 = undefined;
     const destination = scp.remoteSpec(&spec_buf, &conn, remote_dir);
     std.debug.print("SSH file drop upload: {s} -> {s}\n", .{ local_path, destination });
-    if (!file_explorer.uploadLocalFileToRemoteSpec(local_path, destination, filename, &conn)) {
+
+    const pasted = shellSingleQuoteForPaste(allocator, remote_path) orelse return true;
+    defer allocator.free(pasted);
+
+    const pending_paste = createDeferredSshDropPaste(surface, pasted) orelse return true;
+    if (!file_explorer.uploadLocalFileToRemoteSpecWithCompletion(local_path, destination, filename, &conn, .{
+        .context = pending_paste,
+        .on_success = deferredSshDropPasteSuccess,
+        .on_destroy = deferredSshDropPasteDestroy,
+    })) {
         std.debug.print("SSH file drop upload failed to start\n", .{});
         return true;
     }
 
-    const pasted = shellSingleQuoteForPaste(allocator, remote_path) orelse return true;
-    defer allocator.free(pasted);
-    writePasteToPty(surface, allocator, pasted);
     return true;
 }
 
