@@ -606,6 +606,16 @@ fn shellExecutableTokenUtf16(raw: []const u16) []const u16 {
         return raw[start..quote_end];
     }
 
+    var exe_end = start;
+    while (exe_end + 4 <= end) : (exe_end += 1) {
+        if (utf16AsciiEqlIgnoreCase(raw[exe_end .. exe_end + 4], ".exe")) {
+            const after_exe = exe_end + 4;
+            if (after_exe == end or raw[after_exe] == ' ' or raw[after_exe] == '\t') {
+                return raw[start..after_exe];
+            }
+        }
+    }
+
     var token_end = start;
     while (token_end < end and raw[token_end] != ' ' and raw[token_end] != '\t') : (token_end += 1) {}
     return raw[start..token_end];
@@ -3182,6 +3192,24 @@ test "appwindow: PowerShell session command follows configured PowerShell flavor
     try testing.expectEqualStrings(
         "pwsh.exe",
         configuredPowerShellCommandForShell(quoted_pwsh),
+    );
+
+    const unquoted_pwsh = std.unicode.utf8ToUtf16LeStringLiteral("C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+    try testing.expectEqualStrings(
+        "pwsh.exe",
+        configuredPowerShellCommandForShell(unquoted_pwsh),
+    );
+
+    const unquoted_pwsh_with_arg = std.unicode.utf8ToUtf16LeStringLiteral("C:\\Program Files\\PowerShell\\7\\pwsh.exe -NoLogo");
+    try testing.expectEqualStrings(
+        "pwsh.exe",
+        configuredPowerShellCommandForShell(unquoted_pwsh_with_arg),
+    );
+
+    const unquoted_windows_powershell = std.unicode.utf8ToUtf16LeStringLiteral("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo");
+    try testing.expectEqualStrings(
+        "powershell.exe",
+        configuredPowerShellCommandForShell(unquoted_windows_powershell),
     );
 }
 
