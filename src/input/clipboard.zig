@@ -445,7 +445,7 @@ pub fn handleFileDrop(local_path: []const u8, x: i32, _: i32) bool {
 
 fn handleFileExplorerDrop(local_path: []const u8, x: i32) bool {
     const win = AppWindow.g_window orelse return false;
-    if (!file_explorer.g_visible or file_explorer.g_mode != .remote) return false;
+    if (!file_explorer.isVisibleForActiveTab() or file_explorer.g_mode != .remote) return false;
 
     const panel_x: i32 = win.sidebar_width;
     const panel_right: i32 = panel_x + @as(i32, @intFromFloat(file_explorer.width()));

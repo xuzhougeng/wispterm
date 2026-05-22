@@ -5,6 +5,7 @@ const win32 = @import("apprt/win32.zig");
 const Surface = @import("Surface.zig");
 const browser_url = @import("browser_url.zig");
 const ui_perf = @import("ui_perf.zig");
+const tab = @import("appwindow/tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 720;
 pub const MIN_WIDTH: f32 = 360;
@@ -74,6 +75,7 @@ pub fn contentBounds(bounds: Bounds) ?Bounds {
 }
 
 pub threadlocal var g_visible: bool = false;
+pub threadlocal var g_owner_tab: ?usize = null;
 pub threadlocal var g_width: f32 = DEFAULT_WIDTH;
 pub threadlocal var g_last_error: win32.HRESULT = 0;
 threadlocal var g_browser: ?*BrowserHandle = null;
@@ -147,7 +149,32 @@ const SshTunnel = struct {
 };
 
 pub fn width() f32 {
-    return if (g_visible) g_width else 0;
+    return if (isVisibleForActiveTab()) g_width else 0;
+}
+
+pub fn isVisibleForActiveTab() bool {
+    const owner = g_owner_tab orelse return false;
+    return g_visible and owner == tab.g_active_tab;
+}
+
+pub fn onTabClosed(closed_idx: usize) void {
+    const owner = g_owner_tab orelse return;
+    if (owner == closed_idx) {
+        close();
+    } else if (owner > closed_idx) {
+        g_owner_tab = owner - 1;
+    }
+}
+
+pub fn onTabReordered(from_idx: usize, to_idx: usize) void {
+    const owner = g_owner_tab orelse return;
+    if (owner == from_idx) {
+        g_owner_tab = to_idx;
+    } else if (from_idx < to_idx and owner > from_idx and owner <= to_idx) {
+        g_owner_tab = owner - 1;
+    } else if (from_idx > to_idx and owner >= to_idx and owner < from_idx) {
+        g_owner_tab = owner + 1;
+    }
 }
 
 pub fn maxWidthForWindow(window_width: f32) f32 {
@@ -162,7 +189,7 @@ pub fn setWidth(w: f32, window_width: f32) bool {
 }
 
 pub fn panelWidthForWindow(window_width: i32, left_offset: f32, right_offset: f32) f32 {
-    if (!g_visible) return 0;
+    if (!isVisibleForActiveTab()) return 0;
     const win_w: f32 = @floatFromInt(window_width);
     const max_width = @max(MIN_WIDTH, @min(MAX_WIDTH, win_w - left_offset - right_offset - MIN_CONTENT_WIDTH));
     return @max(MIN_WIDTH, @min(g_width, max_width));
@@ -178,12 +205,13 @@ pub fn embeddedBrowserAvailable() bool {
 
 pub fn open(parent: ?win32.HWND, url: []const u8) void {
     if (!embeddedBrowserAvailable()) {
-        g_visible = false;
+        close();
         return;
     }
 
     setUrl(url);
     g_visible = true;
+    g_owner_tab = tab.g_active_tab;
 
     if (g_browser) |browser| {
         navigateCurrentUrl(browser);
@@ -227,7 +255,7 @@ pub fn openForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, url: []
 }
 
 pub fn toggle(parent: ?win32.HWND) void {
-    if (g_visible) {
+    if (isVisibleForActiveTab()) {
         close();
     } else {
         if (!embeddedBrowserAvailable()) return;
@@ -236,7 +264,7 @@ pub fn toggle(parent: ?win32.HWND) void {
 }
 
 pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, surface: ?*const Surface) bool {
-    if (g_visible) {
+    if (isVisibleForActiveTab()) {
         close();
         return true;
     }
@@ -245,6 +273,7 @@ pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, surfa
 
 pub fn close() void {
     g_visible = false;
+    g_owner_tab = null;
     g_url_bar_focused = false;
     g_url_edit_select_all = false;
     stopTunnel();
@@ -275,7 +304,7 @@ pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_
 
     if (window_width <= 0 or window_height <= 0) return;
 
-    if (!g_visible) {
+    if (!isVisibleForActiveTab()) {
         if (g_browser) |browser| phantty_webview2_set_visible(browser, 0);
         return;
     }
@@ -297,12 +326,11 @@ pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_
         if (g_browser) |browser| {
             g_last_error = phantty_webview2_last_error(browser);
             if (hresultFailed(g_last_error)) {
-                destroyBrowser();
-                g_visible = false;
+                close();
                 return;
             }
         } else {
-            g_visible = false;
+            close();
             return;
         }
     }
@@ -318,6 +346,7 @@ pub fn deinit() void {
     destroyBrowser();
     stopTunnel();
     g_visible = false;
+    g_owner_tab = null;
     g_url_bar_focused = false;
     g_url_edit_select_all = false;
 }
@@ -345,7 +374,7 @@ pub fn currentUrl() []const u8 {
 }
 
 pub fn urlBarFocused() bool {
-    return g_url_bar_focused;
+    return isVisibleForActiveTab() and g_url_bar_focused;
 }
 
 pub fn urlBarText() []const u8 {
@@ -707,6 +736,31 @@ fn ensureAskPassScript(allocator: std.mem.Allocator) ?[]u8 {
             "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Out.Write($env:PHANTTY_SSH_PASSWORD)\"\r\n",
     ) catch return null;
     return path;
+}
+
+test "browser_panel: visible only on owning active tab" {
+    const saved_visible = g_visible;
+    const saved_owner = g_owner_tab;
+    const saved_active_tab = tab.g_active_tab;
+    defer {
+        g_visible = saved_visible;
+        g_owner_tab = saved_owner;
+        tab.g_active_tab = saved_active_tab;
+    }
+
+    tab.g_active_tab = 0;
+    g_visible = true;
+    g_owner_tab = 0;
+
+    try std.testing.expect(isVisibleForActiveTab());
+    try std.testing.expectEqual(DEFAULT_WIDTH, width());
+
+    tab.g_active_tab = 1;
+    try std.testing.expect(!isVisibleForActiveTab());
+    try std.testing.expectEqual(@as(f32, 0), width());
+
+    tab.g_active_tab = 0;
+    try std.testing.expect(isVisibleForActiveTab());
 }
 
 test "reservePreferredLocalPort returns the preferred port when it is free" {

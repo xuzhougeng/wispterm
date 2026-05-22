@@ -28,7 +28,7 @@ fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
 }
 
 pub fn render(window_width: f32, window_height: f32, titlebar_h: f32, right_offset: f32) void {
-    if (!panel.g_visible) return;
+    if (!panel.isVisibleForActiveTab()) return;
     const perf = ui_perf.begin("markdown_preview_renderer.render");
     defer perf.end();
 

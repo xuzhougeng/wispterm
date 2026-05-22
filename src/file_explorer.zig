@@ -10,6 +10,7 @@ const agent_history = @import("agent_history.zig");
 const scp = @import("scp.zig");
 const file_backend = @import("file_backend.zig");
 const ui_perf = @import("ui_perf.zig");
+const tab = @import("appwindow/tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 240;
 pub const MIN_WIDTH: f32 = 160;
@@ -43,6 +44,7 @@ pub const TerminalPanelTarget = union(enum) {
 };
 
 pub threadlocal var g_visible: bool = false;
+pub threadlocal var g_owner_tab: ?usize = null;
 pub threadlocal var g_width: f32 = DEFAULT_WIDTH;
 pub threadlocal var g_focused: bool = false;
 pub threadlocal var g_mode: Mode = .local;
@@ -169,7 +171,43 @@ pub const FlatEntry = struct {
 };
 
 pub fn width() f32 {
-    return if (g_visible) g_width else 0;
+    return if (isVisibleForActiveTab()) g_width else 0;
+}
+
+pub fn isVisibleForActiveTab() bool {
+    const owner = g_owner_tab orelse return false;
+    return g_visible and owner == tab.g_active_tab;
+}
+
+pub fn openForActiveTab() void {
+    g_visible = true;
+    g_owner_tab = tab.g_active_tab;
+}
+
+pub fn close() void {
+    g_visible = false;
+    g_owner_tab = null;
+    g_focused = false;
+}
+
+pub fn onTabClosed(closed_idx: usize) void {
+    const owner = g_owner_tab orelse return;
+    if (owner == closed_idx) {
+        close();
+    } else if (owner > closed_idx) {
+        g_owner_tab = owner - 1;
+    }
+}
+
+pub fn onTabReordered(from_idx: usize, to_idx: usize) void {
+    const owner = g_owner_tab orelse return;
+    if (owner == from_idx) {
+        g_owner_tab = to_idx;
+    } else if (from_idx < to_idx and owner > from_idx and owner <= to_idx) {
+        g_owner_tab = owner - 1;
+    } else if (from_idx > to_idx and owner >= to_idx and owner < from_idx) {
+        g_owner_tab = owner + 1;
+    }
 }
 
 pub fn syncLayoutMetrics(text_height: f32) void {
@@ -209,7 +247,11 @@ pub fn setWidth(w: f32, window_width: f32) bool {
 }
 
 pub fn toggle() void {
-    g_visible = !g_visible;
+    if (isVisibleForActiveTab()) {
+        close();
+    } else {
+        openForActiveTab();
+    }
 }
 
 pub fn setPanelMode(mode: PanelMode) void {
@@ -1538,6 +1580,63 @@ test "Mode enum values" {
     // Default state
     g_mode = .local;
     try std.testing.expect(!g_has_ssh_conn);
+}
+
+test "file_explorer: visible only on owning active tab" {
+    const saved_visible = g_visible;
+    const saved_owner = g_owner_tab;
+    const saved_focused = g_focused;
+    const saved_active_tab = tab.g_active_tab;
+    defer {
+        g_visible = saved_visible;
+        g_owner_tab = saved_owner;
+        g_focused = saved_focused;
+        tab.g_active_tab = saved_active_tab;
+    }
+
+    tab.g_active_tab = 0;
+    openForActiveTab();
+
+    try std.testing.expect(isVisibleForActiveTab());
+    try std.testing.expectEqual(DEFAULT_WIDTH, width());
+
+    tab.g_active_tab = 1;
+    try std.testing.expect(!isVisibleForActiveTab());
+    try std.testing.expectEqual(@as(f32, 0), width());
+
+    tab.g_active_tab = 0;
+    try std.testing.expect(isVisibleForActiveTab());
+}
+
+test "file_explorer: owner follows tab close and reorder" {
+    const saved_visible = g_visible;
+    const saved_owner = g_owner_tab;
+    const saved_focused = g_focused;
+    const saved_active_tab = tab.g_active_tab;
+    defer {
+        g_visible = saved_visible;
+        g_owner_tab = saved_owner;
+        g_focused = saved_focused;
+        tab.g_active_tab = saved_active_tab;
+    }
+
+    g_visible = true;
+    g_owner_tab = 2;
+    onTabClosed(1);
+    try std.testing.expectEqual(@as(?usize, 1), g_owner_tab);
+
+    tab.g_active_tab = 1;
+    try std.testing.expect(isVisibleForActiveTab());
+
+    onTabReordered(1, 3);
+    try std.testing.expectEqual(@as(?usize, 3), g_owner_tab);
+
+    onTabReordered(0, 2);
+    try std.testing.expectEqual(@as(?usize, 2), g_owner_tab);
+
+    onTabClosed(2);
+    try std.testing.expectEqual(@as(?usize, null), g_owner_tab);
+    try std.testing.expect(!g_visible);
 }
 
 test "file_explorer: agent history mode selection clamps to row count" {

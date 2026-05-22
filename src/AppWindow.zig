@@ -664,7 +664,7 @@ pub fn agentHistoryRevision() u64 {
 }
 
 pub fn syncVisibleFileExplorerForActiveTab() void {
-    if (!file_explorer.g_visible) return;
+    if (!file_explorer.isVisibleForActiveTab()) return;
 
     const is_ai_tab = activeAiChat() != null;
     if (is_ai_tab) {
@@ -735,7 +735,11 @@ fn syncFileExplorerToActiveTerminalSurface() void {
 
 pub fn closeTab(idx: usize) void {
     const allocator = g_allocator orelse return;
+    if (tab.g_tab_count <= 1 or idx >= tab.g_tab_count) return;
     tab.closeTab(idx, allocator);
+    file_explorer.onTabClosed(idx);
+    markdown_preview_panel.onTabClosed(idx);
+    browser_panel.onTabClosed(idx);
     clearUiStateOnTabChange();
 }
 
@@ -752,6 +756,9 @@ pub fn switchTab(idx: usize) void {
 
 pub fn reorderTab(from_idx: usize, to_idx: usize) bool {
     if (!tab.reorderTab(from_idx, to_idx)) return false;
+    file_explorer.onTabReordered(from_idx, to_idx);
+    markdown_preview_panel.onTabReordered(from_idx, to_idx);
+    browser_panel.onTabReordered(from_idx, to_idx);
     clearUiStateOnTabChange();
     return true;
 }
@@ -782,6 +789,7 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
 
 pub fn closeFocusedSplit() void {
     const allocator = g_allocator orelse return;
+    const closing_tab_idx = tab.g_active_tab;
     switch (tab.closeFocusedSplit(allocator)) {
         .closed_split => {
             input.g_selecting = false;
@@ -789,6 +797,9 @@ pub fn closeFocusedSplit() void {
             requestImmediateLayoutResize();
         },
         .closed_tab => {
+            file_explorer.onTabClosed(closing_tab_idx);
+            markdown_preview_panel.onTabClosed(closing_tab_idx);
+            browser_panel.onTabClosed(closing_tab_idx);
             clearUiStateOnTabChange();
         },
         .close_window => {

@@ -809,7 +809,7 @@ fn renderTitlebarTextStrongLimited(text: []const u8, x_start: f32, y: f32, color
 }
 
 pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f32) void {
-    if (!browser_panel.g_visible) return;
+    if (!browser_panel.isVisibleForActiveTab()) return;
 
     const bounds = browser_panel.boundsForWindow(
         @intFromFloat(@round(window_width)),

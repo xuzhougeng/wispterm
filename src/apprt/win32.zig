@@ -1937,7 +1937,7 @@ fn handleDropFiles(wParam: WPARAM, w: *Window) void {
         // Fallback for callers that have not installed a drop callback.
         const panel_x: i32 = w.sidebar_width;
         const panel_right: i32 = panel_x + @as(i32, @intFromFloat(file_explorer.width()));
-        if (!file_explorer.g_visible or pt.x < panel_x or pt.x >= panel_right) continue;
+        if (!file_explorer.isVisibleForActiveTab() or pt.x < panel_x or pt.x >= panel_right) continue;
         if (file_explorer.g_mode != .remote) continue;
         file_explorer.uploadFile(utf8_buf[0..utf8_len]);
     }

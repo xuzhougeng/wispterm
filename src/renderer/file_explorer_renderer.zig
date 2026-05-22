@@ -38,7 +38,7 @@ const Palette = struct {
 };
 
 pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
-    if (!file_explorer.g_visible) return;
+    if (!file_explorer.isVisibleForActiveTab()) return;
     file_explorer.syncLayoutMetrics(font.g_titlebar_cell_height);
     file_explorer.syncViewportMetrics(window_height, titlebar_h);
     const header_h = file_explorer.headerHeight();

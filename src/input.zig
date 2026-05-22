@@ -270,7 +270,7 @@ pub fn toggleFileExplorer() void {
     defer perf.end();
 
     file_explorer.toggle();
-    if (file_explorer.g_visible) {
+    if (file_explorer.isVisibleForActiveTab()) {
         AppWindow.syncVisibleFileExplorerForActiveTab();
     }
     if (AppWindow.g_window) |win| {
@@ -296,7 +296,7 @@ pub fn toggleBrowserPanel() void {
 }
 
 pub fn closePanelOrTab() void {
-    if (markdown_preview_panel.g_visible) {
+    if (markdown_preview_panel.isVisibleForActiveTab()) {
         g_close_shortcut_confirm_until_ms = 0;
         markdown_preview_panel.close();
         if (AppWindow.g_window) |win| syncPanelGridFromWindowSize(win.width, win.height);
@@ -304,7 +304,7 @@ pub fn closePanelOrTab() void {
         AppWindow.g_cells_valid = false;
         return;
     }
-    if (browser_panel.g_visible) {
+    if (browser_panel.isVisibleForActiveTab()) {
         g_close_shortcut_confirm_until_ms = 0;
         browser_panel.close();
         if (AppWindow.g_window) |win| syncPanelGridFromWindowSize(win.width, win.height);
@@ -615,7 +615,7 @@ fn handleChar(ev: win32_backend.CharEvent) void {
         return;
     }
     // File explorer inline editing
-    if (file_explorer.g_focused and file_explorer.g_visible and file_explorer.g_op_mode != .none and file_explorer.g_op_mode != .confirm_delete) {
+    if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab() and file_explorer.g_op_mode != .none and file_explorer.g_op_mode != .confirm_delete) {
         if (!ev.ctrl and !ev.alt) file_explorer.inputChar(ev.codepoint);
         return;
     }
@@ -709,7 +709,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         return;
     }
     // File explorer key handling (when focused and in operation mode)
-    if (file_explorer.g_focused and file_explorer.g_visible) {
+    if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab()) {
         if (handleFileExplorerKey(ev)) return;
     }
     // Ctrl+Shift+N = new window (even during tab rename)
@@ -1141,7 +1141,7 @@ fn applySidebarWidthFromMouse(xpos: f64) void {
 }
 
 fn hitTestFileExplorer(xpos: f64, ypos: f64) bool {
-    if (!file_explorer.g_visible) return false;
+    if (!file_explorer.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
     const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
@@ -1149,7 +1149,7 @@ fn hitTestFileExplorer(xpos: f64, ypos: f64) bool {
 }
 
 fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
-    if (!markdown_preview_panel.g_visible) return false;
+    if (!markdown_preview_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
     const preview_w: f64 = @floatCast(markdown_preview_panel.width());
@@ -1158,7 +1158,7 @@ fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
 }
 
 fn browserPanelBounds() ?browser_panel.Bounds {
-    if (!browser_panel.g_visible) return null;
+    if (!browser_panel.isVisibleForActiveTab()) return null;
     const win = AppWindow.g_window orelse return null;
     return browser_panel.boundsForWindow(
         win.width,
@@ -1187,7 +1187,7 @@ fn hitTestBrowserUrlBar(xpos: f64, ypos: f64) bool {
 }
 
 fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
-    if (!browser_panel.g_visible) return false;
+    if (!browser_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const bounds = browserPanelBounds() orelse return false;
     const panel_x: f64 = @floatFromInt(bounds.left);
@@ -1207,7 +1207,7 @@ fn applyBrowserWidthFromMouse(xpos: f64) void {
 }
 
 fn hitTestMarkdownPreviewResizeHandle(xpos: f64, ypos: f64) bool {
-    if (!markdown_preview_panel.g_visible) return false;
+    if (!markdown_preview_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
     const preview_w: f64 = @floatCast(markdown_preview_panel.width());
@@ -1227,7 +1227,7 @@ fn applyMarkdownPreviewWidthFromMouse(xpos: f64) void {
 }
 
 fn hitTestFileExplorerResizeHandle(xpos: f64, ypos: f64) bool {
-    if (!file_explorer.g_visible) return false;
+    if (!file_explorer.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
     const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
@@ -2923,7 +2923,7 @@ fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
-    if (markdown_preview_panel.g_visible) {
+    if (markdown_preview_panel.isVisibleForActiveTab()) {
         const win = AppWindow.g_window orelse return;
         const panel_x = @as(i32, @intFromFloat(@as(f32, @floatFromInt(win.width)) - markdown_preview_panel.width()));
         const panel_right = win.width;
@@ -2935,7 +2935,7 @@ fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
         }
     }
     // Scroll in file explorer
-    if (file_explorer.g_visible) {
+    if (file_explorer.isVisibleForActiveTab()) {
         const panel_x = @as(i32, @intFromFloat(titlebar.sidebarWidth()));
         const panel_right = @as(i32, @intFromFloat(titlebar.sidebarWidth() + file_explorer.width()));
         if (ev.xpos >= panel_x and ev.xpos < panel_right) {
