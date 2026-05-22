@@ -1295,6 +1295,21 @@ fn uploadLocalFileToRemoteSpecWithTransfer(local_path: []const u8, dst_spec: []c
     return startTransferJob(.upload, conn, local_path, dst_spec, display_name, transfer_fn);
 }
 
+pub fn downloadRemoteFileToPath(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const Surface.SshConnection) bool {
+    return downloadRemoteFileToPathWithTransfer(remote_path, local_path, display_name, conn, scp.transfer);
+}
+
+fn downloadRemoteFileToPathWithTransfer(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const Surface.SshConnection, transfer_fn: TransferFn) bool {
+    if (conn.user_len + conn.host_len + remote_path.len + 2 > 512) {
+        setTransferStatus(.failed, "Path too long");
+        return false;
+    }
+
+    var spec_buf: [512]u8 = undefined;
+    const src = scp.remoteSpec(&spec_buf, conn, remote_path);
+    return startTransferJob(.download, conn, src, local_path, display_name, transfer_fn);
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1357,6 +1372,22 @@ test "file_explorer: upload helper starts transfer with explicit remote spec" {
     try std.testing.expect(uploadLocalFileToRemoteSpecWithTransfer("local.txt", "user@host:/tmp", "local.txt", &conn, transferOkForTest));
     try std.testing.expectEqual(TransferStatus.in_progress, g_transfer_status);
     try std.testing.expectEqualStrings("local.txt", g_transfer_msg[0..g_transfer_msg_len]);
+    try std.testing.expect(g_transfer_job != null);
+}
+
+test "file_explorer: download helper starts transfer with explicit remote path" {
+    resetTransferStateForTest();
+    defer resetTransferStateForTest();
+
+    var conn: Surface.SshConnection = .{};
+    conn.user_buf[0] = 'u';
+    conn.user_len = 1;
+    conn.host_buf[0] = 'h';
+    conn.host_len = 1;
+
+    try std.testing.expect(downloadRemoteFileToPathWithTransfer("/tmp/file.txt", "C:\\Users\\me\\Downloads\\file.txt", "file.txt", &conn, transferOkForTest));
+    try std.testing.expectEqual(TransferStatus.in_progress, g_transfer_status);
+    try std.testing.expectEqualStrings("file.txt", g_transfer_msg[0..g_transfer_msg_len]);
     try std.testing.expect(g_transfer_job != null);
 }
 

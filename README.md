@@ -97,6 +97,7 @@ To confirm the running desktop version, open the command center with `Ctrl+Shift
 | **Ctrl+Shift+O**                                                               | Split to the right                                                                 |
 | **Ctrl+Shift+Alt+E**                                                           | Toggle file explorer sidebar                                                       |
 | Ctrl-click `.md` / `.txt` in terminal output, or double-click in File Explorer | Preview local, WSL, or SSH Markdown/text in the right preview panel                |
+| Ctrl+Shift-click file path in SSH terminal output                              | Download the SSH remote file to `%USERPROFILE%\Downloads`                         |
 | **Ctrl+Shift+W**                                                               | Close focused panel, tab, or window; press again to confirm closing the last panel |
 | **Alt+Enter**                                                                  | Maximize or restore window                                                         |
 | **Ctrl++** / **Ctrl+-**                                                        | Increase / decrease font size                                                      |

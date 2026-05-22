@@ -28,6 +28,7 @@ const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
     .{ .keys = "Ctrl+Shift+O", .action = "Split right" },
     .{ .keys = "Ctrl+Shift+Alt+E", .action = "File explorer" },
     .{ .keys = "Ctrl/double-click text", .action = "Preview file" },
+    .{ .keys = "Ctrl+Shift-click SSH file", .action = "Download file" },
     .{ .keys = "Ctrl+Shift+[ / ]", .action = "Previous / next panel" },
     .{ .keys = "Alt+Arrows", .action = "Focus panel" },
     .{ .keys = "Ctrl+Shift+Z", .action = "Equalize panels" },
