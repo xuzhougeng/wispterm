@@ -57,6 +57,7 @@ const buildPreviewCommand = preview_source.buildPreviewCommand;
 
 const LayoutResizeUrgency = enum { coalesced, immediate };
 const TerminalPathClickAction = enum { pass_through, open_url_or_preview, download_ssh_file };
+const InteractiveUnderlineTokenKind = enum { none, url, preview_path };
 
 fn panelToggleResizeUrgency() LayoutResizeUrgency {
     return .coalesced;
@@ -88,6 +89,34 @@ test "terminal path click action maps ctrl shift ssh to download" {
     try std.testing.expectEqual(
         TerminalPathClickAction.open_url_or_preview,
         terminalPathClickAction(.ssh, true, true, false, false),
+    );
+}
+
+fn interactiveUnderlineTokenKind(action: TerminalPathClickAction, text: []const u8) InteractiveUnderlineTokenKind {
+    return switch (action) {
+        .pass_through => .none,
+        .download_ssh_file => if (looksLikePreviewPath(text)) .preview_path else .none,
+        .open_url_or_preview => if (looksLikeUrl(text))
+            .url
+        else if (looksLikePreviewPath(text))
+            .preview_path
+        else
+            .none,
+    };
+}
+
+test "interactive underline includes preview paths for ctrl hover" {
+    try std.testing.expectEqual(
+        InteractiveUnderlineTokenKind.preview_path,
+        interactiveUnderlineTokenKind(.open_url_or_preview, "README.md"),
+    );
+    try std.testing.expectEqual(
+        InteractiveUnderlineTokenKind.url,
+        interactiveUnderlineTokenKind(.open_url_or_preview, "https://example.com/README.md"),
+    );
+    try std.testing.expectEqual(
+        InteractiveUnderlineTokenKind.none,
+        interactiveUnderlineTokenKind(.pass_through, "README.md"),
     );
 }
 
@@ -1865,6 +1894,20 @@ fn extractPreviewPathRangeAtCell(allocator: std.mem.Allocator, surface: *Surface
     return token;
 }
 
+fn extractInteractiveUnderlineRangeAtCell(
+    allocator: std.mem.Allocator,
+    surface: *Surface,
+    cell_pos: CellPos,
+    action: TerminalPathClickAction,
+) ?TokenAtCell {
+    const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
+    if (interactiveUnderlineTokenKind(action, token.text) == .none) {
+        token.deinit(allocator);
+        return null;
+    }
+    return token;
+}
+
 fn openUrl(surface: *Surface, url: []const u8) bool {
     const allocator = AppWindow.g_allocator orelse return false;
     const target = if (std.mem.startsWith(u8, url, "www."))
@@ -1920,15 +1963,9 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
 
     const action = terminalPathClickAction(surface.launch_kind, surface.ssh_connection != null, ctrl, shift, alt);
-    const token = switch (action) {
-        .download_ssh_file => extractPreviewPathRangeAtCell(allocator, surface, cell_pos) orelse {
-            clearUrlUnderline();
-            return;
-        },
-        else => extractUrlRangeAtCell(allocator, surface, cell_pos) orelse {
-            clearUrlUnderline();
-            return;
-        },
+    const token = extractInteractiveUnderlineRangeAtCell(allocator, surface, cell_pos, action) orelse {
+        clearUrlUnderline();
+        return;
     };
     defer token.deinit(allocator);
 
