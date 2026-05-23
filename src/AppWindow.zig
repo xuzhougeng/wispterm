@@ -1205,6 +1205,7 @@ fn onWin32Resize(width: i32, height: i32) void {
     overlays.renderCloseShortcutConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderCopyToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderTransferToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    overlays.renderTransferCancelConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
@@ -3248,6 +3249,7 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderCloseShortcutConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderCopyToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderTransferToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        overlays.renderTransferCancelConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         renderImePreedit(win, fb_width, fb_height);

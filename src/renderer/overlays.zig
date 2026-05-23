@@ -99,8 +99,12 @@ const TRANSFER_TOAST_DURATION_MS: i64 = 2500;
 threadlocal var g_transfer_toast_until_ms: i64 = 0;
 threadlocal var g_transfer_toast_sticky: bool = false;
 threadlocal var g_transfer_toast_status: AppWindow.file_explorer.TransferStatus = .idle;
+threadlocal var g_transfer_toast_clickable: bool = false;
 threadlocal var g_transfer_toast_buf: [160]u8 = undefined;
 threadlocal var g_transfer_toast_len: usize = 0;
+
+pub const TransferCancelConfirmAction = enum { none, keep, interrupt };
+threadlocal var g_transfer_cancel_confirm_visible: bool = false;
 
 const UPDATE_PROMPT_DURATION_MS: i64 = 10000;
 const UPDATE_STATUS_DURATION_MS: i64 = 2500;
@@ -131,6 +135,21 @@ const WindowCloseConfirmLayout = struct {
     cancel_top_px: f32,
     cancel_w: f32,
     cancel_h: f32,
+};
+
+const TransferCancelConfirmLayout = struct {
+    panel_x: f32,
+    panel_top_px: f32,
+    panel_w: f32,
+    panel_h: f32,
+    interrupt_x: f32,
+    interrupt_top_px: f32,
+    interrupt_w: f32,
+    interrupt_h: f32,
+    keep_x: f32,
+    keep_top_px: f32,
+    keep_w: f32,
+    keep_h: f32,
 };
 
 // ============================================================================
@@ -362,6 +381,57 @@ pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, wind
         return true;
     }
     return pointInTopRect(xpos, ypos, layout.panel_x, layout.panel_top_px, layout.panel_w, layout.panel_h);
+}
+
+pub fn transferCancelConfirmOpen() void {
+    g_transfer_cancel_confirm_visible = true;
+}
+
+pub fn transferCancelConfirmClose() void {
+    g_transfer_cancel_confirm_visible = false;
+}
+
+pub fn transferCancelConfirmVisible() bool {
+    return g_transfer_cancel_confirm_visible;
+}
+
+pub fn transferCancelConfirmHandleKey(ev: win32_backend.KeyEvent) TransferCancelConfirmAction {
+    if (!g_transfer_cancel_confirm_visible) return .none;
+    switch (ev.vk) {
+        win32_backend.VK_ESCAPE => {
+            transferCancelConfirmClose();
+            return .keep;
+        },
+        win32_backend.VK_RETURN => {
+            transferCancelConfirmClose();
+            return .interrupt;
+        },
+        else => return .none,
+    }
+}
+
+pub fn transferCancelConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) TransferCancelConfirmAction {
+    if (!g_transfer_cancel_confirm_visible) return .none;
+    const layout = transferCancelConfirmLayout(window_width, window_height);
+    if (pointInTopRect(xpos, ypos, layout.interrupt_x, layout.interrupt_top_px, layout.interrupt_w, layout.interrupt_h)) {
+        transferCancelConfirmClose();
+        return .interrupt;
+    }
+    if (pointInTopRect(xpos, ypos, layout.keep_x, layout.keep_top_px, layout.keep_w, layout.keep_h)) {
+        transferCancelConfirmClose();
+        return .keep;
+    }
+    if (pointInTopRect(xpos, ypos, layout.panel_x, layout.panel_top_px, layout.panel_w, layout.panel_h)) return .none;
+    transferCancelConfirmClose();
+    return .keep;
+}
+
+fn transferCancelConfirmLayoutForTest(window_width: f32, window_height: f32) TransferCancelConfirmLayout {
+    return transferCancelConfirmLayout(window_width, window_height);
+}
+
+fn transferCancelConfirmExecuteAtForTest(xpos: f32, ypos: f32, window_width: f32, window_height: f32) TransferCancelConfirmAction {
+    return transferCancelConfirmExecuteAt(xpos, ypos, window_width, window_height);
 }
 
 fn executeCommand(action: CommandAction) void {
@@ -755,6 +825,36 @@ fn windowCloseConfirmLayout(window_width: f32, window_height: f32) WindowCloseCo
         .cancel_top_px = button_top_px,
         .cancel_w = cancel_w,
         .cancel_h = button_h,
+    };
+}
+
+fn transferCancelConfirmLayout(window_width: f32, window_height: f32) TransferCancelConfirmLayout {
+    const panel_w = @round(@min(440.0, @max(320.0, window_width - 48.0)));
+    const panel_h: f32 = 152;
+    const panel_x = @round((window_width - panel_w) / 2);
+    const bottom_margin: f32 = 96;
+    const panel_top_px = @round(@max(18.0, window_height - bottom_margin - panel_h));
+    const button_h: f32 = 34;
+    const button_top_px = panel_top_px + panel_h - 22 - button_h;
+    const gap: f32 = 10;
+    const interrupt_w = @round(@max(118.0, measureTitlebarText("Interrupt") + 34.0));
+    const keep_w = @round(@max(92.0, measureTitlebarText("Keep") + 34.0));
+    const interrupt_x = panel_x + panel_w - 24.0 - interrupt_w;
+    const keep_x = interrupt_x - gap - keep_w;
+
+    return .{
+        .panel_x = panel_x,
+        .panel_top_px = panel_top_px,
+        .panel_w = panel_w,
+        .panel_h = panel_h,
+        .interrupt_x = interrupt_x,
+        .interrupt_top_px = button_top_px,
+        .interrupt_w = interrupt_w,
+        .interrupt_h = button_h,
+        .keep_x = keep_x,
+        .keep_top_px = button_top_px,
+        .keep_w = keep_w,
+        .keep_h = button_h,
     };
 }
 
@@ -3454,12 +3554,14 @@ fn transferToastVerb(kind: AppWindow.file_explorer.TransferKind, status: AppWind
             .in_progress => "Downloading",
             .success => "Downloaded",
             .failed => "Download failed",
+            .cancelled => "Download interrupted",
             .idle => "Download",
         },
         .upload => switch (status) {
             .in_progress => "Uploading",
             .success => "Uploaded",
             .failed => "Upload failed",
+            .cancelled => "Upload interrupted",
             .idle => "Upload",
         },
     };
@@ -3483,6 +3585,8 @@ pub fn showTransferToast(
     g_transfer_toast_len = msg.len;
     g_transfer_toast_status = status;
     g_transfer_toast_sticky = status == .in_progress;
+    g_transfer_toast_clickable = kind == .download and status == .in_progress;
+    if (status != .in_progress) transferCancelConfirmClose();
     g_transfer_toast_until_ms = std.time.milliTimestamp() + TRANSFER_TOAST_DURATION_MS;
 }
 
@@ -3500,6 +3604,41 @@ test "overlays: transfer toast text describes download states" {
     try std.testing.expectEqualStrings(
         "Download failed: file.txt",
         try formatTransferToast(&buf, .download, .failed, "file.txt"),
+    );
+}
+
+test "overlays: active download toast can be clicked for interruption" {
+    showTransferToast(.download, .in_progress, "file.txt - 1.5 MB/s");
+    try std.testing.expect(transferToastHitTestForTest(780, 534, 800, 600));
+
+    showTransferToast(.download, .success, "file.txt");
+    try std.testing.expect(!transferToastHitTestForTest(780, 534, 800, 600));
+}
+
+test "overlays: transfer interruption prompt returns explicit actions" {
+    transferCancelConfirmOpen();
+    try std.testing.expect(transferCancelConfirmVisible());
+
+    const layout = transferCancelConfirmLayoutForTest(800, 600);
+    try std.testing.expectEqual(
+        TransferCancelConfirmAction.interrupt,
+        transferCancelConfirmExecuteAtForTest(
+            layout.interrupt_x + 4,
+            layout.interrupt_top_px + 4,
+            800,
+            600,
+        ),
+    );
+
+    transferCancelConfirmOpen();
+    try std.testing.expectEqual(
+        TransferCancelConfirmAction.keep,
+        transferCancelConfirmExecuteAtForTest(
+            layout.keep_x + 4,
+            layout.keep_top_px + 4,
+            800,
+            600,
+        ),
     );
 }
 
@@ -3621,6 +3760,52 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
     renderTitlebarTextStrong(cancel_label, layout.cancel_x + (layout.cancel_w - measureTitlebarText(cancel_label)) / 2, rowTextY(cancel_y, layout.cancel_h), mixColor(fg, accent, 0.18));
 }
 
+pub fn renderTransferCancelConfirm(window_width: f32, window_height: f32) void {
+    if (!g_transfer_cancel_confirm_visible) return;
+
+    const layout = transferCancelConfirmLayout(window_width, window_height);
+    const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
+    const interrupt_y = @round(window_height - layout.interrupt_top_px - layout.interrupt_h);
+    const keep_y = @round(window_height - layout.keep_top_px - layout.keep_h);
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const warning = .{ 1.0, 0.72, 0.28 };
+    const danger = .{ 0.90, 0.22, 0.18 };
+    const panel = mixColor(bg, fg, 0.060);
+    const panel_border = mixColor(bg, fg, 0.22);
+    const muted = mixColor(bg, fg, 0.58);
+
+    renderRoundedQuadAlpha(layout.panel_x + 6, panel_y - 6, layout.panel_w, layout.panel_h, 11, .{ 0.0, 0.0, 0.0 }, 0.22);
+    renderRoundedQuadAlpha(layout.panel_x - 1, panel_y - 1, layout.panel_w + 2, layout.panel_h + 2, 11, panel_border, 0.48);
+    renderRoundedQuadAlpha(layout.panel_x, panel_y, layout.panel_w, layout.panel_h, 10, panel, 0.99);
+    renderRoundedQuadAlpha(layout.panel_x, panel_y, 4, layout.panel_h, 10, warning, 0.86);
+
+    const pad: f32 = 24;
+    const title_y = @round(panel_y + layout.panel_h - 38);
+    const text_x = layout.panel_x + pad;
+    const text_right = layout.panel_x + layout.panel_w - pad;
+    renderTitlebarTextStrongLimited("Interrupt download?", text_x, title_y, fg, text_right - text_x);
+    renderTitlebarTextLimited(
+        "The active file transfer will be stopped.",
+        text_x,
+        title_y - overlayTextHeight() - 10,
+        muted,
+        text_right - text_x,
+    );
+
+    renderRoundedQuadAlpha(layout.keep_x - 1, keep_y - 1, layout.keep_w + 2, layout.keep_h + 2, 8, mixColor(accent, fg, 0.20), 0.58);
+    renderRoundedQuadAlpha(layout.keep_x, keep_y, layout.keep_w, layout.keep_h, 7, mixColor(bg, accent, 0.18), 0.96);
+    const keep_label = "Keep";
+    renderTitlebarTextStrong(keep_label, layout.keep_x + (layout.keep_w - measureTitlebarText(keep_label)) / 2, rowTextY(keep_y, layout.keep_h), mixColor(fg, accent, 0.16));
+
+    renderRoundedQuadAlpha(layout.interrupt_x - 1, interrupt_y - 1, layout.interrupt_w + 2, layout.interrupt_h + 2, 8, danger, 0.52);
+    renderRoundedQuadAlpha(layout.interrupt_x, interrupt_y, layout.interrupt_w, layout.interrupt_h, 7, mixColor(bg, danger, 0.23), 0.98);
+    const interrupt_label = "Interrupt";
+    renderTitlebarTextStrong(interrupt_label, layout.interrupt_x + (layout.interrupt_w - measureTitlebarText(interrupt_label)) / 2, rowTextY(interrupt_y, layout.interrupt_h), .{ 1.0, 0.70, 0.66 });
+}
+
 pub fn renderCloseShortcutConfirm(window_width: f32, window_height: f32) void {
     _ = window_height;
     if (std.time.milliTimestamp() >= g_close_shortcut_confirm_until_ms) return;
@@ -3669,6 +3854,33 @@ pub fn renderCopyToast(window_width: f32, window_height: f32) void {
     }
 }
 
+fn transferToastLayout(window_width: f32, text: []const u8) DebugLineRect {
+    const pad_h: f32 = 14;
+    const pad_v: f32 = 6;
+    const line_h = font.g_titlebar_cell_height + pad_v * 2;
+    const text_width = measureTitlebarText(text);
+    const max_w = @max(180.0, window_width - 32.0);
+    const bg_w = @min(text_width + pad_h * 2, max_w);
+    const bg_x = @round(@max(12.0, window_width - bg_w - 16.0));
+    return .{ .x = bg_x, .y = 60, .w = bg_w, .h = line_h };
+}
+
+pub fn transferToastHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
+    if (!g_transfer_toast_clickable) return false;
+    if (g_transfer_toast_len == 0) return false;
+    if (std.time.milliTimestamp() >= g_transfer_toast_until_ms and !g_transfer_toast_sticky) return false;
+
+    const rect = transferToastLayout(window_width, g_transfer_toast_buf[0..g_transfer_toast_len]);
+    const x: f32 = @floatCast(xpos);
+    const y_from_bottom = window_height - @as(f32, @floatCast(ypos));
+    return x >= rect.x and x <= rect.x + rect.w and
+        y_from_bottom >= rect.y and y_from_bottom <= rect.y + rect.h;
+}
+
+fn transferToastHitTestForTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
+    return transferToastHitTest(xpos, ypos, window_width, window_height);
+}
+
 pub fn renderTransferToast(window_width: f32, window_height: f32) void {
     _ = window_height;
     const now = std.time.milliTimestamp();
@@ -3678,31 +3890,25 @@ pub fn renderTransferToast(window_width: f32, window_height: f32) void {
     const text = g_transfer_toast_buf[0..g_transfer_toast_len];
     const pad_h: f32 = 14;
     const pad_v: f32 = 6;
-    const line_h = font.g_titlebar_cell_height + pad_v * 2;
-
-    var text_width: f32 = 0;
-    for (text) |ch| {
-        text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
-    }
-
-    const max_w = @max(180.0, window_width - 32.0);
-    const bg_w = @min(text_width + pad_h * 2, max_w);
-    const bg_x = @round(@max(12.0, window_width - bg_w - 16.0));
-    const bg_y: f32 = 60;
+    const layout = transferToastLayout(window_width, text);
 
     const accent = switch (g_transfer_toast_status) {
         .in_progress => AppWindow.g_theme.cursor_color,
         .success => .{ 0.24, 1.0, 0.44 },
         .failed => .{ 1.0, 0.30, 0.28 },
+        .cancelled => .{ 1.0, 0.72, 0.28 },
         .idle => AppWindow.g_theme.foreground,
     };
     const bg = mixColor(AppWindow.g_theme.background, accent, 0.16);
-    gl_init.renderQuadAlpha(bg_x, bg_y, bg_w, line_h, bg, 0.96);
-    gl_init.renderQuadAlpha(bg_x, bg_y, 3, line_h, accent, 0.88);
+    gl_init.renderQuadAlpha(layout.x, layout.y, layout.w, layout.h, bg, 0.96);
+    gl_init.renderQuadAlpha(layout.x, layout.y, 3, layout.h, accent, 0.88);
+    if (g_transfer_toast_clickable) {
+        gl_init.renderQuadAlpha(layout.x, layout.y + layout.h - 2, layout.w, 2, accent, 0.64);
+    }
 
-    const text_x = bg_x + pad_h;
-    const y = bg_y + pad_v;
-    renderTitlebarTextStrongLimited(text, text_x, y, accent, bg_w - pad_h * 2);
+    const text_x = layout.x + pad_h;
+    const y = layout.y + pad_v;
+    renderTitlebarTextStrongLimited(text, text_x, y, accent, layout.w - pad_h * 2);
 }
 
 pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {

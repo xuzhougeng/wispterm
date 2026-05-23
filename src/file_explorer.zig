@@ -65,7 +65,7 @@ pub threadlocal var g_loading: bool = false;
 pub threadlocal var g_loading_msg: [128]u8 = undefined;
 pub threadlocal var g_loading_msg_len: u8 = 0;
 
-pub const TransferStatus = enum { idle, in_progress, success, failed };
+pub const TransferStatus = enum { idle, in_progress, success, failed, cancelled };
 pub const TransferKind = enum { upload, download };
 
 pub const TransferNotification = struct {
@@ -136,7 +136,7 @@ threadlocal var g_async_job: ?*AsyncListJob = null;
 threadlocal var g_pending_async_list: ?PendingAsyncList = null;
 threadlocal var g_async_context_id: u64 = 1;
 
-const TransferFn = *const fn (std.mem.Allocator, *const Surface.SshConnection, []const u8, []const u8) scp.TransferResult;
+const TransferFn = *const fn (std.mem.Allocator, *const Surface.SshConnection, []const u8, []const u8, *scp.TransferControl) scp.TransferResult;
 pub const TransferSuccessCallback = *const fn (?*anyopaque) void;
 pub const TransferDestroyCallback = *const fn (?*anyopaque) void;
 const TRANSFER_PATH_MAX: usize = 1024;
@@ -164,9 +164,12 @@ const TransferRequest = struct {
 
 const TransferJob = struct {
     request: TransferRequest,
+    control: scp.TransferControl = .{},
     result: scp.TransferResult = .failed,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
+    last_progress_ms: i64 = 0,
+    last_progress_bytes: ?u64 = null,
 };
 
 threadlocal var g_transfer_job: ?*TransferJob = null;
@@ -986,7 +989,8 @@ fn startTransferRequestNow(request: TransferRequest) bool {
     };
     job.thread = thread;
     g_transfer_job = job;
-    setTransferStatusForKind(job.request.kind, .in_progress, job.request.display_buf[0..job.request.display_len]);
+    initializeTransferProgress(job, std.time.milliTimestamp());
+    publishTransferInProgress(job, null);
     return true;
 }
 
@@ -997,13 +1001,22 @@ fn transferThread(job: *TransferJob) void {
         &job.request.conn,
         job.request.src_buf[0..job.request.src_len],
         job.request.dst_buf[0..job.request.dst_len],
+        &job.control,
     );
     job.done.store(true, .release);
 }
 
 fn tickTransferJob() void {
     const job = g_transfer_job orelse return;
-    if (!job.done.load(.acquire)) return;
+    if (!job.done.load(.acquire)) {
+        if (job.control.cancelRequested()) {
+            const display = job.request.display_buf[0..job.request.display_len];
+            setTransferStatusForKind(job.request.kind, .cancelled, display);
+            return;
+        }
+        updateTransferProgress(job, std.time.milliTimestamp());
+        return;
+    }
 
     if (job.thread) |thread| thread.join();
     g_transfer_job = null;
@@ -1019,8 +1032,96 @@ fn tickTransferJob() void {
                 rescanRemote();
             }
         },
+        .cancelled => setTransferStatusForKind(job.request.kind, .cancelled, display),
         else => setTransferStatusForKind(job.request.kind, .failed, display),
     }
+}
+
+fn initializeTransferProgress(job: *TransferJob, now_ms: i64) void {
+    job.last_progress_ms = now_ms;
+    job.last_progress_bytes = observedTransferBytes(job);
+}
+
+fn updateTransferProgress(job: *TransferJob, now_ms: i64) void {
+    if (job.request.kind != .download) return;
+    if (now_ms - job.last_progress_ms < 500) return;
+
+    const current_bytes = observedTransferBytes(job) orelse {
+        job.last_progress_ms = now_ms;
+        publishTransferInProgress(job, null);
+        return;
+    };
+
+    const previous_bytes = job.last_progress_bytes orelse {
+        job.last_progress_ms = now_ms;
+        job.last_progress_bytes = current_bytes;
+        publishTransferInProgress(job, null);
+        return;
+    };
+
+    const elapsed_ms = @max(1, now_ms - job.last_progress_ms);
+    const delta = if (current_bytes >= previous_bytes) current_bytes - previous_bytes else 0;
+    const bytes_per_sec = delta * 1000 / @as(u64, @intCast(elapsed_ms));
+    job.last_progress_ms = now_ms;
+    job.last_progress_bytes = current_bytes;
+    publishTransferInProgress(job, bytes_per_sec);
+}
+
+fn publishTransferInProgress(job: *TransferJob, bytes_per_sec: ?u64) void {
+    const display = job.request.display_buf[0..job.request.display_len];
+    if (job.request.kind != .download) {
+        setTransferStatusForKind(job.request.kind, .in_progress, display);
+        return;
+    }
+
+    var msg_buf: [128]u8 = undefined;
+    const msg = formatTransferProgressMessage(&msg_buf, display, bytes_per_sec) catch display;
+    setTransferStatusForKind(job.request.kind, .in_progress, msg);
+}
+
+fn observedTransferBytes(job: *const TransferJob) ?u64 {
+    if (job.request.kind != .download) return null;
+    const path = job.request.dst_buf[0..job.request.dst_len];
+    return localFileSize(path);
+}
+
+fn localFileSize(path: []const u8) ?u64 {
+    var file = if (std.fs.path.isAbsolute(path))
+        std.fs.openFileAbsolute(path, .{}) catch return null
+    else
+        std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    return file.getEndPos() catch null;
+}
+
+fn formatTransferProgressMessage(buf: []u8, display: []const u8, bytes_per_sec: ?u64) ![]u8 {
+    if (bytes_per_sec) |speed| {
+        var speed_buf: [32]u8 = undefined;
+        const speed_text = try formatTransferRate(&speed_buf, speed);
+        return std.fmt.bufPrint(buf, "{s} - {s}", .{ display, speed_text });
+    }
+    return std.fmt.bufPrint(buf, "{s} - calculating...", .{display});
+}
+
+fn formatTransferRate(buf: []u8, bytes_per_sec: u64) ![]u8 {
+    const kb = 1024.0;
+    const mb = 1024.0 * 1024.0;
+    const gb = 1024.0 * 1024.0 * 1024.0;
+    const speed: f64 = @floatFromInt(bytes_per_sec);
+    if (bytes_per_sec < 1024) return std.fmt.bufPrint(buf, "{d} B/s", .{bytes_per_sec});
+    if (speed < mb) return std.fmt.bufPrint(buf, "{d:.1} KB/s", .{speed / kb});
+    if (speed < gb) return std.fmt.bufPrint(buf, "{d:.1} MB/s", .{speed / mb});
+    return std.fmt.bufPrint(buf, "{d:.1} GB/s", .{speed / gb});
+}
+
+pub fn cancelActiveTransfer() bool {
+    const job = g_transfer_job orelse return false;
+    if (job.request.kind != .download) return false;
+    if (job.done.load(.acquire)) return false;
+    job.control.cancel();
+    const display = job.request.display_buf[0..job.request.display_len];
+    setTransferStatusForKind(job.request.kind, .cancelled, display);
+    return true;
 }
 
 fn maybeStartNextTransfer() void {
@@ -1053,6 +1154,14 @@ fn tickTransferJobForTest() void {
 
 fn transferQueueLenForTest() usize {
     return g_transfer_queue.items.len;
+}
+
+fn cancelActiveDownloadForTest() bool {
+    return cancelActiveTransfer();
+}
+
+fn formatTransferProgressMessageForTest(buf: []u8, display: []const u8, bytes_per_sec: ?u64) ![]u8 {
+    return formatTransferProgressMessage(buf, display, bytes_per_sec);
 }
 
 fn resetTransferStateForTest() void {
@@ -1418,7 +1527,7 @@ pub fn downloadSelected(local_dir: []const u8) void {
         return;
     };
 
-    _ = startTransferJob(.download, &g_ssh_conn, src, dst, name, scp.transfer);
+    _ = startTransferJob(.download, &g_ssh_conn, src, dst, name, scp.transferWithControl);
 }
 
 /// Upload a local file to the current remote directory.
@@ -1438,11 +1547,11 @@ pub fn uploadFile(local_path: []const u8) void {
     }
     const filename = local_path[name_start..];
 
-    _ = startTransferJob(.upload, &g_ssh_conn, local_path, dst, filename, scp.transfer);
+    _ = startTransferJob(.upload, &g_ssh_conn, local_path, dst, filename, scp.transferWithControl);
 }
 
 pub fn uploadLocalFileToRemoteSpec(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const Surface.SshConnection) bool {
-    return uploadLocalFileToRemoteSpecWithTransfer(local_path, dst_spec, display_name, conn, scp.transfer);
+    return uploadLocalFileToRemoteSpecWithTransfer(local_path, dst_spec, display_name, conn, scp.transferWithControl);
 }
 
 fn uploadLocalFileToRemoteSpecWithTransfer(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const Surface.SshConnection, transfer_fn: TransferFn) bool {
@@ -1467,11 +1576,11 @@ pub fn uploadLocalFileToRemoteSpecWithCompletion(
     conn: *const Surface.SshConnection,
     completion: TransferCompletion,
 ) bool {
-    return startTransferJobWithCompletion(.upload, conn, local_path, dst_spec, display_name, scp.transfer, completion);
+    return startTransferJobWithCompletion(.upload, conn, local_path, dst_spec, display_name, scp.transferWithControl, completion);
 }
 
 pub fn downloadRemoteFileToPath(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const Surface.SshConnection) bool {
-    return downloadRemoteFileToPathWithTransfer(remote_path, local_path, display_name, conn, scp.transfer);
+    return downloadRemoteFileToPathWithTransfer(remote_path, local_path, display_name, conn, scp.transferWithControl);
 }
 
 fn downloadRemoteFileToPathWithTransfer(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const Surface.SshConnection, transfer_fn: TransferFn) bool {
@@ -1495,7 +1604,7 @@ test "setTransferStatus stores message" {
     try std.testing.expectEqualStrings("test_file.txt", g_transfer_msg[0..g_transfer_msg_len]);
 }
 
-fn transferOkForTest(_: std.mem.Allocator, _: *const Surface.SshConnection, _: []const u8, _: []const u8) scp.TransferResult {
+fn transferOkForTest(_: std.mem.Allocator, _: *const Surface.SshConnection, _: []const u8, _: []const u8, _: *scp.TransferControl) scp.TransferResult {
     return .ok;
 }
 
@@ -1520,7 +1629,7 @@ test "file_explorer: transfer job starts without completing on input thread" {
     var conn: Surface.SshConnection = .{};
     try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", "local", "file.txt", transferOkForTest));
     try std.testing.expectEqual(TransferStatus.in_progress, g_transfer_status);
-    try std.testing.expectEqualStrings("file.txt", g_transfer_msg[0..g_transfer_msg_len]);
+    try std.testing.expectEqualStrings("file.txt - calculating...", g_transfer_msg[0..g_transfer_msg_len]);
     try std.testing.expect(g_transfer_job != null);
 }
 
@@ -1604,7 +1713,7 @@ test "file_explorer: download helper starts transfer with explicit remote path" 
 
     try std.testing.expect(downloadRemoteFileToPathWithTransfer("/tmp/file.txt", "C:\\Users\\me\\Downloads\\file.txt", "file.txt", &conn, transferOkForTest));
     try std.testing.expectEqual(TransferStatus.in_progress, g_transfer_status);
-    try std.testing.expectEqualStrings("file.txt", g_transfer_msg[0..g_transfer_msg_len]);
+    try std.testing.expectEqualStrings("file.txt - calculating...", g_transfer_msg[0..g_transfer_msg_len]);
     try std.testing.expect(g_transfer_job != null);
 }
 
@@ -1622,7 +1731,46 @@ test "file_explorer: download transfer emits notification" {
     const notification = latestTransferNotificationForTest() orelse return error.MissingTransferNotification;
     try std.testing.expectEqual(TransferKind.download, notification.kind);
     try std.testing.expectEqual(TransferStatus.in_progress, notification.status);
-    try std.testing.expectEqualStrings("file.txt", notification.message);
+    try std.testing.expectEqualStrings("file.txt - calculating...", notification.message);
+}
+
+test "file_explorer: download progress message includes transfer speed" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "file.txt - calculating...",
+        try formatTransferProgressMessageForTest(&buf, "file.txt", null),
+    );
+    try std.testing.expectEqualStrings(
+        "file.txt - 1.5 KB/s",
+        try formatTransferProgressMessageForTest(&buf, "file.txt", 1536),
+    );
+    try std.testing.expectEqualStrings(
+        "file.txt - 2.0 MB/s",
+        try formatTransferProgressMessageForTest(&buf, "file.txt", 2 * 1024 * 1024),
+    );
+}
+
+fn transferWaitForCancelForTest(_: std.mem.Allocator, _: *const Surface.SshConnection, _: []const u8, _: []const u8, control: *scp.TransferControl) scp.TransferResult {
+    var attempts: usize = 0;
+    while (!control.cancelRequested() and attempts < 200) : (attempts += 1) {
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    return if (control.cancelRequested()) .cancelled else .failed;
+}
+
+test "file_explorer: active download transfer can be cancelled" {
+    resetTransferStateForTest();
+    defer resetTransferStateForTest();
+
+    var conn: Surface.SshConnection = .{};
+    try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", "local", "file.txt", transferWaitForCancelForTest));
+    try std.testing.expect(cancelActiveDownloadForTest());
+
+    tickTransfersUntilIdleForTest();
+
+    try std.testing.expectEqual(@as(?*TransferJob, null), g_transfer_job);
+    try std.testing.expectEqual(TransferStatus.cancelled, g_transfer_status);
+    try std.testing.expectEqualStrings("file.txt", g_transfer_msg[0..g_transfer_msg_len]);
 }
 
 test "buildChildPathInto avoids duplicate separators" {

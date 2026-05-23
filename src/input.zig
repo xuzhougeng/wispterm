@@ -716,6 +716,15 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         AppWindow.g_cells_valid = false;
         return;
     }
+    if (overlays.transferCancelConfirmVisible()) {
+        switch (overlays.transferCancelConfirmHandleKey(ev)) {
+            .interrupt => _ = file_explorer.cancelActiveTransfer(),
+            .keep, .none => {},
+        }
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
     const is_close_shortcut = ev.ctrl and ev.shift and ev.vk == 0x57;
     if (!is_close_shortcut and !isModifierKey(ev.vk)) g_close_shortcut_confirm_until_ms = 0;
     if (overlays.sessionLauncherVisible()) {
@@ -2141,6 +2150,21 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
         }
         return;
     }
+    if (overlays.transferCancelConfirmVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = win.getFramebufferSize();
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            switch (overlays.transferCancelConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height))) {
+                .interrupt => _ = file_explorer.cancelActiveTransfer(),
+                .keep, .none => {},
+            }
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        }
+        return;
+    }
     if (!hitTestHelpButton(@floatFromInt(ev.x), @floatFromInt(ev.y)))
         overlays.startupShortcutsDismiss();
     if (overlays.sessionLauncherVisible()) {
@@ -2196,6 +2220,12 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
         const fb = win.getFramebufferSize();
         const xpos: f64 = @floatFromInt(ev.x);
         const ypos: f64 = @floatFromInt(ev.y);
+        if (overlays.transferToastHitTest(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height))) {
+            overlays.transferCancelConfirmOpen();
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+            return;
+        }
         if (overlays.updatePromptHitTest(xpos, ypos, @floatFromInt(fb.height))) {
             overlays.openLatestRelease();
             return;

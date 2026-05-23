@@ -5,16 +5,70 @@
 //! image paste path and the file explorer remote operations.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Surface = @import("Surface.zig");
 const SshConnection = Surface.SshConnection;
 const windows = std.os.windows;
+const posix = std.posix;
 
 /// Result of a transfer operation.
-pub const TransferResult = enum { ok, failed, spawn_error };
+pub const TransferResult = enum { ok, failed, spawn_error, cancelled };
+
+pub const TransferControl = struct {
+    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    mutex: std.Thread.Mutex = .{},
+    child_id: ?std.process.Child.Id = null,
+
+    pub fn cancel(self: *TransferControl) void {
+        self.cancel_requested.store(true, .release);
+        self.terminateRegisteredChild();
+    }
+
+    pub fn cancelRequested(self: *const TransferControl) bool {
+        return self.cancel_requested.load(.acquire);
+    }
+
+    fn registerChild(self: *TransferControl, child_id: std.process.Child.Id) void {
+        self.mutex.lock();
+        self.child_id = child_id;
+        const should_terminate = self.cancel_requested.load(.acquire);
+        self.mutex.unlock();
+
+        if (should_terminate) terminateChild(child_id);
+    }
+
+    fn clearChild(self: *TransferControl, child_id: std.process.Child.Id) void {
+        self.mutex.lock();
+        if (self.child_id) |registered| {
+            if (registered == child_id) self.child_id = null;
+        }
+        self.mutex.unlock();
+    }
+
+    fn terminateRegisteredChild(self: *TransferControl) void {
+        self.mutex.lock();
+        const child_id = self.child_id;
+        self.mutex.unlock();
+
+        if (child_id) |id| terminateChild(id);
+    }
+};
+
+fn terminateChild(child_id: std.process.Child.Id) void {
+    switch (builtin.os.tag) {
+        .windows => windows.TerminateProcess(child_id, 1) catch {},
+        else => posix.kill(child_id, posix.SIG.TERM) catch {},
+    }
+}
 
 /// Run `scp src dst` with proper SSH auth options from the connection.
 /// `src` and `dst` are scp-style paths (local or user@host:remote).
 pub fn transfer(allocator: std.mem.Allocator, conn: *const SshConnection, src: []const u8, dst: []const u8) TransferResult {
+    var control: TransferControl = .{};
+    return transferWithControl(allocator, conn, src, dst, &control);
+}
+
+pub fn transferWithControl(allocator: std.mem.Allocator, conn: *const SshConnection, src: []const u8, dst: []const u8, control: *TransferControl) TransferResult {
     var askpass_path: ?[]u8 = null;
     defer if (askpass_path) |p| allocator.free(p);
     var env_map: ?std.process.EnvMap = null;
@@ -38,15 +92,15 @@ pub fn transfer(allocator: std.mem.Allocator, conn: *const SshConnection, src: [
     const control_path: ?[]const u8 = null;
 
     const env_ptr: ?*std.process.EnvMap = if (env_map) |*map| map else null;
-    const default_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, false);
-    if (default_result == .ok or default_result == .spawn_error) return default_result;
+    const default_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, false, control);
+    if (default_result == .ok or default_result == .spawn_error or default_result == .cancelled) return default_result;
 
     std.debug.print("SCP default mode failed; retrying legacy scp protocol (-O)\n", .{});
-    const legacy_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, true);
-    if (legacy_result == .ok or legacy_result == .spawn_error) return legacy_result;
+    const legacy_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, true, control);
+    if (legacy_result == .ok or legacy_result == .spawn_error or legacy_result == .cancelled) return legacy_result;
 
     std.debug.print("SCP legacy mode failed; retrying over ssh stream\n", .{});
-    return runSshStreamTransfer(allocator, conn, src, dst, control_path, env_ptr);
+    return runSshStreamTransfer(allocator, conn, src, dst, control_path, env_ptr, control);
 }
 
 /// Build a remote scp path: "user@host:path"
@@ -81,7 +135,10 @@ fn runScpTransfer(
     control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
     legacy_protocol: bool,
+    control: *TransferControl,
 ) TransferResult {
+    if (control.cancelRequested()) return .cancelled;
+
     var argv_buf: [32][]const u8 = undefined;
     var argc: usize = 0;
     argv_buf[argc] = "scp.exe";
@@ -111,6 +168,9 @@ fn runScpTransfer(
         std.debug.print("SCP spawn failed: {}\n", .{err});
         return .spawn_error;
     };
+    const child_id = child.id;
+    control.registerChild(child_id);
+    defer control.clearChild(child_id);
 
     var stderr_output: ?[]u8 = null;
     defer if (stderr_output) |stderr| allocator.free(stderr);
@@ -119,6 +179,7 @@ fn runScpTransfer(
     }
 
     const term = child.wait() catch return .failed;
+    if (control.cancelRequested()) return .cancelled;
     const result: TransferResult = switch (term) {
         .Exited => |code| if (code == 0) .ok else .failed,
         else => .failed,
@@ -233,12 +294,13 @@ fn runSshStreamTransfer(
     dst: []const u8,
     control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
+    control: *TransferControl,
 ) TransferResult {
     if (remotePathFromSpec(conn, dst)) |remote_path| {
-        return sshStreamUpload(allocator, conn, src, remote_path, control_path, env_map);
+        return sshStreamUpload(allocator, conn, src, remote_path, control_path, env_map, control);
     }
     if (remotePathFromSpec(conn, src)) |remote_path| {
-        return sshStreamDownload(allocator, conn, remote_path, dst, control_path, env_map);
+        return sshStreamDownload(allocator, conn, remote_path, dst, control_path, env_map, control);
     }
     return .failed;
 }
@@ -349,7 +411,10 @@ fn sshStreamUpload(
     remote_path: []const u8,
     control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
+    control: *TransferControl,
 ) TransferResult {
+    if (control.cancelRequested()) return .cancelled;
+
     var file = openLocalRead(local_path) orelse return .failed;
     defer file.close();
 
@@ -369,12 +434,19 @@ fn sshStreamUpload(
     if (env_map) |map| child.env_map = map;
     child.create_no_window = true;
     child.spawn() catch return .spawn_error;
+    const child_id = child.id;
+    control.registerChild(child_id);
+    defer control.clearChild(child_id);
 
     var write_ok = true;
     if (child.stdin) |stdin| {
         var in = stdin;
         var buf: [16 * 1024]u8 = undefined;
         while (true) {
+            if (control.cancelRequested()) {
+                write_ok = false;
+                break;
+            }
             const n = file.read(&buf) catch {
                 write_ok = false;
                 break;
@@ -397,6 +469,7 @@ fn sshStreamUpload(
     }
 
     const term = child.wait() catch return .failed;
+    if (control.cancelRequested()) return .cancelled;
     if (!write_ok) {
         logProcessFailure("SSH stream upload write failed", stderr_output);
         return .failed;
@@ -417,7 +490,10 @@ fn sshStreamDownload(
     local_path: []const u8,
     control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
+    control: *TransferControl,
 ) TransferResult {
+    if (control.cancelRequested()) return .cancelled;
+
     var file = createLocalWrite(local_path) orelse return .failed;
     defer file.close();
 
@@ -437,10 +513,14 @@ fn sshStreamDownload(
     if (env_map) |map| child.env_map = map;
     child.create_no_window = true;
     child.spawn() catch return .spawn_error;
+    const child_id = child.id;
+    control.registerChild(child_id);
+    defer control.clearChild(child_id);
 
     if (child.stdout) |stdout| {
         var buf: [16 * 1024]u8 = undefined;
         while (true) {
+            if (control.cancelRequested()) break;
             const n = stdout.read(&buf) catch break;
             if (n == 0) break;
             file.writeAll(buf[0..n]) catch return .failed;
@@ -454,6 +534,7 @@ fn sshStreamDownload(
     }
 
     const term = child.wait() catch return .failed;
+    if (control.cancelRequested()) return .cancelled;
     const result: TransferResult = switch (term) {
         .Exited => |code| if (code == 0) .ok else .failed,
         else => .failed,
