@@ -59,7 +59,8 @@ pub fn currentFlavor(allocator: std.mem.Allocator) !update_check.PortableFlavor 
     const loader_path = try std.fs.path.join(allocator, &.{ exe_dir, "WebView2Loader.dll" });
     defer allocator.free(loader_path);
     const has_loader = blk: {
-        std.fs.cwd().access(loader_path, .{}) catch break :blk false;
+        var file = std.fs.openFileAbsolute(loader_path, .{}) catch break :blk false;
+        file.close();
         break :blk true;
     };
     return runtimeFlavor(build_options.webview, has_loader);
@@ -85,9 +86,38 @@ fn siblingTempPath(allocator: std.mem.Allocator, path: []const u8, suffix: []con
     return try std.mem.concat(allocator, u8, &.{ path, suffix });
 }
 
+fn replaceDirWithBackup(temp_dir: []const u8, final_dir: []const u8, backup_dir: []const u8) !void {
+    std.fs.deleteTreeAbsolute(backup_dir) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+
+    var moved_existing = false;
+    if (std.fs.renameAbsolute(final_dir, backup_dir)) {
+        moved_existing = true;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    std.fs.renameAbsolute(temp_dir, final_dir) catch |rename_err| {
+        if (moved_existing) {
+            std.fs.renameAbsolute(backup_dir, final_dir) catch {};
+        }
+        return rename_err;
+    };
+
+    std.fs.deleteTreeAbsolute(backup_dir) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+}
+
 pub fn extractZipToPayload(zip_path: []const u8, payload_dir: []const u8) !void {
     const temp_payload_dir = try siblingTempPath(std.heap.page_allocator, payload_dir, ".tmp");
     defer std.heap.page_allocator.free(temp_payload_dir);
+    const backup_payload_dir = try siblingTempPath(std.heap.page_allocator, payload_dir, ".old");
+    defer std.heap.page_allocator.free(backup_payload_dir);
 
     std.fs.deleteTreeAbsolute(temp_payload_dir) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -107,11 +137,7 @@ pub fn extractZipToPayload(zip_path: []const u8, payload_dir: []const u8) !void 
         try std.zip.extract(payload, &reader, .{ .allow_backslashes = false });
     }
 
-    std.fs.deleteTreeAbsolute(payload_dir) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
-    };
-    try std.fs.renameAbsolute(temp_payload_dir, payload_dir);
+    try replaceDirWithBackup(temp_payload_dir, payload_dir, backup_payload_dir);
 }
 
 pub fn downloadAsset(allocator: std.mem.Allocator, url: []const u8, zip_path: []const u8) !void {
@@ -152,10 +178,6 @@ pub fn downloadAsset(allocator: std.mem.Allocator, url: []const u8, zip_path: []
     };
     if (status != .ok) return error.DownloadFailed;
 
-    std.fs.deleteFileAbsolute(zip_path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
-    };
     try std.fs.renameAbsolute(temp_zip_path, zip_path);
 }
 
@@ -255,4 +277,30 @@ test "update_install: payload validation requires plugins directory" {
     try std.testing.expectError(error.MissingPluginsDir, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false }));
     try tmp.dir.writeFile(.{ .sub_path = "plugins", .data = "not a directory" });
     try std.testing.expectError(error.MissingPluginsDir, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false }));
+}
+
+test "update_install: replacing payload preserves old payload until temp moves into place" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("payload");
+    try tmp.dir.writeFile(.{ .sub_path = "payload/old.txt", .data = "old" });
+    try tmp.dir.makeDir("payload.tmp");
+    try tmp.dir.writeFile(.{ .sub_path = "payload.tmp/new.txt", .data = "new" });
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const payload_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "payload" });
+    defer std.testing.allocator.free(payload_dir);
+    const temp_payload_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "payload.tmp" });
+    defer std.testing.allocator.free(temp_payload_dir);
+    const backup_payload_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "payload.old" });
+    defer std.testing.allocator.free(backup_payload_dir);
+
+    try replaceDirWithBackup(temp_payload_dir, payload_dir, backup_payload_dir);
+
+    try std.testing.expect(!dirExists(tmp.dir, "payload.old"));
+    try std.testing.expect(!dirExists(tmp.dir, "payload.tmp"));
+    try std.testing.expect(fileExists(tmp.dir, "payload/new.txt"));
+    try std.testing.expect(!fileExists(tmp.dir, "payload/old.txt"));
 }
