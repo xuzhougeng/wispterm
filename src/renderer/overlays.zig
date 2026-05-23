@@ -1245,6 +1245,8 @@ threadlocal var g_ssh_profile_count: usize = 0;
 threadlocal var g_ssh_profiles_loaded: bool = false;
 threadlocal var g_ssh_list_selected: usize = 0;
 threadlocal var g_ssh_list_mode: SshListMode = .manage;
+threadlocal var g_ssh_list_filter_buf: [SSH_FIELD_MAX]u8 = undefined;
+threadlocal var g_ssh_list_filter_len: usize = 0;
 threadlocal var g_ssh_edit_index: usize = SSH_PROFILE_NONE;
 threadlocal var g_ai_focus: usize = @intFromEnum(AiField.name);
 threadlocal var g_ai_bufs: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined;
@@ -1338,6 +1340,10 @@ pub fn sessionLauncherClose() void {
 
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
     if (codepoint < 0x20 or codepoint == 0x7f) return;
+    if (g_ssh_list_visible) {
+        appendSshListFilterCodepoint(codepoint);
+        return;
+    }
     if (g_ssh_form_visible) {
         if (codepoint > 0x7f) return;
         if (g_ssh_focus >= SSH_FIELD_COUNT) return;
@@ -1354,6 +1360,10 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
 }
 
 pub fn sessionLauncherPasteText(text: []const u8) bool {
+    if (g_ssh_list_visible) {
+        appendSshListFilterText(text);
+        return true;
+    }
     if (g_ai_form_visible) {
         if (g_ai_focus >= AI_FIELD_COUNT) return false;
         appendAiFormText(g_ai_focus, text);
@@ -1369,6 +1379,10 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
 
 pub fn sessionLauncherHandleKey(ev: win32_backend.KeyEvent) void {
     if (ev.vk == win32_backend.VK_ESCAPE) {
+        if (g_ssh_list_visible and g_ssh_list_filter_len > 0) {
+            clearSshListFilter();
+            return;
+        }
         cancelAiFormOrLauncher();
         return;
     }
@@ -1489,7 +1503,8 @@ fn openSshList() void {
     g_ssh_list_visible = true;
     g_ssh_form_visible = false;
     g_ssh_list_mode = .manage;
-    g_ssh_list_selected = @min(g_ssh_list_selected, sshListRowCount() - 1);
+    clearSshListFilter();
+    clampSshListSelection();
 }
 
 fn openSshEditPicker() void {
@@ -1506,7 +1521,8 @@ fn openSshProfilePicker(mode: SshListMode) void {
     g_ssh_list_visible = true;
     g_ssh_form_visible = false;
     g_ssh_list_mode = mode;
-    g_ssh_list_selected = if (g_ssh_list_selected < g_ssh_profile_count) g_ssh_list_selected else 0;
+    clearSshListFilter();
+    clampSshListSelection();
 }
 
 fn openSshFormNew() void {
@@ -1551,15 +1567,87 @@ fn handleSshListKey(ev: win32_backend.KeyEvent) void {
         win32_backend.VK_DOWN, win32_backend.VK_TAB => g_ssh_list_selected = (g_ssh_list_selected + 1) % row_count,
         win32_backend.VK_UP => g_ssh_list_selected = if (g_ssh_list_selected == 0) row_count - 1 else g_ssh_list_selected - 1,
         win32_backend.VK_RETURN => runSshListRow(g_ssh_list_selected),
+        win32_backend.VK_BACK => backspaceSshListFilter(),
         else => {},
     }
 }
 
 fn sshListRowCount() usize {
     return switch (g_ssh_list_mode) {
-        .manage => g_ssh_profile_count + 4,
-        .edit_select, .delete_select => g_ssh_profile_count + 1,
+        .manage => sshVisibleProfileCount() + 4,
+        .edit_select, .delete_select => sshVisibleProfileCount() + 1,
     };
+}
+
+fn sshListFilter() []const u8 {
+    return g_ssh_list_filter_buf[0..g_ssh_list_filter_len];
+}
+
+fn clearSshListFilter() void {
+    g_ssh_list_filter_len = 0;
+    resetSshListSelection();
+}
+
+fn backspaceSshListFilter() void {
+    if (g_ssh_list_filter_len == 0) return;
+    g_ssh_list_filter_len -= 1;
+    resetSshListSelection();
+}
+
+fn appendSshListFilterCodepoint(codepoint: u21) void {
+    if (codepoint > 0x7f) return;
+    if (g_ssh_list_filter_len >= g_ssh_list_filter_buf.len) return;
+    g_ssh_list_filter_buf[g_ssh_list_filter_len] = @intCast(codepoint);
+    g_ssh_list_filter_len += 1;
+    resetSshListSelection();
+}
+
+fn appendSshListFilterText(text: []const u8) void {
+    for (text) |ch| {
+        if (ch < 0x20 or ch == 0x7f) continue;
+        if (g_ssh_list_filter_len >= g_ssh_list_filter_buf.len) break;
+        g_ssh_list_filter_buf[g_ssh_list_filter_len] = ch;
+        g_ssh_list_filter_len += 1;
+    }
+    resetSshListSelection();
+}
+
+fn sshProfileMatchesFilter(profile: *const SshProfile) bool {
+    const filter = sshListFilter();
+    if (filter.len == 0) return true;
+    return startsWithIgnoreCase(profileField(profile, .name), filter);
+}
+
+fn sshVisibleProfileCount() usize {
+    var count: usize = 0;
+    for (0..g_ssh_profile_count) |idx| {
+        if (sshProfileMatchesFilter(&g_ssh_profiles[idx])) count += 1;
+    }
+    return count;
+}
+
+fn sshVisibleProfileIndexAt(visible_row: usize) ?usize {
+    var count: usize = 0;
+    for (0..g_ssh_profile_count) |idx| {
+        if (!sshProfileMatchesFilter(&g_ssh_profiles[idx])) continue;
+        if (count == visible_row) return idx;
+        count += 1;
+    }
+    return null;
+}
+
+fn clampSshListSelection() void {
+    const row_count = sshListRowCount();
+    if (row_count == 0) {
+        g_ssh_list_selected = 0;
+        return;
+    }
+    g_ssh_list_selected = @min(g_ssh_list_selected, row_count - 1);
+}
+
+fn resetSshListSelection() void {
+    g_ssh_list_selected = 0;
+    clampSshListSelection();
 }
 
 fn sshField(field: SshField) []const u8 {
@@ -1586,6 +1674,11 @@ fn findSshProfileIndex(identifier_raw: []const u8) ?usize {
     return null;
 }
 
+fn startsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
+    if (text.len < prefix.len) return false;
+    return std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
+}
+
 pub fn agentConnectSshProfile(identifier: []const u8) AgentSshConnectResult {
     const idx = findSshProfileIndex(identifier) orelse return .not_found;
     const surface = connectSshProfileReturningSurface(idx) orelse return .failed;
@@ -1597,6 +1690,15 @@ fn copySshProfileField(profile: *SshProfile, field: SshField, value: []const u8)
     const len = @min(value.len, SSH_FIELD_MAX);
     @memcpy(profile.fields[idx][0..len], value[0..len]);
     profile.lens[idx] = len;
+}
+
+fn makeSshProfile(name: []const u8, host: []const u8, user: []const u8, port: []const u8) SshProfile {
+    var profile = SshProfile{};
+    copySshProfileField(&profile, .name, name);
+    copySshProfileField(&profile, .ip, host);
+    copySshProfileField(&profile, .user, user);
+    copySshProfileField(&profile, .port, port);
+    return profile;
 }
 
 pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat.SshProfileSaveArgs) !AppWindow.ai_chat.SavedSshProfile {
@@ -1662,13 +1764,15 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
 }
 
 fn runSshListRow(row: usize) void {
+    const visible_profile_count = sshVisibleProfileCount();
     switch (g_ssh_list_mode) {
         .manage => {
-            if (row < g_ssh_profile_count) {
-                connectSshProfile(row);
+            if (row < visible_profile_count) {
+                const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
+                connectSshProfile(profile_idx);
                 return;
             }
-            const action_row = row - g_ssh_profile_count;
+            const action_row = row - visible_profile_count;
             switch (action_row) {
                 0 => openSshFormNew(),
                 1 => openSshEditPicker(),
@@ -1677,15 +1781,17 @@ fn runSshListRow(row: usize) void {
             }
         },
         .edit_select => {
-            if (row < g_ssh_profile_count) {
-                openSshFormEdit(row);
+            if (row < visible_profile_count) {
+                const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
+                openSshFormEdit(profile_idx);
             } else {
                 openSshList();
             }
         },
         .delete_select => {
-            if (row < g_ssh_profile_count) {
-                deleteSshProfile(row);
+            if (row < visible_profile_count) {
+                const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
+                deleteSshProfile(profile_idx);
                 openSshList();
             } else {
                 openSshList();
@@ -1702,7 +1808,7 @@ fn deleteSshProfile(idx: usize) void {
         g_ssh_profiles[i] = g_ssh_profiles[i + 1];
     }
     g_ssh_profile_count -= 1;
-    g_ssh_list_selected = @min(g_ssh_list_selected, sshListRowCount() - 1);
+    clampSshListSelection();
     if (AppWindow.g_allocator) |allocator| saveSshProfiles(allocator);
 }
 
@@ -2500,10 +2606,11 @@ fn sessionLauncherHint() []const u8 {
     }
     if (g_ssh_form_visible) return "Tab changes field, Enter connects";
     if (g_ssh_list_visible) {
+        const has_filter = g_ssh_list_filter_len > 0;
         return switch (g_ssh_list_mode) {
-            .manage => "Enter connects, New/Edit/Delete manage",
-            .edit_select => "Choose a server to edit",
-            .delete_select => "Choose a server to delete",
+            .manage => if (has_filter) "Type to filter, Backspace edits, Enter connects" else "Type to filter, Enter connects, New/Edit/Delete manage",
+            .edit_select => if (has_filter) "Type to filter, Choose a server to edit" else "Choose a server to edit",
+            .delete_select => if (has_filter) "Type to filter, Choose a server to delete" else "Choose a server to delete",
         };
     }
     return "Up/Down select, Enter starts";
@@ -2569,10 +2676,11 @@ fn sessionDesiredBoxWidth() f32 {
     }
 
     if (g_ssh_list_visible) {
-        var row: usize = 0;
-        while (row < g_ssh_profile_count) : (row += 1) {
+        var profile_idx: usize = 0;
+        while (profile_idx < g_ssh_profile_count) : (profile_idx += 1) {
             var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
-            const profile = &g_ssh_profiles[row];
+            const profile = &g_ssh_profiles[profile_idx];
+            if (!sshProfileMatchesFilter(profile)) continue;
             const host = profileField(profile, .ip);
             const user = profileField(profile, .user);
             const port = profileField(profile, .port);
@@ -2646,9 +2754,9 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     if (g_ssh_list_visible) {
         if (row >= sshListRowCount()) return null;
         g_ssh_list_selected = row;
-        if (row < g_ssh_profile_count) return .connect_selected;
+        if (row < sshVisibleProfileCount()) return .connect_selected;
         if (g_ssh_list_mode != .manage) return .connect_selected;
-        return switch (row - g_ssh_profile_count) {
+        return switch (row - sshVisibleProfileCount()) {
             0 => .new_ssh,
             1 => .edit_selected,
             2 => .delete_selected,
@@ -2842,8 +2950,12 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         }
         if (g_ssh_list_visible) {
             var row: usize = 0;
-            while (row < g_ssh_profile_count) : (row += 1) {
-                renderSshProfileRow(layout, window_height, row, &g_ssh_profiles[row], g_ssh_list_selected == row);
+            var profile_idx: usize = 0;
+            while (profile_idx < g_ssh_profile_count) : (profile_idx += 1) {
+                const profile = &g_ssh_profiles[profile_idx];
+                if (!sshProfileMatchesFilter(profile)) continue;
+                renderSshProfileRow(layout, window_height, row, profile, g_ssh_list_selected == row);
+                row += 1;
             }
             switch (g_ssh_list_mode) {
                 .manage => {
@@ -3640,6 +3752,44 @@ test "overlays: transfer interruption prompt returns explicit actions" {
             600,
         ),
     );
+}
+
+test "overlays: SSH list filter matches server name prefixes case-insensitively" {
+    g_ssh_profile_count = 3;
+    g_ssh_profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
+    g_ssh_profiles[1] = makeSshProfile("GX15041", "10.0.0.2", "user", "22");
+    g_ssh_profiles[2] = makeSshProfile("gxy", "10.0.0.3", "user", "22");
+    g_ssh_list_mode = .manage;
+    g_ssh_list_selected = 0;
+    g_ssh_list_filter_len = 0;
+
+    appendSshListFilterText("g");
+    try std.testing.expectEqual(@as(usize, 2), sshVisibleProfileCount());
+    try std.testing.expectEqual(@as(?usize, 1), sshVisibleProfileIndexAt(0));
+    try std.testing.expectEqual(@as(?usize, 2), sshVisibleProfileIndexAt(1));
+    try std.testing.expectEqual(@as(usize, 6), sshListRowCount());
+
+    appendSshListFilterText("x1");
+    try std.testing.expectEqual(@as(usize, 1), sshVisibleProfileCount());
+    try std.testing.expectEqual(@as(?usize, 1), sshVisibleProfileIndexAt(0));
+}
+
+test "overlays: SSH list filter backspace restores matching rows" {
+    g_ssh_profile_count = 2;
+    g_ssh_profiles[0] = makeSshProfile("GPU", "10.0.0.1", "user", "22");
+    g_ssh_profiles[1] = makeSshProfile("CPU", "10.0.0.2", "user", "22");
+    g_ssh_list_mode = .edit_select;
+    g_ssh_list_selected = 0;
+    g_ssh_list_filter_len = 0;
+
+    appendSshListFilterText("gpux");
+    try std.testing.expectEqual(@as(usize, 0), sshVisibleProfileCount());
+    try std.testing.expectEqual(@as(usize, 1), sshListRowCount());
+
+    backspaceSshListFilter();
+    try std.testing.expectEqual(@as(usize, 1), sshVisibleProfileCount());
+    try std.testing.expectEqual(@as(?usize, 0), sshVisibleProfileIndexAt(0));
+    try std.testing.expectEqual(@as(usize, 2), sshListRowCount());
 }
 
 fn showVersionToast() void {
