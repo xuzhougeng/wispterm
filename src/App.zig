@@ -93,6 +93,8 @@ update_mutex: std.Thread.Mutex,
 update_result: update_check.CheckResult,
 update_latest_version_buf: [32]u8,
 update_release_url_buf: [256]u8,
+update_asset_name_buf: [128]u8,
+update_asset_download_url_buf: [512]u8,
 update_thread: ?std.Thread,
 update_check_in_flight: bool,
 startup_update_check_started: bool,
@@ -223,6 +225,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .update_result = .{ .state = .idle },
         .update_latest_version_buf = undefined,
         .update_release_url_buf = undefined,
+        .update_asset_name_buf = undefined,
+        .update_asset_download_url_buf = undefined,
         .update_thread = null,
         .update_check_in_flight = false,
         .startup_update_check_started = false,
@@ -391,11 +395,15 @@ fn startUpdateCheck(self: *App, show_failures: bool) void {
 fn updateCheckThreadMain(app: *App, show_failures: bool) void {
     var latest_version_buf: [32]u8 = undefined;
     var release_url_buf: [256]u8 = undefined;
+    var asset_name_buf: [128]u8 = undefined;
+    var asset_download_url_buf: [512]u8 = undefined;
     var result = update_check.fetchLatestRelease(
         app.allocator,
         app_metadata.version,
         &latest_version_buf,
         &release_url_buf,
+        &asset_name_buf,
+        &asset_download_url_buf,
     );
     if (!show_failures and result.state != .update_available) {
         result = .{ .state = .idle };
@@ -410,6 +418,8 @@ fn storeUpdateResult(self: *App, result: update_check.CheckResult) void {
         result,
         &self.update_latest_version_buf,
         &self.update_release_url_buf,
+        &self.update_asset_name_buf,
+        &self.update_asset_download_url_buf,
     );
     self.update_check_in_flight = false;
 }
