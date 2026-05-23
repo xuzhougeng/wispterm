@@ -14,6 +14,7 @@ const keybind = @import("keybind.zig");
 const win32_backend = @import("apprt/win32.zig");
 const remote = @import("remote_client.zig");
 const update_check = @import("update_check.zig");
+const update_install = @import("update_install.zig");
 
 extern "user32" fn MonitorFromPoint(pt: win32_backend.POINT, dwFlags: u32) callconv(.winapi) ?win32_backend.HMONITOR;
 
@@ -95,8 +96,11 @@ update_latest_version_buf: [32]u8,
 update_release_url_buf: [256]u8,
 update_asset_name_buf: [update_check.asset_name_buffer_len]u8,
 update_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
+available_update: update_check.CheckResult,
 update_thread: ?std.Thread,
 update_check_in_flight: bool,
+install_thread: ?std.Thread,
+install_in_flight: bool,
 startup_update_check_started: bool,
 
 // Window management
@@ -227,8 +231,11 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .update_release_url_buf = undefined,
         .update_asset_name_buf = undefined,
         .update_asset_download_url_buf = undefined,
+        .available_update = .{ .state = .idle },
         .update_thread = null,
         .update_check_in_flight = false,
+        .install_thread = null,
+        .install_in_flight = false,
         .startup_update_check_started = false,
         .windows = .empty,
         .mutex = .{},
@@ -397,9 +404,11 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
     var release_url_buf: [256]u8 = undefined;
     var asset_name_buf: [update_check.asset_name_buffer_len]u8 = undefined;
     var asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8 = undefined;
-    var result = update_check.fetchLatestRelease(
+    const flavor = update_install.currentFlavor(app.allocator) catch .portable;
+    var result = update_check.fetchLatestReleaseForFlavor(
         app.allocator,
         app_metadata.version,
+        flavor,
         .{
             .latest_version = &latest_version_buf,
             .release_url = &release_url_buf,
@@ -416,7 +425,7 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
 fn storeUpdateResult(self: *App, result: update_check.CheckResult) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
-    self.update_result = update_check.copyResult(
+    const copied = update_check.copyResult(
         result,
         .{
             .latest_version = &self.update_latest_version_buf,
@@ -425,6 +434,10 @@ fn storeUpdateResult(self: *App, result: update_check.CheckResult) void {
             .asset_download_url = &self.update_asset_download_url_buf,
         },
     );
+    self.update_result = copied;
+    if (copied.state == .update_available) {
+        self.available_update = copied;
+    }
     self.update_check_in_flight = false;
 }
 
@@ -452,11 +465,147 @@ pub fn copyLatestReleaseUrl(self: *App, out: []u8) ?[]const u8 {
     return copyBounded(out, url);
 }
 
+pub fn requestUpdateInstall(self: *App) void {
+    self.joinFinishedUpdateThread();
+    self.joinFinishedInstallThread();
+
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        if (self.install_in_flight) return;
+        if (self.available_update.state != .update_available or self.available_update.asset_download_url.len == 0) {
+            self.update_result = .{ .state = .failed };
+            return;
+        }
+        self.install_in_flight = true;
+        self.update_result = .{ .state = .downloading };
+    }
+
+    const thread = std.Thread.spawn(.{}, updateInstallThreadMain, .{self}) catch |err| {
+        std.debug.print("Update install: failed to spawn thread: {}\n", .{err});
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        self.install_in_flight = false;
+        self.update_result = .{ .state = .failed };
+        return;
+    };
+
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+    self.install_thread = thread;
+}
+
+fn updateInstallThreadMain(app: *App) void {
+    var latest_version_buf: [32]u8 = undefined;
+    var release_url_buf: [256]u8 = undefined;
+    var asset_name_buf: [update_check.asset_name_buffer_len]u8 = undefined;
+    var asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8 = undefined;
+    const update = blk: {
+        app.update_mutex.lock();
+        defer app.update_mutex.unlock();
+        break :blk update_check.copyResult(
+            app.available_update,
+            .{
+                .latest_version = &latest_version_buf,
+                .release_url = &release_url_buf,
+                .asset_name = &asset_name_buf,
+                .asset_download_url = &asset_download_url_buf,
+            },
+        );
+    };
+    if (update.state != .update_available or update.asset_download_url.len == 0) {
+        app.storeInstallFailure();
+        return;
+    }
+
+    var prepared = update_install.prepareWorkPaths(app.allocator, update.latest_version, update.asset_name) catch |err| {
+        std.debug.print("Update install: failed to prepare work paths: {}\n", .{err});
+        app.storeInstallFailure();
+        return;
+    };
+    defer prepared.deinit(app.allocator);
+
+    update_install.downloadAsset(app.allocator, update.asset_download_url, prepared.zip_path) catch |err| {
+        std.debug.print("Update install: failed to download asset: {}\n", .{err});
+        app.storeInstallFailure();
+        return;
+    };
+    app.storeTransientUpdateState(.extracting);
+
+    update_install.extractZipToPayload(prepared.zip_path, prepared.payload_dir) catch |err| {
+        std.debug.print("Update install: failed to extract asset: {}\n", .{err});
+        app.storeInstallFailure();
+        return;
+    };
+
+    var payload = std.fs.openDirAbsolute(prepared.payload_dir, .{}) catch |err| {
+        std.debug.print("Update install: failed to open payload: {}\n", .{err});
+        app.storeInstallFailure();
+        return;
+    };
+    defer payload.close();
+    const flavor = update_install.currentFlavor(app.allocator) catch .portable;
+    update_install.validatePayloadDir(payload, .{
+        .require_webview2_loader = flavor == .portable_webview2,
+    }) catch |err| {
+        std.debug.print("Update install: payload validation failed: {}\n", .{err});
+        app.storeInstallFailure();
+        return;
+    };
+
+    const target_dir = update_install.currentExeDir(app.allocator) catch |err| {
+        std.debug.print("Update install: failed to resolve current exe dir: {}\n", .{err});
+        app.storeInstallFailure();
+        return;
+    };
+    defer app.allocator.free(target_dir);
+
+    app.storeTransientUpdateState(.installing);
+    update_install.launchUpdater(
+        app.allocator,
+        prepared.payload_dir,
+        target_dir,
+        win32_backend.GetCurrentProcessId(),
+    ) catch |err| {
+        std.debug.print("Update install: failed to launch updater: {}\n", .{err});
+        app.storeInstallFailure();
+        return;
+    };
+
+    app.requestShutdown();
+}
+
+fn storeTransientUpdateState(self: *App, state: update_check.State) void {
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+    self.update_result.state = state;
+}
+
+fn storeInstallFailure(self: *App) void {
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+    self.install_in_flight = false;
+    self.update_result = .{ .state = .failed };
+}
+
 fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
     if (out.len == 0 or value.len == 0) return null;
     const len = @min(out.len, value.len);
     @memcpy(out[0..len], value[0..len]);
     return out[0..len];
+}
+
+fn joinFinishedInstallThread(self: *App) void {
+    var thread: ?std.Thread = null;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        if (!self.install_in_flight) {
+            thread = self.install_thread;
+            self.install_thread = null;
+        }
+    }
+    if (thread) |t| t.join();
 }
 
 fn joinFinishedUpdateThread(self: *App) void {
@@ -479,6 +628,17 @@ fn joinUpdateThread(self: *App) void {
         defer self.update_mutex.unlock();
         thread = self.update_thread;
         self.update_thread = null;
+    }
+    if (thread) |t| t.join();
+}
+
+fn joinInstallThread(self: *App) void {
+    var thread: ?std.Thread = null;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        thread = self.install_thread;
+        self.install_thread = null;
     }
     if (thread) |t| t.join();
 }
@@ -673,6 +833,7 @@ pub fn deinit(self: *App) void {
     // Join any remaining threads
     self.joinAllWindowThreads();
     self.joinUpdateThread();
+    self.joinInstallThread();
 
     if (self.remote_client) |client| {
         client.destroy();
