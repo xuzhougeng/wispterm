@@ -31,6 +31,7 @@ comptime {
     _ = @import("skill_registry.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("ssh_prompt.zig");
+    _ = @import("startup_tabs.zig");
     _ = @import("system_browser.zig");
     _ = @import("split_tree.zig");
     _ = @import("ui_perf.zig");

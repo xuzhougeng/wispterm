@@ -21,6 +21,7 @@ const remote_snapshot = @import("remote_snapshot.zig");
 const memory_debug = @import("memory_debug.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
+const startup_tabs = @import("startup_tabs.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
@@ -255,11 +256,19 @@ const WM_PHANTTY_AGENT_TAB_NEW = win32_backend.WM_APP + 0x52;
 const WM_PHANTTY_AGENT_TAB_CLOSE = win32_backend.WM_APP + 0x53;
 const WM_PHANTTY_REMOTE_AI_INPUT = win32_backend.WM_APP + 0x54;
 const WM_PHANTTY_REMOTE_OPEN_AI_AGENT = win32_backend.WM_APP + 0x55;
+const WM_PHANTTY_AGENT_SSH_SAVE = win32_backend.WM_APP + 0x56;
 
 const AgentSshConnectRequest = struct {
     allocator: std.mem.Allocator,
     profile_name: []const u8,
     result: ?ai_chat.ToolSurface = null,
+    err: ?anyerror = null,
+};
+
+const AgentSshSaveRequest = struct {
+    allocator: std.mem.Allocator,
+    args: ai_chat.SshProfileSaveArgs,
+    result: ?ai_chat.SavedSshProfile = null,
     err: ?anyerror = null,
 };
 
@@ -675,6 +684,29 @@ pub fn spawnConfiguredPowerShellTab() bool {
         return true;
     }
     return spawnTabWithCommandUtf8(configuredPowerShellCommandForShell(shell_cmd));
+}
+
+fn spawnDefaultAgentAndPowerShellTabs(allocator: std.mem.Allocator) bool {
+    const first_tab_index = tab.g_tab_count;
+    const has_ai_profile = overlays.hasAiProfiles();
+    const first_opened = if (has_ai_profile)
+        overlays.openDefaultAgentSessionForStartup() == .opened
+    else
+        spawnTabWithCwd(allocator, null);
+
+    const powershell_opened = spawnConfiguredPowerShellTab();
+    if (!first_opened and !powershell_opened) return false;
+
+    if (first_opened and powershell_opened and first_tab_index < tab.g_tab_count) {
+        switchTab(first_tab_index);
+    }
+
+    if (!has_ai_profile and first_tab_index < tab.g_tab_count) {
+        switchTab(first_tab_index);
+        _ = overlays.openDefaultAgentSessionForStartup();
+    }
+
+    return true;
 }
 
 pub fn spawnAiChatTab(
@@ -1920,6 +1952,15 @@ fn postAgentSshConnect(hwnd: win32_backend.HWND, request: *AgentSshConnectReques
     );
 }
 
+fn postAgentSshSave(hwnd: win32_backend.HWND, request: *AgentSshSaveRequest) void {
+    _ = win32_backend.SendMessageW(
+        hwnd,
+        WM_PHANTTY_AGENT_SSH_SAVE,
+        0,
+        @as(win32_backend.LPARAM, @bitCast(@intFromPtr(request))),
+    );
+}
+
 fn agentSpawnTab(ctx: *anyopaque, allocator: std.mem.Allocator, kind: []const u8, command: ?[]const u8) anyerror!ai_chat.ToolSurface {
     const window: *AppWindow = @ptrCast(@alignCast(ctx));
     const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
@@ -1990,6 +2031,29 @@ fn agentConnectSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, profile
 
     if (request.err) |err| return err;
     return request.result orelse error.ConnectFailed;
+}
+
+fn agentSaveSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, args: ai_chat.SshProfileSaveArgs) anyerror!ai_chat.SavedSshProfile {
+    const window: *AppWindow = @ptrCast(@alignCast(ctx));
+    const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
+
+    var request = AgentSshSaveRequest{
+        .allocator = allocator,
+        .args = args,
+    };
+
+    if (g_window) |current| {
+        if (current.hwnd == hwnd) {
+            handleAgentSshSaveRequest(&request);
+        } else {
+            postAgentSshSave(hwnd, &request);
+        }
+    } else {
+        postAgentSshSave(hwnd, &request);
+    }
+
+    if (request.err) |err| return err;
+    return request.result orelse error.SaveFailed;
 }
 
 fn agentTabCommand(kind_raw: []const u8, command_raw: ?[]const u8) anyerror!?[]const u8 {
@@ -2151,12 +2215,24 @@ fn handleAgentSshConnectRequest(request: *AgentSshConnectRequest) void {
     }
 }
 
+fn handleAgentSshSaveRequest(request: *AgentSshSaveRequest) void {
+    request.result = overlays.agentSaveSshProfile(request.allocator, request.args) catch |err| {
+        request.err = err;
+        return;
+    };
+}
+
 fn onWin32Message(msg: win32_backend.UINT, wParam: win32_backend.WPARAM, lParam: win32_backend.LPARAM) ?win32_backend.LRESULT {
     _ = wParam;
     switch (msg) {
         WM_PHANTTY_AGENT_SSH_CONNECT => {
             const request: *AgentSshConnectRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
             handleAgentSshConnectRequest(request);
+            return 1;
+        },
+        WM_PHANTTY_AGENT_SSH_SAVE => {
+            const request: *AgentSshSaveRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            handleAgentSshSaveRequest(request);
             return 1;
         },
         WM_PHANTTY_AGENT_TAB_NEW => {
@@ -2191,6 +2267,7 @@ fn installAgentToolHost(self: *AppWindow) void {
         .writeSurface = agentWriteSurface,
         .spawnTab = agentSpawnTab,
         .closeTab = agentCloseTab,
+        .saveSshProfile = agentSaveSshProfile,
         .connectSshProfile = agentConnectSshProfile,
     });
 }
@@ -2862,11 +2939,24 @@ fn runMainLoop(self: *AppWindow) !void {
             g_cursor_blink,
         );
 
-        if (!restored) {
-            if (!spawnTabWithCwd(allocator, initial_cwd)) {
-                std.debug.print("Failed to spawn initial tab\n", .{});
-                return error.SpawnFailed;
-            }
+        switch (startup_tabs.initialTabPlan(.{
+            .restored_session = restored,
+            .initial_cwd_present = initial_cwd != null,
+            .first_plain_window = restore_once,
+        })) {
+            .restored_session => {},
+            .single_terminal => {
+                if (!spawnTabWithCwd(allocator, initial_cwd)) {
+                    std.debug.print("Failed to spawn initial tab\n", .{});
+                    return error.SpawnFailed;
+                }
+            },
+            .agent_and_powershell => {
+                if (!spawnDefaultAgentAndPowerShellTabs(allocator)) {
+                    std.debug.print("Failed to spawn default Agent and PowerShell tabs\n", .{});
+                    return error.SpawnFailed;
+                }
+            },
         }
     }
 

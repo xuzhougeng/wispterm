@@ -235,6 +235,30 @@ pub const ToolClosedTab = struct {
     }
 };
 
+pub const SshProfileSaveArgs = struct {
+    name: []const u8 = "",
+    host: []const u8,
+    user: []const u8,
+    password: []const u8 = "",
+    port: []const u8 = "",
+};
+
+pub const SavedSshProfile = struct {
+    name: []u8,
+    host: []u8,
+    user: []u8,
+    port: []u8,
+    updated_existing: bool,
+    password_saved: bool,
+
+    pub fn deinit(self: SavedSshProfile, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.host);
+        allocator.free(self.user);
+        allocator.free(self.port);
+    }
+};
+
 pub const ToolHost = struct {
     ctx: *anyopaque,
     collectSnapshot: *const fn (*anyopaque, std.mem.Allocator) anyerror!ToolSnapshot,
@@ -242,6 +266,7 @@ pub const ToolHost = struct {
     writeSurface: *const fn (*anyopaque, *anyopaque, []const u8) bool,
     spawnTab: *const fn (*anyopaque, std.mem.Allocator, []const u8, ?[]const u8) anyerror!ToolSurface,
     closeTab: *const fn (*anyopaque, std.mem.Allocator, ?usize, ?[]const u8, ?[]const u8) anyerror!ToolClosedTab,
+    saveSshProfile: *const fn (*anyopaque, std.mem.Allocator, SshProfileSaveArgs) anyerror!SavedSshProfile,
     connectSshProfile: *const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!ToolSurface,
 };
 
@@ -3156,6 +3181,8 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("terminal_repl_exec", "Send code or text to the selected already-open interactive REPL/app terminal without shell syntax. The surface_id must match the current terminal_select context. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit.\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("ssh_profile_save", "Create or update a saved Phantty SSH server profile. Use before ssh_profile_connect when the user provides SSH host, user, port, or password details.", "{\"name\":{\"type\":\"string\",\"description\":\"Optional profile name; defaults to host for new profiles.\"},\"host\":{\"type\":\"string\",\"description\":\"SSH host name or IP address.\"},\"user\":{\"type\":\"string\",\"description\":\"SSH username.\"},\"password\":{\"type\":\"string\",\"description\":\"Optional SSH password; omit when using keys.\"},\"port\":{\"type\":\"string\",\"description\":\"Optional SSH port; defaults to 22 for new profiles.\"}}"));
+    try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_profile_connect", "Create a new tab connected to a saved Phantty SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("tab_new", "Create a new local terminal tab. Use kind=default, powershell, pwsh, cmd, wsl, or command with an explicit command line.", "{\"kind\":{\"type\":\"string\",\"description\":\"default, powershell, pwsh, cmd, wsl, or command.\"},\"command\":{\"type\":\"string\",\"description\":\"Optional explicit Windows command line; used when kind is command or to override kind.\"}}"));
@@ -3220,6 +3247,19 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
         const code = jsonStringArg(args.value, "code") orelse return request.allocator.dupe(u8, "Missing code");
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
         return terminalReplExecTool(request, surface_id, repl, code, timeout_ms);
+    }
+    if (std.mem.eql(u8, call.name, "ssh_profile_save")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const host = jsonStringArg(args.value, "host") orelse return request.allocator.dupe(u8, "Missing host");
+        const user = jsonStringArg(args.value, "user") orelse return request.allocator.dupe(u8, "Missing user");
+        return sshProfileSaveTool(request, .{
+            .name = jsonStringArg(args.value, "name") orelse "",
+            .host = host,
+            .user = user,
+            .password = jsonStringArg(args.value, "password") orelse "",
+            .port = jsonStringArg(args.value, "port") orelse "",
+        });
     }
     if (std.mem.eql(u8, call.name, "ssh_profile_connect")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
@@ -3872,6 +3912,56 @@ fn waitForSentinelResult(
         return std.fmt.allocPrint(request.allocator, "Timed out waiting for {s} command sentinel.\nLatest snapshot:\n{s}", .{ label, text });
     }
     return std.fmt.allocPrint(request.allocator, "Timed out waiting for {s} command sentinel.", .{label});
+}
+
+fn sshProfileSaveApprovalText(allocator: std.mem.Allocator, args: SshProfileSaveArgs) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "name=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" password={s}",
+        .{
+            if (args.name.len > 0) args.name else "<default>",
+            args.host,
+            args.user,
+            if (args.port.len > 0) args.port else "22",
+            if (args.password.len > 0) "<redacted>" else "<empty>",
+        },
+    );
+}
+
+fn sshProfileSaveTool(request: *ChatRequest, args: SshProfileSaveArgs) ![]u8 {
+    const settings = currentAgentSettings();
+    if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
+
+    const approval_text = try sshProfileSaveApprovalText(request.allocator, args);
+    defer request.allocator.free(approval_text);
+    if (settings.permission != .full) {
+        if (!request.session.requestApproval("ssh_profile_save", approval_text, "Save SSH server profile")) {
+            return deniedResult(request.allocator, approval_text, "operator rejected saved SSH profile update");
+        }
+    }
+
+    const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
+    var saved = host.saveSshProfile(host.ctx, request.allocator, args) catch |err| switch (err) {
+        error.InvalidProfile => return request.allocator.dupe(u8, "Invalid SSH profile. Provide a non-empty safe host and user, and a numeric port."),
+        error.ProfileLimit => return request.allocator.dupe(u8, "Cannot save SSH profile: profile limit reached."),
+        else => return std.fmt.allocPrint(request.allocator, "Failed to save SSH profile: {}", .{err}),
+    };
+    defer saved.deinit(request.allocator);
+
+    const out = try std.fmt.allocPrint(
+        request.allocator,
+        "saved profile=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" updated_existing={} password_saved={}. Use ssh_profile_connect with profile_name=\"{s}\" to open it.",
+        .{
+            saved.name,
+            saved.host,
+            saved.user,
+            saved.port,
+            saved.updated_existing,
+            saved.password_saved,
+            saved.name,
+        },
+    );
+    return truncateOwned(request.allocator, out);
 }
 
 fn sshProfileConnectTool(request: *ChatRequest, profile_name: []const u8) ![]u8 {
@@ -4846,6 +4936,7 @@ test "ai chat default system prompt is short windows uv guidance" {
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "terminal_list") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "terminal_select") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "ssh_session_exec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "ssh_profile_save") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "wsl_session_exec") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "terminal_repl_exec") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "Codex") != null);
@@ -4936,6 +5027,7 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_repl_exec\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_save\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_close\"") != null);
@@ -4970,6 +5062,26 @@ test "ai chat agent request json includes stable skill_info tool schema" {
     try std.testing.expect(std.mem.indexOf(u8, json, "skill_name") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "pdf") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\\u0070df") == null);
+}
+
+test "ai chat ssh profile save approval text redacts password" {
+    const allocator = std.testing.allocator;
+    const args = SshProfileSaveArgs{
+        .name = "lab",
+        .host = "192.0.2.10",
+        .user = "alice",
+        .password = "super-secret",
+        .port = "2222",
+    };
+    const text = try sshProfileSaveApprovalText(allocator, args);
+    defer allocator.free(text);
+
+    try std.testing.expect(std.mem.indexOf(u8, text, "lab") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "192.0.2.10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "alice") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "2222") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "super-secret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "<redacted>") != null);
 }
 
 test "ai chat request json replays durable tool messages and skips progress tools" {

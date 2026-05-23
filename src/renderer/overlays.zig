@@ -1110,6 +1110,12 @@ pub const AgentSshConnectResult = union(enum) {
     failed,
 };
 
+pub const DefaultAgentOpenResult = enum {
+    opened,
+    form_opened,
+    failed,
+};
+
 const AiProfile = struct {
     fields: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
     lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT,
@@ -1486,6 +1492,75 @@ pub fn agentConnectSshProfile(identifier: []const u8) AgentSshConnectResult {
     return .{ .connected = surface };
 }
 
+fn copySshProfileField(profile: *SshProfile, field: SshField, value: []const u8) void {
+    const idx: usize = @intFromEnum(field);
+    const len = @min(value.len, SSH_FIELD_MAX);
+    @memcpy(profile.fields[idx][0..len], value[0..len]);
+    profile.lens[idx] = len;
+}
+
+pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat.SshProfileSaveArgs) !AppWindow.ai_chat.SavedSshProfile {
+    loadSshProfiles();
+
+    const host = std.mem.trim(u8, args.host, " \t\r\n");
+    const user = std.mem.trim(u8, args.user, " \t\r\n");
+    const name_raw = std.mem.trim(u8, args.name, " \t\r\n");
+    const port_raw = std.mem.trim(u8, args.port, " \t\r\n");
+    const port = if (port_raw.len > 0) port_raw else "22";
+    if (host.len == 0 or user.len == 0) return error.InvalidProfile;
+    if (!isSshTokenSafe(host) or !isSshTokenSafe(user)) return error.InvalidProfile;
+    if (!isPortTokenSafe(port)) return error.InvalidProfile;
+
+    const lookup = if (name_raw.len > 0) name_raw else host;
+    const found_idx = findSshProfileIndex(lookup) orelse findSshProfileIndex(host);
+    const updated_existing = found_idx != null;
+    const idx = found_idx orelse blk: {
+        if (g_ssh_profile_count >= SSH_PROFILE_MAX) return error.ProfileLimit;
+        const next = g_ssh_profile_count;
+        g_ssh_profile_count += 1;
+        break :blk next;
+    };
+
+    const profile = &g_ssh_profiles[idx];
+    const final_name = if (name_raw.len > 0)
+        name_raw
+    else if (updated_existing and profileField(profile, .name).len > 0)
+        profileField(profile, .name)
+    else
+        host;
+
+    copySshProfileField(profile, .name, final_name);
+    copySshProfileField(profile, .ip, host);
+    copySshProfileField(profile, .user, user);
+    if (args.password.len > 0 or !updated_existing) {
+        copySshProfileField(profile, .password, args.password);
+    }
+    copySshProfileField(profile, .port, port);
+
+    saveSshProfiles(allocator);
+
+    const saved_name = profileField(profile, .name);
+    const saved_host = profileField(profile, .ip);
+    const saved_user = profileField(profile, .user);
+    const saved_port = profileField(profile, .port);
+    const name_copy = try allocator.dupe(u8, saved_name);
+    errdefer allocator.free(name_copy);
+    const host_copy = try allocator.dupe(u8, saved_host);
+    errdefer allocator.free(host_copy);
+    const user_copy = try allocator.dupe(u8, saved_user);
+    errdefer allocator.free(user_copy);
+    const port_copy = try allocator.dupe(u8, saved_port);
+    errdefer allocator.free(port_copy);
+    return .{
+        .name = name_copy,
+        .host = host_copy,
+        .user = user_copy,
+        .port = port_copy,
+        .updated_existing = updated_existing,
+        .password_saved = profileField(profile, .password).len > 0,
+    };
+}
+
 fn runSshListRow(row: usize) void {
     switch (g_ssh_list_mode) {
         .manage => {
@@ -1787,6 +1862,20 @@ fn openDefaultAgentSessionFromCommandCenter() void {
         .open_form => openAiFormNewWithMode(.session_setup),
         .connect_default_profile_as_agent => connectAiProfileWithAgentOverride(0, "true"),
     }
+}
+
+pub fn hasAiProfiles() bool {
+    loadAiProfiles();
+    return g_ai_profile_count > 0;
+}
+
+pub fn openDefaultAgentSessionForStartup() DefaultAgentOpenResult {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) {
+        openAiFormNewWithMode(.session_setup);
+        return .form_opened;
+    }
+    return if (spawnAiProfileWithAgentOverride(0, "true")) .opened else .failed;
 }
 
 pub fn openDefaultAgentSessionForRemote() RemoteAgentOpenResult {

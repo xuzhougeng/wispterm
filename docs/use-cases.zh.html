@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phantty 使用案例 — 让 AI Agent 帮你配置终端</title>
+  <meta name="description" content="Phantty AI Agent 使用案例：让 Agent 创建 SSH profile、连接服务器，并在启动时默认打开 Agent 与 PowerShell。">
+  <meta property="og:title" content="Phantty 使用案例">
+  <meta property="og:description" content="让内置 AI Agent 在 Phantty 里配置 SSH profile 并驱动终端工作流。">
+  <meta property="og:image" content="assets/phantty.png">
+  <meta property="og:type" content="website">
+  <meta name="theme-color" content="#1b1e28">
+  <link rel="icon" href="assets/favicon.ico">
+  <link rel="apple-touch-icon" href="assets/phantty.png">
+  <link rel="alternate" hreflang="en" href="./use-cases.html">
+  <link rel="alternate" hreflang="zh-CN" href="./use-cases.zh.html">
+  <link rel="stylesheet" href="style.css?v=6">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container nav">
+      <a class="brand" href="./zh.html">
+        <img src="assets/phantty.png" alt="" width="28" height="28">
+        <span>Phantty</span>
+      </a>
+      <nav class="nav-links">
+        <a href="./zh.html#features">特性</a>
+        <a href="./zh.html#install">安装</a>
+        <a href="./zh.html#config">配置</a>
+        <a href="./zh.html#shortcuts">快捷键</a>
+        <a href="./themes.html">主题</a>
+        <a href="./ai.zh.html">AI</a>
+        <a class="active-link" href="./use-cases.zh.html" aria-current="page">案例</a>
+        <span class="lang-switch" role="group" aria-label="语言">
+          <a class="lang" href="./use-cases.html">EN</a>
+          <a class="lang active" href="./use-cases.zh.html" aria-current="page">中文</a>
+        </span>
+        <a class="github" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="ai-hero">
+      <div class="container ai-hero-grid">
+        <div class="ai-hero-copy">
+          <p class="eyebrow">实用 Agent 工作流</p>
+          <h1>让 Agent 帮你配置终端</h1>
+          <p class="tagline">Phantty 的 Agent 现在可以用内置工具保存 SSH server profile、连接已保存 profile、读取终端现场，并在首次启动时把 Agent 和 PowerShell 放在一起。</p>
+          <div class="cta-row left">
+            <a class="cta primary" href="#ssh-profile">配置 SSH Profile</a>
+            <a class="cta secondary" href="./ai.zh.html">Agent 工具</a>
+          </div>
+        </div>
+
+        <div class="terminal-preview ai-preview" aria-hidden="true">
+          <div class="tp-titlebar">
+            <span class="tp-dot red"></span>
+            <span class="tp-dot yellow"></span>
+            <span class="tp-dot green"></span>
+            <span class="tp-title">phantty — Agent + PowerShell</span>
+          </div>
+          <div class="tp-tabs">
+            <div class="tp-tab active">agent</div>
+            <div class="tp-tab">powershell</div>
+            <div class="tp-tab">ssh: lab</div>
+          </div>
+          <div class="tp-body">
+            <pre><span class="prompt">你</span> <span class="cmd">帮我创建一个 SSH profile：lab，alice@192.0.2.10:2222。</span>
+<span class="muted">Phantty 工具请求</span>
+<span class="branch">ssh_profile_save</span> <span class="muted">name=lab host=192.0.2.10 user=alice port=2222 password=&lt;redacted&gt;</span>
+<span class="ok">saved profile="lab" password_saved=true</span>
+
+<span class="branch">ssh_profile_connect</span> <span class="muted">profile_name=lab</span>
+<span class="ok">connected surface_id=03 tab=2</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ssh-profile" class="section">
+      <div class="container">
+        <h2>用一句话创建 SSH Profile</h2>
+        <p class="section-lead">这个案例来自 <a href="https://github.com/xuzhougeng/phantty/issues/33" target="_blank" rel="noopener">issue #33</a>：SSH 新建界面对新手不够直观，但 Agent 可以把自然语言请求转换成已保存的 profile。</p>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>怎么说</h3>
+            <p>告诉 Agent profile 名称、host、user、port，以及是否要保存 password。它会调用 <code>ssh_profile_save</code>，不再靠手写 profile 文件。</p>
+          </div>
+          <div class="feature">
+            <h3>保存到哪里</h3>
+            <p>profile 会进入 Phantty 正常的 SSH server 列表。已有 profile 会按名称或 host 更新；新 profile 默认端口是 <code>22</code>。</p>
+          </div>
+          <div class="feature">
+            <h3>密码处理</h3>
+            <p>审批文本和工具输出都会隐藏密码原文。如果更新已有 profile 时不传 password，已有密码会被保留。</p>
+          </div>
+        </div>
+<pre class="code-block"><code>可以这样问：
+帮我创建一个 SSH profile，名字叫 lab：
+host 192.0.2.10，user alice，port 2222。
+保存这个密码，然后连接它。
+
+Agent 会用：
+ssh_profile_save
+ssh_profile_connect</code></pre>
+      </div>
+    </section>
+
+    <section id="startup" class="section alt">
+      <div class="container">
+        <h2>启动时默认有 Agent 和 PowerShell</h2>
+        <p class="section-lead">普通首次启动 Phantty 时，第一个入口是 AI Agent，第二个入口是 PowerShell。session restore 和显式 cwd 启动会保留原来的行为。</p>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>已有 AI Profile</h3>
+            <p>第一个 tab 是默认 AI profile，并强制以 Agent 模式打开。第二个 tab 是当前配置的 PowerShell 系列 shell。</p>
+          </div>
+          <div class="feature">
+            <h3>还没有 AI Profile</h3>
+            <p>Phantty 会创建一个终端占位并在上面打开 AI profile 配置表单，同时仍然创建旁边的 PowerShell tab。</p>
+          </div>
+          <div class="feature">
+            <h3>Restore 优先</h3>
+            <p>当 <code>restore-tabs-on-startup = true</code> 且成功恢复上次 session 时，Phantty 不会额外添加默认 Agent 或 PowerShell tab。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="more" class="section">
+      <div class="container">
+        <h2>适合直接复制的 Prompt</h2>
+        <div class="ai-setup-grid">
+          <div class="setup-panel">
+            <h3>SSH 新手配置</h3>
+<pre class="code-block"><code>帮我配置 SSH。
+创建一个 profile，名字叫 gpu-box：
+host gpu.example.com
+user xzg
+port 22
+然后连接它。</code></pre>
+          </div>
+          <div class="setup-panel">
+            <h3>日常终端工作</h3>
+<pre class="code-block"><code>用 PowerShell tab 检查这个仓库。
+找到测试命令，运行它，只总结需要我处理的失败。</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div>
+        <img src="assets/phantty.png" alt="" width="20" height="20">
+        <span>Phantty · MIT 协议</span>
+      </div>
+      <div class="footer-links">
+        <a href="./zh.html">首页</a>
+        <a href="./ai.zh.html">AI</a>
+        <a href="./themes.html">主题</a>
+        <a href="https://github.com/xuzhougeng/phantty/issues/33" target="_blank" rel="noopener">Issue #33</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

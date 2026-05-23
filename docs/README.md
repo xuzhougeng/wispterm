@@ -6,6 +6,7 @@ This folder is the source for the Phantty GitHub Pages site.
 
 - `index.html` — landing page (hero, features, install, config, shortcuts).
 - `ai.html` / `ai.zh.html` — DeepSeek-first AI Agent workflow pages.
+- `use-cases.html` / `use-cases.zh.html` — practical AI Agent use cases such as SSH profile setup.
 - `themes.html` — built-in theme gallery.
 - `configuration.md` — desktop app config reference.
 - `file-explorer.md` — File Explorer, preview panel, browser panel, and SSH cwd notes.
