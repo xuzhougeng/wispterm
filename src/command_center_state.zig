@@ -60,7 +60,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Copy Remote Key", .detail = "Copy the active Phantty remote session key", .shortcut = "click Remote key", .action = .copy_remote_key },
     .{ .title = "Version", .detail = "Show Phantty version", .shortcut = app_metadata.version, .action = .show_version },
     .{ .title = "Check for Updates", .detail = "Check GitHub Releases for a newer Phantty version", .shortcut = "", .action = .check_for_updates },
-    .{ .title = "Install Update", .detail = "Download and install the latest portable Phantty update", .shortcut = "", .action = .install_update },
+    .{ .title = "Install Update", .detail = "Install the last detected portable update", .shortcut = "", .action = .install_update },
     .{ .title = "Open Latest Release", .detail = "Open the latest Phantty GitHub Release", .shortcut = "", .action = .open_latest_release },
 };
 

@@ -467,8 +467,16 @@ fn executeCommand(action: CommandAction) void {
             if (AppWindow.g_app) |app| app.requestManualUpdateCheck();
         },
         .install_update => {
-            showUpdatePrompt(.{ .state = .downloading }, .none);
-            if (AppWindow.g_app) |app| app.requestUpdateInstall();
+            if (AppWindow.g_app) |app| {
+                if (app.hasInstallableUpdate()) {
+                    showUpdatePrompt(.{ .state = .downloading }, .none);
+                    app.requestUpdateInstall();
+                } else {
+                    showUpdateInstallUnavailableToast();
+                }
+            } else {
+                showUpdateInstallUnavailableToast();
+            }
         },
         .open_latest_release => openLatestRelease(),
     }
@@ -3791,6 +3799,37 @@ test "overlays: transfer interruption prompt returns explicit actions" {
     );
 }
 
+test "overlays: update prompt action selection prefers installable asset" {
+    try std.testing.expectEqual(
+        UpdatePromptAction.install_update,
+        updatePromptActionForResult(.{
+            .state = .update_available,
+            .release_url = "https://example.test/releases/v0.28.0",
+            .asset_download_url = "https://example.test/portable.zip",
+        }),
+    );
+    try std.testing.expectEqual(
+        UpdatePromptAction.open_release,
+        updatePromptActionForResult(.{
+            .state = .install_failed,
+            .release_url = "https://example.test/releases/v0.28.0",
+        }),
+    );
+    try std.testing.expectEqual(
+        UpdatePromptAction.none,
+        updatePromptActionForResult(.{ .state = .up_to_date }),
+    );
+}
+
+test "overlays: stored prompt URL does not affect latest release command URL" {
+    showSshCwdFallbackPrompt();
+
+    var latest_buf: [256]u8 = undefined;
+    var prompt_buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(update_check.latest_release_page_url, latestReleaseUrl(&latest_buf));
+    try std.testing.expectEqualStrings(SSH_CWD_HELP_URL, storedPromptUrl(&prompt_buf));
+}
+
 test "overlays: SSH list filter matches server name prefixes case-insensitively" {
     g_ssh_profile_count = 3;
     g_ssh_profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
@@ -3853,7 +3892,11 @@ pub fn showSshCwdFallbackPrompt() void {
 
 pub fn showUpdateCheckResult(result: update_check.CheckResult) void {
     if (result.state == .idle) return;
-    const action: UpdatePromptAction = if (result.state == .update_available and result.asset_download_url.len > 0)
+    showUpdatePrompt(result, updatePromptActionForResult(result));
+}
+
+fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromptAction {
+    return if (result.state == .update_available and result.asset_download_url.len > 0)
         .install_update
     else if (result.state == .update_available and result.release_url.len > 0)
         .open_release
@@ -3861,7 +3904,6 @@ pub fn showUpdateCheckResult(result: update_check.CheckResult) void {
         .open_release
     else
         .none;
-    showUpdatePrompt(result, action);
 }
 
 fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction) void {
@@ -3884,6 +3926,15 @@ fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction
     g_update_prompt_clickable = action != .none;
     g_update_prompt_action = action;
     g_update_prompt_until_ms = std.time.milliTimestamp() + if (action != .none) UPDATE_PROMPT_DURATION_MS else UPDATE_STATUS_DURATION_MS;
+}
+
+fn showUpdateInstallUnavailableToast() void {
+    const msg = std.fmt.bufPrint(&g_update_prompt_buf, "No update ready; run Check for Updates", .{}) catch return;
+    g_update_prompt_len = msg.len;
+    g_update_prompt_url_len = 0;
+    g_update_prompt_clickable = false;
+    g_update_prompt_action = .none;
+    g_update_prompt_until_ms = std.time.milliTimestamp() + UPDATE_STATUS_DURATION_MS;
 }
 
 pub fn showCloseShortcutConfirm(duration_ms: i64) void {
@@ -4163,15 +4214,32 @@ pub fn updatePromptHitTest(xpos: f64, ypos: f64, window_height: f32) bool {
         y_from_bottom >= rect.y and y_from_bottom <= rect.y + rect.h;
 }
 
+fn latestReleaseUrl(out: *[256]u8) []const u8 {
+    return if (AppWindow.g_app) |app|
+        app.copyLatestReleaseUrl(out) orelse update_check.latest_release_page_url
+    else
+        update_check.latest_release_page_url;
+}
+
+fn storedPromptUrl(out: *[256]u8) []const u8 {
+    return if (g_update_prompt_url_len > 0)
+        g_update_prompt_url_buf[0..g_update_prompt_url_len]
+    else
+        latestReleaseUrl(out);
+}
+
 pub fn openLatestRelease() void {
     const allocator = AppWindow.g_allocator orelse return;
     var url_buf: [256]u8 = undefined;
-    const url = if (g_update_prompt_url_len > 0)
-        g_update_prompt_url_buf[0..g_update_prompt_url_len]
-    else if (AppWindow.g_app) |app|
-        app.copyLatestReleaseUrl(&url_buf) orelse update_check.latest_release_page_url
-    else
-        update_check.latest_release_page_url;
+    const url = latestReleaseUrl(&url_buf);
+    const hwnd = if (AppWindow.g_window) |w| w.hwnd else null;
+    _ = system_browser.openUrl(allocator, hwnd, url);
+}
+
+fn openStoredPromptUrl() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    var url_buf: [256]u8 = undefined;
+    const url = storedPromptUrl(&url_buf);
     const hwnd = if (AppWindow.g_window) |w| w.hwnd else null;
     _ = system_browser.openUrl(allocator, hwnd, url);
 }
@@ -4179,9 +4247,18 @@ pub fn openLatestRelease() void {
 pub fn activateUpdatePrompt() void {
     switch (g_update_prompt_action) {
         .install_update => {
-            if (AppWindow.g_app) |app| app.requestUpdateInstall();
+            if (AppWindow.g_app) |app| {
+                if (app.hasInstallableUpdate()) {
+                    showUpdatePrompt(.{ .state = .downloading }, .none);
+                    app.requestUpdateInstall();
+                } else {
+                    showUpdateInstallUnavailableToast();
+                }
+            } else {
+                showUpdateInstallUnavailableToast();
+            }
         },
-        .open_release => openLatestRelease(),
+        .open_release => openStoredPromptUrl(),
         .none => {},
     }
 }

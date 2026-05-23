@@ -486,6 +486,16 @@ pub fn copyLatestReleaseUrl(self: *App, out: []u8) ?[]const u8 {
     return copyBounded(out, url);
 }
 
+pub fn hasInstallableUpdate(self: *App) bool {
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+
+    return !self.install_in_flight and
+        !self.install_worker_running and
+        self.available_update.state == .update_available and
+        self.available_update.asset_download_url.len > 0;
+}
+
 pub fn requestUpdateInstall(self: *App) void {
     self.joinFinishedUpdateThread();
     self.joinFinishedInstallThread();
@@ -983,6 +993,38 @@ test "app: pending install snapshot remains stable when update buffers change" {
     try testing.expectEqualStrings("phantty-windows-portable-webview2-v0.28.0.zip", app.pending_install_update.asset_name);
     try testing.expectEqualStrings("https://example.test/webview2.zip", app.pending_install_update.asset_download_url);
     try testing.expectEqual(@as(u64, 28), app.pending_install_update.asset_size);
+}
+
+test "app: installability reports only stored update with download asset" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    try testing.expect(!app.hasInstallableUpdate());
+
+    app.storeUpdateResult(.{
+        .state = .update_available,
+        .latest_version = "v0.28.0",
+        .release_url = "https://example.test/releases/v0.28.0",
+    }, .portable);
+    try testing.expect(!app.hasInstallableUpdate());
+
+    app.storeUpdateResult(.{
+        .state = .update_available,
+        .latest_version = "v0.28.0",
+        .release_url = "https://example.test/releases/v0.28.0",
+        .asset_name = "phantty-windows-portable-v0.28.0.zip",
+        .asset_download_url = "https://example.test/portable.zip",
+        .asset_size = 28,
+    }, .portable);
+    try testing.expect(app.hasInstallableUpdate());
+
+    app.update_mutex.lock();
+    app.install_in_flight = true;
+    app.update_mutex.unlock();
+    try testing.expect(!app.hasInstallableUpdate());
 }
 
 test "app: update check result does not replace install progress while install is active" {
