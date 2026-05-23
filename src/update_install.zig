@@ -33,7 +33,8 @@ pub fn runtimeFlavor(webview_enabled: bool, has_webview2_loader: bool) update_ch
 }
 
 fn fileExists(dir: std.fs.Dir, sub_path: []const u8) bool {
-    dir.access(sub_path, .{}) catch return false;
+    var file = dir.openFile(sub_path, .{}) catch return false;
+    file.close();
     return true;
 }
 
@@ -80,20 +81,37 @@ pub fn prepareWorkPaths(allocator: std.mem.Allocator, version: []const u8, asset
     return .{ .work_dir = work_dir, .zip_path = zip_path, .payload_dir = payload_dir };
 }
 
+fn siblingTempPath(allocator: std.mem.Allocator, path: []const u8, suffix: []const u8) ![]u8 {
+    return try std.mem.concat(allocator, u8, &.{ path, suffix });
+}
+
 pub fn extractZipToPayload(zip_path: []const u8, payload_dir: []const u8) !void {
+    const temp_payload_dir = try siblingTempPath(std.heap.page_allocator, payload_dir, ".tmp");
+    defer std.heap.page_allocator.free(temp_payload_dir);
+
+    std.fs.deleteTreeAbsolute(temp_payload_dir) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    errdefer std.fs.deleteTreeAbsolute(temp_payload_dir) catch {};
+
+    try std.fs.makeDirAbsolute(temp_payload_dir);
+    {
+        var payload = try std.fs.openDirAbsolute(temp_payload_dir, .{});
+        defer payload.close();
+
+        var zip_file = try std.fs.openFileAbsolute(zip_path, .{});
+        defer zip_file.close();
+        var read_buf: [16 * 1024]u8 = undefined;
+        var reader = zip_file.reader(&read_buf);
+        try std.zip.extract(payload, &reader, .{ .allow_backslashes = false });
+    }
+
     std.fs.deleteTreeAbsolute(payload_dir) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
-    try std.fs.makeDirAbsolute(payload_dir);
-    var payload = try std.fs.openDirAbsolute(payload_dir, .{});
-    defer payload.close();
-
-    var zip_file = try std.fs.openFileAbsolute(zip_path, .{});
-    defer zip_file.close();
-    var read_buf: [16 * 1024]u8 = undefined;
-    var reader = zip_file.reader(&read_buf);
-    try std.zip.extract(payload, &reader, .{ .allow_backslashes = true });
+    try std.fs.renameAbsolute(temp_payload_dir, payload_dir);
 }
 
 pub fn downloadAsset(allocator: std.mem.Allocator, url: []const u8, zip_path: []const u8) !void {
@@ -101,10 +119,13 @@ pub fn downloadAsset(allocator: std.mem.Allocator, url: []const u8, zip_path: []
         try std.fs.cwd().makePath(dir_path);
     }
 
-    var out = try std.fs.createFileAbsolute(zip_path, .{ .truncate = true });
-    defer out.close();
-    var file_buf: [16 * 1024]u8 = undefined;
-    var writer = out.writer(&file_buf);
+    const temp_zip_path = try siblingTempPath(allocator, zip_path, ".part");
+    defer allocator.free(temp_zip_path);
+    std.fs.deleteFileAbsolute(temp_zip_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    errdefer std.fs.deleteFileAbsolute(temp_zip_path) catch {};
 
     var client: std.http.Client = .{
         .allocator = allocator,
@@ -112,15 +133,30 @@ pub fn downloadAsset(allocator: std.mem.Allocator, url: []const u8, zip_path: []
     };
     defer client.deinit();
 
-    const response = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .GET,
-        .keep_alive = false,
-        .headers = .{ .user_agent = .{ .override = "phantty" } },
-        .response_writer = &writer.interface,
-    });
-    if (response.status != .ok) return error.DownloadFailed;
-    try writer.end();
+    const status = blk: {
+        var out = try std.fs.createFileAbsolute(temp_zip_path, .{ .truncate = true });
+        errdefer out.close();
+        var file_buf: [16 * 1024]u8 = undefined;
+        var writer = out.writer(&file_buf);
+
+        const response = try client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .keep_alive = false,
+            .headers = .{ .user_agent = .{ .override = "phantty" } },
+            .response_writer = &writer.interface,
+        });
+        try writer.end();
+        out.close();
+        break :blk response.status;
+    };
+    if (status != .ok) return error.DownloadFailed;
+
+    std.fs.deleteFileAbsolute(zip_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    try std.fs.renameAbsolute(temp_zip_path, zip_path);
 }
 
 pub fn currentExeDir(allocator: std.mem.Allocator) ![]u8 {
@@ -159,6 +195,8 @@ pub fn launchUpdater(
     child.stderr_behavior = .Ignore;
     child.create_no_window = true;
     try child.spawn();
+    std.os.windows.CloseHandle(child.id);
+    std.os.windows.CloseHandle(child.thread_handle);
 }
 
 test "update_install: runtime flavor preserves current portable flavor" {
@@ -181,4 +219,40 @@ test "update_install: payload validation requires packaged files" {
 
     try tmp.dir.writeFile(.{ .sub_path = "WebView2Loader.dll", .data = "dll" });
     try validatePayloadDir(tmp.dir, .{ .require_webview2_loader = true });
+}
+
+test "update_install: payload validation rejects directories for required files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("phantty.exe");
+    try tmp.dir.writeFile(.{ .sub_path = "phantty-updater.exe", .data = "updater" });
+    try tmp.dir.writeFile(.{ .sub_path = "version.txt", .data = "v0.28.0" });
+    try tmp.dir.makeDir("plugins");
+    try std.testing.expectError(error.MissingPhanttyExe, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false }));
+}
+
+test "update_install: payload validation rejects directory WebView2 loader when required" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "phantty.exe", .data = "exe" });
+    try tmp.dir.writeFile(.{ .sub_path = "phantty-updater.exe", .data = "updater" });
+    try tmp.dir.writeFile(.{ .sub_path = "version.txt", .data = "v0.28.0" });
+    try tmp.dir.makeDir("plugins");
+    try tmp.dir.makeDir("WebView2Loader.dll");
+    try std.testing.expectError(error.MissingWebView2Loader, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = true }));
+}
+
+test "update_install: payload validation requires plugins directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "phantty.exe", .data = "exe" });
+    try tmp.dir.writeFile(.{ .sub_path = "phantty-updater.exe", .data = "updater" });
+    try tmp.dir.writeFile(.{ .sub_path = "version.txt", .data = "v0.28.0" });
+
+    try std.testing.expectError(error.MissingPluginsDir, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false }));
+    try tmp.dir.writeFile(.{ .sub_path = "plugins", .data = "not a directory" });
+    try std.testing.expectError(error.MissingPluginsDir, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false }));
 }
