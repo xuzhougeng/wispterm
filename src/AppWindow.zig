@@ -183,6 +183,7 @@ pub fn deinit(self: *AppWindow) void {
     tab.g_tab_count = 0;
     tab.g_remote_client = null;
     if (is_last_window) deinitGlobalAgentHistoryStore(self.allocator);
+    markdown_preview_renderer.deinit();
     markdown_preview_panel.deinit();
     browser_panel.deinit();
 }
@@ -3180,6 +3181,7 @@ fn runMainLoop(self: *AppWindow) !void {
 
     // Clean up file explorer async state (join background thread, free job)
     file_explorer.deinit();
+    markdown_preview_renderer.deinit();
     markdown_preview_panel.deinit();
     browser_panel.deinit();
 

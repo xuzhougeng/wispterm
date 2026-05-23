@@ -1,4 +1,4 @@
-# File Explorer and Markdown Preview
+# File Explorer and Preview Panel
 
 Press `Ctrl+Shift+Alt+E` to open the left-side File Explorer. It follows the
 active environment:
@@ -7,10 +7,12 @@ active environment:
 - WSL sessions browse the default WSL distro through `wsl.exe`.
 - Phantty SSH profile sessions browse the remote host through OpenSSH helpers.
 
-Hold `Ctrl` and click a `.md` or `.txt` file in terminal output, or double-click
-a supported text file in the File Explorer, to open the right-side preview panel.
+Hold `Ctrl` and click a `.md`, `.txt`, or supported image file in terminal
+output, or double-click a supported file in the File Explorer, to open the
+right-side preview panel.
 Markdown previews render headings, lists, blockquotes, code blocks, inline code,
-links, and horizontal rules. Text files are shown as plain text.
+links, and horizontal rules. Text files are shown as plain text. Image previews
+decode PNG, JPEG, GIF, BMP, and WebP bytes directly into the panel.
 
 In SSH profile sessions, hold `Ctrl+Shift` over a file path in terminal output
 to underline it, then click to download that remote file to
@@ -31,7 +33,8 @@ Non-loopback URLs such as `https://10.10.x.x` or public websites open directly.
 Click the browser panel's URL bar to type a new address; press `Enter` to
 navigate. Drag the browser panel's left edge to resize it.
 
-The preview panel can be resized by dragging its left edge and scrolled with the
+The preview panel can be resized by dragging its left edge. Markdown and text
+previews scroll with the mouse wheel; image previews zoom in and out with the
 mouse wheel. `Ctrl+Shift+W` closes the preview panel before closing a split.
 
 SSH previews require Phantty's SSH profile metadata, so sessions launched from

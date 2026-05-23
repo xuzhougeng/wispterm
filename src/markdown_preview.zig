@@ -6,10 +6,12 @@
 const std = @import("std");
 
 pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+pub const MAX_IMAGE_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 
 pub const Kind = enum {
     markdown,
     text,
+    image,
 };
 
 const Link = struct {
@@ -21,10 +23,24 @@ const Link = struct {
 
 pub fn detectKind(path: []const u8) ?Kind {
     if (endsWithIgnoreCase(path, ".md") or endsWithIgnoreCase(path, ".markdown")) return .markdown;
+    inline for (image_file_suffixes) |suffix| {
+        if (endsWithIgnoreCase(path, suffix)) return .image;
+    }
     inline for (text_file_suffixes) |suffix| {
         if (endsWithIgnoreCase(path, suffix)) return .text;
     }
     return null;
+}
+
+pub fn sourceLimit(kind: Kind) usize {
+    return switch (kind) {
+        .markdown, .text => MAX_SOURCE_BYTES,
+        .image => MAX_IMAGE_SOURCE_BYTES,
+    };
+}
+
+pub fn isImagePath(path: []const u8) bool {
+    return detectKind(path) == .image;
 }
 
 const text_file_suffixes = &.{
@@ -44,10 +60,20 @@ const text_file_suffixes = &.{
     ".sh",
 };
 
+const image_file_suffixes = &.{
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".webp",
+};
+
 pub fn render(allocator: std.mem.Allocator, kind: Kind, title: []const u8, source: []const u8) ![]u8 {
     return switch (kind) {
         .markdown => renderMarkdown(allocator, title, source),
         .text => renderText(allocator, source),
+        .image => allocator.dupe(u8, source),
     };
 }
 
@@ -335,7 +361,11 @@ test "detect preview kind" {
     try std.testing.expectEqual(Kind.text, detectKind("config.yaml").?);
     try std.testing.expectEqual(Kind.text, detectKind("Cargo.toml").?);
     try std.testing.expectEqual(Kind.text, detectKind("deploy.sh").?);
-    try std.testing.expect(detectKind("image.png") == null);
+    try std.testing.expectEqual(Kind.image, detectKind("image.png").?);
+    try std.testing.expectEqual(Kind.image, detectKind("photo.JPEG").?);
+    try std.testing.expectEqual(MAX_SOURCE_BYTES, sourceLimit(.markdown));
+    try std.testing.expectEqual(MAX_SOURCE_BYTES, sourceLimit(.text));
+    try std.testing.expectEqual(MAX_IMAGE_SOURCE_BYTES, sourceLimit(.image));
 }
 
 test "markdown render strips structural markers" {

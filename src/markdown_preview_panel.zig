@@ -1,4 +1,4 @@
-//! State for the right-side Markdown/text preview panel.
+//! State for the right-side Markdown/text/image preview panel.
 
 const std = @import("std");
 const markdown_preview = @import("markdown_preview.zig");
@@ -21,7 +21,7 @@ pub const PreviewReadResult = union(enum) {
     failed,
     too_large,
 };
-const PreviewReadFn = *const fn (std.mem.Allocator, PreviewSourceKind, []const u8) PreviewReadResult;
+const PreviewReadFn = *const fn (std.mem.Allocator, PreviewSourceKind, markdown_preview.Kind, []const u8) PreviewReadResult;
 
 const PreviewJob = struct {
     request_id: u64 = 0,
@@ -50,10 +50,15 @@ pub threadlocal var g_title_buf: [256]u8 = undefined;
 pub threadlocal var g_title_len: usize = 0;
 pub threadlocal var g_path_buf: [512]u8 = undefined;
 pub threadlocal var g_path_len: usize = 0;
-pub threadlocal var g_source_buf: [markdown_preview.MAX_SOURCE_BYTES]u8 = undefined;
-pub threadlocal var g_source_len: usize = 0;
+threadlocal var g_source: ?[]u8 = null;
+threadlocal var g_content_generation: u64 = 0;
+threadlocal var g_image_zoom: f32 = 1.0;
 threadlocal var g_preview_request_id: u64 = 0;
 threadlocal var g_preview_jobs: std.ArrayListUnmanaged(*PreviewJob) = .empty;
+
+const IMAGE_ZOOM_MIN: f32 = 0.25;
+const IMAGE_ZOOM_MAX: f32 = 16.0;
+const IMAGE_ZOOM_STEP: f32 = 1.2;
 
 pub fn width() f32 {
     return if (isVisibleForActiveTab()) g_width else 0;
@@ -101,11 +106,21 @@ pub fn open(kind: markdown_preview.Kind, preview_title: []const u8, preview_path
 }
 
 fn applyContentForOwner(owner_tab: usize, kind: markdown_preview.Kind, preview_title: []const u8, preview_path: []const u8, source_text: []const u8, status: LoadStatus) void {
+    const owned_source = std.heap.page_allocator.dupe(u8, source_text) catch {
+        applyFailedWithoutSource(owner_tab, kind, preview_title, preview_path);
+        return;
+    };
+    applyOwnedContentForOwner(owner_tab, kind, preview_title, preview_path, owned_source, status);
+}
+
+fn applyFailedWithoutSource(owner_tab: usize, kind: markdown_preview.Kind, preview_title: []const u8, preview_path: []const u8) void {
     g_visible = true;
     g_owner_tab = owner_tab;
     g_kind = kind;
-    g_load_status = status;
+    g_load_status = .failed;
     g_scroll_offset = 0;
+    g_image_zoom = 1.0;
+    g_content_generation +%= 1;
 
     g_title_len = @min(preview_title.len, g_title_buf.len);
     @memcpy(g_title_buf[0..g_title_len], preview_title[0..g_title_len]);
@@ -113,8 +128,26 @@ fn applyContentForOwner(owner_tab: usize, kind: markdown_preview.Kind, preview_t
     g_path_len = @min(preview_path.len, g_path_buf.len);
     @memcpy(g_path_buf[0..g_path_len], preview_path[0..g_path_len]);
 
-    g_source_len = @min(source_text.len, g_source_buf.len);
-    @memcpy(g_source_buf[0..g_source_len], source_text[0..g_source_len]);
+    freeSource();
+}
+
+fn applyOwnedContentForOwner(owner_tab: usize, kind: markdown_preview.Kind, preview_title: []const u8, preview_path: []const u8, source_text: []u8, status: LoadStatus) void {
+    g_visible = true;
+    g_owner_tab = owner_tab;
+    g_kind = kind;
+    g_load_status = status;
+    g_scroll_offset = 0;
+    g_image_zoom = 1.0;
+    g_content_generation +%= 1;
+
+    g_title_len = @min(preview_title.len, g_title_buf.len);
+    @memcpy(g_title_buf[0..g_title_len], preview_title[0..g_title_len]);
+
+    g_path_len = @min(preview_path.len, g_path_buf.len);
+    @memcpy(g_path_buf[0..g_path_len], preview_path[0..g_path_len]);
+
+    freeSource();
+    g_source = source_text;
 }
 
 pub fn close() void {
@@ -123,9 +156,11 @@ pub fn close() void {
     g_owner_tab = null;
     g_load_status = .idle;
     g_scroll_offset = 0;
-    g_source_len = 0;
+    g_image_zoom = 1.0;
     g_title_len = 0;
     g_path_len = 0;
+    g_content_generation +%= 1;
+    freeSource();
 }
 
 pub fn title() []const u8 {
@@ -137,7 +172,28 @@ pub fn path() []const u8 {
 }
 
 pub fn source() []const u8 {
-    return g_source_buf[0..g_source_len];
+    return g_source orelse "";
+}
+
+pub fn contentGeneration() u64 {
+    return g_content_generation;
+}
+
+pub fn imageZoom() f32 {
+    return g_image_zoom;
+}
+
+pub fn zoomImageBySteps(steps: usize, zoom_in: bool) bool {
+    if (g_kind != .image) return false;
+    var next = g_image_zoom;
+    var remaining = @max(@as(usize, 1), steps);
+    while (remaining > 0) : (remaining -= 1) {
+        next = if (zoom_in) next * IMAGE_ZOOM_STEP else next / IMAGE_ZOOM_STEP;
+    }
+    next = @max(IMAGE_ZOOM_MIN, @min(IMAGE_ZOOM_MAX, next));
+    if (@abs(next - g_image_zoom) < 0.001) return false;
+    g_image_zoom = next;
+    return true;
 }
 
 pub fn scrollBy(delta: f32) void {
@@ -146,6 +202,7 @@ pub fn scrollBy(delta: f32) void {
 }
 
 fn estimatedMaxScroll() f32 {
+    if (g_kind == .image) return 0;
     const line_count = @max(@as(usize, 1), std.mem.count(u8, source(), "\n") + 1);
     return @max(0, @as(f32, @floatFromInt(line_count)) * 28 - 360);
 }
@@ -217,20 +274,24 @@ pub fn tickAsync() bool {
         if (job.request_id != g_preview_request_id) continue;
         if (!g_visible or g_owner_tab != job.owner_tab) continue;
 
-        const result_source = switch (job.status) {
-            .ready => job.source orelse FAILED_SOURCE,
-            .too_large => TOO_LARGE_SOURCE,
-            else => FAILED_SOURCE,
-        };
-        const result_status: LoadStatus = if (job.status == .ready and job.source == null) .failed else job.status;
-        applyContentForOwner(
-            job.owner_tab,
-            job.kind,
-            job.title_buf[0..job.title_len],
-            job.path_buf[0..job.path_len],
-            result_source,
-            result_status,
-        );
+        if (job.status == .ready) {
+            if (job.source) |result_source| {
+                job.source = null;
+                applyOwnedContentForOwner(
+                    job.owner_tab,
+                    job.kind,
+                    job.title_buf[0..job.title_len],
+                    job.path_buf[0..job.path_len],
+                    result_source,
+                    .ready,
+                );
+            } else {
+                applyContentForOwner(job.owner_tab, job.kind, job.title_buf[0..job.title_len], job.path_buf[0..job.path_len], FAILED_SOURCE, .failed);
+            }
+        } else {
+            const result_source = if (job.status == .too_large) TOO_LARGE_SOURCE else FAILED_SOURCE;
+            applyContentForOwner(job.owner_tab, job.kind, job.title_buf[0..job.title_len], job.path_buf[0..job.path_len], result_source, job.status);
+        }
         changed = changed or job.owner_tab == tab.g_active_tab;
     }
     return changed;
@@ -238,10 +299,11 @@ pub fn tickAsync() bool {
 
 pub fn deinit() void {
     resetPreviewJobs();
+    freeSource();
 }
 
 fn previewJobThread(job: *PreviewJob) void {
-    switch (job.read_fn(std.heap.page_allocator, job.source_kind, job.path_buf[0..job.path_len])) {
+    switch (job.read_fn(std.heap.page_allocator, job.source_kind, job.kind, job.path_buf[0..job.path_len])) {
         .ok => |source_text| {
             job.source = source_text;
             job.status = .ready;
@@ -252,11 +314,16 @@ fn previewJobThread(job: *PreviewJob) void {
     job.done.store(true, .release);
 }
 
-fn defaultPreviewRead(allocator: std.mem.Allocator, source_kind: PreviewSourceKind, preview_path: []const u8) PreviewReadResult {
-    const source_text = preview_source.readPreviewSourceForKind(allocator, source_kind, preview_path) catch |err| {
+fn defaultPreviewRead(allocator: std.mem.Allocator, source_kind: PreviewSourceKind, kind: markdown_preview.Kind, preview_path: []const u8) PreviewReadResult {
+    const source_text = preview_source.readPreviewSourceForKind(allocator, source_kind, preview_path, kind) catch |err| {
         return if (err == error.PreviewTooLarge) .too_large else .failed;
     };
     return .{ .ok = source_text };
+}
+
+fn freeSource() void {
+    if (g_source) |source_text| std.heap.page_allocator.free(source_text);
+    g_source = null;
 }
 
 fn destroyPreviewJob(job: *PreviewJob) void {
@@ -286,9 +353,11 @@ fn resetAsyncForTest() void {
     g_owner_tab = null;
     g_load_status = .idle;
     g_scroll_offset = 0;
+    g_image_zoom = 1.0;
     g_title_len = 0;
     g_path_len = 0;
-    g_source_len = 0;
+    g_content_generation +%= 1;
+    freeSource();
     g_preview_request_id = 0;
 }
 
@@ -316,14 +385,33 @@ test "markdown_preview_panel: visible only on owning active tab" {
     try std.testing.expect(isVisibleForActiveTab());
 }
 
-fn previewReadOkForTest(allocator: std.mem.Allocator, _: PreviewSourceKind, _: []const u8) PreviewReadResult {
+test "markdown_preview_panel: image zoom is image-only and clamped" {
+    resetAsyncForTest();
+    defer resetAsyncForTest();
+
+    g_kind = .text;
+    try std.testing.expect(!zoomImageBySteps(1, true));
+    try std.testing.expectEqual(@as(f32, 1.0), imageZoom());
+
+    g_kind = .image;
+    try std.testing.expect(zoomImageBySteps(2, true));
+    try std.testing.expect(imageZoom() > 1.0);
+
+    try std.testing.expect(zoomImageBySteps(100, true));
+    try std.testing.expectEqual(@as(f32, 16.0), imageZoom());
+
+    try std.testing.expect(zoomImageBySteps(100, false));
+    try std.testing.expectEqual(@as(f32, 0.25), imageZoom());
+}
+
+fn previewReadOkForTest(allocator: std.mem.Allocator, _: PreviewSourceKind, _: markdown_preview.Kind, _: []const u8) PreviewReadResult {
     const source_text = allocator.dupe(u8, "# Loaded\n") catch return .failed;
     return .{ .ok = source_text };
 }
 
-fn previewReadSlowOkForTest(allocator: std.mem.Allocator, source_kind: PreviewSourceKind, preview_path: []const u8) PreviewReadResult {
+fn previewReadSlowOkForTest(allocator: std.mem.Allocator, source_kind: PreviewSourceKind, kind: markdown_preview.Kind, preview_path: []const u8) PreviewReadResult {
     std.Thread.sleep(10 * std.time.ns_per_ms);
-    return previewReadOkForTest(allocator, source_kind, preview_path);
+    return previewReadOkForTest(allocator, source_kind, kind, preview_path);
 }
 
 fn tickPreviewJobsUntilIdleForTest() void {

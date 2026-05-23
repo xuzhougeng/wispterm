@@ -1,4 +1,4 @@
-//! Renderer for the right-side Markdown/text preview panel.
+//! Renderer for the right-side Markdown/text/image preview panel.
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
@@ -10,6 +10,7 @@ const font = AppWindow.font;
 const gl_init = AppWindow.gl_init;
 const c = @cImport({
     @cInclude("glad/gl.h");
+    @cInclude("stb_image.h");
 });
 
 const FOOTER_HEIGHT: f32 = 44;
@@ -17,6 +18,12 @@ const PAD_X: f32 = 16;
 const PAD_Y: f32 = 18;
 const LINE_GAP: f32 = 6;
 const MAX_RENDER_LINES: usize = 512;
+
+threadlocal var g_image_texture: c.GLuint = 0;
+threadlocal var g_image_width: c_int = 0;
+threadlocal var g_image_height: c_int = 0;
+threadlocal var g_image_generation: u64 = std.math.maxInt(u64);
+threadlocal var g_image_failed: bool = false;
 
 fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const clamped = @max(0.0, @min(1.0, t));
@@ -28,7 +35,10 @@ fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
 }
 
 pub fn render(window_width: f32, window_height: f32, titlebar_h: f32, right_offset: f32) void {
-    if (!panel.isVisibleForActiveTab()) return;
+    if (!panel.isVisibleForActiveTab()) {
+        unloadImageTexture();
+        return;
+    }
     const perf = ui_perf.begin("markdown_preview_renderer.render");
     defer perf.end();
 
@@ -88,6 +98,7 @@ fn renderFooter(
     const badge = switch (panel.g_kind) {
         .markdown => "MD",
         .text => "TXT",
+        .image => "IMG",
     };
     const text_y = (FOOTER_HEIGHT - font.g_titlebar_cell_height) / 2;
     const badge_end = titlebar.renderTextLimited(badge, panel_x + PAD_X, text_y, accent, 40);
@@ -120,6 +131,11 @@ fn renderDocument(
     const body_h = window_height - body_top - body_bottom;
     if (body_h <= 0) return;
 
+    if (panel.g_kind == .image) {
+        renderImageDocument(panel_x, panel_w, window_height, body_top, body_h, normal, muted, border);
+        return;
+    }
+
     const row_h = @max(22, font.g_titlebar_cell_height + LINE_GAP);
     var y_from_top: f32 = body_top - panel.g_scroll_offset;
     const max_w = panel_w - PAD_X * 2;
@@ -151,6 +167,171 @@ fn renderDocument(
         rendered += 1;
         if (y_from_top > body_top + body_h + row_h * 4) break;
     }
+}
+
+fn renderImageDocument(
+    panel_x: f32,
+    panel_w: f32,
+    window_height: f32,
+    body_top: f32,
+    body_h: f32,
+    normal: [3]f32,
+    muted: [3]f32,
+    border: [3]f32,
+) void {
+    const content_x = panel_x + PAD_X;
+    const content_w = panel_w - PAD_X * 2;
+    if (content_w <= 0) return;
+
+    switch (panel.g_load_status) {
+        .loading => {
+            renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Loading preview...", muted);
+            return;
+        },
+        .failed => {
+            renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Image preview failed", normal);
+            return;
+        },
+        .too_large => {
+            renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Preview too large", normal);
+            return;
+        },
+        .idle => return,
+        .ready => {},
+    }
+
+    if (!ensureImageTexture()) {
+        renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Image preview failed", normal);
+        return;
+    }
+
+    const image_w: f32 = @floatFromInt(g_image_width);
+    const image_h: f32 = @floatFromInt(g_image_height);
+    if (image_w <= 0 or image_h <= 0) return;
+
+    const scale = @min(content_w / image_w, body_h / image_h) * panel.imageZoom();
+    if (scale <= 0) return;
+
+    const draw_w = image_w * scale;
+    const draw_h = image_h * scale;
+    const draw_x = content_x + (content_w - draw_w) / 2;
+    const draw_top = body_top + (body_h - draw_h) / 2;
+    const draw_y = window_height - draw_top - draw_h;
+
+    const gl = AppWindow.gl;
+    const clip_x: c.GLint = @intFromFloat(@max(0, @floor(content_x)));
+    const clip_y: c.GLint = @intFromFloat(@max(0, @floor(window_height - body_top - body_h)));
+    const clip_w: c.GLsizei = @intFromFloat(@max(0, @ceil(content_w)));
+    const clip_h: c.GLsizei = @intFromFloat(@max(0, @ceil(body_h)));
+    if (clip_w <= 0 or clip_h <= 0) return;
+
+    const scissor_was_enabled = gl.IsEnabled.?(c.GL_SCISSOR_TEST) == c.GL_TRUE;
+    var previous_scissor: [4]c.GLint = undefined;
+    if (scissor_was_enabled) gl.GetIntegerv.?(c.GL_SCISSOR_BOX, &previous_scissor);
+    gl.Enable.?(c.GL_SCISSOR_TEST);
+    gl.Scissor.?(clip_x, clip_y, clip_w, clip_h);
+    gl_init.renderQuad(draw_x - 1, draw_y - 1, draw_w + 2, draw_h + 2, border);
+    drawImageTexture(draw_x, draw_y, draw_w, draw_h, window_height);
+    if (scissor_was_enabled) {
+        gl.Scissor.?(previous_scissor[0], previous_scissor[1], previous_scissor[2], previous_scissor[3]);
+    } else {
+        gl.Disable.?(c.GL_SCISSOR_TEST);
+    }
+}
+
+fn renderStatusMessage(
+    x: f32,
+    max_w: f32,
+    window_height: f32,
+    body_top: f32,
+    body_h: f32,
+    text: []const u8,
+    color: [3]f32,
+) void {
+    const row_h = @max(22, font.g_titlebar_cell_height + LINE_GAP);
+    const y_top = body_top + @max(0, (body_h - row_h) / 2);
+    const gl_y = window_height - y_top - row_h;
+    _ = titlebar.renderTextLimited(text, x, gl_y + (row_h - font.g_titlebar_cell_height) / 2, color, max_w);
+}
+
+fn ensureImageTexture() bool {
+    const generation = panel.contentGeneration();
+    if (g_image_generation == generation) return g_image_texture != 0 and !g_image_failed;
+
+    unloadImageTexture();
+    g_image_generation = generation;
+    g_image_failed = true;
+
+    const source = panel.source();
+    if (source.len == 0 or source.len > std.math.maxInt(c_int)) return false;
+
+    var w: c_int = 0;
+    var h: c_int = 0;
+    var n: c_int = 0;
+    const data = c.stbi_load_from_memory(@ptrCast(source.ptr), @intCast(source.len), &w, &h, &n, 4);
+    if (data == null or w <= 0 or h <= 0) return false;
+    defer c.stbi_image_free(data);
+
+    const gl = AppWindow.gl;
+    gl.GenTextures.?(1, &g_image_texture);
+    if (g_image_texture == 0) return false;
+
+    gl.BindTexture.?(c.GL_TEXTURE_2D, g_image_texture);
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+    gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, 1);
+    gl.TexImage2D.?(c.GL_TEXTURE_2D, 0, c.GL_RGBA8, w, h, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, data);
+
+    g_image_width = w;
+    g_image_height = h;
+    g_image_failed = false;
+    return true;
+}
+
+fn drawImageTexture(x: f32, y: f32, w: f32, h: f32, window_height: f32) void {
+    if (g_image_texture == 0 or gl_init.simple_color_shader == 0) return;
+    const gl = AppWindow.gl;
+
+    gl.UseProgram.?(gl_init.simple_color_shader);
+    gl_init.setProjectionForProgram(gl_init.simple_color_shader, window_height);
+    gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.simple_color_shader, "opacity"), 1.0);
+    gl.Uniform1i.?(gl.GetUniformLocation.?(gl_init.simple_color_shader, "text"), 0);
+
+    const vertices = [6][4]f32{
+        .{ x, y + h, 0, 0 },
+        .{ x, y, 0, 1 },
+        .{ x + w, y, 1, 1 },
+        .{ x, y + h, 0, 0 },
+        .{ x + w, y, 1, 1 },
+        .{ x + w, y + h, 1, 0 },
+    };
+
+    gl.ActiveTexture.?(c.GL_TEXTURE0);
+    gl.BindTexture.?(c.GL_TEXTURE_2D, g_image_texture);
+    gl.BindVertexArray.?(gl_init.vao);
+    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.vbo);
+    gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @sizeOf(@TypeOf(vertices)), &vertices);
+    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, 0);
+    gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
+    gl_init.g_draw_call_count += 1;
+}
+
+fn unloadImageTexture() void {
+    if (g_image_texture != 0) {
+        const gl = AppWindow.gl;
+        gl.DeleteTextures.?(1, &g_image_texture);
+        g_image_texture = 0;
+    }
+    g_image_width = 0;
+    g_image_height = 0;
+    g_image_generation = std.math.maxInt(u64);
+    g_image_failed = false;
+}
+
+pub fn deinit() void {
+    unloadImageTexture();
 }
 
 fn renderMarkdownLine(

@@ -14,12 +14,7 @@ fn endsWithIgnoreCase(text: []const u8, suffix: []const u8) bool {
 }
 
 fn isPreviewImagePath(path: []const u8) bool {
-    return endsWithIgnoreCase(path, ".png") or
-        endsWithIgnoreCase(path, ".jpg") or
-        endsWithIgnoreCase(path, ".jpeg") or
-        endsWithIgnoreCase(path, ".gif") or
-        endsWithIgnoreCase(path, ".bmp") or
-        endsWithIgnoreCase(path, ".webp");
+    return markdown_preview.isImagePath(path);
 }
 
 pub const SourceKind = union(enum) {
@@ -51,7 +46,7 @@ fn appendShellQuoted(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Alloc
     try list.append(allocator, '\'');
 }
 
-pub fn readLocalPreviewSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+pub fn readLocalPreviewSource(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
     const perf = ui_perf.begin("preview_source.read_local");
     defer perf.end();
 
@@ -63,60 +58,61 @@ pub fn readLocalPreviewSource(allocator: std.mem.Allocator, path: []const u8) ![
     };
     defer file.close();
 
-    const source = file.readToEndAlloc(allocator, markdown_preview.MAX_SOURCE_BYTES + 1) catch return error.PreviewFailed;
+    const source = file.readToEndAlloc(allocator, limit + 1) catch return error.PreviewFailed;
     errdefer allocator.free(source);
-    if (source.len > markdown_preview.MAX_SOURCE_BYTES) return error.PreviewTooLarge;
+    if (source.len > limit) return error.PreviewTooLarge;
     return source;
 }
 
-fn buildRemotePreviewReadCommand(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+fn buildRemotePreviewReadCommand(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
     var path_buf: [1024]u8 = undefined;
     const path_expr = file_backend.shellPathExpr(&path_buf, path) orelse return error.PreviewFailed;
-    return std.fmt.allocPrint(allocator, "head -c {} -- {s}", .{ markdown_preview.MAX_SOURCE_BYTES + 1, path_expr });
+    return std.fmt.allocPrint(allocator, "head -c {} -- {s}", .{ limit + 1, path_expr });
 }
 
-fn readSshPreviewSource(allocator: std.mem.Allocator, conn: *const Surface.SshConnection, path: []const u8) ![]u8 {
+fn readSshPreviewSource(allocator: std.mem.Allocator, conn: *const Surface.SshConnection, path: []const u8, limit: usize) ![]u8 {
     const perf = ui_perf.begin("preview_source.read_ssh");
     defer perf.end();
 
-    const command = buildRemotePreviewReadCommand(allocator, path) catch return error.PreviewFailed;
+    const command = buildRemotePreviewReadCommand(allocator, path, limit) catch return error.PreviewFailed;
     defer allocator.free(command);
 
     const source = scp.sshExec(allocator, conn, command) orelse return error.PreviewFailed;
     errdefer allocator.free(source);
-    if (source.len > markdown_preview.MAX_SOURCE_BYTES) return error.PreviewTooLarge;
+    if (source.len > limit) return error.PreviewTooLarge;
     return source;
 }
 
 pub fn readRemotePreviewSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (!file_explorer.g_has_ssh_conn) return error.PreviewFailed;
-    return readSshPreviewSource(allocator, &file_explorer.g_ssh_conn, path);
+    return readSshPreviewSource(allocator, &file_explorer.g_ssh_conn, path, markdown_preview.MAX_SOURCE_BYTES);
 }
 
-pub fn readPreviewSourceForKind(allocator: std.mem.Allocator, source_kind: SourceKind, path: []const u8) ![]u8 {
+pub fn readPreviewSourceForKind(allocator: std.mem.Allocator, source_kind: SourceKind, path: []const u8, kind: markdown_preview.Kind) ![]u8 {
+    const limit = markdown_preview.sourceLimit(kind);
     return switch (source_kind) {
-        .local => readLocalPreviewSource(allocator, path),
-        .wsl => readWslPreviewSource(allocator, path),
-        .remote => |conn| readSshPreviewSource(allocator, &conn, path),
+        .local => readLocalPreviewSource(allocator, path, limit),
+        .wsl => readWslPreviewSource(allocator, path, limit),
+        .remote => |conn| readSshPreviewSource(allocator, &conn, path, limit),
     };
 }
 
-fn buildWslPreviewReadCommand(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+fn buildWslPreviewReadCommand(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
     var path_buf: [1024]u8 = undefined;
     const path_expr = file_backend.wslPathExpr(&path_buf, path) orelse return error.PreviewFailed;
-    return std.fmt.allocPrint(allocator, "head -c {} -- {s}", .{ markdown_preview.MAX_SOURCE_BYTES + 1, path_expr });
+    return std.fmt.allocPrint(allocator, "head -c {} -- {s}", .{ limit + 1, path_expr });
 }
 
-pub fn readWslPreviewSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+pub fn readWslPreviewSource(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
     const perf = ui_perf.begin("preview_source.read_wsl");
     defer perf.end();
 
-    const command = buildWslPreviewReadCommand(allocator, path) catch return error.PreviewFailed;
+    const command = buildWslPreviewReadCommand(allocator, path, limit) catch return error.PreviewFailed;
     defer allocator.free(command);
 
     const source = file_backend.wslExec(allocator, command) orelse return error.PreviewFailed;
     errdefer allocator.free(source);
-    if (source.len > markdown_preview.MAX_SOURCE_BYTES) return error.PreviewTooLarge;
+    if (source.len > limit) return error.PreviewTooLarge;
     return source;
 }
 
@@ -160,15 +156,15 @@ pub fn resolveTerminalPreviewPath(allocator: std.mem.Allocator, surface: *Surfac
 
 pub fn readTerminalPreviewSource(allocator: std.mem.Allocator, surface: *Surface, path: []const u8) ![]u8 {
     return switch (surface.launch_kind) {
-        .wsl => readWslPreviewSource(allocator, path),
+        .wsl => readWslPreviewSource(allocator, path, markdown_preview.MAX_SOURCE_BYTES),
         .ssh => blk: {
             const conn = surface.ssh_connection orelse {
                 std.debug.print("Markdown preview over SSH needs Phantty SSH connection metadata; manual ssh sessions are not supported yet\n", .{});
                 return error.PreviewFailed;
             };
-            break :blk try readSshPreviewSource(allocator, &conn, path);
+            break :blk try readSshPreviewSource(allocator, &conn, path, markdown_preview.MAX_SOURCE_BYTES);
         },
-        .windows => readLocalPreviewSource(allocator, path),
+        .windows => readLocalPreviewSource(allocator, path, markdown_preview.MAX_SOURCE_BYTES),
     };
 }
 

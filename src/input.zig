@@ -2994,16 +2994,15 @@ fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
-    if (markdown_preview_panel.isVisibleForActiveTab()) {
-        const win = AppWindow.g_window orelse return;
-        const panel_x = @as(i32, @intFromFloat(@as(f32, @floatFromInt(win.width)) - markdown_preview_panel.width()));
-        const panel_right = win.width;
-        if (ev.xpos >= panel_x and ev.xpos < panel_right) {
+    if (hitTestMarkdownPreviewPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) {
+        if (markdown_preview_panel.g_kind == .image) {
+            _ = markdown_preview_panel.zoomImageBySteps(mouseWheelUnits(ev.delta), ev.delta > 0);
+        } else {
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
             markdown_preview_panel.scrollBy(delta);
-            AppWindow.g_force_rebuild = true;
-            return;
         }
+        AppWindow.g_force_rebuild = true;
+        return;
     }
     // Scroll in file explorer
     if (file_explorer.isVisibleForActiveTab()) {
