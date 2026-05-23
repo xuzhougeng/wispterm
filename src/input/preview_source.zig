@@ -136,12 +136,43 @@ fn joinUnixPreviewPath(allocator: std.mem.Allocator, cwd: []const u8, path: []co
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, path });
 }
 
+fn resolveUnixTerminalPath(
+    allocator: std.mem.Allocator,
+    cwd: ?[]const u8,
+    path: []const u8,
+    require_cwd_for_relative: bool,
+) ![]u8 {
+    if (isUnixAbsoluteOrHome(path)) return allocator.dupe(u8, path);
+    const current = cwd orelse {
+        if (require_cwd_for_relative) return error.CwdUnavailable;
+        return allocator.dupe(u8, path);
+    };
+    if (current.len == 0 and require_cwd_for_relative) return error.CwdUnavailable;
+    return joinUnixPreviewPath(allocator, current, path);
+}
+
+test "preview_source: ssh relative paths require a reported cwd" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectError(error.CwdUnavailable, resolveUnixTerminalPath(allocator, null, "pp.pep.fa", true));
+
+    const absolute = try resolveUnixTerminalPath(allocator, null, "/srv/project/data/sample.fa", true);
+    defer allocator.free(absolute);
+    try std.testing.expectEqualStrings("/srv/project/data/sample.fa", absolute);
+
+    const home = try resolveUnixTerminalPath(allocator, null, "~/sample.fa", true);
+    defer allocator.free(home);
+    try std.testing.expectEqualStrings("~/sample.fa", home);
+
+    const relative = try resolveUnixTerminalPath(allocator, "/srv/project/data", "sample.fa", true);
+    defer allocator.free(relative);
+    try std.testing.expectEqualStrings("/srv/project/data/sample.fa", relative);
+}
+
 pub fn resolveTerminalPreviewPath(allocator: std.mem.Allocator, surface: *Surface, path: []const u8) ![]u8 {
     return switch (surface.launch_kind) {
-        .wsl, .ssh => blk: {
-            const cwd = surface.getCwd() orelse "~";
-            break :blk try joinUnixPreviewPath(allocator, cwd, path);
-        },
+        .wsl => try resolveUnixTerminalPath(allocator, surface.getCwd() orelse "~", path, false),
+        .ssh => try resolveUnixTerminalPath(allocator, surface.getCwd(), path, true),
         .windows => blk: {
             if (std.fs.path.isAbsolute(path) or (path.len >= 2 and path[1] == ':')) {
                 break :blk try allocator.dupe(u8, path);

@@ -122,6 +122,50 @@ To confirm the running desktop version, open the command center with `Ctrl+Shift
 | **Alt+1**-**9**                                                                | Switch to tab 1-9 (when that tab exists)                                           |
 | **Ctrl+,**                                                                     | Open config file in the default editor                                             |
 
+## SSH current directory for downloads and uploads
+
+Phantty can download a relative file path from an SSH terminal output, and upload
+dragged files into the interactive SSH shell's current directory, only when the
+remote shell reports its current directory with OSC 7. This is the same terminal
+convention used by Ghostty shell integration.
+
+If OSC 7 is missing, helper `ssh.exe` / `scp.exe` commands start a fresh SSH
+session and usually see the login directory, not the directory you `cd`'d to in
+the interactive shell. In that case Phantty shows `SSH cwd unknown; click for
+setup` instead of guessing `~/file`.
+
+Add one of these snippets to the remote shell startup file, then start a new
+Phantty SSH session.
+
+For Bash, add this to `~/.bashrc`:
+
+```bash
+__phantty_report_cwd() {
+  printf '\033]7;file://%s%s\a' "${HOSTNAME:-localhost}" "$PWD"
+}
+PROMPT_COMMAND="__phantty_report_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+```
+
+For Zsh, add this to `~/.zshrc`:
+
+```zsh
+__phantty_report_cwd() {
+  printf '\033]7;file://%s%s\a' "${HOST:-localhost}" "$PWD"
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook chpwd __phantty_report_cwd
+add-zsh-hook precmd __phantty_report_cwd
+```
+
+For Fish, add this to `~/.config/fish/config.fish`:
+
+```fish
+function __phantty_report_cwd --on-variable PWD
+    printf '\e]7;file://%s%s\a' (hostname) (string escape --style=url $PWD)
+end
+__phantty_report_cwd
+```
+
 ## Credits
 
 - Original project: [arya-s/phantty](https://github.com/arya-s/phantty) - the

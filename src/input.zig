@@ -2096,8 +2096,13 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
     const path = extractDownloadPathAtCell(allocator, surface, cell_pos) orelse return false;
     defer allocator.free(path);
 
-    const resolved_path = resolveTerminalPreviewPath(allocator, surface, path) catch {
-        file_explorer.setTransferStatusForKind(.download, .failed, "Download failed");
+    const resolved_path = resolveTerminalPreviewPath(allocator, surface, path) catch |err| {
+        if (err == error.CwdUnavailable) {
+            file_explorer.setTransferStatusForKind(.download, .failed, "SSH cwd unknown");
+            overlays.showSshCwdFallbackPrompt();
+        } else {
+            file_explorer.setTransferStatusForKind(.download, .failed, "Download failed");
+        }
         return true;
     };
     defer allocator.free(resolved_path);

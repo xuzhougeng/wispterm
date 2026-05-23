@@ -258,8 +258,8 @@ ai-agent-output-limit  = 16384</code></pre>
             <p>在 <code>%APPDATA%\phantty\config</code> 中设置 <code>ssh-legacy-algorithms = true</code>。它会为仍依赖 <code>ssh-rsa</code>、<code>ssh-dss</code>、旧版 Diffie-Hellman KEX 或 CBC cipher 的主机补上兼容选项。</p>
           </div>
           <div class="feature" id="ssh-current-directory">
-            <h3>为什么 SSH 拖拽上传到了 home 目录？</h3>
-            <p>Phantty 只有在远端 shell 上报 OSC 7 时，才能知道当前交互 shell 的真实目录。如果没有 OSC 7，Phantty 会退回到新开的 <code>ssh.exe pwd</code> 辅助命令，而这个新会话通常会从登录目录开始。请让远端 shell 输出 OSC 7；配置片段见 <a href="https://github.com/xuzhougeng/phantty#ssh-current-directory-for-drag-and-drop-uploads" target="_blank" rel="noopener">README 说明</a>。</p>
+            <h3>为什么 SSH 相对路径下载或拖拽上传找不到当前目录？</h3>
+            <p>Phantty 只有在远端 shell 上报 OSC 7 时，才能下载 SSH 相对路径，并把拖拽文件上传到当前交互 shell 的真实目录。如果没有 OSC 7，辅助 <code>ssh.exe</code> / <code>scp.exe</code> 命令会启动一个新会话，通常只能看到登录目录，而不是你 <code>cd</code> 之后的目录。请让远端 shell 输出 OSC 7；配置片段见 <a href="https://github.com/xuzhougeng/phantty#ssh-current-directory-for-downloads-and-uploads" target="_blank" rel="noopener">README 说明</a>。</p>
           </div>
           <div class="feature">
             <h3>AI Chat / Agent 的 prompt 长度上限是多少？</h3>

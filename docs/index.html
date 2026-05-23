@@ -258,8 +258,8 @@ ai-agent-output-limit  = 16384</code></pre>
             <p>Set <code>ssh-legacy-algorithms = true</code> in <code>%APPDATA%\phantty\config</code>. This enables compatibility options for older hosts that still require <code>ssh-rsa</code>, <code>ssh-dss</code>, legacy Diffie-Hellman key exchange, or CBC ciphers.</p>
           </div>
           <div class="feature" id="ssh-current-directory">
-            <h3>Why did an SSH drag-and-drop upload go to my home directory?</h3>
-            <p>Phantty can upload to the interactive SSH shell's current directory only when the remote shell reports OSC 7. If OSC 7 is missing, Phantty falls back to a fresh <code>ssh.exe pwd</code> helper, which usually starts in the login directory. Configure your remote shell to emit OSC 7; see the <a href="https://github.com/xuzhougeng/phantty#ssh-current-directory-for-drag-and-drop-uploads" target="_blank" rel="noopener">setup snippets in README</a>.</p>
+            <h3>Why did an SSH download or upload lose the current directory?</h3>
+            <p>Phantty can download relative SSH paths and upload dragged files into the interactive SSH shell's current directory only when the remote shell reports OSC 7. If OSC 7 is missing, helper <code>ssh.exe</code> / <code>scp.exe</code> commands start a fresh session that usually sees the login directory, not the directory you <code>cd</code>'d to. Configure your remote shell to emit OSC 7; see the <a href="https://github.com/xuzhougeng/phantty#ssh-current-directory-for-downloads-and-uploads" target="_blank" rel="noopener">setup snippets in README</a>.</p>
           </div>
           <div class="feature">
             <h3>What is the AI Chat / Agent prompt length limit?</h3>
