@@ -38,6 +38,7 @@ comptime {
     _ = @import("split_tree.zig");
     _ = @import("ui_perf.zig");
     _ = @import("update_check.zig");
+    _ = @import("update_install.zig");
 }
 
 test "app version metadata is exposed for CLI and command center" {
