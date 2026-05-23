@@ -35,6 +35,8 @@ const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
     .{ .keys = "Ctrl+Shift+W", .action = "Close panel / tab; confirm last" },
     .{ .keys = "Ctrl+Shift+C / Ctrl+V", .action = "Copy / paste text" },
     .{ .keys = "Shift-click text", .action = "Select from anchor" },
+    .{ .keys = "Drag in AI / Ctrl+C", .action = "Copy answer selection" },
+    .{ .keys = "Shift-drag in AI", .action = "Copy answer selection" },
     .{ .keys = "Ctrl+A / Ctrl+C in AI", .action = "Select / copy chat" },
     .{ .keys = "Right-click selection", .action = "Copy selection" },
     .{ .keys = "Ctrl+Shift+V", .action = "Paste image" },

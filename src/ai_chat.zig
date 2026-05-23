@@ -72,6 +72,30 @@ pub const Message = struct {
     }
 };
 
+pub const TextSelectionRange = struct {
+    start: usize,
+    end: usize,
+};
+
+pub const TranscriptSelection = struct {
+    message_index: usize,
+    anchor: usize,
+    cursor: usize,
+
+    pub fn range(self: TranscriptSelection) ?TextSelectionRange {
+        if (self.anchor == self.cursor) return null;
+        return .{
+            .start = @min(self.anchor, self.cursor),
+            .end = @max(self.anchor, self.cursor),
+        };
+    }
+
+    pub fn rangeForMessage(self: TranscriptSelection, message_index: usize) ?TextSelectionRange {
+        if (self.message_index != message_index) return null;
+        return self.range();
+    }
+};
+
 const RequestMessage = struct {
     role: Role,
     content: []u8,
@@ -789,6 +813,7 @@ pub const Session = struct {
     skill_suggestions_loaded: bool = false,
     skill_suggestions_owned: bool = false,
     transcript_select_all: bool = false,
+    transcript_selection: ?TranscriptSelection = null,
     status_buf: [512]u8 = undefined,
     status_len: usize = 0,
     title_buf: [128]u8 = undefined,
@@ -1102,6 +1127,7 @@ pub const Session = struct {
             self.suggestion_selected = 0;
         }
         self.transcript_select_all = false;
+        self.transcript_selection = null;
         self.insertInputBytesLocked(buf[0..len]);
         self.ensureSkillSuggestionsForInputLocked();
     }
@@ -1118,6 +1144,7 @@ pub const Session = struct {
             self.suggestion_selected = 0;
         }
         self.transcript_select_all = false;
+        self.transcript_selection = null;
         self.insertInputBytesLocked(text);
         self.ensureSkillSuggestionsForInputLocked();
     }
@@ -1235,6 +1262,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.input_select_all = self.input_len > 0;
         self.transcript_select_all = !self.input_select_all and self.messages.items.len > 0;
+        self.transcript_selection = null;
     }
 
     pub fn clearSelection(self: *Session) void {
@@ -1243,12 +1271,62 @@ pub const Session = struct {
         self.clearSelectionLocked();
     }
 
+    pub fn beginTranscriptSelection(self: *Session, message_index: usize, byte_offset: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (message_index >= self.messages.items.len) {
+            self.clearSelectionLocked();
+            return;
+        }
+        const msg = self.messages.items[message_index];
+        if (msg.role != .assistant or msg.content.len == 0) {
+            self.clearSelectionLocked();
+            return;
+        }
+        const offset = clampUtf8Boundary(msg.content, byte_offset);
+        self.input_select_all = false;
+        self.transcript_select_all = false;
+        self.transcript_selection = .{
+            .message_index = message_index,
+            .anchor = offset,
+            .cursor = offset,
+        };
+    }
+
+    pub fn updateTranscriptSelection(self: *Session, message_index: usize, byte_offset: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var selection = self.transcript_selection orelse return;
+        if (selection.message_index != message_index or message_index >= self.messages.items.len) return;
+        const msg = self.messages.items[message_index];
+        if (msg.role != .assistant) return;
+        selection.cursor = clampUtf8Boundary(msg.content, byte_offset);
+        self.transcript_selection = selection;
+    }
+
+    pub fn finishTranscriptSelection(self: *Session) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const selection = self.transcript_selection orelse return false;
+        if (selection.range() == null) {
+            self.transcript_selection = null;
+            return false;
+        }
+        return true;
+    }
+
     pub fn allocClipboardText(self: *Session, allocator: std.mem.Allocator) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         if (self.input_select_all and self.input_len > 0) {
             return allocator.dupe(u8, self.input());
+        }
+        if (self.allocTranscriptSelectionTextLocked(allocator)) |selected| {
+            return selected;
+        } else |err| switch (err) {
+            error.NoSelection => {},
+            else => return err,
         }
         if (self.messages.items.len > 0) {
             return self.allocTranscriptClipboardTextLocked(allocator);
@@ -1633,6 +1711,7 @@ pub const Session = struct {
             return;
         }
         self.transcript_select_all = false;
+        self.transcript_selection = null;
         self.clampInputCursorLocked();
         if (self.input_cursor == 0) return;
         const start = previousUtf8Boundary(self.input(), self.input_cursor);
@@ -1654,6 +1733,7 @@ pub const Session = struct {
             return;
         }
         self.transcript_select_all = false;
+        self.transcript_selection = null;
         self.clampInputCursorLocked();
         if (self.input_cursor >= self.input_len) return;
         const end = nextUtf8Boundary(self.input(), self.input_cursor);
@@ -1824,6 +1904,7 @@ pub const Session = struct {
     fn clearSelectionLocked(self: *Session) void {
         self.input_select_all = false;
         self.transcript_select_all = false;
+        self.transcript_selection = null;
     }
 
     fn clearSubmittedInputLocked(self: *Session) void {
@@ -1868,6 +1949,18 @@ pub const Session = struct {
             }
         }
         return out.toOwnedSlice(allocator);
+    }
+
+    fn allocTranscriptSelectionTextLocked(self: *Session, allocator: std.mem.Allocator) (error{NoSelection} || std.mem.Allocator.Error)![]u8 {
+        const selection = self.transcript_selection orelse return error.NoSelection;
+        const range = selection.range() orelse return error.NoSelection;
+        if (selection.message_index >= self.messages.items.len) return error.NoSelection;
+        const msg = self.messages.items[selection.message_index];
+        if (msg.role != .assistant) return error.NoSelection;
+        const start = clampUtf8Boundary(msg.content, @min(range.start, msg.content.len));
+        const end = clampUtf8Boundary(msg.content, @min(range.end, msg.content.len));
+        if (start >= end) return error.NoSelection;
+        return allocator.dupe(u8, msg.content[start..end]);
     }
 
     fn buildRequestLocked(self: *Session) !*ChatRequest {
@@ -2143,6 +2236,12 @@ fn allocUsageFooter(allocator: std.mem.Allocator, started_ms: i64, usage: ?ApiUs
         .{ u.total_tokens, u.prompt_tokens, u.completion_tokens, u.prompt_cache_hit_tokens, u.prompt_cache_miss_tokens },
     ) catch "usage unavailable";
     return try allocator.dupe(u8, text);
+}
+
+fn clampUtf8Boundary(text: []const u8, cursor: usize) usize {
+    var i = @min(cursor, text.len);
+    while (i > 0 and i < text.len and (text[i] & 0xC0) == 0x80) : (i -= 1) {}
+    return i;
 }
 
 fn previousUtf8Boundary(text: []const u8, cursor: usize) usize {
@@ -5585,6 +5684,51 @@ test "ai chat clipboard text exports transcript when input is empty" {
     try std.testing.expect(std.mem.indexOf(u8, copied, "You:\r\nstatus?") != null);
     try std.testing.expect(std.mem.indexOf(u8, copied, "AI:\r\nready") != null);
     try std.testing.expect(std.mem.indexOf(u8, copied, "Reasoning:\r\nchecked state") != null);
+}
+
+test "ai chat clipboard text prefers selected assistant answer range" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    try session.messages.append(allocator, .{
+        .role = .assistant,
+        .content = try allocator.dupe(u8, "alpha beta gamma"),
+    });
+
+    session.beginTranscriptSelection(0, 6);
+    session.updateTranscriptSelection(0, 10);
+
+    const copied = try session.allocClipboardText(allocator);
+    defer allocator.free(copied);
+    try std.testing.expectEqualStrings("beta", copied);
+
+    session.clearSelection();
+    try std.testing.expect(session.transcript_selection == null);
+}
+
+test "ai chat transcript selection clamps to utf8 boundaries" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    try session.messages.append(allocator, .{
+        .role = .assistant,
+        .content = try allocator.dupe(u8, "你好吗"),
+    });
+
+    session.beginTranscriptSelection(0, 1);
+    session.updateTranscriptSelection(0, 8);
+
+    const copied = try session.allocClipboardText(allocator);
+    defer allocator.free(copied);
+    try std.testing.expectEqualStrings("你好", copied);
 }
 
 test "ai chat message clipboard exports one bubble" {

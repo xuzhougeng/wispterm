@@ -103,6 +103,8 @@ To confirm the running desktop version, open the command center with `Ctrl+Shift
 | **Ctrl++** / **Ctrl+-**                                                        | Increase / decrease font size                                                      |
 | **Ctrl+Shift+C**                                                               | Copy terminal selection, or copy AI Chat selection/transcript                     |
 | Shift-click terminal text                                                      | Select from the last terminal click anchor                                        |
+| Drag AI answer text                                                            | Select part of an AI answer for `Ctrl+C`                                          |
+| Shift-drag AI answer text                                                      | Select and copy part of an AI answer                                              |
 | **Ctrl+A** in AI Chat                                                          | Select the input text; when the input is empty, select the transcript             |
 | **Ctrl+C** in AI Chat                                                          | Copy the selected AI Chat text, or copy the transcript when nothing is selected   |
 | **D** / **Delete** in Agent History                                            | Delete the selected saved Agent session                                          |

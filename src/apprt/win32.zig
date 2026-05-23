@@ -672,6 +672,7 @@ pub fn LoadCursor(hInstance: ?HINSTANCE, lpCursorName: usize) ?HCURSOR {
 
 // IDC_* cursor resources (MAKEINTRESOURCE values)
 pub const IDC_ARROW: usize = 32512;
+pub const IDC_IBEAM: usize = 32513; // Text selection
 pub const IDC_SIZEWE: usize = 32644; // Horizontal resize (left-right)
 pub const IDC_SIZENS: usize = 32645; // Vertical resize (up-down)
 pub const IDC_SIZEALL: usize = 32646; // Four-way move

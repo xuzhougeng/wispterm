@@ -54,6 +54,11 @@ pub const HitTarget = union(enum) {
     toggle_reasoning: usize,
 };
 
+pub const TranscriptTextHit = struct {
+    message_index: usize,
+    byte_offset: usize,
+};
+
 pub const InputCursorRect = struct {
     x: f32,
     row: usize,
@@ -278,7 +283,11 @@ pub fn render(
                 renderToolCard(msg, content_x, cursor_top, content_w, block_h, window_height, transcript_selected);
             }
         } else if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
-            renderMessageBubble(msg.role, msg.content, content_x, cursor_top, content_w, block_h, window_height, transcript_selected, palette);
+            const selection_range = if (session.transcript_selection) |selection|
+                selection.rangeForMessage(message_index)
+            else
+                null;
+            renderMessageBubble(msg.role, msg.content, content_x, cursor_top, content_w, block_h, window_height, transcript_selected, selection_range, palette);
         }
         cursor_top += block_h;
 
@@ -302,7 +311,6 @@ pub fn render(
             }
         }
 
-        _ = message_index;
         cursor_top += BUBBLE_GAP;
     }
 
@@ -383,6 +391,81 @@ pub fn interactionHitTest(
                 }
                 cursor_top += r_h;
             }
+        }
+        if (msg.usage_footer) |footer| {
+            if (footer.len > 0) cursor_top += usageFooterHeight(footer, content_w);
+        }
+        cursor_top += BUBBLE_GAP;
+    }
+
+    return null;
+}
+
+pub fn transcriptTextHitTest(
+    session: *ai_chat.Session,
+    xpos: f64,
+    ypos: f64,
+    window_width: f32,
+    window_height: f32,
+    titlebar_offset: f32,
+    left_panels_w: f32,
+    right_panels_w: f32,
+) ?TranscriptTextHit {
+    const x = @round(left_panels_w);
+    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    if (w <= 1) return null;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+
+    const approval = session.approvalView();
+    const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
+    const input_h = inputLayout(x, w, session.input()).input_h;
+    const transcript_top = titlebar_offset + HEADER_H + 18;
+    const transcript_bottom = input_h + approval_h + 18;
+    const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
+    const viewport_bottom_top_px = window_height - transcript_bottom;
+    const content_w = w - LINE_PAD_X * 2;
+    const content_x = x + LINE_PAD_X;
+
+    var content_h: f32 = 0;
+    for (session.messages.items) |msg| {
+        content_h += messageBlockHeight(msg, content_w);
+        if (msg.reasoning) |reasoning| {
+            if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
+        }
+        if (msg.usage_footer) |footer| {
+            if (footer.len > 0) content_h += usageFooterHeight(footer, content_w);
+        }
+        content_h += BUBBLE_GAP;
+    }
+
+    const scroll_px = @min(session.scroll_px, @max(0.0, content_h - transcript_h));
+    const gravity_offset = @max(0.0, transcript_h - content_h);
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+    var cursor_top = transcript_top + gravity_offset - scroll_px;
+
+    for (session.messages.items, 0..) |msg, message_index| {
+        const block_h = messageBlockHeight(msg, content_w);
+        if (msg.role == .assistant and sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
+            const bubble = bubbleGeometry(msg.role, content_x, content_w);
+            const body_x = bubble.x + BUBBLE_PAD_X;
+            const body_top = cursor_top + BUBBLE_PAD_Y + lineHeight();
+            const body_w = @max(1.0, bubble.w - BUBBLE_PAD_X * 2);
+            const body_h = @max(1.0, block_h - BUBBLE_PAD_Y * 2 - lineHeight());
+            const hit_slop: f32 = 6;
+            if (px >= body_x - hit_slop and px <= body_x + body_w + hit_slop and py >= body_top and py <= body_top + body_h) {
+                return .{
+                    .message_index = message_index,
+                    .byte_offset = byteOffsetForMarkdownPoint(msg.content, body_x, body_top, body_w, px, py),
+                };
+            }
+        }
+        cursor_top += block_h;
+
+        if (msg.reasoning) |reasoning| {
+            if (reasoning.len > 0) cursor_top += reasoningCardHeight(msg, content_w);
         }
         if (msg.usage_footer) |footer| {
             if (footer.len > 0) cursor_top += usageFooterHeight(footer, content_w);
@@ -616,6 +699,7 @@ fn renderMessageBubble(
     h: f32,
     window_height: f32,
     selected: bool,
+    selection_range: ?ai_chat.TextSelectionRange,
     palette: MarkdownPalette,
 ) void {
     const bg = AppWindow.g_theme.background;
@@ -643,8 +727,9 @@ fn renderMessageBubble(
     const body_top = top_px + BUBBLE_PAD_Y + lineHeight();
     const body_w = @max(1.0, bubble.w - BUBBLE_PAD_X * 2);
     if (role == .assistant) {
-        _ = renderMarkdownContent(text, body_x, body_top, body_w, window_height, window_height, palette);
+        _ = renderMarkdownContent(text, body_x, body_top, body_w, window_height, window_height, palette, selection_range);
     } else {
+        renderWrappedSelection(text, 0, body_x, body_top, body_w, lineHeight(), selection_range, window_height, window_height);
         _ = renderWrappedText(text, body_x, body_top, body_w, lineHeight(), fg, window_height, window_height);
     }
 }
@@ -1204,6 +1289,7 @@ fn renderMarkdownContent(
     window_height: f32,
     clip_bottom_top_px: f32,
     palette: MarkdownPalette,
+    selection_range: ?ai_chat.TextSelectionRange,
 ) f32 {
     if (std.mem.trim(u8, text, " \t\r\n").len == 0) {
         return renderWrappedText("", x, top_px, max_w, lineHeight(), palette.normal, window_height, clip_bottom_top_px);
@@ -1221,6 +1307,7 @@ fn renderMarkdownContent(
             continue;
         }
 
+        const line_start = cursor;
         const info = nextSourceLine(text, cursor);
         cursor = info.next;
 
@@ -1248,6 +1335,17 @@ fn renderMarkdownContent(
                 if (prepared.underline) {
                     renderTopQuad(x, max_w, window_height, current_top + body_h - 3, 1, mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.32));
                 }
+                renderWrappedSelection(
+                    info.line,
+                    line_start,
+                    x + prepared.indent,
+                    current_top,
+                    @max(1.0, max_w - prepared.indent),
+                    prepared.line_h,
+                    selection_range,
+                    window_height,
+                    clip_bottom_top_px,
+                );
                 current_top = renderWrappedText(
                     prepared.text,
                     x + prepared.indent,
@@ -1263,6 +1361,147 @@ fn renderMarkdownContent(
     }
 
     return current_top - top_px;
+}
+
+fn byteOffsetForMarkdownPoint(
+    text: []const u8,
+    x: f32,
+    top_px: f32,
+    max_w: f32,
+    px: f32,
+    py: f32,
+) usize {
+    if (std.mem.trim(u8, text, " \t\r\n").len == 0) return 0;
+    if (py <= top_px) return 0;
+
+    const palette = markdownPalette(AppWindow.g_theme.background, AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color);
+    var cursor: usize = 0;
+    var current_top = top_px;
+    var in_code = false;
+
+    while (cursor < text.len) {
+        if (!in_code and isMarkdownTableStart(text, cursor)) {
+            const start = cursor;
+            const end = tableBlockEnd(text, cursor);
+            const block_h = tableBlockHeight(text, cursor, end);
+            if (py < current_top + block_h) {
+                return byteOffsetForTablePoint(text, start, end, current_top, px, py);
+            }
+            current_top += block_h;
+            cursor = end;
+            continue;
+        }
+
+        const line_start = cursor;
+        const info = nextSourceLine(text, cursor);
+        cursor = info.next;
+
+        var clean_buf: [1024]u8 = undefined;
+        const prepared = prepareMarkdownLine(&clean_buf, info.line, in_code, palette);
+        switch (prepared.kind) {
+            .blank => {
+                if (py < current_top + prepared.line_h) return line_start;
+                current_top += prepared.line_h;
+            },
+            .fence => {
+                if (py < current_top + prepared.line_h) return if (px < x + max_w * 0.5) line_start else line_start + info.line.len;
+                current_top += prepared.line_h;
+                in_code = !in_code;
+            },
+            .rule => {
+                if (py < current_top + prepared.line_h) return line_start + info.line.len;
+                current_top += prepared.line_h;
+            },
+            .text => {
+                const line_w = @max(1.0, max_w - prepared.indent);
+                const body_h = plainContentHeight(prepared.text, line_w, prepared.line_h);
+                if (py < current_top + body_h) {
+                    return byteOffsetForWrappedPoint(
+                        info.line,
+                        line_start,
+                        x + prepared.indent,
+                        current_top,
+                        line_w,
+                        prepared.line_h,
+                        px,
+                        py,
+                    );
+                }
+                current_top += body_h;
+            },
+        }
+    }
+
+    return text.len;
+}
+
+fn byteOffsetForTablePoint(text: []const u8, start: usize, end: usize, top_px: f32, px: f32, py: f32) usize {
+    _ = px;
+    const row_h = tableRowHeight();
+    const row_index: usize = @intFromFloat(@max(0.0, @floor((py - top_px) / row_h)));
+    var cursor = start;
+    var row: usize = 0;
+    while (cursor < end) {
+        const line_start = cursor;
+        const info = nextSourceLine(text, cursor);
+        cursor = info.next;
+        if (isTableSeparatorLine(info.line)) continue;
+        if (row == row_index) return line_start;
+        row += 1;
+    }
+    return end;
+}
+
+fn byteOffsetForWrappedPoint(
+    text: []const u8,
+    base_offset: usize,
+    x: f32,
+    top_px: f32,
+    max_w: f32,
+    line_h: f32,
+    px: f32,
+    py: f32,
+) usize {
+    if (py <= top_px) return base_offset;
+    var line_start: usize = 0;
+    var line_width: f32 = 0;
+    var i: usize = 0;
+    var current_top = top_px;
+    while (i < text.len) {
+        if (text[i] == '\n') {
+            if (py < current_top + line_h) return byteOffsetForLineX(text[line_start..i], base_offset + line_start, x, px);
+            current_top += line_h;
+            i += 1;
+            line_start = i;
+            line_width = 0;
+            continue;
+        }
+        const item = nextCodepoint(text, i);
+        if (line_width > 0 and line_width + item.advance > max_w) {
+            if (py < current_top + line_h) return byteOffsetForLineX(text[line_start..i], base_offset + line_start, x, px);
+            current_top += line_h;
+            line_start = i;
+            line_width = 0;
+            continue;
+        }
+        line_width += item.advance;
+        i += item.len;
+    }
+    if (py < current_top + line_h) return byteOffsetForLineX(text[line_start..i], base_offset + line_start, x, px);
+    return base_offset + text.len;
+}
+
+fn byteOffsetForLineX(text: []const u8, base_offset: usize, x: f32, px: f32) usize {
+    if (px <= x) return base_offset;
+    var width: f32 = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        const item = nextCodepoint(text, i);
+        if (px < x + width + item.advance * 0.5) return base_offset + i;
+        width += item.advance;
+        i += item.len;
+    }
+    return base_offset + text.len;
 }
 
 fn renderMarkdownFence(label: []const u8, x: f32, top_px: f32, max_w: f32, window_height: f32, palette: MarkdownPalette) void {
@@ -1473,6 +1712,70 @@ fn isTableSeparatorLine(line: []const u8) bool {
         if (dash_count == 0) return false;
     }
     return true;
+}
+
+fn renderWrappedSelection(
+    text: []const u8,
+    base_offset: usize,
+    x: f32,
+    top_px: f32,
+    max_w: f32,
+    line_h: f32,
+    selection_range: ?ai_chat.TextSelectionRange,
+    window_height: f32,
+    clip_bottom_top_px: f32,
+) void {
+    const range = selection_range orelse return;
+    if (range.start >= range.end) return;
+
+    var line_start: usize = 0;
+    var line_width: f32 = 0;
+    var i: usize = 0;
+    var current_top = top_px;
+    while (i < text.len) {
+        if (text[i] == '\n') {
+            renderTextLineSelection(text[line_start..i], base_offset + line_start, x, current_top, line_h, range, window_height, clip_bottom_top_px);
+            current_top += line_h;
+            i += 1;
+            line_start = i;
+            line_width = 0;
+            continue;
+        }
+        const item = nextCodepoint(text, i);
+        if (line_width > 0 and line_width + item.advance > max_w) {
+            renderTextLineSelection(text[line_start..i], base_offset + line_start, x, current_top, line_h, range, window_height, clip_bottom_top_px);
+            current_top += line_h;
+            line_start = i;
+            line_width = 0;
+            continue;
+        }
+        line_width += item.advance;
+        i += item.len;
+    }
+    renderTextLineSelection(text[line_start..i], base_offset + line_start, x, current_top, line_h, range, window_height, clip_bottom_top_px);
+}
+
+fn renderTextLineSelection(
+    text: []const u8,
+    base_offset: usize,
+    x: f32,
+    top_px: f32,
+    line_h: f32,
+    range: ai_chat.TextSelectionRange,
+    window_height: f32,
+    clip_bottom_top_px: f32,
+) void {
+    if (top_px + line_h < 0 or top_px > clip_bottom_top_px) return;
+    const line_end = base_offset + text.len;
+    const start = @max(range.start, base_offset);
+    const end = @min(range.end, line_end);
+    if (start >= end) return;
+    const local_start = start - base_offset;
+    const local_end = end - base_offset;
+    const prefix_w = measureText(text[0..local_start]);
+    const selected_w = @max(1.0, measureText(text[local_start..local_end]));
+    const selection_color = mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.44);
+    renderTopQuad(x + prefix_w, selected_w, window_height, top_px + @max(0.0, (line_h - font.g_titlebar_cell_height) * 0.5) - 1, @max(1.0, font.g_titlebar_cell_height + 3), selection_color);
 }
 
 fn renderWrappedText(

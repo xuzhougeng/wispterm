@@ -180,6 +180,9 @@ threadlocal var g_scrollbar_drag_top_pad: f32 = 0;
 threadlocal var g_ai_input_scroll_dragging: bool = false;
 threadlocal var g_ai_input_scroll_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_input_scroll_drag_offset: f32 = 0;
+threadlocal var g_ai_transcript_selecting: bool = false;
+threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
+threadlocal var g_ai_transcript_select_auto_copy: bool = false;
 pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
 pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
@@ -297,6 +300,9 @@ pub fn cancelTransientMouseState(win: ?*win32_backend.Window) void {
     g_scrollbar_drag_surface = null;
     g_ai_input_scroll_dragging = false;
     g_ai_input_scroll_chat = null;
+    g_ai_transcript_selecting = false;
+    g_ai_transcript_select_chat = null;
+    g_ai_transcript_select_auto_copy = false;
     if (win) |w| w.clearTransientInputQueues();
 }
 
@@ -2396,6 +2402,27 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                     toggleAiAgentPermission();
                     return;
                 }
+                if (!ev.ctrl and !ev.alt) {
+                    if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
+                        chat,
+                        xpos,
+                        ypos,
+                        @floatFromInt(fb.width),
+                        @floatFromInt(fb.height),
+                        @floatCast(titlebarHeight()),
+                        AppWindow.leftPanelsWidth(),
+                        AppWindow.rightPanelsWidthForWindow(fb.width),
+                    )) |hit| {
+                        chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
+                        g_ai_transcript_selecting = true;
+                        g_ai_transcript_select_chat = chat;
+                        g_ai_transcript_select_auto_copy = ev.shift;
+                        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_IBEAM));
+                        AppWindow.g_force_rebuild = true;
+                        AppWindow.g_cells_valid = false;
+                        return;
+                    }
+                }
                 if (AppWindow.ai_chat_renderer.inputScrollbarHitTest(
                     chat,
                     xpos,
@@ -2536,6 +2563,18 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
             g_scrollbar_drag_surface = null;
             g_ai_input_scroll_dragging = false;
             g_ai_input_scroll_chat = null;
+            if (g_ai_transcript_selecting) {
+                if (g_ai_transcript_select_chat) |chat| {
+                    if (chat.finishTranscriptSelection() and g_ai_transcript_select_auto_copy) copyAiChatToClipboard(chat);
+                }
+                g_ai_transcript_selecting = false;
+                g_ai_transcript_select_chat = null;
+                g_ai_transcript_select_auto_copy = false;
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+                return;
+            }
             if (g_markdown_preview_image_dragging) {
                 g_markdown_preview_image_dragging = false;
                 const cursor_id = if (hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready)
@@ -2767,6 +2806,25 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
     }
 }
 
+fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
+    const win = AppWindow.g_window orelse return;
+    const fb = win.getFramebufferSize();
+    if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
+        chat,
+        xpos,
+        ypos,
+        @floatFromInt(fb.width),
+        @floatFromInt(fb.height),
+        @floatCast(titlebarHeight()),
+        AppWindow.leftPanelsWidth(),
+        AppWindow.rightPanelsWidthForWindow(fb.width),
+    )) |hit| {
+        chat.updateTranscriptSelection(hit.message_index, hit.byte_offset);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+    }
+}
+
 fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     const xpos: f64 = @floatFromInt(ev.x);
     const ypos: f64 = @floatFromInt(ev.y);
@@ -2792,6 +2850,11 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     }
     if (g_ai_input_scroll_dragging) {
         if (g_ai_input_scroll_chat) |chat| applyAiInputScrollbarDrag(chat, ypos);
+        return;
+    }
+    if (g_ai_transcript_selecting) {
+        if (g_ai_transcript_select_chat) |chat| updateAiTranscriptSelectionDrag(chat, xpos, ypos);
+        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_IBEAM));
         return;
     }
     if (g_markdown_preview_image_dragging) {
