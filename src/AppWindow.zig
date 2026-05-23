@@ -69,6 +69,7 @@ pub const AppWindow = @This();
 allocator: std.mem.Allocator,
 app: *App,
 hwnd_bits: std.atomic.Value(usize) = .init(0),
+force_close_requested: std.atomic.Value(bool) = .init(false),
 
 /// Initialize an AppWindow with the given App.
 pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
@@ -154,6 +155,15 @@ pub fn getHwnd(self: *AppWindow) ?win32_backend.HWND {
     return if (bits == 0) null else @ptrFromInt(bits);
 }
 
+/// Request this window to exit without showing the interactive close prompt.
+pub fn requestForceClose(self: *AppWindow) void {
+    self.force_close_requested.store(true, .release);
+}
+
+fn consumeForceCloseRequest(self: *AppWindow) bool {
+    return self.force_close_requested.swap(false, .acq_rel);
+}
+
 /// Clean up resources.
 pub fn deinit(self: *AppWindow) void {
     // Persist the session to disk if restore-tabs-on-startup is enabled.
@@ -191,6 +201,18 @@ pub fn deinit(self: *AppWindow) void {
     markdown_preview_renderer.deinit();
     markdown_preview_panel.deinit();
     browser_panel.deinit();
+}
+
+test "AppWindow: forced close request is consumed once" {
+    var window = AppWindow{
+        .allocator = std.testing.allocator,
+        .app = undefined,
+    };
+
+    try std.testing.expect(!window.consumeForceCloseRequest());
+    window.requestForceClose();
+    try std.testing.expect(window.consumeForceCloseRequest());
+    try std.testing.expect(!window.consumeForceCloseRequest());
 }
 
 // ============================================================================
@@ -3117,6 +3139,12 @@ fn runMainLoop(self: *AppWindow) !void {
 
         // Poll Win32 messages (fills event queues + checks WM_QUIT)
         running = win.pollEvents() and !g_should_close;
+        if (self.consumeForceCloseRequest()) {
+            win.close_requested = false;
+            g_should_close = true;
+            running = false;
+            continue;
+        }
         if (win.close_requested) {
             win.close_requested = false;
             overlays.windowCloseConfirmOpen();

@@ -613,7 +613,7 @@ fn updateInstallThreadMain(app: *App) void {
     };
 
     app.storeInstallLaunched();
-    app.requestShutdown();
+    app.requestImmediateShutdown();
 }
 
 const PendingInstallSnapshot = struct {
@@ -902,6 +902,20 @@ pub fn requestShutdown(self: *App) void {
         if (window.getHwnd()) |hwnd| {
             // Post WM_CLOSE (0x0010) to the window
             _ = win32_backend.PostMessageW(hwnd, 0x0010, 0, 0);
+        }
+    }
+}
+
+/// Request all windows to close without showing interactive close confirmation.
+/// Used after launching the updater helper so the old process exits promptly.
+pub fn requestImmediateShutdown(self: *App) void {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+
+    for (self.windows.items) |window| {
+        window.requestForceClose();
+        if (window.getHwnd()) |hwnd| {
+            _ = win32_backend.PostMessageW(hwnd, win32_backend.WM_CLOSE, 0, 0);
         }
     }
 }

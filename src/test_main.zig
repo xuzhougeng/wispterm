@@ -11,6 +11,7 @@ comptime {
     _ = @import("ai_chat_composer_layout.zig");
     _ = @import("agent_detector.zig");
     _ = @import("App.zig");
+    _ = @import("AppWindow.zig");
     _ = @import("appwindow/tab.zig");
     _ = @import("scp.zig");
     _ = if (build_options.webview) @import("browser_panel.zig") else @import("browser_panel_stub.zig");
