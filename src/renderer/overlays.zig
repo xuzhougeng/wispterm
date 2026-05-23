@@ -3900,6 +3900,8 @@ fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromptAct
         .install_update
     else if (result.state == .update_available and result.release_url.len > 0)
         .open_release
+    else if (result.state == .failed and result.release_url.len > 0)
+        .open_release
     else if (result.state == .install_failed and result.release_url.len > 0)
         .open_release
     else

@@ -432,7 +432,7 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
             .asset_download_url = &asset_download_url_buf,
         },
     );
-    if (!show_failures and result.state != .update_available) {
+    if (!show_failures and result.state != .update_available and result.release_url.len == 0) {
         result = .{ .state = .idle };
     }
     app.storeUpdateResult(result, flavor);

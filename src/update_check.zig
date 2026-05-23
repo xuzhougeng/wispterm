@@ -239,7 +239,11 @@ pub fn evaluateReleaseForFlavor(current_version: []const u8, release: ReleaseInf
 
     return switch (compareVersions(current_version, release.tag_name)) {
         .newer => {
-            const asset = selectPortableAsset(release, flavor) orelse return .{ .state = .failed };
+            const asset = selectPortableAsset(release, flavor) orelse return .{
+                .state = .failed,
+                .latest_version = release.tag_name,
+                .release_url = release.html_url,
+            };
             return .{
                 .state = .update_available,
                 .latest_version = release.tag_name,
@@ -269,7 +273,10 @@ pub fn formatStatusMessage(buf: []u8, result: CheckResult) ![]const u8 {
         .installing => std.fmt.bufPrint(buf, "Installing update...", .{}),
         .updated => std.fmt.bufPrint(buf, "Update installed", .{}),
         .install_failed => std.fmt.bufPrint(buf, "Update install failed", .{}),
-        .failed => std.fmt.bufPrint(buf, "Update check failed", .{}),
+        .failed => if (result.latest_version.len > 0 and result.release_url.len > 0)
+            std.fmt.bufPrint(buf, "Manual update available: {s}", .{result.latest_version})
+        else
+            std.fmt.bufPrint(buf, "Update check failed", .{}),
     };
 }
 
@@ -537,4 +544,8 @@ test "update_check: missing matching asset fails instead of changing flavor" {
 
     const result = evaluateReleaseForFlavor("0.27.2", release, .portable_webview2);
     try std.testing.expectEqual(State.failed, result.state);
+    try std.testing.expectEqualStrings("v0.28.0", result.latest_version);
+    try std.testing.expectEqualStrings("https://github.com/xuzhougeng/phantty/releases/tag/v0.28.0", result.release_url);
+    try std.testing.expectEqualStrings("", result.asset_name);
+    try std.testing.expectEqualStrings("", result.asset_download_url);
 }

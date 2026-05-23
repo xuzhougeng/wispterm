@@ -30,6 +30,8 @@ pub const replacement_manifest = [_]ManifestEntry{
     .{ .path = "WebView2Loader.dll", .optional = true },
 };
 
+const absent_marker_dir = ".phantty-backup-absent";
+
 pub const ArgError = error{
     MissingPid,
     MissingSource,
@@ -346,6 +348,34 @@ fn copyPath(allocator: std.mem.Allocator, source: []const u8, target: []const u8
     }
 }
 
+fn targetEntryRequired(entry: ManifestEntry) bool {
+    return std.mem.eql(u8, entry.path, "phantty.exe");
+}
+
+fn absentMarkerPath(allocator: std.mem.Allocator, backup: []const u8, index: usize) ![]u8 {
+    const name = try std.fmt.allocPrint(allocator, "{d}", .{index});
+    defer allocator.free(name);
+    return try std.fs.path.join(allocator, &.{ backup, absent_marker_dir, name });
+}
+
+fn writeAbsentMarker(allocator: std.mem.Allocator, backup: []const u8, index: usize) !void {
+    const marker_dir = try std.fs.path.join(allocator, &.{ backup, absent_marker_dir });
+    defer allocator.free(marker_dir);
+    try std.fs.cwd().makePath(marker_dir);
+
+    const marker = try absentMarkerPath(allocator, backup, index);
+    defer allocator.free(marker);
+    var file = try std.fs.createFileAbsolute(marker, .{ .truncate = true });
+    file.close();
+}
+
+fn absentMarkerExists(allocator: std.mem.Allocator, backup: []const u8, index: usize) bool {
+    const marker = absentMarkerPath(allocator, backup, index) catch return false;
+    defer allocator.free(marker);
+    std.fs.accessAbsolute(marker, .{}) catch return false;
+    return true;
+}
+
 pub fn preflightReplacement(allocator: std.mem.Allocator, source: []const u8, target: []const u8) ReplacementError!void {
     for (replacement_manifest) |entry| {
         const source_path = joinAlloc(allocator, source, entry.path) catch return error.MissingSourcePayload;
@@ -361,7 +391,7 @@ pub fn preflightReplacement(allocator: std.mem.Allocator, source: []const u8, ta
         defer allocator.free(target_path);
         const target_kind = manifestPathKind(target_path);
         if (target_kind == null) {
-            if (entry.optional) continue;
+            if (!targetEntryRequired(entry)) continue;
             return error.MissingTargetPayload;
         }
         if (!manifestEntryMatches(target_path, entry.directory)) return error.MismatchedTargetPayload;
@@ -379,12 +409,12 @@ pub fn backupCurrentPayload(allocator: std.mem.Allocator, target: []const u8, ba
         else => return err,
     };
     try std.fs.makeDirAbsolute(backup);
-    for (replacement_manifest) |entry| {
+    for (replacement_manifest, 0..) |entry, index| {
         const target_path = try joinAlloc(allocator, target, entry.path);
         defer allocator.free(target_path);
         if (!pathExists(target_path)) {
-            if (entry.optional) continue;
-            return error.MissingTargetPayload;
+            try writeAbsentMarker(allocator, backup, index);
+            continue;
         }
         const backup_path = try joinAlloc(allocator, backup, entry.path);
         defer allocator.free(backup_path);
@@ -396,12 +426,17 @@ pub fn copyNewPayload(allocator: std.mem.Allocator, source: []const u8, target: 
     for (replacement_manifest) |entry| {
         const source_path = try joinAlloc(allocator, source, entry.path);
         defer allocator.free(source_path);
-        if (!pathExists(source_path)) {
-            if (entry.optional) continue;
-            return error.MissingSourcePayload;
-        }
         const target_path = try joinAlloc(allocator, target, entry.path);
         defer allocator.free(target_path);
+
+        if (!pathExists(source_path)) {
+            if (entry.optional) {
+                try deletePath(target_path, entry.directory);
+                continue;
+            }
+            return error.MissingSourcePayload;
+        }
+
         try deletePath(target_path, entry.directory);
         try copyPath(allocator, source_path, target_path, entry.directory);
     }
@@ -409,7 +444,7 @@ pub fn copyNewPayload(allocator: std.mem.Allocator, source: []const u8, target: 
 
 pub fn restoreBackup(allocator: std.mem.Allocator, backup: []const u8, target: []const u8) bool {
     var restored_all = true;
-    for (replacement_manifest) |entry| {
+    for (replacement_manifest, 0..) |entry, index| {
         const backup_path = joinAlloc(allocator, backup, entry.path) catch {
             restored_all = false;
             continue;
@@ -421,7 +456,7 @@ pub fn restoreBackup(allocator: std.mem.Allocator, backup: []const u8, target: [
         };
         defer allocator.free(target_path);
         if (!pathExists(backup_path)) {
-            if (!entry.optional) {
+            if (!entry.optional and !absentMarkerExists(allocator, backup, index)) {
                 restored_all = false;
                 continue;
             }
@@ -640,6 +675,25 @@ test "updater_core: optional WebView2 missing is allowed" {
     try replacePayload(std.testing.allocator, source, target);
 }
 
+test "updater_core: optional WebView2 is removed when selected payload omits it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writePayload(tmp.dir, "source", "new");
+    try writePayload(tmp.dir, "target", "old");
+    try tmp.dir.writeFile(.{ .sub_path = "target/WebView2Loader.dll", .data = "stale dll" });
+
+    const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
+    defer std.testing.allocator.free(source);
+    const target = try tmp.dir.realpathAlloc(std.testing.allocator, "target");
+    defer std.testing.allocator.free(target);
+
+    try replacePayload(std.testing.allocator, source, target);
+
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("target/WebView2Loader.dll", .{}));
+    try expectFileContents(tmp.dir, "target/phantty.exe", "new exe");
+}
+
 test "updater_core: restore removes optional target entry absent from backup" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -697,7 +751,7 @@ test "updater_core: preflight rejects missing required target before changes" {
 
     try writePayload(tmp.dir, "source", "new");
     try writePayload(tmp.dir, "target", "old");
-    try tmp.dir.deleteFile("target/phantty-updater.exe");
+    try tmp.dir.deleteFile("target/phantty.exe");
 
     const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
     defer std.testing.allocator.free(source);
@@ -705,9 +759,30 @@ test "updater_core: preflight rejects missing required target before changes" {
     defer std.testing.allocator.free(target);
 
     try std.testing.expectError(error.MissingTargetPayload, replacePayload(std.testing.allocator, source, target));
-    try expectFileContents(tmp.dir, "target/phantty.exe", "old exe");
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("target/phantty.exe", .{}));
     try expectFileContents(tmp.dir, "target/version.txt", "old version");
     try expectFileContents(tmp.dir, "target/plugins/core.plugin", "old plugin");
+}
+
+test "updater_core: missing target updater is repaired from new payload" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writePayload(tmp.dir, "source", "new");
+    try writePayload(tmp.dir, "target", "old");
+    try tmp.dir.deleteFile("target/phantty-updater.exe");
+
+    const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
+    defer std.testing.allocator.free(source);
+    const target = try tmp.dir.realpathAlloc(std.testing.allocator, "target");
+    defer std.testing.allocator.free(target);
+
+    try replacePayload(std.testing.allocator, source, target);
+
+    try expectFileContents(tmp.dir, "target/phantty.exe", "new exe");
+    try expectFileContents(tmp.dir, "target/phantty-updater.exe", "new updater");
+    try expectFileContents(tmp.dir, "target/version.txt", "new version");
+    try expectFileContents(tmp.dir, "target/plugins/core.plugin", "new plugin");
 }
 
 test "updater_core: preflight rejects target file manifest entry as directory" {
