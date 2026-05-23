@@ -41,13 +41,22 @@ Build the artifacts with:
 powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1
 ```
 
-This produces:
+Key outputs include:
 
 ```text
 zig-out\dist\portable\phantty.exe
+zig-out\dist\portable\phantty-updater.exe
+zig-out\dist\portable\version.txt
+zig-out\dist\portable\plugins\...
 zig-out\dist\portable-webview2\phantty.exe
+zig-out\dist\portable-webview2\phantty-updater.exe
 zig-out\dist\portable-webview2\WebView2Loader.dll
+zig-out\dist\portable-webview2\version.txt
+zig-out\dist\portable-webview2\plugins\...
 zig-out\dist\portable-no-webview\phantty.exe
+zig-out\dist\portable-no-webview\phantty-updater.exe
+zig-out\dist\portable-no-webview\version.txt
+zig-out\dist\portable-no-webview\plugins\...
 zig-out\dist\installer\phantty-setup.exe
 ```
 
@@ -65,6 +74,8 @@ Each tagged release uploads:
 - `phantty-windows-portable-vX.Y.Z.zip`
 - `phantty-windows-portable-webview2-vX.Y.Z.zip`
 - `phantty-windows-portable-no-webview-vX.Y.Z.zip`
+
+Each portable zip also includes `phantty-updater.exe`, a native helper launched by Phantty to update the current portable directory after the app exits.
 
 The unsigned IExpress installer is not published for now because Windows
 Defender can quarantine it as a false positive. Use the portable zip release
