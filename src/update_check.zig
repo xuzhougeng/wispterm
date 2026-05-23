@@ -16,6 +16,7 @@ pub const State = enum {
     ready_to_restart,
     installing,
     updated,
+    install_failed,
     failed,
 };
 
@@ -267,6 +268,7 @@ pub fn formatStatusMessage(buf: []u8, result: CheckResult) ![]const u8 {
         .ready_to_restart => std.fmt.bufPrint(buf, "Update ready; restart to install", .{}),
         .installing => std.fmt.bufPrint(buf, "Installing update...", .{}),
         .updated => std.fmt.bufPrint(buf, "Update installed", .{}),
+        .install_failed => std.fmt.bufPrint(buf, "Update install failed", .{}),
         .failed => std.fmt.bufPrint(buf, "Update check failed", .{}),
     };
 }
@@ -404,6 +406,12 @@ test "update_check: manual failure message is stable" {
     var buf: [96]u8 = undefined;
     const msg = try formatStatusMessage(&buf, .{ .state = .failed });
     try std.testing.expectEqualStrings("Update check failed", msg);
+}
+
+test "update_check: install failure message is distinct from check failure" {
+    var buf: [96]u8 = undefined;
+    const msg = try formatStatusMessage(&buf, .{ .state = .install_failed });
+    try std.testing.expectEqualStrings("Update install failed", msg);
 }
 
 test "update_check: copies result strings into caller buffers" {

@@ -97,10 +97,18 @@ update_release_url_buf: [256]u8,
 update_asset_name_buf: [update_check.asset_name_buffer_len]u8,
 update_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
 available_update: update_check.CheckResult,
+available_update_flavor: update_check.PortableFlavor,
+pending_install_update: update_check.CheckResult,
+pending_install_flavor: update_check.PortableFlavor,
+install_latest_version_buf: [32]u8,
+install_release_url_buf: [256]u8,
+install_asset_name_buf: [update_check.asset_name_buffer_len]u8,
+install_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
 update_thread: ?std.Thread,
 update_check_in_flight: bool,
 install_thread: ?std.Thread,
 install_in_flight: bool,
+install_worker_running: bool,
 startup_update_check_started: bool,
 
 // Window management
@@ -232,10 +240,18 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .update_asset_name_buf = undefined,
         .update_asset_download_url_buf = undefined,
         .available_update = .{ .state = .idle },
+        .available_update_flavor = .portable,
+        .pending_install_update = .{ .state = .idle },
+        .pending_install_flavor = .portable,
+        .install_latest_version_buf = undefined,
+        .install_release_url_buf = undefined,
+        .install_asset_name_buf = undefined,
+        .install_asset_download_url_buf = undefined,
         .update_thread = null,
         .update_check_in_flight = false,
         .install_thread = null,
         .install_in_flight = false,
+        .install_worker_running = false,
         .startup_update_check_started = false,
         .windows = .empty,
         .mutex = .{},
@@ -380,7 +396,7 @@ fn startUpdateCheck(self: *App, show_failures: bool) void {
     {
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
-        if (self.update_check_in_flight) return;
+        if (self.update_check_in_flight or self.install_in_flight or self.install_worker_running) return;
         self.update_check_in_flight = true;
         self.update_result = .{ .state = if (show_failures) .checking else .idle };
     }
@@ -419,12 +435,16 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
     if (!show_failures and result.state != .update_available) {
         result = .{ .state = .idle };
     }
-    app.storeUpdateResult(result);
+    app.storeUpdateResult(result, flavor);
 }
 
-fn storeUpdateResult(self: *App, result: update_check.CheckResult) void {
+fn storeUpdateResult(self: *App, result: update_check.CheckResult, flavor: update_check.PortableFlavor) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
+    if (self.install_in_flight or self.install_worker_running) {
+        self.update_check_in_flight = false;
+        return;
+    }
     const copied = update_check.copyResult(
         result,
         .{
@@ -437,6 +457,7 @@ fn storeUpdateResult(self: *App, result: update_check.CheckResult) void {
     self.update_result = copied;
     if (copied.state == .update_available) {
         self.available_update = copied;
+        self.available_update_flavor = flavor;
     }
     self.update_check_in_flight = false;
 }
@@ -472,21 +493,27 @@ pub fn requestUpdateInstall(self: *App) void {
     {
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
-        if (self.install_in_flight) return;
+        if (self.install_in_flight or self.install_worker_running) return;
         if (self.available_update.state != .update_available or self.available_update.asset_download_url.len == 0) {
-            self.update_result = .{ .state = .failed };
+            self.update_result = .{ .state = .install_failed };
+            return;
+        }
+        if (!self.copyPendingInstallUpdateLocked()) {
+            self.update_result = .{ .state = .install_failed };
             return;
         }
         self.install_in_flight = true;
-        self.update_result = .{ .state = .downloading };
+        self.install_worker_running = true;
+        self.update_result = self.pendingInstallResultWithStateLocked(.downloading);
     }
 
     const thread = std.Thread.spawn(.{}, updateInstallThreadMain, .{self}) catch |err| {
         std.debug.print("Update install: failed to spawn thread: {}\n", .{err});
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
+        self.install_worker_running = false;
         self.install_in_flight = false;
-        self.update_result = .{ .state = .failed };
+        self.update_result = self.pendingInstallResultWithStateLocked(.install_failed);
         return;
     };
 
@@ -500,19 +527,23 @@ fn updateInstallThreadMain(app: *App) void {
     var release_url_buf: [256]u8 = undefined;
     var asset_name_buf: [update_check.asset_name_buffer_len]u8 = undefined;
     var asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8 = undefined;
-    const update = blk: {
+    const snapshot = blk: {
         app.update_mutex.lock();
         defer app.update_mutex.unlock();
-        break :blk update_check.copyResult(
-            app.available_update,
-            .{
-                .latest_version = &latest_version_buf,
-                .release_url = &release_url_buf,
-                .asset_name = &asset_name_buf,
-                .asset_download_url = &asset_download_url_buf,
-            },
-        );
+        break :blk PendingInstallSnapshot{
+            .update = update_check.copyResult(
+                app.pending_install_update,
+                .{
+                    .latest_version = &latest_version_buf,
+                    .release_url = &release_url_buf,
+                    .asset_name = &asset_name_buf,
+                    .asset_download_url = &asset_download_url_buf,
+                },
+            ),
+            .flavor = app.pending_install_flavor,
+        };
     };
+    const update = snapshot.update;
     if (update.state != .update_available or update.asset_download_url.len == 0) {
         app.storeInstallFailure();
         return;
@@ -544,9 +575,8 @@ fn updateInstallThreadMain(app: *App) void {
         return;
     };
     defer payload.close();
-    const flavor = update_install.currentFlavor(app.allocator) catch .portable;
     update_install.validatePayloadDir(payload, .{
-        .require_webview2_loader = flavor == .portable_webview2,
+        .require_webview2_loader = snapshot.flavor == .portable_webview2,
     }) catch |err| {
         std.debug.print("Update install: payload validation failed: {}\n", .{err});
         app.storeInstallFailure();
@@ -572,20 +602,61 @@ fn updateInstallThreadMain(app: *App) void {
         return;
     };
 
+    app.storeInstallLaunched();
     app.requestShutdown();
+}
+
+const PendingInstallSnapshot = struct {
+    update: update_check.CheckResult,
+    flavor: update_check.PortableFlavor,
+};
+
+fn copyPendingInstallUpdateLocked(self: *App) bool {
+    const copied = update_check.copyResult(
+        self.available_update,
+        .{
+            .latest_version = &self.install_latest_version_buf,
+            .release_url = &self.install_release_url_buf,
+            .asset_name = &self.install_asset_name_buf,
+            .asset_download_url = &self.install_asset_download_url_buf,
+        },
+    );
+    if (copied.state != .update_available or copied.asset_download_url.len == 0) return false;
+    self.pending_install_update = copied;
+    self.pending_install_flavor = self.available_update_flavor;
+    return true;
+}
+
+fn pendingInstallResultWithStateLocked(self: *const App, state: update_check.State) update_check.CheckResult {
+    return .{
+        .state = state,
+        .latest_version = self.pending_install_update.latest_version,
+        .release_url = self.pending_install_update.release_url,
+        .asset_name = self.pending_install_update.asset_name,
+        .asset_download_url = self.pending_install_update.asset_download_url,
+        .asset_size = self.pending_install_update.asset_size,
+    };
 }
 
 fn storeTransientUpdateState(self: *App, state: update_check.State) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
-    self.update_result.state = state;
+    self.update_result = self.pendingInstallResultWithStateLocked(state);
 }
 
 fn storeInstallFailure(self: *App) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
+    self.install_worker_running = false;
     self.install_in_flight = false;
-    self.update_result = .{ .state = .failed };
+    self.update_result = self.pendingInstallResultWithStateLocked(.install_failed);
+}
+
+fn storeInstallLaunched(self: *App) void {
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+    self.install_worker_running = false;
+    self.update_result = self.pendingInstallResultWithStateLocked(.installing);
 }
 
 fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
@@ -600,7 +671,7 @@ fn joinFinishedInstallThread(self: *App) void {
     {
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
-        if (!self.install_in_flight) {
+        if (!self.install_worker_running) {
             thread = self.install_thread;
             self.install_thread = null;
         }
@@ -872,4 +943,117 @@ test "app: updateConfig refreshes configured shell command" {
     const actual = try std.unicode.utf16LeToUtf8Alloc(allocator, app.getShellCmd());
     defer allocator.free(actual);
     try testing.expectEqualStrings("pwsh.exe", actual);
+}
+
+test "app: pending install snapshot remains stable when update buffers change" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    app.storeUpdateResult(.{
+        .state = .update_available,
+        .latest_version = "v0.28.0",
+        .release_url = "https://example.test/releases/v0.28.0",
+        .asset_name = "phantty-windows-portable-webview2-v0.28.0.zip",
+        .asset_download_url = "https://example.test/webview2.zip",
+        .asset_size = 28,
+    }, .portable_webview2);
+
+    app.update_mutex.lock();
+    const copied = app.copyPendingInstallUpdateLocked();
+    app.update_mutex.unlock();
+    try testing.expect(copied);
+
+    app.storeUpdateResult(.{
+        .state = .update_available,
+        .latest_version = "v0.29.0",
+        .release_url = "https://example.test/releases/v0.29.0",
+        .asset_name = "phantty-windows-portable-no-webview-v0.29.0.zip",
+        .asset_download_url = "https://example.test/no-webview.zip",
+        .asset_size = 29,
+    }, .portable_no_webview);
+
+    app.update_mutex.lock();
+    defer app.update_mutex.unlock();
+    try testing.expectEqual(update_check.PortableFlavor.portable_webview2, app.pending_install_flavor);
+    try testing.expectEqualStrings("v0.28.0", app.pending_install_update.latest_version);
+    try testing.expectEqualStrings("https://example.test/releases/v0.28.0", app.pending_install_update.release_url);
+    try testing.expectEqualStrings("phantty-windows-portable-webview2-v0.28.0.zip", app.pending_install_update.asset_name);
+    try testing.expectEqualStrings("https://example.test/webview2.zip", app.pending_install_update.asset_download_url);
+    try testing.expectEqual(@as(u64, 28), app.pending_install_update.asset_size);
+}
+
+test "app: update check result does not replace install progress while install is active" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    app.storeUpdateResult(.{
+        .state = .update_available,
+        .latest_version = "v0.28.0",
+        .release_url = "https://example.test/releases/v0.28.0",
+        .asset_name = "phantty-windows-portable-v0.28.0.zip",
+        .asset_download_url = "https://example.test/portable.zip",
+        .asset_size = 28,
+    }, .portable);
+
+    app.update_mutex.lock();
+    try testing.expect(app.copyPendingInstallUpdateLocked());
+    app.install_in_flight = true;
+    app.install_worker_running = true;
+    app.update_result = app.pendingInstallResultWithStateLocked(.downloading);
+    app.update_mutex.unlock();
+
+    app.storeUpdateResult(.{
+        .state = .update_available,
+        .latest_version = "v0.29.0",
+        .release_url = "https://example.test/releases/v0.29.0",
+        .asset_name = "phantty-windows-portable-no-webview-v0.29.0.zip",
+        .asset_download_url = "https://example.test/no-webview.zip",
+        .asset_size = 29,
+    }, .portable_no_webview);
+
+    app.update_mutex.lock();
+    defer app.update_mutex.unlock();
+    try testing.expectEqual(update_check.State.downloading, app.update_result.state);
+    try testing.expectEqualStrings("v0.28.0", app.update_result.latest_version);
+    try testing.expectEqual(update_check.PortableFlavor.portable, app.pending_install_flavor);
+    try testing.expectEqualStrings("v0.28.0", app.available_update.latest_version);
+}
+
+test "app: install launch completion can be joined while duplicate installs stay blocked" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    app.storeUpdateResult(.{
+        .state = .update_available,
+        .latest_version = "v0.28.0",
+        .release_url = "https://example.test/releases/v0.28.0",
+        .asset_name = "phantty-windows-portable-v0.28.0.zip",
+        .asset_download_url = "https://example.test/portable.zip",
+        .asset_size = 28,
+    }, .portable);
+
+    app.update_mutex.lock();
+    try testing.expect(app.copyPendingInstallUpdateLocked());
+    app.install_in_flight = true;
+    app.install_worker_running = true;
+    app.update_result = app.pendingInstallResultWithStateLocked(.installing);
+    app.update_mutex.unlock();
+
+    app.storeInstallLaunched();
+
+    app.update_mutex.lock();
+    defer app.update_mutex.unlock();
+    try testing.expect(app.install_in_flight);
+    try testing.expect(!app.install_worker_running);
+    try testing.expectEqual(update_check.State.installing, app.update_result.state);
+    try testing.expectEqualStrings("https://example.test/releases/v0.28.0", app.update_result.release_url);
 }
