@@ -80,13 +80,16 @@ jobs:
         shell: pwsh
         run: |
           $portableExe = "zig-out\dist\portable\phantty.exe"
+          $portableUpdater = "zig-out\dist\portable\phantty-updater.exe"
           $portableVersion = "zig-out\dist\portable\version.txt"
           $portablePluginSkills = "zig-out\dist\portable\plugins\skills"
           $portableWebView2Exe = "zig-out\dist\portable-webview2\phantty.exe"
+          $portableWebView2Updater = "zig-out\dist\portable-webview2\phantty-updater.exe"
           $portableWebView2Version = "zig-out\dist\portable-webview2\version.txt"
           $portableWebView2Loader = "zig-out\dist\portable-webview2\WebView2Loader.dll"
           $portableWebView2PluginSkills = "zig-out\dist\portable-webview2\plugins\skills"
           $portableNoWebViewExe = "zig-out\dist\portable-no-webview\phantty.exe"
+          $portableNoWebViewUpdater = "zig-out\dist\portable-no-webview\phantty-updater.exe"
           $portableNoWebViewVersion = "zig-out\dist\portable-no-webview\version.txt"
           $portableNoWebViewPluginSkills = "zig-out\dist\portable-no-webview\plugins\skills"
           $skillFiles = @(
@@ -96,6 +99,9 @@ jobs:
 
           if (!(Test-Path $portableExe)) {
             throw "Portable executable not found: $portableExe"
+          }
+          if (!(Test-Path $portableUpdater)) {
+            throw "Portable updater not found: $portableUpdater"
           }
 
           if (!(Test-Path $portableVersion)) {
@@ -108,6 +114,9 @@ jobs:
 
           if (!(Test-Path $portableWebView2Exe)) {
             throw "Portable WebView2 executable not found: $portableWebView2Exe"
+          }
+          if (!(Test-Path $portableWebView2Updater)) {
+            throw "Portable WebView2 updater not found: $portableWebView2Updater"
           }
 
           if (!(Test-Path $portableWebView2Version)) {
@@ -124,6 +133,9 @@ jobs:
 
           if (!(Test-Path $portableNoWebViewExe)) {
             throw "Portable no-WebView executable not found: $portableNoWebViewExe"
+          }
+          if (!(Test-Path $portableNoWebViewUpdater)) {
+            throw "Portable no-WebView updater not found: $portableNoWebViewUpdater"
           }
 
           if (!(Test-Path $portableNoWebViewVersion)) {

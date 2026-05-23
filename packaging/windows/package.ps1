@@ -79,6 +79,7 @@ function Get-WebView2Loader {
 function Copy-PortablePayload {
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$UpdaterPath,
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$ReleaseVersion,
         [string]$WebView2LoaderPath
@@ -86,6 +87,7 @@ function Copy-PortablePayload {
 
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
     Copy-Item -Path $BinaryPath -Destination (Join-Path $TargetDir 'phantty.exe') -Force
+    Copy-Item -Path $UpdaterPath -Destination (Join-Path $TargetDir 'phantty-updater.exe') -Force
     Set-Content -Path (Join-Path $TargetDir 'version.txt') -Value $ReleaseVersion -Encoding ASCII
 
     $targetPluginsDir = Join-Path $TargetDir 'plugins'
@@ -129,9 +131,17 @@ $binaryPath = Join-Path $repoRoot 'zig-out\bin\phantty.exe'
 if (-not (Test-Path $binaryPath)) {
     throw "Expected release binary was not found: $binaryPath"
 }
+$updaterPath = Join-Path $repoRoot 'zig-out\bin\phantty-updater.exe'
+if (-not (Test-Path $updaterPath)) {
+    throw "Expected updater binary was not found: $updaterPath"
+}
 $noWebViewBinaryPath = Join-Path $noWebViewInstallDir 'bin\phantty.exe'
 if (-not $SkipNoWebViewBundle -and -not (Test-Path $noWebViewBinaryPath)) {
     throw "Expected no-WebView release binary was not found: $noWebViewBinaryPath"
+}
+$noWebViewUpdaterPath = Join-Path $noWebViewInstallDir 'bin\phantty-updater.exe'
+if (-not $SkipNoWebViewBundle -and -not (Test-Path $noWebViewUpdaterPath)) {
+    throw "Expected no-WebView updater binary was not found: $noWebViewUpdaterPath"
 }
 
 $portableDir = Join-Path $resolvedOutputDir 'portable'
@@ -150,12 +160,12 @@ if (-not $SkipWebView2Bundle) {
 
 Remove-Item -Path $portableDir, $portableWebView2Dir, $portableNoWebViewDir, $installerDir -Recurse -Force -ErrorAction SilentlyContinue
 
-Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableDir -ReleaseVersion $releaseVersion
+Copy-PortablePayload -BinaryPath $binaryPath -UpdaterPath $updaterPath -TargetDir $portableDir -ReleaseVersion $releaseVersion
 if ($webView2LoaderPath) {
-    Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableWebView2Dir -ReleaseVersion $releaseVersion -WebView2LoaderPath $webView2LoaderPath
+    Copy-PortablePayload -BinaryPath $binaryPath -UpdaterPath $updaterPath -TargetDir $portableWebView2Dir -ReleaseVersion $releaseVersion -WebView2LoaderPath $webView2LoaderPath
 }
 if (-not $SkipNoWebViewBundle) {
-    Copy-PortablePayload -BinaryPath $noWebViewBinaryPath -TargetDir $portableNoWebViewDir -ReleaseVersion $releaseVersion
+    Copy-PortablePayload -BinaryPath $noWebViewBinaryPath -UpdaterPath $noWebViewUpdaterPath -TargetDir $portableNoWebViewDir -ReleaseVersion $releaseVersion
 }
 
 if ($SkipInstaller) {

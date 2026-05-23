@@ -10,6 +10,11 @@ pub fn build(b: *std.Build) void {
         },
     });
     const optimize = b.standardOptimizeOption(.{});
+    const updater_mod = b.createModule(.{
+        .root_source_file = b.path("src/updater_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const webview = b.option(bool, "webview", "Enable the WebView2 browser panel") orelse true;
     const app_version = packageVersion(b);
 
@@ -146,6 +151,13 @@ pub fn build(b: *std.Build) void {
     exe.subsystem = if (optimize == .Debug) .Console else .Windows;
 
     b.installArtifact(exe);
+    const updater_exe = b.addExecutable(.{
+        .name = "phantty-updater",
+        .root_module = updater_mod,
+    });
+    updater_exe.subsystem = if (optimize == .Debug) .Console else .Windows;
+    b.installArtifact(updater_exe);
+
     b.installDirectory(.{
         .source_dir = b.path("plugins"),
         .install_dir = .bin,
