@@ -225,9 +225,9 @@ jobs:
             $assetNotes = @(
               "Windows assets included in this release:",
               "",
-              "- Portable: lightweight zip archive containing phantty.exe",
-              "- Portable WebView2: zip archive containing phantty.exe and WebView2Loader.dll for the embedded browser",
-              "- Portable no-WebView: zip archive containing phantty.exe built with embedded WebView2 disabled",
+              "- Portable: lightweight zip archive containing phantty.exe and phantty-updater.exe",
+              "- Portable WebView2: zip archive containing phantty.exe, phantty-updater.exe, and WebView2Loader.dll for the embedded browser",
+              "- Portable no-WebView: zip archive containing phantty.exe and phantty-updater.exe, built with embedded WebView2 disabled",
               "",
               "The unsigned IExpress setup executable is not published because Windows Defender can quarantine it as a false positive. Use one of the portable zip assets for now."
             ) -join "`n"
