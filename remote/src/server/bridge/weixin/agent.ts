@@ -19,6 +19,8 @@ export type WeixinRouteReply = {
 };
 
 const AI_AGENT_OPEN_TIMEOUT_MS = 2000;
+const AI_ACK_TEXT = "信息已收到，开始处理。\n发送 /stop 可停止本次处理。";
+const ESC = "\x1b";
 let nextAiAgentOpenSeq = 0;
 
 export async function routeWeixinText(input: WeixinRouteInput): Promise<WeixinRouteReply> {
@@ -32,14 +34,15 @@ export async function routeWeixinText(input: WeixinRouteInput): Promise<WeixinRo
   if (cmd === "/sessions") return { text: sessionsText(input.sessions) };
   if (cmd === "/status") return { text: statusText(input.settings, activeSessions) };
   if (cmd === "/use") return useSession(arg, input, activeSessions);
-  if (cmd && cmd !== "/term" && cmd !== "/keys" && cmd !== "/ai") {
+  if (cmd && cmd !== "/term" && cmd !== "/keys" && cmd !== "/ai" && cmd !== "/stop") {
     return { text: `未知命令：${cmd}\n\n${helpText()}` };
   }
-  if (cmd && !arg) return { text: usageText(cmd) };
+  if (cmd && cmd !== "/stop" && !arg) return { text: usageText(cmd) };
 
   const target = resolveTargetSession(input.settings, activeSessions);
   if (!target.session) return { text: target.error };
 
+  if (cmd === "/stop") return stopAi(target.session);
   if (cmd === "/term") return sendTerminal(target.session, arg, true);
   if (cmd === "/keys") return sendTerminal(target.session, arg, false);
   if (cmd === "/ai") return sendAi(target.session, arg, input.aiAgentOpenTimeoutMs);
@@ -110,12 +113,19 @@ function sendAiToSurface(session: RemoteSession, ai: { id: string; title: string
   const baselineTranscript = session.latestAiChatTranscript();
   if (!session.sendInput(ai.id, `${text}\r`)) return { text: "Phantty 当前离线，无法发送给 AI Agent。" };
   return {
-    text: "信息已收到，开始处理。",
+    text: AI_ACK_TEXT,
     ai: {
       session,
       baselineTranscript,
     },
   };
+}
+
+function stopAi(session: RemoteSession): WeixinRouteReply {
+  const ai = session.findAiChatSurface();
+  if (!ai) return { text: "当前没有 AI Agent 可停止。" };
+  if (!session.sendInput(ai.id, ESC)) return { text: "Phantty 当前离线，无法停止 AI Agent。" };
+  return { text: "已发送停止指令。" };
 }
 
 async function waitForAiChatSurface(session: RemoteSession, timeoutMs: number): Promise<{ id: string; title: string } | null> {
@@ -201,6 +211,7 @@ function helpText(): string {
     "/sessions 查看 Remote session",
     "/use <编号> 选择目标 session，也支持完整 session key",
     "/ai <内容> 发送给 AI Agent",
+    "/stop 停止当前 AI Agent 处理",
     "/term <命令> 显式发送到终端并回车",
     "/keys <文本> 显式发送原始文本到终端",
     "普通文本默认发送给 AI Agent。",

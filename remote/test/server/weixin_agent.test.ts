@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { routeWeixinText, maskSessionKey } from "../../src/server/bridge/weixin/agent.js";
 import { RemoteSession } from "../../src/server/session.js";
 
+const AI_ACK_TEXT = "信息已收到，开始处理。\n发送 /stop 可停止本次处理。";
+
 class FakeSocket {
   readyState = 1;
   private listeners = new Map<string, Array<(raw?: unknown) => void>>();
@@ -107,7 +109,7 @@ test("plain text routes to ai chat with carriage return", async () => {
     settings: { enabled: true, target_session: "alpha-secret", reply_timeout_ms: 10000 },
     sessions: [{ key: "alpha-secret", session: sessionWithLayout() }],
   });
-  assert.equal(reply.text, "信息已收到，开始处理。");
+  assert.equal(reply.text, AI_ACK_TEXT);
   assert.equal(reply.ai?.baselineTranscript, "AI\nready");
   assert.equal((sent[0] as { surfaceId: string }).surfaceId, "aichat0000000000");
   assert.equal((sent[0] as { data: string }).data, "73756d6d6172697a652063757272656e7420776f726b0d");
@@ -147,7 +149,7 @@ test("plain text auto-opens AI Agent when no AI Chat exists", async () => {
   });
 
   const reply = await pending;
-  assert.equal(reply.text, "信息已收到，开始处理。");
+  assert.equal(reply.text, AI_ACK_TEXT);
   assert.equal(reply.ai?.baselineTranscript, "AI\nnew session");
   assert.equal((sent.at(-1) as { surfaceId: string }).surfaceId, "aichat-new");
   assert.equal((sent.at(-1) as { data: string }).data, "73756d6d6172697a652063757272656e7420776f726b0d");
@@ -186,7 +188,7 @@ test("/ai auto-opens AI Agent and sends only the command content", async () => {
   });
 
   const reply = await pending;
-  assert.equal(reply.text, "信息已收到，开始处理。");
+  assert.equal(reply.text, AI_ACK_TEXT);
   assert.equal((sent.at(-1) as { surfaceId: string }).surfaceId, "aichat-new");
   assert.equal((sent.at(-1) as { data: string }).data, "636865636b207374617475730d");
 });
@@ -364,6 +366,34 @@ test("/term routes to writable terminal with carriage return", async () => {
   assert.equal((sent[0] as { data: string }).data, "7077640d");
 });
 
+test("/stop sends escape to the AI Agent surface without forwarding text", async () => {
+  sent = [];
+  const reply = await routeWeixinText({
+    text: "/stop",
+    settings: { enabled: true, target_session: "alpha-secret", reply_timeout_ms: 10000 },
+    sessions: [{ key: "alpha-secret", session: sessionWithLayout() }],
+  });
+
+  assert.equal(reply.text, "已发送停止指令。");
+  assert.equal(reply.ai, undefined);
+  assert.equal((sent[0] as { surfaceId: string }).surfaceId, "aichat0000000000");
+  assert.equal((sent[0] as { data: string }).data, "1b");
+});
+
+test("/stop does not open AI Agent when no AI Chat surface exists", async () => {
+  sent = [];
+  const reply = await routeWeixinText({
+    text: "/stop",
+    settings: { enabled: true, target_session: "alpha-secret", reply_timeout_ms: 10000 },
+    sessions: [{ key: "alpha-secret", session: sessionWithoutAiChat() }],
+    aiAgentOpenTimeoutMs: 100,
+  });
+
+  assert.equal(reply.text, "当前没有 AI Agent 可停止。");
+  assert.equal(reply.ai, undefined);
+  assert.equal(sent.length, 0);
+});
+
 test("targeted commands with empty args return usage and send nothing", async () => {
   for (const command of ["/term", "/ai", "/keys"]) {
     sent = [];
@@ -418,13 +448,16 @@ test("/sessions lists all remote sessions without claiming only online sessions"
 });
 
 test("/help describes sessions with neutral wording", async () => {
+  sent = [];
   const reply = await routeWeixinText({
     text: "/help",
-    settings: { enabled: true, target_session: "", reply_timeout_ms: 10000 },
-    sessions: [],
+    settings: { enabled: true, target_session: "alpha-secret", reply_timeout_ms: 10000 },
+    sessions: [{ key: "alpha-secret", session: sessionWithLayout() }],
   });
   assert.match(reply.text, /\/sessions 查看 Remote session/);
+  assert.match(reply.text, /\/stop 停止当前 AI Agent 处理/);
   assert.doesNotMatch(reply.text, /\/sessions 查看在线 Remote session/);
+  assert.equal(sent.length, 0);
 });
 
 test("unknown slash command returns help before resolving a target session", async () => {

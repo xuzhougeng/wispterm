@@ -16,6 +16,7 @@ const binding: WeixinBindingRecord = {
   account_id: "bot@im.bot",
   bound_at: "2026-05-14T00:00:00Z",
 };
+const AI_ACK_TEXT = "信息已收到，开始处理。\n发送 /stop 可停止本次处理。";
 
 test("shouldHandleWeixinMessage rejects group messages, bot echoes, and unexpected users", () => {
   assert.equal(shouldHandleWeixinMessage(binding, { group_id: "group", from_user_id: "user@im.wechat" }).ok, false);
@@ -294,7 +295,7 @@ test("WeixinPoller does not save cursor after stop during an in-flight send", as
   releaseSend();
   await run;
 
-  assert.deepEqual(events, ["send:信息已收到，开始处理。"]);
+  assert.deepEqual(events, [`send:${AI_ACK_TEXT}`]);
   assert.equal(scheduler.scheduledCount(), 0);
 });
 
@@ -383,7 +384,7 @@ test("WeixinPoller sends AI progress checkpoints at 10, 30, 60, and 120 seconds 
   );
 
   await poller.runOnceForTest();
-  assert.deepEqual(events, ["input:hello\r", "send:信息已收到，开始处理。"]);
+  assert.deepEqual(events, ["input:hello\r", `send:${AI_ACK_TEXT}`]);
   assert.deepEqual(scheduler.delays().slice(0, 4), [10000, 30000, 60000, 120000]);
 
   transcript = `${transcript}\r\n\r\nStatus:\r\nRunning tools...\r\n\r\nTool:\r\nterminal_snapshot`;
