@@ -20,6 +20,7 @@ comptime {
     _ = @import("file_explorer.zig");
     _ = @import("input.zig");
     _ = @import("input_shortcuts.zig");
+    _ = @import("keybind.zig");
     _ = @import("kitty_graphics_unit.zig");
     _ = @import("link_open.zig");
     _ = @import("markdown_preview.zig");

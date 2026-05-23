@@ -12,6 +12,7 @@ const cell_renderer = AppWindow.cell_renderer;
 const gl_init = AppWindow.gl_init;
 const win32_backend = @import("../apprt/win32.zig");
 const agent_detector = @import("../agent_detector.zig");
+const keybind = @import("../keybind.zig");
 const c = @cImport({
     @cInclude("glad/gl.h");
 });
@@ -1350,7 +1351,10 @@ pub fn renderPlaceholderTab(window_width: f32, window_height: f32, top_pad: f32)
     gl.BindVertexArray.?(gl_init.vao);
 
     const msg = "Tabs not yet implemented";
-    const hint = "Press Ctrl+Shift+T to open";
+    var shortcut_buf: [64]u8 = undefined;
+    const shortcut = keybind.formatActionShortcut(&AppWindow.g_keybinds, .new_session, &shortcut_buf) orelse "the new session shortcut";
+    var hint_buf: [128]u8 = undefined;
+    const hint = std.fmt.bufPrint(&hint_buf, "Press {s} to open", .{shortcut}) catch "Press the new session shortcut to open";
     const text_color = [3]f32{ 0.4, 0.4, 0.4 };
 
     // Center the message vertically and horizontally

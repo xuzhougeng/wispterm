@@ -7,8 +7,9 @@ main config path is resolved in this order:
 2. `phantty.conf` next to `phantty.exe` (portable profile)
 3. `%APPDATA%\phantty\config`
 
-Press `Ctrl+,` to open the config file in your default editor, or run
-`phantty.exe --show-config-path` to print the resolved path.
+Press the configured `open_config` shortcut (default `Ctrl+,`) to open the
+config file in your default editor, or run `phantty.exe --show-config-path` to
+print the resolved path.
 
 CLI flags override config file values (last wins). `config-file = extra.conf`
 and `--config-file extra.conf` include additional config files; they do not
@@ -26,6 +27,8 @@ theme = Poimandres
 window-height = 32
 window-width = 120
 quake-mode = true
+keybind = global:ctrl+backquote=toggle_quake
+keybind = ctrl+shift+p=toggle_command_palette
 scrollback-limit = 10000000
 custom-shader = path/to/shader.glsl
 background-image = C:\Users\me\Pictures\wallpaper.png
@@ -56,7 +59,8 @@ remote-session-key = Workstation
 | `background-image-mode`     | `fill`     | Image scaling: `fill`, `fit`, `center`, or `tile`                                                                                                                                                                       |
 | `window-height`             | `0` (auto) | Initial height in cells (min: 4, 0 = auto 80x24)                                                                                                                                                                        |
 | `window-width`              | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80x24)                                                                                                                                                                        |
-| `quake-mode`                | `true`     | Start as a Quake-style drop-down terminal. `Ctrl+Backquote` hides or shows the same window while preserving terminal state.                                                                                              |
+| `quake-mode`                | `true`     | Start as a Quake-style drop-down terminal. The `toggle_quake` keybind hides or shows the same window while preserving terminal state.                                                                                    |
+| `keybind`                   | defaults   | Configure an app-level shortcut. Can be repeated. Syntax: `keybind = [global:]modifier+key=action`; use `keybind = clear` before custom bindings to remove all defaults.                                                 |
 | `scrollback-limit`          | `10000000` | Scrollback buffer limit in bytes                                                                                                                                                                                        |
 | `restore-tabs-on-startup`   | `false`    | Persist tab/split layout to `%APPDATA%\phantty\session.json` on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--cwd`) take precedence and skip restore. |
 | `auto-update-check`         | `true`     | Check GitHub Releases after startup and show a clickable prompt when a newer version is available. Set to `false` to disable startup checks.                                                                             |
@@ -79,3 +83,27 @@ local Phantty instances: the first process gets `mypass`, the next gets
 `mypass_1`, then `mypass_2`, `mypass_3`, and so on. This only chooses the relay
 session key that the remote browser enters; it is separate from the web admin
 login password configured on the relay server.
+
+## Keyboard Shortcuts
+
+Phantty follows Ghostty's `keybind = trigger=action` style for app-level
+shortcuts. Prefix a binding with `global:` when the shortcut should be
+registered with Windows; the first global use case is Quake mode.
+
+```text
+keybind = alt+f10=toggle_command_palette
+keybind = ctrl+shift+t=new_session
+keybind = global:ctrl+backquote=toggle_quake
+```
+
+Supported modifiers are `ctrl`, `shift`, `alt`, and `win`. Common key names
+include letters, digits, `f1`-`f24`, `backquote`, `comma`, `plus`, `minus`,
+`bracket_left`, `bracket_right`, `enter`, `tab`, `escape`, and arrow keys.
+
+Current app-level actions include `toggle_command_palette`, `toggle_quake`,
+`new_session`, `new_window`, `split_right`, `toggle_file_explorer`,
+`toggle_sidebar`, `close_panel_or_tab`, `toggle_maximize`,
+`font_size_increase`, `font_size_decrease`, `copy`, `paste`, `paste_image`,
+`focus_left`, `focus_right`, `focus_up`, `focus_down`, `focus_previous`,
+`focus_next`, `equalize_splits`, `next_tab`, `previous_tab`, `switch_tab_1`
+through `switch_tab_9`, and `open_config`.

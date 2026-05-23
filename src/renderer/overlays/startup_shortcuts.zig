@@ -5,6 +5,7 @@ const AppWindow = @import("../../AppWindow.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const gl_init = AppWindow.gl_init;
+const keybind = @import("../../keybind.zig");
 const primitives = @import("primitives.zig");
 const mixColor = primitives.mixColor;
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
@@ -16,34 +17,47 @@ const c = @cImport({
 pub const STARTUP_SHORTCUTS_DURATION_MS: i64 = 12000;
 pub const STARTUP_SHORTCUTS_FADE_MS: i64 = 800;
 
+const StartupShortcutKind = enum {
+    literal,
+    action,
+    pair,
+    quad,
+};
+
 const StartupShortcut = struct {
     keys: []const u8,
+    kind: StartupShortcutKind = .literal,
+    first: ?keybind.Action = null,
+    second: ?keybind.Action = null,
+    third: ?keybind.Action = null,
+    fourth: ?keybind.Action = null,
+    separator: []const u8 = " / ",
     action: []const u8,
 };
 
 const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
-    .{ .keys = "Ctrl+`", .action = "Show / hide Quake window" },
-    .{ .keys = "Ctrl+Shift+P", .action = "Command center" },
-    .{ .keys = "Ctrl+Shift+T", .action = "New session" },
-    .{ .keys = "Ctrl+Shift+B", .action = "Toggle sidebar" },
-    .{ .keys = "Ctrl+Shift+O", .action = "Split right" },
-    .{ .keys = "Ctrl+Shift+Alt+E", .action = "File explorer" },
+    .{ .keys = "Ctrl+Backquote", .kind = .action, .first = .toggle_quake, .action = "Show / hide Quake window" },
+    .{ .keys = "Ctrl+Shift+P", .kind = .action, .first = .toggle_command_palette, .action = "Command center" },
+    .{ .keys = "Ctrl+Shift+T", .kind = .action, .first = .new_session, .action = "New session" },
+    .{ .keys = "Ctrl+Shift+B", .kind = .action, .first = .toggle_sidebar, .action = "Toggle sidebar" },
+    .{ .keys = "Ctrl+Shift+O", .kind = .action, .first = .split_right, .action = "Split right" },
+    .{ .keys = "Ctrl+Shift+Alt+E", .kind = .action, .first = .toggle_file_explorer, .action = "File explorer" },
     .{ .keys = "Ctrl/double-click file", .action = "Preview file" },
     .{ .keys = "Ctrl+Shift-click SSH file", .action = "Download file" },
-    .{ .keys = "Ctrl+Shift+[ / ]", .action = "Previous / next panel" },
-    .{ .keys = "Alt+Arrows", .action = "Focus panel" },
-    .{ .keys = "Ctrl+Shift+Z", .action = "Equalize panels" },
-    .{ .keys = "Ctrl+Shift+W", .action = "Close panel / tab; confirm last" },
-    .{ .keys = "Ctrl+Shift+C / Ctrl+V", .action = "Copy / paste text" },
+    .{ .keys = "Ctrl+Shift+[ / Ctrl+Shift+]", .kind = .pair, .first = .focus_previous, .second = .focus_next, .action = "Previous / next panel" },
+    .{ .keys = "Alt+Left / Alt+Right / Alt+Up / Alt+Down", .kind = .quad, .first = .focus_left, .second = .focus_right, .third = .focus_up, .fourth = .focus_down, .action = "Focus panel" },
+    .{ .keys = "Ctrl+Shift+Z", .kind = .action, .first = .equalize_splits, .action = "Equalize panels" },
+    .{ .keys = "Ctrl+Shift+W", .kind = .action, .first = .close_panel_or_tab, .action = "Close panel / tab; confirm last" },
+    .{ .keys = "Ctrl+Shift+C / Ctrl+V", .kind = .pair, .first = .copy, .second = .paste, .action = "Copy / paste text" },
     .{ .keys = "Shift-click text", .action = "Select from anchor" },
     .{ .keys = "Drag in AI / Ctrl+C", .action = "Copy answer selection" },
     .{ .keys = "Shift-drag in AI", .action = "Copy answer selection" },
     .{ .keys = "Ctrl+A / Ctrl+C in AI", .action = "Select / copy chat" },
     .{ .keys = "Right-click selection", .action = "Copy selection" },
-    .{ .keys = "Ctrl+Shift+V", .action = "Paste image" },
-    .{ .keys = "Ctrl+,", .action = "Open config" },
-    .{ .keys = "Ctrl++ / Ctrl+-", .action = "Font size" },
-    .{ .keys = "Alt+Enter", .action = "Maximize / restore" },
+    .{ .keys = "Ctrl+Shift+V", .kind = .action, .first = .paste_image, .action = "Paste image" },
+    .{ .keys = "Ctrl+,", .kind = .action, .first = .open_config, .action = "Open config" },
+    .{ .keys = "Ctrl++ / Ctrl+-", .kind = .pair, .first = .font_size_increase, .second = .font_size_decrease, .action = "Font size" },
+    .{ .keys = "Alt+Enter", .kind = .action, .first = .toggle_maximize, .action = "Maximize / restore" },
 };
 
 pub threadlocal var g_startup_shortcuts_visible: bool = false;
@@ -114,6 +128,42 @@ fn renderTitlebarTextLimited(text: []const u8, x_start: f32, y: f32, color: [3]f
     }
 }
 
+fn writeActionShortcut(writer: anytype, action: keybind.Action) !bool {
+    const binding = AppWindow.g_keybinds.firstForAction(action) orelse return false;
+    var buf: [64]u8 = undefined;
+    const text = try keybind.formatTrigger(binding.trigger, &buf);
+    try writer.writeAll(text);
+    return true;
+}
+
+fn startupShortcutKeys(entry: StartupShortcut, buf: []u8) []const u8 {
+    if (entry.kind == .literal) return entry.keys;
+
+    var stream = std.io.fixedBufferStream(buf);
+    const writer = stream.writer();
+    const ok = switch (entry.kind) {
+        .literal => true,
+        .action => writeActionShortcut(writer, entry.first.?) catch false,
+        .pair => blk: {
+            if (!(writeActionShortcut(writer, entry.first.?) catch false)) break :blk false;
+            writer.writeAll(entry.separator) catch break :blk false;
+            if (!(writeActionShortcut(writer, entry.second.?) catch false)) break :blk false;
+            break :blk true;
+        },
+        .quad => blk: {
+            if (!(writeActionShortcut(writer, entry.first.?) catch false)) break :blk false;
+            writer.writeAll(entry.separator) catch break :blk false;
+            if (!(writeActionShortcut(writer, entry.second.?) catch false)) break :blk false;
+            writer.writeAll(entry.separator) catch break :blk false;
+            if (!(writeActionShortcut(writer, entry.third.?) catch false)) break :blk false;
+            writer.writeAll(entry.separator) catch break :blk false;
+            if (!(writeActionShortcut(writer, entry.fourth.?) catch false)) break :blk false;
+            break :blk true;
+        },
+    };
+    return if (ok) stream.getWritten() else "unbound";
+}
+
 /// Render a centered startup overlay listing common keyboard shortcuts.
 pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_offset: f32) void {
     const alpha = startupShortcutsOpacity();
@@ -124,7 +174,9 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
     var max_keys_width: f32 = 0;
     var max_action_width: f32 = 0;
     for (STARTUP_SHORTCUT_ENTRIES) |entry| {
-        max_keys_width = @max(max_keys_width, measureTitlebarText(entry.keys));
+        var keys_buf: [256]u8 = undefined;
+        const keys = startupShortcutKeys(entry, &keys_buf);
+        max_keys_width = @max(max_keys_width, measureTitlebarText(keys));
         max_action_width = @max(max_action_width, measureTitlebarText(entry.action));
     }
 
@@ -190,12 +242,14 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
     const action_w = @max(1.0, column_w - keys_w - pair_gap);
 
     for (STARTUP_SHORTCUT_ENTRIES, 0..) |entry, idx| {
+        var keys_buf: [256]u8 = undefined;
+        const keys = startupShortcutKeys(entry, &keys_buf);
         const col = idx / rows_per_column;
         const row = idx % rows_per_column;
         const col_x = @round(box_x + pad_x + @as(f32, @floatFromInt(col)) * (column_w + column_gap));
         const action_x = @round(col_x + keys_w + pair_gap);
         const y = @round(heading_y - heading_gap - line_height - @as(f32, @floatFromInt(row)) * line_height);
-        renderTitlebarTextLimited(entry.keys, col_x, y, keys_color, keys_w);
+        renderTitlebarTextLimited(keys, col_x, y, keys_color, keys_w);
         renderTitlebarTextLimited(entry.action, action_x, y, action_color, action_w);
     }
 

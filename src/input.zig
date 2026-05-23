@@ -21,6 +21,7 @@ const ui_perf = AppWindow.ui_perf;
 const link_open = @import("link_open.zig");
 const system_browser = @import("system_browser.zig");
 const input_shortcuts = @import("input_shortcuts.zig");
+const keybind = @import("keybind.zig");
 const win32_backend = @import("apprt/win32.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
@@ -708,6 +709,190 @@ fn handleChar(ev: win32_backend.CharEvent) void {
     writeToPty(surface, buf[0..len]);
 }
 
+const KeybindPhase = enum { early, late };
+
+fn configuredAction(ev: win32_backend.KeyEvent) ?keybind.Action {
+    return AppWindow.g_keybinds.lookupApp(keybind.triggerFromKeyEvent(ev));
+}
+
+fn actionIs(action: ?keybind.Action, expected: keybind.Action) bool {
+    return if (action) |actual| actual == expected else false;
+}
+
+fn commitTabRenameIfActive() void {
+    if (tab.g_tab_rename_active) tab.commitTabRename();
+}
+
+fn requestNewWindowFromActiveCwd() void {
+    const app = AppWindow.g_app orelse return;
+    const hwnd = if (AppWindow.g_window) |w| w.hwnd else null;
+
+    var cwd_buf: [260]u16 = undefined;
+    var cwd: ?[]const u16 = null;
+    if (AppWindow.activeSurface()) |surface| {
+        if (surface.getCwd()) |unix_path| {
+            std.debug.print("CWD from OSC 7: {s}\n", .{unix_path});
+            if (AppWindow.wsl_paths.unixPathToWindows(unix_path, &cwd_buf)) |len| {
+                cwd = cwd_buf[0..len];
+                var path_u8: [260]u8 = undefined;
+                for (cwd_buf[0..len], 0..) |wc, i| {
+                    path_u8[i] = @truncate(wc);
+                }
+                std.debug.print("Converted to Windows path: {s}\n", .{path_u8[0..len]});
+            } else {
+                std.debug.print("Failed to convert Unix path to Windows\n", .{});
+            }
+        } else {
+            std.debug.print("No CWD from active surface (OSC 7 not received)\n", .{});
+        }
+    }
+    app.requestNewWindow(hwnd, cwd);
+}
+
+fn switchTabActionIndex(action: keybind.Action) ?usize {
+    return switch (action) {
+        .switch_tab_1 => 0,
+        .switch_tab_2 => 1,
+        .switch_tab_3 => 2,
+        .switch_tab_4 => 3,
+        .switch_tab_5 => 4,
+        .switch_tab_6 => 5,
+        .switch_tab_7 => 6,
+        .switch_tab_8 => 7,
+        .switch_tab_9 => 8,
+        else => null,
+    };
+}
+
+fn handleConfiguredKeybindAction(action: keybind.Action, phase: KeybindPhase) bool {
+    switch (phase) {
+        .early => switch (action) {
+            .toggle_quake => {
+                commitTabRenameIfActive();
+                AppWindow.toggleQuakeVisibility();
+                return true;
+            },
+            .toggle_command_palette => {
+                commitTabRenameIfActive();
+                overlays.commandPaletteToggle();
+                return true;
+            },
+            .new_window => {
+                commitTabRenameIfActive();
+                requestNewWindowFromActiveCwd();
+                return true;
+            },
+            .new_session => {
+                commitTabRenameIfActive();
+                overlays.sessionLauncherOpen();
+                return true;
+            },
+            .split_right => {
+                commitTabRenameIfActive();
+                AppWindow.splitFocused(.right);
+                return true;
+            },
+            .toggle_file_explorer => {
+                commitTabRenameIfActive();
+                toggleFileExplorer();
+                return true;
+            },
+            .toggle_sidebar => {
+                commitTabRenameIfActive();
+                toggleSidebar();
+                return true;
+            },
+            .close_panel_or_tab => {
+                commitTabRenameIfActive();
+                closePanelOrTab();
+                return true;
+            },
+            .toggle_maximize => {
+                commitTabRenameIfActive();
+                toggleMaximize();
+                return true;
+            },
+            .font_size_increase => {
+                commitTabRenameIfActive();
+                adjustFontSize(1);
+                return true;
+            },
+            .font_size_decrease => {
+                commitTabRenameIfActive();
+                adjustFontSize(-1);
+                return true;
+            },
+            else => return false,
+        },
+        .late => switch (action) {
+            .copy => {
+                copySelectionToClipboard();
+                return true;
+            },
+            .paste => {
+                if (AppWindow.activeAiChat()) |chat| {
+                    pasteFromClipboardIntoAiChat(chat);
+                } else {
+                    pasteFromClipboard();
+                }
+                return true;
+            },
+            .paste_image => {
+                pasteImageFromClipboard();
+                return true;
+            },
+            .focus_left => {
+                AppWindow.gotoSplit(.{ .spatial = .left });
+                return true;
+            },
+            .focus_right => {
+                AppWindow.gotoSplit(.{ .spatial = .right });
+                return true;
+            },
+            .focus_up => {
+                AppWindow.gotoSplit(.{ .spatial = .up });
+                return true;
+            },
+            .focus_down => {
+                AppWindow.gotoSplit(.{ .spatial = .down });
+                return true;
+            },
+            .focus_previous => {
+                AppWindow.gotoSplit(.previous_wrapped);
+                return true;
+            },
+            .focus_next => {
+                AppWindow.gotoSplit(.next_wrapped);
+                return true;
+            },
+            .equalize_splits => {
+                AppWindow.equalizeSplits();
+                return true;
+            },
+            .next_tab => {
+                AppWindow.switchTab((tab.g_active_tab + 1) % tab.g_tab_count);
+                return true;
+            },
+            .previous_tab => {
+                if (tab.g_active_tab > 0) AppWindow.switchTab(tab.g_active_tab - 1) else AppWindow.switchTab(tab.g_tab_count - 1);
+                return true;
+            },
+            .open_config => {
+                std.debug.print("[keybind] open_config pressed\n", .{});
+                if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc);
+                return true;
+            },
+            else => {
+                if (switchTabActionIndex(action)) |tab_idx| {
+                    if (tab_idx < tab.g_tab_count) AppWindow.switchTab(tab_idx);
+                    return true;
+                }
+                return false;
+            },
+        },
+    }
+}
+
 fn handleKey(ev: win32_backend.KeyEvent) void {
     overlays.startupShortcutsDismiss();
     if (overlays.windowCloseConfirmVisible()) {
@@ -725,10 +910,11 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         AppWindow.g_cells_valid = false;
         return;
     }
-    const is_close_shortcut = ev.ctrl and ev.shift and ev.vk == 0x57;
+    const action = configuredAction(ev);
+    const is_close_shortcut = actionIs(action, .close_panel_or_tab);
     if (!is_close_shortcut and !isModifierKey(ev.vk)) g_close_shortcut_confirm_until_ms = 0;
     if (overlays.sessionLauncherVisible()) {
-        if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x56) { // Ctrl+V
+        if (actionIs(action, .paste)) {
             if (pasteClipboardIntoSessionLauncher()) {
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
@@ -738,11 +924,8 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         overlays.sessionLauncherHandleKey(ev);
         return;
     }
-    // Ctrl+Shift+P = command center (even during tab rename)
-    if (ev.ctrl and ev.shift and ev.vk == 0x50) { // 'P'
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        overlays.commandPaletteToggle();
-        return;
+    if (action) |app_action| {
+        if (handleConfiguredKeybindAction(app_action, .early)) return;
     }
     if (overlays.commandPaletteVisible()) {
         if (overlays.commandPaletteAgentHistoryVisible()) {
@@ -775,82 +958,6 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab()) {
         if (handleFileExplorerKey(ev)) return;
     }
-    // Ctrl+Shift+N = new window (even during tab rename)
-    if (ev.ctrl and ev.shift and ev.vk == 0x4E) { // 'N'
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        if (AppWindow.g_app) |app| {
-            const hwnd = if (AppWindow.g_window) |w| w.hwnd else null;
-            // Get CWD from active tab for working directory inheritance
-            var cwd_buf: [260]u16 = undefined;
-            var cwd: ?[]const u16 = null;
-            if (AppWindow.activeSurface()) |surface| {
-                if (surface.getCwd()) |unix_path| {
-                    std.debug.print("CWD from OSC 7: {s}\n", .{unix_path});
-                    if (AppWindow.wsl_paths.unixPathToWindows(unix_path, &cwd_buf)) |len| {
-                        cwd = cwd_buf[0..len];
-                        var path_u8: [260]u8 = undefined;
-                        for (cwd_buf[0..len], 0..) |wc, i| {
-                            path_u8[i] = @truncate(wc);
-                        }
-                        std.debug.print("Converted to Windows path: {s}\n", .{path_u8[0..len]});
-                    } else {
-                        std.debug.print("Failed to convert Unix path to Windows\n", .{});
-                    }
-                } else {
-                    std.debug.print("No CWD from active surface (OSC 7 not received)\n", .{});
-                }
-            }
-            app.requestNewWindow(hwnd, cwd);
-        }
-        return;
-    }
-    // Ctrl+Shift+T = new session chooser (even during tab rename)
-    if (ev.ctrl and ev.shift and ev.vk == 0x54) { // 'T'
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        overlays.sessionLauncherOpen();
-        return;
-    }
-    // Ctrl+Shift+O = new split right (vertical divider)
-    if (ev.ctrl and ev.shift and ev.vk == 0x4F) { // 'O'
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        AppWindow.splitFocused(.right);
-        return;
-    }
-    // Ctrl+Shift+Alt+E = toggle file explorer sidebar
-    if (ev.ctrl and ev.shift and ev.alt and ev.vk == 0x45) { // 'E'
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        toggleFileExplorer();
-        return;
-    }
-    // Ctrl+Shift+B = show/hide tab sidebar
-    if (ev.ctrl and ev.shift and ev.vk == 0x42) { // 'B'
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        toggleSidebar();
-        return;
-    }
-    // Ctrl+Shift+W = close focused panel/tab/window
-    if (ev.ctrl and ev.shift and ev.vk == 0x57) { // 'W'
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        closePanelOrTab();
-        return;
-    }
-    // Alt+Enter = maximize / restore window
-    if (ev.alt and !ev.ctrl and !ev.shift and ev.vk == win32_backend.VK_RETURN) {
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        toggleMaximize();
-        return;
-    }
-    // Ctrl++ / Ctrl+- = adjust font size
-    if (ev.ctrl and !ev.alt and ev.vk == win32_backend.VK_OEM_PLUS) {
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        adjustFontSize(1);
-        return;
-    }
-    if (ev.ctrl and !ev.alt and ev.vk == win32_backend.VK_OEM_MINUS) {
-        if (tab.g_tab_rename_active) tab.commitTabRename();
-        adjustFontSize(-1);
-        return;
-    }
     // When tab rename is active, handle special keys
     if (tab.g_tab_rename_active) {
         AppWindow.g_cursor_blink_visible = true;
@@ -874,69 +981,9 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
             return;
         }
     }
-    // Ctrl+Shift+C = copy
-    if (ev.ctrl and ev.shift and ev.vk == 0x43) { // 'C'
-        copySelectionToClipboard();
-        return;
+    if (action) |app_action| {
+        if (handleConfiguredKeybindAction(app_action, .late)) return;
     }
-    // Ctrl+V = paste text
-    if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x56) { // 'V'
-        if (AppWindow.activeAiChat()) |chat| {
-            pasteFromClipboardIntoAiChat(chat);
-        } else {
-            pasteFromClipboard();
-        }
-        return;
-    }
-    // Ctrl+Shift+V = paste image
-    if (ev.ctrl and ev.shift and !ev.alt and ev.vk == 0x56) { // 'V'
-        pasteImageFromClipboard();
-        return;
-    }
-    // Ctrl+Shift+T and Ctrl+Shift+N are handled above (before rename guard)
-    // Alt+Arrows = goto split (spatial navigation)
-    if (input_shortcuts.spatialFocusDirection(ev)) |dir| {
-        AppWindow.gotoSplit(.{ .spatial = dir });
-        return;
-    }
-    // Ctrl+Shift+[ = goto previous split
-    if (ev.ctrl and ev.shift and ev.vk == win32_backend.VK_OEM_4) { // '['
-        AppWindow.gotoSplit(.previous_wrapped);
-        return;
-    }
-    // Ctrl+Shift+] = goto next split
-    if (ev.ctrl and ev.shift and ev.vk == win32_backend.VK_OEM_6) { // ']'
-        AppWindow.gotoSplit(.next_wrapped);
-        return;
-    }
-    // Ctrl+Shift+Z = equalize splits
-    if (ev.ctrl and ev.shift and ev.vk == 0x5A) { // 'Z'
-        AppWindow.equalizeSplits();
-        return;
-    }
-    // Ctrl+Tab = next tab
-    if (ev.ctrl and ev.vk == win32_backend.VK_TAB) {
-        if (ev.shift) {
-            // Ctrl+Shift+Tab = previous tab
-            if (tab.g_active_tab > 0) AppWindow.switchTab(tab.g_active_tab - 1) else AppWindow.switchTab(tab.g_tab_count - 1);
-        } else {
-            AppWindow.switchTab((tab.g_active_tab + 1) % tab.g_tab_count);
-        }
-        return;
-    }
-    // Alt+1-9 = switch to tab N
-    if (ev.alt and !ev.ctrl and !ev.shift and ev.vk >= 0x31 and ev.vk <= 0x39) { // '1'-'9'
-        const tab_idx = @as(usize, @intCast(ev.vk - 0x31));
-        if (tab_idx < tab.g_tab_count) AppWindow.switchTab(tab_idx);
-        return;
-    }
-    // Ctrl+, = open config
-    if (ev.ctrl and ev.vk == win32_backend.VK_OEM_COMMA) {
-        std.debug.print("[keybind] Ctrl+, pressed\n", .{});
-        if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc);
-        return;
-    }
-    // Alt+Enter handled above as maximize/restore.
 
     if (AppWindow.activeAiChat()) |chat| {
         if (isAiChatKey(ev)) {

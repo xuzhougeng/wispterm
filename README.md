@@ -69,6 +69,7 @@ Options:
   --window-height <rows>       Initial window height in cells (default: 0=auto, min: 4)
   --window-width <cols>        Initial window width in cells (default: 0=auto, min: 10)
   --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
+  --keybind <binding>          Configure a shortcut, e.g. global:ctrl+backquote=toggle_quake
   --config <path>              Use this file as the main config
   --config-path <path>         Alias for --config
   --config-file <path>         Include another config file (prefix ? for optional)
@@ -84,9 +85,16 @@ Configuration file details are in [Configuration](docs/configuration.md).
 
 ## Keyboard shortcuts
 
-Default chords are implemented in [`src/input.zig`](src/input.zig). Some keys are handled first when a modal overlay is open (command center, session launcher, settings, and similar).
+Default app-level chords are defined in [`src/keybind.zig`](src/keybind.zig) and can be remapped with repeated `keybind = ...` lines in the config file. Some modal/editor-local keys are still handled by the focused overlay first (command center navigation, session launcher editing, AI Chat input, and similar).
 
-To confirm the running desktop version, open the command center with `Ctrl+Shift+P`, type `version`, and press Enter.
+Example remaps:
+
+```text
+keybind = alt+f10=toggle_command_palette
+keybind = global:ctrl+backquote=toggle_quake
+```
+
+Use `keybind = clear` before custom bindings if you want to remove all defaults and rebuild the table from scratch. To confirm the running desktop version, open the command center with the configured command-center shortcut (default `Ctrl+Shift+P`), type `version`, and press Enter.
 
 
 | Shortcut                                                                       | Action                                                                             |

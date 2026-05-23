@@ -23,6 +23,7 @@ const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
 const startup_tabs = @import("startup_tabs.zig");
 const quick_terminal = @import("quick_terminal.zig");
+const keybind = @import("keybind.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
@@ -126,6 +127,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_start_maximize = app.maximize;
     g_start_fullscreen = app.fullscreen;
     g_quake_mode = app.quake_mode;
+    g_keybinds = app.keybinds;
     background_image.g_mode = app.background_image_mode;
     gl_init.g_bg_opacity = app.background_opacity;
     tab.g_forced_title = app.title;
@@ -210,7 +212,7 @@ threadlocal var g_initial_cwd_len: usize = 0;
 
 // Tracks whether session restore has been attempted this process. We only
 // try to restore tabs from session.json once — for the first window. New
-// windows spawned via Ctrl+Shift+N still get a fresh default tab.
+// windows spawned via the new-window keybind still get a fresh default tab.
 var g_session_restore_attempted: std.atomic.Value(bool) = .init(false);
 
 // Stored config values for deferred initialization
@@ -221,6 +223,8 @@ threadlocal var g_start_maximize: bool = false;
 threadlocal var g_start_fullscreen: bool = false;
 threadlocal var g_quake_mode: bool = true;
 threadlocal var g_quake_hidden: bool = false;
+threadlocal var g_quake_hotkey_registered: bool = false;
+pub threadlocal var g_keybinds: keybind.Set = keybind.Set.defaults();
 threadlocal var g_debug_memory: bool = false;
 threadlocal var g_debug_memory_last_ms: i64 = 0;
 threadlocal var g_remote_layout_last_ms: i64 = 0;
@@ -1265,6 +1269,9 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     });
 
     if (g_window == null) return;
+    g_quake_mode = cfg.@"quake-mode";
+    g_keybinds = cfg.keybinds;
+    if (g_window) |win| syncQuakeHotkeyRegistration(win);
     const ft_lib = font.g_ft_lib orelse return;
 
     // --- Theme, cursor, debug ---
@@ -1272,7 +1279,6 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_force_rebuild = true;
     g_cursor_style = cfg.@"cursor-style";
     g_cursor_blink = cfg.@"cursor-style-blink";
-    g_quake_mode = cfg.@"quake-mode";
     overlays.g_debug_fps = cfg.@"phantty-debug-fps";
     overlays.g_debug_draw_calls = cfg.@"phantty-debug-draw-calls";
     g_debug_memory = cfg.@"phantty-debug-memory";
@@ -2246,15 +2252,29 @@ fn applyQuakeFrame(win: *win32_backend.Window) void {
     win.setOuterFrame(frame.x, frame.y, frame.width, frame.height, true);
 }
 
-fn registerQuakeHotkey(win: *win32_backend.Window) bool {
-    const defaults = quick_terminal.defaultSettings();
-    const modifiers: win32_backend.UINT =
-        (if (defaults.hotkey.ctrl) win32_backend.MOD_CONTROL else 0) |
-        (if (defaults.hotkey.shift) win32_backend.MOD_SHIFT else 0) |
-        (if (defaults.hotkey.alt) win32_backend.MOD_ALT else 0) |
-        (if (defaults.hotkey.win) win32_backend.MOD_WIN else 0) |
-        win32_backend.MOD_NOREPEAT;
-    return win.registerHotKey(quick_terminal.HOTKEY_ID, modifiers, defaults.hotkey.vk);
+fn quakeHotkeyBinding() ?keybind.Binding {
+    const binding = g_keybinds.firstForAction(.toggle_quake) orelse return null;
+    return if (binding.global) binding else null;
+}
+
+fn syncQuakeHotkeyRegistration(win: *win32_backend.Window) void {
+    if (g_quake_hotkey_registered) {
+        win.unregisterHotKey(quick_terminal.HOTKEY_ID);
+        g_quake_hotkey_registered = false;
+    }
+
+    if (!g_quake_mode) return;
+    const binding = quakeHotkeyBinding() orelse return;
+    g_quake_hotkey_registered = win.registerHotKey(
+        quick_terminal.HOTKEY_ID,
+        keybind.hotkeyModifiers(binding.trigger),
+        binding.trigger.vk,
+    );
+    if (!g_quake_hotkey_registered) {
+        var label_buf: [64]u8 = undefined;
+        const label = keybind.formatTrigger(binding.trigger, &label_buf) catch "configured";
+        std.debug.print("Quake mode hotkey {s} is already registered by another app or window\n", .{label});
+    }
 }
 
 pub fn toggleQuakeVisibility() void {
@@ -2739,14 +2759,8 @@ fn runMainLoop(self: *AppWindow) !void {
     }
     win32_window.on_message = &onWin32Message;
     win32_window.on_file_drop = &input.handleFileDrop;
-    var quake_hotkey_registered = false;
-    if (g_quake_mode) {
-        quake_hotkey_registered = registerQuakeHotkey(&win32_window);
-        if (!quake_hotkey_registered) {
-            std.debug.print("Quake mode hotkey Ctrl+` is already registered by another app or window\n", .{});
-        }
-    }
-    defer if (quake_hotkey_registered) win32_window.unregisterHotKey(quick_terminal.HOTKEY_ID);
+    syncQuakeHotkeyRegistration(&win32_window);
+    defer if (g_quake_hotkey_registered) win32_window.unregisterHotKey(quick_terminal.HOTKEY_ID);
     installAgentToolHost(self);
     installRemoteControlHandlers(self);
     font.g_dpi = win32_window.dpi;

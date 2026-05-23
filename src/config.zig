@@ -20,6 +20,7 @@ const Config = @This();
 const std = @import("std");
 const ai_chat = @import("ai_chat.zig");
 const directwrite = @import("directwrite.zig");
+const keybind = @import("keybind.zig");
 const themes = @import("themes.zig");
 
 const log = std.log.scoped(.config);
@@ -407,9 +408,13 @@ maximize: bool = false,
 /// Start the window in fullscreen mode.
 fullscreen: bool = false,
 
-/// Start in Quake-style drop-down terminal mode. Uses Ctrl+` as a fixed
-/// global toggle shortcut until the general shortcut system supports remapping.
+/// Start in Quake-style drop-down terminal mode. The toggle shortcut comes
+/// from the `toggle_quake` keybind, which is global by default.
 @"quake-mode": bool = true,
+
+/// Application-level keyboard shortcuts. Values use Ghostty-style
+/// `keybind = trigger=action` syntax; `global:` registers a Win32 hotkey.
+keybinds: keybind.Set = keybind.Set.defaults(),
 
 // ============================================================================
 // Resolved State (not serialized)
@@ -946,6 +951,10 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid quake-mode value: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "keybind")) {
+        self.keybinds.apply(value) catch |err| {
+            log.warn("invalid keybind '{s}': {}", .{ value, err });
+        };
     } else {
         // Silently ignore unknown keys (theme files reuse the same format
         // and may contain keys we don't handle, like palette).
@@ -1186,12 +1195,13 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --ai-agent-output-limit <bytes> Max bytes returned by each tool
         \\  --auto-update-check <bool>  Check GitHub Releases after startup
         \\  --config-file <path>         Include another config file (prefix ? for optional)
+        \\  --keybind <binding>          Configure a shortcut, e.g. global:ctrl+backquote=toggle_quake
         \\  --remote-enabled <bool>      Enable opt-in remote access foundation
         \\  --remote-server-url <url>    Cloudflare relay URL
         \\  --remote-server-fingerprint <fp> Expected relay fingerprint
         \\  --remote-device-name <name>  Friendly device name for remote access
         \\  --remote-session-key <key>   Fixed remote key base; later instances append _1, _2
-        \\  --quake-mode <bool>          Enable Quake-style Ctrl+` show/hide mode (default: true)
+        \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
         \\
         \\Color Options (override theme):
         \\  --background <color>         Background color (#RRGGBB or RRGGBB)
@@ -1237,6 +1247,8 @@ pub fn writeHelp(writer: anytype) !void {
         \\  background = #1a1b26
         \\  foreground = #c0caf5
         \\  palette = 1=#f7768e
+        \\  keybind = ctrl+shift+p=toggle_command_palette
+        \\  keybind = global:ctrl+backquote=toggle_quake
         \\
         \\Examples:
         \\  phantty --font-family "Cascadia Code"
@@ -1257,7 +1269,7 @@ pub fn writeHelp(writer: anytype) !void {
 /// Ensure the config directory and file exist. Called at startup so the
 /// file watcher can observe the directory from the very beginning.
 /// If the config file doesn't exist yet, it is created with the default
-/// template (same one used by Ctrl+,).
+/// template (same one used by the open_config keybind).
 pub fn ensureConfigExists(allocator: std.mem.Allocator) void {
     const path = configFilePath(allocator) catch return;
     defer allocator.free(path);
@@ -1276,11 +1288,11 @@ pub fn ensureConfigExists(allocator: std.mem.Allocator) void {
 }
 
 // ============================================================================
-// Open / Edit Config (Ctrl+, keybinding)
+// Open / Edit Config (`open_config` keybind)
 // ============================================================================
 
 /// Ensure the config file exists (create with default template if not)
-/// and open it in notepad.exe. Mimics Ghostty's Ctrl+, behavior.
+/// and open it in notepad.exe.
 pub fn openConfigInEditor(allocator: std.mem.Allocator) void {
     std.debug.print("[config] openConfigInEditor called\n", .{});
 
@@ -1474,7 +1486,14 @@ const default_config_template =
     \\# title =
     \\# maximize = false
     \\# fullscreen = false
-    \\# quake-mode = true   # Ctrl+` toggles the top drop-down window
+    \\# quake-mode = true   # toggle_quake controls the top drop-down window
+    \\
+    \\# Keyboard shortcuts
+    \\# Syntax: keybind = [global:]modifier+key=action
+    \\# keybind = ctrl+shift+p=toggle_command_palette
+    \\# keybind = global:ctrl+backquote=toggle_quake
+    \\# keybind = alt+f10=toggle_command_palette
+    \\# keybind = clear   # remove all defaults before adding custom bindings
     \\
     \\# Shell (cmd, powershell, pwsh, wsl, or a custom path)
     \\# shell = cmd
@@ -1691,6 +1710,27 @@ test "config: quake mode defaults enabled and parses true false" {
 
     cfg.applyKeyValue(allocator, "quake-mode", "maybe", ".");
     try std.testing.expectEqual(true, cfg.@"quake-mode");
+}
+
+test "config: keybind directives override default action bindings" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(keybind.Action.toggle_command_palette, cfg.keybinds.lookupApp(.{
+        .mods = .{ .ctrl = true, .shift = true },
+        .vk = 'P',
+    }).?);
+
+    cfg.applyKeyValue(allocator, "keybind", "alt+f10=toggle_command_palette", ".");
+
+    try std.testing.expect(cfg.keybinds.lookupApp(.{
+        .mods = .{ .ctrl = true, .shift = true },
+        .vk = 'P',
+    }) == null);
+    try std.testing.expectEqual(keybind.Action.toggle_command_palette, cfg.keybinds.lookupApp(.{
+        .mods = .{ .alt = true },
+        .vk = 0x79,
+    }).?);
 }
 
 test "config: ai agent options parse" {

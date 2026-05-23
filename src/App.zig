@@ -10,6 +10,7 @@ const AppWindow = @import("AppWindow.zig");
 const ai_chat = @import("ai_chat.zig");
 const app_metadata = @import("app_metadata.zig");
 const directwrite = @import("directwrite.zig");
+const keybind = @import("keybind.zig");
 const win32_backend = @import("apprt/win32.zig");
 const remote = @import("remote_client.zig");
 const update_check = @import("update_check.zig");
@@ -49,6 +50,7 @@ maximize: bool,
 fullscreen: bool,
 title: ?[]const u8,
 quake_mode: bool,
+keybinds: keybind.Set,
 
 // Debug flags
 debug_fps: bool,
@@ -192,6 +194,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .fullscreen = cfg.fullscreen,
         .title = title,
         .quake_mode = cfg.@"quake-mode",
+        .keybinds = cfg.keybinds,
         .debug_fps = cfg.@"phantty-debug-fps",
         .debug_draw_calls = cfg.@"phantty-debug-draw-calls",
         .debug_memory = cfg.@"phantty-debug-memory",
@@ -329,6 +332,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.replaceOptStr(&self.remote_session_key, cfg.@"remote-session-key");
     self.replaceOptStr(&self.title, cfg.title);
     self.quake_mode = cfg.@"quake-mode";
+    self.keybinds = cfg.keybinds;
     self.ai_agent_enabled = cfg.@"ai-agent-enabled";
     self.ai_agent_permission = cfg.@"ai-agent-permission";
     self.ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms";
@@ -503,7 +507,7 @@ pub fn run(self: *App) !void {
 }
 
 /// Request a new window to be spawned on a separate thread.
-/// Called from Ctrl+Shift+N in any window.
+/// Called from the `new_window` keybind in any window.
 /// If parent_hwnd is provided, the new window will cascade from that position.
 /// If cwd is provided, the new window's first tab will start in that directory.
 pub fn requestNewWindow(self: *App, parent_hwnd: ?win32_backend.HWND, cwd: ?[]const u16) void {

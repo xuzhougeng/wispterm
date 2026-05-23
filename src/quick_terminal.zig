@@ -1,15 +1,6 @@
 const std = @import("std");
 
 pub const HOTKEY_ID: i32 = 0x5154; // "QT"
-pub const VK_OEM_3: u32 = 0xC0; // US keyboard backquote / tilde key.
-
-pub const Hotkey = struct {
-    ctrl: bool = false,
-    shift: bool = false,
-    alt: bool = false,
-    win: bool = false,
-    vk: u32,
-};
 
 pub const Position = enum {
     top,
@@ -19,7 +10,6 @@ pub const Settings = struct {
     enabled: bool = true,
     position: Position = .top,
     height_percent: u8 = 50,
-    hotkey: Hotkey = .{ .ctrl = true, .vk = VK_OEM_3 },
 };
 
 pub const WorkArea = struct {
@@ -61,11 +51,10 @@ pub fn calculateFrame(request: FrameRequest) Frame {
     };
 }
 
-test "quick terminal defaults are enabled and use ctrl grave" {
+test "quick terminal defaults are enabled" {
     const defaults = defaultSettings();
 
     try std.testing.expect(defaults.enabled);
-    try std.testing.expectEqual(Hotkey{ .ctrl = true, .vk = VK_OEM_3 }, defaults.hotkey);
 }
 
 test "quick terminal top frame uses full work area width and half height" {

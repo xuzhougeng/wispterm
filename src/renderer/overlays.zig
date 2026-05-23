@@ -22,6 +22,7 @@ const command_center_state = @import("../command_center_state.zig");
 const agent_history = @import("../agent_history.zig");
 const system_browser = @import("../system_browser.zig");
 const update_check = @import("../update_check.zig");
+const keybind = @import("../keybind.zig");
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -117,7 +118,6 @@ threadlocal var g_update_prompt_url_len: usize = 0;
 threadlocal var g_update_prompt_clickable: bool = false;
 threadlocal var g_update_prompt_rect: ?DebugLineRect = null;
 
-const CLOSE_SHORTCUT_CONFIRM_TEXT = "Press Ctrl+Shift+W again to close Phantty";
 threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
 threadlocal var g_window_close_confirm_visible: bool = false;
@@ -512,8 +512,36 @@ fn commandEntryTitleMatches(entry: CommandEntry, filter: []const u8) bool {
 }
 
 fn commandEntrySecondaryMatches(entry: CommandEntry, filter: []const u8) bool {
+    var shortcut_buf: [64]u8 = undefined;
     return containsIgnoreCase(entry.detail, filter) or
-        containsIgnoreCase(entry.shortcut, filter);
+        containsIgnoreCase(commandEntryShortcut(entry, &shortcut_buf), filter);
+}
+
+fn commandEntryKeybindAction(action: CommandAction) ?keybind.Action {
+    return switch (action) {
+        .new_tab => .new_session,
+        .split_right => .split_right,
+        .focus_previous => .focus_previous,
+        .focus_next => .focus_next,
+        .equalize_splits => .equalize_splits,
+        .close_split_or_tab => .close_panel_or_tab,
+        .toggle_sidebar => .toggle_sidebar,
+        .toggle_file_explorer => .toggle_file_explorer,
+        .toggle_quake => .toggle_quake,
+        .open_config => .open_config,
+        .font_size_decrease => .font_size_decrease,
+        .font_size_increase => .font_size_increase,
+        .toggle_maximize => .toggle_maximize,
+        else => null,
+    };
+}
+
+fn commandEntryShortcut(entry: CommandEntry, buf: []u8) []const u8 {
+    if (commandEntryKeybindAction(entry.action)) |action| {
+        if (keybind.formatActionShortcut(&AppWindow.g_keybinds, action, buf)) |shortcut| return shortcut;
+        return "";
+    }
+    return entry.shortcut;
 }
 
 fn rebuildPaletteScratch() void {
@@ -1106,11 +1134,13 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                 switch (item) {
                     .command => |cmd_idx| {
                         const entry = COMMAND_ENTRIES[cmd_idx];
+                        var shortcut_buf: [64]u8 = undefined;
+                        const shortcut = commandEntryShortcut(entry, &shortcut_buf);
                         var shortcut_left = layout.box_x + layout.box_w - pad_x;
-                        if (entry.shortcut.len > 0) {
-                            const shortcut_w = measureTitlebarText(entry.shortcut);
+                        if (shortcut.len > 0) {
+                            const shortcut_w = measureTitlebarText(shortcut);
                             shortcut_left = @round(layout.box_x + layout.box_w - pad_x - shortcut_w);
-                            renderTitlebarText(entry.shortcut, shortcut_left, text_y, shortcut_color);
+                            renderTitlebarText(shortcut, shortcut_left, text_y, shortcut_color);
                         }
                         renderTitlebarTextLimited(entry.title, title_x, text_y, row_title_color, shortcut_left - title_x - 18);
                     },
@@ -3961,17 +3991,22 @@ pub fn renderCloseShortcutConfirm(window_width: f32, window_height: f32) void {
     _ = window_height;
     if (std.time.milliTimestamp() >= g_close_shortcut_confirm_until_ms) return;
 
+    var shortcut_buf: [64]u8 = undefined;
+    const shortcut = keybind.formatActionShortcut(&AppWindow.g_keybinds, .close_panel_or_tab, &shortcut_buf) orelse "close shortcut";
+    var text_buf: [128]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buf, "Press {s} again to close Phantty", .{shortcut}) catch "Press close shortcut again to close Phantty";
+
     const pad_h: f32 = 18;
     const pad_v: f32 = 8;
     const line_h = font.g_titlebar_cell_height + pad_v * 2;
-    const text_w = measureTitlebarText(CLOSE_SHORTCUT_CONFIRM_TEXT);
+    const text_w = measureTitlebarText(text);
     const bg_w = text_w + pad_h * 2;
     const bg_x = @round((window_width - bg_w) / 2);
     const bg_y: f32 = 60;
 
     gl_init.renderQuad(bg_x, bg_y, bg_w, line_h, .{ 0.18, 0.11, 0.08 });
     gl_init.renderQuad(bg_x, bg_y + line_h - 2, bg_w, 2, .{ 0.86, 0.48, 0.20 });
-    renderTitlebarText(CLOSE_SHORTCUT_CONFIRM_TEXT, bg_x + pad_h, bg_y + pad_v, .{ 1.0, 0.82, 0.56 });
+    renderTitlebarText(text, bg_x + pad_h, bg_y + pad_v, .{ 1.0, 0.82, 0.56 });
 }
 
 pub fn renderCopyToast(window_width: f32, window_height: f32) void {
