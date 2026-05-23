@@ -24,6 +24,7 @@ comptime {
     _ = @import("link_open.zig");
     _ = @import("markdown_preview.zig");
     _ = @import("preview_token.zig");
+    _ = @import("quick_terminal.zig");
     _ = @import("remote_client.zig");
     _ = @import("remote_snapshot.zig");
     _ = @import("selection_unit.zig");

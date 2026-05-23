@@ -157,6 +157,7 @@ pub const CS_DBLCLKS: UINT = 0x0008;
 
 // ShowWindow commands
 pub const SW_MINIMIZE: INT = 6;
+pub const SW_HIDE: INT = 0;
 pub const SW_SHOW: INT = 5;
 pub const SW_RESTORE: INT = 9;
 pub const SW_MAXIMIZE: INT = 3;
@@ -213,6 +214,7 @@ pub const WM_MOUSELEAVE: UINT = 0x02A3;
 pub const WM_ACTIVATE: UINT = 0x0006;
 pub const WM_GETMINMAXINFO: UINT = 0x0024;
 pub const WM_DROPFILES: UINT = 0x0233;
+pub const WM_HOTKEY: UINT = 0x0312;
 
 pub const SIZE_RESTORED: UINT = 0;
 pub const SIZE_MINIMIZED: UINT = 1;
@@ -298,6 +300,7 @@ pub const VK_RMENU: WPARAM = 0xA5; // Right Alt
 pub const VK_OEM_COMMA: WPARAM = 0xBC;
 pub const VK_OEM_PLUS: WPARAM = 0xBB; // '+' / '=' key
 pub const VK_OEM_MINUS: WPARAM = 0xBD; // '-' / '_' key
+pub const VK_OEM_3: WPARAM = 0xC0; // '`' / '~' key
 pub const VK_OEM_4: WPARAM = 0xDB; // '[' key
 pub const VK_OEM_6: WPARAM = 0xDD; // ']' key
 pub const VK_F11: WPARAM = 0x7A;
@@ -357,6 +360,9 @@ extern "user32" fn SetWindowTextW(hWnd: HWND, lpString: [*:0]const WCHAR) callco
 extern "user32" fn LoadCursorW(hInstance: ?HINSTANCE, lpCursorName: usize) callconv(.winapi) ?HCURSOR;
 pub extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
 pub extern "user32" fn SetWindowPos(hWnd: HWND, hWndInsertAfter: ?HWND, X: INT, Y: INT, cx: INT, cy: INT, uFlags: UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn RegisterHotKey(hWnd: ?HWND, id: INT, fsModifiers: UINT, vk: UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn UnregisterHotKey(hWnd: ?HWND, id: INT) callconv(.winapi) BOOL;
 extern "user32" fn SetCapture(hWnd: HWND) callconv(.winapi) ?HWND;
 extern "user32" fn ReleaseCapture() callconv(.winapi) BOOL;
 extern "user32" fn MessageBeep(uType: UINT) callconv(.winapi) BOOL;
@@ -689,11 +695,21 @@ pub const TITLEBAR_HEIGHT: i32 = 34;
 const PM_REMOVE: UINT = 0x0001;
 
 // SWP flags for SetWindowPos
-const SWP_NOZORDER: UINT = 0x0004;
-const SWP_NOMOVE: UINT = 0x0002;
-const SWP_NOSIZE: UINT = 0x0001;
-const SWP_NOACTIVATE: UINT = 0x0010;
-const SWP_FRAMECHANGED: UINT = 0x0020;
+pub const SWP_NOSIZE: UINT = 0x0001;
+pub const SWP_NOMOVE: UINT = 0x0002;
+pub const SWP_NOZORDER: UINT = 0x0004;
+pub const SWP_NOACTIVATE: UINT = 0x0010;
+pub const SWP_FRAMECHANGED: UINT = 0x0020;
+pub const SWP_SHOWWINDOW: UINT = 0x0040;
+
+pub const MOD_ALT: UINT = 0x0001;
+pub const MOD_CONTROL: UINT = 0x0002;
+pub const MOD_SHIFT: UINT = 0x0004;
+pub const MOD_WIN: UINT = 0x0008;
+pub const MOD_NOREPEAT: UINT = 0x4000;
+
+pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+pub const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
 
 // ============================================================================
 // Window state
@@ -1226,6 +1242,32 @@ pub const Window = struct {
             rect.bottom - rect.top,
             SWP_NOZORDER | SWP_NOMOVE,
         );
+    }
+
+    pub fn setOuterFrame(self: *Window, x: i32, y: i32, w: i32, h: i32, topmost: bool) void {
+        _ = SetWindowPos(
+            self.hwnd,
+            if (topmost) HWND_TOPMOST else null,
+            x,
+            y,
+            w,
+            h,
+            SWP_SHOWWINDOW,
+        );
+        var rect: RECT = undefined;
+        _ = GetClientRect(self.hwnd, &rect);
+        self.width = rect.right - rect.left;
+        self.height = rect.bottom - rect.top;
+        self.is_minimized = false;
+        self.size_changed = true;
+    }
+
+    pub fn registerHotKey(self: *Window, id: i32, modifiers: UINT, vk: UINT) bool {
+        return RegisterHotKey(self.hwnd, id, modifiers, vk) != 0;
+    }
+
+    pub fn unregisterHotKey(self: *Window, id: i32) void {
+        _ = UnregisterHotKey(self.hwnd, id);
     }
 };
 

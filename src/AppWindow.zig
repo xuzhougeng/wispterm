@@ -22,6 +22,7 @@ const memory_debug = @import("memory_debug.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
 const startup_tabs = @import("startup_tabs.zig");
+const quick_terminal = @import("quick_terminal.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
@@ -124,6 +125,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_shader_path = app.shader_path;
     g_start_maximize = app.maximize;
     g_start_fullscreen = app.fullscreen;
+    g_quake_mode = app.quake_mode;
     background_image.g_mode = app.background_image_mode;
     gl_init.g_bg_opacity = app.background_opacity;
     tab.g_forced_title = app.title;
@@ -217,6 +219,8 @@ threadlocal var g_requested_weight: directwrite.DWRITE_FONT_WEIGHT = .NORMAL;
 threadlocal var g_shader_path: ?[]const u8 = null;
 threadlocal var g_start_maximize: bool = false;
 threadlocal var g_start_fullscreen: bool = false;
+threadlocal var g_quake_mode: bool = true;
+threadlocal var g_quake_hidden: bool = false;
 threadlocal var g_debug_memory: bool = false;
 threadlocal var g_debug_memory_last_ms: i64 = 0;
 threadlocal var g_remote_layout_last_ms: i64 = 0;
@@ -1268,6 +1272,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_force_rebuild = true;
     g_cursor_style = cfg.@"cursor-style";
     g_cursor_blink = cfg.@"cursor-style-blink";
+    g_quake_mode = cfg.@"quake-mode";
     overlays.g_debug_fps = cfg.@"phantty-debug-fps";
     overlays.g_debug_draw_calls = cfg.@"phantty-debug-draw-calls";
     g_debug_memory = cfg.@"phantty-debug-memory";
@@ -2223,9 +2228,62 @@ fn handleAgentSshSaveRequest(request: *AgentSshSaveRequest) void {
     };
 }
 
+fn quakeWorkAreaForWindow(win: *win32_backend.Window) ?quick_terminal.WorkArea {
+    const monitor = win32_backend.MonitorFromWindow(win.hwnd, 0x00000002) orelse return null;
+    var mi = win32_backend.MONITORINFO{ .cbSize = @sizeOf(win32_backend.MONITORINFO) };
+    if (win32_backend.GetMonitorInfoW(monitor, &mi) == 0) return null;
+    return .{
+        .left = mi.rcWork.left,
+        .top = mi.rcWork.top,
+        .right = mi.rcWork.right,
+        .bottom = mi.rcWork.bottom,
+    };
+}
+
+fn applyQuakeFrame(win: *win32_backend.Window) void {
+    const work_area = quakeWorkAreaForWindow(win) orelse return;
+    const frame = quick_terminal.calculateFrame(.{ .work_area = work_area });
+    win.setOuterFrame(frame.x, frame.y, frame.width, frame.height, true);
+}
+
+fn registerQuakeHotkey(win: *win32_backend.Window) bool {
+    const defaults = quick_terminal.defaultSettings();
+    const modifiers: win32_backend.UINT =
+        (if (defaults.hotkey.ctrl) win32_backend.MOD_CONTROL else 0) |
+        (if (defaults.hotkey.shift) win32_backend.MOD_SHIFT else 0) |
+        (if (defaults.hotkey.alt) win32_backend.MOD_ALT else 0) |
+        (if (defaults.hotkey.win) win32_backend.MOD_WIN else 0) |
+        win32_backend.MOD_NOREPEAT;
+    return win.registerHotKey(quick_terminal.HOTKEY_ID, modifiers, defaults.hotkey.vk);
+}
+
+pub fn toggleQuakeVisibility() void {
+    if (!g_quake_mode) return;
+    const win = g_window orelse return;
+
+    if (g_quake_hidden) {
+        applyQuakeFrame(win);
+        _ = win32_backend.ShowWindow(win.hwnd, win32_backend.SW_SHOW);
+        _ = win32_backend.SetForegroundWindow(win.hwnd);
+        g_quake_hidden = false;
+        g_force_rebuild = true;
+        g_cells_valid = false;
+    } else {
+        win.clearTransientInputQueues();
+        _ = win32_backend.ShowWindow(win.hwnd, win32_backend.SW_HIDE);
+        g_quake_hidden = true;
+    }
+}
+
 fn onWin32Message(msg: win32_backend.UINT, wParam: win32_backend.WPARAM, lParam: win32_backend.LPARAM) ?win32_backend.LRESULT {
-    _ = wParam;
     switch (msg) {
+        win32_backend.WM_HOTKEY => {
+            if (wParam == @as(win32_backend.WPARAM, @intCast(quick_terminal.HOTKEY_ID))) {
+                toggleQuakeVisibility();
+                return 1;
+            }
+            return null;
+        },
         WM_PHANTTY_AGENT_SSH_CONNECT => {
             const request: *AgentSshConnectRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
             handleAgentSshConnectRequest(request);
@@ -2675,8 +2733,20 @@ fn runMainLoop(self: *AppWindow) !void {
     g_window = &win32_window;
     self.hwnd_bits.store(@intFromPtr(win32_window.hwnd), .release);
     defer self.hwnd_bits.store(0, .release);
+    if (g_quake_mode and (g_start_maximize or g_start_fullscreen)) {
+        std.debug.print("Quake mode disabled for this window because maximize/fullscreen is enabled\n", .{});
+        g_quake_mode = false;
+    }
     win32_window.on_message = &onWin32Message;
     win32_window.on_file_drop = &input.handleFileDrop;
+    var quake_hotkey_registered = false;
+    if (g_quake_mode) {
+        quake_hotkey_registered = registerQuakeHotkey(&win32_window);
+        if (!quake_hotkey_registered) {
+            std.debug.print("Quake mode hotkey Ctrl+` is already registered by another app or window\n", .{});
+        }
+    }
+    defer if (quake_hotkey_registered) win32_window.unregisterHotKey(quick_terminal.HOTKEY_ID);
     installAgentToolHost(self);
     installRemoteControlHandlers(self);
     font.g_dpi = win32_window.dpi;
@@ -2881,9 +2951,11 @@ fn runMainLoop(self: *AppWindow) !void {
     // For height: ph = fb_height - (render_padding + titlebar) - render_padding, then subtract explicit_padding
     const total_height_padding = (render_padding + titlebar_height) + render_padding + explicit_top + explicit_bottom; // 44 + 10 + 20 = 74
 
-    // If config specifies window-width/window-height, resize window to fit that grid.
-    // term_cols/term_rows were set from config at init.
-    if (term_cols > 0 and term_rows > 0) {
+    if (g_quake_mode) {
+        applyQuakeFrame(&win32_window);
+    } else if (term_cols > 0 and term_rows > 0) {
+        // If config specifies window-width/window-height, resize window to fit that grid.
+        // term_cols/term_rows were set from config at init.
         // Calculate window size needed for desired grid
         const desired_grid_width = font.cell_width * @as(f32, @floatFromInt(term_cols));
         const desired_grid_height = font.cell_height * @as(f32, @floatFromInt(term_rows));
@@ -3258,7 +3330,8 @@ fn runMainLoop(self: *AppWindow) !void {
     }
 
     // Save window position for next session
-    if (g_window) |w| {
+    if (!g_quake_mode and g_window != null) {
+        const w = g_window.?;
         var rect: win32_backend.RECT = undefined;
         if (win32_backend.GetWindowRect(w.hwnd, &rect) != 0) {
             const is_maximized = win32_backend.IsZoomed(w.hwnd) != 0;

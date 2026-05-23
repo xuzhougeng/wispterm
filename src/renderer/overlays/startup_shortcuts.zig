@@ -22,6 +22,7 @@ const StartupShortcut = struct {
 };
 
 const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
+    .{ .keys = "Ctrl+`", .action = "Show / hide Quake window" },
     .{ .keys = "Ctrl+Shift+P", .action = "Command center" },
     .{ .keys = "Ctrl+Shift+T", .action = "New session" },
     .{ .keys = "Ctrl+Shift+B", .action = "Toggle sidebar" },

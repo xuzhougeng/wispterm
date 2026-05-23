@@ -68,6 +68,7 @@ Options:
   --background-image-mode <m>  fill | fit | center | tile (default: fill)
   --window-height <rows>       Initial window height in cells (default: 0=auto, min: 4)
   --window-width <cols>        Initial window width in cells (default: 0=auto, min: 10)
+  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
   --config <path>              Use this file as the main config
   --config-path <path>         Alias for --config
   --config-file <path>         Include another config file (prefix ? for optional)
@@ -90,6 +91,7 @@ To confirm the running desktop version, open the command center with `Ctrl+Shift
 
 | Shortcut                                                                       | Action                                                                             |
 | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| **Ctrl+Backquote**                                                            | Show or hide the Quake-style drop-down terminal window                             |
 | **Ctrl+Shift+P**                                                               | Open command center                                                                |
 | **Ctrl+Shift+T**                                                               | New session (session launcher)                                                     |
 | **Ctrl+Shift+N**                                                               | New window                                                                         |

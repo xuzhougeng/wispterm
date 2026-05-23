@@ -48,6 +48,7 @@ initial_rows: u16,
 maximize: bool,
 fullscreen: bool,
 title: ?[]const u8,
+quake_mode: bool,
 
 // Debug flags
 debug_fps: bool,
@@ -190,6 +191,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .maximize = cfg.maximize,
         .fullscreen = cfg.fullscreen,
         .title = title,
+        .quake_mode = cfg.@"quake-mode",
         .debug_fps = cfg.@"phantty-debug-fps",
         .debug_draw_calls = cfg.@"phantty-debug-draw-calls",
         .debug_memory = cfg.@"phantty-debug-memory",
@@ -326,6 +328,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.replaceOptStr(&self.remote_device_name, cfg.@"remote-device-name");
     self.replaceOptStr(&self.remote_session_key, cfg.@"remote-session-key");
     self.replaceOptStr(&self.title, cfg.title);
+    self.quake_mode = cfg.@"quake-mode";
     self.ai_agent_enabled = cfg.@"ai-agent-enabled";
     self.ai_agent_permission = cfg.@"ai-agent-permission";
     self.ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms";

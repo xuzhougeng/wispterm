@@ -25,6 +25,7 @@ cursor-style-blink = true
 theme = Poimandres
 window-height = 32
 window-width = 120
+quake-mode = true
 scrollback-limit = 10000000
 custom-shader = path/to/shader.glsl
 background-image = C:\Users\me\Pictures\wallpaper.png
@@ -55,6 +56,7 @@ remote-session-key = Workstation
 | `background-image-mode`     | `fill`     | Image scaling: `fill`, `fit`, `center`, or `tile`                                                                                                                                                                       |
 | `window-height`             | `0` (auto) | Initial height in cells (min: 4, 0 = auto 80x24)                                                                                                                                                                        |
 | `window-width`              | `0` (auto) | Initial width in cells (min: 10, 0 = auto 80x24)                                                                                                                                                                        |
+| `quake-mode`                | `true`     | Start as a Quake-style drop-down terminal. `Ctrl+Backquote` hides or shows the same window while preserving terminal state.                                                                                              |
 | `scrollback-limit`          | `10000000` | Scrollback buffer limit in bytes                                                                                                                                                                                        |
 | `restore-tabs-on-startup`   | `false`    | Persist tab/split layout to `%APPDATA%\phantty\session.json` on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--cwd`) take precedence and skip restore. |
 | `auto-update-check`         | `true`     | Check GitHub Releases after startup and show a clickable prompt when a newer version is available. Set to `false` to disable startup checks.                                                                             |

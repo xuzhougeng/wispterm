@@ -450,6 +450,7 @@ fn executeCommand(action: CommandAction) void {
         .toggle_sidebar => AppWindow.input.toggleSidebar(),
         .toggle_file_explorer => AppWindow.input.toggleFileExplorer(),
         .toggle_browser_panel => AppWindow.input.toggleBrowserPanel(),
+        .toggle_quake => AppWindow.toggleQuakeVisibility(),
         .show_shortcuts => startupShortcutsShow(),
         .open_config => if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc),
         .font_size_decrease => AppWindow.input.adjustFontSize(-1),

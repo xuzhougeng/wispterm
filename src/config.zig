@@ -407,6 +407,10 @@ maximize: bool = false,
 /// Start the window in fullscreen mode.
 fullscreen: bool = false,
 
+/// Start in Quake-style drop-down terminal mode. Uses Ctrl+` as a fixed
+/// global toggle shortcut until the general shortcut system supports remapping.
+@"quake-mode": bool = true,
+
 // ============================================================================
 // Resolved State (not serialized)
 // ============================================================================
@@ -934,6 +938,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid fullscreen value: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "quake-mode")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"quake-mode" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"quake-mode" = false;
+        } else {
+            log.warn("invalid quake-mode value: {s}", .{value});
+        }
     } else {
         // Silently ignore unknown keys (theme files reuse the same format
         // and may contain keys we don't handle, like palette).
@@ -1179,6 +1191,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --remote-server-fingerprint <fp> Expected relay fingerprint
         \\  --remote-device-name <name>  Friendly device name for remote access
         \\  --remote-session-key <key>   Fixed remote key base; later instances append _1, _2
+        \\  --quake-mode <bool>          Enable Quake-style Ctrl+` show/hide mode (default: true)
         \\
         \\Color Options (override theme):
         \\  --background <color>         Background color (#RRGGBB or RRGGBB)
@@ -1461,6 +1474,7 @@ const default_config_template =
     \\# title =
     \\# maximize = false
     \\# fullscreen = false
+    \\# quake-mode = true   # Ctrl+` toggles the top drop-down window
     \\
     \\# Shell (cmd, powershell, pwsh, wsl, or a custom path)
     \\# shell = cmd
@@ -1661,6 +1675,22 @@ test "config: auto update check option parses true false" {
 
     cfg.applyKeyValue(allocator, "auto-update-check", "maybe", ".");
     try std.testing.expectEqual(true, cfg.@"auto-update-check");
+}
+
+test "config: quake mode defaults enabled and parses true false" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(true, cfg.@"quake-mode");
+
+    cfg.applyKeyValue(allocator, "quake-mode", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"quake-mode");
+
+    cfg.applyKeyValue(allocator, "quake-mode", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"quake-mode");
+
+    cfg.applyKeyValue(allocator, "quake-mode", "maybe", ".");
+    try std.testing.expectEqual(true, cfg.@"quake-mode");
 }
 
 test "config: ai agent options parse" {
