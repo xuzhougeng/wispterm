@@ -2596,57 +2596,88 @@ pub fn resetCursorBlink() void {
 // mid-animation and re-anchor the IME popup / inline preedit on the wrong row.
 threadlocal var g_ime_caret_last_sample_x: i64 = -1;
 threadlocal var g_ime_caret_last_sample_y: i64 = -1;
+threadlocal var g_ime_caret_last_sample_source: ImeCaretSource = .terminal_cursor;
 threadlocal var g_ime_caret_committed_x: i64 = -1;
 threadlocal var g_ime_caret_committed_y: i64 = -1;
+threadlocal var g_ime_caret_committed_source: ImeCaretSource = .terminal_cursor;
+
+const ImeCaretSource = enum {
+    terminal_cursor,
+    visual_inverse,
+};
+
+const ImeCaret = struct {
+    x: usize,
+    y: usize,
+    source: ImeCaretSource,
+};
 
 fn syncImeCaretPosition(win: *win32_backend.Window, split_count: usize) void {
-    // Freeze the caret during composition so the IMM popup, anchored when the
-    // composition started, doesn't drift onto another line as the cursor moves.
-    if (win.ime_composing) return;
-
     if (activeAiChat()) |session| {
+        // Freeze the caret during composition so the IMM popup, anchored when
+        // the composition started, doesn't drift with local UI relayout.
+        if (win.ime_composing) return;
         syncAiChatImeCaret(win, session);
         return;
     }
 
     const surface = activeSurface() orelse return;
 
-    var cursor_x: usize = 0;
-    var cursor_y: usize = 0;
+    var caret: ImeCaret = undefined;
     {
         surface.render_state.mutex.lock();
         defer surface.render_state.mutex.unlock();
-        const screen = surface.terminal.screens.active;
-        cursor_x = screen.cursor.x;
-        cursor_y = screen.cursor.y;
+        caret = imeCaretFromSurfaceLocked(surface);
     }
 
-    // Require two consecutive frames at the same position before committing,
-    // so single-frame transients during status-line animations are skipped.
-    const sx: i64 = @intCast(cursor_x);
-    const sy: i64 = @intCast(cursor_y);
-    if (sx != g_ime_caret_last_sample_x or sy != g_ime_caret_last_sample_y) {
+    // For regular terminal cursors, keep the existing composition freeze. Some
+    // TUIs render transient status lines with cursor save/restore while IME is
+    // active, and moving the IMM popup mid-composition is visually noisy.
+    if (caret.source == .terminal_cursor and win.ime_composing) return;
+
+    // Require two consecutive frames at the same terminal-cursor position
+    // before committing, so single-frame transients during status-line
+    // animations are skipped. Visual inverse carets are app-drawn stable cells
+    // (Claude Code hides the terminal cursor and draws one this way), so accept
+    // them immediately and allow them to correct a stale composition anchor.
+    const sx: i64 = @intCast(caret.x);
+    const sy: i64 = @intCast(caret.y);
+    if (caret.source == .terminal_cursor) {
+        if (sx != g_ime_caret_last_sample_x or
+            sy != g_ime_caret_last_sample_y or
+            caret.source != g_ime_caret_last_sample_source)
+        {
+            g_ime_caret_last_sample_x = sx;
+            g_ime_caret_last_sample_y = sy;
+            g_ime_caret_last_sample_source = caret.source;
+            return;
+        }
+    } else {
         g_ime_caret_last_sample_x = sx;
         g_ime_caret_last_sample_y = sy;
-        return;
+        g_ime_caret_last_sample_source = caret.source;
     }
-    if (sx == g_ime_caret_committed_x and sy == g_ime_caret_committed_y) return;
+
+    if (sx == g_ime_caret_committed_x and
+        sy == g_ime_caret_committed_y and
+        caret.source == g_ime_caret_committed_source) return;
     g_ime_caret_committed_x = sx;
     g_ime_caret_committed_y = sy;
+    g_ime_caret_committed_source = caret.source;
 
     const pad = surface.getPadding();
     const cell_w = font.cell_width;
     const cell_h = font.cell_height;
 
-    var x: f32 = titlebar.sidebarWidth() + @as(f32, @floatFromInt(pad.left)) + @as(f32, @floatFromInt(cursor_x)) * cell_w;
-    var y: f32 = currentTitlebarHeight() + @as(f32, @floatFromInt(pad.top)) + @as(f32, @floatFromInt(cursor_y)) * cell_h;
+    var x: f32 = titlebar.sidebarWidth() + @as(f32, @floatFromInt(pad.left)) + @as(f32, @floatFromInt(caret.x)) * cell_w;
+    var y: f32 = currentTitlebarHeight() + @as(f32, @floatFromInt(pad.top)) + @as(f32, @floatFromInt(caret.y)) * cell_h;
 
     if (split_count > 1) {
         for (0..split_layout.g_split_rect_count) |i| {
             const rect = split_layout.g_split_rects[i];
             if (rect.surface == surface) {
-                x = @as(f32, @floatFromInt(rect.x)) + @as(f32, @floatFromInt(pad.left)) + @as(f32, @floatFromInt(cursor_x)) * cell_w;
-                y = @as(f32, @floatFromInt(rect.y)) + @as(f32, @floatFromInt(pad.top)) + @as(f32, @floatFromInt(cursor_y)) * cell_h;
+                x = @as(f32, @floatFromInt(rect.x)) + @as(f32, @floatFromInt(pad.left)) + @as(f32, @floatFromInt(caret.x)) * cell_w;
+                y = @as(f32, @floatFromInt(rect.y)) + @as(f32, @floatFromInt(pad.top)) + @as(f32, @floatFromInt(caret.y)) * cell_h;
                 break;
             }
         }
@@ -2657,6 +2688,84 @@ fn syncImeCaretPosition(win: *win32_backend.Window, split_count: usize) void {
         @intFromFloat(@round(y)),
         @intFromFloat(@max(1.0, @round(cell_h))),
     );
+}
+
+fn imeCaretFromSurfaceLocked(surface: *Surface) ImeCaret {
+    const terminal = &surface.terminal;
+    const screen = terminal.screens.active;
+
+    var caret: ImeCaret = .{
+        .x = screen.cursor.x,
+        .y = screen.cursor.y,
+        .source = .terminal_cursor,
+    };
+
+    // Match the renderer: translate the cursor's page pin to a visible
+    // viewport row. `screen.cursor.y` can be misleading when scrollback or
+    // alternate screen page pins are involved.
+    var cursor_row_it = screen.pages.rowIterator(.right_down, .{ .viewport = .{} }, null);
+    var cursor_row_idx: usize = 0;
+    while (cursor_row_it.next()) |row_pin| : (cursor_row_idx += 1) {
+        if (@as(?*anyopaque, row_pin.node) == @as(?*anyopaque, screen.cursor.page_pin.node) and
+            row_pin.y == screen.cursor.page_pin.y)
+        {
+            caret.y = cursor_row_idx;
+            break;
+        }
+    }
+
+    if (!terminal.modes.get(.cursor_visible)) {
+        if (visualInverseImeCaretLocked(surface)) |visual| return visual;
+    }
+
+    return caret;
+}
+
+fn visualInverseImeCaretLocked(surface: *Surface) ?ImeCaret {
+    const terminal = &surface.terminal;
+    const screen = terminal.screens.active;
+    const render_cols = @as(usize, terminal.cols);
+    var best: ?ImeCaret = null;
+
+    var row_it = screen.pages.rowIterator(.right_down, .{ .viewport = .{} }, null);
+    var row_idx: usize = 0;
+    while (row_it.next()) |row_pin| : (row_idx += 1) {
+        const p = &row_pin.node.data;
+        const rac = row_pin.rowAndCell();
+        const page_cells = p.getCells(rac.row);
+        const num_cols = @min(page_cells.len, render_cols);
+
+        var col: usize = 0;
+        while (col < num_cols) {
+            if (!isInverseBlankImeCell(p, &page_cells[col])) {
+                col += 1;
+                continue;
+            }
+
+            const run_start = col;
+            while (col < num_cols and isInverseBlankImeCell(p, &page_cells[col])) : (col += 1) {}
+            const run_len = col - run_start;
+            if (run_len <= 2) {
+                best = .{
+                    .x = run_start,
+                    .y = row_idx,
+                    .source = .visual_inverse,
+                };
+            }
+        }
+    }
+
+    return best;
+}
+
+fn isInverseBlankImeCell(p: anytype, cell: anytype) bool {
+    const cp = cell.codepoint();
+    if (cp != 0 and cp != ' ') return false;
+    const wide = @intFromEnum(cell.wide);
+    if (wide == 2 or wide == 3) return false;
+    if (!cell.hasStyling()) return false;
+    const style = p.styles.get(p.memory, cell.style_id);
+    return style.flags.inverse;
 }
 
 fn syncAiChatImeCaret(win: *win32_backend.Window, session: *ai_chat.Session) void {
