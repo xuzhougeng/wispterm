@@ -231,7 +231,11 @@ fn renderDelimitedDocument(
     }
 
     const source = panel.source();
-    const layout = computeTableLayout(source, delimiter, content_w);
+    const layout = blk: {
+        const perf = ui_perf.begin("markdown_preview_renderer.table_layout");
+        defer perf.end();
+        break :blk computeTableLayout(source, delimiter, content_w);
+    };
     if (layout.col_count == 0) {
         renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Empty table", muted);
         return;
@@ -240,34 +244,68 @@ fn renderDelimitedDocument(
     const row_h = @max(26, font.g_titlebar_cell_height + 10);
     if (body_h <= row_h) return;
 
-    var buffers: [markdown_preview.MAX_TABLE_COLS][markdown_preview.MAX_TABLE_CELL_BYTES]u8 = undefined;
-    var lines = std.mem.splitScalar(u8, source, '\n');
     var saw_header = false;
     var data_row_idx: usize = 0;
     var rendered_rows: usize = 0;
     var hovered_cell: ?HoveredTableCell = null;
 
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trimRight(u8, raw_line, "\r");
-        if (std.mem.trim(u8, line, " \t").len == 0) continue;
+    {
+        const perf = ui_perf.begin("markdown_preview_renderer.table_rows");
+        defer perf.end();
 
-        const row = markdown_preview.parseDelimitedRow(line, delimiter, &buffers);
-        if (row.count == 0) continue;
+        var buffers: [markdown_preview.MAX_TABLE_COLS][markdown_preview.MAX_TABLE_CELL_BYTES]u8 = undefined;
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trimRight(u8, raw_line, "\r");
+            if (std.mem.trim(u8, line, " \t").len == 0) continue;
 
-        if (!saw_header) {
+            const row = markdown_preview.parseDelimitedRow(line, delimiter, &buffers);
+            if (row.count == 0) continue;
+
+            if (!saw_header) {
+                renderTableRow(
+                    content_x,
+                    window_height,
+                    body_top,
+                    row_h,
+                    body_top,
+                    row_h,
+                    row_h,
+                    &row,
+                    &layout,
+                    &hovered_cell,
+                    true,
+                    0,
+                    normal,
+                    muted,
+                    strong,
+                    accent,
+                    code_bg,
+                    border,
+                );
+                saw_header = true;
+                continue;
+            }
+
+            const row_top = body_top + row_h + @as(f32, @floatFromInt(data_row_idx)) * row_h - panel.g_scroll_offset;
+            data_row_idx += 1;
+            if (rendered_rows >= MAX_RENDER_LINES) break;
+            if (row_top > body_top + body_h) break;
+            if (row_top + row_h < body_top + row_h) continue;
+
             renderTableRow(
                 content_x,
                 window_height,
-                body_top,
-                row_h,
-                body_top,
+                body_top + row_h,
+                body_h - row_h,
+                row_top,
                 row_h,
                 row_h,
                 &row,
                 &layout,
                 &hovered_cell,
-                true,
-                0,
+                false,
+                data_row_idx,
                 normal,
                 muted,
                 strong,
@@ -275,37 +313,8 @@ fn renderDelimitedDocument(
                 code_bg,
                 border,
             );
-            saw_header = true;
-            continue;
+            rendered_rows += 1;
         }
-
-        const row_top = body_top + row_h + @as(f32, @floatFromInt(data_row_idx)) * row_h - panel.g_scroll_offset;
-        data_row_idx += 1;
-        if (rendered_rows >= MAX_RENDER_LINES) break;
-        if (row_top > body_top + body_h) break;
-        if (row_top + row_h < body_top + row_h) continue;
-
-        renderTableRow(
-            content_x,
-            window_height,
-            body_top + row_h,
-            body_h - row_h,
-            row_top,
-            row_h,
-            row_h,
-            &row,
-            &layout,
-            &hovered_cell,
-            false,
-            data_row_idx,
-            normal,
-            muted,
-            strong,
-            accent,
-            code_bg,
-            border,
-        );
-        rendered_rows += 1;
     }
 
     if (!saw_header) {

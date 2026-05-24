@@ -1223,6 +1223,8 @@ fn updateCursorBlinkForRenderer(rend: *Renderer) void {
 fn onWin32Resize(width: i32, height: i32) void {
     if (width <= 0 or height <= 0) return;
     if (g_allocator == null) return;
+    const resize_perf = ui_perf.begin("appwindow.on_win32_resize");
+    defer resize_perf.end();
 
     // Match exactly what computeSplitLayout → setScreenSize computes for a
     // root (full-window) surface, so term_cols/term_rows stay in sync and
@@ -1280,7 +1282,11 @@ fn onWin32Resize(width: i32, height: i32) void {
         const content_y: i32 = @intFromFloat(render_padding + tb);
         const content_w: i32 = @intFromFloat(@as(f32, @floatFromInt(width)) - left_panels_w - right_panels_w - render_padding * 2);
         const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(height)) - (render_padding + tb) - render_padding);
-        const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
+        const split_count = blk: {
+            const perf = ui_perf.begin("appwindow.resize_compute_split_layout");
+            defer perf.end();
+            break :blk computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
+        };
         if (g_allocator) |alloc| syncRemoteLayout(alloc);
 
         if (split_count <= 1) {

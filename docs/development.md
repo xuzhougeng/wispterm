@@ -26,6 +26,37 @@ consistent with split panes and custom panels. For the primary terminal
 experience, Phantty prefers platform-aware custom controls over embedding
 mismatched native widgets directly.
 
+## Resize Benchmark
+
+Use the checked-in resize benchmark when investigating reports that live window
+resizing feels slower in one release than another. The script launches a real
+Phantty window, enables `PHANTTY_UI_PERF=1`, drives repeated Win32
+`SetWindowPos` size changes, and writes JSON plus CSV timing summaries under
+`zig-out\resize-bench`.
+
+```powershell
+zig build
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\benchmark-resize.ps1
+```
+
+To compare two release builds, run the same command against each executable and
+compare the generated `ui_perf_csv` files:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\benchmark-resize.ps1 `
+  -ExePath .\zig-out-v0.28.1\bin\phantty.exe -Label v0.28.1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\benchmark-resize.ps1 `
+  -ExePath .\zig-out-v0.29.0\bin\phantty.exe -Label v0.29.0
+```
+
+Important labels include `appwindow.on_win32_resize`,
+`appwindow.resize_compute_split_layout`, `markdown_preview_renderer.render`,
+`markdown_preview_renderer.table_layout`, and
+`markdown_preview_renderer.table_rows`. If resize is only slow while a CSV/TSV
+preview is visible, the table preview labels should move with the regression.
+For that scenario, add `-ManualSetupSeconds 15`, open the CSV/TSV preview during
+the pause, then let the script run the resize sequence.
+
 ## Packaging
 
 Phantty supports three portable Windows packages plus the local installer build:
