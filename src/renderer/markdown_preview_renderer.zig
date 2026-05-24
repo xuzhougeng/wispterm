@@ -18,6 +18,11 @@ const PAD_X: f32 = 16;
 const PAD_Y: f32 = 18;
 const LINE_GAP: f32 = 6;
 const MAX_RENDER_LINES: usize = 512;
+const MAX_TABLE_SCAN_ROWS: usize = 128;
+const TABLE_CELL_PAD_X: f32 = 8;
+const TABLE_MIN_COL_W: f32 = 64;
+const TABLE_MAX_COL_W: f32 = 220;
+const TABLE_FIT_MIN_COL_W: f32 = 28;
 
 threadlocal var g_image_texture: c.GLuint = 0;
 threadlocal var g_image_width: c_int = 0;
@@ -98,6 +103,8 @@ fn renderFooter(
     const badge = switch (panel.g_kind) {
         .markdown => "MD",
         .text => "TXT",
+        .csv => "CSV",
+        .tsv => "TSV",
         .image => "IMG",
     };
     const text_y = (FOOTER_HEIGHT - font.g_titlebar_cell_height) / 2;
@@ -135,6 +142,10 @@ fn renderDocument(
         renderImageDocument(panel_x, panel_w, window_height, body_top, body_h, normal, muted, border);
         return;
     }
+    if (markdown_preview.delimiterForKind(panel.g_kind)) |delimiter| {
+        renderDelimitedDocument(panel_x, panel_w, window_height, body_top, body_h, delimiter, normal, muted, strong, accent, code_bg, border);
+        return;
+    }
 
     const row_h = @max(22, font.g_titlebar_cell_height + LINE_GAP);
     var y_from_top: f32 = body_top - panel.g_scroll_offset;
@@ -166,6 +177,372 @@ fn renderDocument(
         y_from_top += consumed;
         rendered += 1;
         if (y_from_top > body_top + body_h + row_h * 4) break;
+    }
+}
+
+const TableLayout = struct {
+    widths: [markdown_preview.MAX_TABLE_COLS]f32 = [_]f32{0} ** markdown_preview.MAX_TABLE_COLS,
+    col_count: usize = 0,
+    total_w: f32 = 0,
+};
+
+const HoveredTableCell = struct {
+    x: f32 = 0,
+    y_top: f32 = 0,
+    w: f32 = 0,
+    h: f32 = 0,
+    text_buf: [markdown_preview.MAX_TABLE_CELL_BYTES]u8 = undefined,
+    text_len: usize = 0,
+};
+
+fn renderDelimitedDocument(
+    panel_x: f32,
+    panel_w: f32,
+    window_height: f32,
+    body_top: f32,
+    body_h: f32,
+    delimiter: u8,
+    normal: [3]f32,
+    muted: [3]f32,
+    strong: [3]f32,
+    accent: [3]f32,
+    code_bg: [3]f32,
+    border: [3]f32,
+) void {
+    const content_x = panel_x + PAD_X;
+    const content_w = panel_w - PAD_X * 2;
+    if (content_w <= 0) return;
+
+    switch (panel.g_load_status) {
+        .loading => {
+            renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Loading preview...", muted);
+            return;
+        },
+        .failed => {
+            renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Preview failed", normal);
+            return;
+        },
+        .too_large => {
+            renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Preview too large", normal);
+            return;
+        },
+        .idle => return,
+        .ready => {},
+    }
+
+    const source = panel.source();
+    const layout = computeTableLayout(source, delimiter, content_w);
+    if (layout.col_count == 0) {
+        renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Empty table", muted);
+        return;
+    }
+
+    const row_h = @max(26, font.g_titlebar_cell_height + 10);
+    if (body_h <= row_h) return;
+
+    var buffers: [markdown_preview.MAX_TABLE_COLS][markdown_preview.MAX_TABLE_CELL_BYTES]u8 = undefined;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    var saw_header = false;
+    var data_row_idx: usize = 0;
+    var rendered_rows: usize = 0;
+    var hovered_cell: ?HoveredTableCell = null;
+
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        if (std.mem.trim(u8, line, " \t").len == 0) continue;
+
+        const row = markdown_preview.parseDelimitedRow(line, delimiter, &buffers);
+        if (row.count == 0) continue;
+
+        if (!saw_header) {
+            renderTableRow(
+                content_x,
+                window_height,
+                body_top,
+                row_h,
+                body_top,
+                row_h,
+                row_h,
+                &row,
+                &layout,
+                &hovered_cell,
+                true,
+                0,
+                normal,
+                muted,
+                strong,
+                accent,
+                code_bg,
+                border,
+            );
+            saw_header = true;
+            continue;
+        }
+
+        const row_top = body_top + row_h + @as(f32, @floatFromInt(data_row_idx)) * row_h - panel.g_scroll_offset;
+        data_row_idx += 1;
+        if (rendered_rows >= MAX_RENDER_LINES) break;
+        if (row_top > body_top + body_h) break;
+        if (row_top + row_h < body_top + row_h) continue;
+
+        renderTableRow(
+            content_x,
+            window_height,
+            body_top + row_h,
+            body_h - row_h,
+            row_top,
+            row_h,
+            row_h,
+            &row,
+            &layout,
+            &hovered_cell,
+            false,
+            data_row_idx,
+            normal,
+            muted,
+            strong,
+            accent,
+            code_bg,
+            border,
+        );
+        rendered_rows += 1;
+    }
+
+    if (!saw_header) {
+        renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Empty table", muted);
+        return;
+    }
+
+    if (hovered_cell) |cell| {
+        renderTableHover(cell, panel_x, panel_w, window_height, body_top, body_h, normal, strong, code_bg, border);
+    }
+}
+
+fn computeTableLayout(source: []const u8, delimiter: u8, max_w: f32) TableLayout {
+    var layout: TableLayout = .{};
+    var buffers: [markdown_preview.MAX_TABLE_COLS][markdown_preview.MAX_TABLE_CELL_BYTES]u8 = undefined;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    var scanned: usize = 0;
+
+    while (lines.next()) |raw_line| {
+        if (scanned >= MAX_TABLE_SCAN_ROWS) break;
+        const line = std.mem.trimRight(u8, raw_line, "\r");
+        if (std.mem.trim(u8, line, " \t").len == 0) continue;
+
+        const row = markdown_preview.parseDelimitedRow(line, delimiter, &buffers);
+        if (row.count == 0) continue;
+        layout.col_count = @max(layout.col_count, row.count);
+        for (0..row.count) |idx| {
+            layout.widths[idx] = @max(layout.widths[idx], tableCellDesiredWidth(row.cells[idx]));
+        }
+        scanned += 1;
+    }
+
+    if (layout.col_count == 0) return layout;
+    for (0..layout.col_count) |idx| {
+        if (layout.widths[idx] <= 0) layout.widths[idx] = TABLE_MIN_COL_W;
+    }
+
+    fitTableLayout(&layout, max_w);
+    return layout;
+}
+
+fn tableCellDesiredWidth(text: []const u8) f32 {
+    const capped_len = @min(text.len, @as(usize, 28));
+    const text_w = @as(f32, @floatFromInt(capped_len)) * @max(font.g_titlebar_cell_width, 1);
+    return @max(TABLE_MIN_COL_W, @min(TABLE_MAX_COL_W, text_w + TABLE_CELL_PAD_X * 2));
+}
+
+fn fitTableLayout(layout: *TableLayout, max_w: f32) void {
+    const grid_w = @as(f32, @floatFromInt(layout.col_count + 1));
+    var cell_total: f32 = 0;
+    for (0..layout.col_count) |idx| cell_total += layout.widths[idx];
+    layout.total_w = cell_total + grid_w;
+
+    if (layout.total_w <= max_w or layout.col_count == 0) return;
+
+    const count_f = @as(f32, @floatFromInt(layout.col_count));
+    const raw_available = @max(1, max_w - grid_w);
+    const fit_floor = @max(8, @floor(raw_available / count_f));
+    const min_w = if (count_f * TABLE_FIT_MIN_COL_W <= raw_available) TABLE_FIT_MIN_COL_W else fit_floor;
+    const available_cells = @max(count_f * min_w, raw_available);
+    const scale = if (cell_total > 0) available_cells / cell_total else 1.0;
+
+    cell_total = 0;
+    for (0..layout.col_count) |idx| {
+        layout.widths[idx] = @max(min_w, @floor(layout.widths[idx] * scale));
+        cell_total += layout.widths[idx];
+    }
+    layout.total_w = cell_total + grid_w;
+
+    if (layout.total_w > max_w and max_w > grid_w) {
+        const equal_w = @max(8, @floor((max_w - grid_w) / count_f));
+        cell_total = 0;
+        for (0..layout.col_count) |idx| {
+            layout.widths[idx] = @min(layout.widths[idx], equal_w);
+            cell_total += layout.widths[idx];
+        }
+        layout.total_w = cell_total + grid_w;
+    }
+}
+
+fn renderTableRow(
+    x: f32,
+    window_height: f32,
+    clip_top: f32,
+    clip_h: f32,
+    row_top: f32,
+    row_h: f32,
+    text_row_h: f32,
+    row: *const markdown_preview.TableRow,
+    layout: *const TableLayout,
+    hovered_cell: *?HoveredTableCell,
+    is_header: bool,
+    row_index: usize,
+    normal: [3]f32,
+    muted: [3]f32,
+    strong: [3]f32,
+    accent: [3]f32,
+    code_bg: [3]f32,
+    border: [3]f32,
+) void {
+    const bg = AppWindow.g_theme.background;
+    const row_bg: ?[3]f32 = if (is_header)
+        blend(code_bg, accent, 0.18)
+    else if (row_index % 2 == 0)
+        blend(bg, AppWindow.g_theme.foreground, 0.035)
+    else
+        null;
+
+    if (row_bg) |color| {
+        renderTopQuad(x, layout.total_w, window_height, clip_top, clip_h, row_top, row_h, color);
+    }
+
+    renderTopQuad(x, layout.total_w, window_height, clip_top, clip_h, row_top, 1, border);
+    renderTopQuad(x, layout.total_w, window_height, clip_top, clip_h, row_top + row_h - 1, 1, border);
+
+    var col_x = x;
+    renderTopQuad(col_x, 1, window_height, clip_top, clip_h, row_top, row_h, border);
+    for (0..layout.col_count) |col| {
+        const col_w = layout.widths[col];
+        col_x += col_w + 1;
+        renderTopQuad(col_x, 1, window_height, clip_top, clip_h, row_top, row_h, border);
+    }
+
+    if (row_top < clip_top or row_top + row_h > clip_top + clip_h) return;
+
+    captureTableHoverCell(x, row_top, row_h, row, layout, hovered_cell);
+
+    col_x = x + 1;
+    const text_color = if (is_header) strong else normal;
+    const empty_color = if (is_header) strong else muted;
+    const gl_y = window_height - row_top - text_row_h + (text_row_h - font.g_titlebar_cell_height) / 2;
+    for (0..layout.col_count) |col| {
+        const col_w = layout.widths[col];
+        const text = if (col < row.count) row.cells[col] else "";
+        const color = if (text.len == 0) empty_color else text_color;
+        _ = titlebar.renderTextLimited(text, col_x + TABLE_CELL_PAD_X, gl_y, color, @max(4, col_w - TABLE_CELL_PAD_X * 2));
+        col_x += col_w + 1;
+    }
+}
+
+fn captureTableHoverCell(
+    x: f32,
+    row_top: f32,
+    row_h: f32,
+    row: *const markdown_preview.TableRow,
+    layout: *const TableLayout,
+    hovered_cell: *?HoveredTableCell,
+) void {
+    const win = AppWindow.g_window orelse return;
+    if (win.mouse_x < 0 or win.mouse_y < 0) return;
+
+    const mx: f32 = @floatFromInt(win.mouse_x);
+    const my: f32 = @floatFromInt(win.mouse_y);
+    if (my < row_top or my >= row_top + row_h) return;
+
+    var col_x = x + 1;
+    for (0..layout.col_count) |col| {
+        const col_w = layout.widths[col];
+        if (mx >= col_x and mx < col_x + col_w) {
+            if (col >= row.count) return;
+            const text = row.cells[col];
+            if (text.len == 0 or !tableCellNeedsHover(text, col_w)) return;
+
+            var hover: HoveredTableCell = .{
+                .x = col_x,
+                .y_top = row_top,
+                .w = col_w,
+                .h = row_h,
+            };
+            hover.text_len = @min(text.len, hover.text_buf.len);
+            @memcpy(hover.text_buf[0..hover.text_len], text[0..hover.text_len]);
+            hovered_cell.* = hover;
+            return;
+        }
+        col_x += col_w + 1;
+    }
+}
+
+fn tableCellNeedsHover(text: []const u8, col_w: f32) bool {
+    const available = @max(1, col_w - TABLE_CELL_PAD_X * 2);
+    const approx_w = @as(f32, @floatFromInt(text.len)) * @max(font.g_titlebar_cell_width, 1);
+    return approx_w > available or text.len > 20;
+}
+
+fn renderTableHover(
+    cell: HoveredTableCell,
+    panel_x: f32,
+    panel_w: f32,
+    window_height: f32,
+    body_top: f32,
+    body_h: f32,
+    normal: [3]f32,
+    strong: [3]f32,
+    code_bg: [3]f32,
+    border: [3]f32,
+) void {
+    const text = cell.text_buf[0..cell.text_len];
+    if (text.len == 0) return;
+
+    const popup_max_w = @min(620, @max(160, panel_w - PAD_X * 2));
+    const text_w = @as(f32, @floatFromInt(@min(text.len, @as(usize, 72)))) * @max(font.g_titlebar_cell_width, 1);
+    const popup_w = @min(popup_max_w, @max(220, text_w + 24));
+    const row_h = @max(24, font.g_titlebar_cell_height + 8);
+    const inner_w = popup_w - 24;
+    const chars_per_line = @max(@as(usize, 12), @as(usize, @intFromFloat(inner_w / @max(font.g_titlebar_cell_width, 1))));
+
+    var ranges: [6]struct { start: usize, end: usize } = undefined;
+    var line_count: usize = 0;
+    var offset: usize = 0;
+    while (offset < text.len and line_count < ranges.len) {
+        const end = wrapEnd(text, offset, chars_per_line);
+        ranges[line_count] = .{ .start = offset, .end = end };
+        line_count += 1;
+        offset = skipSpaces(text, end);
+    }
+    if (line_count == 0) return;
+
+    const popup_h = @as(f32, @floatFromInt(line_count)) * row_h + 16;
+    const min_x = panel_x + PAD_X;
+    const max_x = panel_x + panel_w - PAD_X - popup_w;
+    const popup_x = @max(min_x, @min(max_x, cell.x));
+
+    var popup_top = cell.y_top + cell.h + 6;
+    const body_bottom = body_top + body_h;
+    if (popup_top + popup_h > body_bottom) popup_top = cell.y_top - popup_h - 6;
+    popup_top = @max(body_top + 4, @min(body_bottom - popup_h - 4, popup_top));
+
+    const popup_y = window_height - popup_top - popup_h;
+    const popup_bg = blend(AppWindow.g_theme.background, code_bg, 0.82);
+    gl_init.renderQuad(popup_x - 1, popup_y - 1, popup_w + 2, popup_h + 2, border);
+    gl_init.renderQuad(popup_x, popup_y, popup_w, popup_h, popup_bg);
+    gl_init.renderQuad(popup_x, popup_y + popup_h - 2, popup_w, 2, strong);
+
+    for (0..line_count) |idx| {
+        const line_top = popup_top + 8 + @as(f32, @floatFromInt(idx)) * row_h;
+        const text_y = window_height - line_top - row_h + (row_h - font.g_titlebar_cell_height) / 2;
+        _ = titlebar.renderTextLimited(text[ranges[idx].start..ranges[idx].end], popup_x + 12, text_y, normal, inner_w);
     }
 }
 

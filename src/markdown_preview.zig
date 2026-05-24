@@ -11,7 +11,18 @@ pub const MAX_IMAGE_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 pub const Kind = enum {
     markdown,
     text,
+    csv,
+    tsv,
     image,
+};
+
+pub const MAX_TABLE_COLS: usize = 32;
+pub const MAX_TABLE_CELL_BYTES: usize = 512;
+
+pub const TableRow = struct {
+    cells: [MAX_TABLE_COLS][]const u8 = undefined,
+    count: usize = 0,
+    truncated_cols: bool = false,
 };
 
 const Link = struct {
@@ -23,6 +34,8 @@ const Link = struct {
 
 pub fn detectKind(path: []const u8) ?Kind {
     if (endsWithIgnoreCase(path, ".md") or endsWithIgnoreCase(path, ".markdown")) return .markdown;
+    if (endsWithIgnoreCase(path, ".csv")) return .csv;
+    if (endsWithIgnoreCase(path, ".tsv")) return .tsv;
     inline for (image_file_suffixes) |suffix| {
         if (endsWithIgnoreCase(path, suffix)) return .image;
     }
@@ -34,7 +47,7 @@ pub fn detectKind(path: []const u8) ?Kind {
 
 pub fn sourceLimit(kind: Kind) usize {
     return switch (kind) {
-        .markdown, .text => MAX_SOURCE_BYTES,
+        .markdown, .text, .csv, .tsv => MAX_SOURCE_BYTES,
         .image => MAX_IMAGE_SOURCE_BYTES,
     };
 }
@@ -72,9 +85,99 @@ const image_file_suffixes = &.{
 pub fn render(allocator: std.mem.Allocator, kind: Kind, title: []const u8, source: []const u8) ![]u8 {
     return switch (kind) {
         .markdown => renderMarkdown(allocator, title, source),
-        .text => renderText(allocator, source),
+        .text, .csv, .tsv => renderText(allocator, source),
         .image => allocator.dupe(u8, source),
     };
+}
+
+pub fn delimiterForKind(kind: Kind) ?u8 {
+    return switch (kind) {
+        .csv => ',',
+        .tsv => '\t',
+        else => null,
+    };
+}
+
+pub fn parseDelimitedRow(raw_line: []const u8, delimiter: u8, buffers: *[MAX_TABLE_COLS][MAX_TABLE_CELL_BYTES]u8) TableRow {
+    const line = std.mem.trimRight(u8, raw_line, "\r");
+    var row: TableRow = .{};
+    var i: usize = 0;
+
+    while (i <= line.len) {
+        if (row.count >= MAX_TABLE_COLS) {
+            row.truncated_cols = true;
+            break;
+        }
+
+        var out_len: usize = 0;
+        var quoted = false;
+        var was_quoted = false;
+        var field_started = false;
+
+        if (i < line.len and line[i] == '"') {
+            quoted = true;
+            was_quoted = true;
+            field_started = true;
+            i += 1;
+        }
+
+        while (i < line.len) {
+            const ch = line[i];
+            if (quoted) {
+                if (ch == '"') {
+                    if (i + 1 < line.len and line[i + 1] == '"') {
+                        appendTableCellByte(&buffers[row.count], &out_len, '"');
+                        i += 2;
+                    } else {
+                        quoted = false;
+                        i += 1;
+                    }
+                    continue;
+                }
+                appendTableCellByte(&buffers[row.count], &out_len, ch);
+                i += 1;
+                continue;
+            }
+
+            if (ch == delimiter) break;
+            if (!field_started and ch == '"') {
+                quoted = true;
+                was_quoted = true;
+                field_started = true;
+                i += 1;
+                continue;
+            }
+
+            appendTableCellByte(&buffers[row.count], &out_len, ch);
+            field_started = true;
+            i += 1;
+        }
+
+        const raw_cell = buffers[row.count][0..out_len];
+        row.cells[row.count] = if (was_quoted) raw_cell else std.mem.trim(u8, raw_cell, " \t");
+        row.count += 1;
+
+        if (i >= line.len) break;
+        if (line[i] == delimiter) i += 1;
+    }
+
+    return row;
+}
+
+fn appendTableCellByte(buffer: *[MAX_TABLE_CELL_BYTES]u8, len: *usize, byte: u8) void {
+    if (len.* >= buffer.len) return;
+    switch (byte) {
+        0x1b, '\r', '\n' => {},
+        '\t' => {
+            buffer[len.*] = ' ';
+            len.* += 1;
+        },
+        0x20...0x7e, 0x80...0xff => {
+            buffer[len.*] = byte;
+            len.* += 1;
+        },
+        else => {},
+    }
 }
 
 fn endsWithIgnoreCase(text: []const u8, suffix: []const u8) bool {
@@ -348,6 +451,8 @@ fn parseLink(text: []const u8, start: usize) ?Link {
 test "detect preview kind" {
     try std.testing.expectEqual(Kind.markdown, detectKind("README.md").?);
     try std.testing.expectEqual(Kind.markdown, detectKind("notes.MARKDOWN").?);
+    try std.testing.expectEqual(Kind.csv, detectKind("sample.CSV").?);
+    try std.testing.expectEqual(Kind.tsv, detectKind("matrix.tsv").?);
     try std.testing.expectEqual(Kind.text, detectKind("log.TXT").?);
     try std.testing.expectEqual(Kind.text, detectKind("main.rs").?);
     try std.testing.expectEqual(Kind.text, detectKind("main.c").?);
@@ -365,7 +470,26 @@ test "detect preview kind" {
     try std.testing.expectEqual(Kind.image, detectKind("photo.JPEG").?);
     try std.testing.expectEqual(MAX_SOURCE_BYTES, sourceLimit(.markdown));
     try std.testing.expectEqual(MAX_SOURCE_BYTES, sourceLimit(.text));
+    try std.testing.expectEqual(MAX_SOURCE_BYTES, sourceLimit(.csv));
+    try std.testing.expectEqual(MAX_SOURCE_BYTES, sourceLimit(.tsv));
     try std.testing.expectEqual(MAX_IMAGE_SOURCE_BYTES, sourceLimit(.image));
+}
+
+test "delimited row parser handles csv quotes and tsv" {
+    var buffers: [MAX_TABLE_COLS][MAX_TABLE_CELL_BYTES]u8 = undefined;
+
+    const csv = parseDelimitedRow("name,\"hello, world\",\"a\"\"b\", 42 ", ',', &buffers);
+    try std.testing.expectEqual(@as(usize, 4), csv.count);
+    try std.testing.expectEqualStrings("name", csv.cells[0]);
+    try std.testing.expectEqualStrings("hello, world", csv.cells[1]);
+    try std.testing.expectEqualStrings("a\"b", csv.cells[2]);
+    try std.testing.expectEqualStrings("42", csv.cells[3]);
+
+    const tsv = parseDelimitedRow("gene\tcount\tvalue", '\t', &buffers);
+    try std.testing.expectEqual(@as(usize, 3), tsv.count);
+    try std.testing.expectEqualStrings("gene", tsv.cells[0]);
+    try std.testing.expectEqualStrings("count", tsv.cells[1]);
+    try std.testing.expectEqualStrings("value", tsv.cells[2]);
 }
 
 test "markdown render strips structural markers" {

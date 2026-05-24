@@ -14,7 +14,7 @@ const tab = @import("appwindow/tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 240;
 pub const MIN_WIDTH: f32 = 160;
-pub const MAX_WIDTH: f32 = 420;
+pub const MAX_WIDTH: f32 = 720;
 pub const MIN_CONTENT_WIDTH: f32 = 240;
 pub const RESIZE_HIT_WIDTH: f32 = 8;
 pub const ROW_HEIGHT: f32 = 24;

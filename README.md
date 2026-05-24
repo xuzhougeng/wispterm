@@ -5,7 +5,7 @@ A Windows terminal written in Zig, powered by [libghostty-vt](https://github.com
 > [!NOTE]
 > This repository is a fork of [arya-s/phantty](https://github.com/arya-s/phantty),
 > with additional features layered on top: an embedded WebView2 browser panel,
-> a file explorer with Markdown/text/image preview, AI Agent sessions,
+> a file explorer with Markdown/text/table/image preview, AI Agent sessions,
 > an opt-in remote-access client,
 > Kitty Graphics image protocol support, and a configurable background image.
 
@@ -18,7 +18,7 @@ A Windows terminal written in Zig, powered by [libghostty-vt](https://github.com
 - **Theme support** - Ghostty-compatible theme files, 450+ themes built in (default: Poimandres)
 - **Background image and shaders** - wallpaper blending plus Ghostty-compatible GLSL post-processing
 - **Splits and tabs** - vertical/horizontal splits, tab strip, focus-follows-mouse, equalize sizes
-- **File Explorer and previews** - browse local, WSL, and SSH files; preview Markdown/text/images without leaving the terminal
+- **File Explorer and previews** - browse local, WSL, and SSH files; preview Markdown/text/tables/images without leaving the terminal
 - **Embedded browser panel** - open web URLs in a side WebView2 panel, with SSH loopback tunneling for profile sessions
 - **AI Agent sessions** - launch an OpenAI-compatible Agent tab directly and configure profiles in Settings
 - **Kitty Graphics protocol** - display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
@@ -106,7 +106,7 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | **Ctrl+Shift+B**                                                               | Toggle tab sidebar                                                                 |
 | **Ctrl+Shift+O**                                                               | Split to the right                                                                 |
 | **Ctrl+Shift+Alt+E**                                                           | Toggle file explorer sidebar                                                       |
-| Ctrl-click `.md` / `.txt` / image files in terminal output, or double-click in File Explorer | Preview local, WSL, or SSH Markdown/text/images in the right preview panel        |
+| Ctrl-click `.md` / `.txt` / `.csv` / `.tsv` / image files in terminal output, or double-click in File Explorer | Preview local, WSL, or SSH Markdown/text/table/images in the right preview panel |
 | Ctrl+Shift-click file path in SSH terminal output                              | Download the SSH remote file to `%USERPROFILE%\Downloads`                         |
 | **Ctrl+Shift+W**                                                               | Close focused panel, tab, or window; press again to confirm closing the last panel |
 | **Alt+Enter**                                                                  | Maximize or restore window                                                         |
