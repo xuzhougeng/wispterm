@@ -12,6 +12,8 @@ pub const RowRange = struct {
     end_col: usize,
 };
 
+pub const default_word_delimiters = "\\ :;~`!@#$%^&*()=+|[]{}'\",<>?";
+
 pub fn wordRange(row: []const u21, col: usize) ?ColRange {
     if (col >= row.len or !isWordCodepoint(row[col])) return null;
 
@@ -101,11 +103,15 @@ pub fn trimTrailingClipboardSpaces(row: []const u8) []const u8 {
 }
 
 pub fn isWordCodepoint(cp: u21) bool {
-    if (cp >= '0' and cp <= '9') return true;
-    if (cp >= 'A' and cp <= 'Z') return true;
-    if (cp >= 'a' and cp <= 'z') return true;
-    if (cp == '_') return true;
-    return cp > 0x7f and !isBlankCodepoint(cp);
+    return !isBlankCodepoint(cp) and !isWordDelimiter(cp);
+}
+
+fn isWordDelimiter(cp: u21) bool {
+    if (cp > 0x7f) return false;
+    for (default_word_delimiters) |delimiter| {
+        if (cp == delimiter) return true;
+    }
+    return false;
 }
 
 fn isBlankCodepoint(cp: u21) bool {
@@ -125,7 +131,16 @@ fn isSentenceCloser(cp: u21) bool {
 
 test "selection unit: word range selects an alphanumeric token" {
     const row = comptime toCodepoints("alpha beta_42.");
-    try std.testing.expectEqual(ColRange{ .start = 6, .end = 12 }, wordRange(&row, 8).?);
+    try std.testing.expectEqual(ColRange{ .start = 6, .end = 13 }, wordRange(&row, 8).?);
+}
+
+test "selection unit: word range uses configured delimiter set" {
+    const row = comptime toCodepoints("cat SRP174132_metadata.csv /tmp/a-b.c:next");
+    try std.testing.expectEqual(ColRange{ .start = 4, .end = 25 }, wordRange(&row, 12).?);
+    try std.testing.expectEqual(ColRange{ .start = 27, .end = 36 }, wordRange(&row, 33).?);
+    try std.testing.expectEqual(ColRange{ .start = 38, .end = 41 }, wordRange(&row, 40).?);
+    try std.testing.expect(wordRange(&row, 26) == null);
+    try std.testing.expect(wordRange(&row, 37) == null);
 }
 
 test "selection unit: sentence range trims surrounding whitespace and includes terminator" {
