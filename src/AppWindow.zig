@@ -25,6 +25,7 @@ const platform_display = @import("platform/display.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_file_dialog = @import("platform/file_dialog.zig");
 const platform_global_hotkey = @import("platform/global_hotkey.zig");
+const platform_notifications = @import("platform/notifications.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_window_state = @import("platform/window_state.zig");
 const platform_wsl = @import("platform/wsl.zig");
@@ -2886,8 +2887,8 @@ fn handleBell(surface: *Surface, win: *window_backend.Window, is_active_tab: boo
     surface.bell_indicator = true;
     surface.bell_indicator_time = now;
 
-    window_backend.playBell(win);
-    window_backend.flashTaskbar(win);
+    platform_notifications.bell();
+    platform_notifications.requestAttention(window_backend.nativeHandle(win));
 }
 
 /// Internal main loop - called by AppWindow.run() after init() has set up globals.

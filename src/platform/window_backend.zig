@@ -162,14 +162,6 @@ pub fn resizeClientArea(window: *Window, width: i32, height: i32) void {
     window.setSize(width, height);
 }
 
-pub fn playBell(window: *Window) void {
-    window.playBell();
-}
-
-pub fn flashTaskbar(window: *Window) void {
-    window.flashTaskbar();
-}
-
 pub fn setImeCaret(window: *Window, x: i32, y: i32, height: i32) void {
     window.setImeCaret(x, y, height);
 }

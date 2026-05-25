@@ -365,9 +365,6 @@ extern "user32" fn SetWindowPos(hWnd: HWND, hWndInsertAfter: ?HWND, X: INT, Y: I
 extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn SetCapture(hWnd: HWND) callconv(.winapi) ?HWND;
 extern "user32" fn ReleaseCapture() callconv(.winapi) BOOL;
-extern "user32" fn MessageBeep(uType: UINT) callconv(.winapi) BOOL;
-extern "user32" fn FlashWindowEx(pfwi: *const FLASHWINFO) callconv(.winapi) BOOL;
-extern "user32" fn GetForegroundWindow() callconv(.winapi) ?HWND;
 extern "imm32" fn ImmGetContext(hWnd: HWND) callconv(.winapi) ?HIMC;
 extern "imm32" fn ImmReleaseContext(hWnd: HWND, hIMC: HIMC) callconv(.winapi) BOOL;
 extern "imm32" fn ImmSetCompositionWindow(hIMC: HIMC, lpCompForm: *COMPOSITIONFORM) callconv(.winapi) BOOL;
@@ -671,20 +668,6 @@ pub const MARGINS = extern struct {
     cyTopHeight: INT,
     cyBottomHeight: INT,
 };
-
-// FlashWindowEx
-pub const FLASHWINFO = extern struct {
-    cbSize: UINT,
-    hwnd: HWND,
-    dwFlags: DWORD,
-    uCount: UINT,
-    dwTimeout: DWORD,
-};
-const FLASHW_ALL: DWORD = 3; // Flash both caption and taskbar
-const FLASHW_TIMERNOFG: DWORD = 12; // Flash until window comes to foreground
-
-// MessageBeep
-const MB_OK: UINT = 0x00000000; // Default system sound
 
 // kernel32 for GetModuleHandle and GetProcAddress
 extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*:0]const WCHAR) callconv(.winapi) ?HINSTANCE;
@@ -1202,25 +1185,6 @@ pub const Window = struct {
             _ = DispatchMessageW(&msg);
         }
         return !self.should_close;
-    }
-
-    /// Play the system default notification sound.
-    pub fn playBell(_: *Window) void {
-        _ = MessageBeep(MB_OK);
-    }
-
-    /// Flash the taskbar icon to get user attention (only when not focused).
-    pub fn flashTaskbar(self: *Window) void {
-        // Only flash if this window is not the foreground window
-        if (GetForegroundWindow() == self.hwnd) return;
-        var fwi = FLASHWINFO{
-            .cbSize = @sizeOf(FLASHWINFO),
-            .hwnd = self.hwnd,
-            .dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG,
-            .uCount = 3,
-            .dwTimeout = 0, // Use default cursor blink rate
-        };
-        _ = FlashWindowEx(&fwi);
     }
 
     /// Resize the window to fit the given client area dimensions.

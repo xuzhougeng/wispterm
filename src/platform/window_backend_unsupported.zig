@@ -86,14 +86,6 @@ pub const Window = struct {
         self.size_changed = true;
     }
 
-    pub fn playBell(self: *Window) void {
-        _ = self;
-    }
-
-    pub fn flashTaskbar(self: *Window) void {
-        _ = self;
-    }
-
     pub fn setImeCaret(self: *Window, x: i32, y: i32, height: i32) void {
         _ = self;
         _ = x;

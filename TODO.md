@@ -59,10 +59,12 @@ do not add new OS implementations.
 - [x] Add build target selection and platform feature gates in `build.zig`,
       keeping Windows as the default development target until a port starts.
 - [x] Add compile-only checks for shared modules on non-Windows targets.
-- [ ] Abstract clipboard, file picker, file drop, open-url, notifications,
+- [x] Abstract clipboard, file picker, file drop, open-url, notifications,
       global hotkeys, DPI/content-scale, and config/theme directories.
-      All abstracted **except notifications**, which still has no platform
-      module — close this gap.
+      Notifications now live in `src/platform/notifications*.zig` (bell +
+      window attention) behind the same facade pattern as the other
+      capabilities; the bell/attention logic no longer rides on the window
+      backend.
 
 ### Phase 2 — Native host implementations (not started)
 

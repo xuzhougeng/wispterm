@@ -686,6 +686,7 @@ comptime {
     _ = @import("platform/agent_prompt.zig");
     _ = @import("platform/local_path.zig");
     _ = @import("platform/memory.zig");
+    _ = @import("platform/notifications.zig");
     _ = @import("platform/open_url.zig");
     _ = @import("platform/process.zig");
     _ = @import("platform/pty.zig");
