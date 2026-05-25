@@ -13,6 +13,7 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
 const skill_registry = @import("skill_registry.zig");
+const markdown_text = @import("markdown_text.zig");
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -2063,10 +2064,12 @@ pub const Session = struct {
         if (selection.message_index >= self.messages.items.len) return error.NoSelection;
         const msg = self.messages.items[selection.message_index];
         if (msg.role != .assistant) return error.NoSelection;
-        const start = clampUtf8Boundary(msg.content, @min(range.start, msg.content.len));
-        const end = clampUtf8Boundary(msg.content, @min(range.end, msg.content.len));
+        const display = try markdown_text.allocDisplayText(allocator, msg.content);
+        defer allocator.free(display);
+        const start = clampUtf8Boundary(display, @min(range.start, display.len));
+        const end = clampUtf8Boundary(display, @min(range.end, display.len));
         if (start >= end) return error.NoSelection;
-        return allocator.dupe(u8, msg.content[start..end]);
+        return allocator.dupe(u8, display[start..end]);
     }
 
     fn buildRequestLocked(self: *Session) !*ChatRequest {
@@ -6109,6 +6112,28 @@ test "ai chat transcript selection clamps to utf8 boundaries" {
     const copied = try session.allocClipboardText(allocator);
     defer allocator.free(copied);
     try std.testing.expectEqualStrings("你好", copied);
+}
+
+test "ai chat transcript selection copies cleaned markdown text" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    try session.messages.append(allocator, .{
+        .role = .assistant,
+        .content = try allocator.dupe(u8, "**生成的完整 `Markdown`**"),
+    });
+
+    // Display text is "生成的完整 Markdown\n"; select the whole visible run.
+    session.beginTranscriptSelection(0, 0);
+    session.updateTranscriptSelection(0, "生成的完整 Markdown".len);
+
+    const copied = try session.allocClipboardText(allocator);
+    defer allocator.free(copied);
+    try std.testing.expectEqualStrings("生成的完整 Markdown", copied);
 }
 
 test "ai chat message clipboard exports one bubble" {
