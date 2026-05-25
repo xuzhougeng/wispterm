@@ -1247,18 +1247,20 @@ fn renderMarkdownContent(
     }
 
     var cursor: usize = 0;
+    var display_cursor: usize = 0;
     var current_top = top_px;
     var in_code = false;
 
     while (cursor < text.len) {
         if (!in_code and isMarkdownTableStart(text, cursor)) {
+            const table_start = cursor;
             const end = tableBlockEnd(text, cursor);
             current_top += renderTableBlock(text, cursor, end, x, current_top, max_w, window_height, palette);
+            display_cursor += md.tableBlockDisplayLen(text, table_start, end);
             cursor = end;
             continue;
         }
 
-        const line_start = cursor;
         const info = nextSourceLine(text, cursor);
         cursor = info.next;
 
@@ -1287,8 +1289,8 @@ fn renderMarkdownContent(
                     renderTopQuad(x, max_w, window_height, current_top + body_h - 3, 1, mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.32));
                 }
                 renderWrappedSelection(
-                    info.line,
-                    line_start,
+                    prepared.text,
+                    display_cursor,
                     x + prepared.indent,
                     current_top,
                     @max(1.0, max_w - prepared.indent),
@@ -1309,6 +1311,7 @@ fn renderMarkdownContent(
                 );
             },
         }
+        display_cursor += prepared.text.len + 1;
     }
 
     return current_top - top_px;
