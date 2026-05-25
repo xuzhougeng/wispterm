@@ -17,6 +17,10 @@ const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
+const weixin = @import("weixin/controller.zig");
+const weixin_control = @import("weixin/control.zig");
+const weixin_types = @import("weixin/types.zig");
+const platform_dirs = @import("platform/dirs.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
 
@@ -80,6 +84,9 @@ remote_server_fingerprint: ?[]const u8,
 remote_device_name: ?[]const u8,
 remote_session_key: ?[]const u8,
 remote_client: ?*remote.Client,
+
+// WeChat direct (embedded ilink). Mutually exclusive with remote_client.
+weixin_controller: ?*weixin.Controller,
 
 // AI agent config
 ai_agent_enabled: bool,
@@ -210,6 +217,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .remote_device_name = remote_device_name,
         .remote_session_key = remote_session_key,
         .remote_client = remote_client_ptr,
+        // Created later by startWeixin(), once App lives at a stable address.
+        .weixin_controller = null,
         .ai_agent_enabled = cfg.@"ai-agent-enabled",
         .ai_agent_permission = cfg.@"ai-agent-permission",
         .ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
@@ -270,6 +279,103 @@ fn startRemoteClient(
         std.debug.print("Remote client disabled: {}\n", .{err});
         return null;
     };
+}
+
+// =====================================================================
+// WeChat direct (embedded ilink) — host integration.
+//
+// UNVERIFIED SCAFFOLD: this block compiles against the weixin/ modules but
+// the surface-control vtable bodies are safe stubs. With these stubs the
+// WeChat bridge connects, logs in, and long-polls; control actions report
+// "offline" until the TODOs are wired to the focused AppWindow (mirroring the
+// remote path in AppWindow.zig: remoteAiSurfaceId / remoteAiWrite /
+// remoteAiAgentOpen via thread_message, and activeAiChat() for the transcript).
+// This has not been compiled (the desktop GUI is Windows-only); verify symbol
+// names and signatures against AppWindow.zig during Windows compile iteration.
+// =====================================================================
+
+const weixin_vtable = weixin_control.Control.VTable{
+    .is_connected = wxIsConnected,
+    .find_ai_surface = wxFindAiSurface,
+    .find_terminal_surface = wxFindTerminalSurface,
+    .open_ai_agent = wxOpenAiAgent,
+    .send_input = wxSendInput,
+    .latest_transcript = wxTranscript,
+};
+
+/// Builds the Control the weixin controller drives. `self` must be stable
+/// (this is only valid after App is in its final location — see startWeixin).
+pub fn weixinControl(self: *App) weixin_control.Control {
+    return .{ .ctx = self, .vtable = &weixin_vtable };
+}
+
+fn wxIsConnected(ctx: *anyopaque) bool {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    app.mutex.lock();
+    defer app.mutex.unlock();
+    return app.windows.items.len != 0;
+}
+
+fn wxFindAiSurface(ctx: *anyopaque) ?weixin_control.Surface {
+    _ = ctx;
+    // TODO(weixin-windows): return the focused window's AI-chat surface id/title.
+    // Reuse AppWindow.remoteAiSurfaceId(tab_index) for the active .ai_chat tab.
+    return null;
+}
+
+fn wxFindTerminalSurface(ctx: *anyopaque) ?weixin_control.Surface {
+    _ = ctx;
+    // TODO(weixin-windows): return the active writable terminal surface id/title.
+    return null;
+}
+
+fn wxOpenAiAgent(ctx: *anyopaque, timeout_ms: u32) weixin_control.OpenResult {
+    _ = ctx;
+    _ = timeout_ms;
+    // TODO(weixin-windows): marshal an open-AI-agent request onto the UI thread,
+    // mirroring AppWindow.remoteAiAgentOpen (thread_message .remote_open_ai_agent).
+    return .offline;
+}
+
+fn wxSendInput(ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8) bool {
+    _ = ctx;
+    _ = surface_id;
+    _ = bytes;
+    // TODO(weixin-windows): marshal input to the surface on the UI thread,
+    // mirroring AppWindow.remoteAiWrite (thread_message .remote_ai_input).
+    return false;
+}
+
+fn wxTranscript(ctx: *anyopaque) []const u8 {
+    _ = ctx;
+    // TODO(weixin-windows): render AppWindow.activeAiChat() in the
+    // "You:/AI:/Status:" label format that reply_progress.zig parses.
+    return "";
+}
+
+/// Creates and starts the WeChat direct controller when enabled and remote is
+/// not active. Call once, after App is at its final address (see main.zig).
+/// Mutually exclusive with remote: if remote is active, this is skipped.
+pub fn startWeixin(self: *App, cfg: *const Config) void {
+    if (!cfg.@"weixin-direct-enabled") return;
+    if (self.remote_client != null) {
+        std.debug.print("weixin-direct disabled: remote-enabled takes precedence\n", .{});
+        return;
+    }
+    const state_path = platform_dirs.pathInConfigDir(self.allocator, "weixin.json") catch return;
+    defer self.allocator.free(state_path);
+
+    const settings = weixin_types.Settings{
+        .enabled = true,
+        .reply_timeout_ms = std.math.clamp(cfg.@"weixin-reply-timeout-ms", 5000, 180000),
+        .allowed_user = cfg.@"weixin-allowed-user" orelse "",
+    };
+    const controller = weixin.Controller.create(self.allocator, state_path, self.weixinControl(), settings) catch |err| {
+        std.debug.print("weixin-direct disabled: {}\n", .{err});
+        return;
+    };
+    controller.start() catch {};
+    self.weixin_controller = controller;
 }
 
 /// Get the shell command as a native null-terminated command line.
@@ -893,6 +999,11 @@ pub fn deinit(self: *App) void {
     if (self.remote_client) |client| {
         client.destroy();
         self.remote_client = null;
+    }
+
+    if (self.weixin_controller) |controller| {
+        controller.destroy();
+        self.weixin_controller = null;
     }
 
     // Free owned string copies
