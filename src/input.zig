@@ -917,30 +917,16 @@ fn handleConfiguredKeybindAction(action: keybind.Action, phase: KeybindPhase) bo
                 pasteImageFromClipboard();
                 return true;
             },
-            .focus_left => {
-                AppWindow.gotoSplit(.{ .spatial = .left });
-                return true;
-            },
-            .focus_right => {
-                AppWindow.gotoSplit(.{ .spatial = .right });
-                return true;
-            },
-            .focus_up => {
-                AppWindow.gotoSplit(.{ .spatial = .up });
-                return true;
-            },
-            .focus_down => {
-                AppWindow.gotoSplit(.{ .spatial = .down });
-                return true;
-            },
-            .focus_previous => {
-                AppWindow.gotoSplit(.previous_wrapped);
-                return true;
-            },
-            .focus_next => {
-                AppWindow.gotoSplit(.next_wrapped);
-                return true;
-            },
+            // Panel-focus shortcuts are "performable": if there is no pane in
+            // the requested direction, don't consume the key so it falls
+            // through to the terminal (e.g. Alt+Up reaches a TUI like Claude
+            // Code as \x1b[1;3A when running in a single pane).
+            .focus_left => return AppWindow.gotoSplit(.{ .spatial = .left }),
+            .focus_right => return AppWindow.gotoSplit(.{ .spatial = .right }),
+            .focus_up => return AppWindow.gotoSplit(.{ .spatial = .up }),
+            .focus_down => return AppWindow.gotoSplit(.{ .spatial = .down }),
+            .focus_previous => return AppWindow.gotoSplit(.previous_wrapped),
+            .focus_next => return AppWindow.gotoSplit(.next_wrapped),
             .equalize_splits => {
                 AppWindow.equalizeSplits();
                 return true;
@@ -1085,7 +1071,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
     const seq: ?[]const u8 = switch (ev.key_code) {
         platform_input.key_enter => "\r",
         platform_input.key_backspace => "\x7f",
-        platform_input.key_tab => "\t",
+        platform_input.key_tab => if (ev.shift) "\x1b[Z" else "\t",
         platform_input.key_escape => "\x1b",
         platform_input.key_up, platform_input.key_down, platform_input.key_right, platform_input.key_left => input_shortcuts.terminalArrowSequence(key_event, surface.terminal.modes.get(.cursor_keys)),
         platform_input.key_home => "\x1b[H",

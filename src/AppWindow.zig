@@ -1036,11 +1036,16 @@ pub fn closeFocusedSplit() void {
     }
 }
 
-pub fn gotoSplit(direction: SplitTree.Goto) void {
-    const allocator = g_allocator orelse return;
+/// Move focus to the split in the given direction. Returns whether focus
+/// actually moved — false means there is no pane in that direction, so callers
+/// can let the key fall through to the terminal instead of consuming it.
+pub fn gotoSplit(direction: SplitTree.Goto) bool {
+    const allocator = g_allocator orelse return false;
     if (tab.gotoSplit(allocator, direction)) {
         handleActiveSurfaceChangeWithinTab();
+        return true;
     }
+    return false;
 }
 
 pub fn equalizeSplits() void {
