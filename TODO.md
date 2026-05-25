@@ -35,10 +35,12 @@ code. Do not include the Phantty-specific `remote/` web console or packaged
       the `src/platform/<cap>.zig` facades, and the boundary invariants (plus
       the guards enforcing them) are listed there. AGENTS.md links to it.
 
-### Phase 1 — Platform boundaries (largely complete)
+### Phase 1 — Platform boundaries (complete)
 
 These extract platform coupling behind interfaces so a port is *possible*. They
-do not add new OS implementations.
+do not add new OS implementations. All items below are done; the boundary is
+documented in [docs/architecture.md](docs/architecture.md) and enforced by the
+comptime guards described there.
 
 - [x] Split platform APIs behind narrow interfaces instead of importing
       `src/apprt/win32.zig` and `std.os.windows` from app logic.
@@ -70,10 +72,16 @@ do not add new OS implementations.
       capabilities; the bell/attention logic no longer rides on the window
       backend.
 
-### Phase 2 — Native host implementations (not started)
+### Phase 2 — Native host implementations (deferred)
 
 This is the actual port work. Each platform needs a native host plus the
 platform-service impls behind the Phase 1 interfaces.
+
+Deferred: these need dedicated macOS/Linux development environments (macOS in
+particular needs an SDK with Metal/AppKit/CoreText) and are not verifiable on
+the Windows-default toolchain. Per AGENTS.md, break each track down together and
+compare against Ghostty before starting. The POSIX PTY/process backend is the
+natural first piece, since it can be built and unit-tested on Linux.
 
 Cross-cutting (both platforms):
 - [ ] POSIX PTY/process backend: `openpty`/`fork`/`exec` + `ioctl(TIOCSWINSZ)`.
