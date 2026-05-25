@@ -660,6 +660,7 @@ comptime {
     _ = @import("session_persist.zig");
     _ = @import("skill_registry.zig");
     _ = @import("scrollbar_model.zig");
+    _ = @import("ai_chat_scrollbar_model.zig");
     _ = @import("ssh_prompt.zig");
     _ = @import("startup_tabs.zig");
     _ = @import("system_browser.zig");
