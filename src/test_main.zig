@@ -656,6 +656,16 @@ comptime {
     _ = @import("quick_terminal.zig");
     _ = @import("remote_client.zig");
     _ = @import("remote_snapshot.zig");
+    _ = @import("weixin/types.zig");
+    _ = @import("weixin/state_store.zig");
+    _ = @import("weixin/binding.zig");
+    _ = @import("weixin/control.zig");
+    _ = @import("weixin/agent.zig");
+    _ = @import("weixin/reply_progress.zig");
+    _ = @import("weixin/ilink_codec.zig");
+    _ = @import("weixin/ilink_client.zig");
+    _ = @import("weixin/poller.zig");
+    _ = @import("weixin/controller.zig");
     _ = @import("renderer/overlay_keys.zig");
     _ = @import("selection_unit.zig");
     _ = @import("session_persist.zig");

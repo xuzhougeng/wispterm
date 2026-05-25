@@ -17,6 +17,9 @@ const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
+const weixin = @import("weixin/controller.zig");
+const weixin_types = @import("weixin/types.zig");
+const platform_dirs = @import("platform/dirs.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
 
@@ -80,6 +83,9 @@ remote_server_fingerprint: ?[]const u8,
 remote_device_name: ?[]const u8,
 remote_session_key: ?[]const u8,
 remote_client: ?*remote.Client,
+
+// WeChat direct (embedded ilink). Mutually exclusive with remote_client.
+weixin_controller: ?*weixin.Controller,
 
 // AI agent config
 ai_agent_enabled: bool,
@@ -210,6 +216,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .remote_device_name = remote_device_name,
         .remote_session_key = remote_session_key,
         .remote_client = remote_client_ptr,
+        // Created later by startWeixin(), once App lives at a stable address.
+        .weixin_controller = null,
         .ai_agent_enabled = cfg.@"ai-agent-enabled",
         .ai_agent_permission = cfg.@"ai-agent-permission",
         .ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
@@ -270,6 +278,39 @@ fn startRemoteClient(
         std.debug.print("Remote client disabled: {}\n", .{err});
         return null;
     };
+}
+
+// WeChat direct (embedded ilink). App owns the controller's lifecycle; the
+// Control vtable lives in AppWindow (it needs UI-thread tab/overlay state,
+// marshalled from the poller thread). See AppWindow.weixinControl.
+//
+// Cross-compiles to the Windows exe; not yet run (no Windows runtime / live
+// WeChat here). /term-/keys terminal delegation and the AI transcript (for
+// reply-progress streaming) remain stubbed in AppWindow — see its TODOs.
+
+/// Creates and starts the WeChat direct controller when enabled and remote is
+/// not active. Call once, after App is at its final address (see main.zig).
+/// Mutually exclusive with remote: if remote is active, this is skipped.
+pub fn startWeixin(self: *App, cfg: *const Config) void {
+    if (!cfg.@"weixin-direct-enabled") return;
+    if (self.remote_client != null) {
+        std.debug.print("weixin-direct disabled: remote-enabled takes precedence\n", .{});
+        return;
+    }
+    const state_path = platform_dirs.pathInConfigDir(self.allocator, "weixin.json") catch return;
+    defer self.allocator.free(state_path);
+
+    const settings = weixin_types.Settings{
+        .enabled = true,
+        .reply_timeout_ms = std.math.clamp(cfg.@"weixin-reply-timeout-ms", 5000, 180000),
+        .allowed_user = cfg.@"weixin-allowed-user" orelse "",
+    };
+    const controller = weixin.Controller.create(self.allocator, state_path, AppWindow.weixinControl(), settings) catch |err| {
+        std.debug.print("weixin-direct disabled: {}\n", .{err});
+        return;
+    };
+    controller.start() catch {};
+    self.weixin_controller = controller;
 }
 
 /// Get the shell command as a native null-terminated command line.
@@ -893,6 +934,11 @@ pub fn deinit(self: *App) void {
     if (self.remote_client) |client| {
         client.destroy();
         self.remote_client = null;
+    }
+
+    if (self.weixin_controller) |controller| {
+        controller.destroy();
+        self.weixin_controller = null;
     }
 
     // Free owned string copies

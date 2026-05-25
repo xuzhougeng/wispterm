@@ -139,6 +139,10 @@ pub fn main() !void {
     var app = try App.init(allocator, cfg);
     defer app.deinit();
 
+    // App now lives at a stable address; start the WeChat direct bridge (no-op
+    // unless weixin-direct-enabled and remote is inactive).
+    app.startWeixin(&cfg);
+
     try app.run();
 
     std.debug.print("Phantty exiting...\n", .{});
