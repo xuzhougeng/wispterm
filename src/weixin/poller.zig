@@ -25,6 +25,11 @@ pub const ThreadControl = struct {
     wait_for_exit: *const fn (thread: std.Thread, timeout_ms: u32) bool,
 };
 
+pub const SyncCallback = struct {
+    ctx: *anyopaque,
+    callback: *const fn (ctx: *anyopaque, sync_buf: []const u8) anyerror!void,
+};
+
 pub const ProcessInput = struct {
     allocator: std.mem.Allocator,
     owner: []const u8,
@@ -42,39 +47,63 @@ pub const ProcessInput = struct {
 
 /// Mirror of processWeixinUpdates: filter, extract, route, reply.
 pub fn processUpdates(input: ProcessInput) !void {
-    for (input.messages) |msg| {
+    for (input.messages, 0..) |msg, i| {
+        std.debug.print(
+            "weixin process({d}): index={d} from_len={d} from_hash={x} to_len={d} to_hash={x} group={} context={} items={d}\n",
+            .{
+                debugNowMs(),
+                i,
+                msg.from_user_id.len,
+                debugHash(msg.from_user_id),
+                msg.to_user_id.len,
+                debugHash(msg.to_user_id),
+                msg.group_id.len != 0,
+                msg.context_token.len != 0,
+                msg.item_list.len,
+            },
+        );
         const decision = binding.shouldHandle(input.owner, input.account_id, msg);
         if (!decision.ok) {
-            std.debug.print("weixin message skipped: {s}\n", .{decision.reason});
+            std.debug.print("weixin process({d}): index={d} skipped reason={s}\n", .{ debugNowMs(), i, decision.reason });
             continue;
         }
         const text = binding.extractText(msg);
         if (text.len == 0) {
-            std.debug.print("weixin message skipped: no_text_item\n", .{});
+            std.debug.print("weixin process({d}): index={d} skipped reason=no_text_item\n", .{ debugNowMs(), i });
             continue;
         }
+        std.debug.print("weixin process({d}): index={d} text_bytes={d} route=begin\n", .{ debugNowMs(), i, text.len });
 
         var reply: std.ArrayListUnmanaged(u8) = .empty;
         defer reply.deinit(input.allocator);
         const route_result = input.route_fn(input.route_ctx, text, input.allocator, &reply) catch |err| {
-            std.debug.print("weixin route failed: {}\n", .{err});
+            std.debug.print("weixin process({d}): index={d} route=failed err={}\n", .{ debugNowMs(), i, err });
             continue;
         };
         defer if (route_result.baseline_transcript.len != 0) input.allocator.free(route_result.baseline_transcript);
+        std.debug.print(
+            "weixin process({d}): index={d} route=done reply_bytes={d} ai_followup={} baseline_bytes={d}\n",
+            .{ debugNowMs(), i, reply.items.len, route_result.expect_ai_progress, route_result.baseline_transcript.len },
+        );
 
         const trimmed = std.mem.trim(u8, reply.items, " \t\r\n");
         if (trimmed.len != 0) {
+            std.debug.print(
+                "weixin send({d}): index={d} kind=reply to_len={d} to_hash={x} bytes={d} context={}\n",
+                .{ debugNowMs(), i, msg.from_user_id.len, debugHash(msg.from_user_id), trimmed.len, msg.context_token.len != 0 },
+            );
             input.send_fn(input.send_ctx, msg.from_user_id, trimmed, msg.context_token) catch |err| {
-                std.debug.print("weixin reply send failed: {}\n", .{err});
+                std.debug.print("weixin send({d}): index={d} kind=reply status=failed err={}\n", .{ debugNowMs(), i, err });
                 continue;
             };
-            std.debug.print("weixin reply sent: {d} bytes\n", .{trimmed.len});
+            std.debug.print("weixin send({d}): index={d} kind=reply status=sent bytes={d}\n", .{ debugNowMs(), i, trimmed.len });
         }
         if (route_result.expect_ai_progress) {
             if (input.progress_ctx) |ctx| {
                 if (input.start_progress_fn) |start| {
+                    std.debug.print("weixin process({d}): index={d} ai_followup=start\n", .{ debugNowMs(), i });
                     start(ctx, route_result.baseline_transcript, msg.from_user_id, msg.context_token) catch |err| {
-                        std.debug.print("weixin AI followup failed to start: {}\n", .{err});
+                        std.debug.print("weixin process({d}): index={d} ai_followup=failed err={}\n", .{ debugNowMs(), i, err });
                     };
                 }
             }
@@ -93,9 +122,10 @@ pub const Poller = struct {
     owner: []const u8,
     account_id: []const u8,
     sync_buf: []u8,
+    sync_callback: ?SyncCallback = null,
+    bootstrap_skip_pending: bool = false,
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
-    client_mutex: std.Thread.Mutex = .{},
     transcript_mutex: std.Thread.Mutex = .{},
     followup_mutex: std.Thread.Mutex = .{},
     followup_generation: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -156,11 +186,31 @@ pub const Poller = struct {
             self.stop_requested.store(true, .release);
             return;
         }
-        if (updates.value.ret != 0 or updates.value.errcode != 0) {
-            std.debug.print("weixin getupdates returned ret={} errcode={}\n", .{ updates.value.ret, updates.value.errcode });
+        const bootstrap_skip = self.bootstrap_skip_pending;
+        self.bootstrap_skip_pending = false;
+        const sync_changed = updates.value.get_updates_buf.len != 0 and
+            !std.mem.eql(u8, updates.value.get_updates_buf, self.sync_buf);
+        if (updates.value.msgs.len != 0 or updates.value.ret != 0 or updates.value.errcode != 0 or sync_changed or bootstrap_skip) {
+            std.debug.print(
+                "weixin receive({d}): ret={} errcode={} messages={d} sync_len={d} next_sync_len={d} sync_changed={} bootstrap={}\n",
+                .{
+                    debugNowMs(),
+                    updates.value.ret,
+                    updates.value.errcode,
+                    updates.value.msgs.len,
+                    self.sync_buf.len,
+                    updates.value.get_updates_buf.len,
+                    sync_changed,
+                    bootstrap_skip,
+                },
+            );
         }
-        if (updates.value.msgs.len != 0) {
-            std.debug.print("weixin poll received {d} message(s)\n", .{updates.value.msgs.len});
+        try self.advanceSyncBuf(updates.value.get_updates_buf);
+        if (bootstrap_skip) {
+            if (updates.value.msgs.len != 0) {
+                std.debug.print("weixin process({d}): bootstrap_skip historical_messages={d}\n", .{ debugNowMs(), updates.value.msgs.len });
+            }
+            return;
         }
 
         try processUpdates(.{
@@ -175,14 +225,6 @@ pub const Poller = struct {
             .progress_ctx = self,
             .start_progress_fn = startProgressAdapter,
         });
-
-        if (updates.value.get_updates_buf.len != 0 and
-            !std.mem.eql(u8, updates.value.get_updates_buf, self.sync_buf))
-        {
-            const next = try self.allocator.dupe(u8, updates.value.get_updates_buf);
-            self.allocator.free(self.sync_buf);
-            self.sync_buf = next;
-        }
     }
 
     fn routeAdapter(ctx: *anyopaque, text: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
@@ -217,14 +259,26 @@ pub const Poller = struct {
     }
 
     fn getUpdatesLocked(self: *Poller, sync_buf_value: []const u8) !@import("ilink_codec.zig").ParsedUpdates {
-        self.client_mutex.lock();
-        defer self.client_mutex.unlock();
         return self.client.getUpdates(sync_buf_value);
     }
 
+    fn advanceSyncBuf(self: *Poller, next_buf: []const u8) !void {
+        if (next_buf.len == 0 or std.mem.eql(u8, next_buf, self.sync_buf)) return;
+
+        const old_len = self.sync_buf.len;
+        const next = try self.allocator.dupe(u8, next_buf);
+        self.allocator.free(self.sync_buf);
+        self.sync_buf = next;
+        std.debug.print("weixin receive({d}): sync_cursor=advanced old_len={d} new_len={d}\n", .{ debugNowMs(), old_len, self.sync_buf.len });
+
+        if (self.sync_callback) |cb| {
+            cb.callback(cb.ctx, self.sync_buf) catch |err| {
+                std.debug.print("weixin receive({d}): sync_cursor=persist_failed err={}\n", .{ debugNowMs(), err });
+            };
+        }
+    }
+
     fn sendTextLocked(self: *Poller, to_user_id: []const u8, text: []const u8, context_token: []const u8) !void {
-        self.client_mutex.lock();
-        defer self.client_mutex.unlock();
         try self.client.sendText(to_user_id, text, context_token);
     }
 
@@ -294,7 +348,10 @@ pub const Poller = struct {
         self.followup_mutex.lock();
         self.followup_thread = th;
         self.followup_mutex.unlock();
-        std.debug.print("weixin AI followup started\n", .{});
+        std.debug.print(
+            "weixin process({d}): ai_followup=started generation={d} baseline_bytes={d} to_len={d} to_hash={x} context={}\n",
+            .{ debugNowMs(), generation, baseline_owned.len, to_owned.len, debugHash(to_owned), context_owned.len != 0 },
+        );
     }
 
     fn followupThreadMain(self: *Poller, job: *FollowupJob, generation: u64) void {
@@ -319,22 +376,30 @@ pub const Poller = struct {
             defer if (progress.text.len != 0) self.allocator.free(progress.text);
 
             if (progress.done and progress.text.len != 0) {
+                std.debug.print(
+                    "weixin send({d}): kind=ai_final generation={d} to_len={d} to_hash={x} bytes={d} context={}\n",
+                    .{ debugNowMs(), generation, job.to_user_id.len, debugHash(job.to_user_id), progress.text.len, job.context_token.len != 0 },
+                );
                 self.sendTextLocked(job.to_user_id, progress.text, job.context_token) catch |err| {
-                    std.debug.print("weixin AI followup final send failed: {}\n", .{err});
+                    std.debug.print("weixin send({d}): kind=ai_final generation={d} status=failed err={}\n", .{ debugNowMs(), generation, err });
                     return;
                 };
-                std.debug.print("weixin AI followup final sent: {d} bytes\n", .{progress.text.len});
+                std.debug.print("weixin send({d}): kind=ai_final generation={d} status=sent bytes={d}\n", .{ debugNowMs(), generation, progress.text.len });
                 return;
             }
 
             if (checkpoint_index < AI_REPLY_CHECKPOINTS_MS.len and elapsed_ms >= AI_REPLY_CHECKPOINTS_MS[checkpoint_index]) {
                 checkpoint_index += 1;
                 if (progress.text.len != 0) {
+                    std.debug.print(
+                        "weixin send({d}): kind=ai_progress generation={d} checkpoint={d} to_len={d} to_hash={x} bytes={d} context={}\n",
+                        .{ debugNowMs(), generation, checkpoint_index, job.to_user_id.len, debugHash(job.to_user_id), progress.text.len, job.context_token.len != 0 },
+                    );
                     self.sendTextLocked(job.to_user_id, progress.text, job.context_token) catch |err| {
-                        std.debug.print("weixin AI followup progress send failed: {}\n", .{err});
+                        std.debug.print("weixin send({d}): kind=ai_progress generation={d} checkpoint={d} status=failed err={}\n", .{ debugNowMs(), generation, checkpoint_index, err });
                         continue;
                     };
-                    std.debug.print("weixin AI followup progress sent: {d} bytes\n", .{progress.text.len});
+                    std.debug.print("weixin send({d}): kind=ai_progress generation={d} checkpoint={d} status=sent bytes={d}\n", .{ debugNowMs(), generation, checkpoint_index, progress.text.len });
                 }
             }
         }
@@ -354,6 +419,15 @@ pub const Poller = struct {
     }
 };
 
+fn debugHash(bytes: []const u8) u64 {
+    if (bytes.len == 0) return 0;
+    return std.hash.Wyhash.hash(0, bytes);
+}
+
+fn debugNowMs() i64 {
+    return std.time.milliTimestamp();
+}
+
 const FollowupJob = struct {
     baseline_transcript: []u8 = &.{},
     to_user_id: []u8 = &.{},
@@ -368,6 +442,7 @@ const FollowupJob = struct {
 };
 
 const t = std.testing;
+const codec = @import("ilink_codec.zig");
 
 const Captured = struct {
     sent: std.ArrayListUnmanaged([]u8) = .empty,
@@ -417,6 +492,79 @@ const ProgressCtx = struct {
         try self.baseline.appendSlice(t.allocator, baseline_transcript);
         try self.to_user_id.appendSlice(t.allocator, to_user_id);
         try self.context_token.appendSlice(t.allocator, context_token);
+    }
+};
+
+const FakeClient = struct {
+    get_calls: usize = 0,
+    send_count: usize = 0,
+
+    fn api(self: *FakeClient) ilink.ClientApi {
+        return .{ .ctx = self, .vtable = &.{
+            .get_updates = getUpdates,
+            .send_text = sendText,
+        } };
+    }
+
+    fn getUpdates(ctx: *anyopaque, _: []const u8) anyerror!codec.ParsedUpdates {
+        const self: *FakeClient = @ptrCast(@alignCast(ctx));
+        self.get_calls += 1;
+        return codec.parseGetUpdates(t.allocator,
+            \\{"ret":0,"get_updates_buf":"NEXT",
+            \\"msgs":[{"from_user_id":"u1","context_token":"ctx",
+            \\"item_list":[{"type":1,"text_item":{"text":"old"}}]}]}
+        );
+    }
+
+    fn sendText(ctx: *anyopaque, _: []const u8, _: []const u8, _: []const u8) anyerror!void {
+        const self: *FakeClient = @ptrCast(@alignCast(ctx));
+        self.send_count += 1;
+    }
+};
+
+const SyncCapture = struct {
+    value: std.ArrayListUnmanaged(u8) = .empty,
+
+    fn deinit(self: *SyncCapture) void {
+        self.value.deinit(t.allocator);
+    }
+
+    fn save(ctx: *anyopaque, sync_buf: []const u8) anyerror!void {
+        const self: *SyncCapture = @ptrCast(@alignCast(ctx));
+        self.value.clearRetainingCapacity();
+        try self.value.appendSlice(t.allocator, sync_buf);
+    }
+};
+
+const NoopControl = struct {
+    fn isConnected(_: *anyopaque) bool {
+        return true;
+    }
+    fn findAiSurface(_: *anyopaque) ?control_mod.Surface {
+        return null;
+    }
+    fn findTerminalSurface(_: *anyopaque) ?control_mod.Surface {
+        return null;
+    }
+    fn openAiAgent(_: *anyopaque, _: u32) control_mod.OpenResult {
+        return .offline;
+    }
+    fn sendInput(_: *anyopaque, _: [16]u8, _: []const u8) bool {
+        return false;
+    }
+    fn latestTranscript(_: *anyopaque) []const u8 {
+        return "";
+    }
+    var dummy: u8 = 0;
+    fn iface() control_mod.Control {
+        return .{ .ctx = &dummy, .vtable = &.{
+            .is_connected = isConnected,
+            .find_ai_surface = findAiSurface,
+            .find_terminal_surface = findTerminalSurface,
+            .open_ai_agent = openAiAgent,
+            .send_input = sendInput,
+            .latest_transcript = latestTranscript,
+        } };
     }
 };
 
@@ -487,4 +635,31 @@ test "processUpdates starts AI followup after ack reply is sent" {
     try t.expectEqualStrings("Status:\nReady\n", pctx.baseline.items);
     try t.expectEqualStrings("u1", pctx.to_user_id.items);
     try t.expectEqualStrings("ctx", pctx.context_token.items);
+}
+
+test "poller bootstrap advances cursor without replying to historical messages" {
+    var fake = FakeClient{};
+    var sync = SyncCapture{};
+    defer sync.deinit();
+
+    var p = Poller{
+        .allocator = t.allocator,
+        .client = fake.api(),
+        .control = NoopControl.iface(),
+        .settings = .{},
+        .owner = "u1",
+        .account_id = "",
+        .sync_buf = try t.allocator.dupe(u8, "OLD"),
+        .sync_callback = .{ .ctx = &sync, .callback = SyncCapture.save },
+        .bootstrap_skip_pending = true,
+    };
+    defer t.allocator.free(p.sync_buf);
+
+    try p.tickOnce();
+
+    try t.expectEqual(@as(usize, 1), fake.get_calls);
+    try t.expectEqual(@as(usize, 0), fake.send_count);
+    try t.expect(!p.bootstrap_skip_pending);
+    try t.expectEqualStrings("NEXT", p.sync_buf);
+    try t.expectEqualStrings("NEXT", sync.value.items);
 }

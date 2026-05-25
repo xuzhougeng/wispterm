@@ -108,6 +108,32 @@ pub const Controller = struct {
         qr_content: []const u8,
     };
 
+    pub const Status = struct {
+        running: bool,
+        has_token: bool,
+        has_owner: bool,
+        has_bot_id: bool,
+        login_active: bool,
+        login_status: types.QrStatusKind,
+    };
+
+    pub fn statusSnapshot(self: *Controller) Status {
+        const login_active = self.login_active.load(.acquire);
+        self.login_mutex.lock();
+        const login_status = self.login_status;
+        self.login_mutex.unlock();
+        const poller_active = self.running and !self.poll.stop_requested.load(.acquire);
+
+        return .{
+            .running = poller_active,
+            .has_token = self.token.len != 0,
+            .has_owner = self.owner.len != 0,
+            .has_bot_id = self.bot_id.len != 0,
+            .login_active = login_active,
+            .login_status = login_status,
+        };
+    }
+
     /// Thread-safe snapshot for a UI panel. Returned strings are copied into `arena`.
     pub fn loginSnapshot(self: *Controller, arena: std.mem.Allocator) !LoginSnapshot {
         self.login_mutex.lock();
@@ -183,16 +209,22 @@ pub const Controller = struct {
         var loaded = try state_store.load(self.allocator, self.state_path);
         defer loaded.deinit(self.allocator);
         if (loaded.binding.bot_token.len == 0) return; // not logged in yet
-        try self.startWithBinding(loaded.binding);
+        try self.startWithBinding(loaded.binding, .{
+            .bootstrap_skip_pending = loaded.binding.sync_buf.len == 0,
+        });
     }
 
     /// Stops the poller, persisting the latest sync cursor so the next start
     /// resumes where it left off.
     pub fn stop(self: *Controller) void {
+        self.stopInternal(true);
+    }
+
+    fn stopInternal(self: *Controller, persist_sync: bool) void {
         if (!self.running) return;
         self.poll.stop();
         // Persist the advanced sync cursor (best-effort).
-        self.persist(self.poll.sync_buf) catch {};
+        if (persist_sync) self.persist(self.poll.sync_buf) catch {};
         self.allocator.free(self.poll.sync_buf);
         // ilink.Client holds no persistent resources (it opens a fresh
         // std.http.Client per request), so there is nothing to deinit here.
@@ -244,7 +276,7 @@ pub const Controller = struct {
             .sync_buf = "",
         };
         try self.persistBinding(binding);
-        try self.startWithBinding(binding);
+        try self.startWithBinding(binding, .{ .bootstrap_skip_pending = false });
         std.debug.print("weixin QR login confirmed; polling started\n", .{});
     }
 
@@ -254,8 +286,15 @@ pub const Controller = struct {
         return if (self.base_url.len != 0) self.base_url else ilink_default_base_url;
     }
 
-    fn startWithBinding(self: *Controller, binding: types.Binding) !void {
-        if (self.running) return;
+    const StartOptions = struct {
+        bootstrap_skip_pending: bool = false,
+    };
+
+    fn startWithBinding(self: *Controller, binding: types.Binding, options: StartOptions) !void {
+        if (self.running) {
+            std.debug.print("weixin direct binding refresh requested; stopping existing poller\n", .{});
+            self.stopInternal(false);
+        }
         try self.setBinding(binding);
 
         self.client = ilink.Client.init(self.allocator, self.base_url, self.token);
@@ -267,6 +306,8 @@ pub const Controller = struct {
             .owner = self.owner,
             .account_id = self.bot_id,
             .sync_buf = try self.allocator.dupe(u8, binding.sync_buf),
+            .sync_callback = .{ .ctx = self, .callback = persistSyncAdapter },
+            .bootstrap_skip_pending = options.bootstrap_skip_pending,
         };
         try self.poll.start();
         self.running = true;
@@ -309,6 +350,11 @@ pub const Controller = struct {
 
     fn persistBinding(self: *Controller, binding: types.Binding) !void {
         try state_store.save(self.allocator, self.state_path, binding);
+    }
+
+    fn persistSyncAdapter(ctx: *anyopaque, sync_buf: []const u8) anyerror!void {
+        const self: *Controller = @ptrCast(@alignCast(ctx));
+        try self.persist(sync_buf);
     }
 
     fn joinLoginThreadForProcessExit(self: *Controller, thread_control: ThreadControl) bool {
@@ -393,4 +439,20 @@ test "loginSnapshot on a fresh controller reports unknown/empty" {
     const snap = try ctrl.loginSnapshot(arena.allocator());
     try t.expectEqual(types.QrStatusKind.unknown, snap.status);
     try t.expectEqual(@as(usize, 0), snap.qr_string.len);
+}
+
+test "status on a fresh controller reports disconnected idle" {
+    const path = "zig-cache-tmp-weixin-ctrl-status.json";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    const ctrl = try Controller.create(t.allocator, path, NoopControl.iface(), .{});
+    defer ctrl.destroy();
+
+    const s = ctrl.statusSnapshot();
+    try t.expect(!s.running);
+    try t.expect(!s.has_token);
+    try t.expect(!s.has_owner);
+    try t.expect(!s.has_bot_id);
+    try t.expect(!s.login_active);
+    try t.expectEqual(types.QrStatusKind.unknown, s.login_status);
 }

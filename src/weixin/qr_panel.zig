@@ -43,9 +43,9 @@ pub const QrMatrixView = struct {
 };
 
 const PANEL_MIN_W: f32 = 380;
-const PANEL_MAX_W: f32 = 540;
+const PANEL_MAX_W: f32 = 900;
 const PANEL_MIN_H: f32 = 500;
-const PANEL_MAX_H: f32 = 580;
+const PANEL_MAX_H: f32 = 620;
 const PANEL_MARGIN: f32 = 24;
 const BUTTON_H: f32 = 38;
 const BUTTON_W: f32 = 118;
@@ -305,6 +305,14 @@ test "qr_panel: layout keeps buttons inside the panel" {
     try std.testing.expect(l.retry.x >= l.panel.x);
     try std.testing.expect(l.close.x + l.close.w <= l.panel.x + l.panel.w);
     try std.testing.expect(l.close.top_px + l.close.h <= l.panel.top_px + l.panel.h);
+}
+
+test "qr_panel: wide layout expands text room without enlarging QR" {
+    const l = layout(1200, 900, 0);
+    try std.testing.expectEqual(@as(f32, 900), l.panel.w);
+    try std.testing.expectEqual(@as(f32, 620), l.panel.h);
+    try std.testing.expectEqual(@as(f32, 292), l.qr.w);
+    try std.testing.expectEqual(@as(f32, 292), l.qr.h);
 }
 
 test "qr_panel: expired status exposes retry hit target" {

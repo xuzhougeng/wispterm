@@ -13,9 +13,12 @@ builds for Windows (`build.zig`: `uses_windows_backend = os_tag == .windows`).
 - Ships **off by default**: `weixin-direct-enabled = false`.
 - Backend is wired: config → `App.startWeixin` → `weixin.Controller` →
   `ilink.Client` + `poller.Poller`, with Control marshalled to the UI thread.
-- GUI login entry point now exists: Command Center → **Connect WeChat** starts
-  `controller.startLoginAsync()` and renders the QR login panel. Command Center
-  → **WeChat: Unbind** clears the stored binding.
+- GUI login/control entries now exist: Command Center → **Connect WeChat**
+  starts `controller.startLoginAsync()` and renders the QR login panel. Command
+  Center → **WeChat: Start** starts polling from the saved binding,
+  **WeChat: Stop** stops polling while keeping the binding,
+  **WeChat: Status** shows the current state, and **WeChat: Unbind** clears the
+  stored binding.
 - `/term` and `/keys` now resolve the active terminal surface and write through
   the same queued PTY input boundary used by remote input.
 - AI follow-up sends are wired: after the ACK, the poller compares AI transcript
@@ -81,6 +84,8 @@ Pick one:
   `confirmed`, the controller persists `weixin.json` and starts polling
   automatically (`controller.confirmLogin`, `controller.zig:191`).
 - Add an "Unbind" action → `controller.unbind()`.
+- Command Center also exposes "Start", "Stop", and "Status" actions for the
+  saved binding, so you can pause/resume polling without clearing the token.
 
 **Option B (quick smoke without UI) — pre-seed the state file.**
 If you already have a bot token, drop a `weixin.json` at

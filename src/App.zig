@@ -942,7 +942,8 @@ pub fn deinit(self: *App) void {
             .request_synchronous_io_cancel = platform_thread_control.requestSynchronousIoCancel,
             .wait_for_exit = platform_thread_control.waitForExit,
         })) {
-            std.debug.print("weixin controller left allocated for process exit after shutdown timeout\n", .{});
+            std.debug.print("weixin controller left allocated for process exit after shutdown timeout; exiting now\n", .{});
+            std.process.exit(0);
         }
         self.weixin_controller = null;
     }

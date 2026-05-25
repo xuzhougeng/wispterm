@@ -25,6 +25,9 @@ pub const CommandAction = enum {
     toggle_maximize,
     copy_remote_key,
     connect_wechat,
+    start_wechat,
+    stop_wechat,
+    wechat_status,
     unbind_wechat,
     export_ai_chat_markdown,
     export_ai_chat_markdown_clean,
@@ -64,6 +67,9 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Toggle Maximize", .detail = "Maximize or restore the window", .shortcut = "", .action = .toggle_maximize },
     .{ .title = "Copy Remote Key", .detail = "Copy the active Phantty remote session key", .shortcut = "click Remote key", .action = .copy_remote_key },
     .{ .title = "Connect WeChat", .detail = "Scan a QR code to connect WeChat direct control", .shortcut = "", .action = .connect_wechat },
+    .{ .title = "WeChat: Start", .detail = "Start polling with the saved WeChat binding", .shortcut = "", .action = .start_wechat },
+    .{ .title = "WeChat: Stop", .detail = "Stop polling and keep the saved WeChat binding", .shortcut = "", .action = .stop_wechat },
+    .{ .title = "WeChat: Status", .detail = "Show the WeChat direct connection state", .shortcut = "", .action = .wechat_status },
     .{ .title = "WeChat: Unbind", .detail = "Clear the stored WeChat direct binding", .shortcut = "", .action = .unbind_wechat },
     .{ .title = "Export AI Chat Markdown", .detail = "Save the active AI Chat transcript as Markdown", .shortcut = "", .action = .export_ai_chat_markdown },
     .{ .title = "Export AI Chat Markdown Clean", .detail = "Save user prompts and the final AI result without thinking", .shortcut = "", .action = .export_ai_chat_markdown_clean },
@@ -256,6 +262,9 @@ test "command center includes AI Markdown export actions" {
 
 test "command center includes WeChat direct actions" {
     try std.testing.expectEqual(CommandAction.connect_wechat, findCommandAction("Connect WeChat"));
+    try std.testing.expectEqual(CommandAction.start_wechat, findCommandAction("WeChat: Start"));
+    try std.testing.expectEqual(CommandAction.stop_wechat, findCommandAction("WeChat: Stop"));
+    try std.testing.expectEqual(CommandAction.wechat_status, findCommandAction("WeChat: Status"));
     try std.testing.expectEqual(CommandAction.unbind_wechat, findCommandAction("WeChat: Unbind"));
 }
 

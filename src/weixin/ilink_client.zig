@@ -29,6 +29,7 @@ pub const Client = struct {
     base_url: []const u8,
     token: []const u8,
     rng: std.Random.DefaultPrng,
+    rng_mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, base_url: []const u8, token: []const u8) Client {
         return .{
@@ -88,7 +89,7 @@ pub const Client = struct {
         defer req_arena.deinit();
         const a = req_arena.allocator();
         const client_id = try std.fmt.allocPrint(a, "phantty-weixin-{d}-{d}", .{
-            std.time.milliTimestamp(), self.rng.random().int(u32),
+            std.time.milliTimestamp(), self.nextRandomU32(),
         });
         const body = try codec.buildSendTextBody(a, to_user_id, text, context_token, client_id);
         const resp = try self.fetch(a, .POST, "/ilink/bot/sendmessage", body, null);
@@ -99,7 +100,7 @@ pub const Client = struct {
         });
         if (w.ret) |ret| {
             if (ret != 0) {
-                std.debug.print("weixin sendmessage failed: ret={} errcode={} message={s}\n", .{ ret, w.errcode, w.message });
+                std.debug.print("weixin send({d}): kind=sendmessage status=failed ret={} errcode={} message={s}\n", .{ std.time.milliTimestamp(), ret, w.errcode, w.message });
                 return error.IlinkSendMessageFailed;
             }
         }
@@ -122,7 +123,7 @@ pub const Client = struct {
 
         // X-WECHAT-UIN: base64 of a random uint decimal string (mirrors the TS bridge).
         var num_buf: [16]u8 = undefined;
-        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{self.rng.random().int(u32)}) catch "0";
+        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{self.nextRandomU32()}) catch "0";
         const uin = try arena.alloc(u8, std.base64.standard.Encoder.calcSize(num_str.len));
         _ = std.base64.standard.Encoder.encode(uin, num_str);
 
@@ -154,6 +155,12 @@ pub const Client = struct {
         });
         if (response.status != .ok) return error.IlinkHttpStatus;
         return body.toArrayList().items;
+    }
+
+    fn nextRandomU32(self: *Client) u32 {
+        self.rng_mutex.lock();
+        defer self.rng_mutex.unlock();
+        return self.rng.random().int(u32);
     }
 
     // --- ClientApi adapter ---
