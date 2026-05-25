@@ -19,6 +19,7 @@ const input_key = @import("../input/key.zig");
 const ssh_prompt = @import("../ssh_prompt.zig");
 const app_metadata = @import("../app_metadata.zig");
 const command_center_state = @import("../command_center_state.zig");
+const command_palette_model = @import("../command_palette_model.zig");
 const agent_history = @import("../agent_history.zig");
 const platform_dirs = @import("../platform/dirs.zig");
 const platform_open_url = @import("../platform/open_url.zig");
@@ -180,6 +181,7 @@ const COMMAND_ENTRIES = command_center_state.command_entries;
 
 const PaletteItem = union(enum) {
     command: usize,
+    ssh_profile: usize,
     theme: usize,
 };
 
@@ -485,26 +487,8 @@ fn commandPaletteFilter() []const u8 {
     return g_command_palette_filter[0..g_command_palette_filter_len];
 }
 
-fn lowerAscii(ch: u8) u8 {
-    return if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
-}
-
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-
-    var start: usize = 0;
-    while (start + needle.len <= haystack.len) : (start += 1) {
-        var matched = true;
-        for (needle, 0..) |needle_ch, i| {
-            if (lowerAscii(haystack[start + i]) != lowerAscii(needle_ch)) {
-                matched = false;
-                break;
-            }
-        }
-        if (matched) return true;
-    }
-    return false;
+    return command_palette_model.containsIgnoreCase(haystack, needle);
 }
 
 fn commandEntryMatches(entry: CommandEntry) bool {
@@ -581,6 +565,14 @@ fn rebuildPaletteScratch() void {
         g_palette_scratch[g_palette_scratch_len] = .{ .command = idx };
         g_palette_scratch_len += 1;
     }
+    loadSshProfiles();
+    for (0..g_ssh_profile_count) |profile_idx| {
+        if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
+        const profile = &g_ssh_profiles[profile_idx];
+        if (!command_palette_model.sshProfileNameMatchesFilter(profileField(profile, .name), filter)) continue;
+        g_palette_scratch[g_palette_scratch_len] = .{ .ssh_profile = profile_idx };
+        g_palette_scratch_len += 1;
+    }
     for (&themes_embed.entries, 0..) |th, ti| {
         if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
         if (!containsIgnoreCase(th.name, filter)) continue;
@@ -592,6 +584,7 @@ fn rebuildPaletteScratch() void {
 fn executePaletteItem(item: PaletteItem) void {
     switch (item) {
         .command => |cmd_idx| executeCommand(COMMAND_ENTRIES[cmd_idx].action),
+        .ssh_profile => |profile_idx| connectSshProfile(profile_idx),
         .theme => |ti| applyEmbeddedThemeFromPalette(ti),
     }
 }
@@ -1149,6 +1142,19 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                             renderTitlebarText(shortcut, shortcut_left, text_y, shortcut_color);
                         }
                         renderTitlebarTextLimited(entry.title, title_x, text_y, row_title_color, shortcut_left - title_x - 18);
+                    },
+                    .ssh_profile => |profile_idx| {
+                        if (profile_idx >= g_ssh_profile_count) continue;
+                        const profile = &g_ssh_profiles[profile_idx];
+                        var title_buf: [SSH_FIELD_MAX + 5]u8 = undefined;
+                        const ssh_title = std.fmt.bufPrint(title_buf[0..], "SSH: {s}", .{profileField(profile, .name)}) catch "SSH";
+                        var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
+                        const target = sshProfileTarget(profile, target_buf[0..]);
+                        const target_w = measureTitlebarText(target);
+                        const target_max_w = @min(target_w, @max(80.0, layout.box_w * 0.40));
+                        const target_left = @round(layout.box_x + layout.box_w - pad_x - target_max_w);
+                        renderTitlebarTextLimited(target, target_left, text_y, shortcut_color, target_max_w);
+                        renderTitlebarTextLimited(ssh_title, title_x, text_y, row_title_color, @max(1.0, target_left - title_x - 18));
                     },
                     .theme => |ti| {
                         const name = themes_embed.entries[ti].name;
@@ -2894,14 +2900,18 @@ fn renderSessionFieldValue(layout: SessionLayout, window_height: f32, row: usize
 
 fn renderSshProfileRow(layout: SessionLayout, window_height: f32, row: usize, profile: *const SshProfile, selected: bool) void {
     var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
+    const target = sshProfileTarget(profile, target_buf[0..]);
+    renderSessionRow(layout, window_height, row, profileField(profile, .name), target, selected);
+}
+
+fn sshProfileTarget(profile: *const SshProfile, target_buf: []u8) []const u8 {
     const host = profileField(profile, .ip);
     const user = profileField(profile, .user);
     const port = profileField(profile, .port);
-    const target = if (port.len > 0)
-        std.fmt.bufPrint(&target_buf, "{s}@{s}:{s}", .{ user, host, port }) catch ""
+    return if (port.len > 0)
+        std.fmt.bufPrint(target_buf, "{s}@{s}:{s}", .{ user, host, port }) catch host
     else
-        std.fmt.bufPrint(&target_buf, "{s}@{s}", .{ user, host }) catch "";
-    renderSessionRow(layout, window_height, row, profileField(profile, .name), target, selected);
+        std.fmt.bufPrint(target_buf, "{s}@{s}", .{ user, host }) catch host;
 }
 
 fn renderAiProfileRow(layout: SessionLayout, window_height: f32, row: usize, profile: *const AiProfile, selected: bool) void {
