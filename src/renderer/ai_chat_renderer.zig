@@ -4,6 +4,13 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
 const composer_layout = @import("../ai_chat_composer_layout.zig");
+const scrollbar_model = @import("../ai_chat_scrollbar_model.zig");
+
+// Transcript scrollbar interaction state (one mouse). Set by input.zig,
+// read by the fade computation in renderTranscriptScrollbar.
+pub threadlocal var g_transcript_scrollbar_hover: bool = false;
+pub threadlocal var g_transcript_scrollbar_dragging: bool = false;
+
 const font = AppWindow.font;
 const gl_init = AppWindow.gl_init;
 const titlebar = AppWindow.titlebar;
@@ -316,6 +323,8 @@ pub fn render(
 
     gl.Disable.?(c.GL_SCISSOR_TEST);
 
+    renderTranscriptScrollbar(session, x, w, transcript_top, transcript_h, content_h, window_height);
+
     if (approval) |view| {
         renderApprovalCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, APPROVAL_H);
     }
@@ -613,6 +622,101 @@ pub fn inputScrollbarDragRowAt(
     };
 }
 
+const TranscriptLayout = struct {
+    x: f32,
+    w: f32,
+    transcript_top: f32,
+    transcript_h: f32,
+    content_h: f32,
+};
+
+fn transcriptLayoutLocked(
+    session: *ai_chat.Session,
+    window_width: f32,
+    window_height: f32,
+    titlebar_offset: f32,
+    left_panels_w: f32,
+    right_panels_w: f32,
+) ?TranscriptLayout {
+    const x = @round(left_panels_w);
+    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    if (w <= 1) return null;
+
+    const approval = session.approvalView();
+    const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
+    const input_h = inputLayout(x, w, session.input()).input_h;
+    const transcript_top = titlebar_offset + HEADER_H + 18;
+    const transcript_bottom = input_h + approval_h + 18;
+    const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
+    const content_w = w - LINE_PAD_X * 2;
+
+    var content_h: f32 = 0;
+    for (session.messages.items) |msg| {
+        content_h += messageBlockHeight(msg, content_w);
+        if (msg.reasoning) |reasoning| {
+            if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
+        }
+        if (msg.usage_footer) |footer| {
+            if (footer.len > 0) content_h += usageFooterHeight(footer, content_w);
+        }
+        content_h += BUBBLE_GAP;
+    }
+
+    return .{
+        .x = x,
+        .w = w,
+        .transcript_top = transcript_top,
+        .transcript_h = transcript_h,
+        .content_h = content_h,
+    };
+}
+
+/// Returns the drag offset within the thumb if (xpos, ypos) is over the
+/// transcript scrollbar track, else null.
+pub fn transcriptScrollbarHitTest(
+    session: *ai_chat.Session,
+    xpos: f64,
+    ypos: f64,
+    window_width: f32,
+    window_height: f32,
+    titlebar_offset: f32,
+    left_panels_w: f32,
+    right_panels_w: f32,
+) ?f32 {
+    session.mutex.lock();
+    const layout = transcriptLayoutLocked(session, window_width, window_height, titlebar_offset, left_panels_w, right_panels_w);
+    const scroll_px = session.scroll_px;
+    session.mutex.unlock();
+
+    const l = layout orelse return null;
+    const geo = scrollbar_model.geometry(l.x, l.w, l.transcript_top, l.transcript_h, l.content_h, scroll_px) orelse return null;
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+    if (!scrollbar_model.hitTrack(geo, px, py)) return null;
+    return scrollbar_model.thumbDragOffset(geo, py);
+}
+
+/// Maps a pointer y to a target scroll_px for the transcript scrollbar.
+pub fn transcriptScrollbarScrollPxAt(
+    session: *ai_chat.Session,
+    ypos: f64,
+    window_width: f32,
+    window_height: f32,
+    titlebar_offset: f32,
+    left_panels_w: f32,
+    right_panels_w: f32,
+    drag_offset: f32,
+) ?f32 {
+    session.mutex.lock();
+    const layout = transcriptLayoutLocked(session, window_width, window_height, titlebar_offset, left_panels_w, right_panels_w);
+    const scroll_px = session.scroll_px;
+    session.mutex.unlock();
+
+    const l = layout orelse return null;
+    const geo = scrollbar_model.geometry(l.x, l.w, l.transcript_top, l.transcript_h, l.content_h, scroll_px) orelse return null;
+    return scrollbar_model.scrollPxAt(geo, @floatCast(ypos), drag_offset);
+}
+
 fn messageBlockHeight(msg: ai_chat.Message, max_w: f32) f32 {
     return switch (msg.role) {
         .tool => toolCardHeight(msg, max_w),
@@ -855,6 +959,30 @@ fn renderInputScrollbar(layout: InputLayout, total_rows: usize, visible_rows_raw
 
     gl_init.renderQuadAlpha(geo.track_x, track_y, INPUT_SCROLLBAR_W, geo.track_h, mixColor(bg, fg, 0.24), 0.35);
     gl_init.renderQuadAlpha(geo.track_x, @round(thumb_y), INPUT_SCROLLBAR_W, geo.thumb_h, mixColor(fg, accent, 0.18), 0.72);
+}
+
+fn renderTranscriptScrollbar(
+    session: *ai_chat.Session,
+    x: f32,
+    w: f32,
+    transcript_top: f32,
+    transcript_h: f32,
+    content_h: f32,
+    window_height: f32,
+) void {
+    const geo = scrollbar_model.geometry(x, w, transcript_top, transcript_h, content_h, session.scroll_px) orelse return;
+
+    const held = g_transcript_scrollbar_hover or g_transcript_scrollbar_dragging;
+    const opacity = scrollbar_model.fadeOpacity(session.scrollbar_show_time, std.time.milliTimestamp(), held);
+    if (opacity <= 0.01) return;
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const track_y = window_height - geo.track_top_px - geo.track_h;
+    const thumb_y = window_height - geo.thumb_top_px - geo.thumb_h;
+
+    gl_init.renderQuadAlpha(geo.track_x, track_y, scrollbar_model.WIDTH, geo.track_h, mixColor(bg, fg, 0.18), opacity * 0.20);
+    gl_init.renderQuadAlpha(geo.track_x, thumb_y, scrollbar_model.WIDTH, geo.thumb_h, mixColor(bg, fg, 0.46), opacity * 0.62);
 }
 
 fn inputScrollbarGeometry(layout: InputLayout, window_height: f32, total_rows: usize, visible_rows_raw: usize, first_row_raw: usize) ?InputScrollbarGeometry {
