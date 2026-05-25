@@ -27,6 +27,16 @@ pub const Controller = struct {
     poll: poller.Poller = undefined,
     running: bool = false,
 
+    // QR login, driven by a background thread (network calls must not block the
+    // UI thread). A panel reads loginSnapshot() to render.
+    login_thread: ?std.Thread = null,
+    login_mutex: std.Thread.Mutex = .{},
+    login_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    login_status: types.QrStatusKind = .unknown,
+    login_qr_arena: ?std.heap.ArenaAllocator = null,
+    login_qr_string: []const u8 = "",
+    login_qr_img_base64: []const u8 = "",
+
     pub fn create(
         allocator: std.mem.Allocator,
         state_path: []const u8,
@@ -45,10 +55,94 @@ pub const Controller = struct {
     }
 
     pub fn destroy(self: *Controller) void {
+        self.login_active.store(false, .release);
+        if (self.login_thread) |th| {
+            th.join();
+            self.login_thread = null;
+        }
+        if (self.login_qr_arena) |*a| a.deinit();
         self.stop();
         self.clearBinding();
         self.allocator.free(self.state_path);
         self.allocator.destroy(self);
+    }
+
+    /// Starts QR login on a background thread (idempotent). A panel polls
+    /// loginSnapshot() for the QR + status; on confirmation the binding is
+    /// persisted and polling starts automatically.
+    pub fn startLoginAsync(self: *Controller) !void {
+        if (self.login_active.swap(true, .acq_rel)) return; // already running
+        self.setLoginStatus(.wait);
+        self.login_thread = std.Thread.spawn(.{}, loginThreadMain, .{self}) catch |err| {
+            self.login_active.store(false, .release);
+            return err;
+        };
+    }
+
+    pub const LoginSnapshot = struct {
+        status: types.QrStatusKind,
+        qr_string: []const u8,
+        qr_img_base64: []const u8,
+    };
+
+    /// Thread-safe snapshot for a UI panel. Returned strings are copied into `arena`.
+    pub fn loginSnapshot(self: *Controller, arena: std.mem.Allocator) !LoginSnapshot {
+        self.login_mutex.lock();
+        defer self.login_mutex.unlock();
+        return .{
+            .status = self.login_status,
+            .qr_string = try arena.dupe(u8, self.login_qr_string),
+            .qr_img_base64 = try arena.dupe(u8, self.login_qr_img_base64),
+        };
+    }
+
+    fn loginThreadMain(self: *Controller) void {
+        var qr_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer qr_arena.deinit();
+        const qr = self.beginLogin(qr_arena.allocator()) catch {
+            self.setLoginStatus(.expired);
+            self.login_active.store(false, .release);
+            return;
+        };
+        self.setLoginQr(qr.qrcode, qr.qrcode_img_content);
+
+        while (self.login_active.load(.acquire)) {
+            var poll_arena = std.heap.ArenaAllocator.init(self.allocator);
+            const status = self.pollLogin(poll_arena.allocator(), qr.qrcode) catch {
+                poll_arena.deinit();
+                std.Thread.sleep(2 * std.time.ns_per_s);
+                continue;
+            };
+            self.setLoginStatus(status.status);
+            if (status.status == .confirmed) {
+                self.confirmLogin(status) catch {}; // uses `status` before poll_arena frees
+                poll_arena.deinit();
+                break;
+            }
+            if (status.status == .expired) {
+                poll_arena.deinit();
+                break;
+            }
+            poll_arena.deinit();
+            std.Thread.sleep(2 * std.time.ns_per_s);
+        }
+        self.login_active.store(false, .release);
+    }
+
+    fn setLoginQr(self: *Controller, qr_string: []const u8, img_base64: []const u8) void {
+        self.login_mutex.lock();
+        defer self.login_mutex.unlock();
+        if (self.login_qr_arena) |*a| a.deinit();
+        self.login_qr_arena = std.heap.ArenaAllocator.init(self.allocator);
+        const a = self.login_qr_arena.?.allocator();
+        self.login_qr_string = a.dupe(u8, qr_string) catch "";
+        self.login_qr_img_base64 = a.dupe(u8, img_base64) catch "";
+    }
+
+    fn setLoginStatus(self: *Controller, status: types.QrStatusKind) void {
+        self.login_mutex.lock();
+        defer self.login_mutex.unlock();
+        self.login_status = status;
     }
 
     /// Loads the persisted binding; if a token exists, starts polling.
@@ -223,4 +317,18 @@ test "create/start without a persisted token stays idle, destroy is clean" {
 
     try ctrl.start(); // no token file → no poller spawned
     try t.expect(!ctrl.running);
+}
+
+test "loginSnapshot on a fresh controller reports unknown/empty" {
+    const path = "zig-cache-tmp-weixin-ctrl2.json";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    const ctrl = try Controller.create(t.allocator, path, NoopControl.iface(), .{});
+    defer ctrl.destroy();
+
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const snap = try ctrl.loginSnapshot(arena.allocator());
+    try t.expectEqual(types.QrStatusKind.unknown, snap.status);
+    try t.expectEqual(@as(usize, 0), snap.qr_string.len);
 }
