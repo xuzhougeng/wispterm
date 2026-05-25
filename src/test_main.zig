@@ -617,6 +617,7 @@ comptime {
     _ = @import("kitty_graphics_unit.zig");
     _ = @import("link_open.zig");
     _ = @import("markdown_preview.zig");
+    _ = @import("markdown_text.zig");
     _ = @import("memory_debug.zig");
     _ = @import("platform/atomic_file.zig");
     _ = @import("platform/clipboard.zig");

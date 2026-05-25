@@ -13,6 +13,7 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
 const skill_registry = @import("skill_registry.zig");
+const markdown_text = @import("markdown_text.zig");
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -1189,6 +1190,24 @@ pub const Session = struct {
         self.ensureSkillSuggestionsForInputLocked();
     }
 
+    /// If the composer is selected (select-all) and non-empty, return a copy of
+    /// the input text and clear the composer. Returns null otherwise (e.g. when
+    /// only a read-only transcript selection is active).
+    pub fn cutInputSelection(self: *Session, allocator: std.mem.Allocator) !?[]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.input_select_all or self.input_len == 0) return null;
+        const text = try allocator.dupe(u8, self.input_buf[0..self.input_len]);
+        self.input_len = 0;
+        self.input_cursor = 0;
+        self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
+        self.input_select_all = false;
+        self.suggestion_selected = 0;
+        self.ensureSkillSuggestionsForInputLocked();
+        return text;
+    }
+
     pub fn applyRemoteInput(self: *Session, data: []const u8) void {
         var text_start: usize = 0;
         var i: usize = 0;
@@ -1323,7 +1342,10 @@ pub const Session = struct {
             self.clearSelectionLocked();
             return;
         }
-        const offset = clampUtf8Boundary(msg.content, byte_offset);
+        // byte_offset is a display-text offset (see markdown_text.allocDisplayText);
+        // it is already a valid boundary. Do not clamp against raw msg.content,
+        // whose length differs from the display text. The copy path re-clamps.
+        const offset = byte_offset;
         self.input_select_all = false;
         self.transcript_select_all = false;
         self.transcript_selection = .{
@@ -1340,7 +1362,7 @@ pub const Session = struct {
         if (selection.message_index != message_index or message_index >= self.messages.items.len) return;
         const msg = self.messages.items[message_index];
         if (msg.role != .assistant) return;
-        selection.cursor = clampUtf8Boundary(msg.content, byte_offset);
+        selection.cursor = byte_offset; // display-text offset; copy path re-clamps
         self.transcript_selection = selection;
     }
 
@@ -2072,10 +2094,12 @@ pub const Session = struct {
         if (selection.message_index >= self.messages.items.len) return error.NoSelection;
         const msg = self.messages.items[selection.message_index];
         if (msg.role != .assistant) return error.NoSelection;
-        const start = clampUtf8Boundary(msg.content, @min(range.start, msg.content.len));
-        const end = clampUtf8Boundary(msg.content, @min(range.end, msg.content.len));
+        const display = try markdown_text.allocDisplayText(allocator, msg.content);
+        defer allocator.free(display);
+        const start = clampUtf8Boundary(display, @min(range.start, display.len));
+        const end = clampUtf8Boundary(display, @min(range.end, display.len));
         if (start >= end) return error.NoSelection;
-        return allocator.dupe(u8, msg.content[start..end]);
+        return allocator.dupe(u8, display[start..end]);
     }
 
     fn buildRequestLocked(self: *Session) !*ChatRequest {
@@ -6120,6 +6144,52 @@ test "ai chat transcript selection clamps to utf8 boundaries" {
     try std.testing.expectEqualStrings("你好", copied);
 }
 
+test "ai chat transcript selection copies cleaned markdown text" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    try session.messages.append(allocator, .{
+        .role = .assistant,
+        .content = try allocator.dupe(u8, "**生成的完整 `Markdown`**"),
+    });
+
+    // Display text is "生成的完整 Markdown\n"; select the whole visible run.
+    session.beginTranscriptSelection(0, 0);
+    session.updateTranscriptSelection(0, "生成的完整 Markdown".len);
+
+    const copied = try session.allocClipboardText(allocator);
+    defer allocator.free(copied);
+    try std.testing.expectEqualStrings("生成的完整 Markdown", copied);
+}
+
+test "ai chat transcript selection over table is not truncated to raw length" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    try session.messages.append(allocator, .{
+        .role = .assistant,
+        .content = try allocator.dupe(u8, "a|b|c\n-|-|-\nd|e|f"),
+    });
+
+    // Raw content is 17 bytes; the cleaned display text
+    // "a | b | c\nd | e | f\n" is 20 bytes (borderless table: each '|' → " | ").
+    // Selecting the whole thing must not truncate the selection to the raw length.
+    session.beginTranscriptSelection(0, 0);
+    session.updateTranscriptSelection(0, 20);
+
+    const copied = try session.allocClipboardText(allocator);
+    defer allocator.free(copied);
+    try std.testing.expectEqualStrings("a | b | c\nd | e | f\n", copied);
+}
+
 test "ai chat message clipboard exports one bubble" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
@@ -6331,4 +6401,25 @@ test "ai chat collapse helper only closes auto-expanded details" {
     try std.testing.expect(session.messages.items[1].reasoning_collapsed);
     try std.testing.expect(!session.messages.items[1].reasoning_auto_expand);
     try std.testing.expect(!session.messages.items[2].content_collapsed);
+}
+
+test "ai chat cut input returns text and clears when selected" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    session.appendInputText("hello world");
+    session.selectAll(); // sets input_select_all when input is non-empty
+
+    const cut = try session.cutInputSelection(allocator);
+    defer if (cut) |c| allocator.free(c);
+    try std.testing.expect(cut != null);
+    try std.testing.expectEqualStrings("hello world", cut.?);
+    try std.testing.expectEqual(@as(usize, 0), session.input_len);
+
+    const cut_again = try session.cutInputSelection(allocator);
+    try std.testing.expect(cut_again == null);
 }

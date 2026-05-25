@@ -44,6 +44,7 @@ pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
 const handleConfiguredRightClick = clipboard.handleConfiguredRightClick;
 const copyAiChatToClipboard = clipboard.copyAiChatToClipboard;
+const copyAiChatCutToClipboard = clipboard.copyAiChatCutToClipboard;
 const copyAiChatMessageToClipboard = clipboard.copyAiChatMessageToClipboard;
 pub const handleFileDrop = clipboard.handleFileDrop;
 pub const copySelectionToClipboard = clipboard.copySelectionToClipboard;
@@ -1048,6 +1049,10 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         }
         if (ev.ctrl and !ev.alt and ev.key_code == 0x43) { // Ctrl+C / Ctrl+Shift+C
             copyAiChatToClipboard(chat);
+            return;
+        }
+        if (ev.ctrl and !ev.alt and ev.key_code == 0x58) { // Ctrl+X (cut input)
+            copyAiChatCutToClipboard(chat);
             return;
         }
     }
