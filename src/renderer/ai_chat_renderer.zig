@@ -1197,103 +1197,45 @@ const MarkdownPreparedLine = struct {
 };
 
 fn prepareMarkdownLine(buf: *[1024]u8, raw_line: []const u8, in_code: bool, palette: MarkdownPalette) MarkdownPreparedLine {
-    const trimmed = std.mem.trimLeft(u8, raw_line, " \t");
     const base_h = lineHeight();
-
-    if (trimmed.len == 0) {
-        return .{ .kind = .blank, .line_h = blankLineHeight(), .color = palette.muted };
-    }
-    if (isFence(trimmed)) {
-        return .{
-            .kind = .fence,
-            .line_h = fenceLineHeight(),
-            .color = palette.muted,
-            .fence_label = fenceLanguage(trimmed),
-        };
-    }
-    if (isHorizontalRule(trimmed)) {
-        return .{ .kind = .rule, .line_h = @round(base_h * 0.78), .color = palette.muted };
-    }
-    if (in_code) {
-        return .{
+    const cl = md.cleanedLine(buf, raw_line, in_code);
+    return switch (cl.style) {
+        .blank => .{ .kind = .blank, .line_h = blankLineHeight(), .color = palette.muted },
+        .fence => .{ .kind = .fence, .line_h = fenceLineHeight(), .color = palette.muted, .fence_label = cl.fence_label },
+        .rule => .{ .kind = .rule, .line_h = @round(base_h * 0.78), .color = palette.muted },
+        .code => .{
             .kind = .text,
-            .text = cleanPlain(buf, raw_line),
+            .text = cl.text,
             .color = palette.accent,
             .line_h = base_h,
             .background = palette.code_bg,
             .left_rule = palette.accent,
-        };
-    }
-    if (headingBody(trimmed)) |heading| {
-        return .{
+        },
+        .heading => .{
             .kind = .text,
-            .text = cleanInline(buf, heading.body),
-            .color = if (heading.level <= 2) palette.strong else palette.normal,
-            .line_h = switch (heading.level) {
+            .text = cl.text,
+            .color = if (cl.heading_level <= 2) palette.strong else palette.normal,
+            .line_h = switch (cl.heading_level) {
                 1 => @round(base_h * 1.72),
                 2 => @round(base_h * 1.45),
                 3 => @round(base_h * 1.24),
                 else => @round(base_h * 1.10),
             },
-            .background = if (heading.level <= 2) palette.heading_bg else null,
-            .left_rule = if (heading.level <= 2) palette.accent else null,
-            .underline = heading.level <= 2,
-        };
-    }
-    if (htmlHeadingBody(trimmed)) |heading| {
-        return .{
+            .background = if (cl.heading_level <= 2) palette.heading_bg else null,
+            .left_rule = if (cl.heading_level <= 2) palette.accent else null,
+            .underline = cl.heading_level <= 2,
+        },
+        .quote => .{
             .kind = .text,
-            .text = cleanInline(buf, heading.body),
-            .color = if (heading.level <= 2) palette.strong else palette.normal,
-            .line_h = switch (heading.level) {
-                1 => @round(base_h * 1.72),
-                2 => @round(base_h * 1.45),
-                3 => @round(base_h * 1.24),
-                else => @round(base_h * 1.10),
-            },
-            .background = if (heading.level <= 2) palette.heading_bg else null,
-            .left_rule = if (heading.level <= 2) palette.accent else null,
-            .underline = heading.level <= 2,
-        };
-    }
-    if (std.mem.startsWith(u8, trimmed, ">")) {
-        return .{
-            .kind = .text,
-            .text = cleanInline(buf, std.mem.trimLeft(u8, trimmed[1..], " \t")),
+            .text = cl.text,
             .color = palette.muted,
             .indent = 16,
             .line_h = base_h,
             .background = palette.quote_bg,
             .left_rule = palette.accent,
-        };
-    }
-    if (listBody(trimmed)) |list| {
-        const body = cleanInline(buf, list.body);
-        if (body.len + list.marker.len <= buf.len) {
-            std.mem.copyBackwards(u8, buf[list.marker.len .. list.marker.len + body.len], body);
-            @memcpy(buf[0..list.marker.len], list.marker);
-            return .{
-                .kind = .text,
-                .text = buf[0 .. list.marker.len + body.len],
-                .color = palette.normal,
-                .indent = 12,
-                .line_h = base_h,
-            };
-        }
-        return .{
-            .kind = .text,
-            .text = body,
-            .color = palette.normal,
-            .indent = 12,
-            .line_h = base_h,
-        };
-    }
-
-    return .{
-        .kind = .text,
-        .text = cleanInline(buf, trimmed),
-        .color = palette.normal,
-        .line_h = base_h,
+        },
+        .list => .{ .kind = .text, .text = cl.text, .color = palette.normal, .indent = 12, .line_h = base_h },
+        .normal => .{ .kind = .text, .text = cl.text, .color = palette.normal, .line_h = base_h },
     };
 }
 
