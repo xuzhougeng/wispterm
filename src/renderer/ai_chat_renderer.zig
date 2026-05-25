@@ -4,6 +4,28 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
 const composer_layout = @import("../ai_chat_composer_layout.zig");
+const md = @import("../markdown_text.zig");
+
+const TABLE_MAX_COLS = md.TABLE_MAX_COLS;
+const SourceLine = md.SourceLine;
+const Heading = md.Heading;
+const List = md.List;
+const Link = md.Link;
+const nextSourceLine = md.nextSourceLine;
+const cleanInline = md.cleanInline;
+const cleanPlain = md.cleanPlain;
+const isFence = md.isFence;
+const fenceLanguage = md.fenceLanguage;
+const isHorizontalRule = md.isHorizontalRule;
+const headingBody = md.headingBody;
+const htmlHeadingBody = md.htmlHeadingBody;
+const listBody = md.listBody;
+const looksLikeTableRow = md.looksLikeTableRow;
+const isTableSeparatorLine = md.isTableSeparatorLine;
+const parseTableRowCells = md.parseTableRowCells;
+const isMarkdownTableStart = md.isMarkdownTableStart;
+const tableBlockEnd = md.tableBlockEnd;
+
 const font = AppWindow.font;
 const gl_init = AppWindow.gl_init;
 const titlebar = AppWindow.titlebar;
@@ -39,7 +61,6 @@ const DETAIL_PAD_X: f32 = 14;
 const DETAIL_PAD_Y: f32 = 10;
 const DETAIL_ARROW_W: f32 = 12;
 const DETAIL_RULE_W: f32 = 3;
-const TABLE_MAX_COLS: usize = 8;
 const TABLE_CELL_PAD_X: f32 = 10;
 const TABLE_MIN_COL_W: f32 = 56;
 const SUGGESTION_ROW_H: f32 = 28;
@@ -1512,42 +1533,6 @@ fn renderMarkdownFence(label: []const u8, x: f32, top_px: f32, max_w: f32, windo
     }
 }
 
-const SourceLine = struct {
-    line: []const u8,
-    next: usize,
-};
-
-fn nextSourceLine(text: []const u8, start: usize) SourceLine {
-    if (start >= text.len) return .{ .line = "", .next = text.len };
-    const line_end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
-    const raw = std.mem.trimRight(u8, text[start..line_end], "\r");
-    return .{
-        .line = raw,
-        .next = if (line_end < text.len) line_end + 1 else text.len,
-    };
-}
-
-fn isMarkdownTableStart(text: []const u8, start: usize) bool {
-    const first = nextSourceLine(text, start);
-    if (!looksLikeTableRow(first.line)) return false;
-    if (first.next >= text.len) return false;
-    const second = nextSourceLine(text, first.next);
-    return isTableSeparatorLine(second.line);
-}
-
-fn tableBlockEnd(text: []const u8, start: usize) usize {
-    const first = nextSourceLine(text, start);
-    const second = nextSourceLine(text, first.next);
-    var cursor = second.next;
-    while (cursor < text.len) {
-        const line = nextSourceLine(text, cursor);
-        const trimmed = std.mem.trim(u8, line.line, " \t");
-        if (trimmed.len == 0 or !looksLikeTableRow(line.line) or isTableSeparatorLine(line.line)) break;
-        cursor = line.next;
-    }
-    return cursor;
-}
-
 fn tableBlockHeight(text: []const u8, start: usize, end: usize) f32 {
     var row_count: usize = 0;
     var cursor = start;
@@ -1668,50 +1653,6 @@ fn tableUsedWidth(widths: []const f32) f32 {
     var total: f32 = 1;
     for (widths) |w| total += w + TABLE_CELL_PAD_X * 2 + 1;
     return total;
-}
-
-fn parseTableRowCells(line: []const u8, out: *[TABLE_MAX_COLS][]const u8) usize {
-    var trimmed = std.mem.trim(u8, line, " \t");
-    if (trimmed.len == 0) return 0;
-    if (trimmed[0] == '|') trimmed = trimmed[1..];
-    if (trimmed.len > 0 and trimmed[trimmed.len - 1] == '|') trimmed = trimmed[0 .. trimmed.len - 1];
-
-    var count: usize = 0;
-    var parts = std.mem.splitScalar(u8, trimmed, '|');
-    while (parts.next()) |part| {
-        if (count >= TABLE_MAX_COLS) break;
-        out[count] = std.mem.trim(u8, part, " \t");
-        count += 1;
-    }
-    return count;
-}
-
-fn looksLikeTableRow(line: []const u8) bool {
-    const trimmed = std.mem.trim(u8, line, " \t");
-    return trimmed.len > 0 and std.mem.indexOfScalar(u8, trimmed, '|') != null;
-}
-
-fn isTableSeparatorLine(line: []const u8) bool {
-    if (!looksLikeTableRow(line)) return false;
-    var cells: [TABLE_MAX_COLS][]const u8 = .{""} ** TABLE_MAX_COLS;
-    const count = parseTableRowCells(line, &cells);
-    if (count == 0) return false;
-
-    for (cells[0..count]) |cell| {
-        const trimmed = std.mem.trim(u8, cell, " \t");
-        if (trimmed.len == 0) return false;
-        var dash_count: usize = 0;
-        for (trimmed) |ch| {
-            if (ch == '-') {
-                dash_count += 1;
-                continue;
-            }
-            if (ch == ':') continue;
-            return false;
-        }
-        if (dash_count == 0) return false;
-    }
-    return true;
 }
 
 fn renderWrappedSelection(
@@ -1993,147 +1934,3 @@ fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     };
 }
 
-const Heading = struct {
-    level: usize,
-    body: []const u8,
-};
-
-const List = struct {
-    marker: []const u8,
-    body: []const u8,
-};
-
-const Link = struct {
-    label: []const u8,
-    end: usize,
-};
-
-fn headingBody(line: []const u8) ?Heading {
-    var level: usize = 0;
-    while (level < line.len and line[level] == '#' and level < 6) : (level += 1) {}
-    if (level == 0 or level >= line.len or line[level] != ' ') return null;
-    return .{ .level = level, .body = std.mem.trimLeft(u8, line[level + 1 ..], " \t") };
-}
-
-fn htmlHeadingBody(line: []const u8) ?Heading {
-    if (line.len < 4 or line[0] != '<' or (line[1] != 'h' and line[1] != 'H')) return null;
-    const level_ch = line[2];
-    if (level_ch < '1' or level_ch > '6') return null;
-    const open_end = std.mem.indexOfScalar(u8, line, '>') orelse return null;
-    const close_start = std.mem.indexOf(u8, line[open_end + 1 ..], "</") orelse line.len - (open_end + 1);
-    return .{
-        .level = @intCast(level_ch - '0'),
-        .body = line[open_end + 1 .. open_end + 1 + close_start],
-    };
-}
-
-fn isFence(line: []const u8) bool {
-    return std.mem.startsWith(u8, line, "```") or std.mem.startsWith(u8, line, "~~~");
-}
-
-fn fenceLanguage(line: []const u8) []const u8 {
-    if (!isFence(line) or line.len <= 3) return "";
-    return std.mem.trim(u8, line[3..], " \t");
-}
-
-fn isHorizontalRule(line: []const u8) bool {
-    var marker: u8 = 0;
-    var count: usize = 0;
-    for (line) |ch| {
-        if (ch == ' ' or ch == '\t') continue;
-        if (ch != '-' and ch != '*' and ch != '_') return false;
-        if (marker == 0) marker = ch;
-        if (ch != marker) return false;
-        count += 1;
-    }
-    return count >= 3;
-}
-
-fn listBody(line: []const u8) ?List {
-    if (line.len >= 2 and (line[0] == '-' or line[0] == '*' or line[0] == '+') and isSpace(line[1])) {
-        const body = std.mem.trimLeft(u8, line[2..], " \t");
-        if (std.mem.startsWith(u8, body, "[ ] ")) return .{ .marker = "[ ] ", .body = body[4..] };
-        if (body.len >= 4 and body[0] == '[' and (body[1] == 'x' or body[1] == 'X') and body[2] == ']' and isSpace(body[3])) {
-            return .{ .marker = "[x] ", .body = body[4..] };
-        }
-        return .{ .marker = "- ", .body = body };
-    }
-
-    var i: usize = 0;
-    while (i < line.len and std.ascii.isDigit(line[i])) : (i += 1) {}
-    if (i > 0 and i + 1 < line.len and (line[i] == '.' or line[i] == ')') and isSpace(line[i + 1])) {
-        return .{
-            .marker = line[0 .. i + 2],
-            .body = std.mem.trimLeft(u8, line[i + 2 ..], " \t"),
-        };
-    }
-    return null;
-}
-
-fn isSpace(ch: u8) bool {
-    return ch == ' ' or ch == '\t';
-}
-
-fn cleanPlain(buf: []u8, text: []const u8) []const u8 {
-    var pos: usize = 0;
-    for (text) |ch| {
-        if (pos >= buf.len) break;
-        if (ch == '\r' or ch == '\n' or ch == 0x1b) continue;
-        buf[pos] = ch;
-        pos += 1;
-    }
-    return std.mem.trim(u8, buf[0..pos], " \t");
-}
-
-fn cleanInline(buf: []u8, text: []const u8) []const u8 {
-    var pos: usize = 0;
-    var i: usize = 0;
-    while (i < text.len and pos < buf.len) {
-        const ch = text[i];
-        if (ch == '<') {
-            while (i < text.len and text[i] != '>') : (i += 1) {}
-            if (i < text.len) i += 1;
-            continue;
-        }
-        if (ch == '[') {
-            if (parseMarkdownLink(text, i)) |link| {
-                pos = appendSlice(buf, pos, link.label);
-                i = link.end;
-                continue;
-            }
-        }
-        if (ch == '!' and i + 1 < text.len and text[i + 1] == '[') {
-            if (parseMarkdownLink(text, i + 1)) |link| {
-                pos = appendSlice(buf, pos, link.label);
-                i = link.end;
-                continue;
-            }
-        }
-        if (ch == '*' or ch == '_' or ch == '`' or ch == '\r' or ch == '\n' or ch == 0x1b) {
-            i += 1;
-            continue;
-        }
-        buf[pos] = ch;
-        pos += 1;
-        i += 1;
-    }
-    return std.mem.trim(u8, buf[0..pos], " \t");
-}
-
-fn parseMarkdownLink(text: []const u8, bracket: usize) ?Link {
-    const close_rel = std.mem.indexOfScalar(u8, text[bracket + 1 ..], ']') orelse return null;
-    const close = bracket + 1 + close_rel;
-    if (close + 1 >= text.len or text[close + 1] != '(') return null;
-    const url_start = close + 2;
-    const url_rel = std.mem.indexOfScalar(u8, text[url_start..], ')') orelse return null;
-    return .{
-        .label = text[bracket + 1 .. close],
-        .end = url_start + url_rel + 1,
-    };
-}
-
-fn appendSlice(buf: []u8, pos: usize, text: []const u8) usize {
-    const len = @min(text.len, buf.len - pos);
-    @memcpy(buf[pos..][0..len], text[0..len]);
-    return pos + len;
-}
