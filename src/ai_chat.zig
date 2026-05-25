@@ -5,7 +5,11 @@
 //! Phantty-specific session kind rendered by the window chrome.
 
 const std = @import("std");
-const win32_backend = @import("apprt/win32.zig");
+const input_key = @import("input/key.zig");
+const platform_agent_prompt = @import("platform/agent_prompt.zig");
+const platform_dirs = @import("platform/dirs.zig");
+const platform_process = @import("platform/process.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
 const skill_registry = @import("skill_registry.zig");
@@ -13,7 +17,7 @@ const skill_registry = @import("skill_registry.zig");
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
 pub const DEFAULT_MODEL = "deepseek-v4-pro";
-pub const DEFAULT_SYSTEM_PROMPT = std.mem.trimRight(u8, @embedFile("prompt.md"), "\r\n");
+pub const DEFAULT_SYSTEM_PROMPT = platform_agent_prompt.defaultSystemPrompt;
 pub const DEFAULT_THINKING = "enabled";
 pub const DEFAULT_REASONING_EFFORT = "high";
 pub const DEFAULT_STREAM = "false";
@@ -746,18 +750,17 @@ fn openDirectoryPath(path: []const u8) !std.fs.Dir {
     return std.fs.cwd().openDir(path, .{ .iterate = true });
 }
 
-fn defaultSkillRootPaths(allocator: std.mem.Allocator) ![][]u8 {
-    var roots: std.ArrayListUnmanaged([]u8) = .empty;
+fn defaultSkillRootPaths(allocator: std.mem.Allocator) ![][]const u8 {
+    var roots: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
         for (roots.items) |root| allocator.free(root);
         roots.deinit(allocator);
     }
 
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        const appdata_skills = try std.fs.path.join(allocator, &.{ appdata, "phantty", "skills" });
+    if (platform_dirs.skillsDir(allocator)) |appdata_skills| {
         try appendOwnedSkillRootPath(allocator, &roots, appdata_skills);
-        const appdata_plugin_skills = try std.fs.path.join(allocator, &.{ appdata, "phantty", "plugins", "skills" });
+    } else |_| {}
+    if (platform_dirs.pluginSkillsDir(allocator)) |appdata_plugin_skills| {
         try appendOwnedSkillRootPath(allocator, &roots, appdata_plugin_skills);
     } else |_| {}
 
@@ -777,7 +780,7 @@ fn defaultSkillRootPaths(allocator: std.mem.Allocator) ![][]u8 {
 
 fn appendSkillRootPath(
     allocator: std.mem.Allocator,
-    roots: *std.ArrayListUnmanaged([]u8),
+    roots: *std.ArrayListUnmanaged([]const u8),
     root_path: []const u8,
 ) !void {
     const owned = try allocator.dupe(u8, root_path);
@@ -787,8 +790,8 @@ fn appendSkillRootPath(
 
 fn appendOwnedSkillRootPath(
     allocator: std.mem.Allocator,
-    roots: *std.ArrayListUnmanaged([]u8),
-    owned_root_path: []u8,
+    roots: *std.ArrayListUnmanaged([]const u8),
+    owned_root_path: []const u8,
 ) !void {
     for (roots.items) |existing| {
         if (std.mem.eql(u8, existing, owned_root_path)) {
@@ -800,7 +803,7 @@ fn appendOwnedSkillRootPath(
     try roots.append(allocator, owned_root_path);
 }
 
-fn freeSkillRootPaths(allocator: std.mem.Allocator, roots: [][]u8) void {
+fn freeSkillRootPaths(allocator: std.mem.Allocator, roots: [][]const u8) void {
     for (roots) |root| allocator.free(root);
     allocator.free(roots);
 }
@@ -1215,18 +1218,18 @@ pub const Session = struct {
         if (text_start < data.len) self.appendInputText(data[text_start..]);
     }
 
-    pub fn handleKey(self: *Session, ev: win32_backend.KeyEvent) void {
+    pub fn handleKey(self: *Session, ev: input_key.KeyEvent) void {
         self.handleKeyWithWrapCols(ev, std.math.maxInt(usize));
     }
 
-    pub fn handleKeyWithWrapCols(self: *Session, ev: win32_backend.KeyEvent, max_cols: usize) void {
+    pub fn handleKeyWithWrapCols(self: *Session, ev: input_key.KeyEvent, max_cols: usize) void {
         if (self.handleApprovalKey(ev)) return;
 
-        if (ev.ctrl and !ev.alt and ev.vk == 0x41) {
+        if (ev.ctrl and !ev.alt and ev.key == .key_a) {
             self.selectAll();
             return;
         }
-        if (ev.ctrl and !ev.alt and ev.vk == 0x55) {
+        if (ev.ctrl and !ev.alt and ev.key == .key_u) {
             self.mutex.lock();
             self.input_len = 0;
             self.input_cursor = 0;
@@ -1237,29 +1240,29 @@ pub const Session = struct {
             self.mutex.unlock();
             return;
         }
-        if (ev.ctrl and !ev.alt and ev.vk == 0x4C) {
+        if (ev.ctrl and !ev.alt and ev.key == .key_l) {
             self.clearMessages();
             return;
         }
 
-        switch (ev.vk) {
-            win32_backend.VK_BACK => self.backspaceInput(),
-            win32_backend.VK_DELETE => self.deleteInput(),
-            win32_backend.VK_LEFT => self.moveInputCursorLeft(),
-            win32_backend.VK_RIGHT => self.moveInputCursorRight(),
-            win32_backend.VK_UP => if (!self.moveComposerSuggestionSelection(-1)) self.moveInputCursorVertical(max_cols, -1),
-            win32_backend.VK_DOWN => if (!self.moveComposerSuggestionSelection(1)) self.moveInputCursorVertical(max_cols, 1),
-            win32_backend.VK_HOME => self.moveInputCursorHome(),
-            win32_backend.VK_END => self.moveInputCursorEnd(),
-            win32_backend.VK_TAB => _ = self.completeComposerSuggestion(.tab),
-            win32_backend.VK_ESCAPE => {
+        switch (ev.key) {
+            .backspace => self.backspaceInput(),
+            .delete => self.deleteInput(),
+            .arrow_left => self.moveInputCursorLeft(),
+            .arrow_right => self.moveInputCursorRight(),
+            .arrow_up => if (!self.moveComposerSuggestionSelection(-1)) self.moveInputCursorVertical(max_cols, -1),
+            .arrow_down => if (!self.moveComposerSuggestionSelection(1)) self.moveInputCursorVertical(max_cols, 1),
+            .home => self.moveInputCursorHome(),
+            .end => self.moveInputCursorEnd(),
+            .tab => _ = self.completeComposerSuggestion(.tab),
+            .escape => {
                 if (self.request_inflight) {
                     self.stopRequest();
                 } else {
                     self.clearSelection();
                 }
             },
-            win32_backend.VK_RETURN => {
+            .enter => {
                 if (ev.shift) {
                     self.appendInputText("\n");
                 } else {
@@ -1452,9 +1455,9 @@ pub const Session = struct {
         };
     }
 
-    fn handleApprovalKey(self: *Session, ev: win32_backend.KeyEvent) bool {
-        const approve = ev.vk == win32_backend.VK_RETURN or ev.vk == 0x59; // Y
-        const reject = ev.vk == win32_backend.VK_ESCAPE or ev.vk == 0x4E; // N
+    fn handleApprovalKey(self: *Session, ev: input_key.KeyEvent) bool {
+        const approve = ev.key == .enter or ev.key == .key_y;
+        const reject = ev.key == .escape or ev.key == .key_n;
         if (!approve and !reject) return false;
         return self.resolveApproval(approve);
     }
@@ -3380,13 +3383,33 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("terminal_snapshot", "Read a bounded text snapshot from one terminal surface or all surfaces.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Optional surface id from terminal_list.\"}}"));
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("terminal_select", "Select the terminal surface context for subsequent write tools. Call this before ssh_session_exec, wsl_session_exec, or terminal_repl_exec, and call it again when switching to another panel/tab.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list to make the current agent write context.\"}}"));
+    try appendToolSchema(
+        allocator,
+        out,
+        "terminal_select",
+        platform_pty_command.terminalSelectToolDescription(),
+        "{\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list to make the current agent write context.\"}}",
+    );
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("powershell_exec", "Run a local PowerShell command on Windows and return stdout, stderr, and exit status.", "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    try appendToolSchema(
+        allocator,
+        out,
+        platform_process.localCommandToolName(),
+        platform_process.localCommandToolDescription(),
+        "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}",
+    );
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Run a POSIX shell command in the selected already-open SSH terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("wsl_session_exec", "Run a POSIX shell command in the selected already-open WSL terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
+    if (platform_pty_command.wslSessionToolsEnabled()) {
+        try out.append(allocator, ',');
+        try appendToolSchema(
+            allocator,
+            out,
+            platform_pty_command.wslSessionToolName(),
+            platform_pty_command.wslSessionToolDescription(),
+            platform_pty_command.wslSessionToolPropertiesJson(),
+        );
+    }
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("terminal_repl_exec", "Send code or text to the selected already-open interactive REPL/app terminal without shell syntax. The surface_id must match the current terminal_select context. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit.\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
     try out.append(allocator, ',');
@@ -3394,7 +3417,13 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("ssh_profile_connect", "Create a new tab connected to a saved Phantty SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}"));
     try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("tab_new", "Create a new local terminal tab. Use kind=default, powershell, pwsh, cmd, wsl, or command with an explicit command line.", "{\"kind\":{\"type\":\"string\",\"description\":\"default, powershell, pwsh, cmd, wsl, or command.\"},\"command\":{\"type\":\"string\",\"description\":\"Optional explicit Windows command line; used when kind is command or to override kind.\"}}"));
+    try appendToolSchema(
+        allocator,
+        out,
+        "tab_new",
+        platform_pty_command.tabNewToolDescription(),
+        platform_pty_command.tabNewToolPropertiesJson(),
+    );
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}"));
     try out.append(allocator, ',');
@@ -3405,6 +3434,16 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
 
 fn toolSchema(comptime name: []const u8, comptime description: []const u8, comptime properties: []const u8) []const u8 {
     return "{\"type\":\"function\",\"function\":{\"name\":\"" ++ name ++ "\",\"description\":\"" ++ description ++ "\",\"parameters\":{\"type\":\"object\",\"properties\":" ++ properties ++ ",\"additionalProperties\":false}}}";
+}
+
+fn appendToolSchema(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), name: []const u8, description: []const u8, properties: []const u8) !void {
+    try out.appendSlice(allocator, "{\"type\":\"function\",\"function\":{\"name\":");
+    try appendJsonString(allocator, out, name);
+    try out.appendSlice(allocator, ",\"description\":");
+    try appendJsonString(allocator, out, description);
+    try out.appendSlice(allocator, ",\"parameters\":{\"type\":\"object\",\"properties\":");
+    try out.appendSlice(allocator, properties);
+    try out.appendSlice(allocator, ",\"additionalProperties\":false}}}");
 }
 
 fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
@@ -3424,13 +3463,13 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
         const surface_id = jsonStringArg(args.value, "surface_id") orelse return request.allocator.dupe(u8, "Missing surface_id");
         return terminalSelectTool(request, surface_id);
     }
-    if (std.mem.eql(u8, call.name, "powershell_exec")) {
+    if (std.mem.eql(u8, call.name, platform_process.localCommandToolName())) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         const command = jsonStringArg(args.value, "command") orelse return request.allocator.dupe(u8, "Missing command");
         const cwd = jsonStringArg(args.value, "cwd");
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
-        return powershellExecTool(request, command, cwd, timeout_ms);
+        return localCommandExecTool(request, command, cwd, timeout_ms);
     }
     if (std.mem.eql(u8, call.name, "ssh_session_exec")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
@@ -3713,17 +3752,17 @@ fn rememberClosedTab(request: *ChatRequest, closed: ToolClosedTab) !void {
     }
 }
 
-fn powershellExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
+fn localCommandExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
     const settings = currentAgentSettings();
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
     if (settings.permission != .full) {
-        if (!request.session.requestApproval("powershell_exec", command, "Run local PowerShell command")) {
-            return deniedResult(request.allocator, command, "operator rejected local PowerShell command");
+        if (!request.session.requestApproval(platform_process.localCommandToolName(), command, platform_process.localCommandApprovalLabel())) {
+            return deniedResult(request.allocator, command, platform_process.localCommandDeniedReason());
         }
     }
     const warning = if (isDangerousCommand(command)) "warning: command matched a dangerous-command pattern; full-permission allowed it.\n" else "";
     const result = runShellCommand(request.allocator, command, cwd, settings.output_limit, timeout_ms, request.session) catch |err| {
-        return std.fmt.allocPrint(request.allocator, "{s}PowerShell failed: {}", .{ warning, err });
+        return std.fmt.allocPrint(request.allocator, "{s}{s} failed: {}", .{ warning, platform_process.localCommandFailureLabel(), err });
     };
     defer request.allocator.free(result.stdout);
     defer request.allocator.free(result.stderr);
@@ -3743,12 +3782,16 @@ const ShellResult = struct {
 };
 
 fn runShellCommand(allocator: std.mem.Allocator, command: []const u8, cwd: ?[]const u8, output_limit: u32, timeout_ms: u32, session: ?*Session) !ShellResult {
-    const pwsh_argv = [_][]const u8{ "pwsh.exe", "-NoProfile", "-Command", command };
-    if (runArgv(allocator, pwsh_argv[0..], cwd, output_limit, timeout_ms, session)) |result| return result else |_| {}
-    const powershell_argv = [_][]const u8{ "powershell.exe", "-NoProfile", "-Command", command };
-    if (runArgv(allocator, powershell_argv[0..], cwd, output_limit, timeout_ms, session)) |result| return result else |_| {}
-    const cmd_argv = [_][]const u8{ "cmd.exe", "/C", command };
-    return runArgv(allocator, cmd_argv[0..], cwd, output_limit, timeout_ms, session);
+    var index: usize = 0;
+    var last_err: ?anyerror = null;
+    while (platform_process.localShellFallbackCommandArgv(index, command)) |argv| : (index += 1) {
+        if (runArgv(allocator, argv.slice(), cwd, output_limit, timeout_ms, session)) |result| {
+            return result;
+        } else |err| {
+            last_err = err;
+        }
+    }
+    return if (last_err) |err| err else error.NoLocalShellFallback;
 }
 
 const CaptureOutput = struct {
@@ -3795,8 +3838,7 @@ fn runArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const
     var timed_out = false;
     var canceled = false;
     while (true) {
-        const rc = win32_backend.WaitForSingleObject(child.id, 25);
-        if (rc == win32_backend.WAIT_OBJECT_0) break;
+        if (platform_process.childExited(child.id, 25)) break;
         if (session) |s| {
             if (sessionCancelled(s)) {
                 canceled = true;
@@ -4225,7 +4267,7 @@ fn tabNewTool(request: *ChatRequest, kind: []const u8, command: ?[]const u8) ![]
     const host = request.tool_host orelse return request.allocator.dupe(u8, "No terminal tool host is available.");
     var surface = host.spawnTab(host.ctx, request.allocator, trimmed_kind, command) catch |err| switch (err) {
         error.CommandRequired => return request.allocator.dupe(u8, "tab_new kind=command requires a non-empty command."),
-        error.InvalidTabKind => return std.fmt.allocPrint(request.allocator, "Unsupported tab kind \"{s}\". Use default, powershell, pwsh, cmd, wsl, or command.", .{trimmed_kind}),
+        error.InvalidTabKind => return std.fmt.allocPrint(request.allocator, "Unsupported tab kind \"{s}\". Use {s}.", .{ trimmed_kind, platform_pty_command.tabKindUsage() }),
         else => return std.fmt.allocPrint(request.allocator, "Failed to create new tab: {}", .{err}),
     };
     var surface_owned = true;
@@ -4723,10 +4765,10 @@ test "ai chat slash command suggestions use arrows and tab completion" {
     var session = Session{ .allocator = allocator };
     session.appendInputText("/");
 
-    session.handleKey(.{ .vk = win32_backend.VK_DOWN, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.arrow_down });
     try std.testing.expectEqual(@as(usize, 1), session.slashCommandSuggestionSelectedIndex());
 
-    session.handleKey(.{ .vk = win32_backend.VK_TAB, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.tab });
     try std.testing.expectEqualStrings("/commands", session.input());
     try std.testing.expectEqual(@as(usize, "/commands".len), session.inputCursor());
 }
@@ -4736,13 +4778,13 @@ test "ai chat enter completes selected slash suggestion before command submit" {
     var session = Session{ .allocator = allocator };
     session.appendInputText("/");
 
-    session.handleKey(.{ .vk = win32_backend.VK_DOWN, .ctrl = false, .shift = false, .alt = false });
-    session.handleKey(.{ .vk = win32_backend.VK_RETURN, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.arrow_down });
+    session.handleKey(.{ .key = input_key.Key.enter });
 
     try std.testing.expectEqualStrings("/commands", session.input());
     try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
 
-    session.handleKey(.{ .vk = win32_backend.VK_RETURN, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.enter });
 
     try std.testing.expectEqualStrings("", session.input());
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
@@ -4757,7 +4799,7 @@ test "ai chat enter submits slash commands instead of completing suggestions" {
     var session = Session{ .allocator = allocator };
     session.appendInputText("/commands");
 
-    session.handleKey(.{ .vk = win32_backend.VK_RETURN, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.enter });
 
     try std.testing.expectEqualStrings("", session.input());
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
@@ -4802,7 +4844,7 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
     try std.testing.expectEqual(ComposerSuggestionKind.skill, suggestion.kind);
     try std.testing.expectEqualStrings("pdf", suggestion.text);
 
-    session.handleKey(.{ .vk = win32_backend.VK_RETURN, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.enter });
 
     try std.testing.expectEqualStrings("$pdf ", session.input());
     try std.testing.expectEqual(@as(usize, "$pdf ".len), session.inputCursor());
@@ -5135,27 +5177,26 @@ test "ai chat endpoint normalization" {
     try std.testing.expectEqualStrings("https://api.deepseek.com/chat/completions", endpoint);
 }
 
-test "ai chat default system prompt is short windows uv guidance" {
+test "ai chat default system prompt comes from platform agent prompt" {
     try std.testing.expect(DEFAULT_SYSTEM_PROMPT.len < 1600);
+    try std.testing.expectEqualStrings(platform_agent_prompt.defaultSystemPrompt, DEFAULT_SYSTEM_PROMPT);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "uv") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "Python") != null);
-    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "Windows") != null);
-    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "PowerShell") != null);
-    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "powershell_exec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, platform_process.localCommandToolName()) != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "terminal_list") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "terminal_select") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "ssh_session_exec") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "ssh_profile_save") != null);
-    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "wsl_session_exec") != null);
+    if (platform_pty_command.wslSessionToolsEnabled()) {
+        try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "wsl_session_exec") != null);
+    } else {
+        try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "wsl_session_exec") == null);
+    }
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "terminal_repl_exec") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "Codex") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "Claude Code") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "shell commands") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "uv --version") != null);
-    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "install.ps1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "curl") == null);
-    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "wget") == null);
-    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "macOS") == null);
 }
 
 test "ai chat empty profile system prompt uses full embedded default" {
@@ -5234,11 +5275,17 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_select\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") != null);
+    if (platform_pty_command.wslSessionToolsEnabled()) {
+        try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") != null);
+    } else {
+        try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") == null);
+    }
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_repl_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_save\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, platform_pty_command.tabNewToolPropertiesJson()) != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, platform_pty_command.tabKindUsage()) != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_close\"") != null);
 }
 
@@ -5604,9 +5651,9 @@ test "ai chat tools prefer request-local terminal snapshot" {
     var surfaces = try allocator.alloc(ToolSurface, 1);
     surfaces[0] = .{
         .id = try allocator.dupe(u8, "surface-1"),
-        .title = try allocator.dupe(u8, "PowerShell"),
-        .cwd = try allocator.dupe(u8, "C:\\Users"),
-        .snapshot = try allocator.dupe(u8, "PS C:\\Users>"),
+        .title = try allocator.dupe(u8, "Local Shell"),
+        .cwd = try allocator.dupe(u8, "/home/user"),
+        .snapshot = try allocator.dupe(u8, "$ "),
         .tab_index = 1,
         .focused = true,
         .is_ssh = false,
@@ -5754,7 +5801,7 @@ test "ai chat ctrl a selects input and replacement clears selection" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     session.appendInputText("hello");
-    session.handleKey(.{ .vk = 0x41, .ctrl = true, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.key_a, .ctrl = true });
     try std.testing.expect(session.input_select_all);
 
     const copied = try session.allocClipboardText(allocator);
@@ -5772,19 +5819,31 @@ test "ai chat input cursor supports insertion and deletion in the middle" {
     session.appendInputText("hello");
     try std.testing.expectEqual(@as(usize, 5), session.inputCursor());
 
-    session.handleKey(.{ .vk = win32_backend.VK_LEFT, .ctrl = false, .shift = false, .alt = false });
-    session.handleKey(.{ .vk = win32_backend.VK_LEFT, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.arrow_left });
+    session.handleKey(.{ .key = input_key.Key.arrow_left });
     try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
 
     session.handleChar('X');
     try std.testing.expectEqualStrings("helXlo", session.input());
     try std.testing.expectEqual(@as(usize, 4), session.inputCursor());
 
-    session.handleKey(.{ .vk = win32_backend.VK_BACK, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.backspace });
     try std.testing.expectEqualStrings("hello", session.input());
     try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
 
-    session.handleKey(.{ .vk = win32_backend.VK_DELETE, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.delete });
+    try std.testing.expectEqualStrings("helo", session.input());
+    try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
+}
+
+test "ai chat input handles platform-neutral key events" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    session.appendInputText("hello");
+
+    session.handleKey(.{ .key = input_key.Key.arrow_left });
+    session.handleKey(.{ .key = input_key.Key.backspace });
+
     try std.testing.expectEqualStrings("helo", session.input());
     try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
 }
@@ -5808,9 +5867,9 @@ test "ai chat input cursor moves by utf8 codepoint boundaries" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     session.appendInputText("你a");
-    session.handleKey(.{ .vk = win32_backend.VK_LEFT, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.arrow_left });
     try std.testing.expectEqual(@as(usize, 3), session.inputCursor());
-    session.handleKey(.{ .vk = win32_backend.VK_BACK, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.backspace });
     try std.testing.expectEqualStrings("a", session.input());
     try std.testing.expectEqual(@as(usize, 0), session.inputCursor());
 }
@@ -5820,18 +5879,18 @@ test "ai chat input cursor moves vertically across explicit lines" {
     var session = Session{ .allocator = allocator };
     session.appendInputText("abc\ndefg\nhi");
 
-    session.handleKey(.{ .vk = win32_backend.VK_HOME, .ctrl = false, .shift = false, .alt = false });
-    session.handleKey(.{ .vk = win32_backend.VK_DOWN, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.home });
+    session.handleKey(.{ .key = input_key.Key.arrow_down });
     try std.testing.expectEqual(@as(usize, 4), session.inputCursor());
 
-    session.handleKey(.{ .vk = win32_backend.VK_RIGHT, .ctrl = false, .shift = false, .alt = false });
-    session.handleKey(.{ .vk = win32_backend.VK_RIGHT, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.arrow_right });
+    session.handleKey(.{ .key = input_key.Key.arrow_right });
     try std.testing.expectEqual(@as(usize, 6), session.inputCursor());
 
-    session.handleKey(.{ .vk = win32_backend.VK_DOWN, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.arrow_down });
     try std.testing.expectEqual(@as(usize, 11), session.inputCursor());
 
-    session.handleKey(.{ .vk = win32_backend.VK_UP, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.arrow_up });
     try std.testing.expectEqual(@as(usize, 6), session.inputCursor());
 }
 
@@ -5839,16 +5898,16 @@ test "ai chat input cursor moves vertically across wrapped rows" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     session.appendInputText("abcdefghijkl");
-    session.handleKey(.{ .vk = win32_backend.VK_HOME, .ctrl = false, .shift = false, .alt = false });
-    session.handleKeyWithWrapCols(.{ .vk = win32_backend.VK_DOWN, .ctrl = false, .shift = false, .alt = false }, 5);
+    session.handleKey(.{ .key = input_key.Key.home });
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 5);
     try std.testing.expectEqual(@as(usize, 5), session.inputCursor());
 
-    session.handleKeyWithWrapCols(.{ .vk = win32_backend.VK_RIGHT, .ctrl = false, .shift = false, .alt = false }, 5);
-    session.handleKeyWithWrapCols(.{ .vk = win32_backend.VK_RIGHT, .ctrl = false, .shift = false, .alt = false }, 5);
-    session.handleKeyWithWrapCols(.{ .vk = win32_backend.VK_DOWN, .ctrl = false, .shift = false, .alt = false }, 5);
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_right }, 5);
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_right }, 5);
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 5);
     try std.testing.expectEqual(@as(usize, 12), session.inputCursor());
 
-    session.handleKeyWithWrapCols(.{ .vk = win32_backend.VK_UP, .ctrl = false, .shift = false, .alt = false }, 5);
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 5);
     try std.testing.expectEqual(@as(usize, 7), session.inputCursor());
 }
 
@@ -5909,7 +5968,7 @@ test "ai chat manual input scroll pauses cursor following until cursor moves" {
     _ = session.scrollInputRows(1, 5, 1);
     try std.testing.expect(!session.input_scroll_follow_cursor);
 
-    session.handleKeyWithWrapCols(.{ .vk = win32_backend.VK_RIGHT, .ctrl = false, .shift = false, .alt = false }, 5);
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_right }, 5);
     try std.testing.expect(session.input_scroll_follow_cursor);
 }
 
@@ -5962,7 +6021,7 @@ test "ai chat remote snapshot keeps latest messages after large tool output" {
     try session.messages.append(allocator, .{
         .role = .tool,
         .content = large_tool_output,
-        .tool_name = try allocator.dupe(u8, "powershell_exec"),
+        .tool_name = try allocator.dupe(u8, "terminal_repl_exec"),
     });
     try session.messages.append(allocator, .{
         .role = .assistant,
@@ -5974,7 +6033,7 @@ test "ai chat remote snapshot keeps latest messages after large tool output" {
 
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "latest user message") != null);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "latest assistant reply") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot, "powershell_exec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "terminal_repl_exec") != null);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") == null);
 }
 
@@ -5997,7 +6056,7 @@ test "ai chat clipboard text exports transcript when input is empty" {
         .reasoning = try allocator.dupe(u8, "checked state"),
     });
 
-    session.handleKey(.{ .vk = 0x41, .ctrl = true, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.key_a, .ctrl = true });
     try std.testing.expect(session.transcript_select_all);
 
     const copied = try session.allocClipboardText(allocator);
@@ -6182,7 +6241,7 @@ test "ai chat escape stops in-flight request" {
     var session = Session{ .allocator = std.testing.allocator };
     session.request_inflight = true;
 
-    session.handleKey(.{ .vk = win32_backend.VK_ESCAPE, .ctrl = false, .shift = false, .alt = false });
+    session.handleKey(.{ .key = input_key.Key.escape });
 
     try std.testing.expect(session.request_stopping);
     try std.testing.expect(session.stop_requested.load(.acquire));
@@ -6236,7 +6295,7 @@ test "ai chat collapse helper only closes auto-expanded details" {
 
     try session.messages.append(allocator, .{
         .role = .tool,
-        .content = try allocator.dupe(u8, "running powershell_exec {\"command\":\"Get-ChildItem\"}"),
+        .content = try allocator.dupe(u8, "running terminal_repl_exec {\"input\":\"ls\"}"),
         .content_collapsed = false,
         .content_auto_expand = true,
     });

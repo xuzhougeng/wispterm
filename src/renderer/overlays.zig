@@ -15,14 +15,17 @@ const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
 const Config = @import("../config.zig");
 const themes_embed = @import("../themes.zig");
-const win32_backend = @import("../apprt/win32.zig");
+const input_key = @import("../input/key.zig");
 const ssh_prompt = @import("../ssh_prompt.zig");
 const app_metadata = @import("../app_metadata.zig");
 const command_center_state = @import("../command_center_state.zig");
 const agent_history = @import("../agent_history.zig");
-const system_browser = @import("../system_browser.zig");
+const platform_dirs = @import("../platform/dirs.zig");
+const platform_open_url = @import("../platform/open_url.zig");
+const platform_pty_command = @import("../platform/pty_command.zig");
 const update_check = @import("../update_check.zig");
 const keybind = @import("../keybind.zig");
+const overlay_keys = @import("overlay_keys.zig");
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -104,7 +107,7 @@ threadlocal var g_transfer_toast_clickable: bool = false;
 threadlocal var g_transfer_toast_buf: [160]u8 = undefined;
 threadlocal var g_transfer_toast_len: usize = 0;
 
-pub const TransferCancelConfirmAction = enum { none, keep, interrupt };
+pub const TransferCancelConfirmAction = overlay_keys.TransferCancelConfirmAction;
 threadlocal var g_transfer_cancel_confirm_visible: bool = false;
 
 const UPDATE_PROMPT_DURATION_MS: i64 = 10000;
@@ -360,14 +363,9 @@ pub fn windowCloseConfirmVisible() bool {
     return g_window_close_confirm_visible;
 }
 
-pub fn windowCloseConfirmHandleKey(ev: win32_backend.KeyEvent) void {
+pub fn windowCloseConfirmHandleKey(ev: input_key.KeyEvent) void {
     if (!g_window_close_confirm_visible) return;
-    switch (ev.vk) {
-        win32_backend.VK_ESCAPE,
-        win32_backend.VK_RETURN,
-        => windowCloseConfirmClose(),
-        else => {},
-    }
+    if (overlay_keys.windowCloseConfirmDismisses(ev)) windowCloseConfirmClose();
 }
 
 pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
@@ -397,19 +395,11 @@ pub fn transferCancelConfirmVisible() bool {
     return g_transfer_cancel_confirm_visible;
 }
 
-pub fn transferCancelConfirmHandleKey(ev: win32_backend.KeyEvent) TransferCancelConfirmAction {
+pub fn transferCancelConfirmHandleKey(ev: input_key.KeyEvent) TransferCancelConfirmAction {
     if (!g_transfer_cancel_confirm_visible) return .none;
-    switch (ev.vk) {
-        win32_backend.VK_ESCAPE => {
-            transferCancelConfirmClose();
-            return .keep;
-        },
-        win32_backend.VK_RETURN => {
-            transferCancelConfirmClose();
-            return .interrupt;
-        },
-        else => return .none,
-    }
+    const action = overlay_keys.transferCancelConfirmAction(ev);
+    if (action != .none) transferCancelConfirmClose();
+    return action;
 }
 
 pub fn transferCancelConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) TransferCancelConfirmAction {
@@ -1189,7 +1179,6 @@ const AI_FIELD_COUNT = 9;
 const AI_FIELD_MAX = 8192;
 const AI_PROFILE_MAX = 16;
 const AI_PROFILE_NONE = std.math.maxInt(usize);
-const SESSION_LAUNCHER_ROW_COUNT = 4;
 const SshField = enum(usize) {
     name = 0,
     ip = 1,
@@ -1211,7 +1200,7 @@ const AiField = enum(usize) {
 };
 
 const SessionAction = enum {
-    powershell,
+    local_shell,
     ssh,
     wsl,
     ai_chat,
@@ -1424,8 +1413,8 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
     return false;
 }
 
-pub fn sessionLauncherHandleKey(ev: win32_backend.KeyEvent) void {
-    if (ev.vk == win32_backend.VK_ESCAPE) {
+pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
+    if (ev.key == .escape) {
         if (g_ssh_list_visible and g_ssh_list_filter_len > 0) {
             clearSshListFilter();
             return;
@@ -1443,23 +1432,23 @@ pub fn sessionLauncherHandleKey(ev: win32_backend.KeyEvent) void {
             handleAiListKey(ev);
             return;
         }
-        switch (ev.vk) {
-            win32_backend.VK_DOWN, win32_backend.VK_TAB => g_session_launcher_selected = (g_session_launcher_selected + 1) % SESSION_LAUNCHER_ROW_COUNT,
-            win32_backend.VK_UP => g_session_launcher_selected = if (g_session_launcher_selected == 0) SESSION_LAUNCHER_ROW_COUNT - 1 else g_session_launcher_selected - 1,
-            win32_backend.VK_RETURN => runSessionLauncherRow(g_session_launcher_selected),
-            0x50 => {
+        switch (ev.key) {
+            .arrow_down, .tab => g_session_launcher_selected = (g_session_launcher_selected + 1) % command_center_state.SESSION_LAUNCHER_ROW_COUNT,
+            .arrow_up => g_session_launcher_selected = if (g_session_launcher_selected == 0) command_center_state.SESSION_LAUNCHER_ROW_COUNT - 1 else g_session_launcher_selected - 1,
+            .enter => runSessionLauncherRow(g_session_launcher_selected),
+            .key_p => {
                 g_session_launcher_selected = 0;
                 runSessionLauncherRow(g_session_launcher_selected);
             },
-            0x53 => {
+            .key_s => {
                 g_session_launcher_selected = 1;
                 runSessionLauncherRow(g_session_launcher_selected);
             },
-            0x57 => {
+            .key_w => {
                 g_session_launcher_selected = 2;
                 runSessionLauncherRow(g_session_launcher_selected);
             },
-            0x41 => {
+            .key_a => {
                 g_session_launcher_selected = 3;
                 runSessionLauncherRow(g_session_launcher_selected);
             },
@@ -1469,25 +1458,25 @@ pub fn sessionLauncherHandleKey(ev: win32_backend.KeyEvent) void {
     }
 
     if (g_ai_form_visible) {
-        switch (ev.vk) {
-            win32_backend.VK_TAB, win32_backend.VK_DOWN => g_ai_focus = (g_ai_focus + 1) % (AI_FIELD_COUNT + 3),
-            win32_backend.VK_UP => g_ai_focus = if (g_ai_focus == 0) AI_FIELD_COUNT + 2 else g_ai_focus - 1,
-            win32_backend.VK_BACK => {
+        switch (ev.key) {
+            .tab, .arrow_down => g_ai_focus = (g_ai_focus + 1) % (AI_FIELD_COUNT + 3),
+            .arrow_up => g_ai_focus = if (g_ai_focus == 0) AI_FIELD_COUNT + 2 else g_ai_focus - 1,
+            .backspace => {
                 if (g_ai_focus < AI_FIELD_COUNT) backspaceAiFormField(g_ai_focus);
             },
-            win32_backend.VK_RETURN => runAiFormFocusAction(),
+            .enter => runAiFormFocusAction(),
             else => {},
         }
         return;
     }
 
-    switch (ev.vk) {
-        win32_backend.VK_TAB, win32_backend.VK_DOWN => g_ssh_focus = (g_ssh_focus + 1) % (SSH_FIELD_COUNT + 3),
-        win32_backend.VK_UP => g_ssh_focus = if (g_ssh_focus == 0) SSH_FIELD_COUNT + 2 else g_ssh_focus - 1,
-        win32_backend.VK_BACK => {
+    switch (ev.key) {
+        .tab, .arrow_down => g_ssh_focus = (g_ssh_focus + 1) % (SSH_FIELD_COUNT + 3),
+        .arrow_up => g_ssh_focus = if (g_ssh_focus == 0) SSH_FIELD_COUNT + 2 else g_ssh_focus - 1,
+        .backspace => {
             if (g_ssh_focus < SSH_FIELD_COUNT and g_ssh_lens[g_ssh_focus] > 0) g_ssh_lens[g_ssh_focus] -= 1;
         },
-        win32_backend.VK_RETURN => runSshFormFocusAction(),
+        .enter => runSshFormFocusAction(),
         else => {},
     }
 }
@@ -1503,7 +1492,7 @@ pub fn sessionLauncherContainsPoint(xpos: f64, ypos: f64, window_width: f32, win
 pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32, top_offset: f32) bool {
     const action = sessionHitTest(xpos, ypos, window_width, window_height, top_offset) orelse return false;
     switch (action) {
-        .powershell => openPowerShellSession(),
+        .local_shell => openLocalShellSession(),
         .ssh => openSshList(),
         .wsl => openWslSession(),
         .ai_chat => openDefaultAiSession(),
@@ -1524,23 +1513,31 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
     return true;
 }
 
-fn openPowerShellSession() void {
+fn openLocalShellSession() void {
     sessionLauncherClose();
-    _ = AppWindow.spawnConfiguredPowerShellTab();
+    _ = AppWindow.spawnConfiguredLocalShellTab();
 }
 
 fn openWslSession() void {
     sessionLauncherClose();
-    _ = AppWindow.spawnTabWithCommandUtf8("wsl.exe ~");
+    var command_buf: [1024]u8 = undefined;
+    const command = platform_pty_command.wslInteractiveCommand(command_buf[0..], null) orelse return;
+    _ = AppWindow.spawnTabWithCommandUtf8(command);
 }
 
 fn runSessionLauncherRow(row: usize) void {
-    switch (row) {
-        0 => openPowerShellSession(),
-        1 => openSshList(),
-        2 => openWslSession(),
-        command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT => openDefaultAiSession(),
-        else => {},
+    if (row == 0) {
+        openLocalShellSession();
+    } else if (row == 1) {
+        openSshList();
+    } else if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
+        if (row == wsl_row) {
+            openWslSession();
+            return;
+        }
+    }
+    if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT) {
+        openDefaultAiSession();
     }
 }
 
@@ -1608,13 +1605,13 @@ fn clearSshForm() void {
     g_ssh_lens[@intFromEnum(SshField.port)] = 2;
 }
 
-fn handleSshListKey(ev: win32_backend.KeyEvent) void {
+fn handleSshListKey(ev: input_key.KeyEvent) void {
     const row_count = sshListRowCount();
-    switch (ev.vk) {
-        win32_backend.VK_DOWN, win32_backend.VK_TAB => g_ssh_list_selected = (g_ssh_list_selected + 1) % row_count,
-        win32_backend.VK_UP => g_ssh_list_selected = if (g_ssh_list_selected == 0) row_count - 1 else g_ssh_list_selected - 1,
-        win32_backend.VK_RETURN => runSshListRow(g_ssh_list_selected),
-        win32_backend.VK_BACK => backspaceSshListFilter(),
+    switch (ev.key) {
+        .arrow_down, .tab => g_ssh_list_selected = (g_ssh_list_selected + 1) % row_count,
+        .arrow_up => g_ssh_list_selected = if (g_ssh_list_selected == 0) row_count - 1 else g_ssh_list_selected - 1,
+        .enter => runSshListRow(g_ssh_list_selected),
+        .backspace => backspaceSshListFilter(),
         else => {},
     }
 }
@@ -1932,21 +1929,13 @@ fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
     if (port.len > 0 and !isPortTokenSafe(port)) return null;
 
     var command_buf: [512]u8 = undefined;
-    // ServerAlive* sends an encrypted keepalive every 60s and gives up after 3
-    // misses (~3 min). Defeats NAT/firewall idle drops that hang interactive
-    // sessions (e.g. Codex over SSH) after ~10 min of silence.
-    const legacy_flags = if (AppWindow.g_ssh_legacy_algorithms)
-        "-o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc "
-    else
-        "";
-    const auth_flags = if (password.len > 0)
-        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "
-    else
-        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ";
-    const command = if (port.len > 0)
-        std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}{s}-p {s} {s}@{s}", .{ auth_flags, legacy_flags, port, user, ip }) catch return null
-    else
-        std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}@{s}", .{ auth_flags, legacy_flags, user, ip }) catch return null;
+    const command = platform_pty_command.sshInteractiveCommand(command_buf[0..], .{
+        .user = user,
+        .host = ip,
+        .port = port,
+        .password_auth = password.len > 0,
+        .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
+    }) orelse return null;
 
     sessionLauncherClose();
     if (AppWindow.spawnTabWithCommandUtf8ReturningSurface(command)) |surface| {
@@ -2274,12 +2263,12 @@ fn backspaceAiFormField(field: usize) void {
     }
 }
 
-fn handleAiListKey(ev: win32_backend.KeyEvent) void {
+fn handleAiListKey(ev: input_key.KeyEvent) void {
     const row_count = aiListRowCount();
-    switch (ev.vk) {
-        win32_backend.VK_DOWN, win32_backend.VK_TAB => g_ai_list_selected = (g_ai_list_selected + 1) % row_count,
-        win32_backend.VK_UP => g_ai_list_selected = if (g_ai_list_selected == 0) row_count - 1 else g_ai_list_selected - 1,
-        win32_backend.VK_RETURN => runAiListRow(g_ai_list_selected),
+    switch (ev.key) {
+        .arrow_down, .tab => g_ai_list_selected = (g_ai_list_selected + 1) % row_count,
+        .arrow_up => g_ai_list_selected = if (g_ai_list_selected == 0) row_count - 1 else g_ai_list_selected - 1,
+        .enter => runAiListRow(g_ai_list_selected),
         else => {},
     }
 }
@@ -2441,12 +2430,8 @@ fn isHttpUrlish(value: []const u8) bool {
     return std.mem.startsWith(u8, value, "https://") or std.mem.startsWith(u8, value, "http://");
 }
 
-fn aiProfilesPath(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        return std.fs.path.join(allocator, &.{ appdata, "phantty", "ai_profiles" });
-    } else |_| {}
-    return std.fs.path.join(allocator, &.{ ".", "ai_profiles" });
+fn aiProfilesPath(allocator: std.mem.Allocator) ![]const u8 {
+    return platform_dirs.aiProfilesPath(allocator);
 }
 
 fn loadAiProfiles() void {
@@ -2509,12 +2494,8 @@ fn saveAiProfiles(allocator: std.mem.Allocator) void {
     file.writeAll(out.items) catch {};
 }
 
-fn sshProfilesPath(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        return std.fs.path.join(allocator, &.{ appdata, "phantty", "ssh_hosts" });
-    } else |_| {}
-    return std.fs.path.join(allocator, &.{ ".", "ssh_hosts" });
+fn sshProfilesPath(allocator: std.mem.Allocator) ![]const u8 {
+    return platform_dirs.sshHostsPath(allocator);
 }
 
 fn loadSshProfiles() void {
@@ -2689,7 +2670,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("User", sshField(.user)));
         desired = @max(desired, sessionTwoColumnWidth("Password", sshField(.password)));
         desired = @max(desired, sessionTwoColumnWidth("Port", sshField(.port)));
-        desired = @max(desired, sessionTwoColumnWidth("Save & Connect", "ssh.exe"));
+        desired = @max(desired, sessionTwoColumnWidth("Save & Connect", platform_pty_command.sshLauncherDetail()));
         desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
         desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
         return desired;
@@ -2751,9 +2732,11 @@ fn sessionDesiredBoxWidth() f32 {
         return desired;
     }
 
-    desired = @max(desired, sessionTwoColumnWidth("PowerShell", AppWindow.configuredPowerShellSessionDetail()));
+    desired = @max(desired, sessionTwoColumnWidth(platform_pty_command.localShellLauncherTitle(), AppWindow.configuredLocalShellSessionDetail()));
     desired = @max(desired, sessionTwoColumnWidth("SSH", "connect server"));
-    desired = @max(desired, sessionTwoColumnWidth("WSL", "wsl.exe ~"));
+    if (platform_pty_command.sessionLauncherWslRow() != null) {
+        desired = @max(desired, sessionTwoColumnWidth("WSL", platform_pty_command.wslLauncherDetail()));
+    }
     desired = @max(desired, sessionTwoColumnWidth("AI Agent", defaultAiModeLabel()));
     return desired;
 }
@@ -2775,7 +2758,7 @@ fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) Session
     else if (g_ssh_list_visible)
         sshListRowCount()
     else
-        SESSION_LAUNCHER_ROW_COUNT;
+        command_center_state.SESSION_LAUNCHER_ROW_COUNT;
     const box_h = @round(header_h + row_h * @as(f32, @floatFromInt(row_count)) + bottom_pad);
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
@@ -2825,15 +2808,15 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     }
 
     if (!g_ssh_form_visible and !g_ai_form_visible) {
-        if (row >= SESSION_LAUNCHER_ROW_COUNT) return null;
+        if (row >= command_center_state.SESSION_LAUNCHER_ROW_COUNT) return null;
         g_session_launcher_selected = row;
-        return switch (row) {
-            0 => .powershell,
-            1 => .ssh,
-            2 => .wsl,
-            3 => .ai_chat,
-            else => null,
-        };
+        if (row == 0) return .local_shell;
+        if (row == 1) return .ssh;
+        if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
+            if (row == wsl_row) return .wsl;
+        }
+        if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT) return .ai_chat;
+        return null;
     }
 
     if (g_ai_form_visible) {
@@ -3020,10 +3003,17 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             }
             return;
         }
-        renderSessionRow(layout, window_height, 0, "PowerShell", AppWindow.configuredPowerShellSessionDetail(), g_session_launcher_selected == 0);
-        renderSessionRow(layout, window_height, 1, "SSH", "connect server", g_session_launcher_selected == 1);
-        renderSessionRow(layout, window_height, 2, "WSL", "wsl.exe ~", g_session_launcher_selected == 2);
-        renderSessionRow(layout, window_height, 3, "AI Agent", defaultAiModeLabel(), g_session_launcher_selected == 3);
+        var row: usize = 0;
+        renderSessionRow(layout, window_height, row, platform_pty_command.localShellLauncherTitle(), AppWindow.configuredLocalShellSessionDetail(), g_session_launcher_selected == row);
+        row += 1;
+        renderSessionRow(layout, window_height, row, "SSH", "connect server", g_session_launcher_selected == row);
+        row += 1;
+        if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
+            row = wsl_row;
+            renderSessionRow(layout, window_height, row, "WSL", platform_pty_command.wslLauncherDetail(), g_session_launcher_selected == row);
+            row += 1;
+        }
+        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT, "AI Agent", defaultAiModeLabel(), g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT);
         return;
     }
 
@@ -3054,7 +3044,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderSessionField(layout, window_height, @intFromEnum(SshField.user), "User", sshField(.user), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.password), "Password", sshField(.password), true);
     renderSessionField(layout, window_height, @intFromEnum(SshField.port), "Port", sshField(.port), false);
-    renderSessionRow(layout, window_height, SSH_FIELD_COUNT, "Save & Connect", "ssh.exe", g_ssh_focus == SSH_FIELD_COUNT);
+    renderSessionRow(layout, window_height, SSH_FIELD_COUNT, "Save & Connect", platform_pty_command.sshLauncherDetail(), g_ssh_focus == SSH_FIELD_COUNT);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, "Save", "profile", g_ssh_focus == SSH_FIELD_COUNT + 1);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, "Cancel", "Esc", g_ssh_focus == SSH_FIELD_COUNT + 2);
 }
@@ -3147,14 +3137,14 @@ pub fn settingsPageClose() void {
     }
 }
 
-pub fn settingsPageHandleKey(ev: win32_backend.KeyEvent) void {
-    switch (ev.vk) {
-        win32_backend.VK_ESCAPE => settingsPageClose(),
-        win32_backend.VK_DOWN, win32_backend.VK_TAB => g_settings_focus = (g_settings_focus + 1) % SETTINGS_ROW_COUNT,
-        win32_backend.VK_UP => g_settings_focus = if (g_settings_focus == 0) SETTINGS_ROW_COUNT - 1 else g_settings_focus - 1,
-        win32_backend.VK_LEFT => runSettingsFocusLeft(),
-        win32_backend.VK_RIGHT => runSettingsFocusRight(),
-        win32_backend.VK_RETURN => runSettingsFocusPrimary(),
+pub fn settingsPageHandleKey(ev: input_key.KeyEvent) void {
+    switch (ev.key) {
+        .escape => settingsPageClose(),
+        .arrow_down, .tab => g_settings_focus = (g_settings_focus + 1) % SETTINGS_ROW_COUNT,
+        .arrow_up => g_settings_focus = if (g_settings_focus == 0) SETTINGS_ROW_COUNT - 1 else g_settings_focus - 1,
+        .arrow_left => runSettingsFocusLeft(),
+        .arrow_right => runSettingsFocusRight(),
+        .enter => runSettingsFocusPrimary(),
         else => {},
     }
 }
@@ -3253,7 +3243,7 @@ fn executeSettingsAction(action: SettingsAction) void {
         .cycle_cursor_style => Config.setConfigValue(allocator, "cursor-style", nextCursorStyle(cfg.@"cursor-style")) catch {},
         .toggle_cursor_blink => Config.setConfigValue(allocator, "cursor-style-blink", if (cfg.@"cursor-style-blink") "false" else "true") catch {},
         .toggle_focus_follows_mouse => Config.setConfigValue(allocator, "focus-follows-mouse", if (cfg.@"focus-follows-mouse") "false" else "true") catch {},
-        .cycle_shell => Config.setConfigValue(allocator, "shell", nextShell(cfg.shell)) catch {},
+        .cycle_shell => Config.setConfigValue(allocator, "shell", platform_pty_command.nextConfigShell(cfg.shell)) catch {},
         .open_ai_settings => openAiSettings(),
         .open_raw_config => Config.openConfigInEditor(allocator),
         .close => settingsPageClose(),
@@ -3379,13 +3369,6 @@ fn nextCursorStyle(style: Config.CursorStyle) []const u8 {
     };
 }
 
-fn nextShell(shell: []const u8) []const u8 {
-    if (std.mem.eql(u8, shell, "cmd")) return "powershell";
-    if (std.mem.eql(u8, shell, "powershell")) return "pwsh";
-    if (std.mem.eql(u8, shell, "pwsh")) return "wsl";
-    return "cmd";
-}
-
 fn boolText(value: bool) []const u8 {
     return if (value) "on" else "off";
 }
@@ -3480,7 +3463,7 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, "Cursor style", cursorStyleText(cfg.@"cursor-style"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, "Cursor blink", boolText(cfg.@"cursor-style-blink"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, "Focus follows mouse", boolText(cfg.@"focus-follows-mouse"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, "Shell for new tabs", cfg.shell, "cmd / powershell / pwsh / wsl", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, "Shell for new tabs", cfg.shell, platform_pty_command.shellSettingChoicesHint(), true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
     loadAiProfiles();
     const ai_profile_value = if (g_ai_profile_count > 0) aiProfileField(&g_ai_profiles[0], .name) else "configure";
     const ai_profile_hint = if (g_ai_profile_count > 0) aiProfileModeLabel(&g_ai_profiles[0]) else "Required before first AI session";
@@ -4245,16 +4228,14 @@ pub fn openLatestRelease() void {
     const allocator = AppWindow.g_allocator orelse return;
     var url_buf: [256]u8 = undefined;
     const url = latestReleaseUrl(&url_buf);
-    const hwnd = if (AppWindow.g_window) |w| w.hwnd else null;
-    _ = system_browser.openUrl(allocator, hwnd, url);
+    _ = platform_open_url.open(allocator, .{ .url = url });
 }
 
 fn openStoredPromptUrl() void {
     const allocator = AppWindow.g_allocator orelse return;
     var url_buf: [256]u8 = undefined;
     const url = storedPromptUrl(&url_buf);
-    const hwnd = if (AppWindow.g_window) |w| w.hwnd else null;
-    _ = system_browser.openUrl(allocator, hwnd, url);
+    _ = platform_open_url.open(allocator, .{ .url = url });
 }
 
 pub fn activateUpdatePrompt() void {

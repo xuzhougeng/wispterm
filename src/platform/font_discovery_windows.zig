@@ -70,6 +70,23 @@ pub const DWRITE_FONT_WEIGHT = enum(u32) {
     EXTRA_BLACK = 950,
 };
 
+pub fn fontWeightFromValue(value: u16) DWRITE_FONT_WEIGHT {
+    return switch (value) {
+        100 => .THIN,
+        200 => .EXTRA_LIGHT,
+        300 => .LIGHT,
+        350 => .SEMI_LIGHT,
+        400 => .NORMAL,
+        500 => .MEDIUM,
+        600 => .SEMI_BOLD,
+        700 => .BOLD,
+        800 => .EXTRA_BOLD,
+        900 => .BLACK,
+        950 => .EXTRA_BLACK,
+        else => .NORMAL,
+    };
+}
+
 pub const DWRITE_FONT_STYLE = enum(u32) {
     NORMAL = 0,
     OBLIQUE = 1,
@@ -865,4 +882,12 @@ test "directwrite module compiles" {
     // Just ensure the types are properly defined
     _ = FontDiscovery;
     _ = LoadedFont;
+}
+
+test "directwrite maps numeric font weights" {
+    try std.testing.expectEqual(DWRITE_FONT_WEIGHT.THIN, fontWeightFromValue(100));
+    try std.testing.expectEqual(DWRITE_FONT_WEIGHT.NORMAL, fontWeightFromValue(400));
+    try std.testing.expectEqual(DWRITE_FONT_WEIGHT.BOLD, fontWeightFromValue(700));
+    try std.testing.expectEqual(DWRITE_FONT_WEIGHT.BLACK, fontWeightFromValue(900));
+    try std.testing.expectEqual(DWRITE_FONT_WEIGHT.NORMAL, fontWeightFromValue(123));
 }

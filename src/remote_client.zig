@@ -4,103 +4,11 @@
 //! client, then publish PTY output with their own stable surface id.
 
 const std = @import("std");
-const windows = std.os.windows;
-
-const HINTERNET = *opaque {};
-
-extern "winhttp" fn WinHttpOpen(
-    pszAgentW: ?windows.LPCWSTR,
-    dwAccessType: windows.DWORD,
-    pszProxyW: ?windows.LPCWSTR,
-    pszProxyBypassW: ?windows.LPCWSTR,
-    dwFlags: windows.DWORD,
-) callconv(.winapi) ?HINTERNET;
-
-extern "winhttp" fn WinHttpConnect(
-    hSession: HINTERNET,
-    pswzServerName: windows.LPCWSTR,
-    nServerPort: u16,
-    dwReserved: windows.DWORD,
-) callconv(.winapi) ?HINTERNET;
-
-extern "winhttp" fn WinHttpOpenRequest(
-    hConnect: HINTERNET,
-    pwszVerb: windows.LPCWSTR,
-    pwszObjectName: windows.LPCWSTR,
-    pwszVersion: ?windows.LPCWSTR,
-    pwszReferrer: ?windows.LPCWSTR,
-    ppwszAcceptTypes: ?*const ?windows.LPCWSTR,
-    dwFlags: windows.DWORD,
-) callconv(.winapi) ?HINTERNET;
-
-extern "winhttp" fn WinHttpSetOption(
-    hInternet: HINTERNET,
-    dwOption: windows.DWORD,
-    lpBuffer: ?*anyopaque,
-    dwBufferLength: windows.DWORD,
-) callconv(.winapi) windows.BOOL;
-
-extern "winhttp" fn WinHttpSendRequest(
-    hRequest: HINTERNET,
-    lpszHeaders: ?windows.LPCWSTR,
-    dwHeadersLength: windows.DWORD,
-    lpOptional: ?*anyopaque,
-    dwOptionalLength: windows.DWORD,
-    dwTotalLength: windows.DWORD,
-    dwContext: usize,
-) callconv(.winapi) windows.BOOL;
-
-extern "winhttp" fn WinHttpReceiveResponse(
-    hRequest: HINTERNET,
-    lpReserved: ?*anyopaque,
-) callconv(.winapi) windows.BOOL;
-
-extern "winhttp" fn WinHttpWebSocketCompleteUpgrade(
-    hRequest: HINTERNET,
-    pContext: usize,
-) callconv(.winapi) ?HINTERNET;
-
-extern "winhttp" fn WinHttpWebSocketSend(
-    hWebSocket: HINTERNET,
-    eBufferType: windows.DWORD,
-    pvBuffer: ?*anyopaque,
-    dwBufferLength: windows.DWORD,
-) callconv(.winapi) windows.DWORD;
-
-extern "winhttp" fn WinHttpWebSocketReceive(
-    hWebSocket: HINTERNET,
-    pvBuffer: ?*anyopaque,
-    dwBufferLength: windows.DWORD,
-    pdwBytesRead: *windows.DWORD,
-    peBufferType: *windows.DWORD,
-) callconv(.winapi) windows.DWORD;
-
-extern "winhttp" fn WinHttpWebSocketClose(
-    hWebSocket: HINTERNET,
-    usStatus: u16,
-    pvReason: ?*anyopaque,
-    dwReasonLength: windows.DWORD,
-) callconv(.winapi) windows.DWORD;
-
-extern "winhttp" fn WinHttpCloseHandle(hInternet: HINTERNET) callconv(.winapi) windows.BOOL;
-
-extern "kernel32" fn CreateMutexW(
-    lpMutexAttributes: ?*anyopaque,
-    bInitialOwner: windows.BOOL,
-    lpName: windows.LPCWSTR,
-) callconv(.winapi) ?windows.HANDLE;
-
-const WINHTTP_ACCESS_TYPE_DEFAULT_PROXY: windows.DWORD = 0;
-const WINHTTP_FLAG_SECURE: windows.DWORD = 0x00800000;
-const WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET: windows.DWORD = 114;
-const WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE: windows.DWORD = 2;
-const WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE: windows.DWORD = 3;
-const WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE: windows.DWORD = 4;
-const WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS: u16 = 1000;
+const remote_transport = @import("platform/remote_transport.zig");
+const session_lock = @import("platform/session_lock.zig");
 
 const QUEUE_LIMIT = 512;
 const RETRY_DELAY_NS = 2 * std.time.ns_per_s;
-const WEBSOCKET_IO_CHUNK_SIZE = 16 * 1024;
 const MAX_INCOMING_MESSAGE_BYTES = 1024 * 1024;
 const HEARTBEAT_INTERVAL_MS: i64 = 25 * 1000;
 const PING_MESSAGE = "{\"type\":\"ping\"}";
@@ -149,40 +57,13 @@ const Endpoint = struct {
     }
 };
 
-const Handles = struct {
-    session: ?HINTERNET = null,
-    connect: ?HINTERNET = null,
-    request: ?HINTERNET = null,
-    websocket: ?HINTERNET = null,
-
-    fn close(self: *Handles) void {
-        if (self.websocket) |h| {
-            _ = WinHttpWebSocketClose(h, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, null, 0);
-            _ = WinHttpCloseHandle(h);
-            self.websocket = null;
-        }
-        if (self.request) |h| {
-            _ = WinHttpCloseHandle(h);
-            self.request = null;
-        }
-        if (self.connect) |h| {
-            _ = WinHttpCloseHandle(h);
-            self.connect = null;
-        }
-        if (self.session) |h| {
-            _ = WinHttpCloseHandle(h);
-            self.session = null;
-        }
-    }
-};
-
 const SessionKeyReservation = struct {
-    handle: ?windows.HANDLE = null,
+    lock: ?session_lock.Reservation = null,
 
     fn deinit(self: *SessionKeyReservation) void {
-        if (self.handle) |handle| {
-            windows.CloseHandle(handle);
-            self.handle = null;
+        if (self.lock) |*lock| {
+            lock.deinit();
+            self.lock = null;
         }
     }
 };
@@ -437,7 +318,12 @@ pub const Client = struct {
 fn threadMain(client: *Client) void {
     while (!client.stop_requested.load(.acquire)) {
         client.state.store(.connecting, .release);
-        var handles = connectWebSocket(client) catch |err| {
+        var handles = remote_transport.connect(client.allocator, .{
+            .secure = client.endpoint.secure,
+            .host = client.endpoint.host,
+            .port = client.endpoint.port,
+            .object_name = client.endpoint.object_name,
+        }) catch |err| {
             client.state.store(.failed, .release);
             std.debug.print("Remote client connect failed: {}\n", .{err});
             sleepUntilRetryOrStop(client);
@@ -461,7 +347,7 @@ fn threadMain(client: *Client) void {
             const message = client.popMessage() orelse {
                 const now = std.time.milliTimestamp();
                 if (now >= next_heartbeat_ms) {
-                    if (!sendWebSocketUtf8(websocket, PING_MESSAGE)) {
+                    if (!remote_transport.sendUtf8(websocket, PING_MESSAGE)) {
                         connection_alive.store(false, .release);
                         client.state.store(.disconnected, .release);
                         break;
@@ -475,7 +361,7 @@ fn threadMain(client: *Client) void {
             };
             defer client.allocator.free(message);
 
-            if (!sendWebSocketUtf8(websocket, message)) {
+            if (!remote_transport.sendUtf8(websocket, message)) {
                 connection_alive.store(false, .release);
                 client.state.store(.disconnected, .release);
                 break;
@@ -496,41 +382,35 @@ fn threadMain(client: *Client) void {
     client.state.store(.disabled, .release);
 }
 
-fn receiveThreadMain(client: *Client, websocket: HINTERNET, connection_alive: *std.atomic.Value(bool)) void {
-    var buf: [WEBSOCKET_IO_CHUNK_SIZE]u8 = undefined;
+fn receiveThreadMain(client: *Client, websocket: remote_transport.WebSocketHandle, connection_alive: *std.atomic.Value(bool)) void {
+    var buf: [remote_transport.io_chunk_size]u8 = undefined;
     var incoming: IncomingMessageAssembler = .{};
     defer incoming.deinit(client.allocator);
 
     while (!client.stop_requested.load(.acquire)) {
-        var bytes_read: windows.DWORD = 0;
-        var buffer_type: windows.DWORD = 0;
-        const rc = WinHttpWebSocketReceive(
-            websocket,
-            &buf,
-            @intCast(buf.len),
-            &bytes_read,
-            &buffer_type,
-        );
-        if (rc != 0 or buffer_type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) {
+        const received = remote_transport.receive(websocket, &buf) catch {
+            connection_alive.store(false, .release);
+            client.condition.broadcast();
+            return;
+        };
+        if (received.buffer_type == .close) {
             connection_alive.store(false, .release);
             client.condition.broadcast();
             return;
         }
-        if (bytes_read == 0) continue;
+        if (received.bytes_read == 0) continue;
 
-        if (buffer_type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE or
-            buffer_type == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE)
-        {
+        if (received.buffer_type == .utf8_message or received.buffer_type == .utf8_fragment) {
             const maybe_message = incoming.push(
                 client.allocator,
-                buf[0..@intCast(bytes_read)],
-                buffer_type,
+                buf[0..received.bytes_read],
+                received.buffer_type,
             ) catch continue;
             const message = maybe_message orelse continue;
             defer client.allocator.free(message);
 
             if (isJsonMessageType(message, "ping")) {
-                _ = sendWebSocketUtf8(websocket, PONG_MESSAGE);
+                _ = remote_transport.sendUtf8(websocket, PONG_MESSAGE);
                 continue;
             }
             if (isJsonMessageType(message, "pong")) continue;
@@ -540,73 +420,12 @@ fn receiveThreadMain(client: *Client, websocket: HINTERNET, connection_alive: *s
     }
 }
 
-fn sendWebSocketUtf8(websocket: HINTERNET, message: []const u8) bool {
-    if (message.len <= WEBSOCKET_IO_CHUNK_SIZE) {
-        return sendWebSocketUtf8Chunk(websocket, message, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE);
-    }
-
-    var offset: usize = 0;
-    while (offset < message.len) {
-        const remaining = message.len - offset;
-        const take = @min(WEBSOCKET_IO_CHUNK_SIZE, remaining);
-        const end = offset + take;
-        const buffer_type: windows.DWORD = if (end == message.len)
-            WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE
-        else
-            WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE;
-        if (!sendWebSocketUtf8Chunk(websocket, message[offset..end], buffer_type)) return false;
-        offset = end;
-    }
-    return true;
-}
-
-fn sendWebSocketUtf8Chunk(websocket: HINTERNET, message: []const u8, buffer_type: windows.DWORD) bool {
-    return WinHttpWebSocketSend(
-        websocket,
-        buffer_type,
-        @constCast(message.ptr),
-        @intCast(message.len),
-    ) == 0;
-}
-
 fn sleepUntilRetryOrStop(client: *Client) void {
     const step_ns = 100 * std.time.ns_per_ms;
     var elapsed: u64 = 0;
     while (elapsed < RETRY_DELAY_NS and !client.stop_requested.load(.acquire)) : (elapsed += step_ns) {
         std.Thread.sleep(step_ns);
     }
-}
-
-fn connectWebSocket(client: *Client) !Handles {
-    var handles: Handles = .{};
-    errdefer handles.close();
-
-    const agent = std.unicode.utf8ToUtf16LeStringLiteral("Phantty Remote");
-    handles.session = WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, null, null, 0) orelse return error.WinHttpOpenFailed;
-
-    const host_w = try std.unicode.utf8ToUtf16LeAllocZ(client.allocator, client.endpoint.host);
-    defer client.allocator.free(host_w);
-    handles.connect = WinHttpConnect(handles.session.?, host_w, client.endpoint.port, 0) orelse return error.WinHttpConnectFailed;
-
-    const get_w = std.unicode.utf8ToUtf16LeStringLiteral("GET");
-    const object_w = try std.unicode.utf8ToUtf16LeAllocZ(client.allocator, client.endpoint.object_name);
-    defer client.allocator.free(object_w);
-
-    const flags: windows.DWORD = if (client.endpoint.secure) WINHTTP_FLAG_SECURE else 0;
-    handles.request = WinHttpOpenRequest(handles.connect.?, get_w, object_w, null, null, null, flags) orelse return error.WinHttpOpenRequestFailed;
-
-    if (WinHttpSetOption(handles.request.?, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, null, 0) == 0) {
-        return error.WinHttpUpgradeOptionFailed;
-    }
-    if (WinHttpSendRequest(handles.request.?, null, 0, null, 0, 0, 0) == 0) {
-        return error.WinHttpSendRequestFailed;
-    }
-    if (WinHttpReceiveResponse(handles.request.?, null) == 0) {
-        return error.WinHttpReceiveResponseFailed;
-    }
-
-    handles.websocket = WinHttpWebSocketCompleteUpgrade(handles.request.?, 0) orelse return error.WinHttpCompleteUpgradeFailed;
-    return handles;
 }
 
 fn fillSessionKey(out: *[32]u8) void {
@@ -637,8 +456,8 @@ fn reserveFixedSessionKey(allocator: std.mem.Allocator, base: []const u8, reserv
         const candidate = try fixedSessionKeyCandidate(allocator, base, idx);
         errdefer allocator.free(candidate);
 
-        if (try reserveSessionKeyMutex(allocator, candidate)) |handle| {
-            reservation.handle = handle;
+        if (try session_lock.reserveSessionKey(allocator, candidate)) |lock| {
+            reservation.lock = lock;
             return candidate;
         }
 
@@ -651,36 +470,6 @@ fn reserveFixedSessionKey(allocator: std.mem.Allocator, base: []const u8, reserv
 fn fixedSessionKeyCandidate(allocator: std.mem.Allocator, base: []const u8, index: usize) ![]u8 {
     if (index == 0) return allocator.dupe(u8, base);
     return std.fmt.allocPrint(allocator, "{s}_{d}", .{ base, index });
-}
-
-fn reserveSessionKeyMutex(allocator: std.mem.Allocator, session_key: []const u8) !?windows.HANDLE {
-    const name_w = try sessionKeyMutexName(allocator, session_key);
-    defer allocator.free(name_w);
-
-    const handle = CreateMutexW(null, 0, name_w.ptr) orelse return error.CreateMutexFailed;
-    if (windows.kernel32.GetLastError() == .ALREADY_EXISTS) {
-        windows.CloseHandle(handle);
-        return null;
-    }
-
-    return handle;
-}
-
-fn sessionKeyMutexName(allocator: std.mem.Allocator, session_key: []const u8) ![:0]u16 {
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(session_key, &digest, .{});
-
-    const prefix = "Local\\PhanttyRemoteSessionKey-";
-    var ascii: [prefix.len + digest.len * 2]u8 = undefined;
-    @memcpy(ascii[0..prefix.len], prefix);
-
-    const hex = "0123456789abcdef";
-    for (digest, 0..) |byte, i| {
-        ascii[prefix.len + i * 2] = hex[byte >> 4];
-        ascii[prefix.len + i * 2 + 1] = hex[byte & 0x0f];
-    }
-
-    return std.unicode.utf8ToUtf16LeAllocZ(allocator, ascii[0..]);
 }
 
 pub fn nextSurfaceId(out: *[16]u8) void {
@@ -819,14 +608,14 @@ const IncomingMessageAssembler = struct {
         self: *IncomingMessageAssembler,
         allocator: std.mem.Allocator,
         chunk: []const u8,
-        buffer_type: windows.DWORD,
+        buffer_type: remote_transport.BufferType,
     ) !?[]u8 {
         switch (buffer_type) {
-            WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE => {
+            .utf8_fragment => {
                 try self.append(allocator, chunk);
                 return null;
             },
-            WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE => {
+            .utf8_message => {
                 if (self.pending.items.len == 0) return try allocator.dupe(u8, chunk);
                 try self.append(allocator, chunk);
                 return try self.pending.toOwnedSlice(allocator);
@@ -1020,10 +809,10 @@ test "incoming websocket fragments are reassembled before handling JSON" {
     const prefix = "{\"type\":\"input-bytes\",\"surfaceId\":\"aichat0000000000\",\"encoding\":\"hex\",\"data\":\"";
     const suffix = "68656c6c6f0d\"}";
 
-    const first = try assembler.push(allocator, prefix, WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE);
+    const first = try assembler.push(allocator, prefix, .utf8_fragment);
     try std.testing.expect(first == null);
 
-    const second = try assembler.push(allocator, suffix, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE);
+    const second = try assembler.push(allocator, suffix, .utf8_message);
     defer if (second) |message| allocator.free(message);
     try std.testing.expect(second != null);
 

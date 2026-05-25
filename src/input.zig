@@ -1,6 +1,6 @@
 //! Input handling for AppWindow.
 //!
-//! Processes Win32 input events (keyboard, mouse, resize) and dispatches
+//! Processes platform input events (keyboard, mouse, resize) and dispatches
 //! to appropriate handlers. Manages clipboard, selection, scrollbar dragging,
 //! split divider dragging, and fullscreen toggle.
 
@@ -11,7 +11,6 @@ const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const overlays = AppWindow.overlays;
 const split_layout = AppWindow.split_layout;
-const window_state = AppWindow.window_state;
 const file_explorer = AppWindow.file_explorer;
 const markdown_preview = @import("markdown_preview.zig");
 const markdown_preview_panel = AppWindow.markdown_preview_panel;
@@ -19,10 +18,18 @@ const preview_token = @import("preview_token.zig");
 const browser_panel = AppWindow.browser_panel;
 const ui_perf = AppWindow.ui_perf;
 const link_open = @import("link_open.zig");
-const system_browser = @import("system_browser.zig");
+const platform_dirs = @import("platform/dirs.zig");
+const platform_local_path = @import("platform/local_path.zig");
+const platform_open_url = @import("platform/open_url.zig");
+const platform_file_dialog = @import("platform/file_dialog.zig");
 const input_shortcuts = @import("input_shortcuts.zig");
 const keybind = @import("keybind.zig");
-const win32_backend = @import("apprt/win32.zig");
+const platform_cursor = @import("platform/cursor.zig");
+const platform_input = @import("platform/input_events.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
+const platform_wsl = @import("platform/wsl.zig");
+const window_backend = @import("platform/window_backend.zig");
+const input_key = @import("input/key.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
@@ -58,6 +65,24 @@ const InteractiveUnderlineTokenKind = enum { none, url, preview_path };
 
 fn panelToggleResizeUrgency() LayoutResizeUrgency {
     return .coalesced;
+}
+
+fn clientSize(win: anytype) window_backend.Size {
+    return window_backend.clientSize(win);
+}
+
+fn syncGridFromWindow(win: anytype) void {
+    const size = clientSize(win);
+    syncGridFromWindowSize(size.width, size.height);
+}
+
+fn syncPanelGridFromWindow(win: anytype) void {
+    const size = clientSize(win);
+    syncPanelGridFromWindowSize(size.width, size.height);
+}
+
+fn syncSidebarWidthToBackend(win: anytype) void {
+    window_backend.setSidebarWidth(win, @intFromFloat(titlebar.sidebarWidth()));
 }
 
 test "panel toggles request coalesced layout resize" {
@@ -194,7 +219,7 @@ threadlocal var g_markdown_preview_image_dragging: bool = false;
 threadlocal var g_markdown_preview_image_hover: bool = false;
 threadlocal var g_markdown_preview_image_drag_last_x: f64 = 0;
 threadlocal var g_markdown_preview_image_drag_last_y: f64 = 0;
-pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the WebView2 browser edge
+pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
 const SIDEBAR_TAB_DRAG_THRESHOLD_PX: f64 = 6.0;
 threadlocal var g_sidebar_tab_drag_pressed: ?usize = null;
@@ -203,11 +228,9 @@ threadlocal var g_sidebar_tab_drag_start_x: f64 = 0;
 threadlocal var g_sidebar_tab_drag_start_y: f64 = 0;
 threadlocal var g_sidebar_tab_drag_active: bool = false;
 
-// Internal state (moved from win32_input struct)
+// Internal input state.
 threadlocal var plus_btn_pressed: bool = false;
-threadlocal var saved_style: win32_backend.DWORD = 0;
-threadlocal var saved_rect: win32_backend.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
-threadlocal var is_fullscreen: bool = false;
+threadlocal var fullscreen_restore_state: window_backend.FullscreenRestoreState = .{};
 const CLOSE_SHORTCUT_CONFIRM_MS: i64 = 5000;
 threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
@@ -276,7 +299,7 @@ fn blurBrowserUrlBarIfFocused() void {
     markBrowserUrlBarDirty();
 }
 
-pub fn cancelTransientMouseState(win: ?*win32_backend.Window) void {
+pub fn cancelTransientMouseState(win: anytype) void {
     g_divider_hover = false;
     g_divider_dragging = false;
     g_divider_drag_handle = null;
@@ -304,7 +327,7 @@ pub fn cancelTransientMouseState(win: ?*win32_backend.Window) void {
     g_ai_transcript_selecting = false;
     g_ai_transcript_select_chat = null;
     g_ai_transcript_select_auto_copy = false;
-    if (win) |w| w.clearTransientInputQueues();
+    window_backend.clearTransientInput(win);
 }
 
 pub fn toggleSidebar() void {
@@ -313,8 +336,8 @@ pub fn toggleSidebar() void {
 
     tab.g_sidebar_visible = !tab.g_sidebar_visible;
     if (AppWindow.g_window) |win| {
-        syncPanelGridFromWindowSize(win.width, win.height);
-        win.sidebar_width = @intFromFloat(titlebar.sidebarWidth());
+        syncPanelGridFromWindow(win);
+        syncSidebarWidthToBackend(win);
     }
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
@@ -329,7 +352,7 @@ pub fn toggleFileExplorer() void {
         AppWindow.syncVisibleFileExplorerForActiveTab();
     }
     if (AppWindow.g_window) |win| {
-        syncPanelGridFromWindowSize(win.width, win.height);
+        syncPanelGridFromWindow(win);
     }
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
@@ -340,11 +363,11 @@ pub fn toggleBrowserPanel() void {
     defer perf.end();
 
     const allocator = AppWindow.g_allocator orelse return;
-    const parent = if (AppWindow.g_window) |win| win.hwnd else null;
+    const parent = AppWindow.currentNativeHandle();
     const surface = AppWindow.activeSurface();
     if (!browser_panel.toggleForSurface(allocator, parent, surface)) return;
     if (AppWindow.g_window) |win| {
-        syncPanelGridFromWindowSize(win.width, win.height);
+        syncPanelGridFromWindow(win);
     }
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
@@ -354,7 +377,7 @@ pub fn closePanelOrTab() void {
     if (markdown_preview_panel.isVisibleForActiveTab()) {
         g_close_shortcut_confirm_until_ms = 0;
         markdown_preview_panel.close();
-        if (AppWindow.g_window) |win| syncPanelGridFromWindowSize(win.width, win.height);
+        if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
         return;
@@ -362,7 +385,7 @@ pub fn closePanelOrTab() void {
     if (browser_panel.isVisibleForActiveTab()) {
         g_close_shortcut_confirm_until_ms = 0;
         browser_panel.close();
-        if (AppWindow.g_window) |win| syncPanelGridFromWindowSize(win.width, win.height);
+        if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
         return;
@@ -579,11 +602,11 @@ pub fn updateFocusFromMouse(mouse_x: i32, mouse_y: i32) void {
     }
 }
 
-/// Process all queued Win32 input events. Called once per frame from the main loop.
-pub fn processEvents(win: *win32_backend.Window) void {
-    if (win.is_minimized) {
+/// Process all queued platform input events. Called once per frame from the main loop.
+pub fn processEvents(win: anytype) void {
+    if (window_backend.isMinimized(win)) {
         cancelTransientMouseState(win);
-        win.size_changed = false;
+        _ = window_backend.consumeSizeChanged(win);
         return;
     }
     processKeyAndCharEvents(win);
@@ -593,22 +616,21 @@ pub fn processEvents(win: *win32_backend.Window) void {
     processSizeChange(win);
 }
 
-// Interleave key and char events so they fire in the order Windows
-// generated them. WM_KEYDOWN is dispatched before its matching WM_CHAR
-// (TranslateMessage posts the char), so popping one event from each
-// queue per iteration replays the original temporal order. Draining
-// keys fully before chars meant a focus-shifting key (Enter, Tab,
-// Down) typed right after a character changed focus before the queued
-// char was inserted, dropping the last password byte into the Port
-// field and silently breaking SSH connect via the form.
-fn processKeyAndCharEvents(win: *win32_backend.Window) void {
+// Interleave key and text events so they fire in the order the platform
+// backend generated them. Key events can arrive before their matching text
+// events, so popping one event from each queue per iteration replays the
+// original temporal order. Draining keys fully before text meant a
+// focus-shifting key (Enter, Tab, Down) typed right after a character changed
+// focus before the queued character was inserted, dropping the last password
+// byte into the Port field and silently breaking SSH connect via the form.
+fn processKeyAndCharEvents(win: anytype) void {
     while (true) {
         var did_anything = false;
-        if (win.key_events.pop()) |ev| {
+        if (window_backend.popKeyEvent(win)) |ev| {
             handleKey(ev);
             did_anything = true;
         }
-        if (win.char_events.pop()) |ev| {
+        if (window_backend.popCharEvent(win)) |ev| {
             handleChar(ev);
             did_anything = true;
         }
@@ -616,16 +638,16 @@ fn processKeyAndCharEvents(win: *win32_backend.Window) void {
     }
 }
 
-fn processMouseButtonEvents(win: *win32_backend.Window) void {
-    while (win.mouse_button_events.pop()) |ev| {
+fn processMouseButtonEvents(win: anytype) void {
+    while (window_backend.popMouseButtonEvent(win)) |ev| {
         handleMouseButton(ev);
     }
 }
 
-fn processMouseMoveEvents(win: *win32_backend.Window) void {
+fn processMouseMoveEvents(win: anytype) void {
     // Only process the latest move event (coalesce)
-    var latest: ?win32_backend.MouseMoveEvent = null;
-    while (win.mouse_move_events.pop()) |ev| {
+    var latest: ?platform_input.MouseMoveEvent = null;
+    while (window_backend.popMouseMoveEvent(win)) |ev| {
         latest = ev;
     }
     if (latest) |ev| {
@@ -633,26 +655,26 @@ fn processMouseMoveEvents(win: *win32_backend.Window) void {
     }
 }
 
-fn processMouseWheelEvents(win: *win32_backend.Window) void {
-    while (win.mouse_wheel_events.pop()) |ev| {
+fn processMouseWheelEvents(win: anytype) void {
+    while (window_backend.popMouseWheelEvent(win)) |ev| {
         handleMouseWheel(ev);
     }
 }
 
-fn processSizeChange(win: *win32_backend.Window) void {
-    if (!win.size_changed) return;
-    win.size_changed = false;
-    if (win.is_minimized or win.width <= 0 or win.height <= 0) return;
-    if (titlebar.setSidebarWidth(titlebar.g_sidebar_width, @floatFromInt(win.width))) {
-        win.sidebar_width = @intFromFloat(titlebar.sidebarWidth());
+fn processSizeChange(win: anytype) void {
+    if (!window_backend.consumeSizeChanged(win)) return;
+    const size = window_backend.clientSize(win);
+    if (window_backend.isMinimized(win) or size.width <= 0 or size.height <= 0) return;
+    if (titlebar.setSidebarWidth(titlebar.g_sidebar_width, @floatFromInt(size.width))) {
+        syncSidebarWidthToBackend(win);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
     }
 
-    syncGridFromWindowSize(win.width, win.height);
+    syncGridFromWindowSize(size.width, size.height);
 }
 
-fn handleChar(ev: win32_backend.CharEvent) void {
+fn handleChar(ev: platform_input.CharEvent) void {
     overlays.startupShortcutsDismiss();
     if (overlays.sessionLauncherVisible()) {
         if (!ev.ctrl and !ev.alt) overlays.sessionLauncherInsertChar(ev.codepoint);
@@ -711,8 +733,56 @@ fn handleChar(ev: win32_backend.CharEvent) void {
 
 const KeybindPhase = enum { early, late };
 
-fn configuredAction(ev: win32_backend.KeyEvent) ?keybind.Action {
-    return AppWindow.g_keybinds.lookupApp(keybind.triggerFromKeyEvent(ev));
+fn triggerFromKeyEvent(ev: platform_input.KeyEvent) keybind.Trigger {
+    return .{
+        .mods = .{ .ctrl = ev.ctrl, .shift = ev.shift, .alt = ev.alt },
+        .key_code = @intCast(ev.key_code),
+    };
+}
+
+fn configuredAction(ev: platform_input.KeyEvent) ?keybind.Action {
+    return AppWindow.g_keybinds.lookupApp(triggerFromKeyEvent(ev));
+}
+
+fn logicalKeyEvent(ev: platform_input.KeyEvent) input_key.KeyEvent {
+    return .{
+        .key = logicalKeyFromCode(ev.key_code),
+        .ctrl = ev.ctrl,
+        .shift = ev.shift,
+        .alt = ev.alt,
+    };
+}
+
+fn logicalKeyFromCode(key_code: platform_input.KeyCode) input_key.Key {
+    return switch (key_code) {
+        platform_input.key_backspace => .backspace,
+        platform_input.key_tab => .tab,
+        platform_input.key_enter => .enter,
+        platform_input.key_escape => .escape,
+        platform_input.key_delete => .delete,
+        platform_input.key_home => .home,
+        platform_input.key_end => .end,
+        platform_input.key_page_up => .page_up,
+        platform_input.key_page_down => .page_down,
+        platform_input.key_insert => .insert,
+        platform_input.key_up => .arrow_up,
+        platform_input.key_down => .arrow_down,
+        platform_input.key_left => .arrow_left,
+        platform_input.key_right => .arrow_right,
+        0x41 => .key_a,
+        0x43 => .key_c,
+        0x45 => .key_e,
+        0x4B => .key_k,
+        0x4C => .key_l,
+        0x4E => .key_n,
+        0x50 => .key_p,
+        0x53 => .key_s,
+        0x55 => .key_u,
+        0x56 => .key_v,
+        0x57 => .key_w,
+        0x59 => .key_y,
+        else => .unidentified,
+    };
 }
 
 fn actionIs(action: ?keybind.Action, expected: keybind.Action) bool {
@@ -723,30 +793,36 @@ fn commitTabRenameIfActive() void {
     if (tab.g_tab_rename_active) tab.commitTabRename();
 }
 
+fn currentClientWidthOr(default: f64) ?f64 {
+    const win = AppWindow.g_window orelse return null;
+    const rect = window_backend.clientRect(win) orelse return default;
+    return @floatFromInt(rect.right);
+}
+
 fn requestNewWindowFromActiveCwd() void {
     const app = AppWindow.g_app orelse return;
-    const hwnd = if (AppWindow.g_window) |w| w.hwnd else null;
+    const handle = AppWindow.currentNativeHandle();
 
-    var cwd_buf: [260]u16 = undefined;
-    var cwd: ?[]const u16 = null;
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
+    var cwd: ?platform_pty_command.CwdSlice = null;
     if (AppWindow.activeSurface()) |surface| {
-        if (surface.getCwd()) |unix_path| {
-            std.debug.print("CWD from OSC 7: {s}\n", .{unix_path});
-            if (AppWindow.wsl_paths.unixPathToWindows(unix_path, &cwd_buf)) |len| {
-                cwd = cwd_buf[0..len];
+        if (surface.getCwd()) |guest_path| {
+            std.debug.print("CWD from OSC 7: {s}\n", .{guest_path});
+            if (platform_wsl.guestPathToNativeCwd(guest_path, &cwd_buf)) |native_cwd| {
+                cwd = native_cwd;
                 var path_u8: [260]u8 = undefined;
-                for (cwd_buf[0..len], 0..) |wc, i| {
-                    path_u8[i] = @truncate(wc);
+                var display_buf: platform_pty_command.CwdBuffer = undefined;
+                if (platform_wsl.guestPathToLocalPathUtf8(guest_path, &display_buf, &path_u8)) |local_path| {
+                    std.debug.print("Converted to local path: {s}\n", .{local_path});
                 }
-                std.debug.print("Converted to Windows path: {s}\n", .{path_u8[0..len]});
             } else {
-                std.debug.print("Failed to convert Unix path to Windows\n", .{});
+                std.debug.print("Failed to convert WSL guest path to local path\n", .{});
             }
         } else {
             std.debug.print("No CWD from active surface (OSC 7 not received)\n", .{});
         }
     }
-    app.requestNewWindow(hwnd, cwd);
+    app.requestNewWindow(handle, cwd);
 }
 
 fn switchTabActionIndex(action: keybind.Action) ?usize {
@@ -893,16 +969,17 @@ fn handleConfiguredKeybindAction(action: keybind.Action, phase: KeybindPhase) bo
     }
 }
 
-fn handleKey(ev: win32_backend.KeyEvent) void {
+fn handleKey(ev: platform_input.KeyEvent) void {
     overlays.startupShortcutsDismiss();
+    const key_event = logicalKeyEvent(ev);
     if (overlays.windowCloseConfirmVisible()) {
-        overlays.windowCloseConfirmHandleKey(ev);
+        overlays.windowCloseConfirmHandleKey(key_event);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
         return;
     }
     if (overlays.transferCancelConfirmVisible()) {
-        switch (overlays.transferCancelConfirmHandleKey(ev)) {
+        switch (overlays.transferCancelConfirmHandleKey(key_event)) {
             .interrupt => _ = file_explorer.cancelActiveTransfer(),
             .keep, .none => {},
         }
@@ -912,7 +989,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     }
     const action = configuredAction(ev);
     const is_close_shortcut = actionIs(action, .close_panel_or_tab);
-    if (!is_close_shortcut and !isModifierKey(ev.vk)) g_close_shortcut_confirm_until_ms = 0;
+    if (!is_close_shortcut and !isModifierKey(ev.key_code)) g_close_shortcut_confirm_until_ms = 0;
     if (overlays.sessionLauncherVisible()) {
         if (actionIs(action, .paste)) {
             if (pasteClipboardIntoSessionLauncher()) {
@@ -921,7 +998,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
             }
             return;
         }
-        overlays.sessionLauncherHandleKey(ev);
+        overlays.sessionLauncherHandleKey(key_event);
         return;
     }
     if (action) |app_action| {
@@ -929,29 +1006,29 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     }
     if (overlays.commandPaletteVisible()) {
         if (overlays.commandPaletteAgentHistoryVisible()) {
-            switch (ev.vk) {
-                win32_backend.VK_ESCAPE => overlays.commandPaletteLeaveAgentHistory(),
-                win32_backend.VK_UP => overlays.commandPaletteMoveAgentHistory(-1),
-                win32_backend.VK_DOWN => overlays.commandPaletteMoveAgentHistory(1),
-                win32_backend.VK_RETURN => overlays.commandPaletteExecuteSelected(),
-                win32_backend.VK_DELETE => _ = overlays.commandPaletteDeleteSelectedAgentHistory(),
+            switch (ev.key_code) {
+                platform_input.key_escape => overlays.commandPaletteLeaveAgentHistory(),
+                platform_input.key_up => overlays.commandPaletteMoveAgentHistory(-1),
+                platform_input.key_down => overlays.commandPaletteMoveAgentHistory(1),
+                platform_input.key_enter => overlays.commandPaletteExecuteSelected(),
+                platform_input.key_delete => _ = overlays.commandPaletteDeleteSelectedAgentHistory(),
                 else => {},
             }
         } else {
-            switch (ev.vk) {
-                win32_backend.VK_ESCAPE => overlays.commandPaletteClose(),
-                win32_backend.VK_UP => overlays.commandPaletteMove(-1),
-                win32_backend.VK_DOWN => overlays.commandPaletteMove(1),
-                win32_backend.VK_RETURN => overlays.commandPaletteExecuteSelected(),
-                win32_backend.VK_BACK => overlays.commandPaletteBackspace(),
-                win32_backend.VK_DELETE => overlays.commandPaletteClearFilter(),
+            switch (ev.key_code) {
+                platform_input.key_escape => overlays.commandPaletteClose(),
+                platform_input.key_up => overlays.commandPaletteMove(-1),
+                platform_input.key_down => overlays.commandPaletteMove(1),
+                platform_input.key_enter => overlays.commandPaletteExecuteSelected(),
+                platform_input.key_backspace => overlays.commandPaletteBackspace(),
+                platform_input.key_delete => overlays.commandPaletteClearFilter(),
                 else => {},
             }
         }
         return;
     }
     if (overlays.settingsPageVisible()) {
-        overlays.settingsPageHandleKey(ev);
+        overlays.settingsPageHandleKey(key_event);
         return;
     }
     // File explorer key handling (when focused and in operation mode)
@@ -962,7 +1039,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     if (tab.g_tab_rename_active) {
         AppWindow.g_cursor_blink_visible = true;
         AppWindow.g_last_blink_time = std.time.milliTimestamp();
-        tab.handleRenameKey(ev);
+        tab.handleRenameKey(key_event);
         return;
     }
     if (browser_panel.urlBarFocused()) {
@@ -970,13 +1047,13 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
         return;
     }
     if (AppWindow.activeAiChat()) |chat| {
-        if (ev.ctrl and !ev.alt and ev.vk == 0x41) { // Ctrl+A
+        if (ev.ctrl and !ev.alt and ev.key_code == 0x41) { // Ctrl+A
             chat.selectAll();
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
             return;
         }
-        if (ev.ctrl and !ev.alt and ev.vk == 0x43) { // Ctrl+C / Ctrl+Shift+C
+        if (ev.ctrl and !ev.alt and ev.key_code == 0x43) { // Ctrl+C / Ctrl+Shift+C
             copyAiChatToClipboard(chat);
             return;
         }
@@ -988,7 +1065,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     if (AppWindow.activeAiChat()) |chat| {
         if (isAiChatKey(ev)) {
             AppWindow.resetCursorBlink();
-            chat.handleKeyWithWrapCols(ev, aiChatInputWrapCols());
+            chat.handleKeyWithWrapCols(key_event, aiChatInputWrapCols());
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
             return;
@@ -1005,15 +1082,15 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     // not for modifier-only keys or key combos that don't produce PTY output.
     var wrote_to_pty = false;
 
-    const seq: ?[]const u8 = switch (ev.vk) {
-        win32_backend.VK_RETURN => "\r",
-        win32_backend.VK_BACK => "\x7f",
-        win32_backend.VK_TAB => "\t",
-        win32_backend.VK_ESCAPE => "\x1b",
-        win32_backend.VK_UP, win32_backend.VK_DOWN, win32_backend.VK_RIGHT, win32_backend.VK_LEFT => input_shortcuts.terminalArrowSequence(ev, surface.terminal.modes.get(.cursor_keys)),
-        win32_backend.VK_HOME => "\x1b[H",
-        win32_backend.VK_END => "\x1b[F",
-        win32_backend.VK_PRIOR => blk: { // Page Up
+    const seq: ?[]const u8 = switch (ev.key_code) {
+        platform_input.key_enter => "\r",
+        platform_input.key_backspace => "\x7f",
+        platform_input.key_tab => "\t",
+        platform_input.key_escape => "\x1b",
+        platform_input.key_up, platform_input.key_down, platform_input.key_right, platform_input.key_left => input_shortcuts.terminalArrowSequence(key_event, surface.terminal.modes.get(.cursor_keys)),
+        platform_input.key_home => "\x1b[H",
+        platform_input.key_end => "\x1b[F",
+        platform_input.key_page_up => blk: { // Page Up
             if (ev.shift) {
                 surface.render_state.mutex.lock();
                 surface.terminal.scrollViewport(.{ .delta = -@as(isize, AppWindow.term_rows / 2) });
@@ -1023,7 +1100,7 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
             }
             break :blk "\x1b[5~";
         },
-        win32_backend.VK_NEXT => blk: { // Page Down
+        platform_input.key_page_down => blk: { // Page Down
             if (ev.shift) {
                 surface.render_state.mutex.lock();
                 surface.terminal.scrollViewport(.{ .delta = @as(isize, AppWindow.term_rows / 2) });
@@ -1033,14 +1110,14 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
             }
             break :blk "\x1b[6~";
         },
-        win32_backend.VK_INSERT => "\x1b[2~",
-        win32_backend.VK_DELETE => "\x1b[3~",
+        platform_input.key_insert => "\x1b[2~",
+        platform_input.key_delete => "\x1b[3~",
         else => blk: {
             // Ctrl+A through Ctrl+Z
-            if (ev.ctrl and ev.vk >= 0x41 and ev.vk <= 0x5A) {
+            if (ev.ctrl and ev.key_code >= 0x41 and ev.key_code <= 0x5A) {
                 // Shifted Ctrl+letter chords are application shortcuts above.
                 if (!ev.shift) {
-                    const ctrl_char: u8 = @intCast(ev.vk - 0x41 + 1);
+                    const ctrl_char: u8 = @intCast(ev.key_code - 0x41 + 1);
                     writeToPty(surface, &[_]u8{ctrl_char});
                     wrote_to_pty = true;
                 }
@@ -1066,68 +1143,69 @@ fn handleKey(ev: win32_backend.KeyEvent) void {
     }
 }
 
-fn isModifierKey(vk: win32_backend.WPARAM) bool {
-    return vk == win32_backend.VK_SHIFT or
-        vk == win32_backend.VK_CONTROL or
-        vk == win32_backend.VK_MENU or
-        vk == win32_backend.VK_LSHIFT or
-        vk == win32_backend.VK_RSHIFT or
-        vk == win32_backend.VK_LCONTROL or
-        vk == win32_backend.VK_RCONTROL or
-        vk == win32_backend.VK_LMENU or
-        vk == win32_backend.VK_RMENU;
+fn isModifierKey(key_code: platform_input.KeyCode) bool {
+    return key_code == platform_input.key_shift or
+        key_code == platform_input.key_control or
+        key_code == platform_input.key_alt or
+        key_code == platform_input.key_left_shift or
+        key_code == platform_input.key_right_shift or
+        key_code == platform_input.key_left_control or
+        key_code == platform_input.key_right_control or
+        key_code == platform_input.key_left_alt or
+        key_code == platform_input.key_right_alt;
 }
 
-fn isAiChatKey(ev: win32_backend.KeyEvent) bool {
-    if (ev.vk == win32_backend.VK_RETURN or
-        ev.vk == win32_backend.VK_BACK or
-        ev.vk == win32_backend.VK_DELETE or
-        ev.vk == win32_backend.VK_LEFT or
-        ev.vk == win32_backend.VK_RIGHT or
-        ev.vk == win32_backend.VK_UP or
-        ev.vk == win32_backend.VK_DOWN or
-        ev.vk == win32_backend.VK_HOME or
-        ev.vk == win32_backend.VK_END or
-        ev.vk == win32_backend.VK_TAB or
-        ev.vk == win32_backend.VK_ESCAPE) return true;
-    if (ev.ctrl and !ev.alt and (ev.vk == 0x41 or ev.vk == 0x55 or ev.vk == 0x4C)) return true; // Ctrl+A / Ctrl+U / Ctrl+L
+fn isAiChatKey(ev: platform_input.KeyEvent) bool {
+    if (ev.key_code == platform_input.key_enter or
+        ev.key_code == platform_input.key_backspace or
+        ev.key_code == platform_input.key_delete or
+        ev.key_code == platform_input.key_left or
+        ev.key_code == platform_input.key_right or
+        ev.key_code == platform_input.key_up or
+        ev.key_code == platform_input.key_down or
+        ev.key_code == platform_input.key_home or
+        ev.key_code == platform_input.key_end or
+        ev.key_code == platform_input.key_tab or
+        ev.key_code == platform_input.key_escape) return true;
+    if (ev.ctrl and !ev.alt and (ev.key_code == 0x41 or ev.key_code == 0x55 or ev.key_code == 0x4C)) return true; // Ctrl+A / Ctrl+U / Ctrl+L
     return false;
 }
 
 fn aiChatInputWrapCols() usize {
     const win = AppWindow.g_window orelse return std.math.maxInt(usize);
-    const ww: f32 = @floatFromInt(win.width);
+    const size = clientSize(win);
+    const ww: f32 = @floatFromInt(size.width);
     const panel_w = @max(1.0, ww - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidth());
     return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
 }
 
-fn handleBrowserUrlBarKey(ev: win32_backend.KeyEvent) void {
-    if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x41) { // Ctrl+A
+fn handleBrowserUrlBarKey(ev: platform_input.KeyEvent) void {
+    if (ev.ctrl and !ev.shift and !ev.alt and ev.key_code == 0x41) { // Ctrl+A
         browser_panel.selectAllUrlBar();
         markBrowserUrlBarDirty();
         return;
     }
-    if (ev.ctrl and !ev.shift and !ev.alt and ev.vk == 0x56) { // Ctrl+V
+    if (ev.ctrl and !ev.shift and !ev.alt and ev.key_code == 0x56) { // Ctrl+V
         if (pasteClipboardIntoBrowserUrlBar()) markBrowserUrlBarDirty();
         return;
     }
 
-    switch (ev.vk) {
-        win32_backend.VK_ESCAPE => {
+    switch (ev.key_code) {
+        platform_input.key_escape => {
             browser_panel.blurUrlBar();
             markBrowserUrlBarDirty();
         },
-        win32_backend.VK_RETURN => {
+        platform_input.key_enter => {
             const allocator = AppWindow.g_allocator orelse return;
-            const parent = if (AppWindow.g_window) |win| win.hwnd else null;
+            const parent = AppWindow.currentNativeHandle();
             _ = browser_panel.submitUrlBar(allocator, parent, AppWindow.activeSurface());
             markBrowserUrlBarDirty();
         },
-        win32_backend.VK_BACK => {
+        platform_input.key_backspace => {
             browser_panel.backspaceUrlBar();
             markBrowserUrlBarDirty();
         },
-        win32_backend.VK_DELETE => {
+        platform_input.key_delete => {
             browser_panel.clearUrlBar();
             markBrowserUrlBarDirty();
         },
@@ -1243,9 +1321,10 @@ fn hitTestSidebarResizeHandle(xpos: f64, ypos: f64) bool {
 
 fn applySidebarWidthFromMouse(xpos: f64) void {
     const win = AppWindow.g_window orelse return;
-    if (!titlebar.setSidebarWidth(@floatCast(xpos), @floatFromInt(win.width))) return;
-    syncGridFromWindowSize(win.width, win.height);
-    win.sidebar_width = @intFromFloat(titlebar.sidebarWidth());
+    const size = clientSize(win);
+    if (!titlebar.setSidebarWidth(@floatCast(xpos), @floatFromInt(size.width))) return;
+    syncGridFromWindow(win);
+    syncSidebarWidthToBackend(win);
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
 }
@@ -1262,17 +1341,19 @@ fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
     if (!markdown_preview_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
+    const size = clientSize(win);
     const preview_w: f64 = @floatCast(markdown_preview_panel.width());
-    const panel_x: f64 = @as(f64, @floatFromInt(win.width)) - preview_w;
+    const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
     return xpos >= panel_x and xpos < panel_x + preview_w;
 }
 
 fn browserPanelBounds() ?browser_panel.Bounds {
     if (!browser_panel.isVisibleForActiveTab()) return null;
     const win = AppWindow.g_window orelse return null;
+    const size = clientSize(win);
     return browser_panel.boundsForWindow(
-        win.width,
-        win.height,
+        size.width,
+        size.height,
         @floatCast(titlebarHeight()),
         AppWindow.leftPanelsWidth(),
         AppWindow.browserPanelRightOffset(),
@@ -1307,11 +1388,12 @@ fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
 
 fn applyBrowserWidthFromMouse(xpos: f64) void {
     const win = AppWindow.g_window orelse return;
-    const right_edge = @as(f64, @floatFromInt(win.width)) - @as(f64, @floatCast(AppWindow.browserPanelRightOffset()));
+    const size = clientSize(win);
+    const right_edge = @as(f64, @floatFromInt(size.width)) - @as(f64, @floatCast(AppWindow.browserPanelRightOffset()));
     const new_width = right_edge - xpos;
-    const available_width: f32 = @as(f32, @floatFromInt(win.width)) - AppWindow.leftPanelsWidth() - AppWindow.browserPanelRightOffset();
+    const available_width: f32 = @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.browserPanelRightOffset();
     if (!browser_panel.setWidth(@floatCast(new_width), available_width)) return;
-    syncGridFromWindowSize(win.width, win.height);
+    syncGridFromWindow(win);
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
 }
@@ -1320,18 +1402,20 @@ fn hitTestMarkdownPreviewResizeHandle(xpos: f64, ypos: f64) bool {
     if (!markdown_preview_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
+    const size = clientSize(win);
     const preview_w: f64 = @floatCast(markdown_preview_panel.width());
-    const panel_x: f64 = @as(f64, @floatFromInt(win.width)) - preview_w;
+    const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
     const half_hit: f64 = @as(f64, @floatCast(markdown_preview_panel.RESIZE_HIT_WIDTH)) / 2;
     return xpos >= panel_x - half_hit and xpos <= panel_x + half_hit;
 }
 
 fn applyMarkdownPreviewWidthFromMouse(xpos: f64) void {
     const win = AppWindow.g_window orelse return;
-    const right_edge = @as(f64, @floatFromInt(win.width));
+    const size = clientSize(win);
+    const right_edge = @as(f64, @floatFromInt(size.width));
     const new_width = right_edge - xpos;
-    if (!markdown_preview_panel.setWidth(@floatCast(new_width), @floatFromInt(win.width))) return;
-    syncGridFromWindowSize(win.width, win.height);
+    if (!markdown_preview_panel.setWidth(@floatCast(new_width), @floatFromInt(size.width))) return;
+    syncGridFromWindow(win);
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
 }
@@ -1347,37 +1431,38 @@ fn hitTestFileExplorerResizeHandle(xpos: f64, ypos: f64) bool {
 
 fn applyExplorerWidthFromMouse(xpos: f64) void {
     const win = AppWindow.g_window orelse return;
+    const size = clientSize(win);
     const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
     const new_width = xpos - panel_x;
-    if (!file_explorer.setWidth(@floatCast(new_width), @floatFromInt(win.width))) return;
-    syncGridFromWindowSize(win.width, win.height);
+    if (!file_explorer.setWidth(@floatCast(new_width), @floatFromInt(size.width))) return;
+    syncGridFromWindow(win);
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
 }
 
-fn handleFileExplorerKey(ev: win32_backend.KeyEvent) bool {
+fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
     if (file_explorer.g_panel_mode == .agent_history) {
         return handleAgentHistoryKey(ev);
     }
 
-    const VK_ESCAPE = win32_backend.VK_ESCAPE;
-    const VK_RETURN = win32_backend.VK_RETURN;
-    const VK_BACK = win32_backend.VK_BACK;
-    const VK_UP = win32_backend.VK_UP;
-    const VK_DOWN = win32_backend.VK_DOWN;
+    const key_escape = platform_input.key_escape;
+    const key_enter = platform_input.key_enter;
+    const key_backspace = platform_input.key_backspace;
+    const key_up = platform_input.key_up;
+    const key_down = platform_input.key_down;
 
     // In input mode (rename/new file/new dir)
     if (file_explorer.g_op_mode != .none) {
-        switch (ev.vk) {
-            VK_ESCAPE => {
+        switch (ev.key_code) {
+            key_escape => {
                 file_explorer.cancelOp();
                 return true;
             },
-            VK_RETURN => {
+            key_enter => {
                 file_explorer.commitOp();
                 return true;
             },
-            VK_BACK => {
+            key_backspace => {
                 file_explorer.inputBackspace();
                 return true;
             },
@@ -1386,20 +1471,20 @@ fn handleFileExplorerKey(ev: win32_backend.KeyEvent) bool {
     }
 
     // Normal navigation mode
-    switch (ev.vk) {
-        VK_ESCAPE => {
+    switch (ev.key_code) {
+        key_escape => {
             file_explorer.g_focused = false;
             return true;
         },
-        VK_UP => {
+        key_up => {
             file_explorer.moveSelection(-1);
             return true;
         },
-        VK_DOWN => {
+        key_down => {
             file_explorer.moveSelection(1);
             return true;
         },
-        VK_RETURN => {
+        key_enter => {
             // Enter on directory = toggle expand
             if (file_explorer.g_selected) |sel| {
                 if (sel < file_explorer.g_entry_count and file_explorer.g_entries[sel].is_dir) {
@@ -1460,25 +1545,25 @@ fn handleFileExplorerKey(ev: win32_backend.KeyEvent) bool {
     }
 }
 
-fn handleAgentHistoryKey(ev: win32_backend.KeyEvent) bool {
-    switch (ev.vk) {
-        win32_backend.VK_ESCAPE => {
+fn handleAgentHistoryKey(ev: platform_input.KeyEvent) bool {
+    switch (ev.key_code) {
+        platform_input.key_escape => {
             file_explorer.g_focused = false;
             return true;
         },
-        win32_backend.VK_UP => {
+        platform_input.key_up => {
             file_explorer.moveHistorySelection(-1);
             return true;
         },
-        win32_backend.VK_DOWN => {
+        platform_input.key_down => {
             file_explorer.moveHistorySelection(1);
             return true;
         },
-        win32_backend.VK_RETURN => {
+        platform_input.key_enter => {
             activateSelectedAgentHistoryRow();
             return true;
         },
-        win32_backend.VK_DELETE => {
+        platform_input.key_delete => {
             deleteSelectedAgentHistoryRow();
             return true;
         },
@@ -1494,39 +1579,28 @@ fn handleAgentHistoryKey(ev: win32_backend.KeyEvent) bool {
 }
 
 fn getDownloadsFolder(buf: *[260]u8) []const u8 {
-    // Use %USERPROFILE%\Downloads
-    const userprofile = std.process.getEnvVarOwned(std.heap.page_allocator, "USERPROFILE") catch return "";
-    defer std.heap.page_allocator.free(userprofile);
-    const suffix = "\\Downloads";
-    if (userprofile.len + suffix.len > buf.len) return "";
-    @memcpy(buf[0..userprofile.len], userprofile);
-    @memcpy(buf[userprofile.len..][0..suffix.len], suffix);
-    return buf[0 .. userprofile.len + suffix.len];
+    const downloads = platform_dirs.downloadsDir(std.heap.page_allocator) catch return "";
+    defer std.heap.page_allocator.free(downloads);
+    if (downloads.len > buf.len) return "";
+    @memcpy(buf[0..downloads.len], downloads);
+    return buf[0..downloads.len];
 }
 
 fn openFileDialogAndUpload() void {
-    // Use Win32 GetOpenFileNameA for simplicity
-    var filename_buf: [260]u8 = .{0} ** 260;
+    const allocator = AppWindow.g_allocator orelse return;
+    const filters = [_]platform_file_dialog.Filter{.{ .name = "All Files", .pattern = "*.*" }};
+    const owner: platform_file_dialog.Owner = if (AppWindow.currentNativeHandleBits()) |handle_bits|
+        platform_file_dialog.windowOwner(handle_bits)
+    else
+        .{};
+    const path = platform_file_dialog.openFile(allocator, .{
+        .owner = owner,
+        .title = "Upload file to remote",
+        .filters = &filters,
+    }) orelse return;
+    defer allocator.free(path);
 
-    var ofn: win32_backend.OPENFILENAMEA = .{
-        .lStructSize = @sizeOf(win32_backend.OPENFILENAMEA),
-        .hwndOwner = if (AppWindow.g_window) |w| w.hwnd else null,
-        .lpstrFile = &filename_buf,
-        .nMaxFile = 260,
-        .lpstrFilter = "All Files\x00*.*\x00\x00",
-        .nFilterIndex = 1,
-        .lpstrTitle = "Upload file to remote",
-        .Flags = 0x00001000 | 0x00000800, // OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST
-    };
-
-    if (win32_backend.GetOpenFileNameA(&ofn) != 0) {
-        // Find null terminator
-        var len: usize = 0;
-        while (len < 260 and filename_buf[len] != 0) len += 1;
-        if (len > 0) {
-            file_explorer.uploadFile(filename_buf[0..len]);
-        }
-    }
+    file_explorer.uploadFile(path);
 }
 
 fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool) void {
@@ -1536,7 +1610,7 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
     if (hitTestFileExplorerResizeHandle(xpos, ypos)) {
         g_explorer_resize_dragging = true;
         g_explorer_resize_hover = true;
-        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+        platform_cursor.set(.size_we);
         return;
     }
 
@@ -1624,7 +1698,8 @@ fn hitTestConfigButton(xpos: f64, ypos: f64) bool {
     if (ypos < 0 or ypos >= titlebar_h) return false;
 
     const win = AppWindow.g_window orelse return false;
-    const window_width: f64 = @floatFromInt(win.width);
+    const size = clientSize(win);
+    const window_width: f64 = @floatFromInt(size.width);
     const caption_w: f64 = 46 * 3;
     const config_w: f64 = @floatCast(titlebar.TITLEBAR_CONFIG_W);
     const config_x = window_width - caption_w - config_w;
@@ -1636,7 +1711,8 @@ fn hitTestHelpButton(xpos: f64, ypos: f64) bool {
     if (ypos < 0 or ypos >= titlebar_h) return false;
 
     const win = AppWindow.g_window orelse return false;
-    const window_width: f64 = @floatFromInt(win.width);
+    const size = clientSize(win);
+    const window_width: f64 = @floatFromInt(size.width);
     const caption_w: f64 = 46 * 3;
     const config_w: f64 = @floatCast(titlebar.TITLEBAR_CONFIG_W);
     const help_w: f64 = @floatCast(titlebar.TITLEBAR_HELP_W);
@@ -2011,18 +2087,18 @@ fn openUrl(surface: *Surface, url: []const u8) bool {
         allocator.dupe(u8, url) catch return false;
     defer allocator.free(target);
 
-    const hwnd = if (AppWindow.g_window) |win| win.hwnd else null;
+    const handle = AppWindow.currentNativeHandle();
     switch (link_open.destinationForUrlClick(browser_panel.embeddedBrowserAvailable())) {
         .embedded_browser => {
-            if (!browser_panel.openForSurface(allocator, hwnd, target, surface)) return false;
+            if (!browser_panel.openForSurface(allocator, handle, target, surface)) return false;
             if (AppWindow.g_window) |win| {
-                syncPanelGridFromWindowSize(win.width, win.height);
+                syncPanelGridFromWindow(win);
             }
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
             return true;
         },
-        .system_browser => return system_browser.openUrl(allocator, hwnd, target),
+        .system_browser => return platform_open_url.open(allocator, .{ .url = target }),
     }
 }
 
@@ -2075,7 +2151,7 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
     }
-    if (AppWindow.g_window) |win| syncPanelGridFromWindowSize(win.width, win.height);
+    if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
     return true;
@@ -2091,7 +2167,7 @@ fn fileExplorerPreviewSourceKind() ?markdown_preview_panel.PreviewSourceKind {
 
 fn terminalPreviewSourceKind(surface: *Surface) ?markdown_preview_panel.PreviewSourceKind {
     return switch (surface.launch_kind) {
-        .windows => .local,
+        .local => .local,
         .wsl => .wsl,
         .ssh => if (surface.ssh_connection) |conn| .{ .remote = conn } else null,
     };
@@ -2174,7 +2250,7 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
     }
 
     var dst_buf: [512]u8 = undefined;
-    const dst = std.fmt.bufPrint(&dst_buf, "{s}\\{s}", .{ dl_path, name }) catch {
+    const dst = platform_local_path.joinInto(dst_buf[0..], dl_path, name) orelse {
         file_explorer.setTransferStatusForKind(.download, .failed, "Path too long");
         return true;
     };
@@ -2183,12 +2259,12 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
     return true;
 }
 
-fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
+fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     if (ev.action == .press) g_close_shortcut_confirm_until_ms = 0;
     if (overlays.windowCloseConfirmVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
-            const fb = win.getFramebufferSize();
+            const fb = window_backend.framebufferSize(win);
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
             _ = overlays.windowCloseConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
@@ -2200,7 +2276,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
     if (overlays.transferCancelConfirmVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
-            const fb = win.getFramebufferSize();
+            const fb = window_backend.framebufferSize(win);
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
             switch (overlays.transferCancelConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height))) {
@@ -2217,7 +2293,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
     if (overlays.sessionLauncherVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
-            const fb = win.getFramebufferSize();
+            const fb = window_backend.framebufferSize(win);
             const w_f: f32 = @floatFromInt(fb.width);
             const h_f: f32 = @floatFromInt(fb.height);
             const top_offset: f32 = @floatCast(titlebarHeight());
@@ -2233,7 +2309,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
     if (overlays.settingsPageVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
-            const fb = win.getFramebufferSize();
+            const fb = window_backend.framebufferSize(win);
             const w_f: f32 = @floatFromInt(fb.width);
             const h_f: f32 = @floatFromInt(fb.height);
             const top_offset: f32 = @floatCast(titlebarHeight());
@@ -2249,7 +2325,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
     if (overlays.commandPaletteVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
-            const fb = win.getFramebufferSize();
+            const fb = window_backend.framebufferSize(win);
             const w_f: f32 = @floatFromInt(fb.width);
             const h_f: f32 = @floatFromInt(fb.height);
             const top_offset: f32 = @floatCast(titlebarHeight());
@@ -2264,7 +2340,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
     }
     if (ev.button == .left and ev.action == .press) {
         const win = AppWindow.g_window orelse return;
-        const fb = win.getFramebufferSize();
+        const fb = window_backend.framebufferSize(win);
         const xpos: f64 = @floatFromInt(ev.x);
         const ypos: f64 = @floatFromInt(ev.y);
         if (overlays.transferToastHitTest(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height))) {
@@ -2319,7 +2395,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
         }
         if (AppWindow.activeAiChat()) |chat| {
             const win = AppWindow.g_window orelse return;
-            const fb = win.getFramebufferSize();
+            const fb = window_backend.framebufferSize(win);
             if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
                 chat,
                 xpos,
@@ -2364,25 +2440,25 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
             if (hitTestSidebarResizeHandle(xpos, ypos)) {
                 g_sidebar_resize_dragging = true;
                 g_sidebar_resize_hover = true;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+                platform_cursor.set(.size_we);
                 return;
             }
             if (hitTestFileExplorerResizeHandle(xpos, ypos)) {
                 g_explorer_resize_dragging = true;
                 g_explorer_resize_hover = true;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+                platform_cursor.set(.size_we);
                 return;
             }
             if (hitTestMarkdownPreviewResizeHandle(xpos, ypos)) {
                 g_markdown_preview_resize_dragging = true;
                 g_markdown_preview_resize_hover = true;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+                platform_cursor.set(.size_we);
                 return;
             }
             if (hitTestBrowserResizeHandle(xpos, ypos)) {
                 g_browser_resize_dragging = true;
                 g_browser_resize_hover = true;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+                platform_cursor.set(.size_we);
                 return;
             }
 
@@ -2422,7 +2498,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                     g_markdown_preview_image_hover = true;
                     g_markdown_preview_image_drag_last_x = xpos;
                     g_markdown_preview_image_drag_last_y = ypos;
-                    _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEALL));
+                    platform_cursor.set(.size_all);
                 }
                 return;
             }
@@ -2433,7 +2509,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
 
             if (AppWindow.activeAiChat()) |chat| {
                 const win = AppWindow.g_window orelse return;
-                const fb = win.getFramebufferSize();
+                const fb = window_backend.framebufferSize(win);
                 if (AppWindow.ai_chat_renderer.stopButtonHitTest(
                     chat,
                     xpos,
@@ -2499,7 +2575,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                         g_ai_transcript_selecting = true;
                         g_ai_transcript_select_chat = chat;
                         g_ai_transcript_select_auto_copy = ev.shift;
-                        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_IBEAM));
+                        platform_cursor.set(.ibeam);
                         AppWindow.g_force_rebuild = true;
                         AppWindow.g_cells_valid = false;
                         return;
@@ -2533,7 +2609,7 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
 
             // Check if click is on the scrollbar
             const win = AppWindow.g_window orelse return;
-            const fb = win.getFramebufferSize();
+            const fb = window_backend.framebufferSize(win);
             const w_f: f32 = @floatFromInt(fb.width);
             const h_f: f32 = @floatFromInt(fb.height);
             const tb_f: f32 = @floatCast(titlebarHeight());
@@ -2654,45 +2730,41 @@ fn handleMouseButton(ev: win32_backend.MouseButtonEvent) void {
                 g_ai_transcript_select_auto_copy = false;
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+                platform_cursor.set(.arrow);
                 return;
             }
             if (g_markdown_preview_image_dragging) {
                 g_markdown_preview_image_dragging = false;
-                const cursor_id = if (hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready)
-                    win32_backend.IDC_SIZEALL
+                const cursor_shape: platform_cursor.Shape = if (hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready)
+                    .size_all
                 else
-                    win32_backend.IDC_ARROW;
-                g_markdown_preview_image_hover = cursor_id == win32_backend.IDC_SIZEALL;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, cursor_id));
+                    .arrow;
+                g_markdown_preview_image_hover = cursor_shape == .size_all;
+                platform_cursor.set(cursor_shape);
                 return;
             }
             if (g_sidebar_resize_dragging) {
                 g_sidebar_resize_dragging = false;
                 g_sidebar_resize_hover = hitTestSidebarResizeHandle(xpos, ypos);
-                const cursor_id = if (g_sidebar_resize_hover) win32_backend.IDC_SIZEWE else win32_backend.IDC_ARROW;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, cursor_id));
+                platform_cursor.set(if (g_sidebar_resize_hover) .size_we else .arrow);
                 return;
             }
             if (g_explorer_resize_dragging) {
                 g_explorer_resize_dragging = false;
                 g_explorer_resize_hover = hitTestFileExplorerResizeHandle(xpos, ypos);
-                const cursor_id = if (g_explorer_resize_hover) win32_backend.IDC_SIZEWE else win32_backend.IDC_ARROW;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, cursor_id));
+                platform_cursor.set(if (g_explorer_resize_hover) .size_we else .arrow);
                 return;
             }
             if (g_markdown_preview_resize_dragging) {
                 g_markdown_preview_resize_dragging = false;
                 g_markdown_preview_resize_hover = hitTestMarkdownPreviewResizeHandle(xpos, ypos);
-                const cursor_id = if (g_markdown_preview_resize_hover) win32_backend.IDC_SIZEWE else win32_backend.IDC_ARROW;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, cursor_id));
+                platform_cursor.set(if (g_markdown_preview_resize_hover) .size_we else .arrow);
                 return;
             }
             if (g_browser_resize_dragging) {
                 g_browser_resize_dragging = false;
                 g_browser_resize_hover = hitTestBrowserResizeHandle(xpos, ypos);
-                const cursor_id = if (g_browser_resize_hover) win32_backend.IDC_SIZEWE else win32_backend.IDC_ARROW;
-                _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, cursor_id));
+                platform_cursor.set(if (g_browser_resize_hover) .size_we else .arrow);
                 return;
             }
 
@@ -2751,12 +2823,7 @@ fn handleTabBarPress(xpos: f64) void {
     if (tab.g_tab_rename_active) {
         tab.commitTabRename();
     }
-    const win = AppWindow.g_window orelse return;
-    const window_width: f64 = blk: {
-        var rect: win32_backend.RECT = undefined;
-        _ = win32_backend.GetClientRect(win.hwnd, &rect);
-        break :blk @floatFromInt(rect.right);
-    };
+    const window_width = currentClientWidthOr(800.0) orelse return;
 
     const caption_area_w: f64 = 46 * 3;
     const gap_w: f64 = 42;
@@ -2796,12 +2863,7 @@ fn handleTabBarPress(xpos: f64) void {
 }
 
 fn hitTestTab(xpos: f64) ?usize {
-    const win = AppWindow.g_window orelse return null;
-    const window_width: f64 = blk: {
-        var rect: win32_backend.RECT = undefined;
-        _ = win32_backend.GetClientRect(win.hwnd, &rect);
-        break :blk @floatFromInt(rect.right);
-    };
+    const window_width = currentClientWidthOr(800.0) orelse return null;
 
     const caption_area_w: f64 = 46 * 3;
     const gap_w: f64 = 42;
@@ -2825,12 +2887,7 @@ fn hitTestTab(xpos: f64) ?usize {
 }
 
 fn hitTestTabCloseButton(xpos: f64, tab_idx: usize) bool {
-    const window_width: f64 = blk: {
-        const win = AppWindow.g_window orelse break :blk 800.0;
-        var rect: win32_backend.RECT = undefined;
-        _ = win32_backend.GetClientRect(win.hwnd, &rect);
-        break :blk @floatFromInt(rect.right);
-    };
+    const window_width = currentClientWidthOr(800.0) orelse 800.0;
 
     const caption_area_w: f64 = 46 * 3;
     const gap_w: f64 = 42;
@@ -2851,12 +2908,7 @@ fn hitTestTabCloseButton(xpos: f64, tab_idx: usize) bool {
 }
 
 fn hitTestPlusButton(xpos: f64) bool {
-    const win = AppWindow.g_window orelse return false;
-    const window_width: f64 = blk: {
-        var rect: win32_backend.RECT = undefined;
-        _ = win32_backend.GetClientRect(win.hwnd, &rect);
-        break :blk @floatFromInt(rect.right);
-    };
+    const window_width = currentClientWidthOr(800.0) orelse return false;
 
     const caption_area_w: f64 = 46 * 3;
     const gap_w: f64 = 42;
@@ -2873,13 +2925,14 @@ fn hitTestPlusButton(xpos: f64) bool {
 
 fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
     const win = AppWindow.g_window orelse return;
+    const size = clientSize(win);
     if (AppWindow.ai_chat_renderer.inputScrollbarDragRowAt(
         chat,
         ypos,
-        @floatFromInt(win.width),
-        @floatFromInt(win.height),
+        @floatFromInt(size.width),
+        @floatFromInt(size.height),
         AppWindow.leftPanelsWidth(),
-        AppWindow.rightPanelsWidthForWindow(win.width),
+        AppWindow.rightPanelsWidthForWindow(size.width),
         g_ai_input_scroll_drag_offset,
     )) |drag| {
         _ = chat.setInputScrollRow(drag.row, drag.max_cols, drag.visible_rows);
@@ -2890,7 +2943,7 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
 
 fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
     const win = AppWindow.g_window orelse return;
-    const fb = win.getFramebufferSize();
+    const fb = window_backend.framebufferSize(win);
     if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
         chat,
         xpos,
@@ -2907,27 +2960,27 @@ fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, 
     }
 }
 
-fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
+fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     const xpos: f64 = @floatFromInt(ev.x);
     const ypos: f64 = @floatFromInt(ev.y);
     if (g_sidebar_resize_dragging) {
         applySidebarWidthFromMouse(xpos);
-        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+        platform_cursor.set(.size_we);
         return;
     }
     if (g_explorer_resize_dragging) {
         applyExplorerWidthFromMouse(xpos);
-        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+        platform_cursor.set(.size_we);
         return;
     }
     if (g_markdown_preview_resize_dragging) {
         applyMarkdownPreviewWidthFromMouse(xpos);
-        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+        platform_cursor.set(.size_we);
         return;
     }
     if (g_browser_resize_dragging) {
         applyBrowserWidthFromMouse(xpos);
-        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+        platform_cursor.set(.size_we);
         return;
     }
     if (g_ai_input_scroll_dragging) {
@@ -2936,7 +2989,7 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     }
     if (g_ai_transcript_selecting) {
         if (g_ai_transcript_select_chat) |chat| updateAiTranscriptSelectionDrag(chat, xpos, ypos);
-        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_IBEAM));
+        platform_cursor.set(.ibeam);
         return;
     }
     if (g_markdown_preview_image_dragging) {
@@ -2947,7 +3000,7 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
         if (markdown_preview_panel.panImageBy(delta_x, delta_y)) {
             AppWindow.g_force_rebuild = true;
         }
-        _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEALL));
+        platform_cursor.set(.size_all);
         return;
     }
 
@@ -2965,7 +3018,7 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
 
             // Get content area dimensions
             const win = AppWindow.g_window orelse return;
-            const fb = win.getFramebufferSize();
+            const fb = window_backend.framebufferSize(win);
             const left_panels_w = AppWindow.leftPanelsWidth();
             const right_panels_w = AppWindow.rightPanelsWidthForWindow(fb.width);
             const content_x: f32 = left_panels_w + @as(f32, @floatFromInt(split_layout.DEFAULT_PADDING));
@@ -3005,47 +3058,47 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     if (!g_selecting and !overlays.scrollbar.g_scrollbar_dragging) {
         const over_sidebar_resize = hitTestSidebarResizeHandle(xpos, ypos);
         if (over_sidebar_resize) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+            platform_cursor.set(.size_we);
             g_sidebar_resize_hover = true;
             return;
         } else if (g_sidebar_resize_hover) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+            platform_cursor.set(.arrow);
             g_sidebar_resize_hover = false;
         }
         const over_explorer_resize = hitTestFileExplorerResizeHandle(xpos, ypos);
         if (over_explorer_resize) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+            platform_cursor.set(.size_we);
             g_explorer_resize_hover = true;
             return;
         } else if (g_explorer_resize_hover) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+            platform_cursor.set(.arrow);
             g_explorer_resize_hover = false;
         }
         const over_preview_resize = hitTestMarkdownPreviewResizeHandle(xpos, ypos);
         if (over_preview_resize) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+            platform_cursor.set(.size_we);
             g_markdown_preview_resize_hover = true;
             return;
         } else if (g_markdown_preview_resize_hover) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+            platform_cursor.set(.arrow);
             g_markdown_preview_resize_hover = false;
         }
         const over_preview_image = hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready;
         if (over_preview_image) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEALL));
+            platform_cursor.set(.size_all);
             g_markdown_preview_image_hover = true;
             return;
         } else if (g_markdown_preview_image_hover) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+            platform_cursor.set(.arrow);
             g_markdown_preview_image_hover = false;
         }
         const over_browser_resize = hitTestBrowserResizeHandle(xpos, ypos);
         if (over_browser_resize) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_SIZEWE));
+            platform_cursor.set(.size_we);
             g_browser_resize_hover = true;
             return;
         } else if (g_browser_resize_hover) {
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+            platform_cursor.set(.arrow);
             g_browser_resize_hover = false;
         }
     }
@@ -3063,7 +3116,7 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
 
     // Update scrollbar hover state
     const win = AppWindow.g_window orelse return;
-    const fb = win.getFramebufferSize();
+    const fb = window_backend.framebufferSize(win);
     const w_f: f32 = @floatFromInt(fb.width);
     const h_f: f32 = @floatFromInt(fb.height);
     const tb_f: f32 = @floatCast(titlebarHeight());
@@ -3090,15 +3143,15 @@ fn handleMouseMove(ev: win32_backend.MouseMoveEvent) void {
     if (!overlays.scrollbar.g_scrollbar_hover and !g_selecting) {
         if (split_layout.hitTestDivider(ev.x, ev.y)) |hit| {
             // Set resize cursor based on layout
-            const cursor_id = switch (hit.layout) {
-                .horizontal => win32_backend.IDC_SIZEWE, // left-right resize
-                .vertical => win32_backend.IDC_SIZENS, // up-down resize
+            const cursor_shape: platform_cursor.Shape = switch (hit.layout) {
+                .horizontal => .size_we, // left-right resize
+                .vertical => .size_ns, // up-down resize
             };
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, cursor_id));
+            platform_cursor.set(cursor_shape);
             g_divider_hover = true;
         } else if (g_divider_hover) {
             // Reset to default cursor when leaving divider
-            _ = win32_backend.SetCursor(win32_backend.LoadCursor(null, win32_backend.IDC_ARROW));
+            platform_cursor.set(.arrow);
             g_divider_hover = false;
         }
     }
@@ -3135,7 +3188,7 @@ fn mouseWheelUnits(delta: i16) usize {
     return @max(@as(usize, 1), @as(usize, @intCast((notches * 3 + 119) / 120)));
 }
 
-fn appendMouseWheelReport(surface: *Surface, ev: win32_backend.MouseWheelEvent, out: *[512]u8, len: *usize) bool {
+fn appendMouseWheelReport(surface: *Surface, ev: platform_input.MouseWheelEvent, out: *[512]u8, len: *usize) bool {
     if (surface.terminal.flags.mouse_event == .none or surface.terminal.flags.mouse_event == .x10) return false;
 
     var button_code: u8 = if (ev.delta > 0) 64 else 65; // xterm wheel up/down buttons 4/5
@@ -3165,7 +3218,7 @@ fn appendMouseWheelReport(surface: *Surface, ev: win32_backend.MouseWheelEvent, 
     }
 }
 
-fn appendAlternateScrollKeys(surface: *Surface, ev: win32_backend.MouseWheelEvent, out: *[512]u8, len: *usize) bool {
+fn appendAlternateScrollKeys(surface: *Surface, ev: platform_input.MouseWheelEvent, out: *[512]u8, len: *usize) bool {
     if (surface.terminal.screens.active_key != .alternate) return false;
     if (surface.terminal.flags.mouse_event != .none) return false;
     if (!surface.terminal.modes.get(.mouse_alternate_scroll)) return false;
@@ -3180,7 +3233,7 @@ fn appendAlternateScrollKeys(surface: *Surface, ev: win32_backend.MouseWheelEven
     return true;
 }
 
-fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
+fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
@@ -3206,17 +3259,18 @@ fn handleMouseWheel(ev: win32_backend.MouseWheelEvent) void {
     }
     if (AppWindow.activeAiChat()) |chat| {
         const win = AppWindow.g_window orelse return;
+        const size = clientSize(win);
         const left = @as(i32, @intFromFloat(AppWindow.leftPanelsWidth()));
-        const right = win.width - @as(i32, @intFromFloat(AppWindow.rightPanelsWidthForWindow(win.width)));
+        const right = size.width - @as(i32, @intFromFloat(AppWindow.rightPanelsWidthForWindow(size.width)));
         if (ev.xpos >= left and ev.xpos < right) {
             if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
                 chat,
                 @floatFromInt(ev.xpos),
                 @floatFromInt(ev.ypos),
-                @floatFromInt(win.width),
-                @floatFromInt(win.height),
+                @floatFromInt(size.width),
+                @floatFromInt(size.height),
                 AppWindow.leftPanelsWidth(),
-                AppWindow.rightPanelsWidthForWindow(win.width),
+                AppWindow.rightPanelsWidthForWindow(size.width),
             )) |metrics| {
                 const units: i32 = @intCast(mouseWheelUnits(ev.delta));
                 const rows = if (ev.delta > 0) -units else units;
@@ -3314,68 +3368,30 @@ fn toggleAiAgentPermission() void {
     AppWindow.g_cells_valid = false;
 }
 
-// --- Maximize toggle (Win32 native) ---
+// --- Maximize toggle (native window) ---
 
 pub fn toggleMaximize() void {
     const win = AppWindow.g_window orelse return;
 
-    if (is_fullscreen or win.is_fullscreen) {
+    if (window_backend.isFullscreen(win)) {
         toggleFullscreen();
         return;
     }
 
-    if (win32_backend.IsZoomed(win.hwnd) != 0) {
-        _ = win32_backend.ShowWindow(win.hwnd, win32_backend.SW_RESTORE);
-    } else {
-        _ = win32_backend.ShowWindow(win.hwnd, win32_backend.SW_MAXIMIZE);
-    }
+    window_backend.toggleMaximized(win);
 }
 
-// --- Fullscreen toggle (Win32 native) ---
+// --- Fullscreen toggle (native window) ---
 
 pub fn toggleFullscreen() void {
     const win = AppWindow.g_window orelse return;
 
-    if (is_fullscreen) {
+    if (window_backend.isFullscreen(win)) {
         // Restore windowed mode
-        _ = win32_backend.SetWindowLongW(win.hwnd, -16, @bitCast(saved_style)); // GWL_STYLE
-        _ = win32_backend.SetWindowPos(
-            win.hwnd,
-            null,
-            saved_rect.left,
-            saved_rect.top,
-            saved_rect.right - saved_rect.left,
-            saved_rect.bottom - saved_rect.top,
-            0x0020 | 0x0040, // SWP_FRAMECHANGED | SWP_SHOWWINDOW
-        );
-        is_fullscreen = false;
-        if (AppWindow.g_window) |w| w.is_fullscreen = false;
+        window_backend.exitBorderlessFullscreen(win, fullscreen_restore_state);
         std.debug.print("Exited fullscreen\n", .{});
     } else {
-        // Save current state
-        _ = win32_backend.GetWindowRect(win.hwnd, &saved_rect);
-        saved_style = @bitCast(win32_backend.GetWindowLongW(win.hwnd, -16));
-
-        // Set borderless style
-        const new_style = saved_style & ~@as(u32, 0x00CF0000); // remove WS_OVERLAPPEDWINDOW
-        _ = win32_backend.SetWindowLongW(win.hwnd, -16, @bitCast(new_style));
-
-        // Get monitor info for the monitor containing this window
-        const monitor = win32_backend.MonitorFromWindow(win.hwnd, 0x00000002) orelse return; // MONITOR_DEFAULTTONEAREST
-        var mi = win32_backend.MONITORINFO{ .cbSize = @sizeOf(win32_backend.MONITORINFO) };
-        if (win32_backend.GetMonitorInfoW(monitor, &mi) != 0) {
-            _ = win32_backend.SetWindowPos(
-                win.hwnd,
-                null,
-                mi.rcMonitor.left,
-                mi.rcMonitor.top,
-                mi.rcMonitor.right - mi.rcMonitor.left,
-                mi.rcMonitor.bottom - mi.rcMonitor.top,
-                0x0020 | 0x0040, // SWP_FRAMECHANGED | SWP_SHOWWINDOW
-            );
-        }
-        is_fullscreen = true;
-        if (AppWindow.g_window) |w| w.is_fullscreen = true;
+        if (!window_backend.enterBorderlessFullscreen(win, &fullscreen_restore_state)) return;
         std.debug.print("Entered fullscreen\n", .{});
     }
 }

@@ -3,8 +3,8 @@
 /// Follows Ghostty's configuration format: a simple `key = value` text file.
 /// Config is loaded from the following locations (in order, later overrides earlier):
 ///
-///   1. Main config file: --config/--config-path, phantty.conf next to phantty.exe,
-///      or %APPDATA%\phantty\config
+///   1. Main config file: --config/--config-path, portable phantty.conf next to the app,
+///      or the platform config directory
 ///   2. CLI flags (--key value)
 ///
 /// The syntax uses Ghostty's format:
@@ -19,12 +19,13 @@ const Config = @This();
 
 const std = @import("std");
 const ai_chat = @import("ai_chat.zig");
-const directwrite = @import("directwrite.zig");
 const keybind = @import("keybind.zig");
+const platform_dirs = @import("platform/dirs.zig");
+const platform_editor = @import("platform/editor.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
 const themes = @import("themes.zig");
 
 const log = std.log.scoped(.config);
-const portable_config_basename = "phantty.conf";
 
 // ============================================================================
 // Theme
@@ -194,17 +195,17 @@ pub const FontWeight = enum {
     extra_bold,
     black,
 
-    pub fn toDwriteWeight(self: FontWeight) directwrite.DWRITE_FONT_WEIGHT {
+    pub fn value(self: FontWeight) u16 {
         return switch (self) {
-            .thin => .THIN,
-            .extra_light => .EXTRA_LIGHT,
-            .light => .LIGHT,
-            .regular => .NORMAL,
-            .medium => .MEDIUM,
-            .semi_bold => .SEMI_BOLD,
-            .bold => .BOLD,
-            .extra_bold => .EXTRA_BOLD,
-            .black => .BLACK,
+            .thin => 100,
+            .extra_light => 200,
+            .light => 300,
+            .regular => 400,
+            .medium => 500,
+            .semi_bold => 600,
+            .bold => 700,
+            .extra_bold => 800,
+            .black => 900,
         };
     }
 
@@ -284,13 +285,9 @@ theme: ?[]const u8 = null,
 /// Maximum bytes returned from a single tool result.
 @"ai-agent-output-limit": u32 = 16 * 1024,
 
-/// The shell to run in the terminal. Accepted values:
-///   - "cmd" — run Command Prompt (cmd.exe, default)
-///   - "powershell" — run Windows PowerShell (powershell.exe)
-///   - "pwsh" — run PowerShell 7+ (pwsh.exe)
-///   - "wsl" — run Windows Subsystem for Linux (wsl.exe)
-///   - Any other value is treated as a raw command path
-shell: []const u8 = "cmd",
+/// The shell to run in the terminal. Platform aliases are resolved by
+/// platform/pty_command.zig; any other value is treated as a raw command path.
+shell: []const u8 = platform_pty_command.default_shell_name,
 
 // ============================================================================
 // Remote Access (opt-in foundations)
@@ -332,7 +329,7 @@ shell: []const u8 = "cmd",
 /// When true, moving the mouse into a split pane focuses it.
 @"focus-follows-mouse": bool = false,
 
-/// When true, persist tab/split layout to %APPDATA%\phantty\session.json on
+/// When true, persist tab/split layout to the platform config directory on
 /// close, and restore it on next launch (unless CLI args specify otherwise).
 /// Default false: the file is neither written nor read when this is off.
 @"restore-tabs-on-startup": bool = false,
@@ -413,7 +410,7 @@ fullscreen: bool = false,
 @"quake-mode": bool = true,
 
 /// Application-level keyboard shortcuts. Values use Ghostty-style
-/// `keybind = trigger=action` syntax; `global:` registers a Win32 hotkey.
+/// `keybind = trigger=action` syntax; `global:` registers a native hotkey.
 keybinds: keybind.Set = keybind.Set.defaults(),
 
 // ============================================================================
@@ -478,39 +475,20 @@ pub fn load(allocator: std.mem.Allocator) !Config {
     return self;
 }
 
-/// Resolve `<config-dir>/<basename>` using APPDATA on Windows (native build
-/// target). When cross-compiling from Linux, APPDATA won't resolve at build
-/// time, so we also support XDG_CONFIG_HOME / HOME fallbacks for testing.
-fn pathInConfigDir(allocator: std.mem.Allocator, basename: []const u8) ![]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        return std.fs.path.join(allocator, &.{ appdata, "phantty", basename });
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        return std.fs.path.join(allocator, &.{ xdg, "phantty", basename });
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".config", "phantty", basename });
-    } else |_| {}
-    return error.NoConfigPath;
-}
-
-/// Default config file path: `<config-dir>/config`. See `pathInConfigDir`.
+/// Default config file path: `<config-dir>/config`.
 pub fn defaultConfigFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    return pathInConfigDir(allocator, "config");
+    return platform_dirs.configFilePath(allocator);
 }
 
 /// Active main config file path.
-/// Priority: CLI --config/--config-path, phantty.conf next to phantty.exe,
+/// Priority: CLI --config/--config-path, portable phantty.conf next to the app,
 /// then the default config path.
 pub fn configFilePath(allocator: std.mem.Allocator) ![]const u8 {
     if (try mainConfigPathArgFromProcess(allocator)) |explicit_path| {
         return explicit_path;
     }
 
-    if (try portableConfigFilePath(allocator)) |portable_path| {
+    if (try platform_dirs.portableConfigFilePath(allocator)) |portable_path| {
         if (pathExists(portable_path)) return portable_path;
         allocator.free(portable_path);
     }
@@ -518,9 +496,9 @@ pub fn configFilePath(allocator: std.mem.Allocator) ![]const u8 {
     return defaultConfigFilePath(allocator);
 }
 
-/// Default session-state file path: `<config-dir>/session.json`. See `pathInConfigDir`.
+/// Default session-state file path: `<config-dir>/session.json`.
 pub fn sessionFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    return pathInConfigDir(allocator, "session.json");
+    return platform_dirs.sessionFilePath(allocator);
 }
 
 /// Print the path that would be used for the config file.
@@ -578,14 +556,6 @@ fn mainConfigPathArg(allocator: std.mem.Allocator, args: []const []const u8) !?[
     }
 
     return result;
-}
-
-fn portableConfigFilePath(allocator: std.mem.Allocator) !?[]const u8 {
-    const exe_path = std.fs.selfExePathAlloc(allocator) catch return null;
-    defer allocator.free(exe_path);
-
-    const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
-    return try std.fs.path.join(allocator, &.{ exe_dir, portable_config_basename });
 }
 
 fn selectConfigFilePath(
@@ -1075,7 +1045,7 @@ pub fn hasCommand(allocator: std.mem.Allocator, command: []const u8) bool {
 
 /// Resolve a theme by name or path. Search order (like Ghostty):
 ///   1. Absolute path → load directly
-///   2. User themes:  %APPDATA%\phantty\themes\<name>
+///   2. User themes:  <config-dir>/themes/<name>
 ///   3. Embedded themes compiled into the binary
 fn resolveTheme(self: *Config, allocator: std.mem.Allocator, theme_name: []const u8) void {
     // 1. Absolute path — load directly
@@ -1089,10 +1059,8 @@ fn resolveTheme(self: *Config, allocator: std.mem.Allocator, theme_name: []const
         return;
     }
 
-    // 2. User themes: %APPDATA%\phantty\themes\<name>
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        const path = std.fs.path.join(allocator, &.{ appdata, "phantty", "themes", theme_name }) catch return;
+    // 2. User themes: <config-dir>/themes/<name>
+    if (platform_dirs.themeFilePath(allocator, theme_name)) |path| {
         defer allocator.free(path);
         if (Theme.loadFromFile(allocator, path)) |theme| {
             self.resolved_theme = theme;
@@ -1153,7 +1121,7 @@ pub fn writeThemes(writer: anytype) !void {
     for (&themes.entries) |*entry| {
         try writer.print("  {s}\n", .{entry.name});
     }
-    try writer.writeAll("\nUser themes in %APPDATA%\\phantty\\themes\\ take priority.\n");
+    try writer.writeAll("\nUser themes in <config-dir>\\themes\\ take priority.\n");
     try writer.writeAll("Set with: theme = <name>\n");
 }
 
@@ -1233,8 +1201,8 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --test-font-discovery        Test font discovery for common fonts
         \\  --help, -h                   Show this help message
         \\
-        \\Config priority: --config/--config-path, phantty.conf next to phantty.exe, then %APPDATA%\phantty\config
-        \\User themes: %APPDATA%\phantty\themes\
+        \\Config priority: --config/--config-path, portable phantty.conf next to the app, then the platform config directory
+        \\User themes: <config-dir>\themes\
         \\
         \\Config file uses Ghostty's key = value format. Example:
         \\
@@ -1257,9 +1225,8 @@ pub fn writeHelp(writer: anytype) !void {
         \\  phantty --background "#1a1b26" --foreground "#c0caf5"
         \\  phantty --theme poimandres
         \\  phantty --window-height 40 --window-width 120
-        \\  phantty --config profiles\powershell.conf
-        \\
     );
+    try writer.print("  phantty --config {s}\n\n", .{platform_pty_command.config_profile_example_path});
 }
 
 // ============================================================================
@@ -1292,7 +1259,7 @@ pub fn ensureConfigExists(allocator: std.mem.Allocator) void {
 // ============================================================================
 
 /// Ensure the config file exists (create with default template if not)
-/// and open it in notepad.exe.
+/// and open it in the platform text editor.
 pub fn openConfigInEditor(allocator: std.mem.Allocator) void {
     std.debug.print("[config] openConfigInEditor called\n", .{});
 
@@ -1327,28 +1294,13 @@ pub fn openConfigInEditor(allocator: std.mem.Allocator) void {
         },
     }
 
-    // Open in notepad.exe
-    std.debug.print("[config] spawning notepad.exe with path: {s}\n", .{path});
-    const path_z = allocator.dupeZ(u8, path) catch |err| {
-        std.debug.print("[config] ERROR: failed to dupe path: {}\n", .{err});
+    std.debug.print("[config] opening editor with path: {s}\n", .{path});
+    if (!platform_editor.openTextFile(allocator, .{ .path = path })) {
+        std.debug.print("[config] ERROR: failed to open config editor\n", .{});
         return;
-    };
-    defer allocator.free(path_z);
+    }
 
-    var child = std.process.Child.init(
-        &.{ "notepad.exe", path_z },
-        allocator,
-    );
-    child.spawn() catch |err| {
-        std.debug.print("[config] ERROR: failed to spawn notepad.exe: {}\n", .{err});
-        return;
-    };
-    // Close our handles — let notepad run independently.
-    // Without this the process/thread handles leak until our process exits.
-    std.os.windows.CloseHandle(child.id);
-    std.os.windows.CloseHandle(child.thread_handle);
-
-    std.debug.print("[config] notepad.exe spawned successfully\n", .{});
+    std.debug.print("[config] editor opened successfully\n", .{});
 }
 
 /// Update or append a single `key = value` line in the main config file.
@@ -1444,8 +1396,8 @@ const default_config_template =
     \\# Phantty Configuration
     \\# Ghostty-compatible key = value format
     \\# See: phantty --help
-    \\# Main config path priority: --config/--config-path, phantty.conf next to phantty.exe,
-    \\# then %APPDATA%\phantty\config.
+    \\# Main config path priority: --config/--config-path, portable phantty.conf next to the app,
+    \\# then the platform config directory.
     \\
     \\# Font
     \\# font-family = JetBrains Mono
@@ -1495,8 +1447,11 @@ const default_config_template =
     \\# keybind = alt+f10=toggle_command_palette
     \\# keybind = clear   # remove all defaults before adding custom bindings
     \\
-    \\# Shell (cmd, powershell, pwsh, wsl, or a custom path)
-    \\# shell = cmd
+    \\
+++ platform_pty_command.shell_setting_comment ++
+    \\
+++ platform_pty_command.default_shell_assignment_comment ++
+    \\
     \\
     \\# Remote access foundation (disabled by default)
     \\# remote-session-key is the browser pairing key, not the web admin login password.
@@ -1586,7 +1541,7 @@ test "config: explicit main config path beats portable and default paths" {
     defer allocator.free(portable_path);
     const default_path = try std.fs.path.join(allocator, &.{ dir_path, "appdata", "config" });
     defer allocator.free(default_path);
-    const explicit_path = try std.fs.path.join(allocator, &.{ dir_path, "profiles", "pwsh.conf" });
+    const explicit_path = try std.fs.path.join(allocator, &.{ dir_path, "profiles", "shell.conf" });
     defer allocator.free(explicit_path);
 
     var portable_file = try tmp.dir.createFile("phantty.conf", .{});
@@ -1639,13 +1594,13 @@ test "config: default config is used when explicit and portable paths are absent
 test "config: main config path arg supports --config and --config-path" {
     const allocator = std.testing.allocator;
 
-    const config_arg = try mainConfigPathArg(allocator, &.{ "phantty", "--config", "profiles/cmd.conf" });
+    const config_arg = try mainConfigPathArg(allocator, &.{ "phantty", "--config", "profiles/shell.conf" });
     defer if (config_arg) |path| allocator.free(path);
-    try std.testing.expectEqualStrings("profiles/cmd.conf", config_arg.?);
+    try std.testing.expectEqualStrings("profiles/shell.conf", config_arg.?);
 
-    const config_path_arg = try mainConfigPathArg(allocator, &.{ "phantty", "--config-path=profiles/pwsh.conf" });
+    const config_path_arg = try mainConfigPathArg(allocator, &.{ "phantty", "--config-path=profiles/alt-shell.conf" });
     defer if (config_path_arg) |path| allocator.free(path);
-    try std.testing.expectEqualStrings("profiles/pwsh.conf", config_path_arg.?);
+    try std.testing.expectEqualStrings("profiles/alt-shell.conf", config_path_arg.?);
 }
 
 test "config: help text is writable to a caller-provided writer" {
@@ -1658,6 +1613,21 @@ test "config: help text is writable to a caller-provided writer" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "Usage: phantty [options]") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "--config <path>") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "--config-file <path>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, platform_pty_command.config_profile_example_path) != null);
+}
+
+test "config: shell defaults and template come from platform pty command" {
+    const cfg = Config{};
+    try std.testing.expectEqualStrings(platform_pty_command.defaultShellName(), cfg.shell);
+    try std.testing.expect(std.mem.indexOf(u8, default_config_template, platform_pty_command.shellSettingComment()) != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_config_template, platform_pty_command.defaultShellAssignmentComment()) != null);
+}
+
+test "config: font weight exposes backend-neutral values" {
+    try std.testing.expectEqual(@as(u16, 100), FontWeight.thin.value());
+    try std.testing.expectEqual(@as(u16, 400), FontWeight.regular.value());
+    try std.testing.expectEqual(@as(u16, 700), FontWeight.bold.value());
+    try std.testing.expectEqual(@as(u16, 900), FontWeight.black.value());
 }
 
 test "config: restore-tabs-on-startup parses true/false" {
@@ -1718,18 +1688,18 @@ test "config: keybind directives override default action bindings" {
 
     try std.testing.expectEqual(keybind.Action.toggle_command_palette, cfg.keybinds.lookupApp(.{
         .mods = .{ .ctrl = true, .shift = true },
-        .vk = 'P',
+        .key_code = 'P',
     }).?);
 
     cfg.applyKeyValue(allocator, "keybind", "alt+f10=toggle_command_palette", ".");
 
     try std.testing.expect(cfg.keybinds.lookupApp(.{
         .mods = .{ .ctrl = true, .shift = true },
-        .vk = 'P',
+        .key_code = 'P',
     }) == null);
     try std.testing.expectEqual(keybind.Action.toggle_command_palette, cfg.keybinds.lookupApp(.{
         .mods = .{ .alt = true },
-        .vk = 0x79,
+        .key_code = 0x79,
     }).?);
 }
 

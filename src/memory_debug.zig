@@ -1,60 +1,21 @@
-//! Lightweight Windows process memory sampling for debug builds/runs.
+//! Process memory sampling for debug builds/runs.
 
-const std = @import("std");
-const windows = std.os.windows;
+const platform_memory = @import("platform/memory.zig");
 
-const DWORD = windows.DWORD;
-const BOOL = windows.BOOL;
-const HANDLE = windows.HANDLE;
+pub const ProcessSnapshot = platform_memory.ProcessSnapshot;
+pub const queryProcess = platform_memory.queryProcess;
+pub const mib = platform_memory.mib;
 
-const PROCESS_MEMORY_COUNTERS_EX = extern struct {
-    cb: DWORD,
-    PageFaultCount: DWORD,
-    PeakWorkingSetSize: usize,
-    WorkingSetSize: usize,
-    QuotaPeakPagedPoolUsage: usize,
-    QuotaPagedPoolUsage: usize,
-    QuotaPeakNonPagedPoolUsage: usize,
-    QuotaNonPagedPoolUsage: usize,
-    PagefileUsage: usize,
-    PeakPagefileUsage: usize,
-    PrivateUsage: usize,
-};
-
-extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
-extern "psapi" fn GetProcessMemoryInfo(
-    Process: HANDLE,
-    ppsmemCounters: *PROCESS_MEMORY_COUNTERS_EX,
-    cb: DWORD,
-) callconv(.winapi) BOOL;
-
-pub const ProcessSnapshot = struct {
-    working_set: usize,
-    peak_working_set: usize,
-    pagefile_usage: usize,
-    peak_pagefile_usage: usize,
-    private_usage: usize,
-    page_fault_count: u32,
-};
-
-pub fn queryProcess() ?ProcessSnapshot {
-    var counters: PROCESS_MEMORY_COUNTERS_EX = std.mem.zeroes(PROCESS_MEMORY_COUNTERS_EX);
-    counters.cb = @intCast(@sizeOf(PROCESS_MEMORY_COUNTERS_EX));
-
-    if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, counters.cb) == 0) {
-        return null;
-    }
-
-    return .{
-        .working_set = counters.WorkingSetSize,
-        .peak_working_set = counters.PeakWorkingSetSize,
-        .pagefile_usage = counters.PagefileUsage,
-        .peak_pagefile_usage = counters.PeakPagefileUsage,
-        .private_usage = counters.PrivateUsage,
-        .page_fault_count = counters.PageFaultCount,
+test "memory debug delegates process sampling to platform memory" {
+    const snapshot = ProcessSnapshot{
+        .working_set = 1,
+        .peak_working_set = 2,
+        .pagefile_usage = 3,
+        .peak_pagefile_usage = 4,
+        .private_usage = 5,
+        .page_fault_count = 6,
     };
-}
 
-pub fn mib(bytes: usize) f64 {
-    return @as(f64, @floatFromInt(bytes)) / (1024.0 * 1024.0);
+    try @import("std").testing.expectEqual(@as(usize, 5), snapshot.private_usage);
+    try @import("std").testing.expectEqual(@as(f64, 2.0), mib(2 * 1024 * 1024));
 }

@@ -1,7 +1,7 @@
 //! App — coordinates multiple terminal windows.
 //!
 //! Owns shared configuration and manages the lifecycle of AppWindow instances.
-//! Each window runs on its own thread with independent Win32 message pump,
+//! Each window runs on its own thread with an independent native message pump,
 //! OpenGL context, fonts, and terminal state.
 
 const std = @import("std");
@@ -9,14 +9,16 @@ const Config = @import("config.zig");
 const AppWindow = @import("AppWindow.zig");
 const ai_chat = @import("ai_chat.zig");
 const app_metadata = @import("app_metadata.zig");
-const directwrite = @import("directwrite.zig");
 const keybind = @import("keybind.zig");
-const win32_backend = @import("apprt/win32.zig");
+const platform_com = @import("platform/com.zig");
+const platform_display = @import("platform/display.zig");
+const font_backend = @import("platform/font_backend.zig");
+const platform_process = @import("platform/process.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
+const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
-
-extern "user32" fn MonitorFromPoint(pt: win32_backend.POINT, dwFlags: u32) callconv(.winapi) ?win32_backend.HMONITOR;
 
 const App = @This();
 
@@ -26,8 +28,8 @@ const App = @This();
 
 allocator: std.mem.Allocator,
 
-// Resolved shell command (UTF-16, null-terminated)
-shell_cmd_buf: [256]u16,
+// Resolved platform shell command.
+shell_cmd_buf: platform_pty_command.CommandLineBuffer,
 shell_cmd_len: usize,
 
 // Config values (read-only after init)
@@ -35,7 +37,7 @@ scrollback_limit: u32,
 font_family: []const u8,
 font_family_cjk: ?[]const u8,
 font_family_fallback: ?[]const u8,
-font_weight: directwrite.DWRITE_FONT_WEIGHT,
+font_weight: font_backend.FontWeight,
 font_size: u32,
 cursor_style: Config.CursorStyle,
 cursor_blink: bool,
@@ -97,9 +99,9 @@ update_release_url_buf: [256]u8,
 update_asset_name_buf: [update_check.asset_name_buffer_len]u8,
 update_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
 available_update: update_check.CheckResult,
-available_update_flavor: update_check.PortableFlavor,
+available_update_package: update_check.ReleasePackage,
 pending_install_update: update_check.CheckResult,
-pending_install_flavor: update_check.PortableFlavor,
+pending_install_package: update_check.ReleasePackage,
 install_latest_version_buf: [32]u8,
 install_release_url_buf: [256]u8,
 install_asset_name_buf: [update_check.asset_name_buffer_len]u8,
@@ -121,7 +123,7 @@ next_window_x: ?i32 = null,
 next_window_y: ?i32 = null,
 
 // CWD for next spawned window (working directory inheritance)
-next_window_cwd: [260]u16 = undefined,
+next_window_cwd: platform_pty_command.CwdBuffer = undefined,
 next_window_cwd_len: usize = 0,
 
 // ============================================================================
@@ -140,27 +142,8 @@ fn freeOptStr(allocator: std.mem.Allocator, s: ?[]const u8) void {
     if (s) |v| allocator.free(v);
 }
 
-fn copyShellLiteral(out_buf: *[256]u16, lit: []const u16) usize {
-    const len = @min(lit.len, out_buf.len - 1);
-    @memcpy(out_buf[0..len], lit[0..len]);
-    out_buf[len] = 0;
-    return len;
-}
-
-pub fn resolveShellCommandUtf16(out_buf: *[256]u16, cmd: []const u8) usize {
-    if (std.mem.eql(u8, cmd, "cmd")) {
-        return copyShellLiteral(out_buf, std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe"));
-    } else if (std.mem.eql(u8, cmd, "powershell")) {
-        return copyShellLiteral(out_buf, std.unicode.utf8ToUtf16LeStringLiteral("powershell.exe"));
-    } else if (std.mem.eql(u8, cmd, "pwsh")) {
-        return copyShellLiteral(out_buf, std.unicode.utf8ToUtf16LeStringLiteral("pwsh.exe"));
-    } else if (std.mem.eql(u8, cmd, "wsl")) {
-        return copyShellLiteral(out_buf, std.unicode.utf8ToUtf16LeStringLiteral("wsl.exe"));
-    }
-
-    const len = std.unicode.utf8ToUtf16Le(out_buf[0 .. out_buf.len - 1], cmd) catch 0;
-    out_buf[len] = 0;
-    return len;
+pub fn resolveShellCommandLine(out_buf: *platform_pty_command.CommandLineBuffer, cmd: []const u8) usize {
+    return platform_pty_command.resolveShellCommandLine(out_buf, cmd);
 }
 
 /// Initialize the App with configuration.
@@ -196,7 +179,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .font_family = font_family,
         .font_family_cjk = font_family_cjk,
         .font_family_fallback = font_family_fallback,
-        .font_weight = cfg.@"font-style".toDwriteWeight(),
+        .font_weight = font_backend.fontWeightFromValue(cfg.@"font-style".value()),
         .font_size = cfg.@"font-size",
         .cursor_style = cfg.@"cursor-style",
         .cursor_blink = cfg.@"cursor-style-blink",
@@ -240,9 +223,9 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .update_asset_name_buf = undefined,
         .update_asset_download_url_buf = undefined,
         .available_update = .{ .state = .idle },
-        .available_update_flavor = .portable,
+        .available_update_package = update_install.defaultPackage(),
         .pending_install_update = .{ .state = .idle },
-        .pending_install_flavor = .portable,
+        .pending_install_package = update_install.defaultPackage(),
         .install_latest_version_buf = undefined,
         .install_release_url_buf = undefined,
         .install_asset_name_buf = undefined,
@@ -258,7 +241,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .window_threads = .empty,
     };
 
-    app.shell_cmd_len = resolveShellCommandUtf16(&app.shell_cmd_buf, cfg.shell);
+    app.shell_cmd_len = resolveShellCommandLine(&app.shell_cmd_buf, cfg.shell);
     std.debug.print("Shell command resolved: '{s}'\n", .{cfg.shell});
     if (app.remote_client) |client| {
         std.debug.print("Remote session key: {s}\n", .{client.sessionKey()});
@@ -289,14 +272,14 @@ fn startRemoteClient(
     };
 }
 
-/// Get the shell command as a null-terminated UTF-16 slice.
-pub fn getShellCmd(self: *const App) [:0]const u16 {
+/// Get the shell command as a native null-terminated command line.
+pub fn getShellCmd(self: *const App) platform_pty_command.CommandLine {
     return self.shell_cmd_buf[0..self.shell_cmd_len :0];
 }
 
 /// Take the initial CWD for a new window (copies into provided buffer, clears source).
 /// Returns the length of the CWD, or 0 if no CWD was set.
-pub fn takeInitialCwd(self: *App, out_buf: *[260]u16) usize {
+pub fn takeInitialCwd(self: *App, out_buf: *platform_pty_command.CwdBuffer) usize {
     self.mutex.lock();
     defer self.mutex.unlock();
 
@@ -332,7 +315,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.replaceStr(&self.font_family, cfg.@"font-family");
     self.replaceOptStr(&self.font_family_cjk, cfg.@"font-family-cjk");
     self.replaceOptStr(&self.font_family_fallback, cfg.@"font-family-fallback");
-    self.font_weight = cfg.@"font-style".toDwriteWeight();
+    self.font_weight = font_backend.fontWeightFromValue(cfg.@"font-style".value());
     self.font_size = cfg.@"font-size";
     self.cursor_style = cfg.@"cursor-style";
     self.cursor_blink = cfg.@"cursor-style-blink";
@@ -366,7 +349,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.ai_agent_output_limit = cfg.@"ai-agent-output-limit";
     self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
     self.auto_update_check = cfg.@"auto-update-check";
-    self.shell_cmd_len = resolveShellCommandUtf16(&self.shell_cmd_buf, cfg.shell);
+    self.shell_cmd_len = resolveShellCommandLine(&self.shell_cmd_buf, cfg.shell);
 }
 
 // ============================================================================
@@ -420,11 +403,11 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
     var release_url_buf: [256]u8 = undefined;
     var asset_name_buf: [update_check.asset_name_buffer_len]u8 = undefined;
     var asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8 = undefined;
-    const flavor = update_install.currentFlavor(app.allocator) catch .portable;
-    var result = update_check.fetchLatestReleaseForFlavor(
+    const package = update_install.currentPackage(app.allocator) catch update_install.defaultPackage();
+    var result = update_check.fetchLatestReleaseForPackage(
         app.allocator,
         app_metadata.version,
-        flavor,
+        package,
         .{
             .latest_version = &latest_version_buf,
             .release_url = &release_url_buf,
@@ -435,10 +418,10 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
     if (!show_failures and result.state != .update_available and result.release_url.len == 0) {
         result = .{ .state = .idle };
     }
-    app.storeUpdateResult(result, flavor);
+    app.storeUpdateResult(result, package);
 }
 
-fn storeUpdateResult(self: *App, result: update_check.CheckResult, flavor: update_check.PortableFlavor) void {
+fn storeUpdateResult(self: *App, result: update_check.CheckResult, package: update_check.ReleasePackage) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
     if (self.install_in_flight or self.install_worker_running) {
@@ -457,7 +440,7 @@ fn storeUpdateResult(self: *App, result: update_check.CheckResult, flavor: updat
     self.update_result = copied;
     if (copied.state == .update_available) {
         self.available_update = copied;
-        self.available_update_flavor = flavor;
+        self.available_update_package = package;
     }
     self.update_check_in_flight = false;
 }
@@ -550,7 +533,7 @@ fn updateInstallThreadMain(app: *App) void {
                     .asset_download_url = &asset_download_url_buf,
                 },
             ),
-            .flavor = app.pending_install_flavor,
+            .package = app.pending_install_package,
         };
     };
     const update = snapshot.update;
@@ -585,9 +568,7 @@ fn updateInstallThreadMain(app: *App) void {
         return;
     };
     defer payload.close();
-    update_install.validatePayloadDir(payload, .{
-        .require_webview2_loader = snapshot.flavor == .portable_webview2,
-    }) catch |err| {
+    update_install.validatePayloadDirForPackage(payload, snapshot.package) catch |err| {
         std.debug.print("Update install: payload validation failed: {}\n", .{err});
         app.storeInstallFailure();
         return;
@@ -603,9 +584,10 @@ fn updateInstallThreadMain(app: *App) void {
     app.storeTransientUpdateState(.installing);
     update_install.launchUpdater(
         app.allocator,
+        snapshot.package,
         prepared.payload_dir,
         target_dir,
-        win32_backend.GetCurrentProcessId(),
+        platform_process.currentProcessId(),
     ) catch |err| {
         std.debug.print("Update install: failed to launch updater: {}\n", .{err});
         app.storeInstallFailure();
@@ -618,7 +600,7 @@ fn updateInstallThreadMain(app: *App) void {
 
 const PendingInstallSnapshot = struct {
     update: update_check.CheckResult,
-    flavor: update_check.PortableFlavor,
+    package: update_check.ReleasePackage,
 };
 
 fn copyPendingInstallUpdateLocked(self: *App) bool {
@@ -633,7 +615,7 @@ fn copyPendingInstallUpdateLocked(self: *App) bool {
     );
     if (copied.state != .update_available or copied.asset_download_url.len == 0) return false;
     self.pending_install_update = copied;
-    self.pending_install_flavor = self.available_update_flavor;
+    self.pending_install_package = self.available_update_package;
     return true;
 }
 
@@ -763,21 +745,18 @@ pub fn run(self: *App) !void {
 
 /// Request a new window to be spawned on a separate thread.
 /// Called from the `new_window` keybind in any window.
-/// If parent_hwnd is provided, the new window will cascade from that position.
+/// If parent_handle is provided, the new window will cascade from that position.
 /// If cwd is provided, the new window's first tab will start in that directory.
-pub fn requestNewWindow(self: *App, parent_hwnd: ?win32_backend.HWND, cwd: ?[]const u16) void {
+pub fn requestNewWindow(self: *App, parent_handle: ?window_backend.NativeHandle, cwd: ?platform_pty_command.CwdSlice) void {
     self.mutex.lock();
 
     // Get parent window position for cascading
-    if (parent_hwnd) |hwnd| {
-        var rect: win32_backend.RECT = undefined;
-        if (win32_backend.GetWindowRect(hwnd, &rect) != 0) {
+    if (parent_handle) |handle| {
+        if (window_backend.windowRectForNativeHandle(handle)) |rect| {
             const new_x = rect.left + 30;
             const new_y = rect.top + 30;
             // Validate that the new position is on a visible monitor
-            const pt = win32_backend.POINT{ .x = new_x + 50, .y = new_y + 50 };
-            const monitor = MonitorFromPoint(pt, 0); // MONITOR_DEFAULTTONULL
-            if (monitor != null) {
+            if (platform_display.isPointOnAnyDisplay(new_x + 50, new_y + 50)) {
                 self.next_window_x = new_x;
                 self.next_window_y = new_y;
             }
@@ -813,27 +792,9 @@ pub fn requestNewWindow(self: *App, parent_hwnd: ?win32_backend.HWND, cwd: ?[]co
 
 /// Thread entry point for spawned windows.
 fn windowThreadMain(app: *App) void {
-    // Initialize COM as STA for this UI thread. WebView2 requires STA, and
-    // DirectWrite is fine with the same apartment choice.
-    const ole32 = std.os.windows.kernel32.GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("ole32.dll"));
-    var co_initialized = false;
-    if (ole32) |h| {
-        const CoInit = std.os.windows.kernel32.GetProcAddress(h, "CoInitializeEx");
-        if (CoInit) |f| {
-            const coInitFn: *const fn (?*anyopaque, u32) callconv(.winapi) i32 = @ptrCast(f);
-            const hr = coInitFn(null, 0x2); // COINIT_APARTMENTTHREADED
-            co_initialized = (hr >= 0);
-        }
-    }
-    defer if (co_initialized) {
-        if (ole32) |h| {
-            const CoUninit = std.os.windows.kernel32.GetProcAddress(h, "CoUninitialize");
-            if (CoUninit) |f| {
-                const coUninitFn: *const fn () callconv(.winapi) void = @ptrCast(f);
-                coUninitFn();
-            }
-        }
-    };
+    // Initialize the native UI thread apartment for platform backends.
+    const com_apartment = platform_com.initUiThread();
+    defer com_apartment.deinit();
 
     std.debug.print("Window thread started\n", .{});
 
@@ -892,16 +853,15 @@ fn joinAllWindowThreads(self: *App) void {
 // Shutdown
 // ============================================================================
 
-/// Request all windows to close. Posts WM_CLOSE to each window's HWND.
-/// Windows will exit their run loops and threads will terminate.
+/// Request all windows to close through the native window backend.
+/// The windows will exit their run loops and threads will terminate.
 pub fn requestShutdown(self: *App) void {
     self.mutex.lock();
     defer self.mutex.unlock();
 
     for (self.windows.items) |window| {
-        if (window.getHwnd()) |hwnd| {
-            // Post WM_CLOSE (0x0010) to the window
-            _ = win32_backend.PostMessageW(hwnd, 0x0010, 0, 0);
+        if (window.getNativeHandle()) |handle| {
+            _ = window_backend.postCloseMessage(handle);
         }
     }
 }
@@ -914,8 +874,8 @@ pub fn requestImmediateShutdown(self: *App) void {
 
     for (self.windows.items) |window| {
         window.requestForceClose();
-        if (window.getHwnd()) |hwnd| {
-            _ = win32_backend.PostMessageW(hwnd, win32_backend.WM_CLOSE, 0, 0);
+        if (window.getNativeHandle()) |handle| {
+            _ = window_backend.postCloseMessage(handle);
         }
     }
 }
@@ -954,19 +914,22 @@ pub fn deinit(self: *App) void {
 test "app: updateConfig refreshes configured shell command" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const initial_shell = platform_pty_command.configReloadTestInitialShell();
+    const next_shell = platform_pty_command.configReloadTestNextShell();
 
     var cfg = Config{};
-    cfg.shell = "powershell";
+    cfg.shell = initial_shell;
     var app = try App.init(allocator, cfg);
     defer app.deinit();
 
     var next = Config{};
-    next.shell = "pwsh";
+    next.shell = next_shell;
     app.updateConfig(&next);
 
-    const actual = try std.unicode.utf16LeToUtf8Alloc(allocator, app.getShellCmd());
-    defer allocator.free(actual);
-    try testing.expectEqualStrings("pwsh.exe", actual);
+    var expected_buf: platform_pty_command.CommandLineBuffer = undefined;
+    const expected_len = platform_pty_command.resolveShellCommandLine(&expected_buf, next_shell);
+    const CommandUnit = @TypeOf(expected_buf[0]);
+    try testing.expectEqualSlices(CommandUnit, expected_buf[0..expected_len], app.getShellCmd());
 }
 
 test "app: pending install snapshot remains stable when update buffers change" {
@@ -980,10 +943,10 @@ test "app: pending install snapshot remains stable when update buffers change" {
         .state = .update_available,
         .latest_version = "v0.28.0",
         .release_url = "https://example.test/releases/v0.28.0",
-        .asset_name = "phantty-windows-portable-webview2-v0.28.0.zip",
-        .asset_download_url = "https://example.test/webview2.zip",
+        .asset_name = "selected-update.zip",
+        .asset_download_url = "https://example.test/selected-update.zip",
         .asset_size = 28,
-    }, .portable_webview2);
+    }, update_install.runtimePackage(true, true));
 
     app.update_mutex.lock();
     const copied = app.copyPendingInstallUpdateLocked();
@@ -994,18 +957,18 @@ test "app: pending install snapshot remains stable when update buffers change" {
         .state = .update_available,
         .latest_version = "v0.29.0",
         .release_url = "https://example.test/releases/v0.29.0",
-        .asset_name = "phantty-windows-portable-no-webview-v0.29.0.zip",
-        .asset_download_url = "https://example.test/no-webview.zip",
+        .asset_name = "newer-update.zip",
+        .asset_download_url = "https://example.test/newer-update.zip",
         .asset_size = 29,
-    }, .portable_no_webview);
+    }, update_install.runtimePackage(false, false));
 
     app.update_mutex.lock();
     defer app.update_mutex.unlock();
-    try testing.expectEqual(update_check.PortableFlavor.portable_webview2, app.pending_install_flavor);
+    try testing.expectEqual(update_install.runtimePackage(true, true), app.pending_install_package);
     try testing.expectEqualStrings("v0.28.0", app.pending_install_update.latest_version);
     try testing.expectEqualStrings("https://example.test/releases/v0.28.0", app.pending_install_update.release_url);
-    try testing.expectEqualStrings("phantty-windows-portable-webview2-v0.28.0.zip", app.pending_install_update.asset_name);
-    try testing.expectEqualStrings("https://example.test/webview2.zip", app.pending_install_update.asset_download_url);
+    try testing.expectEqualStrings("selected-update.zip", app.pending_install_update.asset_name);
+    try testing.expectEqualStrings("https://example.test/selected-update.zip", app.pending_install_update.asset_download_url);
     try testing.expectEqual(@as(u64, 28), app.pending_install_update.asset_size);
 }
 
@@ -1022,17 +985,17 @@ test "app: installability reports only stored update with download asset" {
         .state = .update_available,
         .latest_version = "v0.28.0",
         .release_url = "https://example.test/releases/v0.28.0",
-    }, .portable);
+    }, update_install.runtimePackage(true, false));
     try testing.expect(!app.hasInstallableUpdate());
 
     app.storeUpdateResult(.{
         .state = .update_available,
         .latest_version = "v0.28.0",
         .release_url = "https://example.test/releases/v0.28.0",
-        .asset_name = "phantty-windows-portable-v0.28.0.zip",
-        .asset_download_url = "https://example.test/portable.zip",
+        .asset_name = "installable-update.zip",
+        .asset_download_url = "https://example.test/installable-update.zip",
         .asset_size = 28,
-    }, .portable);
+    }, update_install.runtimePackage(true, false));
     try testing.expect(app.hasInstallableUpdate());
 
     app.update_mutex.lock();
@@ -1052,10 +1015,10 @@ test "app: update check result does not replace install progress while install i
         .state = .update_available,
         .latest_version = "v0.28.0",
         .release_url = "https://example.test/releases/v0.28.0",
-        .asset_name = "phantty-windows-portable-v0.28.0.zip",
-        .asset_download_url = "https://example.test/portable.zip",
+        .asset_name = "installable-update.zip",
+        .asset_download_url = "https://example.test/installable-update.zip",
         .asset_size = 28,
-    }, .portable);
+    }, update_install.runtimePackage(true, false));
 
     app.update_mutex.lock();
     try testing.expect(app.copyPendingInstallUpdateLocked());
@@ -1068,16 +1031,16 @@ test "app: update check result does not replace install progress while install i
         .state = .update_available,
         .latest_version = "v0.29.0",
         .release_url = "https://example.test/releases/v0.29.0",
-        .asset_name = "phantty-windows-portable-no-webview-v0.29.0.zip",
-        .asset_download_url = "https://example.test/no-webview.zip",
+        .asset_name = "newer-update.zip",
+        .asset_download_url = "https://example.test/newer-update.zip",
         .asset_size = 29,
-    }, .portable_no_webview);
+    }, update_install.runtimePackage(false, false));
 
     app.update_mutex.lock();
     defer app.update_mutex.unlock();
     try testing.expectEqual(update_check.State.downloading, app.update_result.state);
     try testing.expectEqualStrings("v0.28.0", app.update_result.latest_version);
-    try testing.expectEqual(update_check.PortableFlavor.portable, app.pending_install_flavor);
+    try testing.expectEqual(update_install.runtimePackage(true, false), app.pending_install_package);
     try testing.expectEqualStrings("v0.28.0", app.available_update.latest_version);
 }
 
@@ -1092,10 +1055,10 @@ test "app: install launch completion can be joined while duplicate installs stay
         .state = .update_available,
         .latest_version = "v0.28.0",
         .release_url = "https://example.test/releases/v0.28.0",
-        .asset_name = "phantty-windows-portable-v0.28.0.zip",
-        .asset_download_url = "https://example.test/portable.zip",
+        .asset_name = "installable-update.zip",
+        .asset_download_url = "https://example.test/installable-update.zip",
         .asset_size = 28,
-    }, .portable);
+    }, update_install.runtimePackage(true, false));
 
     app.update_mutex.lock();
     try testing.expect(app.copyPendingInstallUpdateLocked());

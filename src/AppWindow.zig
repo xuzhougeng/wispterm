@@ -7,13 +7,12 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const freetype = @import("freetype");
-const directwrite = @import("directwrite.zig");
 const Config = @import("config.zig");
 const build_options = @import("build_options");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
 const renderer = @import("renderer.zig");
-const win32_backend = @import("apprt/win32.zig");
+const window_backend = @import("platform/window_backend.zig");
 const App = @import("App.zig");
 const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
@@ -21,9 +20,18 @@ const remote_snapshot = @import("remote_snapshot.zig");
 const memory_debug = @import("memory_debug.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
+const font_backend = @import("platform/font_backend.zig");
+const platform_display = @import("platform/display.zig");
+const platform_dirs = @import("platform/dirs.zig");
+const platform_file_dialog = @import("platform/file_dialog.zig");
+const platform_global_hotkey = @import("platform/global_hotkey.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
+const platform_window_state = @import("platform/window_state.zig");
+const platform_wsl = @import("platform/wsl.zig");
 const startup_tabs = @import("startup_tabs.zig");
 const quick_terminal = @import("quick_terminal.zig");
 const keybind = @import("keybind.zig");
+const thread_message = @import("appwindow/thread_message.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
@@ -34,8 +42,6 @@ pub const overlays = @import("renderer/overlays.zig");
 pub const post_process = @import("renderer/post_process.zig");
 pub const gl_init = @import("renderer/gl_init.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
-pub const wsl_paths = @import("apprt/wsl_paths.zig");
-pub const window_state = @import("apprt/window_state.zig");
 pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
@@ -68,7 +74,7 @@ pub const AppWindow = @This();
 
 allocator: std.mem.Allocator,
 app: *App,
-hwnd_bits: std.atomic.Value(usize) = .init(0),
+native_handle_bits: std.atomic.Value(usize) = .init(0),
 force_close_requested: std.atomic.Value(bool) = .init(false),
 
 /// Initialize an AppWindow with the given App.
@@ -149,10 +155,22 @@ pub fn run(self: *AppWindow) void {
     };
 }
 
-/// Get the Win32 HWND for this window (for cross-thread communication).
-pub fn getHwnd(self: *AppWindow) ?win32_backend.HWND {
-    const bits = self.hwnd_bits.load(.acquire);
-    return if (bits == 0) null else @ptrFromInt(bits);
+/// Get the native window handle for cross-thread communication.
+pub fn getNativeHandle(self: *AppWindow) ?window_backend.NativeHandle {
+    const bits = self.native_handle_bits.load(.acquire);
+    return window_backend.nativeHandleFromBits(bits);
+}
+
+/// Get the native handle for the current thread-local platform window.
+pub fn currentNativeHandle() ?window_backend.NativeHandle {
+    const window = g_window orelse return null;
+    return window_backend.nativeHandle(window);
+}
+
+/// Get the native handle bits for the current thread-local platform window.
+pub fn currentNativeHandleBits() ?usize {
+    const window = g_window orelse return null;
+    return window_backend.nativeHandleBits(window);
 }
 
 /// Request this window to exit without showing the interactive close prompt.
@@ -215,6 +233,46 @@ test "AppWindow: forced close request is consumed once" {
     try std.testing.expect(!window.consumeForceCloseRequest());
 }
 
+test "AppWindow: current backend window handle is exposed through platform facade" {
+    const window_handle_info = @typeInfo(@TypeOf(AppWindow.getNativeHandle)).@"fn";
+    try std.testing.expectEqual(@as(usize, 1), window_handle_info.params.len);
+    try std.testing.expect(window_handle_info.return_type.? == ?window_backend.NativeHandle);
+
+    const from_bits_info = @typeInfo(@TypeOf(window_backend.nativeHandleFromBits)).@"fn";
+    try std.testing.expectEqual(@as(usize, 1), from_bits_info.params.len);
+    try std.testing.expect(from_bits_info.params[0].type.? == usize);
+    try std.testing.expect(from_bits_info.return_type.? == ?window_backend.NativeHandle);
+    try std.testing.expect(window_backend.nativeHandleFromBits(0) == null);
+
+    const native_handle_info = @typeInfo(@TypeOf(currentNativeHandle)).@"fn";
+    try std.testing.expectEqual(@as(usize, 0), native_handle_info.params.len);
+    try std.testing.expect(native_handle_info.return_type.? == ?window_backend.NativeHandle);
+
+    const native_bits_info = @typeInfo(@TypeOf(currentNativeHandleBits)).@"fn";
+    try std.testing.expectEqual(@as(usize, 0), native_bits_info.params.len);
+    try std.testing.expect(native_bits_info.return_type.? == ?usize);
+}
+
+test "AppWindow: native handle bit conversion stays in platform backend" {
+    const source = @embedFile("AppWindow.zig");
+    try std.testing.expect(std.mem.indexOf(u8, source, "builtin." ++ "os.tag") == null);
+}
+
+test "AppWindow: platform window callbacks use backend-neutral names" {
+    const resize_info = @typeInfo(@TypeOf(onPlatformResize)).@"fn";
+    try std.testing.expectEqual(@as(usize, 2), resize_info.params.len);
+    try std.testing.expect(resize_info.params[0].type.? == i32);
+    try std.testing.expect(resize_info.params[1].type.? == i32);
+    try std.testing.expect(resize_info.return_type.? == void);
+
+    const message_info = @typeInfo(@TypeOf(onPlatformMessage)).@"fn";
+    try std.testing.expectEqual(@as(usize, 3), message_info.params.len);
+    try std.testing.expect(message_info.params[0].type.? == window_backend.MessageId);
+    try std.testing.expect(message_info.params[1].type.? == window_backend.WordParam);
+    try std.testing.expect(message_info.params[2].type.? == window_backend.LongParam);
+    try std.testing.expect(message_info.return_type.? == ?window_backend.MessageResult);
+}
+
 // ============================================================================
 // Module-level state (will be moved into AppWindow struct in future)
 // ============================================================================
@@ -229,7 +287,7 @@ var g_agent_history_revision: u64 = 0;
 const AGENT_HISTORY_FLUSH_DEBOUNCE_MS: i64 = 350;
 
 // Initial CWD for this window (used when spawning the first tab)
-threadlocal var g_initial_cwd_buf: [260]u16 = undefined;
+threadlocal var g_initial_cwd_buf: platform_pty_command.CwdBuffer = undefined;
 threadlocal var g_initial_cwd_len: usize = 0;
 
 // Tracks whether session restore has been attempted this process. We only
@@ -239,7 +297,7 @@ var g_session_restore_attempted: std.atomic.Value(bool) = .init(false);
 
 // Stored config values for deferred initialization
 threadlocal var g_requested_font: []const u8 = "";
-threadlocal var g_requested_weight: directwrite.DWRITE_FONT_WEIGHT = .NORMAL;
+threadlocal var g_requested_weight: font_backend.FontWeight = .NORMAL;
 threadlocal var g_shader_path: ?[]const u8 = null;
 threadlocal var g_start_maximize: bool = false;
 threadlocal var g_start_fullscreen: bool = false;
@@ -257,11 +315,8 @@ threadlocal var g_last_transfer_notification_seq: u64 = 0;
 // Global theme (set at startup via config)
 pub threadlocal var g_theme: Theme = Theme.default();
 
-// WSL path conversion — see appwindow/wsl_paths.zig
-pub const unixPathToWindows = wsl_paths.unixPathToWindows;
-
 // Global pointers for callbacks
-pub threadlocal var g_window: ?*win32_backend.Window = null;
+pub threadlocal var g_window: ?*window_backend.Window = null;
 pub threadlocal var g_allocator: ?std.mem.Allocator = null;
 
 // Selection is defined in Surface.zig
@@ -281,13 +336,6 @@ pub const hitTestDivider = split_layout.hitTestDivider;
 const computeSplitLayout = split_layout.computeSplitLayout;
 
 pub const MAX_TABS = tab.MAX_TABS;
-
-const WM_PHANTTY_AGENT_SSH_CONNECT = win32_backend.WM_APP + 0x51;
-const WM_PHANTTY_AGENT_TAB_NEW = win32_backend.WM_APP + 0x52;
-const WM_PHANTTY_AGENT_TAB_CLOSE = win32_backend.WM_APP + 0x53;
-const WM_PHANTTY_REMOTE_AI_INPUT = win32_backend.WM_APP + 0x54;
-const WM_PHANTTY_REMOTE_OPEN_AI_AGENT = win32_backend.WM_APP + 0x55;
-const WM_PHANTTY_AGENT_SSH_SAVE = win32_backend.WM_APP + 0x56;
 
 const AgentSshConnectRequest = struct {
     allocator: std.mem.Allocator,
@@ -321,7 +369,7 @@ const AgentTabCloseRequest = struct {
 };
 
 const RemoteAiInputSink = struct {
-    hwnd: win32_backend.HWND,
+    native_handle: window_backend.NativeHandle,
     tab_index: usize,
 };
 
@@ -415,7 +463,7 @@ pub fn exportActiveAiChatMarkdown(mode: ai_chat.MarkdownExportMode) void {
 }
 
 pub fn currentTitlebarHeight() f32 {
-    if (g_window) |w| return @floatFromInt(w.titlebar_height);
+    if (g_window) |w| return @floatFromInt(window_backend.titlebarHeight(w));
     return titlebar.titlebarHeight();
 }
 
@@ -437,20 +485,8 @@ pub fn browserPanelRightOffset() f32 {
     return markdown_preview_panel.width();
 }
 
-fn aiChatExportRoot(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        return std.fs.path.join(allocator, &.{ appdata, "phantty", "exports" });
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        return std.fs.path.join(allocator, &.{ xdg, "phantty", "exports" });
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".config", "phantty", "exports" });
-    } else |_| {}
-    return error.NoExportPath;
+fn aiChatExportRoot(allocator: std.mem.Allocator) ![]const u8 {
+    return platform_dirs.exportsDir(allocator);
 }
 
 fn chooseAiChatMarkdownExportPath(
@@ -482,49 +518,25 @@ fn saveMarkdownDialogPath(
     initial_dir: []const u8,
     default_filename: []const u8,
 ) !?[]u8 {
-    const max_file_chars = 32768;
-    const file_buf = try allocator.alloc(win32_backend.WCHAR, max_file_chars);
-    defer allocator.free(file_buf);
-    @memset(file_buf, 0);
-
-    const filename_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, default_filename);
-    defer allocator.free(filename_w);
-    const filename_len = @min(filename_w.len, file_buf.len - 1);
-    @memcpy(file_buf[0..filename_len], filename_w[0..filename_len]);
-    file_buf[filename_len] = 0;
-
-    const initial_dir_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, initial_dir);
-    defer allocator.free(initial_dir_w);
-
-    const filter = std.unicode.utf8ToUtf16LeStringLiteral("Markdown (*.md)\x00*.md\x00All Files (*.*)\x00*.*\x00");
-    const title_text = std.unicode.utf8ToUtf16LeStringLiteral("Save AI Chat Markdown");
-    const def_ext = std.unicode.utf8ToUtf16LeStringLiteral("md");
-    var ofn: win32_backend.OPENFILENAMEW = .{
-        .hwndOwner = if (g_window) |w| w.hwnd else null,
-        .lpstrFilter = filter,
-        .nFilterIndex = 1,
-        .lpstrFile = file_buf.ptr,
-        .nMaxFile = @intCast(file_buf.len),
-        .lpstrInitialDir = initial_dir_w.ptr,
-        .lpstrTitle = title_text,
-        .Flags = win32_backend.OFN_OVERWRITEPROMPT |
-            win32_backend.OFN_HIDEREADONLY |
-            win32_backend.OFN_NOCHANGEDIR |
-            win32_backend.OFN_PATHMUSTEXIST |
-            win32_backend.OFN_EXPLORER |
-            win32_backend.OFN_ENABLESIZING,
-        .lpstrDefExt = def_ext,
+    const filters = [_]platform_file_dialog.Filter{
+        .{ .name = "Markdown (*.md)", .pattern = "*.md" },
+        .{ .name = "All Files (*.*)", .pattern = "*.*" },
     };
-
-    if (win32_backend.GetSaveFileNameW(&ofn) == 0) {
+    const owner: platform_file_dialog.Owner = if (g_window) |w|
+        platform_file_dialog.windowOwner(window_backend.nativeHandleBits(w))
+    else
+        .{};
+    const path = platform_file_dialog.saveFile(allocator, .{
+        .owner = owner,
+        .title = "Save AI Chat Markdown",
+        .initial_dir = initial_dir,
+        .default_filename = default_filename,
+        .default_extension = "md",
+        .filters = &filters,
+    }) orelse {
         overlays.showStatusToast("Markdown export cancelled");
         return null;
-    }
-
-    var len: usize = 0;
-    while (len < file_buf.len and file_buf[len] != 0) : (len += 1) {}
-    if (len == 0) return null;
-    const path = try std.unicode.utf16LeToUtf8Alloc(allocator, file_buf[0..len]);
+    };
     return path;
 }
 
@@ -545,9 +557,9 @@ fn writeFilePath(path: []const u8, bytes: []const u8) !void {
     try file.writeAll(bytes);
 }
 
-fn syncWindowTitlebarHeight(win: *win32_backend.Window) f32 {
+fn syncWindowTitlebarHeight(win: *window_backend.Window) f32 {
     const next: i32 = @intFromFloat(titlebar.titlebarHeight());
-    win.titlebar_height = next;
+    window_backend.setTitlebarHeight(win, next);
     return @floatFromInt(next);
 }
 
@@ -601,32 +613,17 @@ fn clearUiStateOnTabChange() void {
     g_cells_valid = false;
 }
 
-fn isUnsupportedShellCwd(path: []const u16) bool {
-    if (path.len < 2) return false;
-    if (path[0] != '\\' or path[1] != '\\') return false;
-    return !(path.len >= 4 and path[2] == '?' and path[3] == '\\');
-}
-
-fn utf8PathToCwdPtr(path: []const u8, cwd_buf: *[260]u16) ?[*:0]const u16 {
-    const len = std.unicode.utf8ToUtf16Le(cwd_buf[0 .. cwd_buf.len - 1], path) catch return null;
-    if (isUnsupportedShellCwd(cwd_buf[0..len])) return null;
-    cwd_buf[len] = 0;
-    return @ptrCast(cwd_buf);
-}
-
-/// Convert the active surface's CWD from Unix to Windows path.
-fn getActiveCwd(cwd_buf: *[260]u16) ?[*:0]const u16 {
+/// Convert the active surface's CWD from a WSL guest path to a platform-native path.
+fn getActiveCwd(cwd_buf: *platform_pty_command.CwdBuffer) platform_pty_command.Cwd {
     if (tab.activeSurface()) |surface| {
-        if (surface.getCwd()) |unix_path| {
-            if (unixPathToWindows(unix_path, cwd_buf)) |len| {
-                if (isUnsupportedShellCwd(cwd_buf[0..len])) return null;
-                cwd_buf[len] = 0;
-                return @ptrCast(cwd_buf);
+        if (surface.getCwd()) |guest_path| {
+            if (platform_wsl.guestPathToNativeCwd(guest_path, cwd_buf)) |cwd| {
+                return platform_pty_command.cwdFromBuffer(cwd_buf, cwd.len);
             }
         }
-        if (surface.launch_kind == .windows) {
+        if (surface.launch_kind == .local) {
             if (surface.getInitialCwd()) |initial_cwd| {
-                return utf8PathToCwdPtr(initial_cwd, cwd_buf);
+                return platform_pty_command.cwdFromUtf8(cwd_buf, initial_cwd);
             }
         }
     }
@@ -744,14 +741,14 @@ fn flushAgentHistoryStoreIfDirty(force: bool) void {
     g_agent_history_mutex.unlock();
 }
 
-fn spawnTabWithCwd(allocator: std.mem.Allocator, cwd: ?[*:0]const u16) bool {
+fn spawnTabWithCwd(allocator: std.mem.Allocator, cwd: platform_pty_command.Cwd) bool {
     if (!tab.spawnTabWithCwd(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink, cwd)) return false;
     clearUiStateOnTabChange();
     return true;
 }
 
 pub fn spawnTab(allocator: std.mem.Allocator) bool {
-    var cwd_buf: [260]u16 = undefined;
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
     const cwd = getActiveCwd(&cwd_buf);
     return spawnTabWithCwd(allocator, cwd);
 }
@@ -762,105 +759,38 @@ pub fn spawnTabWithCommandUtf8(command: []const u8) bool {
 
 pub fn spawnTabWithCommandUtf8ReturningSurface(command: []const u8) ?*Surface {
     const allocator = g_allocator orelse return null;
-    const command_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, command) catch return null;
-    defer allocator.free(command_w);
+    const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch return null;
+    defer platform_pty_command.freeCommandLine(allocator, command_line);
 
-    var cwd_buf: [260]u16 = undefined;
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
     const cwd = getActiveCwd(&cwd_buf);
-    if (!tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, command_w, g_cursor_style, g_cursor_blink, cwd)) return null;
+    if (!tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, platform_pty_command.commandLineFromOwned(command_line), g_cursor_style, g_cursor_blink, cwd)) return null;
     clearUiStateOnTabChange();
     return activeSurface();
 }
 
 pub fn syncDefaultShellCommandFromConfig(shell: []const u8) void {
-    tab.g_shell_cmd_len = App.resolveShellCommandUtf16(&tab.g_shell_cmd_buf, shell);
+    tab.g_shell_cmd_len = App.resolveShellCommandLine(&tab.g_shell_cmd_buf, shell);
 }
 
-fn shellExecutableTokenUtf16(raw: []const u16) []const u16 {
-    var start: usize = 0;
-    var end: usize = raw.len;
-
-    while (end > start and raw[end - 1] == 0) : (end -= 1) {}
-    while (start < end and (raw[start] == ' ' or raw[start] == '\t')) : (start += 1) {}
-    if (start >= end) return raw[start..end];
-
-    if (raw[start] == '"') {
-        start += 1;
-        var quote_end = start;
-        while (quote_end < end and raw[quote_end] != '"') : (quote_end += 1) {}
-        return raw[start..quote_end];
-    }
-
-    var exe_end = start;
-    while (exe_end + 4 <= end) : (exe_end += 1) {
-        if (utf16AsciiEqlIgnoreCase(raw[exe_end .. exe_end + 4], ".exe")) {
-            const after_exe = exe_end + 4;
-            if (after_exe == end or raw[after_exe] == ' ' or raw[after_exe] == '\t') {
-                return raw[start..after_exe];
-            }
-        }
-    }
-
-    var token_end = start;
-    while (token_end < end and raw[token_end] != ' ' and raw[token_end] != '\t') : (token_end += 1) {}
-    return raw[start..token_end];
+pub fn configuredLocalShellSessionDetail() []const u8 {
+    return platform_pty_command.configuredLocalShellCommandForShell(tab.getShellCmd());
 }
 
-fn shellBasenameUtf16(raw: []const u16) []const u16 {
-    const token = shellExecutableTokenUtf16(raw);
-    var start: usize = 0;
-    for (token, 0..) |unit, idx| {
-        if (unit == '\\' or unit == '/') start = idx + 1;
-    }
-    return token[start..];
-}
-
-fn utf16AsciiEqlIgnoreCase(wide: []const u16, ascii: []const u8) bool {
-    if (wide.len != ascii.len) return false;
-    for (wide, ascii) |wide_unit, ascii_unit| {
-        if (wide_unit > 0x7f) return false;
-        const wide_ascii: u8 = @intCast(wide_unit);
-        if (std.ascii.toLower(wide_ascii) != std.ascii.toLower(ascii_unit)) return false;
-    }
-    return true;
-}
-
-fn shellCommandLooksLikePwsh(shell_cmd: []const u16) bool {
-    const base = shellBasenameUtf16(shell_cmd);
-    return utf16AsciiEqlIgnoreCase(base, "pwsh.exe") or utf16AsciiEqlIgnoreCase(base, "pwsh");
-}
-
-fn shellCommandLooksLikePowerShell(shell_cmd: []const u16) bool {
-    const base = shellBasenameUtf16(shell_cmd);
-    return shellCommandLooksLikePwsh(shell_cmd) or
-        utf16AsciiEqlIgnoreCase(base, "powershell.exe") or
-        utf16AsciiEqlIgnoreCase(base, "powershell");
-}
-
-pub fn configuredPowerShellCommandForShell(shell_cmd: []const u16) []const u8 {
-    if (shellCommandLooksLikePwsh(shell_cmd)) return "pwsh.exe";
-    return "powershell.exe";
-}
-
-pub fn configuredPowerShellSessionDetail() []const u8 {
-    if (shellCommandLooksLikePwsh(tab.getShellCmd())) return "pwsh.exe";
-    return "powershell.exe";
-}
-
-pub fn spawnConfiguredPowerShellTab() bool {
+pub fn spawnConfiguredLocalShellTab() bool {
     const shell_cmd = tab.getShellCmd();
-    if (shellCommandLooksLikePowerShell(shell_cmd)) {
+    if (platform_pty_command.shellCommandLooksLikeConfiguredLocalShell(shell_cmd)) {
         const allocator = g_allocator orelse return false;
-        var cwd_buf: [260]u16 = undefined;
+        var cwd_buf: platform_pty_command.CwdBuffer = undefined;
         const cwd = getActiveCwd(&cwd_buf);
         if (!tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, shell_cmd, g_cursor_style, g_cursor_blink, cwd)) return false;
         clearUiStateOnTabChange();
         return true;
     }
-    return spawnTabWithCommandUtf8(configuredPowerShellCommandForShell(shell_cmd));
+    return spawnTabWithCommandUtf8(platform_pty_command.configuredLocalShellCommandForShell(shell_cmd));
 }
 
-fn spawnDefaultAgentAndPowerShellTabs(allocator: std.mem.Allocator) bool {
+fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {
     const first_tab_index = tab.g_tab_count;
     const has_ai_profile = overlays.hasAiProfiles();
     const first_opened = if (has_ai_profile)
@@ -868,10 +798,10 @@ fn spawnDefaultAgentAndPowerShellTabs(allocator: std.mem.Allocator) bool {
     else
         spawnTabWithCwd(allocator, null);
 
-    const powershell_opened = spawnConfiguredPowerShellTab();
-    if (!first_opened and !powershell_opened) return false;
+    const local_shell_opened = spawnConfiguredLocalShellTab();
+    if (!first_opened and !local_shell_opened) return false;
 
-    if (first_opened and powershell_opened and first_tab_index < tab.g_tab_count) {
+    if (first_opened and local_shell_opened and first_tab_index < tab.g_tab_count) {
         switchTab(first_tab_index);
     }
 
@@ -1009,16 +939,13 @@ fn syncFileExplorerToActiveTerminalSurface() void {
         .wsl => {
             file_explorer.syncPanelForTerminalTarget(.{ .wsl = surface.getCwd() orelse "~" });
         },
-        .windows => {
-            if (surface.getCwd()) |unix_path| {
-                var wpath: [260]u16 = undefined;
-                if (wsl_paths.unixPathToWindows(unix_path, &wpath)) |wlen| {
-                    var utf8_buf: [260]u8 = undefined;
-                    const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, wpath[0..wlen]) catch 0;
-                    if (utf8_len > 0) {
-                        file_explorer.syncPanelForTerminalTarget(.{ .local = utf8_buf[0..utf8_len] });
-                        return;
-                    }
+        .local => {
+            if (surface.getCwd()) |guest_path| {
+                var native_buf: platform_pty_command.CwdBuffer = undefined;
+                var utf8_buf: [260]u8 = undefined;
+                if (platform_wsl.guestPathToLocalPathUtf8(guest_path, &native_buf, &utf8_buf)) |local_path| {
+                    file_explorer.syncPanelForTerminalTarget(.{ .local = local_path });
+                    return;
                 }
             }
             if (surface.getInitialCwd()) |initial_cwd| {
@@ -1066,7 +993,7 @@ pub fn splitFocused(direction: SplitTree.Split.Direction) void {
 
 pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surface {
     const allocator = g_allocator orelse return null;
-    var cwd_buf: [260]u16 = undefined;
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
     const cwd = getActiveCwd(&cwd_buf);
     const surface = tab.splitFocusedReturningSurface(allocator, direction, font.cell_width, font.cell_height, g_cursor_style, g_cursor_blink, cwd) orelse return null;
     if (surface.ssh_connection) |conn| {
@@ -1143,9 +1070,9 @@ pub threadlocal var g_force_rebuild: bool = true;
 
 pub threadlocal var window_focused: bool = true; // Track window focus state
 
-// Window state persistence — see appwindow/window_state.zig
-const loadWindowState = window_state.loadWindowState;
-const saveWindowState = window_state.saveWindowState;
+// Window state persistence.
+const loadWindowState = platform_window_state.loadWindowState;
+const saveWindowState = platform_window_state.saveWindowState;
 
 // Pending resize state (resize is deferred to main loop to avoid PageList integrity issues)
 // Ghostty coalesces resize events with a 25ms timer to batch rapid resizes
@@ -1216,14 +1143,14 @@ fn updateCursorBlinkForRenderer(rend: *Renderer) void {
 }
 
 /// Resize the window to fit the current terminal grid and cell dimensions.
-/// Called from WM_SIZE inside the Win32 modal resize loop.
+/// Called from the platform backend during a modal live resize loop.
 /// Performs a full render cycle: resize terminal → snapshot → rebuild → draw.
 /// This runs synchronously on the main thread (which owns the GL context)
-/// while Win32's modal drag loop is active.
-fn onWin32Resize(width: i32, height: i32) void {
+/// while the backend's modal drag loop is active.
+fn onPlatformResize(width: i32, height: i32) void {
     if (width <= 0 or height <= 0) return;
     if (g_allocator == null) return;
-    const resize_perf = ui_perf.begin("appwindow.on_win32_resize");
+    const resize_perf = ui_perf.begin("appwindow.on_platform_resize");
     defer resize_perf.end();
 
     // Match exactly what computeSplitLayout → setScreenSize computes for a
@@ -1271,7 +1198,7 @@ fn onWin32Resize(width: i32, height: i32) void {
     if (g_window) |w| {
         const perf = ui_perf.begin("appwindow.browser_panel_sync_resize");
         defer perf.end();
-        browser_panel.sync(w.hwnd, width, height, titlebar_offset, left_panels_w, browserPanelRightOffset());
+        browser_panel.sync(window_backend.nativeHandle(w), width, height, titlebar_offset, left_panels_w, browserPanelRightOffset());
     }
 
     // Snapshot + rebuild + draw (split-aware, mirrors main loop)
@@ -1389,7 +1316,7 @@ fn onWin32Resize(width: i32, height: i32) void {
     overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
-    if (g_window) |w| w.swapBuffers();
+    if (g_window) |w| window_backend.swapBuffers(w);
 }
 
 fn resizeWindowToGrid() void {
@@ -1399,7 +1326,7 @@ fn resizeWindowToGrid() void {
     const content_h: f32 = font.cell_height * @as(f32, @floatFromInt(term_rows));
     const win_w: i32 = @intFromFloat(content_w + leftPanelsWidth() + rightPanelsWidth() + padding * 2);
     const win_h: i32 = @intFromFloat(content_h + padding + (padding + tb));
-    if (g_window) |w| w.setSize(win_w, win_h);
+    if (g_window) |w| window_backend.resizeClientArea(w, win_w, win_h);
 }
 
 fn pollUpdateCheck(app: *App) void {
@@ -1496,7 +1423,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
 
     // --- Font ---
     const new_font_size = cfg.@"font-size";
-    const new_weight = cfg.@"font-style".toDwriteWeight();
+    const new_weight = font_backend.fontWeightFromValue(cfg.@"font-style".value());
     const new_family = cfg.@"font-family";
     font.g_cjk_font_family = cfg.@"font-family-cjk";
     font.g_fallback_font_families = cfg.@"font-family-fallback";
@@ -1508,9 +1435,10 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     if (font_changed) {
         if (reloadFontFaces(allocator, new_family, new_weight, new_font_size, ft_lib)) {
             if (g_window) |w| {
-                const is_os_sized = w.is_fullscreen or win32_backend.IsZoomed(w.hwnd) != 0;
+                const is_os_sized = window_backend.isFullscreen(w) or window_backend.isMaximized(w);
                 if (is_os_sized) {
-                    onWin32Resize(w.width, w.height);
+                    const size = window_backend.clientSize(w);
+                    onPlatformResize(size.width, size.height);
                 } else {
                     if (cfg.@"window-width" > 0) term_cols = cfg.@"window-width";
                     if (cfg.@"window-height" > 0) term_rows = cfg.@"window-height";
@@ -1869,7 +1797,7 @@ fn registerRemoteAiInputSink(tab_index: usize) void {
     if (tab_index >= g_remote_ai_sinks.len) return;
 
     g_remote_ai_sinks[tab_index] = .{
-        .hwnd = window.hwnd,
+        .native_handle = window_backend.nativeHandle(window),
         .tab_index = tab_index,
     };
     client.registerSurface(remoteAiSurfaceId(tab_index), &g_remote_ai_sinks[tab_index], remoteAiWrite);
@@ -1886,12 +1814,7 @@ fn remoteAiWrite(ctx: *anyopaque, data: []const u8) void {
         },
     };
 
-    const ok = win32_backend.PostMessageW(
-        sink.hwnd,
-        WM_PHANTTY_REMOTE_AI_INPUT,
-        0,
-        @bitCast(@as(isize, @intCast(@intFromPtr(request)))),
-    ) != 0;
+    const ok = thread_message.postPointer(sink.native_handle, .remote_ai_input, @intFromPtr(request));
     if (!ok) {
         std.heap.page_allocator.free(request.data);
         std.heap.page_allocator.destroy(request);
@@ -1908,19 +1831,19 @@ fn remoteAiAgentOpen(ctx: *anyopaque, request_id: []const u8) void {
     };
     defer std.heap.page_allocator.free(owned_request_id);
 
-    var hwnd: ?win32_backend.HWND = null;
+    var native_handle: ?window_backend.NativeHandle = null;
     {
         app.mutex.lock();
         defer app.mutex.unlock();
         for (app.windows.items) |window| {
-            if (window.getHwnd()) |candidate| {
-                hwnd = candidate;
+            if (window.getNativeHandle()) |candidate| {
+                native_handle = candidate;
                 break;
             }
         }
     }
 
-    const target = hwnd orelse {
+    const target = native_handle orelse {
         if (app.remote_client) |current_client| {
             current_client.sendAiAgentOpenResult(owned_request_id, .failed);
         }
@@ -1928,12 +1851,7 @@ fn remoteAiAgentOpen(ctx: *anyopaque, request_id: []const u8) void {
     };
 
     var request = RemoteAiAgentOpenRequest{ .request_id = owned_request_id };
-    const result = win32_backend.SendMessageW(
-        target,
-        WM_PHANTTY_REMOTE_OPEN_AI_AGENT,
-        0,
-        @bitCast(@as(isize, @intCast(@intFromPtr(&request)))),
-    );
+    const result = thread_message.sendPointer(target, .remote_open_ai_agent, @intFromPtr(&request));
     if (result == 0) {
         if (app.remote_client) |current_client| {
             current_client.sendAiAgentOpenResult(owned_request_id, .failed);
@@ -2109,45 +2027,25 @@ fn agentWriteSurface(ctx: *anyopaque, surface_ptr: *anyopaque, data: []const u8)
     return true;
 }
 
-fn postAgentTabNew(hwnd: win32_backend.HWND, request: *AgentTabNewRequest) void {
-    _ = win32_backend.SendMessageW(
-        hwnd,
-        WM_PHANTTY_AGENT_TAB_NEW,
-        0,
-        @as(win32_backend.LPARAM, @bitCast(@intFromPtr(request))),
-    );
+fn postAgentTabNew(native_handle: window_backend.NativeHandle, request: *AgentTabNewRequest) void {
+    _ = thread_message.sendPointer(native_handle, .agent_tab_new, @intFromPtr(request));
 }
 
-fn postAgentTabClose(hwnd: win32_backend.HWND, request: *AgentTabCloseRequest) void {
-    _ = win32_backend.SendMessageW(
-        hwnd,
-        WM_PHANTTY_AGENT_TAB_CLOSE,
-        0,
-        @as(win32_backend.LPARAM, @bitCast(@intFromPtr(request))),
-    );
+fn postAgentTabClose(native_handle: window_backend.NativeHandle, request: *AgentTabCloseRequest) void {
+    _ = thread_message.sendPointer(native_handle, .agent_tab_close, @intFromPtr(request));
 }
 
-fn postAgentSshConnect(hwnd: win32_backend.HWND, request: *AgentSshConnectRequest) void {
-    _ = win32_backend.SendMessageW(
-        hwnd,
-        WM_PHANTTY_AGENT_SSH_CONNECT,
-        0,
-        @as(win32_backend.LPARAM, @bitCast(@intFromPtr(request))),
-    );
+fn postAgentSshConnect(native_handle: window_backend.NativeHandle, request: *AgentSshConnectRequest) void {
+    _ = thread_message.sendPointer(native_handle, .agent_ssh_connect, @intFromPtr(request));
 }
 
-fn postAgentSshSave(hwnd: win32_backend.HWND, request: *AgentSshSaveRequest) void {
-    _ = win32_backend.SendMessageW(
-        hwnd,
-        WM_PHANTTY_AGENT_SSH_SAVE,
-        0,
-        @as(win32_backend.LPARAM, @bitCast(@intFromPtr(request))),
-    );
+fn postAgentSshSave(native_handle: window_backend.NativeHandle, request: *AgentSshSaveRequest) void {
+    _ = thread_message.sendPointer(native_handle, .agent_ssh_save, @intFromPtr(request));
 }
 
 fn agentSpawnTab(ctx: *anyopaque, allocator: std.mem.Allocator, kind: []const u8, command: ?[]const u8) anyerror!ai_chat.ToolSurface {
     const window: *AppWindow = @ptrCast(@alignCast(ctx));
-    const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
+    const native_handle = window.getNativeHandle() orelse return error.WindowUnavailable;
 
     var request = AgentTabNewRequest{
         .allocator = allocator,
@@ -2156,13 +2054,13 @@ fn agentSpawnTab(ctx: *anyopaque, allocator: std.mem.Allocator, kind: []const u8
     };
 
     if (g_window) |current| {
-        if (current.hwnd == hwnd) {
+        if (window_backend.nativeHandle(current) == native_handle) {
             handleAgentTabNewRequest(&request);
         } else {
-            postAgentTabNew(hwnd, &request);
+            postAgentTabNew(native_handle, &request);
         }
     } else {
-        postAgentTabNew(hwnd, &request);
+        postAgentTabNew(native_handle, &request);
     }
 
     if (request.err) |err| return err;
@@ -2171,7 +2069,7 @@ fn agentSpawnTab(ctx: *anyopaque, allocator: std.mem.Allocator, kind: []const u8
 
 fn agentCloseTab(ctx: *anyopaque, allocator: std.mem.Allocator, tab_index: ?usize, surface_id: ?[]const u8, title_text: ?[]const u8) anyerror!ai_chat.ToolClosedTab {
     const window: *AppWindow = @ptrCast(@alignCast(ctx));
-    const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
+    const native_handle = window.getNativeHandle() orelse return error.WindowUnavailable;
 
     var request = AgentTabCloseRequest{
         .allocator = allocator,
@@ -2181,13 +2079,13 @@ fn agentCloseTab(ctx: *anyopaque, allocator: std.mem.Allocator, tab_index: ?usiz
     };
 
     if (g_window) |current| {
-        if (current.hwnd == hwnd) {
+        if (window_backend.nativeHandle(current) == native_handle) {
             handleAgentTabCloseRequest(&request);
         } else {
-            postAgentTabClose(hwnd, &request);
+            postAgentTabClose(native_handle, &request);
         }
     } else {
-        postAgentTabClose(hwnd, &request);
+        postAgentTabClose(native_handle, &request);
     }
 
     if (request.err) |err| return err;
@@ -2196,7 +2094,7 @@ fn agentCloseTab(ctx: *anyopaque, allocator: std.mem.Allocator, tab_index: ?usiz
 
 fn agentConnectSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, profile_name: []const u8) anyerror!ai_chat.ToolSurface {
     const window: *AppWindow = @ptrCast(@alignCast(ctx));
-    const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
+    const native_handle = window.getNativeHandle() orelse return error.WindowUnavailable;
 
     var request = AgentSshConnectRequest{
         .allocator = allocator,
@@ -2204,13 +2102,13 @@ fn agentConnectSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, profile
     };
 
     if (g_window) |current| {
-        if (current.hwnd == hwnd) {
+        if (window_backend.nativeHandle(current) == native_handle) {
             handleAgentSshConnectRequest(&request);
         } else {
-            postAgentSshConnect(hwnd, &request);
+            postAgentSshConnect(native_handle, &request);
         }
     } else {
-        postAgentSshConnect(hwnd, &request);
+        postAgentSshConnect(native_handle, &request);
     }
 
     if (request.err) |err| return err;
@@ -2219,7 +2117,7 @@ fn agentConnectSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, profile
 
 fn agentSaveSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, args: ai_chat.SshProfileSaveArgs) anyerror!ai_chat.SavedSshProfile {
     const window: *AppWindow = @ptrCast(@alignCast(ctx));
-    const hwnd = window.getHwnd() orelse return error.WindowUnavailable;
+    const native_handle = window.getNativeHandle() orelse return error.WindowUnavailable;
 
     var request = AgentSshSaveRequest{
         .allocator = allocator,
@@ -2227,13 +2125,13 @@ fn agentSaveSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, args: ai_c
     };
 
     if (g_window) |current| {
-        if (current.hwnd == hwnd) {
+        if (window_backend.nativeHandle(current) == native_handle) {
             handleAgentSshSaveRequest(&request);
         } else {
-            postAgentSshSave(hwnd, &request);
+            postAgentSshSave(native_handle, &request);
         }
     } else {
-        postAgentSshSave(hwnd, &request);
+        postAgentSshSave(native_handle, &request);
     }
 
     if (request.err) |err| return err;
@@ -2241,19 +2139,7 @@ fn agentSaveSshProfile(ctx: *anyopaque, allocator: std.mem.Allocator, args: ai_c
 }
 
 fn agentTabCommand(kind_raw: []const u8, command_raw: ?[]const u8) anyerror!?[]const u8 {
-    if (command_raw) |command| {
-        const trimmed = std.mem.trim(u8, command, " \t\r\n");
-        if (trimmed.len > 0) return trimmed;
-    }
-
-    const kind = std.mem.trim(u8, kind_raw, " \t\r\n");
-    if (kind.len == 0 or std.ascii.eqlIgnoreCase(kind, "default")) return null;
-    if (std.ascii.eqlIgnoreCase(kind, "powershell")) return configuredPowerShellCommandForShell(tab.getShellCmd());
-    if (std.ascii.eqlIgnoreCase(kind, "pwsh")) return "pwsh.exe -NoLogo -NoProfile";
-    if (std.ascii.eqlIgnoreCase(kind, "cmd")) return "cmd.exe";
-    if (std.ascii.eqlIgnoreCase(kind, "wsl")) return "wsl.exe ~";
-    if (std.ascii.eqlIgnoreCase(kind, "command") or std.ascii.eqlIgnoreCase(kind, "custom")) return error.CommandRequired;
-    return error.InvalidTabKind;
+    return platform_pty_command.tabCommandForKind(kind_raw, command_raw, tab.getShellCmd());
 }
 
 fn handleAgentTabNewRequest(request: *AgentTabNewRequest) void {
@@ -2406,30 +2292,27 @@ fn handleAgentSshSaveRequest(request: *AgentSshSaveRequest) void {
     };
 }
 
-fn quakeWorkAreaForWindow(win: *win32_backend.Window) ?quick_terminal.WorkArea {
-    const monitor = win32_backend.MonitorFromWindow(win.hwnd, 0x00000002) orelse return null;
-    var mi = win32_backend.MONITORINFO{ .cbSize = @sizeOf(win32_backend.MONITORINFO) };
-    if (win32_backend.GetMonitorInfoW(monitor, &mi) == 0) return null;
+fn quakeWorkAreaForWindow(win: *window_backend.Window) ?quick_terminal.WorkArea {
+    const work_area = window_backend.nearestMonitorWorkArea(win) orelse return null;
     return .{
-        .left = mi.rcWork.left,
-        .top = mi.rcWork.top,
-        .right = mi.rcWork.right,
-        .bottom = mi.rcWork.bottom,
+        .left = work_area.left,
+        .top = work_area.top,
+        .right = work_area.right,
+        .bottom = work_area.bottom,
     };
 }
 
-fn currentQuakeFrame(win: *win32_backend.Window) ?quick_terminal.Frame {
-    var rect: win32_backend.RECT = undefined;
-    if (win32_backend.GetWindowRect(win.hwnd, &rect) == 0) return null;
+fn currentQuakeFrame(win: *window_backend.Window) ?quick_terminal.Frame {
+    const rect = window_backend.windowRect(win) orelse return null;
     const width = rect.right - rect.left;
     const height = rect.bottom - rect.top;
     if (width <= 0 or height <= 0) return null;
     return .{ .x = rect.left, .y = rect.top, .width = width, .height = height };
 }
 
-fn rememberQuakeFrame(win: *win32_backend.Window) void {
-    if (win.is_minimized or win.is_fullscreen) return;
-    if (win32_backend.IsZoomed(win.hwnd) != 0) return;
+fn rememberQuakeFrame(win: *window_backend.Window) void {
+    if (window_backend.isMinimized(win) or window_backend.isFullscreen(win)) return;
+    if (window_backend.isMaximized(win)) return;
 
     const frame = currentQuakeFrame(win) orelse return;
     if (quakeWorkAreaForWindow(win)) |work_area| {
@@ -2438,7 +2321,7 @@ fn rememberQuakeFrame(win: *win32_backend.Window) void {
     g_quake_frame = frame;
 }
 
-fn applyQuakeFrame(win: *win32_backend.Window, use_cached_frame: bool) void {
+fn applyQuakeFrame(win: *window_backend.Window, use_cached_frame: bool) void {
     const work_area = quakeWorkAreaForWindow(win) orelse return;
     const frame = if (use_cached_frame) frame: {
         if (g_quake_frame) |cached| {
@@ -2450,7 +2333,18 @@ fn applyQuakeFrame(win: *win32_backend.Window, use_cached_frame: bool) void {
         break :frame quick_terminal.calculateFrame(.{ .work_area = work_area });
     } else quick_terminal.calculateFrame(.{ .work_area = work_area });
 
-    win.setOuterFrame(frame.x, frame.y, frame.width, frame.height, false);
+    applyOuterFrame(win, frame, false);
+}
+
+fn applyOuterFrame(win: *window_backend.Window, frame: quick_terminal.Frame, topmost: bool) void {
+    _ = window_backend.setOuterFrame(win, .{
+        .left = frame.x,
+        .top = frame.y,
+        .right = frame.x + frame.width,
+        .bottom = frame.y + frame.height,
+    }, topmost);
+    _ = window_backend.refreshClientSizeFromNative(win);
+    window_backend.markVisibleAndSizeChanged(win);
 }
 
 fn quakeHotkeyBinding() ?keybind.Binding {
@@ -2458,18 +2352,29 @@ fn quakeHotkeyBinding() ?keybind.Binding {
     return if (binding.global) binding else null;
 }
 
-fn syncQuakeHotkeyRegistration(win: *win32_backend.Window) void {
+fn globalHotkeyTrigger(trigger: keybind.Trigger) platform_global_hotkey.Trigger {
+    return .{
+        .ctrl = trigger.mods.ctrl,
+        .shift = trigger.mods.shift,
+        .alt = trigger.mods.alt,
+        .win = trigger.mods.win,
+        .key_code = trigger.key_code,
+    };
+}
+
+fn syncQuakeHotkeyRegistration(win: *window_backend.Window) void {
+    const handle = window_backend.nativeHandle(win);
     if (g_quake_hotkey_registered) {
-        win.unregisterHotKey(quick_terminal.HOTKEY_ID);
+        platform_global_hotkey.unregister(handle, quick_terminal.HOTKEY_ID);
         g_quake_hotkey_registered = false;
     }
 
     if (!g_quake_mode) return;
     const binding = quakeHotkeyBinding() orelse return;
-    g_quake_hotkey_registered = win.registerHotKey(
+    g_quake_hotkey_registered = platform_global_hotkey.register(
+        handle,
         quick_terminal.HOTKEY_ID,
-        keybind.hotkeyModifiers(binding.trigger),
-        binding.trigger.vk,
+        globalHotkeyTrigger(binding.trigger),
     );
     if (!g_quake_hotkey_registered) {
         var label_buf: [64]u8 = undefined;
@@ -2482,62 +2387,37 @@ pub fn toggleQuakeVisibility() void {
     if (!g_quake_mode) return;
     const win = g_window orelse return;
 
-    if (g_quake_hidden or win.is_minimized) {
+    if (g_quake_hidden or window_backend.isMinimized(win)) {
         applyQuakeFrame(win, true);
-        _ = win32_backend.ShowWindow(win.hwnd, win32_backend.SW_SHOW);
-        _ = win32_backend.SetForegroundWindow(win.hwnd);
+        _ = window_backend.showVisible(win);
+        _ = window_backend.setForeground(win);
         g_quake_hidden = false;
         g_force_rebuild = true;
         g_cells_valid = false;
     } else {
         rememberQuakeFrame(win);
-        win.clearTransientInputQueues();
-        _ = win32_backend.ShowWindow(win.hwnd, win32_backend.SW_HIDE);
+        window_backend.clearTransientInput(win);
+        _ = window_backend.showHidden(win);
         g_quake_hidden = true;
     }
 }
 
-fn onWin32Message(msg: win32_backend.UINT, wParam: win32_backend.WPARAM, lParam: win32_backend.LPARAM) ?win32_backend.LRESULT {
-    switch (msg) {
-        win32_backend.WM_HOTKEY => {
-            if (wParam == @as(win32_backend.WPARAM, @intCast(quick_terminal.HOTKEY_ID))) {
-                toggleQuakeVisibility();
-                return 1;
-            }
-            return null;
-        },
-        WM_PHANTTY_AGENT_SSH_CONNECT => {
-            const request: *AgentSshConnectRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
-            handleAgentSshConnectRequest(request);
-            return 1;
-        },
-        WM_PHANTTY_AGENT_SSH_SAVE => {
-            const request: *AgentSshSaveRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
-            handleAgentSshSaveRequest(request);
-            return 1;
-        },
-        WM_PHANTTY_AGENT_TAB_NEW => {
-            const request: *AgentTabNewRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
-            handleAgentTabNewRequest(request);
-            return 1;
-        },
-        WM_PHANTTY_AGENT_TAB_CLOSE => {
-            const request: *AgentTabCloseRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
-            handleAgentTabCloseRequest(request);
-            return 1;
-        },
-        WM_PHANTTY_REMOTE_AI_INPUT => {
-            const request: *RemoteAiInputRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
-            handleRemoteAiInputRequest(request);
-            return 1;
-        },
-        WM_PHANTTY_REMOTE_OPEN_AI_AGENT => {
-            const request: *RemoteAiAgentOpenRequest = @ptrFromInt(@as(usize, @bitCast(lParam)));
-            handleRemoteAiAgentOpenRequest(request);
-            return 1;
-        },
-        else => return null,
+fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordParam, lParam: window_backend.LongParam) ?window_backend.MessageResult {
+    if (window_backend.isHotkeyMessage(msg, wParam, quick_terminal.HOTKEY_ID)) {
+        toggleQuakeVisibility();
+        return 1;
     }
+
+    const decoded = thread_message.decode(msg, lParam) orelse return null;
+    switch (decoded.tag) {
+        .agent_ssh_connect => handleAgentSshConnectRequest(@ptrFromInt(decoded.ptr)),
+        .agent_ssh_save => handleAgentSshSaveRequest(@ptrFromInt(decoded.ptr)),
+        .agent_tab_new => handleAgentTabNewRequest(@ptrFromInt(decoded.ptr)),
+        .agent_tab_close => handleAgentTabCloseRequest(@ptrFromInt(decoded.ptr)),
+        .remote_ai_input => handleRemoteAiInputRequest(@ptrFromInt(decoded.ptr)),
+        .remote_open_ai_agent => handleRemoteAiAgentOpenRequest(@ptrFromInt(decoded.ptr)),
+    }
+    return 1;
 }
 
 fn installAgentToolHost(self: *AppWindow) void {
@@ -2595,14 +2475,14 @@ fn clearIconFont(allocator: std.mem.Allocator) void {
 fn rebuildIconFont(allocator: std.mem.Allocator, ft_lib: freetype.Library) void {
     clearIconFont(allocator);
 
-    if (ft_lib.initFace("C:\\Windows\\Fonts\\segmdl2.ttf", 0)) |iface| {
-        // 10px at 96 DPI, scaled to the current monitor DPI.
-        const icon_size_26_6: i32 = @intCast(10 * 64 * font.g_dpi / 96);
+    const icon_font = font_backend.titlebarIconFont();
+    if (ft_lib.initFace(icon_font.path, @intCast(icon_font.face_index))) |iface| {
+        const icon_size_26_6 = platform_display.scaledPixels26Dot6ForDpi(10, font.g_dpi);
         iface.setCharSize(0, icon_size_26_6, 72, 72) catch {};
         font.icon_face = iface;
-        std.debug.print("Loaded Segoe MDL2 Assets for caption icons (dpi={})\n", .{font.g_dpi});
+        std.debug.print("Loaded {s} for caption icons (dpi={})\n", .{ icon_font.display_name, font.g_dpi });
     } else |_| {
-        std.debug.print("Segoe MDL2 Assets not found, using quad-based caption icons\n", .{});
+        std.debug.print("{s} not found, using quad-based caption icons\n", .{icon_font.display_name});
     }
 }
 
@@ -2625,7 +2505,7 @@ fn clearTitlebarFont(allocator: std.mem.Allocator) void {
 fn reloadFontFaces(
     allocator: std.mem.Allocator,
     family: []const u8,
-    weight: directwrite.DWRITE_FONT_WEIGHT,
+    weight: font_backend.FontWeight,
     font_size: u32,
     ft_lib: freetype.Library,
 ) bool {
@@ -2650,22 +2530,24 @@ fn reloadFontFaces(
 
 fn handleWindowDpiChanged(
     allocator: std.mem.Allocator,
-    win: *win32_backend.Window,
+    win: *window_backend.Window,
     ft_lib: freetype.Library,
     family: []const u8,
-    weight: directwrite.DWRITE_FONT_WEIGHT,
+    weight: font_backend.FontWeight,
 ) void {
-    const new_dpi = if (win.dpi == 0) win32_backend.GetDpiForWindow(win.hwnd) else win.dpi;
+    const new_dpi = window_backend.effectiveDpi(win);
     if (new_dpi == 0) return;
     if (font.g_dpi == new_dpi) {
-        onWin32Resize(win.width, win.height);
+        const size = window_backend.clientSize(win);
+        onPlatformResize(size.width, size.height);
         return;
     }
 
     std.debug.print("DPI changed: {} -> {}\n", .{ font.g_dpi, new_dpi });
     font.g_dpi = new_dpi;
     if (reloadFontFaces(allocator, family, weight, font.g_font_size, ft_lib)) {
-        onWin32Resize(win.width, win.height);
+        const size = window_backend.clientSize(win);
+        onPlatformResize(size.width, size.height);
     } else {
         std.debug.print("DPI font reload failed, keeping previous font\n", .{});
     }
@@ -2674,7 +2556,7 @@ fn handleWindowDpiChanged(
 fn rebuildTitlebarFont(
     allocator: std.mem.Allocator,
     family: []const u8,
-    weight: directwrite.DWRITE_FONT_WEIGHT,
+    weight: font_backend.FontWeight,
     pt: u32,
     ft_lib: freetype.Library,
 ) void {
@@ -2707,7 +2589,7 @@ fn rebuildTitlebarFont(
     }
 }
 
-/// Check if the config file has changed (via ReadDirectoryChangesW) and reload if so.
+/// Check if the config file has changed and reload if so.
 /// Debounces rapid changes (e.g. settings page writing multiple keys) into a single reload.
 threadlocal var g_config_change_time: i64 = 0;
 const CONFIG_DEBOUNCE_MS: i64 = 250;
@@ -2761,7 +2643,7 @@ const ImeCaret = struct {
     source: ImeCaretSource,
 };
 
-fn syncImeCaretPosition(win: *win32_backend.Window, split_count: usize) void {
+fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
     if (activeAiChat()) |session| {
         // Freeze the caret during composition so the IMM popup, anchored when
         // the composition started, doesn't drift with local UI relayout.
@@ -2832,7 +2714,8 @@ fn syncImeCaretPosition(win: *win32_backend.Window, split_count: usize) void {
         }
     }
 
-    win.setImeCaret(
+    window_backend.setImeCaret(
+        win,
         @intFromFloat(@round(x)),
         @intFromFloat(@round(y)),
         @intFromFloat(@max(1.0, @round(cell_h))),
@@ -2917,11 +2800,12 @@ fn isInverseBlankImeCell(p: anytype, cell: anytype) bool {
     return style.flags.inverse;
 }
 
-fn syncAiChatImeCaret(win: *win32_backend.Window, session: *ai_chat.Session) void {
-    const wh: f32 = @floatFromInt(win.height);
-    const ww: f32 = @floatFromInt(win.width);
+fn syncAiChatImeCaret(win: *window_backend.Window, session: *ai_chat.Session) void {
+    const size = window_backend.clientSize(win);
+    const wh: f32 = @floatFromInt(size.height);
+    const ww: f32 = @floatFromInt(size.width);
     const left_panels_w = leftPanelsWidth();
-    const right_panels_w = rightPanelsWidthForWindow(win.width);
+    const right_panels_w = rightPanelsWidthForWindow(size.width);
     const panel_w = @max(1.0, ww - left_panels_w - right_panels_w);
     session.mutex.lock();
     const input_text = session.input();
@@ -2946,16 +2830,17 @@ fn syncAiChatImeCaret(win: *win32_backend.Window, session: *ai_chat.Session) voi
     const cursor_top_px = field_top_px + ai_chat_renderer.INPUT_FIELD_PAD_TOP + @as(f32, @floatFromInt(row)) * input_line_h;
     const cursor_y = cursor_top_px;
     const h = font.g_titlebar_cell_height;
-    win.setImeCaret(
+    window_backend.setImeCaret(
+        win,
         @intFromFloat(@round(cursor.x)),
         @intFromFloat(@round(cursor_y)),
         @intFromFloat(@max(1.0, @round(h))),
     );
 }
 
-fn renderImePreedit(win: *win32_backend.Window, fb_width: i32, fb_height: i32) void {
+fn renderImePreedit(win: *window_backend.Window, fb_width: i32, fb_height: i32) void {
     _ = fb_width;
-    const text = win.imePreeditText();
+    const text = window_backend.imePreeditText(win);
     if (text.len == 0) return;
 
     var view = std.unicode.Utf8View.init(text) catch return;
@@ -2991,7 +2876,7 @@ fn renderImePreedit(win: *win32_backend.Window, fb_width: i32, fb_height: i32) v
 
 /// Handle a bell notification from the terminal.
 /// Rate-limited to once per 100ms (matching Ghostty).
-fn handleBell(surface: *Surface, win: *win32_backend.Window, is_active_tab: bool) void {
+fn handleBell(surface: *Surface, win: *window_backend.Window, is_active_tab: bool) void {
     _ = is_active_tab;
     const now = std.time.milliTimestamp();
     if (now - surface.last_bell_time < 100) return;
@@ -3001,8 +2886,8 @@ fn handleBell(surface: *Surface, win: *win32_backend.Window, is_active_tab: bool
     surface.bell_indicator = true;
     surface.bell_indicator_time = now;
 
-    win.playBell();
-    win.flashTaskbar();
+    window_backend.playBell(win);
+    window_backend.flashTaskbar(win);
 }
 
 /// Internal main loop - called by AppWindow.run() after init() has set up globals.
@@ -3024,7 +2909,7 @@ fn runMainLoop(self: *AppWindow) !void {
     // stays alive for the rest of main().
     // ================================================================
 
-    // --- Win32 window (cascade from parent or restore from last session) ---
+    // --- Platform window (cascade from parent or restore from last session) ---
     // Check if App has a suggested position (for cascading from parent window)
     var init_x: ?i32 = null;
     var init_y: ?i32 = null;
@@ -3048,37 +2933,39 @@ fn runMainLoop(self: *AppWindow) !void {
             if (init_y == null) init_y = s.y;
         }
     }
-    var win32_window = win32_backend.Window.init(
-        800,
-        600,
-        std.unicode.utf8ToUtf16LeStringLiteral("Phantty"),
-        init_x,
-        init_y,
-        g_start_maximize and !g_start_fullscreen, // Don't maximize if going fullscreen
-    ) catch |err| {
-        std.debug.print("Failed to create Win32 window: {}\n", .{err});
+    var backend_window = window_backend.create(allocator, .{
+        .width = 800,
+        .height = 600,
+        .title = "Phantty",
+        .x = init_x,
+        .y = init_y,
+        .maximize = g_start_maximize and !g_start_fullscreen, // Don't maximize if going fullscreen
+    }) catch |err| {
+        std.debug.print("Failed to create platform window: {}\n", .{err});
         return err;
     };
-    defer win32_window.deinit();
-    win32_backend.setGlobalWindow(&win32_window);
-    g_window = &win32_window;
-    self.hwnd_bits.store(@intFromPtr(win32_window.hwnd), .release);
-    defer self.hwnd_bits.store(0, .release);
+    defer window_backend.destroy(&backend_window);
+    window_backend.setGlobalWindow(&backend_window);
+    g_window = &backend_window;
+    self.native_handle_bits.store(window_backend.nativeHandleBits(&backend_window), .release);
+    defer self.native_handle_bits.store(0, .release);
     if (g_quake_mode and (g_start_maximize or g_start_fullscreen)) {
         std.debug.print("Quake mode disabled for this window because maximize/fullscreen is enabled\n", .{});
         g_quake_mode = false;
     }
-    win32_window.on_message = &onWin32Message;
-    win32_window.on_file_drop = &input.handleFileDrop;
-    syncQuakeHotkeyRegistration(&win32_window);
-    defer if (g_quake_hotkey_registered) win32_window.unregisterHotKey(quick_terminal.HOTKEY_ID);
+    window_backend.setEventHandlers(&backend_window, .{
+        .on_message = &onPlatformMessage,
+        .on_file_drop = &input.handleFileDrop,
+    });
+    syncQuakeHotkeyRegistration(&backend_window);
+    defer if (g_quake_hotkey_registered) platform_global_hotkey.unregister(window_backend.nativeHandle(&backend_window), quick_terminal.HOTKEY_ID);
     installAgentToolHost(self);
     installRemoteControlHandlers(self);
-    font.g_dpi = win32_window.dpi;
+    font.g_dpi = window_backend.dpi(&backend_window);
 
     // --- Load OpenGL via GLAD ---
     {
-        const version = c.gladLoadGLContext(&gl, @ptrCast(&win32_backend.glGetProcAddress));
+        const version = c.gladLoadGLContext(&gl, @ptrCast(&window_backend.glGetProcAddress));
         if (version == 0) {
             std.debug.print("Failed to initialize GLAD\n", .{});
             return error.GLADInitFailed;
@@ -3100,25 +2987,25 @@ fn runMainLoop(self: *AppWindow) !void {
     std.debug.print("Requested font: {s} (weight: {})\n", .{ requested_font, @intFromEnum(requested_weight) });
     std.debug.print("Cursor style: {s}, blink: {}\n", .{ @tagName(g_cursor_style), g_cursor_blink });
 
-    // Initialize DirectWrite for font discovery (keep alive for fallback lookups)
-    var dw_discovery: ?directwrite.FontDiscovery = directwrite.FontDiscovery.init() catch |err| blk: {
-        std.debug.print("DirectWrite init failed: {}\n", .{err});
+    // Initialize system font discovery (keep alive for fallback lookups)
+    var font_discovery: ?font_backend.FontDiscovery = font_backend.FontDiscovery.init() catch |err| blk: {
+        std.debug.print("{s}: {}\n", .{ font_backend.discoveryInitErrorPrefix(), err });
         break :blk null;
     };
-    defer if (dw_discovery) |*dw| dw.deinit();
+    defer if (font_discovery) |*discovery| discovery.deinit();
 
     // Store globally for fallback font lookups
-    font.g_font_discovery = if (dw_discovery) |*dw| dw else null;
+    font.g_font_discovery = if (font_discovery) |*discovery| discovery else null;
     defer font.g_font_discovery = null;
 
     // Fallback faces are cleaned up in the main defer block (with font.glyph_face)
 
-    // Try to find the requested font via DirectWrite
-    var font_result: ?directwrite.FontDiscovery.FontResult = null;
+    // Try to find the requested font via the system font backend
+    var font_result: ?font_backend.FontDiscovery.FontResult = null;
 
-    if (dw_discovery) |*dw| {
+    if (font_discovery) |*discovery| {
         if (requested_font.len > 0) {
-            if (dw.findFontFilePath(allocator, requested_font, requested_weight, .NORMAL) catch null) |result| {
+            if (discovery.findFontFilePath(allocator, requested_font, requested_weight, .NORMAL) catch null) |result| {
                 font_result = result;
                 std.debug.print("Found system font: {s}\n", .{result.path});
             } else {
@@ -3169,9 +3056,9 @@ fn runMainLoop(self: *AppWindow) !void {
     font.preloadCharacters(face);
 
     rebuildTitlebarFont(allocator, requested_font, requested_weight, uiFontSize(font_size), ft_lib);
-    _ = syncWindowTitlebarHeight(&win32_window);
+    _ = syncWindowTitlebarHeight(&backend_window);
 
-    // Load Segoe MDL2 Assets for caption button icons (Windows system font)
+    // Load the platform caption icon font for titlebar buttons.
     rebuildIconFont(allocator, ft_lib);
 
     defer {
@@ -3277,7 +3164,7 @@ fn runMainLoop(self: *AppWindow) !void {
     const total_height_padding = (render_padding + titlebar_height) + render_padding + explicit_top + explicit_bottom; // 44 + 10 + 20 = 74
 
     if (g_quake_mode) {
-        applyQuakeFrame(&win32_window, false);
+        applyQuakeFrame(&backend_window, false);
     } else if (term_cols > 0 and term_rows > 0) {
         // If config specifies window-width/window-height, resize window to fit that grid.
         // term_cols/term_rows were set from config at init.
@@ -3290,11 +3177,11 @@ fn runMainLoop(self: *AppWindow) !void {
         const target_fb_width: i32 = @intFromFloat(desired_grid_width + total_width_padding);
         const target_fb_height: i32 = @intFromFloat(desired_grid_height + total_height_padding);
 
-        win32_window.setSize(target_fb_width, target_fb_height);
+        window_backend.resizeClientArea(&backend_window, target_fb_width, target_fb_height);
     }
 
     // Get actual window client size (after potential resize)
-    const init_fb = win32_window.getFramebufferSize();
+    const init_fb = window_backend.framebufferSize(&backend_window);
     const actual_width: f32 = @floatFromInt(init_fb.width);
     const actual_height: f32 = @floatFromInt(init_fb.height);
 
@@ -3313,7 +3200,7 @@ fn runMainLoop(self: *AppWindow) !void {
     // No resize will be needed because term_cols/term_rows match
     // what setScreenSize will compute from the window size.
     {
-        const initial_cwd: ?[*:0]const u16 = if (g_initial_cwd_len > 0)
+        const initial_cwd: platform_pty_command.Cwd = if (g_initial_cwd_len > 0)
             @ptrCast(&g_initial_cwd_buf)
         else
             null;
@@ -3349,9 +3236,9 @@ fn runMainLoop(self: *AppWindow) !void {
                     return error.SpawnFailed;
                 }
             },
-            .agent_and_powershell => {
-                if (!spawnDefaultAgentAndPowerShellTabs(allocator)) {
-                    std.debug.print("Failed to spawn default Agent and PowerShell tabs\n", .{});
+            .agent_and_local_shell => {
+                if (!spawnDefaultAgentAndLocalShellTabs(allocator)) {
+                    std.debug.print("Failed to spawn default Agent and local shell tabs\n", .{});
                     return error.SpawnFailed;
                 }
             },
@@ -3362,16 +3249,20 @@ fn runMainLoop(self: *AppWindow) !void {
     gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
 
     // Register resize callback so newly exposed pixels get filled with the
-    // terminal background during live resize (Win32 modal resize loop blocks
-    // our main loop, so we must render from inside WM_SIZE).
-    win32_window.on_resize = &onWin32Resize;
+    // terminal background during live resize. Some platform resize loops block
+    // our main loop, so the backend can ask us to render from the resize event.
+    window_backend.setEventHandlers(&backend_window, .{
+        .on_resize = &onPlatformResize,
+        .on_message = &onPlatformMessage,
+        .on_file_drop = &input.handleFileDrop,
+    });
 
     std.debug.print("Ready! Cell size: {d:.1}x{d:.1}\n", .{ font.cell_width, font.cell_height });
 
     // Ensure config directory + file exist so the watcher can observe from startup
     Config.ensureConfigExists(allocator);
 
-    // Set up config file watcher (ReadDirectoryChangesW)
+    // Set up config file watcher.
     var config_watcher = ConfigWatcher.init(allocator);
     if (config_watcher == null) {
         std.debug.print("Config watcher not available (config directory may not exist)\n", .{});
@@ -3426,41 +3317,41 @@ fn runMainLoop(self: *AppWindow) !void {
         // Get framebuffer size and render
         const win = g_window orelse break;
 
-        // Poll Win32 messages (fills event queues + checks WM_QUIT)
-        running = win.pollEvents() and !g_should_close;
+        // Poll platform messages, filling event queues and close state.
+        running = window_backend.pollEvents(win) and !g_should_close;
         if (self.consumeForceCloseRequest()) {
-            win.close_requested = false;
+            window_backend.clearCloseRequested(win);
             g_should_close = true;
             running = false;
             continue;
         }
-        if (win.close_requested) {
-            win.close_requested = false;
+        if (window_backend.closeRequested(win)) {
+            window_backend.clearCloseRequested(win);
             overlays.windowCloseConfirmOpen();
             g_force_rebuild = true;
             g_cells_valid = false;
         }
 
-        if (win.dpi_changed) {
-            win.dpi_changed = false;
+        if (window_backend.consumeDpiChanged(win)) {
             handleWindowDpiChanged(allocator, win, ft_lib, requested_font, requested_weight);
         }
 
-        // Sync tab count to win32 for hit-testing
-        win.tab_count = tab.g_tab_count;
-        win.sidebar_width = @intFromFloat(titlebar.sidebarWidth());
+        // Sync tab count to the window backend for hit-testing
+        window_backend.setTabCount(win, tab.g_tab_count);
+        window_backend.setSidebarWidth(win, @intFromFloat(titlebar.sidebarWidth()));
 
         // Process all queued input events (keyboard, mouse, resize)
         input.processEvents(win);
 
         // Update focus state
-        if (window_focused != win.focused) g_force_rebuild = true;
-        window_focused = win.focused;
+        const focused = window_backend.isFocused(win);
+        if (window_focused != focused) g_force_rebuild = true;
+        window_focused = focused;
 
-        const fb = win.getFramebufferSize();
+        const fb = window_backend.framebufferSize(win);
         const fb_width: c_int = fb.width;
         const fb_height: c_int = fb.height;
-        if (win.is_minimized or fb_width <= 0 or fb_height <= 0) {
+        if (window_backend.isMinimized(win) or fb_width <= 0 or fb_height <= 0) {
             std.Thread.sleep(16 * std.time.ns_per_ms);
             continue;
         }
@@ -3497,7 +3388,7 @@ fn runMainLoop(self: *AppWindow) !void {
         {
             const perf = ui_perf.begin("appwindow.browser_panel_sync");
             defer perf.end();
-            browser_panel.sync(win.hwnd, fb_width, fb_height, titlebar_offset, left_panels_w, browserPanelRightOffset());
+            browser_panel.sync(window_backend.nativeHandle(win), fb_width, fb_height, titlebar_offset, left_panels_w, browserPanelRightOffset());
         }
 
         if (activeTab()) |active_tab| {
@@ -3657,20 +3548,19 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         renderImePreedit(win, fb_width, fb_height);
 
-        win.swapBuffers();
+        window_backend.swapBuffers(win);
     }
 
     // Save window position for next session
     if (!g_quake_mode and g_window != null) {
         const w = g_window.?;
-        var rect: win32_backend.RECT = undefined;
-        if (win32_backend.GetWindowRect(w.hwnd, &rect) != 0) {
-            const is_maximized = win32_backend.IsZoomed(w.hwnd) != 0;
-            if (!is_maximized and !w.is_fullscreen) {
+        if (window_backend.windowRect(w)) |rect| {
+            const is_maximized = window_backend.isMaximized(w);
+            if (!is_maximized and !window_backend.isFullscreen(w)) {
                 saveWindowState(allocator, .{ .x = rect.left, .y = rect.top });
             } else {
                 // Save the last known windowed position before maximize/fullscreen
-                saveWindowState(allocator, .{ .x = window_state.g_windowed_x, .y = window_state.g_windowed_y });
+                saveWindowState(allocator, .{ .x = platform_window_state.g_windowed_x, .y = platform_window_state.g_windowed_y });
             }
         }
     }
@@ -3684,58 +3574,19 @@ fn runMainLoop(self: *AppWindow) !void {
     // Tab cleanup is handled by AppWindow.deinit()
 }
 
-test "appwindow: PowerShell session command follows configured PowerShell flavor" {
-    const testing = std.testing;
-
-    const powershell = std.unicode.utf8ToUtf16LeStringLiteral("powershell.exe");
-    try testing.expectEqualStrings(
-        "powershell.exe",
-        configuredPowerShellCommandForShell(powershell),
-    );
-
-    const pwsh = std.unicode.utf8ToUtf16LeStringLiteral("pwsh.exe");
-    try testing.expectEqualStrings(
-        "pwsh.exe",
-        configuredPowerShellCommandForShell(pwsh),
-    );
-
-    const quoted_pwsh = std.unicode.utf8ToUtf16LeStringLiteral("\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo");
-    try testing.expectEqualStrings(
-        "pwsh.exe",
-        configuredPowerShellCommandForShell(quoted_pwsh),
-    );
-
-    const unquoted_pwsh = std.unicode.utf8ToUtf16LeStringLiteral("C:\\Program Files\\PowerShell\\7\\pwsh.exe");
-    try testing.expectEqualStrings(
-        "pwsh.exe",
-        configuredPowerShellCommandForShell(unquoted_pwsh),
-    );
-
-    const unquoted_pwsh_with_arg = std.unicode.utf8ToUtf16LeStringLiteral("C:\\Program Files\\PowerShell\\7\\pwsh.exe -NoLogo");
-    try testing.expectEqualStrings(
-        "pwsh.exe",
-        configuredPowerShellCommandForShell(unquoted_pwsh_with_arg),
-    );
-
-    const unquoted_windows_powershell = std.unicode.utf8ToUtf16LeStringLiteral("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo");
-    try testing.expectEqualStrings(
-        "powershell.exe",
-        configuredPowerShellCommandForShell(unquoted_windows_powershell),
-    );
-}
-
 test "appwindow: syncDefaultShellCommandFromConfig refreshes tab default shell" {
     const testing = std.testing;
-    const allocator = testing.allocator;
+    const test_shell = platform_pty_command.configReloadTestNextShell();
 
     defer {
-        tab.g_shell_cmd_buf = [_]u16{0} ** tab.g_shell_cmd_buf.len;
+        @memset(&tab.g_shell_cmd_buf, 0);
         tab.g_shell_cmd_len = 0;
     }
 
-    syncDefaultShellCommandFromConfig("pwsh");
+    syncDefaultShellCommandFromConfig(test_shell);
 
-    const actual = try std.unicode.utf16LeToUtf8Alloc(allocator, tab.getShellCmd());
-    defer allocator.free(actual);
-    try testing.expectEqualStrings("pwsh.exe", actual);
+    var expected_buf: platform_pty_command.CommandLineBuffer = undefined;
+    const expected_len = platform_pty_command.resolveShellCommandLine(&expected_buf, test_shell);
+    const CommandUnit = @TypeOf(expected_buf[0]);
+    try testing.expectEqualSlices(CommandUnit, expected_buf[0..expected_len], tab.getShellCmd());
 }

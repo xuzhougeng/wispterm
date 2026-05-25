@@ -7,10 +7,8 @@
 ///   - Stop signal: clean shutdown via xev.Async
 ///
 /// Resize is applied directly on this thread. This works because the
-/// ReadThread is concurrently blocked in ReadFile on the output pipe,
-/// which keeps the pipe draining while ResizePseudoConsole runs.
-/// (ResizePseudoConsole makes ConPTY send a full screen redraw through
-/// the pipe — the ReadThread's pending ReadFile absorbs that output.)
+/// ReadThread is concurrently blocked on PTY output, which keeps data draining
+/// while a backend-specific resize may emit redraw output.
 ///
 /// Flow:
 ///   Main thread → mailbox.send(.resize) → mailbox.notify()
@@ -20,7 +18,6 @@ const std = @import("std");
 const xev = @import("xev");
 const Surface = @import("../Surface.zig");
 const renderer = @import("../renderer.zig");
-const windows = std.os.windows;
 
 const Thread = @This();
 
@@ -109,24 +106,7 @@ fn drainMailbox(self: *Thread) void {
 }
 
 fn writeToPty(surface: *Surface, data: []const u8) void {
-    var offset: usize = 0;
-    while (offset < data.len) {
-        const remaining = data.len - offset;
-        const chunk_len: windows.DWORD = @intCast(@min(remaining, std.math.maxInt(windows.DWORD)));
-        var bytes_written: windows.DWORD = 0;
-
-        if (windows.kernel32.WriteFile(
-            surface.pty.in_pipe,
-            data[offset..].ptr,
-            chunk_len,
-            &bytes_written,
-            null,
-        ) == 0) {
-            return;
-        }
-        if (bytes_written == 0) return;
-        offset += @intCast(bytes_written);
-    }
+    surface.pty.writeInput(data) catch {};
 }
 
 fn handleResize(self: *Thread, grid: renderer.size.GridSize) void {
@@ -170,9 +150,8 @@ fn coalesceCallback(
 
 fn applyResize(surface: *Surface, grid: renderer.size.GridSize) void {
     // PTY resize first (like Ghostty), then terminal.
-    // The ReadThread is concurrently in blocking ReadFile, which keeps
-    // a kernel IRP pending on the pipe. This drains the pipe while
-    // ResizePseudoConsole sends its full screen redraw through it.
+    // The ReadThread is concurrently in a blocking PTY read. This keeps
+    // backend output draining while resize side effects are emitted.
     surface.resize_in_progress.store(true, .release);
     defer surface.resize_in_progress.store(false, .release);
 

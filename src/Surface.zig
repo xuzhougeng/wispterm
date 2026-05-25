@@ -12,7 +12,6 @@ const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const Pty = @import("pty.zig").Pty;
 const Command = @import("Command.zig");
-const win32 = @import("apprt/win32.zig");
 const renderer = @import("renderer.zig");
 const termio = @import("termio.zig");
 const Config = @import("config.zig");
@@ -21,8 +20,7 @@ const RendererThread = @import("RendererThread.zig");
 const remote = @import("remote_client.zig");
 const threading = @import("threading.zig");
 const agent_detector = @import("agent_detector.zig");
-
-const windows = std.os.windows;
+const platform_pty_command = @import("platform/pty_command.zig");
 
 const Surface = @This();
 
@@ -63,11 +61,7 @@ const PHANTTY_IMAGE_OSC_PREFIX = "7747;PhanttyImage=";
 const PHANTTY_IMAGE_OSC_MAX = 16 * 1024;
 
 /// Coarse launch environment for terminal-side integrations such as path paste.
-pub const LaunchKind = enum {
-    windows,
-    wsl,
-    ssh,
-};
+pub const LaunchKind = platform_pty_command.LaunchKind;
 
 pub const SshConnection = struct {
     user_buf: [128]u8 = undefined,
@@ -104,8 +98,8 @@ pub const SshConnection = struct {
 
 /// Custom VT stream handler that delegates to the readonly handler but
 /// intercepts the bell action to set a flag on the Surface.
-/// This is necessary because ConPTY consumes BEL characters and the
-/// readonly handler ignores them, so we can't detect bells from raw bytes.
+/// This keeps bell detection independent from backend-specific PTY behavior
+/// and the readonly handler's raw byte handling.
 pub const VtHandler = struct {
     /// The inner readonly handler type, obtained via Terminal.vtHandler's return type.
     const InnerHandler = @typeInfo(@TypeOf(ghostty_vt.Terminal.vtHandler)).@"fn".return_type.?;
@@ -140,28 +134,6 @@ pub const VtHandler = struct {
 /// Our custom stream type using the bell-aware handler.
 pub const VtStream = ghostty_vt.Stream(VtHandler);
 
-fn detectLaunchKind(command: []const u16) LaunchKind {
-    var buf: [512]u8 = undefined;
-    const len = @min(command.len, buf.len);
-    for (command[0..len], 0..) |wc, i| {
-        const ch: u8 = if (wc < 0x80) @intCast(wc) else ' ';
-        buf[i] = std.ascii.toLower(ch);
-    }
-    const lower = buf[0..len];
-
-    if (std.mem.indexOf(u8, lower, "ssh.exe") != null or
-        std.mem.startsWith(u8, lower, "ssh "))
-    {
-        return .ssh;
-    }
-    if (std.mem.indexOf(u8, lower, "wsl.exe") != null or
-        std.mem.startsWith(u8, lower, "wsl "))
-    {
-        return .wsl;
-    }
-    return .windows;
-}
-
 // ============================================================================
 // Core state
 // ============================================================================
@@ -195,7 +167,7 @@ io_thread_state: ?*termio.Thread = null,
 /// IO writer thread (xev event loop — handles resize, future messages).
 io_writer_thread: ?std.Thread = null,
 
-/// IO reader thread (blocking ReadFile loop).
+/// IO reader thread (blocking PTY output loop).
 io_reader_thread: ?std.Thread = null,
 
 // ============================================================================
@@ -215,8 +187,8 @@ dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 /// Set when the PTY process has exited.
 exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
-/// Set while the IO writer thread is resizing ConPTY and terminal state.
-/// The reader thread still drains ConPTY output during this window, but
+/// Set while the IO writer thread is resizing PTY and terminal state.
+/// The reader thread still drains PTY output during this window, but
 /// delays VT parsing until terminal.resize has caught up to the new grid.
 resize_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -289,8 +261,7 @@ phantty_image_osc_buf: std.ArrayListUnmanaged(u8) = .empty,
 cwd_path: [512]u8 = undefined,
 cwd_path_len: usize = 0,
 
-// Windows-side launch CWD. Used as a fallback for shells that do not emit OSC 7
-// (cmd.exe and stock PowerShell, for example).
+// Platform launch CWD. Used as a fallback for shells that do not emit OSC 7.
 initial_cwd_path: [512]u8 = undefined,
 initial_cwd_path_len: usize = 0,
 
@@ -325,11 +296,11 @@ pub fn init(
     allocator: std.mem.Allocator,
     cols: u16,
     rows: u16,
-    shell_cmd: [:0]const u16,
+    shell_cmd: platform_pty_command.CommandLine,
     scrollback_limit: u32,
     cursor_style: Config.CursorStyle,
     cursor_blink: bool,
-    cwd: ?[*:0]const u16,
+    cwd: platform_pty_command.Cwd,
 ) !*Surface {
     const surface = try allocator.create(Surface);
     errdefer allocator.destroy(surface);
@@ -356,16 +327,15 @@ pub fn init(
     };
     surface.terminal.modes.set(.cursor_blinking, cursor_blink);
 
-    // Open PTY (pipes + pseudo console, no process)
+    // Open PTY, then ask the PTY backend to attach the child process.
     surface.pty = Pty.open(.{ .ws_col = cols, .ws_row = rows }) catch |err| {
         surface.terminal.deinit(allocator);
         return err;
     };
     errdefer surface.pty.deinit();
 
-    // Spawn child process attached to the pseudo console
     surface.command = .{};
-    surface.command.start(surface.pty.pseudo_console, shell_cmd, cwd) catch |err| {
+    surface.command.start(&surface.pty, shell_cmd, cwd) catch |err| {
         surface.pty.deinit();
         surface.terminal.deinit(allocator);
         return err;
@@ -375,7 +345,7 @@ pub fn init(
     surface.allocator = allocator;
     surface.selection = .{};
     surface.render_state = renderer.State.init(&surface.terminal);
-    surface.launch_kind = detectLaunchKind(shell_cmd);
+    surface.launch_kind = platform_pty_command.launchKindForCommand(shell_cmd);
     surface.ssh_connection = null;
     surface.remote_client = null;
     remote.nextSurfaceId(&surface.remote_id);
@@ -469,7 +439,7 @@ pub fn init(
         return err;
     };
 
-    // Spawn IO reader thread (blocking ReadFile loop)
+    // Spawn IO reader thread (blocking PTY output loop)
     surface.io_reader_thread = std.Thread.spawn(threading.surface_thread_spawn_config, termio.ReadThread.threadMain, .{surface}) catch |err| {
         std.debug.print("Failed to spawn IO reader thread: {}\n", .{err});
         // Stop writer thread since we can't proceed without reader
@@ -511,10 +481,8 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
         state.stop.notify() catch {};
     }
 
-    // Cancel the reader thread's blocking ReadFile
-    if (self.pty.out_pipe != windows.INVALID_HANDLE_VALUE) {
-        _ = win32.CancelIoEx(self.pty.out_pipe, null);
-    }
+    // Cancel the reader thread's blocking PTY output read.
+    self.pty.cancelOutputRead();
 
     // Join both threads
     if (self.io_writer_thread) |thread| {
@@ -756,7 +724,7 @@ pub fn getCwd(self: *const Surface) ?[]const u8 {
     return null;
 }
 
-/// Get the Windows-side launch directory for shells that do not report OSC 7.
+/// Get the platform launch directory for shells that do not report OSC 7.
 pub fn getInitialCwd(self: *const Surface) ?[]const u8 {
     if (self.initial_cwd_path_len > 0)
         return self.initial_cwd_path[0..self.initial_cwd_path_len];
@@ -764,7 +732,7 @@ pub fn getInitialCwd(self: *const Surface) ?[]const u8 {
 }
 
 /// Coarse classification for session persistence. Distinct from `LaunchKind`
-/// (which separates `windows` from `wsl` for path translation) because v1
+/// (which separates `local` from `wsl` for path translation) because v1
 /// session restore only cares about local-vs-remote — WSL surfaces are
 /// classified as `local_shell` and are not faithfully restored. v2 may
 /// reuse `LaunchKind` directly when WSL restoration is supported.
@@ -778,12 +746,9 @@ pub fn surfaceKind(self: *const Surface) SurfaceKind {
     return .local_shell;
 }
 
-fn captureInitialCwd(self: *Surface, cwd: ?[*:0]const u16) void {
-    if (cwd) |ptr| {
-        var len: usize = 0;
-        while (ptr[len] != 0) : (len += 1) {}
-        const utf8_len = std.unicode.utf16LeToUtf8(&self.initial_cwd_path, ptr[0..len]) catch 0;
-        self.initial_cwd_path_len = utf8_len;
+fn captureInitialCwd(self: *Surface, cwd: platform_pty_command.Cwd) void {
+    if (platform_pty_command.cwdToUtf8(&self.initial_cwd_path, cwd)) |path| {
+        self.initial_cwd_path_len = path.len;
         return;
     }
 
@@ -1026,29 +991,6 @@ pub fn scanForOscTitle(self: *Surface, data: []const u8) void {
     }
 }
 
-/// Map known shell executable paths/titles to friendly display names.
-fn shellFriendlyName(title: []const u8) []const u8 {
-    var lower_buf: [512]u8 = undefined;
-    const len = @min(title.len, lower_buf.len);
-    for (0..len) |i| {
-        lower_buf[i] = if (title[i] >= 'A' and title[i] <= 'Z') title[i] + 32 else title[i];
-    }
-    const lower = lower_buf[0..len];
-
-    if (std.mem.indexOf(u8, lower, "powershell.exe") != null) return "Windows PowerShell";
-    if (std.mem.indexOf(u8, lower, "pwsh.exe") != null) return "PowerShell";
-    if (std.mem.indexOf(u8, lower, "powershell") != null and
-        std.mem.indexOf(u8, lower, ".exe") == null) return "Windows PowerShell";
-    if (std.mem.indexOf(u8, lower, "pwsh") != null and
-        std.mem.indexOf(u8, lower, ".exe") == null) return "PowerShell";
-    if (std.mem.indexOf(u8, lower, "cmd.exe") != null) return "Command Prompt";
-    if (std.mem.eql(u8, lower, "cmd")) return "Command Prompt";
-    if (std.mem.indexOf(u8, lower, "wsl.exe") != null) return "WSL";
-    if (std.mem.eql(u8, lower, "wsl")) return "WSL";
-
-    return title;
-}
-
 /// Update the surface title from an OSC sequence.
 /// Like Ghostty, reject titles that aren't valid UTF-8 — this filters out
 /// garbage from random byte streams (e.g. cat /dev/urandom) that happen to
@@ -1094,7 +1036,7 @@ fn updateTitle(self: *Surface, title: []const u8, osc_num: u8) void {
         // OSC 0/1/2 — skip if we already got OSC 7 in this same batch
         if (self.got_osc7_this_batch) return;
 
-        const friendly = shellFriendlyName(title);
+        const friendly = platform_pty_command.friendlyShellTitle(title);
 
         // Accept and clear OSC 7 cache
         self.osc7_title_len = 0;

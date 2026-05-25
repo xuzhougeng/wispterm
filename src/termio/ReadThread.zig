@@ -1,20 +1,15 @@
-/// Blocking PTY reader thread (matches Ghostty's threadMainWindows).
+/// Blocking PTY reader thread.
 ///
-/// Runs a tight blocking ReadFile loop on the PTY output pipe, processing
-/// VT data under the render lock. The output pipe is created via CreatePipe
-/// (anonymous, synchronous), so blocking ReadFile properly registers a
-/// kernel IRP on the pipe.
+/// Runs a tight blocking read loop on the PTY output stream, processing VT
+/// data under the render lock.
 ///
-/// This is critical for resize: ResizePseudoConsole (called on the writer
-/// thread) makes ConPTY send a full screen redraw through the pipe. The
-/// pending ReadFile on this thread absorbs that output, preventing the
-/// pipe from filling up and deadlocking ResizePseudoConsole.
+/// This is critical for resize: some PTY backends emit a redraw when the grid
+/// size changes. The pending read on this thread keeps output draining while
+/// the writer thread applies the resize.
 ///
-/// Shutdown via CancelIoEx from Surface.deinit().
+/// Shutdown is delegated to the platform PTY backend.
 const std = @import("std");
-const windows = std.os.windows;
 const Surface = @import("../Surface.zig");
-const win32 = @import("../apprt/win32.zig");
 
 const READ_BUF_SIZE = 4096;
 
@@ -24,40 +19,31 @@ pub fn threadMain(surface: *Surface) void {
     defer resize_pending.deinit(surface.allocator);
 
     while (!surface.exited.load(.acquire)) {
-        var bytes_read: windows.DWORD = 0;
-        if (windows.kernel32.ReadFile(
-            surface.pty.out_pipe,
-            &buf,
-            READ_BUF_SIZE,
-            &bytes_read,
-            null, // synchronous — properly registers kernel IRP
-        ) == 0) {
-            const err = windows.kernel32.GetLastError();
+        const bytes_read = surface.pty.readOutput(&buf) catch |err| {
             switch (err) {
-                // CancelIoEx from deinit, or ConPTY internally cancelling
-                // I/O during resize. Retry unless we're shutting down.
-                .OPERATION_ABORTED => continue,
+                // Backend interrupted the blocking read. Retry unless we're shutting down.
+                error.ReadInterrupted => continue,
 
                 // Pipe closed — child process exited
-                .BROKEN_PIPE => {
+                error.BrokenPipe => {
                     surface.exited.store(true, .release);
                     return;
                 },
 
                 // Any other error — exit
                 else => {
-                    std.debug.print("ReadThread: ReadFile error: {}\n", .{err});
+                    std.debug.print("ReadThread: read error: {}\n", .{err});
                     surface.exited.store(true, .release);
                     return;
                 },
             }
-        }
+        };
         if (bytes_read == 0) {
             surface.exited.store(true, .release);
             return;
         }
 
-        const data = buf[0..@intCast(bytes_read)];
+        const data = buf[0..bytes_read];
         if (surface.remote_client) |client| {
             client.sendOutput(surface.remote_id[0..], data);
         }
@@ -94,37 +80,22 @@ fn drainResizeOutput(
     scratch: *[READ_BUF_SIZE]u8,
 ) void {
     while (surface.resize_in_progress.load(.acquire) and !surface.exited.load(.acquire)) {
-        var available: windows.DWORD = 0;
-        if (win32.PeekNamedPipe(
-            surface.pty.out_pipe,
-            null,
-            0,
-            null,
-            &available,
-            null,
-        ) == 0) return;
+        const available = surface.pty.outputAvailable() orelse return;
 
         if (available == 0) {
             std.Thread.sleep(std.time.ns_per_ms);
             continue;
         }
 
-        const to_read: windows.DWORD = @intCast(@min(@as(usize, @intCast(available)), scratch.len));
-        var bytes_read: windows.DWORD = 0;
-        if (windows.kernel32.ReadFile(
-            surface.pty.out_pipe,
-            scratch,
-            to_read,
-            &bytes_read,
-            null,
-        ) == 0) {
-            if (windows.kernel32.GetLastError() == .OPERATION_ABORTED) continue;
-            return;
-        }
+        const to_read = @min(available, scratch.len);
+        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (err) {
+            error.ReadInterrupted => continue,
+            else => return,
+        };
 
         if (bytes_read == 0) return;
 
-        const data = scratch[0..@intCast(bytes_read)];
+        const data = scratch[0..bytes_read];
         if (surface.remote_client) |client| {
             client.sendOutput(surface.remote_id[0..], data);
         }

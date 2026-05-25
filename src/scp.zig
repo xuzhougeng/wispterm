@@ -5,11 +5,11 @@
 //! image paste path and the file explorer remote operations.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Surface = @import("Surface.zig");
 const SshConnection = Surface.SshConnection;
-const windows = std.os.windows;
-const posix = std.posix;
+const platform_dirs = @import("platform/dirs.zig");
+const platform_process = @import("platform/process.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
 
 /// Result of a transfer operation.
 pub const TransferResult = enum { ok, failed, spawn_error, cancelled };
@@ -34,7 +34,7 @@ pub const TransferControl = struct {
         const should_terminate = self.cancel_requested.load(.acquire);
         self.mutex.unlock();
 
-        if (should_terminate) terminateChild(child_id);
+        if (should_terminate) platform_process.terminateChild(child_id);
     }
 
     fn clearChild(self: *TransferControl, child_id: std.process.Child.Id) void {
@@ -50,16 +50,9 @@ pub const TransferControl = struct {
         const child_id = self.child_id;
         self.mutex.unlock();
 
-        if (child_id) |id| terminateChild(id);
+        if (child_id) |id| platform_process.terminateChild(id);
     }
 };
-
-fn terminateChild(child_id: std.process.Child.Id) void {
-    switch (builtin.os.tag) {
-        .windows => windows.TerminateProcess(child_id, 1) catch {},
-        else => posix.kill(child_id, posix.SIG.TERM) catch {},
-    }
-}
 
 /// Run `scp src dst` with proper SSH auth options from the connection.
 /// `src` and `dst` are scp-style paths (local or user@host:remote).
@@ -69,13 +62,13 @@ pub fn transfer(allocator: std.mem.Allocator, conn: *const SshConnection, src: [
 }
 
 pub fn transferWithControl(allocator: std.mem.Allocator, conn: *const SshConnection, src: []const u8, dst: []const u8, control: *TransferControl) TransferResult {
-    var askpass_path: ?[]u8 = null;
+    var askpass_path: ?[]const u8 = null;
     defer if (askpass_path) |p| allocator.free(p);
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
     if (conn.password_auth) {
-        askpass_path = ensureAskPassScript(allocator) orelse return .spawn_error;
+        askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return .spawn_error;
         env_map = std.process.getEnvMap(allocator) catch return .spawn_error;
         if (env_map) |*map| {
             map.put("SSH_ASKPASS", askpass_path.?) catch return .spawn_error;
@@ -141,7 +134,7 @@ fn runScpTransfer(
 
     var argv_buf: [32][]const u8 = undefined;
     var argc: usize = 0;
-    argv_buf[argc] = "scp.exe";
+    argv_buf[argc] = platform_pty_command.scpExecutableName();
     argc += 1;
     argv_buf[argc] = "-q";
     argc += 1;
@@ -197,7 +190,7 @@ fn appendSshExecPrefix(
     dest_buf: *[280]u8,
 ) usize {
     var argc: usize = 0;
-    argv_buf[argc] = "ssh.exe";
+    argv_buf[argc] = platform_pty_command.sshExecutableName();
     argc += 1;
 
     argc = appendSshOptions(argv_buf, argc, conn, .ssh, control_path);
@@ -217,13 +210,13 @@ fn appendSshExecPrefix(
 /// Run `ssh user@host "<command>"` and capture stdout.
 /// Returns allocated output slice on success, null on failure.
 pub fn sshExec(allocator: std.mem.Allocator, conn: *const SshConnection, command: []const u8) ?[]u8 {
-    var askpass_path: ?[]u8 = null;
+    var askpass_path: ?[]const u8 = null;
     defer if (askpass_path) |p| allocator.free(p);
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
     if (conn.password_auth) {
-        askpass_path = ensureAskPassScript(allocator) orelse return null;
+        askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return null;
         env_map = std.process.getEnvMap(allocator) catch return null;
         if (env_map) |*map| {
             map.put("SSH_ASKPASS", askpass_path.?) catch return null;
@@ -237,7 +230,7 @@ pub fn sshExec(allocator: std.mem.Allocator, conn: *const SshConnection, command
 
     var argv_buf: [32][]const u8 = undefined;
     var argc: usize = 0;
-    argv_buf[argc] = "ssh.exe";
+    argv_buf[argc] = platform_pty_command.sshExecutableName();
     argc += 1;
 
     argc = appendSshOptions(&argv_buf, argc, conn, .ssh, control_path);
@@ -385,25 +378,6 @@ fn createLocalWrite(path: []const u8) ?std.fs.File {
     return std.fs.cwd().createFile(path, .{ .truncate = true }) catch null;
 }
 
-const StdinWriteError = error{ BrokenPipe, WriteFailed };
-
-fn writeAllToChildStdin(file: std.fs.File, data: []const u8) StdinWriteError!void {
-    var index: usize = 0;
-    while (index < data.len) {
-        var written: windows.DWORD = 0;
-        const remaining = data[index..];
-        const chunk_len: windows.DWORD = @intCast(@min(remaining.len, std.math.maxInt(windows.DWORD)));
-        if (windows.kernel32.WriteFile(file.handle, remaining.ptr, chunk_len, &written, null) == 0) {
-            return switch (windows.GetLastError()) {
-                .BROKEN_PIPE, .NO_DATA => error.BrokenPipe,
-                else => error.WriteFailed,
-            };
-        }
-        if (written == 0) return error.BrokenPipe;
-        index += written;
-    }
-}
-
 fn sshStreamUpload(
     allocator: std.mem.Allocator,
     conn: *const SshConnection,
@@ -452,7 +426,7 @@ fn sshStreamUpload(
                 break;
             };
             if (n == 0) break;
-            writeAllToChildStdin(in, buf[0..n]) catch {
+            platform_process.writeAllToPipe(in, buf[0..n]) catch {
                 write_ok = false;
                 break;
             };
@@ -630,8 +604,7 @@ fn appendSshOptions(
 }
 
 fn sshControlPathOption(allocator: std.mem.Allocator) ?[]u8 {
-    const temp_raw = std.process.getEnvVarOwned(allocator, "TEMP") catch
-        std.process.getEnvVarOwned(allocator, "TMP") catch return null;
+    const temp_raw = platform_dirs.tempDir(allocator) catch return null;
     defer allocator.free(temp_raw);
 
     const trimmed = std.mem.trimRight(u8, temp_raw, "\\/");
@@ -645,27 +618,6 @@ fn sshControlPathOption(allocator: std.mem.Allocator) ?[]u8 {
     }
     normalized.appendSlice(allocator, "/phantty-ssh-%C") catch return null;
     return normalized.toOwnedSlice(allocator) catch null;
-}
-
-fn askPassScriptPath(allocator: std.mem.Allocator) ?[]u8 {
-    const temp = std.process.getEnvVarOwned(allocator, "TEMP") catch
-        std.process.getEnvVarOwned(allocator, "TMP") catch return null;
-    defer allocator.free(temp);
-    return std.fmt.allocPrint(allocator, "{s}\\phantty-ssh-askpass.cmd", .{temp}) catch null;
-}
-
-fn ensureAskPassScript(allocator: std.mem.Allocator) ?[]u8 {
-    const path = askPassScriptPath(allocator) orelse return null;
-    errdefer allocator.free(path);
-
-    const file = std.fs.createFileAbsolute(path, .{ .truncate = true }) catch return null;
-    defer file.close();
-
-    file.writeAll(
-        "@echo off\r\n" ++
-            "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Out.Write($env:PHANTTY_SSH_PASSWORD)\"\r\n",
-    ) catch return null;
-    return path;
 }
 
 // ============================================================================

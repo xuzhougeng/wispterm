@@ -8,7 +8,8 @@ const std = @import("std");
 const freetype = @import("freetype");
 const harfbuzz = @import("harfbuzz");
 const sprite = @import("sprite.zig");
-const directwrite = @import("../directwrite.zig");
+const platform_display = @import("../platform/display.zig");
+const font_backend = @import("../platform/font_backend.zig");
 const embedded = @import("embedded.zig");
 const Config = @import("../config.zig");
 const AppWindow = @import("../AppWindow.zig");
@@ -69,7 +70,7 @@ pub threadlocal var glyph_cache: std.AutoHashMapUnmanaged(u32, Character) = .emp
 // Grapheme cluster cache — keyed by hash of full codepoint sequence
 pub threadlocal var grapheme_cache: std.AutoHashMapUnmanaged(u64, Character) = .empty;
 pub threadlocal var glyph_face: ?freetype.Face = null;
-pub threadlocal var icon_face: ?freetype.Face = null; // Segoe MDL2 Assets for caption button icons
+pub threadlocal var icon_face: ?freetype.Face = null; // Platform caption button icon font
 pub threadlocal var icon_cache: std.AutoHashMapUnmanaged(u32, Character) = .empty;
 
 // Font atlas — single texture for all glyphs (replaces per-glyph textures)
@@ -82,7 +83,7 @@ pub threadlocal var g_color_atlas: ?FontAtlas = null;
 pub threadlocal var g_color_atlas_texture: c.GLuint = 0;
 pub threadlocal var g_color_atlas_modified: usize = 0;
 
-// Icon atlas — separate atlas for caption button icons (Segoe MDL2)
+// Icon atlas — separate atlas for caption button icons
 pub threadlocal var g_icon_atlas: ?FontAtlas = null;
 pub threadlocal var g_icon_atlas_texture: c.GLuint = 0;
 pub threadlocal var g_icon_atlas_modified: usize = 0;
@@ -100,11 +101,11 @@ pub threadlocal var g_titlebar_baseline: f32 = 3;
 
 // Font fallback system
 pub threadlocal var g_ft_lib: ?freetype.Library = null;
-pub threadlocal var g_font_discovery: ?*directwrite.FontDiscovery = null;
+pub threadlocal var g_font_discovery: ?*font_backend.FontDiscovery = null;
 pub threadlocal var g_fallback_faces: std.AutoHashMapUnmanaged(u32, freetype.Face) = .empty; // codepoint -> fallback face
 pub threadlocal var g_no_fallback: std.AutoHashMapUnmanaged(u32, void) = .empty; // codepoints with no fallback (negative cache)
 pub threadlocal var g_font_size: u32 = DEFAULT_FONT_SIZE;
-pub threadlocal var g_dpi: u32 = 96;
+pub threadlocal var g_dpi: u32 = platform_display.default_dpi;
 pub threadlocal var g_cjk_font_family: ?[]const u8 = null;
 pub threadlocal var g_fallback_font_families: ?[]const u8 = null;
 
@@ -123,7 +124,7 @@ pub threadlocal var g_bell_emoji_face: ?freetype.Face = null;
 
 /// Set a FreeType face to a point size using the current window DPI.
 /// High-DPI monitors need a higher-resolution glyph atlas instead of relying on
-/// Windows to scale a 96-DPI OpenGL bitmap.
+/// platform display scaling from the baseline DPI.
 pub fn setFacePointSize(face: freetype.Face, font_size: u32) !void {
     try face.setCharSize(
         0,
@@ -325,12 +326,12 @@ fn trimAsciiSpaces(value: []const u8) []const u8 {
     return std.mem.trim(u8, value, " \t\r");
 }
 
-fn findConfiguredFallbackFont(dw: *directwrite.FontDiscovery, codepoint: u32) ?*directwrite.IDWriteFont {
+fn findConfiguredFallbackFont(discovery: *font_backend.FontDiscovery, codepoint: u32) ?*font_backend.FallbackFont {
     if (isCjkCodepoint(codepoint)) {
         if (g_cjk_font_family) |family_name| {
             const trimmed = trimAsciiSpaces(family_name);
             if (trimmed.len > 0) {
-                const maybe_font = dw.findFont(trimmed, .NORMAL, .NORMAL) catch null;
+                const maybe_font = discovery.findFont(trimmed, .NORMAL, .NORMAL) catch null;
                 if (maybe_font) |font| {
                     if (font.hasCharacter(codepoint)) return font;
                     font.release();
@@ -344,7 +345,7 @@ fn findConfiguredFallbackFont(dw: *directwrite.FontDiscovery, codepoint: u32) ?*
         while (it.next()) |family_name| {
             const trimmed = trimAsciiSpaces(family_name);
             if (trimmed.len == 0) continue;
-            const maybe_font = dw.findFont(trimmed, .NORMAL, .NORMAL) catch null;
+            const maybe_font = discovery.findFont(trimmed, .NORMAL, .NORMAL) catch null;
             if (maybe_font) |font| {
                 if (font.hasCharacter(codepoint)) return font;
                 font.release();
@@ -1024,7 +1025,7 @@ pub fn loadTitlebarGlyph(codepoint: u32) ?Character {
     return ch;
 }
 
-/// Load a glyph from the Segoe MDL2 Assets icon font.
+/// Load a glyph from the platform caption icon font.
 pub fn loadIconGlyph(codepoint: u32) ?Character {
     if (icon_cache.get(codepoint)) |ch| return ch;
 
@@ -1073,11 +1074,11 @@ pub fn loadBellEmoji() ?BellCache {
 
     // Load a color emoji font face if we haven't yet
     if (g_bell_emoji_face == null) {
-        const dw = g_font_discovery orelse return null;
+        const discovery = g_font_discovery orelse return null;
         // Try well-known color emoji fonts
         const emoji_fonts = [_][]const u8{ "Segoe UI Emoji", "Noto Color Emoji" };
         for (emoji_fonts) |font_name| {
-            if (dw.findFontFilePath(alloc, font_name, .NORMAL, .NORMAL) catch null) |result| {
+            if (discovery.findFontFilePath(alloc, font_name, .NORMAL, .NORMAL) catch null) |result| {
                 defer alloc.free(result.path);
                 const emoji_face = ft_lib.initFace(result.path, @intCast(result.face_index)) catch continue;
                 // Set a large size for crisp color emoji bitmaps
@@ -1132,67 +1133,35 @@ pub fn findOrLoadFallbackFace(codepoint: u32, alloc: std.mem.Allocator) ?freetyp
         return face;
     }
 
-    // Check negative cache - if we already know there's no fallback, skip DirectWrite
+    // Check negative cache - if we already know there's no fallback, skip system font lookup
     if (g_no_fallback.contains(codepoint)) {
         return null;
     }
 
-    // Need DirectWrite and FreeType library to find fallbacks
-    const dw = g_font_discovery orelse return null;
+    // Need system font discovery and FreeType library to find fallbacks
+    const discovery = g_font_discovery orelse return null;
     const ft_lib = g_ft_lib orelse return null;
 
     const preferred_families = preferredFallbackFamilies(codepoint);
-    const maybe_font = findConfiguredFallbackFont(dw, codepoint) orelse if (preferred_families.len > 0)
-        ((dw.findPreferredFallbackFont(codepoint, preferred_families) catch null) orelse
-            (dw.findFallbackFont(codepoint) catch null))
+    const maybe_font = findConfiguredFallbackFont(discovery, codepoint) orelse if (preferred_families.len > 0)
+        ((discovery.findPreferredFallbackFont(codepoint, preferred_families) catch null) orelse
+            (discovery.findFallbackFont(codepoint) catch null))
     else
-        (dw.findFallbackFont(codepoint) catch null);
+        (discovery.findFallbackFont(codepoint) catch null);
 
-    // Use DirectWrite to find a font with this codepoint
+    // Use the system font backend to find a font with this codepoint
     const font = maybe_font orelse {
-        // Cache the negative result to avoid repeated DirectWrite queries
+        // Cache the negative result to avoid repeated system font queries
         g_no_fallback.put(alloc, codepoint, {}) catch {};
         return null;
     };
     defer font.release();
 
-    // Get the font face to extract file path
-    const dw_face = font.createFontFace() catch return null;
-    defer dw_face.release();
-
-    // Get font file
-    const font_file = dw_face.getFiles() catch return null;
-    defer font_file.release();
-
-    // Get file loader
-    const loader = font_file.getLoader() catch return null;
-    defer loader.release();
-
-    // Get local font file loader
-    const local_loader = loader.queryLocalFontFileLoader() orelse return null;
-    defer local_loader.release();
-
-    // Get reference key
-    const ref_key = font_file.getReferenceKey() catch return null;
-
-    // Get path length
-    const path_len = local_loader.getFilePathLengthFromKey(ref_key.key, ref_key.size) catch return null;
-
-    // Allocate buffer for path
-    var path_buf = alloc.alloc(u16, path_len + 1) catch return null;
-    defer alloc.free(path_buf);
-
-    // Get the path
-    local_loader.getFilePathFromKey(ref_key.key, ref_key.size, path_buf) catch return null;
-
-    // Convert to UTF-8
-    const utf8_path = std.unicode.utf16LeToUtf8AllocZ(alloc, path_buf[0..path_len]) catch return null;
-    defer alloc.free(utf8_path);
-
-    const face_index = dw_face.getIndex();
+    var font_path = font_backend.fontFilePathAlloc(alloc, font) orelse return null;
+    defer font_path.deinit();
 
     // Load with FreeType
-    const ft_face = ft_lib.initFace(utf8_path, @intCast(face_index)) catch return null;
+    const ft_face = ft_lib.initFace(font_path.path, @intCast(font_path.face_index)) catch return null;
 
     // Start from the primary point size, then normalize fallback metrics to
     // the active terminal face. This follows Ghostty's overall approach of
@@ -1462,14 +1431,14 @@ pub fn clearFallbackFaces(allocator: std.mem.Allocator) void {
 pub fn loadFontFromConfig(
     allocator: std.mem.Allocator,
     font_family: []const u8,
-    weight: directwrite.DWRITE_FONT_WEIGHT,
+    weight: font_backend.FontWeight,
     font_size: u32,
     ft_lib: freetype.Library,
 ) ?freetype.Face {
-    // Try system font via DirectWrite
+    // Try system font via the system font backend
     if (font_family.len > 0) {
-        if (g_font_discovery) |dw| {
-            if (dw.findFontFilePath(allocator, font_family, weight, .NORMAL) catch null) |result| {
+        if (g_font_discovery) |discovery| {
+            if (discovery.findFontFilePath(allocator, font_family, weight, .NORMAL) catch null) |result| {
                 var r = result;
                 defer r.deinit();
                 if (ft_lib.initFace(r.path, @intCast(r.face_index))) |face| {

@@ -12,33 +12,49 @@ runtime surface API, CoreText fonts, POSIX PTYs, and Metal rendering. Phantty
 should move toward similarly explicit boundaries before attempting macOS or
 Linux support.
 
-- [ ] Split platform APIs behind narrow interfaces instead of importing
+Scope note: platform boundary checks apply to the desktop app/build/shared Zig
+code. Do not include the Phantty-specific `remote/` web console or packaged
+`plugins/` content in these platform-leakage checks.
+
+- [x] Split platform APIs behind narrow interfaces instead of importing
       `src/apprt/win32.zig` and `std.os.windows` from app logic.
-- [ ] Introduce a PTY/process abstraction:
-      - Windows: ConPTY plus `CreateProcessW`.
+      App logic now goes through `src/platform/`; only `src/test_main.zig`
+      still references win32 directly.
+- [x] Introduce a PTY/process abstraction:
+      - Windows: ConPTY plus `CreateProcessW`. (done)
       - macOS/Linux: POSIX `openpty`/`fork`/`exec` plus `ioctl(TIOCSWINSZ)`.
-- [ ] Separate window/event/input backends from `AppWindow.zig`:
-      - Windows: current Win32 backend.
+        (abstraction + posix process in place; native POSIX PTY impl pending
+        the port phase)
+- [x] Separate window/event/input backends from `AppWindow.zig`:
+      - Windows: current Win32 backend. (done)
       - macOS: native AppKit host, following Ghostty/cmux style.
       - Linux: GTK/libadwaita, GLFW, or another explicit native host decision.
-- [ ] Abstract font discovery and fallback:
-      - Windows: DirectWrite.
+      (backend abstraction done; native macOS/Linux hosts pending the port phase)
+- [x] Abstract font discovery and fallback:
+      - Windows: DirectWrite. (done)
       - macOS: CoreText.
       - Linux: fontconfig.
-- [ ] Keep terminal rendering core independent from the presentation backend.
+      (backend abstraction done; CoreText/fontconfig impls pending the port phase)
+- [x] Keep terminal rendering core independent from the presentation backend.
       Decide later whether macOS should keep OpenGL temporarily or move directly
       to Metal like Ghostty.
+      `src/renderer/` has no win32/DirectWrite/WebView2 leakage.
 - [ ] Abstract clipboard, file picker, file drop, open-url, notifications,
       global hotkeys, DPI/content-scale, and config/theme directories.
-- [ ] Replace Windows-only remote client networking (`WinHTTP`) with a portable
+      All abstracted except notifications, which still has no platform module.
+- [x] Replace Windows-only remote client networking (`WinHTTP`) with a portable
       WebSocket transport, or provide per-platform transports behind one API.
-- [ ] Split embedded browser integration by platform:
-      - Windows: WebView2.
+      Satisfied via per-platform transports behind one API
+      (`src/platform/remote_transport*.zig`).
+- [x] Split embedded browser integration by platform:
+      - Windows: WebView2. (done)
       - macOS: WKWebView.
       - Linux: WebKitGTK or disable until a supported backend exists.
-- [ ] Isolate updater and release asset logic so platform-specific packaging
+      (abstraction + `EmbeddedBrowserBackend` build gate done; non-Windows
+      currently disabled, as allowed)
+- [x] Isolate updater and release asset logic so platform-specific packaging
       does not leak into app runtime code.
-- [ ] Add build target selection and platform feature gates in `build.zig`,
+- [x] Add build target selection and platform feature gates in `build.zig`,
       keeping Windows as the default development target until a port starts.
-- [ ] Add compile-only checks for shared modules on non-Windows targets once
+- [x] Add compile-only checks for shared modules on non-Windows targets once
       the first layer of platform boundaries exists.

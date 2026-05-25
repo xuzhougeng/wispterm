@@ -5,7 +5,8 @@
 //! on a visible monitor before applying.
 
 const std = @import("std");
-const win32_backend = @import("win32.zig");
+const platform_display = @import("display.zig");
+const platform_dirs = @import("dirs.zig");
 
 /// Saved window position state.
 pub const WindowState = struct {
@@ -17,21 +18,9 @@ pub const WindowState = struct {
 pub threadlocal var g_windowed_x: c_int = 0;
 pub threadlocal var g_windowed_y: c_int = 0;
 
-/// Return the state file path: %APPDATA%\phantty\state
+/// Return the state file path in the platform config directory.
 pub fn stateFilePath(allocator: std.mem.Allocator) ?[]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        return std.fs.path.join(allocator, &.{ appdata, "phantty", "state" }) catch null;
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        return std.fs.path.join(allocator, &.{ xdg, "phantty", "state" }) catch null;
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".config", "phantty", "state" }) catch null;
-    } else |_| {}
-    return null;
+    return platform_dirs.stateFilePath(allocator) catch null;
 }
 
 /// Load window state from the state file.
@@ -65,22 +54,13 @@ pub fn loadWindowState(allocator: std.mem.Allocator) ?WindowState {
 
     if (!has_x or !has_y) return null;
 
-    // Validate that the position is on a visible monitor
-    // Use MonitorFromPoint with MONITOR_DEFAULTTONULL - returns null if point is off-screen
-    const pt = win32_backend.POINT{ .x = state.x + 50, .y = state.y + 50 }; // Check a point inside the window
-    const monitor = monitorFromPoint(pt, 0); // MONITOR_DEFAULTTONULL = 0
-    if (monitor == null) {
+    // Check a point inside the restored frame, not just the saved origin.
+    if (!platform_display.isPointOnAnyDisplay(state.x + 50, state.y + 50)) {
         std.debug.print("Saved window position ({}, {}) is off-screen, ignoring\n", .{ state.x, state.y });
         return null;
     }
 
     return state;
-}
-
-extern "user32" fn MonitorFromPoint(pt: win32_backend.POINT, dwFlags: u32) callconv(.winapi) ?win32_backend.HMONITOR;
-
-fn monitorFromPoint(pt: win32_backend.POINT, flags: u32) ?win32_backend.HMONITOR {
-    return MonitorFromPoint(pt, flags);
 }
 
 /// Save window state to the state file.

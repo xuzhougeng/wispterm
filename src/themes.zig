@@ -1,9 +1,8 @@
 /// Embedded themes shipped with Phantty.
 ///
 /// All 453 themes from Ghostty (https://github.com/ghostty-org/ghostty)
-/// are embedded at compile time. User themes in %%APPDATA%%\phantty\themes\
+/// are embedded at compile time. User themes in the app config themes directory
 /// take priority over embedded themes.
-
 const std = @import("std");
 
 const Entry = struct {

@@ -2,13 +2,14 @@
 //!
 //! Manages the left-side file explorer sidebar: visibility, width, directory
 //! scanning, tree expand/collapse, selection, scroll, and file operations.
-//! Supports local (std.fs), WSL (wsl.exe), and remote (ssh ls / scp) modes.
+//! Supports local (std.fs), WSL, and remote SSH/SCP modes.
 
 const std = @import("std");
 const Surface = @import("Surface.zig");
 const agent_history = @import("agent_history.zig");
 const scp = @import("scp.zig");
 const file_backend = @import("file_backend.zig");
+const platform_local_path = @import("platform/local_path.zig");
 const ui_perf = @import("ui_perf.zig");
 const tab = @import("appwindow/tab.zig");
 
@@ -527,7 +528,7 @@ pub fn enterLocalMode() void {
     g_root_path_len = 0;
 }
 
-/// Enter WSL mode. Paths are Linux-style and listed via wsl.exe.
+/// Enter WSL mode. Paths are Linux-style and listed via the platform backend.
 pub fn enterWslMode(wsl_cwd: []const u8) void {
     g_async_context_id +%= 1;
     g_pending_async_list = null;
@@ -622,7 +623,7 @@ pub fn rescan() void {
         .wsl => .wsl,
         .remote => unreachable,
     };
-    const sep: u8 = if (g_mode == .wsl) '/' else '\\';
+    const sep: u8 = if (g_mode == .wsl) '/' else platform_local_path.separator();
     const result = loadBackendEntries(backend, path, 0, path, sep);
     if (result != .ok) {
         setTransferStatus(.failed, if (g_mode == .wsl) "WSL list failed" else "Cannot open folder");
@@ -723,10 +724,7 @@ fn buildChildPathInto(buf: *[512]u8, parent: []const u8, name: []const u8, sep: 
 }
 
 fn pathEndsWithSeparator(path: []const u8, sep: u8) bool {
-    if (path.len == 0) return false;
-    const last = path[path.len - 1];
-    if (sep == '\\') return last == '\\' or last == '/';
-    return last == sep;
+    return platform_local_path.endsWithSeparatorForSeparator(path, sep);
 }
 
 pub fn toggleExpand(idx: usize) void {
@@ -1212,7 +1210,7 @@ fn setLoading(msg: []const u8) void {
 }
 
 fn expand(idx: usize) void {
-    expandWithBackend(idx, .local, '\\');
+    expandWithBackend(idx, .local, platform_local_path.separator());
 }
 
 fn expandWsl(idx: usize) void {
@@ -1333,16 +1331,9 @@ fn commitRename() void {
     const old_path = entry.path_buf[0..entry.path_len];
     const new_name = g_input_buf[0..g_input_len];
 
-    // Build new path: parent dir + new name
     var new_path_buf: [512]u8 = undefined;
-    const parent_end = blk: {
-        var i: usize = old_path.len;
-        while (i > 0) {
-            i -= 1;
-            if (old_path[i] == '\\' or old_path[i] == '/') break :blk i + 1;
-        }
-        break :blk 0;
-    };
+    const parent_end = platform_local_path.parentPrefixLen(old_path);
+    if (parent_end + new_name.len > new_path_buf.len) return;
     @memcpy(new_path_buf[0..parent_end], old_path[0..parent_end]);
     @memcpy(new_path_buf[parent_end..][0..new_name.len], new_name);
     const new_path = new_path_buf[0 .. parent_end + new_name.len];
@@ -1360,7 +1351,7 @@ fn commitNewFile() void {
     const parent = getSelectedParentPath();
 
     var path_buf: [512]u8 = undefined;
-    const path = buildChildPath(&path_buf, parent, new_name);
+    const path = buildChildPath(&path_buf, parent, new_name) orelse return;
 
     const cwd = std.fs.cwd();
     const file = cwd.createFile(path, .{}) catch return;
@@ -1375,7 +1366,7 @@ fn commitNewDir() void {
     const parent = getSelectedParentPath();
 
     var path_buf: [512]u8 = undefined;
-    const path = buildChildPath(&path_buf, parent, new_name);
+    const path = buildChildPath(&path_buf, parent, new_name) orelse return;
 
     const cwd = std.fs.cwd();
     cwd.makeDir(path) catch return;
@@ -1407,23 +1398,15 @@ fn getSelectedParentPath() []const u8 {
             if (entry.is_dir and entry.expanded) {
                 return entry.path_buf[0..entry.path_len];
             }
-            // Use parent directory of selected item
             const path = entry.path_buf[0..entry.path_len];
-            var i: usize = path.len;
-            while (i > 0) {
-                i -= 1;
-                if (path[i] == '\\' or path[i] == '/') return path[0..i];
-            }
+            if (platform_local_path.parent(path)) |parent_path| return parent_path;
         }
     }
     return g_root_path[0..g_root_path_len];
 }
 
-fn buildChildPath(buf: *[512]u8, parent: []const u8, name: []const u8) []const u8 {
-    @memcpy(buf[0..parent.len], parent);
-    buf[parent.len] = '\\';
-    @memcpy(buf[parent.len + 1 ..][0..name.len], name);
-    return buf[0 .. parent.len + 1 + name.len];
+fn buildChildPath(buf: *[512]u8, parent: []const u8, name: []const u8) ?[]const u8 {
+    return platform_local_path.joinInto(buf[0..], parent, name);
 }
 
 pub fn inputChar(cp: u21) void {
@@ -1519,10 +1502,9 @@ pub fn downloadSelected(local_dir: []const u8) void {
     var spec_buf: [512]u8 = undefined;
     const src = scp.remoteSpec(&spec_buf, &g_ssh_conn, remote_path);
 
-    // Destination: local_dir\filename
     var dst_buf: [512]u8 = undefined;
     const name = entry.name_buf[0..entry.name_len];
-    const dst = std.fmt.bufPrint(&dst_buf, "{s}\\{s}", .{ local_dir, name }) catch {
+    const dst = platform_local_path.joinInto(dst_buf[0..], local_dir, name) orelse {
         setTransferStatusForKind(.download, .failed, "Path too long");
         return;
     };
@@ -1540,12 +1522,7 @@ pub fn uploadFile(local_path: []const u8) void {
     var spec_buf: [512]u8 = undefined;
     const dst = scp.remoteSpec(&spec_buf, &g_ssh_conn, remote_dir);
 
-    // Extract filename for status
-    var name_start: usize = 0;
-    for (local_path, 0..) |ch, i| {
-        if (ch == '\\' or ch == '/') name_start = i + 1;
-    }
-    const filename = local_path[name_start..];
+    const filename = platform_local_path.basename(local_path);
 
     _ = startTransferJob(.upload, &g_ssh_conn, local_path, dst, filename, scp.transferWithControl);
 }
@@ -1781,9 +1758,6 @@ test "buildChildPathInto avoids duplicate separators" {
 
     const remote_root = buildChildPathInto(&buf, "/", "home", '/') orelse unreachable;
     try std.testing.expectEqualStrings("/home", buf[0..remote_root]);
-
-    const local = buildChildPathInto(&buf, "C:\\Users", "xzg", '\\') orelse unreachable;
-    try std.testing.expectEqualStrings("C:\\Users\\xzg", buf[0..local]);
 }
 
 test "Mode enum values" {

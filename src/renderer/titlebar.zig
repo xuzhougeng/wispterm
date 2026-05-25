@@ -10,7 +10,8 @@ const font = AppWindow.font;
 const tab = AppWindow.tab;
 const cell_renderer = AppWindow.cell_renderer;
 const gl_init = AppWindow.gl_init;
-const win32_backend = @import("../apprt/win32.zig");
+const font_backend = @import("../platform/font_backend.zig");
+const window_backend = @import("../platform/window_backend.zig");
 const agent_detector = @import("../agent_detector.zig");
 const keybind = @import("../keybind.zig");
 const c = @cImport({
@@ -44,7 +45,34 @@ pub fn sidebarHeaderHeight() f32 {
 }
 
 pub fn titlebarHeight() f32 {
-    return @round(@max(@as(f32, @floatFromInt(win32_backend.TITLEBAR_HEIGHT)), font.g_titlebar_cell_height + 12));
+    return @round(@max(@as(f32, @floatFromInt(window_backend.titlebarBaseHeight())), font.g_titlebar_cell_height + 12));
+}
+
+fn currentMousePosition() ?window_backend.Point {
+    const win = AppWindow.g_window orelse return null;
+    return window_backend.mousePosition(win);
+}
+
+fn mouseX() ?f32 {
+    const mouse = currentMousePosition() orelse return null;
+    return @floatFromInt(mouse.x);
+}
+
+fn mouseInRect(left: f32, top: f32, width: f32, height: f32) bool {
+    const mouse = currentMousePosition() orelse return false;
+    if (mouse.x < 0 or mouse.y < 0) return false;
+    const mx: f32 = @floatFromInt(mouse.x);
+    const my: f32 = @floatFromInt(mouse.y);
+    return mx >= left and mx < left + width and my >= top and my < top + height;
+}
+
+fn mouseInTitlebarRange(titlebar_h: f32, left: f32, right: f32) bool {
+    return mouseInRect(left, 0, right - left, titlebar_h);
+}
+
+fn currentWindowIsMaximized() bool {
+    const win = AppWindow.g_window orelse return false;
+    return window_backend.isMaximized(win);
 }
 
 pub fn sidebarMaxWidthForWindow(window_width: f32) f32 {
@@ -226,7 +254,7 @@ fn renderFallbackHelpIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
 
 fn renderPlusIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     if (font.icon_face != null) {
-        if (font.loadIconGlyph(0xE948)) |ch| {
+        if (font.loadIconGlyph(font_backend.titlebarIconGlyph(.add))) |ch| {
             renderIconGlyph(ch, x, y, w, h, color, 1.1);
             return;
         }
@@ -242,7 +270,7 @@ fn renderPlusIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
 
 fn renderCloseIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     if (font.icon_face != null) {
-        if (font.loadIconGlyph(0xE8BB)) |ch| {
+        if (font.loadIconGlyph(font_backend.titlebarIconGlyph(.close))) |ch| {
             renderIconGlyph(ch, x, y, w, h, color, 0.95);
             return;
         }
@@ -483,11 +511,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         gl_init.renderQuad(0, tb_top, window_width, titlebar_h, top_bg);
         gl_init.renderQuad(0, tb_top, window_width, 1, border_color_simple);
 
-        const toggle_hovered = blk: {
-            const win = AppWindow.g_window orelse break :blk false;
-            if (win.mouse_y < 0 or win.mouse_y >= @as(i32, @intFromFloat(titlebar_h))) break :blk false;
-            break :blk win.mouse_x >= 0 and win.mouse_x < @as(i32, @intFromFloat(TITLEBAR_TOGGLE_W));
-        };
+        const toggle_hovered = mouseInTitlebarRange(titlebar_h, 0, TITLEBAR_TOGGLE_W);
         if (toggle_hovered) {
             gl_init.renderQuad(0, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
         }
@@ -501,18 +525,14 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             renderFallbackMenuIcon(0, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
         }
 
-        const top_caption_btn_w: f32 = 46;
+        const top_caption_btn_w = window_backend.caption_button_visual_style.width;
         const top_caption_area_w: f32 = top_caption_btn_w * 3;
         const top_btn_h: f32 = titlebar_h;
-        const top_hovered: win32_backend.CaptionButton = if (AppWindow.g_window) |w| w.hovered_button else .none;
+        const top_hovered: window_backend.CaptionButton = if (AppWindow.g_window) |w| window_backend.hoveredCaptionButton(w) else .none;
 
         const top_caption_start = window_width - top_caption_area_w;
         const config_x = top_caption_start - TITLEBAR_CONFIG_W;
-        const config_hovered = blk: {
-            const win = AppWindow.g_window orelse break :blk false;
-            if (win.mouse_y < 0 or win.mouse_y >= @as(i32, @intFromFloat(titlebar_h))) break :blk false;
-            break :blk @as(f32, @floatFromInt(win.mouse_x)) >= config_x and @as(f32, @floatFromInt(win.mouse_x)) < config_x + TITLEBAR_CONFIG_W;
-        };
+        const config_hovered = mouseInTitlebarRange(titlebar_h, config_x, config_x + TITLEBAR_CONFIG_W);
         if (config_hovered) {
             gl_init.renderQuad(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
         }
@@ -527,11 +547,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         }
 
         const help_x = config_x - TITLEBAR_HELP_W;
-        const help_hovered = blk: {
-            const win = AppWindow.g_window orelse break :blk false;
-            if (win.mouse_y < 0 or win.mouse_y >= @as(i32, @intFromFloat(titlebar_h))) break :blk false;
-            break :blk @as(f32, @floatFromInt(win.mouse_x)) >= help_x and @as(f32, @floatFromInt(win.mouse_x)) < help_x + TITLEBAR_HELP_W;
-        };
+        const help_hovered = mouseInTitlebarRange(titlebar_h, help_x, help_x + TITLEBAR_HELP_W);
         if (help_hovered) {
             gl_init.renderQuad(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, hover_bg);
         }
@@ -556,8 +572,8 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         renderCaptionButton(top_caption_start + top_caption_btn_w * 2, tb_top, top_caption_btn_w, top_btn_h, .close, top_hovered == .close);
 
         {
-            const is_focused = if (AppWindow.g_window) |w| w.focused else false;
-            const is_maximized = if (AppWindow.g_window) |w| win32_backend.IsZoomed(w.hwnd) != 0 else false;
+            const is_focused = if (AppWindow.g_window) |w| window_backend.isFocused(w) else false;
+            const is_maximized = currentWindowIsMaximized();
             if (is_focused and !is_maximized) {
                 const b: f32 = 1;
                 gl_init.renderQuad(0, 0, window_width, b, bg);
@@ -586,7 +602,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
     const text_inactive = [3]f32{ 0.55, 0.55, 0.55 };
 
     // Layout constants
-    const caption_btn_w: f32 = 46;
+    const caption_btn_w = window_backend.caption_button_visual_style.width;
     const caption_area_w: f32 = caption_btn_w * 3; // min + max + close
     const plus_btn_w: f32 = 46; // + button width (same as caption buttons)
     const gap_w: f32 = 42; // breathing room between + and caption buttons
@@ -618,12 +634,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         const is_active = (tab_idx == tab.g_active_tab);
 
         // Check if mouse is hovering this tab
-        const tab_hovered = blk: {
-            const win = AppWindow.g_window orelse break :blk false;
-            if (win.mouse_y < 0 or win.mouse_y >= @as(i32, @intFromFloat(titlebar_h))) break :blk false;
-            const fx: f32 = @floatFromInt(win.mouse_x);
-            break :blk fx >= cursor_x and fx < cursor_x + tab_w;
-        };
+        const tab_hovered = mouseInTitlebarRange(titlebar_h, cursor_x, cursor_x + tab_w);
 
         // Animate close button opacity: fade in when hovered, fade out when not
         if (num_tabs > 1) {
@@ -923,8 +934,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                 const close_btn_x = shortcut_center - tab.TAB_CLOSE_BTN_W / 2;
                 const close_hovered = blk: {
                     if (!tab_hovered) break :blk false;
-                    const win = AppWindow.g_window orelse break :blk false;
-                    const fx: f32 = @floatFromInt(win.mouse_x);
+                    const fx = mouseX() orelse break :blk false;
                     break :blk fx >= close_btn_x and fx < close_btn_x + tab.TAB_CLOSE_BTN_W;
                 };
 
@@ -951,7 +961,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                 }
 
                 if (font.icon_face != null) {
-                    if (font.loadIconGlyph(0xE8BB)) |ch| {
+                    if (font.loadIconGlyph(font_backend.titlebarIconGlyph(.close))) |ch| {
                         renderIconGlyph(ch, close_btn_x, tb_top, tab.TAB_CLOSE_BTN_W, titlebar_h, faded_close_color, 1.0);
                     }
                 } else {
@@ -980,8 +990,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                 const re = cursor_x + tab_w - tp;
                 const sc_center = re - sc_w / 2;
                 const cb_x = sc_center - tab.TAB_CLOSE_BTN_W / 2;
-                w.close_btn_x_start[tab_idx] = @intFromFloat(cb_x);
-                w.close_btn_x_end[tab_idx] = @intFromFloat(cb_x + tab.TAB_CLOSE_BTN_W);
+                window_backend.setTabCloseButtonBounds(w, tab_idx, @intFromFloat(cb_x), @intFromFloat(cb_x + tab.TAB_CLOSE_BTN_W));
             }
         }
 
@@ -991,14 +1000,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
     // --- + (new tab) button — transparent bg, inactive_tab_bg on hover ---
     if (show_plus) {
         // Check if mouse is hovering the + button
-        const plus_hovered = blk: {
-            const win = AppWindow.g_window orelse break :blk false;
-            const mouse_x = win.mouse_x;
-            const mouse_y = win.mouse_y;
-            if (mouse_y < 0 or mouse_y >= @as(i32, @intFromFloat(titlebar_h))) break :blk false;
-            const fx: f32 = @floatFromInt(mouse_x);
-            break :blk fx >= cursor_x and fx < cursor_x + plus_btn_w;
-        };
+        const plus_hovered = mouseInTitlebarRange(titlebar_h, cursor_x, cursor_x + plus_btn_w);
 
         if (plus_hovered) {
             gl_init.renderQuad(cursor_x, tb_top, plus_btn_w, titlebar_h, inactive_tab_bg);
@@ -1014,7 +1016,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         const plus_icon_color = [3]f32{ 0.75, 0.75, 0.75 };
         const plus_scale: f32 = 1.15;
         if (font.icon_face != null) {
-            if (font.loadIconGlyph(0xE948)) |ch| {
+            if (font.loadIconGlyph(font_backend.titlebarIconGlyph(.add))) |ch| {
                 renderIconGlyph(ch, cursor_x, tb_top, plus_btn_w, titlebar_h, plus_icon_color, plus_scale);
             }
         } else {
@@ -1027,15 +1029,14 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         }
         // Sync plus button position for double-click suppression in WndProc
         if (AppWindow.g_window) |w| {
-            w.plus_btn_x_start = @intFromFloat(cursor_x);
-            w.plus_btn_x_end = @intFromFloat(cursor_x + plus_btn_w);
+            window_backend.setNewTabButtonBounds(w, @intFromFloat(cursor_x), @intFromFloat(cursor_x + plus_btn_w));
         }
         cursor_x += plus_btn_w;
     }
 
     // --- Caption buttons (minimize, maximize, close) ---
     const btn_h: f32 = titlebar_h;
-    const hovered: win32_backend.CaptionButton = if (AppWindow.g_window) |w| w.hovered_button else .none;
+    const hovered: window_backend.CaptionButton = if (AppWindow.g_window) |w| window_backend.hoveredCaptionButton(w) else .none;
 
     const caption_start = window_width - caption_area_w;
     renderCaptionButton(caption_start, tb_top, caption_btn_w, btn_h, .minimize, hovered == .minimize);
@@ -1044,8 +1045,8 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
 
     // --- Focus border: 1px accent border when window is focused (matches Explorer/DWM) ---
     {
-        const is_focused = if (AppWindow.g_window) |w| w.focused else false;
-        const is_maximized = if (AppWindow.g_window) |w| win32_backend.IsZoomed(w.hwnd) != 0 else false;
+        const is_focused = if (AppWindow.g_window) |w| window_backend.isFocused(w) else false;
+        const is_maximized = currentWindowIsMaximized();
         if (is_focused and !is_maximized) {
             // Same color as active tab (terminal background)
             const accent = bg;
@@ -1058,7 +1059,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
     }
 }
 
-/// Render the left tab sidebar. The top titlebar remains separate so Windows
+/// Render the left tab sidebar. The top titlebar remains separate so native
 /// caption hit-testing stays simple.
 pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) void {
     _ = window_width;
@@ -1085,14 +1086,8 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
     const side_h = window_height - titlebar_h;
     if (side_h <= 0) return;
 
-    const resize_hovered = blk: {
-        const win = AppWindow.g_window orelse break :blk false;
-        if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
-        const mx: f32 = @floatFromInt(win.mouse_x);
-        const my: f32 = @floatFromInt(win.mouse_y);
-        const half_hit = SIDEBAR_RESIZE_HIT_WIDTH / 2;
-        break :blk mx >= sidebar_w - half_hit and mx <= sidebar_w + half_hit and my >= titlebar_h and my < window_height;
-    };
+    const half_resize_hit = SIDEBAR_RESIZE_HIT_WIDTH / 2;
+    const resize_hovered = mouseInRect(sidebar_w - half_resize_hit, titlebar_h, SIDEBAR_RESIZE_HIT_WIDTH, window_height - titlebar_h);
     const edge_color = if (resize_hovered) blend(bg, accent, 0.38) else border_color;
 
     gl_init.renderQuad(0, 0, sidebar_w, side_h, sidebar_bg);
@@ -1104,13 +1099,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
     const header_y = window_height - header_top_px - header_h;
     const plus_btn_w: f32 = 42;
     const plus_x = sidebar_w - plus_btn_w - 6;
-    const plus_hovered = blk: {
-        const win = AppWindow.g_window orelse break :blk false;
-        if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
-        const mx: f32 = @floatFromInt(win.mouse_x);
-        const my: f32 = @floatFromInt(win.mouse_y);
-        break :blk mx >= plus_x and mx < plus_x + plus_btn_w and my >= header_top_px and my < header_top_px + header_h;
-    };
+    const plus_hovered = mouseInRect(plus_x, header_top_px, plus_btn_w, header_h);
     if (plus_hovered) {
         gl_init.renderQuad(plus_x, header_y + 4, plus_btn_w, header_h - 8, hover_bg);
     }
@@ -1144,13 +1133,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         const row_y = window_height - row_top_px - row_h;
         const is_active = tab_idx == tab.g_active_tab;
 
-        const row_hovered = blk: {
-            const win = AppWindow.g_window orelse break :blk false;
-            if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
-            const mx: f32 = @floatFromInt(win.mouse_x);
-            const my: f32 = @floatFromInt(win.mouse_y);
-            break :blk mx >= 0 and mx < sidebar_w and my >= row_top_px and my < row_top_px + row_h;
-        };
+        const row_hovered = mouseInRect(0, row_top_px, sidebar_w, row_h);
 
         if (is_active) {
             gl_init.renderQuad(0, row_y, sidebar_w, row_h, active_bg);
@@ -1235,8 +1218,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
 
         if (close_opacity > 0.01 and tab.g_tab_count > 1) {
             const close_hovered = row_hovered and blk: {
-                const win = AppWindow.g_window orelse break :blk false;
-                const mx: f32 = @floatFromInt(win.mouse_x);
+                const mx = mouseX() orelse break :blk false;
                 break :blk mx >= close_btn_x and mx < close_btn_x + tab.TAB_CLOSE_BTN_W;
             };
             const raw_color = if (close_hovered) text_active else muted;
@@ -1258,28 +1240,25 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
     }
 }
 
-/// Draw a Windows Terminal-style caption button with hover support.
+/// Draw a native caption button with hover support.
 /// Each button is 46×40px with a 10×10 icon centered inside.
-/// Matches Windows Terminal's visual style:
-///   - Normal: transparent bg, light gray icon
-///   - Hover (min/max): subtle light fill bg, white icon
-///   - Hover (close): red #C42B1C bg, white icon
+/// Platform/window provides the concrete colors and metrics.
 pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButtonType, hovered: bool) void {
+    const visual = window_backend.caption_button_visual_style;
     // Draw hover background, respecting the 1px focus border on edges
     if (hovered) {
         const hover_bg = switch (btn_type) {
-            .close => [3]f32{ 0.77, 0.17, 0.11 }, // #C42B1C
+            .close => visual.close_hover_background,
             else => [3]f32{
-                @min(1.0, AppWindow.g_theme.background[0] + 0.05),
-                @min(1.0, AppWindow.g_theme.background[1] + 0.05),
-                @min(1.0, AppWindow.g_theme.background[2] + 0.05),
+                @min(1.0, AppWindow.g_theme.background[0] + visual.hover_background_delta),
+                @min(1.0, AppWindow.g_theme.background[1] + visual.hover_background_delta),
+                @min(1.0, AppWindow.g_theme.background[2] + visual.hover_background_delta),
             },
         };
-        // Close button is at the window edge — inset by 1px on top/right
-        // to respect the focus border (matches Explorer behavior)
+        // Close button is at the window edge; inset by the focus border.
         if (btn_type == .close) {
-            const is_focused = if (AppWindow.g_window) |win| win.focused else false;
-            const is_maximized = if (AppWindow.g_window) |win| win32_backend.IsZoomed(win.hwnd) != 0 else false;
+            const is_focused = if (AppWindow.g_window) |win| window_backend.isFocused(win) else false;
+            const is_maximized = currentWindowIsMaximized();
             const b: f32 = if (is_focused and !is_maximized) 1 else 0;
             gl_init.renderQuad(x, y + b, w - b, h - b, hover_bg);
         } else {
@@ -1287,21 +1266,19 @@ pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButt
         }
     }
 
-    // Icon color: white when hovered, light gray otherwise
-    const icon_color: [3]f32 = if (hovered) .{ 1.0, 1.0, 1.0 } else .{ 0.75, 0.75, 0.75 };
+    const icon_color: [3]f32 = if (hovered) visual.hover_icon_color else visual.icon_color;
 
     // Check if window is maximized or fullscreen (for restore icon)
-    const is_maximized = if (AppWindow.g_window) |win| win32_backend.IsZoomed(win.hwnd) != 0 else false;
-    const is_fullscreen = if (AppWindow.g_window) |win| win.is_fullscreen else false;
+    const is_maximized = currentWindowIsMaximized();
+    const is_fullscreen = if (AppWindow.g_window) |win| window_backend.isFullscreen(win) else false;
 
-    // Segoe MDL2 Assets glyph codepoints (same as Windows Terminal)
-    const icon_codepoint: u32 = switch (btn_type) {
-        .close => 0xE8BB,
-        .maximize => if (is_maximized or is_fullscreen) @as(u32, 0xE923) else @as(u32, 0xE922),
-        .minimize => 0xE921,
-    };
+    const icon_codepoint = font_backend.titlebarIconGlyph(switch (btn_type) {
+        .close => .close,
+        .maximize => if (is_maximized or is_fullscreen) .restore else .maximize,
+        .minimize => .minimize,
+    });
 
-    // Try rendering from Segoe MDL2 Assets icon font
+    // Try rendering from the platform caption icon font.
     if (font.icon_face != null) {
         if (font.loadIconGlyph(icon_codepoint)) |ch| {
             renderIconGlyph(ch, x, y, w, h, icon_color, 1.0);

@@ -1,4 +1,5 @@
 const app_metadata = @import("app_metadata.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
 const std = @import("std");
 
 pub const CommandAction = enum {
@@ -39,7 +40,7 @@ pub const CommandEntry = struct {
 };
 
 pub const command_entries = [_]CommandEntry{
-    .{ .title = "New Session", .detail = "Choose PowerShell, SSH, WSL, or AI Agent", .shortcut = "", .action = .new_tab },
+    .{ .title = "New Session", .detail = platform_pty_command.session_launcher_detail, .shortcut = "", .action = .new_tab },
     .{ .title = "New Agent", .detail = "Open a new Agent tab with the default AI config", .shortcut = "", .action = .new_agent },
     .{ .title = "Select Agent History", .detail = "Open the command-center agent history picker", .shortcut = "", .action = .select_agent_history },
     .{ .title = "Split Right", .detail = "Create a panel to the right", .shortcut = "", .action = .split_right },
@@ -52,7 +53,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Close Panel / Tab", .detail = "Close focused panel or tab; press again for the last panel", .shortcut = "", .action = .close_split_or_tab },
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "", .action = .toggle_sidebar },
     .{ .title = "Toggle File Explorer", .detail = "Show or hide the left-side file explorer", .shortcut = "", .action = .toggle_file_explorer },
-    .{ .title = "Toggle Browser", .detail = "Show WebView2 browser for local or SSH URLs", .shortcut = "", .action = .toggle_browser_panel },
+    .{ .title = "Toggle Browser", .detail = "Show embedded browser for local or SSH URLs", .shortcut = "", .action = .toggle_browser_panel },
     .{ .title = "Toggle Quake Window", .detail = "Show or hide the drop-down terminal window", .shortcut = "", .action = .toggle_quake },
     .{ .title = "Keyboard Shortcuts", .detail = "Show the shortcut reference overlay", .shortcut = "", .action = .show_shortcuts },
     .{ .title = "Open Config", .detail = "Open the Phantty config file", .shortcut = "", .action = .open_config },
@@ -78,7 +79,8 @@ pub const NewAgentLaunchAction = enum {
     connect_default_profile_as_agent,
 };
 
-pub const SESSION_LAUNCHER_ROW_AI_AGENT: usize = 3;
+pub const SESSION_LAUNCHER_ROW_COUNT: usize = platform_pty_command.session_launcher_row_count;
+pub const SESSION_LAUNCHER_ROW_AI_AGENT: usize = platform_pty_command.session_launcher_ai_agent_row;
 
 pub const State = struct {
     command_palette_visible: bool = false,
@@ -246,6 +248,17 @@ test "command center includes update check actions" {
 test "command center includes AI Markdown export actions" {
     try std.testing.expectEqual(CommandAction.export_ai_chat_markdown, findCommandAction("Export AI Chat Markdown"));
     try std.testing.expectEqual(CommandAction.export_ai_chat_markdown_clean, findCommandAction("Export AI Chat Markdown Clean"));
+}
+
+test "command center browser text is backend neutral" {
+    comptime {
+        @setEvalBranchQuota(10_000);
+        for (command_entries) |entry| {
+            if (std.mem.indexOf(u8, entry.detail, "Web" ++ "View2") != null) {
+                @compileError("command center browser text must not expose the concrete embedded browser backend");
+            }
+        }
+    }
 }
 
 test "command center New Agent launch path forces agent mode when profiles exist" {

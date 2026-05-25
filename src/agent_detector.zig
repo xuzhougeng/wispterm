@@ -430,7 +430,7 @@ test "agent detector ignores stale Claude Code approval after newer tool output"
 }
 
 test "agent detector ignores normal shell output" {
-    const detection = detect("PowerShell", "PS C:\\Users> ls");
+    const detection = detect("Local Shell", "$ ls");
     try std.testing.expectEqual(App.none, detection.app);
     try std.testing.expectEqual(State.none, detection.state);
     try std.testing.expect(!detection.visible());

@@ -1,41 +1,15 @@
-//! Open URLs with the Windows default browser.
+//! Compatibility wrapper for opening URLs with the platform default browser.
 
 const std = @import("std");
-const win32 = @import("apprt/win32.zig");
+const platform_open_url = @import("platform/open_url.zig");
 
-const SW_SHOWNORMAL: win32.INT = 1;
-const SHELL_EXECUTE_ERROR_MAX: usize = 32;
-
-pub fn openUrl(allocator: std.mem.Allocator, hwnd: ?win32.HWND, url: []const u8) bool {
-    const url_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, url) catch return false;
-    defer allocator.free(url_w);
-
-    const result = win32.ShellExecuteW(
-        hwnd,
-        std.unicode.utf8ToUtf16LeStringLiteral("open"),
-        url_w.ptr,
-        null,
-        null,
-        SW_SHOWNORMAL,
-    );
-    if (!shellExecuteSucceeded(result)) {
-        std.debug.print("System browser open failed for {s}: ShellExecuteW returned {d}\n", .{ url, result });
-        return false;
-    }
-    return true;
+pub fn openUrl(allocator: std.mem.Allocator, url: []const u8) bool {
+    return platform_open_url.open(allocator, .{ .url = url });
 }
 
-pub fn shellExecuteSucceeded(result: usize) bool {
-    return result > SHELL_EXECUTE_ERROR_MAX;
-}
-
-test "ShellExecuteW return values at or below 32 are failures" {
-    try std.testing.expect(!shellExecuteSucceeded(0));
-    try std.testing.expect(!shellExecuteSucceeded(2));
-    try std.testing.expect(!shellExecuteSucceeded(31));
-    try std.testing.expect(!shellExecuteSucceeded(32));
-}
-
-test "ShellExecuteW return values above 32 are success" {
-    try std.testing.expect(shellExecuteSucceeded(33));
+test "system browser wrapper exposes only the platform-neutral URL open API" {
+    try std.testing.expectEqual(@as(usize, 2), @typeInfo(@TypeOf(openUrl)).@"fn".params.len);
+    try std.testing.expect(@typeInfo(@TypeOf(openUrl)).@"fn".params[0].type.? == std.mem.Allocator);
+    try std.testing.expect(@typeInfo(@TypeOf(openUrl)).@"fn".params[1].type.? == []const u8);
+    try std.testing.expect(@typeInfo(@TypeOf(openUrl)).@"fn".return_type.? == bool);
 }

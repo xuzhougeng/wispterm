@@ -10,6 +10,8 @@
 
 const std = @import("std");
 const windows = std.os.windows;
+const platform_input = @import("../platform/input_events.zig");
+const platform_window = @import("../platform/window.zig");
 
 // ============================================================================
 // Win32 API types
@@ -156,11 +158,11 @@ pub const CS_OWNDC: UINT = 0x0020;
 pub const CS_DBLCLKS: UINT = 0x0008;
 
 // ShowWindow commands
-pub const SW_MINIMIZE: INT = 6;
-pub const SW_HIDE: INT = 0;
-pub const SW_SHOW: INT = 5;
-pub const SW_RESTORE: INT = 9;
-pub const SW_MAXIMIZE: INT = 3;
+const SW_MINIMIZE: INT = 6;
+const SW_HIDE: INT = 0;
+const SW_SHOW: INT = 5;
+const SW_RESTORE: INT = 9;
+const SW_MAXIMIZE: INT = 3;
 
 // CW_USEDEFAULT
 pub const CW_USEDEFAULT: INT = @bitCast(@as(u32, 0x80000000));
@@ -173,55 +175,55 @@ pub const PFD_TYPE_RGBA: BYTE = 0;
 pub const PFD_MAIN_PLANE: BYTE = 0;
 
 // Window messages
-pub const WM_APP: UINT = 0x8000;
-pub const WM_DESTROY: UINT = 0x0002;
-pub const WM_CLOSE: UINT = 0x0010;
-pub const WM_SIZE: UINT = 0x0005;
-pub const WM_PAINT: UINT = 0x000F;
-pub const WM_KEYDOWN: UINT = 0x0100;
-pub const WM_KEYUP: UINT = 0x0101;
-pub const WM_SYSKEYDOWN: UINT = 0x0104;
-pub const WM_SYSKEYUP: UINT = 0x0105;
-pub const WM_CHAR: UINT = 0x0102;
-pub const WM_SYSCHAR: UINT = 0x0106;
-pub const WM_SYSDEADCHAR: UINT = 0x0107;
-pub const WM_IME_STARTCOMPOSITION: UINT = 0x010D;
-pub const WM_IME_ENDCOMPOSITION: UINT = 0x010E;
-pub const WM_IME_COMPOSITION: UINT = 0x010F;
-pub const WM_IME_SETCONTEXT: UINT = 0x0281;
-pub const WM_MOUSEMOVE: UINT = 0x0200;
-pub const WM_LBUTTONDOWN: UINT = 0x0201;
-pub const WM_LBUTTONUP: UINT = 0x0202;
-pub const WM_LBUTTONDBLCLK: UINT = 0x0203;
-pub const WM_MBUTTONDOWN: UINT = 0x0207;
-pub const WM_MBUTTONUP: UINT = 0x0208;
-pub const WM_NCMBUTTONDOWN: UINT = 0x00A8;
-pub const WM_NCMBUTTONUP: UINT = 0x00A9;
-pub const WM_RBUTTONDOWN: UINT = 0x0204;
-pub const WM_RBUTTONUP: UINT = 0x0205;
-pub const WM_MOUSEWHEEL: UINT = 0x020A;
-pub const WM_SETFOCUS: UINT = 0x0007;
-pub const WM_KILLFOCUS: UINT = 0x0008;
-pub const WM_DPICHANGED: UINT = 0x02E0;
-pub const WM_NCCALCSIZE: UINT = 0x0083;
-pub const WM_NCHITTEST: UINT = 0x0084;
-pub const WM_ERASEBKGND: UINT = 0x0014;
-pub const WM_NCLBUTTONDOWN: UINT = 0x00A1;
-pub const WM_NCLBUTTONUP: UINT = 0x00A2;
-pub const WM_NCMOUSEMOVE: UINT = 0x00A0;
-pub const WM_NCMOUSELEAVE: UINT = 0x02A2;
-pub const WM_MOUSELEAVE: UINT = 0x02A3;
-pub const WM_ACTIVATE: UINT = 0x0006;
-pub const WM_GETMINMAXINFO: UINT = 0x0024;
-pub const WM_DROPFILES: UINT = 0x0233;
-pub const WM_HOTKEY: UINT = 0x0312;
+const WM_APP: UINT = 0x8000;
+const WM_DESTROY: UINT = 0x0002;
+const WM_CLOSE: UINT = 0x0010;
+const WM_SIZE: UINT = 0x0005;
+const WM_PAINT: UINT = 0x000F;
+const WM_KEYDOWN: UINT = 0x0100;
+const WM_KEYUP: UINT = 0x0101;
+const WM_SYSKEYDOWN: UINT = 0x0104;
+const WM_SYSKEYUP: UINT = 0x0105;
+const WM_CHAR: UINT = 0x0102;
+const WM_SYSCHAR: UINT = 0x0106;
+const WM_SYSDEADCHAR: UINT = 0x0107;
+const WM_IME_STARTCOMPOSITION: UINT = 0x010D;
+const WM_IME_ENDCOMPOSITION: UINT = 0x010E;
+const WM_IME_COMPOSITION: UINT = 0x010F;
+const WM_IME_SETCONTEXT: UINT = 0x0281;
+const WM_MOUSEMOVE: UINT = 0x0200;
+const WM_LBUTTONDOWN: UINT = 0x0201;
+const WM_LBUTTONUP: UINT = 0x0202;
+const WM_LBUTTONDBLCLK: UINT = 0x0203;
+const WM_MBUTTONDOWN: UINT = 0x0207;
+const WM_MBUTTONUP: UINT = 0x0208;
+const WM_NCMBUTTONDOWN: UINT = 0x00A8;
+const WM_NCMBUTTONUP: UINT = 0x00A9;
+const WM_RBUTTONDOWN: UINT = 0x0204;
+const WM_RBUTTONUP: UINT = 0x0205;
+const WM_MOUSEWHEEL: UINT = 0x020A;
+const WM_SETFOCUS: UINT = 0x0007;
+const WM_KILLFOCUS: UINT = 0x0008;
+const WM_DPICHANGED: UINT = 0x02E0;
+const WM_NCCALCSIZE: UINT = 0x0083;
+const WM_NCHITTEST: UINT = 0x0084;
+const WM_ERASEBKGND: UINT = 0x0014;
+const WM_NCLBUTTONDOWN: UINT = 0x00A1;
+const WM_NCLBUTTONUP: UINT = 0x00A2;
+const WM_NCMOUSEMOVE: UINT = 0x00A0;
+const WM_NCMOUSELEAVE: UINT = 0x02A2;
+const WM_MOUSELEAVE: UINT = 0x02A3;
+const WM_ACTIVATE: UINT = 0x0006;
+const WM_GETMINMAXINFO: UINT = 0x0024;
+const WM_DROPFILES: UINT = 0x0233;
+const WM_HOTKEY: UINT = 0x0312;
 
-pub const SIZE_RESTORED: UINT = 0;
-pub const SIZE_MINIMIZED: UINT = 1;
-pub const SIZE_MAXIMIZED: UINT = 2;
+const SIZE_RESTORED: UINT = 0;
+const SIZE_MINIMIZED: UINT = 1;
+const SIZE_MAXIMIZED: UINT = 2;
 
-pub const CFS_POINT: DWORD = 0x0002;
-pub const CFS_CANDIDATEPOS: DWORD = 0x0040;
+const CFS_POINT: DWORD = 0x0002;
+const CFS_CANDIDATEPOS: DWORD = 0x0040;
 const GCS_COMPSTR: DWORD = 0x0008;
 const GCS_RESULTSTR: DWORD = 0x0800;
 const ISC_SHOWUICOMPOSITIONWINDOW: usize = 0x80000000;
@@ -240,8 +242,8 @@ pub const CANDIDATEFORM = extern struct {
 };
 
 // TrackMouseEvent
-pub const TME_LEAVE: DWORD = 0x00000002;
-pub const TME_NONCLIENT: DWORD = 0x00000010;
+const TME_LEAVE: DWORD = 0x00000002;
+const TME_NONCLIENT: DWORD = 0x00000010;
 
 pub const TRACKMOUSEEVENT = extern struct {
     cbSize: DWORD = @sizeOf(TRACKMOUSEEVENT),
@@ -253,60 +255,60 @@ pub const TRACKMOUSEEVENT = extern struct {
 extern "user32" fn TrackMouseEvent(lpEventTrack: *TRACKMOUSEEVENT) callconv(.winapi) BOOL;
 
 // NCHITTEST return values
-pub const HTCLIENT: LRESULT = 1;
-pub const HTCAPTION: LRESULT = 2;
-pub const HTSYSMENU: LRESULT = 3;
-pub const HTMINBUTTON: LRESULT = 8;
-pub const HTMAXBUTTON: LRESULT = 9;
-pub const HTLEFT: LRESULT = 10;
-pub const HTRIGHT: LRESULT = 11;
-pub const HTTOP: LRESULT = 12;
-pub const HTTOPLEFT: LRESULT = 13;
-pub const HTTOPRIGHT: LRESULT = 14;
-pub const HTBOTTOM: LRESULT = 15;
-pub const HTBOTTOMLEFT: LRESULT = 16;
-pub const HTBOTTOMRIGHT: LRESULT = 17;
-pub const HTCLOSE: LRESULT = 20;
+const HTCLIENT: LRESULT = 1;
+const HTCAPTION: LRESULT = 2;
+const HTSYSMENU: LRESULT = 3;
+const HTMINBUTTON: LRESULT = 8;
+const HTMAXBUTTON: LRESULT = 9;
+const HTLEFT: LRESULT = 10;
+const HTRIGHT: LRESULT = 11;
+const HTTOP: LRESULT = 12;
+const HTTOPLEFT: LRESULT = 13;
+const HTTOPRIGHT: LRESULT = 14;
+const HTBOTTOM: LRESULT = 15;
+const HTBOTTOMLEFT: LRESULT = 16;
+const HTBOTTOMRIGHT: LRESULT = 17;
+const HTCLOSE: LRESULT = 20;
 
 // Virtual key codes
-pub const VK_RETURN: WPARAM = 0x0D;
-pub const VK_BACK: WPARAM = 0x08;
-pub const VK_TAB: WPARAM = 0x09;
-pub const VK_ESCAPE: WPARAM = 0x1B;
-pub const VK_UP: WPARAM = 0x26;
-pub const VK_DOWN: WPARAM = 0x28;
-pub const VK_LEFT: WPARAM = 0x25;
-pub const VK_RIGHT: WPARAM = 0x27;
-pub const VK_HOME: WPARAM = 0x24;
-pub const VK_END: WPARAM = 0x23;
-pub const VK_PRIOR: WPARAM = 0x21; // Page Up
-pub const VK_NEXT: WPARAM = 0x22; // Page Down
-pub const VK_INSERT: WPARAM = 0x2D;
-pub const VK_DELETE: WPARAM = 0x2E;
-pub const VK_SHIFT: WPARAM = 0x10;
-pub const VK_CONTROL: WPARAM = 0x11;
-pub const VK_MENU: WPARAM = 0x12; // Alt
-pub const VK_CAPITAL: WPARAM = 0x14; // Caps Lock
-pub const VK_LWIN: WPARAM = 0x5B;
-pub const VK_RWIN: WPARAM = 0x5C;
-pub const VK_NUMLOCK: WPARAM = 0x90;
-pub const VK_SCROLL: WPARAM = 0x91;
-pub const VK_LSHIFT: WPARAM = 0xA0;
-pub const VK_RSHIFT: WPARAM = 0xA1;
-pub const VK_LCONTROL: WPARAM = 0xA2;
-pub const VK_RCONTROL: WPARAM = 0xA3;
-pub const VK_LMENU: WPARAM = 0xA4; // Left Alt
-pub const VK_RMENU: WPARAM = 0xA5; // Right Alt
-pub const VK_OEM_COMMA: WPARAM = 0xBC;
-pub const VK_OEM_PLUS: WPARAM = 0xBB; // '+' / '=' key
-pub const VK_OEM_MINUS: WPARAM = 0xBD; // '-' / '_' key
-pub const VK_OEM_3: WPARAM = 0xC0; // '`' / '~' key
-pub const VK_OEM_4: WPARAM = 0xDB; // '[' key
-pub const VK_OEM_6: WPARAM = 0xDD; // ']' key
-pub const VK_F11: WPARAM = 0x7A;
+const VK_RETURN: WPARAM = 0x0D;
+const VK_BACK: WPARAM = 0x08;
+const VK_TAB: WPARAM = 0x09;
+const VK_ESCAPE: WPARAM = 0x1B;
+const VK_UP: WPARAM = 0x26;
+const VK_DOWN: WPARAM = 0x28;
+const VK_LEFT: WPARAM = 0x25;
+const VK_RIGHT: WPARAM = 0x27;
+const VK_HOME: WPARAM = 0x24;
+const VK_END: WPARAM = 0x23;
+const VK_PRIOR: WPARAM = 0x21; // Page Up
+const VK_NEXT: WPARAM = 0x22; // Page Down
+const VK_INSERT: WPARAM = 0x2D;
+const VK_DELETE: WPARAM = 0x2E;
+const VK_SHIFT: WPARAM = 0x10;
+const VK_CONTROL: WPARAM = 0x11;
+const VK_MENU: WPARAM = 0x12; // Alt
+const VK_CAPITAL: WPARAM = 0x14; // Caps Lock
+const VK_LWIN: WPARAM = 0x5B;
+const VK_RWIN: WPARAM = 0x5C;
+const VK_NUMLOCK: WPARAM = 0x90;
+const VK_SCROLL: WPARAM = 0x91;
+const VK_LSHIFT: WPARAM = 0xA0;
+const VK_RSHIFT: WPARAM = 0xA1;
+const VK_LCONTROL: WPARAM = 0xA2;
+const VK_RCONTROL: WPARAM = 0xA3;
+const VK_LMENU: WPARAM = 0xA4; // Left Alt
+const VK_RMENU: WPARAM = 0xA5; // Right Alt
+const VK_OEM_COMMA: WPARAM = 0xBC;
+const VK_OEM_PLUS: WPARAM = 0xBB; // '+' / '=' key
+const VK_OEM_MINUS: WPARAM = 0xBD; // '-' / '_' key
+const VK_OEM_3: WPARAM = 0xC0; // '`' / '~' key
+const VK_OEM_4: WPARAM = 0xDB; // '[' key
+const VK_OEM_6: WPARAM = 0xDD; // ']' key
+const VK_F11: WPARAM = 0x7A;
 
 // GetKeyState
-pub const KEY_PRESSED: i16 = @bitCast(@as(u16, 0x8000));
+const KEY_PRESSED: i16 = @bitCast(@as(u16, 0x8000));
 
 // ============================================================================
 // Win32 API imports
@@ -335,7 +337,7 @@ extern "user32" fn CreateWindowExW(
     hInstance: ?HINSTANCE,
     lpParam: ?*anyopaque,
 ) callconv(.winapi) ?HWND;
-pub extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: INT) callconv(.winapi) BOOL;
+extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: INT) callconv(.winapi) BOOL;
 extern "user32" fn DestroyWindow(hWnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn DefWindowProcW(hWnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
 extern "user32" fn GetMessageW(lpMsg: *MSG, hWnd: ?HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT) callconv(.winapi) BOOL;
@@ -343,26 +345,24 @@ extern "user32" fn PeekMessageW(lpMsg: *MSG, hWnd: ?HWND, wMsgFilterMin: UINT, w
 extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.winapi) BOOL;
 extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.winapi) LRESULT;
 extern "user32" fn PostQuitMessage(nExitCode: INT) callconv(.winapi) void;
-pub extern "user32" fn PostMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
+extern "user32" fn PostMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
 extern "user32" fn GetDC(hWnd: ?HWND) callconv(.winapi) ?HDC;
 extern "user32" fn ReleaseDC(hWnd: ?HWND, hDC: HDC) callconv(.winapi) INT;
-pub extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
-pub extern "user32" fn GetDpiForWindow(hWnd: HWND) callconv(.winapi) UINT;
+extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
+extern "user32" fn GetDpiForWindow(hWnd: HWND) callconv(.winapi) UINT;
 extern "user32" fn GetDpiForSystem() callconv(.winapi) UINT;
 extern "user32" fn SetProcessDpiAwarenessContext(value: DPI_AWARENESS_CONTEXT) callconv(.winapi) BOOL;
 extern "user32" fn SetProcessDPIAware() callconv(.winapi) BOOL;
-pub extern "user32" fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
+extern "user32" fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
 extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.winapi) BOOL;
 extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.winapi) ?HDC;
 extern "user32" fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.winapi) BOOL;
 extern "user32" fn GetKeyState(nVirtKey: INT) callconv(.winapi) i16;
 extern "user32" fn SetWindowTextW(hWnd: HWND, lpString: [*:0]const WCHAR) callconv(.winapi) BOOL;
 extern "user32" fn LoadCursorW(hInstance: ?HINSTANCE, lpCursorName: usize) callconv(.winapi) ?HCURSOR;
-pub extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
-pub extern "user32" fn SetWindowPos(hWnd: HWND, hWndInsertAfter: ?HWND, X: INT, Y: INT, cx: INT, cy: INT, uFlags: UINT) callconv(.winapi) BOOL;
-pub extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.winapi) BOOL;
-pub extern "user32" fn RegisterHotKey(hWnd: ?HWND, id: INT, fsModifiers: UINT, vk: UINT) callconv(.winapi) BOOL;
-pub extern "user32" fn UnregisterHotKey(hWnd: ?HWND, id: INT) callconv(.winapi) BOOL;
+extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
+extern "user32" fn SetWindowPos(hWnd: HWND, hWndInsertAfter: ?HWND, X: INT, Y: INT, cx: INT, cy: INT, uFlags: UINT) callconv(.winapi) BOOL;
+extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn SetCapture(hWnd: HWND) callconv(.winapi) ?HWND;
 extern "user32" fn ReleaseCapture() callconv(.winapi) BOOL;
 extern "user32" fn MessageBeep(uType: UINT) callconv(.winapi) BOOL;
@@ -375,13 +375,13 @@ extern "imm32" fn ImmSetCandidateWindow(hIMC: HIMC, lpCandidate: *CANDIDATEFORM)
 extern "imm32" fn ImmGetCompositionStringW(hIMC: HIMC, dwIndex: DWORD, lpBuf: ?*anyopaque, dwBufLen: DWORD) callconv(.winapi) LONG;
 
 // Clipboard
-pub extern "user32" fn OpenClipboard(hWndNewOwner: ?HWND) callconv(.winapi) BOOL;
-pub extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
-pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
-pub extern "user32" fn SetClipboardData(uFormat: UINT, hMem: ?*anyopaque) callconv(.winapi) ?*anyopaque;
-pub extern "user32" fn GetClipboardData(uFormat: UINT) callconv(.winapi) ?*anyopaque;
-pub extern "user32" fn IsClipboardFormatAvailable(format: UINT) callconv(.winapi) BOOL;
-pub extern "shell32" fn ShellExecuteW(
+extern "user32" fn OpenClipboard(hWndNewOwner: ?HWND) callconv(.winapi) BOOL;
+extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
+extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
+extern "user32" fn SetClipboardData(uFormat: UINT, hMem: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+extern "user32" fn GetClipboardData(uFormat: UINT) callconv(.winapi) ?*anyopaque;
+extern "user32" fn IsClipboardFormatAvailable(format: UINT) callconv(.winapi) BOOL;
+extern "shell32" fn ShellExecuteW(
     hwnd: ?HWND,
     lpOperation: ?[*:0]const WCHAR,
     lpFile: [*:0]const WCHAR,
@@ -389,13 +389,13 @@ pub extern "shell32" fn ShellExecuteW(
     lpDirectory: ?[*:0]const WCHAR,
     nShowCmd: INT,
 ) callconv(.winapi) usize;
-pub extern "kernel32" fn GlobalAlloc(uFlags: UINT, dwBytes: usize) callconv(.winapi) ?*anyopaque;
-pub extern "kernel32" fn GlobalLock(hMem: *anyopaque) callconv(.winapi) ?*anyopaque;
-pub extern "kernel32" fn GlobalUnlock(hMem: *anyopaque) callconv(.winapi) BOOL;
-pub extern "kernel32" fn GlobalSize(hMem: *anyopaque) callconv(.winapi) usize;
+extern "kernel32" fn GlobalAlloc(uFlags: UINT, dwBytes: usize) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GlobalLock(hMem: *anyopaque) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GlobalUnlock(hMem: *anyopaque) callconv(.winapi) BOOL;
+extern "kernel32" fn GlobalSize(hMem: *anyopaque) callconv(.winapi) usize;
 
 // Open File Dialog (comdlg32)
-pub const OPENFILENAMEA = extern struct {
+const OPENFILENAMEA = extern struct {
     lStructSize: DWORD = @sizeOf(OPENFILENAMEA),
     hwndOwner: ?HWND = null,
     hInstance: ?HINSTANCE = null,
@@ -418,9 +418,9 @@ pub const OPENFILENAMEA = extern struct {
     lpTemplateName: ?[*:0]const u8 = null,
 };
 
-pub extern "comdlg32" fn GetOpenFileNameA(lpofn: *OPENFILENAMEA) callconv(.winapi) BOOL;
+extern "comdlg32" fn GetOpenFileNameA(lpofn: *OPENFILENAMEA) callconv(.winapi) BOOL;
 
-pub const OPENFILENAMEW = extern struct {
+const OPENFILENAMEW = extern struct {
     lStructSize: DWORD = @sizeOf(OPENFILENAMEW),
     hwndOwner: ?HWND = null,
     hInstance: ?HINSTANCE = null,
@@ -443,108 +443,108 @@ pub const OPENFILENAMEW = extern struct {
     lpTemplateName: ?[*:0]const WCHAR = null,
 };
 
-pub const OFN_OVERWRITEPROMPT: DWORD = 0x00000002;
-pub const OFN_HIDEREADONLY: DWORD = 0x00000004;
-pub const OFN_NOCHANGEDIR: DWORD = 0x00000008;
-pub const OFN_PATHMUSTEXIST: DWORD = 0x00000800;
-pub const OFN_EXPLORER: DWORD = 0x00080000;
-pub const OFN_ENABLESIZING: DWORD = 0x00800000;
+const OFN_OVERWRITEPROMPT: DWORD = 0x00000002;
+const OFN_HIDEREADONLY: DWORD = 0x00000004;
+const OFN_NOCHANGEDIR: DWORD = 0x00000008;
+const OFN_PATHMUSTEXIST: DWORD = 0x00000800;
+const OFN_EXPLORER: DWORD = 0x00080000;
+const OFN_ENABLESIZING: DWORD = 0x00800000;
 
-pub extern "comdlg32" fn GetSaveFileNameW(lpofn: *OPENFILENAMEW) callconv(.winapi) BOOL;
+extern "comdlg32" fn GetSaveFileNameW(lpofn: *OPENFILENAMEW) callconv(.winapi) BOOL;
 
 // Shell drag-drop
 pub const HDROP = *opaque {};
-pub extern "shell32" fn DragAcceptFiles(hWnd: HWND, fAccept: BOOL) callconv(.winapi) void;
-pub extern "shell32" fn DragQueryFileW(hDrop: HDROP, iFile: UINT, lpszFile: ?[*]WCHAR, cch: UINT) callconv(.winapi) UINT;
-pub extern "shell32" fn DragFinish(hDrop: HDROP) callconv(.winapi) void;
-pub extern "shell32" fn DragQueryPoint(hDrop: HDROP, lppt: *POINT) callconv(.winapi) BOOL;
+extern "shell32" fn DragAcceptFiles(hWnd: HWND, fAccept: BOOL) callconv(.winapi) void;
+extern "shell32" fn DragQueryFileW(hDrop: HDROP, iFile: UINT, lpszFile: ?[*]WCHAR, cch: UINT) callconv(.winapi) UINT;
+extern "shell32" fn DragFinish(hDrop: HDROP) callconv(.winapi) void;
+extern "shell32" fn DragQueryPoint(hDrop: HDROP, lppt: *POINT) callconv(.winapi) BOOL;
 
 // GDI+ image encoding
-pub const GpImage = opaque {};
-pub const GpBitmap = GpImage;
+const GpImage = opaque {};
+const GpBitmap = GpImage;
 
-pub const GdiplusStartupInput = extern struct {
+const GdiplusStartupInput = extern struct {
     GdiplusVersion: UINT,
     DebugEventCallback: ?*const anyopaque,
     SuppressBackgroundThread: BOOL,
     SuppressExternalCodecs: BOOL,
 };
 
-pub extern "gdiplus" fn GdiplusStartup(
+extern "gdiplus" fn GdiplusStartup(
     token: *usize,
     input: *const GdiplusStartupInput,
     output: ?*anyopaque,
 ) callconv(.winapi) INT;
-pub extern "gdiplus" fn GdiplusShutdown(token: usize) callconv(.winapi) void;
-pub extern "gdiplus" fn GdipCreateBitmapFromGdiDib(
+extern "gdiplus" fn GdiplusShutdown(token: usize) callconv(.winapi) void;
+extern "gdiplus" fn GdipCreateBitmapFromGdiDib(
     gdiBitmapInfo: *const anyopaque,
     gdiBitmapData: *const anyopaque,
     bitmap: *?*GpBitmap,
 ) callconv(.winapi) INT;
-pub extern "gdiplus" fn GdipSaveImageToFile(
+extern "gdiplus" fn GdipSaveImageToFile(
     image: *GpImage,
     filename: [*:0]const WCHAR,
     clsidEncoder: *const GUID,
     encoderParams: ?*const anyopaque,
 ) callconv(.winapi) INT;
-pub extern "gdiplus" fn GdipDisposeImage(image: *GpImage) callconv(.winapi) INT;
+extern "gdiplus" fn GdipDisposeImage(image: *GpImage) callconv(.winapi) INT;
 
 // ============================================================================
 // ConPTY, pipes, and process management
 // ============================================================================
 
-pub const HPCON = windows.HANDLE;
-pub const COORD = extern struct {
+const HPCON = windows.HANDLE;
+const COORD = extern struct {
     X: i16,
     Y: i16,
 };
 pub const HRESULT = i32;
 pub const S_OK: HRESULT = 0;
 
-pub const SECURITY_ATTRIBUTES = extern struct {
+const SECURITY_ATTRIBUTES = extern struct {
     nLength: DWORD,
     lpSecurityDescriptor: ?*anyopaque,
     bInheritHandle: BOOL,
 };
 
-pub const STARTUPINFOEXW = extern struct {
+const STARTUPINFOEXW = extern struct {
     StartupInfo: windows.STARTUPINFOW,
     lpAttributeList: ?*anyopaque,
 };
 
 // Process creation flags
-pub const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
-pub const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
-pub const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
-pub const HANDLE_FLAG_INHERIT: DWORD = 0x00000001;
+const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
+const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
+const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
+const HANDLE_FLAG_INHERIT: DWORD = 0x00000001;
 
 // Named pipe constants
-pub const FILE_FLAG_OVERLAPPED: DWORD = 0x40000000;
-pub const PIPE_ACCESS_OUTBOUND: DWORD = 0x00000002;
-pub const PIPE_ACCESS_INBOUND: DWORD = 0x00000001;
-pub const PIPE_TYPE_BYTE: DWORD = 0x00000000;
-pub const FILE_FLAG_FIRST_PIPE_INSTANCE: DWORD = 0x00080000;
-pub const GENERIC_READ: DWORD = 0x80000000;
-pub const GENERIC_WRITE: DWORD = 0x40000000;
-pub const OPEN_EXISTING: DWORD = 3;
-pub const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
+const FILE_FLAG_OVERLAPPED: DWORD = 0x40000000;
+const PIPE_ACCESS_OUTBOUND: DWORD = 0x00000002;
+const PIPE_ACCESS_INBOUND: DWORD = 0x00000001;
+const PIPE_TYPE_BYTE: DWORD = 0x00000000;
+const FILE_FLAG_FIRST_PIPE_INSTANCE: DWORD = 0x00080000;
+const GENERIC_READ: DWORD = 0x80000000;
+const GENERIC_WRITE: DWORD = 0x40000000;
+const OPEN_EXISTING: DWORD = 3;
+const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
 
 // Wait constants
-pub const WAIT_OBJECT_0: DWORD = 0x00000000;
-pub const WAIT_TIMEOUT: DWORD = 0x00000102;
-pub const INFINITE: DWORD = 0xFFFFFFFF;
+const WAIT_OBJECT_0: DWORD = 0x00000000;
+const WAIT_TIMEOUT: DWORD = 0x00000102;
+const INFINITE: DWORD = 0xFFFFFFFF;
 
-pub extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
-pub extern "kernel32" fn SetHandleInformation(hObject: windows.HANDLE, dwMask: DWORD, dwFlags: DWORD) callconv(.winapi) BOOL;
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
+extern "kernel32" fn SetHandleInformation(hObject: windows.HANDLE, dwMask: DWORD, dwFlags: DWORD) callconv(.winapi) BOOL;
 
-pub extern "kernel32" fn CreatePipe(
+extern "kernel32" fn CreatePipe(
     hReadPipe: *windows.HANDLE,
     hWritePipe: *windows.HANDLE,
     lpPipeAttributes: ?*const SECURITY_ATTRIBUTES,
     nSize: DWORD,
 ) callconv(.winapi) BOOL;
 
-pub extern "kernel32" fn CreateNamedPipeW(
+extern "kernel32" fn CreateNamedPipeW(
     lpName: [*:0]const u16,
     dwOpenMode: DWORD,
     dwPipeMode: DWORD,
@@ -555,7 +555,7 @@ pub extern "kernel32" fn CreateNamedPipeW(
     lpSecurityAttributes: ?*const SECURITY_ATTRIBUTES,
 ) callconv(.winapi) windows.HANDLE;
 
-pub extern "kernel32" fn CreateFileW(
+extern "kernel32" fn CreateFileW(
     lpFileName: [*:0]const u16,
     dwDesiredAccess: DWORD,
     dwShareMode: DWORD,
@@ -565,7 +565,7 @@ pub extern "kernel32" fn CreateFileW(
     hTemplateFile: ?windows.HANDLE,
 ) callconv(.winapi) windows.HANDLE;
 
-pub extern "kernel32" fn CreatePseudoConsole(
+extern "kernel32" fn CreatePseudoConsole(
     size: COORD,
     hInput: windows.HANDLE,
     hOutput: windows.HANDLE,
@@ -573,18 +573,18 @@ pub extern "kernel32" fn CreatePseudoConsole(
     phPC: *HPCON,
 ) callconv(.winapi) HRESULT;
 
-pub extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
+extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
 
-pub extern "kernel32" fn ResizePseudoConsole(hPC: HPCON, size: COORD) callconv(.winapi) HRESULT;
+extern "kernel32" fn ResizePseudoConsole(hPC: HPCON, size: COORD) callconv(.winapi) HRESULT;
 
-pub extern "kernel32" fn InitializeProcThreadAttributeList(
+extern "kernel32" fn InitializeProcThreadAttributeList(
     lpAttributeList: ?*anyopaque,
     dwAttributeCount: DWORD,
     dwFlags: DWORD,
     lpSize: *usize,
 ) callconv(.winapi) BOOL;
 
-pub extern "kernel32" fn UpdateProcThreadAttribute(
+extern "kernel32" fn UpdateProcThreadAttribute(
     lpAttributeList: ?*anyopaque,
     dwFlags: DWORD,
     Attribute: usize,
@@ -594,9 +594,9 @@ pub extern "kernel32" fn UpdateProcThreadAttribute(
     lpReturnSize: ?*usize,
 ) callconv(.winapi) BOOL;
 
-pub extern "kernel32" fn DeleteProcThreadAttributeList(lpAttributeList: ?*anyopaque) callconv(.winapi) void;
+extern "kernel32" fn DeleteProcThreadAttributeList(lpAttributeList: ?*anyopaque) callconv(.winapi) void;
 
-pub extern "kernel32" fn CreateProcessW(
+extern "kernel32" fn CreateProcessW(
     lpApplicationName: ?[*:0]const u16,
     lpCommandLine: ?[*:0]u16,
     lpProcessAttributes: ?*SECURITY_ATTRIBUTES,
@@ -609,7 +609,7 @@ pub extern "kernel32" fn CreateProcessW(
     lpProcessInformation: *windows.PROCESS_INFORMATION,
 ) callconv(.winapi) BOOL;
 
-pub extern "kernel32" fn PeekNamedPipe(
+extern "kernel32" fn PeekNamedPipe(
     hNamedPipe: windows.HANDLE,
     lpBuffer: ?*anyopaque,
     nBufferSize: DWORD,
@@ -618,30 +618,30 @@ pub extern "kernel32" fn PeekNamedPipe(
     lpBytesLeftThisMessage: ?*DWORD,
 ) callconv(.winapi) BOOL;
 
-pub extern "kernel32" fn CancelIoEx(
+extern "kernel32" fn CancelIoEx(
     hFile: windows.HANDLE,
     lpOverlapped: ?*windows.OVERLAPPED,
 ) callconv(.winapi) BOOL;
 
-pub extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
+extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
 
-pub extern "kernel32" fn CreateEventW(
+extern "kernel32" fn CreateEventW(
     lpEventAttributes: ?*anyopaque,
     bManualReset: BOOL,
     bInitialState: BOOL,
     lpName: ?[*:0]const u16,
 ) callconv(.winapi) ?windows.HANDLE;
 
-pub extern "kernel32" fn SetEvent(hEvent: windows.HANDLE) callconv(.winapi) BOOL;
-pub extern "kernel32" fn ResetEvent(hEvent: windows.HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn SetEvent(hEvent: windows.HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn ResetEvent(hEvent: windows.HANDLE) callconv(.winapi) BOOL;
 
-pub extern "kernel32" fn GetExitCodeProcess(hProcess: windows.HANDLE, lpExitCode: *DWORD) callconv(.winapi) BOOL;
+extern "kernel32" fn GetExitCodeProcess(hProcess: windows.HANDLE, lpExitCode: *DWORD) callconv(.winapi) BOOL;
 
 // Fullscreen
-pub extern "user32" fn GetWindowLongW(hWnd: HWND, nIndex: INT) callconv(.winapi) LONG;
-pub extern "user32" fn SetWindowLongW(hWnd: HWND, nIndex: INT, dwNewLong: LONG) callconv(.winapi) LONG;
-pub extern "user32" fn MonitorFromWindow(hWnd: HWND, dwFlags: DWORD) callconv(.winapi) ?HMONITOR;
-pub extern "user32" fn GetMonitorInfoW(hMonitor: HMONITOR, lpmi: *MONITORINFO) callconv(.winapi) BOOL;
+extern "user32" fn GetWindowLongW(hWnd: HWND, nIndex: INT) callconv(.winapi) LONG;
+extern "user32" fn SetWindowLongW(hWnd: HWND, nIndex: INT, dwNewLong: LONG) callconv(.winapi) LONG;
+extern "user32" fn MonitorFromWindow(hWnd: HWND, dwFlags: DWORD) callconv(.winapi) ?HMONITOR;
+extern "user32" fn GetMonitorInfoW(hMonitor: HMONITOR, lpmi: *MONITORINFO) callconv(.winapi) BOOL;
 
 pub const HMONITOR = *opaque {};
 pub const MONITORINFO = extern struct {
@@ -680,40 +680,40 @@ pub const FLASHWINFO = extern struct {
     uCount: UINT,
     dwTimeout: DWORD,
 };
-pub const FLASHW_ALL: DWORD = 3; // Flash both caption and taskbar
-pub const FLASHW_TIMERNOFG: DWORD = 12; // Flash until window comes to foreground
+const FLASHW_ALL: DWORD = 3; // Flash both caption and taskbar
+const FLASHW_TIMERNOFG: DWORD = 12; // Flash until window comes to foreground
 
 // MessageBeep
-pub const MB_OK: UINT = 0x00000000; // Default system sound
+const MB_OK: UINT = 0x00000000; // Default system sound
 
 // kernel32 for GetModuleHandle and GetProcAddress
 extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*:0]const WCHAR) callconv(.winapi) ?HINSTANCE;
 extern "kernel32" fn GetProcAddress(hModule: HINSTANCE, lpProcName: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 
 // System metrics
-pub extern "user32" fn GetSystemMetrics(nIndex: INT) callconv(.winapi) INT;
-pub const SM_CXSIZEFRAME: INT = 32;
-pub const SM_CYSIZEFRAME: INT = 33;
-pub const SM_CXPADDEDBORDER: INT = 92;
+extern "user32" fn GetSystemMetrics(nIndex: INT) callconv(.winapi) INT;
+const SM_CXSIZEFRAME: INT = 32;
+const SM_CYSIZEFRAME: INT = 33;
+const SM_CXPADDEDBORDER: INT = 92;
 
 // IsZoomed (maximized check)
-pub extern "user32" fn IsZoomed(hWnd: HWND) callconv(.winapi) BOOL;
+extern "user32" fn IsZoomed(hWnd: HWND) callconv(.winapi) BOOL;
 
 // Screen-to-client coordinate conversion
-pub extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.winapi) BOOL;
+extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.winapi) BOOL;
 
 // Cursor management
-pub extern "user32" fn SetCursor(hCursor: ?HCURSOR) callconv(.winapi) ?HCURSOR;
+extern "user32" fn SetCursor(hCursor: ?HCURSOR) callconv(.winapi) ?HCURSOR;
 pub fn LoadCursor(hInstance: ?HINSTANCE, lpCursorName: usize) ?HCURSOR {
     return LoadCursorW(hInstance, lpCursorName);
 }
 
 // IDC_* cursor resources (MAKEINTRESOURCE values)
-pub const IDC_ARROW: usize = 32512;
-pub const IDC_IBEAM: usize = 32513; // Text selection
-pub const IDC_SIZEWE: usize = 32644; // Horizontal resize (left-right)
-pub const IDC_SIZENS: usize = 32645; // Vertical resize (up-down)
-pub const IDC_SIZEALL: usize = 32646; // Four-way move
+const IDC_ARROW: usize = 32512;
+const IDC_IBEAM: usize = 32513; // Text selection
+const IDC_SIZEWE: usize = 32644; // Horizontal resize (left-right)
+const IDC_SIZENS: usize = 32645; // Vertical resize (up-down)
+const IDC_SIZEALL: usize = 32646; // Four-way move
 
 // DWM attributes
 const DWMWA_USE_IMMERSIVE_DARK_MODE: DWORD = 20;
@@ -721,26 +721,26 @@ const DWMWA_USE_IMMERSIVE_DARK_MODE: DWORD = 20;
 /// Height of the custom title bar area in pixels.
 /// This is where tabs will eventually be drawn.
 /// Windows Terminal uses ~40px at 96 DPI. We match that.
-pub const TITLEBAR_HEIGHT: i32 = 34;
+pub const TITLEBAR_HEIGHT: i32 = platform_window.titlebar_height;
 
 // PM_REMOVE for PeekMessage
 const PM_REMOVE: UINT = 0x0001;
 
 // SWP flags for SetWindowPos
-pub const SWP_NOSIZE: UINT = 0x0001;
-pub const SWP_NOMOVE: UINT = 0x0002;
-pub const SWP_NOZORDER: UINT = 0x0004;
-pub const SWP_NOACTIVATE: UINT = 0x0010;
-pub const SWP_FRAMECHANGED: UINT = 0x0020;
-pub const SWP_SHOWWINDOW: UINT = 0x0040;
+const SWP_NOSIZE: UINT = 0x0001;
+const SWP_NOMOVE: UINT = 0x0002;
+const SWP_NOZORDER: UINT = 0x0004;
+const SWP_NOACTIVATE: UINT = 0x0010;
+const SWP_FRAMECHANGED: UINT = 0x0020;
+const SWP_SHOWWINDOW: UINT = 0x0040;
 
-pub const MOD_ALT: UINT = 0x0001;
-pub const MOD_CONTROL: UINT = 0x0002;
-pub const MOD_SHIFT: UINT = 0x0004;
-pub const MOD_WIN: UINT = 0x0008;
-pub const MOD_NOREPEAT: UINT = 0x4000;
+const MOD_ALT: UINT = 0x0001;
+const MOD_CONTROL: UINT = 0x0002;
+const MOD_SHIFT: UINT = 0x0004;
+const MOD_WIN: UINT = 0x0008;
+const MOD_NOREPEAT: UINT = 0x4000;
 
-pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 pub const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
 
 // ============================================================================
@@ -752,53 +752,22 @@ pub const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))
 // ============================================================================
 
 /// Keyboard events (special keys via WM_KEYDOWN/WM_SYSKEYDOWN)
-pub const KeyEvent = struct {
-    vk: WPARAM,
-    ctrl: bool,
-    shift: bool,
-    alt: bool,
-};
+pub const KeyEvent = platform_input.KeyEvent;
 
 /// Character input events (text via WM_CHAR, after TranslateMessage)
-pub const CharEvent = struct {
-    codepoint: u21,
-    ctrl: bool = false,
-    shift: bool = false,
-    alt: bool = false,
-};
+pub const CharEvent = platform_input.CharEvent;
 
-pub const MouseButton = enum { left, right, middle };
-pub const MouseButtonAction = enum { press, release, double_click };
+pub const MouseButton = platform_input.MouseButton;
+pub const MouseButtonAction = platform_input.MouseButtonAction;
 
 /// Mouse button events
-pub const MouseButtonEvent = struct {
-    button: MouseButton,
-    action: MouseButtonAction,
-    x: i32,
-    y: i32,
-    ctrl: bool = false,
-    shift: bool = false,
-    alt: bool = false,
-};
+pub const MouseButtonEvent = platform_input.MouseButtonEvent;
 
 /// Mouse move events
-pub const MouseMoveEvent = struct {
-    x: i32,
-    y: i32,
-    ctrl: bool = false,
-    shift: bool = false,
-    alt: bool = false,
-};
+pub const MouseMoveEvent = platform_input.MouseMoveEvent;
 
 /// Mouse wheel events
-pub const MouseWheelEvent = struct {
-    delta: i16, // positive = up, negative = down
-    xpos: i32, // mouse x position in window coordinates
-    ypos: i32, // mouse y position in window coordinates
-    ctrl: bool = false,
-    shift: bool = false,
-    alt: bool = false,
-};
+pub const MouseWheelEvent = platform_input.MouseWheelEvent;
 
 pub const FileDropHandler = *const fn (path: []const u8, x: i32, y: i32) bool;
 
@@ -835,7 +804,7 @@ fn RingBuffer(comptime T: type, comptime N: usize) type {
     };
 }
 
-pub const CaptionButton = enum { none, minimize, maximize, close };
+pub const CaptionButton = platform_window.CaptionButton;
 
 /// Platform window handle and associated state.
 pub const Window = struct {
@@ -1292,14 +1261,6 @@ pub const Window = struct {
         self.height = rect.bottom - rect.top;
         self.is_minimized = false;
         self.size_changed = true;
-    }
-
-    pub fn registerHotKey(self: *Window, id: i32, modifiers: UINT, vk: UINT) bool {
-        return RegisterHotKey(self.hwnd, id, modifiers, vk) != 0;
-    }
-
-    pub fn unregisterHotKey(self: *Window, id: i32) void {
-        _ = UnregisterHotKey(self.hwnd, id);
     }
 };
 
@@ -1773,7 +1734,7 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
                     },
                     .maximize => {
                         if (w.is_fullscreen) {
-                            w.key_events.push(.{ .vk = VK_RETURN, .alt = false, .ctrl = true, .shift = false });
+                            w.key_events.push(.{ .key_code = VK_RETURN, .alt = false, .ctrl = true, .shift = false });
                         } else if (IsZoomed(hwnd) != 0) {
                             _ = ShowWindow(hwnd, SW_RESTORE);
                         } else {
@@ -1803,7 +1764,7 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
         WM_KEYDOWN, WM_SYSKEYDOWN => {
             const mods = getModifiers();
             w.key_events.push(.{
-                .vk = wParam,
+                .key_code = wParam,
                 .ctrl = mods.ctrl,
                 .shift = mods.shift,
                 .alt = mods.alt,

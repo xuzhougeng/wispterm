@@ -1,13 +1,6 @@
 const std = @import("std");
-const builtin = @import("builtin");
-
-extern "kernel32" fn CompareStringOrdinal(
-    lpString1: [*]const u16,
-    cchCount1: i32,
-    lpString2: [*]const u16,
-    cchCount2: i32,
-    bIgnoreCase: i32,
-) callconv(.winapi) i32;
+const platform_local_path = @import("platform/local_path.zig");
+const platform_update_package = @import("platform/update_package.zig");
 
 pub const Options = struct {
     pid: u32,
@@ -16,19 +9,9 @@ pub const Options = struct {
     restart: bool,
 };
 
-pub const ManifestEntry = struct {
-    path: []const u8,
-    directory: bool = false,
-    optional: bool = false,
-};
+pub const ManifestEntry = platform_update_package.PayloadEntry;
 
-pub const replacement_manifest = [_]ManifestEntry{
-    .{ .path = "phantty.exe" },
-    .{ .path = "phantty-updater.exe" },
-    .{ .path = "version.txt" },
-    .{ .path = "plugins", .directory = true },
-    .{ .path = "WebView2Loader.dll", .optional = true },
-};
+pub const replacement_manifest = platform_update_package.updaterReplacementManifest();
 
 const absent_marker_dir = ".phantty-backup-absent";
 
@@ -89,199 +72,12 @@ pub fn parseArgs(args: []const []const u8) ArgError!Options {
     return options;
 }
 
-fn isAbsoluteWindowsOrNative(path: []const u8) bool {
-    if (std.fs.path.isAbsolute(path)) return true;
-    return isWindowsAbsolute(path);
-}
-
-fn windowsRootLen(path: []const u8) usize {
-    if (path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/')) return 3;
-
-    if (path.len >= 4 and (path[0] == '\\' or path[0] == '/') and (path[1] == '\\' or path[1] == '/') and path[2] == '?' and (path[3] == '\\' or path[3] == '/')) {
-        if (path.len >= 8 and std.ascii.eqlIgnoreCase(path[4..7], "UNC") and (path[7] == '\\' or path[7] == '/')) {
-            return uncRootLenFrom(path, 8);
-        }
-        if (path.len >= 7 and std.ascii.isAlphabetic(path[4]) and path[5] == ':' and (path[6] == '\\' or path[6] == '/')) return 7;
-        return 4;
-    }
-
-    if (path.len >= 2 and (path[0] == '\\' or path[0] == '/') and (path[1] == '\\' or path[1] == '/')) {
-        return uncRootLenFrom(path, 2);
-    }
-
-    return 0;
-}
-
-fn canonicalWindowsPath(path: []const u8) []const u8 {
-    if (path.len >= 7 and (path[0] == '\\' or path[0] == '/') and (path[1] == '\\' or path[1] == '/') and path[2] == '?' and (path[3] == '\\' or path[3] == '/') and std.ascii.isAlphabetic(path[4]) and path[5] == ':' and (path[6] == '\\' or path[6] == '/')) {
-        return path[4..];
-    }
-    return path;
-}
-
-fn uncRootLenFrom(path: []const u8, start: usize) usize {
-    const server_end = findSeparator(path, start) orelse return path.len;
-    const share_start = server_end + 1;
-    const share_end = findSeparator(path, share_start) orelse return path.len;
-    return share_end;
-}
-
-fn findSeparator(path: []const u8, start: usize) ?usize {
-    var i = start;
-    while (i < path.len) : (i += 1) {
-        if (path[i] == '\\' or path[i] == '/') return i;
-    }
-    return null;
-}
-
-fn trimTrailingSeparators(path: []const u8, root_len: usize) []const u8 {
-    var end = path.len;
-    while (end > root_len and (path[end - 1] == '\\' or path[end - 1] == '/')) : (end -= 1) {}
-    return path[0..end];
-}
-
-fn isWindowsAbsolute(path: []const u8) bool {
-    return windowsRootLen(path) > 0;
-}
-
-fn normalizeWindowsPath(path: []const u8, buf: []u8) ?[]const u8 {
-    var out_len: usize = 0;
-    if (path.len >= 8 and (path[0] == '\\' or path[0] == '/') and (path[1] == '\\' or path[1] == '/') and path[2] == '?' and (path[3] == '\\' or path[3] == '/') and std.ascii.eqlIgnoreCase(path[4..7], "UNC") and (path[7] == '\\' or path[7] == '/')) {
-        if (buf.len < 2) return null;
-        buf[0] = '\\';
-        buf[1] = '\\';
-        out_len = 2;
-        for (path[8..]) |ch| {
-            if (out_len >= buf.len) return null;
-            buf[out_len] = if (ch == '/') '\\' else ch;
-            out_len += 1;
-        }
-    } else {
-        const source = canonicalWindowsPath(path);
-        for (source) |ch| {
-            if (out_len >= buf.len) return null;
-            buf[out_len] = if (ch == '/') '\\' else ch;
-            out_len += 1;
-        }
-    }
-
-    const normalized = buf[0..out_len];
-    const root_len = windowsRootLen(normalized);
-    if (root_len == 0) return null;
-    return trimTrailingSeparators(normalized, root_len);
-}
-
-fn simpleWindowsCaseFold(codepoint: u21) u21 {
-    if (codepoint >= 'A' and codepoint <= 'Z') return codepoint + 0x20;
-    if (codepoint >= 0x00C0 and codepoint <= 0x00D6) return codepoint + 0x20;
-    if (codepoint >= 0x00D8 and codepoint <= 0x00DE) return codepoint + 0x20;
-    if (codepoint == 0x0178) return 0x00FF;
-    if (codepoint >= 0x0100 and codepoint <= 0x0177 and codepoint % 2 == 0) return codepoint + 1;
-    if (codepoint >= 0x0181 and codepoint <= 0x024E) {
-        return switch (codepoint) {
-            0x0181 => 0x0253,
-            0x0182, 0x0184, 0x0187, 0x018B, 0x0191, 0x0198, 0x01A0, 0x01A2, 0x01A4, 0x01A7, 0x01AC, 0x01AF, 0x01B3, 0x01B5, 0x01B8, 0x01BC, 0x01CD, 0x01CF, 0x01D1, 0x01D3, 0x01D5, 0x01D7, 0x01D9, 0x01DB, 0x01DE, 0x01E0, 0x01E2, 0x01E4, 0x01E6, 0x01E8, 0x01EA, 0x01EC, 0x01EE, 0x01F4, 0x01F8, 0x01FA, 0x01FC, 0x01FE, 0x0200, 0x0202, 0x0204, 0x0206, 0x0208, 0x020A, 0x020C, 0x020E, 0x0210, 0x0212, 0x0214, 0x0216, 0x0218, 0x021A, 0x021C, 0x021E, 0x0220, 0x0222, 0x0224, 0x0226, 0x0228, 0x022A, 0x022C, 0x022E, 0x0230, 0x0232, 0x0246, 0x0248, 0x024A, 0x024C, 0x024E => codepoint + 1,
-            0x0186 => 0x0254,
-            0x0189 => 0x0256,
-            0x018A => 0x0257,
-            0x018E => 0x01DD,
-            0x018F => 0x0259,
-            0x0190 => 0x025B,
-            0x0193 => 0x0260,
-            0x0194 => 0x0263,
-            0x0196 => 0x0269,
-            0x0197 => 0x0268,
-            0x019C => 0x026F,
-            0x019D => 0x0272,
-            0x019F => 0x0275,
-            0x01A6 => 0x0280,
-            0x01A9 => 0x0283,
-            0x01AE => 0x0288,
-            0x01B1 => 0x028A,
-            0x01B2 => 0x028B,
-            0x01B7 => 0x0292,
-            0x01F1, 0x01F2 => 0x01F3,
-            0x023A => 0x2C65,
-            0x023B => 0x023C,
-            0x023D => 0x019A,
-            0x023E => 0x2C66,
-            0x0241 => 0x0242,
-            0x0243 => 0x0180,
-            0x0244 => 0x0289,
-            0x0245 => 0x028C,
-            else => codepoint,
-        };
-    }
-    if (codepoint >= 0x0391 and codepoint <= 0x03A1) return codepoint + 0x20;
-    if (codepoint >= 0x03A3 and codepoint <= 0x03AB) return codepoint + 0x20;
-    if (codepoint == 0x0386) return 0x03AC;
-    if (codepoint >= 0x0388 and codepoint <= 0x038A) return codepoint + 0x25;
-    if (codepoint == 0x038C) return 0x03CC;
-    if (codepoint >= 0x038E and codepoint <= 0x038F) return codepoint + 0x3F;
-    if (codepoint >= 0x0400 and codepoint <= 0x040F) return codepoint + 0x50;
-    if (codepoint >= 0x0410 and codepoint <= 0x042F) return codepoint + 0x20;
-    return codepoint;
-}
-
-fn windowsCaseInsensitiveUtf8Equal(a: []const u8, b: []const u8) bool {
-    if (comptime builtin.os.tag == .windows) {
-        if (windowsCaseInsensitiveUtf16Equal(a, b)) |equal| return equal;
-    }
-
-    const a_view = std.unicode.Utf8View.init(a) catch return std.mem.eql(u8, a, b);
-    const b_view = std.unicode.Utf8View.init(b) catch return std.mem.eql(u8, a, b);
-    var a_it = a_view.iterator();
-    var b_it = b_view.iterator();
-    while (true) {
-        const a_cp = a_it.nextCodepoint();
-        const b_cp = b_it.nextCodepoint();
-        if (a_cp == null or b_cp == null) return a_cp == null and b_cp == null;
-        if (simpleWindowsCaseFold(a_cp.?) != simpleWindowsCaseFold(b_cp.?)) return false;
-    }
-}
-
-fn windowsCaseInsensitiveUtf16Equal(a: []const u8, b: []const u8) ?bool {
-    var a_buf: [4096]u16 = undefined;
-    var b_buf: [4096]u16 = undefined;
-    const a_len = std.unicode.utf8ToUtf16Le(&a_buf, a) catch return null;
-    const b_len = std.unicode.utf8ToUtf16Le(&b_buf, b) catch return null;
-    const result = CompareStringOrdinal(
-        a_buf[0..a_len].ptr,
-        @intCast(a_len),
-        b_buf[0..b_len].ptr,
-        @intCast(b_len),
-        1,
-    );
-    return switch (result) {
-        2 => true,
-        1, 3 => false,
-        else => null,
-    };
-}
-
-fn windowsAbsolutePathEqual(a: []const u8, b: []const u8) bool {
-    var a_buf: [4096]u8 = undefined;
-    var b_buf: [4096]u8 = undefined;
-    const a_normalized = normalizeWindowsPath(a, &a_buf) orelse return false;
-    const b_normalized = normalizeWindowsPath(b, &b_buf) orelse return false;
-    return windowsCaseInsensitiveUtf8Equal(a_normalized, b_normalized);
-}
-
-fn nativeAbsolutePathEqual(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, trimTrailingSeparators(a, 1), trimTrailingSeparators(b, 1));
-}
-
-fn absolutePathEqual(a: []const u8, b: []const u8) bool {
-    if (windowsAbsolutePathEqual(a, b)) return true;
-    return nativeAbsolutePathEqual(a, b);
-}
-
 pub fn validateOptions(options: Options) ArgError!void {
     if (options.source.len == 0) return error.MissingSource;
     if (options.target.len == 0) return error.MissingTarget;
-    if (absolutePathEqual(options.source, options.target)) return error.SourceEqualsTarget;
-    if (!isAbsoluteWindowsOrNative(options.source)) return error.RelativeSource;
-    if (!isAbsoluteWindowsOrNative(options.target)) return error.RelativeTarget;
+    if (platform_local_path.absolutePathEqual(options.source, options.target)) return error.SourceEqualsTarget;
+    if (!platform_local_path.isAbsoluteInstallPath(options.source)) return error.RelativeSource;
+    if (!platform_local_path.isAbsoluteInstallPath(options.target)) return error.RelativeTarget;
 }
 
 fn joinAlloc(allocator: std.mem.Allocator, a: []const u8, b: []const u8) ![]u8 {
@@ -349,7 +145,9 @@ fn copyPath(allocator: std.mem.Allocator, source: []const u8, target: []const u8
 }
 
 fn targetEntryRequired(entry: ManifestEntry) bool {
-    return std.mem.eql(u8, entry.path, "phantty.exe");
+    const package = platform_update_package.updaterReplacementPackage();
+    const main_exe = platform_update_package.mainExecutablePath(package) catch return false;
+    return std.mem.eql(u8, entry.path, main_exe);
 }
 
 fn absentMarkerPath(allocator: std.mem.Allocator, backup: []const u8, index: usize) ![]u8 {
@@ -490,25 +288,57 @@ pub fn replacePayload(allocator: std.mem.Allocator, source: []const u8, target: 
 }
 
 pub fn targetExePath(allocator: std.mem.Allocator, target: []const u8) ![]u8 {
-    return try std.fs.path.join(allocator, &.{ target, "phantty.exe" });
+    const package = platform_update_package.updaterReplacementPackage();
+    return try std.fs.path.join(allocator, &.{ target, try platform_update_package.mainExecutablePath(package) });
+}
+
+fn updaterPackageForTest() @TypeOf(platform_update_package.updaterReplacementPackage()) {
+    return platform_update_package.updaterReplacementPackage();
+}
+
+fn mainExecutablePayloadPathForTest() []const u8 {
+    return platform_update_package.mainExecutablePath(updaterPackageForTest()) catch unreachable;
+}
+
+fn updaterExecutablePayloadPathForTest() []const u8 {
+    return platform_update_package.updaterExecutablePath(updaterPackageForTest()) catch unreachable;
+}
+
+fn manifestEntryForPathForTest(path: []const u8) ManifestEntry {
+    for (replacement_manifest) |entry| {
+        if (std.mem.eql(u8, entry.path, path)) return entry;
+    }
+    unreachable;
+}
+
+fn mainExecutableManifestEntryForTest() ManifestEntry {
+    return manifestEntryForPathForTest(mainExecutablePayloadPathForTest());
+}
+
+fn updaterExecutableManifestEntryForTest() ManifestEntry {
+    return manifestEntryForPathForTest(updaterExecutablePayloadPathForTest());
+}
+
+fn versionManifestEntryForTest() ManifestEntry {
+    return manifestEntryForPathForTest("version.txt");
 }
 
 test "updater_core: parses updater arguments" {
     const args = [_][]const u8{
-        "phantty-updater.exe",
+        "updater",
         "--pid",
         "123",
         "--source",
-        "C:\\Temp\\payload",
+        "/tmp/payload",
         "--target",
-        "C:\\Apps\\Phantty",
+        "/opt/phantty",
         "--restart",
     };
 
     const options = try parseArgs(args[1..]);
     try std.testing.expectEqual(@as(u32, 123), options.pid);
-    try std.testing.expectEqualStrings("C:\\Temp\\payload", options.source);
-    try std.testing.expectEqualStrings("C:\\Apps\\Phantty", options.target);
+    try std.testing.expectEqualStrings("/tmp/payload", options.source);
+    try std.testing.expectEqualStrings("/opt/phantty", options.target);
     try std.testing.expect(options.restart);
 }
 
@@ -521,97 +351,8 @@ test "updater_core: manifest excludes portable user config" {
 test "updater_core: rejects equal source and target paths" {
     try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
         .pid = 1,
-        .source = "C:\\Apps\\Phantty",
-        .target = "C:\\Apps\\Phantty",
-        .restart = false,
-    }));
-}
-
-test "updater_core: rejects equal Windows paths ignoring case and trailing separators" {
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "C:\\Apps\\Phantty",
-        .target = "c:\\apps\\phantty\\",
-        .restart = false,
-    }));
-
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "D:/Tools/Phantty/",
-        .target = "d:/tools/phantty",
-        .restart = false,
-    }));
-}
-
-test "updater_core: rejects equal Windows paths with non-ASCII case differences" {
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "C:\\Apps\\Ångström",
-        .target = "c:\\apps\\ångström\\",
-        .restart = false,
-    }));
-}
-
-test "updater_core: rejects equal UNC Windows paths ignoring case and trailing separators" {
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "\\\\Server\\Share\\Apps\\Phantty",
-        .target = "\\\\server\\share\\apps\\phantty\\",
-        .restart = false,
-    }));
-
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "//Server/Share/Apps/Phantty",
-        .target = "\\\\server\\share\\apps\\phantty",
-        .restart = false,
-    }));
-}
-
-test "updater_core: rejects equal extended Windows paths ignoring case and trailing separators" {
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "\\\\?\\C:\\Apps\\Phantty",
-        .target = "\\\\?\\c:\\apps\\phantty\\",
-        .restart = false,
-    }));
-
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "\\\\?\\UNC\\Server\\Share\\Apps\\Phantty",
-        .target = "\\\\?\\UNC\\server\\share\\apps\\phantty\\",
-        .restart = false,
-    }));
-}
-
-test "updater_core: rejects equal extended and non-extended Windows paths" {
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "\\\\?\\C:\\Apps\\Phantty",
-        .target = "C:\\Apps\\Phantty",
-        .restart = false,
-    }));
-
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "\\\\?\\UNC\\Server\\Share\\App",
-        .target = "\\\\server\\share\\App",
-        .restart = false,
-    }));
-}
-
-test "updater_core: rejects equal UNC share roots with optional trailing separator" {
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "\\\\server\\share",
-        .target = "\\\\SERVER\\SHARE\\",
-        .restart = false,
-    }));
-
-    try std.testing.expectError(error.SourceEqualsTarget, validateOptions(.{
-        .pid = 1,
-        .source = "\\\\?\\UNC\\server\\share",
-        .target = "\\\\server\\share\\",
+        .source = "/opt/phantty",
+        .target = "/opt/phantty/",
         .restart = false,
     }));
 }
@@ -631,20 +372,27 @@ test "updater_core: successful replacement preserves portable user config" {
 
     try replacePayload(std.testing.allocator, source, target);
 
-    try expectFileContents(tmp.dir, "target/phantty.exe", "new exe");
-    try expectFileContents(tmp.dir, "target/phantty-updater.exe", "new updater");
-    try expectFileContents(tmp.dir, "target/version.txt", "new version");
+    try expectManifestFileContents(tmp.dir, "target", mainExecutableManifestEntryForTest(), "new exe");
+    try expectManifestFileContents(tmp.dir, "target", updaterExecutableManifestEntryForTest(), "new updater");
+    try expectManifestFileContents(tmp.dir, "target", versionManifestEntryForTest(), "new version");
     try expectFileContents(tmp.dir, "target/plugins/core.plugin", "new plugin");
     try expectFileContents(tmp.dir, "target/phantty.conf", "user config");
+}
+
+test "updater_core: replacement manifest is sourced from release package entries" {
+    comptime {
+        if (@TypeOf(replacement_manifest[0]) != platform_update_package.PayloadEntry) {
+            @compileError("updater replacement manifest must use platform_update_package.PayloadEntry");
+        }
+    }
 }
 
 test "updater_core: missing required source payload fails before target changes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("source/plugins");
-    try tmp.dir.writeFile(.{ .sub_path = "source/phantty.exe", .data = "new exe" });
-    try tmp.dir.writeFile(.{ .sub_path = "source/version.txt", .data = "new version" });
+    try writePayload(tmp.dir, "source", "new");
+    try deleteManifestPath(tmp.dir, "source", updaterExecutableManifestEntryForTest());
     try writePayload(tmp.dir, "target", "old");
 
     const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
@@ -653,13 +401,13 @@ test "updater_core: missing required source payload fails before target changes"
     defer std.testing.allocator.free(target);
 
     try std.testing.expectError(error.MissingSourcePayload, replacePayload(std.testing.allocator, source, target));
-    try expectFileContents(tmp.dir, "target/phantty.exe", "old exe");
-    try expectFileContents(tmp.dir, "target/phantty-updater.exe", "old updater");
-    try expectFileContents(tmp.dir, "target/version.txt", "old version");
+    try expectManifestFileContents(tmp.dir, "target", mainExecutableManifestEntryForTest(), "old exe");
+    try expectManifestFileContents(tmp.dir, "target", updaterExecutableManifestEntryForTest(), "old updater");
+    try expectManifestFileContents(tmp.dir, "target", versionManifestEntryForTest(), "old version");
     try expectFileContents(tmp.dir, "target/plugins/core.plugin", "old plugin");
 }
 
-test "updater_core: optional WebView2 missing is allowed" {
+test "updater_core: optional manifest payload missing is allowed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -675,13 +423,15 @@ test "updater_core: optional WebView2 missing is allowed" {
     try replacePayload(std.testing.allocator, source, target);
 }
 
-test "updater_core: optional WebView2 is removed when selected payload omits it" {
+test "updater_core: optional manifest payload is removed when selected payload omits it" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    const optional_entry = optionalFileManifestEntry();
+
     try writePayload(tmp.dir, "source", "new");
     try writePayload(tmp.dir, "target", "old");
-    try tmp.dir.writeFile(.{ .sub_path = "target/WebView2Loader.dll", .data = "stale dll" });
+    try writeManifestFile(tmp.dir, "target", optional_entry, "stale optional payload");
 
     const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
     defer std.testing.allocator.free(source);
@@ -690,17 +440,21 @@ test "updater_core: optional WebView2 is removed when selected payload omits it"
 
     try replacePayload(std.testing.allocator, source, target);
 
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("target/WebView2Loader.dll", .{}));
-    try expectFileContents(tmp.dir, "target/phantty.exe", "new exe");
+    var optional_path_buf: [256]u8 = undefined;
+    const optional_path = try manifestSubPath(&optional_path_buf, "target", optional_entry);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(optional_path, .{}));
+    try expectManifestFileContents(tmp.dir, "target", mainExecutableManifestEntryForTest(), "new exe");
 }
 
 test "updater_core: restore removes optional target entry absent from backup" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    const optional_entry = optionalFileManifestEntry();
+
     try writePayload(tmp.dir, "backup", "old");
     try writePayload(tmp.dir, "target", "new");
-    try tmp.dir.writeFile(.{ .sub_path = "target/WebView2Loader.dll", .data = "new dll" });
+    try writeManifestFile(tmp.dir, "target", optional_entry, "new optional payload");
 
     const backup = try tmp.dir.realpathAlloc(std.testing.allocator, "backup");
     defer std.testing.allocator.free(backup);
@@ -708,8 +462,10 @@ test "updater_core: restore removes optional target entry absent from backup" {
     defer std.testing.allocator.free(target);
 
     try std.testing.expect(restoreBackup(std.testing.allocator, backup, target));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("target/WebView2Loader.dll", .{}));
-    try expectFileContents(tmp.dir, "target/phantty.exe", "old exe");
+    var optional_path_buf: [256]u8 = undefined;
+    const optional_path = try manifestSubPath(&optional_path_buf, "target", optional_entry);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(optional_path, .{}));
+    try expectManifestFileContents(tmp.dir, "target", mainExecutableManifestEntryForTest(), "old exe");
 }
 
 test "updater_core: restore reports failure for missing required backup entry" {
@@ -718,7 +474,7 @@ test "updater_core: restore reports failure for missing required backup entry" {
 
     try writePayload(tmp.dir, "backup", "old");
     try writePayload(tmp.dir, "target", "new");
-    try tmp.dir.deleteFile("backup/phantty.exe");
+    try deleteManifestPath(tmp.dir, "backup", mainExecutableManifestEntryForTest());
 
     const backup = try tmp.dir.realpathAlloc(std.testing.allocator, "backup");
     defer std.testing.allocator.free(backup);
@@ -734,8 +490,8 @@ test "updater_core: preflight rejects mismatched manifest kinds" {
 
     try writePayload(tmp.dir, "source", "new");
     try writePayload(tmp.dir, "target", "old");
-    try tmp.dir.deleteFile("source/phantty.exe");
-    try tmp.dir.makeDir("source/phantty.exe");
+    try deleteManifestPath(tmp.dir, "source", mainExecutableManifestEntryForTest());
+    try makeManifestDirPath(tmp.dir, "source", mainExecutableManifestEntryForTest());
 
     const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
     defer std.testing.allocator.free(source);
@@ -751,7 +507,7 @@ test "updater_core: preflight rejects missing required target before changes" {
 
     try writePayload(tmp.dir, "source", "new");
     try writePayload(tmp.dir, "target", "old");
-    try tmp.dir.deleteFile("target/phantty.exe");
+    try deleteManifestPath(tmp.dir, "target", mainExecutableManifestEntryForTest());
 
     const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
     defer std.testing.allocator.free(source);
@@ -759,8 +515,8 @@ test "updater_core: preflight rejects missing required target before changes" {
     defer std.testing.allocator.free(target);
 
     try std.testing.expectError(error.MissingTargetPayload, replacePayload(std.testing.allocator, source, target));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("target/phantty.exe", .{}));
-    try expectFileContents(tmp.dir, "target/version.txt", "old version");
+    try expectManifestPathMissing(tmp.dir, "target", mainExecutableManifestEntryForTest());
+    try expectManifestFileContents(tmp.dir, "target", versionManifestEntryForTest(), "old version");
     try expectFileContents(tmp.dir, "target/plugins/core.plugin", "old plugin");
 }
 
@@ -770,7 +526,7 @@ test "updater_core: missing target updater is repaired from new payload" {
 
     try writePayload(tmp.dir, "source", "new");
     try writePayload(tmp.dir, "target", "old");
-    try tmp.dir.deleteFile("target/phantty-updater.exe");
+    try deleteManifestPath(tmp.dir, "target", updaterExecutableManifestEntryForTest());
 
     const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
     defer std.testing.allocator.free(source);
@@ -779,9 +535,9 @@ test "updater_core: missing target updater is repaired from new payload" {
 
     try replacePayload(std.testing.allocator, source, target);
 
-    try expectFileContents(tmp.dir, "target/phantty.exe", "new exe");
-    try expectFileContents(tmp.dir, "target/phantty-updater.exe", "new updater");
-    try expectFileContents(tmp.dir, "target/version.txt", "new version");
+    try expectManifestFileContents(tmp.dir, "target", mainExecutableManifestEntryForTest(), "new exe");
+    try expectManifestFileContents(tmp.dir, "target", updaterExecutableManifestEntryForTest(), "new updater");
+    try expectManifestFileContents(tmp.dir, "target", versionManifestEntryForTest(), "new version");
     try expectFileContents(tmp.dir, "target/plugins/core.plugin", "new plugin");
 }
 
@@ -791,8 +547,8 @@ test "updater_core: preflight rejects target file manifest entry as directory" {
 
     try writePayload(tmp.dir, "source", "new");
     try writePayload(tmp.dir, "target", "old");
-    try tmp.dir.deleteFile("target/phantty.exe");
-    try tmp.dir.makeDir("target/phantty.exe");
+    try deleteManifestPath(tmp.dir, "target", mainExecutableManifestEntryForTest());
+    try makeManifestDirPath(tmp.dir, "target", mainExecutableManifestEntryForTest());
 
     const source = try tmp.dir.realpathAlloc(std.testing.allocator, "source");
     defer std.testing.allocator.free(source);
@@ -800,8 +556,8 @@ test "updater_core: preflight rejects target file manifest entry as directory" {
     defer std.testing.allocator.free(target);
 
     try std.testing.expectError(error.MismatchedTargetPayload, replacePayload(std.testing.allocator, source, target));
-    try expectFileContents(tmp.dir, "target/phantty-updater.exe", "old updater");
-    try expectFileContents(tmp.dir, "target/version.txt", "old version");
+    try expectManifestFileContents(tmp.dir, "target", updaterExecutableManifestEntryForTest(), "old updater");
+    try expectManifestFileContents(tmp.dir, "target", versionManifestEntryForTest(), "old version");
     try expectFileContents(tmp.dir, "target/plugins/core.plugin", "old plugin");
 }
 
@@ -810,7 +566,7 @@ test "updater_core: restore backup reports failure" {
     defer tmp.cleanup();
 
     try writePayload(tmp.dir, "backup", "old");
-    try tmp.dir.makePath("target/phantty.exe");
+    try makeManifestDirPath(tmp.dir, "target", mainExecutableManifestEntryForTest());
 
     const backup = try tmp.dir.realpathAlloc(std.testing.allocator, "backup");
     defer std.testing.allocator.free(backup);
@@ -821,30 +577,79 @@ test "updater_core: restore backup reports failure" {
 }
 
 fn writePayload(dir: std.fs.Dir, base: []const u8, label: []const u8) !void {
-    var plugins_buf: [256]u8 = undefined;
-    const plugins_path = try std.fmt.bufPrint(&plugins_buf, "{s}/plugins", .{base});
     try dir.makePath(base);
-    try dir.makePath(plugins_path);
 
     var path_buf: [256]u8 = undefined;
     var data_buf: [128]u8 = undefined;
 
-    try dir.writeFile(.{
-        .sub_path = try std.fmt.bufPrint(&path_buf, "{s}/phantty.exe", .{base}),
-        .data = try std.fmt.bufPrint(&data_buf, "{s} exe", .{label}),
-    });
-    try dir.writeFile(.{
-        .sub_path = try std.fmt.bufPrint(&path_buf, "{s}/phantty-updater.exe", .{base}),
-        .data = try std.fmt.bufPrint(&data_buf, "{s} updater", .{label}),
-    });
-    try dir.writeFile(.{
-        .sub_path = try std.fmt.bufPrint(&path_buf, "{s}/version.txt", .{base}),
-        .data = try std.fmt.bufPrint(&data_buf, "{s} version", .{label}),
-    });
+    for (replacement_manifest) |entry| {
+        const sub_path = try manifestSubPath(&path_buf, base, entry);
+        if (entry.directory) {
+            try dir.makePath(sub_path);
+            continue;
+        }
+        if (entry.optional) continue;
+        try dir.writeFile(.{
+            .sub_path = sub_path,
+            .data = try payloadDataForTest(&data_buf, entry, label),
+        });
+    }
+
     try dir.writeFile(.{
         .sub_path = try std.fmt.bufPrint(&path_buf, "{s}/plugins/core.plugin", .{base}),
         .data = try std.fmt.bufPrint(&data_buf, "{s} plugin", .{label}),
     });
+}
+
+fn payloadDataForTest(buf: []u8, entry: ManifestEntry, label: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, entry.path, mainExecutablePayloadPathForTest())) {
+        return try std.fmt.bufPrint(buf, "{s} exe", .{label});
+    }
+    if (std.mem.eql(u8, entry.path, updaterExecutablePayloadPathForTest())) {
+        return try std.fmt.bufPrint(buf, "{s} updater", .{label});
+    }
+    if (std.mem.eql(u8, entry.path, versionManifestEntryForTest().path)) {
+        return try std.fmt.bufPrint(buf, "{s} version", .{label});
+    }
+    return try std.fmt.bufPrint(buf, "{s} payload", .{label});
+}
+
+fn optionalFileManifestEntry() ManifestEntry {
+    for (replacement_manifest) |entry| {
+        if (entry.optional and !entry.directory) return entry;
+    }
+    unreachable;
+}
+
+fn manifestSubPath(buf: []u8, base: []const u8, entry: ManifestEntry) ![]const u8 {
+    return try std.fmt.bufPrint(buf, "{s}/{s}", .{ base, entry.path });
+}
+
+fn deleteManifestPath(dir: std.fs.Dir, base: []const u8, entry: ManifestEntry) !void {
+    var path_buf: [256]u8 = undefined;
+    try dir.deleteFile(try manifestSubPath(&path_buf, base, entry));
+}
+
+fn makeManifestDirPath(dir: std.fs.Dir, base: []const u8, entry: ManifestEntry) !void {
+    var path_buf: [256]u8 = undefined;
+    try dir.makeDir(try manifestSubPath(&path_buf, base, entry));
+}
+
+fn writeManifestFile(dir: std.fs.Dir, base: []const u8, entry: ManifestEntry, data: []const u8) !void {
+    var path_buf: [256]u8 = undefined;
+    const sub_path = try manifestSubPath(&path_buf, base, entry);
+    if (std.fs.path.dirname(sub_path)) |parent| try dir.makePath(parent);
+    try dir.writeFile(.{ .sub_path = sub_path, .data = data });
+}
+
+fn expectManifestFileContents(dir: std.fs.Dir, base: []const u8, entry: ManifestEntry, expected: []const u8) !void {
+    var path_buf: [256]u8 = undefined;
+    try expectFileContents(dir, try manifestSubPath(&path_buf, base, entry), expected);
+}
+
+fn expectManifestPathMissing(dir: std.fs.Dir, base: []const u8, entry: ManifestEntry) !void {
+    var path_buf: [256]u8 = undefined;
+    try std.testing.expectError(error.FileNotFound, dir.access(try manifestSubPath(&path_buf, base, entry), .{}));
 }
 
 fn expectFileContents(dir: std.fs.Dir, path: []const u8, expected: []const u8) !void {

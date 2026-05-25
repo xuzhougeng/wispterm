@@ -1,5 +1,5 @@
 //! Fonts that are embedded with Phantty as fallbacks.
-//! These are only used if the requested font cannot be found via DirectWrite.
+//! These are only used if the requested font cannot be found via the system font backend.
 //!
 //! Be careful to ensure that any fonts you embed are licensed for
 //! redistribution and include their license as necessary.

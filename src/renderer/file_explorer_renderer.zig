@@ -10,7 +10,6 @@ const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const gl_init = AppWindow.gl_init;
 const file_explorer = @import("../file_explorer.zig");
-const win32_backend = @import("../apprt/win32.zig");
 const c = @cImport({
     @cInclude("glad/gl.h");
 });

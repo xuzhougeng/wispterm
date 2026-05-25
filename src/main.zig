@@ -5,38 +5,31 @@
 //! in AppWindow.zig.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Config = @import("config.zig");
-const directwrite = @import("directwrite.zig");
 const App = @import("App.zig");
 const image_decoder = @import("image_decoder.zig");
 const app_metadata = @import("app_metadata.zig");
-
-extern "kernel32" fn AttachConsole(dwProcessId: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+const platform_console = @import("platform/console.zig");
+const font_backend = @import("platform/font_backend.zig");
 
 // ============================================================================
 // Font Discovery Test Functions (use --list-fonts or --test-font-discovery)
 // ============================================================================
 
 fn prepareCliConsole() void {
-    if (comptime builtin.os.tag == .windows) {
-        _ = std.os.windows.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) catch {
-            const ATTACH_PARENT_PROCESS: std.os.windows.DWORD = 0xFFFFFFFF;
-            _ = AttachConsole(ATTACH_PARENT_PROCESS);
-        };
-    }
+    platform_console.prepareCliConsole();
 }
 
 fn listSystemFonts(allocator: std.mem.Allocator, writer: anytype) !void {
-    try writer.print("Listing system fonts via DirectWrite...\n\n", .{});
+    try writer.print("Listing system fonts...\nBackend: {s}\n\n", .{font_backend.discoveryDisplayName()});
 
-    var dw = directwrite.FontDiscovery.init() catch |err| {
-        try writer.print("Failed to initialize DirectWrite: {}\n", .{err});
+    var discovery = font_backend.FontDiscovery.init() catch |err| {
+        try writer.print("{s}: {}\n", .{ font_backend.discoveryInitErrorPrefix(), err });
         return err;
     };
-    defer dw.deinit();
+    defer discovery.deinit();
 
-    const families = try dw.listFontFamilies(allocator);
+    const families = try discovery.listFontFamilies(allocator);
     defer {
         for (families) |f| allocator.free(f);
         allocator.free(families);
@@ -51,11 +44,11 @@ fn listSystemFonts(allocator: std.mem.Allocator, writer: anytype) !void {
 fn testFontDiscovery(allocator: std.mem.Allocator, writer: anytype) !void {
     try writer.print("Testing font discovery...\n\n", .{});
 
-    var dw = directwrite.FontDiscovery.init() catch |err| {
-        try writer.print("Failed to initialize DirectWrite: {}\n", .{err});
+    var discovery = font_backend.FontDiscovery.init() catch |err| {
+        try writer.print("{s}: {}\n", .{ font_backend.discoveryInitErrorPrefix(), err });
         return err;
     };
-    defer dw.deinit();
+    defer discovery.deinit();
 
     // Test fonts to look for
     const test_fonts = [_][]const u8{
@@ -71,7 +64,7 @@ fn testFontDiscovery(allocator: std.mem.Allocator, writer: anytype) !void {
     for (test_fonts) |font_name| {
         try writer.print("Looking for '{s}'... ", .{font_name});
 
-        if (dw.findFontFilePath(allocator, font_name, .NORMAL, .NORMAL)) |maybe_result| {
+        if (discovery.findFontFilePath(allocator, font_name, .NORMAL, .NORMAL)) |maybe_result| {
             if (maybe_result) |result| {
                 var r = result;
                 defer r.deinit();

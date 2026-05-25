@@ -6,37 +6,10 @@ const file_explorer = AppWindow.file_explorer;
 const browser_panel = AppWindow.browser_panel;
 const overlays = AppWindow.overlays;
 const scp = @import("../scp.zig");
-const win32_backend = @import("../apprt/win32.zig");
+const platform_clipboard = @import("../platform/clipboard.zig");
+const platform_remote_file = @import("../platform/remote_file.zig");
 const Surface = @import("../Surface.zig");
 const selection_unit = @import("../selection_unit.zig");
-
-const CF_TEXT: win32_backend.UINT = 1;
-const CF_DIB: win32_backend.UINT = 8;
-const CF_UNICODETEXT: win32_backend.UINT = 13;
-const CF_DIBV5: win32_backend.UINT = 17;
-const BI_RGB: u32 = 0;
-const BI_BITFIELDS: u32 = 3;
-const GDIP_OK: win32_backend.INT = 0;
-const PNG_ENCODER_CLSID: win32_backend.GUID = .{
-    .Data1 = 0x557CF406,
-    .Data2 = 0x1A04,
-    .Data3 = 0x11D3,
-    .Data4 = .{ 0x9A, 0x73, 0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E },
-};
-
-const BitmapInfoHeader = extern struct {
-    biSize: u32,
-    biWidth: i32,
-    biHeight: i32,
-    biPlanes: u16,
-    biBitCount: u16,
-    biCompression: u32,
-    biSizeImage: u32,
-    biXPelsPerMeter: i32,
-    biYPelsPerMeter: i32,
-    biClrUsed: u32,
-    biClrImportant: u32,
-};
 
 fn isPasteStripByte(byte: u8) bool {
     return switch (byte) {
@@ -106,44 +79,9 @@ pub fn writePasteToPty(surface: *Surface, allocator: std.mem.Allocator, data: []
     }
 }
 
-fn clipboardTempDir(allocator: std.mem.Allocator) ?[]u8 {
-    if (std.process.getEnvVarOwned(allocator, "TEMP")) |v| return v else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "TMP")) |v| return v else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "LOCALAPPDATA")) |v| {
-        return std.fs.path.join(allocator, &.{ v, "Temp" }) catch {
-            allocator.free(v);
-            return null;
-        };
-    } else |_| {}
-    return null;
-}
-
-fn clipboardImagePath(allocator: std.mem.Allocator) ?[]u8 {
-    const temp_dir = clipboardTempDir(allocator) orelse return null;
-    defer allocator.free(temp_dir);
-
-    const ts = std.time.milliTimestamp();
-    return std.fmt.allocPrint(allocator, "{s}\\phantty-clipboard-{d}.png", .{ temp_dir, ts }) catch null;
-}
-
 fn quotePathForPaste(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
     if (std.mem.indexOfAny(u8, path, " \t\"") == null) return allocator.dupe(u8, path) catch null;
     return std.fmt.allocPrint(allocator, "\"{s}\"", .{path}) catch null;
-}
-
-fn windowsPathToWslPath(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
-    if (path.len < 3 or path[1] != ':' or (path[2] != '\\' and path[2] != '/')) return null;
-    const drive = std.ascii.toLower(path[0]);
-    if (drive < 'a' or drive > 'z') return null;
-
-    const out_len = 6 + path.len - 2; // "/mnt/<drive>" plus the path after "C:"
-    const out = allocator.alloc(u8, out_len) catch return null;
-    @memcpy(out[0..5], "/mnt/");
-    out[5] = drive;
-    for (path[2..], 6..) |ch, i| {
-        out[i] = if (ch == '\\') '/' else ch;
-    }
-    return out;
 }
 
 fn clipboardImageBasename(path: []const u8) []const u8 {
@@ -222,27 +160,6 @@ fn remoteClipboardImagePath(allocator: std.mem.Allocator, local_path: []const u8
     return std.fmt.allocPrint(allocator, "/tmp/{s}", .{basename}) catch null;
 }
 
-fn sshAskPassScriptPath(allocator: std.mem.Allocator) ?[]u8 {
-    const temp_dir = clipboardTempDir(allocator) orelse return null;
-    defer allocator.free(temp_dir);
-
-    return std.fmt.allocPrint(allocator, "{s}\\phantty-ssh-askpass.cmd", .{temp_dir}) catch null;
-}
-
-fn ensureSshAskPassScript(allocator: std.mem.Allocator) ?[]u8 {
-    const path = sshAskPassScriptPath(allocator) orelse return null;
-    errdefer allocator.free(path);
-
-    const file = std.fs.createFileAbsolute(path, .{ .truncate = true }) catch return null;
-    defer file.close();
-
-    file.writeAll(
-        "@echo off\r\n" ++
-            "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Out.Write($env:PHANTTY_SSH_PASSWORD)\"\r\n",
-    ) catch return null;
-    return path;
-}
-
 fn uploadClipboardImageForSsh(allocator: std.mem.Allocator, surface: *const Surface, local_path: []const u8) ?[]u8 {
     const conn = surface.ssh_connection orelse {
         std.debug.print("SSH image paste skipped: no SSH profile metadata for this surface\n", .{});
@@ -268,127 +185,9 @@ fn uploadClipboardImageForSsh(allocator: std.mem.Allocator, surface: *const Surf
 
 fn imagePathForSurfacePaste(allocator: std.mem.Allocator, surface: *const Surface, path: []const u8) ?[]u8 {
     switch (surface.launch_kind) {
-        .wsl => if (windowsPathToWslPath(allocator, path)) |wsl_path| return wsl_path,
         .ssh => return uploadClipboardImageForSsh(allocator, surface, path),
-        .windows => {},
+        .local, .wsl => return platform_remote_file.localPathForTerminalPaste(allocator, surface.launch_kind, path),
     }
-    return allocator.dupe(u8, path) catch null;
-}
-
-fn readClipboardUnicodeText(allocator: std.mem.Allocator, hmem: *anyopaque) ?[]u8 {
-    const ptr = win32_backend.GlobalLock(hmem) orelse return null;
-    defer _ = win32_backend.GlobalUnlock(hmem);
-
-    const data: [*]const u16 = @ptrCast(@alignCast(ptr));
-    var len: usize = 0;
-    while (data[len] != 0) : (len += 1) {}
-    if (len == 0) return null;
-
-    const raw = std.unicode.utf16LeToUtf8Alloc(allocator, data[0..len]) catch return null;
-    defer allocator.free(raw);
-    return normalizeClipboardText(allocator, raw) catch null;
-}
-
-fn readClipboardAnsiText(allocator: std.mem.Allocator, hmem: *anyopaque) ?[]u8 {
-    const ptr = win32_backend.GlobalLock(hmem) orelse return null;
-    defer _ = win32_backend.GlobalUnlock(hmem);
-
-    const data: [*]const u8 = @ptrCast(ptr);
-    var len: usize = 0;
-    while (data[len] != 0) : (len += 1) {}
-    if (len == 0) return null;
-
-    return normalizeClipboardText(allocator, data[0..len]) catch null;
-}
-
-fn normalizeClipboardText(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try out.ensureTotalCapacity(allocator, text.len);
-
-    var i: usize = 0;
-    while (i < text.len) {
-        if (text[i] == '\r') {
-            try out.append(allocator, '\n');
-            i += 1;
-            if (i < text.len and text[i] == '\n') i += 1;
-            continue;
-        }
-
-        try out.append(allocator, text[i]);
-        i += 1;
-    }
-
-    return out.toOwnedSlice(allocator);
-}
-
-test "clipboard text normalizes Windows newlines before paste encoding" {
-    const text = try normalizeClipboardText(std.testing.allocator, "a\r\nb\rc\nd");
-    defer std.testing.allocator.free(text);
-
-    try std.testing.expectEqualStrings("a\nb\nc\nd", text);
-}
-
-fn dibColorTableBytes(header: BitmapInfoHeader) usize {
-    if (header.biBitCount > 8) return 0;
-    const colors = if (header.biClrUsed != 0) header.biClrUsed else (@as(u32, 1) << @intCast(header.biBitCount));
-    return @as(usize, colors) * 4;
-}
-
-fn dibMaskBytes(header: BitmapInfoHeader) usize {
-    if (header.biCompression != BI_BITFIELDS) return 0;
-    return if (header.biSize == @sizeOf(BitmapInfoHeader)) 12 else 0;
-}
-
-fn saveClipboardDibAsPng(allocator: std.mem.Allocator, hmem: *anyopaque) ?[]u8 {
-    const total_size = win32_backend.GlobalSize(hmem);
-    if (total_size < @sizeOf(BitmapInfoHeader)) return null;
-
-    const ptr = win32_backend.GlobalLock(hmem) orelse return null;
-    defer _ = win32_backend.GlobalUnlock(hmem);
-
-    const bytes: [*]const u8 = @ptrCast(ptr);
-    const dib = bytes[0..total_size];
-    const header: *align(1) const BitmapInfoHeader = @ptrCast(dib.ptr);
-
-    if (header.biSize < @sizeOf(BitmapInfoHeader) or header.biPlanes != 1) return null;
-    if (header.biCompression != BI_RGB and header.biCompression != BI_BITFIELDS) return null;
-
-    const pixel_offset = @as(usize, header.biSize) + dibColorTableBytes(header.*) + dibMaskBytes(header.*);
-    if (pixel_offset > dib.len) return null;
-
-    const out_path = clipboardImagePath(allocator) orelse return null;
-    var keep_out_path = false;
-    defer if (!keep_out_path) allocator.free(out_path);
-
-    const out_path_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, out_path) catch return null;
-    defer allocator.free(out_path_w);
-
-    const startup_input: win32_backend.GdiplusStartupInput = .{
-        .GdiplusVersion = 1,
-        .DebugEventCallback = null,
-        .SuppressBackgroundThread = 0,
-        .SuppressExternalCodecs = 0,
-    };
-    var gdip_token: usize = 0;
-    if (win32_backend.GdiplusStartup(&gdip_token, &startup_input, null) != GDIP_OK) return null;
-    defer win32_backend.GdiplusShutdown(gdip_token);
-
-    const info_ptr: *const anyopaque = @ptrCast(dib.ptr);
-    const data_ptr: *const anyopaque = @ptrCast(dib[pixel_offset..].ptr);
-    var bitmap: ?*win32_backend.GpBitmap = null;
-    if (win32_backend.GdipCreateBitmapFromGdiDib(info_ptr, data_ptr, &bitmap) != GDIP_OK) return null;
-    const gdip_bitmap = bitmap orelse return null;
-    defer _ = win32_backend.GdipDisposeImage(gdip_bitmap);
-
-    if (win32_backend.GdipSaveImageToFile(gdip_bitmap, out_path_w.ptr, &PNG_ENCODER_CLSID, null) != GDIP_OK) return null;
-    keep_out_path = true;
-    return out_path;
-}
-
-fn saveClipboardImageToTemp(allocator: std.mem.Allocator) ?[]u8 {
-    const hmem = win32_backend.GetClipboardData(CF_DIBV5) orelse win32_backend.GetClipboardData(CF_DIB) orelse return null;
-    return saveClipboardDibAsPng(allocator, hmem);
 }
 
 fn pasteSavedClipboardImage(surface: *Surface, allocator: std.mem.Allocator, image_path: []const u8) bool {
@@ -504,7 +303,7 @@ fn handleSshTerminalFileDrop(local_path: []const u8) bool {
     return true;
 }
 
-// --- Clipboard (Win32 native) ---
+// --- Clipboard (native window owner) ---
 
 fn selectionSurfaceForClipboard() ?*Surface {
     if (AppWindow.activeTab()) |tb| {
@@ -540,28 +339,21 @@ pub fn handleConfiguredRightClick() void {
     }
 }
 
+fn clipboardOwner() ?platform_clipboard.Owner {
+    const handle_bits = AppWindow.currentNativeHandleBits() orelse return null;
+    return platform_clipboard.windowOwner(handle_bits);
+}
+
+fn readClipboardText(allocator: std.mem.Allocator) ?[]u8 {
+    const owner = clipboardOwner() orelse return null;
+    return platform_clipboard.readText(allocator, owner);
+}
+
 pub fn copyTextToClipboard(text: []const u8) bool {
     const allocator = AppWindow.g_allocator orelse return false;
-    const win = AppWindow.g_window orelse return false;
+    const owner = clipboardOwner() orelse return false;
     if (text.len == 0) return false;
-
-    const utf16 = std.unicode.utf8ToUtf16LeAllocZ(allocator, text) catch return false;
-    defer allocator.free(utf16);
-
-    // Win32 clipboard takes ownership of the moveable global handle after SetClipboardData.
-    if (win32_backend.OpenClipboard(win.hwnd) == 0) return false;
-    defer _ = win32_backend.CloseClipboard();
-    _ = win32_backend.EmptyClipboard();
-
-    const size = (utf16.len + 1) * @sizeOf(u16);
-    const hmem = win32_backend.GlobalAlloc(0x0002, size) orelse return false; // GMEM_MOVEABLE
-    const ptr = win32_backend.GlobalLock(hmem) orelse return false;
-    const dest: [*]u16 = @ptrCast(@alignCast(ptr));
-    @memcpy(dest[0..utf16.len], utf16);
-    dest[utf16.len] = 0;
-    _ = win32_backend.GlobalUnlock(hmem);
-
-    return win32_backend.SetClipboardData(CF_UNICODETEXT, hmem) != null;
+    return platform_clipboard.writeText(allocator, owner, text);
 }
 
 pub fn copyAiChatToClipboard(chat: *AppWindow.ai_chat.Session) void {
@@ -673,128 +465,50 @@ pub fn copySelectionToClipboard() void {
 
 pub fn pasteFromClipboard() void {
     const surface = AppWindow.activeSurface() orelse return;
-    const win = AppWindow.g_window orelse return;
     const allocator = AppWindow.g_allocator orelse return;
+    const text = readClipboardText(allocator) orelse return;
+    defer allocator.free(text);
 
-    if (win32_backend.OpenClipboard(win.hwnd) == 0) return;
-    defer {
-        _ = win32_backend.CloseClipboard();
-    }
-
-    if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
-        const text = readClipboardUnicodeText(allocator, hmem) orelse return;
-        defer allocator.free(text);
-        if (text.len > 0) {
-            std.debug.print("Pasting {} UTF-8 bytes from clipboard\n", .{text.len});
-            writePasteToPty(surface, allocator, text);
-        }
-        return;
-    }
-
-    if (win32_backend.GetClipboardData(CF_TEXT)) |hmem| {
-        const text = readClipboardAnsiText(allocator, hmem) orelse return;
-        defer allocator.free(text);
-        if (text.len > 0) {
-            std.debug.print("Pasting {} ANSI bytes from clipboard\n", .{text.len});
-            writePasteToPty(surface, allocator, text);
-        }
-        return;
+    if (text.len > 0) {
+        std.debug.print("Pasting {} UTF-8 bytes from clipboard\n", .{text.len});
+        writePasteToPty(surface, allocator, text);
     }
 }
 
 pub fn pasteClipboardIntoBrowserUrlBar() bool {
-    const win = AppWindow.g_window orelse return false;
     const allocator = AppWindow.g_allocator orelse return false;
+    const text = readClipboardText(allocator) orelse return false;
+    defer allocator.free(text);
 
-    if (win32_backend.OpenClipboard(win.hwnd) == 0) return false;
-    defer {
-        _ = win32_backend.CloseClipboard();
-    }
-
-    if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
-        const text = readClipboardUnicodeText(allocator, hmem) orelse return false;
-        defer allocator.free(text);
-        browser_panel.appendUrlBarText(text);
-        return text.len > 0;
-    }
-
-    if (win32_backend.GetClipboardData(CF_TEXT)) |hmem| {
-        const text = readClipboardAnsiText(allocator, hmem) orelse return false;
-        defer allocator.free(text);
-        browser_panel.appendUrlBarText(text);
-        return text.len > 0;
-    }
-
-    return false;
+    browser_panel.appendUrlBarText(text);
+    return text.len > 0;
 }
 
 pub fn pasteClipboardIntoSessionLauncher() bool {
-    const win = AppWindow.g_window orelse return false;
     const allocator = AppWindow.g_allocator orelse return false;
+    const text = readClipboardText(allocator) orelse return false;
+    defer allocator.free(text);
 
-    if (win32_backend.OpenClipboard(win.hwnd) == 0) return false;
-    defer {
-        _ = win32_backend.CloseClipboard();
-    }
-
-    if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
-        const text = readClipboardUnicodeText(allocator, hmem) orelse return false;
-        defer allocator.free(text);
-        return overlays.sessionLauncherPasteText(text);
-    }
-
-    if (win32_backend.GetClipboardData(CF_TEXT)) |hmem| {
-        const text = readClipboardAnsiText(allocator, hmem) orelse return false;
-        defer allocator.free(text);
-        return overlays.sessionLauncherPasteText(text);
-    }
-
-    return false;
+    return overlays.sessionLauncherPasteText(text);
 }
 
 pub fn pasteFromClipboardIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
-    const win = AppWindow.g_window orelse return;
     const allocator = AppWindow.g_allocator orelse return;
+    const text = readClipboardText(allocator) orelse return;
+    defer allocator.free(text);
 
-    if (win32_backend.OpenClipboard(win.hwnd) == 0) return;
-    defer {
-        _ = win32_backend.CloseClipboard();
-    }
-
-    if (win32_backend.GetClipboardData(CF_UNICODETEXT)) |hmem| {
-        const text = readClipboardUnicodeText(allocator, hmem) orelse return;
-        defer allocator.free(text);
-        chat.appendInputText(text);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
-    }
-
-    if (win32_backend.GetClipboardData(CF_TEXT)) |hmem| {
-        const text = readClipboardAnsiText(allocator, hmem) orelse return;
-        defer allocator.free(text);
-        chat.appendInputText(text);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
-    }
+    chat.appendInputText(text);
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
 }
 
 pub fn pasteImageFromClipboard() void {
     const surface = AppWindow.activeSurface() orelse return;
-    const win = AppWindow.g_window orelse return;
     const allocator = AppWindow.g_allocator orelse return;
+    const owner = clipboardOwner() orelse return;
 
-    if (win32_backend.OpenClipboard(win.hwnd) == 0) return;
-    var clipboard_open = true;
-    defer if (clipboard_open) {
-        _ = win32_backend.CloseClipboard();
-    };
-
-    const image_path = saveClipboardImageToTemp(allocator) orelse return;
+    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return;
     defer allocator.free(image_path);
-    _ = win32_backend.CloseClipboard();
-    clipboard_open = false;
 
     _ = pasteSavedClipboardImage(surface, allocator, image_path);
 }

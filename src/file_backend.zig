@@ -1,12 +1,13 @@
 //! Lightweight file access backends for the sidebar explorer.
 //!
 //! This keeps the explorer UI independent from how files are listed. Backends
-//! intentionally use platform tools (std.fs, wsl.exe, OpenSSH) instead of
+//! intentionally use app-facing local IO plus platform helper modules instead of
 //! adding extra filesystem/SSH dependencies.
 
 const std = @import("std");
 const Surface = @import("Surface.zig");
 const scp = @import("scp.zig");
+const platform_remote_file = @import("platform/remote_file.zig");
 
 pub const MAX_NAME_LEN = 255;
 
@@ -97,13 +98,13 @@ fn listWsl(
     if (path.len == 0) return .{ .status = .empty_root };
 
     var path_buf: [1024]u8 = undefined;
-    const path_expr = wslPathExpr(&path_buf, path) orelse return .{ .status = .wsl_failed };
+    const path_expr = platform_remote_file.wslPathExpr(&path_buf, path) orelse return .{ .status = .wsl_failed };
 
     var cmd_buf: [1200]u8 = undefined;
     const cmd = std.fmt.bufPrint(&cmd_buf, "ls -1p -- {s}", .{path_expr}) catch
         return .{ .status = .wsl_failed };
 
-    const output = wslExec(allocator, cmd) orelse {
+    const output = platform_remote_file.wslExec(allocator, cmd) orelse {
         std.debug.print("FileBackend WSL list failed for '{s}'\n", .{path});
         return .{ .status = .wsl_failed };
     };
@@ -123,7 +124,7 @@ fn listSsh(
     if (path.len == 0) return .{ .status = .empty_root };
 
     var path_buf: [1024]u8 = undefined;
-    const path_expr = shellPathExpr(&path_buf, path) orelse return .{ .status = .ssh_failed };
+    const path_expr = platform_remote_file.shellPathExpr(&path_buf, path) orelse return .{ .status = .ssh_failed };
 
     var cmd_buf: [1200]u8 = undefined;
     const cmd = std.fmt.bufPrint(&cmd_buf, "ls -1p -- {s}", .{path_expr}) catch
@@ -160,7 +161,7 @@ fn wslHome(
     allocator: std.mem.Allocator,
     out: []u8,
 ) ?usize {
-    const output = wslExec(allocator, "printf %s \"$HOME\"") orelse return null;
+    const output = platform_remote_file.wslExec(allocator, platform_remote_file.wslHomeCommand()) orelse return null;
     defer allocator.free(output);
 
     var line: []const u8 = output;
@@ -169,38 +170,6 @@ fn wslHome(
     if (line.len == 0 or line.len > out.len) return null;
     @memcpy(out[0..line.len], line);
     return line.len;
-}
-
-/// Run a command inside the default WSL distro and capture stdout.
-pub fn wslExec(allocator: std.mem.Allocator, command: []const u8) ?[]u8 {
-    var child = std.process.Child.init(&.{ "wsl.exe", "--exec", "sh", "-lc", command }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    child.spawn() catch return null;
-
-    var output: std.ArrayListUnmanaged(u8) = .empty;
-    defer output.deinit(allocator);
-
-    const stdout = child.stdout orelse {
-        _ = child.wait() catch {};
-        return null;
-    };
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = stdout.read(&buf) catch break;
-        if (n == 0) break;
-        output.appendSlice(allocator, buf[0..n]) catch break;
-    }
-
-    const term = child.wait() catch return null;
-    const ok = switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-    if (!ok) return null;
-
-    return output.toOwnedSlice(allocator) catch null;
 }
 
 fn parseRemoteList(output: []const u8, out: []Entry) usize {
@@ -248,80 +217,6 @@ fn lessThan(_: void, a: Entry, b: Entry) bool {
     if (a.is_dir and !b.is_dir) return true;
     if (!a.is_dir and b.is_dir) return false;
     return std.mem.order(u8, a.name(), b.name()) == .lt;
-}
-
-pub fn wslPathExpr(buf: *[1024]u8, path: []const u8) ?[]const u8 {
-    return shellPathExpr(buf, path);
-}
-
-pub fn shellPathExpr(buf: *[1024]u8, path: []const u8) ?[]const u8 {
-    var pos: usize = 0;
-    if (std.mem.eql(u8, path, "~")) {
-        if (!appendLiteral(buf, &pos, "\"$HOME\"")) return null;
-        return buf[0..pos];
-    }
-    if (std.mem.startsWith(u8, path, "~/")) {
-        if (!appendLiteral(buf, &pos, "\"$HOME\"/")) return null;
-        if (!appendShellQuoted(buf, &pos, path[2..])) return null;
-        return buf[0..pos];
-    }
-    if (!appendShellQuoted(buf, &pos, path)) return null;
-    return buf[0..pos];
-}
-
-fn shellQuote(buf: *[1024]u8, arg: []const u8) ?[]const u8 {
-    var pos: usize = 0;
-    if (!appendShellQuoted(buf, &pos, arg)) return null;
-    return buf[0..pos];
-}
-
-fn appendLiteral(buf: *[1024]u8, pos: *usize, text: []const u8) bool {
-    if (pos.* + text.len > buf.len) return false;
-    @memcpy(buf[pos.*..][0..text.len], text);
-    pos.* += text.len;
-    return true;
-}
-
-fn appendShellQuoted(buf: *[1024]u8, pos: *usize, arg: []const u8) bool {
-    if (pos.* >= buf.len) return false;
-    buf[pos.*] = '\'';
-    pos.* += 1;
-
-    for (arg) |ch| {
-        if (ch == '\'') {
-            const escaped = "'\\''";
-            if (!appendLiteral(buf, pos, escaped)) return false;
-        } else {
-            if (pos.* >= buf.len) return false;
-            buf[pos.*] = ch;
-            pos.* += 1;
-        }
-    }
-
-    if (pos.* >= buf.len) return false;
-    buf[pos.*] = '\'';
-    pos.* += 1;
-    return true;
-}
-
-test "shellQuote escapes single quotes" {
-    var buf: [1024]u8 = undefined;
-    const quoted = shellQuote(&buf, "/tmp/it's here") orelse unreachable;
-    try std.testing.expectEqualStrings("'/tmp/it'\\''s here'", quoted);
-}
-
-test "wslPathExpr keeps home expandable" {
-    var buf: [1024]u8 = undefined;
-    try std.testing.expectEqualStrings("\"$HOME\"", wslPathExpr(&buf, "~").?);
-    try std.testing.expectEqualStrings("\"$HOME\"/'README.md'", wslPathExpr(&buf, "~/README.md").?);
-    try std.testing.expectEqualStrings("'/home/me/README.md'", wslPathExpr(&buf, "/home/me/README.md").?);
-}
-
-test "shellPathExpr keeps home expandable for remote commands" {
-    var buf: [1024]u8 = undefined;
-    try std.testing.expectEqualStrings("\"$HOME\"", shellPathExpr(&buf, "~").?);
-    try std.testing.expectEqualStrings("\"$HOME\"/'README.md'", shellPathExpr(&buf, "~/README.md").?);
-    try std.testing.expectEqualStrings("'/home/me/README.md'", shellPathExpr(&buf, "/home/me/README.md").?);
 }
 
 test "parseRemoteList sorts directories first and skips dot entries" {

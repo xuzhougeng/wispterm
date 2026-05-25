@@ -2,17 +2,18 @@
 //!
 //! Owns all tab state (TabState, tab array, tab count, active tab),
 //! tab rename state, and tab/split operations. Does NOT depend on
-//! rendering or GL — only on Surface, SplitTree, and win32_backend.
+//! rendering, GL, or platform windowing APIs — only on Surface and SplitTree.
 
 const std = @import("std");
 const Config = @import("../config.zig");
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
-const win32_backend = @import("../apprt/win32.zig");
+const input_key = @import("../input/key.zig");
 const remote_client = @import("../remote_client.zig");
 const session_persist = @import("../session_persist.zig");
 const ai_chat = @import("../ai_chat.zig");
 const agent_history = @import("../agent_history.zig");
+const platform_pty_command = @import("../platform/pty_command.zig");
 
 const CursorStyle = Config.CursorStyle;
 const Selection = Surface.Selection;
@@ -95,7 +96,7 @@ pub threadlocal var g_tab_count: usize = 0;
 pub threadlocal var g_active_tab: usize = 0;
 
 // Shell command for spawning new tabs (set once at startup from config)
-pub threadlocal var g_shell_cmd_buf: [256]u16 = undefined;
+pub threadlocal var g_shell_cmd_buf: platform_pty_command.CommandLineBuffer = undefined;
 pub threadlocal var g_shell_cmd_len: usize = 0;
 pub threadlocal var g_scrollback_limit: u32 = 10_000_000;
 pub threadlocal var g_remote_client: ?*remote_client.Client = null;
@@ -143,7 +144,7 @@ pub threadlocal var g_tab_rename_orig_len: usize = 0;
 // Query functions
 // ============================================================================
 
-pub fn getShellCmd() [:0]const u16 {
+pub fn getShellCmd() platform_pty_command.CommandLine {
     return g_shell_cmd_buf[0..g_shell_cmd_len :0];
 }
 
@@ -184,79 +185,39 @@ pub fn switchToAiTabBySessionId(session_id: []const u8) bool {
 fn splitSpawnCommand(
     allocator: std.mem.Allocator,
     surface: *const Surface,
-) ?[:0]const u16 {
+) ?platform_pty_command.OwnedCommandLine {
     return switch (surface.launch_kind) {
         .wsl => splitWslCommand(allocator, surface),
         .ssh => splitSshCommand(allocator, surface),
-        .windows => null,
+        .local => null,
     };
-}
-
-fn appendAscii(buf: *[1024]u8, pos: *usize, text: []const u8) bool {
-    if (pos.* + text.len > buf.len) return false;
-    @memcpy(buf[pos.*..][0..text.len], text);
-    pos.* += text.len;
-    return true;
-}
-
-fn appendWindowsQuotedArg(buf: *[1024]u8, pos: *usize, arg: []const u8) bool {
-    if (pos.* >= buf.len) return false;
-    buf[pos.*] = '"';
-    pos.* += 1;
-    for (arg) |ch| {
-        if (ch == '"') {
-            if (!appendAscii(buf, pos, "\\\"")) return false;
-        } else {
-            if (pos.* >= buf.len) return false;
-            buf[pos.*] = ch;
-            pos.* += 1;
-        }
-    }
-    if (pos.* >= buf.len) return false;
-    buf[pos.*] = '"';
-    pos.* += 1;
-    return true;
 }
 
 fn splitWslCommand(
     allocator: std.mem.Allocator,
     surface: *const Surface,
-) ?[:0]const u16 {
+) ?platform_pty_command.OwnedCommandLine {
     var command_buf: [1024]u8 = undefined;
-    var pos: usize = 0;
-    if (!appendAscii(&command_buf, &pos, "wsl.exe")) return null;
-
-    if (surface.getCwd()) |cwd| {
-        if (cwd.len > 0) {
-            if (!appendAscii(&command_buf, &pos, " --cd ")) return null;
-            if (!appendWindowsQuotedArg(&command_buf, &pos, cwd)) return null;
-            return std.unicode.utf8ToUtf16LeAllocZ(allocator, command_buf[0..pos]) catch null;
-        }
-    }
-
-    if (!appendAscii(&command_buf, &pos, " ~")) return null;
-    return std.unicode.utf8ToUtf16LeAllocZ(allocator, command_buf[0..pos]) catch null;
+    const command = platform_pty_command.wslInteractiveCommand(command_buf[0..], surface.getCwd()) orelse return null;
+    return platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch null;
 }
 
 fn splitSshCommand(
     allocator: std.mem.Allocator,
     surface: *const Surface,
-) ?[:0]const u16 {
+) ?platform_pty_command.OwnedCommandLine {
     const conn = surface.ssh_connection orelse return null;
 
     var command_buf: [512]u8 = undefined;
-    // Keep this in sync with overlays.connectSshProfile — see comment there
-    // for why ServerAlive* is mandatory for split-inherited SSH sessions too.
-    const auth_flags = if (conn.password_auth)
-        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "
-    else
-        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ";
-    const command = if (conn.port().len > 0)
-        std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}-p {s} {s}@{s}", .{ auth_flags, conn.port(), conn.user(), conn.host() }) catch return null
-    else
-        std.fmt.bufPrint(&command_buf, "cmd.exe /k ssh.exe -tt {s}{s}@{s}", .{ auth_flags, conn.user(), conn.host() }) catch return null;
+    const command = platform_pty_command.sshInteractiveCommand(command_buf[0..], .{
+        .user = conn.user(),
+        .host = conn.host(),
+        .port = conn.port(),
+        .password_auth = conn.password_auth,
+        .legacy_algorithms = conn.legacy_algorithms,
+    }) orelse return null;
 
-    return std.unicode.utf8ToUtf16LeAllocZ(allocator, command) catch null;
+    return platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch null;
 }
 
 /// Get the active tab's focused surface's selection
@@ -293,11 +254,11 @@ pub fn isActiveTabTerminal() bool {
 /// Spawn a new tab with its own Surface (PTY + terminal).
 /// The caller is responsible for clearing UI state (selection, divider, resize overlay)
 /// and setting rebuild flags after a successful spawn.
-pub fn spawnTabWithCwd(allocator: std.mem.Allocator, cols: u16, rows: u16, cursor_style: CursorStyle, cursor_blink: bool, cwd: ?[*:0]const u16) bool {
+pub fn spawnTabWithCwd(allocator: std.mem.Allocator, cols: u16, rows: u16, cursor_style: CursorStyle, cursor_blink: bool, cwd: platform_pty_command.Cwd) bool {
     return spawnTabWithCommandAndCwd(allocator, cols, rows, getShellCmd(), cursor_style, cursor_blink, cwd);
 }
 
-pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: u16, command: [:0]const u16, cursor_style: CursorStyle, cursor_blink: bool, cwd: ?[*:0]const u16) bool {
+pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: u16, command: platform_pty_command.CommandLine, cursor_style: CursorStyle, cursor_blink: bool, cwd: platform_pty_command.Cwd) bool {
     if (g_tab_count >= MAX_TABS) return false;
 
     const surface = Surface.init(
@@ -544,7 +505,7 @@ pub fn splitFocused(
     cell_h: f32,
     cursor_style: CursorStyle,
     cursor_blink: bool,
-    cwd: ?[*:0]const u16,
+    cwd: platform_pty_command.Cwd,
 ) bool {
     return splitFocusedReturningSurface(allocator, direction, cell_w, cell_h, cursor_style, cursor_blink, cwd) != null;
 }
@@ -558,14 +519,17 @@ pub fn splitFocusedReturningSurface(
     cell_h: f32,
     cursor_style: CursorStyle,
     cursor_blink: bool,
-    cwd: ?[*:0]const u16,
+    cwd: platform_pty_command.Cwd,
 ) ?*Surface {
     const t = activeTab() orelse return null;
     if (t.kind != .terminal) return null;
     const focused_surface = t.focusedSurface() orelse return null;
     const split_command = splitSpawnCommand(allocator, focused_surface);
-    defer if (split_command) |command| allocator.free(command);
-    const shell_cmd = split_command orelse getShellCmd();
+    defer if (split_command) |command| platform_pty_command.freeCommandLine(allocator, command);
+    const shell_cmd = if (split_command) |command|
+        platform_pty_command.commandLineFromOwned(command)
+    else
+        getShellCmd();
 
     return splitFocusedSurfaceWithCommand(
         allocator,
@@ -591,8 +555,8 @@ fn splitFocusedSurfaceWithCommand(
     cell_h: f32,
     cursor_style: CursorStyle,
     cursor_blink: bool,
-    cwd: ?[*:0]const u16,
-    shell_cmd: [:0]const u16,
+    cwd: platform_pty_command.Cwd,
+    shell_cmd: platform_pty_command.CommandLine,
     inherit_ssh_connection: bool,
 ) ?*Surface {
     // Calculate exact dimensions for the new split surface
@@ -829,16 +793,16 @@ pub fn cancelTabRename() void {
 
 /// Handle a key event during tab rename. Does NOT reset cursor blink —
 /// the caller should reset blink state before calling this.
-pub fn handleRenameKey(ev: win32_backend.KeyEvent) void {
-    if (ev.vk == win32_backend.VK_RETURN) {
+pub fn handleRenameKey(ev: input_key.KeyEvent) void {
+    if (ev.key == .enter) {
         commitTabRename();
         return;
     }
-    if (ev.vk == win32_backend.VK_ESCAPE) {
+    if (ev.key == .escape) {
         cancelTabRename();
         return;
     }
-    if (ev.vk == win32_backend.VK_BACK) {
+    if (ev.key == .backspace) {
         if (g_tab_rename_select_all) {
             g_tab_rename_len = 0;
             g_tab_rename_cursor = 0;
@@ -858,7 +822,7 @@ pub fn handleRenameKey(ev: win32_backend.KeyEvent) void {
         }
         return;
     }
-    if (ev.vk == win32_backend.VK_DELETE) {
+    if (ev.key == .delete) {
         if (g_tab_rename_select_all) {
             g_tab_rename_len = 0;
             g_tab_rename_cursor = 0;
@@ -877,7 +841,7 @@ pub fn handleRenameKey(ev: win32_backend.KeyEvent) void {
         }
         return;
     }
-    if (ev.vk == win32_backend.VK_LEFT) {
+    if (ev.key == .arrow_left) {
         g_tab_rename_select_all = false;
         if (g_tab_rename_cursor > 0) {
             g_tab_rename_cursor -= 1;
@@ -886,7 +850,7 @@ pub fn handleRenameKey(ev: win32_backend.KeyEvent) void {
         }
         return;
     }
-    if (ev.vk == win32_backend.VK_RIGHT) {
+    if (ev.key == .arrow_right) {
         g_tab_rename_select_all = false;
         if (g_tab_rename_cursor < g_tab_rename_len) {
             g_tab_rename_cursor += 1;
@@ -895,17 +859,17 @@ pub fn handleRenameKey(ev: win32_backend.KeyEvent) void {
         }
         return;
     }
-    if (ev.ctrl and ev.vk == 0x41) {
+    if (ev.ctrl and ev.key == .key_a) {
         g_tab_rename_select_all = false;
         g_tab_rename_cursor = 0;
         return;
     }
-    if (ev.ctrl and ev.vk == 0x45) {
+    if (ev.ctrl and ev.key == .key_e) {
         g_tab_rename_select_all = false;
         g_tab_rename_cursor = g_tab_rename_len;
         return;
     }
-    if (ev.ctrl and ev.vk == 0x55) {
+    if (ev.ctrl and ev.key == .key_u) {
         if (g_tab_rename_select_all) {
             g_tab_rename_len = 0;
             g_tab_rename_cursor = 0;
@@ -920,7 +884,7 @@ pub fn handleRenameKey(ev: win32_backend.KeyEvent) void {
         }
         return;
     }
-    if (ev.ctrl and ev.vk == 0x4B) {
+    if (ev.ctrl and ev.key == .key_k) {
         if (g_tab_rename_select_all) {
             g_tab_rename_len = 0;
             g_tab_rename_cursor = 0;
@@ -1108,13 +1072,13 @@ fn surfaceFromSnapImpl(
 
     switch (snap.*) {
         .local_shell => |sh| {
-            // Convert cwd to UTF-16 (CreateProcessW copies the string during
-            // Surface.init, so freeing after init is safe).
-            var cwd_w_buf: ?[:0]u16 = null;
-            defer if (cwd_w_buf) |b| gpa.free(b);
-            const cwd_w: ?[*:0]const u16 = if (sh.cwd) |c| blk: {
-                cwd_w_buf = try std.unicode.utf8ToUtf16LeAllocZ(gpa, c);
-                break :blk cwd_w_buf.?.ptr;
+            // Native process launch copies cwd during Surface.init, so freeing
+            // this owned platform string after init is safe.
+            var cwd_owned: ?platform_pty_command.OwnedCwd = null;
+            defer if (cwd_owned) |owned| platform_pty_command.freeCwd(gpa, owned);
+            const cwd_w: platform_pty_command.Cwd = if (sh.cwd) |c| blk: {
+                cwd_owned = try platform_pty_command.allocCwdFromUtf8(gpa, c);
+                break :blk platform_pty_command.cwdFromOwned(cwd_owned.?);
             } else null;
 
             const command = getShellCmd();
@@ -1123,14 +1087,11 @@ fn surfaceFromSnapImpl(
             return surface;
         },
         .ssh => |s| {
-            // Build SSH command equivalent to splitSshCommand, with optional
-            // trailing `cd <cwd>` argument when cwd is present. Mirrors the
-            // password_auth=false (key-auth) branch since persisted SSH snaps
-            // do not carry the password_auth flag. SSH password is never
-            // persisted (security invariant I1); ssh.exe -tt handles any
-            // password prompt interactively in the cmd.exe window.
+            // Build the platform SSH command with an optional trailing
+            // `cd <cwd>` argument when cwd is present. Mirrors the
+            // password_auth=false branch since persisted SSH snaps do not
+            // carry the password_auth flag. SSH password is never persisted.
             var stack_buf: [1024]u8 = undefined;
-            const auth_flags = "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ";
 
             // Render the port to a stable scratch buffer first; we need the
             // port string both inside the spawned command and to pass to
@@ -1138,7 +1099,12 @@ fn surfaceFromSnapImpl(
             var port_buf: [8]u8 = undefined;
             const port_slice = std.fmt.bufPrint(&port_buf, "{}", .{s.port}) catch return error.CommandTooLong;
 
-            const base = std.fmt.bufPrint(&stack_buf, "cmd.exe /k ssh.exe -tt {s}-p {s} {s}@{s}", .{ auth_flags, port_slice, s.user, s.host }) catch return error.CommandTooLong;
+            const base = platform_pty_command.sshInteractiveCommand(stack_buf[0..], .{
+                .user = s.user,
+                .host = s.host,
+                .port = port_slice,
+                .legacy_algorithms = g_ssh_legacy_algorithms,
+            }) orelse return error.CommandTooLong;
             var final_len: usize = base.len;
 
             if (s.cwd) |cwd_str| {
@@ -1151,12 +1117,12 @@ fn surfaceFromSnapImpl(
                 final_len += trail.len;
             }
 
-            const command_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, stack_buf[0..final_len]);
-            defer gpa.free(command_w);
-            const surface = try Surface.init(gpa, cols, rows, command_w, g_scrollback_limit, cursor_style, cursor_blink, null);
+            const command = try platform_pty_command.allocCommandLineFromUtf8(gpa, stack_buf[0..final_len]);
+            defer platform_pty_command.freeCommandLine(gpa, command);
+            const surface = try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(command), g_scrollback_limit, cursor_style, cursor_blink, null);
             surface.attachRemoteClient(g_remote_client);
             // SSH password is never persisted (security invariant I1). On restore,
-            // ssh.exe -tt prompts interactively in cmd.exe if key auth fails;
+            // the native SSH client prompts interactively if key auth fails;
             // the in-app password-autofill flow (which requires password_auth=true)
             // does not engage here.
             surface.setSshConnection(s.user, s.host, port_slice, "", false, g_ssh_legacy_algorithms);
@@ -1392,6 +1358,21 @@ test "tab: reorder moves active tab forward" {
     try std.testing.expectEqual(@as(f32, 23), g_tab_text_y_end[0]);
     try std.testing.expectEqual(@as(f32, 33), g_tab_text_y_end[1]);
     try std.testing.expectEqual(@as(f32, 13), g_tab_text_y_end[2]);
+}
+
+test "tab: rename key handling accepts platform-neutral key events" {
+    resetTestTabGlobals();
+    @memcpy(g_tab_rename_buf[0..3], "abc");
+    g_tab_rename_len = 3;
+    g_tab_rename_cursor = 1;
+    g_tab_rename_active = true;
+
+    handleRenameKey(.{ .key = input_key.Key.arrow_right });
+    try std.testing.expectEqual(@as(usize, 2), g_tab_rename_cursor);
+
+    handleRenameKey(.{ .key = input_key.Key.backspace });
+    try std.testing.expectEqualStrings("ac", g_tab_rename_buf[0..g_tab_rename_len]);
+    try std.testing.expectEqual(@as(usize, 1), g_tab_rename_cursor);
 }
 
 test "tab: reorder moves active tab backward" {

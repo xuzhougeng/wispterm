@@ -1,9 +1,12 @@
-//! State and WebView2 interop for the right-side browser panel.
+//! State and embedded-browser interop for the right-side browser panel.
 
 const std = @import("std");
-const win32 = @import("apprt/win32.zig");
 const Surface = @import("Surface.zig");
 const browser_url = @import("browser_url.zig");
+const platform_process = @import("platform/process.zig");
+const platform_pty_command = @import("platform/pty_command.zig");
+const platform_webview = @import("platform/webview.zig");
+const window_backend = @import("platform/window_backend.zig");
 const ui_perf = @import("ui_perf.zig");
 const tab = @import("appwindow/tab.zig");
 
@@ -22,24 +25,6 @@ const MAX_TUNNEL_SPEC_BYTES = 96;
 const MAX_LOCAL_HOST_BYTES = 32;
 const TUNNEL_READY_TIMEOUT_MS = 8000;
 const TUNNEL_READY_POLL_NS = 50 * std.time.ns_per_ms;
-const BrowserHandle = opaque {};
-
-extern fn phantty_webview2_create(
-    parent: win32.HWND,
-    left: c_int,
-    top: c_int,
-    right: c_int,
-    bottom: c_int,
-    initial_url: [*:0]const u16,
-) callconv(.c) ?*BrowserHandle;
-extern fn phantty_webview2_set_bounds(browser: *BrowserHandle, left: c_int, top: c_int, right: c_int, bottom: c_int) callconv(.c) void;
-extern fn phantty_webview2_set_visible(browser: *BrowserHandle, visible: c_int) callconv(.c) void;
-extern fn phantty_webview2_focus(browser: *BrowserHandle) callconv(.c) void;
-extern fn phantty_webview2_navigate(browser: *BrowserHandle, url: [*:0]const u16) callconv(.c) void;
-extern fn phantty_webview2_is_ready(browser: *BrowserHandle) callconv(.c) c_int;
-extern fn phantty_webview2_last_error(browser: *BrowserHandle) callconv(.c) win32.HRESULT;
-extern fn phantty_webview2_destroy(browser: *BrowserHandle) callconv(.c) void;
-extern fn phantty_webview2_loader_available() callconv(.c) c_int;
 
 pub const Bounds = struct {
     left: i32,
@@ -77,8 +62,8 @@ pub fn contentBounds(bounds: Bounds) ?Bounds {
 pub threadlocal var g_visible: bool = false;
 pub threadlocal var g_owner_tab: ?usize = null;
 pub threadlocal var g_width: f32 = DEFAULT_WIDTH;
-pub threadlocal var g_last_error: win32.HRESULT = 0;
-threadlocal var g_browser: ?*BrowserHandle = null;
+pub threadlocal var g_last_error: platform_webview.ErrorCode = 0;
+threadlocal var g_browser: ?*platform_webview.Browser = null;
 threadlocal var g_url_buf: [MAX_URL_BYTES]u8 = undefined;
 threadlocal var g_url_len: usize = 0;
 threadlocal var g_url_bar_focused: bool = false;
@@ -197,13 +182,13 @@ pub fn panelWidthForWindow(window_width: i32, left_offset: f32, right_offset: f3
 
 pub fn embeddedBrowserAvailable() bool {
     if (!g_availability_checked) {
-        g_embedded_browser_available = phantty_webview2_loader_available() != 0;
+        g_embedded_browser_available = platform_webview.loaderAvailable();
         g_availability_checked = true;
     }
     return g_embedded_browser_available;
 }
 
-pub fn open(parent: ?win32.HWND, url: []const u8) void {
+pub fn open(parent: ?window_backend.NativeHandle, url: []const u8) void {
     if (!embeddedBrowserAvailable()) {
         close();
         return;
@@ -215,7 +200,7 @@ pub fn open(parent: ?win32.HWND, url: []const u8) void {
 
     if (g_browser) |browser| {
         navigateCurrentUrl(browser);
-        phantty_webview2_set_visible(browser, 1);
+        platform_webview.setVisible(browser, true);
         focus();
         return;
     }
@@ -223,7 +208,7 @@ pub fn open(parent: ?win32.HWND, url: []const u8) void {
     _ = parent;
 }
 
-pub fn openForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, url: []const u8, surface: ?*const Surface) bool {
+pub fn openForSurface(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, url: []const u8, surface: ?*const Surface) bool {
     const perf = ui_perf.begin("browser_panel.open_for_surface");
     defer perf.end();
 
@@ -254,7 +239,7 @@ pub fn openForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, url: []
     return true;
 }
 
-pub fn toggle(parent: ?win32.HWND) void {
+pub fn toggle(parent: ?window_backend.NativeHandle) void {
     if (isVisibleForActiveTab()) {
         close();
     } else {
@@ -263,7 +248,7 @@ pub fn toggle(parent: ?win32.HWND) void {
     }
 }
 
-pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, surface: ?*const Surface) bool {
+pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, surface: ?*const Surface) bool {
     if (isVisibleForActiveTab()) {
         close();
         return true;
@@ -282,30 +267,30 @@ pub fn close() void {
 
 pub fn focus() void {
     if (g_browser) |browser| {
-        phantty_webview2_focus(browser);
+        platform_webview.focus(browser);
     }
 }
 
 pub fn isReady() bool {
     const browser = g_browser orelse return false;
-    return phantty_webview2_is_ready(browser) != 0;
+    return platform_webview.isReady(browser);
 }
 
-pub fn lastError() win32.HRESULT {
+pub fn lastError() platform_webview.ErrorCode {
     if (g_browser) |browser| {
-        g_last_error = phantty_webview2_last_error(browser);
+        g_last_error = platform_webview.lastError(browser);
     }
     return g_last_error;
 }
 
-pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) void {
+pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) void {
     const perf = ui_perf.begin("browser_panel.sync");
     defer perf.end();
 
     if (window_width <= 0 or window_height <= 0) return;
 
     if (!isVisibleForActiveTab()) {
-        if (g_browser) |browser| phantty_webview2_set_visible(browser, 0);
+        if (g_browser) |browser| platform_webview.setVisible(browser, false);
         return;
     }
 
@@ -320,12 +305,12 @@ pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_
     const webview_bounds = contentBounds(bounds) orelse return;
 
     if (g_browser == null) {
-        var wide_buf: [MAX_URL_BYTES]u16 = undefined;
-        const wide_url = urlToWide(currentUrl(), &wide_buf) orelse return;
-        g_browser = phantty_webview2_create(parent, webview_bounds.left, webview_bounds.top, webview_bounds.right, webview_bounds.bottom, wide_url);
+        var url_buf: platform_webview.UrlBuffer = undefined;
+        const initial_url = platform_webview.urlFromUtf8(currentUrl(), &url_buf) orelse return;
+        g_browser = platform_webview.create(parent, toWebviewBounds(webview_bounds), initial_url);
         if (g_browser) |browser| {
-            g_last_error = phantty_webview2_last_error(browser);
-            if (hresultFailed(g_last_error)) {
+            g_last_error = platform_webview.lastError(browser);
+            if (platform_webview.failed(g_last_error)) {
                 close();
                 return;
             }
@@ -336,9 +321,9 @@ pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_
     }
 
     if (g_browser) |browser| {
-        phantty_webview2_set_bounds(browser, webview_bounds.left, webview_bounds.top, webview_bounds.right, webview_bounds.bottom);
-        phantty_webview2_set_visible(browser, 1);
-        g_last_error = phantty_webview2_last_error(browser);
+        platform_webview.setBounds(browser, toWebviewBounds(webview_bounds));
+        platform_webview.setVisible(browser, true);
+        g_last_error = platform_webview.lastError(browser);
     }
 }
 
@@ -353,13 +338,18 @@ pub fn deinit() void {
 
 fn destroyBrowser() void {
     if (g_browser) |browser| {
-        phantty_webview2_destroy(browser);
+        platform_webview.destroy(browser);
         g_browser = null;
     }
 }
 
-fn hresultFailed(hr: win32.HRESULT) bool {
-    return hr < 0;
+fn toWebviewBounds(bounds: Bounds) platform_webview.Bounds {
+    return .{
+        .left = bounds.left,
+        .top = bounds.top,
+        .right = bounds.right,
+        .bottom = bounds.bottom,
+    };
 }
 
 fn setUrl(url: []const u8) void {
@@ -432,7 +422,7 @@ pub fn clearUrlBar() void {
     g_url_edit_select_all = false;
 }
 
-pub fn submitUrlBar(allocator: std.mem.Allocator, parent: ?win32.HWND, surface: ?*const Surface) bool {
+pub fn submitUrlBar(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, surface: ?*const Surface) bool {
     const target = normalizeUrlInput(allocator, g_url_edit_buf[0..g_url_edit_len]) orelse return false;
     defer allocator.free(target);
 
@@ -452,19 +442,11 @@ fn replaceSelectedUrlBeforeEdit() void {
     g_url_edit_select_all = false;
 }
 
-fn navigateCurrentUrl(browser: *BrowserHandle) void {
-    var wide_buf: [MAX_URL_BYTES]u16 = undefined;
-    const wide_url = urlToWide(currentUrl(), &wide_buf) orelse return;
-    phantty_webview2_navigate(browser, wide_url);
-    g_last_error = phantty_webview2_last_error(browser);
-}
-
-fn urlToWide(url: []const u8, out: *[MAX_URL_BYTES]u16) ?[*:0]const u16 {
-    if (url.len >= out.len) return null;
-    @memset(out, 0);
-    const len = std.unicode.utf8ToUtf16Le(out[0 .. out.len - 1], url) catch return null;
-    out[len] = 0;
-    return out[0..len :0].ptr;
+fn navigateCurrentUrl(browser: *platform_webview.Browser) void {
+    var url_buf: platform_webview.UrlBuffer = undefined;
+    const url = platform_webview.urlFromUtf8(currentUrl(), &url_buf) orelse return;
+    platform_webview.navigate(browser, url);
+    g_last_error = platform_webview.lastError(browser);
 }
 
 pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) Bounds {
@@ -546,13 +528,13 @@ fn ensureSshTunnel(allocator: std.mem.Allocator, conn: *const Surface.SshConnect
     var dest_buf: [MAX_SSH_DEST_BYTES]u8 = undefined;
     const dest = sshDestination(&dest_buf, conn) orelse return null;
 
-    var askpass_path: ?[]u8 = null;
+    var askpass_path: ?[]const u8 = null;
     defer if (askpass_path) |path| allocator.free(path);
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
     if (conn.password_auth) {
-        askpass_path = ensureAskPassScript(allocator) orelse return null;
+        askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return null;
         env_map = std.process.getEnvMap(allocator) catch return null;
         if (env_map) |*map| {
             map.put("SSH_ASKPASS", askpass_path.?) catch return null;
@@ -564,7 +546,7 @@ fn ensureSshTunnel(allocator: std.mem.Allocator, conn: *const Surface.SshConnect
 
     var argv_buf: [48][]const u8 = undefined;
     var argc: usize = 0;
-    argv_buf[argc] = "ssh.exe";
+    argv_buf[argc] = platform_pty_command.sshExecutableName();
     argc += 1;
     argv_buf[argc] = "-N";
     argc += 1;
@@ -666,7 +648,7 @@ fn canConnectToLocalHostName(allocator: std.mem.Allocator, local_host: []const u
 }
 
 fn childHasExited(child: *const std.process.Child) bool {
-    return win32.WaitForSingleObject(child.id, 0) == win32.WAIT_OBJECT_0;
+    return platform_process.childExited(child.id, 0);
 }
 
 fn reservePreferredLocalPort(preferred_port: u16) ?u16 {
@@ -717,27 +699,6 @@ fn copyBounded(dest: []u8, text: []const u8) usize {
     return n;
 }
 
-fn askPassScriptPath(allocator: std.mem.Allocator) ?[]u8 {
-    const temp = std.process.getEnvVarOwned(allocator, "TEMP") catch
-        std.process.getEnvVarOwned(allocator, "TMP") catch return null;
-    defer allocator.free(temp);
-    return std.fmt.allocPrint(allocator, "{s}\\phantty-ssh-askpass.cmd", .{temp}) catch null;
-}
-
-fn ensureAskPassScript(allocator: std.mem.Allocator) ?[]u8 {
-    const path = askPassScriptPath(allocator) orelse return null;
-    errdefer allocator.free(path);
-
-    const file = std.fs.createFileAbsolute(path, .{ .truncate = true }) catch return null;
-    defer file.close();
-
-    file.writeAll(
-        "@echo off\r\n" ++
-            "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Out.Write($env:PHANTTY_SSH_PASSWORD)\"\r\n",
-    ) catch return null;
-    return path;
-}
-
 test "browser_panel: visible only on owning active tab" {
     const saved_visible = g_visible;
     const saved_owner = g_owner_tab;
@@ -761,6 +722,23 @@ test "browser_panel: visible only on owning active tab" {
 
     tab.g_active_tab = 0;
     try std.testing.expect(isVisibleForActiveTab());
+}
+
+test "browser_panel: public parent handle API uses window backend handle" {
+    const open_info = @typeInfo(@TypeOf(open)).@"fn";
+    try std.testing.expect(open_info.params[0].type.? == ?window_backend.NativeHandle);
+
+    const open_surface_info = @typeInfo(@TypeOf(openForSurface)).@"fn";
+    try std.testing.expect(open_surface_info.params[1].type.? == ?window_backend.NativeHandle);
+
+    const toggle_info = @typeInfo(@TypeOf(toggle)).@"fn";
+    try std.testing.expect(toggle_info.params[0].type.? == ?window_backend.NativeHandle);
+
+    const sync_info = @typeInfo(@TypeOf(sync)).@"fn";
+    try std.testing.expect(sync_info.params[0].type.? == window_backend.NativeHandle);
+
+    const submit_info = @typeInfo(@TypeOf(submitUrlBar)).@"fn";
+    try std.testing.expect(submit_info.params[1].type.? == ?window_backend.NativeHandle);
 }
 
 test "reservePreferredLocalPort returns the preferred port when it is free" {

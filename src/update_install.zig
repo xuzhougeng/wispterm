@@ -1,20 +1,17 @@
 const std = @import("std");
 const build_options = @import("build_options");
+const platform_process = @import("platform/process.zig");
+const platform_update_package = @import("platform/update_package.zig");
 const update_check = @import("update_check.zig");
-
-pub const PayloadValidation = struct {
-    require_webview2_loader: bool,
-};
 
 pub const PayloadError = error{
     MissingPhanttyExe,
     MissingUpdaterExe,
     MissingVersionFile,
     MissingPluginsDir,
-    MissingWebView2Loader,
+    MissingRequiredPayloadFile,
+    UnsupportedReleasePackage,
 };
-
-const ZipEntryNameError = error{UnsafeZipEntryName};
 
 pub const PreparedUpdate = struct {
     work_dir: []u8,
@@ -28,16 +25,17 @@ pub const PreparedUpdate = struct {
     }
 };
 
-pub fn runtimeFlavor(webview_enabled: bool, has_webview2_loader: bool) update_check.PortableFlavor {
-    if (!webview_enabled) return .portable_no_webview;
-    if (has_webview2_loader) return .portable_webview2;
-    return .portable;
+pub fn runtimePackage(webview_enabled: bool, has_embedded_browser_payload: bool) update_check.ReleasePackage {
+    return platform_update_package.runtimePackage(webview_enabled, has_embedded_browser_payload);
+}
+
+pub fn defaultPackage() update_check.ReleasePackage {
+    return platform_update_package.defaultPackage();
 }
 
 fn fileExists(dir: std.fs.Dir, sub_path: []const u8) bool {
-    var file = dir.openFile(sub_path, .{}) catch return false;
-    file.close();
-    return true;
+    const stat = dir.statFile(sub_path) catch return false;
+    return stat.kind == .file;
 }
 
 fn dirExists(dir: std.fs.Dir, sub_path: []const u8) bool {
@@ -46,26 +44,32 @@ fn dirExists(dir: std.fs.Dir, sub_path: []const u8) bool {
     return true;
 }
 
-pub fn validatePayloadDir(dir: std.fs.Dir, options: PayloadValidation) PayloadError!void {
-    if (!fileExists(dir, "phantty.exe")) return error.MissingPhanttyExe;
-    if (!fileExists(dir, "phantty-updater.exe")) return error.MissingUpdaterExe;
-    if (!fileExists(dir, "version.txt")) return error.MissingVersionFile;
-    if (!dirExists(dir, "plugins")) return error.MissingPluginsDir;
-    if (options.require_webview2_loader and !fileExists(dir, "WebView2Loader.dll")) return error.MissingWebView2Loader;
+pub fn validatePayloadDirForPackage(dir: std.fs.Dir, package: update_check.ReleasePackage) PayloadError!void {
+    const manifest = platform_update_package.payloadManifest(package) catch return error.UnsupportedReleasePackage;
+    for (manifest) |entry| {
+        const exists = if (entry.directory) dirExists(dir, entry.path) else fileExists(dir, entry.path);
+        if (exists) continue;
+        if (entry.optional) continue;
+        return payloadMissingError(package, entry);
+    }
 }
 
-pub fn currentFlavor(allocator: std.mem.Allocator) !update_check.PortableFlavor {
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
-    defer allocator.free(exe_path);
-    const exe_dir = std.fs.path.dirname(exe_path) orelse return .portable;
-    const loader_path = try std.fs.path.join(allocator, &.{ exe_dir, "WebView2Loader.dll" });
-    defer allocator.free(loader_path);
-    const has_loader = blk: {
-        var file = std.fs.openFileAbsolute(loader_path, .{}) catch break :blk false;
-        file.close();
-        break :blk true;
-    };
-    return runtimeFlavor(build_options.webview, has_loader);
+fn payloadMissingError(package: update_check.ReleasePackage, entry: platform_update_package.PayloadEntry) PayloadError {
+    const path = entry.path;
+    if (platform_update_package.mainExecutablePath(package)) |main_exe| {
+        if (std.mem.eql(u8, path, main_exe)) return error.MissingPhanttyExe;
+    } else |_| {}
+    if (platform_update_package.updaterExecutablePath(package)) |updater_exe| {
+        if (std.mem.eql(u8, path, updater_exe)) return error.MissingUpdaterExe;
+    } else |_| {}
+    if (std.mem.eql(u8, path, "version.txt")) return error.MissingVersionFile;
+    if (std.mem.eql(u8, path, "plugins")) return error.MissingPluginsDir;
+    if (!entry.directory) return error.MissingRequiredPayloadFile;
+    return error.UnsupportedReleasePackage;
+}
+
+pub fn currentPackage(allocator: std.mem.Allocator) !update_check.ReleasePackage {
+    return platform_update_package.currentPackage(allocator, build_options.webview);
 }
 
 pub fn updateWorkDir(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
@@ -115,47 +119,6 @@ fn replaceDirWithBackup(temp_dir: []const u8, final_dir: []const u8, backup_dir:
     };
 }
 
-fn isWindowsDriveQualified(name: []const u8) bool {
-    return name.len >= 3 and
-        std.ascii.isAlphabetic(name[0]) and
-        name[1] == ':' and
-        (name[2] == '/' or name[2] == '\\');
-}
-
-fn isIllegalWindowsNameChar(c: u8) bool {
-    return switch (c) {
-        '<', '>', ':', '"', '|', '?', '*' => true,
-        else => false,
-    };
-}
-
-fn validateZipEntryName(name: []const u8) ZipEntryNameError!void {
-    if (name.len == 0) return error.UnsafeZipEntryName;
-    if (name[0] == '/' or name[0] == '\\') return error.UnsafeZipEntryName;
-    if (isWindowsDriveQualified(name)) return error.UnsafeZipEntryName;
-
-    var component_start: usize = 0;
-    var saw_component = false;
-    for (name, 0..) |c, i| {
-        if (isIllegalWindowsNameChar(c)) return error.UnsafeZipEntryName;
-        if (c != '/' and c != '\\') continue;
-
-        if (i == component_start) return error.UnsafeZipEntryName;
-        const component = name[component_start..i];
-        if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.UnsafeZipEntryName;
-        saw_component = true;
-        component_start = i + 1;
-    }
-
-    if (component_start == name.len) {
-        if (!saw_component) return error.UnsafeZipEntryName;
-        return;
-    }
-
-    const component = name[component_start..];
-    if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.UnsafeZipEntryName;
-}
-
 fn validateZipEntryNames(zip_file: *std.fs.File, read_buf: []u8) !void {
     try zip_file.seekTo(0);
     var reader = zip_file.reader(read_buf);
@@ -165,7 +128,7 @@ fn validateZipEntryNames(zip_file: *std.fs.File, read_buf: []u8) !void {
         if (entry.filename_len > filename_buf.len) return error.ZipInsufficientBuffer;
         try reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
         try reader.interface.readSliceAll(filename_buf[0..entry.filename_len]);
-        try validateZipEntryName(filename_buf[0..entry.filename_len]);
+        try platform_update_package.validateArchiveEntryName(filename_buf[0..entry.filename_len]);
     }
     try zip_file.seekTo(0);
 }
@@ -250,11 +213,13 @@ pub fn currentExeDir(allocator: std.mem.Allocator) ![]u8 {
 
 pub fn launchUpdater(
     allocator: std.mem.Allocator,
+    package: update_check.ReleasePackage,
     payload_dir: []const u8,
     target_dir: []const u8,
     pid: u32,
 ) !void {
-    const updater_path = try std.fs.path.join(allocator, &.{ payload_dir, "phantty-updater.exe" });
+    const updater_executable = platform_update_package.updaterExecutablePath(package) catch return error.UnsupportedReleasePackage;
+    const updater_path = try std.fs.path.join(allocator, &.{ payload_dir, updater_executable });
     defer allocator.free(updater_path);
     var pid_buf: [32]u8 = undefined;
     const pid_text = try std.fmt.bufPrint(&pid_buf, "{d}", .{pid});
@@ -268,73 +233,117 @@ pub fn launchUpdater(
         target_dir,
         "--restart",
     };
-    var child = std.process.Child.init(&argv, allocator);
-    child.cwd = payload_dir;
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    child.create_no_window = true;
-    try child.spawn();
-    std.os.windows.CloseHandle(child.id);
-    std.os.windows.CloseHandle(child.thread_handle);
+    try platform_process.spawnDetachedWithOptions(allocator, .{
+        .argv = &argv,
+        .cwd = payload_dir,
+        .create_no_window = true,
+    });
 }
 
-test "update_install: runtime flavor preserves current portable flavor" {
-    try std.testing.expectEqual(update_check.PortableFlavor.portable_no_webview, runtimeFlavor(false, true));
-    try std.testing.expectEqual(update_check.PortableFlavor.portable_webview2, runtimeFlavor(true, true));
-    try std.testing.expectEqual(update_check.PortableFlavor.portable, runtimeFlavor(true, false));
+fn writeExecutablePayloadsForTest(dir: std.fs.Dir, package: update_check.ReleasePackage) !void {
+    try dir.writeFile(.{ .sub_path = try platform_update_package.mainExecutablePath(package), .data = "exe" });
+    try dir.writeFile(.{ .sub_path = try platform_update_package.updaterExecutablePath(package), .data = "updater" });
+}
+
+fn makeMainExecutablePayloadDirForTest(dir: std.fs.Dir, package: update_check.ReleasePackage) !void {
+    try dir.makeDir(try platform_update_package.mainExecutablePath(package));
+}
+
+fn writeUpdaterExecutablePayloadForTest(dir: std.fs.Dir, package: update_check.ReleasePackage) !void {
+    try dir.writeFile(.{ .sub_path = try platform_update_package.updaterExecutablePath(package), .data = "updater" });
+}
+
+test "update_install: runtime package carries installer requirements" {
+    const package_with_required_extra_payload = platform_update_package.packageForScenario(.with_required_embedded_browser_payload);
+    const required_extra_manifest = try platform_update_package.payloadManifest(package_with_required_extra_payload);
+    try std.testing.expect(!required_extra_manifest[required_extra_manifest.len - 1].optional);
+
+    const package_without_required_extra_payload = platform_update_package.packageForScenario(.baseline);
+    const optional_extra_manifest = try platform_update_package.payloadManifest(package_without_required_extra_payload);
+    try std.testing.expect(optional_extra_manifest[optional_extra_manifest.len - 1].optional);
+
+    const package_without_embedded_browser_payload = platform_update_package.packageForScenario(.without_embedded_browser_payload);
+    const disabled_extra_manifest = try platform_update_package.payloadManifest(package_without_embedded_browser_payload);
+    try std.testing.expect(disabled_extra_manifest[disabled_extra_manifest.len - 1].optional);
+
+    const linux = platform_update_package.runtimePackageForOs(.linux, true, true);
+    try std.testing.expectEqual(update_check.ReleasePlatform.linux, linux.platform);
+
+    const macos = platform_update_package.runtimePackageForOs(.macos, true, true);
+    try std.testing.expectEqual(update_check.ReleasePlatform.macos, macos.platform);
 }
 
 test "update_install: payload validation requires packaged files" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "phantty.exe", .data = "exe" });
-    try tmp.dir.writeFile(.{ .sub_path = "phantty-updater.exe", .data = "updater" });
+    const portable_package = platform_update_package.packageForScenario(.baseline);
+    const package_with_required_extra_payload = platform_update_package.packageForScenario(.with_required_embedded_browser_payload);
+    const required_extra_payload = blk: {
+        const manifest = try platform_update_package.payloadManifest(package_with_required_extra_payload);
+        break :blk manifest[manifest.len - 1].path;
+    };
+
+    try writeExecutablePayloadsForTest(tmp.dir, portable_package);
     try tmp.dir.writeFile(.{ .sub_path = "version.txt", .data = "v0.28.0" });
     try tmp.dir.makeDir("plugins");
 
-    try validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false });
-    try std.testing.expectError(error.MissingWebView2Loader, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = true }));
+    try validatePayloadDirForPackage(tmp.dir, portable_package);
+    try std.testing.expectError(
+        error.MissingRequiredPayloadFile,
+        validatePayloadDirForPackage(tmp.dir, package_with_required_extra_payload),
+    );
 
-    try tmp.dir.writeFile(.{ .sub_path = "WebView2Loader.dll", .data = "dll" });
-    try validatePayloadDir(tmp.dir, .{ .require_webview2_loader = true });
+    try tmp.dir.writeFile(.{ .sub_path = required_extra_payload, .data = "extra payload" });
+    try validatePayloadDirForPackage(tmp.dir, package_with_required_extra_payload);
 }
 
 test "update_install: payload validation rejects directories for required files" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makeDir("phantty.exe");
-    try tmp.dir.writeFile(.{ .sub_path = "phantty-updater.exe", .data = "updater" });
+    const portable_package = platform_update_package.packageForScenario(.baseline);
+    try makeMainExecutablePayloadDirForTest(tmp.dir, portable_package);
+    try writeUpdaterExecutablePayloadForTest(tmp.dir, portable_package);
     try tmp.dir.writeFile(.{ .sub_path = "version.txt", .data = "v0.28.0" });
     try tmp.dir.makeDir("plugins");
-    try std.testing.expectError(error.MissingPhanttyExe, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false }));
+    try std.testing.expectError(
+        error.MissingPhanttyExe,
+        validatePayloadDirForPackage(tmp.dir, portable_package),
+    );
 }
 
-test "update_install: payload validation rejects directory WebView2 loader when required" {
+test "update_install: payload validation rejects directories for required extra files" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "phantty.exe", .data = "exe" });
-    try tmp.dir.writeFile(.{ .sub_path = "phantty-updater.exe", .data = "updater" });
+    const package_with_required_extra_payload = platform_update_package.packageForScenario(.with_required_embedded_browser_payload);
+    const required_extra_payload = blk: {
+        const manifest = try platform_update_package.payloadManifest(package_with_required_extra_payload);
+        break :blk manifest[manifest.len - 1].path;
+    };
+
+    try writeExecutablePayloadsForTest(tmp.dir, package_with_required_extra_payload);
     try tmp.dir.writeFile(.{ .sub_path = "version.txt", .data = "v0.28.0" });
     try tmp.dir.makeDir("plugins");
-    try tmp.dir.makeDir("WebView2Loader.dll");
-    try std.testing.expectError(error.MissingWebView2Loader, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = true }));
+    try tmp.dir.makeDir(required_extra_payload);
+    try std.testing.expectError(
+        error.MissingRequiredPayloadFile,
+        validatePayloadDirForPackage(tmp.dir, package_with_required_extra_payload),
+    );
 }
 
 test "update_install: payload validation requires plugins directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "phantty.exe", .data = "exe" });
-    try tmp.dir.writeFile(.{ .sub_path = "phantty-updater.exe", .data = "updater" });
+    const portable_package = platform_update_package.packageForScenario(.baseline);
+    try writeExecutablePayloadsForTest(tmp.dir, portable_package);
     try tmp.dir.writeFile(.{ .sub_path = "version.txt", .data = "v0.28.0" });
 
-    try std.testing.expectError(error.MissingPluginsDir, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false }));
+    try std.testing.expectError(error.MissingPluginsDir, validatePayloadDirForPackage(tmp.dir, portable_package));
     try tmp.dir.writeFile(.{ .sub_path = "plugins", .data = "not a directory" });
-    try std.testing.expectError(error.MissingPluginsDir, validatePayloadDir(tmp.dir, .{ .require_webview2_loader = false }));
+    try std.testing.expectError(error.MissingPluginsDir, validatePayloadDirForPackage(tmp.dir, portable_package));
 }
 
 test "update_install: replacing payload preserves old payload until temp moves into place" {
@@ -361,31 +370,4 @@ test "update_install: replacing payload preserves old payload until temp moves i
     try std.testing.expect(!dirExists(tmp.dir, "payload.tmp"));
     try std.testing.expect(fileExists(tmp.dir, "payload/new.txt"));
     try std.testing.expect(!fileExists(tmp.dir, "payload/old.txt"));
-}
-
-test "update_install: zip entry validation allows safe backslash separators" {
-    try validateZipEntryName("plugins\\skill\\SKILL.md");
-    try validateZipEntryName("plugins/");
-}
-
-test "update_install: zip entry validation rejects windows unsafe names" {
-    const unsafe_names = [_][]const u8{
-        "",
-        "/phantty.exe",
-        "\\phantty.exe",
-        "//phantty.exe",
-        "\\\\server\\share\\phantty.exe",
-        "C:\\Phantty\\phantty.exe",
-        "C:/Phantty/phantty.exe",
-        "plugins//skill",
-        "plugins\\\\skill",
-        "plugins/./skill",
-        "plugins/../skill",
-        "plugins/skill:name",
-        "plugins/skill?.md",
-    };
-
-    for (unsafe_names) |name| {
-        try std.testing.expectError(error.UnsafeZipEntryName, validateZipEntryName(name));
-    }
 }

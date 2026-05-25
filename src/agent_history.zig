@@ -1,7 +1,7 @@
 const std = @import("std");
+const platform_dirs = @import("platform/dirs.zig");
 const log = std.log.scoped(.agent_history);
 
-const DEFAULT_HISTORY_BASENAME = "agent-history.json";
 const MAX_HISTORY_BYTES = 8 * 1024 * 1024;
 
 pub const MessageRole = enum {
@@ -434,19 +434,7 @@ fn isLenientJsonLoadError(err: anyerror) bool {
 }
 
 pub fn defaultPath(allocator: std.mem.Allocator) ![]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
-        defer allocator.free(appdata);
-        return std.fs.path.join(allocator, &.{ appdata, "phantty", DEFAULT_HISTORY_BASENAME });
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        return std.fs.path.join(allocator, &.{ xdg, "phantty", DEFAULT_HISTORY_BASENAME });
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".config", "phantty", DEFAULT_HISTORY_BASENAME });
-    } else |_| {}
-    return error.NoConfigPath;
+    return platform_dirs.agentHistoryPath(allocator);
 }
 
 fn messageInputCount(message_inputs: anytype) usize {

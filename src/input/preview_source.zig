@@ -2,9 +2,9 @@
 
 const std = @import("std");
 const Surface = @import("../Surface.zig");
-const file_backend = @import("../file_backend.zig");
 const file_explorer = @import("../file_explorer.zig");
 const markdown_preview = @import("../markdown_preview.zig");
+const platform_remote_file = @import("../platform/remote_file.zig");
 const scp = @import("../scp.zig");
 const ui_perf = @import("../ui_perf.zig");
 
@@ -66,7 +66,7 @@ pub fn readLocalPreviewSource(allocator: std.mem.Allocator, path: []const u8, li
 
 fn buildRemotePreviewReadCommand(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
     var path_buf: [1024]u8 = undefined;
-    const path_expr = file_backend.shellPathExpr(&path_buf, path) orelse return error.PreviewFailed;
+    const path_expr = platform_remote_file.shellPathExpr(&path_buf, path) orelse return error.PreviewFailed;
     return std.fmt.allocPrint(allocator, "head -c {} -- {s}", .{ limit + 1, path_expr });
 }
 
@@ -99,7 +99,7 @@ pub fn readPreviewSourceForKind(allocator: std.mem.Allocator, source_kind: Sourc
 
 fn buildWslPreviewReadCommand(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
     var path_buf: [1024]u8 = undefined;
-    const path_expr = file_backend.wslPathExpr(&path_buf, path) orelse return error.PreviewFailed;
+    const path_expr = platform_remote_file.wslPathExpr(&path_buf, path) orelse return error.PreviewFailed;
     return std.fmt.allocPrint(allocator, "head -c {} -- {s}", .{ limit + 1, path_expr });
 }
 
@@ -110,7 +110,7 @@ pub fn readWslPreviewSource(allocator: std.mem.Allocator, path: []const u8, limi
     const command = buildWslPreviewReadCommand(allocator, path, limit) catch return error.PreviewFailed;
     defer allocator.free(command);
 
-    const source = file_backend.wslExec(allocator, command) orelse return error.PreviewFailed;
+    const source = platform_remote_file.wslExec(allocator, command) orelse return error.PreviewFailed;
     errdefer allocator.free(source);
     if (source.len > limit) return error.PreviewTooLarge;
     return source;
@@ -173,7 +173,7 @@ pub fn resolveTerminalPreviewPath(allocator: std.mem.Allocator, surface: *Surfac
     return switch (surface.launch_kind) {
         .wsl => try resolveUnixTerminalPath(allocator, surface.getCwd() orelse "~", path, false),
         .ssh => try resolveUnixTerminalPath(allocator, surface.getCwd(), path, true),
-        .windows => blk: {
+        .local => blk: {
             if (std.fs.path.isAbsolute(path) or (path.len >= 2 and path[1] == ':')) {
                 break :blk try allocator.dupe(u8, path);
             }
@@ -195,7 +195,7 @@ pub fn readTerminalPreviewSource(allocator: std.mem.Allocator, surface: *Surface
             };
             break :blk try readSshPreviewSource(allocator, &conn, path, markdown_preview.MAX_SOURCE_BYTES);
         },
-        .windows => readLocalPreviewSource(allocator, path, markdown_preview.MAX_SOURCE_BYTES),
+        .local => readLocalPreviewSource(allocator, path, markdown_preview.MAX_SOURCE_BYTES),
     };
 }
 

@@ -1,4 +1,6 @@
 const std = @import("std");
+const platform_update_package = @import("platform/update_package.zig");
+const release_package = @import("release_package.zig");
 
 pub const latest_release_api_url = "https://api.github.com/repos/xuzhougeng/phantty/releases/latest";
 pub const latest_release_page_url = "https://github.com/xuzhougeng/phantty/releases/latest";
@@ -20,11 +22,8 @@ pub const State = enum {
     failed,
 };
 
-pub const PortableFlavor = enum {
-    portable,
-    portable_webview2,
-    portable_no_webview,
-};
+pub const ReleasePlatform = release_package.Platform;
+pub const ReleasePackage = release_package.Package;
 
 pub const ReleaseAsset = struct {
     name: []const u8,
@@ -194,52 +193,19 @@ fn freeAssets(allocator: std.mem.Allocator, assets: []const ReleaseAsset) void {
     allocator.free(assets);
 }
 
-pub fn portableAssetName(tag_name: []const u8, flavor: PortableFlavor, buf: []u8) ![]const u8 {
-    return switch (flavor) {
-        .portable => std.fmt.bufPrint(buf, "phantty-windows-portable-{s}.zip", .{tag_name}),
-        .portable_webview2 => std.fmt.bufPrint(buf, "phantty-windows-portable-webview2-{s}.zip", .{tag_name}),
-        .portable_no_webview => std.fmt.bufPrint(buf, "phantty-windows-portable-no-webview-{s}.zip", .{tag_name}),
-    };
-}
-
-pub fn selectPortableAsset(release: ReleaseInfo, flavor: PortableFlavor) ?ReleaseAsset {
+pub fn selectReleaseAsset(release: ReleaseInfo, package: ReleasePackage) ?ReleaseAsset {
     for (release.assets) |asset| {
-        if (portableAssetNameMatches(asset.name, release.tag_name, flavor)) return asset;
+        if (platform_update_package.matchesAssetName(asset.name, release.tag_name, package)) return asset;
     }
     return null;
 }
 
-fn portableAssetNameMatches(name: []const u8, tag_name: []const u8, flavor: PortableFlavor) bool {
-    const Parts = struct {
-        prefix: []const u8,
-        suffix: []const u8,
-    };
-    const parts = switch (flavor) {
-        .portable => Parts{
-            .prefix = "phantty-windows-portable-",
-            .suffix = ".zip",
-        },
-        .portable_webview2 => Parts{
-            .prefix = "phantty-windows-portable-webview2-",
-            .suffix = ".zip",
-        },
-        .portable_no_webview => Parts{
-            .prefix = "phantty-windows-portable-no-webview-",
-            .suffix = ".zip",
-        },
-    };
-    return name.len == parts.prefix.len + tag_name.len + parts.suffix.len and
-        std.mem.startsWith(u8, name, parts.prefix) and
-        std.mem.endsWith(u8, name, parts.suffix) and
-        std.mem.eql(u8, name[parts.prefix.len .. parts.prefix.len + tag_name.len], tag_name);
-}
-
-pub fn evaluateReleaseForFlavor(current_version: []const u8, release: ReleaseInfo, flavor: PortableFlavor) CheckResult {
+pub fn evaluateReleaseForPackage(current_version: []const u8, release: ReleaseInfo, package: ReleasePackage) CheckResult {
     if (release.draft or release.prerelease) return .{ .state = .up_to_date };
 
     return switch (compareVersions(current_version, release.tag_name)) {
         .newer => {
-            const asset = selectPortableAsset(release, flavor) orelse return .{
+            const asset = selectReleaseAsset(release, package) orelse return .{
                 .state = .failed,
                 .latest_version = release.tag_name,
                 .release_url = release.html_url,
@@ -258,7 +224,7 @@ pub fn evaluateReleaseForFlavor(current_version: []const u8, release: ReleaseInf
 }
 
 pub fn evaluateRelease(current_version: []const u8, release: ReleaseInfo) CheckResult {
-    return evaluateReleaseForFlavor(current_version, release, .portable);
+    return evaluateReleaseForPackage(current_version, release, .{ .platform = .unsupported });
 }
 
 pub fn formatStatusMessage(buf: []u8, result: CheckResult) ![]const u8 {
@@ -311,18 +277,18 @@ pub fn fetchLatestRelease(
     current_version: []const u8,
     buffers: CheckResultBuffers,
 ) CheckResult {
-    return fetchLatestReleaseForFlavor(
+    return fetchLatestReleaseForPackage(
         allocator,
         current_version,
-        .portable,
+        .{ .platform = .unsupported },
         buffers,
     );
 }
 
-pub fn fetchLatestReleaseForFlavor(
+pub fn fetchLatestReleaseForPackage(
     allocator: std.mem.Allocator,
     current_version: []const u8,
-    flavor: PortableFlavor,
+    package: ReleasePackage,
     buffers: CheckResultBuffers,
 ) CheckResult {
     var client: std.http.Client = .{
@@ -352,7 +318,7 @@ pub fn fetchLatestReleaseForFlavor(
     defer release.deinit(allocator);
 
     return copyResult(
-        evaluateReleaseForFlavor(current_version, release, flavor),
+        evaluateReleaseForPackage(current_version, release, package),
         buffers,
     );
 }
@@ -381,6 +347,10 @@ test "update_check: parses latest release json" {
 }
 
 test "update_check: decides when update is available" {
+    const package = platform_update_package.packageForScenario(.baseline);
+    var asset_name_buf: [asset_name_buffer_len]u8 = undefined;
+    const asset_name = try platform_update_package.assetName("v0.23.3", package, &asset_name_buf);
+
     const release = ReleaseInfo{
         .tag_name = "v0.23.3",
         .html_url = "https://github.com/xuzhougeng/phantty/releases/tag/v0.23.3",
@@ -388,14 +358,14 @@ test "update_check: decides when update is available" {
         .prerelease = false,
         .assets = &.{
             .{
-                .name = "phantty-windows-portable-v0.23.3.zip",
+                .name = asset_name,
                 .download_url = "https://example.test/portable.zip",
                 .size = 1234,
             },
         },
         .owned = false,
     };
-    const result = evaluateRelease("0.23.2", release);
+    const result = evaluateReleaseForPackage("0.23.2", release, package);
     try std.testing.expectEqual(State.update_available, result.state);
 }
 
@@ -430,7 +400,7 @@ test "update_check: copies result strings into caller buffers" {
         .state = .update_available,
         .latest_version = "v0.23.3",
         .release_url = "https://github.com/xuzhougeng/phantty/releases/tag/v0.23.3",
-        .asset_name = "phantty-windows-portable-v0.23.3.zip",
+        .asset_name = "selected-update.zip",
         .asset_download_url = "https://example.test/portable.zip",
         .asset_size = 1234,
     }, .{
@@ -443,7 +413,7 @@ test "update_check: copies result strings into caller buffers" {
     try std.testing.expectEqual(State.update_available, copied.state);
     try std.testing.expectEqualStrings("v0.23.3", copied.latest_version);
     try std.testing.expectEqualStrings("https://github.com/xuzhougeng/phantty/releases/tag/v0.23.3", copied.release_url);
-    try std.testing.expectEqualStrings("phantty-windows-portable-v0.23.3.zip", copied.asset_name);
+    try std.testing.expectEqualStrings("selected-update.zip", copied.asset_name);
     try std.testing.expectEqualStrings("https://example.test/portable.zip", copied.asset_download_url);
     try std.testing.expectEqual(@as(u64, 1234), copied.asset_size);
 }
@@ -457,7 +427,7 @@ test "update_check: copy result fails when asset buffers are too small" {
         .state = .update_available,
         .latest_version = "v0.23.3",
         .release_url = "https://github.com/xuzhougeng/phantty/releases/tag/v0.23.3",
-        .asset_name = "phantty-windows-portable-v0.23.3.zip",
+        .asset_name = "selected-update.zip",
         .asset_download_url = "https://example.test/portable.zip",
         .asset_size = 1234,
     }, .{
@@ -474,35 +444,58 @@ test "update_check: copy result fails when asset buffers are too small" {
 }
 
 test "update_check: selects portable asset for runtime flavor" {
-    const json =
-        \\{
-        \\  "tag_name":"v0.28.0",
-        \\  "html_url":"https://github.com/xuzhougeng/phantty/releases/tag/v0.28.0",
+    const tag_name = "v0.28.0";
+    var portable_name_buf: [asset_name_buffer_len]u8 = undefined;
+    var required_extra_name_buf: [asset_name_buffer_len]u8 = undefined;
+    var no_embedded_browser_name_buf: [asset_name_buffer_len]u8 = undefined;
+    const portable_package = platform_update_package.packageForScenario(.baseline);
+    const required_extra_package = platform_update_package.packageForScenario(.with_required_embedded_browser_payload);
+    const no_embedded_browser_package = platform_update_package.packageForScenario(.without_embedded_browser_payload);
+    const portable_name = try platform_update_package.assetName(tag_name, portable_package, &portable_name_buf);
+    const required_extra_name = try platform_update_package.assetName(tag_name, required_extra_package, &required_extra_name_buf);
+    const no_embedded_browser_name = try platform_update_package.assetName(tag_name, no_embedded_browser_package, &no_embedded_browser_name_buf);
+
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{
+        \\  "tag_name":"{s}",
+        \\  "html_url":"https://github.com/xuzhougeng/phantty/releases/tag/{s}",
         \\  "draft":false,
         \\  "prerelease":false,
         \\  "assets":[
-        \\    {"name":"phantty-windows-portable-v0.28.0.zip","browser_download_url":"https://example.test/portable.zip","size":11},
-        \\    {"name":"phantty-windows-portable-webview2-v0.28.0.zip","browser_download_url":"https://example.test/webview2.zip","size":22},
-        \\    {"name":"phantty-windows-portable-no-webview-v0.28.0.zip","browser_download_url":"https://example.test/no-webview.zip","size":33}
+        \\    {{"name":"{s}","browser_download_url":"https://example.test/portable.zip","size":11}},
+        \\    {{"name":"{s}","browser_download_url":"https://example.test/required-extra.zip","size":22}},
+        \\    {{"name":"{s}","browser_download_url":"https://example.test/no-embedded-browser.zip","size":33}}
         \\  ]
-        \\}
-    ;
+        \\}}
+    , .{
+        tag_name,
+        tag_name,
+        portable_name,
+        required_extra_name,
+        no_embedded_browser_name,
+    });
+    defer std.testing.allocator.free(json);
+
     const release = try parseLatestRelease(std.testing.allocator, json);
     defer release.deinit(std.testing.allocator);
 
-    const normal = selectPortableAsset(release, .portable) orelse return error.ExpectedAsset;
-    try std.testing.expectEqualStrings("phantty-windows-portable-v0.28.0.zip", normal.name);
+    const normal = selectReleaseAsset(release, portable_package) orelse return error.ExpectedAsset;
+    try std.testing.expectEqualStrings(portable_name, normal.name);
     try std.testing.expectEqualStrings("https://example.test/portable.zip", normal.download_url);
     try std.testing.expectEqual(@as(u64, 11), normal.size);
 
-    const webview2 = selectPortableAsset(release, .portable_webview2) orelse return error.ExpectedAsset;
-    try std.testing.expectEqualStrings("phantty-windows-portable-webview2-v0.28.0.zip", webview2.name);
+    const required_extra = selectReleaseAsset(release, required_extra_package) orelse return error.ExpectedAsset;
+    try std.testing.expectEqualStrings(required_extra_name, required_extra.name);
 
-    const no_webview = selectPortableAsset(release, .portable_no_webview) orelse return error.ExpectedAsset;
-    try std.testing.expectEqualStrings("phantty-windows-portable-no-webview-v0.28.0.zip", no_webview.name);
+    const no_embedded_browser = selectReleaseAsset(release, no_embedded_browser_package) orelse return error.ExpectedAsset;
+    try std.testing.expectEqualStrings(no_embedded_browser_name, no_embedded_browser.name);
 }
 
 test "update_check: update result includes selected asset fields" {
+    const package = platform_update_package.packageForScenario(.with_required_embedded_browser_payload);
+    var asset_name_buf: [asset_name_buffer_len]u8 = undefined;
+    const asset_name = try platform_update_package.assetName("v0.28.0", package, &asset_name_buf);
+
     const release = ReleaseInfo{
         .tag_name = "v0.28.0",
         .html_url = "https://github.com/xuzhougeng/phantty/releases/tag/v0.28.0",
@@ -510,23 +503,28 @@ test "update_check: update result includes selected asset fields" {
         .prerelease = false,
         .assets = &.{
             .{
-                .name = "phantty-windows-portable-webview2-v0.28.0.zip",
-                .download_url = "https://example.test/webview2.zip",
+                .name = asset_name,
+                .download_url = "https://example.test/required-extra.zip",
                 .size = 1234,
             },
         },
         .owned = false,
     };
 
-    const result = evaluateReleaseForFlavor("0.27.2", release, .portable_webview2);
+    const result = evaluateReleaseForPackage("0.27.2", release, package);
     try std.testing.expectEqual(State.update_available, result.state);
     try std.testing.expectEqualStrings("v0.28.0", result.latest_version);
-    try std.testing.expectEqualStrings("phantty-windows-portable-webview2-v0.28.0.zip", result.asset_name);
-    try std.testing.expectEqualStrings("https://example.test/webview2.zip", result.asset_download_url);
+    try std.testing.expectEqualStrings(asset_name, result.asset_name);
+    try std.testing.expectEqualStrings("https://example.test/required-extra.zip", result.asset_download_url);
     try std.testing.expectEqual(@as(u64, 1234), result.asset_size);
 }
 
 test "update_check: missing matching asset fails instead of changing flavor" {
+    const available_package = platform_update_package.packageForScenario(.baseline);
+    const requested_package = platform_update_package.packageForScenario(.with_required_embedded_browser_payload);
+    var asset_name_buf: [asset_name_buffer_len]u8 = undefined;
+    const asset_name = try platform_update_package.assetName("v0.28.0", available_package, &asset_name_buf);
+
     const release = ReleaseInfo{
         .tag_name = "v0.28.0",
         .html_url = "https://github.com/xuzhougeng/phantty/releases/tag/v0.28.0",
@@ -534,7 +532,7 @@ test "update_check: missing matching asset fails instead of changing flavor" {
         .prerelease = false,
         .assets = &.{
             .{
-                .name = "phantty-windows-portable-v0.28.0.zip",
+                .name = asset_name,
                 .download_url = "https://example.test/portable.zip",
                 .size = 1234,
             },
@@ -542,7 +540,7 @@ test "update_check: missing matching asset fails instead of changing flavor" {
         .owned = false,
     };
 
-    const result = evaluateReleaseForFlavor("0.27.2", release, .portable_webview2);
+    const result = evaluateReleaseForPackage("0.27.2", release, requested_package);
     try std.testing.expectEqual(State.failed, result.state);
     try std.testing.expectEqualStrings("v0.28.0", result.latest_version);
     try std.testing.expectEqualStrings("https://github.com/xuzhougeng/phantty/releases/tag/v0.28.0", result.release_url);

@@ -1,8 +1,8 @@
 //! No-op browser panel used for pure terminal-core builds.
 
 const std = @import("std");
-const win32 = @import("apprt/win32.zig");
 const Surface = @import("Surface.zig");
+const window_backend = @import("platform/window_backend.zig");
 const tab = @import("appwindow/tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 720;
@@ -24,7 +24,7 @@ pub const Bounds = struct {
 pub threadlocal var g_visible: bool = false;
 pub threadlocal var g_owner_tab: ?usize = null;
 pub threadlocal var g_width: f32 = DEFAULT_WIDTH;
-pub threadlocal var g_last_error: win32.HRESULT = 0;
+pub threadlocal var g_last_error: i32 = 0;
 
 pub fn urlBarBounds(bounds: Bounds) ?Bounds {
     const grip: i32 = @intFromFloat(@round(RESIZE_HIT_WIDTH));
@@ -102,14 +102,14 @@ pub fn embeddedBrowserAvailable() bool {
     return false;
 }
 
-pub fn open(parent: ?win32.HWND, url: []const u8) void {
+pub fn open(parent: ?window_backend.NativeHandle, url: []const u8) void {
     _ = parent;
     _ = url;
     g_visible = false;
     g_owner_tab = null;
 }
 
-pub fn openForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, url: []const u8, surface: ?*const Surface) bool {
+pub fn openForSurface(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, url: []const u8, surface: ?*const Surface) bool {
     _ = allocator;
     _ = parent;
     _ = url;
@@ -119,13 +119,13 @@ pub fn openForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, url: []
     return false;
 }
 
-pub fn toggle(parent: ?win32.HWND) void {
+pub fn toggle(parent: ?window_backend.NativeHandle) void {
     _ = parent;
     g_visible = false;
     g_owner_tab = null;
 }
 
-pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?win32.HWND, surface: ?*const Surface) bool {
+pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, surface: ?*const Surface) bool {
     _ = allocator;
     _ = parent;
     _ = surface;
@@ -145,11 +145,11 @@ pub fn isReady() bool {
     return false;
 }
 
-pub fn lastError() win32.HRESULT {
+pub fn lastError() i32 {
     return g_last_error;
 }
 
-pub fn sync(parent: win32.HWND, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) void {
+pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) void {
     _ = parent;
     _ = window_width;
     _ = window_height;
@@ -195,7 +195,7 @@ pub fn backspaceUrlBar() void {}
 
 pub fn clearUrlBar() void {}
 
-pub fn submitUrlBar(allocator: std.mem.Allocator, parent: ?win32.HWND, surface: ?*const Surface) bool {
+pub fn submitUrlBar(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, surface: ?*const Surface) bool {
     _ = allocator;
     _ = parent;
     _ = surface;
@@ -235,4 +235,21 @@ test "browser_panel_stub: visible only on owning active tab" {
 
     tab.g_active_tab = 1;
     try std.testing.expect(!isVisibleForActiveTab());
+}
+
+test "browser_panel_stub: public parent handle API uses window backend handle" {
+    const open_info = @typeInfo(@TypeOf(open)).@"fn";
+    try std.testing.expect(open_info.params[0].type.? == ?window_backend.NativeHandle);
+
+    const open_surface_info = @typeInfo(@TypeOf(openForSurface)).@"fn";
+    try std.testing.expect(open_surface_info.params[1].type.? == ?window_backend.NativeHandle);
+
+    const toggle_info = @typeInfo(@TypeOf(toggle)).@"fn";
+    try std.testing.expect(toggle_info.params[0].type.? == ?window_backend.NativeHandle);
+
+    const sync_info = @typeInfo(@TypeOf(sync)).@"fn";
+    try std.testing.expect(sync_info.params[0].type.? == window_backend.NativeHandle);
+
+    const submit_info = @typeInfo(@TypeOf(submitUrlBar)).@"fn";
+    try std.testing.expect(submit_info.params[1].type.? == ?window_backend.NativeHandle);
 }

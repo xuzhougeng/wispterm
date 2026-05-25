@@ -1,5 +1,6 @@
 // src/session_persist.zig
 const std = @import("std");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 
 const log = std.log.scoped(.session_persist);
 
@@ -371,7 +372,10 @@ test "session_persist: normalize() clamps ratio above 1" {
     var parsed = try loadSessionFromString(allocator, json);
     defer parsed.deinit();
     normalize(&parsed.value);
-    const sp = switch (parsed.value.tabs[0].tree) { .split => |s| s, else => return error.UnexpectedLeaf };
+    const sp = switch (parsed.value.tabs[0].tree) {
+        .split => |s| s,
+        else => return error.UnexpectedLeaf,
+    };
     try std.testing.expect(sp.ratio <= 0.95);
 }
 
@@ -418,11 +422,11 @@ pub fn shellSingleQuoteEscape(allocator: std.mem.Allocator, input: []const u8) !
 test "session_persist: shellSingleQuoteEscape handles common paths" {
     const allocator = std.testing.allocator;
     const cases = [_]struct { in: []const u8, want: []const u8 }{
-        .{ .in = "/var/log",         .want = "/var/log" },
-        .{ .in = "/home/x'z",        .want = "/home/x'\\''z" },
-        .{ .in = "/tmp/with space",  .want = "/tmp/with space" },
+        .{ .in = "/var/log", .want = "/var/log" },
+        .{ .in = "/home/x'z", .want = "/home/x'\\''z" },
+        .{ .in = "/tmp/with space", .want = "/tmp/with space" },
         .{ .in = "/p/with\"$\\back", .want = "/p/with\"$\\back" },
-        .{ .in = "",                 .want = "" },
+        .{ .in = "", .want = "" },
     };
     for (cases) |c| {
         const got = try shellSingleQuoteEscape(allocator, c.in);
@@ -431,13 +435,9 @@ test "session_persist: shellSingleQuoteEscape handles common paths" {
     }
 }
 
-/// Serialize and atomically write the session to `path`. Uses
-/// std.fs.Dir.atomicFile so the write is replace-safe on both POSIX and
-/// Windows (NTFS) — std's AtomicFile passes replace_if_exists=TRUE on the
-/// Windows rename, unlike the bare std.fs.Dir.rename. Partial writes are
-/// auto-cleaned on error via AtomicFile.deinit (the temp uses an opaque
-/// random hex name, not `<path>.tmp`). On any I/O failure, log a warning
-/// and return the error; callers in the close path swallow the error.
+/// Serialize and replace-safely write the session to `path`.
+/// On any I/O failure, log a warning and return the error; callers in the
+/// close path swallow the error.
 pub fn dumpSession(allocator: std.mem.Allocator, path: []const u8, session: Session) !void {
     const json = try dumpSessionToString(allocator, session);
     defer allocator.free(json);
@@ -449,14 +449,7 @@ pub fn dumpSession(allocator: std.mem.Allocator, path: []const u8, session: Sess
         };
     }
 
-    // AtomicFileOptions.write_buffer is required in Zig 0.15.2; we pass an
-    // empty slice and bypass the buffered writer by calling writeAll on the
-    // underlying File directly (the JSON payload is already in memory).
-    var write_buffer: [0]u8 = .{};
-    var atomic = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buffer });
-    defer atomic.deinit();
-    try atomic.file_writer.file.writeAll(json);
-    try atomic.finish();
+    try platform_atomic_file.writeFileReplaceSafe(path, json);
 }
 
 /// Read and parse the session file. Returns null on any failure (missing,
