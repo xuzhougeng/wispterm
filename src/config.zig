@@ -310,6 +310,21 @@ shell: []const u8 = platform_pty_command.default_shell_name,
 /// instance uses it directly and later local instances append _1, _2, ...
 @"remote-session-key": ?[]const u8 = null,
 
+/// Enables the embedded WeChat ilink direct path. Mutually exclusive with
+/// remote-enabled; if both are true, remote wins and this is disabled.
+@"weixin-direct-enabled": bool = false,
+
+/// Override for the ilink API base URL. Defaults to the public endpoint.
+@"weixin-base-url": ?[]const u8 = null,
+
+/// Max time (ms) to keep streaming AI-reply progress to WeChat. Clamped to
+/// [5000, 180000]. Matches the TS bridge default.
+@"weixin-reply-timeout-ms": u32 = 120000,
+
+/// When set, only this ilink user_id may control the terminal/AI. When empty,
+/// the first 1:1 sender after login is auto-bound as owner.
+@"weixin-allowed-user": ?[]const u8 = null,
+
 /// Show a debug FPS overlay in the bottom-right corner.
 @"phantty-debug-fps": bool = false,
 @"phantty-debug-draw-calls": bool = false,
@@ -758,6 +773,23 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         self.@"remote-device-name" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "remote-session-key")) {
         self.@"remote-session-key" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "weixin-direct-enabled")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"weixin-direct-enabled" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"weixin-direct-enabled" = false;
+        } else {
+            log.warn("invalid weixin-direct-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "weixin-base-url")) {
+        self.@"weixin-base-url" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "weixin-reply-timeout-ms")) {
+        self.@"weixin-reply-timeout-ms" = std.fmt.parseInt(u32, value, 10) catch {
+            log.warn("invalid weixin-reply-timeout-ms: {s}", .{value});
+            return;
+        };
+    } else if (std.mem.eql(u8, key, "weixin-allowed-user")) {
+        self.@"weixin-allowed-user" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "phantty-debug-fps")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"phantty-debug-fps" = true;
@@ -1169,6 +1201,10 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --remote-server-fingerprint <fp> Expected relay fingerprint
         \\  --remote-device-name <name>  Friendly device name for remote access
         \\  --remote-session-key <key>   Fixed remote key base; later instances append _1, _2
+        \\  --weixin-direct-enabled <bool> Enable embedded WeChat ilink direct path
+        \\  --weixin-base-url <url>      Override ilink API base URL
+        \\  --weixin-reply-timeout-ms <n> AI-reply streaming window in ms
+        \\  --weixin-allowed-user <id>   Restrict control to one ilink user_id
         \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
         \\
         \\Color Options (override theme):
