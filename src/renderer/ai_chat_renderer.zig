@@ -1327,6 +1327,7 @@ fn byteOffsetForMarkdownPoint(
 
     const palette = markdownPalette(AppWindow.g_theme.background, AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color);
     var cursor: usize = 0;
+    var display_cursor: usize = 0;
     var current_top = top_px;
     var in_code = false;
 
@@ -1336,14 +1337,16 @@ fn byteOffsetForMarkdownPoint(
             const end = tableBlockEnd(text, cursor);
             const block_h = tableBlockHeight(text, cursor, end);
             if (py < current_top + block_h) {
-                return byteOffsetForTablePoint(text, start, end, current_top, px, py);
+                const row_h = tableRowHeight();
+                const row_index: usize = @intFromFloat(@max(0.0, @floor((py - current_top) / row_h)));
+                return display_cursor + md.tableRowDisplayOffsetWithin(text, start, end, row_index);
             }
             current_top += block_h;
+            display_cursor += md.tableBlockDisplayLen(text, start, end);
             cursor = end;
             continue;
         }
 
-        const line_start = cursor;
         const info = nextSourceLine(text, cursor);
         cursor = info.next;
 
@@ -1351,16 +1354,16 @@ fn byteOffsetForMarkdownPoint(
         const prepared = prepareMarkdownLine(&clean_buf, info.line, in_code, palette);
         switch (prepared.kind) {
             .blank => {
-                if (py < current_top + prepared.line_h) return line_start;
+                if (py < current_top + prepared.line_h) return display_cursor;
                 current_top += prepared.line_h;
             },
             .fence => {
-                if (py < current_top + prepared.line_h) return if (px < x + max_w * 0.5) line_start else line_start + info.line.len;
+                if (py < current_top + prepared.line_h) return display_cursor;
                 current_top += prepared.line_h;
                 in_code = !in_code;
             },
             .rule => {
-                if (py < current_top + prepared.line_h) return line_start + info.line.len;
+                if (py < current_top + prepared.line_h) return display_cursor;
                 current_top += prepared.line_h;
             },
             .text => {
@@ -1368,8 +1371,8 @@ fn byteOffsetForMarkdownPoint(
                 const body_h = plainContentHeight(prepared.text, line_w, prepared.line_h);
                 if (py < current_top + body_h) {
                     return byteOffsetForWrappedPoint(
-                        info.line,
-                        line_start,
+                        prepared.text,
+                        display_cursor,
                         x + prepared.indent,
                         current_top,
                         line_w,
@@ -1381,27 +1384,12 @@ fn byteOffsetForMarkdownPoint(
                 current_top += body_h;
             },
         }
+        display_cursor += prepared.text.len + 1;
     }
 
-    return text.len;
+    return display_cursor;
 }
 
-fn byteOffsetForTablePoint(text: []const u8, start: usize, end: usize, top_px: f32, px: f32, py: f32) usize {
-    _ = px;
-    const row_h = tableRowHeight();
-    const row_index: usize = @intFromFloat(@max(0.0, @floor((py - top_px) / row_h)));
-    var cursor = start;
-    var row: usize = 0;
-    while (cursor < end) {
-        const line_start = cursor;
-        const info = nextSourceLine(text, cursor);
-        cursor = info.next;
-        if (isTableSeparatorLine(info.line)) continue;
-        if (row == row_index) return line_start;
-        row += 1;
-    }
-    return end;
-}
 
 fn byteOffsetForWrappedPoint(
     text: []const u8,
