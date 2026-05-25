@@ -369,6 +369,20 @@ pub fn copyAiChatToClipboard(chat: *AppWindow.ai_chat.Session) void {
     }
 }
 
+pub fn copyAiChatCutToClipboard(chat: *AppWindow.ai_chat.Session) void {
+    const allocator = AppWindow.g_allocator orelse return;
+    const maybe_text = chat.cutInputSelection(allocator) catch return;
+    const text = maybe_text orelse return;
+    defer allocator.free(text);
+    if (text.len == 0) return;
+    if (copyTextToClipboard(text)) {
+        overlays.showCopyToast(text.len);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        std.debug.print("Cut {} AI chat input bytes to clipboard\n", .{text.len});
+    }
+}
+
 pub fn copyAiChatMessageToClipboard(chat: *AppWindow.ai_chat.Session, message_index: usize) void {
     const allocator = AppWindow.g_allocator orelse return;
     const text = chat.allocMessageClipboardText(allocator, message_index) catch return;

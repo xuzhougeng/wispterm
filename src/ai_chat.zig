@@ -1189,6 +1189,24 @@ pub const Session = struct {
         self.ensureSkillSuggestionsForInputLocked();
     }
 
+    /// If the composer is selected (select-all) and non-empty, return a copy of
+    /// the input text and clear the composer. Returns null otherwise (e.g. when
+    /// only a read-only transcript selection is active).
+    pub fn cutInputSelection(self: *Session, allocator: std.mem.Allocator) !?[]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.input_select_all or self.input_len == 0) return null;
+        const text = try allocator.dupe(u8, self.input_buf[0..self.input_len]);
+        self.input_len = 0;
+        self.input_cursor = 0;
+        self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
+        self.input_select_all = false;
+        self.suggestion_selected = 0;
+        self.ensureSkillSuggestionsForInputLocked();
+        return text;
+    }
+
     pub fn applyRemoteInput(self: *Session, data: []const u8) void {
         var text_start: usize = 0;
         var i: usize = 0;
@@ -6347,4 +6365,25 @@ test "ai chat collapse helper only closes auto-expanded details" {
     try std.testing.expect(session.messages.items[1].reasoning_collapsed);
     try std.testing.expect(!session.messages.items[1].reasoning_auto_expand);
     try std.testing.expect(!session.messages.items[2].content_collapsed);
+}
+
+test "ai chat cut input returns text and clears when selected" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    session.appendInputText("hello world");
+    session.selectAll(); // sets input_select_all when input is non-empty
+
+    const cut = try session.cutInputSelection(allocator);
+    defer if (cut) |c| allocator.free(c);
+    try std.testing.expect(cut != null);
+    try std.testing.expectEqualStrings("hello world", cut.?);
+    try std.testing.expectEqual(@as(usize, 0), session.input_len);
+
+    const cut_again = try session.cutInputSelection(allocator);
+    try std.testing.expect(cut_again == null);
 }
