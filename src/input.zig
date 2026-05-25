@@ -206,6 +206,9 @@ threadlocal var g_scrollbar_drag_top_pad: f32 = 0;
 threadlocal var g_ai_input_scroll_dragging: bool = false;
 threadlocal var g_ai_input_scroll_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_input_scroll_drag_offset: f32 = 0;
+threadlocal var g_ai_transcript_scroll_dragging: bool = false;
+threadlocal var g_ai_transcript_scroll_chat: ?*AppWindow.ai_chat.Session = null;
+threadlocal var g_ai_transcript_scroll_drag_offset: f32 = 0;
 threadlocal var g_ai_transcript_selecting: bool = false;
 threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_select_auto_copy: bool = false;
@@ -324,6 +327,10 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_scrollbar_drag_surface = null;
     g_ai_input_scroll_dragging = false;
     g_ai_input_scroll_chat = null;
+    g_ai_transcript_scroll_dragging = false;
+    g_ai_transcript_scroll_chat = null;
+    AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = false;
+    AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = false;
     g_ai_transcript_selecting = false;
     g_ai_transcript_select_chat = null;
     g_ai_transcript_select_auto_copy = false;
@@ -2546,6 +2553,25 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     toggleAiAgentPermission();
                     return;
                 }
+                if (AppWindow.ai_chat_renderer.transcriptScrollbarHitTest(
+                    chat,
+                    xpos,
+                    ypos,
+                    @floatFromInt(fb.width),
+                    @floatFromInt(fb.height),
+                    @floatCast(titlebarHeight()),
+                    AppWindow.leftPanelsWidth(),
+                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                )) |drag_offset| {
+                    g_ai_transcript_scroll_dragging = true;
+                    g_ai_transcript_scroll_chat = chat;
+                    g_ai_transcript_scroll_drag_offset = drag_offset;
+                    AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = true;
+                    applyAiTranscriptScrollbarDrag(chat, ypos);
+                    AppWindow.g_force_rebuild = true;
+                    AppWindow.g_cells_valid = false;
+                    return;
+                }
                 if (!ev.ctrl and !ev.alt) {
                     if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
                         chat,
@@ -2707,6 +2733,9 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             g_scrollbar_drag_surface = null;
             g_ai_input_scroll_dragging = false;
             g_ai_input_scroll_chat = null;
+            g_ai_transcript_scroll_dragging = false;
+            g_ai_transcript_scroll_chat = null;
+            AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = false;
             if (g_ai_transcript_selecting) {
                 if (g_ai_transcript_select_chat) |chat| {
                     if (chat.finishTranscriptSelection() and g_ai_transcript_select_auto_copy) copyAiChatToClipboard(chat);
@@ -2927,6 +2956,25 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
     }
 }
 
+fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
+    const win = AppWindow.g_window orelse return;
+    const size = clientSize(win);
+    if (AppWindow.ai_chat_renderer.transcriptScrollbarScrollPxAt(
+        chat,
+        ypos,
+        @floatFromInt(size.width),
+        @floatFromInt(size.height),
+        @floatCast(titlebarHeight()),
+        AppWindow.leftPanelsWidth(),
+        AppWindow.rightPanelsWidthForWindow(size.width),
+        g_ai_transcript_scroll_drag_offset,
+    )) |px| {
+        chat.scrollToPx(px);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+    }
+}
+
 fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
     const win = AppWindow.g_window orelse return;
     const fb = window_backend.framebufferSize(win);
@@ -2973,6 +3021,10 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         if (g_ai_input_scroll_chat) |chat| applyAiInputScrollbarDrag(chat, ypos);
         return;
     }
+    if (g_ai_transcript_scroll_dragging) {
+        if (g_ai_transcript_scroll_chat) |chat| applyAiTranscriptScrollbarDrag(chat, ypos);
+        return;
+    }
     if (g_ai_transcript_selecting) {
         if (g_ai_transcript_select_chat) |chat| updateAiTranscriptSelectionDrag(chat, xpos, ypos);
         platform_cursor.set(.ibeam);
@@ -2990,6 +3042,28 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         return;
     }
 
+    if (AppWindow.g_window) |hover_win| {
+        if (AppWindow.activeAiChat()) |chat| {
+            const hover_fb = window_backend.framebufferSize(hover_win);
+            const over = AppWindow.ai_chat_renderer.transcriptScrollbarHitTest(
+                chat,
+                xpos,
+                ypos,
+                @floatFromInt(hover_fb.width),
+                @floatFromInt(hover_fb.height),
+                @floatCast(titlebarHeight()),
+                AppWindow.leftPanelsWidth(),
+                AppWindow.rightPanelsWidthForWindow(hover_fb.width),
+            ) != null;
+            if (over != AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
+                AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = over;
+                AppWindow.g_force_rebuild = true;
+            }
+        } else if (AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
+            AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = false;
+            AppWindow.g_force_rebuild = true;
+        }
+    }
     if (updateSidebarTabDrag(xpos, ypos)) return;
 
     // Handle divider dragging
