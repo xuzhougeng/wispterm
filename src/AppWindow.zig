@@ -17,6 +17,7 @@ const App = @import("App.zig");
 const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
 const remote_snapshot = @import("remote_snapshot.zig");
+const weixin_control = @import("weixin/control.zig");
 const memory_debug = @import("memory_debug.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
@@ -1934,6 +1935,144 @@ fn handleRemoteAiAgentOpenRequest(request: *RemoteAiAgentOpenRequest) void {
     }
 }
 
+// ============================================================================
+// WeChat direct (embedded ilink) — UI-thread control surface.
+//
+// The weixin poller runs on its own thread, but tab state (tab.g_tabs etc.) is
+// threadlocal to the UI thread. So the Control vtable marshals each request to
+// the UI thread via SendMessage (.weixin_control), where handleWeixinControlRequest
+// reads/acts on tab state, mirroring the remote .remote_ai_input path.
+//
+// UNVERIFIED AT RUNTIME: cross-compiles to the Windows exe, but has not been run
+// (no Windows runtime / live WeChat here). /term-/keys terminal delegation and
+// the AI transcript (for reply-progress streaming) are intentionally stubbed.
+// ============================================================================
+
+var g_weixin_ui_handle = std.atomic.Value(usize).init(0);
+var g_weixin_ctx: u8 = 0;
+
+const WeixinRequest = struct {
+    op: enum { find_ai, open_ai, send_input },
+    // send_input input (valid for the duration of the synchronous call):
+    surface_id: [16]u8 = [_]u8{0} ** 16,
+    bytes: []const u8 = "",
+    // outputs filled by the UI-thread handler:
+    found: bool = false,
+    out_surface_id: [16]u8 = [_]u8{0} ** 16,
+    open_result: weixin_control.OpenResult = .failed,
+    sent: bool = false,
+};
+
+/// Index of the AI-chat tab to target: the active tab if it is AI chat, else the
+/// first AI-chat tab. UI-thread only (reads threadlocal tab state).
+fn weixinActiveAiTabIndex() ?usize {
+    if (tab.g_active_tab < tab.g_tab_count) {
+        if (tab.g_tabs[tab.g_active_tab]) |ts| {
+            if (ts.kind == .ai_chat) return tab.g_active_tab;
+        }
+    }
+    for (0..tab.g_tab_count) |i| {
+        if (tab.g_tabs[i]) |ts| {
+            if (ts.kind == .ai_chat) return i;
+        }
+    }
+    return null;
+}
+
+fn weixinTabIndexFromSurfaceId(id: [16]u8) ?usize {
+    if (!std.mem.eql(u8, id[0..6], "aichat")) return null;
+    return std.fmt.parseInt(usize, id[6..16], 10) catch null;
+}
+
+/// Runs on the UI thread (dispatched from the window message pump).
+fn handleWeixinControlRequest(req: *WeixinRequest) void {
+    switch (req.op) {
+        .find_ai => {
+            if (weixinActiveAiTabIndex()) |idx| {
+                req.out_surface_id = remoteAiSurfaceId(idx);
+                req.found = true;
+            }
+        },
+        .open_ai => {
+            req.open_result = switch (overlays.openDefaultAgentSessionForRemote()) {
+                .opened => .opened,
+                .no_profile => .no_profile,
+                .failed => .failed,
+            };
+            if (req.open_result == .opened) g_force_rebuild = true;
+        },
+        .send_input => {
+            const idx = weixinTabIndexFromSurfaceId(req.surface_id) orelse return;
+            if (idx >= tab.g_tab_count) return;
+            const tab_state = tab.g_tabs[idx] orelse return;
+            if (tab_state.kind != .ai_chat) return;
+            const session = tab_state.ai_chat_session orelse return;
+            session.applyRemoteInput(req.bytes);
+            g_force_rebuild = true;
+            req.sent = true;
+        },
+    }
+}
+
+/// Marshals a request to the UI thread synchronously. Returns false if no UI
+/// window is currently published. Called from the poller thread.
+fn weixinDispatch(req: *WeixinRequest) bool {
+    const bits = g_weixin_ui_handle.load(.acquire);
+    if (bits == 0) return false;
+    const handle = window_backend.nativeHandleFromBits(bits) orelse return false;
+    _ = thread_message.sendPointer(handle, .weixin_control, @intFromPtr(req));
+    return true;
+}
+
+fn wxIsConnected(_: *anyopaque) bool {
+    return g_weixin_ui_handle.load(.acquire) != 0;
+}
+
+fn wxFindAiSurface(_: *anyopaque) ?weixin_control.Surface {
+    var req = WeixinRequest{ .op = .find_ai };
+    if (!weixinDispatch(&req) or !req.found) return null;
+    return .{ .id = req.out_surface_id, .title = "" };
+}
+
+fn wxFindTerminalSurface(_: *anyopaque) ?weixin_control.Surface {
+    // TODO(weixin-windows): resolve the active writable terminal surface and
+    // marshal input to its PTY (the remote path uses per-surface sink write_fn).
+    return null;
+}
+
+fn wxOpenAiAgent(_: *anyopaque, _: u32) weixin_control.OpenResult {
+    var req = WeixinRequest{ .op = .open_ai };
+    if (!weixinDispatch(&req)) return .offline;
+    return req.open_result;
+}
+
+fn wxSendInput(_: *anyopaque, surface_id: [16]u8, bytes: []const u8) bool {
+    var req = WeixinRequest{ .op = .send_input, .surface_id = surface_id, .bytes = bytes };
+    if (!weixinDispatch(&req)) return false;
+    return req.sent;
+}
+
+fn wxTranscript(_: *anyopaque) []const u8 {
+    // TODO(weixin-windows): render activeAiChat() into the "You:/AI:/Status:"
+    // label format that reply_progress.zig parses, to enable progress streaming.
+    return "";
+}
+
+const weixin_vtable = weixin_control.Control.VTable{
+    .is_connected = wxIsConnected,
+    .find_ai_surface = wxFindAiSurface,
+    .find_terminal_surface = wxFindTerminalSurface,
+    .open_ai_agent = wxOpenAiAgent,
+    .send_input = wxSendInput,
+    .latest_transcript = wxTranscript,
+};
+
+/// The Control the weixin controller drives. Backed by process-global state, so
+/// the dummy ctx is unused.
+pub fn weixinControl() weixin_control.Control {
+    return .{ .ctx = &g_weixin_ctx, .vtable = &weixin_vtable };
+}
+
 fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface) ![]u8 {
     surface.render_state.mutex.lock();
     defer surface.render_state.mutex.unlock();
@@ -2422,6 +2561,7 @@ fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordP
         .agent_tab_close => handleAgentTabCloseRequest(@ptrFromInt(decoded.ptr)),
         .remote_ai_input => handleRemoteAiInputRequest(@ptrFromInt(decoded.ptr)),
         .remote_open_ai_agent => handleRemoteAiAgentOpenRequest(@ptrFromInt(decoded.ptr)),
+        .weixin_control => handleWeixinControlRequest(@ptrFromInt(decoded.ptr)),
     }
     return 1;
 }
@@ -2955,6 +3095,10 @@ fn runMainLoop(self: *AppWindow) !void {
     g_window = &backend_window;
     self.native_handle_bits.store(window_backend.nativeHandleBits(&backend_window), .release);
     defer self.native_handle_bits.store(0, .release);
+    // Publish a process-global UI handle so the WeChat poller thread can marshal
+    // control requests here. Last window to init wins; cleared on teardown.
+    g_weixin_ui_handle.store(window_backend.nativeHandleBits(&backend_window), .release);
+    defer g_weixin_ui_handle.store(0, .release);
     if (g_quake_mode and (g_start_maximize or g_start_fullscreen)) {
         std.debug.print("Quake mode disabled for this window because maximize/fullscreen is enabled\n", .{});
         g_quake_mode = false;

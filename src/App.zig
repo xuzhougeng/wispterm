@@ -18,7 +18,6 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
 const weixin = @import("weixin/controller.zig");
-const weixin_control = @import("weixin/control.zig");
 const weixin_types = @import("weixin/types.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const update_check = @import("update_check.zig");
@@ -281,77 +280,13 @@ fn startRemoteClient(
     };
 }
 
-// =====================================================================
-// WeChat direct (embedded ilink) — host integration.
+// WeChat direct (embedded ilink). App owns the controller's lifecycle; the
+// Control vtable lives in AppWindow (it needs UI-thread tab/overlay state,
+// marshalled from the poller thread). See AppWindow.weixinControl.
 //
-// UNVERIFIED SCAFFOLD: this block compiles against the weixin/ modules but
-// the surface-control vtable bodies are safe stubs. With these stubs the
-// WeChat bridge connects, logs in, and long-polls; control actions report
-// "offline" until the TODOs are wired to the focused AppWindow (mirroring the
-// remote path in AppWindow.zig: remoteAiSurfaceId / remoteAiWrite /
-// remoteAiAgentOpen via thread_message, and activeAiChat() for the transcript).
-// This has not been compiled (the desktop GUI is Windows-only); verify symbol
-// names and signatures against AppWindow.zig during Windows compile iteration.
-// =====================================================================
-
-const weixin_vtable = weixin_control.Control.VTable{
-    .is_connected = wxIsConnected,
-    .find_ai_surface = wxFindAiSurface,
-    .find_terminal_surface = wxFindTerminalSurface,
-    .open_ai_agent = wxOpenAiAgent,
-    .send_input = wxSendInput,
-    .latest_transcript = wxTranscript,
-};
-
-/// Builds the Control the weixin controller drives. `self` must be stable
-/// (this is only valid after App is in its final location — see startWeixin).
-pub fn weixinControl(self: *App) weixin_control.Control {
-    return .{ .ctx = self, .vtable = &weixin_vtable };
-}
-
-fn wxIsConnected(ctx: *anyopaque) bool {
-    const app: *App = @ptrCast(@alignCast(ctx));
-    app.mutex.lock();
-    defer app.mutex.unlock();
-    return app.windows.items.len != 0;
-}
-
-fn wxFindAiSurface(ctx: *anyopaque) ?weixin_control.Surface {
-    _ = ctx;
-    // TODO(weixin-windows): return the focused window's AI-chat surface id/title.
-    // Reuse AppWindow.remoteAiSurfaceId(tab_index) for the active .ai_chat tab.
-    return null;
-}
-
-fn wxFindTerminalSurface(ctx: *anyopaque) ?weixin_control.Surface {
-    _ = ctx;
-    // TODO(weixin-windows): return the active writable terminal surface id/title.
-    return null;
-}
-
-fn wxOpenAiAgent(ctx: *anyopaque, timeout_ms: u32) weixin_control.OpenResult {
-    _ = ctx;
-    _ = timeout_ms;
-    // TODO(weixin-windows): marshal an open-AI-agent request onto the UI thread,
-    // mirroring AppWindow.remoteAiAgentOpen (thread_message .remote_open_ai_agent).
-    return .offline;
-}
-
-fn wxSendInput(ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8) bool {
-    _ = ctx;
-    _ = surface_id;
-    _ = bytes;
-    // TODO(weixin-windows): marshal input to the surface on the UI thread,
-    // mirroring AppWindow.remoteAiWrite (thread_message .remote_ai_input).
-    return false;
-}
-
-fn wxTranscript(ctx: *anyopaque) []const u8 {
-    _ = ctx;
-    // TODO(weixin-windows): render AppWindow.activeAiChat() in the
-    // "You:/AI:/Status:" label format that reply_progress.zig parses.
-    return "";
-}
+// Cross-compiles to the Windows exe; not yet run (no Windows runtime / live
+// WeChat here). /term-/keys terminal delegation and the AI transcript (for
+// reply-progress streaming) remain stubbed in AppWindow — see its TODOs.
 
 /// Creates and starts the WeChat direct controller when enabled and remote is
 /// not active. Call once, after App is at its final address (see main.zig).
@@ -370,7 +305,7 @@ pub fn startWeixin(self: *App, cfg: *const Config) void {
         .reply_timeout_ms = std.math.clamp(cfg.@"weixin-reply-timeout-ms", 5000, 180000),
         .allowed_user = cfg.@"weixin-allowed-user" orelse "",
     };
-    const controller = weixin.Controller.create(self.allocator, state_path, self.weixinControl(), settings) catch |err| {
+    const controller = weixin.Controller.create(self.allocator, state_path, AppWindow.weixinControl(), settings) catch |err| {
         std.debug.print("weixin-direct disabled: {}\n", .{err});
         return;
     };
