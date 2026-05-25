@@ -26,10 +26,14 @@ code. Do not include the Phantty-specific `remote/` web console or packaged
 - The host owns the OS event loop (Win32 message loop today; AppKit and GTK own
   their own loops) and pumps the core from there.
 
-- [ ] Define and document the core↔host surface API boundary explicitly, so the
+- [x] Define and document the core↔host surface API boundary explicitly, so the
       seam is a named contract rather than an implicit convention. App logic
       already routes through `src/platform/`; this item is about formalizing the
-      surface API the host implements.
+      surface API the host implements. Documented in
+      [docs/architecture.md](docs/architecture.md): the host interface is
+      `src/platform/window_backend.zig`, the platform-service capabilities are
+      the `src/platform/<cap>.zig` facades, and the boundary invariants (plus
+      the guards enforcing them) are listed there. AGENTS.md links to it.
 
 ### Phase 1 — Platform boundaries (largely complete)
 
