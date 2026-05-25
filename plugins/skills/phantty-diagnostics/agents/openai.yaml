@@ -1,0 +1,4 @@
+interface:
+  display_name: "Phantty Diagnostics"
+  short_description: "Generate a safe Phantty issue report"
+  default_prompt: "Use $phantty-diagnostics to generate a Markdown diagnostic report for my Phantty issue."
