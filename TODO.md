@@ -110,9 +110,19 @@ mapping in guide §2 and §5.
       `gpu/opengl/`; `cell_renderer` is converted — `drawCells` routes through
       `cell_pipeline.zig` (cell pipelines built from the primitives) and the pure
       BG/cursor/selection + glyph-rect logic + instance types moved to std-only,
-      unit-tested `cell_geometry.zig`. *Still pending:* the other 9 files, plus
-      the shared `shader_program`/`overlay_shader`/`simple_color_shader`
-      pipelines (still in `gl_init`).
+      unit-tested `cell_geometry.zig`.
+      *Increment 2 done:* the shared UI rendering (solid quad / text-glyph /
+      color-emoji) moved out of `gl_init` into primitives-backed
+      `ui_pipeline.zig`; `gl_init` keeps compat mirror handles (`shader_program`/
+      `simple_color_shader`/`vao`/`vbo`, set via `syncSharedHandles()`) +
+      re-exports `renderQuad`/`renderQuadAlpha`/`setProjection`, so the
+      still-unconverted files are untouched. `titlebar` is converted (glyph/emoji
+      through `ui_pipeline`, no raw `gl.*`/glad) and its pure layout logic moved
+      to std-only `titlebar_layout.zig`. `overlay_shader` stays in `gl_init`.
+      *Still pending:* `overlays`, `ai_chat_renderer`, `image_renderer`,
+      `post_process`, `background_image`, `fbo`, `markdown_preview_renderer`,
+      `file_explorer_renderer` (each converts to `ui_pipeline`, dissolving the
+      compat mirrors as they go).
 - [ ] **A4** Route font atlas → GPU texture through the `Texture` primitive;
       drop `font/manager.zig`'s direct `@cImport("glad/gl.h")`.
 - [ ] **A5** Backend-scope shaders: GLSL under `gpu/opengl/shaders.zig`; reserve

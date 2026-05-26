@@ -217,6 +217,15 @@ with **A**. **D** is deferred until a macOS SDK environment exists.
 > time. Remaining: the other 9 renderer files, the shared pipelines still in
 > `gl_init`, then A4–A6.
 
+> **Status (A3 increment 2 landed).** The shared UI rendering (solid quad /
+> text-glyph / color-emoji) moved out of `gl_init` into primitives-backed
+> `ui_pipeline.zig` (self-contained draw helpers). `gl_init` keeps compat mirror
+> handles + re-exports (`renderQuad` → `ui_pipeline.fillQuad`, etc.) so the
+> still-unconverted files are untouched — the **compat-shim** strategy.
+> `titlebar` is converted (glyph/emoji through `ui_pipeline`, zero raw `gl.*`)
+> and its pure layout logic extracted to std-only `titlebar_layout.zig`. The
+> mirror handles dissolve as each remaining UI file converts to `ui_pipeline`.
+
 - **A1** Define `src/renderer/gpu/gpu.zig` (the `GraphicsAPI` interface:
   `Target`, `Frame`, `RenderPass`, `Pipeline`, `Buffer`, `Texture`, `Sampler`,
   `shaders`) and `src/renderer/gpu/backend.zig` (`Backend{opengl,metal}`,
