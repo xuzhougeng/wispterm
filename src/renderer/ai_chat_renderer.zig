@@ -21,7 +21,6 @@ const isMarkdownTableStart = md.isMarkdownTableStart;
 const tableBlockEnd = md.tableBlockEnd;
 
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
 const titlebar = AppWindow.titlebar;
 const ui_pipeline = @import("ui_pipeline.zig");
 const ai_chat_layout = @import("../ai_chat_layout.zig");
