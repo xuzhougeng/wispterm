@@ -77,7 +77,7 @@ fn buildPostFragmentSource(allocator: std.mem.Allocator, user_shader: []const u8
 
 /// Load and compile a custom post-processing shader from a file
 fn initPostShader(allocator: std.mem.Allocator, shader_path: []const u8) bool {
-    const gl = gpu.glTable();
+    const gl = &gpu.Context.gl;
     // Read shader source file
     const file = std.fs.cwd().openFile(shader_path, .{}) catch |err| {
         std.debug.print("Failed to open shader file '{s}': {}\n", .{ shader_path, err });
@@ -150,11 +150,10 @@ fn ensurePostFBO(width: c_int, height: c_int) void {
 
 /// Render the fullscreen quad with post-processing shader applied
 fn renderPostProcess(width: c_int, height: c_int) void {
-    const gl = gpu.glTable();
     // Bind default framebuffer (screen)
     gpu.Framebuffer.unbind();
-    gl.Viewport.?(0, 0, width, height);
-    gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+    gpu.state.setViewport(0, 0, width, height);
+    gpu.state.clear(0, 0, 0, 1);
 
     // Disable blending for the fullscreen quad - shader output is final color
     ui_pipeline.setBlendEnabled(false);
@@ -192,14 +191,12 @@ fn renderPostProcess(width: c_int, height: c_int) void {
 /// Render with post-processing. Called after updateTerminalCells() has
 /// already been called under the lock — this only does GL work.
 pub fn renderFrameWithPostFromCells(rend: *const Renderer, width: c_int, height: c_int, padding: f32) void {
-    const gl = gpu.glTable();
     ensurePostFBO(width, height);
 
     // 1. Render terminal to FBO
     g_post_fb.bind();
     ui_pipeline.setProjection(@floatFromInt(width), @floatFromInt(height));
-    gl.ClearColor.?(AppWindow.g_theme.background[0], AppWindow.g_theme.background[1], AppWindow.g_theme.background[2], 1.0);
-    gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+    gpu.state.clear(AppWindow.g_theme.background[0], AppWindow.g_theme.background[1], AppWindow.g_theme.background[2], 1.0);
     background_image.drawFullscreen(@floatFromInt(width), @floatFromInt(height));
     cell_renderer.drawCells(rend, @floatFromInt(height), padding, padding);
 
