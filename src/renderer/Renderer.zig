@@ -19,9 +19,7 @@ const Allocator = std.mem.Allocator;
 const ghostty_vt = @import("ghostty-vt");
 const Surface = @import("../Surface.zig");
 const AppWindow = @import("../AppWindow.zig");
-const c = @cImport({
-    @cInclude("glad/gl.h");
-});
+const c = AppWindow.gpu.c;
 
 const Renderer = @This();
 
