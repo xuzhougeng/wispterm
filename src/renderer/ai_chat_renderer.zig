@@ -171,7 +171,7 @@ pub fn render(
     ui_pipeline.fillQuadAlpha(layout.field_x, layout.field_y, layout.field_w, layout.field_h, field_bg, 0.95);
     ui_pipeline.fillQuadAlpha(layout.field_x, layout.field_y, layout.field_w, 1, mixColor(bg, accent, 0.38), 0.6);
 
-    ui_pipeline.pushClip(.{ .x = layout.field_x, .y = layout.field_y, .w = layout.field_w, .h = layout.field_h });
+    ui_pipeline.beginClip(.{ .x = layout.field_x, .y = layout.field_y, .w = layout.field_w, .h = layout.field_h });
 
     if (input_text.len == 0) {
         session.input_scroll_row = 0;
@@ -237,7 +237,7 @@ pub fn render(
             }
         }
     }
-    ui_pipeline.popClip();
+    ui_pipeline.endClip();
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
@@ -263,7 +263,7 @@ pub fn render(
     const max_scroll = @max(0.0, content_h - transcript_h);
     session.scroll_px = @min(session.scroll_px, max_scroll);
 
-    ui_pipeline.pushClip(.{ .x = x, .y = transcript_bottom, .w = w, .h = transcript_h });
+    ui_pipeline.beginClip(.{ .x = x, .y = transcript_bottom, .w = w, .h = transcript_h });
 
     const gravity_offset = @max(0.0, transcript_h - content_h);
     const palette = markdownPalette(bg, fg, accent);
@@ -308,7 +308,7 @@ pub fn render(
         cursor_top += BUBBLE_GAP;
     }
 
-    ui_pipeline.popClip();
+    ui_pipeline.endClip();
 
     renderTranscriptScrollbar(session, x, w, transcript_top, transcript_h, content_h, window_height);
 

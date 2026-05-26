@@ -63,20 +63,21 @@ caller needs no raw GL; `overlays`/`markdown` reuse it later, and it advances A6
 /// Enable scissor clipping to `rect` (window-space, y-up bottom-left origin —
 /// same convention as glScissor / the existing ai_chat scissor calls). Rounds
 /// to integer pixels.
-pub fn pushClip(rect: Rect) void;
+pub fn beginClip(rect: Rect) void;
 /// Disable scissor clipping (= the old gl.Disable(GL_SCISSOR_TEST)).
-pub fn popClip() void;
+pub fn endClip() void;
 ```
 
 - Implemented over `gpu.glTable()` (`Enable`/`Disable(GL_SCISSOR_TEST)`,
   `Scissor`), living with the other `ui_pipeline` helpers.
-- `pushClip` takes `Rect{ x, y, w, h }`; the caller passes the same
+- `beginClip` takes `Rect{ x, y, w, h }`; the caller passes the same
   field/transcript rect it currently feeds to `glScissor` (verbatim arithmetic,
   preserving the `@intFromFloat(@round(...))` rounding inside the helper).
 - Scope note: this is a flat enable/disable mirror of today's behavior, not a
   nesting stack. `ai_chat` never nests scissor regions, so a single
-  enable/disable pair per region is sufficient; the `push`/`pop` naming reserves
-  room without implementing a stack now (YAGNI).
+  enable/disable pair per region is sufficient. Named `beginClip`/`endClip`
+  (not `push`/`pop`) so the name reflects the flat semantics rather than
+  implying a stack that does not exist (YAGNI).
 
 No other `ui_pipeline` API changes; `fillQuad`/`fillQuadAlpha`/`drawGlyph` are
 used as-is.
@@ -89,8 +90,8 @@ used as-is.
    `gl_init` re-export anyway; this drops the indirection so the file imports
    `ui_pipeline` directly.)
 2. **Scissor (2 regions):** the `Enable(GL_SCISSOR_TEST)+Scissor(...)` /
-   `Disable(GL_SCISSOR_TEST)` pairs → `ui_pipeline.pushClip(rect)` /
-   `ui_pipeline.popClip()`.
+   `Disable(GL_SCISSOR_TEST)` pairs → `ui_pipeline.beginClip(rect)` /
+   `ui_pipeline.endClip()`.
 3. **Delete dead setup:** remove the `Enable(GL_BLEND)+BlendFunc` and the
    `UseProgram+ActiveTexture+BindVertexArray` ambient block at the top of
    `render()` (redundant per §1.1).
@@ -171,7 +172,7 @@ and `detailCopyButtonRect` placement (incl. the `header_h` centering); `permissi
   `BlendFunc`). If an artifact appears, the fallback is a single
   `ui_pipeline.resetBlend()` call (or keeping one explicit `BlendFunc`) at the
   top of `render()` rather than reintroducing the full ambient block.
-- **Scissor coordinate parity.** `pushClip` must reproduce the exact
+- **Scissor coordinate parity.** `beginClip` must reproduce the exact
   `@intFromFloat(@round(...))` rounding and the y-up window-space origin of the
   current `glScissor` calls; the input-field and transcript clip rects are passed
   verbatim.

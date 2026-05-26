@@ -4,7 +4,7 @@
 
 **Goal:** Route `src/renderer/ai_chat_renderer.zig` entirely through the shared `ui_pipeline` (plus a new clip helper), ending with zero raw `gl.*` and no `glad` cImport, and extract its pure rect-geometry into a std-only, unit-tested `ai_chat_layout.zig`.
 
-**Architecture:** Axis A — replace the 56 `gl_init.renderQuad*` calls with `ui_pipeline.fillQuad*`, the two `GL_SCISSOR_TEST` regions with new `ui_pipeline.pushClip/popClip`, and delete the now-redundant ambient blend/program setup (blend is frame-level in `AppWindow`). Axis B — move 7 pure rect-geometry functions into `src/ai_chat_layout.zig` (std-only, constants/metrics passed as params), with `ai_chat_renderer` keeping thin wrappers so internal call sites are unchanged.
+**Architecture:** Axis A — replace the 56 `gl_init.renderQuad*` calls with `ui_pipeline.fillQuad*`, the two `GL_SCISSOR_TEST` regions with new `ui_pipeline.beginClip/endClip`, and delete the now-redundant ambient blend/program setup (blend is frame-level in `AppWindow`). Axis B — move 7 pure rect-geometry functions into `src/ai_chat_layout.zig` (std-only, constants/metrics passed as params), with `ai_chat_renderer` keeping thin wrappers so internal call sites are unchanged.
 
 **Tech Stack:** Zig 0.15.2; OpenGL via the `gpu` backend primitives; tests via `zig build test` (fast, std-only) and `zig build test-full` (full app binary, pre-merge gate).
 
@@ -15,7 +15,7 @@
 ## File Structure
 
 - **Create** `src/ai_chat_layout.zig` — std-only pure rect geometry + unit tests. Sibling of the existing `ai_chat_composer_layout.zig` / `ai_chat_scrollbar_model.zig`.
-- **Modify** `src/renderer/ui_pipeline.zig` — add `pushClip(rect)` / `popClip()`.
+- **Modify** `src/renderer/ui_pipeline.zig` — add `beginClip(rect)` / `endClip()`.
 - **Modify** `src/renderer/ai_chat_renderer.zig` — quad/scissor/ambient conversion; alias `Rect`/`BubbleGeometry` and wrap geometry via `ai_chat_layout`; drop the `glad` cImport.
 - **Modify** `src/test_fast.zig` — register `ai_chat_layout.zig`.
 
@@ -100,7 +100,7 @@ test "detailCopyButtonRect centers in header_h" {
 }
 
 test "permissionChipX" {
-    const px = permissionChipX(0, 1000, 18, 280, 104); // w - line_pad - status - 12 - chip
+    const px = permissionChipX(0, 1000, 18, 280, 12, 104); // w - line_pad - status - gap - chip
     try std.testing.expectApproxEqAbs(@as(f32, 586), px, 0.001);
 }
 
@@ -177,8 +177,8 @@ pub fn detailCopyButtonRect(
     };
 }
 
-pub fn permissionChipX(x: f32, w: f32, line_pad_x: f32, status_slot_w: f32, chip_w: f32) f32 {
-    return x + w - line_pad_x - status_slot_w - 12 - chip_w;
+pub fn permissionChipX(x: f32, w: f32, line_pad_x: f32, status_slot_w: f32, chip_gap: f32, chip_w: f32) f32 {
+    return x + w - line_pad_x - status_slot_w - chip_gap - chip_w;
 }
 
 pub fn stopButtonRect(
@@ -215,7 +215,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ---
 
-## Task 2: `ui_pipeline.pushClip` / `popClip` (Axis A infra)
+## Task 2: `ui_pipeline.beginClip` / `endClip` (Axis A infra)
 
 **Files:**
 - Modify: `src/renderer/ui_pipeline.zig`
@@ -228,7 +228,7 @@ In `src/renderer/ui_pipeline.zig`, add after the `setProjection` function (befor
 /// Enable scissor clipping to `rect` (window-space, same convention as the
 /// caller's existing glScissor: x/y are the lower-left corner in GL pixels).
 /// Rounds to integer pixels, matching the prior @intFromFloat(@round(...)) calls.
-pub fn pushClip(rect: Rect) void {
+pub fn beginClip(rect: Rect) void {
     const gl = gpu.glTable();
     gl.Enable.?(c.GL_SCISSOR_TEST);
     gl.Scissor.?(
@@ -241,7 +241,7 @@ pub fn pushClip(rect: Rect) void {
 
 /// Disable scissor clipping (= the prior gl.Disable(GL_SCISSOR_TEST)). Flat
 /// enable/disable, not a nesting stack — ai_chat never nests clip regions.
-pub fn popClip() void {
+pub fn endClip() void {
     gpu.glTable().Disable.?(c.GL_SCISSOR_TEST);
 }
 ```
@@ -257,7 +257,7 @@ Expected: clean build, no errors.
 
 ```bash
 git add src/renderer/ui_pipeline.zig
-git commit -m "feat: add ui_pipeline.pushClip/popClip scissor helpers (A3 increment 3)
+git commit -m "feat: add ui_pipeline.beginClip/endClip scissor helpers (A3 increment 3)
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -304,7 +304,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ---
 
-## Task 4: Scissor → pushClip/popClip, drop ambient setup + glad cImport (Axis A)
+## Task 4: Scissor → beginClip/endClip, drop ambient setup + glad cImport (Axis A)
 
 **Files:**
 - Modify: `src/renderer/ai_chat_renderer.zig`
@@ -341,10 +341,10 @@ Replace the input-field scissor enable (currently ~183-189):
 with:
 
 ```zig
-    ui_pipeline.pushClip(.{ .x = layout.field_x, .y = layout.field_y, .w = layout.field_w, .h = layout.field_h });
+    ui_pipeline.beginClip(.{ .x = layout.field_x, .y = layout.field_y, .w = layout.field_w, .h = layout.field_h });
 ```
 
-And its matching disable (currently ~255): `gl.Disable.?(c.GL_SCISSOR_TEST);` → `ui_pipeline.popClip();`
+And its matching disable (currently ~255): `gl.Disable.?(c.GL_SCISSOR_TEST);` → `ui_pipeline.endClip();`
 
 - [ ] **Step 3: Convert the transcript scissor region**
 
@@ -363,10 +363,10 @@ Replace the transcript scissor enable (currently ~281-287):
 with:
 
 ```zig
-    ui_pipeline.pushClip(.{ .x = x, .y = transcript_bottom, .w = w, .h = transcript_h });
+    ui_pipeline.beginClip(.{ .x = x, .y = transcript_bottom, .w = w, .h = transcript_h });
 ```
 
-And its matching disable (currently ~332): `gl.Disable.?(c.GL_SCISSOR_TEST);` → `ui_pipeline.popClip();`
+And its matching disable (currently ~332): `gl.Disable.?(c.GL_SCISSOR_TEST);` → `ui_pipeline.endClip();`
 
 - [ ] **Step 4: Remove the glad cImport**
 
@@ -503,7 +503,7 @@ The AI chat panel must render identically. Verify:
 - Message bubbles: user right-aligned (0.82 width), assistant full-width; selection rule; **copy buttons** (hover/click hit area unchanged).
 - Tool / reasoning cards: collapse arrows, header, copy button placement.
 - Usage footer.
-- Input field: typing, multi-line, and **scroll-clipping** — text scrolled past the field edge clips exactly as before (this exercises the new `pushClip`).
+- Input field: typing, multi-line, and **scroll-clipping** — text scrolled past the field edge clips exactly as before (this exercises the new `beginClip`).
 - Input + transcript **scrollbars**: track/thumb render, drag.
 - Composer suggestion popup, approval card, markdown / table content, text selection.
 - **Blend sanity (primary risk):** bubbles, cards, and glyph text blend correctly with no premultiplied-alpha artifacts. If any appear, the fallback per the spec is to add a single explicit `BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` reset at the top of `render()` (via a small `ui_pipeline.resetBlend()` helper) rather than restoring the whole ambient block.
@@ -515,5 +515,5 @@ Behavior-preserving — any visual difference is a regression.
 ## Self-review notes
 
 - **Spec coverage:** §2 clip helper → Task 2; §3 quad/scissor/ambient/cImport → Tasks 3-4; §4 ai_chat_layout extraction → Tasks 1 & 5; §5 verification → Task 6; §6 blend risk → Task 6 Step 3 fallback. All covered.
-- **Type consistency:** `Rect{x,top_px,w,h}` and `BubbleGeometry{x,w}` defined once in `ai_chat_layout.zig` (Task 1), aliased in the renderer (Task 5). `ui_pipeline.Rect{x,y,w,h}` is the existing distinct type used only by `pushClip` (Task 2/4) — the field name `y` (not `top_px`) is intentional and matches glScissor's lower-left origin.
+- **Type consistency:** `Rect{x,top_px,w,h}` and `BubbleGeometry{x,w}` defined once in `ai_chat_layout.zig` (Task 1), aliased in the renderer (Task 5). `ui_pipeline.Rect{x,y,w,h}` is the existing distinct type used only by `beginClip` (Task 2/4) — the field name `y` (not `top_px`) is intentional and matches glScissor's lower-left origin.
 - **No placeholders:** every code step shows the actual code; every run step states the expected result.
