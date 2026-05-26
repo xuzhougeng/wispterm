@@ -43,6 +43,7 @@ pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
 pub const post_process = @import("renderer/post_process.zig");
 pub const gl_init = @import("renderer/gl_init.zig");
+pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
