@@ -570,9 +570,9 @@ pub fn init() void {
     gl.VertexAttribDivisor.?(4, 1);
     gl.BindVertexArray.?(0);
 
-    bg = .{ .program = Pipeline.linkProgram(shaders.bg_vertex_source, shaders.bg_fragment_source), .vao = bg_vao };
-    fg = .{ .program = Pipeline.linkProgram(shaders.fg_vertex_source, shaders.fg_fragment_source), .vao = fg_vao };
-    color_fg = .{ .program = Pipeline.linkProgram(shaders.fg_vertex_source, shaders.color_fg_fragment_source), .vao = color_fg_vao };
+    bg = Pipeline.init(shaders.bg_vertex_source, shaders.bg_fragment_source, bg_vao);
+    fg = Pipeline.init(shaders.fg_vertex_source, shaders.fg_fragment_source, fg_vao);
+    color_fg = Pipeline.init(shaders.fg_vertex_source, shaders.color_fg_fragment_source, color_fg_vao);
     if (bg.program == 0) std.debug.print("BG instanced shader failed\n", .{});
     if (fg.program == 0) std.debug.print("FG instanced shader failed\n", .{});
     if (color_fg.program == 0) std.debug.print("Color FG instanced shader failed\n", .{});
@@ -721,7 +721,7 @@ Replace the BG, FG, and color-emoji blocks (the ones guarded by `gl_init.bg_shad
         p.setVec2("cellSize", font.cell_width, font.cell_height);
         p.setVec2("gridOffset", offset_x, offset_y);
         p.setFloat("windowHeight", window_height);
-        p.setProjection(window_height);
+        p.setProjection();
         p.bindVao();
         cell_pipeline.bg_instances.upload(std.mem.sliceAsBytes(rend.bg_cells.items[0..rend.bg_cell_count]));
         p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.bg_cell_count));
@@ -737,7 +737,7 @@ Replace the BG, FG, and color-emoji blocks (the ones guarded by `gl_init.bg_shad
         p.setVec2("cellSize", font.cell_width, font.cell_height);
         p.setVec2("gridOffset", offset_x, offset_y);
         p.setFloat("windowHeight", window_height);
-        p.setProjection(window_height);
+        p.setProjection();
         gpu.Texture.fromHandle(font.g_atlas_texture).bind(0);
         p.setInt("atlas", 0);
         p.bindVao();
@@ -755,7 +755,7 @@ Replace the BG, FG, and color-emoji blocks (the ones guarded by `gl_init.bg_shad
         p.setVec2("cellSize", font.cell_width, font.cell_height);
         p.setVec2("gridOffset", offset_x, offset_y);
         p.setFloat("windowHeight", window_height);
-        p.setProjection(window_height);
+        p.setProjection();
         gpu.Texture.fromHandle(font.g_color_atlas_texture).bind(0);
         p.setInt("atlas", 0);
         p.bindVao();
