@@ -62,10 +62,23 @@ possible: add `_macos`/`_unsupported` fallbacks for any platform `<cap>` facade 
 so missing-symbol errors surface HERE, not on the Mac. Renderer/Metal bodies panic at runtime (stub) but
 must compile. Document the residual gaps the Mac must fill.
 
-## Done = "ready to start macOS cold"
-- No raw `gpu.glTable()` in the rendering layer (guard-enforced).
-- Neutral surface seam (drawable, not glGetProcAddress).
-- `gpu/metal/api.zig` contract compiles; `gpu.zig` `.metal` wired.
-- macOS pty constants in; `backendForOs(.macos)=.posix`.
-- `zig build -Dtarget=aarch64-macos` compiles the core+platform layer (renderer stubs panic at runtime).
-- Windows `zig build test-full` stays green throughout.
+## Done = "ready to start macOS cold" — ✅ COMPLETE
+- ✅ **①** No raw `gpu.glTable()`/`gpu.Context.gl` in the rendering layer — `ui_pipeline`/
+  `cell_pipeline`/`cell_renderer`/`post_process`/`Renderer`/`markdown`/`weixin`/`overlays/*`/
+  `titlebar`/`ai_chat`/`file_explorer`/`image`/`background`/`fbo`/`font.manager` all route
+  through `gpu.Pipeline`/`Buffer`/`Texture`/`Framebuffer`/`state`/`vertex`; AppWindow's
+  frame-loop render-state too. Guard-enforced (`gl_backend_guard.zig`, ①c). Residue:
+  AppWindow's `Context.init` seam + a diagnostics snapshot (host-specific).
+- ✅ **②** Surface seam documented as per-backend `Context.init` (GL loader vs `CAMetalLayer`)
+  in `window_backend.zig` + `gpu/metal/Context.zig`.
+- ✅ **③** `gpu/metal/*` stub mirrors `opengl/api.zig`'s full interface (`@panic("metal: TODO D1")`
+  bodies); `gpu.zig` `.metal` branch wired (lazy imports so glad isn't analyzed on Darwin).
+- ✅ **④** macOS pty ioctl constants OS-dispatched; `backendForOs(.macos)=.posix`.
+- ✅ **⑤** `zig build test-full -Dtarget=aarch64-macos` compiles (renderer/Metal/host bodies
+  are `@panic` stubs to fill on a Mac); platform facades' `_unsupported` macOS fallbacks sufficed.
+- ✅ Windows `zig build`/`test`/`test-full` + Linux native pty tests stayed green throughout.
+
+**Mac fill-in TODO** (the skeleton to flesh out on a Mac, all tagged `metal: TODO D1`):
+implement `gpu/metal/` bodies (Context/Buffer/Texture/Pipeline/Framebuffer/render_state/vertex
++ real MSL in `shaders.zig`), the AppKit host (`window_backend_macos.zig`) feeding a
+`CAMetalLayer` to `Context.init`, CoreText fonts, and the `_macos` platform-service impls.

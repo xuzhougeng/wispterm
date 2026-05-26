@@ -190,7 +190,16 @@ mapping in guide §2 and §5.
 
 The actual port work, gated on Phase A (GPU spine) and Phase C (POSIX PTY).
 **Focus: macOS.** Per AGENTS.md, compare each track against Ghostty before
-starting. macOS reuses the platform-neutral core; it needs a Metal GPU backend,
+starting.
+
+> **D-prep landed** (see `docs/superpowers/plans/2026-05-26-d-prep-gpu-neutralize.md`):
+> the rendering layer is fully backend-neutral (no raw `gl.*`, guard-enforced), a
+> `gpu/metal/` stub skeleton mirrors `gpu/opengl/api.zig` (`@panic` bodies), the
+> project cross-compiles to `aarch64-macos`, and the macOS pty constants are in.
+> Starting macOS = fill in the `metal: TODO D1` stubs + the AppKit host + CoreText
+> against a building skeleton — no core/OpenGL refactoring needed on the Mac.
+
+macOS reuses the platform-neutral core; it needs a Metal GPU backend,
 an AppKit host, CoreText fonts, `_macos` siblings of the `_windows` platform
 services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
 `macos/` (AppKit app + GhosttyKit), `src/font/discovery.zig` (CoreText),
