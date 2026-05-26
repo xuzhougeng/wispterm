@@ -640,6 +640,12 @@ extern "user32" fn GetWindowLongW(hWnd: HWND, nIndex: INT) callconv(.winapi) LON
 extern "user32" fn SetWindowLongW(hWnd: HWND, nIndex: INT, dwNewLong: LONG) callconv(.winapi) LONG;
 extern "user32" fn MonitorFromWindow(hWnd: HWND, dwFlags: DWORD) callconv(.winapi) ?HMONITOR;
 extern "user32" fn GetMonitorInfoW(hMonitor: HMONITOR, lpmi: *MONITORINFO) callconv(.winapi) BOOL;
+extern "user32" fn EnumDisplayMonitors(hdc: ?HDC, lprcClip: ?*const RECT, lpfnEnum: MonitorEnumProc, dwData: LPARAM) callconv(.winapi) BOOL;
+extern "shcore" fn GetDpiForMonitor(hmonitor: HMONITOR, dpiType: c_int, dpiX: *UINT, dpiY: *UINT) callconv(.winapi) windows.HRESULT;
+
+const MonitorEnumProc = *const fn (HMONITOR, ?HDC, *RECT, LPARAM) callconv(.winapi) BOOL;
+const MONITOR_DEFAULTTONEAREST: DWORD = 2;
+const MDT_EFFECTIVE_DPI: c_int = 0;
 
 pub const HMONITOR = *opaque {};
 pub const MONITORINFO = extern struct {
@@ -1151,6 +1157,12 @@ pub const Window = struct {
             window.height = rect.bottom - rect.top;
         }
 
+        // Record the full monitor topology (bounds + per-monitor DPI) and the
+        // monitor this window started on — the baseline for diagnosing
+        // drag-between-monitors / high-DPI render glitches.
+        logDisplayTopology();
+        logWindowMonitor(hwnd, "startup");
+
         return window;
     }
 
@@ -1248,6 +1260,62 @@ fn enableDpiAwareness() void {
 fn currentSystemDpi() u32 {
     const dpi = GetDpiForSystem();
     return if (dpi == 0) 96 else dpi;
+}
+
+/// EnumDisplayMonitors callback: log every monitor's bounds + effective DPI.
+/// Used to record the full multi-monitor topology when diagnostics start, so
+/// the high-vs-low DPI pair behind drag-between-monitors glitches is visible.
+fn logMonitorEnumProc(hmon: HMONITOR, _: ?HDC, _: *RECT, _: LPARAM) callconv(.winapi) BOOL {
+    var mi = MONITORINFO{};
+    if (GetMonitorInfoW(hmon, &mi) == 0) return 1;
+    var dx: UINT = 0;
+    var dy: UINT = 0;
+    _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &dx, &dy);
+    render_diagnostics.log(
+        "monitor-enum rcMonitor=({},{} {}x{}) rcWork=({},{} {}x{}) dpi={}x{} primary={}",
+        .{
+            mi.rcMonitor.left,                      mi.rcMonitor.top,
+            mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+            mi.rcWork.left,                         mi.rcWork.top,
+            mi.rcWork.right - mi.rcWork.left,       mi.rcWork.bottom - mi.rcWork.top,
+            dx,                                     dy,
+            (mi.dwFlags & 1) != 0, // MONITORINFOF_PRIMARY
+        },
+    );
+    return 1;
+}
+
+/// Log the full monitor topology once (e.g. at startup). No-op unless
+/// diagnostics are enabled.
+pub fn logDisplayTopology() void {
+    if (!render_diagnostics.enabled()) return;
+    _ = EnumDisplayMonitors(null, null, &logMonitorEnumProc, 0);
+}
+
+/// Log the monitor the given window currently sits on, tagged with `tag`
+/// (e.g. "dpi-change"). Useful to correlate a DPI transition with which
+/// physical monitor the window moved onto.
+pub fn logWindowMonitor(hwnd: HWND, tag: []const u8) void {
+    if (!render_diagnostics.enabled()) return;
+    const hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) orelse return;
+    var mi = MONITORINFO{};
+    if (GetMonitorInfoW(hmon, &mi) == 0) return;
+    var dx: UINT = 0;
+    var dy: UINT = 0;
+    _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &dx, &dy);
+    render_diagnostics.log(
+        "window-monitor {s} rcMonitor=({},{} {}x{}) mon_dpi={}x{} win_dpi={}",
+        .{
+            tag,
+            mi.rcMonitor.left,
+            mi.rcMonitor.top,
+            mi.rcMonitor.right - mi.rcMonitor.left,
+            mi.rcMonitor.bottom - mi.rcMonitor.top,
+            dx,
+            dy,
+            GetDpiForWindow(hwnd),
+        },
+    );
 }
 
 fn scaleFrom96(value: i32, dpi: u32) i32 {
@@ -1599,6 +1667,7 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
                 "WM_DPICHANGED end dpi={} win_dpi={} client={}x{} stored={}x{} size_changed={}",
                 .{ w.dpi, GetDpiForWindow(hwnd), rect.right - rect.left, rect.bottom - rect.top, w.width, w.height, w.size_changed },
             );
+            logWindowMonitor(hwnd, "dpi-change-end");
             return 0;
         },
         WM_ACTIVATE => {

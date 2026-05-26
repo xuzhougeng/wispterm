@@ -24,6 +24,7 @@ const windows_system_libraries = [_][]const u8{
     "winhttp",
     "ole32",
     "psapi",
+    "shcore", // GetDpiForMonitor for render diagnostics (per-monitor DPI)
 };
 
 const EmbeddedBrowserBackend = enum {
@@ -134,9 +135,10 @@ test "platform feature gates only enable windows artifacts on windows" {
 
 test "windows system libraries are gated by platform" {
     const windows = PlatformFeatures.forOs(.windows);
-    try std.testing.expectEqual(@as(usize, 12), systemLibrariesFor(windows).len);
+    try std.testing.expectEqual(@as(usize, 13), systemLibrariesFor(windows).len);
     try std.testing.expectEqualStrings("user32", systemLibrariesFor(windows)[0]);
     try std.testing.expectEqualStrings("psapi", systemLibrariesFor(windows)[11]);
+    try std.testing.expectEqualStrings("shcore", systemLibrariesFor(windows)[12]);
 
     const linux = PlatformFeatures.forOs(.linux);
     try std.testing.expectEqual(@as(usize, 0), systemLibrariesFor(linux).len);

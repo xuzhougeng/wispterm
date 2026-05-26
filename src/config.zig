@@ -340,6 +340,11 @@ shell: []const u8 = platform_pty_command.default_shell_name,
 @"phantty-debug-fps": bool = false,
 @"phantty-debug-draw-calls": bool = false,
 @"phantty-debug-memory": bool = false,
+/// Write rendering/window-geometry diagnostics to
+/// `%APPDATA%\phantty\render-diagnostic.log` (Windows). Equivalent to setting
+/// the `PHANTTY_RENDER_DIAGNOSTICS=1` env var, but survives restarts and needs
+/// no shell setup — intended for users helping debug resize/DPI render glitches.
+@"phantty-debug-render": bool = false,
 
 // ============================================================================
 // Split pane configuration

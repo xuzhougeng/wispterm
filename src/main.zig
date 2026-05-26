@@ -11,6 +11,7 @@ const image_decoder = @import("image_decoder.zig");
 const app_metadata = @import("app_metadata.zig");
 const platform_console = @import("platform/console.zig");
 const font_backend = @import("platform/font_backend.zig");
+const render_diagnostics = @import("render_diagnostics.zig");
 
 // ============================================================================
 // Font Discovery Test Functions (use --list-fonts or --test-font-discovery)
@@ -134,6 +135,10 @@ pub fn main() !void {
     } else {
         std.debug.print("No config file found, using defaults\n", .{});
     }
+
+    // Honor the config opt-in for render diagnostics before any window/GL
+    // exists, so the very first WM_SIZE/WM_DPICHANGED events are captured.
+    render_diagnostics.enableFromConfig(cfg.@"phantty-debug-render");
 
     // Create the App and run (first window on main thread, spawned windows on separate threads)
     var app = try App.init(allocator, cfg);

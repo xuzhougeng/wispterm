@@ -454,6 +454,81 @@ fn logFrameGeometryIfChanged(win: *window_backend.Window, fb_width: c_int, fb_he
     );
 }
 
+fn glDiagString(name: gpu.c.GLenum) []const u8 {
+    const ptr = gpu.glTable().GetString.?(name);
+    if (ptr == null) return "(null)";
+    return std.mem.span(@as([*:0]const u8, @ptrCast(ptr)));
+}
+
+/// Log GPU vendor/renderer/version and the backbuffer clear-alpha fact once,
+/// after the GL context + glad table are ready. Lets the analyst correlate
+/// glitches with a specific driver (AMD/Intel/NVIDIA) and confirm the alpha=1
+/// clear that feeds DWM composition.
+fn logGpuDiagnosticsOnce() void {
+    if (!render_diagnostics.enabled()) return;
+    if (g_gpu_diag_logged) return;
+    g_gpu_diag_logged = true;
+    render_diagnostics.log(
+        "gpu vendor=\"{s}\" renderer=\"{s}\" version=\"{s}\" glsl=\"{s}\" clear_alpha=1.0 dwm_frame_extend_top=-1",
+        .{
+            glDiagString(gpu.c.GL_VENDOR),
+            glDiagString(gpu.c.GL_RENDERER),
+            glDiagString(gpu.c.GL_VERSION),
+            glDiagString(gpu.c.GL_SHADING_LANGUAGE_VERSION),
+        },
+    );
+}
+
+threadlocal var g_gpu_diag_logged: bool = false;
+threadlocal var g_diag_last_vp: [4]gpu.c.GLint = .{ -1, -1, -1, -1 };
+threadlocal var g_diag_last_blend: [5]gpu.c.GLint = .{ -1, -1, -1, -1, -1 };
+threadlocal var g_diag_last_swap_client_w: i32 = -1;
+threadlocal var g_diag_last_swap_client_h: i32 = -1;
+
+/// Just before SwapBuffers, snapshot the *actual* GL viewport, re-read the
+/// client rect, and read the active blend state. Logged only when one of these
+/// changes (or when viewport diverges from the client size) so it stays
+/// analyzable. Targets the viewport/client-size desync (hypothesis ②) and the
+/// backbuffer-alpha blend mode (hypothesis ①).
+fn logSwapDiagnosticsIfChanged(win: *window_backend.Window, fb_width: c_int, fb_height: c_int) void {
+    if (!render_diagnostics.enabled()) return;
+    const gl = gpu.glTable();
+
+    var vp: [4]gpu.c.GLint = undefined;
+    gl.GetIntegerv.?(gpu.c.GL_VIEWPORT, &vp);
+
+    var blend: [5]gpu.c.GLint = undefined;
+    blend[0] = @intFromBool(gl.IsEnabled.?(gpu.c.GL_BLEND) != 0);
+    gl.GetIntegerv.?(gpu.c.GL_BLEND_SRC_RGB, &blend[1]);
+    gl.GetIntegerv.?(gpu.c.GL_BLEND_DST_RGB, &blend[2]);
+    gl.GetIntegerv.?(gpu.c.GL_BLEND_SRC_ALPHA, &blend[3]);
+    gl.GetIntegerv.?(gpu.c.GL_BLEND_DST_ALPHA, &blend[4]);
+
+    const client = window_backend.clientSize(win);
+    const vp_matches_client = (vp[2] == client.width and vp[3] == client.height);
+
+    const unchanged = std.mem.eql(gpu.c.GLint, &vp, &g_diag_last_vp) and
+        std.mem.eql(gpu.c.GLint, &blend, &g_diag_last_blend) and
+        client.width == g_diag_last_swap_client_w and
+        client.height == g_diag_last_swap_client_h;
+    if (unchanged) return;
+
+    g_diag_last_vp = vp;
+    g_diag_last_blend = blend;
+    g_diag_last_swap_client_w = client.width;
+    g_diag_last_swap_client_h = client.height;
+
+    render_diagnostics.log(
+        "swap viewport=({},{} {}x{}) client={}x{} fb={}x{} vp_matches_client={} blend_enabled={} blend_rgb=({},{}) blend_alpha=({},{})",
+        .{
+            vp[0],             vp[1],         vp[2],    vp[3],
+            client.width,      client.height, fb_width, fb_height,
+            vp_matches_client, blend[0] != 0, blend[1], blend[2],
+            blend[3],          blend[4],
+        },
+    );
+}
+
 fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
     gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
     gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
@@ -3585,6 +3660,7 @@ fn runMainLoop(self: *AppWindow) !void {
 
     gpu.glTable().Enable.?(gpu.c.GL_BLEND);
     gpu.glTable().BlendFunc.?(gpu.c.GL_SRC_ALPHA, gpu.c.GL_ONE_MINUS_SRC_ALPHA);
+    logGpuDiagnosticsOnce();
 
     // Register resize callback so newly exposed pixels get filled with the
     // terminal background during live resize. Some platform resize loops block
@@ -3671,6 +3747,7 @@ fn runMainLoop(self: *AppWindow) !void {
         }
 
         if (window_backend.consumeDpiChanged(win)) {
+            render_diagnostics.log("main-loop consume-dpi-changed dpi={} font_dpi={}", .{ window_backend.effectiveDpi(win), font.g_dpi });
             handleWindowDpiChanged(allocator, win, ft_lib, requested_font, requested_weight);
         }
 
@@ -3888,6 +3965,7 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         renderImePreedit(win, fb_width, fb_height);
 
+        logSwapDiagnosticsIfChanged(win, fb_width, fb_height);
         window_backend.swapBuffers(win);
     }
 

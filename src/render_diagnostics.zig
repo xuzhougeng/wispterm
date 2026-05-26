@@ -1,6 +1,7 @@
 //! Opt-in rendering/window geometry diagnostics.
 //!
-//! Enable with `PHANTTY_RENDER_DIAGNOSTICS=1`. Logs go to
+//! Enable with either the `PHANTTY_RENDER_DIAGNOSTICS=1` env var or the
+//! `phantty-debug-render = true` config key (see `enableFromConfig`). Logs go to
 //! `%APPDATA%\phantty\render-diagnostic.log` on Windows, matching the config
 //! directory convention used elsewhere in the app.
 
@@ -16,7 +17,20 @@ threadlocal var g_file_open: bool = false;
 threadlocal var g_file: std.fs.File = undefined;
 threadlocal var g_start_ms: i64 = 0;
 
+/// Process-global override flipped on by the `phantty-debug-render` config key.
+/// Unlike the threadlocal env-var cache above, this is visible to every thread
+/// that logs, and is consulted before the (cached) env-var check so a config
+/// opt-in works even if a thread already evaluated the env var as off.
+var g_config_force = std.atomic.Value(bool).init(false);
+
+/// Force diagnostics on from config. Call once, as early as the config is
+/// available (before any window/GL exists) so startup geometry is captured.
+pub fn enableFromConfig(on: bool) void {
+    if (on) g_config_force.store(true, .seq_cst);
+}
+
 pub fn enabled() bool {
+    if (g_config_force.load(.seq_cst)) return true;
     if (g_checked) return g_enabled;
     g_checked = true;
 
@@ -105,4 +119,20 @@ test "render diagnostics enabled parser rejects empty and falsey values" {
     try std.testing.expect(!parseEnabledValue("false"));
     try std.testing.expect(!parseEnabledValue("off"));
     try std.testing.expect(!parseEnabledValue("anything-else"));
+}
+
+test "enableFromConfig forces diagnostics on regardless of cached env check" {
+    // Simulate a thread that already evaluated the env var as off.
+    g_checked = true;
+    g_enabled = false;
+    defer {
+        g_checked = false;
+        g_enabled = false;
+        g_config_force.store(false, .seq_cst);
+    }
+    try std.testing.expect(!enabled());
+    enableFromConfig(false); // no-op
+    try std.testing.expect(!enabled());
+    enableFromConfig(true);
+    try std.testing.expect(enabled());
 }
