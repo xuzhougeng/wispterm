@@ -7,9 +7,7 @@ const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const gl_init = AppWindow.gpu.gl_init;
 
-const c = @cImport({
-    @cInclude("glad/gl.h");
-});
+const c = AppWindow.gpu.c;
 
 fn mix(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const amount = @max(0.0, @min(1.0, t));

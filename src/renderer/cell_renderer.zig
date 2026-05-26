@@ -18,9 +18,7 @@ const cell_pipeline = @import("cell_pipeline.zig");
 const image_renderer = @import("image_renderer.zig");
 const cell_geometry = @import("cell_geometry.zig");
 
-const c = @cImport({
-    @cInclude("glad/gl.h");
-});
+const c = AppWindow.gpu.c;
 
 const Character = font.Character;
 const Selection = Surface.Selection;

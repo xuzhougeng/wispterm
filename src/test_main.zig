@@ -594,6 +594,7 @@ comptime {
     _ = @import("platform/input_events.zig");
     _ = @import("platform/agent_prompt.zig");
     _ = @import("platform/apprt_win32_guard.zig");
+    _ = @import("renderer/gpu/gl_backend_guard.zig");
     _ = @import("platform/local_path.zig");
     _ = @import("platform/memory.zig");
     _ = @import("platform/notifications.zig");

@@ -72,6 +72,25 @@ pub fn setWrap(self: Texture, wrap: Wrap) void {
     gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, wrapEnum(wrap));
 }
 
+/// Update a sub-region (glTexSubImage2D) of an already-allocated texture.
+/// Uses o.format / o.data_type / o.unpack_alignment (the filter/wrap/internal_format
+/// fields of Upload are ignored here).
+pub fn subImage2D(self: Texture, x: c_int, y: c_int, width: c_int, height: c_int, data: ?*const anyopaque, o: Upload) void {
+    const gl = Context.gl;
+    gl.BindTexture.?(c.GL_TEXTURE_2D, self.handle);
+    if (o.unpack_alignment) |a| gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, a);
+    gl.TexSubImage2D.?(c.GL_TEXTURE_2D, 0, x, y, width, height, o.format, o.data_type, data);
+}
+
+/// Read back the width of mip level 0 (glGetTexLevelParameteriv GL_TEXTURE_WIDTH).
+pub fn levelWidth(self: Texture) c_int {
+    const gl = Context.gl;
+    gl.BindTexture.?(c.GL_TEXTURE_2D, self.handle);
+    var w: c.GLint = 0;
+    gl.GetTexLevelParameteriv.?(c.GL_TEXTURE_2D, 0, c.GL_TEXTURE_WIDTH, &w);
+    return w;
+}
+
 /// Delete the GL texture and zero the handle.
 pub fn destroy(self: *Texture) void {
     if (self.handle != 0) {

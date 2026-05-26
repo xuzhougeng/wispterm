@@ -45,13 +45,16 @@ code only — not the `remote/` web console or packaged `plugins/`.
 - **Axis A platform-runtime seam — done and enforced.** App logic routes through
   `src/platform/`; no `std.os.windows` / `apprt/win32.zig` leakage; comptime
   guards fail the build on violations; input uses neutral `key_*` codes.
-- **GPU graphics API — interface landed (A1/A2); renderer routing pending
-  (A3+).** The `GraphicsAPI` spine exists under `src/renderer/gpu/`; OpenGL is
-  the first backend under `gpu/opengl/` and now owns the GL context (table +
-  load in `Context.zig`, helpers/shaders under the backend, `AppWindow.zig` no
-  longer `@cImport`s `glad`). Still pending: route the ~700 raw `gl.*` sites
-  through `gpu.zig` (A3), font atlas via `Texture` (A4), MSL slot (A5), and the
-  `gl.*`-outside-backend guard (A6). → **Phase A**. See guide §1.
+- **GPU graphics API — Phase A complete (A1–A6).** The `GraphicsAPI` spine
+  under `src/renderer/gpu/` owns the GL context and primitives (`Buffer`/
+  `Texture`/`Pipeline`/`Framebuffer`); all renderer files route draws through
+  `gpu`/`ui_pipeline`/`cell_pipeline`; the font atlas uses `Texture`; the MSL
+  shader slot is reserved at `gpu/metal/shaders.zig`; and a comptime guard
+  (`gpu/gl_backend_guard.zig`) keeps `@cInclude("glad/gl.h")` backend-only and
+  regression-locks the decoupled feature files. A small documented residue of
+  files still calls `gpu.glTable()` (the GL presentation layer + not-yet-extracted
+  plumbing) — to be absorbed as the primitive set grows. → **Phase D** (Metal/Linux
+  backends) is now the gate. See guide §1.
 - **Giant files conflate presentation + logic.** `ai_chat.zig` (248 KB),
   `input.zig` (3,462 ln), `AppWindow.zig` (3,742 ln), `overlays.zig` (171 KB).
   → **Phase B**.
@@ -136,12 +139,24 @@ mapping in guide §2 and §5.
       `overlays` quads → `fillQuad`. None carries its own `@cInclude("glad/gl.h")`;
       `markdown_preview`/`post_process` keep `gpu.glTable()` plumbing for VAO
       build / scissor save-restore / Clear-Viewport (the `cell_pipeline` bar).
-- [ ] **A4** Route font atlas → GPU texture through the `Texture` primitive;
-      drop `font/manager.zig`'s direct `@cImport("glad/gl.h")`.
-- [ ] **A5** Backend-scope shaders: GLSL under `gpu/opengl/shaders.zig`; reserve
-      MSL slot under `gpu/metal/shaders.zig`. *Ghostty: `renderer/shaders/`.*
-- [ ] **A6** Extend guards: forbid `gl.*` / `@cInclude("glad/gl.h")` outside
-      `src/renderer/gpu/opengl/`; forbid `AppWindow.zig` importing `glad`.
+- [x] **A4** Route font atlas → GPU texture through the `Texture` primitive;
+      drop `font/manager.zig`'s direct `@cImport("glad/gl.h")`. Added
+      `Texture.subImage2D`/`levelWidth`; `font/manager.zig` is now fully GL-free
+      (atlas create/upload/sub-update/teardown via `gpu.Texture`, constants via
+      `gpu.c`).
+- [x] **A5** Backend-scope shaders: GLSL under `gpu/opengl/shaders.zig`; the
+      symmetric MSL slot is reserved at `gpu/metal/shaders.zig` (documented
+      placeholder, filled by the Metal backend in D1). *Ghostty: `renderer/shaders/`.*
+- [x] **A6** Guard `src/renderer/gpu/gl_backend_guard.zig` (comptime source
+      scans, imported by `test_main.zig`): (1) `@cInclude("glad/gl.h")` only
+      under `src/renderer/gpu/opengl/` — every other renderer/font/`AppWindow`
+      file now sources GL constants from `gpu.c`; (2) the A3/A4-decoupled feature
+      files are regression-locked against re-acquiring `gpu.glTable()`. The
+      remaining `gpu.glTable()` users (GL presentation layer `ui_pipeline`/
+      `cell_pipeline`, render coordination `Renderer`/`cell_renderer`/
+      `post_process`, and plumbing in `markdown_preview_renderer`/
+      `weixin_qr_renderer`/`overlays/{resize,scrollbar,startup_shortcuts}`) are
+      the documented residue to absorb as the primitive set grows.
 
 ### Phase B — Presentation/logic separation (actionable now; verifiable on Windows)
 
@@ -199,9 +214,12 @@ Linux (native):
 - [x] No shared/test code outside `src/platform/` depends on a platform runtime.
       The `apprt/win32.zig` API-surface leak checks live in
       `src/platform/apprt_win32_guard.zig`.
-- [ ] **(Phase A6)** No raw GPU API outside its backend: `gl.*` and
-      `@cInclude("glad/gl.h")` only under `src/renderer/gpu/opengl/`; the host
-      owns the GPU context, so `AppWindow.zig` must not `@cImport` `glad`.
-      (Partially holds as of A2: `AppWindow.zig` no longer `@cImport`s `glad`
-      and the backend owns the context; the general `gl.*`/`glad`-outside-backend
-      guard still waits on the A3 renderer routing.)
+- [x] **(Phase A6)** Raw GPU API stays in its backend, enforced by
+      `src/renderer/gpu/gl_backend_guard.zig` (comptime scans, imported by
+      `test_main.zig`): `@cInclude("glad/gl.h")` only under
+      `src/renderer/gpu/opengl/` (every other renderer/font/`AppWindow` file uses
+      `gpu.c`), and the A3/A4-decoupled feature files are locked against
+      re-acquiring `gpu.glTable()`. Remaining `gpu.glTable()` callers (GL
+      presentation layer + not-yet-extracted render plumbing) are the documented,
+      shrinking residue — a full `gl.*`-outside-backend ban awaits extracting
+      VAO-build / render-state primitives for those.

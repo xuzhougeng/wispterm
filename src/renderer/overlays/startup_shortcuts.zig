@@ -10,9 +10,7 @@ const primitives = @import("primitives.zig");
 const mixColor = primitives.mixColor;
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
 
-const c = @cImport({
-    @cInclude("glad/gl.h");
-});
+const c = AppWindow.gpu.c;
 
 pub const STARTUP_SHORTCUTS_DURATION_MS: i64 = 12000;
 pub const STARTUP_SHORTCUTS_FADE_MS: i64 = 800;

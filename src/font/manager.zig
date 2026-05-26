@@ -14,9 +14,8 @@ const embedded = @import("embedded.zig");
 const Config = @import("../config.zig");
 const AppWindow = @import("../AppWindow.zig");
 
-const c = @cImport({
-    @cInclude("glad/gl.h");
-});
+const gpu = AppWindow.gpu;
+const c = gpu.c;
 
 pub const FontAtlas = @import("Atlas.zig");
 
@@ -571,42 +570,35 @@ pub fn syncAtlasTexture(atlas_ptr: *?FontAtlas, texture_ptr: *c.GLuint, modified
     const modified = atlas.modified.load(.monotonic);
     if (modified <= modified_ptr.*) return;
 
-    const gl = AppWindow.gpu.glTable();
     const size: c_int = @intCast(atlas.size);
 
     // Pick GL format based on atlas pixel format.
     // FreeType color emoji bitmaps are BGRA byte order, so we upload with GL_BGRA
     // which tells OpenGL to swizzle B↔R on upload, giving us proper RGBA in the texture.
-    const gl_internal: c.GLint = if (atlas.format == .bgra) c.GL_RGBA8 else c.GL_RED;
+    const gl_internal: c.GLenum = if (atlas.format == .bgra) c.GL_RGBA8 else c.GL_RED;
     const gl_format: c.GLenum = if (atlas.format == .bgra) c.GL_BGRA else c.GL_RED;
+    const upload_opts = gpu.Texture.Upload{
+        .internal_format = gl_internal,
+        .format = gl_format,
+        .filter = .linear,
+        .wrap = .clamp_to_edge,
+        .unpack_alignment = 1,
+    };
 
     if (texture_ptr.* == 0) {
-        // First time — create the texture
-        gl.GenTextures.?(1, texture_ptr);
-        gl.BindTexture.?(c.GL_TEXTURE_2D, texture_ptr.*);
-        gl.TexImage2D.?(c.GL_TEXTURE_2D, 0, gl_internal, size, size, 0, gl_format, c.GL_UNSIGNED_BYTE, atlas.data.ptr);
-        gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
-        gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
-        gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
-        gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+        const tex = gpu.Texture.create();
+        texture_ptr.* = tex.handle;
+        tex.upload2D(size, size, atlas.data.ptr, upload_opts);
     } else {
-        gl.BindTexture.?(c.GL_TEXTURE_2D, texture_ptr.*);
-        // Check if atlas grew beyond current GPU texture size
-        var current_size: c.GLint = 0;
-        gl.GetTexLevelParameteriv.?(c.GL_TEXTURE_2D, 0, c.GL_TEXTURE_WIDTH, &current_size);
-        if (current_size < size) {
-            // Atlas grew — need a new texture
-            gl.DeleteTextures.?(1, texture_ptr);
-            gl.GenTextures.?(1, texture_ptr);
-            gl.BindTexture.?(c.GL_TEXTURE_2D, texture_ptr.*);
-            gl.TexImage2D.?(c.GL_TEXTURE_2D, 0, gl_internal, size, size, 0, gl_format, c.GL_UNSIGNED_BYTE, atlas.data.ptr);
-            gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
-            gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
-            gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
-            gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+        const tex = gpu.Texture.fromHandle(texture_ptr.*);
+        if (tex.levelWidth() < size) {
+            var old = tex;
+            old.destroy();
+            const new_tex = gpu.Texture.create();
+            texture_ptr.* = new_tex.handle;
+            new_tex.upload2D(size, size, atlas.data.ptr, upload_opts);
         } else {
-            // Same size — sub-image upload
-            gl.TexSubImage2D.?(c.GL_TEXTURE_2D, 0, 0, 0, size, size, gl_format, c.GL_UNSIGNED_BYTE, atlas.data.ptr);
+            tex.subImage2D(0, 0, size, size, atlas.data.ptr, upload_opts);
         }
     }
 
@@ -1197,9 +1189,6 @@ pub fn findOrLoadFallbackFace(codepoint: u32, alloc: std.mem.Allocator) ?freetyp
 
 /// Preload common character ranges
 pub fn preloadCharacters(face: freetype.Face) void {
-    const gl = AppWindow.gpu.glTable();
-    gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, 1);
-
     // Store face for later on-demand loading
     glyph_face = face;
 
@@ -1366,8 +1355,6 @@ pub fn memoryStats() MemoryStats {
 
 /// Clear all GL textures from the glyph cache and reset it.
 pub fn clearGlyphCache(allocator: std.mem.Allocator) void {
-    const gl = AppWindow.gpu.glTable();
-
     glyph_cache.deinit(allocator);
     glyph_cache = .empty;
     grapheme_cache.deinit(allocator);
@@ -1379,7 +1366,8 @@ pub fn clearGlyphCache(allocator: std.mem.Allocator) void {
         g_atlas = null;
     }
     if (g_atlas_texture != 0) {
-        gl.DeleteTextures.?(1, &g_atlas_texture);
+        var t = gpu.Texture.fromHandle(g_atlas_texture);
+        t.destroy();
         g_atlas_texture = 0;
         g_atlas_modified = 0;
     }
@@ -1390,7 +1378,8 @@ pub fn clearGlyphCache(allocator: std.mem.Allocator) void {
         g_color_atlas = null;
     }
     if (g_color_atlas_texture != 0) {
-        gl.DeleteTextures.?(1, &g_color_atlas_texture);
+        var t = gpu.Texture.fromHandle(g_color_atlas_texture);
+        t.destroy();
         g_color_atlas_texture = 0;
         g_color_atlas_modified = 0;
     }
