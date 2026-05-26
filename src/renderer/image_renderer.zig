@@ -2,12 +2,9 @@ const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const Renderer = @import("Renderer.zig");
 const AppWindow = @import("../AppWindow.zig");
-const gl_init = AppWindow.gpu.gl_init;
+const gpu = AppWindow.gpu;
+const ui_pipeline = @import("ui_pipeline.zig");
 const font = AppWindow.font;
-
-const c = @cImport({
-    @cInclude("glad/gl.h");
-});
 
 const KittyImage = ghostty_vt.kitty.graphics.Image;
 const KittyStorage = ghostty_vt.kitty.graphics.ImageStorage;
@@ -81,15 +78,15 @@ pub fn snapshot(rend: *Renderer, terminal: *ghostty_vt.Terminal) void {
 }
 
 pub fn uploadPending(rend: *Renderer) void {
-    const gl = AppWindow.gpu.glTable();
     const alloc = rend.surface.allocator;
 
     for (rend.kitty_pending_uploads.items) |pending| {
-        var texture_handle: c.GLuint = 0;
+        var texture_handle: Renderer.GLuint = 0;
         if (findTexture(rend, pending.image_id)) |existing| {
             texture_handle = existing.texture;
         } else {
-            gl.GenTextures.?(1, &texture_handle);
+            const new_tex = gpu.Texture.create();
+            texture_handle = new_tex.handle;
             rend.kitty_textures.append(alloc, .{
                 .image_id = pending.image_id,
                 .width = pending.width,
@@ -97,28 +94,18 @@ pub fn uploadPending(rend: *Renderer) void {
                 .transmit_time = pending.transmit_time,
                 .texture = texture_handle,
             }) catch {
-                gl.DeleteTextures.?(1, &texture_handle);
+                var t = gpu.Texture.fromHandle(texture_handle);
+                t.destroy();
                 alloc.free(pending.rgba);
                 continue;
             };
         }
 
-        gl.BindTexture.?(c.GL_TEXTURE_2D, texture_handle);
-        gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
-        gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
-        gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
-        gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
-        gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, 1);
-        gl.TexImage2D.?(
-            c.GL_TEXTURE_2D,
-            0,
-            c.GL_RGBA8,
+        gpu.Texture.fromHandle(texture_handle).upload2D(
             @intCast(pending.width),
             @intCast(pending.height),
-            0,
-            c.GL_RGBA,
-            c.GL_UNSIGNED_BYTE,
             pending.rgba.ptr,
+            .{ .filter = .linear, .wrap = .clamp_to_edge, .unpack_alignment = 1 },
         );
 
         if (findTextureMut(rend, pending.image_id)) |tex| {
@@ -141,15 +128,7 @@ pub fn draw(
     offset_y: f32,
     layer: Renderer.KittyLayer,
 ) void {
-    const gl = AppWindow.gpu.glTable();
-    if (gl_init.simple_color_shader == 0) return;
-
-    gl.UseProgram.?(gl_init.simple_color_shader);
-    gl_init.setProjectionForProgram(gl_init.simple_color_shader, window_height);
-    gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.simple_color_shader, "opacity"), 1.0);
-    gl.Uniform1i.?(gl.GetUniformLocation.?(gl_init.simple_color_shader, "text"), 0);
-    gl.BindVertexArray.?(gl_init.vao);
-    gl.ActiveTexture.?(c.GL_TEXTURE0);
+    if (ui_pipeline.emoji.program == 0) return;
 
     for (rend.kitty_placements.items) |placement| {
         if (placement.layer != layer) continue;
@@ -171,12 +150,7 @@ pub fn draw(
             .{ x + placement.width, y + placement.height, placement.uv_right, placement.uv_top },
         };
 
-        gl.BindTexture.?(c.GL_TEXTURE_2D, texture.texture);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.vbo);
-        gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @sizeOf(@TypeOf(vertices)), &vertices);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, 0);
-        gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
-        gl_init.g_draw_call_count += 1;
+        ui_pipeline.drawTextureQuad(vertices, texture.texture, 1.0);
     }
 }
 
