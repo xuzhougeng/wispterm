@@ -19,6 +19,11 @@ comptime {
     _ = @import("update_check.zig");
     _ = @import("update_install.zig");
     _ = @import("platform/webview.zig");
+    // GPU backend spine: forces the active backend (Metal on macOS, OpenGL
+    // elsewhere) to be analyzed for the selected target so the cross-compile
+    // gate actually exercises the backend. gpu.zig is self-contained (it does
+    // not pull in AppWindow), so this stays a shared compile-only check.
+    _ = @import("renderer/gpu/gpu.zig");
 }
 
 test "shared compile target has app metadata" {

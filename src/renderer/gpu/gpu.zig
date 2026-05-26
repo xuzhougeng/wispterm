@@ -2,14 +2,16 @@
 //! style, no runtime vtable) and re-exports its types. See
 //! docs/decoupling-guide.md §2 and the spec for the abstraction hierarchy.
 const builtin = @import("builtin");
-const opengl = @import("opengl/api.zig");
 
 pub const Backend = @import("backend.zig").Backend;
 pub const active: Backend = Backend.default(builtin.os.tag);
 
+// Resolve the active backend lazily inside each branch so a non-selected
+// backend's C imports (e.g. the OpenGL backend's `@cInclude("glad/gl.h")`) are
+// never analyzed on a target that doesn't ship them (macOS → Metal).
 const impl = switch (active) {
-    .opengl => opengl,
-    .metal => @compileError("metal backend is Phase D (not yet implemented)"),
+    .opengl => @import("opengl/api.zig"),
+    .metal => @import("metal/api.zig"),
 };
 
 // The active backend's surface. The GL table lives in the backend (moved out
