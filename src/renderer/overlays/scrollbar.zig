@@ -115,7 +115,6 @@ fn scrollbarUpdateFade(surface: *Surface) void {
 /// view_width/view_height are the viewport dimensions (not full window).
 /// top_padding is the padding from the top of the viewport to the terminal content.
 pub fn renderScrollbarForSurface(surface: *Surface, view_width: f32, view_height: f32, top_padding: f32) void {
-    const gl = AppWindow.gpu.glTable();
     const geo = scrollbarGeometryForSurface(surface, view_height, top_padding) orelse return;
 
     scrollbarUpdateFade(surface);
@@ -125,9 +124,6 @@ pub fn renderScrollbarForSurface(surface: *Surface, view_width: f32, view_height
     const bar_x = view_width - SCROLLBAR_WIDTH;
     const bar_w = SCROLLBAR_WIDTH;
 
-    // Use the shader_program for quad rendering
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.BindVertexArray.?(gl_init.vao);
 
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
