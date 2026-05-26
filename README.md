@@ -1,6 +1,6 @@
 # Phantty
 
-A Windows terminal written in Zig, powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
+A terminal written in Zig, powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation. It ships for Windows today, with macOS and Linux ports in progress.
 
 > [!NOTE]
 > This repository is a fork of [arya-s/phantty](https://github.com/arya-s/phantty),
@@ -26,7 +26,9 @@ A Windows terminal written in Zig, powered by [libghostty-vt](https://github.com
 - **Opt-in remote access** - share a session key over a Cloudflare-hosted relay (disabled by default)
 
 > [!NOTE]
-> Phantty is **Windows-only**. On macOS and Linux, use [Ghostty](https://ghostty.org/) instead.
+> Phantty currently ships for **Windows only**. macOS and Linux ports are in
+> progress (see [TODO.md](TODO.md)); until they land, use
+> [Ghostty](https://ghostty.org/) on those platforms.
 
 ## Documentation
 
