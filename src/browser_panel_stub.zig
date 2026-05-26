@@ -119,6 +119,11 @@ pub fn openForSurface(allocator: std.mem.Allocator, parent: ?window_backend.Nati
     return false;
 }
 
+pub fn externalUrlForSurface(allocator: std.mem.Allocator, url: []const u8, surface: ?*const Surface) ?[]u8 {
+    _ = surface;
+    return allocator.dupe(u8, url) catch null;
+}
+
 pub fn toggle(parent: ?window_backend.NativeHandle) void {
     _ = parent;
     g_visible = false;

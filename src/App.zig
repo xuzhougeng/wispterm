@@ -70,6 +70,7 @@ split_divider_color: ?Config.Color,
 focus_follows_mouse: bool,
 copy_on_select: bool,
 right_click_action: Config.RightClickAction,
+url_open_mode: Config.UrlOpenMode,
 ssh_legacy_algorithms: bool,
 
 // Background image
@@ -207,6 +208,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .focus_follows_mouse = cfg.@"focus-follows-mouse",
         .copy_on_select = cfg.@"copy-on-select",
         .right_click_action = cfg.@"right-click-action",
+        .url_open_mode = cfg.@"url-open-mode",
         .ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms",
         .background_image = background_image,
         .background_opacity = cfg.@"background-opacity",
@@ -373,6 +375,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.focus_follows_mouse = cfg.@"focus-follows-mouse";
     self.copy_on_select = cfg.@"copy-on-select";
     self.right_click_action = cfg.@"right-click-action";
+    self.url_open_mode = cfg.@"url-open-mode";
     self.ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     self.replaceOptStr(&self.background_image, cfg.@"background-image");
     self.background_opacity = cfg.@"background-opacity";

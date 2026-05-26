@@ -24,8 +24,10 @@ the embedded WebView2 browser panel when WebView2 support is available.
 `Ctrl`-clicking an `http://` or `https://` URL in terminal output opens it in
 the same right-side WebView2 panel when available; builds without embedded
 WebView2 support, or without a usable WebView2 loader/runtime, open URLs in the
-system default browser instead. In SSH profile sessions with embedded WebView2
-support, loopback URLs such as `http://127.0.0.1:4232` and
+system default browser instead. Set `url-open-mode = system-browser` to always
+open web URLs in the Windows default browser, including when embedded WebView2
+support is available. In SSH profile sessions, loopback URLs such as
+`http://127.0.0.1:4232` and
 `http://localhost:43455` are opened through an automatic local SSH tunnel;
 the tunnel prefers the same local port and only increments when that port is
 already occupied.

@@ -30,6 +30,7 @@ quake-mode = true
 keybind = global:ctrl+backquote=toggle_quake
 keybind = ctrl+shift+p=toggle_command_palette
 scrollback-limit = 10000000
+url-open-mode = embedded
 custom-shader = path/to/shader.glsl
 background-image = C:\Users\me\Pictures\wallpaper.png
 background-opacity = 0.85
@@ -62,6 +63,7 @@ remote-session-key = Workstation
 | `quake-mode`                | `true`     | Start as a Quake-style drop-down terminal. The `toggle_quake` keybind hides or shows the same window while preserving terminal state.                                                                                    |
 | `keybind`                   | defaults   | Configure an app-level shortcut. Can be repeated. Syntax: `keybind = [global:]modifier+key=action`; use `keybind = clear` before custom bindings to remove all defaults.                                                 |
 | `scrollback-limit`          | `10000000` | Scrollback buffer limit in bytes                                                                                                                                                                                        |
+| `url-open-mode`             | `embedded` | Where web URLs open: `embedded` uses the right-side browser panel when available, while `system-browser` always opens the Windows default browser.                                                                         |
 | `restore-tabs-on-startup`   | `false`    | Persist tab/split layout to `%APPDATA%\phantty\session.json` on close and rebuild it on next launch. SSH passwords are never persisted; reconnects re-prompt. CLI overrides (`--cwd`) take precedence and skip restore. |
 | `auto-update-check`         | `true`     | Check GitHub Releases after startup and show a clickable prompt when a newer version is available. Set to `false` to disable startup checks.                                                                             |
 | `config-file`               | *(none)*   | Include another config file (prefix with `?` to make optional)                                                                                                                                                          |

@@ -217,26 +217,28 @@ pub fn openForSurface(allocator: std.mem.Allocator, parent: ?window_backend.Nati
         return false;
     }
 
-    var target = url;
-    var tunneled_url: ?[]u8 = null;
-    defer if (tunneled_url) |owned| allocator.free(owned);
-
-    if (sshLoopbackUrl(surface, target)) |request| {
-        const local_port = ensureSshTunnel(allocator, &request.conn, request.parsed.port, browser_url.localTunnelHost(request.parsed.host), browser_url.remoteTunnelHost(request.parsed.host)) orelse return false;
-        tunneled_url = browser_url.buildLocalTunnelUrl(allocator, request.parsed, local_port) orelse return false;
-        target = tunneled_url.?;
-    } else {
-        stopTunnel();
-        if (browser_url.parseHttpUrl(target)) |parsed| {
-            if (browser_url.isUnspecifiedHost(parsed.host)) {
-                tunneled_url = browser_url.buildLocalTunnelUrl(allocator, parsed, parsed.port) orelse return false;
-                target = tunneled_url.?;
-            }
-        }
-    }
+    const target = externalUrlForSurface(allocator, url, surface) orelse return false;
+    defer allocator.free(target);
 
     open(parent, target);
     return true;
+}
+
+pub fn externalUrlForSurface(allocator: std.mem.Allocator, url: []const u8, surface: ?*const Surface) ?[]u8 {
+    const target = url;
+    if (sshLoopbackUrl(surface, target)) |request| {
+        const local_port = ensureSshTunnel(allocator, &request.conn, request.parsed.port, browser_url.localTunnelHost(request.parsed.host), browser_url.remoteTunnelHost(request.parsed.host)) orelse return null;
+        return browser_url.buildLocalTunnelUrl(allocator, request.parsed, local_port);
+    }
+
+    stopTunnel();
+    if (browser_url.parseHttpUrl(target)) |parsed| {
+        if (browser_url.isUnspecifiedHost(parsed.host)) {
+            return browser_url.buildLocalTunnelUrl(allocator, parsed, parsed.port);
+        }
+    }
+
+    return allocator.dupe(u8, target) catch null;
 }
 
 pub fn toggle(parent: ?window_backend.NativeHandle) void {
@@ -739,6 +741,20 @@ test "browser_panel: public parent handle API uses window backend handle" {
 
     const submit_info = @typeInfo(@TypeOf(submitUrlBar)).@"fn";
     try std.testing.expect(submit_info.params[1].type.? == ?window_backend.NativeHandle);
+}
+
+test "browser_panel external URL helper preserves public URLs" {
+    const target = externalUrlForSurface(std.testing.allocator, "https://example.com/app?q=1", null) orelse unreachable;
+    defer std.testing.allocator.free(target);
+
+    try std.testing.expectEqualStrings("https://example.com/app?q=1", target);
+}
+
+test "browser_panel external URL helper maps unspecified hosts to loopback" {
+    const target = externalUrlForSurface(std.testing.allocator, "http://0.0.0.0:1234/app?q=1", null) orelse unreachable;
+    defer std.testing.allocator.free(target);
+
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/app?q=1", target);
 }
 
 test "reservePreferredLocalPort returns the preferred port when it is free" {

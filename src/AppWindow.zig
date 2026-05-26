@@ -103,6 +103,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_focus_follows_mouse = app.focus_follows_mouse;
     g_copy_on_select = app.copy_on_select;
     g_right_click_action = app.right_click_action;
+    input.g_url_open_mode = app.url_open_mode;
     g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     tab.g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     overlays.g_split_divider_color = app.split_divider_color;
@@ -1391,6 +1392,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_focus_follows_mouse = cfg.@"focus-follows-mouse";
     g_copy_on_select = cfg.@"copy-on-select";
     g_right_click_action = cfg.@"right-click-action";
+    input.g_url_open_mode = cfg.@"url-open-mode";
     g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     tab.g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     overlays.g_split_divider_color = cfg.@"split-divider-color";

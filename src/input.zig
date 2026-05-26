@@ -236,6 +236,7 @@ threadlocal var g_markdown_preview_image_drag_last_x: f64 = 0;
 threadlocal var g_markdown_preview_image_drag_last_y: f64 = 0;
 pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
+pub threadlocal var g_url_open_mode: link_open.Mode = .embedded;
 const SIDEBAR_TAB_DRAG_THRESHOLD_PX: f64 = 6.0;
 threadlocal var g_sidebar_tab_drag_pressed: ?usize = null;
 threadlocal var g_sidebar_tab_drag_current: ?usize = null;
@@ -384,6 +385,12 @@ pub fn toggleBrowserPanel() void {
     const allocator = AppWindow.g_allocator orelse return;
     const parent = AppWindow.currentNativeHandle();
     const surface = AppWindow.activeSurface();
+    if (g_url_open_mode == .system_browser and !browser_panel.isVisibleForActiveTab()) {
+        const target = browser_panel.externalUrlForSurface(allocator, browser_panel.DEFAULT_URL, surface) orelse return;
+        defer allocator.free(target);
+        _ = platform_open_url.open(allocator, .{ .url = target });
+        return;
+    }
     if (!browser_panel.toggleForSurface(allocator, parent, surface)) return;
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
@@ -2106,7 +2113,7 @@ fn openUrl(surface: *Surface, url: []const u8) bool {
     defer allocator.free(target);
 
     const handle = AppWindow.currentNativeHandle();
-    switch (link_open.destinationForUrlClick(browser_panel.embeddedBrowserAvailable())) {
+    switch (link_open.destinationForUrlClick(browser_panel.embeddedBrowserAvailable(), g_url_open_mode)) {
         .embedded_browser => {
             if (!browser_panel.openForSurface(allocator, handle, target, surface)) return false;
             if (AppWindow.g_window) |win| {
@@ -2116,7 +2123,11 @@ fn openUrl(surface: *Surface, url: []const u8) bool {
             AppWindow.g_cells_valid = false;
             return true;
         },
-        .system_browser => return platform_open_url.open(allocator, .{ .url = target }),
+        .system_browser => {
+            const external_target = browser_panel.externalUrlForSurface(allocator, target, surface) orelse return false;
+            defer allocator.free(external_target);
+            return platform_open_url.open(allocator, .{ .url = external_target });
+        },
     }
 }
 

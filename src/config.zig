@@ -20,6 +20,7 @@ const Config = @This();
 const std = @import("std");
 const ai_chat = @import("ai_chat.zig");
 const keybind = @import("keybind.zig");
+const link_open = @import("link_open.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_editor = @import("platform/editor.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
@@ -161,6 +162,8 @@ pub const RightClickAction = enum {
     }
 };
 
+pub const UrlOpenMode = link_open.Mode;
+
 // ============================================================================
 // Background Image
 // ============================================================================
@@ -269,6 +272,9 @@ theme: ?[]const u8 = null,
 
 /// Right-click action for terminal surfaces.
 @"right-click-action": RightClickAction = .copy,
+
+/// Where Ctrl-clicked web URLs open.
+@"url-open-mode": UrlOpenMode = .embedded,
 
 /// Add legacy OpenSSH algorithms for older bastion/servers.
 @"ssh-legacy-algorithms": bool = false,
@@ -727,6 +733,12 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"right-click-action" = action;
         } else {
             log.warn("invalid right-click-action: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "url-open-mode")) {
+        if (UrlOpenMode.parse(value)) |mode| {
+            self.@"url-open-mode" = mode;
+        } else {
+            log.warn("invalid url-open-mode: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "ssh-legacy-algorithms")) {
         if (std.mem.eql(u8, value, "true")) {
@@ -1195,6 +1207,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --scrollback-limit <bytes>   Scrollback buffer size (default: 10000000)
         \\  --copy-on-select <bool>      Copy terminal selection when mouse selection completes
         \\  --right-click-action <mode>  ignore | copy | paste | copy-or-paste
+        \\  --url-open-mode <mode>       embedded | system-browser
         \\  --ssh-legacy-algorithms <bool> Enable legacy ssh-rsa/ssh-dss OpenSSH options
         \\  --ai-agent-enabled <bool>    Enable AI Chat agent tools by default
         \\  --ai-agent-permission <mode> Agent tool permission: confirm | full
@@ -1510,6 +1523,7 @@ const default_config_template =
     \\# Terminal mouse/clipboard behavior
     \\# copy-on-select = false
     \\# right-click-action = copy   # ignore | copy | paste | copy-or-paste
+    \\# url-open-mode = embedded    # embedded | system-browser
     \\
     \\# SSH compatibility for older bastions/servers.
     \\# Adds ssh-rsa/ssh-dss and legacy KEX/cipher options to profile/helper SSH.
@@ -1806,12 +1820,21 @@ test "config: copy and right click options parse" {
 
     try std.testing.expectEqual(false, cfg.@"copy-on-select");
     try std.testing.expectEqual(RightClickAction.copy, cfg.@"right-click-action");
+    try std.testing.expectEqual(UrlOpenMode.embedded, cfg.@"url-open-mode");
 
     cfg.applyKeyValue(allocator, "copy-on-select", "true", ".");
     cfg.applyKeyValue(allocator, "right-click-action", "copy-or-paste", ".");
+    cfg.applyKeyValue(allocator, "url-open-mode", "system-browser", ".");
 
     try std.testing.expectEqual(true, cfg.@"copy-on-select");
     try std.testing.expectEqual(RightClickAction.copy_or_paste, cfg.@"right-click-action");
+    try std.testing.expectEqual(UrlOpenMode.system_browser, cfg.@"url-open-mode");
+
+    cfg.applyKeyValue(allocator, "url-open-mode", "default-browser", ".");
+    try std.testing.expectEqual(UrlOpenMode.system_browser, cfg.@"url-open-mode");
+
+    cfg.applyKeyValue(allocator, "url-open-mode", "embedded", ".");
+    try std.testing.expectEqual(UrlOpenMode.embedded, cfg.@"url-open-mode");
 }
 
 test "config: ssh legacy algorithm option parses" {

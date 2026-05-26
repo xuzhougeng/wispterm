@@ -60,7 +60,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Close Panel / Tab", .detail = "Close focused panel or tab; press again for the last panel", .shortcut = "", .action = .close_split_or_tab },
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "", .action = .toggle_sidebar },
     .{ .title = "Toggle File Explorer", .detail = "Show or hide the left-side file explorer", .shortcut = "", .action = .toggle_file_explorer },
-    .{ .title = "Toggle Browser", .detail = "Show embedded browser for local or SSH URLs", .shortcut = "", .action = .toggle_browser_panel },
+    .{ .title = "Toggle Browser", .detail = "Open the configured browser for local or SSH URLs", .shortcut = "", .action = .toggle_browser_panel },
     .{ .title = "Toggle Quake Window", .detail = "Show or hide the drop-down terminal window", .shortcut = "", .action = .toggle_quake },
     .{ .title = "Keyboard Shortcuts", .detail = "Show the shortcut reference overlay", .shortcut = "", .action = .show_shortcuts },
     .{ .title = "Open Config", .detail = "Open the Phantty config file", .shortcut = "", .action = .open_config },
