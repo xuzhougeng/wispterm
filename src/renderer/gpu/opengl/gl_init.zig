@@ -1,11 +1,11 @@
 //! OpenGL initialization and shared rendering primitives.
 //!
-//! Shader sources, compilation, buffer setup (VAO/VBO), instanced rendering
-//! buffers, and shared drawing helpers (renderQuad, setProjection).
+//! Shader compilation, the text-shader VAO/VBO, the shared simple-color/overlay
+//! pipelines, and shared drawing helpers (renderQuad, setProjection). The
+//! cell-grid instanced pipelines live in renderer/cell_pipeline.zig.
 
 const std = @import("std");
 const AppWindow = @import("../../../AppWindow.zig");
-const Renderer = @import("../../Renderer.zig");
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -20,18 +20,6 @@ const shaders = @import("shaders.zig");
 pub threadlocal var vao: c.GLuint = 0;
 pub threadlocal var vbo: c.GLuint = 0;
 pub threadlocal var shader_program: c.GLuint = 0;
-
-// GL objects for instanced rendering
-pub threadlocal var bg_shader: c.GLuint = 0;
-pub threadlocal var fg_shader: c.GLuint = 0;
-pub threadlocal var color_fg_shader: c.GLuint = 0; // Color emoji shader (BGRA sampling)
-pub threadlocal var bg_vao: c.GLuint = 0;
-pub threadlocal var fg_vao: c.GLuint = 0;
-pub threadlocal var color_fg_vao: c.GLuint = 0;
-pub threadlocal var bg_instance_vbo: c.GLuint = 0;
-pub threadlocal var fg_instance_vbo: c.GLuint = 0;
-pub threadlocal var color_fg_instance_vbo: c.GLuint = 0;
-threadlocal var quad_vbo: c.GLuint = 0; // shared unit quad for instanced draws
 
 pub threadlocal var simple_color_shader: c.GLuint = 0;
 pub threadlocal var overlay_shader: c.GLuint = 0;
@@ -138,6 +126,12 @@ pub fn initShaders() bool {
         return false;
     }
 
+    // Shared simple-color + overlay shaders (used by titlebar/overlays).
+    simple_color_shader = linkProgram(shaders.vertex_shader_source, shaders.simple_color_fragment_source);
+    if (simple_color_shader == 0) std.debug.print("Simple color shader failed\n", .{});
+    overlay_shader = linkProgram(shaders.vertex_shader_source, shaders.overlay_fragment_source);
+    if (overlay_shader == 0) std.debug.print("Overlay shader failed\n", .{});
+
     return true;
 }
 
@@ -154,124 +148,6 @@ pub fn initBuffers() void {
     gl.BindVertexArray.?(0);
 }
 
-pub fn initInstancedBuffers() void {
-    const gl = AppWindow.gpu.glTable();
-
-    // Shared unit quad (triangle strip: 4 verts)
-    const quad_verts = [4][2]f32{
-        .{ 0.0, 0.0 }, // bottom-left
-        .{ 1.0, 0.0 }, // bottom-right
-        .{ 0.0, 1.0 }, // top-left
-        .{ 1.0, 1.0 }, // top-right
-    };
-    gl.GenBuffers.?(1, &quad_vbo);
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, quad_vbo);
-    gl.BufferData.?(c.GL_ARRAY_BUFFER, @sizeOf(@TypeOf(quad_verts)), &quad_verts, c.GL_STATIC_DRAW);
-
-    // --- BG VAO ---
-    gl.GenVertexArrays.?(1, &bg_vao);
-    gl.GenBuffers.?(1, &bg_instance_vbo);
-    gl.BindVertexArray.?(bg_vao);
-
-    // Attr 0: unit quad (per-vertex)
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, quad_vbo);
-    gl.EnableVertexAttribArray.?(0);
-    gl.VertexAttribPointer.?(0, 2, c.GL_FLOAT, c.GL_FALSE, 2 * @sizeOf(f32), null);
-
-    // Attrs 1-3: per-instance BG data
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, bg_instance_vbo);
-    gl.BufferData.?(c.GL_ARRAY_BUFFER, @sizeOf(Renderer.CellBg) * Renderer.MAX_CELLS, null, c.GL_STREAM_DRAW);
-    const bg_stride: c.GLsizei = @sizeOf(Renderer.CellBg);
-    // Attr 1: grid_col, grid_row
-    gl.EnableVertexAttribArray.?(1);
-    gl.VertexAttribPointer.?(1, 2, c.GL_FLOAT, c.GL_FALSE, bg_stride, @ptrFromInt(0));
-    gl.VertexAttribDivisor.?(1, 1);
-    // Attr 2: r, g, b
-    gl.EnableVertexAttribArray.?(2);
-    gl.VertexAttribPointer.?(2, 3, c.GL_FLOAT, c.GL_FALSE, bg_stride, @ptrFromInt(2 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(2, 1);
-    // Attr 3: alpha
-    gl.EnableVertexAttribArray.?(3);
-    gl.VertexAttribPointer.?(3, 1, c.GL_FLOAT, c.GL_FALSE, bg_stride, @ptrFromInt(5 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(3, 1);
-
-    gl.BindVertexArray.?(0);
-
-    // --- FG VAO ---
-    gl.GenVertexArrays.?(1, &fg_vao);
-    gl.GenBuffers.?(1, &fg_instance_vbo);
-    gl.BindVertexArray.?(fg_vao);
-
-    // Attr 0: unit quad (per-vertex)
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, quad_vbo);
-    gl.EnableVertexAttribArray.?(0);
-    gl.VertexAttribPointer.?(0, 2, c.GL_FLOAT, c.GL_FALSE, 2 * @sizeOf(f32), null);
-
-    // Attrs 1-4: per-instance FG data
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, fg_instance_vbo);
-    gl.BufferData.?(c.GL_ARRAY_BUFFER, @sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, null, c.GL_STREAM_DRAW);
-    const fg_stride: c.GLsizei = @sizeOf(Renderer.CellFg);
-    // Attr 1: grid_col, grid_row
-    gl.EnableVertexAttribArray.?(1);
-    gl.VertexAttribPointer.?(1, 2, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(0));
-    gl.VertexAttribDivisor.?(1, 1);
-    // Attr 2: glyph_x, glyph_y, glyph_w, glyph_h
-    gl.EnableVertexAttribArray.?(2);
-    gl.VertexAttribPointer.?(2, 4, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(2 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(2, 1);
-    // Attr 3: uv_left, uv_top, uv_right, uv_bottom
-    gl.EnableVertexAttribArray.?(3);
-    gl.VertexAttribPointer.?(3, 4, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(6 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(3, 1);
-    // Attr 4: r, g, b
-    gl.EnableVertexAttribArray.?(4);
-    gl.VertexAttribPointer.?(4, 3, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(10 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(4, 1);
-
-    gl.BindVertexArray.?(0);
-
-    // --- Color FG VAO (same layout as FG, separate buffer for color emoji) ---
-    gl.GenVertexArrays.?(1, &color_fg_vao);
-    gl.GenBuffers.?(1, &color_fg_instance_vbo);
-    gl.BindVertexArray.?(color_fg_vao);
-
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, quad_vbo);
-    gl.EnableVertexAttribArray.?(0);
-    gl.VertexAttribPointer.?(0, 2, c.GL_FLOAT, c.GL_FALSE, 2 * @sizeOf(f32), null);
-
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, color_fg_instance_vbo);
-    gl.BufferData.?(c.GL_ARRAY_BUFFER, @sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, null, c.GL_STREAM_DRAW);
-    gl.EnableVertexAttribArray.?(1);
-    gl.VertexAttribPointer.?(1, 2, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(0));
-    gl.VertexAttribDivisor.?(1, 1);
-    gl.EnableVertexAttribArray.?(2);
-    gl.VertexAttribPointer.?(2, 4, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(2 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(2, 1);
-    gl.EnableVertexAttribArray.?(3);
-    gl.VertexAttribPointer.?(3, 4, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(6 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(3, 1);
-    gl.EnableVertexAttribArray.?(4);
-    gl.VertexAttribPointer.?(4, 3, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(10 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(4, 1);
-
-    gl.BindVertexArray.?(0);
-
-    // --- Compile instanced shaders ---
-    bg_shader = linkProgram(shaders.bg_vertex_source, shaders.bg_fragment_source);
-    fg_shader = linkProgram(shaders.fg_vertex_source, shaders.fg_fragment_source);
-    color_fg_shader = linkProgram(shaders.fg_vertex_source, shaders.color_fg_fragment_source);
-    if (bg_shader == 0) std.debug.print("BG instanced shader failed\n", .{});
-    if (fg_shader == 0) std.debug.print("FG instanced shader failed\n", .{});
-    if (color_fg_shader == 0) std.debug.print("Color FG instanced shader failed\n", .{});
-
-    // Simple color shader for titlebar emoji (uses same vertex layout as text shader)
-    simple_color_shader = linkProgram(shaders.vertex_shader_source, shaders.simple_color_fragment_source);
-    if (simple_color_shader == 0) std.debug.print("Simple color shader failed\n", .{});
-
-    // Overlay shader for unfocused split dimming (solid color with alpha)
-    overlay_shader = linkProgram(shaders.vertex_shader_source, shaders.overlay_fragment_source);
-    if (overlay_shader == 0) std.debug.print("Overlay shader failed\n", .{});
-}
 
 pub fn initSolidTexture() void {
     const gl = AppWindow.gpu.glTable();
@@ -281,24 +157,6 @@ pub fn initSolidTexture() void {
     gl.TexImage2D.?(c.GL_TEXTURE_2D, 0, c.GL_RED, 1, 1, 0, c.GL_RED, c.GL_UNSIGNED_BYTE, &white_pixel);
     gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
     gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
-}
-
-// ============================================================================
-// Cleanup
-// ============================================================================
-
-pub fn deinitInstancedResources() void {
-    const gl = AppWindow.gpu.glTable();
-    if (bg_shader != 0) gl.DeleteProgram.?(bg_shader);
-    if (fg_shader != 0) gl.DeleteProgram.?(fg_shader);
-    if (color_fg_shader != 0) gl.DeleteProgram.?(color_fg_shader);
-    if (bg_vao != 0) gl.DeleteVertexArrays.?(1, &bg_vao);
-    if (fg_vao != 0) gl.DeleteVertexArrays.?(1, &fg_vao);
-    if (color_fg_vao != 0) gl.DeleteVertexArrays.?(1, &color_fg_vao);
-    if (bg_instance_vbo != 0) gl.DeleteBuffers.?(1, &bg_instance_vbo);
-    if (fg_instance_vbo != 0) gl.DeleteBuffers.?(1, &fg_instance_vbo);
-    if (color_fg_instance_vbo != 0) gl.DeleteBuffers.?(1, &color_fg_instance_vbo);
-    if (quad_vbo != 0) gl.DeleteBuffers.?(1, &quad_vbo);
 }
 
 // ============================================================================

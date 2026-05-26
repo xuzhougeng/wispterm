@@ -10,6 +10,7 @@ pub fn fromHandle(h: c.GLuint) Texture {
     return .{ .handle = h };
 }
 pub fn bind(self: Texture, unit: u32) void {
-    Context.gl.ActiveTexture.?(c.GL_TEXTURE0 + unit);
+    const texture_unit: c.GLenum = @as(c.GLenum, c.GL_TEXTURE0) + unit;
+    Context.gl.ActiveTexture.?(texture_unit);
     Context.gl.BindTexture.?(c.GL_TEXTURE_2D, self.handle);
 }

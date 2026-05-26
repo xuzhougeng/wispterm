@@ -12,7 +12,9 @@ const Renderer = @import("Renderer.zig");
 const AppWindow = @import("../AppWindow.zig");
 const font = AppWindow.font;
 const tab = AppWindow.tab;
-const gl_init = AppWindow.gpu.gl_init;
+const gpu = AppWindow.gpu;
+const gl_init = gpu.gl_init;
+const cell_pipeline = @import("cell_pipeline.zig");
 const image_renderer = @import("image_renderer.zig");
 const cell_geometry = @import("cell_geometry.zig");
 
@@ -400,64 +402,54 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
     image_renderer.draw(rend, window_height, offset_x, offset_y, .below_bg);
 
     // --- Draw BG cells ---
-    if (rend.bg_cell_count > 0 and gl_init.bg_shader != 0) {
-        gl.UseProgram.?(gl_init.bg_shader);
-        gl.Uniform2f.?(gl.GetUniformLocation.?(gl_init.bg_shader, "cellSize"), font.cell_width, font.cell_height);
-        gl.Uniform2f.?(gl.GetUniformLocation.?(gl_init.bg_shader, "gridOffset"), offset_x, offset_y);
-        gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.bg_shader, "windowHeight"), window_height);
-        gl_init.setProjectionForProgram(gl_init.bg_shader, window_height);
-
-        gl.BindVertexArray.?(gl_init.bg_vao);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.bg_instance_vbo);
-        gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @intCast(@sizeOf(Renderer.CellBg) * rend.bg_cell_count), rend.bg_cells.items.ptr);
-        gl.DrawArraysInstanced.?(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.bg_cell_count));
+    if (rend.bg_cell_count > 0 and cell_pipeline.bg.program != 0) {
+        const p = cell_pipeline.bg;
+        p.use();
+        p.setVec2("cellSize", font.cell_width, font.cell_height);
+        p.setVec2("gridOffset", offset_x, offset_y);
+        p.setFloat("windowHeight", window_height);
+        p.setProjection();
+        p.bindVao();
+        cell_pipeline.bg_instances.upload(std.mem.sliceAsBytes(rend.bg_cells.items[0..rend.bg_cell_count]));
+        p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.bg_cell_count));
         gl_init.g_draw_call_count += 1;
     }
 
     image_renderer.draw(rend, window_height, offset_x, offset_y, .below_text);
 
     // --- Draw FG cells ---
-    if (rend.fg_cell_count > 0 and gl_init.fg_shader != 0) {
-        gl.UseProgram.?(gl_init.fg_shader);
-        gl.Uniform2f.?(gl.GetUniformLocation.?(gl_init.fg_shader, "cellSize"), font.cell_width, font.cell_height);
-        gl.Uniform2f.?(gl.GetUniformLocation.?(gl_init.fg_shader, "gridOffset"), offset_x, offset_y);
-        gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.fg_shader, "windowHeight"), window_height);
-        gl_init.setProjectionForProgram(gl_init.fg_shader, window_height);
-
-        gl.ActiveTexture.?(c.GL_TEXTURE0);
-        gl.BindTexture.?(c.GL_TEXTURE_2D, font.g_atlas_texture);
-        gl.Uniform1i.?(gl.GetUniformLocation.?(gl_init.fg_shader, "atlas"), 0);
-
-        gl.BindVertexArray.?(gl_init.fg_vao);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.fg_instance_vbo);
-        gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @intCast(@sizeOf(Renderer.CellFg) * rend.fg_cell_count), rend.fg_cells.items.ptr);
-        gl.DrawArraysInstanced.?(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.fg_cell_count));
+    if (rend.fg_cell_count > 0 and cell_pipeline.fg.program != 0) {
+        const p = cell_pipeline.fg;
+        p.use();
+        p.setVec2("cellSize", font.cell_width, font.cell_height);
+        p.setVec2("gridOffset", offset_x, offset_y);
+        p.setFloat("windowHeight", window_height);
+        p.setProjection();
+        gpu.Texture.fromHandle(font.g_atlas_texture).bind(0);
+        p.setInt("atlas", 0);
+        p.bindVao();
+        cell_pipeline.fg_instances.upload(std.mem.sliceAsBytes(rend.fg_cells.items[0..rend.fg_cell_count]));
+        p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.fg_cell_count));
         gl_init.g_draw_call_count += 1;
     }
 
-    // --- Draw color emoji cells ---
-    // Color emoji use premultiplied alpha, so we switch blend mode to (ONE, ONE_MINUS_SRC_ALPHA)
-    // for this pass, then restore the normal blend mode afterwards.
-    if (rend.color_fg_cell_count > 0 and gl_init.color_fg_shader != 0) {
+    // --- Draw color emoji cells (premultiplied alpha blend) ---
+    if (rend.color_fg_cell_count > 0 and cell_pipeline.color_fg.program != 0) {
+        // Color emoji bitmaps are premultiplied-alpha, so use (ONE, 1-SRC_ALPHA).
         gl.BlendFunc.?(c.GL_ONE, c.GL_ONE_MINUS_SRC_ALPHA);
-
-        gl.UseProgram.?(gl_init.color_fg_shader);
-        gl.Uniform2f.?(gl.GetUniformLocation.?(gl_init.color_fg_shader, "cellSize"), font.cell_width, font.cell_height);
-        gl.Uniform2f.?(gl.GetUniformLocation.?(gl_init.color_fg_shader, "gridOffset"), offset_x, offset_y);
-        gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.color_fg_shader, "windowHeight"), window_height);
-        gl_init.setProjectionForProgram(gl_init.color_fg_shader, window_height);
-
-        gl.ActiveTexture.?(c.GL_TEXTURE0);
-        gl.BindTexture.?(c.GL_TEXTURE_2D, font.g_color_atlas_texture);
-        gl.Uniform1i.?(gl.GetUniformLocation.?(gl_init.color_fg_shader, "atlas"), 0);
-
-        gl.BindVertexArray.?(gl_init.color_fg_vao);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.color_fg_instance_vbo);
-        gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @intCast(@sizeOf(Renderer.CellFg) * rend.color_fg_cell_count), rend.color_fg_cells.items.ptr);
-        gl.DrawArraysInstanced.?(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.color_fg_cell_count));
+        const p = cell_pipeline.color_fg;
+        p.use();
+        p.setVec2("cellSize", font.cell_width, font.cell_height);
+        p.setVec2("gridOffset", offset_x, offset_y);
+        p.setFloat("windowHeight", window_height);
+        p.setProjection();
+        gpu.Texture.fromHandle(font.g_color_atlas_texture).bind(0);
+        p.setInt("atlas", 0);
+        p.bindVao();
+        cell_pipeline.color_fg_instances.upload(std.mem.sliceAsBytes(rend.color_fg_cells.items[0..rend.color_fg_cell_count]));
+        p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.color_fg_cell_count));
         gl_init.g_draw_call_count += 1;
-
-        // Restore normal blend mode for subsequent draws (cursor, titlebar, etc.)
+        // Restore standard blend for the cursor/titlebar draws that follow.
         gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     }
 

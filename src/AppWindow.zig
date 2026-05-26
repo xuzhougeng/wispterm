@@ -38,6 +38,7 @@ pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
+pub const cell_pipeline = @import("renderer/cell_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
@@ -3257,7 +3258,7 @@ fn runMainLoop(self: *AppWindow) !void {
         return error.ShaderInitFailed;
     }
     gpu.gl_init.initBuffers();
-    gpu.gl_init.initInstancedBuffers();
+    cell_pipeline.init();
     font.preloadCharacters(face);
 
     rebuildTitlebarFont(allocator, requested_font, requested_weight, uiFontSize(font_size), ft_lib);
@@ -3321,7 +3322,7 @@ fn runMainLoop(self: *AppWindow) !void {
     defer {
         background_image.deinit();
         post_process.deinit();
-        gpu.gl_init.deinitInstancedResources();
+        cell_pipeline.deinit();
     }
 
     // Ghostty approach: calculate grid size from ACTUAL window size.
