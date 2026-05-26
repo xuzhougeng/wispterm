@@ -30,3 +30,5 @@ pub const Texture = impl.Texture;
 pub const Buffer = impl.Buffer;
 pub const Pipeline = impl.Pipeline;
 pub const Framebuffer = impl.Framebuffer;
+pub const state = impl.render_state;
+pub const vertex = impl.vertex;
