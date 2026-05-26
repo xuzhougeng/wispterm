@@ -4,6 +4,7 @@ pub const ResultGroup = enum {
     command_title,
     command_secondary,
     ssh_profile,
+    ai_profile,
     theme,
 };
 
@@ -12,7 +13,8 @@ pub fn resultGroupRank(group: ResultGroup) u8 {
         .command_title => 0,
         .command_secondary => 1,
         .ssh_profile => 2,
-        .theme => 3,
+        .ai_profile => 3,
+        .theme => 4,
     };
 }
 
@@ -46,6 +48,24 @@ pub fn sshProfileNameMatchesFilter(name: []const u8, filter: []const u8) bool {
     return shouldSearchSshProfiles(filter) and containsIgnoreCase(name, filter);
 }
 
+/// True when a non-empty filter should surface an AI profile launch row.
+/// Any filter that is a substring of "ai" (i.e. "a", "i", or "ai") lists
+/// every profile; otherwise the filter must match part of the name.
+pub fn aiProfileLabelMatchesFilter(name: []const u8, filter: []const u8) bool {
+    if (filter.len == 0) return false;
+    return containsIgnoreCase(name, filter) or containsIgnoreCase("ai", filter);
+}
+
+/// Index of the profile whose name equals `default_name`. Returns 0 when
+/// `default_name` is empty or unmatched (caller guards the empty-list case).
+pub fn resolveDefaultIndex(names: []const []const u8, default_name: []const u8) usize {
+    if (default_name.len == 0) return 0;
+    for (names, 0..) |name, i| {
+        if (std.mem.eql(u8, name, default_name)) return i;
+    }
+    return 0;
+}
+
 test "command palette model matches SSH profile names case-insensitively" {
     try std.testing.expect(sshProfileNameMatchesFilter("LabServer", "labserver"));
 }
@@ -64,4 +84,27 @@ test "command palette model orders SSH results after commands and before themes"
     try std.testing.expect(resultGroupRank(.command_title) < resultGroupRank(.command_secondary));
     try std.testing.expect(resultGroupRank(.command_secondary) < resultGroupRank(.ssh_profile));
     try std.testing.expect(resultGroupRank(.ssh_profile) < resultGroupRank(.theme));
+}
+
+test "ai profile label matches the ai token and the name" {
+    try std.testing.expect(aiProfileLabelMatchesFilter("DeepSeek", "ai"));
+    try std.testing.expect(aiProfileLabelMatchesFilter("DeepSeek", "deep"));
+    try std.testing.expect(aiProfileLabelMatchesFilter("DeepSeek", "SEEK"));
+}
+
+test "ai profile label does not match unrelated filter and hides on empty" {
+    try std.testing.expect(!aiProfileLabelMatchesFilter("DeepSeek", "gpt"));
+    try std.testing.expect(!aiProfileLabelMatchesFilter("DeepSeek", ""));
+}
+
+test "resolve default index matches by name with fallback to first" {
+    const names = [_][]const u8{ "DeepSeek", "GPT-4o", "Local" };
+    try std.testing.expectEqual(@as(usize, 1), resolveDefaultIndex(&names, "GPT-4o"));
+    try std.testing.expectEqual(@as(usize, 0), resolveDefaultIndex(&names, ""));
+    try std.testing.expectEqual(@as(usize, 0), resolveDefaultIndex(&names, "missing"));
+}
+
+test "command palette model orders AI profiles between SSH and themes" {
+    try std.testing.expect(resultGroupRank(.ssh_profile) < resultGroupRank(.ai_profile));
+    try std.testing.expect(resultGroupRank(.ai_profile) < resultGroupRank(.theme));
 }
