@@ -2527,7 +2527,8 @@ fn saveAiFormProfile() ?usize {
     if (base_url.len == 0 or model.len == 0) return null;
     if (!isHttpUrlish(base_url)) return null;
 
-    const idx = if (g_ai_edit_index != AI_PROFILE_NONE)
+    const editing_existing = g_ai_edit_index != AI_PROFILE_NONE;
+    const idx = if (editing_existing)
         g_ai_edit_index
     else blk: {
         if (g_ai_profile_count >= AI_PROFILE_MAX) return null;
@@ -2535,6 +2536,17 @@ fn saveAiFormProfile() ?usize {
         g_ai_profile_count += 1;
         break :blk next;
     };
+
+    // Capture the pre-edit name so a rename of the current default profile
+    // can keep `ai-default-profile` pointing at it instead of falling back
+    // to the first profile.
+    var old_name_buf: [256]u8 = undefined;
+    var old_name_len: usize = 0;
+    if (editing_existing) {
+        const old_name = aiProfileField(&g_ai_profiles[idx], .name);
+        old_name_len = @min(old_name.len, old_name_buf.len);
+        @memcpy(old_name_buf[0..old_name_len], old_name[0..old_name_len]);
+    }
 
     for (0..AI_FIELD_COUNT) |i| {
         g_ai_profiles[idx].lens[i] = g_ai_lens[i];
@@ -2544,6 +2556,15 @@ fn saveAiFormProfile() ?usize {
         const len = @min(model.len, AI_FIELD_MAX);
         @memcpy(g_ai_profiles[idx].fields[@intFromEnum(AiField.name)][0..len], model[0..len]);
         g_ai_profiles[idx].lens[@intFromEnum(AiField.name)] = len;
+    }
+
+    if (editing_existing and old_name_len > 0) {
+        const old_name = old_name_buf[0..old_name_len];
+        const new_name = aiProfileField(&g_ai_profiles[idx], .name);
+        if (!std.mem.eql(u8, old_name, new_name) and std.mem.eql(u8, old_name, aiDefaultProfileName())) {
+            Config.setConfigValue(allocator, "ai-default-profile", new_name) catch {};
+            invalidateAiDefaultName();
+        }
     }
 
     saveAiProfiles(allocator);
@@ -3122,7 +3143,7 @@ fn aiProfileModeLabel(profile: *const AiProfile) []const u8 {
 
 fn defaultAiModeLabel() []const u8 {
     loadAiProfiles();
-    if (g_ai_profile_count > 0) return aiProfileModeLabel(&g_ai_profiles[0]);
+    if (g_ai_profile_count > 0) return aiProfileModeLabel(&g_ai_profiles[defaultAiProfileIndex()]);
     return aiModeText(AppWindow.ai_chat.DEFAULT_AGENT);
 }
 
