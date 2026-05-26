@@ -24,6 +24,7 @@ const font = AppWindow.font;
 const gl_init = AppWindow.gpu.gl_init;
 const titlebar = AppWindow.titlebar;
 const ui_pipeline = @import("ui_pipeline.zig");
+const ai_chat_layout = @import("../ai_chat_layout.zig");
 
 
 pub const LINE_PAD_X: f32 = 18;
@@ -1003,51 +1004,27 @@ fn sectionVisible(top_px: f32, h: f32, viewport_top: f32, viewport_bottom_top_px
 }
 
 fn bubbleGeometry(role: ai_chat.Role, x: f32, w: f32) BubbleGeometry {
-    const is_user = role == .user;
-    const bubble_w = @min(w, if (is_user) w * 0.82 else w);
-    return .{
-        .x = if (is_user) x + w - bubble_w else x,
-        .w = bubble_w,
-    };
+    return ai_chat_layout.bubbleGeometry(role == .user, x, w);
 }
 
-const BubbleGeometry = struct {
-    x: f32,
-    w: f32,
-};
+const BubbleGeometry = ai_chat_layout.BubbleGeometry;
 
-const Rect = struct {
-    x: f32,
-    top_px: f32,
-    w: f32,
-    h: f32,
-};
+const Rect = ai_chat_layout.Rect;
 
 const CopyButtonRect = Rect;
 
 const HeaderButtonRect = Rect;
 
 fn pointInRect(px: f32, py: f32, rect: Rect) bool {
-    return px >= rect.x and px <= rect.x + rect.w and py >= rect.top_px and py <= rect.top_px + rect.h;
+    return ai_chat_layout.pointInRect(px, py, rect);
 }
 
 fn detailHeaderRect(x: f32, top_px: f32, w: f32) Rect {
-    return .{
-        .x = x,
-        .top_px = top_px,
-        .w = w,
-        .h = detailHeaderHeight(),
-    };
+    return ai_chat_layout.detailHeaderRect(x, top_px, w, detailHeaderHeight());
 }
 
 fn detailCopyButtonRect(x: f32, top_px: f32, w: f32) CopyButtonRect {
-    const header_h = detailHeaderHeight();
-    return .{
-        .x = x + w - DETAIL_PAD_X - COPY_BUTTON_SIZE,
-        .top_px = top_px + @round((header_h - COPY_BUTTON_SIZE) / 2),
-        .w = COPY_BUTTON_SIZE,
-        .h = COPY_BUTTON_SIZE,
-    };
+    return ai_chat_layout.detailCopyButtonRect(x, top_px, w, detailHeaderHeight(), DETAIL_PAD_X, COPY_BUTTON_SIZE);
 }
 
 fn copyButtonRect(role: ai_chat.Role, x: f32, top_px: f32, w: f32) CopyButtonRect {
@@ -1056,25 +1033,15 @@ fn copyButtonRect(role: ai_chat.Role, x: f32, top_px: f32, w: f32) CopyButtonRec
 }
 
 fn copyButtonRectForBubble(bubble_x: f32, top_px: f32, bubble_w: f32) CopyButtonRect {
-    return .{
-        .x = bubble_x + bubble_w - BUBBLE_PAD_X - COPY_BUTTON_SIZE,
-        .top_px = top_px + COPY_BUTTON_PAD,
-        .w = COPY_BUTTON_SIZE,
-        .h = COPY_BUTTON_SIZE,
-    };
+    return ai_chat_layout.copyButtonRectForBubble(bubble_x, top_px, bubble_w, BUBBLE_PAD_X, COPY_BUTTON_SIZE, COPY_BUTTON_PAD);
 }
 
 fn permissionChipX(x: f32, w: f32) f32 {
-    return x + w - LINE_PAD_X - STATUS_SLOT_W - 12 - PERMISSION_CHIP_W;
+    return ai_chat_layout.permissionChipX(x, w, LINE_PAD_X, STATUS_SLOT_W, 12, PERMISSION_CHIP_W);
 }
 
 fn stopButtonRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
-    return .{
-        .x = x + w - LINE_PAD_X - STOP_BUTTON_W,
-        .top_px = titlebar_offset + @round((HEADER_H - STOP_BUTTON_H) / 2),
-        .w = STOP_BUTTON_W,
-        .h = STOP_BUTTON_H,
-    };
+    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, STOP_BUTTON_W, STOP_BUTTON_H, HEADER_H);
 }
 
 fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) void {
