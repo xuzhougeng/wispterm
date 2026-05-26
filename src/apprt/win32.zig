@@ -1412,9 +1412,19 @@ fn pushImeResultString(w: *Window) void {
     w.clearImePreedit();
 }
 
-fn getResizeBorderThickness() i32 {
+const GetSystemMetricsForDpiFn = *const fn (INT, UINT) callconv(.winapi) INT;
+
+fn systemMetricForDpi(metric: INT, dpi: u32) INT {
+    const user32 = GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("user32.dll")) orelse return GetSystemMetrics(metric);
+    const proc = GetProcAddress(user32, "GetSystemMetricsForDpi") orelse return GetSystemMetrics(metric);
+    const get_for_dpi: GetSystemMetricsForDpiFn = @ptrCast(proc);
+    const effective_dpi: UINT = if (dpi == 0) GetDpiForSystem() else dpi;
+    return get_for_dpi(metric, effective_dpi);
+}
+
+fn getResizeBorderThickness(dpi: u32) i32 {
     // SM_CXSIZEFRAME + SM_CXPADDEDBORDER gives the total resize border width
-    return GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+    return systemMetricForDpi(SM_CXSIZEFRAME, dpi) + systemMetricForDpi(SM_CXPADDEDBORDER, dpi);
 }
 
 /// Get the caption button width (min/max/close area).
@@ -1453,7 +1463,7 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             if (g_win32_window) |w| {
                 if (IsZoomed(hwnd) != 0 and !w.is_fullscreen) {
                     const params: *NCCALCSIZE_PARAMS = @ptrFromInt(@as(usize, @bitCast(lParam)));
-                    const border = getResizeBorderThickness();
+                    const border = getResizeBorderThickness(w.dpi);
                     const before = params.rgrc[0];
                     params.rgrc[0].top += border;
                     params.rgrc[0].left += border;
@@ -1538,6 +1548,13 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             // Render a frame immediately so newly exposed pixels show
             // the terminal background instead of black. This runs inside
             // the Win32 modal resize loop where our main loop is blocked.
+            if (w.dpi_changed) {
+                render_diagnostics.log(
+                    "WM_SIZE defer-sync-render pending-dpi client={}x{} dpi={}",
+                    .{ width, height, w.dpi },
+                );
+                return 0;
+            }
             if (w.on_resize) |cb| cb(width, height);
             return 0;
         },
@@ -1652,7 +1669,7 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
             var client_rect: RECT = undefined;
             _ = GetClientRect(hwnd, &client_rect);
 
-            const border = getResizeBorderThickness();
+            const border = getResizeBorderThickness(w.dpi);
             const titlebar_h = w.titlebar_height;
 
             // Resize borders (top, left, right, bottom, corners)

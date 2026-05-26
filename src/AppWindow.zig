@@ -2870,7 +2870,8 @@ fn handleWindowDpiChanged(
         return;
     }
 
-    std.debug.print("DPI changed: {} -> {}\n", .{ font.g_dpi, new_dpi });
+    const old_font_dpi = font.g_dpi;
+    std.debug.print("DPI changed: {} -> {}\n", .{ old_font_dpi, new_dpi });
     font.g_dpi = new_dpi;
     if (reloadFontFaces(allocator, family, weight, font.g_font_size, ft_lib)) {
         const size = window_backend.clientSize(win);
@@ -2881,8 +2882,14 @@ fn handleWindowDpiChanged(
         );
         onPlatformResize(size.width, size.height);
     } else {
-        render_diagnostics.log("dpi-change font-reload-failed new_dpi={} kept_cell={d:.2}x{d:.2}", .{ new_dpi, font.cell_width, font.cell_height });
+        font.g_dpi = old_font_dpi;
+        const size = window_backend.clientSize(win);
+        render_diagnostics.log(
+            "dpi-change font-reload-failed new_dpi={} restored_font_dpi={} kept_cell={d:.2}x{d:.2}",
+            .{ new_dpi, old_font_dpi, font.cell_width, font.cell_height },
+        );
         std.debug.print("DPI font reload failed, keeping previous font\n", .{});
+        onPlatformResize(size.width, size.height);
     }
 }
 
