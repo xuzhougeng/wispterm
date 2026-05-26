@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const process_shared = @import("process_shared.zig");
 
 pub const CommandLineBuffer = [256]u8;
 pub const CwdBuffer = [260]u8;
@@ -73,14 +75,31 @@ pub const Command = struct {
         unknown,
     };
 
+    /// Child PID populated by the POSIX `Pty.startCommand`. `-1` means "no
+    /// child" (not yet spawned, or already reaped).
+    pid: std.c.pid_t = -1,
+
     pub fn wait(self: *const Command, block: bool) !?Exit {
-        _ = self;
-        _ = block;
-        return null;
+        if (self.pid <= 0) return null;
+        // POSIX-only: guarded so this file still compiles under a Windows
+        // target build (it is selected only for non-windows hosts).
+        if (builtin.os.tag == .windows) return null;
+
+        const options: u32 = if (block) 0 else process_shared.WNOHANG;
+        switch (process_shared.reapChild(self.pid, options)) {
+            .still_running => return null,
+            .no_child => return null,
+            .reaped => |code| return Exit{ .exited = code },
+            .reaped_unknown => return .unknown,
+        }
     }
 
     pub fn deinit(self: *Command) void {
-        _ = self;
+        // Best-effort non-blocking reap so we don't leak a zombie.
+        if (self.pid > 0 and builtin.os.tag != .windows) {
+            _ = process_shared.reapChild(self.pid, process_shared.WNOHANG);
+            self.pid = -1;
+        }
     }
 };
 
