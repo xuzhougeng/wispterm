@@ -7,10 +7,8 @@ pub const c = c_mod.c;                       // glad constants/types
 pub const Context = @import("Context.zig");  // context lifecycle + GL table
 pub const GlTable = c_mod.c.GladGLContext;   // the table type
 
-/// The `gl_init` helpers currently live at src/renderer/gl_init.zig; they are
-/// physically relocated under this directory in a later task. Re-exporting here
-/// keeps consumers (gpu.gl_init.*) stable across that move.
-pub const gl_init = @import("../../gl_init.zig");
+/// gl_init helpers live in the same directory as api.zig.
+pub const gl_init = @import("gl_init.zig");
 
 // Reserved Ghostty-shaped primitive slots. Declared now so gpu.zig's public
 // surface is stable; bodies are filled when the renderers are rewritten.

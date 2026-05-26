@@ -4,8 +4,8 @@
 //! buffers, and shared drawing helpers (renderQuad, setProjection).
 
 const std = @import("std");
-const AppWindow = @import("../AppWindow.zig");
-const Renderer = @import("Renderer.zig");
+const AppWindow = @import("../../../AppWindow.zig");
+const Renderer = @import("../../Renderer.zig");
 
 const c = @cImport({
     @cInclude("glad/gl.h");
