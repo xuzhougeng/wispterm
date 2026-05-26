@@ -1,18 +1,15 @@
 //! File explorer sidebar renderer.
 //!
 //! Renders the left-side file explorer panel using the same OpenGL primitives
-//! as the left tab sidebar (titlebar.zig). Uses gl_init.renderQuad for backgrounds
+//! as the left tab sidebar (titlebar.zig). Uses ui_pipeline.fillQuad for backgrounds
 //! and titlebar.renderTextLimited / renderTitlebarChar for text.
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const titlebar = AppWindow.titlebar;
+const ui_pipeline = @import("ui_pipeline.zig");
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
 const file_explorer = @import("../file_explorer.zig");
-const c = @cImport({
-    @cInclude("glad/gl.h");
-});
 
 fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const clamped = @max(0.0, @min(1.0, t));
@@ -44,11 +41,6 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
     const row_h = file_explorer.rowHeight();
     const explorer_w = file_explorer.width();
     if (explorer_w <= 0) return;
-
-    const gl = AppWindow.gpu.glTable();
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.ActiveTexture.?(c.GL_TEXTURE0);
-    gl.BindVertexArray.?(gl_init.vao);
 
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
@@ -82,7 +74,7 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
     const panel_right = panel_x + explorer_w;
 
     // Background
-    gl_init.renderQuad(panel_x, 0, explorer_w, side_h, sidebar_bg);
+    ui_pipeline.fillQuad(panel_x, 0, explorer_w, side_h, sidebar_bg);
 
     // Right border (resize edge between explorer and terminal content)
     const resize_hovered = blk: {
@@ -94,7 +86,7 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
         break :blk mx >= panel_right - half_hit and mx <= panel_right + half_hit and my >= titlebar_h and my < window_height;
     };
     const edge_color = if (resize_hovered) blend(bg, accent, 0.38) else border_color;
-    gl_init.renderQuad(panel_right - 1, 0, if (resize_hovered) 2 else 1, side_h, edge_color);
+    ui_pipeline.fillQuad(panel_right - 1, 0, if (resize_hovered) 2 else 1, side_h, edge_color);
 
     switch (file_explorer.g_panel_mode) {
         .files => renderFiles(window_height, titlebar_h, header_h, row_h, panel_x, explorer_w, palette),
@@ -132,7 +124,7 @@ fn renderFiles(
     const header_text_y = header_y + (header_h - font.g_titlebar_cell_height) / 2;
     const label_end = titlebar.renderTextLimited(mode_label, panel_x + 12, header_text_y, mode_color, explorer_w - 24);
     _ = titlebar.renderTextLimited(" Explorer", label_end, header_text_y, header_text, explorer_w - (label_end - panel_x) - 12);
-    gl_init.renderQuad(panel_x, header_y, explorer_w, 1, border_color);
+    ui_pipeline.fillQuad(panel_x, header_y, explorer_w, 1, border_color);
 
     // File entries
     const list_top_px = titlebar_h + header_h;
@@ -163,9 +155,9 @@ fn renderFiles(
         const is_selected = if (file_explorer.g_selected) |sel| sel == i else false;
 
         if (is_selected) {
-            gl_init.renderQuad(panel_x, row_y, explorer_w, row_h, selected_bg);
+            ui_pipeline.fillQuad(panel_x, row_y, explorer_w, row_h, selected_bg);
         } else if (row_hovered) {
-            gl_init.renderQuad(panel_x, row_y, explorer_w, row_h, hover_bg);
+            ui_pipeline.fillQuad(panel_x, row_y, explorer_w, row_h, hover_bg);
         }
 
         // Expand/collapse indicator for directories
@@ -216,7 +208,7 @@ fn renderFiles(
         const new_row_top = list_top_px + @as(f32, @floatFromInt(file_explorer.g_entry_count)) * row_h - scroll;
         if (new_row_top >= 0 and new_row_top < visible_height) {
             const new_row_y = window_height - new_row_top - row_h;
-            gl_init.renderQuad(panel_x, new_row_y, explorer_w, row_h, selected_bg);
+            ui_pipeline.fillQuad(panel_x, new_row_y, explorer_w, row_h, selected_bg);
             const label = if (file_explorer.g_op_mode == .new_dir) "New folder: " else "New file: ";
             const input_y = new_row_y + (row_h - font.g_titlebar_cell_height) / 2;
             const op_label_end = titlebar.renderTextLimited(label, panel_x + 8, input_y, header_text, explorer_w - 16);
@@ -227,7 +219,7 @@ fn renderFiles(
         if (del_row_top >= 0 and del_row_top < visible_height) {
             const del_row_y = window_height - del_row_top - row_h;
             const warn_bg = blend(bg, .{ 0.8, 0.2, 0.2 }, 0.2);
-            gl_init.renderQuad(panel_x, del_row_y, explorer_w, row_h, warn_bg);
+            ui_pipeline.fillQuad(panel_x, del_row_y, explorer_w, row_h, warn_bg);
             _ = titlebar.renderTextLimited("Delete? Enter=yes Esc=no", panel_x + 8, del_row_y + (row_h - font.g_titlebar_cell_height) / 2, fg, explorer_w - 16);
         }
     }
@@ -237,7 +229,7 @@ fn renderFiles(
     if (file_explorer.g_loading) {
         const status_h: f32 = @max(24, font.g_titlebar_cell_height + 8);
         const status_y: f32 = 0;
-        gl_init.renderQuad(panel_x, status_y, explorer_w, status_h, blend(bg, accent, 0.15));
+        ui_pipeline.fillQuad(panel_x, status_y, explorer_w, status_h, blend(bg, accent, 0.15));
         const ty = status_y + (status_h - font.g_titlebar_cell_height) / 2;
         const prefix_end = titlebar.renderTextLimited("Loading: ", panel_x + 8, ty, accent, explorer_w - 16);
         _ = titlebar.renderTextLimited(file_explorer.g_loading_msg[0..file_explorer.g_loading_msg_len], prefix_end, ty, fg, explorer_w - (prefix_end - panel_x) - 8);
@@ -257,7 +249,7 @@ fn renderAgentHistory(
     const header_text_y = header_y + (header_h - font.g_titlebar_cell_height) / 2;
     const agent_end = titlebar.renderTextLimited("AGENT", panel_x + 12, header_text_y, palette.accent, explorer_w - 24);
     _ = titlebar.renderTextLimited(" History", agent_end, header_text_y, palette.header_text, explorer_w - (agent_end - panel_x) - 12);
-    gl_init.renderQuad(panel_x, header_y, explorer_w, 1, palette.border_color);
+    ui_pipeline.fillQuad(panel_x, header_y, explorer_w, 1, palette.border_color);
 
     const list_top_px = titlebar_h + header_h;
     const visible_height = window_height - list_top_px;
@@ -285,9 +277,9 @@ fn renderAgentHistory(
 
         const is_selected = if (file_explorer.g_history_selected) |selected| selected == i else false;
         if (is_selected) {
-            gl_init.renderQuad(panel_x, row_y, explorer_w, row_h, palette.selected_bg);
+            ui_pipeline.fillQuad(panel_x, row_y, explorer_w, row_h, palette.selected_bg);
         } else if (row_hovered) {
-            gl_init.renderQuad(panel_x, row_y, explorer_w, row_h, palette.hover_bg);
+            ui_pipeline.fillQuad(panel_x, row_y, explorer_w, row_h, palette.hover_bg);
         }
 
         const title = historyRowTitle(i, row);
@@ -331,6 +323,6 @@ fn renderInputField(x: f32, y: f32, max_w: f32, text_color: [3]f32, cursor_color
     const now = std.time.milliTimestamp();
     if (@mod(@divTrunc(now, 530), 2) == 0) {
         const font_mod = @import("../font/manager.zig");
-        gl_init.renderQuad(text_end + 1, y, 1, font_mod.g_titlebar_cell_height, cursor_color);
+        ui_pipeline.fillQuad(text_end + 1, y, 1, font_mod.g_titlebar_cell_height, cursor_color);
     }
 }
