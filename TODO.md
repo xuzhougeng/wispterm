@@ -168,13 +168,23 @@ mapping in guide §2 and §5.
       orchestration, and input routing (GL binding removed in A2).
 - [ ] **B4** Unit tests for the extracted pure logic (`zig test`).
 
-### Phase C — POSIX PTY/process backend (actionable now; unit-testable on Linux)
+### Phase C — POSIX PTY/process backend (Linux done; macOS/BSD deferred to Phase D)
 
-- [ ] **C1** `src/platform/pty_posix.zig`: `openpty`/`fork`/`exec` +
-      `ioctl(TIOCSWINSZ)` satisfying the `pty.zig` facade. *Ghostty:
-      `src/pty.zig` (POSIX).*
-- [ ] **C2** Complete `src/platform/process_posix.zig` to drive the PTY.
-- [ ] **C3** Linux unit tests for spawn/resize/teardown.
+- [x] **C1** `src/platform/pty_posix.zig` satisfies the `pty.zig` facade:
+      `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` for the master + slave path,
+      `fork`+`setsid`/`TIOCSCTTY`/`dup2`/`chdir`/`execvp` in the child (pid stored
+      in the `Command`), `ioctl(TIOCSWINSZ)` for size, poll-based `readOutput`
+      with a self-pipe so `cancelOutputRead` breaks the blocking read, `FIONREAD`
+      for `outputAvailable`, EIO→`BrokenPipe`. `pty.zig` gains a `.posix` backend
+      (Linux only — macOS/BSD use different ioctl request codes, deferred).
+- [x] **C2** `process_posix.zig` `waitForPid`/`childExited` implemented via a
+      shared `reapChild` (raw `wait4` syscall on Linux so the no-libc fast-test
+      graph links; `std.c.waitpid` elsewhere); `pty_command` POSIX `Command` got
+      a `pid` + waitpid-based `wait`/`deinit` (zombie reaping).
+- [x] **C3** Native Linux tests in `pty_posix.zig` (real `fork`/`exec`/`poll`/
+      `waitpid`): backend selection, open+resize, spawn+read, child-exit→
+      `BrokenPipe`/0 + `wait` exit code, `outputAvailable` count, cancel breaks a
+      blocking read. Run via `zig test src/platform/pty_posix.zig -lc`.
 
 ### Phase D — Native host implementations (deferred; needs macOS/Linux SDK)
 
