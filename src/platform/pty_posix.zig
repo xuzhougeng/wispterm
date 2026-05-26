@@ -1,8 +1,10 @@
-//! POSIX PTY backend (Linux only for now).
+//! POSIX PTY backend (Linux + macOS).
 //!
-//! The ioctl request numbers come from `std.os.linux.T`, so macOS and the BSDs
-//! (which use different request codes) are routed to `.unsupported` by
-//! `pty.zig`'s `backendForOs` until those constants are added in Phase D.
+//! The ioctl request numbers are OS-dispatched: Linux uses `std.os.linux.T`,
+//! macOS uses the BSD IOC-encoded constants below (verified values, but the
+//! macOS path is compile-checked, not run, on the Linux dev box). The BSDs use
+//! the same IOC scheme as macOS but their exact codes are unverified, so
+//! `pty.zig`'s `backendForOs` still routes them to `.unsupported`.
 //!
 //! Mirrors the `Pty` API of `pty_windows.zig`. Uses libc (link with `-lc`):
 //! `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` to allocate a master fd plus
@@ -16,10 +18,22 @@ const pty_command = @import("pty_command.zig");
 
 const fd_t = c.fd_t;
 
-/// ioctl request numbers (per-arch Linux values). macOS/BSD differ, hence the
-/// Linux-only `backendForOs` mapping in pty.zig.
-const T = std.os.linux.T;
+/// ioctl request numbers, OS-dispatched. Linux: `std.os.linux.T` (per-arch).
+/// macOS: BSD `_IOW('t',103,struct winsize)` etc. — fixed values. Untyped so
+/// they coerce to whatever `c.ioctl`'s request param is on each target (the
+/// macOS values exceed i32, and macOS `ioctl` takes `c_ulong`).
+const T = switch (builtin.os.tag) {
+    .macos => struct {
+        pub const IOCSWINSZ = 0x80087467; // _IOW('t', 103, struct winsize)
+        pub const IOCSCTTY = 0x20007461; // _IO('t', 97)
+        pub const FIONREAD = 0x4004667f; // _IOR('f', 127, int)
+    },
+    else => std.os.linux.T,
+};
 
+// C `ioctl` takes `unsigned long` for the request on both Linux and macOS;
+// std.c.ioctl types it as c_int, which can't hold the macOS IOC codes (> i32).
+extern "c" fn ioctl(fd: fd_t, request: c_ulong, ...) c_int;
 extern "c" fn posix_openpt(oflag: c_int) c_int;
 extern "c" fn grantpt(fd: c_int) c_int;
 extern "c" fn unlockpt(fd: c_int) c_int;
@@ -99,7 +113,7 @@ pub const Pty = struct {
 
         // Apply the initial window size to the master.
         var os_ws = osWinsize(size);
-        _ = c.ioctl(master, T.IOCSWINSZ, &os_ws);
+        _ = ioctl(master, T.IOCSWINSZ, &os_ws);
 
         return self;
     }
@@ -125,7 +139,7 @@ pub const Pty = struct {
 
     pub fn setSize(self: *Pty, s: winsize) !void {
         var os_ws = osWinsize(s);
-        if (c.ioctl(self.master, T.IOCSWINSZ, &os_ws) != 0) {
+        if (ioctl(self.master, T.IOCSWINSZ, &os_ws) != 0) {
             return error.SetSizeFailed;
         }
         self.size = s;
@@ -200,7 +214,7 @@ pub const Pty = struct {
 
     pub fn outputAvailable(self: *Pty) ?usize {
         var n: c_int = 0;
-        if (c.ioctl(self.master, T.FIONREAD, &n) != 0) return null;
+        if (ioctl(self.master, T.FIONREAD, &n) != 0) return null;
         if (n < 0) return null;
         return @intCast(n);
     }
@@ -239,7 +253,7 @@ fn childExec(
     if (slave < 0) _exit(127);
 
     // Claim the slave as the controlling terminal for this session.
-    _ = c.ioctl(slave, T.IOCSCTTY, @as(c_int, 0));
+    _ = ioctl(slave, T.IOCSCTTY, @as(c_int, 0));
 
     _ = c.dup2(slave, 0);
     _ = c.dup2(slave, 1);
@@ -301,11 +315,12 @@ fn parseArgv(
 
 const backend_facade = @import("pty.zig");
 
-test "posix backend selected for linux; macos/bsd unsupported until Phase D" {
+test "posix backend selected for linux + macos; bsd/wasi unsupported" {
     try std.testing.expectEqual(backend_facade.Backend.posix, backend_facade.backendForOs(.linux));
+    try std.testing.expectEqual(backend_facade.Backend.posix, backend_facade.backendForOs(.macos));
     try std.testing.expectEqual(backend_facade.Backend.windows, backend_facade.backendForOs(.windows));
-    // macOS/BSD ioctl request codes differ from std.os.linux.T — see backendForOs.
-    try std.testing.expectEqual(backend_facade.Backend.unsupported, backend_facade.backendForOs(.macos));
+    // BSD IOC codes are unverified; wasi has no pty.
+    try std.testing.expectEqual(backend_facade.Backend.unsupported, backend_facade.backendForOs(.freebsd));
     try std.testing.expectEqual(backend_facade.Backend.unsupported, backend_facade.backendForOs(.wasi));
 }
 
