@@ -30,6 +30,8 @@ test {
     _ = @import("selection_unit.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("preview_token.zig");
+    _ = @import("ime_caret.zig");
+    _ = @import("sync_output.zig");
     _ = @import("agent_history.zig");
     _ = @import("render_diagnostics.zig");
     _ = @import("renderer/gpu/backend.zig");
