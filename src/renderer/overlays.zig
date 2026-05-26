@@ -2505,12 +2505,17 @@ fn runAiListRow(row: usize) void {
 fn deleteAiProfile(idx: usize) void {
     if (g_ai_profile_count == 0) return;
     if (idx >= g_ai_profile_count) return;
+    const deleted_is_default = std.mem.eql(u8, aiProfileField(&g_ai_profiles[idx], .name), aiDefaultProfileName());
     var i = idx;
     while (i + 1 < g_ai_profile_count) : (i += 1) {
         g_ai_profiles[i] = g_ai_profiles[i + 1];
     }
     g_ai_profile_count -= 1;
     g_ai_list_selected = @min(g_ai_list_selected, aiListRowCount() - 1);
+    if (deleted_is_default) {
+        if (AppWindow.g_allocator) |allocator| Config.removeConfigKeys(allocator, &.{"ai-default-profile"}) catch {};
+        invalidateAiDefaultName();
+    }
     if (AppWindow.g_allocator) |allocator| saveAiProfiles(allocator);
 }
 
@@ -3126,7 +3131,12 @@ fn sshProfileTarget(profile: *const SshProfile, target_buf: []u8) []const u8 {
 
 fn renderAiProfileRow(layout: SessionLayout, window_height: f32, row: usize, profile: *const AiProfile, selected: bool) void {
     const name = aiProfileField(profile, .name);
-    const detail = aiProfileModeLabel(profile);
+    const mode = aiProfileModeLabel(profile);
+    var detail_buf: [24]u8 = undefined;
+    const detail = if (row == defaultAiProfileIndex())
+        (std.fmt.bufPrint(detail_buf[0..], "{s} · default", .{mode}) catch mode)
+    else
+        mode;
     renderSessionRow(layout, window_height, row, name, detail, selected);
 }
 
