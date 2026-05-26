@@ -80,6 +80,8 @@ pub fn backgroundFor(
         if (cursor_is_block) fg = theme.cursor_text orelse theme.background;
         if (cell_bg) |b| bg = .{ .grid_col = grid_col, .grid_row = grid_row, .r = b[0], .g = b[1], .b = b[2], .a = normal_bg_alpha };
     } else if (is_selected) {
+        // Selected cells stay fully opaque (alpha 1.0) even when normal cell
+        // backgrounds reveal a wallpaper underneath — matches Ghostty.
         bg = .{ .grid_col = grid_col, .grid_row = grid_row, .r = theme.selection_background[0], .g = theme.selection_background[1], .b = theme.selection_background[2], .a = 1.0 };
         fg = theme.selection_foreground orelse theme.foreground;
     } else if (cell_bg) |b| {
@@ -91,17 +93,17 @@ pub fn backgroundFor(
 pub const GlyphRect = struct { gx: f32, gy: f32, gw: f32, gh: f32 };
 
 /// Grayscale glyph rect math, extracted from cell_renderer.rebuildCells.
-pub fn grayscaleGlyphRect(bearing_x: i32, bearing_y: i32, size_x: u32, size_y: u32, cell_baseline: f32) GlyphRect {
+pub fn grayscaleGlyphRect(bearing_x: i32, bearing_y: i32, size_x: i32, size_y: i32, cell_baseline: f32) GlyphRect {
     return .{
         .gx = @floatFromInt(bearing_x),
-        .gy = cell_baseline - @as(f32, @floatFromInt(@as(i32, @intCast(size_y)) - bearing_y)),
+        .gy = cell_baseline - @as(f32, @floatFromInt(size_y - bearing_y)),
         .gw = @floatFromInt(size_x),
         .gh = @floatFromInt(size_y),
     };
 }
 
 /// Color-emoji aspect-fit + centering, extracted from cell_renderer.rebuildCells.
-pub fn colorEmojiRect(size_x: u32, size_y: u32, grid_width: f32, cell_w: f32, cell_h: f32) GlyphRect {
+pub fn colorEmojiRect(size_x: i32, size_y: i32, grid_width: f32, cell_w: f32, cell_h: f32) GlyphRect {
     const emoji_w: f32 = @floatFromInt(size_x);
     const emoji_h: f32 = @floatFromInt(size_y);
     const target_w = cell_w * grid_width;

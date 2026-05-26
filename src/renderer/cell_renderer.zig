@@ -333,7 +333,7 @@ pub fn rebuildCells(rend: *Renderer) void {
                         if (ch.is_color) {
                             // Color emoji — route to separate color cell buffer.
                             // Scale the emoji bitmap to fit within grid_width cells, preserving aspect ratio.
-                            const rect = cell_geometry.colorEmojiRect(@intCast(ch.size_x), @intCast(ch.size_y), grid_width, font.cell_width, font.cell_height);
+                            const rect = cell_geometry.colorEmojiRect(ch.size_x, ch.size_y, grid_width, font.cell_width, font.cell_height);
                             const gx = rect.gx;
                             const gy = rect.gy;
                             const gw = rect.gw;
@@ -360,7 +360,7 @@ pub fn rebuildCells(rend: *Renderer) void {
                         } else {
                             // Grayscale text glyph
                             const uv_val = font.glyphUV(ch.region, atlas_size);
-                            const rect = cell_geometry.grayscaleGlyphRect(ch.bearing_x, ch.bearing_y, @intCast(ch.size_x), @intCast(ch.size_y), font.cell_baseline);
+                            const rect = cell_geometry.grayscaleGlyphRect(ch.bearing_x, ch.bearing_y, ch.size_x, ch.size_y, font.cell_baseline);
                             const gx = rect.gx;
                             const gy = rect.gy;
                             const gw = rect.gw;
