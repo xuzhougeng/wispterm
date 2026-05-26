@@ -1410,11 +1410,6 @@ const AiListMode = enum {
     delete_select,
 };
 
-const AiFormMode = enum {
-    session_setup,
-    settings,
-};
-
 const SshProfile = struct {
     fields: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined,
     lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT,
@@ -1472,7 +1467,6 @@ threadlocal var g_ai_profiles_loaded: bool = false;
 threadlocal var g_ai_list_selected: usize = 0;
 threadlocal var g_ai_list_mode: AiListMode = .manage;
 threadlocal var g_ai_edit_index: usize = AI_PROFILE_NONE;
-threadlocal var g_ai_form_mode: AiFormMode = .session_setup;
 
 pub const RemoteAgentOpenResult = enum {
     opened,
@@ -1550,7 +1544,6 @@ pub fn sessionLauncherClose() void {
     commandCenterStateCommit(state);
     g_ssh_list_mode = .manage;
     g_ai_list_mode = .manage;
-    g_ai_form_mode = .session_setup;
 }
 
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
@@ -2271,7 +2264,7 @@ fn openAiList() void {
 fn openDefaultAiSession() void {
     loadAiProfiles();
     if (g_ai_profile_count == 0) {
-        openAiFormNewWithMode(.session_setup);
+        openAiFormNew();
         return;
     }
     connectAiProfile(defaultAiProfileIndex());
@@ -2280,7 +2273,7 @@ fn openDefaultAiSession() void {
 fn openDefaultAgentSessionFromCommandCenter() void {
     loadAiProfiles();
     switch (command_center_state.resolveNewAgentLaunch(g_ai_profile_count != 0)) {
-        .open_form => openAiFormNewWithMode(.session_setup),
+        .open_form => openAiFormNew(),
         .connect_default_profile_as_agent => connectAiProfileWithAgentOverride(defaultAiProfileIndex(), "true"),
     }
 }
@@ -2293,7 +2286,7 @@ pub fn hasAiProfiles() bool {
 pub fn openDefaultAgentSessionForStartup() DefaultAgentOpenResult {
     loadAiProfiles();
     if (g_ai_profile_count == 0) {
-        openAiFormNewWithMode(.session_setup);
+        openAiFormNew();
         return .form_opened;
     }
     return if (spawnAiProfileWithAgentOverride(defaultAiProfileIndex(), "true")) .opened else .failed;
@@ -2303,15 +2296,6 @@ pub fn openDefaultAgentSessionForRemote() RemoteAgentOpenResult {
     loadAiProfiles();
     if (g_ai_profile_count == 0) return .no_profile;
     return if (spawnAiProfileWithAgentOverride(defaultAiProfileIndex(), "true")) .opened else .failed;
-}
-
-fn openAiSettings() void {
-    loadAiProfiles();
-    if (g_ai_profile_count == 0) {
-        openAiFormNewWithMode(.settings);
-        return;
-    }
-    openAiFormEditWithMode(0, .settings);
 }
 
 fn openAiEditPicker() void {
@@ -2334,20 +2318,12 @@ fn openAiProfilePicker(mode: AiListMode) void {
 }
 
 fn openAiFormNew() void {
-    openAiFormNewWithMode(.session_setup);
-}
-
-fn openAiFormNewWithMode(mode: AiFormMode) void {
     clearAiForm();
     g_ai_edit_index = AI_PROFILE_NONE;
-    openAiFormWithMode(mode);
+    openAiForm();
 }
 
 fn openAiFormEdit(index: usize) void {
-    openAiFormEditWithMode(index, .session_setup);
-}
-
-fn openAiFormEditWithMode(index: usize, mode: AiFormMode) void {
     if (index >= g_ai_profile_count) return;
     clearAiForm();
     for (0..AI_FIELD_COUNT) |i| {
@@ -2355,17 +2331,16 @@ fn openAiFormEditWithMode(index: usize, mode: AiFormMode) void {
         @memcpy(g_ai_bufs[i][0..g_ai_lens[i]], g_ai_profiles[index].fields[i][0..g_ai_lens[i]]);
     }
     g_ai_edit_index = index;
-    openAiFormWithMode(mode);
+    openAiForm();
 }
 
-fn openAiFormWithMode(mode: AiFormMode) void {
+fn openAiForm() void {
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
     g_ai_list_visible = false;
     g_session_launcher_visible = false;
     g_settings_visible = false;
     g_ai_form_visible = true;
-    g_ai_form_mode = mode;
     g_ai_focus = @intFromEnum(AiField.name);
 }
 
@@ -2526,17 +2501,10 @@ fn connectAiFromForm() void {
 
 fn saveAiFormOnly() void {
     _ = saveAiFormProfile() orelse return;
-    switch (g_ai_form_mode) {
-        .settings => settingsPageOpen(),
-        .session_setup => sessionLauncherClose(),
-    }
+    sessionLauncherClose();
 }
 
 fn cancelAiFormOrLauncher() void {
-    if (g_ai_form_visible and g_ai_form_mode == .settings) {
-        settingsPageOpen();
-        return;
-    }
     sessionLauncherClose();
 }
 
@@ -2546,8 +2514,8 @@ fn runAiFormFocusAction() void {
         return;
     }
     switch (g_ai_focus - AI_FIELD_COUNT) {
-        0 => if (g_ai_form_mode == .settings) saveAiFormOnly() else connectAiFromForm(),
-        1 => if (g_ai_form_mode == .settings) connectAiFromForm() else saveAiFormOnly(),
+        0 => connectAiFromForm(),
+        1 => saveAiFormOnly(),
         else => cancelAiFormOrLauncher(),
     }
 }
@@ -2645,6 +2613,15 @@ fn defaultAiProfileIndex() usize {
         names[i] = aiProfileField(&g_ai_profiles[i], .name);
     }
     return command_palette_model.resolveDefaultIndex(names[0..g_ai_profile_count], aiDefaultProfileName());
+}
+
+/// Name of the profile after the current default, wrapping around. Empty when
+/// no profiles exist.
+fn nextDefaultAiProfileName() []const u8 {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) return "";
+    const next = (defaultAiProfileIndex() + 1) % g_ai_profile_count;
+    return aiProfileField(&g_ai_profiles[next], .name);
 }
 
 fn isHttpUrlish(value: []const u8) bool {
@@ -2816,10 +2793,7 @@ fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
 
 fn sessionLauncherTitle() []const u8 {
     if (g_ai_form_visible) {
-        return switch (g_ai_form_mode) {
-            .settings => "AI Settings",
-            .session_setup => "AI Agent",
-        };
+        return "AI Agent";
     }
     if (g_ai_list_visible) {
         return switch (g_ai_list_mode) {
@@ -2841,10 +2815,7 @@ fn sessionLauncherTitle() []const u8 {
 
 fn sessionLauncherHint() []const u8 {
     if (g_ai_form_visible) {
-        return switch (g_ai_form_mode) {
-            .settings => "Tab changes field, Enter saves",
-            .session_setup => "Configure once, then Enter opens",
-        };
+        return "Configure once, then Enter opens";
     }
     if (g_ai_list_visible) {
         return switch (g_ai_list_mode) {
@@ -2881,7 +2852,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("Stream", aiField(.stream)));
         desired = @max(desired, sessionTwoColumnWidth("Save & Open", "agent"));
         desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
-        desired = @max(desired, sessionTwoColumnWidth("Back", "Settings"));
+        desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
         return desired;
     }
 
@@ -3257,15 +3228,9 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.reasoning_effort), "Effort", aiField(.reasoning_effort), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.stream), "Stream", aiField(.stream), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.agent), "Agent", aiField(.agent), false);
-        if (g_ai_form_mode == .settings) {
-            renderSessionRow(layout, window_height, AI_FIELD_COUNT, "Save", "settings", g_ai_focus == AI_FIELD_COUNT);
-            renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, "Save & Open", "agent", g_ai_focus == AI_FIELD_COUNT + 1);
-            renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, "Back", "Settings", g_ai_focus == AI_FIELD_COUNT + 2);
-        } else {
-            renderSessionRow(layout, window_height, AI_FIELD_COUNT, "Save & Open", "agent", g_ai_focus == AI_FIELD_COUNT);
-            renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, "Save", "profile", g_ai_focus == AI_FIELD_COUNT + 1);
-            renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, "Cancel", "Esc", g_ai_focus == AI_FIELD_COUNT + 2);
-        }
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT, "Save & Open", "agent", g_ai_focus == AI_FIELD_COUNT);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, "Save", "profile", g_ai_focus == AI_FIELD_COUNT + 1);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, "Cancel", "Esc", g_ai_focus == AI_FIELD_COUNT + 2);
         return;
     }
 
@@ -3309,7 +3274,7 @@ const SettingsAction = enum {
     toggle_cursor_blink,
     toggle_focus_follows_mouse,
     cycle_shell,
-    open_ai_settings,
+    cycle_default_ai_profile,
     open_raw_config,
     close,
 };
@@ -3340,7 +3305,6 @@ pub fn settingsPageOpen() void {
     commandCenterStateCommit(state);
     g_settings_focus = SETTINGS_THEME_ROW;
     g_ai_list_mode = .manage;
-    g_ai_form_mode = .session_setup;
     g_settings_cfg_dirty = true;
 }
 
@@ -3448,7 +3412,7 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
         1 => .toggle_cursor_blink,
         2 => .toggle_focus_follows_mouse,
         3 => .cycle_shell,
-        4 => .open_ai_settings,
+        4 => .cycle_default_ai_profile,
         5 => .open_raw_config,
         6 => .close,
         else => null,
@@ -3474,7 +3438,14 @@ fn executeSettingsAction(action: SettingsAction) void {
         .toggle_cursor_blink => Config.setConfigValue(allocator, "cursor-style-blink", if (cfg.@"cursor-style-blink") "false" else "true") catch {},
         .toggle_focus_follows_mouse => Config.setConfigValue(allocator, "focus-follows-mouse", if (cfg.@"focus-follows-mouse") "false" else "true") catch {},
         .cycle_shell => Config.setConfigValue(allocator, "shell", platform_pty_command.nextConfigShell(cfg.shell)) catch {},
-        .open_ai_settings => openAiSettings(),
+        .cycle_default_ai_profile => {
+            loadAiProfiles();
+            if (g_ai_profile_count > 0) {
+                const next_name = nextDefaultAiProfileName();
+                Config.setConfigValue(allocator, "ai-default-profile", next_name) catch {};
+                invalidateAiDefaultName();
+            }
+        },
         .open_raw_config => Config.openConfigInEditor(allocator),
         .close => settingsPageClose(),
     }
@@ -3496,7 +3467,7 @@ fn runSettingsFocusPrimary() void {
         SETTINGS_CONTROL_ROW_START + 1 => executeSettingsAction(.toggle_cursor_blink),
         SETTINGS_CONTROL_ROW_START + 2 => executeSettingsAction(.toggle_focus_follows_mouse),
         SETTINGS_CONTROL_ROW_START + 3 => executeSettingsAction(.cycle_shell),
-        SETTINGS_CONTROL_ROW_START + 4 => executeSettingsAction(.open_ai_settings),
+        SETTINGS_CONTROL_ROW_START + 4 => executeSettingsAction(.cycle_default_ai_profile),
         SETTINGS_CONTROL_ROW_START + 5 => executeSettingsAction(.open_raw_config),
         SETTINGS_CONTROL_ROW_START + 6 => executeSettingsAction(.close),
         else => {},
@@ -3695,9 +3666,15 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, "Focus follows mouse", boolText(cfg.@"focus-follows-mouse"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, "Shell for new tabs", cfg.shell, platform_pty_command.shellSettingChoicesHint(), true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
     loadAiProfiles();
-    const ai_profile_value = if (g_ai_profile_count > 0) aiProfileField(&g_ai_profiles[0], .name) else "configure";
-    const ai_profile_hint = if (g_ai_profile_count > 0) aiProfileModeLabel(&g_ai_profiles[0]) else "Required before first AI session";
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, "AI agent profile", ai_profile_value, ai_profile_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
+    const ai_default_value = if (g_ai_profile_count > 0)
+        aiProfileField(&g_ai_profiles[defaultAiProfileIndex()], .name)
+    else
+        "(none)";
+    const ai_default_hint = if (g_ai_profile_count > 0)
+        aiProfileModeLabel(&g_ai_profiles[defaultAiProfileIndex()])
+    else
+        "Add profiles via Command Center";
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, "Default AI", ai_default_value, ai_default_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, "Raw config file", "open", "Advanced editor", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, "Close settings", "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
 }
