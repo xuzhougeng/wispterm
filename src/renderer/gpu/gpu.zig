@@ -17,6 +17,7 @@ const impl = switch (active) {
 pub const Context = impl.Context; // context lifecycle (owns the GL table)
 pub const c = impl.c; // GL constants/types (transition: removed from app code by A6)
 pub const gl_init = impl.gl_init; // GL helpers + buffers (GLSL in shaders.zig)
+pub const shaders = impl.shaders; // backend GLSL sources (for cell pipelines)
 
 /// Pointer to the active backend's GL function table. Transition handle used by
 /// renderer files until they route through the primitives (A3); removed in A6.
