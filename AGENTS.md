@@ -34,6 +34,8 @@ Exception: work under `remote/` is Phantty's own web remote console and relay im
 
 Develop on Windows in PowerShell with direct `zig` commands (do not assume non-PowerShell tooling). Use `zig build` for development; only use `zig build -Doptimize=ReleaseFast` for final/shipping builds. `build.zig` defaults to `x86_64-windows-gnu`. Full build commands, the required Zig toolchain version, and artifact checks live in [docs/development.md](docs/development.md#building).
 
+Tests have two steps. `zig build test` is the fast inner loop: it builds and runs only platform-independent logic modules (`src/test_fast.zig`) against the native host — sub-second when cached, and it does **not** recompile the heavy `test_main` binary (the full app plus `ghostty-vt`/`xev`). `zig build test-full` runs the complete suite (shared compile checks + the app test binary) and is the pre-merge gate; run it before finishing a change. A single pure module can be run directly with `zig test src/<module>.zig`. When you add a unit-tested, platform-independent module, list it in `src/test_fast.zig`; keep target-coupled tests (which assert Windows behavior) out of the fast suite or guard them with `if (builtin.os.tag != .windows) return error.SkipZigTest;`.
+
 ## Windows UI Automation
 
 When debugging UI behavior, automate Phantty as a real visible Windows app from PowerShell using Win32-driven automation rather than shell-only assumptions. The checked-in scripts and conventions are in [docs/development.md](docs/development.md#windows-ui-automation).
