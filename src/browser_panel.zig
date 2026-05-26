@@ -2,10 +2,8 @@
 
 const std = @import("std");
 const Surface = @import("Surface.zig");
-const browser_url = @import("browser_url.zig");
-const platform_process = @import("platform/process.zig");
-const platform_pty_command = @import("platform/pty_command.zig");
 const platform_webview = @import("platform/webview.zig");
+const ssh_tunnel = @import("ssh_tunnel.zig");
 const window_backend = @import("platform/window_backend.zig");
 const ui_perf = @import("ui_perf.zig");
 const tab = @import("appwindow/tab.zig");
@@ -20,11 +18,6 @@ pub const URL_BAR_MARGIN: f32 = 8;
 pub const DEFAULT_URL = "http://localhost:3000";
 
 const MAX_URL_BYTES = 2048;
-const MAX_SSH_DEST_BYTES = 280;
-const MAX_TUNNEL_SPEC_BYTES = 96;
-const MAX_LOCAL_HOST_BYTES = 32;
-const TUNNEL_READY_TIMEOUT_MS = 8000;
-const TUNNEL_READY_POLL_NS = 50 * std.time.ns_per_ms;
 
 pub const Bounds = struct {
     left: i32,
@@ -70,68 +63,8 @@ threadlocal var g_url_bar_focused: bool = false;
 threadlocal var g_url_edit_buf: [MAX_URL_BYTES]u8 = undefined;
 threadlocal var g_url_edit_len: usize = 0;
 threadlocal var g_url_edit_select_all: bool = false;
-threadlocal var g_tunnel: ?SshTunnel = null;
 threadlocal var g_availability_checked: bool = false;
 threadlocal var g_embedded_browser_available: bool = false;
-
-const SshTunnel = struct {
-    child: std.process.Child,
-    local_port: u16,
-    remote_port: u16,
-    local_host_buf: [MAX_LOCAL_HOST_BYTES]u8 = undefined,
-    local_host_len: usize = 0,
-    remote_host_buf: [MAX_LOCAL_HOST_BYTES]u8 = undefined,
-    remote_host_len: usize = 0,
-    user_buf: [128]u8 = undefined,
-    user_len: usize = 0,
-    host_buf: [128]u8 = undefined,
-    host_len: usize = 0,
-    ssh_port_buf: [16]u8 = undefined,
-    ssh_port_len: usize = 0,
-
-    fn init(child: std.process.Child, conn: *const Surface.SshConnection, remote_port: u16, local_port: u16, local_host: []const u8, remote_host: []const u8) SshTunnel {
-        var tunnel: SshTunnel = .{
-            .child = child,
-            .local_port = local_port,
-            .remote_port = remote_port,
-        };
-        tunnel.local_host_len = copyBounded(tunnel.local_host_buf[0..], local_host);
-        tunnel.remote_host_len = copyBounded(tunnel.remote_host_buf[0..], remote_host);
-        tunnel.user_len = copyBounded(tunnel.user_buf[0..], conn.user());
-        tunnel.host_len = copyBounded(tunnel.host_buf[0..], conn.host());
-        tunnel.ssh_port_len = copyBounded(tunnel.ssh_port_buf[0..], conn.port());
-        return tunnel;
-    }
-
-    fn matches(self: *const SshTunnel, conn: *const Surface.SshConnection, remote_port: u16, local_host: []const u8, remote_host: []const u8) bool {
-        return self.remote_port == remote_port and
-            std.mem.eql(u8, self.localHost(), local_host) and
-            std.mem.eql(u8, self.remoteHost(), remote_host) and
-            std.mem.eql(u8, self.user(), conn.user()) and
-            std.mem.eql(u8, self.host(), conn.host()) and
-            std.mem.eql(u8, self.sshPort(), conn.port());
-    }
-
-    fn localHost(self: *const SshTunnel) []const u8 {
-        return self.local_host_buf[0..self.local_host_len];
-    }
-
-    fn remoteHost(self: *const SshTunnel) []const u8 {
-        return self.remote_host_buf[0..self.remote_host_len];
-    }
-
-    fn user(self: *const SshTunnel) []const u8 {
-        return self.user_buf[0..self.user_len];
-    }
-
-    fn host(self: *const SshTunnel) []const u8 {
-        return self.host_buf[0..self.host_len];
-    }
-
-    fn sshPort(self: *const SshTunnel) []const u8 {
-        return self.ssh_port_buf[0..self.ssh_port_len];
-    }
-};
 
 pub fn width() f32 {
     return if (isVisibleForActiveTab()) g_width else 0;
@@ -225,20 +158,7 @@ pub fn openForSurface(allocator: std.mem.Allocator, parent: ?window_backend.Nati
 }
 
 pub fn externalUrlForSurface(allocator: std.mem.Allocator, url: []const u8, surface: ?*const Surface) ?[]u8 {
-    const target = url;
-    if (sshLoopbackUrl(surface, target)) |request| {
-        const local_port = ensureSshTunnel(allocator, &request.conn, request.parsed.port, browser_url.localTunnelHost(request.parsed.host), browser_url.remoteTunnelHost(request.parsed.host)) orelse return null;
-        return browser_url.buildLocalTunnelUrl(allocator, request.parsed, local_port);
-    }
-
-    stopTunnel();
-    if (browser_url.parseHttpUrl(target)) |parsed| {
-        if (browser_url.isUnspecifiedHost(parsed.host)) {
-            return browser_url.buildLocalTunnelUrl(allocator, parsed, parsed.port);
-        }
-    }
-
-    return allocator.dupe(u8, target) catch null;
+    return ssh_tunnel.externalUrlForSurface(allocator, url, surface);
 }
 
 pub fn toggle(parent: ?window_backend.NativeHandle) void {
@@ -263,7 +183,6 @@ pub fn close() void {
     g_owner_tab = null;
     g_url_bar_focused = false;
     g_url_edit_select_all = false;
-    stopTunnel();
     destroyBrowser();
 }
 
@@ -331,7 +250,7 @@ pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_heigh
 
 pub fn deinit() void {
     destroyBrowser();
-    stopTunnel();
+    ssh_tunnel.deinit();
     g_visible = false;
     g_owner_tab = null;
     g_url_bar_focused = false;
@@ -490,211 +409,6 @@ fn startsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
     return std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
 }
 
-const SshLoopbackUrl = struct {
-    conn: Surface.SshConnection,
-    parsed: browser_url.HttpUrl,
-};
-
-fn sshLoopbackUrl(surface: ?*const Surface, url: []const u8) ?SshLoopbackUrl {
-    const s = surface orelse return null;
-    if (s.launch_kind != .ssh) return null;
-    const conn = s.ssh_connection orelse return null;
-    const parsed = browser_url.parseHttpUrl(url) orelse return null;
-    if (!browser_url.isLoopbackHost(parsed.host)) return null;
-    return .{ .conn = conn, .parsed = parsed };
-}
-
-fn ensureSshTunnel(allocator: std.mem.Allocator, conn: *const Surface.SshConnection, remote_port: u16, local_host: []const u8, remote_host: []const u8) ?u16 {
-    const perf = ui_perf.begin("browser_panel.ensure_ssh_tunnel");
-    defer perf.end();
-
-    if (g_tunnel) |*tunnel| {
-        if (tunnel.matches(conn, remote_port, local_host, remote_host) and
-            !childHasExited(&tunnel.child) and
-            canConnectToLocalPort(allocator, tunnel.localHost(), tunnel.local_port))
-        {
-            return tunnel.local_port;
-        }
-    }
-
-    stopTunnel();
-
-    const local_port = reservePreferredLocalPort(remote_port) orelse return null;
-    var local_spec_buf: [MAX_TUNNEL_SPEC_BYTES]u8 = undefined;
-    const local_spec = std.fmt.bufPrint(
-        &local_spec_buf,
-        "{s}:{d}:{s}:{d}",
-        .{ local_host, local_port, remote_host, remote_port },
-    ) catch return null;
-
-    var dest_buf: [MAX_SSH_DEST_BYTES]u8 = undefined;
-    const dest = sshDestination(&dest_buf, conn) orelse return null;
-
-    var askpass_path: ?[]const u8 = null;
-    defer if (askpass_path) |path| allocator.free(path);
-    var env_map: ?std.process.EnvMap = null;
-    defer if (env_map) |*map| map.deinit();
-
-    if (conn.password_auth) {
-        askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return null;
-        env_map = std.process.getEnvMap(allocator) catch return null;
-        if (env_map) |*map| {
-            map.put("SSH_ASKPASS", askpass_path.?) catch return null;
-            map.put("SSH_ASKPASS_REQUIRE", "force") catch return null;
-            map.put("DISPLAY", "phantty") catch return null;
-            map.put("PHANTTY_SSH_PASSWORD", conn.password()) catch return null;
-        }
-    }
-
-    var argv_buf: [48][]const u8 = undefined;
-    var argc: usize = 0;
-    argv_buf[argc] = platform_pty_command.sshExecutableName();
-    argc += 1;
-    argv_buf[argc] = "-N";
-    argc += 1;
-    argv_buf[argc] = "-T";
-    argc += 1;
-    argv_buf[argc] = "-L";
-    argc += 1;
-    argv_buf[argc] = local_spec;
-    argc += 1;
-
-    appendSshOption(&argv_buf, &argc, "ExitOnForwardFailure=yes");
-    appendSshOption(&argv_buf, &argc, "StrictHostKeyChecking=accept-new");
-    appendSshOption(&argv_buf, &argc, "ConnectTimeout=8");
-    appendSshOption(&argv_buf, &argc, "ServerAliveInterval=60");
-    appendSshOption(&argv_buf, &argc, "ServerAliveCountMax=3");
-    if (conn.password_auth) {
-        appendSshOption(&argv_buf, &argc, "PreferredAuthentications=publickey,password,keyboard-interactive");
-        appendSshOption(&argv_buf, &argc, "NumberOfPasswordPrompts=1");
-    } else {
-        appendSshOption(&argv_buf, &argc, "BatchMode=yes");
-    }
-    if (conn.port().len > 0) {
-        argv_buf[argc] = "-p";
-        argc += 1;
-        argv_buf[argc] = conn.port();
-        argc += 1;
-    }
-    argv_buf[argc] = dest;
-    argc += 1;
-
-    // Keep this helper independent. Windows OpenSSH ControlMaster options are
-    // intentionally not used here; they break on Windows socket semantics.
-    var child = std.process.Child.init(argv_buf[0..argc], allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Inherit;
-    if (env_map) |*map| child.env_map = map;
-    child.spawn() catch |err| {
-        std.debug.print("SSH browser tunnel spawn failed: {}\n", .{err});
-        return null;
-    };
-
-    g_tunnel = SshTunnel.init(child, conn, remote_port, local_port, local_host, remote_host);
-    if (!waitForTunnelReady(allocator, local_host, local_port)) {
-        std.debug.print("SSH browser tunnel did not become ready on {s}:{d}\n", .{ local_host, local_port });
-        stopTunnel();
-        return null;
-    }
-
-    std.debug.print("SSH browser tunnel: {s}:{d} -> remote {s}:{d}\n", .{ local_host, local_port, remote_host, remote_port });
-    return local_port;
-}
-
-fn stopTunnel() void {
-    if (g_tunnel) |*tunnel| {
-        if (childHasExited(&tunnel.child)) {
-            _ = tunnel.child.wait() catch {};
-        } else {
-            _ = tunnel.child.kill() catch {};
-        }
-        g_tunnel = null;
-    }
-}
-
-fn waitForTunnelReady(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) bool {
-    const perf = ui_perf.begin("browser_panel.wait_for_tunnel_ready");
-    defer perf.end();
-
-    const deadline = std.time.milliTimestamp() + TUNNEL_READY_TIMEOUT_MS;
-    while (std.time.milliTimestamp() < deadline) {
-        if (canConnectToLocalPort(allocator, local_host, local_port)) return true;
-        if (g_tunnel) |*tunnel| {
-            if (childHasExited(&tunnel.child)) return false;
-        } else {
-            return false;
-        }
-        std.Thread.sleep(TUNNEL_READY_POLL_NS);
-    }
-    return false;
-}
-
-fn canConnectToLocalPort(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) bool {
-    if (std.mem.eql(u8, local_host, "127.0.0.1") or std.mem.eql(u8, local_host, "localhost")) {
-        const address = std.net.Address.parseIp4("127.0.0.1", local_port) catch return false;
-        var stream = std.net.tcpConnectToAddress(address) catch {
-            if (!std.mem.eql(u8, local_host, "localhost")) return false;
-            return canConnectToLocalHostName(allocator, local_host, local_port);
-        };
-        stream.close();
-        return true;
-    }
-    return canConnectToLocalHostName(allocator, local_host, local_port);
-}
-
-fn canConnectToLocalHostName(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) bool {
-    var stream = std.net.tcpConnectToHost(allocator, local_host, local_port) catch return false;
-    stream.close();
-    return true;
-}
-
-fn childHasExited(child: *const std.process.Child) bool {
-    return platform_process.childExited(child.id, 0);
-}
-
-fn reservePreferredLocalPort(preferred_port: u16) ?u16 {
-    var port: u32 = if (preferred_port == 0) 1 else preferred_port;
-    while (port <= std.math.maxInt(u16)) : (port += 1) {
-        const candidate: u16 = @intCast(port);
-        if (isLocalPortAvailable(candidate)) return candidate;
-    }
-    return null;
-}
-
-fn isLocalPortAvailable(port: u16) bool {
-    const address = std.net.Address.parseIp4("127.0.0.1", port) catch return false;
-    var server = address.listen(.{}) catch return false;
-    server.deinit();
-    return true;
-}
-
-fn reserveLocalPort() ?u16 {
-    const address = std.net.Address.parseIp4("127.0.0.1", 0) catch return null;
-    var server = address.listen(.{}) catch return null;
-    const port = server.listen_address.getPort();
-    server.deinit();
-    return if (port == 0) null else port;
-}
-
-fn sshDestination(buf: *[MAX_SSH_DEST_BYTES]u8, conn: *const Surface.SshConnection) ?[]const u8 {
-    const user = conn.user();
-    const host = conn.host();
-    const len = user.len + 1 + host.len;
-    if (len > buf.len) return null;
-    @memcpy(buf[0..user.len], user);
-    buf[user.len] = '@';
-    @memcpy(buf[user.len + 1 ..][0..host.len], host);
-    return buf[0..len];
-}
-
-fn appendSshOption(argv_buf: *[48][]const u8, argc: *usize, option: []const u8) void {
-    argv_buf[argc.*] = "-o";
-    argc.* += 1;
-    argv_buf[argc.*] = option;
-    argc.* += 1;
-}
-
 fn copyBounded(dest: []u8, text: []const u8) usize {
     const n = @min(dest.len, text.len);
     @memcpy(dest[0..n], text[0..n]);
@@ -741,36 +455,4 @@ test "browser_panel: public parent handle API uses window backend handle" {
 
     const submit_info = @typeInfo(@TypeOf(submitUrlBar)).@"fn";
     try std.testing.expect(submit_info.params[1].type.? == ?window_backend.NativeHandle);
-}
-
-test "browser_panel external URL helper preserves public URLs" {
-    const target = externalUrlForSurface(std.testing.allocator, "https://example.com/app?q=1", null) orelse unreachable;
-    defer std.testing.allocator.free(target);
-
-    try std.testing.expectEqualStrings("https://example.com/app?q=1", target);
-}
-
-test "browser_panel external URL helper maps unspecified hosts to loopback" {
-    const target = externalUrlForSurface(std.testing.allocator, "http://0.0.0.0:1234/app?q=1", null) orelse unreachable;
-    defer std.testing.allocator.free(target);
-
-    try std.testing.expectEqualStrings("http://127.0.0.1:1234/app?q=1", target);
-}
-
-test "reservePreferredLocalPort returns the preferred port when it is free" {
-    const preferred = reserveLocalPort() orelse return error.SkipZigTest;
-    const selected = reservePreferredLocalPort(preferred) orelse return error.SkipZigTest;
-    try std.testing.expectEqual(preferred, selected);
-}
-
-test "reservePreferredLocalPort skips an occupied preferred port" {
-    const preferred = reserveLocalPort() orelse return error.SkipZigTest;
-    if (preferred == std.math.maxInt(u16)) return error.SkipZigTest;
-
-    const address = std.net.Address.parseIp4("127.0.0.1", preferred) catch return error.SkipZigTest;
-    var server = address.listen(.{}) catch return error.SkipZigTest;
-    defer server.deinit();
-
-    const selected = reservePreferredLocalPort(preferred) orelse return error.SkipZigTest;
-    try std.testing.expect(selected > preferred);
 }
