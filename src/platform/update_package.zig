@@ -3,8 +3,6 @@ const builtin = @import("builtin");
 const release_package = @import("../release_package.zig");
 const release_asset_backend = @import("update_package_windows.zig");
 
-pub const PayloadEntry = release_package.PayloadEntry;
-
 pub const Backend = enum {
     windows,
     unsupported,
@@ -56,27 +54,6 @@ pub fn matchesAssetName(name: []const u8, tag_name: []const u8, package: release
     };
 }
 
-pub fn payloadManifest(package: release_package.Package) ![]const PayloadEntry {
-    return switch (package.platform) {
-        .windows => release_asset_backend.payloadManifest(package),
-        else => error.UnsupportedReleasePackage,
-    };
-}
-
-pub fn mainExecutablePath(package: release_package.Package) ![]const u8 {
-    return switch (package.platform) {
-        .windows => release_asset_backend.mainExecutablePath(package),
-        else => error.UnsupportedReleasePackage,
-    };
-}
-
-pub fn updaterExecutablePath(package: release_package.Package) ![]const u8 {
-    return switch (package.platform) {
-        .windows => release_asset_backend.updaterExecutablePath(package),
-        else => error.UnsupportedReleasePackage,
-    };
-}
-
 pub fn defaultPackageForOs(os_tag: std.Target.Os.Tag) release_package.Package {
     return switch (os_tag) {
         .windows => release_package.Package.init(.windows, .baseline),
@@ -107,57 +84,6 @@ pub fn runtimePackage(webview_enabled: bool, has_embedded_browser_payload: bool)
 
 pub fn currentPackage(allocator: std.mem.Allocator, webview_enabled: bool) !release_package.Package {
     return impl.currentPackage(allocator, webview_enabled);
-}
-
-pub const ArchiveEntryNameError = error{UnsafeArchiveEntryName};
-
-fn isDriveQualifiedArchiveName(name: []const u8) bool {
-    return name.len >= 3 and
-        std.ascii.isAlphabetic(name[0]) and
-        name[1] == ':' and
-        (name[2] == '/' or name[2] == '\\');
-}
-
-fn isReservedArchiveNameChar(c: u8) bool {
-    return switch (c) {
-        '<', '>', ':', '"', '|', '?', '*' => true,
-        else => false,
-    };
-}
-
-pub fn validateArchiveEntryName(name: []const u8) ArchiveEntryNameError!void {
-    if (name.len == 0) return error.UnsafeArchiveEntryName;
-    if (name[0] == '/' or name[0] == '\\') return error.UnsafeArchiveEntryName;
-    if (isDriveQualifiedArchiveName(name)) return error.UnsafeArchiveEntryName;
-
-    var component_start: usize = 0;
-    var saw_component = false;
-    for (name, 0..) |c, i| {
-        if (isReservedArchiveNameChar(c)) return error.UnsafeArchiveEntryName;
-        if (c != '/' and c != '\\') continue;
-
-        if (i == component_start) return error.UnsafeArchiveEntryName;
-        const component = name[component_start..i];
-        if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.UnsafeArchiveEntryName;
-        saw_component = true;
-        component_start = i + 1;
-    }
-
-    if (component_start == name.len) {
-        if (!saw_component) return error.UnsafeArchiveEntryName;
-        return;
-    }
-
-    const component = name[component_start..];
-    if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.UnsafeArchiveEntryName;
-}
-
-pub fn updaterReplacementPackage() release_package.Package {
-    return release_package.Package.init(.windows, .baseline);
-}
-
-pub fn updaterReplacementManifest() []const release_package.PayloadEntry {
-    return payloadManifest(updaterReplacementPackage()) catch unreachable;
 }
 
 test "platform update package selects backend by target OS" {
@@ -222,69 +148,4 @@ test "platform update package exposes platform-neutral package scenarios" {
     const baseline_name = try assetNameForScenario("v0.28.0", .baseline, &buf);
     try std.testing.expectEqual(release_package.Platform.windows, baseline.platform);
     try std.testing.expectEqualStrings("phantty-windows-portable-v0.28.0.zip", baseline_name);
-
-    const required_extra = try payloadManifest(packageForScenario(.with_required_embedded_browser_payload));
-    try std.testing.expect(!required_extra[required_extra.len - 1].optional);
-
-    const without_extra = try payloadManifest(packageForScenario(.without_embedded_browser_payload));
-    try std.testing.expect(without_extra[without_extra.len - 1].optional);
-}
-
-test "platform update package exposes updater replacement manifest package" {
-    const manifest = updaterReplacementManifest();
-    try std.testing.expectEqualStrings(try mainExecutablePath(updaterReplacementPackage()), manifest[0].path);
-    try std.testing.expectEqualStrings(try updaterExecutablePath(updaterReplacementPackage()), manifest[1].path);
-}
-
-test "platform update package exposes payload metadata through platform boundary" {
-    const package = packageForScenario(.baseline);
-    const manifest = try payloadManifest(package);
-    try std.testing.expect(@TypeOf(manifest[0]) == PayloadEntry);
-    try std.testing.expectEqualStrings(try mainExecutablePath(package), manifest[0].path);
-    try std.testing.expectEqualStrings(try updaterExecutablePath(package), manifest[1].path);
-}
-
-test "platform update package provides Windows portable payload manifest" {
-    const portable = try payloadManifest(packageForScenario(.baseline));
-    try std.testing.expectEqual(@as(usize, 5), portable.len);
-    try std.testing.expectEqualStrings(try mainExecutablePath(packageForScenario(.baseline)), portable[0].path);
-    try std.testing.expect(!portable[0].directory);
-    try std.testing.expect(!portable[0].optional);
-    try std.testing.expectEqualStrings("plugins", portable[3].path);
-    try std.testing.expect(portable[3].directory);
-    try std.testing.expectEqualStrings(release_asset_backend.embeddedBrowserPayloadPath(), portable[4].path);
-    try std.testing.expect(portable[4].optional);
-
-    const embedded_browser = try payloadManifest(packageForScenario(.with_required_embedded_browser_payload));
-    try std.testing.expect(!embedded_browser[4].optional);
-}
-
-test "platform update package rejects executable payload paths for unsupported packages" {
-    try std.testing.expectError(error.UnsupportedReleasePackage, mainExecutablePath(.{ .platform = .linux }));
-    try std.testing.expectError(error.UnsupportedReleasePackage, updaterExecutablePath(.{ .platform = .macos }));
-}
-
-test "platform update package validates archive entry names for extraction" {
-    try validateArchiveEntryName("plugins\\skill\\SKILL.md");
-    try validateArchiveEntryName("plugins/");
-
-    const unsafe_names = [_][]const u8{
-        "",
-        "/phantty.exe",
-        "\\phantty.exe",
-        "//phantty.exe",
-        "\\\\server\\share\\phantty.exe",
-        "C:\\Phantty\\phantty.exe",
-        "C:/Phantty/phantty.exe",
-        "plugins//skill",
-        "plugins\\\\skill",
-        "plugins/./skill",
-        "plugins/../skill",
-        "plugins/skill:name",
-        "plugins/skill?.md",
-    };
-
-    for (unsafe_names) |name| {
-        try std.testing.expectError(error.UnsafeArchiveEntryName, validateArchiveEntryName(name));
-    }
 }

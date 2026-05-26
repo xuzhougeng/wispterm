@@ -36,6 +36,13 @@ pub fn open(allocator: std.mem.Allocator, request: Request) bool {
     return impl.open(allocator, request);
 }
 
+/// Open the native file manager with `path` highlighted (Explorer on Windows,
+/// Finder on macOS, the containing folder on Linux). Best-effort: returns false
+/// when the platform has no file manager integration.
+pub fn reveal(allocator: std.mem.Allocator, path: []const u8) bool {
+    return impl.reveal(allocator, path);
+}
+
 test "platform open url API accepts a typed request without a native window handle" {
     const request = Request{ .kind = .html, .url = "https://example.test" };
 

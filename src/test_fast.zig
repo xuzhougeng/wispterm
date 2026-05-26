@@ -12,8 +12,8 @@
 //!
 //! Only add modules here that (a) have unit tests worth running and (b) pass
 //! natively. Platform-coupled modules whose tests assert Windows behavior
-//! (e.g. `updater_core`, `platform/window_backend`) belong in `test-full`, not
-//! here.
+//! (e.g. `platform/window_backend`, `platform/pty_command_windows`) belong in
+//! `test-full`, not here.
 
 const build_options = @import("build_options");
 const std = @import("std");

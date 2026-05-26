@@ -37,7 +37,6 @@ const EmbeddedBrowserBackend = enum {
 
 const PlatformFeatures = struct {
     supports_desktop_exe: bool,
-    supports_updater: bool,
     supports_embedded_browser: bool,
     embedded_browser_backend: EmbeddedBrowserBackend,
     supports_resource_manifest: bool,
@@ -51,7 +50,6 @@ const PlatformFeatures = struct {
         const embedded_browser_backend: EmbeddedBrowserBackend = if (uses_windows_backend) .webview2 else .none;
         return .{
             .supports_desktop_exe = uses_windows_backend,
-            .supports_updater = uses_windows_backend,
             .supports_embedded_browser = embedded_browser_backend.isSupported(),
             .embedded_browser_backend = embedded_browser_backend,
             .supports_resource_manifest = uses_windows_backend,
@@ -110,7 +108,6 @@ test "default development target remains x86_64 windows gnu" {
 test "platform feature gates only enable windows artifacts on windows" {
     const windows = PlatformFeatures.forOs(.windows);
     try std.testing.expect(windows.supports_desktop_exe);
-    try std.testing.expect(windows.supports_updater);
     try std.testing.expect(windows.supports_embedded_browser);
     try std.testing.expectEqual(EmbeddedBrowserBackend.webview2, windows.embedded_browser_backend);
     try std.testing.expect(windows.supports_resource_manifest);
@@ -120,7 +117,6 @@ test "platform feature gates only enable windows artifacts on windows" {
 
     const linux = PlatformFeatures.forOs(.linux);
     try std.testing.expect(!linux.supports_desktop_exe);
-    try std.testing.expect(!linux.supports_updater);
     try std.testing.expect(!linux.supports_embedded_browser);
     try std.testing.expectEqual(EmbeddedBrowserBackend.none, linux.embedded_browser_backend);
     try std.testing.expect(!linux.supports_resource_manifest);
@@ -223,12 +219,6 @@ pub fn build(b: *std.Build) void {
     const app_version = packageVersion(b);
 
     if (emit_desktop_exe) {
-        const updater_mod = b.createModule(.{
-            .root_source_file = b.path("src/updater_main.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-
         const exe_mod = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -356,14 +346,6 @@ pub fn build(b: *std.Build) void {
         }
 
         b.installArtifact(exe);
-        if (platform.supports_updater) {
-            const updater_exe = b.addExecutable(.{
-                .name = "phantty-updater",
-                .root_module = updater_mod,
-            });
-            updater_exe.subsystem = if (optimize == .Debug) .Console else .Windows;
-            b.installArtifact(updater_exe);
-        }
     }
 
     b.installDirectory(.{

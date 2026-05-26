@@ -14,11 +14,8 @@ pub const State = enum {
     up_to_date,
     update_available,
     downloading,
-    extracting,
-    ready_to_restart,
-    installing,
-    updated,
-    install_failed,
+    downloaded,
+    download_failed,
     failed,
 };
 
@@ -234,11 +231,8 @@ pub fn formatStatusMessage(buf: []u8, result: CheckResult) ![]const u8 {
         .up_to_date => std.fmt.bufPrint(buf, "Phantty is up to date", .{}),
         .update_available => std.fmt.bufPrint(buf, "Update available: {s}", .{result.latest_version}),
         .downloading => std.fmt.bufPrint(buf, "Downloading update...", .{}),
-        .extracting => std.fmt.bufPrint(buf, "Preparing update...", .{}),
-        .ready_to_restart => std.fmt.bufPrint(buf, "Update ready; restart to install", .{}),
-        .installing => std.fmt.bufPrint(buf, "Installing update...", .{}),
-        .updated => std.fmt.bufPrint(buf, "Update installed", .{}),
-        .install_failed => std.fmt.bufPrint(buf, "Update install failed", .{}),
+        .downloaded => std.fmt.bufPrint(buf, "Saved to Downloads - unzip to update", .{}),
+        .download_failed => std.fmt.bufPrint(buf, "Update download failed", .{}),
         .failed => if (result.latest_version.len > 0 and result.release_url.len > 0)
             std.fmt.bufPrint(buf, "Manual update available: {s}", .{result.latest_version})
         else
@@ -385,10 +379,16 @@ test "update_check: manual failure message is stable" {
     try std.testing.expectEqualStrings("Update check failed", msg);
 }
 
-test "update_check: install failure message is distinct from check failure" {
+test "update_check: download failure message is distinct from check failure" {
     var buf: [96]u8 = undefined;
-    const msg = try formatStatusMessage(&buf, .{ .state = .install_failed });
-    try std.testing.expectEqualStrings("Update install failed", msg);
+    const msg = try formatStatusMessage(&buf, .{ .state = .download_failed });
+    try std.testing.expectEqualStrings("Update download failed", msg);
+}
+
+test "update_check: downloaded message points at Downloads" {
+    var buf: [96]u8 = undefined;
+    const msg = try formatStatusMessage(&buf, .{ .state = .downloaded });
+    try std.testing.expectEqualStrings("Saved to Downloads - unzip to update", msg);
 }
 
 test "update_check: copies result strings into caller buffers" {
