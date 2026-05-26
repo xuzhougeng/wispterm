@@ -39,6 +39,7 @@ pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
 pub const cell_pipeline = @import("renderer/cell_pipeline.zig");
+pub const ui_pipeline = @import("renderer/ui_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
@@ -3260,7 +3261,8 @@ fn runMainLoop(self: *AppWindow) !void {
         std.debug.print("Failed to initialize shaders\n", .{});
         return error.ShaderInitFailed;
     }
-    gpu.gl_init.initBuffers();
+    ui_pipeline.init();
+    gpu.gl_init.syncSharedHandles();
     cell_pipeline.init();
     font.preloadCharacters(face);
 
@@ -3307,8 +3309,6 @@ fn runMainLoop(self: *AppWindow) !void {
             font.g_titlebar_atlas_texture = 0;
         }
     }
-    gpu.gl_init.initSolidTexture();
-
     // Initialize custom post-processing shader if requested
     post_process.init(allocator, shader_path);
     if (g_app) |app| {
@@ -3326,6 +3326,7 @@ fn runMainLoop(self: *AppWindow) !void {
         background_image.deinit();
         post_process.deinit();
         cell_pipeline.deinit();
+        ui_pipeline.deinit();
     }
 
     // Ghostty approach: calculate grid size from ACTUAL window size.

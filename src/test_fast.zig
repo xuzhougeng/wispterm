@@ -33,4 +33,5 @@ test {
     _ = @import("agent_history.zig");
     _ = @import("renderer/gpu/backend.zig");
     _ = @import("renderer/cell_geometry.zig");
+    _ = @import("renderer/titlebar_layout.zig");
 }

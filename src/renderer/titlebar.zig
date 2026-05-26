@@ -5,7 +5,9 @@
 //! primitives. Depends on font module for glyph loading and tab module for state.
 
 const std = @import("std");
+const titlebar_layout = @import("titlebar_layout.zig");
 const AppWindow = @import("../AppWindow.zig");
+const ui_pipeline = AppWindow.ui_pipeline;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
 const cell_renderer = AppWindow.cell_renderer;
@@ -14,9 +16,6 @@ const font_backend = @import("../platform/font_backend.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const agent_detector = @import("../agent_detector.zig");
 const keybind = @import("../keybind.zig");
-const c = @cImport({
-    @cInclude("glad/gl.h");
-});
 const Character = font.Character;
 
 pub const CaptionButtonType = enum { minimize, maximize, close };
@@ -61,9 +60,7 @@ fn mouseX() ?f32 {
 fn mouseInRect(left: f32, top: f32, width: f32, height: f32) bool {
     const mouse = currentMousePosition() orelse return false;
     if (mouse.x < 0 or mouse.y < 0) return false;
-    const mx: f32 = @floatFromInt(mouse.x);
-    const my: f32 = @floatFromInt(mouse.y);
-    return mx >= left and mx < left + width and my >= top and my < top + height;
+    return titlebar_layout.pointInRect(@floatFromInt(mouse.x), @floatFromInt(mouse.y), left, top, width, height);
 }
 
 fn mouseInTitlebarRange(titlebar_h: f32, left: f32, right: f32) bool {
@@ -76,11 +73,11 @@ fn currentWindowIsMaximized() bool {
 }
 
 pub fn sidebarMaxWidthForWindow(window_width: f32) f32 {
-    return @max(SIDEBAR_MIN_WIDTH, @min(SIDEBAR_MAX_WIDTH, window_width - SIDEBAR_MIN_CONTENT_WIDTH));
+    return titlebar_layout.sidebarMaxWidthForWindow(window_width, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_CONTENT_WIDTH);
 }
 
 pub fn clampSidebarWidth(width: f32, window_width: f32) f32 {
-    return @max(SIDEBAR_MIN_WIDTH, @min(sidebarMaxWidthForWindow(window_width), width));
+    return titlebar_layout.clampSidebarWidth(width, SIDEBAR_MIN_WIDTH, sidebarMaxWidthForWindow(window_width));
 }
 
 pub fn setSidebarWidth(width: f32, window_width: f32) bool {
@@ -91,12 +88,7 @@ pub fn setSidebarWidth(width: f32, window_width: f32) bool {
 }
 
 fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
-    const clamped = @max(0.0, @min(1.0, t));
-    return .{
-        a[0] + (b[0] - a[0]) * clamped,
-        a[1] + (b[1] - a[1]) * clamped,
-        a[2] + (b[2] - a[2]) * clamped,
-    };
+    return titlebar_layout.blend(a, b, t);
 }
 
 fn titlebarTextWidth(text: []const u8) f32 {
@@ -142,7 +134,7 @@ fn renderAgentBadge(detection: agent_detector.Detection, x: f32, text_y: f32, ac
 }
 
 fn fallbackCodepoint(byte: u8) u32 {
-    return if (byte >= 0x20 and byte <= 0x7e) byte else '?';
+    return titlebar_layout.fallbackCodepoint(byte);
 }
 
 fn renderFallbackBytesLimited(text: []const u8, x: f32, y: f32, color: [3]f32, max_w: f32) f32 {
@@ -292,83 +284,35 @@ fn renderCloseIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
 /// Render a titlebar glyph at 1:1 atlas size (no scaling).
 /// Supports both grayscale (titlebar atlas) and color emoji (color atlas).
 pub fn renderTitlebarChar(codepoint: u32, x: f32, y: f32, color: [3]f32) void {
-    const gl = AppWindow.gpu.glTable();
     if (codepoint < 32) return;
     const ch: Character = font.loadTitlebarGlyph(codepoint) orelse return;
     if (ch.region.width == 0 or ch.region.height == 0) return;
 
     if (ch.is_color) {
-        // Color emoji — scale down to fit titlebar height and render with simple color shader
         const scale = font.g_titlebar_cell_height / @as(f32, @floatFromInt(ch.size_y));
         const w = @as(f32, @floatFromInt(ch.size_x)) * scale;
         const h = @as(f32, @floatFromInt(ch.size_y)) * scale;
-        const x0 = x;
-        const y0 = y;
-
         const atlas_size = if (font.g_color_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
         const uv = font.glyphUV(ch.region, atlas_size);
-
-        const vertices = [6][4]f32{
-            .{ x0, y0 + h, uv.u0, uv.v0 },
-            .{ x0, y0, uv.u0, uv.v1 },
-            .{ x0 + w, y0, uv.u1, uv.v1 },
-            .{ x0, y0 + h, uv.u0, uv.v0 },
-            .{ x0 + w, y0, uv.u1, uv.v1 },
-            .{ x0 + w, y0 + h, uv.u1, uv.v0 },
-        };
-
-        // Use simple color shader (same vertex layout as text shader, but samples RGBA)
-        // Set projection matrix from current viewport (same ortho as text shader)
-        var viewport: [4]c.GLint = undefined;
-        gl.GetIntegerv.?(c.GL_VIEWPORT, &viewport);
-        const vp_w: f32 = @floatFromInt(viewport[2]);
-        const vp_h: f32 = @floatFromInt(viewport[3]);
-        const projection = [16]f32{
-            2.0 / vp_w, 0.0,        0.0,  0.0,
-            0.0,        2.0 / vp_h, 0.0,  0.0,
-            0.0,        0.0,        -1.0, 0.0,
-            -1.0,       -1.0,       0.0,  1.0,
-        };
-        gl.UseProgram.?(gl_init.simple_color_shader);
-        gl.UniformMatrix4fv.?(gl.GetUniformLocation.?(gl_init.simple_color_shader, "projection"), 1, c.GL_FALSE, &projection);
-        gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.simple_color_shader, "opacity"), 1.0);
-        // Premultiplied alpha blend for color emoji (BGRA bitmaps from FreeType)
-        gl.BlendFunc.?(c.GL_ONE, c.GL_ONE_MINUS_SRC_ALPHA);
-        gl.BindTexture.?(c.GL_TEXTURE_2D, font.g_color_atlas_texture);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.vbo);
-        gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @sizeOf(@TypeOf(vertices)), &vertices);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, 0);
-        gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
-        gl_init.g_draw_call_count += 1;
-        // Restore text shader and standard alpha blend
-        gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-        gl.UseProgram.?(gl_init.shader_program);
+        ui_pipeline.drawColorGlyph(
+            .{ .x = x, .y = y, .w = w, .h = h },
+            .{ .u0 = uv.u0, .v0 = uv.v0, .u1 = uv.u1, .v1 = uv.v1 },
+            font.g_color_atlas_texture,
+            1.0,
+        );
     } else {
-        // Grayscale glyph — render with text shader from titlebar atlas
         const x0 = x + @as(f32, @floatFromInt(ch.bearing_x));
         const y0 = y + font.g_titlebar_baseline - @as(f32, @floatFromInt(ch.size_y - ch.bearing_y));
         const w = @as(f32, @floatFromInt(ch.size_x));
         const h = @as(f32, @floatFromInt(ch.size_y));
-
         const atlas_size = if (font.g_titlebar_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
         const uv = font.glyphUV(ch.region, atlas_size);
-
-        const vertices = [6][4]f32{
-            .{ x0, y0 + h, uv.u0, uv.v0 },
-            .{ x0, y0, uv.u0, uv.v1 },
-            .{ x0 + w, y0, uv.u1, uv.v1 },
-            .{ x0, y0 + h, uv.u0, uv.v0 },
-            .{ x0 + w, y0, uv.u1, uv.v1 },
-            .{ x0 + w, y0 + h, uv.u1, uv.v0 },
-        };
-
-        gl.Uniform3f.?(gl.GetUniformLocation.?(gl_init.shader_program, "textColor"), color[0], color[1], color[2]);
-        gl.BindTexture.?(c.GL_TEXTURE_2D, font.g_titlebar_atlas_texture);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.vbo);
-        gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @sizeOf(@TypeOf(vertices)), &vertices);
-        gl.BindBuffer.?(c.GL_ARRAY_BUFFER, 0);
-        gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
-        gl_init.g_draw_call_count += 1;
+        ui_pipeline.drawGlyph(
+            .{ .x = x0, .y = y0, .w = w, .h = h },
+            .{ .u0 = uv.u0, .v0 = uv.v0, .u1 = uv.u1, .v1 = uv.v1 },
+            font.g_titlebar_atlas_texture,
+            color,
+        );
     }
 }
 
@@ -390,88 +334,38 @@ pub fn titlebarGlyphAdvance(codepoint: u32) f32 {
 }
 
 pub fn renderBellEmoji(x: f32, y: f32, opacity: f32) void {
-    const gl = AppWindow.gpu.glTable();
     const bell = font.loadBellEmoji() orelse {
         renderTitlebarChar(0x1F514, x, y, .{ 1.0, 0.84, 0.0 });
         return;
     };
-
     const aspect = bell.bmp_w / bell.bmp_h;
     const h = font.g_titlebar_cell_height * 0.85;
     const w = h * aspect;
-    const x0 = x;
-    const y0 = y;
-
     const atlas_size = if (font.g_color_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
     const uv = font.glyphUV(bell.region, atlas_size);
-
-    const vertices = [6][4]f32{
-        .{ x0, y0 + h, uv.u0, uv.v0 },
-        .{ x0, y0, uv.u0, uv.v1 },
-        .{ x0 + w, y0, uv.u1, uv.v1 },
-        .{ x0, y0 + h, uv.u0, uv.v0 },
-        .{ x0 + w, y0, uv.u1, uv.v1 },
-        .{ x0 + w, y0 + h, uv.u1, uv.v0 },
-    };
-
-    // Compute projection from current viewport
-    var viewport: [4]c.GLint = undefined;
-    gl.GetIntegerv.?(c.GL_VIEWPORT, &viewport);
-    const vp_w: f32 = @floatFromInt(viewport[2]);
-    const vp_h: f32 = @floatFromInt(viewport[3]);
-    const projection = [16]f32{
-        2.0 / vp_w, 0.0,        0.0,  0.0,
-        0.0,        2.0 / vp_h, 0.0,  0.0,
-        0.0,        0.0,        -1.0, 0.0,
-        -1.0,       -1.0,       0.0,  1.0,
-    };
-
-    // Render with simple color shader (premultiplied alpha + opacity fade)
-    gl.UseProgram.?(gl_init.simple_color_shader);
-    gl.UniformMatrix4fv.?(gl.GetUniformLocation.?(gl_init.simple_color_shader, "projection"), 1, c.GL_FALSE, &projection);
-    gl.Uniform1f.?(gl.GetUniformLocation.?(gl_init.simple_color_shader, "opacity"), opacity);
-    gl.BlendFunc.?(c.GL_ONE, c.GL_ONE_MINUS_SRC_ALPHA);
-    gl.BindTexture.?(c.GL_TEXTURE_2D, font.g_color_atlas_texture);
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.vbo);
-    gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @sizeOf(@TypeOf(vertices)), &vertices);
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, 0);
-    gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
-    gl_init.g_draw_call_count += 1;
-
-    // Restore text shader and standard blend
-    gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-    gl.UseProgram.?(gl_init.shader_program);
+    ui_pipeline.drawColorGlyph(
+        .{ .x = x, .y = y, .w = w, .h = h },
+        .{ .u0 = uv.u0, .v0 = uv.v0, .u1 = uv.u1, .v1 = uv.v1 },
+        font.g_color_atlas_texture,
+        opacity,
+    );
 }
 
 /// Render an icon glyph centered within a button rect, using the icon atlas.
 pub fn renderIconGlyph(ch: Character, btn_x: f32, btn_y: f32, btn_w: f32, btn_h: f32, color: [3]f32, scale: f32) void {
-    const gl = AppWindow.gpu.glTable();
     if (ch.region.width == 0 or ch.region.height == 0) return;
-
     const gw = @as(f32, @floatFromInt(ch.size_x)) * scale;
     const gh = @as(f32, @floatFromInt(ch.size_y)) * scale;
     const gx = btn_x + (btn_w - gw) / 2;
     const gy = btn_y + (btn_h - gh) / 2;
-
     const icon_atlas_size = if (font.g_icon_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
     const uv = font.glyphUV(ch.region, icon_atlas_size);
-
-    const vertices = [6][4]f32{
-        .{ gx, gy + gh, uv.u0, uv.v0 },
-        .{ gx, gy, uv.u0, uv.v1 },
-        .{ gx + gw, gy, uv.u1, uv.v1 },
-        .{ gx, gy + gh, uv.u0, uv.v0 },
-        .{ gx + gw, gy, uv.u1, uv.v1 },
-        .{ gx + gw, gy + gh, uv.u1, uv.v0 },
-    };
-
-    gl.Uniform3f.?(gl.GetUniformLocation.?(gl_init.shader_program, "textColor"), color[0], color[1], color[2]);
-    gl.BindTexture.?(c.GL_TEXTURE_2D, font.g_icon_atlas_texture);
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.vbo);
-    gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @sizeOf(@TypeOf(vertices)), &vertices);
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, 0);
-    gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
-    gl_init.g_draw_call_count += 1;
+    ui_pipeline.drawGlyph(
+        .{ .x = gx, .y = gy, .w = gw, .h = gh },
+        .{ .u0 = uv.u0, .v0 = uv.v0, .u1 = uv.u1, .v1 = uv.v1 },
+        font.g_icon_atlas_texture,
+        color,
+    );
 }
 
 /// Render the Ghostty-style tab bar.
@@ -488,12 +382,10 @@ pub fn renderIconGlyph(ch: Character, btn_x: f32, btn_y: f32, btn_w: f32, btn_h:
 ///
 /// OpenGL Y=0 is BOTTOM, so titlebar top = window_height - titlebar_h.
 pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) void {
-    const gl = AppWindow.gpu.glTable();
     if (titlebar_h <= 0) return;
-
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.ActiveTexture.?(c.GL_TEXTURE0);
-    gl.BindVertexArray.?(gl_init.vao);
+    // No GL program/VAO setup here: the ui_pipeline helpers (and gl_init.renderQuad,
+    // which now delegates to ui_pipeline) are self-contained — each binds its own
+    // program + VAO per draw.
 
     const tb_top = window_height - titlebar_h; // top of titlebar in GL coords
     const bg = AppWindow.g_theme.background;
@@ -1066,11 +958,6 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
     if (!tab.g_sidebar_visible) return;
     const sidebar_w = sidebarWidth();
 
-    const gl = AppWindow.gpu.glTable();
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.ActiveTexture.?(c.GL_TEXTURE0);
-    gl.BindVertexArray.?(gl_init.vao);
-
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
@@ -1322,11 +1209,6 @@ pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButt
 
 /// Render placeholder content for tabs that don't have a terminal yet.
 pub fn renderPlaceholderTab(window_width: f32, window_height: f32, top_pad: f32) void {
-    const gl = AppWindow.gpu.glTable();
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.ActiveTexture.?(c.GL_TEXTURE0);
-    gl.BindVertexArray.?(gl_init.vao);
-
     const msg = "Tabs not yet implemented";
     var shortcut_buf: [64]u8 = undefined;
     const shortcut = keybind.formatActionShortcut(&AppWindow.g_keybinds, .new_session, &shortcut_buf) orelse "the new session shortcut";
