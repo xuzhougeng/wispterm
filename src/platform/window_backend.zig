@@ -77,6 +77,11 @@ pub const EventHandlers = struct {
 };
 
 pub const setGlobalWindow = impl.setGlobalWindow;
+/// Renderer surface seam (host → GPU backend). This is OpenGL-shaped: the host
+/// supplies a GL proc-address loader, which `gpu.Context.init` consumes. The
+/// seam is per-backend by design — a macOS/AppKit host pairs with the Metal
+/// backend and hands `gpu.Context.init` a `CAMetalLayer` instead (see the
+/// surface-seam note in `gpu/metal/Context.zig`); it does not call this.
 pub const glGetProcAddress = impl.glGetProcAddress;
 
 pub fn create(allocator: std.mem.Allocator, options: CreateOptions) !Window {

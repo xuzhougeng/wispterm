@@ -38,13 +38,6 @@ fn rectY(window_height: f32, rect: qr_panel.Rect) f32 {
     return @round(window_height - rect.top_px - rect.h);
 }
 
-fn beginUi() void {
-    const gl = AppWindow.gpu.glTable();
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.ActiveTexture.?(c.GL_TEXTURE0);
-    gl.BindVertexArray.?(gl_init.vao);
-}
-
 pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     if (!qr_panel.visible()) return;
 
@@ -55,10 +48,8 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     }
     if (!qr_panel.visible()) return;
 
-    const gl = AppWindow.gpu.glTable();
-    gl.Enable.?(c.GL_BLEND);
-    gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-    beginUi();
+    AppWindow.gpu.state.setBlendEnabled(true);
+    AppWindow.gpu.state.setBlendMode(.alpha);
 
     const l = qr_panel.layout(window_width, window_height, top_offset);
     const panel_y = rectY(window_height, l.panel);

@@ -600,25 +600,18 @@ fn renderImageDocument(
     const draw_top = body_top + (body_h - draw_h) / 2 + panel.imagePanY();
     const draw_y = window_height - draw_top - draw_h;
 
-    const gl = gpu.glTable();
-    const clip_x: gpu.c.GLint = @intFromFloat(@max(0, @floor(content_x)));
-    const clip_y: gpu.c.GLint = @intFromFloat(@max(0, @floor(window_height - body_top - body_h)));
-    const clip_w: gpu.c.GLsizei = @intFromFloat(@max(0, @ceil(content_w)));
-    const clip_h: gpu.c.GLsizei = @intFromFloat(@max(0, @ceil(body_h)));
+    const clip_x: i32 = @intFromFloat(@max(0, @floor(content_x)));
+    const clip_y: i32 = @intFromFloat(@max(0, @floor(window_height - body_top - body_h)));
+    const clip_w: i32 = @intFromFloat(@max(0, @ceil(content_w)));
+    const clip_h: i32 = @intFromFloat(@max(0, @ceil(body_h)));
     if (clip_w <= 0 or clip_h <= 0) return;
 
-    const scissor_was_enabled = gl.IsEnabled.?(gpu.c.GL_SCISSOR_TEST) == gpu.c.GL_TRUE;
-    var previous_scissor: [4]gpu.c.GLint = undefined;
-    if (scissor_was_enabled) gl.GetIntegerv.?(gpu.c.GL_SCISSOR_BOX, &previous_scissor);
-    gl.Enable.?(gpu.c.GL_SCISSOR_TEST);
-    gl.Scissor.?(clip_x, clip_y, clip_w, clip_h);
+    // Clip the image to the body area, restoring any outer scissor afterward.
+    const saved_scissor = gpu.state.scissorState();
+    gpu.state.setScissor(.{ .x = clip_x, .y = clip_y, .w = clip_w, .h = clip_h });
     ui_pipeline.fillQuad(draw_x - 1, draw_y - 1, draw_w + 2, draw_h + 2, border);
     drawImageTexture(draw_x, draw_y, draw_w, draw_h, window_height);
-    if (scissor_was_enabled) {
-        gl.Scissor.?(previous_scissor[0], previous_scissor[1], previous_scissor[2], previous_scissor[3]);
-    } else {
-        gl.Disable.?(gpu.c.GL_SCISSOR_TEST);
-    }
+    gpu.state.restoreScissor(saved_scissor);
 }
 
 fn renderStatusMessage(

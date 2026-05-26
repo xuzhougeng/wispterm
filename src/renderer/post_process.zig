@@ -77,7 +77,6 @@ fn buildPostFragmentSource(allocator: std.mem.Allocator, user_shader: []const u8
 
 /// Load and compile a custom post-processing shader from a file
 fn initPostShader(allocator: std.mem.Allocator, shader_path: []const u8) bool {
-    const gl = gpu.glTable();
     // Read shader source file
     const file = std.fs.cwd().openFile(shader_path, .{}) catch |err| {
         std.debug.print("Failed to open shader file '{s}': {}\n", .{ shader_path, err });
@@ -114,24 +113,20 @@ fn initPostShader(allocator: std.mem.Allocator, shader_path: []const u8) bool {
     g_post_vbo_buf = gpu.Buffer.init(c.GL_ARRAY_BUFFER);
     g_post_vbo_buf.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), c.GL_STATIC_DRAW);
 
-    var vao: c.GLuint = 0;
-    gl.GenVertexArrays.?(1, &vao);
-    gl.BindVertexArray.?(vao);
-    g_post_vbo_buf.bind();
-    // position (location 0)
-    gl.EnableVertexAttribArray.?(0);
-    gl.VertexAttribPointer.?(0, 2, c.GL_FLOAT, c.GL_FALSE, 4 * @sizeOf(f32), null);
-    // texcoord (location 1)
-    gl.EnableVertexAttribArray.?(1);
-    gl.VertexAttribPointer.?(1, 2, c.GL_FLOAT, c.GL_FALSE, 4 * @sizeOf(f32), @ptrFromInt(2 * @sizeOf(f32)));
-    gl.BindVertexArray.?(0);
+    // Fullscreen quad VAO: vec2 position (loc 0) + vec2 texcoord (loc 1), interleaved.
+    const vao = gpu.vertex.buildVertexArray(&.{
+        .{ .buffer = g_post_vbo_buf, .attrs = &.{
+            .{ .loc = 0, .count = 2, .stride = 4 * @sizeOf(f32), .offset = 0 },
+            .{ .loc = 1, .count = 2, .stride = 4 * @sizeOf(f32), .offset = 2 * @sizeOf(f32) },
+        } },
+    });
 
     // Compile and link via Pipeline.init (logs errors itself)
     g_post_pipeline = gpu.Pipeline.init(post_vertex_source, frag_source.ptr, vao);
     if (g_post_pipeline.program == 0) {
         // Pipeline.init already logged the failure; clean up vbo and vao
         g_post_vbo_buf.deinit();
-        gl.DeleteVertexArrays.?(1, &vao);
+        gpu.vertex.deleteVertexArray(vao);
         return false;
     }
 
@@ -150,11 +145,10 @@ fn ensurePostFBO(width: c_int, height: c_int) void {
 
 /// Render the fullscreen quad with post-processing shader applied
 fn renderPostProcess(width: c_int, height: c_int) void {
-    const gl = gpu.glTable();
     // Bind default framebuffer (screen)
     gpu.Framebuffer.unbind();
-    gl.Viewport.?(0, 0, width, height);
-    gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+    gpu.state.setViewport(0, 0, width, height);
+    gpu.state.clear(0, 0, 0, 1);
 
     // Disable blending for the fullscreen quad - shader output is final color
     ui_pipeline.setBlendEnabled(false);
@@ -192,14 +186,12 @@ fn renderPostProcess(width: c_int, height: c_int) void {
 /// Render with post-processing. Called after updateTerminalCells() has
 /// already been called under the lock — this only does GL work.
 pub fn renderFrameWithPostFromCells(rend: *const Renderer, width: c_int, height: c_int, padding: f32) void {
-    const gl = gpu.glTable();
     ensurePostFBO(width, height);
 
     // 1. Render terminal to FBO
     g_post_fb.bind();
     ui_pipeline.setProjection(@floatFromInt(width), @floatFromInt(height));
-    gl.ClearColor.?(AppWindow.g_theme.background[0], AppWindow.g_theme.background[1], AppWindow.g_theme.background[2], 1.0);
-    gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
+    gpu.state.clear(AppWindow.g_theme.background[0], AppWindow.g_theme.background[1], AppWindow.g_theme.background[2], 1.0);
     background_image.drawFullscreen(@floatFromInt(width), @floatFromInt(height));
     cell_renderer.drawCells(rend, @floatFromInt(height), padding, padding);
 

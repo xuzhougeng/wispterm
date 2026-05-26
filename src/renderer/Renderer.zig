@@ -12,8 +12,8 @@
 /// 3. No scissor needed - each surface has isolated render target
 ///
 /// Note: the GL context is owned by the GPU backend (`renderer/gpu/`); GL
-/// operations run against `AppWindow.gpu.glTable()`. Renderer just stores the
-/// handles.
+/// operations route through the gpu primitives (gpu.state, gpu.Texture, etc.).
+/// Renderer just stores the handles.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ghostty_vt = @import("ghostty-vt");
@@ -301,9 +301,10 @@ pub fn fboPixelBytes(self: *const Renderer) usize {
 }
 
 fn deinitKittyResources(self: *Renderer) void {
-    const gl = AppWindow.gpu.glTable();
     for (self.kitty_textures.items) |*tex| {
-        if (tex.texture != 0) gl.DeleteTextures.?(1, &tex.texture);
+        var t = AppWindow.gpu.Texture.fromHandle(tex.texture);
+        t.destroy();
+        tex.texture = 0;
     }
     self.kitty_textures.deinit(self.surface.allocator);
 

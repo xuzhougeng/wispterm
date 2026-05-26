@@ -14,6 +14,7 @@ const font = AppWindow.font;
 const tab = AppWindow.tab;
 const gpu = AppWindow.gpu;
 const gl_init = gpu.gl_init;
+const ui_pipeline = @import("ui_pipeline.zig");
 const cell_pipeline = @import("cell_pipeline.zig");
 const image_renderer = @import("image_renderer.zig");
 const cell_geometry = @import("cell_geometry.zig");
@@ -37,8 +38,6 @@ pub threadlocal var g_current_render_surface: ?*Surface = null;
 /// Render a single character at the given position using the text shader.
 /// Used for UI text (placeholder messages, overlays), not terminal cells.
 pub fn renderChar(codepoint: u32, x: f32, y: f32, color: [3]f32) void {
-    const gl = AppWindow.gpu.glTable();
-
     // Skip control characters
     if (codepoint < 32) return;
 
@@ -56,22 +55,12 @@ pub fn renderChar(codepoint: u32, x: f32, y: f32, color: [3]f32) void {
     const atlas_size = if (font.g_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
     const uv = font.glyphUV(ch.region, atlas_size);
 
-    const vertices = [6][4]f32{
-        .{ x0, y0 + h, uv.u0, uv.v0 },
-        .{ x0, y0, uv.u0, uv.v1 },
-        .{ x0 + w, y0, uv.u1, uv.v1 },
-        .{ x0, y0 + h, uv.u0, uv.v0 },
-        .{ x0 + w, y0, uv.u1, uv.v1 },
-        .{ x0 + w, y0 + h, uv.u1, uv.v0 },
-    };
-
-    gl.Uniform3f.?(gl.GetUniformLocation.?(gl_init.shader_program, "textColor"), color[0], color[1], color[2]);
-    gl.BindTexture.?(c.GL_TEXTURE_2D, font.g_atlas_texture);
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, gl_init.vbo);
-    gl.BufferSubData.?(c.GL_ARRAY_BUFFER, 0, @sizeOf(@TypeOf(vertices)), &vertices);
-    gl.BindBuffer.?(c.GL_ARRAY_BUFFER, 0);
-    gl.DrawArrays.?(c.GL_TRIANGLES, 0, 6);
-    gl_init.g_draw_call_count += 1;
+    ui_pipeline.drawGlyph(
+        .{ .x = x0, .y = y0, .w = w, .h = h },
+        .{ .u0 = uv.u0, .v0 = uv.v0, .u1 = uv.u1, .v1 = uv.v1 },
+        font.g_atlas_texture,
+        color,
+    );
 }
 
 /// Update terminal cells for a specific surface in a split tree.
@@ -394,7 +383,6 @@ pub fn rebuildCells(rend: *Renderer) void {
 /// Draw terminal grid from CPU cell buffers. Does NOT require the terminal
 /// mutex — all terminal state was already read by updateTerminalCells().
 pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offset_y: f32) void {
-    const gl = AppWindow.gpu.glTable();
     const g_theme = AppWindow.g_theme;
 
     image_renderer.draw(rend, window_height, offset_x, offset_y, .below_bg);
@@ -434,7 +422,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
     // --- Draw color emoji cells (premultiplied alpha blend) ---
     if (rend.color_fg_cell_count > 0 and cell_pipeline.color_fg.program != 0) {
         // Color emoji bitmaps are premultiplied-alpha, so use (ONE, 1-SRC_ALPHA).
-        gl.BlendFunc.?(c.GL_ONE, c.GL_ONE_MINUS_SRC_ALPHA);
+        gpu.state.setBlendMode(.premultiplied);
         const p = cell_pipeline.color_fg;
         p.use();
         p.setVec2("cellSize", font.cell_width, font.cell_height);
@@ -448,7 +436,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.color_fg_cell_count));
         gl_init.g_draw_call_count += 1;
         // Restore standard blend for the cursor/titlebar draws that follow.
-        gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
+        gpu.state.setBlendMode(.alpha);
     }
 
     image_renderer.draw(rend, window_height, offset_x, offset_y, .above_text);
@@ -461,9 +449,6 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         if (rend.cached_cursor_effective) |style| {
             const px = offset_x + @as(f32, @floatFromInt(rend.cached_cursor_x)) * font.cell_width;
             const py = window_height - offset_y - ((@as(f32, @floatFromInt(rend.cached_cursor_y)) + 1) * font.cell_height);
-
-            gl.UseProgram.?(gl_init.shader_program);
-            gl.BindVertexArray.?(gl_init.vao);
 
             const cursor_color = g_theme.cursor_color;
             const cursor_thickness: f32 = @max(2.0, @as(f32, @floatFromInt(font.box_thickness)));
@@ -486,18 +471,12 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         }
     }
 
-    gl.BindVertexArray.?(0);
-    gl.BindTexture.?(c.GL_TEXTURE_2D, 0);
 }
 
 fn drawUrlUnderline(rend: *const Renderer, window_height: f32, offset_x: f32, offset_y: f32) void {
-    const gl = AppWindow.gpu.glTable();
     const thickness: f32 = @max(1.0, @as(f32, @floatFromInt(font.box_thickness)));
     const underline_y_offset: f32 = @max(2.0, thickness);
     const color = AppWindow.g_theme.cursor_color;
-
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.BindVertexArray.?(gl_init.vao);
 
     for (0..rend.snap_rows) |row| {
         var col: usize = 0;

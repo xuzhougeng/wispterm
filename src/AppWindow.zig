@@ -394,8 +394,7 @@ const RemoteAiAgentOpenRequest = struct {
 /// background image (if any) over the cleared color. The current viewport
 /// must already cover (0,0)..(fb_w,fb_h).
 fn clearWithBackground(fb_w: c_int, fb_h: c_int) void {
-    gpu.glTable().ClearColor.?(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
-    gpu.glTable().Clear.?(gpu.c.GL_COLOR_BUFFER_BIT);
+    gpu.state.clear(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
     background_image.drawFullscreen(@floatFromInt(fb_w), @floatFromInt(fb_h));
 }
 
@@ -530,7 +529,7 @@ fn logSwapDiagnosticsIfChanged(win: *window_backend.Window, fb_width: c_int, fb_
 }
 
 fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
-    gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
     gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -1404,7 +1403,7 @@ fn onPlatformResize(width: i32, height: i32) void {
                 }
                 if (needs_rebuild) cell_renderer.rebuildCells(rend);
 
-                gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+                gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
                 gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                 clearWithBackground(fb_width, fb_height);
 
@@ -1420,7 +1419,7 @@ fn onPlatformResize(width: i32, height: i32) void {
             }
         } else {
             // Multiple splits: render each surface in its own viewport
-            gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+            gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
             gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             clearWithBackground(fb_width, fb_height);
 
@@ -1435,7 +1434,7 @@ fn onPlatformResize(width: i32, height: i32) void {
                 const rend = &rect.surface.surface_renderer;
 
                 const viewport_y = fb_height - rect.y - rect.height;
-                gpu.glTable().Viewport.?(rect.x, viewport_y, rect.width, rect.height);
+                gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
                 gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
                 {
@@ -1462,12 +1461,12 @@ fn onPlatformResize(width: i32, height: i32) void {
             }
 
             // Restore full viewport for dividers
-            gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+            gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
             gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
         }
     } else {
-        gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+        gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
         gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
         clearWithBackground(fb_width, fb_height);
         titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -2848,7 +2847,8 @@ fn clearIconFont(allocator: std.mem.Allocator) void {
         font.g_icon_atlas = null;
     }
     if (font.g_icon_atlas_texture != 0) {
-        gpu.glTable().DeleteTextures.?(1, &font.g_icon_atlas_texture);
+        var t = gpu.Texture.fromHandle(font.g_icon_atlas_texture);
+        t.destroy();
         font.g_icon_atlas_texture = 0;
         font.g_icon_atlas_modified = 0;
     }
@@ -2878,7 +2878,8 @@ fn clearTitlebarFont(allocator: std.mem.Allocator) void {
         font.g_titlebar_atlas = null;
     }
     if (font.g_titlebar_atlas_texture != 0) {
-        gpu.glTable().DeleteTextures.?(1, &font.g_titlebar_atlas_texture);
+        var t = gpu.Texture.fromHandle(font.g_titlebar_atlas_texture);
+        t.destroy();
         font.g_titlebar_atlas_texture = 0;
         font.g_titlebar_atlas_modified = 0;
     }
@@ -3273,8 +3274,6 @@ fn renderImePreedit(win: *window_backend.Window, fb_width: i32, fb_height: i32) 
     const bg = g_theme.selection_background;
     const fg = g_theme.selection_foreground orelse g_theme.foreground;
 
-    gpu.glTable().UseProgram.?(gpu.gl_init.shader_program);
-    gpu.glTable().BindVertexArray.?(gpu.gl_init.vao);
     gpu.gl_init.renderQuad(x, y, width, height, bg);
     gpu.gl_init.renderQuad(x, y, width, @max(1.0, @as(f32, @floatFromInt(font.box_thickness))), g_theme.cursor_color);
 
@@ -3285,9 +3284,6 @@ fn renderImePreedit(win: *window_backend.Window, fb_width: i32, fb_height: i32) 
         cell_renderer.renderChar(@intCast(cp), cursor_x, y, fg);
         cursor_x += font.cell_width;
     }
-
-    gpu.glTable().BindVertexArray.?(0);
-    gpu.glTable().BindTexture.?(gpu.c.GL_TEXTURE_2D, 0);
 }
 
 /// Handle a bell notification from the terminal.
@@ -3495,7 +3491,8 @@ fn runMainLoop(self: *AppWindow) !void {
             font.g_icon_atlas = null;
         }
         if (font.g_icon_atlas_texture != 0) {
-            gpu.glTable().DeleteTextures.?(1, &font.g_icon_atlas_texture);
+            var t = gpu.Texture.fromHandle(font.g_icon_atlas_texture);
+            t.destroy();
             font.g_icon_atlas_texture = 0;
         }
 
@@ -3508,7 +3505,8 @@ fn runMainLoop(self: *AppWindow) !void {
             font.g_titlebar_atlas = null;
         }
         if (font.g_titlebar_atlas_texture != 0) {
-            gpu.glTable().DeleteTextures.?(1, &font.g_titlebar_atlas_texture);
+            var t = gpu.Texture.fromHandle(font.g_titlebar_atlas_texture);
+            t.destroy();
             font.g_titlebar_atlas_texture = 0;
         }
     }
@@ -3658,8 +3656,8 @@ fn runMainLoop(self: *AppWindow) !void {
         }
     }
 
-    gpu.glTable().Enable.?(gpu.c.GL_BLEND);
-    gpu.glTable().BlendFunc.?(gpu.c.GL_SRC_ALPHA, gpu.c.GL_ONE_MINUS_SRC_ALPHA);
+    gpu.state.setBlendEnabled(true);
+    gpu.state.setBlendMode(.alpha);
     logGpuDiagnosticsOnce();
 
     // Register resize callback so newly exposed pixels get filled with the
@@ -3853,7 +3851,7 @@ fn runMainLoop(self: *AppWindow) !void {
                     }
                     if (needs_rebuild) cell_renderer.rebuildCells(rend);
 
-                    gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+                    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
                     gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                     clearWithBackground(fb_width, fb_height);
 
@@ -3872,7 +3870,7 @@ fn runMainLoop(self: *AppWindow) !void {
                 }
             } else {
                 // Multiple splits: render with scissor/viewport per surface
-                gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+                gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
                 gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
                 clearWithBackground(fb_width, fb_height);
 
@@ -3891,7 +3889,7 @@ fn runMainLoop(self: *AppWindow) !void {
                         // Set viewport to this split's region
                         // OpenGL viewport: (x, y, width, height) where y is from bottom
                         const viewport_y = fb_height - rect.y - rect.height;
-                        gpu.glTable().Viewport.?(rect.x, viewport_y, rect.width, rect.height);
+                        gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
 
                         // Set projection for this viewport size
                         gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
@@ -3931,7 +3929,7 @@ fn runMainLoop(self: *AppWindow) !void {
                     }
 
                     // Restore full viewport for dividers
-                    gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+                    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
                     gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
                     // Draw split dividers
@@ -3939,7 +3937,7 @@ fn runMainLoop(self: *AppWindow) !void {
                 }
             }
         } else if (!post_process.g_post_enabled) {
-            gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+            gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
             gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             clearWithBackground(fb_width, fb_height);
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -3948,7 +3946,7 @@ fn runMainLoop(self: *AppWindow) !void {
             file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         }
 
-        gpu.glTable().Viewport.?(0, 0, fb_width, fb_height);
+        gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
         gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderStartupShortcutsOverlay(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);

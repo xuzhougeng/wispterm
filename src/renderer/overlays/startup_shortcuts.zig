@@ -167,8 +167,6 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
     const alpha = startupShortcutsOpacity();
     if (alpha <= 0.01) return;
 
-    const gl = AppWindow.gpu.glTable();
-
     var max_keys_width: f32 = 0;
     var max_action_width: f32 = 0;
     for (STARTUP_SHORTCUT_ENTRIES) |entry| {
@@ -206,12 +204,6 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
 
     const box_x = @round(@max(12, (window_width - box_width) / 2));
     const box_y = @round(@max(12, (content_height - box_height) / 2));
-
-    gl.Enable.?(c.GL_BLEND);
-    gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.ActiveTexture.?(c.GL_TEXTURE0);
-    gl.BindVertexArray.?(gl_init.vao);
 
     const panel_color = mixColor(AppWindow.g_theme.background, AppWindow.g_theme.foreground, 0.035);
     const border_color = mixColor(AppWindow.g_theme.background, AppWindow.g_theme.cursor_color, 0.24);

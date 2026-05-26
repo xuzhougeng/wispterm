@@ -24,7 +24,6 @@ pub threadlocal var quad: Buffer = .{ .handle = 0, .target = 0 };
 /// On shader link failure a pipeline's `program` is 0 (draws are guarded on
 /// `program != 0`); its VAO is still owned and released by `deinit()`.
 pub fn init() void {
-    const gl = gpu.glTable();
     const shaders = gpu.shaders;
 
     // Shared unit quad (triangle strip: 4 verts)
@@ -38,73 +37,78 @@ pub fn init() void {
     quad.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), c.GL_STATIC_DRAW);
 
     // --- BG VAO ---
-    var bg_vao: c.GLuint = 0;
-    gl.GenVertexArrays.?(1, &bg_vao);
+    // attr 0 (loc=0, count=2): position xy from quad buffer (divisor=0)
+    // attr 1 (loc=1, count=2): grid_col/grid_row from bg_instances (divisor=1)
+    // attr 2 (loc=2, count=3): r/g/b from bg_instances (divisor=1)
+    // attr 3 (loc=3, count=1): alpha from bg_instances (divisor=1)
     bg_instances = Buffer.init(c.GL_ARRAY_BUFFER);
-    gl.BindVertexArray.?(bg_vao);
-    quad.bind();
-    gl.EnableVertexAttribArray.?(0);
-    gl.VertexAttribPointer.?(0, 2, c.GL_FLOAT, c.GL_FALSE, 2 * @sizeOf(f32), null);
     bg_instances.allocate(@sizeOf(Renderer.CellBg) * Renderer.MAX_CELLS, c.GL_STREAM_DRAW);
-    const bg_stride: c.GLsizei = @sizeOf(Renderer.CellBg);
-    gl.EnableVertexAttribArray.?(1);
-    gl.VertexAttribPointer.?(1, 2, c.GL_FLOAT, c.GL_FALSE, bg_stride, @ptrFromInt(0));
-    gl.VertexAttribDivisor.?(1, 1);
-    gl.EnableVertexAttribArray.?(2);
-    gl.VertexAttribPointer.?(2, 3, c.GL_FLOAT, c.GL_FALSE, bg_stride, @ptrFromInt(2 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(2, 1);
-    gl.EnableVertexAttribArray.?(3);
-    gl.VertexAttribPointer.?(3, 1, c.GL_FLOAT, c.GL_FALSE, bg_stride, @ptrFromInt(5 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(3, 1);
-    gl.BindVertexArray.?(0);
+    const bg_stride = @sizeOf(Renderer.CellBg);
+    const bg_vao = gpu.vertex.buildVertexArray(&.{
+        .{
+            .buffer = quad,
+            .attrs = &.{
+                .{ .loc = 0, .count = 2, .stride = 2 * @sizeOf(f32), .offset = 0 },
+            },
+        },
+        .{
+            .buffer = bg_instances,
+            .attrs = &.{
+                .{ .loc = 1, .count = 2, .stride = bg_stride, .offset = 0,                  .divisor = 1 },
+                .{ .loc = 2, .count = 3, .stride = bg_stride, .offset = 2 * @sizeOf(f32),   .divisor = 1 },
+                .{ .loc = 3, .count = 1, .stride = bg_stride, .offset = 5 * @sizeOf(f32),   .divisor = 1 },
+            },
+        },
+    });
 
     // --- FG VAO ---
-    var fg_vao: c.GLuint = 0;
-    gl.GenVertexArrays.?(1, &fg_vao);
+    // attr 0 (loc=0, count=2): position xy from quad buffer (divisor=0)
+    // attr 1 (loc=1, count=2): grid_col/grid_row (divisor=1)
+    // attr 2 (loc=2, count=4): glyph_x/y/w/h (divisor=1)
+    // attr 3 (loc=3, count=4): uv_left/top/right/bottom (divisor=1)
+    // attr 4 (loc=4, count=3): r/g/b (divisor=1)
     fg_instances = Buffer.init(c.GL_ARRAY_BUFFER);
-    gl.BindVertexArray.?(fg_vao);
-    quad.bind();
-    gl.EnableVertexAttribArray.?(0);
-    gl.VertexAttribPointer.?(0, 2, c.GL_FLOAT, c.GL_FALSE, 2 * @sizeOf(f32), null);
     fg_instances.allocate(@sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, c.GL_STREAM_DRAW);
-    const fg_stride: c.GLsizei = @sizeOf(Renderer.CellFg);
-    gl.EnableVertexAttribArray.?(1);
-    gl.VertexAttribPointer.?(1, 2, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(0));
-    gl.VertexAttribDivisor.?(1, 1);
-    gl.EnableVertexAttribArray.?(2);
-    gl.VertexAttribPointer.?(2, 4, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(2 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(2, 1);
-    gl.EnableVertexAttribArray.?(3);
-    gl.VertexAttribPointer.?(3, 4, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(6 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(3, 1);
-    gl.EnableVertexAttribArray.?(4);
-    gl.VertexAttribPointer.?(4, 3, c.GL_FLOAT, c.GL_FALSE, fg_stride, @ptrFromInt(10 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(4, 1);
-    gl.BindVertexArray.?(0);
+    const fg_stride = @sizeOf(Renderer.CellFg);
+    const fg_vao = gpu.vertex.buildVertexArray(&.{
+        .{
+            .buffer = quad,
+            .attrs = &.{
+                .{ .loc = 0, .count = 2, .stride = 2 * @sizeOf(f32), .offset = 0 },
+            },
+        },
+        .{
+            .buffer = fg_instances,
+            .attrs = &.{
+                .{ .loc = 1, .count = 2, .stride = fg_stride, .offset = 0,                   .divisor = 1 },
+                .{ .loc = 2, .count = 4, .stride = fg_stride, .offset = 2  * @sizeOf(f32),   .divisor = 1 },
+                .{ .loc = 3, .count = 4, .stride = fg_stride, .offset = 6  * @sizeOf(f32),   .divisor = 1 },
+                .{ .loc = 4, .count = 3, .stride = fg_stride, .offset = 10 * @sizeOf(f32),   .divisor = 1 },
+            },
+        },
+    });
 
     // --- Color FG VAO (same layout as FG) ---
-    var color_fg_vao: c.GLuint = 0;
-    gl.GenVertexArrays.?(1, &color_fg_vao);
     color_fg_instances = Buffer.init(c.GL_ARRAY_BUFFER);
-    gl.BindVertexArray.?(color_fg_vao);
-    quad.bind();
-    gl.EnableVertexAttribArray.?(0);
-    gl.VertexAttribPointer.?(0, 2, c.GL_FLOAT, c.GL_FALSE, 2 * @sizeOf(f32), null);
     color_fg_instances.allocate(@sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, c.GL_STREAM_DRAW);
-    const color_fg_stride: c.GLsizei = @sizeOf(Renderer.CellFg); // same CellFg layout as fg
-    gl.EnableVertexAttribArray.?(1);
-    gl.VertexAttribPointer.?(1, 2, c.GL_FLOAT, c.GL_FALSE, color_fg_stride, @ptrFromInt(0));
-    gl.VertexAttribDivisor.?(1, 1);
-    gl.EnableVertexAttribArray.?(2);
-    gl.VertexAttribPointer.?(2, 4, c.GL_FLOAT, c.GL_FALSE, color_fg_stride, @ptrFromInt(2 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(2, 1);
-    gl.EnableVertexAttribArray.?(3);
-    gl.VertexAttribPointer.?(3, 4, c.GL_FLOAT, c.GL_FALSE, color_fg_stride, @ptrFromInt(6 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(3, 1);
-    gl.EnableVertexAttribArray.?(4);
-    gl.VertexAttribPointer.?(4, 3, c.GL_FLOAT, c.GL_FALSE, color_fg_stride, @ptrFromInt(10 * @sizeOf(f32)));
-    gl.VertexAttribDivisor.?(4, 1);
-    gl.BindVertexArray.?(0);
+    const color_fg_stride = @sizeOf(Renderer.CellFg); // same CellFg layout as fg
+    const color_fg_vao = gpu.vertex.buildVertexArray(&.{
+        .{
+            .buffer = quad,
+            .attrs = &.{
+                .{ .loc = 0, .count = 2, .stride = 2 * @sizeOf(f32), .offset = 0 },
+            },
+        },
+        .{
+            .buffer = color_fg_instances,
+            .attrs = &.{
+                .{ .loc = 1, .count = 2, .stride = color_fg_stride, .offset = 0,                   .divisor = 1 },
+                .{ .loc = 2, .count = 4, .stride = color_fg_stride, .offset = 2  * @sizeOf(f32),   .divisor = 1 },
+                .{ .loc = 3, .count = 4, .stride = color_fg_stride, .offset = 6  * @sizeOf(f32),   .divisor = 1 },
+                .{ .loc = 4, .count = 3, .stride = color_fg_stride, .offset = 10 * @sizeOf(f32),   .divisor = 1 },
+            },
+        },
+    });
 
     bg = Pipeline.init(shaders.bg_vertex_source, shaders.bg_fragment_source, bg_vao);
     fg = Pipeline.init(shaders.fg_vertex_source, shaders.fg_fragment_source, fg_vao);

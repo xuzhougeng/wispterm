@@ -148,7 +148,6 @@ pub fn renderResizeOverlayForSurface(surface: *Surface, window_width: f32, windo
 
 /// Core function to render a resize overlay with specific dimensions.
 fn renderResizeOverlayText(cols: u16, rows: u16, window_width: f32, window_height: f32, top_offset: f32, alpha: f32) void {
-    const gl = AppWindow.gpu.glTable();
     if (alpha <= 0.01) return;
 
     // Format the size string: "cols x rows"
@@ -175,12 +174,6 @@ fn renderResizeOverlayText(cols: u16, rows: u16, window_width: f32, window_heigh
     const box_x = (window_width - box_width) / 2;
     const box_y = (content_height - box_height) / 2; // Centered in content area (GL coords)
 
-    // Enable blending
-    gl.Enable.?(c.GL_BLEND);
-    gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-
-    gl.UseProgram.?(gl_init.shader_program);
-    gl.BindVertexArray.?(gl_init.vao);
 
     // Draw rounded background box (black with alpha, slightly more transparent than scrollbar)
     const corner_radius: f32 = 6;

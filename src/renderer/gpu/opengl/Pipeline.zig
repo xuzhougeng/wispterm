@@ -100,6 +100,10 @@ pub fn setProjection(self: Pipeline) void {
     };
     gl.UniformMatrix4fv.?(gl.GetUniformLocation.?(self.program, "projection"), 1, c.GL_FALSE, &projection);
 }
+pub fn setMat4(self: Pipeline, name: [*c]const u8, m: *const [16]f32) void {
+    Context.gl.UseProgram.?(self.program);
+    Context.gl.UniformMatrix4fv.?(Context.gl.GetUniformLocation.?(self.program, name), 1, c.GL_FALSE, m);
+}
 pub fn setVec3(self: Pipeline, name: [*c]const u8, x: f32, y: f32, z: f32) void {
     Context.gl.Uniform3f.?(Context.gl.GetUniformLocation.?(self.program, name), x, y, z);
 }
