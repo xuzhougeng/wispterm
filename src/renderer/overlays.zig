@@ -8,7 +8,7 @@ const AppWindow = @import("../AppWindow.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const split_layout = AppWindow.split_layout;
 const browser_panel = AppWindow.browser_panel;
 const Surface = @import("../Surface.zig");
@@ -1112,7 +1112,7 @@ pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f3
     );
     const url_bar = browser_panel.urlBarBounds(bounds) orelse return;
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.Enable.?(c.GL_BLEND);
     gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     gl.UseProgram.?(gl_init.shader_program);
@@ -1169,7 +1169,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
     if (!g_command_palette_visible) return;
     commandPaletteSyncAgentHistoryRows();
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const layout = commandPaletteLayout(window_width, window_height, top_offset);
     const box_y = @round(window_height - layout.box_top_px - layout.box_h);
 
@@ -3150,7 +3150,7 @@ fn defaultAiModeLabel() []const u8 {
 pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: f32) void {
     if (!sessionLauncherVisible()) return;
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const layout = sessionLayout(window_width, window_height, top_offset);
     const box_y = @round(window_height - layout.box_top_px - layout.box_h);
 
@@ -3647,7 +3647,7 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
 
     const cfg = settingsCfg(allocator);
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const layout = settingsLayout(window_width, window_height, top_offset);
     const box_y = @round(window_height - layout.box_top_px - layout.box_h);
 
@@ -3716,7 +3716,7 @@ threadlocal var g_fps_value: f32 = 0; // Current FPS value to display
 
 /// Render a semi-transparent overlay over an unfocused split pane.
 pub fn renderUnfocusedOverlay(rect: SplitRect, window_height: f32) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const opacity = 1.0 - g_unfocused_split_opacity;
     if (opacity < 0.01) return;
 
@@ -3737,7 +3737,7 @@ pub fn renderUnfocusedOverlay(rect: SplitRect, window_height: f32) void {
 /// Assumes viewport is already set to the split's region.
 /// Uses true alpha blending so it blends with actual rendered content.
 pub fn renderUnfocusedOverlaySimple(width: f32, height: f32) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const alpha = 1.0 - g_unfocused_split_opacity;
     if (alpha < 0.01) return;
 
@@ -3787,7 +3787,7 @@ pub fn renderUnfocusedOverlaySimple(width: f32, height: f32) void {
 /// If split-divider-color is configured, uses that color (solid).
 /// Otherwise uses scrollbar-style rendering: black with alpha transparency.
 pub fn renderSplitDividers(active_tab: *const TabState, content_x: i32, content_y: i32, content_w: i32, content_h: i32, window_height: f32) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (!active_tab.tree.isSplit()) return;
 
     const allocator = AppWindow.g_allocator orelse return;
@@ -4168,7 +4168,7 @@ pub fn showCloseShortcutConfirm(duration_ms: i64) void {
 pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
     if (!g_window_close_confirm_visible) return;
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.Enable.?(c.GL_BLEND);
     gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     gl.UseProgram.?(gl_init.shader_program);
@@ -4527,7 +4527,7 @@ fn remoteStateColor(state: @import("../remote_client.zig").State) [3]f32 {
 }
 
 fn renderDebugLine(window_width: f32, y_pos: *f32, margin: f32, pad_h: f32, pad_v: f32, line_h: f32, text: []const u8, text_color: [3]f32) ?DebugLineRect {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (text.len == 0) return null;
 
     gl.UseProgram.?(gl_init.shader_program);

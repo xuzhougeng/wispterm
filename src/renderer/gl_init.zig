@@ -189,7 +189,7 @@ const overlay_fragment_source: [*c]const u8 =
 // ============================================================================
 
 pub fn compileShader(shader_type: c.GLenum, source: [*c]const u8) ?c.GLuint {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const shader = gl.CreateShader.?(shader_type);
     if (shader == 0) {
         const gl_err = if (gl.GetError) |getErr| getErr() else 0;
@@ -219,7 +219,7 @@ pub fn compileShader(shader_type: c.GLenum, source: [*c]const u8) ?c.GLuint {
 }
 
 fn linkProgram(vs_src: [*c]const u8, fs_src: [*c]const u8) c.GLuint {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const vs = compileShader(c.GL_VERTEX_SHADER, vs_src) orelse return 0;
     defer gl.DeleteShader.?(vs);
     const fs = compileShader(c.GL_FRAGMENT_SHADER, fs_src) orelse return 0;
@@ -247,7 +247,7 @@ fn linkProgram(vs_src: [*c]const u8, fs_src: [*c]const u8) c.GLuint {
 // ============================================================================
 
 pub fn initShaders() bool {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const vertex_shader = compileShader(c.GL_VERTEX_SHADER, vertex_shader_source) orelse return false;
     defer gl.DeleteShader.?(vertex_shader);
 
@@ -280,7 +280,7 @@ pub fn initShaders() bool {
 }
 
 pub fn initBuffers() void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.GenVertexArrays.?(1, &vao);
     gl.GenBuffers.?(1, &vbo);
     gl.BindVertexArray.?(vao);
@@ -293,7 +293,7 @@ pub fn initBuffers() void {
 }
 
 pub fn initInstancedBuffers() void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     // Shared unit quad (triangle strip: 4 verts)
     const quad_verts = [4][2]f32{
@@ -412,7 +412,7 @@ pub fn initInstancedBuffers() void {
 }
 
 pub fn initSolidTexture() void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const white_pixel = [_]u8{255};
     gl.GenTextures.?(1, &solid_texture);
     gl.BindTexture.?(c.GL_TEXTURE_2D, solid_texture);
@@ -426,7 +426,7 @@ pub fn initSolidTexture() void {
 // ============================================================================
 
 pub fn deinitInstancedResources() void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (bg_shader != 0) gl.DeleteProgram.?(bg_shader);
     if (fg_shader != 0) gl.DeleteProgram.?(fg_shader);
     if (color_fg_shader != 0) gl.DeleteProgram.?(color_fg_shader);
@@ -448,7 +448,7 @@ pub fn renderQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
 }
 
 pub fn renderQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const vertices = [6][4]f32{
         .{ x, y + h, 0.0, 0.0 },
         .{ x, y, 0.0, 1.0 },
@@ -481,7 +481,7 @@ pub fn renderQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32
 }
 
 pub fn setProjection(width: f32, height: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const projection = [16]f32{
         2.0 / width, 0.0,          0.0,  0.0,
         0.0,         2.0 / height, 0.0,  0.0,
@@ -495,7 +495,7 @@ pub fn setProjection(width: f32, height: f32) void {
 
 /// Set the orthographic projection matrix on a specific shader program.
 pub fn setProjectionForProgram(program: c.GLuint, window_height: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     var viewport: [4]c.GLint = undefined;
     gl.GetIntegerv.?(c.GL_VIEWPORT, &viewport);
     const width: f32 = @floatFromInt(viewport[2]);

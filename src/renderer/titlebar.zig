@@ -9,7 +9,7 @@ const AppWindow = @import("../AppWindow.zig");
 const font = AppWindow.font;
 const tab = AppWindow.tab;
 const cell_renderer = AppWindow.cell_renderer;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const font_backend = @import("../platform/font_backend.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const agent_detector = @import("../agent_detector.zig");
@@ -292,7 +292,7 @@ fn renderCloseIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
 /// Render a titlebar glyph at 1:1 atlas size (no scaling).
 /// Supports both grayscale (titlebar atlas) and color emoji (color atlas).
 pub fn renderTitlebarChar(codepoint: u32, x: f32, y: f32, color: [3]f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (codepoint < 32) return;
     const ch: Character = font.loadTitlebarGlyph(codepoint) orelse return;
     if (ch.region.width == 0 or ch.region.height == 0) return;
@@ -390,7 +390,7 @@ pub fn titlebarGlyphAdvance(codepoint: u32) f32 {
 }
 
 pub fn renderBellEmoji(x: f32, y: f32, opacity: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const bell = font.loadBellEmoji() orelse {
         renderTitlebarChar(0x1F514, x, y, .{ 1.0, 0.84, 0.0 });
         return;
@@ -445,7 +445,7 @@ pub fn renderBellEmoji(x: f32, y: f32, opacity: f32) void {
 
 /// Render an icon glyph centered within a button rect, using the icon atlas.
 pub fn renderIconGlyph(ch: Character, btn_x: f32, btn_y: f32, btn_w: f32, btn_h: f32, color: [3]f32, scale: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (ch.region.width == 0 or ch.region.height == 0) return;
 
     const gw = @as(f32, @floatFromInt(ch.size_x)) * scale;
@@ -488,7 +488,7 @@ pub fn renderIconGlyph(ch: Character, btn_x: f32, btn_y: f32, btn_w: f32, btn_h:
 ///
 /// OpenGL Y=0 is BOTTOM, so titlebar top = window_height - titlebar_h.
 pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (titlebar_h <= 0) return;
 
     gl.UseProgram.?(gl_init.shader_program);
@@ -1066,7 +1066,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
     if (!tab.g_sidebar_visible) return;
     const sidebar_w = sidebarWidth();
 
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.UseProgram.?(gl_init.shader_program);
     gl.ActiveTexture.?(c.GL_TEXTURE0);
     gl.BindVertexArray.?(gl_init.vao);
@@ -1322,7 +1322,7 @@ pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButt
 
 /// Render placeholder content for tabs that don't have a terminal yet.
 pub fn renderPlaceholderTab(window_width: f32, window_height: f32, top_pad: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.UseProgram.?(gl_init.shader_program);
     gl.ActiveTexture.?(c.GL_TEXTURE0);
     gl.BindVertexArray.?(gl_init.vao);

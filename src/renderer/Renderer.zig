@@ -11,8 +11,9 @@
 /// 2. Main render loop composites all surface textures to screen
 /// 3. No scissor needed - each surface has isolated render target
 ///
-/// Note: GL operations are performed by AppWindow since it owns the GL context.
-/// Renderer just stores the handles.
+/// Note: the GL context is owned by the GPU backend (`renderer/gpu/`); GL
+/// operations run against `AppWindow.gpu.glTable()`. Renderer just stores the
+/// handles.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ghostty_vt = @import("ghostty-vt");
@@ -336,7 +337,7 @@ pub fn fboPixelBytes(self: *const Renderer) usize {
 }
 
 fn deinitKittyResources(self: *Renderer) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     for (self.kitty_textures.items) |*tex| {
         if (tex.texture != 0) gl.DeleteTextures.?(1, &tex.texture);
     }

@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const Renderer = @import("Renderer.zig");
 
 const c = @cImport({
@@ -17,7 +17,7 @@ const c = @cImport({
 pub fn ensureRendererFBO(rend: *Renderer, width: u32, height: u32) void {
     if (!rend.needsFBOUpdate(width, height)) return;
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     // Clean up existing FBO if resizing
     if (rend.isFBOReady()) {
@@ -74,7 +74,7 @@ pub fn ensureRendererFBO(rend: *Renderer, width: u32, height: u32) void {
 pub fn cleanupRendererFBO(rend: *Renderer) void {
     if (!rend.isFBOReady()) return;
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     var texture = rend.getTexture();
     var fbo = rend.getFBO();
@@ -92,7 +92,7 @@ pub fn cleanupRendererFBO(rend: *Renderer) void {
 /// Bind a renderer's FBO for drawing.
 pub fn bindRendererFBO(rend: *Renderer) void {
     if (!rend.isFBOReady()) return;
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.BindFramebuffer.?(c.GL_FRAMEBUFFER, rend.getFBO());
     const size = rend.getFBOSize();
     gl.Viewport.?(0, 0, @intCast(size.width), @intCast(size.height));
@@ -100,7 +100,7 @@ pub fn bindRendererFBO(rend: *Renderer) void {
 
 /// Unbind FBO (return to default framebuffer).
 pub fn unbindFBO() void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.BindFramebuffer.?(c.GL_FRAMEBUFFER, 0);
 }
 
@@ -109,7 +109,7 @@ pub fn unbindFBO() void {
 pub fn drawRendererFBOToScreen(rend: *Renderer, x: f32, y: f32, w: f32, h: f32, window_height: f32, window_width: f32) void {
     if (!rend.isFBOReady()) return;
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     // Convert from top-left screen coords to OpenGL bottom-left coords
     const gl_y = window_height - y - h;

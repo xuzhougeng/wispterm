@@ -5,7 +5,7 @@ const AppWindow = @import("../AppWindow.zig");
 const qr_panel = @import("../weixin/qr_panel.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -41,7 +41,7 @@ fn rectY(window_height: f32, rect: qr_panel.Rect) f32 {
 }
 
 fn beginUi() void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.UseProgram.?(gl_init.shader_program);
     gl.ActiveTexture.?(c.GL_TEXTURE0);
     gl.BindVertexArray.?(gl_init.vao);
@@ -57,7 +57,7 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     }
     if (!qr_panel.visible()) return;
 
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.Enable.?(c.GL_BLEND);
     gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     beginUi();

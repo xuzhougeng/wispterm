@@ -21,7 +21,7 @@ const isMarkdownTableStart = md.isMarkdownTableStart;
 const tableBlockEnd = md.tableBlockEnd;
 
 const font = AppWindow.font;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const titlebar = AppWindow.titlebar;
 
 const c = @cImport({
@@ -121,7 +121,7 @@ pub fn render(
     left_panels_w: f32,
     right_panels_w: f32,
 ) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.Enable.?(c.GL_BLEND);
     gl.BlendFunc.?(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     gl.UseProgram.?(gl_init.shader_program);

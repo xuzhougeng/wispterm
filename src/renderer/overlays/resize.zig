@@ -5,7 +5,7 @@ const AppWindow = @import("../../AppWindow.zig");
 const Surface = @import("../../Surface.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const primitives = @import("primitives.zig");
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
 
@@ -150,7 +150,7 @@ pub fn renderResizeOverlayForSurface(surface: *Surface, window_width: f32, windo
 
 /// Core function to render a resize overlay with specific dimensions.
 fn renderResizeOverlayText(cols: u16, rows: u16, window_width: f32, window_height: f32, top_offset: f32, alpha: f32) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (alpha <= 0.01) return;
 
     // Format the size string: "cols x rows"

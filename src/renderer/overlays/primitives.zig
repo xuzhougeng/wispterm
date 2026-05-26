@@ -1,7 +1,7 @@
 //! Shared overlay drawing primitives.
 
 const AppWindow = @import("../../AppWindow.zig");
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 
 /// Render a rounded rectangle with the given color and alpha.
 /// Uses multiple quads to approximate rounded corners.

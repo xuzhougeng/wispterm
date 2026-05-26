@@ -8,7 +8,7 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const file_explorer = @import("../file_explorer.zig");
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -45,7 +45,7 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
     const explorer_w = file_explorer.width();
     if (explorer_w <= 0) return;
 
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.UseProgram.?(gl_init.shader_program);
     gl.ActiveTexture.?(c.GL_TEXTURE0);
     gl.BindVertexArray.?(gl_init.vao);

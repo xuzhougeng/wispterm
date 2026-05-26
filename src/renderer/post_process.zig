@@ -12,7 +12,7 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const cell_renderer = AppWindow.cell_renderer;
 const background_image = AppWindow.background_image;
 const Renderer = @import("Renderer.zig");
@@ -83,7 +83,7 @@ fn buildPostFragmentSource(allocator: std.mem.Allocator, user_shader: []const u8
 
 /// Load and compile a custom post-processing shader from a file
 fn initPostShader(allocator: std.mem.Allocator, shader_path: []const u8) bool {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     // Read shader source file
     const file = std.fs.cwd().openFile(shader_path, .{}) catch |err| {
         std.debug.print("Failed to open shader file '{s}': {}\n", .{ shader_path, err });
@@ -161,7 +161,7 @@ fn initPostShader(allocator: std.mem.Allocator, shader_path: []const u8) bool {
 
 /// Create or resize the off-screen framebuffer for post-processing
 fn ensurePostFBO(width: c_int, height: c_int) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (width == g_post_fb_width and height == g_post_fb_height and g_post_fbo != 0) return;
 
     // Delete old FBO/texture if resizing
@@ -204,7 +204,7 @@ fn ensurePostFBO(width: c_int, height: c_int) void {
 
 /// Render the fullscreen quad with post-processing shader applied
 fn renderPostProcess(width: c_int, height: c_int) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     // Bind default framebuffer (screen)
     gl.BindFramebuffer.?(c.GL_FRAMEBUFFER, 0);
     gl.Viewport.?(0, 0, width, height);
@@ -254,7 +254,7 @@ fn renderPostProcess(width: c_int, height: c_int) void {
 /// Render with post-processing. Called after updateTerminalCells() has
 /// already been called under the lock — this only does GL work.
 pub fn renderFrameWithPostFromCells(rend: *const Renderer, width: c_int, height: c_int, padding: f32) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     ensurePostFBO(width, height);
 
     // 1. Render terminal to FBO
@@ -284,7 +284,7 @@ pub fn init(allocator: std.mem.Allocator, shader_path: ?[]const u8) void {
 /// Clean up post-processing GL resources.
 pub fn deinit() void {
     if (!g_post_enabled) return;
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.DeleteProgram.?(g_post_program);
     gl.DeleteVertexArrays.?(1, &g_post_vao);
     gl.DeleteBuffers.?(1, &g_post_vbo);

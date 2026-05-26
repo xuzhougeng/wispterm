@@ -7,7 +7,7 @@
 const std = @import("std");
 const Config = @import("../config.zig");
 const AppWindow = @import("../AppWindow.zig");
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 
 const c = @cImport({
     @cInclude("glad/gl.h");
@@ -51,7 +51,7 @@ fn freeLoadedPath() void {
 pub fn load(allocator: std.mem.Allocator, path: ?[]const u8) void {
     if (isLoaded(path)) return;
 
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     // Reset existing state
     if (g_texture != 0) {
@@ -110,7 +110,7 @@ pub fn load(allocator: std.mem.Allocator, path: ?[]const u8) void {
 /// Update the wrap mode after `g_mode` changes (without reloading the image).
 pub fn refreshWrapMode() void {
     if (g_texture == 0) return;
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const wrap: c.GLint = if (g_mode == .tile) c.GL_REPEAT else c.GL_CLAMP_TO_EDGE;
     gl.BindTexture.?(c.GL_TEXTURE_2D, g_texture);
     gl.TexParameteri.?(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, wrap);
@@ -119,7 +119,7 @@ pub fn refreshWrapMode() void {
 
 pub fn deinit() void {
     if (g_texture != 0) {
-        const gl = AppWindow.gl;
+        const gl = AppWindow.gpu.glTable();
         gl.DeleteTextures.?(1, &g_texture);
         g_texture = 0;
     }
@@ -198,7 +198,7 @@ fn computeUv(fb_w: f32, fb_h: f32, mode: Mode) Uv {
 /// (used to flip Y in the projection matrix used by the simple shader).
 pub fn drawFullscreen(viewport_width: f32, viewport_height: f32) void {
     if (!g_enabled or g_texture == 0) return;
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (gl_init.simple_color_shader == 0) return;
 
     const uv = computeUv(viewport_width, viewport_height, g_mode);

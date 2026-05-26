@@ -4,7 +4,7 @@ const std = @import("std");
 const AppWindow = @import("../../AppWindow.zig");
 const Surface = @import("../../Surface.zig");
 const scrollbar_model = @import("../../scrollbar_model.zig");
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const primitives = @import("primitives.zig");
 const mixColor = primitives.mixColor;
 
@@ -115,7 +115,7 @@ fn scrollbarUpdateFade(surface: *Surface) void {
 /// view_width/view_height are the viewport dimensions (not full window).
 /// top_padding is the padding from the top of the viewport to the terminal content.
 pub fn renderScrollbarForSurface(surface: *Surface, view_width: f32, view_height: f32, top_padding: f32) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const geo = scrollbarGeometryForSurface(surface, view_height, top_padding) orelse return;
 
     scrollbarUpdateFade(surface);

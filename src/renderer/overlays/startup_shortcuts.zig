@@ -4,7 +4,7 @@ const std = @import("std");
 const AppWindow = @import("../../AppWindow.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const keybind = @import("../../keybind.zig");
 const primitives = @import("primitives.zig");
 const mixColor = primitives.mixColor;
@@ -169,7 +169,7 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
     const alpha = startupShortcutsOpacity();
     if (alpha <= 0.01) return;
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     var max_keys_width: f32 = 0;
     var max_action_width: f32 = 0;

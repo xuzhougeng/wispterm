@@ -571,7 +571,7 @@ pub fn syncAtlasTexture(atlas_ptr: *?FontAtlas, texture_ptr: *c.GLuint, modified
     const modified = atlas.modified.load(.monotonic);
     if (modified <= modified_ptr.*) return;
 
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const size: c_int = @intCast(atlas.size);
 
     // Pick GL format based on atlas pixel format.
@@ -1197,7 +1197,7 @@ pub fn findOrLoadFallbackFace(codepoint: u32, alloc: std.mem.Allocator) ?freetyp
 
 /// Preload common character ranges
 pub fn preloadCharacters(face: freetype.Face) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.PixelStorei.?(c.GL_UNPACK_ALIGNMENT, 1);
 
     // Store face for later on-demand loading
@@ -1366,7 +1366,7 @@ pub fn memoryStats() MemoryStats {
 
 /// Clear all GL textures from the glyph cache and reset it.
 pub fn clearGlyphCache(allocator: std.mem.Allocator) void {
-    const gl = &AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     glyph_cache.deinit(allocator);
     glyph_cache = .empty;

@@ -7,7 +7,7 @@ const markdown_preview = @import("../markdown_preview.zig");
 const ui_perf = @import("../ui_perf.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const c = @cImport({
     @cInclude("glad/gl.h");
     @cInclude("stb_image.h");
@@ -55,7 +55,7 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32, right_offs
 
     const panel_x = window_width - right_offset - panel_w;
 
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.UseProgram.?(gl_init.shader_program);
     gl.ActiveTexture.?(c.GL_TEXTURE0);
     gl.BindVertexArray.?(gl_init.vao);
@@ -605,7 +605,7 @@ fn renderImageDocument(
     const draw_top = body_top + (body_h - draw_h) / 2 + panel.imagePanY();
     const draw_y = window_height - draw_top - draw_h;
 
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const clip_x: c.GLint = @intFromFloat(@max(0, @floor(content_x)));
     const clip_y: c.GLint = @intFromFloat(@max(0, @floor(window_height - body_top - body_h)));
     const clip_w: c.GLsizei = @intFromFloat(@max(0, @ceil(content_w)));
@@ -659,7 +659,7 @@ fn ensureImageTexture() bool {
     if (data == null or w <= 0 or h <= 0) return false;
     defer c.stbi_image_free(data);
 
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     gl.GenTextures.?(1, &g_image_texture);
     if (g_image_texture == 0) return false;
 
@@ -679,7 +679,7 @@ fn ensureImageTexture() bool {
 
 fn drawImageTexture(x: f32, y: f32, w: f32, h: f32, window_height: f32) void {
     if (g_image_texture == 0 or gl_init.simple_color_shader == 0) return;
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     gl.UseProgram.?(gl_init.simple_color_shader);
     gl_init.setProjectionForProgram(gl_init.simple_color_shader, window_height);
@@ -707,7 +707,7 @@ fn drawImageTexture(x: f32, y: f32, w: f32, h: f32, window_height: f32) void {
 
 fn unloadImageTexture() void {
     if (g_image_texture != 0) {
-        const gl = AppWindow.gl;
+        const gl = AppWindow.gpu.glTable();
         gl.DeleteTextures.?(1, &g_image_texture);
         g_image_texture = 0;
     }

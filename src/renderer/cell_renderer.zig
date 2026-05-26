@@ -12,7 +12,7 @@ const Renderer = @import("Renderer.zig");
 const AppWindow = @import("../AppWindow.zig");
 const font = AppWindow.font;
 const tab = AppWindow.tab;
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const image_renderer = @import("image_renderer.zig");
 
 const c = @cImport({
@@ -36,7 +36,7 @@ pub threadlocal var g_current_render_surface: ?*Surface = null;
 /// Render a single character at the given position using the text shader.
 /// Used for UI text (placeholder messages, overlays), not terminal cells.
 pub fn renderChar(codepoint: u32, x: f32, y: f32, color: [3]f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
 
     // Skip control characters
     if (codepoint < 32) return;
@@ -400,7 +400,7 @@ pub fn rebuildCells(rend: *Renderer) void {
 /// Draw terminal grid from CPU cell buffers. Does NOT require the terminal
 /// mutex — all terminal state was already read by updateTerminalCells().
 pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offset_y: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const g_theme = AppWindow.g_theme;
 
     image_renderer.draw(rend, window_height, offset_x, offset_y, .below_bg);
@@ -507,7 +507,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
 }
 
 fn drawUrlUnderline(rend: *const Renderer, window_height: f32, offset_x: f32, offset_y: f32) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const thickness: f32 = @max(1.0, @as(f32, @floatFromInt(font.box_thickness)));
     const underline_y_offset: f32 = @max(2.0, thickness);
     const color = AppWindow.g_theme.cursor_color;

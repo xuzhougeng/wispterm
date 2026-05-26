@@ -12,7 +12,8 @@ const impl = switch (active) {
     .metal => @compileError("metal backend is Phase D (not yet implemented)"),
 };
 
-// Wired here; the cutover from AppWindow.gl to this backend completes in A2:
+// The active backend's surface. The GL table lives in the backend (moved out
+// of AppWindow in A2); the app reaches it through the decls below.
 pub const Context = impl.Context; // context lifecycle (owns the GL table)
 pub const c = impl.c; // GL constants/types (transition: removed from app code by A6)
 pub const gl_init = impl.gl_init; // shared GL helpers + buffers + shaders

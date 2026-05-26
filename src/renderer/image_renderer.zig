@@ -2,7 +2,7 @@ const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const Renderer = @import("Renderer.zig");
 const AppWindow = @import("../AppWindow.zig");
-const gl_init = AppWindow.gl_init;
+const gl_init = AppWindow.gpu.gl_init;
 const font = AppWindow.font;
 
 const c = @cImport({
@@ -81,7 +81,7 @@ pub fn snapshot(rend: *Renderer, terminal: *ghostty_vt.Terminal) void {
 }
 
 pub fn uploadPending(rend: *Renderer) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     const alloc = rend.surface.allocator;
 
     for (rend.kitty_pending_uploads.items) |pending| {
@@ -141,7 +141,7 @@ pub fn draw(
     offset_y: f32,
     layer: Renderer.KittyLayer,
 ) void {
-    const gl = AppWindow.gl;
+    const gl = AppWindow.gpu.glTable();
     if (gl_init.simple_color_shader == 0) return;
 
     gl.UseProgram.?(gl_init.simple_color_shader);
