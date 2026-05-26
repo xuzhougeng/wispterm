@@ -289,6 +289,11 @@ theme: ?[]const u8 = null,
 /// platform/pty_command.zig; any other value is treated as a raw command path.
 shell: []const u8 = platform_pty_command.default_shell_name,
 
+/// Name of the saved AI profile used as the default for startup auto-open,
+/// remote auto-open, and the "New Agent" command. Empty falls back to the
+/// first saved profile.
+@"ai-default-profile": []const u8 = "",
+
 // ============================================================================
 // Remote Access (opt-in foundations)
 // ============================================================================
@@ -757,6 +762,8 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         };
     } else if (std.mem.eql(u8, key, "shell")) {
         self.shell = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "ai-default-profile")) {
+        self.@"ai-default-profile" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "remote-enabled")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"remote-enabled" = true;
@@ -1830,4 +1837,13 @@ test "config: remote session key parses" {
 test "config: version flags are special commands" {
     try std.testing.expect(isSpecialCommand("version"));
     try std.testing.expect(isSpecialCommand("v"));
+}
+
+test "config: ai-default-profile parses" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqualStrings("", cfg.@"ai-default-profile");
+    cfg.applyKeyValue(allocator, "ai-default-profile", "GPT-4o", ".");
+    try std.testing.expectEqualStrings("GPT-4o", cfg.@"ai-default-profile");
 }
