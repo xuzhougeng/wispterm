@@ -129,6 +129,14 @@ pub fn endClip() void {
     gpu.glTable().Disable.?(c.GL_SCISSOR_TEST);
 }
 
+/// Toggle GL_BLEND. Lets callers that draw opaque content (e.g. a background
+/// image or post-process pass) disable blending for a draw and restore it,
+/// without touching raw GL (= the prior gl.Disable/Enable(GL_BLEND) bookends).
+pub fn setBlendEnabled(enabled: bool) void {
+    const gl = gpu.glTable();
+    if (enabled) gl.Enable.?(c.GL_BLEND) else gl.Disable.?(c.GL_BLEND);
+}
+
 pub fn fillQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     fillQuadAlpha(x, y, w, h, color, 1.0);
 }
