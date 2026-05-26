@@ -18,7 +18,6 @@ comptime {
     _ = @import("system_browser.zig");
     _ = @import("update_check.zig");
     _ = @import("update_install.zig");
-    _ = @import("updater_core.zig");
     _ = @import("platform/webview.zig");
 }
 

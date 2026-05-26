@@ -116,7 +116,7 @@ threadlocal var g_transfer_cancel_confirm_visible: bool = false;
 const UPDATE_PROMPT_DURATION_MS: i64 = 10000;
 const UPDATE_STATUS_DURATION_MS: i64 = 2500;
 const SSH_CWD_HELP_URL = "https://github.com/xuzhougeng/phantty#ssh-current-directory-for-downloads-and-uploads";
-const UpdatePromptAction = enum { none, open_release, install_update };
+const UpdatePromptAction = enum { none, open_release, download_update };
 threadlocal var g_update_prompt_until_ms: i64 = 0;
 threadlocal var g_update_prompt_buf: [128]u8 = undefined;
 threadlocal var g_update_prompt_len: usize = 0;
@@ -469,16 +469,16 @@ fn executeCommand(action: CommandAction) void {
             showUpdateCheckingToast();
             if (AppWindow.g_app) |app| app.requestManualUpdateCheck();
         },
-        .install_update => {
+        .download_update => {
             if (AppWindow.g_app) |app| {
-                if (app.hasInstallableUpdate()) {
+                if (app.hasDownloadableUpdate()) {
                     showUpdatePrompt(.{ .state = .downloading }, .none);
-                    app.requestUpdateInstall();
+                    app.requestUpdateDownload();
                 } else {
-                    showUpdateInstallUnavailableToast();
+                    showUpdateDownloadUnavailableToast();
                 }
             } else {
-                showUpdateInstallUnavailableToast();
+                showUpdateDownloadUnavailableToast();
             }
         },
         .open_latest_release => openLatestRelease(),
@@ -4021,9 +4021,9 @@ test "overlays: transfer interruption prompt returns explicit actions" {
     );
 }
 
-test "overlays: update prompt action selection prefers installable asset" {
+test "overlays: update prompt action selection prefers downloadable asset" {
     try std.testing.expectEqual(
-        UpdatePromptAction.install_update,
+        UpdatePromptAction.download_update,
         updatePromptActionForResult(.{
             .state = .update_available,
             .release_url = "https://example.test/releases/v0.28.0",
@@ -4033,7 +4033,7 @@ test "overlays: update prompt action selection prefers installable asset" {
     try std.testing.expectEqual(
         UpdatePromptAction.open_release,
         updatePromptActionForResult(.{
-            .state = .install_failed,
+            .state = .download_failed,
             .release_url = "https://example.test/releases/v0.28.0",
         }),
     );
@@ -4119,12 +4119,12 @@ pub fn showUpdateCheckResult(result: update_check.CheckResult) void {
 
 fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromptAction {
     return if (result.state == .update_available and result.asset_download_url.len > 0)
-        .install_update
+        .download_update
     else if (result.state == .update_available and result.release_url.len > 0)
         .open_release
     else if (result.state == .failed and result.release_url.len > 0)
         .open_release
-    else if (result.state == .install_failed and result.release_url.len > 0)
+    else if (result.state == .download_failed and result.release_url.len > 0)
         .open_release
     else
         .none;
@@ -4134,7 +4134,7 @@ fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction
     var status_buf: [96]u8 = undefined;
     const status = update_check.formatStatusMessage(&status_buf, result) catch return;
     const suffix = switch (action) {
-        .install_update => "  click to install",
+        .download_update => "  click to download",
         .open_release => "  click to open",
         .none => "",
     };
@@ -4152,7 +4152,7 @@ fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction
     g_update_prompt_until_ms = std.time.milliTimestamp() + if (action != .none) UPDATE_PROMPT_DURATION_MS else UPDATE_STATUS_DURATION_MS;
 }
 
-fn showUpdateInstallUnavailableToast() void {
+fn showUpdateDownloadUnavailableToast() void {
     const msg = std.fmt.bufPrint(&g_update_prompt_buf, "No update ready; run Check for Updates", .{}) catch return;
     g_update_prompt_len = msg.len;
     g_update_prompt_url_len = 0;
@@ -4468,16 +4468,16 @@ fn openStoredPromptUrl() void {
 
 pub fn activateUpdatePrompt() void {
     switch (g_update_prompt_action) {
-        .install_update => {
+        .download_update => {
             if (AppWindow.g_app) |app| {
-                if (app.hasInstallableUpdate()) {
+                if (app.hasDownloadableUpdate()) {
                     showUpdatePrompt(.{ .state = .downloading }, .none);
-                    app.requestUpdateInstall();
+                    app.requestUpdateDownload();
                 } else {
-                    showUpdateInstallUnavailableToast();
+                    showUpdateDownloadUnavailableToast();
                 }
             } else {
-                showUpdateInstallUnavailableToast();
+                showUpdateDownloadUnavailableToast();
             }
         },
         .open_release => openStoredPromptUrl(),

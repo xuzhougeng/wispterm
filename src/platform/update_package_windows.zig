@@ -2,24 +2,6 @@ const std = @import("std");
 const release_package = @import("../release_package.zig");
 
 const embedded_browser_payload_path = "WebView2Loader.dll";
-const windows_main_executable_path = "phantty.exe";
-const windows_updater_executable_path = "phantty-updater.exe";
-
-const windows_portable_payload = [_]release_package.PayloadEntry{
-    .{ .path = windows_main_executable_path },
-    .{ .path = windows_updater_executable_path },
-    .{ .path = "version.txt" },
-    .{ .path = "plugins", .directory = true },
-    .{ .path = embedded_browser_payload_path, .optional = true },
-};
-
-const windows_portable_embedded_browser_payload = [_]release_package.PayloadEntry{
-    .{ .path = windows_main_executable_path },
-    .{ .path = windows_updater_executable_path },
-    .{ .path = "version.txt" },
-    .{ .path = "plugins", .directory = true },
-    .{ .path = embedded_browser_payload_path },
-};
 
 const AssetNameParts = struct {
     prefix: []const u8,
@@ -73,24 +55,6 @@ pub fn matchesAssetName(name: []const u8, tag_name: []const u8, package: release
 
 pub fn embeddedBrowserPayloadPath() []const u8 {
     return embedded_browser_payload_path;
-}
-
-pub fn mainExecutablePath(package: release_package.Package) ![]const u8 {
-    if (package.platform != .windows) return error.UnsupportedReleasePackage;
-    return windows_main_executable_path;
-}
-
-pub fn updaterExecutablePath(package: release_package.Package) ![]const u8 {
-    if (package.platform != .windows) return error.UnsupportedReleasePackage;
-    return windows_updater_executable_path;
-}
-
-pub fn payloadManifest(package: release_package.Package) ![]const release_package.PayloadEntry {
-    if (package.platform != .windows) return error.UnsupportedReleasePackage;
-    return switch (package.flavor) {
-        .baseline, .without_embedded_browser_payload => &windows_portable_payload,
-        .with_required_embedded_browser_payload => &windows_portable_embedded_browser_payload,
-    };
 }
 
 fn runtimeFlavor(webview_enabled: bool, has_embedded_browser_payload: bool) release_package.Flavor {

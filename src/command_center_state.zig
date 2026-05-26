@@ -34,7 +34,7 @@ pub const CommandAction = enum {
     export_ai_chat_markdown_clean,
     show_version,
     check_for_updates,
-    install_update,
+    download_update,
     open_latest_release,
 };
 
@@ -77,7 +77,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Export AI Chat Markdown Clean", .detail = "Save user prompts and the final AI result without thinking", .shortcut = "", .action = .export_ai_chat_markdown_clean },
     .{ .title = "Version", .detail = "Show Phantty version", .shortcut = app_metadata.version, .action = .show_version },
     .{ .title = "Check for Updates", .detail = "Check GitHub Releases for a newer Phantty version", .shortcut = "", .action = .check_for_updates },
-    .{ .title = "Install Update", .detail = "Install the last detected portable update", .shortcut = "", .action = .install_update },
+    .{ .title = "Download Update", .detail = "Download the latest update to your Downloads folder", .shortcut = "", .action = .download_update },
     .{ .title = "Open Latest Release", .detail = "Open the latest Phantty GitHub Release", .shortcut = "", .action = .open_latest_release },
 };
 
@@ -257,7 +257,7 @@ test "command center includes Select Agent History action" {
 
 test "command center includes update check actions" {
     try std.testing.expectEqual(CommandAction.check_for_updates, findCommandAction("Check for Updates"));
-    try std.testing.expectEqual(CommandAction.install_update, findCommandAction("Install Update"));
+    try std.testing.expectEqual(CommandAction.download_update, findCommandAction("Download Update"));
     try std.testing.expectEqual(CommandAction.open_latest_release, findCommandAction("Open Latest Release"));
 }
 

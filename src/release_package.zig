@@ -13,12 +13,6 @@ pub const Flavor = enum {
     without_embedded_browser_payload,
 };
 
-pub const PayloadEntry = struct {
-    path: []const u8,
-    directory: bool = false,
-    optional: bool = false,
-};
-
 pub const Package = struct {
     platform: Platform,
     flavor: Flavor = .baseline,

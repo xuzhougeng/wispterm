@@ -13,7 +13,6 @@ const keybind = @import("keybind.zig");
 const platform_com = @import("platform/com.zig");
 const platform_display = @import("platform/display.zig");
 const font_backend = @import("platform/font_backend.zig");
-const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_thread_control = @import("platform/thread_control.zig");
 const window_backend = @import("platform/window_backend.zig");
@@ -21,6 +20,7 @@ const remote = @import("remote_client.zig");
 const weixin = @import("weixin/controller.zig");
 const weixin_types = @import("weixin/types.zig");
 const platform_dirs = @import("platform/dirs.zig");
+const platform_open_url = @import("platform/open_url.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
 
@@ -107,17 +107,17 @@ update_asset_name_buf: [update_check.asset_name_buffer_len]u8,
 update_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
 available_update: update_check.CheckResult,
 available_update_package: update_check.ReleasePackage,
-pending_install_update: update_check.CheckResult,
-pending_install_package: update_check.ReleasePackage,
-install_latest_version_buf: [32]u8,
-install_release_url_buf: [256]u8,
-install_asset_name_buf: [update_check.asset_name_buffer_len]u8,
-install_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
+pending_download_update: update_check.CheckResult,
+pending_download_package: update_check.ReleasePackage,
+download_latest_version_buf: [32]u8,
+download_release_url_buf: [256]u8,
+download_asset_name_buf: [update_check.asset_name_buffer_len]u8,
+download_asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8,
 update_thread: ?std.Thread,
 update_check_in_flight: bool,
-install_thread: ?std.Thread,
-install_in_flight: bool,
-install_worker_running: bool,
+download_thread: ?std.Thread,
+download_in_flight: bool,
+download_worker_running: bool,
 startup_update_check_started: bool,
 
 // Window management
@@ -233,17 +233,17 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .update_asset_download_url_buf = undefined,
         .available_update = .{ .state = .idle },
         .available_update_package = update_install.defaultPackage(),
-        .pending_install_update = .{ .state = .idle },
-        .pending_install_package = update_install.defaultPackage(),
-        .install_latest_version_buf = undefined,
-        .install_release_url_buf = undefined,
-        .install_asset_name_buf = undefined,
-        .install_asset_download_url_buf = undefined,
+        .pending_download_update = .{ .state = .idle },
+        .pending_download_package = update_install.defaultPackage(),
+        .download_latest_version_buf = undefined,
+        .download_release_url_buf = undefined,
+        .download_asset_name_buf = undefined,
+        .download_asset_download_url_buf = undefined,
         .update_thread = null,
         .update_check_in_flight = false,
-        .install_thread = null,
-        .install_in_flight = false,
-        .install_worker_running = false,
+        .download_thread = null,
+        .download_in_flight = false,
+        .download_worker_running = false,
         .startup_update_check_started = false,
         .windows = .empty,
         .mutex = .{},
@@ -421,7 +421,7 @@ fn startUpdateCheck(self: *App, show_failures: bool) void {
     {
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
-        if (self.update_check_in_flight or self.install_in_flight or self.install_worker_running) return;
+        if (self.update_check_in_flight or self.download_in_flight or self.download_worker_running) return;
         self.update_check_in_flight = true;
         self.update_result = .{ .state = if (show_failures) .checking else .idle };
     }
@@ -466,7 +466,7 @@ fn updateCheckThreadMain(app: *App, show_failures: bool) void {
 fn storeUpdateResult(self: *App, result: update_check.CheckResult, package: update_check.ReleasePackage) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
-    if (self.install_in_flight or self.install_worker_running) {
+    if (self.download_in_flight or self.download_worker_running) {
         self.update_check_in_flight = false;
         return;
     }
@@ -511,186 +511,136 @@ pub fn copyLatestReleaseUrl(self: *App, out: []u8) ?[]const u8 {
     return copyBounded(out, url);
 }
 
-pub fn hasInstallableUpdate(self: *App) bool {
+pub fn hasDownloadableUpdate(self: *App) bool {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
 
-    return !self.install_in_flight and
-        !self.install_worker_running and
+    return !self.download_in_flight and
+        !self.download_worker_running and
         self.available_update.state == .update_available and
         self.available_update.asset_download_url.len > 0;
 }
 
-pub fn requestUpdateInstall(self: *App) void {
+pub fn requestUpdateDownload(self: *App) void {
     self.joinFinishedUpdateThread();
-    self.joinFinishedInstallThread();
+    self.joinFinishedDownloadThread();
 
     {
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
-        if (self.install_in_flight or self.install_worker_running) return;
+        if (self.download_in_flight or self.download_worker_running) return;
         if (self.available_update.state != .update_available or self.available_update.asset_download_url.len == 0) {
-            self.update_result = .{ .state = .install_failed };
+            self.update_result = .{ .state = .download_failed };
             return;
         }
-        if (!self.copyPendingInstallUpdateLocked()) {
-            self.update_result = .{ .state = .install_failed };
+        if (!self.copyPendingDownloadUpdateLocked()) {
+            self.update_result = .{ .state = .download_failed };
             return;
         }
-        self.install_in_flight = true;
-        self.install_worker_running = true;
-        self.update_result = self.pendingInstallResultWithStateLocked(.downloading);
+        self.download_in_flight = true;
+        self.download_worker_running = true;
+        self.update_result = self.pendingDownloadResultWithStateLocked(.downloading);
     }
 
-    const thread = std.Thread.spawn(.{}, updateInstallThreadMain, .{self}) catch |err| {
-        std.debug.print("Update install: failed to spawn thread: {}\n", .{err});
+    const thread = std.Thread.spawn(.{}, updateDownloadThreadMain, .{self}) catch |err| {
+        std.debug.print("Update download: failed to spawn thread: {}\n", .{err});
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
-        self.install_worker_running = false;
-        self.install_in_flight = false;
-        self.update_result = self.pendingInstallResultWithStateLocked(.install_failed);
+        self.download_worker_running = false;
+        self.download_in_flight = false;
+        self.update_result = self.pendingDownloadResultWithStateLocked(.download_failed);
         return;
     };
 
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
-    self.install_thread = thread;
+    self.download_thread = thread;
 }
 
-fn updateInstallThreadMain(app: *App) void {
+fn updateDownloadThreadMain(app: *App) void {
     var latest_version_buf: [32]u8 = undefined;
     var release_url_buf: [256]u8 = undefined;
     var asset_name_buf: [update_check.asset_name_buffer_len]u8 = undefined;
     var asset_download_url_buf: [update_check.asset_download_url_buffer_len]u8 = undefined;
-    const snapshot = blk: {
+    const update = blk: {
         app.update_mutex.lock();
         defer app.update_mutex.unlock();
-        break :blk PendingInstallSnapshot{
-            .update = update_check.copyResult(
-                app.pending_install_update,
-                .{
-                    .latest_version = &latest_version_buf,
-                    .release_url = &release_url_buf,
-                    .asset_name = &asset_name_buf,
-                    .asset_download_url = &asset_download_url_buf,
-                },
-            ),
-            .package = app.pending_install_package,
-        };
+        break :blk update_check.copyResult(
+            app.pending_download_update,
+            .{
+                .latest_version = &latest_version_buf,
+                .release_url = &release_url_buf,
+                .asset_name = &asset_name_buf,
+                .asset_download_url = &asset_download_url_buf,
+            },
+        );
     };
-    const update = snapshot.update;
-    if (update.state != .update_available or update.asset_download_url.len == 0) {
-        app.storeInstallFailure();
+    if (update.state != .update_available or
+        update.asset_download_url.len == 0 or
+        update.asset_name.len == 0)
+    {
+        app.storeDownloadFailure();
         return;
     }
 
-    var prepared = update_install.prepareWorkPaths(app.allocator, update.latest_version, update.asset_name) catch |err| {
-        std.debug.print("Update install: failed to prepare work paths: {}\n", .{err});
-        app.storeInstallFailure();
+    const dest_path = update_install.downloadDestPath(app.allocator, update.asset_name) catch |err| {
+        std.debug.print("Update download: failed to resolve Downloads path: {}\n", .{err});
+        app.storeDownloadFailure();
         return;
     };
-    defer prepared.deinit(app.allocator);
+    defer app.allocator.free(dest_path);
 
-    update_install.downloadAsset(app.allocator, update.asset_download_url, prepared.zip_path) catch |err| {
-        std.debug.print("Update install: failed to download asset: {}\n", .{err});
-        app.storeInstallFailure();
-        return;
-    };
-    app.storeTransientUpdateState(.extracting);
-
-    update_install.extractZipToPayload(prepared.zip_path, prepared.payload_dir) catch |err| {
-        std.debug.print("Update install: failed to extract asset: {}\n", .{err});
-        app.storeInstallFailure();
+    update_install.downloadAsset(app.allocator, update.asset_download_url, dest_path) catch |err| {
+        std.debug.print("Update download: failed to download asset: {}\n", .{err});
+        app.storeDownloadFailure();
         return;
     };
 
-    var payload = std.fs.openDirAbsolute(prepared.payload_dir, .{}) catch |err| {
-        std.debug.print("Update install: failed to open payload: {}\n", .{err});
-        app.storeInstallFailure();
-        return;
-    };
-    defer payload.close();
-    update_install.validatePayloadDirForPackage(payload, snapshot.package) catch |err| {
-        std.debug.print("Update install: payload validation failed: {}\n", .{err});
-        app.storeInstallFailure();
-        return;
-    };
-
-    const target_dir = update_install.currentExeDir(app.allocator) catch |err| {
-        std.debug.print("Update install: failed to resolve current exe dir: {}\n", .{err});
-        app.storeInstallFailure();
-        return;
-    };
-    defer app.allocator.free(target_dir);
-
-    app.storeTransientUpdateState(.installing);
-    update_install.launchUpdater(
-        app.allocator,
-        snapshot.package,
-        prepared.payload_dir,
-        target_dir,
-        platform_process.currentProcessId(),
-    ) catch |err| {
-        std.debug.print("Update install: failed to launch updater: {}\n", .{err});
-        app.storeInstallFailure();
-        return;
-    };
-
-    app.storeInstallLaunched();
-    app.requestImmediateShutdown();
+    app.storeDownloadComplete();
+    // Best-effort: surface the saved archive so the user can unzip it.
+    _ = platform_open_url.reveal(app.allocator, dest_path);
 }
 
-const PendingInstallSnapshot = struct {
-    update: update_check.CheckResult,
-    package: update_check.ReleasePackage,
-};
-
-fn copyPendingInstallUpdateLocked(self: *App) bool {
+fn copyPendingDownloadUpdateLocked(self: *App) bool {
     const copied = update_check.copyResult(
         self.available_update,
         .{
-            .latest_version = &self.install_latest_version_buf,
-            .release_url = &self.install_release_url_buf,
-            .asset_name = &self.install_asset_name_buf,
-            .asset_download_url = &self.install_asset_download_url_buf,
+            .latest_version = &self.download_latest_version_buf,
+            .release_url = &self.download_release_url_buf,
+            .asset_name = &self.download_asset_name_buf,
+            .asset_download_url = &self.download_asset_download_url_buf,
         },
     );
     if (copied.state != .update_available or copied.asset_download_url.len == 0) return false;
-    self.pending_install_update = copied;
-    self.pending_install_package = self.available_update_package;
+    self.pending_download_update = copied;
+    self.pending_download_package = self.available_update_package;
     return true;
 }
 
-fn pendingInstallResultWithStateLocked(self: *const App, state: update_check.State) update_check.CheckResult {
+fn pendingDownloadResultWithStateLocked(self: *const App, state: update_check.State) update_check.CheckResult {
     return .{
         .state = state,
-        .latest_version = self.pending_install_update.latest_version,
-        .release_url = self.pending_install_update.release_url,
-        .asset_name = self.pending_install_update.asset_name,
-        .asset_download_url = self.pending_install_update.asset_download_url,
-        .asset_size = self.pending_install_update.asset_size,
+        .latest_version = self.pending_download_update.latest_version,
+        .release_url = self.pending_download_update.release_url,
+        .asset_name = self.pending_download_update.asset_name,
+        .asset_download_url = self.pending_download_update.asset_download_url,
+        .asset_size = self.pending_download_update.asset_size,
     };
 }
 
-fn storeTransientUpdateState(self: *App, state: update_check.State) void {
+fn storeDownloadFailure(self: *App) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
-    self.update_result = self.pendingInstallResultWithStateLocked(state);
+    self.download_worker_running = false;
+    self.download_in_flight = false;
+    self.update_result = self.pendingDownloadResultWithStateLocked(.download_failed);
 }
 
-fn storeInstallFailure(self: *App) void {
+fn storeDownloadComplete(self: *App) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
-    self.install_worker_running = false;
-    self.install_in_flight = false;
-    self.update_result = self.pendingInstallResultWithStateLocked(.install_failed);
-}
-
-fn storeInstallLaunched(self: *App) void {
-    self.update_mutex.lock();
-    defer self.update_mutex.unlock();
-    self.install_worker_running = false;
-    self.update_result = self.pendingInstallResultWithStateLocked(.installing);
+    self.download_worker_running = false;
+    self.update_result = self.pendingDownloadResultWithStateLocked(.downloaded);
 }
 
 fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
@@ -700,14 +650,14 @@ fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
     return out[0..len];
 }
 
-fn joinFinishedInstallThread(self: *App) void {
+fn joinFinishedDownloadThread(self: *App) void {
     var thread: ?std.Thread = null;
     {
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
-        if (!self.install_worker_running) {
-            thread = self.install_thread;
-            self.install_thread = null;
+        if (!self.download_worker_running) {
+            thread = self.download_thread;
+            self.download_thread = null;
         }
     }
     if (thread) |t| t.join();
@@ -737,13 +687,13 @@ fn joinUpdateThread(self: *App) void {
     if (thread) |t| t.join();
 }
 
-fn joinInstallThread(self: *App) void {
+fn joinDownloadThread(self: *App) void {
     var thread: ?std.Thread = null;
     {
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
-        thread = self.install_thread;
-        self.install_thread = null;
+        thread = self.download_thread;
+        self.download_thread = null;
     }
     if (thread) |t| t.join();
 }
@@ -930,7 +880,7 @@ pub fn deinit(self: *App) void {
     // Join any remaining threads
     self.joinAllWindowThreads();
     self.joinUpdateThread();
-    self.joinInstallThread();
+    self.joinDownloadThread();
 
     if (self.remote_client) |client| {
         client.destroy();
@@ -985,7 +935,7 @@ test "app: updateConfig refreshes configured shell command" {
     try testing.expectEqualSlices(CommandUnit, expected_buf[0..expected_len], app.getShellCmd());
 }
 
-test "app: pending install snapshot remains stable when update buffers change" {
+test "app: pending download snapshot remains stable when update buffers change" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -1002,7 +952,7 @@ test "app: pending install snapshot remains stable when update buffers change" {
     }, update_install.runtimePackage(true, true));
 
     app.update_mutex.lock();
-    const copied = app.copyPendingInstallUpdateLocked();
+    const copied = app.copyPendingDownloadUpdateLocked();
     app.update_mutex.unlock();
     try testing.expect(copied);
 
@@ -1017,29 +967,29 @@ test "app: pending install snapshot remains stable when update buffers change" {
 
     app.update_mutex.lock();
     defer app.update_mutex.unlock();
-    try testing.expectEqual(update_install.runtimePackage(true, true), app.pending_install_package);
-    try testing.expectEqualStrings("v0.28.0", app.pending_install_update.latest_version);
-    try testing.expectEqualStrings("https://example.test/releases/v0.28.0", app.pending_install_update.release_url);
-    try testing.expectEqualStrings("selected-update.zip", app.pending_install_update.asset_name);
-    try testing.expectEqualStrings("https://example.test/selected-update.zip", app.pending_install_update.asset_download_url);
-    try testing.expectEqual(@as(u64, 28), app.pending_install_update.asset_size);
+    try testing.expectEqual(update_install.runtimePackage(true, true), app.pending_download_package);
+    try testing.expectEqualStrings("v0.28.0", app.pending_download_update.latest_version);
+    try testing.expectEqualStrings("https://example.test/releases/v0.28.0", app.pending_download_update.release_url);
+    try testing.expectEqualStrings("selected-update.zip", app.pending_download_update.asset_name);
+    try testing.expectEqualStrings("https://example.test/selected-update.zip", app.pending_download_update.asset_download_url);
+    try testing.expectEqual(@as(u64, 28), app.pending_download_update.asset_size);
 }
 
-test "app: installability reports only stored update with download asset" {
+test "app: downloadability reports only stored update with download asset" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
     var app = try App.init(allocator, .{});
     defer app.deinit();
 
-    try testing.expect(!app.hasInstallableUpdate());
+    try testing.expect(!app.hasDownloadableUpdate());
 
     app.storeUpdateResult(.{
         .state = .update_available,
         .latest_version = "v0.28.0",
         .release_url = "https://example.test/releases/v0.28.0",
     }, update_install.runtimePackage(true, false));
-    try testing.expect(!app.hasInstallableUpdate());
+    try testing.expect(!app.hasDownloadableUpdate());
 
     app.storeUpdateResult(.{
         .state = .update_available,
@@ -1049,15 +999,15 @@ test "app: installability reports only stored update with download asset" {
         .asset_download_url = "https://example.test/installable-update.zip",
         .asset_size = 28,
     }, update_install.runtimePackage(true, false));
-    try testing.expect(app.hasInstallableUpdate());
+    try testing.expect(app.hasDownloadableUpdate());
 
     app.update_mutex.lock();
-    app.install_in_flight = true;
+    app.download_in_flight = true;
     app.update_mutex.unlock();
-    try testing.expect(!app.hasInstallableUpdate());
+    try testing.expect(!app.hasDownloadableUpdate());
 }
 
-test "app: update check result does not replace install progress while install is active" {
+test "app: update check result does not replace download progress while download is active" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -1074,10 +1024,10 @@ test "app: update check result does not replace install progress while install i
     }, update_install.runtimePackage(true, false));
 
     app.update_mutex.lock();
-    try testing.expect(app.copyPendingInstallUpdateLocked());
-    app.install_in_flight = true;
-    app.install_worker_running = true;
-    app.update_result = app.pendingInstallResultWithStateLocked(.downloading);
+    try testing.expect(app.copyPendingDownloadUpdateLocked());
+    app.download_in_flight = true;
+    app.download_worker_running = true;
+    app.update_result = app.pendingDownloadResultWithStateLocked(.downloading);
     app.update_mutex.unlock();
 
     app.storeUpdateResult(.{
@@ -1093,11 +1043,11 @@ test "app: update check result does not replace install progress while install i
     defer app.update_mutex.unlock();
     try testing.expectEqual(update_check.State.downloading, app.update_result.state);
     try testing.expectEqualStrings("v0.28.0", app.update_result.latest_version);
-    try testing.expectEqual(update_install.runtimePackage(true, false), app.pending_install_package);
+    try testing.expectEqual(update_install.runtimePackage(true, false), app.pending_download_package);
     try testing.expectEqualStrings("v0.28.0", app.available_update.latest_version);
 }
 
-test "app: install launch completion can be joined while duplicate installs stay blocked" {
+test "app: download completion can be joined while duplicate downloads stay blocked" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -1114,18 +1064,18 @@ test "app: install launch completion can be joined while duplicate installs stay
     }, update_install.runtimePackage(true, false));
 
     app.update_mutex.lock();
-    try testing.expect(app.copyPendingInstallUpdateLocked());
-    app.install_in_flight = true;
-    app.install_worker_running = true;
-    app.update_result = app.pendingInstallResultWithStateLocked(.installing);
+    try testing.expect(app.copyPendingDownloadUpdateLocked());
+    app.download_in_flight = true;
+    app.download_worker_running = true;
+    app.update_result = app.pendingDownloadResultWithStateLocked(.downloading);
     app.update_mutex.unlock();
 
-    app.storeInstallLaunched();
+    app.storeDownloadComplete();
 
     app.update_mutex.lock();
     defer app.update_mutex.unlock();
-    try testing.expect(app.install_in_flight);
-    try testing.expect(!app.install_worker_running);
-    try testing.expectEqual(update_check.State.installing, app.update_result.state);
+    try testing.expect(app.download_in_flight);
+    try testing.expect(!app.download_worker_running);
+    try testing.expectEqual(update_check.State.downloaded, app.update_result.state);
     try testing.expectEqualStrings("https://example.test/releases/v0.28.0", app.update_result.release_url);
 }

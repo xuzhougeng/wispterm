@@ -199,13 +199,13 @@ pub fn spawnDetachedWithOptions(allocator: std.mem.Allocator, options: DetachedS
 
 test "platform process exposes typed detached spawn options" {
     const options = DetachedSpawnOptions{
-        .argv = &.{ "phantty-updater.exe", "--restart" },
-        .cwd = "C:/Phantty/update",
+        .argv = &.{ "phantty.exe", "--detached" },
+        .cwd = "C:/Phantty",
         .create_no_window = true,
     };
 
-    try std.testing.expectEqualStrings("phantty-updater.exe", options.argv[0]);
-    try std.testing.expectEqualStrings("C:/Phantty/update", options.cwd.?);
+    try std.testing.expectEqualStrings("phantty.exe", options.argv[0]);
+    try std.testing.expectEqualStrings("C:/Phantty", options.cwd.?);
     try std.testing.expect(options.create_no_window);
     try std.testing.expectEqual(@as(usize, 2), @typeInfo(@TypeOf(spawnDetachedWithOptions)).@"fn".params.len);
 }

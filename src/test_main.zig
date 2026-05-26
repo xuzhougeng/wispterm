@@ -82,34 +82,6 @@ comptime {
         @compileError("update_install.zig tests must get executable payload paths through platform/update_package.zig");
     }
 
-    const updater_core_source = @embedFile("updater_core.zig");
-    if (std.mem.indexOf(u8, updater_core_source, "WebView2") != null or
-        std.mem.indexOf(u8, updater_core_source, "webview2") != null)
-    {
-        @compileError("updater_core.zig must test optional payload behavior via release package manifests, not WebView2 names");
-    }
-    if (std.mem.indexOf(u8, updater_core_source, "phantty.exe") != null or
-        std.mem.indexOf(u8, updater_core_source, "phantty-updater.exe") != null)
-    {
-        @compileError("updater_core.zig tests must get executable payload paths through platform/update_package.zig");
-    }
-    if (std.mem.indexOf(u8, updater_core_source, "Windows paths") != null or
-        std.mem.indexOf(u8, updater_core_source, "UNC Windows paths") != null or
-        std.mem.indexOf(u8, updater_core_source, "extended Windows paths") != null or
-        std.mem.indexOf(u8, updater_core_source, "\\\\?\\") != null or
-        std.mem.indexOf(u8, updater_core_source, "C:\\") != null)
-    {
-        @compileError("updater_core.zig tests must keep platform-specific path compatibility cases in platform/local_path.zig");
-    }
-    if (std.mem.indexOf(u8, updater_core_source, "windowsRootLen") != null or
-        std.mem.indexOf(u8, updater_core_source, "normalizeWindowsPath") != null or
-        std.mem.indexOf(u8, updater_core_source, "simpleWindowsCaseFold") != null or
-        std.mem.indexOf(u8, updater_core_source, "windowsAbsolutePathEqual") != null or
-        std.mem.indexOf(u8, updater_core_source, "isAbsoluteWindowsOrNative") != null or
-        std.mem.indexOf(u8, updater_core_source, "isAbsoluteOrWindows") != null)
-    {
-        @compileError("updater_core.zig must validate updater paths through platform/local_path.zig");
-    }
     const local_path_source = @embedFile("platform/local_path.zig");
     if (std.mem.indexOf(u8, local_path_source, "pub fn isAbsoluteOrWindows") != null) {
         @compileError("platform/local_path.zig public APIs must use platform-neutral path role names");
@@ -124,19 +96,6 @@ comptime {
     {
         @compileError("platform/local_path.zig path helpers must describe native path roles instead of Windows-specific helper names");
     }
-    const direct_release_package_payload_access = "release_package." ++ "payloadManifest";
-    const direct_release_package_main_exe_access = "release_package." ++ "mainExecutablePath";
-    const direct_release_package_updater_exe_access = "release_package." ++ "updaterExecutablePath";
-    if (std.mem.indexOf(u8, update_install_source, direct_release_package_payload_access) != null or
-        std.mem.indexOf(u8, update_install_source, direct_release_package_main_exe_access) != null or
-        std.mem.indexOf(u8, update_install_source, direct_release_package_updater_exe_access) != null or
-        std.mem.indexOf(u8, updater_core_source, direct_release_package_payload_access) != null or
-        std.mem.indexOf(u8, updater_core_source, direct_release_package_main_exe_access) != null or
-        std.mem.indexOf(u8, updater_core_source, direct_release_package_updater_exe_access) != null)
-    {
-        @compileError("updater runtime code must read package payload metadata through platform/update_package.zig");
-    }
-
     const app_source = @embedFile("App.zig");
     if (std.mem.indexOf(u8, app_source, "WebView2") != null or
         std.mem.indexOf(u8, app_source, "webview2") != null or
@@ -683,7 +642,6 @@ comptime {
     _ = @import("ui_perf.zig");
     _ = @import("update_check.zig");
     _ = @import("update_install.zig");
-    _ = @import("updater_core.zig");
 }
 
 test "app version metadata is exposed for CLI and command center" {

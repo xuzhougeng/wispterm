@@ -13,3 +13,17 @@ pub fn open(allocator: std.mem.Allocator, request: anytype) bool {
     }
     return true;
 }
+
+pub fn reveal(allocator: std.mem.Allocator, path: []const u8) bool {
+    switch (builtin.os.tag) {
+        // `open -R` reveals the file in Finder with it selected.
+        .macos => platform_process.spawnDetached(allocator, &.{ "open", "-R", path }) catch return false,
+        // No portable "select file" verb; open the containing folder instead.
+        .linux, .freebsd => {
+            const dir = std.fs.path.dirname(path) orelse path;
+            platform_process.spawnDetached(allocator, &.{ "xdg-open", dir }) catch return false;
+        },
+        else => return false,
+    }
+    return true;
+}
