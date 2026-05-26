@@ -29,3 +29,4 @@ pub inline fn glTable() *impl.GlTable {
 pub const Texture = impl.Texture;
 pub const Buffer = impl.Buffer;
 pub const Pipeline = impl.Pipeline;
+pub const Framebuffer = impl.Framebuffer;

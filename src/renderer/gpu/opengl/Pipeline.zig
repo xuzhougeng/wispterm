@@ -100,6 +100,18 @@ pub fn setProjection(self: Pipeline) void {
     };
     gl.UniformMatrix4fv.?(gl.GetUniformLocation.?(self.program, "projection"), 1, c.GL_FALSE, &projection);
 }
+pub fn setVec3(self: Pipeline, name: [*c]const u8, x: f32, y: f32, z: f32) void {
+    Context.gl.Uniform3f.?(Context.gl.GetUniformLocation.?(self.program, name), x, y, z);
+}
+pub fn setVec4(self: Pipeline, name: [*c]const u8, x: f32, y: f32, z: f32, w: f32) void {
+    Context.gl.Uniform4f.?(Context.gl.GetUniformLocation.?(self.program, name), x, y, z, w);
+}
+/// Non-instanced draw against the currently-bound program/VAO. Does NOT touch
+/// any draw-call counter (callers tick their own, same as drawArraysInstanced).
+pub fn drawArrays(self: Pipeline, mode: c.GLenum, first: c.GLint, count: c.GLsizei) void {
+    _ = self;
+    Context.gl.DrawArrays.?(mode, first, count);
+}
 /// Issue an instanced draw against the currently-bound program/VAO. `self` is
 /// unused today (the bound state carries the pipeline); kept as a method for
 /// call-site ergonomics and so a future backend can attach per-pipeline state.

@@ -13,4 +13,5 @@ pub const gl_init = @import("gl_init.zig");
 pub const Buffer = @import("Buffer.zig");
 pub const Texture = @import("Texture.zig");
 pub const Pipeline = @import("Pipeline.zig");
+pub const Framebuffer = @import("Framebuffer.zig");
 pub const shaders = @import("shaders.zig");
