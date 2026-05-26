@@ -450,7 +450,7 @@ fn copyButtonRectForBubble(bubble_x: f32, top_px: f32, bubble_w: f32) CopyButton
 }
 
 fn permissionChipX(x: f32, w: f32) f32 {
-    return ai_chat_layout.permissionChipX(x, w, LINE_PAD_X, STATUS_SLOT_W, PERMISSION_CHIP_W);
+    return ai_chat_layout.permissionChipX(x, w, LINE_PAD_X, STATUS_SLOT_W, 12, PERMISSION_CHIP_W);
 }
 
 fn stopButtonRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
