@@ -1321,7 +1321,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                         var tag_buf: [24]u8 = undefined;
                         const mode = aiProfileModeLabel(profile);
                         const tag = if (profile_idx == defaultAiProfileIndex())
-                            (std.fmt.bufPrint(tag_buf[0..], "{s} · default", .{mode}) catch mode)
+                            (std.fmt.bufPrint(tag_buf[0..], "{s} (default)", .{mode}) catch mode)
                         else
                             mode;
                         const tag_w = measureTitlebarText(tag);
@@ -2818,9 +2818,9 @@ fn sessionLauncherTitle() []const u8 {
     }
     if (g_ai_list_visible) {
         return switch (g_ai_list_mode) {
-            .manage => "AI Chats",
-            .edit_select => "Edit AI Chat",
-            .delete_select => "Delete AI Chat",
+            .manage => "LLM Providers",
+            .edit_select => "Edit LLM Provider",
+            .delete_select => "Delete LLM Provider",
         };
     }
     if (g_ssh_form_visible) return "SSH Server";
@@ -2904,9 +2904,9 @@ fn sessionDesiredBoxWidth() f32 {
         }
         switch (g_ai_list_mode) {
             .manage => {
-                desired = @max(desired, sessionTwoColumnWidth("New AI Chat", "add"));
-                desired = @max(desired, sessionTwoColumnWidth("Edit AI Chat", if (g_ai_profile_count > 0) "choose" else "no profile"));
-                desired = @max(desired, sessionTwoColumnWidth("Delete AI Chat", if (g_ai_profile_count > 0) "choose" else "no profile"));
+                desired = @max(desired, sessionTwoColumnWidth("New LLM Provider", "add"));
+                desired = @max(desired, sessionTwoColumnWidth("Edit LLM Provider", if (g_ai_profile_count > 0) "choose" else "no profile"));
+                desired = @max(desired, sessionTwoColumnWidth("Delete LLM Provider", if (g_ai_profile_count > 0) "choose" else "no profile"));
                 desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
             },
             .edit_select, .delete_select => {
@@ -3126,7 +3126,7 @@ fn renderAiProfileRow(layout: SessionLayout, window_height: f32, row: usize, pro
     const mode = aiProfileModeLabel(profile);
     var detail_buf: [24]u8 = undefined;
     const detail = if (row == defaultAiProfileIndex())
-        (std.fmt.bufPrint(detail_buf[0..], "{s} · default", .{mode}) catch mode)
+        (std.fmt.bufPrint(detail_buf[0..], "{s} (default)", .{mode}) catch mode)
     else
         mode;
     renderSessionRow(layout, window_height, row, name, detail, selected);
@@ -3186,11 +3186,11 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             }
             switch (g_ai_list_mode) {
                 .manage => {
-                    renderSessionRow(layout, window_height, row, "New AI Chat", "add", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, "New LLM Provider", "add", g_ai_list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, "Edit AI Chat", if (g_ai_profile_count > 0) "choose" else "no profile", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, "Edit LLM Provider", if (g_ai_profile_count > 0) "choose" else "no profile", g_ai_list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, "Delete AI Chat", if (g_ai_profile_count > 0) "choose" else "no profile", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, "Delete LLM Provider", if (g_ai_profile_count > 0) "choose" else "no profile", g_ai_list_selected == row);
                     row += 1;
                     renderSessionRow(layout, window_height, row, "Cancel", "Esc", g_ai_list_selected == row);
                 },
