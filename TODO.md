@@ -119,8 +119,14 @@ mapping in guide §2 and §5.
       still-unconverted files are untouched. `titlebar` is converted (glyph/emoji
       through `ui_pipeline`, no raw `gl.*`/glad) and its pure layout logic moved
       to std-only `titlebar_layout.zig`. `overlay_shader` stays in `gl_init`.
-      *Still pending:* `overlays`, `ai_chat_renderer`, `image_renderer`,
-      `post_process`, `background_image`, `fbo`, `markdown_preview_renderer`,
+      *Increment 3 done:* `ai_chat_renderer` is converted — its 56 quad draws
+      route through `ui_pipeline.fillQuad*`, the two scissor regions through new
+      `ui_pipeline.beginClip`/`endClip`, and the redundant local blend setup +
+      `glad` cImport + `gl_init` import are gone (the file is now raw-`gl.*`-free,
+      like `titlebar`). Its pure rect geometry moved to std-only, unit-tested
+      `ai_chat_layout.zig`.
+      *Still pending:* `overlays`, `image_renderer`, `post_process`,
+      `background_image`, `fbo`, `markdown_preview_renderer`,
       `file_explorer_renderer` (each converts to `ui_pipeline`, dissolving the
       compat mirrors as they go).
 - [ ] **A4** Route font atlas → GPU texture through the `Texture` primitive;
