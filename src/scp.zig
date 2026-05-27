@@ -432,6 +432,10 @@ fn sshStreamUpload(
             };
         }
         in.close();
+        // child.stdin still owns the same fd; nulling it prevents
+        // Child.cleanupStreams from closing it again during wait() and
+        // crashing on EBADF (Zig's posix.close treats EBADF as unreachable).
+        child.stdin = null;
     } else {
         write_ok = false;
     }
