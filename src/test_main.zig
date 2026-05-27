@@ -637,6 +637,7 @@ comptime {
     _ = @import("scrollbar_model.zig");
     _ = @import("ai_chat_scrollbar_model.zig");
     _ = @import("ssh_prompt.zig");
+    _ = @import("ssh_tunnel.zig");
     _ = @import("startup_tabs.zig");
     _ = @import("system_browser.zig");
     _ = @import("split_tree.zig");

@@ -28,9 +28,11 @@ system default browser instead. Set `url-open-mode = system-browser` to always
 open web URLs in the Windows default browser, including when embedded WebView2
 support is available. In SSH profile sessions, loopback URLs such as
 `http://127.0.0.1:4232` and
-`http://localhost:43455` are opened through an automatic local SSH tunnel;
-the tunnel prefers the same local port and only increments when that port is
-already occupied.
+`http://localhost:43455` are opened through automatic local SSH tunnels.
+Tunnels are shared by the embedded panel and the system browser, so setting
+`url-open-mode = system-browser` lets the remote web app open in your normal
+Windows browser. Each remote port keeps its own forward; Phantty prefers the
+same local port and only increments when that port is already occupied.
 
 Non-loopback URLs such as `https://10.10.x.x` or public websites open directly.
 Click the browser panel's URL bar to type a new address; press `Enter` to

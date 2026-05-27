@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const Surface = @import("Surface.zig");
+const ssh_tunnel = @import("ssh_tunnel.zig");
 const window_backend = @import("platform/window_backend.zig");
 const tab = @import("appwindow/tab.zig");
 
@@ -120,8 +121,7 @@ pub fn openForSurface(allocator: std.mem.Allocator, parent: ?window_backend.Nati
 }
 
 pub fn externalUrlForSurface(allocator: std.mem.Allocator, url: []const u8, surface: ?*const Surface) ?[]u8 {
-    _ = surface;
-    return allocator.dupe(u8, url) catch null;
+    return ssh_tunnel.externalUrlForSurface(allocator, url, surface);
 }
 
 pub fn toggle(parent: ?window_backend.NativeHandle) void {
@@ -164,6 +164,7 @@ pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_heigh
 }
 
 pub fn deinit() void {
+    ssh_tunnel.deinit();
     g_visible = false;
     g_owner_tab = null;
 }
