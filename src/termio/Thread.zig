@@ -166,8 +166,7 @@ fn applyResize(surface: *Surface, grid: renderer.size.GridSize) void {
 
     // Match Ghostty's Termio.resize behavior: a resize is allowed to break
     // synchronized output mode so TUI redraws become visible immediately.
-    surface.terminal.modes.set(.synchronized_output, false);
-    surface.surface_renderer.force_rebuild = true;
+    surface.clearSynchronizedOutputLocked();
 
     surface.terminal.scrollViewport(.{ .bottom = {} });
     surface.dirty.store(true, .release);

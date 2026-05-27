@@ -35,6 +35,7 @@ const quick_terminal = @import("quick_terminal.zig");
 const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
+const ime_caret = @import("ime_caret.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
 pub const font = @import("font/manager.zig");
@@ -338,6 +339,18 @@ pub const DEFAULT_PADDING = split_layout.DEFAULT_PADDING;
 pub const surfaceAtPoint = split_layout.surfaceAtPoint;
 pub const hitTestDivider = split_layout.hitTestDivider;
 const computeSplitLayout = split_layout.computeSplitLayout;
+
+fn synchronizedOutputPendingForVisibleSplits(split_count: usize) bool {
+    for (0..split_count) |i| {
+        const surface = split_layout.g_split_rects[i].surface;
+        surface.render_state.mutex.lock();
+        const pending = surface.synchronizedOutputPendingLocked();
+        surface.render_state.mutex.unlock();
+
+        if (pending) return true;
+    }
+    return false;
+}
 
 pub const MAX_TABS = tab.MAX_TABS;
 
@@ -3071,6 +3084,12 @@ fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
 
     const surface = activeSurface() orelse return;
 
+    // Once the IME starts composing, keep the candidate window and inline
+    // preedit anchored to the last stable position. TUIs can repaint status
+    // areas while composing, and moving the OS IME window mid-composition is
+    // more disruptive than waiting for the next composition session.
+    if (win.ime_composing) return;
+
     var caret: ImeCaret = undefined;
     {
         surface.render_state.mutex.lock();
@@ -3078,16 +3097,11 @@ fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
         caret = imeCaretFromSurfaceLocked(surface);
     }
 
-    // For regular terminal cursors, keep the existing composition freeze. Some
-    // TUIs render transient status lines with cursor save/restore while IME is
-    // active, and moving the IMM popup mid-composition is visually noisy.
-    if (caret.source == .terminal_cursor and win.ime_composing) return;
-
     // Require two consecutive frames at the same terminal-cursor position
     // before committing, so single-frame transients during status-line
     // animations are skipped. Visual inverse carets are app-drawn stable cells
-    // (Claude Code hides the terminal cursor and draws one this way), so accept
-    // them immediately and allow them to correct a stale composition anchor.
+    // (some TUIs hide the terminal cursor and draw one this way), so accept
+    // them immediately.
     const sx: i64 = @intCast(caret.x);
     const sy: i64 = @intCast(caret.y);
     if (caret.source == .terminal_cursor) {
@@ -3164,17 +3178,19 @@ fn imeCaretFromSurfaceLocked(surface: *Surface) ImeCaret {
     }
 
     if (!terminal.modes.get(.cursor_visible)) {
-        if (visualInverseImeCaretLocked(surface)) |visual| return visual;
+        if (visualInverseImeCaretLocked(surface, caret)) |visual| return visual;
     }
 
     return caret;
 }
 
-fn visualInverseImeCaretLocked(surface: *Surface) ?ImeCaret {
+fn visualInverseImeCaretLocked(surface: *Surface, anchor: ImeCaret) ?ImeCaret {
     const terminal = &surface.terminal;
     const screen = terminal.screens.active;
     const render_cols = @as(usize, terminal.cols);
     var best: ?ImeCaret = null;
+    var best_point: ?ime_caret.Point = null;
+    const anchor_point: ime_caret.Point = .{ .x = anchor.x, .y = anchor.y };
 
     var row_it = screen.pages.rowIterator(.right_down, .{ .viewport = .{} }, null);
     var row_idx: usize = 0;
@@ -3195,11 +3211,14 @@ fn visualInverseImeCaretLocked(surface: *Surface) ?ImeCaret {
             while (col < num_cols and isInverseBlankImeCell(p, &page_cells[col])) : (col += 1) {}
             const run_len = col - run_start;
             if (run_len <= 2) {
+                const point: ime_caret.Point = .{ .x = run_start, .y = row_idx };
+                if (!ime_caret.isBetterCandidate(anchor_point, best_point, point)) continue;
                 best = .{
                     .x = run_start,
                     .y = row_idx,
                     .source = .visual_inverse,
                 };
+                best_point = point;
             }
         }
     }
@@ -3817,6 +3836,10 @@ fn runMainLoop(self: *AppWindow) !void {
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
             syncRemoteLayout(allocator);
             syncImeCaretPosition(win, split_count);
+            if (active_tab.kind != .ai_chat and synchronizedOutputPendingForVisibleSplits(split_count)) {
+                std.Thread.sleep(std.time.ns_per_ms);
+                continue;
+            }
 
             // Debug: print split count on first few frames
             // GL rendering

@@ -20,6 +20,7 @@ const RendererThread = @import("RendererThread.zig");
 const remote = @import("remote_client.zig");
 const threading = @import("threading.zig");
 const agent_detector = @import("agent_detector.zig");
+const sync_output = @import("sync_output.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 
 const Surface = @This();
@@ -127,7 +128,20 @@ pub const VtHandler = struct {
             self.surface.bell_pending.store(true, .release);
             return;
         }
+
+        const sync_before = self.surface.terminal.modes.get(.synchronized_output);
+        const sync_mode_touched = switch (action) {
+            .set_mode,
+            .reset_mode,
+            .restore_mode,
+            => value.mode == .synchronized_output,
+            else => false,
+        };
         self.inner.vt(action, value);
+        const sync_after = self.surface.terminal.modes.get(.synchronized_output);
+        if (sync_mode_touched or sync_before != sync_after) {
+            self.surface.noteSynchronizedOutputMode(sync_after);
+        }
     }
 };
 
@@ -183,6 +197,9 @@ renderer_thread: RendererThread,
 /// Dirty flag — set by IO thread (Phase 2), read by render loop.
 /// For Phase 1 this is always effectively true (we render every frame).
 dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+
+/// Deadline state for DEC synchronized output mode (2026).
+sync_output_state: sync_output.State = .{},
 
 /// Set when the PTY process has exited.
 exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -352,6 +369,7 @@ pub fn init(
     surface.vt_stream = surface.initVtStream();
     errdefer surface.vt_stream.deinit();
     surface.dirty = std.atomic.Value(bool).init(true);
+    surface.sync_output_state = .{};
     surface.exited = std.atomic.Value(bool).init(false);
     surface.resize_in_progress = std.atomic.Value(bool).init(false);
 
@@ -759,6 +777,46 @@ fn captureInitialCwd(self: *Surface, cwd: platform_pty_command.Cwd) void {
 /// Reset OSC batch state — call before each PTY read batch.
 pub fn resetOscBatch(self: *Surface) void {
     self.got_osc7_this_batch = false;
+}
+
+/// Track DEC synchronized output mode (2026) transitions. This mirrors
+/// Ghostty's behavior: rendering waits while the mode is enabled, but a
+/// watchdog prevents an application from hiding the terminal indefinitely.
+pub fn noteSynchronizedOutputMode(self: *Surface, enabled: bool) void {
+    if (enabled) {
+        self.sync_output_state.start(std.time.milliTimestamp());
+    } else {
+        self.sync_output_state.stop();
+        self.surface_renderer.force_rebuild = true;
+    }
+    self.dirty.store(true, .release);
+}
+
+/// Clear synchronized output after an external terminal state change such as
+/// resize. Caller must hold render_state.mutex.
+pub fn clearSynchronizedOutputLocked(self: *Surface) void {
+    self.terminal.modes.set(.synchronized_output, false);
+    self.sync_output_state.stop();
+    self.surface_renderer.force_rebuild = true;
+    self.dirty.store(true, .release);
+}
+
+/// Return true while a visible frame should be deferred for synchronized
+/// output. Caller must hold render_state.mutex.
+pub fn synchronizedOutputPendingLocked(self: *Surface) bool {
+    return switch (self.sync_output_state.poll(
+        self.terminal.modes.get(.synchronized_output),
+        std.time.milliTimestamp(),
+    )) {
+        .inactive => false,
+        .pending => true,
+        .expired => expired: {
+            self.terminal.modes.set(.synchronized_output, false);
+            self.surface_renderer.force_rebuild = true;
+            self.dirty.store(true, .release);
+            break :expired false;
+        },
+    };
 }
 
 /// Feed terminal output to the VT parser, translating Phantty's private OSC
