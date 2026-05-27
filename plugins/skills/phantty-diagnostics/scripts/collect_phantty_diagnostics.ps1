@@ -3,6 +3,10 @@ param(
     [string]$UserDescription = "",
     [string]$ReproductionSteps = "",
     [string]$PhanttyExePath = "",
+    [switch]$StartupProbe,
+    [switch]$EnableCrashDumps,
+    [int]$CrashEventDays = 14,
+    [int]$StartupProbeTimeoutMs = 8000,
     [switch]$SelfTest
 )
 
@@ -10,6 +14,86 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
 $script:FailedCommands = New-Object System.Collections.Generic.List[string]
+$script:CrashDumpSetup = "not requested"
+$script:StartupProbeResult = "not run"
+$script:StartupProbeOutput = @()
+
+function Redact-UrlForPublicReport {
+    param([string]$Value)
+    try {
+        $uri = [Uri]$Value.Trim()
+        if ($uri.Host) {
+            if ($uri.IsDefaultPort) { return "$($uri.Scheme)://$($uri.Host)/..." }
+            return "$($uri.Scheme)://$($uri.Host):$($uri.Port)/..."
+        }
+    } catch {}
+    return "<redacted-url>"
+}
+
+function Redact-Text {
+    param([string]$Text)
+    if ($null -eq $Text) { return $null }
+
+    $redacted = [string]$Text
+    $esc = [regex]::Escape([string][char]27)
+    $oscPattern = $esc + '\][^\x07]*(?:\x07|' + $esc + '\\)'
+    $csiPattern = $esc + '\[[0-?]*[ -/]*[@-~]'
+    $redacted = [regex]::Replace($redacted, $oscPattern, "")
+    $redacted = [regex]::Replace($redacted, $csiPattern, "")
+    $redacted = $redacted -replace $esc, ""
+    $redacted = [regex]::Replace($redacted, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "")
+
+    $pathPairs = @(
+        @{ Path = $env:LOCALAPPDATA; Token = "%LOCALAPPDATA%" },
+        @{ Path = $env:APPDATA; Token = "%APPDATA%" },
+        @{ Path = $env:USERPROFILE; Token = "%USERPROFILE%" },
+        @{ Path = $env:TEMP; Token = "%TEMP%" },
+        @{ Path = $env:TMP; Token = "%TMP%" }
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Path) } |
+        Sort-Object { $_.Path.Length } -Descending
+
+    foreach ($pair in $pathPairs) {
+        $redacted = [regex]::Replace(
+            $redacted,
+            [regex]::Escape($pair.Path),
+            [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $pair.Token },
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+        $slashPath = $pair.Path -replace '\\', '/'
+        if ($slashPath -ne $pair.Path) {
+            $redacted = [regex]::Replace(
+                $redacted,
+                [regex]::Escape($slashPath),
+                [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $pair.Token },
+                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+            )
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+        $redacted = [regex]::Replace($redacted, [regex]::Escape($env:COMPUTERNAME), "<computer>", "IgnoreCase")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:USERNAME) -and $env:USERNAME.Length -ge 3) {
+        $namePattern = '(?<![A-Za-z0-9_@.-])' + [regex]::Escape($env:USERNAME) + '(?![A-Za-z0-9_@.-])'
+        $redacted = [regex]::Replace($redacted, $namePattern, "<user>", "IgnoreCase")
+    }
+
+    $redacted = $redacted -replace 'S-\d-\d+(?:-\d+)+', '<sid>'
+    $redacted = $redacted -replace '(?i)(remote\s+session\s+key\s*[:=]\s*)\S+', '$1<redacted>'
+    $redacted = $redacted -replace '(?i)((?:api[-_ ]?key|password|token|secret|authorization|bearer)\s*[:=]\s*)\S+', '$1<redacted>'
+
+    $urlPattern = '(https?://[^\s\)>\]"]+)'
+    $redacted = [regex]::Replace($redacted, $urlPattern, {
+        param($m)
+        $url = $m.Groups[1].Value
+        if ($url -match '(?i)(github\.com/xuzhougeng/phantty|github\.com/ghostty-org/ghostty)') {
+            return $url
+        }
+        return Redact-UrlForPublicReport $url
+    })
+
+    return $redacted
+}
 
 function Add-FailedCommand {
     param([string]$Label, [string]$Reason)
@@ -25,7 +109,7 @@ function Format-Value {
     if ($null -eq $Value) { return "unavailable" }
     $text = [string]$Value
     if ([string]::IsNullOrWhiteSpace($text)) { return "unavailable" }
-    return ($text -replace "`r", "" -replace "`n", " ").Trim()
+    return (Redact-Text (($text -replace "`r", "" -replace "`n", " ").Trim()))
 }
 
 function Test-PathSafe {
@@ -42,6 +126,19 @@ function Get-FileSummary {
         return "present ($($item.Length) bytes)"
     } catch {
         return "present (size unavailable)"
+    }
+}
+
+function Get-DirectoryFileSummary {
+    param([string]$Path, [string]$Filter = "*")
+    if (-not (Test-PathSafe $Path)) { return "not found" }
+    try {
+        $items = @(Get-ChildItem -LiteralPath $Path -Filter $Filter -File -ErrorAction Stop)
+        if ($items.Count -eq 0) { return "present (0 matching files)" }
+        $latest = $items | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        return "present ($($items.Count) matching files, latest $($latest.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")), $($latest.Length) bytes)"
+    } catch {
+        return "present (contents unavailable)"
     }
 }
 
@@ -141,6 +238,23 @@ function Get-RegistryValue {
     }
 }
 
+function Get-DpiInfo {
+    try {
+        $desktop = Get-ItemProperty -Path "HKCU:\Control Panel\Desktop" -ErrorAction Stop
+        $logPixelsProp = $desktop.PSObject.Properties["LogPixels"]
+        if ($logPixelsProp) {
+            $logPixels = [int]$logPixelsProp.Value
+            if ($logPixels -gt 0) {
+                $scale = [Math]::Round(($logPixels / 96.0) * 100)
+                return "LogPixels=$logPixels (~$scale%)"
+            }
+        }
+        return "default or per-monitor"
+    } catch {
+        return "unavailable"
+    }
+}
+
 function Get-WindowsInfo {
     $cv = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
     $product = Get-RegistryValue $cv "ProductName"
@@ -237,6 +351,46 @@ function Get-WebView2Version {
     return "not found"
 }
 
+function Get-RenderDiagnosticLogPath {
+    if (-not $env:APPDATA) { return $null }
+    return Join-Path $env:APPDATA "phantty\render-diagnostic.log"
+}
+
+function Get-OpenGlFromRenderDiagnosticLog {
+    $path = Get-RenderDiagnosticLogPath
+    if (-not (Test-PathSafe $path)) { return "unavailable" }
+    try {
+        $match = Select-String -LiteralPath $path -Pattern 'gpu vendor=' -ErrorAction Stop | Select-Object -Last 1
+        if ($match) { return Format-Value $match.Line }
+    } catch {}
+    return "unavailable"
+}
+
+function Get-RenderDiagnosticLogExcerpt {
+    $path = Get-RenderDiagnosticLogPath
+    if (-not (Test-PathSafe $path)) {
+        return [pscustomobject]@{
+            Summary = "not found"
+            Lines = @()
+        }
+    }
+
+    try {
+        $item = Get-Item -LiteralPath $path -ErrorAction Stop
+        $lines = @(Get-Content -LiteralPath $path -Tail 80 -ErrorAction Stop | ForEach-Object { Redact-Text $_ })
+        return [pscustomobject]@{
+            Summary = "present ($($item.Length) bytes, updated $($item.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")))"
+            Lines = $lines
+        }
+    } catch {
+        Add-FailedCommand "read render-diagnostic.log" $_.Exception.Message
+        return [pscustomobject]@{
+            Summary = "unavailable"
+            Lines = @()
+        }
+    }
+}
+
 function Get-RenderingInfo {
     $gpuLines = New-Object System.Collections.Generic.List[string]
     try {
@@ -251,8 +405,8 @@ function Get-RenderingInfo {
 
     return [pscustomobject]@{
         GPU = if ($gpuLines.Count -gt 0) { $gpuLines -join "; " } else { "unavailable" }
-        OpenGL = "unavailable"
-        DpiScaling = "unavailable"
+        OpenGL = Get-OpenGlFromRenderDiagnosticLog
+        DpiScaling = Get-DpiInfo
         WebView2Runtime = Get-WebView2Version
     }
 }
@@ -262,6 +416,9 @@ function Get-PhanttyInfo {
     $exeDir = if ($exe) { Split-Path -Parent $exe } else { $null }
     $versionOutput = if ($exe) { Invoke-CapturedCommand $exe @("--version") 5000 "phantty.exe --version" } else { $null }
     $configPath = if ($exe) { Invoke-CapturedCommand $exe @("--show-config-path") 5000 "phantty.exe --show-config-path" } else { $null }
+    if ($configPath -match "(?im)^\s*(?:Config file|Config path):\s*(.+?)\s*$") {
+        $configPath = $Matches[1]
+    }
     if ([string]::IsNullOrWhiteSpace($configPath) -and $env:APPDATA) {
         $configPath = Join-Path $env:APPDATA "phantty\config"
     }
@@ -286,6 +443,8 @@ function Get-PhanttyInfo {
     $logs = if ($appDataDir) { Join-Path $appDataDir "logs" } else { $null }
 
     return [pscustomobject]@{
+        ExePathRaw = $exe
+        ConfigPathRaw = $configPath
         ExePath = Format-Value $exe
         ExeDir = $exeDir
         Version = Format-Value $versionOutput
@@ -300,6 +459,177 @@ function Get-PhanttyInfo {
     }
 }
 
+function Get-EventDataMap {
+    param([System.Diagnostics.Eventing.Reader.EventRecord]$Event)
+    $map = @{}
+    try {
+        [xml]$xml = $Event.ToXml()
+        $idx = 0
+        foreach ($data in @($xml.Event.EventData.Data)) {
+            $name = [string]$data.Name
+            if ([string]::IsNullOrWhiteSpace($name)) {
+                $name = "Data$idx"
+            }
+            $map[$name] = [string]$data.'#text'
+            $idx += 1
+        }
+    } catch {}
+    return $map
+}
+
+function Format-CrashEvent {
+    param([System.Diagnostics.Eventing.Reader.EventRecord]$Event)
+    $map = Get-EventDataMap $Event
+    $time = $Event.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss")
+    $provider = Format-Value $Event.ProviderName
+
+    if ($Event.Id -eq 1000) {
+        $app = if ($map.ContainsKey("AppName")) { $map["AppName"] } else { "phantty.exe" }
+        $module = if ($map.ContainsKey("ModuleName")) { $map["ModuleName"] } else { "unavailable" }
+        $code = if ($map.ContainsKey("ExceptionCode")) { $map["ExceptionCode"] } else { "unavailable" }
+        $offset = if ($map.ContainsKey("FaultingOffset")) { $map["FaultingOffset"] } else { "unavailable" }
+        $path = if ($map.ContainsKey("AppPath")) { Format-Value $map["AppPath"] } else { "unavailable" }
+        return "- $time Event $($Event.Id) ${provider}: app=$(Format-Value $app), module=$(Format-Value $module), exception=$(Format-Value $code), offset=$(Format-Value $offset), path=$path"
+    }
+
+    $message = ""
+    try {
+        $message = (($Event.FormatDescription() -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($message)) { $message = "Windows Error Reporting entry" }
+    return "- $time Event $($Event.Id) ${provider}: $(Format-Value $message)"
+}
+
+function Get-PhanttyCrashEvents {
+    param([int]$Days = 14)
+    $start = (Get-Date).AddDays(-1 * [Math]::Max(1, $Days))
+    $eventLines = New-Object System.Collections.Generic.List[string]
+    try {
+        $events = Get-WinEvent -FilterHashtable @{ LogName = "Application"; Id = 1000, 1001; StartTime = $start } -MaxEvents 80 -ErrorAction Stop
+        foreach ($event in $events) {
+            $map = Get-EventDataMap $event
+            $text = ""
+            try { $text = $event.FormatDescription() } catch {}
+            $values = ($map.Values -join " ") + " " + $text
+            if ($values -notmatch "(?i)\bphantty\.exe\b") { continue }
+            $eventLines.Add((Format-CrashEvent $event)) | Out-Null
+            if ($eventLines.Count -ge 5) { break }
+        }
+    } catch {
+        Add-FailedCommand "read Windows Application crash events" $_.Exception.Message
+    }
+
+    if ($eventLines.Count -eq 0) { return @("- No recent phantty.exe crash events found in the Windows Application log.") }
+    return @($eventLines)
+}
+
+function Get-WerDumpRegistryPath {
+    return "HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\phantty.exe"
+}
+
+function Resolve-WerDumpFolder {
+    $path = Get-WerDumpRegistryPath
+    $folder = Get-RegistryValue $path "DumpFolder"
+    if ([string]::IsNullOrWhiteSpace($folder)) {
+        if ($env:LOCALAPPDATA) { return Join-Path $env:LOCALAPPDATA "CrashDumps" }
+        return $null
+    }
+    return [System.Environment]::ExpandEnvironmentVariables([string]$folder)
+}
+
+function Enable-WerCrashDumpCollection {
+    if (-not $env:LOCALAPPDATA) {
+        $script:CrashDumpSetup = "failed (LOCALAPPDATA unavailable)"
+        return
+    }
+
+    $folder = Join-Path $env:LOCALAPPDATA "CrashDumps"
+    $regPath = Get-WerDumpRegistryPath
+    try {
+        New-Item -Force -Path $folder | Out-Null
+        New-Item -Force -Path $regPath | Out-Null
+        New-ItemProperty -Force -Path $regPath -Name DumpFolder -PropertyType ExpandString -Value $folder | Out-Null
+        New-ItemProperty -Force -Path $regPath -Name DumpType -PropertyType DWord -Value 2 | Out-Null
+        New-ItemProperty -Force -Path $regPath -Name DumpCount -PropertyType DWord -Value 5 | Out-Null
+        $script:CrashDumpSetup = "enabled for phantty.exe at $(Format-Value $folder) (full dumps; do not post publicly)"
+    } catch {
+        $script:CrashDumpSetup = "failed ($($_.Exception.Message))"
+        Add-FailedCommand "enable WER crash dumps" $_.Exception.Message
+    }
+}
+
+function Get-WerDumpInfo {
+    $regPath = Get-WerDumpRegistryPath
+    $dumpType = Get-RegistryValue $regPath "DumpType"
+    $dumpCount = Get-RegistryValue $regPath "DumpCount"
+    $folder = Resolve-WerDumpFolder
+    $folderSummary = if ($folder) { Get-DirectoryFileSummary $folder "phantty*.dmp" } else { "unavailable" }
+    $configured = if (Test-PathSafe $regPath) { "yes" } else { "no" }
+
+    return [pscustomobject]@{
+        Setup = Format-Value $script:CrashDumpSetup
+        Configured = Format-Value $configured
+        DumpFolder = Format-Value $folder
+        DumpType = Format-Value $dumpType
+        DumpCount = Format-Value $dumpCount
+        DumpFiles = Format-Value $folderSummary
+    }
+}
+
+function Invoke-PhanttyStartupProbe {
+    param([string]$ExePath, [int]$TimeoutMs = 8000)
+    if (-not (Test-PathSafe $ExePath)) {
+        $script:StartupProbeResult = "not run (phantty.exe not found)"
+        return
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $ExePath
+    $psi.Arguments = "--auto-update-check false"
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $false
+    $psi.EnvironmentVariables["PHANTTY_RENDER_DIAGNOSTICS"] = "1"
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    $started = Get-Date
+    try {
+        [void]$process.Start()
+        if ($process.WaitForExit($TimeoutMs)) {
+            $elapsed = [int]((Get-Date) - $started).TotalMilliseconds
+            $script:StartupProbeResult = "exited within $elapsed ms (exit code $($process.ExitCode))"
+        } else {
+            $elapsed = [int]((Get-Date) - $started).TotalMilliseconds
+            $closed = $false
+            try {
+                if ($process.MainWindowHandle -ne 0) { $closed = $process.CloseMainWindow() }
+            } catch {}
+            if ($closed -and $process.WaitForExit(2000)) {
+                $script:StartupProbeResult = "survived $elapsed ms, then closed by diagnostic probe"
+            } else {
+                try { $process.Kill() } catch {}
+                $script:StartupProbeResult = "survived $elapsed ms, then killed by diagnostic probe"
+            }
+        }
+
+        $stdout = ""
+        $stderr = ""
+        try { $stdout = $process.StandardOutput.ReadToEnd() } catch {}
+        try { $stderr = $process.StandardError.ReadToEnd() } catch {}
+        $combined = (($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n"
+        if (-not [string]::IsNullOrWhiteSpace($combined)) {
+            $script:StartupProbeOutput = @($combined -split "`r?`n" | Select-Object -First 80 | ForEach-Object { Redact-Text $_ })
+        }
+    } catch {
+        $script:StartupProbeResult = "failed ($($_.Exception.Message))"
+        Add-FailedCommand "run startup probe" $_.Exception.Message
+    } finally {
+        $process.Dispose()
+    }
+}
+
 function Test-SensitiveConfigKey {
     param([string]$Key, [string]$Line)
     $text = "$Key $Line"
@@ -308,14 +638,7 @@ function Test-SensitiveConfigKey {
 
 function Redact-RemoteUrl {
     param([string]$Value)
-    try {
-        $uri = [Uri]$Value.Trim()
-        if ($uri.Host) {
-            if ($uri.IsDefaultPort) { return "$($uri.Scheme)://$($uri.Host)/..." }
-            return "$($uri.Scheme)://$($uri.Host):$($uri.Port)/..."
-        }
-    } catch {}
-    return "<redacted>"
+    return Redact-UrlForPublicReport $Value
 }
 
 function Redact-ConfigLine {
@@ -365,7 +688,8 @@ function Get-IssueHints {
         "(?i)startup|crash" {
             return @(
                 "- Startup/crash: describe whether a window appears before exit.",
-                "- Startup/crash: check Windows Event Viewer for an Application Error mentioning phantty.exe."
+                "- Startup/crash: recent Windows Application Error entries are collected below when available.",
+                "- Startup/crash: if WER dumps are enabled, attach dumps only in a private channel because they may contain memory contents."
             )
         }
         "(?i)keyboard|input" {
@@ -416,16 +740,22 @@ function Get-IssueHints {
 
 function New-MarkdownReport {
     $phantty = Get-PhanttyInfo
+    if ($EnableCrashDumps) { Enable-WerCrashDumpCollection }
+    if ($StartupProbe) { Invoke-PhanttyStartupProbe $phantty.ExePathRaw $StartupProbeTimeoutMs }
     $windows = Get-WindowsInfo
     $ssh = Get-SshInfo
     $rendering = Get-RenderingInfo
-    $configLines = Get-ConfigExcerpt $phantty.ConfigPath
+    $configLines = Get-ConfigExcerpt $phantty.ConfigPathRaw
     $hints = Get-IssueHints $ProblemType
+    $crashEvents = Get-PhanttyCrashEvents $CrashEventDays
+    $wer = Get-WerDumpInfo
+    $renderLog = Get-RenderDiagnosticLogExcerpt
 
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("## Phantty Diagnostic Report") | Out-Null
     $lines.Add("") | Out-Null
     $lines.Add("### Summary") | Out-Null
+    $lines.Add("- Generated at: $((Get-Date).ToString("yyyy-MM-dd HH:mm:ss zzz"))") | Out-Null
     $lines.Add("- Problem type: $(Format-Value $ProblemType)") | Out-Null
     $lines.Add("- User description: $(Format-Value $UserDescription)") | Out-Null
     $lines.Add("- Reproduction steps: $(Format-Value $ReproductionSteps)") | Out-Null
@@ -461,6 +791,32 @@ function New-MarkdownReport {
     $lines.Add("- DPI/scaling: $($rendering.DpiScaling)") | Out-Null
     $lines.Add("- WebView2 runtime: $($rendering.WebView2Runtime)") | Out-Null
     $lines.Add("") | Out-Null
+    $lines.Add("### Startup / Crash") | Out-Null
+    $lines.Add("- Startup probe: $(Format-Value $script:StartupProbeResult)") | Out-Null
+    $lines.Add("- WER dump setup: $($wer.Setup)") | Out-Null
+    $lines.Add("- WER local dumps configured: $($wer.Configured)") | Out-Null
+    $lines.Add("- WER dump folder: $($wer.DumpFolder)") | Out-Null
+    $lines.Add("- WER dump type/count: type=$($wer.DumpType), count=$($wer.DumpCount)") | Out-Null
+    $lines.Add("- WER dump files: $($wer.DumpFiles)") | Out-Null
+    $lines.Add("- Render diagnostic log: $($renderLog.Summary)") | Out-Null
+    $lines.Add("") | Out-Null
+    $lines.Add("#### Recent Windows Crash Events") | Out-Null
+    foreach ($eventLine in $crashEvents) { $lines.Add($eventLine) | Out-Null }
+    $lines.Add("") | Out-Null
+    if ($script:StartupProbeOutput.Count -gt 0) {
+        $lines.Add("#### Startup Probe Output") | Out-Null
+        $lines.Add('```text') | Out-Null
+        foreach ($line in $script:StartupProbeOutput) { $lines.Add($line) | Out-Null }
+        $lines.Add('```') | Out-Null
+        $lines.Add("") | Out-Null
+    }
+    if ($renderLog.Lines.Count -gt 0) {
+        $lines.Add("#### Render Diagnostic Log Excerpt") | Out-Null
+        $lines.Add('```text') | Out-Null
+        foreach ($line in $renderLog.Lines) { $lines.Add($line) | Out-Null }
+        $lines.Add('```') | Out-Null
+        $lines.Add("") | Out-Null
+    }
     $lines.Add("### Relevant Files") | Out-Null
     $lines.Add("- `%APPDATA%\phantty\config`: $($phantty.AppDataConfig)") | Out-Null
     $lines.Add("- `%APPDATA%\phantty\session.json`: $($phantty.SessionJson)") | Out-Null
@@ -473,9 +829,9 @@ function New-MarkdownReport {
         $lines.Add("") | Out-Null
     }
     $lines.Add("### Config Excerpt") | Out-Null
-    $lines.Add("````ini") | Out-Null
+    $lines.Add('```ini') | Out-Null
     foreach ($line in $configLines) { $lines.Add($line) | Out-Null }
-    $lines.Add("````") | Out-Null
+    $lines.Add('```') | Out-Null
     $lines.Add("") | Out-Null
     $lines.Add("### Notes") | Out-Null
     $lines.Add("- Sensitive fields redacted: yes") | Out-Null
@@ -498,8 +854,25 @@ function Invoke-SelfTest {
     $line = Redact-ConfigLine "keybind = ctrl+shift+p=toggle_command_palette"
     if ($line -ne "keybind = ctrl+shift+p=toggle_command_palette") { throw "safe keybind was incorrectly redacted" }
 
+    $fakeUserPath = Join-Path $env:USERPROFILE "Documents\secret\phantty.exe"
+    $redacted = Redact-Text $fakeUserPath
+    if ($redacted -match [regex]::Escape($env:USERPROFILE)) { throw "USERPROFILE path was not redacted" }
+
+    $slashPath = ($fakeUserPath -replace '\\', '/')
+    $redacted = Redact-Text $slashPath
+    if ($redacted -match "C:/Users") { throw "slash-form USERPROFILE path was not redacted" }
+
+    $ansi = Redact-Text "$([char]27)[31m$env:USERNAME$([char]27)[0m"
+    if ($ansi -ne "<user>") { throw "ANSI/user prompt text was not sanitized" }
+
+    $secretOutput = Redact-Text "Remote session key: abc123"
+    if ($secretOutput -ne "Remote session key: <redacted>") { throw "remote session key output was not redacted" }
+
     $hints = Get-IssueHints "SSH/SCP"
     if ($hints.Count -lt 1) { throw "SSH/SCP hints missing" }
+
+    $crashHints = Get-IssueHints "startup/crash"
+    if ($crashHints.Count -lt 2) { throw "startup/crash hints missing" }
 
     "Self-test passed"
 }
