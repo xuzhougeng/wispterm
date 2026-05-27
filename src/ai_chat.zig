@@ -5,6 +5,7 @@
 //! Phantty-specific session kind rendered by the window chrome.
 
 const std = @import("std");
+const ai_chat_input_text = @import("ai_chat_input_text.zig");
 const input_key = @import("input/key.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
 const platform_dirs = @import("platform/dirs.zig");
@@ -2441,127 +2442,16 @@ fn allocUsageFooter(allocator: std.mem.Allocator, started_ms: i64, usage: ?ApiUs
     return try allocator.dupe(u8, text);
 }
 
-fn clampUtf8Boundary(text: []const u8, cursor: usize) usize {
-    var i = @min(cursor, text.len);
-    while (i > 0 and i < text.len and (text[i] & 0xC0) == 0x80) : (i -= 1) {}
-    return i;
-}
-
-fn previousUtf8Boundary(text: []const u8, cursor: usize) usize {
-    if (cursor == 0) return 0;
-    var i = @min(cursor, text.len);
-    i -= 1;
-    while (i > 0 and (text[i] & 0xC0) == 0x80) : (i -= 1) {}
-    return i;
-}
-
-fn nextUtf8Boundary(text: []const u8, cursor: usize) usize {
-    if (cursor >= text.len) return text.len;
-    var i = cursor + 1;
-    while (i < text.len and (text[i] & 0xC0) == 0x80) : (i += 1) {}
-    return i;
-}
-
-const VisualCursor = struct {
-    row: usize,
-    col: usize,
-};
-
-const VisualRow = struct {
-    start: usize,
-    end: usize,
-};
-
-fn nextUtf8Step(text: []const u8, index: usize) usize {
-    const len = std.unicode.utf8ByteSequenceLength(text[index]) catch 1;
-    return if (index + len <= text.len) len else 1;
-}
-
-fn visualCursorPosition(text: []const u8, cursor_raw: usize, max_cols_raw: usize) VisualCursor {
-    const cursor = @min(cursor_raw, text.len);
-    const max_cols = @max(@as(usize, 1), max_cols_raw);
-    var row: usize = 0;
-    var col: usize = 0;
-    var i: usize = 0;
-    while (i < cursor) {
-        if (text[i] == '\n') {
-            row += 1;
-            col = 0;
-            i += 1;
-            continue;
-        }
-        if (col >= max_cols) {
-            row += 1;
-            col = 0;
-        }
-        col += 1;
-        i += nextUtf8Step(text, i);
-    }
-    return .{ .row = row, .col = col };
-}
-
-fn visualRowAt(text: []const u8, target_row: usize, max_cols_raw: usize) ?VisualRow {
-    const max_cols = @max(@as(usize, 1), max_cols_raw);
-    var row: usize = 0;
-    var row_start: usize = 0;
-    var col: usize = 0;
-    var i: usize = 0;
-    while (i < text.len) {
-        if (text[i] == '\n') {
-            if (row == target_row) return .{ .start = row_start, .end = i };
-            row += 1;
-            row_start = i + 1;
-            col = 0;
-            i += 1;
-            continue;
-        }
-        if (col >= max_cols) {
-            if (row == target_row) return .{ .start = row_start, .end = i };
-            row += 1;
-            row_start = i;
-            col = 0;
-        }
-        col += 1;
-        i += nextUtf8Step(text, i);
-    }
-    if (row == target_row) return .{ .start = row_start, .end = text.len };
-    return null;
-}
-
-fn byteOffsetForVisualPosition(text: []const u8, target_row: usize, target_col: usize, max_cols: usize) ?usize {
-    const row = visualRowAt(text, target_row, max_cols) orelse return null;
-    var col: usize = 0;
-    var i = row.start;
-    while (i < row.end and col < target_col) {
-        i += nextUtf8Step(text, i);
-        col += 1;
-    }
-    return i;
-}
-
-pub fn inputWrappedLineCount(text: []const u8, max_cols_raw: usize) usize {
-    if (text.len == 0) return 1;
-    const max_cols = @max(@as(usize, 1), max_cols_raw);
-    var lines: usize = 1;
-    var cols: usize = 0;
-    var i: usize = 0;
-    while (i < text.len) {
-        if (text[i] == '\n') {
-            lines += 1;
-            cols = 0;
-            i += 1;
-            continue;
-        }
-        const len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
-        if (cols >= max_cols) {
-            lines += 1;
-            cols = 0;
-        }
-        cols += 1;
-        i += if (i + len <= text.len) len else 1;
-    }
-    return lines;
-}
+const VisualCursor = ai_chat_input_text.VisualCursor;
+const VisualRow = ai_chat_input_text.VisualRow;
+const clampUtf8Boundary = ai_chat_input_text.clampUtf8Boundary;
+const previousUtf8Boundary = ai_chat_input_text.previousUtf8Boundary;
+const nextUtf8Boundary = ai_chat_input_text.nextUtf8Boundary;
+const nextUtf8Step = ai_chat_input_text.nextUtf8Step;
+const visualCursorPosition = ai_chat_input_text.visualCursorPosition;
+const visualRowAt = ai_chat_input_text.visualRowAt;
+const byteOffsetForVisualPosition = ai_chat_input_text.byteOffsetForVisualPosition;
+pub const inputWrappedLineCount = ai_chat_input_text.inputWrappedLineCount;
 
 fn appendClipboardSection(
     allocator: std.mem.Allocator,
