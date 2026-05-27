@@ -571,6 +571,7 @@ comptime {
     _ = @import("input.zig");
     _ = @import("input/clipboard.zig");
     _ = @import("input/click_tracker.zig");
+    _ = @import("input/command_dispatch.zig");
     _ = @import("input/hit_test.zig");
     _ = @import("input/key.zig");
     _ = @import("input/preview_source.zig");

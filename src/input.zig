@@ -32,6 +32,7 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const platform_wsl = @import("platform/wsl.zig");
 const window_backend = @import("platform/window_backend.zig");
 const input_key = @import("input/key.zig");
+const command_dispatch = @import("input/command_dispatch.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
@@ -814,7 +815,7 @@ fn handleChar(ev: platform_input.CharEvent) void {
     writeToPty(surface, buf[0..len]);
 }
 
-const KeybindPhase = enum { early, late };
+const KeybindPhase = command_dispatch.Phase;
 
 fn triggerFromKeyEvent(ev: platform_input.KeyEvent) keybind.Trigger {
     return .{
@@ -908,134 +909,61 @@ fn requestNewWindowFromActiveCwd() void {
     app.requestNewWindow(handle, cwd);
 }
 
-fn switchTabActionIndex(action: keybind.Action) ?usize {
-    return switch (action) {
-        .switch_tab_1 => 0,
-        .switch_tab_2 => 1,
-        .switch_tab_3 => 2,
-        .switch_tab_4 => 3,
-        .switch_tab_5 => 4,
-        .switch_tab_6 => 5,
-        .switch_tab_7 => 6,
-        .switch_tab_8 => 7,
-        .switch_tab_9 => 8,
-        else => null,
-    };
+fn handleConfiguredKeybindAction(action: keybind.Action, phase: KeybindPhase) bool {
+    const cmd = command_dispatch.resolve(action, phase) orelse return false;
+    if (phase == .early) commitTabRenameIfActive();
+    return executeCommand(cmd);
 }
 
-fn handleConfiguredKeybindAction(action: keybind.Action, phase: KeybindPhase) bool {
-    switch (phase) {
-        .early => switch (action) {
-            .toggle_quake => {
-                commitTabRenameIfActive();
-                AppWindow.toggleQuakeVisibility();
-                return true;
-            },
-            .toggle_command_palette => {
-                commitTabRenameIfActive();
-                overlays.commandPaletteToggle();
-                return true;
-            },
-            .new_window => {
-                commitTabRenameIfActive();
-                requestNewWindowFromActiveCwd();
-                return true;
-            },
-            .new_session => {
-                commitTabRenameIfActive();
-                overlays.sessionLauncherOpen();
-                return true;
-            },
-            .split_right => {
-                commitTabRenameIfActive();
-                AppWindow.splitFocused(.right);
-                return true;
-            },
-            .toggle_file_explorer => {
-                commitTabRenameIfActive();
-                toggleFileExplorer();
-                return true;
-            },
-            .toggle_sidebar => {
-                commitTabRenameIfActive();
-                toggleSidebar();
-                return true;
-            },
-            .close_panel_or_tab => {
-                commitTabRenameIfActive();
-                closePanelOrTab();
-                return true;
-            },
-            .toggle_maximize => {
-                commitTabRenameIfActive();
-                toggleMaximize();
-                return true;
-            },
-            .font_size_increase => {
-                commitTabRenameIfActive();
-                adjustFontSize(1);
-                return true;
-            },
-            .font_size_decrease => {
-                commitTabRenameIfActive();
-                adjustFontSize(-1);
-                return true;
-            },
-            else => return false,
+fn executeCommand(cmd: command_dispatch.Command) bool {
+    switch (cmd) {
+        // Early
+        .toggle_quake => AppWindow.toggleQuakeVisibility(),
+        .toggle_command_palette => overlays.commandPaletteToggle(),
+        .new_window => requestNewWindowFromActiveCwd(),
+        .new_session => overlays.sessionLauncherOpen(),
+        .split_right => AppWindow.splitFocused(.right),
+        .toggle_file_explorer => toggleFileExplorer(),
+        .toggle_sidebar => toggleSidebar(),
+        .close_panel_or_tab => closePanelOrTab(),
+        .toggle_maximize => toggleMaximize(),
+        .font_size => |delta| adjustFontSize(delta),
+        // Late
+        .copy => copySelectionToClipboard(),
+        .paste => {
+            if (AppWindow.activeAiChat()) |chat| {
+                pasteFromClipboardIntoAiChat(chat);
+            } else {
+                pasteFromClipboard();
+            }
         },
-        .late => switch (action) {
-            .copy => {
-                copySelectionToClipboard();
-                return true;
-            },
-            .paste => {
-                if (AppWindow.activeAiChat()) |chat| {
-                    pasteFromClipboardIntoAiChat(chat);
-                } else {
-                    pasteFromClipboard();
-                }
-                return true;
-            },
-            .paste_image => {
-                pasteImageFromClipboard();
-                return true;
-            },
-            // Panel-focus shortcuts are "performable": if there is no pane in
-            // the requested direction, don't consume the key so it falls
-            // through to the terminal (e.g. Alt+Up reaches a TUI like Claude
-            // Code as \x1b[1;3A when running in a single pane).
-            .focus_left => return AppWindow.gotoSplit(.{ .spatial = .left }),
-            .focus_right => return AppWindow.gotoSplit(.{ .spatial = .right }),
-            .focus_up => return AppWindow.gotoSplit(.{ .spatial = .up }),
-            .focus_down => return AppWindow.gotoSplit(.{ .spatial = .down }),
-            .focus_previous => return AppWindow.gotoSplit(.previous_wrapped),
-            .focus_next => return AppWindow.gotoSplit(.next_wrapped),
-            .equalize_splits => {
-                AppWindow.equalizeSplits();
-                return true;
-            },
-            .next_tab => {
-                AppWindow.switchTab((tab.g_active_tab + 1) % tab.g_tab_count);
-                return true;
-            },
-            .previous_tab => {
-                if (tab.g_active_tab > 0) AppWindow.switchTab(tab.g_active_tab - 1) else AppWindow.switchTab(tab.g_tab_count - 1);
-                return true;
-            },
-            .open_config => {
-                std.debug.print("[keybind] open_config pressed\n", .{});
-                if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc);
-                return true;
-            },
-            else => {
-                if (switchTabActionIndex(action)) |tab_idx| {
-                    if (tab_idx < tab.g_tab_count) AppWindow.switchTab(tab_idx);
-                    return true;
-                }
-                return false;
-            },
+        .paste_image => pasteImageFromClipboard(),
+        // Panel-focus shortcuts are "performable": if there is no pane in
+        // the requested direction, don't consume the key so it falls
+        // through to the terminal (e.g. Alt+Up reaches a TUI like Claude
+        // Code as \x1b[1;3A when running in a single pane).
+        .focus_split => |target| return switch (target) {
+            .left => AppWindow.gotoSplit(.{ .spatial = .left }),
+            .right => AppWindow.gotoSplit(.{ .spatial = .right }),
+            .up => AppWindow.gotoSplit(.{ .spatial = .up }),
+            .down => AppWindow.gotoSplit(.{ .spatial = .down }),
+            .previous => AppWindow.gotoSplit(.previous_wrapped),
+            .next => AppWindow.gotoSplit(.next_wrapped),
+        },
+        .equalize_splits => AppWindow.equalizeSplits(),
+        .next_tab => AppWindow.switchTab((tab.g_active_tab + 1) % tab.g_tab_count),
+        .previous_tab => {
+            if (tab.g_active_tab > 0) AppWindow.switchTab(tab.g_active_tab - 1) else AppWindow.switchTab(tab.g_tab_count - 1);
+        },
+        .open_config => {
+            std.debug.print("[keybind] open_config pressed\n", .{});
+            if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc);
+        },
+        .switch_tab => |idx| {
+            if (idx < tab.g_tab_count) AppWindow.switchTab(idx);
         },
     }
+    return true;
 }
 
 fn handleKey(ev: platform_input.KeyEvent) void {
