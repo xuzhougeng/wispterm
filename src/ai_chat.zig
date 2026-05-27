@@ -16,6 +16,7 @@ const agent_history = @import("agent_history.zig");
 const skill_registry = @import("skill_registry.zig");
 const markdown_text = @import("markdown_text.zig");
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
+const ai_chat_composer = @import("ai_chat_composer.zig");
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -26,8 +27,6 @@ pub const DEFAULT_REASONING_EFFORT = "high";
 pub const DEFAULT_STREAM = "false";
 pub const DEFAULT_AGENT = "true";
 pub const DEFAULT_PROTOCOL = ai_chat_protocol.DEFAULT_PROTOCOL;
-
-
 
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
 const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
@@ -334,8 +333,6 @@ fn currentToolHost() ?ToolHost {
     return g_tool_host;
 }
 
-const ai_chat_composer = @import("ai_chat_composer.zig");
-
 const SlashCommand = ai_chat_composer.SlashCommand;
 const SkillInvocation = ai_chat_composer.SkillInvocation;
 const ComposerSuggestionPrefix = ai_chat_composer.ComposerSuggestionPrefix;
@@ -346,13 +343,8 @@ pub const SlashCommandSuggestion = ai_chat_composer.SlashCommandSuggestion;
 const parseSlashCommand = ai_chat_composer.parseSlashCommand;
 const composerSuggestionPrefix = ai_chat_composer.composerSuggestionPrefix;
 const slashCommandSuggestionPrefix = ai_chat_composer.slashCommandSuggestionPrefix;
-const slashCommandTokenEnd = ai_chat_composer.slashCommandTokenEnd;
-const skillSuggestionCountForPrefix = ai_chat_composer.skillSuggestionCountForPrefix;
-const skillSuggestionAtForPrefix = ai_chat_composer.skillSuggestionAtForPrefix;
 const suggestionReplacementText = ai_chat_composer.suggestionReplacementText;
 const parseSkillInvocation = ai_chat_composer.parseSkillInvocation;
-const isAsciiWhitespace = ai_chat_composer.isAsciiWhitespace;
-const SlashCommandEntry = ai_chat_composer.SlashCommandEntry;
 const slash_command_entries = ai_chat_composer.slash_command_entries;
 pub const slashCommandSuggestionCountForInput = ai_chat_composer.slashCommandSuggestionCountForInput;
 pub const slashCommandSuggestionAtForInput = ai_chat_composer.slashCommandSuggestionAtForInput;
@@ -2173,11 +2165,9 @@ fn allocUsageFooter(allocator: std.mem.Allocator, started_ms: i64, usage: ?ApiUs
 }
 
 const VisualCursor = ai_chat_input_text.VisualCursor;
-const VisualRow = ai_chat_input_text.VisualRow;
 const clampUtf8Boundary = ai_chat_input_text.clampUtf8Boundary;
 const previousUtf8Boundary = ai_chat_input_text.previousUtf8Boundary;
 const nextUtf8Boundary = ai_chat_input_text.nextUtf8Boundary;
-const nextUtf8Step = ai_chat_input_text.nextUtf8Step;
 const visualCursorPosition = ai_chat_input_text.visualCursorPosition;
 const visualRowAt = ai_chat_input_text.visualRowAt;
 const byteOffsetForVisualPosition = ai_chat_input_text.byteOffsetForVisualPosition;
