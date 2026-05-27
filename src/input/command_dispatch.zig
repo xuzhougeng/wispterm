@@ -10,7 +10,8 @@ const keybind = @import("../keybind.zig");
 /// routing) or `late` (after).
 pub const Phase = enum { early, late };
 
-/// The six split-focus directions a focus_split command can target.
+/// Where a focus_split command moves focus: four spatial directions plus
+/// previous/next ordering.
 pub const FocusTarget = enum { left, right, up, down, previous, next };
 
 pub const Command = union(enum) {

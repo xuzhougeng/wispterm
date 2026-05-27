@@ -160,8 +160,17 @@ mapping in guide §2 and §5.
 
 ### Phase B — Presentation/logic separation (actionable now; verifiable on Windows)
 
-- [ ] **B1** `input.zig`: extract keybind parsing + command dispatch from
-      platform input handling into pure, unit-testable modules.
+- [x] **B1** `input.zig`: extract keybind parsing + command dispatch from
+      platform input handling into pure, unit-testable modules. Done via targeted
+      pure-module extraction (no global struct-ification): `input/click_tracker.zig`
+      (multi-click counter), `input/hit_test.zig` (sidebar geometry over a
+      `SidebarLayout` descriptor), `input/command_dispatch.zig` (pure
+      `resolve(action, phase) → ?Command`; `input.zig` keeps `executeCommand`).
+      19 std-only unit tests, run in the fast loop via `test_fast.zig` and
+      regression-locked in `test_main.zig`; `input.zig` 3573 → 3467 ln. Spec/plan:
+      `docs/superpowers/{specs/2026-05-27-b1-input-decouple-design,plans/2026-05-27-b1-input-decouple}.md`.
+      Native proof: `zig build test` (268 tests) and
+      `zig build test-full -Dtarget=x86_64-windows-gnu`.
 - [ ] **B2** `ai_chat.zig`: separate conversation/state/protocol logic from UI
       state into independently testable sub-modules.
 - [ ] **B3** `AppWindow.zig`: layer tab/split orchestration, render
