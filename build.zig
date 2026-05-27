@@ -135,6 +135,19 @@ fn macosBundleResourcesKeepPath() []const u8 {
     return "Phantty.app/Contents/Resources/.keep";
 }
 
+fn macosBundleIconSourcePath() []const u8 {
+    return "assets/phantty.icns";
+}
+
+fn macosBundleIconBundlePath() []const u8 {
+    return "Phantty.app/Contents/Resources/Phantty.icns";
+}
+
+fn macosBundleIconNameInPlist() []const u8 {
+    // CFBundleIconFile is stored without the .icns extension.
+    return "Phantty";
+}
+
 fn macosPackageScriptPath() []const u8 {
     return "packaging/macos/package.sh";
 }
@@ -155,6 +168,8 @@ fn macosInfoPlist(allocator: std.mem.Allocator, app_version: []const u8) []const
         \\    <key>CFBundleDisplayName</key>
         \\    <string>{s}</string>
         \\    <key>CFBundleExecutable</key>
+        \\    <string>{s}</string>
+        \\    <key>CFBundleIconFile</key>
         \\    <string>{s}</string>
         \\    <key>CFBundleIdentifier</key>
         \\    <string>{s}</string>
@@ -178,6 +193,7 @@ fn macosInfoPlist(allocator: std.mem.Allocator, app_version: []const u8) []const
     , .{
         metadata.display_name,
         metadata.executable_name,
+        macosBundleIconNameInPlist(),
         metadata.bundle_identifier,
         metadata.display_name,
         app_version,
@@ -421,6 +437,8 @@ test "macOS Info.plist renders app bundle metadata and package type" {
     try expectSourceContains(plist, "<string>com.phantty.terminal</string>");
     try expectSourceContains(plist, "<key>CFBundleShortVersionString</key>");
     try expectSourceContains(plist, "<string>1.2.3</string>");
+    try expectSourceContains(plist, "<key>CFBundleIconFile</key>");
+    try expectSourceContains(plist, "<string>Phantty</string>");
 }
 
 test "macOS app bundle links required native frameworks" {
@@ -802,6 +820,11 @@ fn createAppModuleWithRoot(
     const freetype_dep = b.lazyDependency("freetype", .{
         .target = target,
         .optimize = optimize,
+        // Apple Color Emoji and most modern color-emoji fonts store sbix /
+        // CBDT strikes as PNG; without libpng FreeType reads the strike
+        // metadata but renderGlyph fails to decode the bitmap, leaving
+        // emoji cells blank.
+        .@"enable-libpng" = true,
     });
     if (freetype_dep) |dep| {
         app_mod.addImport("freetype", dep.module("freetype"));
@@ -905,6 +928,7 @@ fn addMacosAppBundle(
     _ = bundle.add("Phantty.app/Contents/PkgInfo", "APPL????");
     _ = bundle.add(macosBundleResourcesKeepPath(), "");
     _ = bundle.addCopyFile(exe.getEmittedBin(), macosBundleExecutablePath());
+    _ = bundle.addCopyFile(b.path(macosBundleIconSourcePath()), macosBundleIconBundlePath());
 
     const install_bundle = b.addInstallDirectory(.{
         .source_dir = bundle.getDirectory(),

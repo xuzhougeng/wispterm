@@ -125,12 +125,42 @@ pub threadlocal var g_bell_emoji_face: ?freetype.Face = null;
 /// High-DPI monitors need a higher-resolution glyph atlas instead of relying on
 /// platform display scaling from the baseline DPI.
 pub fn setFacePointSize(face: freetype.Face, font_size: u32) !void {
-    try face.setCharSize(
+    face.setCharSize(
         0,
         @as(i32, @intCast(font_size)) * 64,
         @intCast(g_dpi),
         @intCast(g_dpi),
-    );
+    ) catch |err| {
+        // Bitmap-only fonts (Apple Color Emoji's sbix strikes etc.) reject
+        // FT_Set_Char_Size because they aren't scalable; we have to pick the
+        // best matching fixed strike via FT_Select_Size instead. Without this
+        // emoji fallback faces fail to load and the cells render blank.
+        if (!face.hasFixedSizes()) return err;
+        try selectClosestFixedStrike(face, font_size);
+    };
+}
+
+fn selectClosestFixedStrike(face: freetype.Face, font_size: u32) !void {
+    const num = face.handle.*.num_fixed_sizes;
+    if (num <= 0) return error.NoFixedSizes;
+
+    // Target pixel-per-em from the requested point size at the active DPI.
+    const target_ppem: i32 = @intCast(@divTrunc(font_size * g_dpi + 36, 72));
+
+    var best_idx: i32 = 0;
+    var best_diff: i32 = std.math.maxInt(i32);
+    var i: i32 = 0;
+    while (i < num) : (i += 1) {
+        const bs = face.handle.*.available_sizes[@intCast(i)];
+        // y_ppem is in 26.6 fixed-point pixels; >>6 gives integer ppem.
+        const ppem: i32 = @intCast(bs.y_ppem >> 6);
+        const diff: i32 = if (ppem >= target_ppem) ppem - target_ppem else target_ppem - ppem;
+        if (diff < best_diff) {
+            best_diff = diff;
+            best_idx = i;
+        }
+    }
+    try face.selectSize(best_idx);
 }
 
 /// Convert FreeType 26.6 fixed-point to f64 (like Ghostty)
@@ -1168,8 +1198,14 @@ pub fn findOrLoadFallbackFace(codepoint: u32, alloc: std.mem.Allocator) ?freetyp
         if (@abs(scale - 1.0) > 0.01) {
             const scaled_size = @max(8.0, @round(@as(f64, @floatFromInt(g_font_size)) * scale));
             ft_face.setCharSize(0, @intFromFloat(scaled_size * 64.0), @intCast(g_dpi), @intCast(g_dpi)) catch {
-                ft_face.deinit();
-                return null;
+                // Bitmap-only fallbacks (Apple Color Emoji etc.) can't be
+                // rescaled here; the strike already chosen in
+                // setFacePointSize stays in effect. Renderer scales the
+                // BGRA bitmap down to cell height at draw time.
+                if (!ft_face.hasFixedSizes()) {
+                    ft_face.deinit();
+                    return null;
+                }
             };
         }
     }
