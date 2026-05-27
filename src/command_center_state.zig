@@ -19,6 +19,7 @@ pub const CommandAction = enum {
     toggle_file_explorer,
     toggle_browser_panel,
     toggle_quake,
+    open_settings,
     show_shortcuts,
     open_config,
     font_size_decrease,
@@ -62,6 +63,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Toggle File Explorer", .detail = "Show or hide the left-side file explorer", .shortcut = "", .action = .toggle_file_explorer },
     .{ .title = "Toggle Browser", .detail = "Open the configured browser for local or SSH URLs", .shortcut = "", .action = .toggle_browser_panel },
     .{ .title = "Toggle Quake Window", .detail = "Show or hide the drop-down terminal window", .shortcut = "", .action = .toggle_quake },
+    .{ .title = "Settings", .detail = "Open the settings page", .shortcut = "", .action = .open_settings },
     .{ .title = "Keyboard Shortcuts", .detail = "Show the shortcut reference overlay", .shortcut = "", .action = .show_shortcuts },
     .{ .title = "Open Config", .detail = "Open the Phantty config file", .shortcut = "", .action = .open_config },
     .{ .title = "Decrease Font Size", .detail = "Make terminal text smaller", .shortcut = "", .action = .font_size_decrease },
@@ -297,6 +299,16 @@ test "command center New Agent opens the AI form when no profiles exist" {
         NewAgentLaunchAction.open_form,
         resolveNewAgentLaunch(false),
     );
+}
+
+test "command center exposes settings as a command" {
+    for (command_entries) |entry| {
+        if (entry.action == .open_settings) {
+            try std.testing.expectEqualStrings("Settings", entry.title);
+            return;
+        }
+    }
+    return error.MissingSettingsCommand;
 }
 
 test "Select Agent History reuses command center open flow and switches to history mode" {

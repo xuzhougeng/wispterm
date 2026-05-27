@@ -166,6 +166,21 @@ test "input: WeChat QR panel consumes text input while visible" {
     try std.testing.expect(weixinQrPanelConsumesChar());
 }
 
+test "input: Ctrl+Shift+P toggles command center" {
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.commandPaletteClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.commandPaletteClose();
+
+    handleKey(.{ .key_code = 'P', .ctrl = true, .shift = true, .alt = false });
+    try std.testing.expect(overlays.commandPaletteVisible());
+
+    handleKey(.{ .key_code = 'P', .ctrl = true, .shift = true, .alt = false });
+    try std.testing.expect(!overlays.commandPaletteVisible());
+}
+
 fn weixinQrPanelConsumesChar() bool {
     return AppWindow.weixin_qr_panel.visible();
 }

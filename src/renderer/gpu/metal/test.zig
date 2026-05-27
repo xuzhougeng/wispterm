@@ -7,6 +7,7 @@ const Framebuffer = @import("Framebuffer.zig");
 const Pipeline = @import("Pipeline.zig");
 const Texture = @import("Texture.zig");
 const gl_init = @import("gl_init.zig");
+const render_state = @import("render_state.zig");
 const shaders = @import("shaders.zig");
 const vertex = @import("vertex.zig");
 
@@ -122,6 +123,43 @@ test "Pipeline compiles simple MSL vertex and fragment functions" {
     pipeline.setVec4("overlayColor", 1, 0, 0, 1);
     pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
     try std.testing.expect(Pipeline.lastDrawSucceeded());
+}
+
+test "render_state batches multiple Metal draws into one presented frame" {
+    try Context.init(null);
+    defer Context.deinit();
+
+    const vs: [*c]const u8 =
+        \\#include <metal_stdlib>
+        \\using namespace metal;
+        \\vertex float4 vertex_main(uint vertex_id [[vertex_id]]) {
+        \\    float2 positions[3] = {
+        \\        float2(-1.0, -1.0),
+        \\        float2( 3.0, -1.0),
+        \\        float2(-1.0,  3.0),
+        \\    };
+        \\    return float4(positions[vertex_id], 0.0, 1.0);
+        \\}
+    ;
+    const fs: [*c]const u8 =
+        \\#include <metal_stdlib>
+        \\using namespace metal;
+        \\fragment float4 fragment_main() {
+        \\    return float4(0.0, 1.0, 0.0, 1.0);
+        \\}
+    ;
+
+    var pipeline = Pipeline.init(vs, fs, 0);
+    defer pipeline.deinit();
+
+    render_state.clear(0, 0, 0, 1);
+    try std.testing.expect(render_state.isFrameActive());
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+    render_state.endFrame();
+    try std.testing.expect(!render_state.isFrameActive());
 }
 
 test "vertex builder returns stable nonzero layout handles" {

@@ -340,6 +340,54 @@ static PhanttyMacCharEvent phantty_macos_char_event(uint32_t codepoint, NSEventM
     return event;
 }
 
+static uintptr_t phantty_macos_map_ansi_key_code(unsigned short key_code) {
+    switch (key_code) {
+        case 0: return 'A';
+        case 1: return 'S';
+        case 2: return 'D';
+        case 3: return 'F';
+        case 4: return 'H';
+        case 5: return 'G';
+        case 6: return 'Z';
+        case 7: return 'X';
+        case 8: return 'C';
+        case 9: return 'V';
+        case 11: return 'B';
+        case 12: return 'Q';
+        case 13: return 'W';
+        case 14: return 'E';
+        case 15: return 'R';
+        case 16: return 'Y';
+        case 17: return 'T';
+        case 18: return '1';
+        case 19: return '2';
+        case 20: return '3';
+        case 21: return '4';
+        case 22: return '6';
+        case 23: return '5';
+        case 24: return 0xBB; // = / +
+        case 25: return '9';
+        case 26: return '7';
+        case 27: return 0xBD; // - / _
+        case 28: return '8';
+        case 29: return '0';
+        case 30: return 0xDD; // ] / }
+        case 31: return 'O';
+        case 32: return 'U';
+        case 33: return 0xDB; // [ / {
+        case 34: return 'I';
+        case 35: return 'P';
+        case 37: return 'L';
+        case 38: return 'J';
+        case 40: return 'K';
+        case 43: return 0xBC; // , / <
+        case 45: return 'N';
+        case 46: return 'M';
+        case 50: return 0xC0; // ` / ~
+        default: return 0;
+    }
+}
+
 static uintptr_t phantty_macos_map_key_code(unsigned short key_code, NSString *characters) {
     switch (key_code) {
         case 36: return 0x0D;  // Return
@@ -360,17 +408,34 @@ static uintptr_t phantty_macos_map_key_code(unsigned short key_code, NSString *c
 
     if (characters.length > 0) {
         unichar ch = [characters characterAtIndex:0];
+        if (ch < 0x20 || ch == 0x7F || (ch >= 0xF700 && ch <= 0xF8FF)) {
+            uintptr_t ansi = phantty_macos_map_ansi_key_code(key_code);
+            if (ansi != 0) return ansi;
+        }
         if (ch >= 'a' && ch <= 'z') return (uintptr_t)(ch - ('a' - 'A'));
         return (uintptr_t)ch;
     }
+    uintptr_t ansi = phantty_macos_map_ansi_key_code(key_code);
+    if (ansi != 0) return ansi;
     return (uintptr_t)key_code;
+}
+
+static NSString *phantty_macos_key_characters(NSEvent *event) {
+    if (event == nil) return nil;
+    NSString *characters = nil;
+    if ((event.modifierFlags & NSEventModifierFlagControl) != 0) {
+        NSEventModifierFlags translation_flags = event.modifierFlags & ~NSEventModifierFlagControl;
+        characters = [event charactersByApplyingModifiers:translation_flags];
+    }
+    if (characters != nil) return characters;
+    return event.charactersIgnoringModifiers != nil ? event.charactersIgnoringModifiers : event.characters;
 }
 
 static void phantty_macos_handle_event(PhanttyMacWindowState *state, NSEvent *event) {
     if (state == NULL || event == nil) return;
     switch (event.type) {
         case NSEventTypeKeyDown: {
-            NSString *characters = event.charactersIgnoringModifiers ?: event.characters;
+            NSString *characters = phantty_macos_key_characters(event);
             uintptr_t key_code = phantty_macos_map_key_code(event.keyCode, characters);
             phantty_macos_push_key_event(state, phantty_macos_key_event(key_code, event.modifierFlags));
             break;
@@ -452,7 +517,7 @@ static void phantty_macos_set_preedit(PhanttyMacWindowState *state, id string_or
 
 - (void)keyDown:(NSEvent *)event {
     if (self.state != NULL) {
-        NSString *characters = event.charactersIgnoringModifiers != nil ? event.charactersIgnoringModifiers : event.characters;
+        NSString *characters = phantty_macos_key_characters(event);
         uintptr_t key_code = phantty_macos_map_key_code(event.keyCode, characters);
         phantty_macos_push_key_event(self.state, phantty_macos_key_event(key_code, event.modifierFlags));
     }
@@ -672,6 +737,7 @@ void *phantty_macos_window_create(
         [window setTitle:window_title];
         [window_title release];
         [window setReleasedWhenClosed:NO];
+        [window setSharingType:NSWindowSharingReadOnly];
 
         PhanttyMacContentView *view = [[PhanttyMacContentView alloc] initWithFrame:NSMakeRect(0, 0, content_rect.size.width, content_rect.size.height)];
         CAMetalLayer *layer = [CAMetalLayer layer];
@@ -800,6 +866,16 @@ void phantty_macos_window_test_push_key(void *handle, uintptr_t key_code, bool c
         .shift = shift,
         .alt = alt,
     });
+}
+
+uintptr_t phantty_macos_window_test_map_key_code(uint16_t native_key_code, const char *characters_utf8) {
+    @autoreleasepool {
+        NSString *characters = nil;
+        if (characters_utf8 != NULL) {
+            characters = [NSString stringWithUTF8String:characters_utf8];
+        }
+        return phantty_macos_map_key_code(native_key_code, characters);
+    }
 }
 
 void phantty_macos_window_test_push_char(void *handle, uint32_t codepoint, bool ctrl, bool shift, bool alt) {

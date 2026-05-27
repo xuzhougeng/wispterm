@@ -447,6 +447,7 @@ fn executeCommand(action: CommandAction) void {
         .toggle_file_explorer => AppWindow.input.toggleFileExplorer(),
         .toggle_browser_panel => AppWindow.input.toggleBrowserPanel(),
         .toggle_quake => AppWindow.toggleQuakeVisibility(),
+        .open_settings => settingsPageOpen(),
         .show_shortcuts => startupShortcutsShow(),
         .open_config => if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc),
         .font_size_decrease => AppWindow.input.adjustFontSize(-1),
@@ -3927,6 +3928,17 @@ test "overlays: transfer toast text describes download states" {
         "Download failed: file.txt",
         try formatTransferToast(&buf, .download, .failed, "file.txt"),
     );
+}
+
+test "overlays: command center Settings command opens settings page" {
+    commandPaletteOpen();
+    defer settingsPageClose();
+    defer commandPaletteClose();
+
+    executeCommand(.open_settings);
+
+    try std.testing.expect(settingsPageVisible());
+    try std.testing.expect(!commandPaletteVisible());
 }
 
 test "overlays: active download toast can be clicked for interruption" {

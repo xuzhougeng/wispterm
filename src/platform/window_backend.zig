@@ -139,10 +139,10 @@ pub fn nativeHandleFromBits(bits: usize) ?NativeHandle {
 }
 
 pub fn nativeHandle(window: *Window) NativeHandle {
-    return switch (backendForOs(builtin.os.tag)) {
-        .windows, .macos => window.hwnd,
-        else => nativeHandleBits(window),
-    };
+    if (comptime backendForOs(builtin.os.tag) == .unsupported) {
+        return nativeHandleBits(window);
+    }
+    return window.hwnd;
 }
 
 pub fn nativeHandleBits(window: *Window) usize {

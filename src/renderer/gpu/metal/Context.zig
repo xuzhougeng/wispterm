@@ -24,6 +24,9 @@ pub const Handles = extern struct {
     device: ?*anyopaque = null,
     command_queue: ?*anyopaque = null,
     layer: ?*anyopaque = null,
+    drawable: ?*anyopaque = null,
+    command_buffer: ?*anyopaque = null,
+    encoder: ?*anyopaque = null,
 };
 
 pub const Error = error{

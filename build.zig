@@ -35,6 +35,15 @@ const macos_app_frameworks = [_][]const u8{
     "CoreText",
     "CoreGraphics",
     "Foundation",
+    "CoreFoundation",
+    "Carbon",
+};
+
+const macos_objective_c_sources = [_][]const u8{
+    "src/renderer/gpu/metal/bridge.m",
+    "src/platform/window_macos_bridge.m",
+    "src/platform/font_macos_bridge.m",
+    "src/platform/services_macos_bridge.m",
 };
 
 const MacosBundleMetadata = struct {
@@ -68,10 +77,12 @@ const PlatformFeatures = struct {
 
     fn forOs(os_tag: std.Target.Os.Tag) PlatformFeatures {
         const uses_windows_backend = os_tag == .windows;
+        const uses_macos_backend = os_tag == .macos;
+        const has_desktop_backend = uses_windows_backend or uses_macos_backend;
         const has_app_bundle = os_tag == .macos;
         const embedded_browser_backend: EmbeddedBrowserBackend = if (uses_windows_backend) .webview2 else .none;
         return .{
-            .supports_desktop_exe = uses_windows_backend,
+            .supports_desktop_exe = has_desktop_backend,
             .supports_embedded_browser = embedded_browser_backend.isSupported(),
             .embedded_browser_backend = embedded_browser_backend,
             .supports_resource_manifest = uses_windows_backend,
@@ -133,8 +144,7 @@ fn macosEntitlementsPath() []const u8 {
 
 fn macosInfoPlist(allocator: std.mem.Allocator, app_version: []const u8) []const u8 {
     const metadata = macosBundleMetadata();
-    return std.fmt.allocPrint(
-        allocator,
+    return std.fmt.allocPrint(allocator,
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         \\<plist version="1.0">
@@ -215,7 +225,7 @@ test "default development target remains x86_64 windows gnu" {
     try std.testing.expectEqual(std.Target.Abi.gnu, query.abi.?);
 }
 
-test "platform feature gates only enable windows artifacts on windows" {
+test "platform feature gates enable implemented desktop artifacts" {
     const windows = PlatformFeatures.forOs(.windows);
     try std.testing.expect(windows.supports_desktop_exe);
     try std.testing.expect(windows.supports_embedded_browser);
@@ -237,9 +247,11 @@ test "platform feature gates only enable windows artifacts on windows" {
     try std.testing.expect(linux.opengl_system_library == null);
 
     const macos = PlatformFeatures.forOs(.macos);
+    try std.testing.expect(macos.supports_desktop_exe);
     try std.testing.expect(!macos.supports_embedded_browser);
     try std.testing.expectEqual(EmbeddedBrowserBackend.none, macos.embedded_browser_backend);
     try std.testing.expect(!macos.supports_resource_manifest);
+    try std.testing.expect(!macos.supports_gui_subsystem);
     try std.testing.expect(!macos.supports_remote_transport);
     try std.testing.expect(macos.supports_app_bundle);
     try std.testing.expect(macos.opengl_system_library == null);
@@ -261,13 +273,15 @@ test "windows system libraries are gated by platform" {
 
 test "macOS platform advertises required app frameworks" {
     const frameworks = appFrameworksFor(PlatformFeatures.forOs(.macos));
-    try std.testing.expectEqual(@as(usize, 6), frameworks.len);
+    try std.testing.expectEqual(@as(usize, 8), frameworks.len);
     try expectContainsString(frameworks, "Metal");
     try expectContainsString(frameworks, "QuartzCore");
     try expectContainsString(frameworks, "AppKit");
     try expectContainsString(frameworks, "CoreText");
     try expectContainsString(frameworks, "CoreGraphics");
     try expectContainsString(frameworks, "Foundation");
+    try expectContainsString(frameworks, "CoreFoundation");
+    try expectContainsString(frameworks, "Carbon");
 
     try std.testing.expectEqual(@as(usize, 0), appFrameworksFor(PlatformFeatures.forOs(.windows)).len);
     try std.testing.expectEqual(@as(usize, 0), appFrameworksFor(PlatformFeatures.forOs(.linux)).len);
@@ -308,13 +322,13 @@ test "foreign target tests are compile-only by default" {
 test "desktop executable emission defaults to implemented platform backends" {
     try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.windows)));
     try std.testing.expect(!defaultEmitDesktopExe(PlatformFeatures.forOs(.linux)));
-    try std.testing.expect(!defaultEmitDesktopExe(PlatformFeatures.forOs(.macos)));
+    try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.macos)));
 }
 
 test "shared compile checks default to platforms without desktop backends" {
     try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.windows)));
     try std.testing.expect(defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.linux)));
-    try std.testing.expect(defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.macos)));
+    try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.macos)));
 }
 
 test "macOS app target path accepts Apple Silicon and Intel Macs" {
@@ -327,8 +341,15 @@ test "macOS app target path accepts Apple Silicon and Intel Macs" {
 
 test "macOS app bundle build contract is declared" {
     const source = @embedFile("build.zig");
+    const stub_path = "src/" ++ "macos_app_stub.zig";
+    const skeleton_text = "bundle " ++ "skeleton";
 
     try expectSourceContains(source, "b.step(\"macos-app\"");
+    try expectSourceContains(source, "Build and install the native macOS .app bundle");
+    try expectSourceContains(source, "src/main.zig");
+    try expectSourceContains(source, "phantty-clean-macos-app");
+    try std.testing.expect(std.mem.indexOf(u8, source, stub_path) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, skeleton_text) == null);
     try std.testing.expectEqualStrings("Phantty.app/Contents/Info.plist", macosBundleInfoPlistPath());
     try std.testing.expectEqualStrings("Phantty.app/Contents/MacOS/Phantty", macosBundleExecutablePath());
     try std.testing.expectEqualStrings("Phantty.app/Contents/Resources/.keep", macosBundleResourcesKeepPath());
@@ -395,6 +416,8 @@ test "macOS app bundle links required native frameworks" {
     try expectContainsString(frameworks, "CoreText");
     try expectContainsString(frameworks, "CoreGraphics");
     try expectContainsString(frameworks, "Foundation");
+    try expectContainsString(frameworks, "CoreFoundation");
+    try expectContainsString(frameworks, "Carbon");
 }
 
 fn expectSourceContains(source: []const u8, needle: []const u8) !void {
@@ -445,125 +468,15 @@ pub fn build(b: *std.Build) void {
     const app_version = packageVersion(b);
 
     if (emit_desktop_exe) {
-        const exe_mod = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        });
-        const app_options = b.addOptions();
-        app_options.addOption(bool, "webview", webview);
-        app_options.addOption([]const u8, "app_version", app_version);
-        exe_mod.addOptions("build_options", app_options);
-
-        // Add ghostty-vt dependency with SIMD disabled for cross-compilation
-        if (b.lazyDependency("ghostty", .{
-            .target = target,
-            .optimize = optimize,
-            .simd = false,
-        })) |dep| {
-            exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
-            exe_mod.addIncludePath(dep.path("src/stb"));
-            exe_mod.addCSourceFile(.{
-                .file = dep.path("src/stb/stb.c"),
-                .flags = &.{},
-            });
-        }
-
-        // Add libxev dependency (xev event loop for IO thread)
-        if (b.lazyDependency("libxev", .{
-            .target = target,
-            .optimize = optimize,
-        })) |dep| {
-            exe_mod.addImport("xev", dep.module("xev"));
-        }
-
-        for (systemLibrariesFor(platform)) |library| {
-            exe_mod.linkSystemLibrary(library, .{});
-        }
-
-        // Add FreeType dependency (shared between main and harfbuzz)
-        const freetype_dep = b.lazyDependency("freetype", .{
-            .target = target,
-            .optimize = optimize,
-        });
-        if (freetype_dep) |dep| {
-            exe_mod.addImport("freetype", dep.module("freetype"));
-            exe_mod.linkLibrary(dep.artifact("freetype"));
-        }
-
-        // Add z2d dependency for sprite rendering
-        if (b.lazyDependency("z2d", .{
-            .target = target,
-            .optimize = optimize,
-        })) |dep| {
-            exe_mod.addImport("z2d", dep.module("z2d"));
-        }
-
-        // Add HarfBuzz — build C library and create Zig module sharing our freetype
-        if (b.lazyDependency("harfbuzz", .{})) |hb_dep| {
-            if (freetype_dep) |ft_dep| {
-                // Build the HarfBuzz C static library from source
-                const hb_lib = buildHarfbuzzLib(b, target, optimize, hb_dep, ft_dep);
-
-                // Create Zig wrapper module sharing our freetype module
-                const hb_mod = b.addModule("harfbuzz", .{
-                    .root_source_file = b.path("pkg/harfbuzz/main.zig"),
-                    .target = target,
-                    .optimize = optimize,
-                    .imports = &.{
-                        .{ .name = "freetype", .module = ft_dep.module("freetype") },
-                    },
-                });
-
-                const options = b.addOptions();
-                options.addOption(bool, "coretext", false);
-                options.addOption(bool, "freetype", true);
-                hb_mod.addOptions("build_options", options);
-
-                // Add HarfBuzz C headers to the Zig module
-                if (hb_dep.builder.lazyDependency("harfbuzz", .{})) |upstream| {
-                    hb_mod.addIncludePath(upstream.path("src"));
-                }
-                // Add FreeType C headers so hb-ft.h can find ft2build.h
-                hb_mod.addIncludePath(b.path("pkg/freetype"));
-                if (ft_dep.builder.lazyDependency("freetype", .{})) |ft_upstream| {
-                    hb_mod.addIncludePath(ft_upstream.path("include"));
-                }
-
-                exe_mod.addImport("harfbuzz", hb_mod);
-                exe_mod.linkLibrary(hb_lib);
-            }
-        }
-
-        // Add OpenGL/glad headers and source
-        exe_mod.addIncludePath(b.path("vendor/glad/include"));
-        exe_mod.addCSourceFile(.{
-            .file = b.path("vendor/glad/src/gl.c"),
-            .flags = &.{},
-        });
-        if (webview) {
-            exe_mod.addCSourceFile(.{
-                .file = b.path(webviewBridgeSourcePath(platform).?),
-                .flags = &.{},
-            });
-        }
-
-        if (platform.opengl_system_library) |library| {
-            exe_mod.linkSystemLibrary(library, .{});
-        }
-
-        if (platform.supports_resource_manifest) {
-            exe_mod.addWin32ResourceFile(.{
-                .file = b.path("assets/phantty.rc"),
-                .include_paths = &.{b.path("assets")},
-            });
-        }
+        const exe_mod = createAppModule(b, target, optimize, app_version, platform, webview);
 
         const exe = b.addExecutable(.{
             .name = "phantty",
             .root_module = exe_mod,
         });
+        if (platform.supports_app_bundle) {
+            apple_sdk.addPaths(b, exe) catch @panic("failed to locate native Apple SDK for macOS app executable");
+        }
 
         if (platform.supports_gui_subsystem) {
             // Debug builds use Console subsystem so std.debug.print output is visible.
@@ -587,7 +500,7 @@ pub fn build(b: *std.Build) void {
     const test_macos_window_step = b.step("test-macos-window", "Run native macOS AppKit window backend smoke tests");
     const test_macos_font_step = b.step("test-macos-font", "Run native macOS CoreText font backend smoke tests");
     const test_macos_services_step = b.step("test-macos-services", "Run native macOS platform service smoke tests");
-    const macos_app_step = b.step("macos-app", "Build and install the native macOS .app bundle skeleton");
+    const macos_app_step = b.step("macos-app", "Build and install the native macOS .app bundle");
     const macos_dist_step = b.step("macos-dist", "Build, sign, and package the native macOS .app into a DMG");
 
     if (platform.supports_app_bundle) {
@@ -738,34 +651,22 @@ pub fn build(b: *std.Build) void {
     }
 
     if (platform.supports_desktop_exe) {
-        const test_mod = b.createModule(.{
-            .root_source_file = b.path("src/test_main.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        const test_options = b.addOptions();
-        test_options.addOption(bool, "webview", webview);
-        test_options.addOption([]const u8, "app_version", app_version);
-        test_mod.addOptions("build_options", test_options);
-
-        if (b.lazyDependency("ghostty", .{
-            .target = target,
-            .optimize = optimize,
-            .simd = false,
-        })) |dep| {
-            test_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
-        }
-
-        if (b.lazyDependency("libxev", .{
-            .target = target,
-            .optimize = optimize,
-        })) |dep| {
-            test_mod.addImport("xev", dep.module("xev"));
-        }
+        const test_mod = createAppModuleWithRoot(
+            b,
+            "src/test_main.zig",
+            target,
+            optimize,
+            app_version,
+            platform,
+            webview,
+        );
 
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
+        if (platform.supports_app_bundle) {
+            apple_sdk.addPaths(b, tests) catch @panic("failed to locate native Apple SDK for app tests");
+        }
 
         const run_tests = b.addRunArtifact(tests);
         run_tests.skip_foreign_checks = shouldSkipForeignTestRun(
@@ -777,6 +678,151 @@ pub fn build(b: *std.Build) void {
     }
 }
 
+fn createAppModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    app_version: []const u8,
+    platform: PlatformFeatures,
+    webview: bool,
+) *std.Build.Module {
+    return createAppModuleWithRoot(b, "src/main.zig", target, optimize, app_version, platform, webview);
+}
+
+fn createAppModuleWithRoot(
+    b: *std.Build,
+    root_source_path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    app_version: []const u8,
+    platform: PlatformFeatures,
+    webview: bool,
+) *std.Build.Module {
+    const app_mod = b.createModule(.{
+        .root_source_file = b.path(root_source_path),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const app_options = b.addOptions();
+    app_options.addOption(bool, "webview", webview);
+    app_options.addOption([]const u8, "app_version", app_version);
+    app_mod.addOptions("build_options", app_options);
+
+    // Add ghostty-vt dependency with SIMD disabled for cross-compilation.
+    if (b.lazyDependency("ghostty", .{
+        .target = target,
+        .optimize = optimize,
+        .simd = false,
+    })) |dep| {
+        app_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
+        app_mod.addIncludePath(dep.path("src/stb"));
+        app_mod.addCSourceFile(.{
+            .file = dep.path("src/stb/stb.c"),
+            .flags = &.{},
+        });
+    }
+
+    if (b.lazyDependency("libxev", .{
+        .target = target,
+        .optimize = optimize,
+    })) |dep| {
+        app_mod.addImport("xev", dep.module("xev"));
+    }
+
+    for (systemLibrariesFor(platform)) |library| {
+        app_mod.linkSystemLibrary(library, .{});
+    }
+    for (appFrameworksFor(platform)) |framework| {
+        app_mod.linkFramework(framework, .{});
+    }
+
+    const freetype_dep = b.lazyDependency("freetype", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    if (freetype_dep) |dep| {
+        app_mod.addImport("freetype", dep.module("freetype"));
+        app_mod.linkLibrary(dep.artifact("freetype"));
+    }
+
+    if (b.lazyDependency("z2d", .{
+        .target = target,
+        .optimize = optimize,
+    })) |dep| {
+        app_mod.addImport("z2d", dep.module("z2d"));
+    }
+
+    if (b.lazyDependency("harfbuzz", .{})) |hb_dep| {
+        if (freetype_dep) |ft_dep| {
+            const hb_lib = buildHarfbuzzLib(b, target, optimize, hb_dep, ft_dep);
+            const hb_mod = b.addModule("harfbuzz", .{
+                .root_source_file = b.path("pkg/harfbuzz/main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "freetype", .module = ft_dep.module("freetype") },
+                },
+            });
+
+            const options = b.addOptions();
+            options.addOption(bool, "coretext", false);
+            options.addOption(bool, "freetype", true);
+            hb_mod.addOptions("build_options", options);
+
+            if (hb_dep.builder.lazyDependency("harfbuzz", .{})) |upstream| {
+                hb_mod.addIncludePath(upstream.path("src"));
+            }
+            hb_mod.addIncludePath(b.path("pkg/freetype"));
+            if (ft_dep.builder.lazyDependency("freetype", .{})) |ft_upstream| {
+                hb_mod.addIncludePath(ft_upstream.path("include"));
+            }
+
+            app_mod.addImport("harfbuzz", hb_mod);
+            app_mod.linkLibrary(hb_lib);
+        }
+    }
+
+    if (platform.opengl_system_library) |library| {
+        app_mod.addIncludePath(b.path("vendor/glad/include"));
+        app_mod.addCSourceFile(.{
+            .file = b.path("vendor/glad/src/gl.c"),
+            .flags = &.{},
+        });
+        app_mod.linkSystemLibrary(library, .{});
+    }
+
+    if (platform.supports_app_bundle) {
+        for (macos_objective_c_sources) |source| {
+            app_mod.addCSourceFile(.{
+                .file = b.path(source),
+                .flags = &.{},
+                .language = .objective_c,
+            });
+        }
+    }
+
+    if (webview) {
+        app_mod.addCSourceFile(.{
+            .file = b.path(webviewBridgeSourcePath(platform).?),
+            .flags = &.{},
+        });
+    }
+
+    if (platform.supports_resource_manifest) {
+        app_mod.addWin32ResourceFile(.{
+            .file = b.path("assets/phantty.rc"),
+            .include_paths = &.{b.path("assets")},
+        });
+    }
+
+    if (platform.supports_app_bundle) {
+        app_mod.linkSystemLibrary("objc", .{});
+    }
+    return app_mod;
+}
+
 fn addMacosAppBundle(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -785,30 +831,13 @@ fn addMacosAppBundle(
     platform: PlatformFeatures,
 ) *std.Build.Step.InstallDir {
     const metadata = macosBundleMetadata();
-    const macos_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos_app_stub.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const macos_options = b.addOptions();
-    macos_options.addOption([]const u8, "app_version", app_version);
-    macos_mod.addOptions("build_options", macos_options);
-    macos_mod.addCSourceFile(.{
-        .file = b.path("src/renderer/gpu/metal/bridge.m"),
-        .flags = &.{},
-        .language = .objective_c,
-    });
-    for (appFrameworksFor(platform)) |framework| {
-        macos_mod.linkFramework(framework, .{});
-    }
-    macos_mod.linkSystemLibrary("objc", .{});
+    const macos_mod = createAppModule(b, target, optimize, app_version, platform, false);
 
     const exe = b.addExecutable(.{
         .name = metadata.executable_name,
         .root_module = macos_mod,
     });
-    apple_sdk.addPaths(b, exe) catch @panic("failed to locate native Apple SDK for macOS app skeleton");
+    apple_sdk.addPaths(b, exe) catch @panic("failed to locate native Apple SDK for macOS app executable");
 
     const bundle = b.addWriteFiles();
     _ = bundle.add(macosBundleInfoPlistPath(), macosInfoPlist(b.allocator, app_version));
@@ -816,11 +845,20 @@ fn addMacosAppBundle(
     _ = bundle.add(macosBundleResourcesKeepPath(), "");
     _ = bundle.addCopyFile(exe.getEmittedBin(), macosBundleExecutablePath());
 
-    return b.addInstallDirectory(.{
+    const install_bundle = b.addInstallDirectory(.{
         .source_dir = bundle.getDirectory(),
         .install_dir = .bin,
         .install_subdir = "",
     });
+    const clean_existing_bundle = b.addSystemCommand(&.{
+        "bash",
+        "-c",
+        "rm -rf \"$1\"",
+        "phantty-clean-macos-app",
+        b.getInstallPath(.bin, metadata.bundle_dir),
+    });
+    install_bundle.step.dependOn(&clean_existing_bundle.step);
+    return install_bundle;
 }
 
 fn packageVersion(b: *std.Build) []const u8 {

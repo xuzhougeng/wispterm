@@ -9,8 +9,8 @@ hardened runtime and entitlements, creates a DMG, notarizes with `notarytool`,
 staples the DMG and app, and uses Sparkle appcast metadata for automatic
 updates. Phantty keeps the same signing/notarization shape, but the initial
 updater story is a manual DMG release asset selected by the existing update
-checker. A full Sparkle integration should be designed when the macOS app shell
-is no longer a skeleton.
+checker. A full Sparkle integration should be designed when the macOS
+release-update flow is ready for unattended replacement.
 
 ## Local DMG
 

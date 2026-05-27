@@ -214,7 +214,8 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
 **D0 — Build & target plumbing**
 - [x] `build.zig`: a macOS target path (`aarch64-macos` / `x86_64-macos`), link
       frameworks (Metal, QuartzCore, AppKit/Cocoa, CoreText, CoreGraphics,
-      Foundation), and a `.app` artifact skeleton. Keep the comptime guards
+      Foundation), and a `.app` artifact wired to the real `src/main.zig`
+      desktop entrypoint. Keep the comptime guards
       (`build_guards`, `apprt_win32_guard`, `gl_backend_guard`) green for macOS.
       Native proof: `zig test build.zig`, `zig build macos-app -Dtarget=aarch64-macos`,
       `zig build macos-app -Dtarget=x86_64-macos`, `zig build test-metal`,
@@ -334,7 +335,8 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       initial macOS releases publish a matching DMG asset selected by the
       existing update checker (`phantty-macos-{tag}.dmg`) and saved to
       Downloads; a full automatic updater should follow Ghostty's Sparkle
-      approach once the macOS app shell is no longer a skeleton. Ghostty
+      approach once the macOS release-update flow is ready for unattended
+      replacement. Ghostty
       reference: its release workflow signs nested code and app with hardened
       runtime, creates a DMG, notarizes/staples app + DMG, and generates Sparkle
       appcast metadata. Proof: `zig build macos-dist -Dtarget=aarch64-macos`,

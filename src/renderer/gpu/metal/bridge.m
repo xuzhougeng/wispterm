@@ -22,6 +22,9 @@ typedef struct PhanttyMetalContext {
     void *device;
     void *command_queue;
     void *layer;
+    void *drawable;
+    void *command_buffer;
+    void *encoder;
 } PhanttyMetalContext;
 
 typedef struct PhanttyMetalBufferSlot {
@@ -63,6 +66,17 @@ static void phantty_metal_set_error(char *error_buf, size_t error_buf_len, const
     if (error_buf == NULL || error_buf_len == 0) return;
     snprintf(error_buf, error_buf_len, "%s", message);
 }
+
+bool phantty_metal_frame_begin(
+    PhanttyMetalContext *ctx,
+    float r,
+    float g,
+    float b,
+    float a,
+    char *error_buf,
+    size_t error_buf_len
+);
+bool phantty_metal_frame_end(PhanttyMetalContext *ctx, char *error_buf, size_t error_buf_len);
 
 static bool phantty_metal_buffer_valid(unsigned int handle) {
     return handle > 0 && handle < PHANTTY_METAL_MAX_BUFFERS;
@@ -152,6 +166,9 @@ bool phantty_metal_context_init(void *layer, PhanttyMetalContext *out, char *err
     out->device = NULL;
     out->command_queue = NULL;
     out->layer = NULL;
+    out->drawable = NULL;
+    out->command_buffer = NULL;
+    out->encoder = NULL;
 
     @autoreleasepool {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -191,6 +208,9 @@ bool phantty_metal_context_init(void *layer, PhanttyMetalContext *out, char *err
         out->device = device;
         out->command_queue = queue;
         out->layer = metal_layer;
+        out->drawable = NULL;
+        out->command_buffer = NULL;
+        out->encoder = NULL;
         phantty_metal_set_error(error_buf, error_buf_len, "");
         return true;
     }
@@ -200,6 +220,8 @@ void phantty_metal_context_deinit(PhanttyMetalContext *ctx) {
     if (ctx == NULL) return;
 
     @autoreleasepool {
+        char ignored[1] = {0};
+        (void)phantty_metal_frame_end(ctx, ignored, sizeof(ignored));
         if (ctx->layer != NULL) {
             [(id)ctx->layer release];
             ctx->layer = NULL;
@@ -646,27 +668,20 @@ void phantty_metal_pipeline_set_mat4(unsigned int handle, const char *name, cons
     }
 }
 
-bool phantty_metal_pipeline_draw_arrays(
+bool phantty_metal_frame_begin(
     PhanttyMetalContext *ctx,
-    unsigned int handle,
-    unsigned int mode,
-    int first,
-    int count,
-    int instances,
-    unsigned int buffer0,
-    unsigned int buffer1,
+    float r,
+    float g,
+    float b,
+    float a,
     char *error_buf,
     size_t error_buf_len
 ) {
     if (ctx == NULL || ctx->command_queue == NULL || ctx->layer == NULL) {
-        phantty_metal_set_error(error_buf, error_buf_len, "missing Metal context for draw");
+        phantty_metal_set_error(error_buf, error_buf_len, "missing Metal context for frame begin");
         return false;
     }
-    if (!phantty_metal_pipeline_valid(handle) || phantty_metal_pipelines[handle].pipeline == nil) {
-        phantty_metal_set_error(error_buf, error_buf_len, "invalid Metal pipeline handle");
-        return false;
-    }
-    if (count <= 0) {
+    if (ctx->encoder != NULL) {
         phantty_metal_set_error(error_buf, error_buf_len, "");
         return true;
     }
@@ -679,21 +694,106 @@ bool phantty_metal_pipeline_draw_arrays(
             phantty_metal_set_error(error_buf, error_buf_len, "CAMetalLayer nextDrawable returned nil");
             return false;
         }
+        [drawable retain];
 
         id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
+        if (command_buffer == nil) {
+            [drawable release];
+            phantty_metal_set_error(error_buf, error_buf_len, "commandBuffer returned nil");
+            return false;
+        }
+        [command_buffer retain];
+
         MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
         MTLRenderPassColorAttachmentDescriptor *color = pass.colorAttachments[0];
         color.texture = drawable.texture;
         color.loadAction = MTLLoadActionClear;
         color.storeAction = MTLStoreActionStore;
-        color.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+        color.clearColor = MTLClearColorMake(r, g, b, a);
 
         id<MTLRenderCommandEncoder> encoder = [command_buffer renderCommandEncoderWithDescriptor:pass];
         if (encoder == nil) {
+            [command_buffer release];
+            [drawable release];
             phantty_metal_set_error(error_buf, error_buf_len, "renderCommandEncoderWithDescriptor returned nil");
             return false;
         }
+        [encoder retain];
 
+        ctx->drawable = drawable;
+        ctx->command_buffer = command_buffer;
+        ctx->encoder = encoder;
+        phantty_metal_set_error(error_buf, error_buf_len, "");
+        return true;
+    }
+}
+
+bool phantty_metal_frame_end(PhanttyMetalContext *ctx, char *error_buf, size_t error_buf_len) {
+    if (ctx == NULL) {
+        phantty_metal_set_error(error_buf, error_buf_len, "missing Metal context for frame end");
+        return false;
+    }
+    if (ctx->encoder == NULL) {
+        phantty_metal_set_error(error_buf, error_buf_len, "");
+        return true;
+    }
+
+    @autoreleasepool {
+        id<MTLRenderCommandEncoder> encoder = (id<MTLRenderCommandEncoder>)ctx->encoder;
+        id<MTLCommandBuffer> command_buffer = (id<MTLCommandBuffer>)ctx->command_buffer;
+        id<CAMetalDrawable> drawable = (id<CAMetalDrawable>)ctx->drawable;
+
+        [encoder endEncoding];
+        if (drawable != nil) [command_buffer presentDrawable:drawable];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+
+        bool ok = command_buffer.status != MTLCommandBufferStatusError;
+        if (!ok) {
+            NSError *error = command_buffer.error;
+            const char *message = error != nil ? [[error localizedDescription] UTF8String] : "Metal command buffer failed";
+            phantty_metal_set_error(error_buf, error_buf_len, message);
+        } else {
+            phantty_metal_set_error(error_buf, error_buf_len, "");
+        }
+
+        [encoder release];
+        if (command_buffer != nil) [command_buffer release];
+        if (drawable != nil) [drawable release];
+        ctx->encoder = NULL;
+        ctx->command_buffer = NULL;
+        ctx->drawable = NULL;
+        return ok;
+    }
+}
+
+static bool phantty_metal_encode_draw(
+    PhanttyMetalContext *ctx,
+    unsigned int handle,
+    unsigned int mode,
+    int first,
+    int count,
+    int instances,
+    unsigned int buffer0,
+    unsigned int buffer1,
+    char *error_buf,
+    size_t error_buf_len
+) {
+    if (ctx == NULL || ctx->encoder == NULL) {
+        phantty_metal_set_error(error_buf, error_buf_len, "missing Metal frame encoder for draw");
+        return false;
+    }
+    if (!phantty_metal_pipeline_valid(handle) || phantty_metal_pipelines[handle].pipeline == nil) {
+        phantty_metal_set_error(error_buf, error_buf_len, "invalid Metal pipeline handle");
+        return false;
+    }
+    if (count <= 0) {
+        phantty_metal_set_error(error_buf, error_buf_len, "");
+        return true;
+    }
+
+    @autoreleasepool {
+        id<MTLRenderCommandEncoder> encoder = (id<MTLRenderCommandEncoder>)ctx->encoder;
         PhanttyMetalPipelineSlot *slot = &phantty_metal_pipelines[handle];
         [encoder setRenderPipelineState:slot->pipeline];
 
@@ -715,20 +815,37 @@ bool phantty_metal_pipeline_draw_arrays(
         } else {
             [encoder drawPrimitives:primitive vertexStart:(NSUInteger)first vertexCount:(NSUInteger)count];
         }
-        [encoder endEncoding];
-
-        [command_buffer presentDrawable:drawable];
-        [command_buffer commit];
-        [command_buffer waitUntilCompleted];
-
-        if (command_buffer.status == MTLCommandBufferStatusError) {
-            NSError *error = command_buffer.error;
-            const char *message = error != nil ? [[error localizedDescription] UTF8String] : "Metal command buffer failed";
-            phantty_metal_set_error(error_buf, error_buf_len, message);
-            return false;
-        }
 
         phantty_metal_set_error(error_buf, error_buf_len, "");
         return true;
     }
+}
+
+bool phantty_metal_pipeline_draw_arrays(
+    PhanttyMetalContext *ctx,
+    unsigned int handle,
+    unsigned int mode,
+    int first,
+    int count,
+    int instances,
+    unsigned int buffer0,
+    unsigned int buffer1,
+    char *error_buf,
+    size_t error_buf_len
+) {
+    if (ctx == NULL || ctx->command_queue == NULL || ctx->layer == NULL) {
+        phantty_metal_set_error(error_buf, error_buf_len, "missing Metal context for draw");
+        return false;
+    }
+
+    const bool owns_frame = ctx->encoder == NULL;
+    if (owns_frame && !phantty_metal_frame_begin(ctx, 0.0f, 0.0f, 0.0f, 1.0f, error_buf, error_buf_len)) {
+        return false;
+    }
+
+    bool ok = phantty_metal_encode_draw(ctx, handle, mode, first, count, instances, buffer0, buffer1, error_buf, error_buf_len);
+    if (owns_frame && !phantty_metal_frame_end(ctx, error_buf, error_buf_len)) {
+        ok = false;
+    }
+    return ok;
 }

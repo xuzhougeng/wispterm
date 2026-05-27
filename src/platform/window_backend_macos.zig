@@ -126,6 +126,7 @@ extern fn phantty_macos_window_pop_file_drop_event(handle: NativeHandle, out: *R
 extern fn phantty_macos_window_copy_ime_preedit(handle: NativeHandle, out: [*]u8, out_len: usize) usize;
 extern fn phantty_macos_window_set_ime_caret(handle: NativeHandle, x: i32, y: i32, height: i32) void;
 extern fn phantty_macos_window_test_push_key(handle: NativeHandle, key_code: usize, ctrl: bool, shift: bool, alt: bool) void;
+extern fn phantty_macos_window_test_map_key_code(native_key_code: u16, characters_utf8: ?[*:0]const u8) usize;
 extern fn phantty_macos_window_test_push_char(handle: NativeHandle, codepoint: u32, ctrl: bool, shift: bool, alt: bool) void;
 extern fn phantty_macos_window_test_push_mouse_button(handle: NativeHandle, button: u8, action: u8, x: i32, y: i32, ctrl: bool, shift: bool, alt: bool) void;
 extern fn phantty_macos_window_test_push_mouse_move(handle: NativeHandle, x: i32, y: i32, ctrl: bool, shift: bool, alt: bool) void;
@@ -160,6 +161,10 @@ pub const Window = struct {
     close_btn_x_end: [256]i32 = [_]i32{0} ** 256,
     plus_btn_x_start: i32 = 0,
     plus_btn_x_end: i32 = 0,
+    ime_caret_x: i32 = 12,
+    ime_caret_y: i32 = 10,
+    ime_caret_height: i32 = 20,
+    ime_composing: bool = false,
     focused: bool = true,
     is_minimized: bool = false,
     is_fullscreen: bool = false,
@@ -224,6 +229,9 @@ pub const Window = struct {
     }
 
     pub fn setImeCaret(self: *Window, x: i32, y: i32, height: i32) void {
+        self.ime_caret_x = @max(0, x);
+        self.ime_caret_y = @max(0, y);
+        self.ime_caret_height = @max(1, height);
         phantty_macos_window_set_ime_caret(self.hwnd, x, y, height);
     }
 
@@ -325,6 +333,7 @@ pub const Window = struct {
             phantty_macos_window_copy_ime_preedit(self.hwnd, self.ime_preedit_buf[0..].ptr, self.ime_preedit_buf.len),
             self.ime_preedit_buf.len,
         );
+        self.ime_composing = self.ime_preedit_len > 0;
     }
 
     fn drainMessageEvents(self: *Window) void {
@@ -375,6 +384,14 @@ test "macOS backend drains translated key events" {
     try std.testing.expect(ev.alt);
 }
 
+test "macOS backend normalizes control-modified shortcut key codes" {
+    const ctrl_p = [_:0]u8{0x10};
+    try std.testing.expectEqual(@as(usize, 'P'), phantty_macos_window_test_map_key_code(35, &ctrl_p));
+    try std.testing.expectEqual(@as(usize, 'P'), phantty_macos_window_test_map_key_code(35, "P"));
+    try std.testing.expectEqual(@as(usize, 'P'), phantty_macos_window_test_map_key_code(35, "p"));
+    try std.testing.expectEqual(@as(usize, 0xC0), phantty_macos_window_test_map_key_code(50, null));
+}
+
 test "macOS backend drains text, mouse, wheel, and IME preedit events" {
     const title = std.unicode.utf8ToUtf16LeStringLiteral("Phantty Input Smoke");
     var window = try Window.init(320, 180, title, null, null, false);
@@ -384,8 +401,13 @@ test "macOS backend drains text, mouse, wheel, and IME preedit events" {
     phantty_macos_window_test_push_mouse_button(window.hwnd, 0, 2, 10, 20, false, false, true);
     phantty_macos_window_test_push_mouse_move(window.hwnd, 30, 40, true, false, false);
     phantty_macos_window_test_push_mouse_wheel(window.hwnd, 120, 30, 40, false, true, false);
-    phantty_macos_window_test_set_ime_preedit(window.hwnd, "zhong");
     _ = window.pollEvents();
+    phantty_macos_window_test_set_ime_preedit(window.hwnd, "zhong");
+    window.ime_preedit_len = @min(
+        phantty_macos_window_copy_ime_preedit(window.hwnd, window.ime_preedit_buf[0..].ptr, window.ime_preedit_buf.len),
+        window.ime_preedit_buf.len,
+    );
+    window.ime_composing = window.ime_preedit_len > 0;
 
     const char = window.char_events.pop() orelse return error.ExpectedCharEvent;
     try std.testing.expectEqual(@as(u21, 'A'), char.codepoint);

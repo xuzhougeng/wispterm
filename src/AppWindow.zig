@@ -3967,6 +3967,7 @@ fn runMainLoop(self: *AppWindow) !void {
         renderImePreedit(win, fb_width, fb_height);
 
         logSwapDiagnosticsIfChanged(win, fb_width, fb_height);
+        gpu.state.endFrame();
         window_backend.swapBuffers(win);
     }
 
