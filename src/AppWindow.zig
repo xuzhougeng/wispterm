@@ -26,6 +26,7 @@ const platform_display = @import("platform/display.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_file_dialog = @import("platform/file_dialog.zig");
 const platform_global_hotkey = @import("platform/global_hotkey.zig");
+const platform_menu = @import("platform/menu.zig");
 const platform_notifications = @import("platform/notifications.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_window_state = @import("platform/window_state.zig");
@@ -2819,6 +2820,15 @@ fn installRemoteControlHandlers(self: *AppWindow) void {
     }
 }
 
+fn onPlatformMenuAction(action: keybind.Action) void {
+    _ = input.invokeKeybindAction(action);
+}
+
+fn installPlatformMenu() void {
+    if (platform_menu.isInstalled()) return;
+    platform_menu.install(onPlatformMenuAction);
+}
+
 fn uiFontSize(term_font_size: u32) u32 {
     return @min(24, @max(9, term_font_size));
 }
@@ -3354,6 +3364,7 @@ fn runMainLoop(self: *AppWindow) !void {
     defer if (g_quake_hotkey_registered) platform_global_hotkey.unregister(window_backend.nativeHandle(&backend_window), quick_terminal.HOTKEY_ID);
     installAgentToolHost(self);
     installRemoteControlHandlers(self);
+    installPlatformMenu();
     font.g_dpi = window_backend.dpi(&backend_window);
 
     // --- Initialize the active GPU backend through the host surface seam ---

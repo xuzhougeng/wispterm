@@ -915,6 +915,14 @@ fn handleConfiguredKeybindAction(action: keybind.Action, phase: KeybindPhase) bo
     return executeCommand(cmd);
 }
 
+/// Dispatch a keybind action through both early and late phases. Used by UI
+/// entrypoints (NSMenu items, future buttons) so a click takes the same path
+/// as a keyboard shortcut without reproducing the early/late split logic.
+pub fn invokeKeybindAction(action: keybind.Action) bool {
+    if (handleConfiguredKeybindAction(action, .early)) return true;
+    return handleConfiguredKeybindAction(action, .late);
+}
+
 fn executeCommand(cmd: command_dispatch.Command) bool {
     switch (cmd) {
         // Early

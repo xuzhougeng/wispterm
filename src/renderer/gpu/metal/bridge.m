@@ -325,21 +325,24 @@ bool phantty_metal_buffer_upload(unsigned int handle, void *device_handle, const
         return true;
     }
 
+    // IMPORTANT: every upload allocates a fresh MTLBuffer. Reusing the same
+    // backing storage (via memcpy) is unsafe under Metal's deferred-execution
+    // model: setVertexBuffer:offset:atIndex: stores a pointer that's only read
+    // when the command buffer commits, so multiple "upload + drawArrays" pairs
+    // sharing a single MTLBuffer all end up reading the *last* upload — every
+    // overlay/quad gets stamped at the same coordinates. The previous buffer
+    // is released here; Metal keeps it alive via the encoder's retain until
+    // commit completes, then deallocates asynchronously. The per-call alloc
+    // cost is negligible for the small vertex blobs ui_pipeline uses (~96B/quad).
     @autoreleasepool {
-        id<MTLBuffer> buffer = phantty_metal_buffers[handle].buffer;
-        if (buffer == nil || [buffer length] < len) {
-            id<MTLBuffer> new_buffer = phantty_metal_new_buffer(device_handle, bytes, len);
-            if (new_buffer == nil) {
-                phantty_metal_set_error(error_buf, error_buf_len, "newBufferWithBytes returned nil");
-                return false;
-            }
-            if (buffer != nil) [buffer release];
-            phantty_metal_buffers[handle].buffer = new_buffer;
-            phantty_metal_set_error(error_buf, error_buf_len, "");
-            return true;
+        id<MTLBuffer> old_buffer = phantty_metal_buffers[handle].buffer;
+        id<MTLBuffer> new_buffer = phantty_metal_new_buffer(device_handle, bytes, len);
+        if (new_buffer == nil) {
+            phantty_metal_set_error(error_buf, error_buf_len, "newBufferWithBytes returned nil");
+            return false;
         }
-
-        memcpy([buffer contents], bytes, len);
+        phantty_metal_buffers[handle].buffer = new_buffer;
+        if (old_buffer != nil) [old_buffer release];
         phantty_metal_set_error(error_buf, error_buf_len, "");
         return true;
     }

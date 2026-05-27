@@ -123,7 +123,10 @@ pub fn shellCommandLooksLikeConfiguredLocalShell(shell_cmd: CommandLine) bool {
 
 pub fn configuredLocalShellCommandForShell(shell_cmd: CommandLine) []const u8 {
     _ = shell_cmd;
-    return "sh";
+    return switch (builtin.os.tag) {
+        .macos => "zsh",
+        else => "sh",
+    };
 }
 
 pub fn tabCommandForKind(kind: []const u8, current_shell: CommandLine) ![]const u8 {

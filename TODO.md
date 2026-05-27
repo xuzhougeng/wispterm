@@ -268,14 +268,43 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       covers context, buffers, textures, framebuffers, pipelines, vertex layout
       handles, compatibility helpers, and a committed simple draw. *Ghostty:
       `renderer/metal/`.*
-- [x] **Neutralize the GL-shaped presentation layer (prerequisite).**
+- [x] **Neutralize the GL-shaped presentation layer (prerequisite, call sites only).**
       `ui_pipeline.zig`, `cell_pipeline.zig`, and the render-coordination files
-      still call `gpu.glTable()` directly (the residue `gl_backend_guard`
-      documents) — OpenGL-only. Route their draws through the backend-dispatched
-      `gpu.Pipeline`/`Buffer`/`Texture`/`Framebuffer` methods so they compile and
-      render on Metal. This is guard-enforced by `gl_backend_guard`; only the
-      documented AppWindow diagnostics/context residue still touches
-      `gpu.glTable()`.
+      no longer call `gpu.glTable()` directly (guard-enforced by
+      `gl_backend_guard`); only the documented AppWindow diagnostics/context
+      residue still touches `gpu.glTable()`. **However, this only neutralized the
+      call sites — the Metal-backend implementations of those primitives are
+      still partial. See D1.x below.**
+- [x] **D1.x — Wire the Metal `gl_init` stub to `ui_pipeline` (macOS UI gap).**
+      Root cause turned out to be two narrow bugs, not the missing-pipeline
+      story I originally feared. The MSL shaders and the `gpu.Pipeline`/
+      `Buffer`/`Texture` primitives were already complete enough for
+      `ui_pipeline.fillQuad`; the call never made it to the GPU because:
+      1. `src/renderer/gpu/metal/gl_init.zig`'s `renderQuad`/`renderQuadAlpha`/
+         `setProjection` were stubs that dropped their arguments. In
+         particular, `setProjection` only updated the viewport — it never
+         pushed the orthographic projection into the text pipeline's
+         uniforms, so every vertex came out at `(0, 0, 0, 0)` in clip space.
+         Now they dispatch through a `BackendHooks` function-pointer table
+         registered by `ui_pipeline.init()` (the indirection is needed because
+         `test-metal`'s module root sits inside `gpu/metal/`, which forbids
+         walking out to `renderer/ui_pipeline.zig` with a static `@import`).
+      2. `phantty_metal_buffer_upload` reused the same `MTLBuffer` storage
+         across uploads (`memcpy([buffer contents])`). Metal's
+         `setVertexBuffer:offset:atIndex:` captures the buffer pointer at
+         encoding time but the GPU only reads its bytes at command-buffer
+         commit, so successive `ui_pipeline.fillQuad` calls all shared the
+         last upload — every overlay piled up at the same coordinates and
+         the prior contents were silently overwritten. Upload now always
+         allocates a fresh `MTLBuffer`; Metal's encoder retain keeps the
+         prior one alive until the command buffer completes, then drops it
+         asynchronously.
+      Native proof: `zig build test-metal` (new hook-dispatch assertion),
+      `zig build test-macos-ui`, `zig build test`, and
+      `zig build test-full -Dtarget=aarch64-macos`; plus the macOS app now
+      renders the tab sidebar, NSMenu "Open Command Center" overlay, SSH
+      Server / AI Agent forms, and settings page with backgrounds, borders,
+      selection highlights, and text all visible.
 - [x] Port the shader set to MSL in `gpu/metal/shaders.zig` (the A5 slot already
       lists the symmetric set: text/glyph, instanced bg/fg cells, color-emoji,
       simple-textured, overlay). Native proof: `zig build test-metal` compiles
@@ -380,6 +409,47 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
 Critical path to "a shell renders on screen": **D0 → D1 (Metal + presentation-
 layer neutralization) → D2 (AppKit host + drawable seam) → D3 (CoreText) → the
 macOS pty constants in D4.** Services / webview / packaging follow.
+
+**D7 — Native macOS app menu (NSMenu)**
+- [x] **D7.1 NSMenu skeleton.** Phantty had no application menu on macOS — the
+      only way to reach the command center, settings, or sidebar toggle was the
+      keyboard shortcut, which gets eaten by IME/remote-control software
+      (ToDesk, etc.). Added a thin Objective-C bridge
+      (`src/platform/menu_macos_bridge.m`) that builds the standard macOS
+      menu set (`Phantty / File / Edit / View / Window`) with menu items wired
+      to the existing keybind `Action` enum: Open Command Center
+      (`⌃⇧P`), Settings… (`⌘,`), New Tab (`⌃⇧T`), New Window (`⌃⇧N`),
+      Toggle Tab Sidebar (`⌃⇧B`), Toggle File Explorer (`⌃⇧⌥E`), Split Right
+      (`⌃⇧O`), Equalize Splits (`⌃⇧Z`), Next/Previous Tab, Minimize, Zoom.
+      A C ABI shim hands action ids back to Zig
+      (`src/platform/menu_macos.zig`) which dispatches via
+      `input.invokeKeybindAction`. Bonus: NSMenu key equivalents are handled
+      earlier in the AppKit responder chain than `keyDown:`, so they keep
+      working even when third-party utilities intercept the chord at the
+      `keyDown:` layer. Native proof: `zig build test-macos-menu`
+      validates menu install, item count, action encoding, and round-trip
+      decode; covered also by `zig build test-full -Dtarget=aarch64-macos`.
+- [ ] **D7.2 Menu items reflect runtime state.** Add NSMenuItem validation:
+      grey out actions when no surface is focused, mark the sidebar/command-
+      center items checked when the panel is currently visible, surface the
+      configured shortcut text from `keybind.Set` instead of hardcoded
+      equivalents (so user remaps show in the menu).
+- [ ] **D7.3 Localize menu titles.** Currently English-only; add a localized
+      string table that matches the rest of Phantty's locale story.
+
+### macOS UI status (post D1.x + D7.1)
+
+| Feature | Status on macOS |
+|---|---|
+| Terminal text rendering | ✅ works (cell pipeline + CoreText/FreeType) |
+| Default shell | ✅ `zsh` (was `sh` until 2026-05-27) |
+| NSMenu (Phantty / File / Edit / View / Window) | ✅ visible, clickable, key equivalents fire |
+| Command center / settings page / SSH form / AI form / session launcher | ✅ render fully (panels, borders, selection highlights, text) |
+| Tab sidebar | ✅ renders rows, selection highlight, tab numbers |
+| File explorer panel | ✅ unblocked by D1.x; verify icons/scroll on real workloads |
+| Markdown / image preview | ✅ unblocked by D1.x; verify chrome on real previews |
+| Quake-style drop-down | ✅ window position + overlay rendering |
+| Embedded browser panel | ❌ disabled (D5 — no WKWebView backend yet) |
 
 ### Linux — deferred
 

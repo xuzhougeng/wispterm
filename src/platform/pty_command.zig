@@ -180,7 +180,13 @@ pub const default_shell_name = defaultShellNameForOs(builtin.os.tag);
 pub fn defaultShellNameForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
         .windows => "cmd",
-        .unsupported => "sh",
+        // POSIX: macOS has shipped zsh as the default user shell since
+        // Catalina; Linux distros still default to bash/sh, so keep sh
+        // there until we add a Linux-specific override.
+        .unsupported => switch (os_tag) {
+            .macos => "zsh",
+            else => "sh",
+        },
     };
 }
 
@@ -219,7 +225,10 @@ pub const default_shell_assignment_comment = defaultShellAssignmentCommentForOs(
 pub fn defaultShellAssignmentCommentForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
         .windows => "# shell = cmd",
-        .unsupported => "# shell = sh",
+        .unsupported => switch (os_tag) {
+            .macos => "# shell = zsh",
+            else => "# shell = sh",
+        },
     };
 }
 
@@ -533,7 +542,11 @@ test "platform pty command exposes configured local shell launcher by target OS"
         },
         .unsupported => {
             try std.testing.expect(!shellCommandLooksLikeConfiguredLocalShell(current_shell));
-            try std.testing.expectEqualStrings("sh", configuredLocalShellCommandForShell(current_shell));
+            const expected_shell: []const u8 = switch (builtin.os.tag) {
+                .macos => "zsh",
+                else => "sh",
+            };
+            try std.testing.expectEqualStrings(expected_shell, configuredLocalShellCommandForShell(current_shell));
         },
     }
 }
@@ -541,7 +554,7 @@ test "platform pty command exposes configured local shell launcher by target OS"
 test "platform pty command exposes shell config defaults by target OS" {
     try std.testing.expectEqualStrings("cmd", defaultShellNameForOs(.windows));
     try std.testing.expectEqualStrings("sh", defaultShellNameForOs(.linux));
-    try std.testing.expectEqualStrings("sh", defaultShellNameForOs(.macos));
+    try std.testing.expectEqualStrings("zsh", defaultShellNameForOs(.macos));
 
     try std.testing.expect(std.mem.indexOf(u8, shellSettingChoicesHintForOs(.windows), "powershell") != null);
     try std.testing.expect(std.mem.indexOf(u8, shellSettingChoicesHintForOs(.linux), "powershell") == null);

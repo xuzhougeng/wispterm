@@ -9,12 +9,42 @@
 //!     `setProjection`, `syncSharedHandles`, `compileShader`, `linkProgram`,
 //!     `setProjectionForProgram`.
 //!
-//! NOTE: unlike the OpenGL backend, this file does NOT import `ui_pipeline`/
-//! `AppWindow` — the Metal render helpers will be wired when the backend lands,
-//! and keeping the import out avoids extra coupling in the stub.
+//! D1.x: this file now mirrors `gpu/opengl/gl_init.zig`'s delegation to
+//! `ui_pipeline` for the solid-color quad helpers and `setProjection`. The
+//! prior stub silently dropped these calls — leaving the text pipeline's
+//! projection at zero — and every overlay (command center, sidebar, settings
+//! page, SSH list, …) rendered into the wrong clip space.
+//!
+//! NOTE: `ui_pipeline` cannot be imported here at file scope because the
+//! `test-metal` build step roots its module at `gpu/metal/test.zig`, and
+//! Zig 0.15 rejects imports that walk outside the module root. Instead,
+//! `ui_pipeline.init()` registers a `BackendHooks` snapshot via
+//! `setBackendHooks()` at startup; the helpers below dispatch through the
+//! installed function pointers (and silently no-op if the renderer hasn't
+//! booted yet — which is the case in the Metal smoke tests).
+const std = @import("std");
 const c = @import("c.zig");
 const Pipeline = @import("Pipeline.zig");
 const render_state = @import("render_state.zig");
+
+/// Function-pointer surface the renderer fills in at startup so this file
+/// (which sits inside the Metal backend's module root) can call into
+/// `renderer/ui_pipeline.zig` without an absolute import path.
+pub const BackendHooks = struct {
+    fillQuad: *const fn (x: f32, y: f32, w: f32, h: f32, color: [3]f32) void,
+    fillQuadAlpha: *const fn (x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void,
+    setProjection: *const fn (width: f32, height: f32) void,
+};
+
+threadlocal var g_hooks: ?BackendHooks = null;
+
+pub fn setBackendHooks(hooks: BackendHooks) void {
+    g_hooks = hooks;
+}
+
+pub fn clearBackendHooks() void {
+    g_hooks = null;
+}
 
 // ----------------------------------------------------------------------------
 // Compat mirror handles (populated by syncSharedHandles on the real backend).
@@ -52,27 +82,19 @@ pub fn initShaders() bool {
 }
 
 // ----------------------------------------------------------------------------
-// Render helpers — compatibility shims until all call sites use ui_pipeline.
+// Render helpers — dispatch through the BackendHooks registered by
+// ui_pipeline.init() (parity with the OpenGL backend, but with an indirection
+// to keep the test-metal compile happy).
 // ----------------------------------------------------------------------------
 pub fn renderQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
-    _ = x;
-    _ = y;
-    _ = w;
-    _ = h;
-    _ = color;
-    g_draw_call_count += 1;
+    if (g_hooks) |hk| hk.fillQuad(x, y, w, h, color);
 }
 pub fn renderQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
-    _ = x;
-    _ = y;
-    _ = w;
-    _ = h;
-    _ = color;
-    _ = alpha;
-    g_draw_call_count += 1;
+    if (g_hooks) |hk| hk.fillQuadAlpha(x, y, w, h, color, alpha);
 }
 pub fn setProjection(width: f32, height: f32) void {
     render_state.setViewport(0, 0, @intFromFloat(width), @intFromFloat(height));
+    if (g_hooks) |hk| hk.setProjection(width, height);
 }
 
 /// Populate the compat mirror handles from the backend-owned objects.

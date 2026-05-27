@@ -122,6 +122,12 @@ the `Settings` command, and the Settings page writes to an isolated test config
 file. The test intentionally avoids external keyboard/screenshot automation so
 it does not depend on macOS Accessibility or Screen Recording permissions.
 
+For the Metal-backend and AppKit-host gotchas surfaced during the macOS port
+(deferred MTLBuffer semantics, NSMenu vs. keyDown interception, Zig 0.15
+module-path constraints on cross-backend imports, IME swallowing letter keys,
+etc.) see [macos-ui-lessons.md](macos-ui-lessons.md). Read this before
+touching anything under `src/renderer/gpu/metal/` or `src/platform/*_macos*`.
+
 ## Windows Checkout Safety
 
 This repository must remain safe to check out and develop on Windows. Before

@@ -192,7 +192,39 @@ test "gl_init compatibility helpers do not panic on Metal" {
     gl_init.setProjection(80, 40);
     gl_init.renderQuad(1, 2, 3, 4, .{ 1, 0, 0 });
     gl_init.renderQuadAlpha(1, 2, 3, 4, .{ 0, 1, 0 }, 0.5);
-    try std.testing.expectEqual(@as(u32, 2), gl_init.g_draw_call_count);
+    // The render helpers now dispatch through BackendHooks installed by
+    // ui_pipeline.init() in the real app; the Metal smoke test runs without
+    // that registration, so the helpers are no-ops here and the draw counter
+    // stays at zero. The test still checks the calls don't panic.
+    try std.testing.expectEqual(@as(u32, 0), gl_init.g_draw_call_count);
+
+    // Verify BackendHooks dispatch fires when a hook table is installed.
+    const HookCounter = struct {
+        var calls: u32 = 0;
+        fn fillQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
+            _ = x; _ = y; _ = w; _ = h; _ = color;
+            calls += 1;
+        }
+        fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
+            _ = x; _ = y; _ = w; _ = h; _ = color; _ = alpha;
+            calls += 1;
+        }
+        fn setProjection(width: f32, height: f32) void {
+            _ = width; _ = height;
+            calls += 1;
+        }
+    };
+    HookCounter.calls = 0;
+    gl_init.setBackendHooks(.{
+        .fillQuad = &HookCounter.fillQuad,
+        .fillQuadAlpha = &HookCounter.fillQuadAlpha,
+        .setProjection = &HookCounter.setProjection,
+    });
+    defer gl_init.clearBackendHooks();
+    gl_init.setProjection(80, 40);
+    gl_init.renderQuad(1, 2, 3, 4, .{ 1, 0, 0 });
+    gl_init.renderQuadAlpha(1, 2, 3, 4, .{ 0, 1, 0 }, 0.5);
+    try std.testing.expectEqual(@as(u32, 3), HookCounter.calls);
 
     gl_init.syncSharedHandles();
     gl_init.setProjectionForProgram(0, 40);

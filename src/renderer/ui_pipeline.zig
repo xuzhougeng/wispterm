@@ -40,6 +40,10 @@ fn buildQuadVao() c.GLuint {
 /// Build the shared pipelines, quad buffer, and solid texture. Call once after
 /// the GL context is current (before any UI draw).
 pub fn init() void {
+    // Make the Metal backend's gl_init shim able to call back into ui_pipeline
+    // without an absolute import (see gpu/metal/gl_init.zig BackendHooks).
+    registerMetalBackendHooks();
+
     quad = Buffer.init(c.GL_ARRAY_BUFFER);
     quad.allocate(@sizeOf(f32) * 6 * 4, c.GL_DYNAMIC_DRAW);
 
@@ -203,4 +207,33 @@ pub fn fillOverlay(verts: [6][4]f32, color: [4]f32) void {
     quad.upload(std.mem.sliceAsBytes(verts[0..]));
     overlay.drawArrays(c.GL_TRIANGLES, 0, 6);
     drawCallTick();
+}
+
+// ---------------------------------------------------------------------------
+// Metal-backend dispatcher registration
+// ---------------------------------------------------------------------------
+// The Metal `gpu/metal/gl_init.zig` shim cannot `@import("../../ui_pipeline.zig")`
+// directly (the `test-metal` build step's module root is `gpu/metal/`, so the
+// path walks outside the allowed tree). Instead we hand it a small function-
+// pointer table at app startup. On the OpenGL backend `gpu.gl_init` is the
+// OpenGL `gl_init.zig`, which already imports `ui_pipeline` directly and
+// exposes neither `BackendHooks` nor `setBackendHooks` — guard with comptime
+// `@hasDecl` so the call compiles away to nothing there.
+fn metalFillQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
+    fillQuad(x, y, w, h, color);
+}
+fn metalFillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
+    fillQuadAlpha(x, y, w, h, color, alpha);
+}
+fn metalSetProjection(width: f32, height: f32) void {
+    setProjection(width, height);
+}
+
+fn registerMetalBackendHooks() void {
+    if (!@hasDecl(AppWindow.gpu.gl_init, "setBackendHooks")) return;
+    AppWindow.gpu.gl_init.setBackendHooks(.{
+        .fillQuad = &metalFillQuad,
+        .fillQuadAlpha = &metalFillQuadAlpha,
+        .setProjection = &metalSetProjection,
+    });
 }
