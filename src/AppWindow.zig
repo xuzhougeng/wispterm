@@ -48,6 +48,7 @@ pub const overlays = @import("renderer/overlays.zig");
 pub const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
+const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
@@ -286,10 +287,8 @@ test "AppWindow: platform window callbacks use backend-neutral names" {
 pub threadlocal var g_app: ?*App = null;
 var g_agent_history_mutex: std.Thread.Mutex = .{};
 pub var g_agent_history: ?*agent_history.Store = null;
-var g_agent_history_dirty: bool = false;
-var g_agent_history_next_flush_ms: i64 = 0;
+var g_flush_scheduler: flush_scheduler.FlushScheduler = .{};
 var g_agent_history_revision: u64 = 0;
-const AGENT_HISTORY_FLUSH_DEBOUNCE_MS: i64 = 350;
 
 // Initial CWD for this window (used when spawning the first tab)
 threadlocal var g_initial_cwd_buf: platform_pty_command.CwdBuffer = undefined;
@@ -786,8 +785,7 @@ fn ensureGlobalAgentHistoryStore(allocator: std.mem.Allocator) !void {
     errdefer allocator.destroy(store);
     store.* = try agent_history.loadDefault(allocator);
     g_agent_history = store;
-    g_agent_history_dirty = false;
-    g_agent_history_next_flush_ms = 0;
+    g_flush_scheduler.reset();
     g_agent_history_revision = 0;
 }
 
@@ -802,8 +800,7 @@ fn deinitGlobalAgentHistoryStore(allocator: std.mem.Allocator) void {
         allocator.destroy(store);
         g_agent_history = null;
     }
-    g_agent_history_dirty = false;
-    g_agent_history_next_flush_ms = 0;
+    g_flush_scheduler.reset();
     g_agent_history_revision = 0;
 }
 
@@ -823,10 +820,7 @@ fn saveAiHistoryChangeEvent(event: ai_chat.HistoryChangeEvent) void {
 }
 
 fn markAgentHistoryDirtyLocked() void {
-    if (!g_agent_history_dirty) {
-        g_agent_history_dirty = true;
-        g_agent_history_next_flush_ms = std.time.milliTimestamp() + AGENT_HISTORY_FLUSH_DEBOUNCE_MS;
-    }
+    g_flush_scheduler.markDirty(std.time.milliTimestamp());
     g_agent_history_revision +%= 1;
 }
 
@@ -837,11 +831,7 @@ fn flushAgentHistoryStoreIfDirty(force: bool) void {
     var snapshot_allocator: ?std.mem.Allocator = null;
 
     g_agent_history_mutex.lock();
-    if (!g_agent_history_dirty) {
-        g_agent_history_mutex.unlock();
-        return;
-    }
-    if (!force and now < g_agent_history_next_flush_ms) {
+    if (!g_flush_scheduler.shouldFlush(force, now)) {
         g_agent_history_mutex.unlock();
         return;
     }
@@ -853,28 +843,24 @@ fn flushAgentHistoryStoreIfDirty(force: bool) void {
     snapshot_allocator = store.allocator;
     json = store.toJsonString(store.allocator) catch |err| {
         log.warn("failed to snapshot agent history store for flush: {}", .{err});
-        g_agent_history_next_flush_ms = now + AGENT_HISTORY_FLUSH_DEBOUNCE_MS;
+        g_flush_scheduler.deferFlush(now);
         g_agent_history_mutex.unlock();
         return;
     };
     path = agent_history.defaultPath(store.allocator) catch |err| {
         log.warn("failed to resolve agent history path for flush: {}", .{err});
         store.allocator.free(json.?);
-        g_agent_history_next_flush_ms = now + AGENT_HISTORY_FLUSH_DEBOUNCE_MS;
+        g_flush_scheduler.deferFlush(now);
         g_agent_history_mutex.unlock();
         return;
     };
-    g_agent_history_dirty = false;
-    g_agent_history_next_flush_ms = 0;
+    g_flush_scheduler.beginFlush();
     g_agent_history_mutex.unlock();
 
     agent_history.saveJsonToPath(path.?, json.?) catch |err| {
         log.warn("failed to flush agent history store: {}", .{err});
         g_agent_history_mutex.lock();
-        if (!g_agent_history_dirty) {
-            g_agent_history_dirty = true;
-            g_agent_history_next_flush_ms = std.time.milliTimestamp() + AGENT_HISTORY_FLUSH_DEBOUNCE_MS;
-        }
+        g_flush_scheduler.failFlush(std.time.milliTimestamp());
         snapshot_allocator.?.free(path.?);
         snapshot_allocator.?.free(json.?);
         g_agent_history_mutex.unlock();

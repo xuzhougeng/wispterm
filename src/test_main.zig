@@ -556,6 +556,7 @@ comptime {
     _ = @import("agent_detector.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
+    _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("appwindow/tab.zig");
     _ = @import("appwindow/thread_message.zig");
     _ = @import("scp.zig");
