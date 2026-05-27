@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const MAX_BINDINGS: usize = 64;
 
@@ -117,7 +118,36 @@ pub const Set = struct {
             set.items[set.len] = binding;
             set.len += 1;
         }
+        if (builtin.target.os.tag == .macos) {
+            // On macOS the conventional clipboard shortcuts use Cmd (the
+            // `win`/super modifier) rather than Ctrl, which in a terminal is
+            // reserved for control sequences (Ctrl+C = SIGINT, Ctrl+V = literal
+            // next key). Migrate each Ctrl-based default to its Cmd equivalent
+            // and also add a bare Cmd+C alongside the shifted form so both the
+            // macOS convention (Cmd+C) and the historic Ctrl+Shift+C muscle
+            // memory work for plain copy.
+            set.replaceTrigger(.copy, .{ .mods = .{ .win = true, .shift = true }, .key_code = 'C' });
+            set.replaceTrigger(.paste, .{ .mods = .{ .win = true }, .key_code = 'V' });
+            set.replaceTrigger(.paste_image, .{ .mods = .{ .win = true, .shift = true }, .key_code = 'V' });
+            set.appendIfRoom(.{ .trigger = .{ .mods = .{ .win = true }, .key_code = 'C' }, .action = .copy });
+        }
         return set;
+    }
+
+    fn replaceTrigger(self: *Set, action: Action, new_trigger: Trigger) void {
+        for (self.items[0..self.len]) |*b| {
+            if (b.action == action) {
+                b.trigger = new_trigger;
+                return;
+            }
+        }
+        self.appendIfRoom(.{ .trigger = new_trigger, .action = action });
+    }
+
+    fn appendIfRoom(self: *Set, binding: Binding) void {
+        if (self.len >= self.items.len) return;
+        self.items[self.len] = binding;
+        self.len += 1;
     }
 
     pub fn apply(self: *Set, value: []const u8) !void {

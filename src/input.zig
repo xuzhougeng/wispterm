@@ -803,6 +803,9 @@ fn handleChar(ev: platform_input.CharEvent) void {
     // we must allow chars when both Ctrl and Alt are held (AltGr chars).
     // This matches Ghostty's consumed_mods / effectiveMods approach.
     if (ev.alt and !ev.ctrl) return;
+    // Cmd / Super shortcuts (macOS Cmd+C, Win key on other platforms) are
+    // commands, not text input — never inject them into the PTY.
+    if (ev.super) return;
     const surface = AppWindow.activeSurface() orelse return;
     AppWindow.resetCursorBlink();
     {
@@ -819,7 +822,7 @@ const KeybindPhase = command_dispatch.Phase;
 
 fn triggerFromKeyEvent(ev: platform_input.KeyEvent) keybind.Trigger {
     return .{
-        .mods = .{ .ctrl = ev.ctrl, .shift = ev.shift, .alt = ev.alt },
+        .mods = .{ .ctrl = ev.ctrl, .shift = ev.shift, .alt = ev.alt, .win = ev.super },
         .key_code = @intCast(ev.key_code),
     };
 }

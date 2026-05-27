@@ -31,6 +31,7 @@ pub const KeyEvent = struct {
     ctrl: bool,
     shift: bool,
     alt: bool,
+    super: bool = false,
 };
 
 pub const CharEvent = struct {
@@ -38,6 +39,7 @@ pub const CharEvent = struct {
     ctrl: bool = false,
     shift: bool = false,
     alt: bool = false,
+    super: bool = false,
 };
 
 pub const MouseButton = enum { left, right, middle };

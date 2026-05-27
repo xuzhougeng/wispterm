@@ -18,6 +18,7 @@ typedef struct PhanttyMacKeyEvent {
     bool ctrl;
     bool shift;
     bool alt;
+    bool super;
 } PhanttyMacKeyEvent;
 
 typedef struct PhanttyMacCharEvent {
@@ -25,6 +26,7 @@ typedef struct PhanttyMacCharEvent {
     bool ctrl;
     bool shift;
     bool alt;
+    bool super;
 } PhanttyMacCharEvent;
 
 typedef struct PhanttyMacMouseButtonEvent {
@@ -319,10 +321,11 @@ static bool phantty_macos_pop_file_drop_event(PhanttyMacWindowState *state, Phan
     return true;
 }
 
-static void phantty_macos_mods(NSEventModifierFlags flags, bool *ctrl, bool *shift, bool *alt) {
+static void phantty_macos_mods(NSEventModifierFlags flags, bool *ctrl, bool *shift, bool *alt, bool *super) {
     if (ctrl != NULL) *ctrl = (flags & NSEventModifierFlagControl) != 0;
     if (shift != NULL) *shift = (flags & NSEventModifierFlagShift) != 0;
     if (alt != NULL) *alt = (flags & NSEventModifierFlagOption) != 0;
+    if (super != NULL) *super = (flags & NSEventModifierFlagCommand) != 0;
 }
 
 static PhanttyMacKeyEvent phantty_macos_key_event(uintptr_t key_code, NSEventModifierFlags flags) {
@@ -331,12 +334,13 @@ static PhanttyMacKeyEvent phantty_macos_key_event(uintptr_t key_code, NSEventMod
         .ctrl = (flags & NSEventModifierFlagControl) != 0,
         .shift = (flags & NSEventModifierFlagShift) != 0,
         .alt = (flags & NSEventModifierFlagOption) != 0,
+        .super = (flags & NSEventModifierFlagCommand) != 0,
     };
 }
 
 static PhanttyMacCharEvent phantty_macos_char_event(uint32_t codepoint, NSEventModifierFlags flags) {
-    PhanttyMacCharEvent event = { .codepoint = codepoint, .ctrl = false, .shift = false, .alt = false };
-    phantty_macos_mods(flags, &event.ctrl, &event.shift, &event.alt);
+    PhanttyMacCharEvent event = { .codepoint = codepoint, .ctrl = false, .shift = false, .alt = false, .super = false };
+    phantty_macos_mods(flags, &event.ctrl, &event.shift, &event.alt, &event.super);
     return event;
 }
 
@@ -524,10 +528,26 @@ static void phantty_macos_set_preedit(PhanttyMacWindowState *state, id string_or
     [self interpretKeyEvents:@[event]];
 }
 
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    // Cmd shortcuts never reach -keyDown:, so we intercept them here.
+    // Pushing the event ourselves and returning YES prevents AppKit from
+    // emitting the unhandled-shortcut system beep.
+    if ((event.modifierFlags & NSEventModifierFlagCommand) == 0) return NO;
+    if (self.state == NULL) return NO;
+    NSString *characters = phantty_macos_key_characters(event);
+    uintptr_t key_code = phantty_macos_map_key_code(event.keyCode, characters);
+    phantty_macos_push_key_event(self.state, phantty_macos_key_event(key_code, event.modifierFlags));
+    return YES;
+}
+
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     (void)replacementRange;
     phantty_macos_push_string(self.state, string, 0);
     phantty_macos_set_preedit(self.state, nil);
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+    (void)selector;
 }
 
 - (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
@@ -595,7 +615,7 @@ static void phantty_macos_set_preedit(PhanttyMacWindowState *state, id string_or
         .shift = false,
         .alt = false,
     };
-    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt);
+    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, NULL);
     return out;
 }
 
@@ -632,7 +652,7 @@ static void phantty_macos_set_preedit(PhanttyMacWindowState *state, id string_or
         .shift = false,
         .alt = false,
     };
-    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt);
+    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, NULL);
     phantty_macos_push_mouse_move_event(self.state, out);
 }
 
@@ -651,7 +671,7 @@ static void phantty_macos_set_preedit(PhanttyMacWindowState *state, id string_or
         .shift = false,
         .alt = false,
     };
-    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt);
+    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, NULL);
     phantty_macos_push_mouse_wheel_event(self.state, out);
 }
 
