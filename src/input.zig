@@ -41,6 +41,7 @@ const CellPos = struct { col: usize, row: usize };
 
 const clipboard = @import("input/clipboard.zig");
 const click_tracker = @import("input/click_tracker.zig");
+const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
@@ -1293,17 +1294,21 @@ fn handleBrowserUrlBarKey(ev: platform_input.KeyEvent) void {
     }
 }
 
+fn sidebarLayout() hit_test.SidebarLayout {
+    return .{
+        .visible = tab.g_sidebar_visible,
+        .titlebar_h = titlebarHeight(),
+        .width = @floatCast(titlebar.sidebarWidth()),
+        .header_h = @floatCast(titlebar.sidebarHeaderHeight()),
+        .row_h = @floatCast(titlebar.sidebarRowHeight()),
+        .tab_count = tab.g_tab_count,
+        .resize_hit_width = @floatCast(titlebar.SIDEBAR_RESIZE_HIT_WIDTH),
+        .close_btn_w = @floatCast(tab.TAB_CLOSE_BTN_W),
+    };
+}
+
 fn hitTestSidebarTab(xpos: f64, ypos: f64) ?usize {
-    if (!tab.g_sidebar_visible) return null;
-    if (xpos < 0 or xpos >= @as(f64, @floatCast(titlebar.sidebarWidth()))) return null;
-
-    const list_top = titlebarHeight() + @as(f64, @floatCast(titlebar.sidebarHeaderHeight())) + 6;
-    if (ypos < list_top) return null;
-
-    const idx_f = (ypos - list_top) / @as(f64, @floatCast(titlebar.sidebarRowHeight()));
-    const idx: usize = @intFromFloat(@floor(idx_f));
-    if (idx >= tab.g_tab_count) return null;
-    return idx;
+    return hit_test.sidebarTabAt(sidebarLayout(), xpos, ypos);
 }
 
 fn resetSidebarTabDragState() void {
@@ -1324,16 +1329,7 @@ fn beginSidebarTabPotentialDrag(tab_idx: usize, xpos: f64, ypos: f64) void {
 }
 
 fn sidebarTabIndexForDragY(ypos: f64) ?usize {
-    if (!tab.g_sidebar_visible or tab.g_tab_count == 0) return null;
-
-    const list_top = titlebarHeight() + @as(f64, @floatCast(titlebar.sidebarHeaderHeight())) + 6;
-    const row_h = @as(f64, @floatCast(titlebar.sidebarRowHeight()));
-    if (ypos < list_top) return 0;
-
-    const idx_f = (ypos - list_top) / row_h;
-    const idx_raw: usize = @intFromFloat(@floor(idx_f));
-    if (idx_raw >= tab.g_tab_count) return tab.g_tab_count - 1;
-    return idx_raw;
+    return hit_test.sidebarTabIndexForDragY(sidebarLayout(), ypos);
 }
 
 fn updateSidebarTabDrag(xpos: f64, ypos: f64) bool {
@@ -1367,36 +1363,24 @@ fn finishSidebarTabDrag() bool {
 }
 
 fn hitTestSidebarPlusButton(xpos: f64, ypos: f64) bool {
-    if (!tab.g_sidebar_visible) return false;
-    const top = titlebarHeight();
-    const plus_w: f64 = 42;
-    const plus_x = @as(f64, @floatCast(titlebar.sidebarWidth())) - plus_w - 6;
-    return xpos >= plus_x and xpos < plus_x + plus_w and
-        ypos >= top and ypos < top + @as(f64, @floatCast(titlebar.sidebarHeaderHeight()));
+    return hit_test.sidebarPlusButton(sidebarLayout(), xpos, ypos);
 }
 
 fn hitTestSidebarTabCloseButton(xpos: f64, ypos: f64, tab_idx: usize) bool {
-    if (!tab.g_sidebar_visible or tab_idx >= tab.g_tab_count or tab.g_tab_count <= 1) return false;
-    const row = hitTestSidebarTab(xpos, ypos) orelse return false;
-    if (row != tab_idx) return false;
-    const close_x = @as(f64, @floatCast(titlebar.sidebarWidth() - tab.TAB_CLOSE_BTN_W - 4));
-    return xpos >= close_x and xpos < close_x + @as(f64, tab.TAB_CLOSE_BTN_W);
+    return hit_test.sidebarTabCloseButton(sidebarLayout(), xpos, ypos, tab_idx);
 }
 
 fn shouldStartSidebarTabRename(xpos: f64, ypos: f64, tab_idx: usize) bool {
     if (tab_idx >= tab.g_tab_count) return false;
-    if (hitTestSidebarPlusButton(xpos, ypos)) return false;
-    if (hitTestSidebarResizeHandle(xpos, ypos)) return false;
-    if (hitTestSidebarTabCloseButton(xpos, ypos, tab_idx)) return false;
+    const layout = sidebarLayout();
+    if (hit_test.sidebarPlusButton(layout, xpos, ypos)) return false;
+    if (hit_test.sidebarResizeHandle(layout, xpos, ypos)) return false;
+    if (hit_test.sidebarTabCloseButton(layout, xpos, ypos, tab_idx)) return false;
     return true;
 }
 
 fn hitTestSidebarResizeHandle(xpos: f64, ypos: f64) bool {
-    if (!tab.g_sidebar_visible) return false;
-    if (ypos < titlebarHeight()) return false;
-    const sidebar_w: f64 = @floatCast(titlebar.sidebarWidth());
-    const half_hit: f64 = @as(f64, @floatCast(titlebar.SIDEBAR_RESIZE_HIT_WIDTH)) / 2;
-    return xpos >= sidebar_w - half_hit and xpos <= sidebar_w + half_hit;
+    return hit_test.sidebarResizeHandle(sidebarLayout(), xpos, ypos);
 }
 
 fn applySidebarWidthFromMouse(xpos: f64) void {
