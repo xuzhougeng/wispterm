@@ -164,9 +164,23 @@ mapping in guide §2 and §5.
       platform input handling into pure, unit-testable modules.
 - [ ] **B2** `ai_chat.zig`: separate conversation/state/protocol logic from UI
       state into independently testable sub-modules.
-- [ ] **B3** `AppWindow.zig`: layer tab/split orchestration, render
-      orchestration, and input routing (GL binding removed in A2).
-- [ ] **B4** Unit tests for the extracted pure logic (`zig test`).
+- [x] **B3** `AppWindow.zig`: layer tab/split orchestration, render
+      orchestration, and input routing (GL binding removed in A2). Tab/split
+      orchestration was already layered into `appwindow/{tab,split_layout,thread_message}.zig`
+      by prior work; B3 finishes by extracting the remaining pure decision logic
+      into testable modules (Session/threads/GL/frame-loop untouched):
+      `appwindow/flush_scheduler.zig` (agent-history flush debounce; replaced 2
+      globals + a const) and `ime_caret.zig` extensions (`pixelPosition` placement
+      math + `StabilityTracker` two-frame commit decision; replaced 6 threadlocal
+      globals). `AppWindow.zig` 4045 → 4003 ln, 47 → 41 globals. Spec/plan:
+      `docs/superpowers/{specs/2026-05-27-b3-appwindow-decouple-design,plans/2026-05-27-b3-appwindow-decouple}.md`.
+      Native proof: `zig build test` and `zig build test-full -Dtarget=x86_64-windows-gnu`.
+- [x] **B4** Unit tests for the extracted pure logic (`zig test`). Satisfied across
+      B1–B3: every extracted pure module ships std-only `test` blocks that run in the
+      fast `zig build test` loop (registered in `test_fast.zig`) and are
+      regression-locked in `test_main.zig` — `input/{click_tracker,hit_test,command_dispatch}.zig`,
+      `ai_chat_{input_text,composer,protocol}.zig`, `appwindow/flush_scheduler.zig`,
+      and the `ime_caret.zig` additions.
 
 ### Phase C — POSIX PTY/process backend (Linux done; macOS/BSD deferred to Phase D)
 

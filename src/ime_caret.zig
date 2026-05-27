@@ -62,6 +62,8 @@ pub fn pixelPosition(
 /// repaints); a `visual_inverse` sample (an app-drawn stable cell) commits
 /// immediately. A sample equal to the already-committed one is a no-op.
 pub const StabilityTracker = struct {
+    // {-1,-1} is a sentinel for "no sample seen yet" — real caret coords are
+    // usize values cast to i64, so they never collide with it.
     last_sample: Sample = .{ .x = -1, .y = -1, .source = .terminal_cursor },
     committed: Sample = .{ .x = -1, .y = -1, .source = .terminal_cursor },
 
@@ -110,6 +112,9 @@ test "visual_inverse caret commits immediately" {
     const v: Sample = .{ .x = 7, .y = 2, .source = .visual_inverse };
     try std.testing.expectEqual(v, t.commit(v).?);
     try std.testing.expectEqual(@as(?Sample, null), t.commit(v));
+    // A moved visual_inverse caret also commits immediately (no two-frame wait).
+    const v2: Sample = .{ .x = 9, .y = 2, .source = .visual_inverse };
+    try std.testing.expectEqual(v2, t.commit(v2).?);
 }
 
 test "IME visual caret prefers nearest candidate to terminal anchor" {

@@ -31,7 +31,8 @@ pub const FlushScheduler = struct {
     }
 
     /// A transient error BEFORE the snapshot (snapshot/path build failed): stay
-    /// dirty, re-arm the debounce.
+    /// dirty, re-arm the debounce. Precondition: caller is already dirty (this is
+    /// only reached after `shouldFlush` returned true); it does not set `dirty`.
     pub fn deferFlush(self: *FlushScheduler, now_ms: i64) void {
         self.next_flush_ms = now_ms + DEBOUNCE_MS;
     }
@@ -85,6 +86,14 @@ test "beginFlush clears; failFlush and deferFlush re-arm" {
     s.deferFlush(3000);
     try std.testing.expect(s.dirty);
     try std.testing.expectEqual(@as(i64, 3000 + DEBOUNCE_MS), s.next_flush_ms);
+}
+
+test "failFlush keeps a newer markDirty deadline (concurrent dirty)" {
+    var s: FlushScheduler = .{};
+    s.markDirty(1000); // armed for 1000+DEBOUNCE
+    s.failFlush(2000); // already dirty -> must NOT stomp the earlier deadline
+    try std.testing.expect(s.dirty);
+    try std.testing.expectEqual(@as(i64, 1000 + DEBOUNCE_MS), s.next_flush_ms);
 }
 
 test "reset clears everything" {
