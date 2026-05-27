@@ -420,214 +420,30 @@ fn currentToolHost() ?ToolHost {
     return g_tool_host;
 }
 
-const SlashCommand = enum { skills, commands, reload_skills, unknown };
+const ai_chat_composer = @import("ai_chat_composer.zig");
 
-pub const ComposerSuggestionKind = enum {
-    slash_command,
-    skill,
-};
-
-pub const ComposerSuggestion = struct {
-    kind: ComposerSuggestionKind,
-    text: []const u8,
-    description: []const u8,
-};
-
-pub const SlashCommandSuggestion = struct {
-    command: []const u8,
-    description: []const u8,
-};
-
-const SlashCommandEntry = struct {
-    suggestion: SlashCommandSuggestion,
-    action: SlashCommand,
-};
-
-const slash_command_entries = [_]SlashCommandEntry{
-    .{
-        .suggestion = .{ .command = "/skills", .description = "list available skills" },
-        .action = .skills,
-    },
-    .{
-        .suggestion = .{ .command = "/commands", .description = "list slash commands" },
-        .action = .commands,
-    },
-    .{
-        .suggestion = .{ .command = "/reload-skills", .description = "rescan skills for future calls" },
-        .action = .reload_skills,
-    },
-};
-
-const SkillInvocation = struct {
-    skill_name: []const u8,
-    prompt: []const u8,
-};
-
-const ComposerSuggestionPrefix = struct {
-    kind: ComposerSuggestionKind,
-    prefix: []const u8,
-    token_end: usize,
-};
-
-const ComposerCompletionTrigger = enum {
-    tab,
-    enter,
-};
-
-fn parseSlashCommand(input: []const u8) ?SlashCommand {
-    const trimmed = std.mem.trim(u8, input, " \t\r\n");
-    if (!std.mem.startsWith(u8, trimmed, "/")) return null;
-    for (slash_command_entries) |entry| {
-        if (std.mem.eql(u8, trimmed, entry.suggestion.command)) return entry.action;
-    }
-    if (std.mem.indexOfAny(u8, trimmed[1..], "/ \t\r\n") != null) return null;
-    if (trimmed.len < "/help".len) return null;
-    return .unknown;
-}
-
-fn composerSuggestionPrefix(input: []const u8, cursor_raw: usize) ?ComposerSuggestionPrefix {
-    if (input.len == 0) return null;
-    const kind: ComposerSuggestionKind = switch (input[0]) {
-        '/' => .slash_command,
-        '$' => .skill,
-        else => return null,
-    };
-    const cursor = @min(cursor_raw, input.len);
-    if (cursor == 0) return null;
-    const token_end = slashCommandTokenEnd(input);
-    if (cursor > token_end) return null;
-    return .{
-        .kind = kind,
-        .prefix = input[0..cursor],
-        .token_end = token_end,
-    };
-}
-
-fn slashCommandSuggestionPrefix(input: []const u8, cursor_raw: usize) ?[]const u8 {
-    const prefix = composerSuggestionPrefix(input, cursor_raw) orelse return null;
-    if (prefix.kind != .slash_command) return null;
-    return prefix.prefix;
-}
-
-fn slashCommandTokenEnd(input: []const u8) usize {
-    var end: usize = 0;
-    while (end < input.len and !isAsciiWhitespace(input[end])) : (end += 1) {}
-    return end;
-}
-
-pub fn slashCommandSuggestionCountForInput(input: []const u8, cursor: usize) usize {
-    const prefix = slashCommandSuggestionPrefix(input, cursor) orelse return 0;
-    var count: usize = 0;
-    for (slash_command_entries) |entry| {
-        if (std.mem.startsWith(u8, entry.suggestion.command, prefix)) count += 1;
-    }
-    return count;
-}
-
-pub fn slashCommandSuggestionAtForInput(input: []const u8, cursor: usize, suggestion_index: usize) ?SlashCommandSuggestion {
-    const prefix = slashCommandSuggestionPrefix(input, cursor) orelse return null;
-    var match_index: usize = 0;
-    for (slash_command_entries) |entry| {
-        if (!std.mem.startsWith(u8, entry.suggestion.command, prefix)) continue;
-        if (match_index == suggestion_index) return entry.suggestion;
-        match_index += 1;
-    }
-    return null;
-}
-
-pub fn composerSuggestionCountForInput(input: []const u8, cursor: usize, skills: []const skill_registry.SkillMeta) usize {
-    const prefix = composerSuggestionPrefix(input, cursor) orelse return 0;
-    return switch (prefix.kind) {
-        .slash_command => slashCommandSuggestionCountForInput(input, cursor),
-        .skill => skillSuggestionCountForPrefix(prefix.prefix, skills),
-    };
-}
-
-pub fn composerSuggestionAtForInput(
-    input: []const u8,
-    cursor: usize,
-    skills: []const skill_registry.SkillMeta,
-    suggestion_index: usize,
-) ?ComposerSuggestion {
-    const prefix = composerSuggestionPrefix(input, cursor) orelse return null;
-    return switch (prefix.kind) {
-        .slash_command => if (slashCommandSuggestionAtForInput(input, cursor, suggestion_index)) |suggestion| .{
-            .kind = .slash_command,
-            .text = suggestion.command,
-            .description = suggestion.description,
-        } else null,
-        .skill => skillSuggestionAtForPrefix(prefix.prefix, skills, suggestion_index),
-    };
-}
-
-fn skillSuggestionCountForPrefix(prefix: []const u8, skills: []const skill_registry.SkillMeta) usize {
-    if (prefix.len == 0 or prefix[0] != '$') return 0;
-    const skill_prefix = prefix[1..];
-    var count: usize = 0;
-    for (skills) |meta| {
-        if (std.mem.startsWith(u8, meta.name, skill_prefix)) count += 1;
-    }
-    return count;
-}
-
-fn skillSuggestionAtForPrefix(
-    prefix: []const u8,
-    skills: []const skill_registry.SkillMeta,
-    suggestion_index: usize,
-) ?ComposerSuggestion {
-    if (prefix.len == 0 or prefix[0] != '$') return null;
-    const skill_prefix = prefix[1..];
-    var match_index: usize = 0;
-    for (skills) |meta| {
-        if (!std.mem.startsWith(u8, meta.name, skill_prefix)) continue;
-        if (match_index == suggestion_index) return .{
-            .kind = .skill,
-            .text = meta.name,
-            .description = meta.description,
-        };
-        match_index += 1;
-    }
-    return null;
-}
-
-fn suggestionReplacementText(buf: []u8, suggestion: ComposerSuggestion, suffix: []const u8) ?[]const u8 {
-    return switch (suggestion.kind) {
-        .slash_command => suggestion.text,
-        .skill => blk: {
-            const needs_space = suffix.len == 0 or !isAsciiWhitespace(suffix[0]);
-            const text = if (needs_space)
-                std.fmt.bufPrint(buf, "${s} ", .{suggestion.text}) catch return null
-            else
-                std.fmt.bufPrint(buf, "${s}", .{suggestion.text}) catch return null;
-            break :blk text;
-        },
-    };
-}
-
-fn parseSkillInvocation(input: []const u8) ?SkillInvocation {
-    const trimmed = std.mem.trim(u8, input, " \t\r\n");
-    if (!std.mem.startsWith(u8, trimmed, "$") or trimmed.len < 2) return null;
-    if (!(std.ascii.isAlphabetic(trimmed[1]) or trimmed[1] == '_')) return null;
-
-    var end: usize = 1;
-    var has_lower = false;
-    while (end < trimmed.len) : (end += 1) {
-        const ch = trimmed[end];
-        if (!(std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_')) break;
-        if (std.ascii.isLower(ch)) has_lower = true;
-    }
-
-    if (end == 1) return null;
-    if (!has_lower) return null;
-    if (end >= trimmed.len or !isAsciiWhitespace(trimmed[end])) return null;
-    const rest = std.mem.trim(u8, trimmed[end..], " \t\r\n");
-    if (rest.len == 0) return null;
-    return .{ .skill_name = trimmed[1..end], .prompt = rest };
-}
-
-fn isAsciiWhitespace(ch: u8) bool {
-    return ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n';
-}
+const SlashCommand = ai_chat_composer.SlashCommand;
+const SkillInvocation = ai_chat_composer.SkillInvocation;
+const ComposerSuggestionPrefix = ai_chat_composer.ComposerSuggestionPrefix;
+const ComposerCompletionTrigger = ai_chat_composer.ComposerCompletionTrigger;
+pub const ComposerSuggestionKind = ai_chat_composer.ComposerSuggestionKind;
+pub const ComposerSuggestion = ai_chat_composer.ComposerSuggestion;
+pub const SlashCommandSuggestion = ai_chat_composer.SlashCommandSuggestion;
+const parseSlashCommand = ai_chat_composer.parseSlashCommand;
+const composerSuggestionPrefix = ai_chat_composer.composerSuggestionPrefix;
+const slashCommandSuggestionPrefix = ai_chat_composer.slashCommandSuggestionPrefix;
+const slashCommandTokenEnd = ai_chat_composer.slashCommandTokenEnd;
+const skillSuggestionCountForPrefix = ai_chat_composer.skillSuggestionCountForPrefix;
+const skillSuggestionAtForPrefix = ai_chat_composer.skillSuggestionAtForPrefix;
+const suggestionReplacementText = ai_chat_composer.suggestionReplacementText;
+const parseSkillInvocation = ai_chat_composer.parseSkillInvocation;
+const isAsciiWhitespace = ai_chat_composer.isAsciiWhitespace;
+const SlashCommandEntry = ai_chat_composer.SlashCommandEntry;
+const slash_command_entries = ai_chat_composer.slash_command_entries;
+pub const slashCommandSuggestionCountForInput = ai_chat_composer.slashCommandSuggestionCountForInput;
+pub const slashCommandSuggestionAtForInput = ai_chat_composer.slashCommandSuggestionAtForInput;
+pub const composerSuggestionCountForInput = ai_chat_composer.composerSuggestionCountForInput;
+pub const composerSuggestionAtForInput = ai_chat_composer.composerSuggestionAtForInput;
 
 fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8 {
     return switch (command) {
