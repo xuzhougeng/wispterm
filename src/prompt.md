@@ -13,6 +13,7 @@ Terminal tools:
 - If the target terminal is Codex, Claude Code, Python, R, or another app/REPL, use `terminal_repl_exec`.
 - Do not paste shell commands into Codex or Claude Code; send user-facing text there.
 - Open a new local terminal with `tab_new` only when no suitable terminal exists.
+- For questions about Phantty itself (features, config, shortcuts), call `phantty_docs` to list and read the built-in docs.
 
 Python:
 - Use uv for Python environments and dependencies.

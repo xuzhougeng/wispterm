@@ -430,6 +430,8 @@ fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
     try out.appendSlice(allocator, toolSchema("tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, toolSchema("skill_info", "Load a Phantty skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}"));
+    try out.append(allocator, ',');
+    try out.appendSlice(allocator, toolSchema("phantty_docs", "Read Phantty's own documentation (features, configuration, shortcuts, AI agent, file explorer, media). Call with no topic to list available topics, then call again with a topic to read its full text.", "{\"topic\":{\"type\":\"string\",\"description\":\"Topic name from the list. Omit to list available topics.\"}}"));
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
@@ -485,6 +487,8 @@ fn appendResponseToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUn
     try out.appendSlice(allocator, responseToolSchema("tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}"));
     try out.append(allocator, ',');
     try out.appendSlice(allocator, responseToolSchema("skill_info", "Load a Phantty skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}"));
+    try out.append(allocator, ',');
+    try out.appendSlice(allocator, responseToolSchema("phantty_docs", "Read Phantty's own documentation (features, configuration, shortcuts, AI agent, file explorer, media). Call with no topic to list available topics, then call again with a topic to read its full text.", "{\"topic\":{\"type\":\"string\",\"description\":\"Topic name from the list. Omit to list available topics.\"}}"));
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
@@ -885,6 +889,21 @@ test "buildRequestJson chat_completions emits tool_calls when present" {
     defer a.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_calls\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"terminal_list\"") != null);
+}
+
+test "buildRequestJson includes phantty_docs tool for both protocols" {
+    const a = std.testing.allocator;
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("hi") }};
+
+    const chat = RequestParams{ .model = "m", .system_prompt = "", .protocol = .chat_completions, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const chat_json = try buildRequestJson(a, chat, &msgs, true);
+    defer a.free(chat_json);
+    try std.testing.expect(std.mem.indexOf(u8, chat_json, "\"phantty_docs\"") != null);
+
+    const resp = RequestParams{ .model = "m", .system_prompt = "", .protocol = .responses, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const resp_json = try buildRequestJson(a, resp, &msgs, true);
+    defer a.free(resp_json);
+    try std.testing.expect(std.mem.indexOf(u8, resp_json, "\"phantty_docs\"") != null);
 }
 
 test "parseApiResponse reads responses-protocol output text" {

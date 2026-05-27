@@ -762,6 +762,15 @@ fn createAppModuleWithRoot(
     app_options.addOption([]const u8, "app_version", app_version);
     app_mod.addOptions("build_options", app_options);
 
+    // Embed user-facing docs so the phantty_docs agent tool can read them at
+    // runtime. @embedFile cannot escape src/, so docs/ files are wired in here
+    // as named embed imports consumed by src/phantty_docs.zig.
+    app_mod.addAnonymousImport("phantty_doc_faq", .{ .root_source_file = b.path("docs/faq.md") });
+    app_mod.addAnonymousImport("phantty_doc_configuration", .{ .root_source_file = b.path("docs/configuration.md") });
+    app_mod.addAnonymousImport("phantty_doc_ai_agent", .{ .root_source_file = b.path("docs/ai-agent.md") });
+    app_mod.addAnonymousImport("phantty_doc_file_explorer", .{ .root_source_file = b.path("docs/file-explorer.md") });
+    app_mod.addAnonymousImport("phantty_doc_media", .{ .root_source_file = b.path("docs/media.md") });
+
     // Add ghostty-vt dependency with SIMD disabled for cross-compilation.
     if (b.lazyDependency("ghostty", .{
         .target = target,

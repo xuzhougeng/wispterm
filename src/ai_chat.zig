@@ -14,6 +14,7 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
 const skill_registry = @import("skill_registry.zig");
+const phantty_docs = @import("phantty_docs.zig");
 const markdown_text = @import("markdown_text.zig");
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_chat_composer = @import("ai_chat_composer.zig");
@@ -3120,6 +3121,12 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
         const skill_name = jsonStringArg(args.value, "skill_name") orelse return request.allocator.dupe(u8, "Missing skill_name");
         return skillInfoTool(request.allocator, skill_name);
     }
+    if (std.mem.eql(u8, call.name, "phantty_docs")) {
+        const args = parseArgs(request.allocator, call.arguments);
+        defer if (args) |parsed| parsed.deinit();
+        const topic = if (args) |parsed| jsonStringArg(parsed.value, "topic") else null;
+        return phanttyDocsTool(request.allocator, topic);
+    }
     return std.fmt.allocPrint(request.allocator, "Unknown tool: {s}", .{call.name});
 }
 
@@ -3172,6 +3179,22 @@ fn skillInfoToolFromRoots(allocator: std.mem.Allocator, skill_name: []const u8, 
     };
     defer snapshot.deinit(allocator);
     return allocator.dupe(u8, snapshot.content);
+}
+
+fn phanttyDocsTool(allocator: std.mem.Allocator, topic: ?[]const u8) ![]u8 {
+    if (topic) |name| {
+        if (phantty_docs.readTopic(name)) |content| {
+            return allocator.dupe(u8, content);
+        }
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try out.print(allocator, "Unknown topic \"{s}\". Available topics:", .{name});
+        for (phantty_docs.topics) |t| {
+            try out.print(allocator, " {s}", .{t.name});
+        }
+        return out.toOwnedSlice(allocator);
+    }
+    return phantty_docs.listTopics(allocator);
 }
 
 fn toolSurfaceKind(surface: ToolSurface) []const u8 {
@@ -4357,6 +4380,29 @@ test "ai chat lists skills from explicit root paths" {
     try std.testing.expect(std.mem.indexOf(u8, output, "- $pdf: Work with PDF files.") != null);
 }
 
+test "phantty_docs tool lists topics when no topic is given" {
+    const a = std.testing.allocator;
+    const text = try phanttyDocsTool(a, null);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "faq") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "configuration") != null);
+}
+
+test "phantty_docs tool returns content for a known topic" {
+    const a = std.testing.allocator;
+    const text = try phanttyDocsTool(a, "faq");
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "FAQ") != null);
+}
+
+test "phantty_docs tool reports unknown topic with the topic list" {
+    const a = std.testing.allocator;
+    const text = try phanttyDocsTool(a, "does-not-exist");
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Unknown topic") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "faq") != null);
+}
+
 test "ai chat skill_info loads from explicit root paths" {
     const allocator = std.testing.allocator;
     const root = ".zig-cache/skill-root-load-test";
@@ -4702,7 +4748,8 @@ test "ai chat responses endpoint normalization" {
 }
 
 test "ai chat default system prompt comes from platform agent prompt" {
-    try std.testing.expect(DEFAULT_SYSTEM_PROMPT.len < 1600);
+    try std.testing.expect(DEFAULT_SYSTEM_PROMPT.len < 1800);
+    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "phantty_docs") != null);
     try std.testing.expectEqualStrings(platform_agent_prompt.defaultSystemPrompt, DEFAULT_SYSTEM_PROMPT);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "uv") != null);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "Python") != null);

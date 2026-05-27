@@ -30,6 +30,7 @@ const common_tools_after_wsl =
     \\- If the target terminal is Codex, Claude Code, Python, R, or another app/REPL, use `terminal_repl_exec`.
     \\- Do not paste shell commands into Codex or Claude Code; send user-facing text there, not shell commands.
     \\- Open a new local terminal with `tab_new` only when no suitable terminal exists.
+    \\- For questions about Phantty itself (features, config, shortcuts), call `phantty_docs` to list and read the built-in docs.
     \\
     \\Python:
     \\- Use uv for Python environments and dependencies.
@@ -101,4 +102,11 @@ test "platform agent prompt has macOS-specific shell wording" {
     try std.testing.expect(std.mem.indexOf(u8, macos, "shell_exec") != null);
     try std.testing.expect(std.mem.indexOf(u8, macos, "PowerShell") == null);
     try std.testing.expect(std.mem.indexOf(u8, macos, "wsl_session_exec") == null);
+}
+
+test "platform agent prompt points at the phantty_docs tool on every OS" {
+    for ([_]std.Target.Os.Tag{ .windows, .linux, .macos }) |os| {
+        const p = defaultSystemPromptForOs(os);
+        try std.testing.expect(std.mem.indexOf(u8, p, "phantty_docs") != null);
+    }
 }

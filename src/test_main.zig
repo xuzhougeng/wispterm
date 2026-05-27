@@ -586,6 +586,7 @@ comptime {
     _ = @import("markdown_preview.zig");
     _ = @import("markdown_text.zig");
     _ = @import("memory_debug.zig");
+    _ = @import("phantty_docs.zig");
     _ = @import("platform/atomic_file.zig");
     _ = @import("platform/clipboard.zig");
     _ = @import("platform/com.zig");
