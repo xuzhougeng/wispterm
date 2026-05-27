@@ -79,3 +79,15 @@ right-click-action = paste
 
 `right-click-action = copy-or-paste` copies when a terminal selection is active
 and pastes when there is no selection.
+
+## Asking About Phantty Itself
+
+The agent can read Phantty's own user documentation on demand through the
+`phantty_docs` tool. Ask a natural question such as "how do I change the font?"
+or "what clipboard options exist?" and the agent first lists the available
+topics (`faq`, `configuration`, `ai-agent`, `file-explorer`, `media`), then
+reads the relevant one and answers from it.
+
+The docs are embedded in the Phantty binary, so this works offline and without
+the source tree. The system prompt only carries a one-line pointer to the tool;
+the documentation text is loaded only when the agent calls `phantty_docs`.
