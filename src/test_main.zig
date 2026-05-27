@@ -551,8 +551,11 @@ comptime {
 
 comptime {
     _ = @import("ai_chat.zig");
+    _ = @import("ai_chat_protocol.zig");
     _ = @import("agent_history.zig");
     _ = @import("ai_chat_composer_layout.zig");
+    _ = @import("ai_chat_input_text.zig");
+    _ = @import("ai_chat_composer.zig");
     _ = @import("agent_detector.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");

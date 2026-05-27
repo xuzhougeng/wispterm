@@ -171,8 +171,16 @@ mapping in guide §2 and §5.
       `docs/superpowers/{specs/2026-05-27-b1-input-decouple-design,plans/2026-05-27-b1-input-decouple}.md`.
       Native proof: `zig build test` (268 tests) and
       `zig build test-full -Dtarget=x86_64-windows-gnu`.
-- [ ] **B2** `ai_chat.zig`: separate conversation/state/protocol logic from UI
-      state into independently testable sub-modules.
+- [x] **B2** `ai_chat.zig`: separate conversation/state/protocol logic from UI
+      state into independently testable sub-modules. Done via targeted pure-module
+      extraction (Session/threads/tooling/network untouched): `ai_chat_input_text.zig`
+      (UTF-8/visual-cursor/wrap geometry), `ai_chat_composer.zig` (slash/skill/composer
+      suggestion parsing), `ai_chat_protocol.zig` (API wire format — protocol types +
+      request-JSON building via a `RequestParams` seam + response parsing). `ai_chat.zig`
+      delegates via re-export aliases; 7051 → 6003 ln. Modules run in the fast loop
+      (`test_fast.zig`) + regression-locked in `test_main.zig`. Spec/plan:
+      `docs/superpowers/{specs/2026-05-27-b2-ai-chat-decouple-design,plans/2026-05-27-b2-ai-chat-decouple}.md`.
+      Native proof: `zig build test` and `zig build test-full -Dtarget=x86_64-windows-gnu`.
 - [ ] **B3** `AppWindow.zig`: layer tab/split orchestration, render
       orchestration, and input routing (GL binding removed in A2).
 - [ ] **B4** Unit tests for the extracted pure logic (`zig test`).
