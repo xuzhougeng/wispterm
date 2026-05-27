@@ -39,6 +39,8 @@ extern "c" fn grantpt(fd: c_int) c_int;
 extern "c" fn unlockpt(fd: c_int) c_int;
 extern "c" fn ptsname_r(fd: c_int, buf: [*]u8, buflen: usize) c_int;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 /// Raw `_exit(2)` — used in the forked child so we never run libc `atexit`
 /// handlers or flush stdio buffers inherited from the parent.
 extern "c" fn _exit(code: c_int) noreturn;
@@ -301,6 +303,20 @@ fn childExec(
     if (cwd) |dir| {
         _ = c.chdir(dir);
     }
+
+    // GUI-launched apps on macOS inherit a minimal environment from launchd, so
+    // TERM is usually unset. Without it, shells fall back to "dumb" or other
+    // limited profiles — Starship rendered a stub prompt, zsh-autosuggestions
+    // miscalculated redraw widths, and line-edit redraws left stale glyphs on
+    // screen. xterm-256color is the most broadly supported terminfo entry and
+    // matches the SGR / cursor-control set our ghostty-vt parser implements.
+    _ = setenv("TERM", "xterm-256color", 1);
+    _ = setenv("COLORTERM", "truecolor", 1);
+    _ = setenv("TERM_PROGRAM", "phantty", 1);
+    // Some shells refuse to load completions when TERMINFO points at a value
+    // that doesn't exist for our TERM choice. Clearing it lets ncurses fall
+    // back to the system database.
+    _ = unsetenv("TERMINFO");
 
     // Parse command line into argv (split on ASCII whitespace).
     var arg_storage: [ARG_BUF]u8 = undefined;
