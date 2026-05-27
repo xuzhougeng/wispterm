@@ -20,11 +20,16 @@ const std = @import("std");
 const app_metadata = @import("app_metadata.zig");
 
 test {
+    _ = @import("input/command_dispatch.zig");
+    _ = @import("input/click_tracker.zig");
+    _ = @import("input/hit_test.zig");
     _ = @import("command_palette_model.zig");
     _ = @import("command_center_state.zig");
     _ = @import("config.zig");
     _ = @import("markdown_text.zig");
     _ = @import("ai_chat_composer_layout.zig");
+    _ = @import("ai_chat_input_text.zig");
+    _ = @import("ai_chat_composer.zig");
     _ = @import("browser_url.zig");
     _ = @import("ssh_prompt.zig");
     _ = @import("selection_unit.zig");
@@ -39,4 +44,5 @@ test {
     _ = @import("renderer/titlebar_layout.zig");
     _ = @import("ai_chat_layout.zig");
     _ = @import("appwindow/flush_scheduler.zig");
+    _ = @import("ai_chat_protocol.zig");
 }

@@ -32,6 +32,7 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const platform_wsl = @import("platform/wsl.zig");
 const window_backend = @import("platform/window_backend.zig");
 const input_key = @import("input/key.zig");
+const command_dispatch = @import("input/command_dispatch.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
@@ -40,6 +41,8 @@ const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
 
 const clipboard = @import("input/clipboard.zig");
+const click_tracker = @import("input/click_tracker.zig");
+const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
@@ -209,10 +212,7 @@ pub threadlocal var g_selecting: bool = false; // True while mouse button is hel
 pub threadlocal var g_click_x: f64 = 0; // X position of initial click (for threshold calculation)
 pub threadlocal var g_click_y: f64 = 0; // Y position of initial click
 var g_selection_changed_for_copy: bool = false;
-threadlocal var g_left_click_count: u8 = 0;
-threadlocal var g_left_click_time_ms: i64 = 0;
-threadlocal var g_left_click_x: f64 = 0;
-threadlocal var g_left_click_y: f64 = 0;
+threadlocal var g_left_click_tracker: click_tracker.ClickTracker = .{};
 const MULTI_CLICK_INTERVAL_MS: i64 = 500;
 const MAX_SELECTION_COLS: usize = 4096;
 
@@ -815,7 +815,7 @@ fn handleChar(ev: platform_input.CharEvent) void {
     writeToPty(surface, buf[0..len]);
 }
 
-const KeybindPhase = enum { early, late };
+const KeybindPhase = command_dispatch.Phase;
 
 fn triggerFromKeyEvent(ev: platform_input.KeyEvent) keybind.Trigger {
     return .{
@@ -909,134 +909,61 @@ fn requestNewWindowFromActiveCwd() void {
     app.requestNewWindow(handle, cwd);
 }
 
-fn switchTabActionIndex(action: keybind.Action) ?usize {
-    return switch (action) {
-        .switch_tab_1 => 0,
-        .switch_tab_2 => 1,
-        .switch_tab_3 => 2,
-        .switch_tab_4 => 3,
-        .switch_tab_5 => 4,
-        .switch_tab_6 => 5,
-        .switch_tab_7 => 6,
-        .switch_tab_8 => 7,
-        .switch_tab_9 => 8,
-        else => null,
-    };
+fn handleConfiguredKeybindAction(action: keybind.Action, phase: KeybindPhase) bool {
+    const cmd = command_dispatch.resolve(action, phase) orelse return false;
+    if (phase == .early) commitTabRenameIfActive();
+    return executeCommand(cmd);
 }
 
-fn handleConfiguredKeybindAction(action: keybind.Action, phase: KeybindPhase) bool {
-    switch (phase) {
-        .early => switch (action) {
-            .toggle_quake => {
-                commitTabRenameIfActive();
-                AppWindow.toggleQuakeVisibility();
-                return true;
-            },
-            .toggle_command_palette => {
-                commitTabRenameIfActive();
-                overlays.commandPaletteToggle();
-                return true;
-            },
-            .new_window => {
-                commitTabRenameIfActive();
-                requestNewWindowFromActiveCwd();
-                return true;
-            },
-            .new_session => {
-                commitTabRenameIfActive();
-                overlays.sessionLauncherOpen();
-                return true;
-            },
-            .split_right => {
-                commitTabRenameIfActive();
-                AppWindow.splitFocused(.right);
-                return true;
-            },
-            .toggle_file_explorer => {
-                commitTabRenameIfActive();
-                toggleFileExplorer();
-                return true;
-            },
-            .toggle_sidebar => {
-                commitTabRenameIfActive();
-                toggleSidebar();
-                return true;
-            },
-            .close_panel_or_tab => {
-                commitTabRenameIfActive();
-                closePanelOrTab();
-                return true;
-            },
-            .toggle_maximize => {
-                commitTabRenameIfActive();
-                toggleMaximize();
-                return true;
-            },
-            .font_size_increase => {
-                commitTabRenameIfActive();
-                adjustFontSize(1);
-                return true;
-            },
-            .font_size_decrease => {
-                commitTabRenameIfActive();
-                adjustFontSize(-1);
-                return true;
-            },
-            else => return false,
+fn executeCommand(cmd: command_dispatch.Command) bool {
+    switch (cmd) {
+        // Early
+        .toggle_quake => AppWindow.toggleQuakeVisibility(),
+        .toggle_command_palette => overlays.commandPaletteToggle(),
+        .new_window => requestNewWindowFromActiveCwd(),
+        .new_session => overlays.sessionLauncherOpen(),
+        .split_right => AppWindow.splitFocused(.right),
+        .toggle_file_explorer => toggleFileExplorer(),
+        .toggle_sidebar => toggleSidebar(),
+        .close_panel_or_tab => closePanelOrTab(),
+        .toggle_maximize => toggleMaximize(),
+        .font_size => |delta| adjustFontSize(delta),
+        // Late
+        .copy => copySelectionToClipboard(),
+        .paste => {
+            if (AppWindow.activeAiChat()) |chat| {
+                pasteFromClipboardIntoAiChat(chat);
+            } else {
+                pasteFromClipboard();
+            }
         },
-        .late => switch (action) {
-            .copy => {
-                copySelectionToClipboard();
-                return true;
-            },
-            .paste => {
-                if (AppWindow.activeAiChat()) |chat| {
-                    pasteFromClipboardIntoAiChat(chat);
-                } else {
-                    pasteFromClipboard();
-                }
-                return true;
-            },
-            .paste_image => {
-                pasteImageFromClipboard();
-                return true;
-            },
-            // Panel-focus shortcuts are "performable": if there is no pane in
-            // the requested direction, don't consume the key so it falls
-            // through to the terminal (e.g. Alt+Up reaches a TUI like Claude
-            // Code as \x1b[1;3A when running in a single pane).
-            .focus_left => return AppWindow.gotoSplit(.{ .spatial = .left }),
-            .focus_right => return AppWindow.gotoSplit(.{ .spatial = .right }),
-            .focus_up => return AppWindow.gotoSplit(.{ .spatial = .up }),
-            .focus_down => return AppWindow.gotoSplit(.{ .spatial = .down }),
-            .focus_previous => return AppWindow.gotoSplit(.previous_wrapped),
-            .focus_next => return AppWindow.gotoSplit(.next_wrapped),
-            .equalize_splits => {
-                AppWindow.equalizeSplits();
-                return true;
-            },
-            .next_tab => {
-                AppWindow.switchTab((tab.g_active_tab + 1) % tab.g_tab_count);
-                return true;
-            },
-            .previous_tab => {
-                if (tab.g_active_tab > 0) AppWindow.switchTab(tab.g_active_tab - 1) else AppWindow.switchTab(tab.g_tab_count - 1);
-                return true;
-            },
-            .open_config => {
-                std.debug.print("[keybind] open_config pressed\n", .{});
-                if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc);
-                return true;
-            },
-            else => {
-                if (switchTabActionIndex(action)) |tab_idx| {
-                    if (tab_idx < tab.g_tab_count) AppWindow.switchTab(tab_idx);
-                    return true;
-                }
-                return false;
-            },
+        .paste_image => pasteImageFromClipboard(),
+        // Panel-focus shortcuts are "performable": if there is no pane in
+        // the requested direction, don't consume the key so it falls
+        // through to the terminal (e.g. Alt+Up reaches a TUI like Claude
+        // Code as \x1b[1;3A when running in a single pane).
+        .focus_split => |target| return switch (target) {
+            .left => AppWindow.gotoSplit(.{ .spatial = .left }),
+            .right => AppWindow.gotoSplit(.{ .spatial = .right }),
+            .up => AppWindow.gotoSplit(.{ .spatial = .up }),
+            .down => AppWindow.gotoSplit(.{ .spatial = .down }),
+            .previous => AppWindow.gotoSplit(.previous_wrapped),
+            .next => AppWindow.gotoSplit(.next_wrapped),
+        },
+        .equalize_splits => AppWindow.equalizeSplits(),
+        .next_tab => AppWindow.switchTab((tab.g_active_tab + 1) % tab.g_tab_count),
+        .previous_tab => {
+            if (tab.g_active_tab > 0) AppWindow.switchTab(tab.g_active_tab - 1) else AppWindow.switchTab(tab.g_tab_count - 1);
+        },
+        .open_config => {
+            std.debug.print("[keybind] open_config pressed\n", .{});
+            if (AppWindow.g_allocator) |alloc| Config.openConfigInEditor(alloc);
+        },
+        .switch_tab => |idx| {
+            if (idx < tab.g_tab_count) AppWindow.switchTab(idx);
         },
     }
+    return true;
 }
 
 fn handleKey(ev: platform_input.KeyEvent) void {
@@ -1295,17 +1222,21 @@ fn handleBrowserUrlBarKey(ev: platform_input.KeyEvent) void {
     }
 }
 
+fn sidebarLayout() hit_test.SidebarLayout {
+    return .{
+        .visible = tab.g_sidebar_visible,
+        .titlebar_h = titlebarHeight(),
+        .width = @floatCast(titlebar.sidebarWidth()),
+        .header_h = @floatCast(titlebar.sidebarHeaderHeight()),
+        .row_h = @floatCast(titlebar.sidebarRowHeight()),
+        .tab_count = tab.g_tab_count,
+        .resize_hit_width = @floatCast(titlebar.SIDEBAR_RESIZE_HIT_WIDTH),
+        .close_btn_w = @floatCast(tab.TAB_CLOSE_BTN_W),
+    };
+}
+
 fn hitTestSidebarTab(xpos: f64, ypos: f64) ?usize {
-    if (!tab.g_sidebar_visible) return null;
-    if (xpos < 0 or xpos >= @as(f64, @floatCast(titlebar.sidebarWidth()))) return null;
-
-    const list_top = titlebarHeight() + @as(f64, @floatCast(titlebar.sidebarHeaderHeight())) + 6;
-    if (ypos < list_top) return null;
-
-    const idx_f = (ypos - list_top) / @as(f64, @floatCast(titlebar.sidebarRowHeight()));
-    const idx: usize = @intFromFloat(@floor(idx_f));
-    if (idx >= tab.g_tab_count) return null;
-    return idx;
+    return hit_test.sidebarTabAt(sidebarLayout(), xpos, ypos);
 }
 
 fn resetSidebarTabDragState() void {
@@ -1326,16 +1257,7 @@ fn beginSidebarTabPotentialDrag(tab_idx: usize, xpos: f64, ypos: f64) void {
 }
 
 fn sidebarTabIndexForDragY(ypos: f64) ?usize {
-    if (!tab.g_sidebar_visible or tab.g_tab_count == 0) return null;
-
-    const list_top = titlebarHeight() + @as(f64, @floatCast(titlebar.sidebarHeaderHeight())) + 6;
-    const row_h = @as(f64, @floatCast(titlebar.sidebarRowHeight()));
-    if (ypos < list_top) return 0;
-
-    const idx_f = (ypos - list_top) / row_h;
-    const idx_raw: usize = @intFromFloat(@floor(idx_f));
-    if (idx_raw >= tab.g_tab_count) return tab.g_tab_count - 1;
-    return idx_raw;
+    return hit_test.sidebarTabIndexForDragY(sidebarLayout(), ypos);
 }
 
 fn updateSidebarTabDrag(xpos: f64, ypos: f64) bool {
@@ -1369,36 +1291,24 @@ fn finishSidebarTabDrag() bool {
 }
 
 fn hitTestSidebarPlusButton(xpos: f64, ypos: f64) bool {
-    if (!tab.g_sidebar_visible) return false;
-    const top = titlebarHeight();
-    const plus_w: f64 = 42;
-    const plus_x = @as(f64, @floatCast(titlebar.sidebarWidth())) - plus_w - 6;
-    return xpos >= plus_x and xpos < plus_x + plus_w and
-        ypos >= top and ypos < top + @as(f64, @floatCast(titlebar.sidebarHeaderHeight()));
+    return hit_test.sidebarPlusButton(sidebarLayout(), xpos, ypos);
 }
 
 fn hitTestSidebarTabCloseButton(xpos: f64, ypos: f64, tab_idx: usize) bool {
-    if (!tab.g_sidebar_visible or tab_idx >= tab.g_tab_count or tab.g_tab_count <= 1) return false;
-    const row = hitTestSidebarTab(xpos, ypos) orelse return false;
-    if (row != tab_idx) return false;
-    const close_x = @as(f64, @floatCast(titlebar.sidebarWidth() - tab.TAB_CLOSE_BTN_W - 4));
-    return xpos >= close_x and xpos < close_x + @as(f64, tab.TAB_CLOSE_BTN_W);
+    return hit_test.sidebarTabCloseButton(sidebarLayout(), xpos, ypos, tab_idx);
 }
 
 fn shouldStartSidebarTabRename(xpos: f64, ypos: f64, tab_idx: usize) bool {
     if (tab_idx >= tab.g_tab_count) return false;
-    if (hitTestSidebarPlusButton(xpos, ypos)) return false;
-    if (hitTestSidebarResizeHandle(xpos, ypos)) return false;
-    if (hitTestSidebarTabCloseButton(xpos, ypos, tab_idx)) return false;
+    const layout = sidebarLayout();
+    if (hit_test.sidebarPlusButton(layout, xpos, ypos)) return false;
+    if (hit_test.sidebarResizeHandle(layout, xpos, ypos)) return false;
+    if (hit_test.sidebarTabCloseButton(layout, xpos, ypos, tab_idx)) return false;
     return true;
 }
 
 fn hitTestSidebarResizeHandle(xpos: f64, ypos: f64) bool {
-    if (!tab.g_sidebar_visible) return false;
-    if (ypos < titlebarHeight()) return false;
-    const sidebar_w: f64 = @floatCast(titlebar.sidebarWidth());
-    const half_hit: f64 = @as(f64, @floatCast(titlebar.SIDEBAR_RESIZE_HIT_WIDTH)) / 2;
-    return xpos >= sidebar_w - half_hit and xpos <= sidebar_w + half_hit;
+    return hit_test.sidebarResizeHandle(sidebarLayout(), xpos, ypos);
 }
 
 fn applySidebarWidthFromMouse(xpos: f64) void {
@@ -1854,27 +1764,11 @@ fn markSelectionChanged() void {
 fn nextLeftClickCount(xpos: f64, ypos: f64) u8 {
     const now = std.time.milliTimestamp();
     const max_distance: f64 = @floatCast(@max(font.cell_width, font.cell_height));
-    const dx = xpos - g_left_click_x;
-    const dy = ypos - g_left_click_y;
-    const distance = @sqrt(dx * dx + dy * dy);
-    const within_interval = g_left_click_count > 0 and now - g_left_click_time_ms <= MULTI_CLICK_INTERVAL_MS;
-    const within_distance = g_left_click_count > 0 and distance <= max_distance;
-
-    if (!within_interval or !within_distance) g_left_click_count = 0;
-
-    g_left_click_count += 1;
-    if (g_left_click_count > 4) g_left_click_count = 1;
-    g_left_click_time_ms = now;
-    g_left_click_x = xpos;
-    g_left_click_y = ypos;
-    return g_left_click_count;
+    return g_left_click_tracker.register(xpos, ypos, now, max_distance, MULTI_CLICK_INTERVAL_MS);
 }
 
 fn resetLeftClickCount() void {
-    g_left_click_count = 0;
-    g_left_click_time_ms = 0;
-    g_left_click_x = 0;
-    g_left_click_y = 0;
+    g_left_click_tracker.reset();
 }
 
 fn readViewportRowLocked(surface: *Surface, row: usize, buf: *[MAX_SELECTION_COLS]u21) []const u21 {

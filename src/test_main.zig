@@ -551,8 +551,11 @@ comptime {
 
 comptime {
     _ = @import("ai_chat.zig");
+    _ = @import("ai_chat_protocol.zig");
     _ = @import("agent_history.zig");
     _ = @import("ai_chat_composer_layout.zig");
+    _ = @import("ai_chat_input_text.zig");
+    _ = @import("ai_chat_composer.zig");
     _ = @import("agent_detector.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
@@ -571,6 +574,9 @@ comptime {
     _ = @import("file_explorer.zig");
     _ = @import("input.zig");
     _ = @import("input/clipboard.zig");
+    _ = @import("input/click_tracker.zig");
+    _ = @import("input/command_dispatch.zig");
+    _ = @import("input/hit_test.zig");
     _ = @import("input/key.zig");
     _ = @import("input/preview_source.zig");
     _ = @import("input_shortcuts.zig");
