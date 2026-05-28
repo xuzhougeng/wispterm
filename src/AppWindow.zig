@@ -94,6 +94,10 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
 
     try ensureGlobalAgentHistoryStore(allocator);
     tab.g_ai_history_change_hook = saveAiHistoryChangeEvent;
+    // Let session restore reopen AI Chat tabs from their persisted history
+    // session id. AppWindow owns the agent history store, so it supplies the
+    // hook tab.zig calls from restoreTab (which only knows the session id).
+    tab.g_ai_restore_hook = reopenAiChatTabFromHistorySessionId;
 
     // Apply config from App to globals
     g_theme = app.theme;
