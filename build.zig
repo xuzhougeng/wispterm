@@ -565,6 +565,13 @@ pub fn build(b: *std.Build) void {
     const fast_test_options = b.addOptions();
     fast_test_options.addOption([]const u8, "app_version", app_version);
     fast_test_mod.addOptions("build_options", fast_test_options);
+    // Mirror the app's doc embeds: a fast-test module (ai_chat_protocol) pulls in
+    // phantty_docs, whose @embedFile names must resolve here too.
+    fast_test_mod.addAnonymousImport("phantty_doc_faq", .{ .root_source_file = b.path("docs/faq.md") });
+    fast_test_mod.addAnonymousImport("phantty_doc_configuration", .{ .root_source_file = b.path("docs/configuration.md") });
+    fast_test_mod.addAnonymousImport("phantty_doc_ai_agent", .{ .root_source_file = b.path("docs/ai-agent.md") });
+    fast_test_mod.addAnonymousImport("phantty_doc_file_explorer", .{ .root_source_file = b.path("docs/file-explorer.md") });
+    fast_test_mod.addAnonymousImport("phantty_doc_media", .{ .root_source_file = b.path("docs/media.md") });
     const fast_tests = b.addTest(.{
         .name = "phantty-fast-test",
         .root_module = fast_test_mod,

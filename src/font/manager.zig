@@ -1260,15 +1260,26 @@ pub fn findOrLoadFallbackFace(codepoint: u32, alloc: std.mem.Allocator) ?freetyp
         return null;
     };
 
-    if (glyph_face) |primary_face| {
+    if (ft_face.hasColor() and ft_face.hasFixedSizes()) {
+        // Color bitmap fonts (Apple Color Emoji's sbix strikes, Noto CBDT,
+        // etc.): pin a fixed strike explicitly. On these faces FT_Set_Char_Size
+        // can *succeed* without selecting a strike (e.g. Apple Color Emoji at
+        // Retina DPI), leaving the face in scalable mode — FT_LOAD_COLOR then
+        // renders a tiny gray outline instead of the color bitmap, so the cell
+        // appears blank. We must also skip the metric rescale below: its
+        // FT_Set_Char_Size would unpin the strike again. The renderer scales
+        // the BGRA bitmap down to cell height at draw time.
+        selectClosestFixedStrike(ft_face, g_font_size) catch {
+            ft_face.deinit();
+            return null;
+        };
+    } else if (glyph_face) |primary_face| {
         const scale = fallbackScaleFactor(primary_face, ft_face, codepoint);
         if (@abs(scale - 1.0) > 0.01) {
             const scaled_size = @max(8.0, @round(@as(f64, @floatFromInt(g_font_size)) * scale));
             ft_face.setCharSize(0, @intFromFloat(scaled_size * 64.0), @intCast(g_dpi), @intCast(g_dpi)) catch {
-                // Bitmap-only fallbacks (Apple Color Emoji etc.) can't be
-                // rescaled here; the strike already chosen in
-                // setFacePointSize stays in effect. Renderer scales the
-                // BGRA bitmap down to cell height at draw time.
+                // Non-color bitmap-only fallbacks can't be rescaled here; the
+                // strike already chosen in setFacePointSize stays in effect.
                 if (!ft_face.hasFixedSizes()) {
                     ft_face.deinit();
                     return null;
