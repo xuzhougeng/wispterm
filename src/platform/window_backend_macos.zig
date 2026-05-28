@@ -394,6 +394,17 @@ test "macOS backend normalizes control-modified shortcut key codes" {
     try std.testing.expectEqual(@as(usize, 'P'), phantty_macos_window_test_map_key_code(35, "P"));
     try std.testing.expectEqual(@as(usize, 'P'), phantty_macos_window_test_map_key_code(35, "p"));
     try std.testing.expectEqual(@as(usize, 0xC0), phantty_macos_window_test_map_key_code(50, null));
+
+    // Punctuation keys must map to their Windows virtual-key codes (not the
+    // raw character) so Cmd shortcuts on them match: "="/"+" -> 0xBB,
+    // "-"/"_" -> 0xBD, "," -> 0xBC, "[" -> 0xDB, "]" -> 0xDD.
+    try std.testing.expectEqual(@as(usize, 0xBB), phantty_macos_window_test_map_key_code(24, "="));
+    try std.testing.expectEqual(@as(usize, 0xBB), phantty_macos_window_test_map_key_code(24, "+"));
+    try std.testing.expectEqual(@as(usize, 0xBD), phantty_macos_window_test_map_key_code(27, "-"));
+    try std.testing.expectEqual(@as(usize, 0xBD), phantty_macos_window_test_map_key_code(27, "_"));
+    try std.testing.expectEqual(@as(usize, 0xBC), phantty_macos_window_test_map_key_code(43, ","));
+    try std.testing.expectEqual(@as(usize, 0xDB), phantty_macos_window_test_map_key_code(33, "["));
+    try std.testing.expectEqual(@as(usize, 0xDD), phantty_macos_window_test_map_key_code(30, "]"));
 }
 
 test "macOS backend drains text, mouse, wheel, and IME preedit events" {

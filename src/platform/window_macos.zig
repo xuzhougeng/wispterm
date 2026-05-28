@@ -98,6 +98,7 @@ pub fn dpiForWindow(hwnd: NativeHandle) u32 {
 }
 
 pub fn showRestored(hwnd: NativeHandle) bool {
+    if (phantty_macos_window_is_zoomed(hwnd)) phantty_macos_window_zoom(hwnd);
     phantty_macos_window_show(hwnd);
     return true;
 }
