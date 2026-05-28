@@ -1,19 +1,22 @@
 ---
 name: phantty-diagnostics
-description: Use when a Windows user wants to report, troubleshoot, or collect context for a Phantty issue, including startup failures, crashes, keyboard input bugs, selection/copy/scrolling issues, SSH/SCP problems, file explorer behavior, WebView2/browser panel issues, updater failures, or remote console behavior.
+description: Use when a user (Windows or macOS) wants to report, troubleshoot, or collect context for a Phantty issue, including startup failures, crashes, keyboard input bugs, selection/copy/scrolling issues, SSH/SCP problems, file explorer behavior, WebView2/browser panel issues (Windows), updater failures, or remote console behavior.
 ---
 
 # Phantty Diagnostics
 
 ## Overview
 
-Generate a safe, copyable Markdown diagnostic report for ordinary Windows users
-filing Phantty issues. Use the bundled PowerShell script instead of asking the
+Generate a safe, copyable Markdown diagnostic report for users filing Phantty
+issues. On **Windows**, use the bundled PowerShell script instead of asking the
 user to manually discover Phantty, Windows, OpenSSH, WebView2, GPU, and config
-details. For startup crashes, prefer the automated crash workflow so users do
-not have to manually copy Event Viewer XML.
+details. For startup crashes on Windows, prefer the automated crash workflow so
+users do not have to manually copy Event Viewer XML.
 
-## Workflow
+On **macOS**, there is no equivalent script yet — use the manual bash workflow
+in the macOS section below.
+
+## Windows Workflow
 
 1. If the user already described the problem, infer `-ProblemType` from it.
    Otherwise use an empty problem type.
@@ -59,7 +62,44 @@ terminal text, environment fragments, tokens, paths, or other process memory.
    before posting and to fill in blank human-only fields such as the exact
    description and reproduction steps.
 
-## What The Report Covers
+## macOS Workflow
+
+No automated script yet. Collect the following manually using bash and paste
+the results into a Markdown report:
+
+```bash
+# Phantty version and config path
+/Applications/Phantty.app/Contents/MacOS/phantty --version
+/Applications/Phantty.app/Contents/MacOS/phantty --show-config-path
+
+# macOS version and hardware
+sw_vers
+uname -m
+sysctl -n machdep.cpu.brand_string
+sysctl -n hw.memsize
+
+# GPU information
+system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset|VRAM|Vendor|Metal"
+
+# Config file (sanitize API keys / passwords before pasting)
+CONF="$HOME/Library/Application Support/phantty/config"
+[ -f "$CONF" ] && cat "$CONF" || echo "config not found"
+
+# List files under phantty data dir
+ls -la "$HOME/Library/Application Support/phantty/"
+
+# Recent Phantty crash reports (last 7 days)
+find "$HOME/Library/Logs/DiagnosticReports" -name "Phantty*" -mtime -7 2>/dev/null
+
+# Render diagnostic log (if present)
+LOG="$HOME/Library/Application Support/phantty/render-diagnostic.log"
+[ -f "$LOG" ] && tail -50 "$LOG" || echo "render-diagnostic.log not found"
+```
+
+Remind the user to review the output before pasting publicly: remove any API
+keys, SSH passwords, tokens, or other sensitive values the config may contain.
+
+## What The Report Covers (Windows script)
 
 - Phantty version, executable path, package flavor, `version.txt`, config path,
   and portable config presence.
@@ -97,7 +137,7 @@ Never paste raw Event Viewer XML when the script can summarize it; raw XML can
 include machine/user identifiers. Never paste `.dmp` crash dumps into a public
 issue.
 
-## Validation
+## Validation (Windows script)
 
 When modifying the script, run on Windows:
 

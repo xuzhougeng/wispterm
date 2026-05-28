@@ -7,11 +7,15 @@ description: Use when the user asks about TBtools, TBtools-II, TBtools RPC API, 
 
 ## Overview
 
-TBtools-II is a Java-based bioinformatics toolkit. In this environment, assume the user is working from Windows PowerShell and prefer TBtools' own bundled Java/RPC/CLI tools. Do not introduce Python, R, Conda, or other dependencies unless the user explicitly asks.
+TBtools-II is a Java-based bioinformatics toolkit that runs on Windows and
+macOS. Prefer TBtools' own bundled Java/RPC/CLI tools. Do not introduce Python,
+R, Conda, or other dependencies unless the user explicitly asks.
 
-Default install path is `C:\Program Files\TBtools`, but first honor `TBTOOLS_HOME` or `TBTOOLS_JAR` if present.
+Honor `TBTOOLS_HOME` or `TBTOOLS_JAR` if set; fall back to the platform default.
 
-## PowerShell Setup
+## Setup
+
+### Windows (PowerShell)
 
 ```powershell
 $TbtoolsHome = if ($env:TBTOOLS_HOME) { $env:TBTOOLS_HOME } else { "C:\Program Files\TBtools" }
@@ -22,9 +26,20 @@ Test-Path $TbtoolsJar
 java -version
 ```
 
-Use `bin\` tools directly when the task is a standard external tool workflow:
+### macOS / Linux (bash)
 
-```powershell
+```bash
+TBTOOLS_HOME="${TBTOOLS_HOME:-/Applications/TBtools-II}"
+TBTOOLS_JAR="${TBTOOLS_JAR:-$(find "$TBTOOLS_HOME" -name 'TBtools*.jar' -maxdepth 4 2>/dev/null | head -1)}"
+export PATH="$TBTOOLS_HOME/bin:$PATH"
+
+[ -f "$TBTOOLS_JAR" ] && echo "jar: $TBTOOLS_JAR" || echo "TBtools jar not found — set TBTOOLS_JAR"
+java -version
+```
+
+Use `bin/` (`bin\` on Windows) tools directly when the task is a standard external tool workflow:
+
+```bash
 blastn -query query.fa -db db_prefix -out results.tsv -outfmt 6
 muscle -in input.fa -out aligned.fa
 iqtree -s aligned.fa -m MFP -bb 1000 -nt AUTO
@@ -33,7 +48,7 @@ diamond blastp -d proteins.dmnd -q query.fa -o matches.tsv
 
 ## RPC Server
 
-Start the headless RPC server from PowerShell:
+### Windows (PowerShell)
 
 ```powershell
 .\scripts\start_rpc_server.ps1 -Background
@@ -45,6 +60,12 @@ Direct form:
 java -cp $TbtoolsJar biocjava.rpc.RpcServer
 ```
 
+### macOS / Linux (bash)
+
+```bash
+java -cp "$TBTOOLS_JAR" biocjava.rpc.RpcServer &
+```
+
 Default URLs:
 
 | Purpose | URL |
@@ -54,9 +75,9 @@ Default URLs:
 
 `rpcPort` is configurable in TBtools config. `rpcBindAddress` is normalized to loopback only (`127.0.0.1` or `::1`); do not expose the RPC server on `0.0.0.0`.
 
-## PowerShell RPC Helper
+## RPC Helper
 
-Use this helper in the current PowerShell session. It uses only built-in PowerShell HTTP and JSON support.
+### Windows (PowerShell)
 
 ```powershell
 function Invoke-TBtoolsRpc {
@@ -83,15 +104,35 @@ function Invoke-TBtoolsRpc {
 }
 ```
 
+### macOS / Linux (bash + curl)
+
+```bash
+tbtools_rpc() {
+    local method="$1"
+    local params="${2:-{}}"
+    local uri="${TBTOOLS_RPC_URI:-http://127.0.0.1:8765/rpc}"
+    curl -s --max-time 600 -X POST "$uri" \
+        -H "Content-Type: application/json" \
+        -d "{\"jsonrpc\":\"2.0\",\"method\":\"$method\",\"params\":$params,\"id\":\"1\"}"
+}
+```
+
 Discovery:
 
-```powershell
+```bash
+# Windows
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/health
 Invoke-TBtoolsRpc -Method system.ping
 $methods = (Invoke-TBtoolsRpc -Method system.listMethods).methods
 $methods | Where-Object { $_ -like "*Fasta*" }
 Invoke-TBtoolsRpc -Method system.describeMethod -Params @{ method = "FastaStat.process" }
 Invoke-TBtoolsRpc -Method system.toolsJson
+
+# macOS / Linux
+curl -s http://127.0.0.1:8765/health
+tbtools_rpc system.ping
+tbtools_rpc system.listMethods | python3 -c "import sys,json; [print(m) for m in json.load(sys.stdin)['result']['methods']]"
+tbtools_rpc system.describeMethod '{"method":"FastaStat.process"}'
 ```
 
 ## RPC Workflow
@@ -130,7 +171,7 @@ Common error codes: `-32700` parse error, `-32600` invalid request, `-32601` met
 
 ## Examples
 
-FASTA statistics:
+FASTA statistics (Windows PowerShell):
 
 ```powershell
 Invoke-TBtoolsRpc -Method FastaStat.process -Params @{
@@ -140,7 +181,14 @@ Invoke-TBtoolsRpc -Method FastaStat.process -Params @{
 }
 ```
 
-Extract FASTA records with a prewritten ID list:
+FASTA statistics (macOS / Linux bash):
+
+```bash
+tbtools_rpc FastaStat.process \
+  '{"inputPath":"/data/genome.fa","outputPath":"/data/out/genome_stat.xls","options":{"getLengthOnly":false}}'
+```
+
+Extract FASTA records with a prewritten ID list (Windows PowerShell):
 
 ```powershell
 Invoke-TBtoolsRpc -Method AmazingFastaExtract.process -Params @{
@@ -156,7 +204,7 @@ Invoke-TBtoolsRpc -Method AmazingFastaExtract.process -Params @{
 }
 ```
 
-Validate then run a tree pipeline:
+Validate then run a tree pipeline (Windows PowerShell):
 
 ```powershell
 $params = @{
@@ -169,11 +217,21 @@ if ($check.ok -eq $false -or $check.validated -eq $false) { $check.errors; throw
 Invoke-TBtoolsRpc -Method OneStepBuildATree.process -Params $params -TimeoutSec 7200
 ```
 
+Validate then run a tree pipeline (macOS / Linux bash):
+
+```bash
+tbtools_rpc OneStepBuildATree.validateParams \
+  '{"inputPath":"/data/sequences.fa","outputPath":"/data/out/tree","options":{"ultraFastBS":true,"bbTime":5000,"model":"Auto","threads":2}}'
+tbtools_rpc OneStepBuildATree.process \
+  '{"inputPath":"/data/sequences.fa","outputPath":"/data/out/tree","options":{"ultraFastBS":true,"bbTime":5000,"model":"Auto","threads":2}}'
+```
+
 ## Operating Rules
 
-- Use PowerShell examples by default.
-- Use TBtools bundled `bin\` tools before suggesting external installs.
+- Detect the platform first: use PowerShell helpers on Windows, bash + curl on macOS/Linux.
+- Use TBtools bundled `bin/` tools before suggesting external installs.
 - Keep stderr/error details visible for external tools and RPC errors.
 - Do not assume a method exists from memory; discover it through `system.listMethods`.
 - Do not assume `system.listMethods` returns a raw array; the canonical result is an object with `methods`.
 - Do not use Python helpers for normal TBtools work in this environment.
+- Use forward-slash paths (`/data/...`) in RPC calls even on Windows — TBtools accepts them.
