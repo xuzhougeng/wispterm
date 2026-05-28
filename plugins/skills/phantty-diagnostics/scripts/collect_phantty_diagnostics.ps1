@@ -255,6 +255,51 @@ function Get-DpiInfo {
     }
 }
 
+function Get-MonitorInfo {
+    $lines = New-Object System.Collections.Generic.List[string]
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $screens = [System.Windows.Forms.Screen]::AllScreens
+        foreach ($s in $screens) {
+            $primary = if ($s.Primary) { " [primary]" } else { "" }
+            $lines.Add("$($s.DeviceName): $($s.Bounds.Width)x$($s.Bounds.Height) bits=$($s.BitsPerPixel)$primary") | Out-Null
+        }
+    } catch {
+        try {
+            $monitors = Get-CimInstance Win32_DesktopMonitor -ErrorAction Stop
+            foreach ($m in $monitors) {
+                $w = if ($m.ScreenWidth) { $m.ScreenWidth } else { "?" }
+                $h = if ($m.ScreenHeight) { $m.ScreenHeight } else { "?" }
+                $lines.Add("$($m.Name): ${w}x${h}") | Out-Null
+            }
+        } catch {}
+    }
+    if ($lines.Count -eq 0) { return "unavailable" }
+    return ($lines -join "; ")
+}
+
+function Get-CpuSample {
+    param([int]$Seconds = 3)
+    try {
+        $procs = Get-Process -Name phantty -ErrorAction SilentlyContinue
+        if (-not $procs) { return "phantty.exe not running during sample" }
+        $proc = $procs | Sort-Object CPU -Descending | Select-Object -First 1
+        $t0 = $proc.TotalProcessorTime
+        $w0 = [DateTime]::UtcNow
+        Start-Sleep -Seconds $Seconds
+        $proc.Refresh()
+        $dt = ($proc.TotalProcessorTime - $t0).TotalSeconds
+        $wall = ([DateTime]::UtcNow - $w0).TotalSeconds
+        $cores = [Environment]::ProcessorCount
+        $pct = [Math]::Round($dt / $wall / $cores * 100, 1)
+        $mem = [Math]::Round($proc.WorkingSet64 / 1MB, 1)
+        return "~$pct% of one core ($Seconds s sample, $cores logical cores, ${mem} MB working set, PID $($proc.Id))"
+    } catch {
+        Add-FailedCommand "sample CPU" $_.Exception.Message
+        return "unavailable"
+    }
+}
+
 function Get-WindowsInfo {
     $cv = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
     $product = Get-RegistryValue $cv "ProductName"
@@ -407,6 +452,7 @@ function Get-RenderingInfo {
         GPU = if ($gpuLines.Count -gt 0) { $gpuLines -join "; " } else { "unavailable" }
         OpenGL = Get-OpenGlFromRenderDiagnosticLog
         DpiScaling = Get-DpiInfo
+        Monitors = Get-MonitorInfo
         WebView2Runtime = Get-WebView2Version
     }
 }
@@ -734,6 +780,20 @@ function Get-IssueHints {
                 "- Remote console: include whether the browser login page or console shell is failing."
             )
         }
+        "(?i)render|dpi|monitor|display|glitch|resize" {
+            return @(
+                "- Rendering/DPI: monitor count and resolutions are collected in the Rendering section above.",
+                "- Rendering/DPI: if render-diagnostic.log is missing or empty, add `phantty-debug-render = true` to your config, restart Phantty, reproduce the issue, then re-run this script.",
+                "- Rendering/DPI: attach a screenshot or short screen recording showing the glitch."
+            )
+        }
+        "(?i)cpu|perf|slow|performance|high.cpu" {
+            return @(
+                "- High CPU: CPU usage sample is in the Rendering section (phantty.exe must be running when the script runs).",
+                "- High CPU: note whether CPU stays high continuously or spikes briefly.",
+                "- High CPU: check whether a background AI Chat request, remote session, or file preview is active when CPU is high."
+            )
+        }
         default { return @() }
     }
 }
@@ -745,6 +805,7 @@ function New-MarkdownReport {
     $windows = Get-WindowsInfo
     $ssh = Get-SshInfo
     $rendering = Get-RenderingInfo
+    $cpuSample = if ($ProblemType -match "(?i)cpu|perf|slow|performance|high.cpu") { Get-CpuSample 3 } else { $null }
     $configLines = Get-ConfigExcerpt $phantty.ConfigPathRaw
     $hints = Get-IssueHints $ProblemType
     $crashEvents = Get-PhanttyCrashEvents $CrashEventDays
@@ -789,7 +850,11 @@ function New-MarkdownReport {
     $lines.Add("- GPU: $($rendering.GPU)") | Out-Null
     $lines.Add("- OpenGL: $($rendering.OpenGL)") | Out-Null
     $lines.Add("- DPI/scaling: $($rendering.DpiScaling)") | Out-Null
+    $lines.Add("- Monitors: $($rendering.Monitors)") | Out-Null
     $lines.Add("- WebView2 runtime: $($rendering.WebView2Runtime)") | Out-Null
+    if ($cpuSample) {
+        $lines.Add("- phantty.exe CPU sample: $cpuSample") | Out-Null
+    }
     $lines.Add("") | Out-Null
     $lines.Add("### Startup / Crash") | Out-Null
     $lines.Add("- Startup probe: $(Format-Value $script:StartupProbeResult)") | Out-Null
@@ -873,6 +938,12 @@ function Invoke-SelfTest {
 
     $crashHints = Get-IssueHints "startup/crash"
     if ($crashHints.Count -lt 2) { throw "startup/crash hints missing" }
+
+    $renderHints = Get-IssueHints "rendering/DPI"
+    if ($renderHints.Count -lt 2) { throw "rendering/DPI hints missing" }
+
+    $cpuHints = Get-IssueHints "high-cpu"
+    if ($cpuHints.Count -lt 2) { throw "high-cpu hints missing" }
 
     "Self-test passed"
 }

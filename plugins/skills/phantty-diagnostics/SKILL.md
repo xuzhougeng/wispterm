@@ -1,6 +1,6 @@
 ---
 name: phantty-diagnostics
-description: Use when a user (Windows or macOS) wants to report, troubleshoot, or collect context for a Phantty issue, including startup failures, crashes, keyboard input bugs, selection/copy/scrolling issues, SSH/SCP problems, file explorer behavior, WebView2/browser panel issues (Windows), updater failures, or remote console behavior.
+description: Use when a user (Windows or macOS) wants to report, troubleshoot, or collect context for a Phantty issue, including startup failures, crashes, rendering/DPI/multi-monitor glitches, high CPU usage, keyboard input bugs, selection/copy/scrolling issues, SSH/SCP problems, file explorer behavior, WebView2/browser panel issues (Windows), updater failures, or remote console behavior.
 ---
 
 # Phantty Diagnostics
@@ -34,11 +34,20 @@ Use `pwsh` instead of `powershell` only if Windows PowerShell is unavailable.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_phantty_diagnostics.ps1 -ProblemType "SSH/SCP"
 ```
 
-Recommended labels: `startup/crash`, `keyboard/input`, `selection/copy/scrolling`,
-`SSH/SCP`, `file explorer`, `WebView2/browser panel`, `updater`,
-`remote console`, `other`.
+Recommended labels: `startup/crash`, `rendering/DPI`, `high-cpu`,
+`keyboard/input`, `selection/copy/scrolling`, `SSH/SCP`, `file explorer`,
+`WebView2/browser panel`, `updater`, `remote console`, `other`.
 
-4. For startup/crash reports, run the automated startup probe. It enables
+4. For **rendering/DPI/multi-monitor glitch** reports, first check whether
+   `render-diagnostic.log` is already present. If not, ask the user to add
+   `phantty-debug-render = true` to their config (press `Ctrl+,` to open it),
+   restart Phantty, reproduce the glitch, then run the script. The log is
+   written to `%APPDATA%\phantty\render-diagnostic.log`.
+
+   For **high-cpu** reports, run the script while Phantty is exhibiting the
+   high-CPU behavior so the 3-second CPU sample captures the real usage.
+
+5. For startup/crash reports, run the automated startup probe. It enables
 `PHANTTY_RENDER_DIAGNOSTICS=1` only for the probe process, starts Phantty with
 auto-update disabled, waits briefly, then closes/kills the process if it did
 not crash:
@@ -47,7 +56,7 @@ not crash:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_phantty_diagnostics.ps1 -ProblemType "startup/crash" -StartupProbe
 ```
 
-5. If the user is willing to reproduce a crash and can share a dump privately,
+6. If the user is willing to reproduce a crash and can share a dump privately,
 enable Windows Error Reporting local dumps before the startup probe:
 
 ```powershell
@@ -58,7 +67,7 @@ This writes HKCU-only WER settings for `phantty.exe` and reports the dump
 folder. Do not ask the user to attach `.dmp` files publicly; dumps may contain
 terminal text, environment fragments, tokens, paths, or other process memory.
 
-6. Paste the generated Markdown report back to the user. Ask them to review it
+7. Paste the generated Markdown report back to the user. Ask them to review it
    before posting and to fill in blank human-only fields such as the exact
    description and reproduction steps.
 
@@ -78,8 +87,8 @@ uname -m
 sysctl -n machdep.cpu.brand_string
 sysctl -n hw.memsize
 
-# GPU information
-system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset|VRAM|Vendor|Metal"
+# GPU and connected monitors (resolution, DPI, color depth)
+system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset|VRAM|Vendor|Metal|Resolution|Pixel Depth|Mirror|Color"
 
 # Config file (sanitize API keys / passwords before pasting)
 CONF="$HOME/Library/Application Support/phantty/config"
@@ -92,8 +101,21 @@ ls -la "$HOME/Library/Application Support/phantty/"
 find "$HOME/Library/Logs/DiagnosticReports" -name "Phantty*" -mtime -7 2>/dev/null
 
 # Render diagnostic log (if present)
+# NOTE: the log only exists when phantty-debug-render = true is set in config.
+# For rendering/DPI issues: add that key, restart Phantty, reproduce the glitch,
+# then collect the log.
 LOG="$HOME/Library/Application Support/phantty/render-diagnostic.log"
-[ -f "$LOG" ] && tail -50 "$LOG" || echo "render-diagnostic.log not found"
+[ -f "$LOG" ] && tail -80 "$LOG" || echo "render-diagnostic.log not found — add phantty-debug-render = true to config and reproduce the issue first"
+
+# CPU usage sample (run while Phantty is showing high CPU)
+pid=$(pgrep -x phantty 2>/dev/null | head -1)
+if [ -n "$pid" ]; then
+  ps -p "$pid" -o pid,pcpu,pmem,rss,comm
+  # macOS: sample over 3 seconds
+  top -l 3 -pid "$pid" -stats pid,cpu,mem,time 2>/dev/null | tail -5
+else
+  echo "phantty not running"
+fi
 ```
 
 Remind the user to review the output before pasting publicly: remove any API
@@ -107,8 +129,9 @@ keys, SSH passwords, tokens, or other sensitive values the config may contain.
   current shell process.
 - `ssh.exe` / `scp.exe` path and version, plus whether Phantty's `ssh_hosts`
   file exists and how many saved profiles it contains.
-- GPU and driver details, WebView2 runtime version, and nearby
-  `WebView2Loader.dll` presence.
+- GPU and driver details, connected monitors with resolutions, WebView2
+  runtime version, and nearby `WebView2Loader.dll` presence.
+- phantty.exe CPU sample (3 seconds) when `-ProblemType "high-cpu"` is used.
 - Startup/crash context: recent Windows Application Error / Windows Error
   Reporting entries for `phantty.exe`, sanitized module/exception/offset fields,
   optional startup probe result, WER local dump configuration, and whether dump
