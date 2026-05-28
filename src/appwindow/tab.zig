@@ -102,6 +102,11 @@ pub threadlocal var g_scrollback_limit: u32 = 10_000_000;
 pub threadlocal var g_remote_client: ?*remote_client.Client = null;
 pub threadlocal var g_ai_history_change_hook: ?ai_chat.HistoryChangeHook = null;
 
+// Restore hook: rebuild an AI Chat tab from its persisted agent-history session
+// id. Registered by AppWindow (which owns the history store), so tab.zig stays
+// free of that dependency. Returns true if the tab was reopened.
+pub threadlocal var g_ai_restore_hook: ?*const fn (session_id: []const u8) bool = null;
+
 // Forced title from config (overrides all tab titles)
 pub threadlocal var g_forced_title: ?[]const u8 = null;
 
@@ -933,6 +938,20 @@ pub fn handleRenameChar(codepoint: u21) void {
 /// is the caller's responsibility to free (via Session.deinit pattern, or
 /// shared across all tabs in a session).
 pub fn snapshotTab(arena: std.mem.Allocator, t: *const TabState) !session_persist.TabSnap {
+    // AI Chat tabs persist only their history session id; the conversation
+    // itself lives in the agent history store. `tree` is a required field, so
+    // emit an ignored placeholder leaf — restoreTab routes by ai_session_id.
+    if (t.kind == .ai_chat) {
+        const session = t.ai_chat_session orelse return error.NoAiSession;
+        const sid = try arena.dupe(u8, session.sessionId());
+        return session_persist.TabSnap{
+            .title_override = null,
+            .focused_leaf = 0,
+            .zoomed_leaf = null,
+            .tree = .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
+            .ai_session_id = sid,
+        };
+    }
     if (t.kind != .terminal) return error.NotTerminalTab;
     if (t.tree.isEmpty()) return error.EmptyTree;
 
@@ -1149,6 +1168,15 @@ pub fn restoreTab(
 ) bool {
     if (g_tab_count >= MAX_TABS) return false;
 
+    // AI Chat tab: rebuild from its persisted history session via the hook
+    // AppWindow installed (it owns the history store). The placeholder `tree` in
+    // the snapshot is ignored. If the hook isn't installed or the session is
+    // gone from history, skip this tab rather than restoring a wrong terminal.
+    if (snap.ai_session_id) |sid| {
+        const hook = g_ai_restore_hook orelse return false;
+        return hook(sid);
+    }
+
     // Populate the thread-local restore context so surfaceFromSnap can read
     // these values without changing the SplitTree.fromSnapshot factory ABI.
     g_restore_cols = cols;
@@ -1311,6 +1339,48 @@ fn makeTestTabState() TabState {
         .focused = .root,
         .ai_chat_session = null,
     };
+}
+
+test "tab: restoreTab routes ai_session_id through the restore hook" {
+    resetTestTabGlobals();
+    const previous_hook = g_ai_restore_hook;
+    defer g_ai_restore_hook = previous_hook;
+
+    const Captured = struct {
+        var session_id: []const u8 = "";
+        var called: bool = false;
+        fn hook(session_id_in: []const u8) bool {
+            session_id = session_id_in;
+            called = true;
+            return true;
+        }
+    };
+    Captured.called = false;
+    Captured.session_id = "";
+    g_ai_restore_hook = Captured.hook;
+
+    const snap = session_persist.TabSnap{
+        .tree = .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
+        .ai_session_id = "sess-xyz",
+    };
+    try std.testing.expect(restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
+    try std.testing.expect(Captured.called);
+    try std.testing.expectEqualStrings("sess-xyz", Captured.session_id);
+    // The hook owns tab creation; restoreTab must not also build a terminal tab.
+    try std.testing.expectEqual(@as(usize, 0), g_tab_count);
+}
+
+test "tab: restoreTab skips an ai tab when no restore hook is installed" {
+    resetTestTabGlobals();
+    const previous_hook = g_ai_restore_hook;
+    defer g_ai_restore_hook = previous_hook;
+    g_ai_restore_hook = null;
+
+    const snap = session_persist.TabSnap{
+        .tree = .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
+        .ai_session_id = "sess-xyz",
+    };
+    try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
 }
 
 test "tab: reorder moves active tab forward" {

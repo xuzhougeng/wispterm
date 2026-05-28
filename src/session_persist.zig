@@ -53,6 +53,11 @@ pub const TabSnap = struct {
     focused_leaf: u32 = 0,
     zoomed_leaf: ?u32 = null,
     tree: NodeSnap,
+    // When non-null this tab is an AI Chat tab: it is restored by reopening the
+    // agent history session of this id (the conversation lives in the persisted
+    // agent history store, not in this snapshot), and `tree` is an ignored
+    // placeholder. Absent in older snapshots → null → ordinary terminal tab.
+    ai_session_id: ?[]const u8 = null,
 };
 
 pub const Session = struct {
@@ -199,6 +204,44 @@ test "session_persist: round-trip simple local-shell session via JSON" {
     };
     try std.testing.expectEqualStrings("/home/user", sh.cwd.?);
     try std.testing.expect(sh.command == null);
+}
+
+test "session_persist: AI chat tab round-trips its ai_session_id" {
+    const allocator = std.testing.allocator;
+
+    const placeholder = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    const tabs = [_]TabSnap{.{
+        .tree = placeholder,
+        .ai_session_id = "sess-abc-123",
+    }};
+    const original: Session = .{ .active_tab = 0, .tabs = @constCast(&tabs) };
+
+    const json = try dumpSessionToString(allocator, original);
+    defer allocator.free(json);
+
+    var parsed = try loadSessionFromString(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.tabs.len);
+    try std.testing.expect(parsed.value.tabs[0].ai_session_id != null);
+    try std.testing.expectEqualStrings("sess-abc-123", parsed.value.tabs[0].ai_session_id.?);
+}
+
+test "session_persist: tab without ai_session_id defaults to null (back-compat)" {
+    const allocator = std.testing.allocator;
+
+    // An older snapshot has no ai_session_id field; it must parse as a terminal
+    // tab (ai_session_id == null), not error.
+    const json =
+        \\{ "version": 1, "active_tab": 0, "tabs": [
+        \\  { "focused_leaf": 0, "tree": { "leaf": { "surface": { "local_shell": {} } } } }
+        \\] }
+    ;
+    var parsed = try loadSessionFromString(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.tabs.len);
+    try std.testing.expect(parsed.value.tabs[0].ai_session_id == null);
 }
 
 test "session_persist: round-trip nested split with SSH leaf" {
