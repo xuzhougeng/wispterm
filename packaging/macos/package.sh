@@ -36,7 +36,24 @@ codesign --verify --strict --verbose=2 "$app_path"
 
 mkdir -p "$dist_dir"
 staging="$(mktemp -d "${TMPDIR:-/tmp}/phantty-macos-dmg.XXXXXX")"
-trap 'rm -rf "$staging"' EXIT
+notarize_workdir="$(mktemp -d "${TMPDIR:-/tmp}/phantty-macos-notarize.XXXXXX")"
+trap 'rm -rf "$staging" "$notarize_workdir"' EXIT
+
+# Notarize and staple the .app FIRST, then ditto the stapled copy into the DMG.
+# Otherwise the .app inside the DMG carries no ticket (it was copied before
+# stapling) and the first launch needs an online Gatekeeper round-trip even
+# though the DMG envelope itself is stapled.
+if [[ -n "$notary_profile" ]]; then
+  app_zip="$notarize_workdir/Phantty.zip"
+  # ditto -c -k --keepParent produces an Apple-friendly zip preserving the
+  # bundle structure, which is what notarytool expects for a .app submission.
+  ditto -c -k --keepParent "$app_path" "$app_zip"
+  xcrun notarytool submit "$app_zip" --keychain-profile "$notary_profile" --wait
+  xcrun stapler staple "$app_path"
+  xcrun stapler validate "$app_path"
+else
+  echo "notarization skipped: set PHANTTY_MACOS_NOTARY_PROFILE to submit with notarytool" >&2
+fi
 
 ditto "$app_path" "$staging/Phantty.app"
 ln -s /Applications "$staging/Applications"
@@ -49,12 +66,12 @@ dmg_path="$dist_dir/phantty-macos-$tag_version.dmg"
 rm -f "$dmg_path"
 hdiutil create -volname "Phantty" -srcfolder "$staging" -ov -format UDZO "$dmg_path" >/dev/null
 
+# Now notarize + staple the DMG envelope. The .app's cdhash is already on
+# Apple's approved list from the submission above, so this submit only adds
+# a ticket onto the disk image itself for Gatekeeper to find at mount time.
 if [[ -n "$notary_profile" ]]; then
   xcrun notarytool submit "$dmg_path" --keychain-profile "$notary_profile" --wait
   xcrun stapler staple "$dmg_path"
-  xcrun stapler staple "$app_path"
-else
-  echo "notarization skipped: set PHANTTY_MACOS_NOTARY_PROFILE to submit with notarytool" >&2
 fi
 
 verified=0
