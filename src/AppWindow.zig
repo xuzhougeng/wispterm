@@ -5,6 +5,7 @@
 //! will be converted to struct fields in a future refactoring step.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ghostty_vt = @import("ghostty-vt");
 const freetype = @import("freetype");
 const Config = @import("config.zig");
@@ -3475,8 +3476,11 @@ fn runMainLoop(self: *AppWindow) !void {
         // Clean up glyph cache and atlas
         font.clearGlyphCache(allocator);
         font.clearFallbackFaces(allocator);
-        // Clean up icon cache and icon atlas
+        // Clean up icon cache and icon atlas. Reset to .empty so the
+        // threadlocal slot is safe to re-use if the main thread spawns
+        // another first-window (e.g. macOS Dock reopen).
         font.icon_cache.deinit(allocator);
+        font.icon_cache = .empty;
         if (font.g_icon_atlas) |*a| {
             a.deinit(allocator);
             font.g_icon_atlas = null;
@@ -3487,10 +3491,12 @@ fn runMainLoop(self: *AppWindow) !void {
             font.g_icon_atlas_texture = 0;
         }
 
-        // Clean up titlebar font
+        // Clean up titlebar font. Reset cache to .empty for the same reason
+        // as icon_cache above.
         if (font.g_titlebar_face) |f| f.deinit();
         font.g_titlebar_face = null;
         font.g_titlebar_cache.deinit(allocator);
+        font.g_titlebar_cache = .empty;
         if (font.g_titlebar_atlas) |*a| {
             a.deinit(allocator);
             font.g_titlebar_atlas = null;
@@ -3730,6 +3736,15 @@ fn runMainLoop(self: *AppWindow) !void {
         }
         if (window_backend.closeRequested(win)) {
             window_backend.clearCloseRequested(win);
+            if (builtin.os.tag == .macos) {
+                // macOS semantics: the red traffic-light closes this window
+                // immediately. Closing the last window does NOT terminate the
+                // process — App.run() keeps the NSApp alive so the Dock icon
+                // can re-open a window (handled by PhanttyAppDelegate).
+                g_should_close = true;
+                running = false;
+                continue;
+            }
             overlays.windowCloseConfirmOpen();
             g_force_rebuild = true;
             g_cells_valid = false;

@@ -5,6 +5,7 @@
 //! Uses AppWindow's GL context for GPU texture operations.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const freetype = @import("freetype");
 const harfbuzz = @import("harfbuzz");
 const sprite = @import("sprite.zig");
@@ -333,6 +334,26 @@ fn isCjkCodepoint(codepoint: u32) bool {
 
 fn preferredFallbackFamilies(codepoint: u32) []const []const u8 {
     if (isCjkCodepoint(codepoint)) {
+        if (builtin.os.tag == .macos) {
+            // macOS 26 moved PingFang into PrivateFrameworks/.../Reserved as a
+            // system-reserved .ttc that FreeType cannot open (FT_New_Face fails),
+            // and CoreText's default cascade prefers exactly that reserved font —
+            // which is why CJK rendered as tofu. List the public system CJK
+            // families (all FreeType-loadable from /System/Library/Fonts) first
+            // so findOrLoadFallbackFace resolves a usable face before falling
+            // back to the broken CoreText default. Third-party families follow
+            // for users who installed them.
+            return &.{
+                "Hiragino Sans GB",
+                "Songti SC",
+                "Heiti SC",
+                "STHeiti",
+                "Hiragino Sans",
+                "Apple SD Gothic Neo",
+                "Sarasa Mono SC",
+                "Noto Sans CJK SC",
+            };
+        }
         return &.{
             "Maple Mono NF CN",
             "Sarasa Mono SC",
@@ -1149,6 +1170,47 @@ pub fn loadBellEmoji() ?BellCache {
 // ============================================================================
 
 /// Find or load a fallback font that contains the given codepoint
+/// Resolve a FallbackFont to a FreeType face, verifying FreeType can actually
+/// open the file AND that the face contains `codepoint`. Returns null (after
+/// cleaning up) if either check fails, so callers can try the next candidate.
+/// This is the crux of the macOS CJK fix: CoreText happily hands back the
+/// reserved PingFangUI.ttc which FreeType cannot open, so we must validate the
+/// load rather than trust the discovery result.
+fn openFallbackFreetypeFace(
+    ft_lib: freetype.Library,
+    font: *font_backend.FallbackFont,
+    codepoint: u32,
+    alloc: std.mem.Allocator,
+) ?freetype.Face {
+    var font_path = font_backend.fontFilePathAlloc(alloc, font) orelse return null;
+    defer font_path.deinit();
+
+    const ft_face = ft_lib.initFace(font_path.path, @intCast(font_path.face_index)) catch return null;
+    if ((ft_face.getCharIndex(codepoint) orelse 0) == 0) {
+        ft_face.deinit();
+        return null;
+    }
+    return ft_face;
+}
+
+/// Try each family in order; return the first one FreeType can load with a
+/// glyph for `codepoint`.
+fn tryFamiliesForFallback(
+    discovery: *font_backend.FontDiscovery,
+    ft_lib: freetype.Library,
+    codepoint: u32,
+    families: []const []const u8,
+    alloc: std.mem.Allocator,
+) ?freetype.Face {
+    for (families) |family_name| {
+        const font = (discovery.findFont(family_name, .NORMAL, .NORMAL) catch null) orelse continue;
+        defer font.release();
+        if (!font.hasCharacter(codepoint)) continue;
+        if (openFallbackFreetypeFace(ft_lib, font, codepoint, alloc)) |face| return face;
+    }
+    return null;
+}
+
 pub fn findOrLoadFallbackFace(codepoint: u32, alloc: std.mem.Allocator) ?freetype.Face {
     // Check if we already have a fallback for this codepoint
     if (g_fallback_faces.get(codepoint)) |face| {
@@ -1164,26 +1226,31 @@ pub fn findOrLoadFallbackFace(codepoint: u32, alloc: std.mem.Allocator) ?freetyp
     const discovery = g_font_discovery orelse return null;
     const ft_lib = g_ft_lib orelse return null;
 
-    const preferred_families = preferredFallbackFamilies(codepoint);
-    const maybe_font = findConfiguredFallbackFont(discovery, codepoint) orelse if (preferred_families.len > 0)
-        ((discovery.findPreferredFallbackFont(codepoint, preferred_families) catch null) orelse
-            (discovery.findFallbackFont(codepoint) catch null))
-    else
-        (discovery.findFallbackFont(codepoint) catch null);
+    // Resolve a FreeType-loadable face, trying candidates in priority order.
+    // Each candidate is validated by actually opening it with FreeType (see
+    // openFallbackFreetypeFace) so an unloadable system-reserved font does not
+    // abort the whole lookup.
+    const ft_face: freetype.Face = blk: {
+        // 1. Explicit user configuration (cjk-font / fallback CSV).
+        if (findConfiguredFallbackFont(discovery, codepoint)) |font| {
+            defer font.release();
+            if (openFallbackFreetypeFace(ft_lib, font, codepoint, alloc)) |face| break :blk face;
+        }
 
-    // Use the system font backend to find a font with this codepoint
-    const font = maybe_font orelse {
-        // Cache the negative result to avoid repeated system font queries
+        // 2. Platform preferred families (FreeType-loadable system fonts).
+        const preferred = preferredFallbackFamilies(codepoint);
+        if (tryFamiliesForFallback(discovery, ft_lib, codepoint, preferred, alloc)) |face| break :blk face;
+
+        // 3. CoreText / platform default cascade as a last resort.
+        if (discovery.findFallbackFont(codepoint) catch null) |font| {
+            defer font.release();
+            if (openFallbackFreetypeFace(ft_lib, font, codepoint, alloc)) |face| break :blk face;
+        }
+
+        // Nothing usable — cache the negative result to avoid repeated queries.
         g_no_fallback.put(alloc, codepoint, {}) catch {};
         return null;
     };
-    defer font.release();
-
-    var font_path = font_backend.fontFilePathAlloc(alloc, font) orelse return null;
-    defer font_path.deinit();
-
-    // Load with FreeType
-    const ft_face = ft_lib.initFace(font_path.path, @intCast(font_path.face_index)) catch return null;
 
     // Start from the primary point size, then normalize fallback metrics to
     // the active terminal face. This follows Ghostty's overall approach of

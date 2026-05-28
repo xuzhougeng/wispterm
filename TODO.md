@@ -437,18 +437,113 @@ macOS pty constants in D4.** Services / webview / packaging follow.
 - [ ] **D7.3 Localize menu titles.** Currently English-only; add a localized
       string table that matches the rest of Phantty's locale story.
 
-### macOS UI status (post D1.x + D7.1)
+### Phase D8 — macOS window lifecycle, native title bar & CJK fallback
+
+Polish/bugfix pass after the D-phase skeleton landed. Surfaced by real on-device
+use; the Windows port (`builtin.os.tag != .macos`) is unchanged throughout —
+every behavior is gated behind a macOS check. Status: implemented, builds clean
+for both `aarch64-macos` and the default `x86_64-windows-gnu`; on-device
+verification in progress.
+
+- [x] **D8.1 Close button keeps the process alive (Terminal.app / VS Code
+      semantics).** The red traffic-light used to tear down the whole process.
+      Added `PhanttyAppDelegate` in `window_macos_bridge.m`:
+      `applicationShouldTerminateAfterLastWindowClosed:` → NO,
+      `applicationShouldHandleReopen:hasVisibleWindows:` sets an atomic reopen
+      flag, `applicationShouldTerminate:` sets a quit flag and `performClose:`-es
+      every live window then returns `NSTerminateCancel` (zig owns shutdown).
+      Bridge exposes `consume_reopen` / `consume_quit` / `request_quit` /
+      `pump_events(timeout)`; wired through `window_macos.zig` → `window.zig`
+      facade → `window_backend.zig` (no-op stubs for Windows/unsupported). On
+      macOS the close button now sets `g_should_close` directly (no confirm
+      overlay). `App.run()` runs the first window on the main thread, then enters
+      `macIdleUntilQuit()`: blocks in `pumpAppEvents(0.25)`, spawns a fresh window
+      on Dock reopen, returns on quit.
+- [x] **D8.2 Dock reopen spawns on a worker thread, not the main thread.**
+      Reusing the main thread for a second window session resurfaced
+      "single-run" thread-local state (font caches, atlas handles, UI flags).
+      Reopen now calls `requestNewWindow(null, null)` (same path as `⌃⇧N`), so
+      the new window's thread-locals start at their declared defaults. Also fixed
+      two latent single-run bugs this exposed: `AppWindow.zig` shutdown defer now
+      resets `font.icon_cache` / `font.g_titlebar_cache` to `.empty` after
+      `deinit` (a re-entrant `clearTitlebarFont` was double-freeing dangling
+      hash-map metadata → `incorrectAlignment` panic).
+- [x] **D8.3 NSWindow operations marshalled to the main thread (crash fix).**
+      Root macOS-port architecture bug: every `AppWindow` runs its event/render
+      loop on a spawned thread but called NSWindow APIs directly, tripping
+      AppKit's "Must only be used from the main thread" assertion (crashed in
+      `setContentSize` → `-[NSWMWindowCoordinator performTransactionUsingBlock:]`
+      on resize/reopen). Added `phantty_macos_run_on_main(block)` (inline on the
+      main thread, else `dispatch_sync` to the main queue) and wrapped
+      `set_content_size` / `set_frame` / `show` / `hide` / `make_key` / `zoom` /
+      `destroy`. `window_poll` only pumps `[NSApp nextEvent]` on the main thread
+      (worker threads just sync the Metal layer; AppKit dispatches their events to
+      the window delegate which fills the per-window buffer). `pump_events` gained
+      a blocking `timeout` so the main run loop drains the GCD main queue —
+      otherwise worker `dispatch_sync` would deadlock against a spin-sleep.
+- [ ] **D8.3a Event buffer cross-thread safety (follow-up).** The per-window
+      key/char/mouse/file-drop/message ring buffers in `window_macos_bridge.m` are
+      SPSC and lock-free; with D8.3 the producer is now the main thread (AppKit
+      delegate) and the consumer is the worker thread. Add an `os_unfair_lock` (or
+      atomic head/count) before relying on this under load — watch for dropped
+      keystrokes / input lag as the symptom.
+- [x] **D8.4 Unified title bar + traffic-light-aware toggle placement.** macOS no
+      longer shows the empty native title strip above Phantty's own bar. NSWindow
+      gains `NSWindowStyleMaskFullSizeContentView` + `titlebarAppearsTransparent`
+      + `titleVisibility = NSWindowTitleHidden`, so the app-drawn titlebar extends
+      under the traffic lights (Codex / VS Code style). `titlebar.zig` reserves a
+      DPI-scaled strip on the left (`titlebarLeftReserved()` = 80 logical px ×
+      `g_dpi/96`, in framebuffer pixels) so the sidebar-toggle hamburger and tab
+      title sit to the right of the red/yellow/green controls; `input.zig`
+      hit-tests shift to match. (Supersedes the D2 note that macOS skips the
+      app-drawn titlebar entirely.)
+- [ ] **D8.4a Draggable titlebar region (follow-up).** With the native title bar
+      hidden the window is only draggable via the traffic-light gaps. Give the
+      non-interactive part of the app-drawn titlebar a window-drag affordance
+      (`-mouseDownCanMoveWindow` / a hit-test drag region).
+- [x] **D8.5 CJK fallback no longer renders tofu.** macOS 26 moved PingFang into
+      `PrivateFrameworks/.../Reserved/PingFangUI.ttc`, a system-reserved `.ttc`
+      that FreeType cannot open (`FT_New_Face` → err 144) — and CoreText's default
+      cascade prefers exactly that font, so every CJK glyph fell through to a
+      blank box. `font/manager.zig`: `preferredFallbackFamilies` gained a macOS
+      branch listing FreeType-loadable public system fonts (`Hiragino Sans GB`,
+      `Songti SC`, `Heiti SC`, `STHeiti`, …); `findOrLoadFallbackFace` was
+      restructured to try candidates in priority order (config → preferred →
+      CoreText default), each validated by `openFallbackFreetypeFace` which
+      actually opens the file with FreeType and confirms the glyph exists — so an
+      unloadable reserved font no longer aborts the lookup. First candidate
+      (`Hiragino Sans GB` → `/System/Library/Fonts/Hiragino Sans GB.ttc`) resolves
+      cleanly.
+- [ ] **D8.6 Window position persistence is wrong on macOS (known bug, not yet
+      fixed).** `window_state.zig` saves `rect.left/top`, but on macOS
+      `phantty_macos_rect_from_nsrect` stores `NSMinY` (the window's *bottom* edge
+      in AppKit's bottom-left origin) into the `top` field. Combined with
+      `isPointOnAnyDisplay` only validating a single `(x+50, y+50)` point, a
+      previously off-screen / multi-monitor position can be restored off-screen.
+      Fix: translate NSRect into Windows-style top-left semantics (or persist
+      native AppKit coords separately), validate the whole frame against
+      `visibleFrame`, and default new windows to `[NSWindow center]` / cascade
+      instead of the hard-coded `(120, 120)`.
+
+### macOS UI status (post D1.x + D7.1 + D8)
 
 | Feature | Status on macOS |
 |---|---|
 | Terminal text rendering | ✅ works (cell pipeline + CoreText/FreeType) |
+| CJK / 中文 rendering | ✅ fixed in D8.5 (public-font fallback; PingFang reserved-ttc was unloadable) |
 | Default shell | ✅ `zsh` (was `sh` until 2026-05-27) |
 | NSMenu (Phantty / File / Edit / View / Window) | ✅ visible, clickable, key equivalents fire |
+| Window title bar | ✅ unified — app-drawn bar extends under traffic lights (D8.4) |
+| Close button (red) | ✅ closes window, keeps process in Dock; Dock icon reopens (D8.1) |
+| cmd+Q | ✅ tears down the whole app (D8.1) |
+| Window resize / reopen | ✅ no longer crashes — NSWindow ops marshalled to main thread (D8.3) |
 | Command center / settings page / SSH form / AI form / session launcher | ✅ render fully (panels, borders, selection highlights, text) |
 | Tab sidebar | ✅ renders rows, selection highlight, tab numbers |
 | File explorer panel | ✅ unblocked by D1.x; verify icons/scroll on real workloads |
 | Markdown / image preview | ✅ unblocked by D1.x; verify chrome on real previews |
 | Quake-style drop-down | ✅ window position + overlay rendering |
+| Window position restore | ⚠️ buggy on macOS (D8.6 — coordinate-system mismatch) |
+| Draggable titlebar | ⚠️ only via traffic-light gaps until D8.4a |
 | Embedded browser panel | ❌ disabled (D5 — no WKWebView backend yet) |
 
 ### Linux — deferred

@@ -156,3 +156,17 @@ pub fn nearestMonitorWorkArea(hwnd: NativeHandle) ?Rect {
     _ = hwnd;
     return null;
 }
+
+pub fn consumeReopenRequest() bool {
+    return false;
+}
+
+pub fn consumeQuitRequest() bool {
+    return false;
+}
+
+pub fn requestQuit() void {}
+
+pub fn pumpAppEvents(timeout_seconds: f64) void {
+    _ = timeout_seconds;
+}

@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -126,12 +127,90 @@ struct PhanttyMacWindowState {
 }
 @end
 
+// ---------------------------------------------------------------------------
+// PhanttyAppDelegate — owns app-level lifecycle so closing the last window
+// does not terminate the process (Terminal.app / VS Code semantics). A reopen
+// (Dock icon click when no visible window) is reported back to zig either via
+// a registered C callback or via an atomic flag the zig idle loop polls.
+// ---------------------------------------------------------------------------
+
+typedef void (*phantty_macos_reopen_callback)(void *userdata);
+
+static phantty_macos_reopen_callback g_reopen_callback = NULL;
+static void *g_reopen_userdata = NULL;
+// _Atomic(bool) is not supported by Clang's __atomic_* builtins on all targets,
+// and stdatomic.h's atomic_bool is the portable way to express the same intent.
+static atomic_bool g_reopen_pending = false;
+static atomic_bool g_quit_pending = false;
+
+@interface PhanttyAppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation PhanttyAppDelegate
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
+    (void)sender;
+    return NO;
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
+    (void)sender;
+    if (flag) return YES;
+    atomic_store_explicit(&g_reopen_pending, true, memory_order_release);
+    if (g_reopen_callback != NULL) g_reopen_callback(g_reopen_userdata);
+    return NO;
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    (void)sender;
+    atomic_store_explicit(&g_quit_pending, true, memory_order_release);
+    // Ask every live window to close. Each AppWindow's main loop observes
+    // the close_requested flag and exits cleanly; App.run() then drains the
+    // quit flag and breaks out of its idle loop. We return Cancel so AppKit
+    // doesn't tear NSApp down underneath us — zig owns the actual shutdown.
+    NSArray<NSWindow *> *snapshot = [[NSApp windows] copy];
+    for (NSWindow *win in snapshot) {
+        [win performClose:nil];
+    }
+    [snapshot release];
+    return NSTerminateCancel;
+}
+@end
+
+static PhanttyAppDelegate *g_app_delegate = nil;
+
 static void phantty_macos_app_ensure(void) {
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+        if (g_app_delegate == nil) {
+            g_app_delegate = [[PhanttyAppDelegate alloc] init];
+            [app setDelegate:g_app_delegate];
+        }
         [app finishLaunching];
     }
+}
+
+void phantty_macos_app_install_reopen_handler(phantty_macos_reopen_callback cb, void *userdata) {
+    g_reopen_callback = cb;
+    g_reopen_userdata = userdata;
+}
+
+bool phantty_macos_app_consume_reopen(void) {
+    bool expected = true;
+    return atomic_compare_exchange_strong_explicit(
+        &g_reopen_pending, &expected, false,
+        memory_order_acq_rel, memory_order_acquire);
+}
+
+bool phantty_macos_app_consume_quit(void) {
+    bool expected = true;
+    return atomic_compare_exchange_strong_explicit(
+        &g_quit_pending, &expected, false,
+        memory_order_acq_rel, memory_order_acquire);
+}
+
+void phantty_macos_app_request_quit(void) {
+    atomic_store_explicit(&g_quit_pending, true, memory_order_release);
 }
 
 static NSString *phantty_macos_title_from_utf16(const uint16_t *title) {
@@ -150,6 +229,23 @@ static PhanttyMacWindowState *phantty_macos_state(void *handle) {
 
 static int32_t phantty_macos_round_double(double value) {
     return (int32_t)(value + (value >= 0 ? 0.5 : -0.5));
+}
+
+// Marshal an AppKit operation onto the main thread. NSWindow modifiers
+// (setFrame, setContentSize, makeKeyAndOrderFront, close, zoom, …) trip the
+// "Must only be used from the main thread" assertion on macOS 14+ when called
+// off-main. phantty spawns per-window worker threads (windowThreadMain) that
+// own the zig event/render loop, so every wrapper that mutates NSWindow state
+// must run through here. Inline if we're already on main to avoid a
+// dispatch_sync self-deadlock; otherwise wait for the main run loop to drain
+// the block (the main thread idles in -nextEventMatchingMask: which keeps the
+// main queue running).
+static void phantty_macos_run_on_main(dispatch_block_t block) {
+    if ([NSThread isMainThread]) {
+        block();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), block);
+    }
 }
 
 static void phantty_macos_rect_from_nsrect(NSRect rect, PhanttyMacRect *out) {
@@ -740,11 +836,17 @@ void *phantty_macos_window_create(
                 width > 0 ? (CGFloat)width : 800.0,
                 height > 0 ? (CGFloat)height : 600.0
             );
+            // FullSizeContentView lets phantty's own GL/Metal-drawn titlebar
+            // extend behind the traffic-light buttons, matching Codex / VS
+            // Code / Ghostty. titlebarAppearsTransparent + titleVisibility
+            // hide the system-drawn title chrome so only the traffic lights
+            // remain visible on top of our content.
             NSUInteger style =
                 NSWindowStyleMaskTitled |
                 NSWindowStyleMaskClosable |
                 NSWindowStyleMaskMiniaturizable |
-                NSWindowStyleMaskResizable;
+                NSWindowStyleMaskResizable |
+                NSWindowStyleMaskFullSizeContentView;
             NSWindow *window = [[NSWindow alloc]
                 initWithContentRect:content_rect
                           styleMask:style
@@ -754,6 +856,8 @@ void *phantty_macos_window_create(
                 free(state);
                 return;
             }
+            [window setTitlebarAppearsTransparent:YES];
+            [window setTitleVisibility:NSWindowTitleHidden];
 
             NSString *window_title = phantty_macos_title_from_utf16(title);
             [window setTitle:window_title];
@@ -813,35 +917,79 @@ void *phantty_macos_window_create(
 }
 
 void phantty_macos_window_destroy(void *handle) {
-    @autoreleasepool {
-        PhanttyMacWindowState *state = phantty_macos_state(handle);
-        if (state == NULL) return;
-        [state->window setDelegate:nil];
-        [state->window orderOut:nil];
-        [state->layer release];
-        [state->view release];
-        [state->delegate release];
-        [state->window close];
-        [state->window release];
-        free(state);
-    }
+    PhanttyMacWindowState *state = phantty_macos_state(handle);
+    if (state == NULL) return;
+    phantty_macos_run_on_main(^{
+        @autoreleasepool {
+            [state->window setDelegate:nil];
+            [state->window orderOut:nil];
+            [state->layer release];
+            [state->view release];
+            [state->delegate release];
+            [state->window close];
+            [state->window release];
+            free(state);
+        }
+    });
 }
 
 void phantty_macos_window_poll(void *handle) {
     @autoreleasepool {
         PhanttyMacWindowState *state = phantty_macos_state(handle);
         if (state == NULL) return;
+        // -nextEventMatchingMask: / -sendEvent: must run on the main thread.
+        // Worker AppWindow threads still call into here every frame; for them
+        // we skip the AppKit pump (the main thread idle loop drains events
+        // and AppKit dispatches them to PhanttyMacWindowDelegate, which pushes
+        // into state->*_events). Worker threads only need to sync the Metal
+        // layer to the current backing scale.
+        if ([NSThread isMainThread]) {
+            for (;;) {
+                NSEvent *event = [NSApp
+                    nextEventMatchingMask:NSEventMaskAny
+                                 untilDate:[NSDate distantPast]
+                                    inMode:NSDefaultRunLoopMode
+                                   dequeue:YES];
+                if (event == nil) break;
+                [NSApp sendEvent:event];
+            }
+            [NSApp updateWindows];
+        }
+        phantty_macos_sync_layer(state);
+    }
+}
+
+// Pump pending NSApp events without requiring a window handle. Used by the
+// zig idle loop in App.run() between window sessions so the AppDelegate's
+// reopen / terminate callbacks (Dock icon, cmd+Q) still fire while no
+// AppWindow loop is running.
+//
+// `timeout_seconds` is how long the main thread is willing to block waiting
+// for the next event. Blocking (rather than spinning + sleeping in zig) is
+// what keeps the main run loop alive — that's how dispatch_get_main_queue()
+// blocks posted from worker threads via phantty_macos_run_on_main() actually
+// get drained. With distantPast (0s) the main queue never runs and any
+// worker dispatch_sync to main deadlocks until something else wakes the run
+// loop.
+void phantty_macos_app_pump_events(double timeout_seconds) {
+    @autoreleasepool {
+        NSDate *first_until = (timeout_seconds > 0)
+            ? [NSDate dateWithTimeIntervalSinceNow:timeout_seconds]
+            : [NSDate distantPast];
+        // Block once for up to timeout_seconds (or until any event arrives),
+        // then drain anything else without blocking.
+        NSDate *until = first_until;
         for (;;) {
             NSEvent *event = [NSApp
                 nextEventMatchingMask:NSEventMaskAny
-                             untilDate:[NSDate distantPast]
+                             untilDate:until
                                 inMode:NSDefaultRunLoopMode
                                dequeue:YES];
             if (event == nil) break;
             [NSApp sendEvent:event];
+            until = [NSDate distantPast];
         }
         [NSApp updateWindows];
-        phantty_macos_sync_layer(state);
     }
 }
 
@@ -1018,12 +1166,14 @@ void phantty_macos_window_get_framebuffer_size(void *handle, int32_t *width, int
 }
 
 void phantty_macos_window_set_content_size(void *handle, int32_t width, int32_t height) {
-    @autoreleasepool {
-        PhanttyMacWindowState *state = phantty_macos_state(handle);
-        if (state == NULL || state->window == nil) return;
-        [state->window setContentSize:NSMakeSize(width > 0 ? width : 1, height > 0 ? height : 1)];
-        phantty_macos_sync_layer(state);
-    }
+    PhanttyMacWindowState *state = phantty_macos_state(handle);
+    if (state == NULL || state->window == nil) return;
+    phantty_macos_run_on_main(^{
+        @autoreleasepool {
+            [state->window setContentSize:NSMakeSize(width > 0 ? width : 1, height > 0 ? height : 1)];
+            phantty_macos_sync_layer(state);
+        }
+    });
 }
 
 void *phantty_macos_window_metal_layer(void *handle) {
@@ -1056,28 +1206,34 @@ uint32_t phantty_macos_window_dpi(void *handle) {
 }
 
 void phantty_macos_window_show(void *handle) {
-    @autoreleasepool {
-        PhanttyMacWindowState *state = phantty_macos_state(handle);
-        if (state == NULL || state->window == nil) return;
-        [state->window makeKeyAndOrderFront:nil];
-    }
+    PhanttyMacWindowState *state = phantty_macos_state(handle);
+    if (state == NULL || state->window == nil) return;
+    phantty_macos_run_on_main(^{
+        @autoreleasepool {
+            [state->window makeKeyAndOrderFront:nil];
+        }
+    });
 }
 
 void phantty_macos_window_hide(void *handle) {
-    @autoreleasepool {
-        PhanttyMacWindowState *state = phantty_macos_state(handle);
-        if (state == NULL || state->window == nil) return;
-        [state->window orderOut:nil];
-    }
+    PhanttyMacWindowState *state = phantty_macos_state(handle);
+    if (state == NULL || state->window == nil) return;
+    phantty_macos_run_on_main(^{
+        @autoreleasepool {
+            [state->window orderOut:nil];
+        }
+    });
 }
 
 void phantty_macos_window_make_key(void *handle) {
-    @autoreleasepool {
-        PhanttyMacWindowState *state = phantty_macos_state(handle);
-        if (state == NULL || state->window == nil) return;
-        [state->window makeKeyWindow];
-        [NSApp activateIgnoringOtherApps:NO];
-    }
+    PhanttyMacWindowState *state = phantty_macos_state(handle);
+    if (state == NULL || state->window == nil) return;
+    phantty_macos_run_on_main(^{
+        @autoreleasepool {
+            [state->window makeKeyWindow];
+            [NSApp activateIgnoringOtherApps:NO];
+        }
+    });
 }
 
 bool phantty_macos_window_is_zoomed(void *handle) {
@@ -1086,22 +1242,26 @@ bool phantty_macos_window_is_zoomed(void *handle) {
 }
 
 void phantty_macos_window_zoom(void *handle) {
-    @autoreleasepool {
-        PhanttyMacWindowState *state = phantty_macos_state(handle);
-        if (state == NULL || state->window == nil) return;
-        [state->window zoom:nil];
-    }
+    PhanttyMacWindowState *state = phantty_macos_state(handle);
+    if (state == NULL || state->window == nil) return;
+    phantty_macos_run_on_main(^{
+        @autoreleasepool {
+            [state->window zoom:nil];
+        }
+    });
 }
 
 bool phantty_macos_window_set_frame(void *handle, int32_t x, int32_t y, int32_t width, int32_t height) {
-    @autoreleasepool {
-        PhanttyMacWindowState *state = phantty_macos_state(handle);
-        if (state == NULL || state->window == nil) return false;
-        NSRect frame = NSMakeRect(x, y, width > 0 ? width : 1, height > 0 ? height : 1);
-        [state->window setFrame:frame display:YES];
-        phantty_macos_sync_layer(state);
-        return true;
-    }
+    PhanttyMacWindowState *state = phantty_macos_state(handle);
+    if (state == NULL || state->window == nil) return false;
+    phantty_macos_run_on_main(^{
+        @autoreleasepool {
+            NSRect frame = NSMakeRect(x, y, width > 0 ? width : 1, height > 0 ? height : 1);
+            [state->window setFrame:frame display:YES];
+            phantty_macos_sync_layer(state);
+        }
+    });
+    return true;
 }
 
 bool phantty_macos_window_nearest_monitor_frame(void *handle, PhanttyMacRect *out) {

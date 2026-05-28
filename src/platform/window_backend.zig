@@ -227,6 +227,35 @@ pub fn setOuterFrame(window: *Window, rect: Rect, topmost: bool) bool {
     return platform_window.setOuterFrame(nativeHandle(window), rectToPlatform(rect), topmost);
 }
 
+/// macOS-only: returns true if the user clicked the Dock icon while no window
+/// was visible (NSApplicationDelegate.applicationShouldHandleReopen). Other
+/// platforms return false.
+pub fn consumeReopenRequest() bool {
+    return platform_window.consumeReopenRequest();
+}
+
+/// macOS-only: returns true if the user invoked Quit (cmd+Q or menu) and the
+/// app should tear down. Other platforms return false.
+pub fn consumeQuitRequest() bool {
+    return platform_window.consumeQuitRequest();
+}
+
+/// macOS-only: signal the idle loop that the app should quit (used when zig
+/// initiates a quit, e.g. from a menu handler). No-op elsewhere.
+pub fn requestQuit() void {
+    platform_window.requestQuit();
+}
+
+/// macOS-only: pump pending NSApp events without owning a window — needed by
+/// the idle loop in App.run() so AppDelegate callbacks (Dock reopen, cmd+Q)
+/// keep firing between window sessions. `timeout_seconds` is the max time the
+/// main thread will block waiting for an event (also drains the GCD main
+/// queue, which worker threads use to marshal NSWindow modifications back to
+/// the main thread). No-op elsewhere.
+pub fn pumpAppEvents(timeout_seconds: f64) void {
+    platform_window.pumpAppEvents(timeout_seconds);
+}
+
 pub fn refreshClientSizeFromNative(window: *Window) bool {
     const rect = clientRect(window) orelse return false;
     setClientSize(window, rect.right - rect.left, rect.bottom - rect.top);

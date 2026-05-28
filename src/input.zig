@@ -1724,7 +1724,9 @@ fn hitTestHelpButton(xpos: f64, ypos: f64) bool {
 }
 
 fn handleTopbarPress(xpos: f64) void {
-    if (xpos >= 0 and xpos < @as(f64, titlebar.TITLEBAR_TOGGLE_W)) {
+    const toggle_x: f64 = @floatCast(titlebar.titlebarLeftReserved());
+    const toggle_end: f64 = toggle_x + @as(f64, titlebar.TITLEBAR_TOGGLE_W);
+    if (xpos >= toggle_x and xpos < toggle_end) {
         toggleSidebar();
         return;
     }
@@ -2374,7 +2376,9 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         if (ypos < titlebar_h) {
             if (hitTestConfigButton(xpos, ypos)) {
                 overlays.settingsPageOpen();
-            } else if (xpos >= @as(f64, titlebar.TITLEBAR_TOGGLE_W)) {
+            } else if (xpos >= @as(f64, titlebar.titlebarLeftReserved() + titlebar.TITLEBAR_TOGGLE_W)) {
+                // Double-clicking on bare titlebar (not on the toggle, and not
+                // on the macOS traffic-light strip) zooms / unzooms.
                 toggleMaximize();
             }
         } else if (hitTestSidebarTab(xpos, ypos)) |tab_idx| {

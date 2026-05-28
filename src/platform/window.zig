@@ -71,6 +71,10 @@ pub const setWindowFrameRaw = impl.setWindowFrameRaw;
 pub const setOuterFrame = impl.setOuterFrame;
 pub const nearestMonitorRect = impl.nearestMonitorRect;
 pub const nearestMonitorWorkArea = impl.nearestMonitorWorkArea;
+pub const consumeReopenRequest = impl.consumeReopenRequest;
+pub const consumeQuitRequest = impl.consumeQuitRequest;
+pub const requestQuit = impl.requestQuit;
+pub const pumpAppEvents = impl.pumpAppEvents;
 
 test "platform window exposes native handle helpers" {
     const rect_info = @typeInfo(@TypeOf(getWindowRect)).@"fn";

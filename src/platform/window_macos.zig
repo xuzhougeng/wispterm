@@ -41,6 +41,10 @@ extern fn phantty_macos_window_zoom(handle: NativeHandle) void;
 extern fn phantty_macos_window_set_frame(handle: NativeHandle, x: i32, y: i32, width: i32, height: i32) bool;
 extern fn phantty_macos_window_nearest_monitor_frame(handle: NativeHandle, rect: *Rect) bool;
 extern fn phantty_macos_window_nearest_monitor_work_area(handle: NativeHandle, rect: *Rect) bool;
+extern fn phantty_macos_app_consume_reopen() bool;
+extern fn phantty_macos_app_consume_quit() bool;
+extern fn phantty_macos_app_request_quit() void;
+extern fn phantty_macos_app_pump_events(timeout_seconds: f64) void;
 
 pub fn appMessage(offset: u32) MessageId {
     return wm_app + offset;
@@ -164,6 +168,25 @@ pub fn nearestMonitorWorkArea(hwnd: NativeHandle) ?Rect {
     var rect: Rect = undefined;
     if (!phantty_macos_window_nearest_monitor_work_area(hwnd, &rect)) return null;
     return rect;
+}
+
+pub fn consumeReopenRequest() bool {
+    return phantty_macos_app_consume_reopen();
+}
+
+pub fn consumeQuitRequest() bool {
+    return phantty_macos_app_consume_quit();
+}
+
+pub fn requestQuit() void {
+    phantty_macos_app_request_quit();
+}
+
+/// Pump pending NSApp events; blocks up to `timeout_seconds` waiting for the
+/// first event so the main thread's run loop also drains the GCD main queue
+/// (needed for worker-thread dispatch_sync to the main thread).
+pub fn pumpAppEvents(timeout_seconds: f64) void {
+    phantty_macos_app_pump_events(timeout_seconds);
 }
 
 test "macOS window constants defer caption controls to AppKit" {

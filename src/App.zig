@@ -5,6 +5,7 @@
 //! OpenGL context, fonts, and terminal state.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Config = @import("config.zig");
 const AppWindow = @import("AppWindow.zig");
 const ai_chat = @import("ai_chat.zig");
@@ -707,22 +708,40 @@ fn joinDownloadThread(self: *App) void {
 
 /// Run the first window on the main thread. Blocks until that window closes.
 /// After returning, waits for all spawned window threads to finish.
+///
+/// On macOS the close-button no longer terminates the process (matches
+/// Terminal.app / VS Code). After the first window closes the main thread
+/// enters an idle pump loop:
+///   * Dock-icon reopen → spawn a fresh window on a new thread (so all
+///     thread-local globals — font atlas, glyph cache, UI flags — start
+///     from their declared defaults instead of inheriting stale state from
+///     the previous main-thread session).
+///   * cmd+Q / app-menu Quit → drain the quit flag and tear down.
 pub fn run(self: *App) !void {
-    // Create and run the first window on the main thread
+    try self.runFirstWindowOnce();
+
+    if (builtin.os.tag == .macos) {
+        self.macIdleUntilQuit();
+    }
+
+    // Wait for all spawned window threads to finish
+    self.joinAllWindowThreads();
+}
+
+/// Construct and run a first-window on the main thread (one window session).
+/// Adds to / removes from the global window list around the run call.
+fn runFirstWindowOnce(self: *App) !void {
     var first_window = try AppWindow.init(self.allocator, self);
     defer first_window.deinit();
 
-    // Add to window list
     {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.windows.append(self.allocator, &first_window);
     }
 
-    // Run blocks until window closes
     first_window.run();
 
-    // Remove from list
     {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -733,9 +752,29 @@ pub fn run(self: *App) !void {
             }
         }
     }
+}
 
-    // Wait for all spawned window threads to finish
-    self.joinAllWindowThreads();
+/// macOS-only: main-thread idle loop that runs once the initial first-window
+/// has returned. Pumps NSApp events so AppDelegate callbacks (reopen,
+/// terminate) fire, and either spawns a fresh window on a worker thread when
+/// the user clicks the Dock icon or returns when quit is requested.
+fn macIdleUntilQuit(self: *App) void {
+    while (true) {
+        // Block (up to 250ms) waiting for the next AppKit event. The blocking
+        // wait keeps the main run loop alive, which is what drains the GCD
+        // main queue used by phantty_macos_run_on_main(). Without it, worker
+        // threads calling setContentSize/setFrame/etc would deadlock waiting
+        // for the main thread to come back from std.Thread.sleep().
+        window_backend.pumpAppEvents(0.25);
+
+        if (window_backend.consumeQuitRequest()) return;
+        if (window_backend.consumeReopenRequest()) {
+            // Spawn on a worker thread (same code path as Ctrl+Shift+N) so
+            // thread-local globals start fresh. Main thread keeps idling so
+            // it can pump AppKit and respond to the next reopen/quit.
+            self.requestNewWindow(null, null);
+        }
+    }
 }
 
 /// Request a new window to be spawned on a separate thread.

@@ -32,6 +32,21 @@ pub const TITLEBAR_TOGGLE_W: f32 = 46;
 // these in-titlebar buttons, so they collapse to zero width and are not drawn.
 pub const TITLEBAR_CONFIG_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
 pub const TITLEBAR_HELP_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
+// macOS draws the close / minimize / zoom (red / yellow / green) controls over
+// the left edge of the titlebar via AppKit when NSWindowStyleMaskFullSizeContentView
+// is set. Reserve a strip in *framebuffer pixels* so phantty's own toggle and
+// tab title don't sit underneath them. AppKit positions the traffic lights in
+// LOGICAL pixels (~80 across), whereas phantty renders/hit-tests in framebuffer
+// pixels — on a 2x Retina display 80 logical = 160 fb, so we must scale by the
+// current DPI ratio. Non-macOS platforms reserve nothing.
+const TITLEBAR_LEFT_RESERVED_LOGICAL: f32 = 80;
+
+pub fn titlebarLeftReserved() f32 {
+    if (builtin.os.tag != .macos) return 0;
+    const dpi: f32 = @floatFromInt(font.g_dpi);
+    const scale = if (dpi > 0) dpi / 96.0 else 1.0;
+    return @round(TITLEBAR_LEFT_RESERVED_LOGICAL * scale);
+}
 pub threadlocal var g_sidebar_width: f32 = SIDEBAR_WIDTH;
 
 pub fn sidebarWidth() f32 {
@@ -406,18 +421,19 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         gl_init.renderQuad(0, tb_top, window_width, titlebar_h, top_bg);
         gl_init.renderQuad(0, tb_top, window_width, 1, border_color_simple);
 
-        const toggle_hovered = mouseInTitlebarRange(titlebar_h, 0, TITLEBAR_TOGGLE_W);
+        const toggle_x = titlebarLeftReserved();
+        const toggle_hovered = mouseInTitlebarRange(titlebar_h, toggle_x, toggle_x + TITLEBAR_TOGGLE_W);
         if (toggle_hovered) {
-            gl_init.renderQuad(0, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
+            gl_init.renderQuad(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
         }
         if (font.icon_face != null) {
             if (font.loadIconGlyph(0xE700)) |ch| {
-                renderIconGlyph(ch, 0, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color, 1.0);
+                renderIconGlyph(ch, toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color, 1.0);
             } else {
-                renderFallbackMenuIcon(0, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
+                renderFallbackMenuIcon(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
             }
         } else {
-            renderFallbackMenuIcon(0, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
+            renderFallbackMenuIcon(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, icon_color);
         }
 
         const top_caption_btn_w = window_backend.caption_button_visual_style.width;
@@ -463,7 +479,8 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         if (tab.activeTab()) |active_tab| {
             const title = active_tab.getTitle();
             const text_y = tb_top + (titlebar_h - font.g_titlebar_cell_height) / 2;
-            _ = renderTextLimited(title, TITLEBAR_TOGGLE_W + 10, text_y, blend(bg, fg, 0.90), help_x - TITLEBAR_TOGGLE_W - 22);
+            const text_x = titlebarLeftReserved() + TITLEBAR_TOGGLE_W + 10;
+            _ = renderTextLimited(title, text_x, text_y, blend(bg, fg, 0.90), help_x - text_x - 12);
         }
 
         renderCaptionButton(top_caption_start, tb_top, top_caption_btn_w, top_btn_h, .minimize, top_hovered == .minimize);
