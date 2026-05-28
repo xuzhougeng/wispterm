@@ -119,16 +119,26 @@ pub const Set = struct {
             set.len += 1;
         }
         if (builtin.target.os.tag == .macos) {
-            // On macOS the conventional clipboard shortcuts use Cmd (the
-            // `win`/super modifier) rather than Ctrl, which in a terminal is
-            // reserved for control sequences (Ctrl+C = SIGINT, Ctrl+V = literal
-            // next key). Migrate each Ctrl-based default to its Cmd equivalent
-            // and also add a bare Cmd+C alongside the shifted form so both the
-            // macOS convention (Cmd+C) and the historic Ctrl+Shift+C muscle
-            // memory work for plain copy.
-            set.replaceTrigger(.copy, .{ .mods = .{ .win = true, .shift = true }, .key_code = 'C' });
-            set.replaceTrigger(.paste, .{ .mods = .{ .win = true }, .key_code = 'V' });
-            set.replaceTrigger(.paste_image, .{ .mods = .{ .win = true, .shift = true }, .key_code = 'V' });
+            // On macOS, application shortcuts use Cmd (the `win`/super modifier)
+            // instead of Ctrl: Ctrl is reserved for terminal control sequences
+            // (Ctrl+C = SIGINT, Ctrl+V = literal-next) and mac users expect Cmd.
+            // Remap every Ctrl-based default to its Cmd equivalent, except two
+            // that would collide with the system:
+            //   - the global Quake hotkey (Cmd+` is the macOS "cycle windows" key)
+            //   - tab switching on Tab (Cmd+Tab / Cmd+Shift+Tab are the system
+            //     app switcher)
+            // which keep Ctrl. Alt/Option-based defaults are already mac-native
+            // and untouched.
+            for (set.items[0..set.len]) |*b| {
+                if (b.global) continue;
+                if (b.trigger.key_code == Key.tab) continue;
+                if (b.trigger.mods.ctrl) {
+                    b.trigger.mods.ctrl = false;
+                    b.trigger.mods.win = true;
+                }
+            }
+            // Plain Cmd+C alongside Cmd+Shift+C, matching the macOS copy
+            // convention (Cmd+Shift+C still works as the historic muscle memory).
             set.appendIfRoom(.{ .trigger = .{ .mods = .{ .win = true }, .key_code = 'C' }, .action = .copy });
         }
         return set;
@@ -265,8 +275,8 @@ pub fn formatTrigger(trigger: Trigger, buf: []u8) ![]const u8 {
 
     if (trigger.mods.ctrl) try writer.writeAll("Ctrl+");
     if (trigger.mods.shift) try writer.writeAll("Shift+");
-    if (trigger.mods.alt) try writer.writeAll("Alt+");
-    if (trigger.mods.win) try writer.writeAll("Win+");
+    if (trigger.mods.alt) try writer.writeAll(if (builtin.target.os.tag == .macos) "Option+" else "Alt+");
+    if (trigger.mods.win) try writer.writeAll(if (builtin.target.os.tag == .macos) "Cmd+" else "Win+");
     try writeKeyLabel(writer, trigger.key_code);
 
     return stream.getWritten();
@@ -435,24 +445,30 @@ test "keybind parses ghostty-style global trigger and action" {
 
 test "keybind defaults include global quake and command palette" {
     const set = Set.defaults();
+    const is_macos = builtin.target.os.tag == .macos;
 
+    // Quake stays Ctrl+` on every platform (global; Cmd+` is the macOS window cycler).
     try std.testing.expectEqual(Action.toggle_quake, set.lookupGlobal(.{
         .mods = .{ .ctrl = true },
         .key_code = Key.backquote,
     }).?);
+    // Command palette migrates Ctrl→Cmd (win) on macOS; Ctrl elsewhere.
     try std.testing.expectEqual(Action.toggle_command_palette, set.lookupApp(.{
-        .mods = .{ .ctrl = true, .shift = true },
+        .mods = if (is_macos) .{ .win = true, .shift = true } else .{ .ctrl = true, .shift = true },
         .key_code = 'P',
     }).?);
 }
 
 test "keybind overriding an action removes its old default trigger" {
     var set = Set.defaults();
+    const is_macos = builtin.target.os.tag == .macos;
 
     try set.apply("alt+f10=toggle_command_palette");
 
+    // The original default trigger (Cmd+Shift+P on macOS, Ctrl+Shift+P elsewhere)
+    // must be gone after the override.
     try std.testing.expect(set.lookupApp(.{
-        .mods = .{ .ctrl = true, .shift = true },
+        .mods = if (is_macos) .{ .win = true, .shift = true } else .{ .ctrl = true, .shift = true },
         .key_code = 'P',
     }) == null);
     try std.testing.expectEqual(Action.toggle_command_palette, set.lookupApp(.{
@@ -463,15 +479,19 @@ test "keybind overriding an action removes its old default trigger" {
 
 test "keybind overriding a trigger removes the old action binding" {
     var set = Set.defaults();
+    const is_macos = builtin.target.os.tag == .macos;
 
     try set.apply("ctrl+shift+p=new_session");
 
+    // The explicit user binding uses Ctrl on every platform.
     try std.testing.expectEqual(Action.new_session, set.lookupApp(.{
         .mods = .{ .ctrl = true, .shift = true },
         .key_code = 'P',
     }).?);
+    // new_session's original default (Cmd+Shift+T on macOS, Ctrl+Shift+T else)
+    // must be gone now that new_session was rebound.
     try std.testing.expect(set.lookupApp(.{
-        .mods = .{ .ctrl = true, .shift = true },
+        .mods = if (is_macos) .{ .win = true, .shift = true } else .{ .ctrl = true, .shift = true },
         .key_code = 'T',
     }) == null);
 }
@@ -488,6 +508,7 @@ test "keybind clear removes defaults before adding custom bindings" {
 
 test "keybind formats display labels" {
     var buf: [64]u8 = undefined;
+    const is_macos = builtin.target.os.tag == .macos;
 
     try std.testing.expectEqualStrings(
         "Ctrl+Backquote",
@@ -497,9 +518,15 @@ test "keybind formats display labels" {
         "Ctrl++",
         try formatTrigger(.{ .mods = .{ .ctrl = true }, .key_code = Key.plus }, &buf),
     );
+    // Alt renders as Option on macOS, Alt elsewhere.
     try std.testing.expectEqualStrings(
-        "Alt+KeyCode 0xAB",
+        if (is_macos) "Option+KeyCode 0xAB" else "Alt+KeyCode 0xAB",
         try formatTrigger(.{ .mods = .{ .alt = true }, .key_code = 0xAB }, &buf),
+    );
+    // The win/super modifier renders as Cmd on macOS, Win elsewhere.
+    try std.testing.expectEqualStrings(
+        if (is_macos) "Cmd+P" else "Win+P",
+        try formatTrigger(.{ .mods = .{ .win = true }, .key_code = 'P' }, &buf),
     );
 }
 

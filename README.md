@@ -97,8 +97,9 @@ keybind = alt+f10=toggle_command_palette
 keybind = global:ctrl+backquote=toggle_quake
 ```
 
-Use `keybind = clear` before custom bindings if you want to remove all defaults and rebuild the table from scratch. To confirm the running desktop version, open the command center with the configured command-center shortcut (default `Ctrl+Shift+P`), type `version`, and press Enter.
+Use `keybind = clear` before custom bindings if you want to remove all defaults and rebuild the table from scratch. To confirm the running desktop version, open the command center with the configured command-center shortcut (default `Ctrl+Shift+P`, or `Cmd+Shift+P` on macOS), type `version`, and press Enter.
 
+> **On macOS**, application shortcuts use **Cmd** in place of Ctrl (e.g. `Cmd+Shift+P` opens the command center) and **Option** in place of Alt. Two bindings keep Ctrl to avoid colliding with macOS system shortcuts: **Ctrl+`** (Quake drop-down — `Cmd+`` is the system window cycler) and **Ctrl+Tab** / **Ctrl+Shift+Tab** (tab switching — `Cmd+Tab` is the system app switcher). The table below lists the Windows/Linux (Ctrl) bindings; read "Ctrl" as "Cmd" on macOS except for those two.
 
 | Shortcut                                                                       | Action                                                                             |
 | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |

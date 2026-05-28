@@ -18,6 +18,7 @@
 const Config = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ai_chat = @import("ai_chat.zig");
 const keybind = @import("keybind.zig");
 const link_open = @import("link_open.zig");
@@ -1783,16 +1784,18 @@ test "config: inline comments after values are ignored" {
 test "config: keybind directives override default action bindings" {
     const allocator = std.testing.allocator;
     var cfg: Config = .{};
+    const is_macos = builtin.target.os.tag == .macos;
 
+    // Command palette default is Cmd+Shift+P on macOS, Ctrl+Shift+P elsewhere.
     try std.testing.expectEqual(keybind.Action.toggle_command_palette, cfg.keybinds.lookupApp(.{
-        .mods = .{ .ctrl = true, .shift = true },
+        .mods = if (is_macos) .{ .win = true, .shift = true } else .{ .ctrl = true, .shift = true },
         .key_code = 'P',
     }).?);
 
     cfg.applyKeyValue(allocator, "keybind", "alt+f10=toggle_command_palette", ".");
 
     try std.testing.expect(cfg.keybinds.lookupApp(.{
-        .mods = .{ .ctrl = true, .shift = true },
+        .mods = if (is_macos) .{ .win = true, .shift = true } else .{ .ctrl = true, .shift = true },
         .key_code = 'P',
     }) == null);
     try std.testing.expectEqual(keybind.Action.toggle_command_palette, cfg.keybinds.lookupApp(.{

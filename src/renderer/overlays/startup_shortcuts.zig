@@ -1,6 +1,7 @@
 //! Startup keyboard shortcuts overlay.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const AppWindow = @import("../../AppWindow.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
@@ -24,6 +25,10 @@ const StartupShortcutKind = enum {
 
 const StartupShortcut = struct {
     keys: []const u8,
+    // macOS-specific literal text (Cmd instead of Ctrl). Only used for `.literal`
+    // entries whose keys were migrated to Cmd; `.action`-family entries derive
+    // their text from the live keybind via formatTrigger and ignore this.
+    keys_macos: ?[]const u8 = null,
     kind: StartupShortcutKind = .literal,
     first: ?keybind.Action = null,
     second: ?keybind.Action = null,
@@ -48,9 +53,9 @@ const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
     .{ .keys = "Ctrl+Shift+W", .kind = .action, .first = .close_panel_or_tab, .action = "Close panel / tab; confirm last" },
     .{ .keys = "Ctrl+Shift+C / Ctrl+V", .kind = .pair, .first = .copy, .second = .paste, .action = "Copy / paste text" },
     .{ .keys = "Shift-click text", .action = "Select from anchor" },
-    .{ .keys = "Drag in AI / Ctrl+C", .action = "Copy answer selection" },
+    .{ .keys = "Drag in AI / Ctrl+C", .keys_macos = "Drag in AI / Cmd+C", .action = "Copy answer selection" },
     .{ .keys = "Shift-drag in AI", .action = "Copy answer selection" },
-    .{ .keys = "Ctrl+A / Ctrl+C in AI", .action = "Select / copy chat" },
+    .{ .keys = "Ctrl+A / Ctrl+C in AI", .keys_macos = "Cmd+A / Cmd+C in AI", .action = "Select / copy chat" },
     .{ .keys = "Right-click selection", .action = "Copy selection" },
     .{ .keys = "Ctrl+Shift+V", .kind = .action, .first = .paste_image, .action = "Paste image" },
     .{ .keys = "Ctrl+,", .kind = .action, .first = .open_config, .action = "Open config" },
@@ -135,7 +140,12 @@ fn writeActionShortcut(writer: anytype, action: keybind.Action) !bool {
 }
 
 fn startupShortcutKeys(entry: StartupShortcut, buf: []u8) []const u8 {
-    if (entry.kind == .literal) return entry.keys;
+    if (entry.kind == .literal) {
+        if (builtin.target.os.tag == .macos) {
+            if (entry.keys_macos) |m| return m;
+        }
+        return entry.keys;
+    }
 
     var stream = std.io.fixedBufferStream(buf);
     const writer = stream.writer();

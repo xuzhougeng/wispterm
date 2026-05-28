@@ -1063,17 +1063,19 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         return;
     }
     if (AppWindow.activeAiChat()) |chat| {
-        if (ev.ctrl and !ev.alt and ev.key_code == 0x41) { // Ctrl+A
+        // Accept Cmd (super, macOS) or Ctrl (Windows) for chat editing keys.
+        const mod = ev.ctrl or ev.super;
+        if (mod and !ev.alt and ev.key_code == 0x41) { // select all
             chat.selectAll();
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
             return;
         }
-        if (ev.ctrl and !ev.alt and ev.key_code == 0x43) { // Ctrl+C / Ctrl+Shift+C
+        if (mod and !ev.alt and ev.key_code == 0x43) { // copy
             copyAiChatToClipboard(chat);
             return;
         }
-        if (ev.ctrl and !ev.alt and ev.key_code == 0x58) { // Ctrl+X (cut input)
+        if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
             copyAiChatCutToClipboard(chat);
             return;
         }
