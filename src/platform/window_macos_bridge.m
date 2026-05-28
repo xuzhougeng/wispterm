@@ -1170,7 +1170,16 @@ void phantty_macos_window_set_content_size(void *handle, int32_t width, int32_t 
     if (state == NULL || state->window == nil) return;
     phantty_macos_run_on_main(^{
         @autoreleasepool {
-            [state->window setContentSize:NSMakeSize(width > 0 ? width : 1, height > 0 ? height : 1)];
+            // phantty sizes the client area in *framebuffer pixels* (cell_width ×
+            // cols, etc.), but -setContentSize: takes *logical points*. On a 2x
+            // Retina display, passing framebuffer pixels straight through made the
+            // window twice the intended size. Convert by the backing scale so the
+            // resulting backing-store size matches the requested framebuffer px.
+            double scale = phantty_macos_scale(state);
+            if (scale <= 0.0) scale = 1.0;
+            CGFloat w = (CGFloat)(width > 0 ? width : 1) / scale;
+            CGFloat h = (CGFloat)(height > 0 ? height : 1) / scale;
+            [state->window setContentSize:NSMakeSize(w, h)];
             phantty_macos_sync_layer(state);
         }
     });

@@ -429,6 +429,12 @@ pub const Command = struct {
             self.attr_list = null;
         }
     }
+
+    /// No POSIX-style pid cwd query on Windows (local preview uses OSC 7).
+    pub fn cwdQueryId(self: *const Command) ?i32 {
+        _ = self;
+        return null;
+    }
 };
 
 pub fn startInPseudoConsole(command: *Command, pseudo_console: PseudoConsoleHandle, command_line: CommandLine, cwd: Cwd) !void {

@@ -250,10 +250,15 @@ pub fn sshExec(allocator: std.mem.Allocator, conn: *const SshConnection, command
     var child = std.process.Child.init(argv_buf[0..argc], allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
+    // Capture stderr so a failed remote exec surfaces the real ssh error
+    // (auth failure, host key, timeout) instead of a silent null.
+    child.stderr_behavior = .Pipe;
     if (env_map) |*map| child.env_map = map;
     child.create_no_window = true;
-    child.spawn() catch return null;
+    child.spawn() catch |err| {
+        std.debug.print("sshExec: spawn failed: {}\n", .{err});
+        return null;
+    };
 
     // Read stdout
     var output: std.ArrayListUnmanaged(u8) = .empty;
@@ -270,12 +275,26 @@ pub fn sshExec(allocator: std.mem.Allocator, conn: *const SshConnection, command
         output.appendSlice(allocator, buf[0..n]) catch break;
     }
 
+    var stderr_text: std.ArrayListUnmanaged(u8) = .empty;
+    defer stderr_text.deinit(allocator);
+    if (child.stderr) |stderr| {
+        var errbuf: [1024]u8 = undefined;
+        while (true) {
+            const n = stderr.read(&errbuf) catch break;
+            if (n == 0) break;
+            stderr_text.appendSlice(allocator, errbuf[0..n]) catch break;
+        }
+    }
+
     const term = child.wait() catch return null;
     const ok = switch (term) {
         .Exited => |code| code == 0,
         else => false,
     };
-    if (!ok) return null;
+    if (!ok) {
+        std.debug.print("sshExec: ssh exited non-zero (term={any}); stderr: {s}\n", .{ term, stderr_text.items });
+        return null;
+    }
 
     return output.toOwnedSlice(allocator) catch null;
 }

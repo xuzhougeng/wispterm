@@ -22,6 +22,7 @@ const threading = @import("threading.zig");
 const agent_detector = @import("agent_detector.zig");
 const sync_output = @import("sync_output.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
+const platform_process = @import("platform/process.zig");
 
 const Surface = @This();
 
@@ -746,6 +747,19 @@ pub fn getCwd(self: *const Surface) ?[]const u8 {
 pub fn getInitialCwd(self: *const Surface) ?[]const u8 {
     if (self.initial_cwd_path_len > 0)
         return self.initial_cwd_path[0..self.initial_cwd_path_len];
+    return null;
+}
+
+/// Best-effort current working directory for resolving relative paths.
+/// Tries, in order: the OSC 7-reported cwd; a live query of the shell
+/// process's cwd (POSIX proc lookup — covers zsh and other shells that don't
+/// emit OSC 7); the launch cwd. Caller owns the returned slice.
+pub fn dupeCurrentCwd(self: *const Surface, allocator: std.mem.Allocator) ?[]u8 {
+    if (self.getCwd()) |c| return allocator.dupe(u8, c) catch null;
+    if (self.command.cwdQueryId()) |pid| {
+        if (platform_process.processCwd(allocator, pid)) |live| return live;
+    }
+    if (self.getInitialCwd()) |c| return allocator.dupe(u8, c) catch null;
     return null;
 }
 

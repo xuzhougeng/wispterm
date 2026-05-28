@@ -101,6 +101,11 @@ pub const Command = struct {
             self.pid = -1;
         }
     }
+
+    /// PID usable for an OS cwd query (proc_pidinfo / /proc), or null.
+    pub fn cwdQueryId(self: *const Command) ?i32 {
+        return if (self.pid > 0) @intCast(self.pid) else null;
+    }
 };
 
 pub fn cwdToUtf8(out: []u8, cwd: Cwd) ?[]u8 {
