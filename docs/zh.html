@@ -219,29 +219,30 @@ ai-agent-output-limit  = 16384</code></pre>
     <section id="shortcuts" class="section alt">
       <div class="container">
         <h2>键盘快捷键</h2>
-        <p class="section-lead">默认快捷键定义在 <code>src/input.zig</code>。模态浮层（命令面板、会话启动器、设置等）会优先拦截按键。macOS 上 <kbd>Ctrl</kbd> 快捷键改为 <kbd>Cmd</kbd>（如 <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>），但 <kbd>Ctrl</kbd>+<kbd>`</kbd> 与 <kbd>Ctrl</kbd>+<kbd>Tab</kbd> 保持不变。</p>
+        <p class="section-lead">默认快捷键定义在 <code>src/keybind.zig</code>。模态浮层优先拦截按键。<code>Ctrl/Cmd</code> 表示 Windows/Linux 用 Ctrl，macOS 用 Cmd；<code>Alt/Opt</code> 表示 Windows/Linux 用 Alt，macOS 用 Option。<kbd>Ctrl</kbd>+<kbd>`</kbd> 与 <kbd>Ctrl</kbd>+<kbd>Tab</kbd> 在所有平台保持 Ctrl。</p>
         <div class="shortcut-grid">
-          <div><span class="label">打开命令面板</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></span></div>
-          <div><span class="label">新建会话（启动器）</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
-          <div><span class="label">新建窗口</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>N</kbd></span></div>
-          <div><span class="label">切换标签侧栏</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>B</kbd></span></div>
-          <div><span class="label">切换文件浏览器</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Alt</kbd><kbd>E</kbd></span></div>
-          <div><span class="label">向右分屏</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>O</kbd></span></div>
-          <div><span class="label">均分分屏尺寸</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd></span></div>
-          <div><span class="label">关闭面板 / 标签 / 窗口</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>W</kbd></span></div>
-          <div><span class="label">最大化 / 还原窗口</span><span class="keys"><kbd>Alt</kbd><kbd>Enter</kbd></span></div>
-          <div><span class="label">按方位移动焦点</span><span class="keys"><kbd>Alt</kbd><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></span></div>
-          <div><span class="label">上一个面板</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>[</kbd></span></div>
-          <div><span class="label">下一个面板</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>]</kbd></span></div>
+          <div><span class="label">打开命令面板</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>P</kbd></span></div>
+          <div><span class="label">新建会话（启动器）</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
+          <div><span class="label">新建窗口</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>N</kbd></span></div>
+          <div><span class="label">切换标签侧栏</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>B</kbd></span></div>
+          <div><span class="label">切换文件浏览器</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>Alt/Opt</kbd><kbd>E</kbd></span></div>
+          <div><span class="label">向右分屏</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>O</kbd></span></div>
+          <div><span class="label">均分分屏尺寸</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>Z</kbd></span></div>
+          <div><span class="label">关闭面板 / 标签 / 窗口</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>W</kbd></span></div>
+          <div><span class="label">最大化 / 还原窗口</span><span class="keys"><kbd>Alt/Opt</kbd><kbd>Enter</kbd></span></div>
+          <div><span class="label">按方位移动焦点</span><span class="keys"><kbd>Alt/Opt</kbd><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></span></div>
+          <div><span class="label">上一个面板</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>[</kbd></span></div>
+          <div><span class="label">下一个面板</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>]</kbd></span></div>
           <div><span class="label">上一个标签</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Tab</kbd></span></div>
           <div><span class="label">下一个标签</span><span class="keys"><kbd>Ctrl</kbd><kbd>Tab</kbd></span></div>
-          <div><span class="label">跳转到第 1–9 个标签</span><span class="keys"><kbd>Alt</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
-          <div><span class="label">放大字号</span><span class="keys"><kbd>Ctrl</kbd><kbd>+</kbd></span></div>
-          <div><span class="label">缩小字号</span><span class="keys"><kbd>Ctrl</kbd><kbd>−</kbd></span></div>
-          <div><span class="label">复制选中内容</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd></span></div>
-          <div><span class="label">粘贴文本</span><span class="keys"><kbd>Ctrl</kbd><kbd>V</kbd></span></div>
-          <div><span class="label">粘贴剪贴板图片</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>V</kbd></span></div>
-          <div><span class="label">打开配置文件</span><span class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></span></div>
+          <div><span class="label">跳转到第 1–9 个标签</span><span class="keys"><kbd>Alt/Opt</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
+          <div><span class="label">放大字号</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>+</kbd></span></div>
+          <div><span class="label">缩小字号</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>−</kbd></span></div>
+          <div><span class="label">复制选中内容</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>C</kbd></span></div>
+          <div><span class="label">粘贴文本</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>V</kbd></span></div>
+          <div><span class="label">粘贴剪贴板图片</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>V</kbd></span></div>
+          <div><span class="label">打开配置文件</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>,</kbd></span></div>
+          <div><span class="label">显示 / 隐藏 Quake 下拉窗口</span><span class="keys"><kbd>Ctrl</kbd><kbd>`</kbd></span></div>
         </div>
       </div>
     </section>

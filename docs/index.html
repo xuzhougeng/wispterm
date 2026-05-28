@@ -219,29 +219,30 @@ ai-agent-output-limit  = 16384</code></pre>
     <section id="shortcuts" class="section alt">
       <div class="container">
         <h2>Keyboard shortcuts</h2>
-        <p class="section-lead">Defaults from <code>src/input.zig</code>. Modal overlays (command center, session launcher, settings) intercept keys first. On macOS, <kbd>Ctrl</kbd> shortcuts use <kbd>Cmd</kbd> instead (e.g. <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>) except <kbd>Ctrl</kbd>+<kbd>`</kbd> and <kbd>Ctrl</kbd>+<kbd>Tab</kbd>.</p>
+        <p class="section-lead">Defaults from <code>src/keybind.zig</code>. Modal overlays intercept keys first. <code>Ctrl/Cmd</code> means Ctrl on Windows/Linux, Cmd on macOS; <code>Alt/Opt</code> means Alt on Windows/Linux, Option on macOS. <kbd>Ctrl</kbd>+<kbd>`</kbd> and <kbd>Ctrl</kbd>+<kbd>Tab</kbd> stay on Ctrl on all platforms.</p>
         <div class="shortcut-grid">
-          <div><span class="label">Open command center</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></span></div>
-          <div><span class="label">New session (launcher)</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
-          <div><span class="label">New window</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>N</kbd></span></div>
-          <div><span class="label">Toggle tab sidebar</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>B</kbd></span></div>
-          <div><span class="label">Toggle file explorer</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Alt</kbd><kbd>E</kbd></span></div>
-          <div><span class="label">Split to the right</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>O</kbd></span></div>
-          <div><span class="label">Equalize splits</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd></span></div>
-          <div><span class="label">Close panel / tab / window</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>W</kbd></span></div>
-          <div><span class="label">Maximize / restore window</span><span class="keys"><kbd>Alt</kbd><kbd>Enter</kbd></span></div>
-          <div><span class="label">Move focus by direction</span><span class="keys"><kbd>Alt</kbd><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></span></div>
-          <div><span class="label">Previous panel</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>[</kbd></span></div>
-          <div><span class="label">Next panel</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>]</kbd></span></div>
+          <div><span class="label">Open command center</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>P</kbd></span></div>
+          <div><span class="label">New session (launcher)</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>T</kbd></span></div>
+          <div><span class="label">New window</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>N</kbd></span></div>
+          <div><span class="label">Toggle tab sidebar</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>B</kbd></span></div>
+          <div><span class="label">Toggle file explorer</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>Alt/Opt</kbd><kbd>E</kbd></span></div>
+          <div><span class="label">Split to the right</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>O</kbd></span></div>
+          <div><span class="label">Equalize splits</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>Z</kbd></span></div>
+          <div><span class="label">Close panel / tab / window</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>W</kbd></span></div>
+          <div><span class="label">Maximize / restore window</span><span class="keys"><kbd>Alt/Opt</kbd><kbd>Enter</kbd></span></div>
+          <div><span class="label">Move focus by direction</span><span class="keys"><kbd>Alt/Opt</kbd><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></span></div>
+          <div><span class="label">Previous panel</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>[</kbd></span></div>
+          <div><span class="label">Next panel</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>]</kbd></span></div>
           <div><span class="label">Previous tab</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Tab</kbd></span></div>
           <div><span class="label">Next tab</span><span class="keys"><kbd>Ctrl</kbd><kbd>Tab</kbd></span></div>
-          <div><span class="label">Jump to tab 1–9</span><span class="keys"><kbd>Alt</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
-          <div><span class="label">Increase font size</span><span class="keys"><kbd>Ctrl</kbd><kbd>+</kbd></span></div>
-          <div><span class="label">Decrease font size</span><span class="keys"><kbd>Ctrl</kbd><kbd>−</kbd></span></div>
-          <div><span class="label">Copy selection</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd></span></div>
-          <div><span class="label">Paste text</span><span class="keys"><kbd>Ctrl</kbd><kbd>V</kbd></span></div>
-          <div><span class="label">Paste clipboard image</span><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>V</kbd></span></div>
-          <div><span class="label">Open config file</span><span class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></span></div>
+          <div><span class="label">Jump to tab 1–9</span><span class="keys"><kbd>Alt/Opt</kbd><kbd>1</kbd>…<kbd>9</kbd></span></div>
+          <div><span class="label">Increase font size</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>+</kbd></span></div>
+          <div><span class="label">Decrease font size</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>−</kbd></span></div>
+          <div><span class="label">Copy selection</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>C</kbd></span></div>
+          <div><span class="label">Paste text</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>V</kbd></span></div>
+          <div><span class="label">Paste clipboard image</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>V</kbd></span></div>
+          <div><span class="label">Open config file</span><span class="keys"><kbd>Ctrl/Cmd</kbd><kbd>,</kbd></span></div>
+          <div><span class="label">Show/hide Quake drop-down</span><span class="keys"><kbd>Ctrl</kbd><kbd>`</kbd></span></div>
         </div>
       </div>
     </section>

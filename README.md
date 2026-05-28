@@ -111,44 +111,44 @@ keybind = alt+f10=toggle_command_palette
 keybind = global:ctrl+backquote=toggle_quake
 ```
 
-Use `keybind = clear` before custom bindings if you want to remove all defaults and rebuild the table from scratch. To confirm the running desktop version, open the command center with the configured command-center shortcut (default `Ctrl+Shift+P`, or `Cmd+Shift+P` on macOS), type `version`, and press Enter.
+Use `keybind = clear` before custom bindings if you want to remove all defaults and rebuild the table from scratch. To confirm the running desktop version, open the command center (`Ctrl+Shift+P` on Windows, `Cmd+Shift+P` on macOS), type `version`, and press Enter.
 
-> **On macOS**, application shortcuts use **Cmd** in place of Ctrl (e.g. `Cmd+Shift+P` opens the command center) and **Option** in place of Alt. Two bindings keep Ctrl to avoid colliding with macOS system shortcuts: **Ctrl+`** (Quake drop-down — `Cmd+`` is the system window cycler) and **Ctrl+Tab** / **Ctrl+Shift+Tab** (tab switching — `Cmd+Tab` is the system app switcher). The table below lists the Windows/Linux (Ctrl) bindings; read "Ctrl" as "Cmd" on macOS except for those two.
+> **macOS modifier mapping:** most shortcuts use **Cmd** in place of Ctrl and **Opt** in place of Alt. Two exceptions keep Ctrl to avoid colliding with system shortcuts: **Ctrl+`** (Quake — `Cmd+`` is the system window cycler) and **Ctrl+Tab** / **Ctrl+Shift+Tab** (tab switching — `Cmd+Tab` is the system app switcher).
 
-| Shortcut                                                                       | Action                                                                             |
-| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| **Ctrl+Backquote**                                                            | Show or hide the Quake-style drop-down terminal window                             |
-| **Ctrl+Shift+P**                                                               | Open command center                                                                |
-| **Ctrl+Shift+T**                                                               | New session (session launcher)                                                     |
-| **Ctrl+Shift+N**                                                               | New window                                                                         |
-| **Ctrl+Shift+B**                                                               | Toggle tab sidebar                                                                 |
-| **Ctrl+Shift+O**                                                               | Split to the right                                                                 |
-| **Ctrl+Shift+Alt+E**                                                           | Toggle file explorer sidebar                                                       |
-| Ctrl-click `.md` / `.txt` / `.csv` / `.tsv` / image files in terminal output, or double-click in File Explorer | Preview local, WSL, or SSH Markdown/text/table/images in the right preview panel |
-| Ctrl+Shift-click file path in SSH terminal output                              | Download the SSH remote file to `%USERPROFILE%\Downloads` (Windows) or `~/Downloads` (macOS/Linux) |
-| **Ctrl+Shift+W**                                                               | Close focused panel, tab, or window; press again to confirm closing the last panel |
-| **Alt+Enter**                                                                  | Maximize or restore window                                                         |
-| **Ctrl++** / **Ctrl+-**                                                        | Increase / decrease font size                                                      |
-| **Ctrl+Shift+C**                                                               | Copy terminal selection, or copy AI Chat selection/transcript                     |
-| Shift-click terminal text                                                      | Select from the last terminal click anchor                                        |
-| Drag AI answer text                                                            | Select part of an AI answer for `Ctrl+C`                                          |
-| Shift-drag AI answer text                                                      | Select and copy part of an AI answer                                              |
-| **Ctrl+A** in AI Chat                                                          | Select the input text; when the input is empty, select the transcript             |
-| **Ctrl+C** in AI Chat                                                          | Copy the selected AI Chat text, or copy the transcript when nothing is selected   |
-| **D** / **Delete** in Agent History                                            | Delete the selected saved Agent session                                          |
-| Left / Right / Home / End / Delete / Backspace in AI Chat                      | Edit the AI Chat input cursor without clearing the whole draft                    |
-| **Esc** in AI Chat while working                                               | Stop the in-flight AI Chat or Agent request                                      |
-| Right-click a selection                                                        | Copy selection by default; configurable with `right-click-action`                 |
-| **Ctrl+V**                                                                     | Paste text                                                                         |
-| **Ctrl+Shift+V**                                                               | Paste clipboard image                                                              |
-| **Alt** + arrow keys                                                           | Move focus to adjacent panel (spatial)                                             |
-| **Ctrl+Shift+[**                                                               | Focus previous panel (cycle)                                                       |
-| **Ctrl+Shift+]**                                                               | Focus next panel (cycle)                                                           |
-| **Ctrl+Shift+Z**                                                               | Equalize split sizes                                                               |
-| **Ctrl+Tab**                                                                   | Next tab                                                                           |
-| **Ctrl+Shift+Tab**                                                             | Previous tab                                                                       |
-| **Alt+1**-**9**                                                                | Switch to tab 1-9 (when that tab exists)                                           |
-| **Ctrl+,**                                                                     | Open config file in the default editor                                             |
+| Action | Windows / Linux | macOS |
+| ------ | --------------- | ----- |
+| Show/hide Quake drop-down | **Ctrl+`** | **Ctrl+`** |
+| Open command center | **Ctrl+Shift+P** | **Cmd+Shift+P** |
+| New session (session launcher) | **Ctrl+Shift+T** | **Cmd+Shift+T** |
+| New window | **Ctrl+Shift+N** | **Cmd+Shift+N** |
+| Toggle tab sidebar | **Ctrl+Shift+B** | **Cmd+Shift+B** |
+| Split to the right | **Ctrl+Shift+O** | **Cmd+Shift+O** |
+| Toggle file explorer sidebar | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
+| Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |
+| Download SSH remote file | Ctrl+Shift-click path in SSH output | Cmd+Shift-click path in SSH output |
+| Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+Shift+W** |
+| Maximize or restore window | **Alt+Enter** | **Opt+Enter** |
+| Increase / decrease font size | **Ctrl++** / **Ctrl+-** | **Cmd++** / **Cmd+-** |
+| Copy terminal selection or AI Chat selection/transcript | **Ctrl+Shift+C** | **Cmd+Shift+C** |
+| Select from the last terminal click anchor | Shift-click terminal text | Shift-click terminal text |
+| Select part of an AI answer | Drag AI answer text | Drag AI answer text |
+| Select and copy part of an AI answer | Shift-drag AI answer text | Shift-drag AI answer text |
+| Select AI Chat input; select transcript when input is empty | **Ctrl+A** in AI Chat | **Cmd+A** in AI Chat |
+| Copy AI Chat selection or full transcript | **Ctrl+C** in AI Chat | **Cmd+C** in AI Chat |
+| Delete the selected saved Agent session | **D** / **Delete** in Agent History | **D** / **Delete** in Agent History |
+| Edit AI Chat input cursor | Left/Right/Home/End/Delete/Backspace | Left/Right/Home/End/Delete/Backspace |
+| Stop in-flight AI Chat or Agent request | **Esc** in AI Chat while working | **Esc** in AI Chat while working |
+| Copy selection (right-click) | Right-click a selection | Right-click a selection |
+| Paste text | **Ctrl+V** | **Cmd+V** |
+| Paste clipboard image | **Ctrl+Shift+V** | **Cmd+Shift+V** |
+| Move focus to adjacent panel | **Alt** + arrow keys | **Opt** + arrow keys |
+| Focus previous panel (cycle) | **Ctrl+Shift+[** | **Cmd+Shift+[** |
+| Focus next panel (cycle) | **Ctrl+Shift+]** | **Cmd+Shift+]** |
+| Equalize split sizes | **Ctrl+Shift+Z** | **Cmd+Shift+Z** |
+| Next tab | **Ctrl+Tab** | **Ctrl+Tab** |
+| Previous tab | **Ctrl+Shift+Tab** | **Ctrl+Shift+Tab** |
+| Switch to tab 1–9 | **Alt+1**–**9** | **Opt+1**–**9** |
+| Open config file | **Ctrl+,** | **Cmd+,** |
 
 ## AI Chat Markdown export
 
