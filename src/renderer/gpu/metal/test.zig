@@ -162,6 +162,105 @@ test "render_state batches multiple Metal draws into one presented frame" {
     try std.testing.expect(!render_state.isFrameActive());
 }
 
+test "viewport and scissor apply to the encoder without breaking draws" {
+    try Context.init(null);
+    defer Context.deinit();
+
+    const vs: [*c]const u8 =
+        \\#include <metal_stdlib>
+        \\using namespace metal;
+        \\vertex float4 vertex_main(uint vertex_id [[vertex_id]]) {
+        \\    float2 positions[3] = {
+        \\        float2(-1.0, -1.0),
+        \\        float2( 3.0, -1.0),
+        \\        float2(-1.0,  3.0),
+        \\    };
+        \\    return float4(positions[vertex_id], 0.0, 1.0);
+        \\}
+    ;
+    const fs: [*c]const u8 =
+        \\#include <metal_stdlib>
+        \\using namespace metal;
+        \\fragment float4 fragment_main() {
+        \\    return float4(0.0, 0.0, 1.0, 1.0);
+        \\}
+    ;
+
+    var pipeline = Pipeline.init(vs, fs, 0);
+    defer pipeline.deinit();
+
+    render_state.clear(0, 0, 0, 1);
+
+    // A sub-rectangle viewport + scissor (GL lower-left convention) — the split
+    // pane case. The standalone test layer is 64x64, so these stay in bounds.
+    render_state.setViewport(10, 10, 40, 30);
+    render_state.setScissor(.{ .x = 12, .y = 12, .w = 20, .h = 16 });
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+
+    // Disabling scissor must reset to the full drawable and still draw.
+    render_state.disableScissor();
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+
+    // An intentionally out-of-bounds scissor must be clamped, not crash the
+    // command buffer (MTLScissorRect outside the render target raises).
+    render_state.setScissor(.{ .x = -100, .y = -100, .w = 100000, .h = 100000 });
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+
+    render_state.endFrame();
+}
+
+test "blend modes select pipeline variants without breaking draws" {
+    try Context.init(null);
+    defer Context.deinit();
+
+    const vs: [*c]const u8 =
+        \\#include <metal_stdlib>
+        \\using namespace metal;
+        \\vertex float4 vertex_main(uint vertex_id [[vertex_id]]) {
+        \\    float2 positions[3] = {
+        \\        float2(-1.0, -1.0),
+        \\        float2( 3.0, -1.0),
+        \\        float2(-1.0,  3.0),
+        \\    };
+        \\    return float4(positions[vertex_id], 0.0, 1.0);
+        \\}
+    ;
+    const fs: [*c]const u8 =
+        \\#include <metal_stdlib>
+        \\using namespace metal;
+        \\fragment float4 fragment_main() {
+        \\    return float4(0.5, 0.5, 0.5, 0.5);
+        \\}
+    ;
+
+    var pipeline = Pipeline.init(vs, fs, 0);
+    defer pipeline.deinit();
+    try std.testing.expect(pipeline.program != 0);
+
+    render_state.clear(0, 0, 0, 1);
+
+    // Each blend mode must pick a valid pre-built PSO and draw successfully.
+    render_state.setBlendEnabled(true);
+    render_state.setBlendMode(.alpha);
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+
+    render_state.setBlendMode(.premultiplied);
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+
+    render_state.setBlendEnabled(false);
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+
+    render_state.setBlendEnabled(true);
+    render_state.setBlendMode(.alpha);
+    render_state.endFrame();
+}
+
 test "vertex builder returns stable nonzero layout handles" {
     try Context.init(null);
     defer Context.deinit();

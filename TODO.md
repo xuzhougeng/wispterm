@@ -54,7 +54,13 @@ code only — not the `remote/` web console or packaged `plugins/`.
   regression-locks the decoupled feature files. A small documented residue of
   files still calls `gpu.glTable()` (the GL presentation layer + not-yet-extracted
   plumbing) — to be absorbed as the primitive set grows. → **Phase D** (Metal/Linux
-  backends) is now the gate. See guide §1.
+  backends) is now the gate. See guide §1. **D1.y render-correctness work done:
+  per-pane viewport/scissor (P0, fixes the split bug), blend-mode PSO variants
+  (P1), sampler filter/wrap (P2), and frame throughput (P3) all land + verify on
+  three platforms. The only D1.y item left — FBO render-target switching — is
+  DEFERRED into a separate "macOS custom-shader" feature, because its sole
+  consumer (post-process GLSL) needs a GLSL→MSL layer before an FBO is useful on
+  Metal. See D1.y.**
 - **Giant files conflate presentation + logic.** `ai_chat.zig` (248 KB),
   `input.zig` (3,462 ln), `AppWindow.zig` (3,742 ln), `overlays.zig` (171 KB).
   → **Phase B**.
@@ -309,6 +315,129 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       lists the symmetric set: text/glyph, instanced bg/fg cells, color-emoji,
       simple-textured, overlay). Native proof: `zig build test-metal` compiles
       every bundled MSL shader pair into `MTLRenderPipelineState`.
+
+**D1.y — Metal render-state application (split / scissor / blend) — INCOMPLETE**
+
+> **Found on-device (2026-05-28):** creating a split pane on macOS renders both
+> panes blank and draws the shell prompt over the title bar (the split *logic*
+> is fine — `Split created: ... tree nodes: 3`). Root cause: the Metal backend
+> **records render state into thread-locals but never applies it to the
+> `MTLRenderCommandEncoder`.** A single full-window surface accidentally hides
+> this (origin is `(0,0)`, nothing needs clipping, plain alpha blend is enough);
+> the moment a feature needs a sub-rectangle origin, a clip, or a non-alpha
+> blend, it breaks. So D1's "Metal GPU backend" is functionally complete only
+> for the full-window single-surface path. The state-application layer below is
+> the real gap.
+>
+> **Architecture note vs. Ghostty.** Ghostty renders each terminal surface into
+> its **own** `NSView` + `CAMetalLayer`; AppKit's split container lays the views
+> out, so each Metal renderer instance owns a drawable that *is* the pane — it
+> never needs per-pane viewport/scissor inside one drawable. Phantty instead
+> keeps **one window / one `CAMetalLayer` / one drawable** and renders every pane
+> in a loop with per-pane viewport + scissor (symmetric with its Windows OpenGL
+> path: `AppWindow.zig:3893-3947`). **Decision: keep Phantty's single-drawable
+> model and make Metal honor `setViewport:`/`setScissorRect:` per draw** (Option
+> A — symmetric with OpenGL, low risk, no AppKit/host rework). Option B (one
+> layer per surface, Ghostty-style) is a much larger host refactor and is *not*
+> chosen here.
+>
+> **Verified against Ghostty/cmux (2026-05-28).** Ghostty's Metal renderer is
+> one `IOSurfaceLayer` + one renderer instance **per surface**; its
+> `metal/RenderPass.zig` calls **neither** `setViewport` **nor**
+> `setScissorRect` — the drawable *is* the pane, so padding rides in the
+> projection/cell coordinates and clipping is unneeded. cmux is a Ghostty-based
+> macOS terminal (vertical tabs, splits, embedded browser, agent socket API) and
+> inherits this rendering model. Phantty's single-drawable choice is the
+> deliberate trade for sharing one render loop with Windows; the cost is that
+> Phantty **must** implement the per-draw `setViewport:`/`setScissorRect:` that
+> Ghostty sidesteps. That is standard Metal usage (an encoder's viewport and
+> scissor are mutable between draws), so **the architecture is sound — only the
+> application step is missing.** Keep Option A; revisit per-surface layers
+> (Option B) only if multi-split frame pacing on the single render thread ever
+> becomes a problem.
+
+- [x] **P0 — Apply viewport origin to the encoder (fixes split positioning).**
+      Done. `render_state.setViewport` now forwards to the C bridge
+      (`phantty_metal_set_viewport`); `phantty_metal_apply_viewport_scissor`
+      emits `[encoder setViewport:]` before every draw with the GL bottom-left →
+      Metal top-left flip (`originY = drawable_h - y - h`, drawable size captured
+      at frame begin). `metal/gl_init.zig:setProjection` no longer clobbers the
+      viewport to `(0,0)`; projection stays width/height-only (origin honored by
+      the encoder viewport, like OpenGL's `glViewport`). Proof: `zig build
+      test-metal` (new viewport/scissor assertion), `zig build test-full
+      -Dtarget=aarch64-macos`, `zig build -Dtarget=x86_64-windows-gnu` (no
+      regression). **On-device split visual check still pending.**
+- [x] **P0 — Apply scissor to the encoder (fixes clip overflow).** Done.
+      `setScissor`/`disableScissor`/`restoreScissor` forward to
+      `phantty_metal_set_scissor`; the apply helper emits
+      `[encoder setScissorRect:]` per draw — enabled → recorded box (y-flipped),
+      disabled → full drawable (Metal has no "scissor off"). The rect is
+      **clamped to the drawable** (an out-of-bounds `MTLScissorRect` raises and
+      kills the command buffer); the test-metal assertion feeds a deliberately
+      out-of-bounds box to lock the clamp. Unblocks
+      `markdown_preview_renderer.zig:610-614` and `ui_pipeline.zig:110-121`.
+- [x] **P1 — Blend modes as pipeline variants (fixes color-emoji / bg image).**
+      Done. `pipeline_create` now builds three `MTLRenderPipelineState` variants
+      per shader via `phantty_metal_make_pso` (alpha `(src_alpha,1-src_alpha)` /
+      premultiplied `(one,1-src_alpha)` / blending-disabled);
+      `phantty_metal_set_blend_enabled`/`phantty_metal_set_blend_mode` record the
+      state and `encode_draw` selects the matching PSO. `render_state.setBlendMode`/
+      `setBlendEnabled` now forward instead of no-op'ing, so `cell_renderer.zig:425`
+      (premultiplied color emoji) and `background_image.zig:215`
+      (`setBlendEnabled(false)` opaque wallpaper) behave like the OpenGL backend.
+      Proof: `zig build test-metal` (new blend-variant assertion). **On-device
+      visual check (emoji brightness, wallpaper) still pending.**
+      *Ghostty does this differently and more simply: `metal/Pipeline.zig` uses
+      **one** blend config everywhere — premultiplied alpha (`src=one`,
+      `dst=one_minus_source_alpha`; comment: "We always use premultiplied alpha
+      blending for now") — and every fragment shader emits premultiplied color.
+      That removes `setBlendMode` entirely and structurally avoids the
+      color-emoji double-multiply. **Long-term Phantty should consider converging
+      on this** (rewrite each MSL fragment shader to output premultiplied RGB, so
+      one PSO blend config serves all draws) instead of carrying alpha +
+      premultiplied PSO variants; short-term the variants are the lower-risk fix.*
+- [x] **P2 — Sampler filter/wrap state (fixes `nearest` blur).** Done. The four
+      texture-sampling MSL shaders now take `sampler s [[sampler(0)]]` instead of
+      a hard-coded `constexpr sampler`; `bridge.m` lazily builds an
+      `MTLSamplerState` per (filter, wrap) and `encode_draw` binds it with
+      `setFragmentSamplerState:` from the active texture's recorded filter/wrap;
+      `Texture.upload2D` now forwards `o.filter`. Default behavior is unchanged
+      (everything currently uses linear/clamp) but `.nearest` is now honored.
+      Proof: `zig build test-metal`, `zig build test-full -Dtarget=aarch64-macos`.
+      *Mirrors Ghostty's dedicated `metal/Sampler.zig` + `setFragmentSamplerState:`.*
+- [ ] **P2 — Framebuffer render-target switching — DEFERRED (needs a GLSL→MSL
+      path first; not a standalone task).** Evaluated 2026-05-28. The FBO itself
+      has a clean Metal equivalent — render-to-texture (end the current encoder,
+      open a new render pass whose color attachment is the offscreen `MTLTexture`,
+      restore on `unbind`); `metal/Framebuffer.zig` already holds the texture, only
+      `bind`/`unbind` need to switch the render pass. **But its only consumer is
+      `post_process.zig`, whose custom shaders are Shadertoy-style GLSL**
+      (`#version 330 core` + `mainImage`, wrapped in `buildPostFragmentSource`).
+      **Metal cannot compile GLSL** (it runs MSL), so even with the FBO wired up
+      the user's `custom-shader` would not run on macOS — the FBO would have no
+      working consumer. The real macOS work is a **GLSL→MSL translation layer**,
+      exactly what Ghostty does in `src/renderer/shadertoy.zig`: GLSL →SPIR-V
+      (glslang) →MSL (SPIRV-Cross), so one Shadertoy GLSL runs on every backend.
+      → Track this as a separate **"macOS custom-shader support"** feature (FBO
+      render-to-texture **plus** the glslang+SPIRV-Cross translation + the
+      Shadertoy uniform struct), not as part of D1.y's render-correctness scope.
+      `g_post_enabled` defaults off and `fbo.zig` is currently un-wired, so there
+      is no regression today.
+- [x] **P3 — Frame throughput.** Done. `phantty_metal_frame_end` no longer calls
+      `waitUntilCompleted` every frame (that serialized CPU and GPU with zero
+      overlap); GPU errors are now reported via `addCompletedHandler` and our own
+      command-buffer/drawable refs are released right after `commit` (Metal
+      retains them until the GPU finishes + the frame presents). Proof: `zig build
+      test-metal`, `zig build test-full -Dtarget=aarch64-macos`. **On-device
+      frame-pacing/no-flicker check still pending.** Per-upload fresh `MTLBuffer`
+      allocation (intentional, `bridge.m` comment) can later become a ring buffer
+      if profiling shows it matters.
+
+> **Native proof for D1.y:** extend `zig build test-metal` with viewport-origin,
+> scissor-rect, and blend-variant assertions; keep `zig build test-full
+> -Dtarget=aarch64-macos` green; and verify on-device that a split positions both
+> panes correctly with no clip overflow, color emoji render at full brightness,
+> and the markdown preview / file explorer clip to their regions.
 
 **D2 — AppKit host** (`window_backend_macos.zig` + `window_macos.zig`)
 - [x] `NSApplication`/`NSWindow` + the AppKit run loop (AppKit owns the event

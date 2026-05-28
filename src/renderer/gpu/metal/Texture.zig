@@ -9,7 +9,7 @@ const Texture = @This();
 handle: c.GLuint,
 
 extern fn phantty_metal_texture_create() c.GLuint;
-extern fn phantty_metal_texture_upload_2d(handle: c.GLuint, device: ?*anyopaque, width: c_int, height: c_int, data: ?*const anyopaque, format: c.GLenum, data_type: c.GLenum, wrap: c_uint, error_buf: [*]u8, error_buf_len: usize) bool;
+extern fn phantty_metal_texture_upload_2d(handle: c.GLuint, device: ?*anyopaque, width: c_int, height: c_int, data: ?*const anyopaque, format: c.GLenum, data_type: c.GLenum, wrap: c_uint, filter: c_uint, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn phantty_metal_texture_sub_image_2d(handle: c.GLuint, x: c_int, y: c_int, width: c_int, height: c_int, data: ?*const anyopaque, format: c.GLenum, data_type: c.GLenum, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn phantty_metal_texture_set_wrap(handle: c.GLuint, wrap: c_uint) void;
 extern fn phantty_metal_texture_bind(handle: c.GLuint, unit: c_uint) void;
@@ -46,7 +46,6 @@ pub fn create() Texture {
 /// Bind + upload (or allocate, if `data` is null) a 2D image.
 pub fn upload2D(self: Texture, width: c_int, height: c_int, data: ?*const anyopaque, o: Upload) void {
     _ = o.internal_format;
-    _ = o.filter;
     _ = o.unpack_alignment;
     _ = runBool("Metal texture upload2D failed", phantty_metal_texture_upload_2d(
         self.handle,
@@ -57,6 +56,7 @@ pub fn upload2D(self: Texture, width: c_int, height: c_int, data: ?*const anyopa
         o.format,
         o.data_type,
         wrapInt(o.wrap),
+        filterInt(o.filter),
         &scratch_error,
         scratch_error.len,
     ));
@@ -106,6 +106,13 @@ fn wrapInt(wrap: Wrap) c_uint {
     return switch (wrap) {
         .clamp_to_edge => 0,
         .repeat => 1,
+    };
+}
+
+fn filterInt(filter: Filter) c_uint {
+    return switch (filter) {
+        .nearest => 0,
+        .linear => 1,
     };
 }
 

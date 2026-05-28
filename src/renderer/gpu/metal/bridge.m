@@ -44,7 +44,8 @@ static _Thread_local unsigned int phantty_metal_next_buffer = 1;
 
 typedef struct PhanttyMetalTextureSlot {
     id<MTLTexture> texture;
-    unsigned int wrap;
+    unsigned int wrap;   // 0 = clamp-to-edge, 1 = repeat
+    unsigned int filter; // 0 = nearest, 1 = linear
     size_t width;
     size_t height;
     size_t bpp;
@@ -54,7 +55,12 @@ static _Thread_local PhanttyMetalTextureSlot phantty_metal_textures[PHANTTY_META
 static _Thread_local unsigned int phantty_metal_next_texture = 1;
 
 typedef struct PhanttyMetalPipelineSlot {
-    id<MTLRenderPipelineState> pipeline;
+    // Metal bakes blend into the pipeline state, so each logical pipeline keeps
+    // one PSO per blend mode and the encoder picks by the current blend state.
+    // `pipeline` is the straight-alpha default (the `!= nil` validity check).
+    id<MTLRenderPipelineState> pipeline;          // alpha: (src_alpha, 1-src_alpha)
+    id<MTLRenderPipelineState> pipeline_premult;  // premultiplied: (one, 1-src_alpha)
+    id<MTLRenderPipelineState> pipeline_opaque;   // blending disabled
     unsigned int vao;
     struct {
         float projection[16];
@@ -68,6 +74,116 @@ typedef struct PhanttyMetalPipelineSlot {
 static _Thread_local PhanttyMetalPipelineSlot phantty_metal_pipelines[PHANTTY_METAL_MAX_PIPELINES];
 static _Thread_local unsigned int phantty_metal_next_pipeline = 1;
 static _Thread_local unsigned int phantty_metal_active_textures[16];
+
+// Encoder render state recorded by the Zig render_state layer (GL lower-left
+// convention) and applied on the active encoder before each draw. The drawable
+// size is captured at frame begin so we can flip y to Metal's upper-left origin.
+static _Thread_local int phantty_metal_vp_x = 0;
+static _Thread_local int phantty_metal_vp_y = 0;
+static _Thread_local int phantty_metal_vp_w = 0;
+static _Thread_local int phantty_metal_vp_h = 0;
+static _Thread_local bool phantty_metal_vp_set = false;
+static _Thread_local bool phantty_metal_scissor_enabled = false;
+static _Thread_local int phantty_metal_sc_x = 0;
+static _Thread_local int phantty_metal_sc_y = 0;
+static _Thread_local int phantty_metal_sc_w = 0;
+static _Thread_local int phantty_metal_sc_h = 0;
+static _Thread_local int phantty_metal_drawable_w = 0;
+static _Thread_local int phantty_metal_drawable_h = 0;
+
+void phantty_metal_set_viewport(int x, int y, int w, int h) {
+    phantty_metal_vp_x = x;
+    phantty_metal_vp_y = y;
+    phantty_metal_vp_w = w;
+    phantty_metal_vp_h = h;
+    phantty_metal_vp_set = true;
+}
+
+void phantty_metal_set_scissor(bool enabled, int x, int y, int w, int h) {
+    phantty_metal_scissor_enabled = enabled;
+    phantty_metal_sc_x = x;
+    phantty_metal_sc_y = y;
+    phantty_metal_sc_w = w;
+    phantty_metal_sc_h = h;
+}
+
+// Blend state recorded by the Zig render_state layer. Metal can't change blend
+// on the encoder (it is fixed in the PSO), so encode_draw selects the matching
+// per-mode PSO instead.
+static _Thread_local bool phantty_metal_blend_enabled = true;
+static _Thread_local bool phantty_metal_blend_premult = false;
+
+void phantty_metal_set_blend_enabled(bool enabled) {
+    phantty_metal_blend_enabled = enabled;
+}
+
+void phantty_metal_set_blend_mode(int premultiplied) {
+    phantty_metal_blend_premult = (premultiplied != 0);
+}
+
+// Lazily-built MTLSamplerState cache, indexed by (filter, wrap). Replaces the
+// per-shader `constexpr sampler` so a texture's configured filter/wrap (e.g.
+// nearest for pixel-exact bitmaps) actually applies, mirroring the GL backend's
+// sampler parameters. Threadlocal to match the per-render-thread registries.
+static _Thread_local id<MTLSamplerState> phantty_metal_samplers[4]; // idx = filter*2 + wrap
+
+static id<MTLSamplerState> phantty_metal_sampler_for(id<MTLDevice> device, unsigned int filter, unsigned int wrap) {
+    if (device == nil) return nil;
+    const unsigned int idx = (filter ? 2u : 0u) + (wrap ? 1u : 0u);
+    if (phantty_metal_samplers[idx] == nil) {
+        MTLSamplerDescriptor *desc = [[MTLSamplerDescriptor alloc] init];
+        const MTLSamplerMinMagFilter f = filter ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        desc.minFilter = f;
+        desc.magFilter = f;
+        const MTLSamplerAddressMode mode = wrap ? MTLSamplerAddressModeRepeat : MTLSamplerAddressModeClampToEdge;
+        desc.sAddressMode = mode;
+        desc.tAddressMode = mode;
+        phantty_metal_samplers[idx] = [device newSamplerStateWithDescriptor:desc];
+        [desc release];
+    }
+    return phantty_metal_samplers[idx];
+}
+
+// Apply the recorded viewport + scissor to the encoder before a draw. Without a
+// per-pane viewport every split pane drew at the window origin; without scissor
+// the markdown preview / file explorer clip regions had no effect. Both convert
+// GL lower-left → Metal upper-left; the scissor is clamped to the drawable
+// because an out-of-bounds MTLScissorRect raises and kills the command buffer.
+static void phantty_metal_apply_viewport_scissor(id<MTLRenderCommandEncoder> encoder) {
+    int dw = phantty_metal_drawable_w;
+    int dh = phantty_metal_drawable_h;
+    if (dw <= 0 || dh <= 0) return; // drawable size unknown — keep encoder defaults
+
+    int vx, vy, vw, vh;
+    if (phantty_metal_vp_set && phantty_metal_vp_w > 0 && phantty_metal_vp_h > 0) {
+        vx = phantty_metal_vp_x;
+        vw = phantty_metal_vp_w;
+        vh = phantty_metal_vp_h;
+        vy = dh - phantty_metal_vp_y - phantty_metal_vp_h;
+    } else {
+        vx = 0; vy = 0; vw = dw; vh = dh;
+    }
+    [encoder setViewport:(MTLViewport){ (double)vx, (double)vy, (double)vw, (double)vh, 0.0, 1.0 }];
+
+    int sx, sy, sw, sh;
+    if (phantty_metal_scissor_enabled) {
+        sx = phantty_metal_sc_x;
+        sw = phantty_metal_sc_w;
+        sh = phantty_metal_sc_h;
+        sy = dh - phantty_metal_sc_y - phantty_metal_sc_h;
+    } else {
+        sx = 0; sy = 0; sw = dw; sh = dh; // Metal has no scissor-off; reset to full
+    }
+    if (sx < 0) { sw += sx; sx = 0; }
+    if (sy < 0) { sh += sy; sy = 0; }
+    if (sx > dw) sx = dw;
+    if (sy > dh) sy = dh;
+    if (sw < 0) sw = 0;
+    if (sh < 0) sh = 0;
+    if (sx + sw > dw) sw = dw - sx;
+    if (sy + sh > dh) sh = dh - sy;
+    [encoder setScissorRect:(MTLScissorRect){ (NSUInteger)sx, (NSUInteger)sy, (NSUInteger)sw, (NSUInteger)sh }];
+}
 
 static void phantty_metal_set_error(char *error_buf, size_t error_buf_len, const char *message) {
     if (error_buf == NULL || error_buf_len == 0) return;
@@ -396,6 +512,7 @@ bool phantty_metal_texture_upload_2d(
     unsigned int format,
     unsigned int data_type,
     unsigned int wrap,
+    unsigned int filter,
     char *error_buf,
     size_t error_buf_len
 ) {
@@ -445,6 +562,7 @@ bool phantty_metal_texture_upload_2d(
         }
         phantty_metal_textures[handle].texture = texture;
         phantty_metal_textures[handle].wrap = wrap;
+        phantty_metal_textures[handle].filter = filter;
         phantty_metal_textures[handle].width = (size_t)width;
         phantty_metal_textures[handle].height = (size_t)height;
         phantty_metal_textures[handle].bpp = bpp;
@@ -522,6 +640,40 @@ void phantty_metal_texture_destroy(unsigned int handle) {
     }
 }
 
+// Build one MTLRenderPipelineState for a given blend mode. Metal fixes blend in
+// the pipeline state, so Phantty mirrors the OpenGL backend's mutable
+// glBlendFunc by pre-building a PSO per mode; encode_draw selects by the
+// recorded blend state.
+static id<MTLRenderPipelineState> phantty_metal_make_pso(
+    id<MTLDevice> device,
+    id<MTLFunction> vertex_fn,
+    id<MTLFunction> fragment_fn,
+    bool blend_enabled,
+    bool premultiplied,
+    NSError **error
+) {
+    MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = vertex_fn;
+    desc.fragmentFunction = fragment_fn;
+    MTLRenderPipelineColorAttachmentDescriptor *color = desc.colorAttachments[0];
+    color.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    if (blend_enabled) {
+        MTLBlendFactor src = premultiplied ? MTLBlendFactorOne : MTLBlendFactorSourceAlpha;
+        color.blendingEnabled = YES;
+        color.rgbBlendOperation = MTLBlendOperationAdd;
+        color.alphaBlendOperation = MTLBlendOperationAdd;
+        color.sourceRGBBlendFactor = src;
+        color.sourceAlphaBlendFactor = src;
+        color.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    } else {
+        color.blendingEnabled = NO;
+    }
+    id<MTLRenderPipelineState> pso = [device newRenderPipelineStateWithDescriptor:desc error:error];
+    [desc release];
+    return pso;
+}
+
 unsigned int phantty_metal_pipeline_create(
     void *device_handle,
     const char *vertex_source,
@@ -560,28 +712,21 @@ unsigned int phantty_metal_pipeline_create(
             return 0;
         }
 
-        MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
-        desc.vertexFunction = vertex_fn;
-        desc.fragmentFunction = fragment_fn;
-        MTLRenderPipelineColorAttachmentDescriptor *color = desc.colorAttachments[0];
-        color.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        color.blendingEnabled = YES;
-        color.rgbBlendOperation = MTLBlendOperationAdd;
-        color.alphaBlendOperation = MTLBlendOperationAdd;
-        color.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-        color.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        color.sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
-        color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-
         error = nil;
-        id<MTLRenderPipelineState> pipeline = [device newRenderPipelineStateWithDescriptor:desc error:&error];
+        id<MTLRenderPipelineState> pipeline = phantty_metal_make_pso(device, vertex_fn, fragment_fn, true, false, &error);
+        id<MTLRenderPipelineState> pipeline_premult = (pipeline != nil)
+            ? phantty_metal_make_pso(device, vertex_fn, fragment_fn, true, true, &error) : nil;
+        id<MTLRenderPipelineState> pipeline_opaque = (pipeline_premult != nil)
+            ? phantty_metal_make_pso(device, vertex_fn, fragment_fn, false, false, &error) : nil;
 
-        [desc release];
         [vertex_fn release];
         [fragment_fn release];
         [library release];
 
-        if (pipeline == nil) {
+        if (pipeline == nil || pipeline_premult == nil || pipeline_opaque == nil) {
+            if (pipeline != nil) [pipeline release];
+            if (pipeline_premult != nil) [pipeline_premult release];
+            if (pipeline_opaque != nil) [pipeline_opaque release];
             const char *message = error != nil ? [[error localizedDescription] UTF8String] : "newRenderPipelineStateWithDescriptor returned nil";
             phantty_metal_set_error(error_buf, error_buf_len, message);
             return 0;
@@ -594,6 +739,8 @@ unsigned int phantty_metal_pipeline_create(
             }
             if (phantty_metal_pipelines[handle].pipeline == nil) {
                 phantty_metal_pipelines[handle].pipeline = pipeline;
+                phantty_metal_pipelines[handle].pipeline_premult = pipeline_premult;
+                phantty_metal_pipelines[handle].pipeline_opaque = pipeline_opaque;
                 phantty_metal_pipelines[handle].vao = vao;
                 phantty_metal_pipeline_init_uniforms(&phantty_metal_pipelines[handle]);
                 phantty_metal_set_error(error_buf, error_buf_len, "");
@@ -602,6 +749,8 @@ unsigned int phantty_metal_pipeline_create(
         }
 
         [pipeline release];
+        [pipeline_premult release];
+        [pipeline_opaque release];
         phantty_metal_set_error(error_buf, error_buf_len, "Metal pipeline registry is full");
         return 0;
     }
@@ -614,7 +763,15 @@ void phantty_metal_pipeline_destroy(unsigned int handle) {
         if (phantty_metal_pipelines[handle].pipeline != nil) {
             [phantty_metal_pipelines[handle].pipeline release];
         }
+        if (phantty_metal_pipelines[handle].pipeline_premult != nil) {
+            [phantty_metal_pipelines[handle].pipeline_premult release];
+        }
+        if (phantty_metal_pipelines[handle].pipeline_opaque != nil) {
+            [phantty_metal_pipelines[handle].pipeline_opaque release];
+        }
         phantty_metal_pipelines[handle].pipeline = nil;
+        phantty_metal_pipelines[handle].pipeline_premult = nil;
+        phantty_metal_pipelines[handle].pipeline_opaque = nil;
         phantty_metal_pipelines[handle].vao = 0;
         phantty_metal_pipeline_init_uniforms(&phantty_metal_pipelines[handle]);
     }
@@ -706,6 +863,11 @@ bool phantty_metal_frame_begin(
         }
         [drawable retain];
 
+        // Capture the drawable size so per-pane viewport/scissor can flip y to
+        // Metal's upper-left origin (see phantty_metal_apply_viewport_scissor).
+        phantty_metal_drawable_w = (int)drawable.texture.width;
+        phantty_metal_drawable_h = (int)drawable.texture.height;
+
         id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
         if (command_buffer == nil) {
             [drawable release];
@@ -755,17 +917,21 @@ bool phantty_metal_frame_end(PhanttyMetalContext *ctx, char *error_buf, size_t e
 
         [encoder endEncoding];
         if (drawable != nil) [command_buffer presentDrawable:drawable];
-        [command_buffer commit];
-        [command_buffer waitUntilCompleted];
 
-        bool ok = command_buffer.status != MTLCommandBufferStatusError;
-        if (!ok) {
-            NSError *error = command_buffer.error;
-            const char *message = error != nil ? [[error localizedDescription] UTF8String] : "Metal command buffer failed";
-            phantty_metal_set_error(error_buf, error_buf_len, message);
-        } else {
-            phantty_metal_set_error(error_buf, error_buf_len, "");
-        }
+        // Report GPU errors asynchronously rather than blocking the render
+        // thread on waitUntilCompleted every frame (that serialized CPU and GPU
+        // with zero overlap). Metal retains the command buffer + drawable until
+        // the GPU finishes and the frame is presented, so releasing our own refs
+        // right after commit is safe without waiting.
+        [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            if (completed.status == MTLCommandBufferStatusError) {
+                NSError *error = completed.error;
+                fprintf(stderr, "Metal command buffer error: %s\n",
+                        error != nil ? [[error localizedDescription] UTF8String] : "unknown");
+            }
+        }];
+        [command_buffer commit];
+        phantty_metal_set_error(error_buf, error_buf_len, "");
 
         [encoder release];
         if (command_buffer != nil) [command_buffer release];
@@ -773,7 +939,7 @@ bool phantty_metal_frame_end(PhanttyMetalContext *ctx, char *error_buf, size_t e
         ctx->encoder = NULL;
         ctx->command_buffer = NULL;
         ctx->drawable = NULL;
-        return ok;
+        return true;
     }
 }
 
@@ -805,7 +971,14 @@ static bool phantty_metal_encode_draw(
     @autoreleasepool {
         id<MTLRenderCommandEncoder> encoder = (id<MTLRenderCommandEncoder>)ctx->encoder;
         PhanttyMetalPipelineSlot *slot = &phantty_metal_pipelines[handle];
-        [encoder setRenderPipelineState:slot->pipeline];
+        id<MTLRenderPipelineState> pso = slot->pipeline; // straight-alpha default
+        if (!phantty_metal_blend_enabled) {
+            pso = slot->pipeline_opaque;
+        } else if (phantty_metal_blend_premult) {
+            pso = slot->pipeline_premult;
+        }
+        [encoder setRenderPipelineState:pso];
+        phantty_metal_apply_viewport_scissor(encoder);
 
         id<MTLBuffer> vertex0 = phantty_metal_buffer_object(buffer0);
         id<MTLBuffer> vertex1 = phantty_metal_buffer_object(buffer1);
@@ -816,8 +989,16 @@ static bool phantty_metal_encode_draw(
         [encoder setVertexBytes:&slot->uniforms length:sizeof(slot->uniforms) atIndex:uniform_index];
         [encoder setFragmentBytes:&slot->uniforms length:sizeof(slot->uniforms) atIndex:1];
 
-        id<MTLTexture> texture0 = phantty_metal_texture_object(phantty_metal_active_textures[0]);
-        if (texture0 != nil) [encoder setFragmentTexture:texture0 atIndex:0];
+        const unsigned int tex_handle0 = phantty_metal_active_textures[0];
+        id<MTLTexture> texture0 = phantty_metal_texture_object(tex_handle0);
+        if (texture0 != nil) {
+            [encoder setFragmentTexture:texture0 atIndex:0];
+            id<MTLSamplerState> sampler0 = phantty_metal_sampler_for(
+                (id<MTLDevice>)ctx->device,
+                phantty_metal_textures[tex_handle0].filter,
+                phantty_metal_textures[tex_handle0].wrap);
+            if (sampler0 != nil) [encoder setFragmentSamplerState:sampler0 atIndex:0];
+        }
 
         MTLPrimitiveType primitive = phantty_metal_primitive_type(mode);
         if (instances > 1) {

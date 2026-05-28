@@ -23,6 +23,18 @@ threadlocal var scratch_error: [256]u8 = @splat(0);
 
 extern fn phantty_metal_frame_begin(ctx: *Context.Handles, r: f32, g: f32, b: f32, a: f32, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn phantty_metal_frame_end(ctx: *Context.Handles, error_buf: [*]u8, error_buf_len: usize) bool;
+// Viewport/scissor are encoder state: the renderer records them here per pane,
+// and the C bridge applies them on the active `MTLRenderCommandEncoder` before
+// each draw (with the GL bottom-left → Metal top-left y-flip and a clamp to the
+// drawable for the scissor). x/y/w/h use the GL convention (lower-left origin),
+// matching the OpenGL backend's `setViewport`/`setScissor` callers.
+extern fn phantty_metal_set_viewport(x: c_int, y: c_int, w: c_int, h: c_int) void;
+extern fn phantty_metal_set_scissor(enabled: bool, x: c_int, y: c_int, w: c_int, h: c_int) void;
+// Blend is baked into the Metal PSO (unlike GL's mutable glBlendFunc), so the
+// bridge keeps one PSO per mode and picks by this recorded state. `mode`: 0 =
+// straight alpha, 1 = premultiplied.
+extern fn phantty_metal_set_blend_enabled(enabled: bool) void;
+extern fn phantty_metal_set_blend_mode(mode: c_int) void;
 
 /// Frame seam — the Metal backend owns the command buffer / drawable here.
 pub fn beginFrame() void {
@@ -54,10 +66,15 @@ pub fn endFrame() void {
 
 pub fn setBlendEnabled(enabled: bool) void {
     blend_enabled = enabled;
+    phantty_metal_set_blend_enabled(enabled);
 }
 
 pub fn setBlendMode(mode: BlendMode) void {
     blend_mode = mode;
+    phantty_metal_set_blend_mode(switch (mode) {
+        .alpha => 0,
+        .premultiplied => 1,
+    });
 }
 
 pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
@@ -67,6 +84,7 @@ pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
 
 pub fn setViewport(x: i32, y: i32, w: i32, h: i32) void {
     viewport = .{ .x = x, .y = y, .w = w, .h = h };
+    phantty_metal_set_viewport(@intCast(x), @intCast(y), @intCast(w), @intCast(h));
 }
 
 pub fn viewportSize() Size {
@@ -75,10 +93,12 @@ pub fn viewportSize() Size {
 
 pub fn setScissor(rect: Rect) void {
     scissor = .{ .enabled = true, .box = rect };
+    phantty_metal_set_scissor(true, @intCast(rect.x), @intCast(rect.y), @intCast(rect.w), @intCast(rect.h));
 }
 
 pub fn disableScissor() void {
     scissor.enabled = false;
+    phantty_metal_set_scissor(false, 0, 0, 0, 0);
 }
 
 pub fn scissorState() ScissorState {
@@ -87,6 +107,7 @@ pub fn scissorState() ScissorState {
 
 pub fn restoreScissor(s: ScissorState) void {
     scissor = s;
+    phantty_metal_set_scissor(s.enabled, @intCast(s.box.x), @intCast(s.box.y), @intCast(s.box.w), @intCast(s.box.h));
 }
 
 pub fn isFrameActive() bool {

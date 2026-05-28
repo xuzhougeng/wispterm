@@ -39,8 +39,8 @@ pub const vertex_shader_source: [*c]const u8 =
 pub const fragment_shader_source: [*c]const u8 =
     \\fragment float4 fragment_main(QuadOut in [[stage_in]],
     \\                              texture2d<float> text [[texture(0)]],
+    \\                              sampler s [[sampler(0)]],
     \\                              constant Uniforms& uniforms [[buffer(1)]]) {
-    \\    constexpr sampler s(address::clamp_to_edge, filter::linear);
     \\    float alpha = text.sample(s, in.texCoord).r;
     \\    return float4(uniforms.textColor.rgb, 1.0) * float4(1.0, 1.0, 1.0, alpha);
     \\}
@@ -162,8 +162,8 @@ pub const fg_vertex_source: [*c]const u8 =
 
 pub const fg_fragment_source: [*c]const u8 =
     \\fragment float4 fragment_main(FgOut in [[stage_in]],
-    \\                              texture2d<float> atlas [[texture(0)]]) {
-    \\    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    \\                              texture2d<float> atlas [[texture(0)]],
+    \\                              sampler s [[sampler(0)]]) {
     \\    float alpha = atlas.sample(s, in.texCoord).r;
     \\    return float4(in.color, 1.0) * float4(1.0, 1.0, 1.0, alpha);
     \\}
@@ -172,8 +172,8 @@ pub const fg_fragment_source: [*c]const u8 =
 /// Color (emoji) cell glyphs.
 pub const color_fg_fragment_source: [*c]const u8 =
     \\fragment float4 fragment_main(FgOut in [[stage_in]],
-    \\                              texture2d<float> atlas [[texture(0)]]) {
-    \\    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    \\                              texture2d<float> atlas [[texture(0)]],
+    \\                              sampler s [[sampler(0)]]) {
     \\    return atlas.sample(s, in.texCoord);
     \\}
 ;
@@ -182,8 +182,8 @@ pub const color_fg_fragment_source: [*c]const u8 =
 pub const simple_color_fragment_source: [*c]const u8 =
     \\fragment float4 fragment_main(QuadOut in [[stage_in]],
     \\                              texture2d<float> text [[texture(0)]],
+    \\                              sampler s [[sampler(0)]],
     \\                              constant Uniforms& uniforms [[buffer(1)]]) {
-    \\    constexpr sampler s(address::clamp_to_edge, filter::linear);
     \\    return text.sample(s, in.texCoord) * uniforms.scalars.y;
     \\}
 ;

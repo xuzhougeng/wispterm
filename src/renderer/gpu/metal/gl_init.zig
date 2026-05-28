@@ -93,7 +93,12 @@ pub fn renderQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32
     if (g_hooks) |hk| hk.fillQuadAlpha(x, y, w, h, color, alpha);
 }
 pub fn setProjection(width: f32, height: f32) void {
-    render_state.setViewport(0, 0, @intFromFloat(width), @intFromFloat(height));
+    // Do NOT touch the viewport here. The viewport (including its per-pane
+    // origin) is set by the caller via `gpu.state.setViewport` immediately
+    // before this call; overwriting it to (0,0,w,h) dropped the origin and made
+    // every split pane render at the window origin. Projection is width/height
+    // only — the origin is honored by the encoder viewport (see bridge.m), the
+    // same way the OpenGL backend relies on `glViewport`.
     if (g_hooks) |hk| hk.setProjection(width, height);
 }
 
