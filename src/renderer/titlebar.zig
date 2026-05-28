@@ -5,6 +5,7 @@
 //! primitives. Depends on font module for glyph loading and tab module for state.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const titlebar_layout = @import("titlebar_layout.zig");
 const AppWindow = @import("../AppWindow.zig");
 const ui_pipeline = AppWindow.ui_pipeline;
@@ -27,8 +28,10 @@ pub const SIDEBAR_RESIZE_HIT_WIDTH: f32 = 8;
 pub const SIDEBAR_ROW_H: f32 = 42;
 pub const SIDEBAR_HEADER_H: f32 = 46;
 pub const TITLEBAR_TOGGLE_W: f32 = 46;
-pub const TITLEBAR_CONFIG_W: f32 = 46;
-pub const TITLEBAR_HELP_W: f32 = 46;
+// On macOS the native menu bar (Phantty › Settings…, command palette) replaces
+// these in-titlebar buttons, so they collapse to zero width and are not drawn.
+pub const TITLEBAR_CONFIG_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
+pub const TITLEBAR_HELP_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
 pub threadlocal var g_sidebar_width: f32 = SIDEBAR_WIDTH;
 
 pub fn sidebarWidth() f32 {
@@ -424,33 +427,37 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
 
         const top_caption_start = window_width - top_caption_area_w;
         const config_x = top_caption_start - TITLEBAR_CONFIG_W;
-        const config_hovered = mouseInTitlebarRange(titlebar_h, config_x, config_x + TITLEBAR_CONFIG_W);
-        if (config_hovered) {
-            gl_init.renderQuad(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
-        }
-        if (font.icon_face != null) {
-            if (font.loadIconGlyph(0xE713)) |ch| {
-                renderIconGlyph(ch, config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color, 1.0);
+        if (TITLEBAR_CONFIG_W > 0) {
+            const config_hovered = mouseInTitlebarRange(titlebar_h, config_x, config_x + TITLEBAR_CONFIG_W);
+            if (config_hovered) {
+                gl_init.renderQuad(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
+            }
+            if (font.icon_face != null) {
+                if (font.loadIconGlyph(0xE713)) |ch| {
+                    renderIconGlyph(ch, config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color, 1.0);
+                } else {
+                    renderFallbackGearIcon(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
+                }
             } else {
                 renderFallbackGearIcon(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
             }
-        } else {
-            renderFallbackGearIcon(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, icon_color);
         }
 
         const help_x = config_x - TITLEBAR_HELP_W;
-        const help_hovered = mouseInTitlebarRange(titlebar_h, help_x, help_x + TITLEBAR_HELP_W);
-        if (help_hovered) {
-            gl_init.renderQuad(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, hover_bg);
-        }
-        if (font.icon_face != null) {
-            if (font.loadIconGlyph(0xEDA7)) |ch| {
-                renderIconGlyph(ch, help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color, 1.0);
+        if (TITLEBAR_HELP_W > 0) {
+            const help_hovered = mouseInTitlebarRange(titlebar_h, help_x, help_x + TITLEBAR_HELP_W);
+            if (help_hovered) {
+                gl_init.renderQuad(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, hover_bg);
+            }
+            if (font.icon_face != null) {
+                if (font.loadIconGlyph(0xEDA7)) |ch| {
+                    renderIconGlyph(ch, help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color, 1.0);
+                } else {
+                    renderFallbackHelpIcon(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color);
+                }
             } else {
                 renderFallbackHelpIcon(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color);
             }
-        } else {
-            renderFallbackHelpIcon(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, icon_color);
         }
 
         if (tab.activeTab()) |active_tab| {

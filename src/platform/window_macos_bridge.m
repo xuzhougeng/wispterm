@@ -726,75 +726,90 @@ void *phantty_macos_window_create(
     bool has_position,
     bool maximize
 ) {
-    @autoreleasepool {
-        phantty_macos_app_ensure();
+    __block PhanttyMacWindowState *result = NULL;
+    dispatch_block_t create_block = ^{
+        @autoreleasepool {
+            phantty_macos_app_ensure();
 
-        PhanttyMacWindowState *state = calloc(1, sizeof(PhanttyMacWindowState));
-        if (state == NULL) return NULL;
+            PhanttyMacWindowState *state = calloc(1, sizeof(PhanttyMacWindowState));
+            if (state == NULL) return;
 
-        NSRect content_rect = NSMakeRect(
-            has_position ? (CGFloat)x : 120.0,
-            has_position ? (CGFloat)y : 120.0,
-            width > 0 ? (CGFloat)width : 800.0,
-            height > 0 ? (CGFloat)height : 600.0
-        );
-        NSUInteger style =
-            NSWindowStyleMaskTitled |
-            NSWindowStyleMaskClosable |
-            NSWindowStyleMaskMiniaturizable |
-            NSWindowStyleMaskResizable;
-        NSWindow *window = [[NSWindow alloc]
-            initWithContentRect:content_rect
-                      styleMask:style
-                        backing:NSBackingStoreBuffered
-                          defer:NO];
-        if (window == nil) {
-            free(state);
-            return NULL;
+            NSRect content_rect = NSMakeRect(
+                has_position ? (CGFloat)x : 120.0,
+                has_position ? (CGFloat)y : 120.0,
+                width > 0 ? (CGFloat)width : 800.0,
+                height > 0 ? (CGFloat)height : 600.0
+            );
+            NSUInteger style =
+                NSWindowStyleMaskTitled |
+                NSWindowStyleMaskClosable |
+                NSWindowStyleMaskMiniaturizable |
+                NSWindowStyleMaskResizable;
+            NSWindow *window = [[NSWindow alloc]
+                initWithContentRect:content_rect
+                          styleMask:style
+                            backing:NSBackingStoreBuffered
+                              defer:NO];
+            if (window == nil) {
+                free(state);
+                return;
+            }
+
+            NSString *window_title = phantty_macos_title_from_utf16(title);
+            [window setTitle:window_title];
+            [window_title release];
+            [window setReleasedWhenClosed:NO];
+            [window setSharingType:NSWindowSharingReadOnly];
+
+            PhanttyMacContentView *view = [[PhanttyMacContentView alloc] initWithFrame:NSMakeRect(0, 0, content_rect.size.width, content_rect.size.height)];
+            CAMetalLayer *layer = [CAMetalLayer layer];
+            id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+            layer.device = device;
+            layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+            layer.framebufferOnly = YES;
+            if (device != nil) [device release];
+            [view setWantsLayer:YES];
+            [view setLayer:layer];
+            [view registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+            [window setContentView:view];
+
+            PhanttyMacWindowDelegate *delegate = [[PhanttyMacWindowDelegate alloc] init];
+            delegate.state = state;
+            [window setDelegate:delegate];
+
+            state->window = window;
+            state->view = view;
+            state->layer = [layer retain];
+            state->delegate = delegate;
+            state->close_requested = false;
+            state->ime_caret_x = 0;
+            state->ime_caret_y = 0;
+            state->ime_caret_height = 16;
+            state->ime_preedit[0] = 0;
+            state->ime_preedit_len = 0;
+            view.state = state;
+            phantty_macos_sync_layer(state);
+
+            [window setAcceptsMouseMovedEvents:YES];
+            [window makeKeyAndOrderFront:nil];
+            [window makeFirstResponder:view];
+            [NSApp activateIgnoringOtherApps:NO];
+            if (maximize) [window zoom:nil];
+            result = state;
         }
+    };
 
-        NSString *window_title = phantty_macos_title_from_utf16(title);
-        [window setTitle:window_title];
-        [window_title release];
-        [window setReleasedWhenClosed:NO];
-        [window setSharingType:NSWindowSharingReadOnly];
-
-        PhanttyMacContentView *view = [[PhanttyMacContentView alloc] initWithFrame:NSMakeRect(0, 0, content_rect.size.width, content_rect.size.height)];
-        CAMetalLayer *layer = [CAMetalLayer layer];
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        layer.device = device;
-        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        layer.framebufferOnly = YES;
-        if (device != nil) [device release];
-        [view setWantsLayer:YES];
-        [view setLayer:layer];
-        [view registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
-        [window setContentView:view];
-
-        PhanttyMacWindowDelegate *delegate = [[PhanttyMacWindowDelegate alloc] init];
-        delegate.state = state;
-        [window setDelegate:delegate];
-
-        state->window = window;
-        state->view = view;
-        state->layer = [layer retain];
-        state->delegate = delegate;
-        state->close_requested = false;
-        state->ime_caret_x = 0;
-        state->ime_caret_y = 0;
-        state->ime_caret_height = 16;
-        state->ime_preedit[0] = 0;
-        state->ime_preedit_len = 0;
-        view.state = state;
-        phantty_macos_sync_layer(state);
-
-        [window setAcceptsMouseMovedEvents:YES];
-        [window makeKeyAndOrderFront:nil];
-        [window makeFirstResponder:view];
-        [NSApp activateIgnoringOtherApps:NO];
-        if (maximize) [window zoom:nil];
-        return state;
+    // AppKit window construction (NSApplication/NSWindow) is main-thread only;
+    // macOS 26 raises NSInternalInconsistencyException from -[NSWindow _initContent:]
+    // when invoked off-main. Worker threads (e.g. App.requestNewWindow) marshal
+    // here via the main queue; if we are already on the main thread, run inline
+    // to avoid a dispatch_sync self-deadlock.
+    if ([NSThread isMainThread]) {
+        create_block();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), create_block);
     }
+    return result;
 }
 
 void phantty_macos_window_destroy(void *handle) {
