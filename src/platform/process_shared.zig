@@ -28,6 +28,18 @@ pub const WaitResult = union(enum) {
 
 pub const WNOHANG: u32 = 1;
 
+/// Result of polling a child for exit (used by ai_chat's local-command tool).
+pub const ChildExit = union(enum) {
+    /// Still running when the poll timeout elapsed.
+    running,
+    /// Exited; `code` is the exit status. On POSIX the zombie has been reaped
+    /// by this call, so callers must NOT waitpid() it again (set Child.term to
+    /// take std's cleanup-only fast path instead).
+    exited: u32,
+    /// No such child / reaped by a signal — treat as finished, code unknown.
+    gone,
+};
+
 /// Non-blocking-or-blocking child reap that works WITHOUT libc on Linux (raw
 /// `wait4` syscall) and via libc `waitpid` elsewhere. This matters because the
 /// fast native test build does not link libc, yet pulls in the POSIX process

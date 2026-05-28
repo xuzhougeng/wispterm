@@ -26,6 +26,11 @@ pub fn deinit(self: *Command) void {
     self.impl.deinit();
 }
 
+/// PID usable for an OS cwd query (proc_pidinfo / /proc), or null.
+pub fn cwdQueryId(self: *const Command) ?i32 {
+    return self.impl.cwdQueryId();
+}
+
 test "Command delegates lifecycle API to platform implementation" {
     const start_info = @typeInfo(@TypeOf(start)).@"fn";
     try std.testing.expectEqual(@as(usize, 4), start_info.params.len);

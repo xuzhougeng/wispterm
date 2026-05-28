@@ -32,8 +32,15 @@ typedef struct PhanttyMetalBufferSlot {
     unsigned int target;
 } PhanttyMetalBufferSlot;
 
-static PhanttyMetalBufferSlot phantty_metal_buffers[PHANTTY_METAL_MAX_BUFFERS];
-static unsigned int phantty_metal_next_buffer = 1;
+// These registries are _Thread_local: each AppWindow runs its render loop on
+// its own worker thread and the zig-side GPU handles (ui_pipeline, cell
+// pipelines, font atlas, …) are likewise threadlocal. Keeping the slot tables
+// and handle counters per-thread gives every window an independent handle
+// namespace, so two windows rendering concurrently can't clobber each other's
+// buffers/textures/pipelines or the active-texture binding. (Process-global
+// here was the multi-window "one window renders incomplete" bug.)
+static _Thread_local PhanttyMetalBufferSlot phantty_metal_buffers[PHANTTY_METAL_MAX_BUFFERS];
+static _Thread_local unsigned int phantty_metal_next_buffer = 1;
 
 typedef struct PhanttyMetalTextureSlot {
     id<MTLTexture> texture;
@@ -43,8 +50,8 @@ typedef struct PhanttyMetalTextureSlot {
     size_t bpp;
 } PhanttyMetalTextureSlot;
 
-static PhanttyMetalTextureSlot phantty_metal_textures[PHANTTY_METAL_MAX_TEXTURES];
-static unsigned int phantty_metal_next_texture = 1;
+static _Thread_local PhanttyMetalTextureSlot phantty_metal_textures[PHANTTY_METAL_MAX_TEXTURES];
+static _Thread_local unsigned int phantty_metal_next_texture = 1;
 
 typedef struct PhanttyMetalPipelineSlot {
     id<MTLRenderPipelineState> pipeline;
@@ -58,9 +65,9 @@ typedef struct PhanttyMetalPipelineSlot {
     } uniforms;
 } PhanttyMetalPipelineSlot;
 
-static PhanttyMetalPipelineSlot phantty_metal_pipelines[PHANTTY_METAL_MAX_PIPELINES];
-static unsigned int phantty_metal_next_pipeline = 1;
-static unsigned int phantty_metal_active_textures[16];
+static _Thread_local PhanttyMetalPipelineSlot phantty_metal_pipelines[PHANTTY_METAL_MAX_PIPELINES];
+static _Thread_local unsigned int phantty_metal_next_pipeline = 1;
+static _Thread_local unsigned int phantty_metal_active_textures[16];
 
 static void phantty_metal_set_error(char *error_buf, size_t error_buf_len, const char *message) {
     if (error_buf == NULL || error_buf_len == 0) return;

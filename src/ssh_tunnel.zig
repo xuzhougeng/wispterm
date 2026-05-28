@@ -1,6 +1,7 @@
 //! SSH loopback port forwarding for URLs opened from SSH terminal surfaces.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Surface = @import("Surface.zig");
 const browser_url = @import("browser_url.zig");
 const platform_process = @import("platform/process.zig");
@@ -259,6 +260,13 @@ fn pruneExitedTunnels() void {
 fn stopTunnelSlot(slot: *?SshTunnel) void {
     if (slot.*) |*tunnel| {
         if (childHasExited(&tunnel.child)) {
+            // On POSIX childHasExited() already reaped the zombie via
+            // waitpid(WNOHANG). Pre-set Child.term so child.wait() takes std's
+            // cleanup-only fast path instead of a second waitpid — that would
+            // hit ECHILD, which std.posix.waitpid treats as `unreachable`
+            // (abort, not catchable). On Windows the handle is not consumed,
+            // so leave term unset and let wait() close it.
+            if (builtin.os.tag != .windows) tunnel.child.term = .{ .Unknown = 0 };
             _ = tunnel.child.wait() catch {};
         } else {
             _ = tunnel.child.kill() catch {};
@@ -300,7 +308,10 @@ fn canConnectToLocalHostName(allocator: std.mem.Allocator, local_host: []const u
 }
 
 fn childHasExited(child: *const std.process.Child) bool {
-    return platform_process.childExited(child.id, 0);
+    return switch (platform_process.childExited(child.id, 0)) {
+        .running => false,
+        .exited, .gone => true,
+    };
 }
 
 fn reservePreferredLocalPort(preferred_port: u16) ?u16 {

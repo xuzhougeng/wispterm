@@ -5,6 +5,7 @@
 //! Phantty-specific session kind rendered by the window chrome.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ai_chat_input_text = @import("ai_chat_input_text.zig");
 const input_key = @import("input/key.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
@@ -3440,7 +3441,24 @@ fn runArgv(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const
     var timed_out = false;
     var canceled = false;
     while (true) {
-        if (platform_process.childExited(child.id, 25)) break;
+        switch (platform_process.childExited(child.id, 25)) {
+            .running => {},
+            .exited => |code| {
+                // On POSIX childExited() already reaped the zombie via
+                // waitpid(WNOHANG). Pre-set Child.term so the child.wait()
+                // below takes std's cleanup-only fast path instead of calling
+                // waitpid() a second time — that second wait would hit ECHILD,
+                // which Zig's std.posix.waitpid treats as `unreachable` (abort).
+                // On Windows the process handle is NOT consumed by the poll, so
+                // leave term unset and let child.wait() close the handle.
+                if (builtin.os.tag != .windows) child.term = .{ .Exited = @intCast(code) };
+                break;
+            },
+            .gone => {
+                if (builtin.os.tag != .windows) child.term = .{ .Unknown = 0 };
+                break;
+            },
+        }
         if (session) |s| {
             if (sessionCancelled(s)) {
                 canceled = true;

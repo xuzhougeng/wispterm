@@ -1,10 +1,26 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #import <CoreFoundation/CoreFoundation.h>
+#include <libproc.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Query the current working directory of a live process by pid (used to
+// resolve relative preview paths for shells that don't emit OSC 7, e.g. zsh).
+// Writes the path into `buf` and returns its length, or -1 on failure.
+int32_t phantty_macos_proc_cwd(int32_t pid, char *buf, int32_t buf_len) {
+    if (pid <= 0 || buf == NULL || buf_len <= 0) return -1;
+    struct proc_vnodepathinfo vpi;
+    const int ret = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, sizeof(vpi));
+    if (ret <= 0) return -1;
+    const char *path = vpi.pvi_cdir.vip_path;
+    const size_t len = strlen(path);
+    if (len == 0 || (int32_t)len >= buf_len) return -1;
+    memcpy(buf, path, len);
+    return (int32_t)len;
+}
 
 __attribute__((weak)) bool phantty_macos_window_post_message(void *handle, uint32_t message, uintptr_t wparam, intptr_t lparam) {
     (void)handle;

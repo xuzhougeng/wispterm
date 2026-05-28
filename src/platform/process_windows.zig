@@ -24,18 +24,32 @@ pub fn waitForPid(pid: u32, timeout_ms: u32, diagnostic: ?*shared.WaitForPidDiag
     }
 }
 
-pub fn childExited(id: std.process.Child.Id, timeout_ms: u32) bool {
+pub fn childExited(id: std.process.Child.Id, timeout_ms: u32) shared.ChildExit {
     const windows = std.os.windows;
     windows.WaitForSingleObject(id, timeout_ms) catch |err| switch (err) {
-        error.WaitTimeOut => return false,
-        else => return false,
+        error.WaitTimeOut => return .running,
+        else => return .gone,
     };
-    return true;
+    // The process object is not consumed by WaitForSingleObject, so the caller's
+    // std.process.Child.wait() still closes the handle later — we only report
+    // the code here. (On Windows, callers must NOT pre-set Child.term, or the
+    // process handle would leak.)
+    var code: u32 = 0;
+    if (GetExitCodeProcess(id, &code) == 0) return .gone;
+    return .{ .exited = code };
 }
 
 pub fn terminateChild(id: std.process.Child.Id) void {
     const windows = std.os.windows;
     windows.TerminateProcess(id, 1) catch {};
+}
+
+pub fn processCwd(allocator: std.mem.Allocator, pid: i32) ?[]u8 {
+    // Windows resolves local relative preview paths via OSC 7 (pwsh shell
+    // integration), so a process-cwd query isn't needed here.
+    _ = allocator;
+    _ = pid;
+    return null;
 }
 
 pub fn writeAllToPipe(file: std.fs.File, data: []const u8) shared.PipeWriteError!void {
@@ -91,6 +105,11 @@ extern "kernel32" fn WaitForSingleObject(
     hHandle: std.os.windows.HANDLE,
     dwMilliseconds: u32,
 ) callconv(.winapi) u32;
+
+extern "kernel32" fn GetExitCodeProcess(
+    hProcess: std.os.windows.HANDLE,
+    lpExitCode: *u32,
+) callconv(.winapi) i32;
 
 fn setWaitDiagnostic(diagnostic: ?*shared.WaitForPidDiagnostic, operation: []const u8, code: u32, wait_result: ?u32) void {
     if (diagnostic) |diag| {
