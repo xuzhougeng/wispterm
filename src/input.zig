@@ -170,7 +170,7 @@ test "input: WeChat QR panel consumes text input while visible" {
     try std.testing.expect(weixinQrPanelConsumesChar());
 }
 
-test "input: Ctrl+Shift+P toggles command center" {
+test "input: command palette shortcut toggles command center" {
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
     defer overlays.commandPaletteClose();
@@ -178,14 +178,25 @@ test "input: Ctrl+Shift+P toggles command center" {
     AppWindow.g_keybinds = keybind.Set.defaults();
     overlays.commandPaletteClose();
 
-    handleKey(.{ .key_code = 'P', .ctrl = true, .shift = true, .alt = false });
+    // macOS migrates app shortcuts to Cmd (the super modifier); other platforms
+    // keep Ctrl. So the command palette is Cmd+Shift+P on macOS, Ctrl+Shift+P else.
+    const is_macos = builtin.os.tag == .macos;
+    const palette_key = platform_input.KeyEvent{
+        .key_code = 'P',
+        .ctrl = !is_macos,
+        .shift = true,
+        .alt = false,
+        .super = is_macos,
+    };
+
+    handleKey(palette_key);
     try std.testing.expect(overlays.commandPaletteVisible());
 
-    handleKey(.{ .key_code = 'P', .ctrl = true, .shift = true, .alt = false });
+    handleKey(palette_key);
     try std.testing.expect(!overlays.commandPaletteVisible());
 }
 
-test "macOS UI smoke: Ctrl+Shift+B toggles the tab sidebar" {
+test "macOS UI smoke: Cmd+Shift+B toggles the tab sidebar" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
     const previous_keybinds = AppWindow.g_keybinds;
@@ -196,10 +207,19 @@ test "macOS UI smoke: Ctrl+Shift+B toggles the tab sidebar" {
     AppWindow.g_keybinds = keybind.Set.defaults();
     tab.g_sidebar_visible = false;
 
-    handleKey(.{ .key_code = 'B', .ctrl = true, .shift = true, .alt = false });
+    // macOS uses Cmd (super) for the sidebar toggle, not Ctrl.
+    const sidebar_key = platform_input.KeyEvent{
+        .key_code = 'B',
+        .ctrl = false,
+        .shift = true,
+        .alt = false,
+        .super = true,
+    };
+
+    handleKey(sidebar_key);
     try std.testing.expect(tab.g_sidebar_visible);
 
-    handleKey(.{ .key_code = 'B', .ctrl = true, .shift = true, .alt = false });
+    handleKey(sidebar_key);
     try std.testing.expect(!tab.g_sidebar_visible);
 }
 

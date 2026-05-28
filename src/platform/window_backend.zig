@@ -403,6 +403,20 @@ pub fn clearCloseRequested(window: *Window) void {
     window.close_requested = false;
 }
 
+fn closeRequestPromptsConfirmationForBackend(backend: Backend) bool {
+    // macOS follows traffic-light semantics: the red close button tears down
+    // this window immediately with no in-app prompt, and closing the last
+    // window does not end the process — App.run() keeps the NSApp alive so the
+    // Dock icon can re-open a window. Other backends confirm before closing.
+    return backend != .macos;
+}
+
+/// Whether an OS window-close request should open an in-app confirmation prompt
+/// before the window is torn down, instead of closing immediately.
+pub fn closeRequestPromptsConfirmation() bool {
+    return closeRequestPromptsConfirmationForBackend(comptime backendForOs(builtin.os.tag));
+}
+
 pub fn consumeDpiChanged(window: *Window) bool {
     const changed = window.dpi_changed;
     window.dpi_changed = false;
@@ -786,4 +800,10 @@ test "platform window backend selects backend by target OS" {
     try std.testing.expectEqual(Backend.windows, backendForOs(.windows));
     try std.testing.expectEqual(Backend.unsupported, backendForOs(.linux));
     try std.testing.expectEqual(Backend.macos, backendForOs(.macos));
+}
+
+test "platform window backend resolves close-request confirmation policy per backend" {
+    try std.testing.expect(closeRequestPromptsConfirmationForBackend(.windows));
+    try std.testing.expect(closeRequestPromptsConfirmationForBackend(.unsupported));
+    try std.testing.expect(!closeRequestPromptsConfirmationForBackend(.macos));
 }

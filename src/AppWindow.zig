@@ -5,7 +5,6 @@
 //! will be converted to struct fields in a future refactoring step.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const ghostty_vt = @import("ghostty-vt");
 const freetype = @import("freetype");
 const Config = @import("config.zig");
@@ -3736,11 +3735,10 @@ fn runMainLoop(self: *AppWindow) !void {
         }
         if (window_backend.closeRequested(win)) {
             window_backend.clearCloseRequested(win);
-            if (builtin.os.tag == .macos) {
-                // macOS semantics: the red traffic-light closes this window
-                // immediately. Closing the last window does NOT terminate the
-                // process — App.run() keeps the NSApp alive so the Dock icon
-                // can re-open a window (handled by PhanttyAppDelegate).
+            if (!window_backend.closeRequestPromptsConfirmation()) {
+                // Backend tears the window down immediately with no in-app
+                // prompt; closing this window does not necessarily end the app
+                // session (the backend owns process lifecycle).
                 g_should_close = true;
                 running = false;
                 continue;
