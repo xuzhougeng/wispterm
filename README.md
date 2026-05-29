@@ -3,12 +3,7 @@
 **WispTerm**, formerly Phantty, is a cross-platform terminal workspace for remote development and AI agent workflows. It is written in Zig and powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
 
 > [!NOTE]
-> This repository is a fork of [arya-s/phantty](https://github.com/arya-s/phantty),
-> with additional features layered on top: an embedded WebView2 browser panel,
-> a file explorer with Markdown/text/table/image preview, AI Agent sessions with
-> Markdown export,
-> an opt-in remote-access client,
-> Kitty Graphics image protocol support, and a configurable background image.
+> WispTerm is a fork of [arya-s/phantty](https://github.com/arya-s/phantty); see [Credits](#credits) below.
 
 ## Features
 
@@ -210,7 +205,11 @@ __wispterm_report_cwd
 ## Credits
 
 - Original project: [arya-s/phantty](https://github.com/arya-s/phantty) - the
-Zig + libghostty-vt foundation and the Windows terminal core.
+Zig + libghostty-vt foundation and the Windows terminal core. WispTerm builds on
+that base and layers additional features on top: an embedded WebView2 browser
+panel, a file explorer with Markdown/text/table/image preview, AI Agent sessions
+with Markdown export, an opt-in remote-access client, Kitty Graphics image
+protocol support, and a configurable background image.
 - Terminal emulation: [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)
 via `libghostty-vt`.
 - Image decoding: [stb_image](https://github.com/nothings/stb) (vendored
