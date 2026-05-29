@@ -1,6 +1,6 @@
-# Phantty
+# WispTerm
 
-A terminal written in Zig, powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation. It ships for Windows and, as of v0.35.0, macOS (Apple Silicon and Intel) — macOS support is new and may still have bugs (see the note below). A Linux port is in progress.
+**WispTerm**, formerly Phantty, is a cross-platform terminal workspace for remote development and AI agent workflows. It is written in Zig and powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
 
 > [!NOTE]
 > This repository is a fork of [arya-s/phantty](https://github.com/arya-s/phantty),
@@ -26,7 +26,7 @@ A terminal written in Zig, powered by [libghostty-vt](https://github.com/ghostty
 - **Opt-in remote access** - share a session key over a Cloudflare-hosted relay (disabled by default)
 
 > [!NOTE]
-> Phantty ships for **Windows** and, as of v0.35.0, **macOS** (Apple Silicon and
+> WispTerm ships for **Windows** and, as of v0.35.0, **macOS** (Apple Silicon and
 > Intel). **macOS support is new and may still have bugs** — the AppKit/Metal,
 > multi-window, and rendering paths are young and can misbehave in scenarios we
 > haven't covered yet. If you need rock-solid daily stability on macOS, prefer
@@ -56,7 +56,7 @@ macOS (requires macOS 13+ and Zig 0.15.2):
 
 ```bash
 zig build macos-app -Dtarget=aarch64-macos   # Apple Silicon .app bundle (use x86_64-macos on Intel)
-open zig-out/bin/Phantty.app                  # launch the built app
+open zig-out/bin/WispTerm.app                  # launch the built app
 ```
 
 The `Makefile` may still exist as a convenience wrapper, but normal Windows
@@ -66,10 +66,10 @@ For architecture, packaging, and release details, see [Development, architecture
 
 ## Usage
 
-On Windows run `phantty.exe`; on macOS run `Phantty.app/Contents/MacOS/phantty` (or launch `Phantty.app` directly — passing CLI flags requires the binary path).
+On Windows run `wispterm.exe`; on macOS run `WispTerm.app/Contents/MacOS/wispterm` (or launch `WispTerm.app` directly — passing CLI flags requires the binary path).
 
 ```bash
-phantty [options]
+wispterm [options]
 
 Options:
   --font, -f <name>            Set font (default: embedded fallback)
@@ -90,7 +90,7 @@ Options:
   --config <path>              Use this file as the main config
   --config-path <path>         Alias for --config
   --config-file <path>         Include another config file (prefix ? for optional)
-  --version, -v                Print the Phantty version and exit
+  --version, -v                Print the WispTerm version and exit
   --show-config-path           Print the resolved main config path
   --list-fonts                 List available system fonts
   --list-themes                List available themes
@@ -160,51 +160,51 @@ and run:
 - `Export AI Chat Markdown Clean` to save a publishing-friendly Markdown file
   with only the user inputs and the final AI answer.
 
-Phantty opens a save dialog with a `.md` filename. After saving, the
+WispTerm opens a save dialog with a `.md` filename. After saving, the
 saved path is copied to the clipboard.
 
 ## SSH current directory for downloads and uploads
 
-Phantty can download a relative file path from an SSH terminal output, and upload
+WispTerm can download a relative file path from an SSH terminal output, and upload
 dragged files into the interactive SSH shell's current directory, only when the
 remote shell reports its current directory with OSC 7. This is the same terminal
 convention used by Ghostty shell integration.
 
 If OSC 7 is missing, helper `ssh.exe` / `scp.exe` commands start a fresh SSH
 session and usually see the login directory, not the directory you `cd`'d to in
-the interactive shell. In that case Phantty shows `SSH cwd unknown; click for
+the interactive shell. In that case WispTerm shows `SSH cwd unknown; click for
 setup` instead of guessing `~/file`.
 
 Add one of these snippets to the remote shell startup file, then start a new
-Phantty SSH session.
+WispTerm SSH session.
 
 For Bash, add this to `~/.bashrc`:
 
 ```bash
-__phantty_report_cwd() {
+__wispterm_report_cwd() {
   printf '\033]7;file://%s%s\a' "${HOSTNAME:-localhost}" "$PWD"
 }
-PROMPT_COMMAND="__phantty_report_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+PROMPT_COMMAND="__wispterm_report_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 ```
 
 For Zsh, add this to `~/.zshrc`:
 
 ```zsh
-__phantty_report_cwd() {
+__wispterm_report_cwd() {
   printf '\033]7;file://%s%s\a' "${HOST:-localhost}" "$PWD"
 }
 autoload -Uz add-zsh-hook
-add-zsh-hook chpwd __phantty_report_cwd
-add-zsh-hook precmd __phantty_report_cwd
+add-zsh-hook chpwd __wispterm_report_cwd
+add-zsh-hook precmd __wispterm_report_cwd
 ```
 
 For Fish, add this to `~/.config/fish/config.fish`:
 
 ```fish
-function __phantty_report_cwd --on-variable PWD
+function __wispterm_report_cwd --on-variable PWD
     printf '\e]7;file://%s%s\a' (hostname) (string escape --style=url $PWD)
 end
-__phantty_report_cwd
+__wispterm_report_cwd
 ```
 
 ## Credits

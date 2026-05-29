@@ -295,7 +295,7 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
          registered by `ui_pipeline.init()` (the indirection is needed because
          `test-metal`'s module root sits inside `gpu/metal/`, which forbids
          walking out to `renderer/ui_pipeline.zig` with a static `@import`).
-      2. `phantty_metal_buffer_upload` reused the same `MTLBuffer` storage
+      2. `wispterm_metal_buffer_upload` reused the same `MTLBuffer` storage
          across uploads (`memcpy([buffer contents])`). Metal's
          `setVertexBuffer:offset:atIndex:` captures the buffer pointer at
          encoding time but the GPU only reads its bytes at command-buffer
@@ -332,10 +332,10 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
 > **Architecture note vs. Ghostty.** Ghostty renders each terminal surface into
 > its **own** `NSView` + `CAMetalLayer`; AppKit's split container lays the views
 > out, so each Metal renderer instance owns a drawable that *is* the pane — it
-> never needs per-pane viewport/scissor inside one drawable. Phantty instead
+> never needs per-pane viewport/scissor inside one drawable. WispTerm instead
 > keeps **one window / one `CAMetalLayer` / one drawable** and renders every pane
 > in a loop with per-pane viewport + scissor (symmetric with its Windows OpenGL
-> path: `AppWindow.zig:3893-3947`). **Decision: keep Phantty's single-drawable
+> path: `AppWindow.zig:3893-3947`). **Decision: keep WispTerm's single-drawable
 > model and make Metal honor `setViewport:`/`setScissorRect:` per draw** (Option
 > A — symmetric with OpenGL, low risk, no AppKit/host rework). Option B (one
 > layer per surface, Ghostty-style) is a much larger host refactor and is *not*
@@ -347,9 +347,9 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
 > `setScissorRect` — the drawable *is* the pane, so padding rides in the
 > projection/cell coordinates and clipping is unneeded. cmux is a Ghostty-based
 > macOS terminal (vertical tabs, splits, embedded browser, agent socket API) and
-> inherits this rendering model. Phantty's single-drawable choice is the
+> inherits this rendering model. WispTerm's single-drawable choice is the
 > deliberate trade for sharing one render loop with Windows; the cost is that
-> Phantty **must** implement the per-draw `setViewport:`/`setScissorRect:` that
+> WispTerm **must** implement the per-draw `setViewport:`/`setScissorRect:` that
 > Ghostty sidesteps. That is standard Metal usage (an encoder's viewport and
 > scissor are mutable between draws), so **the architecture is sound — only the
 > application step is missing.** Keep Option A; revisit per-surface layers
@@ -358,7 +358,7 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
 
 - [x] **P0 — Apply viewport origin to the encoder (fixes split positioning).**
       Done. `render_state.setViewport` now forwards to the C bridge
-      (`phantty_metal_set_viewport`); `phantty_metal_apply_viewport_scissor`
+      (`wispterm_metal_set_viewport`); `wispterm_metal_apply_viewport_scissor`
       emits `[encoder setViewport:]` before every draw with the GL bottom-left →
       Metal top-left flip (`originY = drawable_h - y - h`, drawable size captured
       at frame begin). `metal/gl_init.zig:setProjection` no longer clobbers the
@@ -369,7 +369,7 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       regression). **On-device split visual check still pending.**
 - [x] **P0 — Apply scissor to the encoder (fixes clip overflow).** Done.
       `setScissor`/`disableScissor`/`restoreScissor` forward to
-      `phantty_metal_set_scissor`; the apply helper emits
+      `wispterm_metal_set_scissor`; the apply helper emits
       `[encoder setScissorRect:]` per draw — enabled → recorded box (y-flipped),
       disabled → full drawable (Metal has no "scissor off"). The rect is
       **clamped to the drawable** (an out-of-bounds `MTLScissorRect` raises and
@@ -378,9 +378,9 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       `markdown_preview_renderer.zig:610-614` and `ui_pipeline.zig:110-121`.
 - [x] **P1 — Blend modes as pipeline variants (fixes color-emoji / bg image).**
       Done. `pipeline_create` now builds three `MTLRenderPipelineState` variants
-      per shader via `phantty_metal_make_pso` (alpha `(src_alpha,1-src_alpha)` /
+      per shader via `wispterm_metal_make_pso` (alpha `(src_alpha,1-src_alpha)` /
       premultiplied `(one,1-src_alpha)` / blending-disabled);
-      `phantty_metal_set_blend_enabled`/`phantty_metal_set_blend_mode` record the
+      `wispterm_metal_set_blend_enabled`/`wispterm_metal_set_blend_mode` record the
       state and `encode_draw` selects the matching PSO. `render_state.setBlendMode`/
       `setBlendEnabled` now forward instead of no-op'ing, so `cell_renderer.zig:425`
       (premultiplied color emoji) and `background_image.zig:215`
@@ -392,7 +392,7 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       `dst=one_minus_source_alpha`; comment: "We always use premultiplied alpha
       blending for now") — and every fragment shader emits premultiplied color.
       That removes `setBlendMode` entirely and structurally avoids the
-      color-emoji double-multiply. **Long-term Phantty should consider converging
+      color-emoji double-multiply. **Long-term WispTerm should consider converging
       on this** (rewrite each MSL fragment shader to output premultiplied RGB, so
       one PSO blend config serves all draws) instead of carrying alpha +
       premultiplied PSO variants; short-term the variants are the lower-risk fix.*
@@ -423,7 +423,7 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       Shadertoy uniform struct), not as part of D1.y's render-correctness scope.
       `g_post_enabled` defaults off and `fbo.zig` is currently un-wired, so there
       is no regression today.
-- [x] **P3 — Frame throughput.** Done. `phantty_metal_frame_end` no longer calls
+- [x] **P3 — Frame throughput.** Done. `wispterm_metal_frame_end` no longer calls
       `waitUntilCompleted` every frame (that serialized CPU and GPU with zero
       overlap); GPU errors are now reported via `addCompletedHandler` and our own
       command-buffer/drawable refs are released right after `commit` (Metal
@@ -458,7 +458,7 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       smoke paths.
 - [x] Reconcile the app-drawn titlebar / caption buttons with macOS traffic-light
       conventions. macOS uses AppKit's titlebar/traffic lights (`titlebar_height`
-      and caption button width are zero), so Phantty's app-drawn titlebar path
+      and caption button width are zero), so WispTerm's app-drawn titlebar path
       skips itself while Windows keeps the custom caption metrics.
 
 **D3 — CoreText fonts** (`font_discovery_macos.zig`, `font_backend_macos.zig`)
@@ -482,8 +482,8 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
       cursor, display, text, global hotkeys (Carbon `RegisterEventHotKey`),
       AppKit file drops, and update-package current-package detection; existing
       portable/no-op seams cover session_lock and console on macOS; dirs already
-      resolve to `~/Library/Application Support/phantty`; config watching now
-      uses kqueue `EVFILT_VNODE`. Phantty's current notification seam is bell +
+      resolve to `~/Library/Application Support/wispterm`; config watching now
+      uses kqueue `EVFILT_VNODE`. WispTerm's current notification seam is bell +
       window attention (`NSBeep`/`requestUserAttention`); Ghostty's broader
       desktop-notification path uses `UNUserNotificationCenter` in its AppKit
       layer. Native proof: `zig build test-macos-services`,
@@ -517,21 +517,21 @@ services, and `.app` packaging. Ghostty reference: `src/renderer/metal/`,
 - [x] `.app` bundle + `Info.plist`; code signing + notarization; `.dmg`. Updater
       story (adapt the existing portable updater or adopt Sparkle).
       Implemented a `macos-dist` build step, `packaging/macos/package.sh`, and
-      `packaging/macos/Phantty.entitlements`. Local builds ad-hoc sign with
-      hardened runtime and create `zig-out/dist/macos/phantty-macos-vX.Y.Z.dmg`;
-      release builds set `PHANTTY_MACOS_SIGN_IDENTITY` and
-      `PHANTTY_MACOS_NOTARY_PROFILE` to enable Developer ID signing,
+      `packaging/macos/WispTerm.entitlements`. Local builds ad-hoc sign with
+      hardened runtime and create `zig-out/dist/macos/wispterm-macos-vX.Y.Z.dmg`;
+      release builds set `WISPTERM_MACOS_SIGN_IDENTITY` and
+      `WISPTERM_MACOS_NOTARY_PROFILE` to enable Developer ID signing,
       `notarytool submit --wait`, and stapling. The macOS updater story is:
       initial macOS releases publish a matching DMG asset selected by the
-      existing update checker (`phantty-macos-{tag}.dmg`) and saved to
+      existing update checker (`wispterm-macos-{tag}.dmg`) and saved to
       Downloads; a full automatic updater should follow Ghostty's Sparkle
       approach once the macOS release-update flow is ready for unattended
       replacement. Ghostty
       reference: its release workflow signs nested code and app with hardened
       runtime, creates a DMG, notarizes/staples app + DMG, and generates Sparkle
       appcast metadata. Proof: `zig build macos-dist -Dtarget=aarch64-macos`,
-      `codesign -dvvv --entitlements :- zig-out/bin/Phantty.app`,
-      `hdiutil verify zig-out/dist/macos/phantty-macos-v0.32.0.dmg`,
+      `codesign -dvvv --entitlements :- zig-out/bin/WispTerm.app`,
+      `hdiutil verify zig-out/dist/macos/wispterm-macos-v0.32.0.dmg`,
       `zig test build.zig`, `zig build test`, `zig build test-macos-services`,
       `zig build test-full`, and `zig build test-full -Dtarget=aarch64-macos`.
 
@@ -540,12 +540,12 @@ layer neutralization) → D2 (AppKit host + drawable seam) → D3 (CoreText) →
 macOS pty constants in D4.** Services / webview / packaging follow.
 
 **D7 — Native macOS app menu (NSMenu)**
-- [x] **D7.1 NSMenu skeleton.** Phantty had no application menu on macOS — the
+- [x] **D7.1 NSMenu skeleton.** WispTerm had no application menu on macOS — the
       only way to reach the command center, settings, or sidebar toggle was the
       keyboard shortcut, which gets eaten by IME/remote-control software
       (ToDesk, etc.). Added a thin Objective-C bridge
       (`src/platform/menu_macos_bridge.m`) that builds the standard macOS
-      menu set (`Phantty / File / Edit / View / Window`) with menu items wired
+      menu set (`WispTerm / File / Edit / View / Window`) with menu items wired
       to the existing keybind `Action` enum: Open Command Center
       (`⌃⇧P`), Settings… (`⌘,`), New Tab (`⌃⇧T`), New Window (`⌃⇧N`),
       Toggle Tab Sidebar (`⌃⇧B`), Toggle File Explorer (`⌃⇧⌥E`), Split Right
@@ -564,7 +564,7 @@ macOS pty constants in D4.** Services / webview / packaging follow.
       configured shortcut text from `keybind.Set` instead of hardcoded
       equivalents (so user remaps show in the menu).
 - [ ] **D7.3 Localize menu titles.** Currently English-only; add a localized
-      string table that matches the rest of Phantty's locale story.
+      string table that matches the rest of WispTerm's locale story.
 
 ### Phase D8 — macOS window lifecycle, native title bar & CJK fallback
 
@@ -576,7 +576,7 @@ verification in progress.
 
 - [x] **D8.1 Close button keeps the process alive (Terminal.app / VS Code
       semantics).** The red traffic-light used to tear down the whole process.
-      Added `PhanttyAppDelegate` in `window_macos_bridge.m`:
+      Added `WispTermAppDelegate` in `window_macos_bridge.m`:
       `applicationShouldTerminateAfterLastWindowClosed:` → NO,
       `applicationShouldHandleReopen:hasVisibleWindows:` sets an atomic reopen
       flag, `applicationShouldTerminate:` sets a quit flag and `performClose:`-es
@@ -602,7 +602,7 @@ verification in progress.
       loop on a spawned thread but called NSWindow APIs directly, tripping
       AppKit's "Must only be used from the main thread" assertion (crashed in
       `setContentSize` → `-[NSWMWindowCoordinator performTransactionUsingBlock:]`
-      on resize/reopen). Added `phantty_macos_run_on_main(block)` (inline on the
+      on resize/reopen). Added `wispterm_macos_run_on_main(block)` (inline on the
       main thread, else `dispatch_sync` to the main queue) and wrapped
       `set_content_size` / `set_frame` / `show` / `hide` / `make_key` / `zoom` /
       `destroy`. `window_poll` only pumps `[NSApp nextEvent]` on the main thread
@@ -617,7 +617,7 @@ verification in progress.
       atomic head/count) before relying on this under load — watch for dropped
       keystrokes / input lag as the symptom.
 - [x] **D8.4 Unified title bar + traffic-light-aware toggle placement.** macOS no
-      longer shows the empty native title strip above Phantty's own bar. NSWindow
+      longer shows the empty native title strip above WispTerm's own bar. NSWindow
       gains `NSWindowStyleMaskFullSizeContentView` + `titlebarAppearsTransparent`
       + `titleVisibility = NSWindowTitleHidden`, so the app-drawn titlebar extends
       under the traffic lights (Codex / VS Code style). `titlebar.zig` reserves a
@@ -645,7 +645,7 @@ verification in progress.
       cleanly.
 - [ ] **D8.6 Window position persistence is wrong on macOS (known bug, not yet
       fixed).** `window_state.zig` saves `rect.left/top`, but on macOS
-      `phantty_macos_rect_from_nsrect` stores `NSMinY` (the window's *bottom* edge
+      `wispterm_macos_rect_from_nsrect` stores `NSMinY` (the window's *bottom* edge
       in AppKit's bottom-left origin) into the `top` field. Combined with
       `isPointOnAnyDisplay` only validating a single `(x+50, y+50)` point, a
       previously off-screen / multi-monitor position can be restored off-screen.
@@ -661,7 +661,7 @@ verification in progress.
 | Terminal text rendering | ✅ works (cell pipeline + CoreText/FreeType) |
 | CJK / 中文 rendering | ✅ fixed in D8.5 (public-font fallback; PingFang reserved-ttc was unloadable) |
 | Default shell | ✅ `zsh` (was `sh` until 2026-05-27) |
-| NSMenu (Phantty / File / Edit / View / Window) | ✅ visible, clickable, key equivalents fire |
+| NSMenu (WispTerm / File / Edit / View / Window) | ✅ visible, clickable, key equivalents fire |
 | Window title bar | ✅ unified — app-drawn bar extends under traffic lights (D8.4) |
 | Close button (red) | ✅ closes window, keeps process in Dock; Dock icon reopens (D8.1) |
 | cmd+Q | ✅ tears down the whole app (D8.1) |

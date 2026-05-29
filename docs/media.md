@@ -42,7 +42,7 @@ restarting. Clearing the value removes the wallpaper.
 
 ## Remote Image Viewing
 
-Phantty accepts Kitty Graphics protocol image output, so remote shells can
+WispTerm accepts Kitty Graphics protocol image output, so remote shells can
 display inline images if they emit `imgcat`/`pdfcat` style escape sequences.
 
 This repository includes two helper scripts for server-side use:
@@ -63,4 +63,4 @@ Notes:
 
 - `imgcat.py` sends PNG directly. Non-PNG inputs require Pillow or ImageMagick.
 - `pdfcat.py` requires one of `pdftoppm`, `mutool`, or ImageMagick on the server.
-- The scripts are meant to run on the remote machine inside Phantty, not on Windows host side.
+- The scripts are meant to run on the remote machine inside WispTerm, not on Windows host side.

@@ -3,23 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phantty Themes — Built-in Ghostty-compatible themes</title>
-  <meta name="description" content="Browse Phantty's built-in Ghostty-compatible terminal themes with live color previews and copyable config names.">
-  <meta property="og:title" content="Phantty Themes">
-  <meta property="og:description" content="Browse Phantty's built-in terminal themes with live color previews.">
-  <meta property="og:image" content="assets/phantty.png">
+  <title>WispTerm Themes — Built-in Ghostty-compatible themes</title>
+  <meta name="description" content="Browse WispTerm's built-in Ghostty-compatible terminal themes with live color previews and copyable config names.">
+  <meta property="og:title" content="WispTerm Themes">
+  <meta property="og:description" content="Browse WispTerm's built-in terminal themes with live color previews.">
+  <meta property="og:image" content="assets/wispterm.png">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#1b1e28">
   <link rel="icon" href="assets/favicon.ico">
-  <link rel="apple-touch-icon" href="assets/phantty.png">
+  <link rel="apple-touch-icon" href="assets/wispterm.png">
   <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <header class="site-header">
     <div class="container nav">
       <a class="brand" href="./">
-        <img src="assets/phantty.png" alt="" width="28" height="28">
-        <span>Phantty</span>
+        <img src="assets/wispterm.png" alt="" width="28" height="28">
+        <span>WispTerm</span>
       </a>
       <nav class="nav-links">
         <a href="./#features">Features</a>
@@ -33,7 +33,7 @@
           <a class="lang active" href="./themes.html" aria-current="page">EN</a>
           <a class="lang" href="./zh.html">中文</a>
         </span>
-        <a class="github" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+        <a class="github" href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </div>
   </header>
@@ -42,8 +42,8 @@
     <section class="theme-hero">
       <div class="container">
         <p class="eyebrow">Built-in theme gallery</p>
-        <h1>Find a Phantty theme</h1>
-        <p class="tagline">Preview every embedded Ghostty-compatible theme, then copy the exact config line into <code>%APPDATA%\phantty\config</code>.</p>
+        <h1>Find a WispTerm theme</h1>
+        <p class="tagline">Preview every embedded Ghostty-compatible theme, then copy the exact config line into <code>%APPDATA%\wispterm\config</code>.</p>
         <div class="theme-copy-line" aria-label="Theme config example">
           <code>theme = <span id="featured-theme-name">Poimandres</span></code>
           <button class="copy-config" type="button" data-copy-theme="Poimandres">Copy</button>
@@ -76,14 +76,14 @@
   <footer class="site-footer">
     <div class="container footer-inner">
       <div>
-        <img src="assets/phantty.png" alt="" width="20" height="20">
-        <span>Phantty · MIT License</span>
+        <img src="assets/wispterm.png" alt="" width="20" height="20">
+        <span>WispTerm · MIT License</span>
       </div>
       <div class="footer-links">
         <a href="./">Home</a>
         <a href="./ai.html">AI</a>
-        <a href="https://github.com/xuzhougeng/phantty/releases" target="_blank" rel="noopener">Releases</a>
-        <a href="https://github.com/xuzhougeng/phantty/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/xuzhougeng/wispterm/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/xuzhougeng/wispterm/issues" target="_blank" rel="noopener">Issues</a>
         <a href="https://ghostty.org/" target="_blank" rel="noopener">Ghostty</a>
       </div>
     </div>
@@ -91,7 +91,7 @@
 
   <script src="themes-data.js"></script>
   <script>
-    const themes = window.PHANTTY_THEMES || [];
+    const themes = window.WISPTERM_THEMES || [];
     const grid = document.getElementById("theme-grid");
     const empty = document.getElementById("theme-empty");
     const count = document.getElementById("theme-count");
@@ -138,7 +138,7 @@
             <div class="theme-preview-bar">
               <span></span><span></span><span></span>
             </div>
-            <pre><span class="prompt">$</span> phantty --theme ${escapeHtml(theme.name)}
+            <pre><span class="prompt">$</span> wispterm --theme ${escapeHtml(theme.name)}
 <span class="muted">loading Ghostty colors</span>
 <span class="success">ready</span> <span class="cursor"> </span></pre>
           </div>

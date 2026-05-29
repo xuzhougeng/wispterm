@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phantty AI Agent: DeepSeek-first terminal workflows</title>
-  <meta name="description" content="Configure Phantty AI Agent sessions with DeepSeek V4, local terminal tools, WSL/SSH support, skills, and approval-based command execution.">
-  <meta property="og:title" content="Phantty AI Agent">
+  <title>WispTerm AI Agent: DeepSeek-first terminal workflows</title>
+  <meta name="description" content="Configure WispTerm AI Agent sessions with DeepSeek V4, local terminal tools, WSL/SSH support, skills, and approval-based command execution.">
+  <meta property="og:title" content="WispTerm AI Agent">
   <meta property="og:description" content="DeepSeek-first AI Agent sessions inside a native terminal for Windows and macOS.">
-  <meta property="og:image" content="assets/phantty.png">
+  <meta property="og:image" content="assets/wispterm.png">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#1b1e28">
   <link rel="icon" href="assets/favicon.ico">
-  <link rel="apple-touch-icon" href="assets/phantty.png">
+  <link rel="apple-touch-icon" href="assets/wispterm.png">
   <link rel="alternate" hreflang="en" href="./ai.html">
   <link rel="alternate" hreflang="zh-CN" href="./ai.zh.html">
   <link rel="stylesheet" href="style.css?v=6">
@@ -20,8 +20,8 @@
   <header class="site-header">
     <div class="container nav">
       <a class="brand" href="./">
-        <img src="assets/phantty.png" alt="" width="28" height="28">
-        <span>Phantty</span>
+        <img src="assets/wispterm.png" alt="" width="28" height="28">
+        <span>WispTerm</span>
       </a>
       <nav class="nav-links">
         <a href="./#features">Features</a>
@@ -35,7 +35,7 @@
           <a class="lang active" href="./ai.html" aria-current="page">EN</a>
           <a class="lang" href="./ai.zh.html">中文</a>
         </span>
-        <a class="github" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+        <a class="github" href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </div>
   </header>
@@ -45,7 +45,7 @@
       <div class="container ai-hero-grid">
         <div class="ai-hero-copy">
           <p class="eyebrow">DeepSeek-first agent sessions</p>
-          <h1>Run agent work inside Phantty</h1>
+          <h1>Run agent work inside WispTerm</h1>
           <p class="tagline">Open a native AI Agent tab that can inspect terminal context, run local PowerShell or cmd tools, work with WSL and SSH sessions, load local skills, and keep approvals in the terminal UI.</p>
           <div class="cta-row left">
             <a class="cta primary" href="#setup">Configure DeepSeek</a>
@@ -58,7 +58,7 @@
             <span class="tp-dot red"></span>
             <span class="tp-dot yellow"></span>
             <span class="tp-dot green"></span>
-            <span class="tp-title">phantty — AI Agent</span>
+            <span class="tp-title">wispterm — AI Agent</span>
           </div>
           <div class="tp-tabs">
             <div class="tp-tab active">agent</div>
@@ -67,7 +67,7 @@
           </div>
           <div class="tp-body">
             <pre><span class="prompt">You</span> <span class="cmd">Inspect this repo and find the test command.</span>
-<span class="muted">Phantty tool request</span>
+<span class="muted">WispTerm tool request</span>
 <span class="branch">terminal_list</span> <span class="muted">visible surfaces: pwsh, ssh: lab</span>
 <span class="branch">terminal_select</span> <span class="muted">surface=pwsh</span>
 <span class="branch">powershell_exec</span> <span class="muted">rg -n "test" README.md build.zig</span>
@@ -82,7 +82,7 @@
     <section id="overview" class="section">
       <div class="container">
         <h2>AI that understands the terminal</h2>
-        <p class="section-lead">Phantty keeps agent work close to the shell state you already have open. It does not need a separate browser workspace to understand tabs, split panes, local commands, WSL, and SSH sessions.</p>
+        <p class="section-lead">WispTerm keeps agent work close to the shell state you already have open. It does not need a separate browser workspace to understand tabs, split panes, local commands, WSL, and SSH sessions.</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>DeepSeek V4 profiles</h3>
@@ -94,7 +94,7 @@
           </div>
           <div class="feature">
             <h3>Approval-based execution</h3>
-            <p>Tool requests appear in Phantty before execution when permission is set to <code>confirm</code>. Switch to <code>full</code> only for trusted workflows.</p>
+            <p>Tool requests appear in WispTerm before execution when permission is set to <code>confirm</code>. Switch to <code>full</code> only for trusted workflows.</p>
           </div>
           <div class="feature">
             <h3>Saved conversations</h3>
@@ -102,7 +102,7 @@
           </div>
           <div class="feature">
             <h3>Markdown exports</h3>
-            <p>Run <code>Export AI Chat Markdown</code> to save the full transcript, or <code>Export AI Chat Markdown Clean</code> to save only user prompts and the final answer without thinking or tool details. Phantty opens a save dialog and copies the saved path.</p>
+            <p>Run <code>Export AI Chat Markdown</code> to save the full transcript, or <code>Export AI Chat Markdown Clean</code> to save only user prompts and the final answer without thinking or tool details. WispTerm opens a save dialog and copies the saved path.</p>
           </div>
         </div>
       </div>
@@ -111,7 +111,7 @@
     <section id="setup" class="section alt">
       <div class="container">
         <h2>Configure DeepSeek V4</h2>
-        <p class="section-lead">Open the session launcher with <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd>, choose <code>AI Agent</code>, and fill the AI profile. If no profile exists, Phantty opens this form before the first agent launch.</p>
+        <p class="section-lead">Open the session launcher with <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd>, choose <code>AI Agent</code>, and fill the AI profile. If no profile exists, WispTerm opens this form before the first agent launch.</p>
         <div class="ai-setup-grid">
           <div class="setup-panel">
             <h3>Recommended agent profile</h3>
@@ -123,7 +123,7 @@
                 <tr><th>Model</th><td><code>deepseek-v4-pro</code></td></tr>
                 <tr><th>Protocol</th><td><code>chat_completions</code>; use <code>responses</code> for OpenAI Responses API providers</td></tr>
                 <tr><th>Thinking</th><td><code>enabled</code></td></tr>
-                <tr><th>Effort</th><td><code>max</code> for coding-heavy agent work; <code>high</code> is Phantty's built-in default</td></tr>
+                <tr><th>Effort</th><td><code>max</code> for coding-heavy agent work; <code>high</code> is WispTerm's built-in default</td></tr>
                 <tr><th>Stream</th><td><code>false</code></td></tr>
                 <tr><th>Agent</th><td><code>true</code></td></tr>
               </tbody>
@@ -131,7 +131,7 @@
           </div>
           <div class="setup-panel">
             <h3>Environment key</h3>
-            <p>When the profile base URL points to DeepSeek and the profile key is empty, Phantty reads <code>DEEPSEEK_API_KEY</code> from the process environment.</p>
+            <p>When the profile base URL points to DeepSeek and the profile key is empty, WispTerm reads <code>DEEPSEEK_API_KEY</code> from the process environment.</p>
 <pre class="code-block"><code># Windows (PowerShell)
 $env:DEEPSEEK_API_KEY = "sk-your-deepseek-api-key"
 # Persist for future sessions:
@@ -149,7 +149,7 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
     <section id="tools" class="section">
       <div class="container">
         <h2>Agent tools and boundaries</h2>
-        <p class="section-lead">The agent can help with local work without losing track of which terminal it is controlling. Phantty requires an explicit terminal selection before write tools target another surface.</p>
+        <p class="section-lead">The agent can help with local work without losing track of which terminal it is controlling. WispTerm requires an explicit terminal selection before write tools target another surface.</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>Local commands</h3>
@@ -157,7 +157,7 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
           </div>
           <div class="feature">
             <h3>WSL and SSH routing</h3>
-            <p>The agent can inspect visible terminal surfaces, save Phantty SSH profiles with <code>ssh_profile_save</code>, and route writes to the selected WSL or SSH session rather than guessing from focus alone.</p>
+            <p>The agent can inspect visible terminal surfaces, save WispTerm SSH profiles with <code>ssh_profile_save</code>, and route writes to the selected WSL or SSH session rather than guessing from focus alone.</p>
           </div>
           <div class="feature">
             <h3>Terminal selection</h3>
@@ -183,7 +183,7 @@ ai-agent-output-limit       = 16384</code></pre>
         <div class="feature-grid">
           <div class="feature">
             <h3>Skill locations</h3>
-            <p>Phantty discovers <code>SKILL.md</code> files under the platform config directory (<code>%APPDATA%\phantty</code> on Windows, <code>~/Library/Application Support/phantty</code> on macOS) in <code>skills/</code> and <code>plugins/skills/</code>, plus the same two sub-paths next to the executable and in the current working directory.</p>
+            <p>WispTerm discovers <code>SKILL.md</code> files under the platform config directory (<code>%APPDATA%\wispterm</code> on Windows, <code>~/Library/Application Support/wispterm</code> on macOS) in <code>skills/</code> and <code>plugins/skills/</code>, plus the same two sub-paths next to the executable and in the current working directory.</p>
           </div>
           <div class="feature">
             <h3>Load a skill</h3>
@@ -207,7 +207,7 @@ ai-agent-output-limit       = 16384</code></pre>
         <div class="feature-grid">
           <div class="feature">
             <h3>Missing API key</h3>
-            <p>Set <code>DEEPSEEK_API_KEY</code> before launching Phantty, or save the key in the AI profile.</p>
+            <p>Set <code>DEEPSEEK_API_KEY</code> before launching WispTerm, or save the key in the AI profile.</p>
           </div>
           <div class="feature">
             <h3>Authentication or balance errors</h3>
@@ -230,15 +230,15 @@ ai-agent-output-limit       = 16384</code></pre>
   <footer class="site-footer">
     <div class="container footer-inner">
       <div>
-        <img src="assets/phantty.png" alt="" width="20" height="20">
-        <span>Phantty · MIT License</span>
+        <img src="assets/wispterm.png" alt="" width="20" height="20">
+        <span>WispTerm · MIT License</span>
       </div>
       <div class="footer-links">
         <a href="./">Home</a>
         <a href="./themes.html">Themes</a>
         <a href="./use-cases.html">Use Cases</a>
-        <a href="https://github.com/xuzhougeng/phantty/releases" target="_blank" rel="noopener">Releases</a>
-        <a href="https://github.com/xuzhougeng/phantty/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/xuzhougeng/wispterm/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/xuzhougeng/wispterm/issues" target="_blank" rel="noopener">Issues</a>
       </div>
     </div>
   </footer>

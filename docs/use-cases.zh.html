@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phantty 使用案例 — 让 AI Agent 帮你配置终端</title>
-  <meta name="description" content="Phantty AI Agent 使用案例：让 Agent 创建 SSH profile、连接服务器，并在启动时默认打开 Agent 与 PowerShell。">
-  <meta property="og:title" content="Phantty 使用案例">
-  <meta property="og:description" content="让内置 AI Agent 在 Phantty 里配置 SSH profile 并驱动终端工作流。">
-  <meta property="og:image" content="assets/phantty.png">
+  <title>WispTerm 使用案例 — 让 AI Agent 帮你配置终端</title>
+  <meta name="description" content="WispTerm AI Agent 使用案例：让 Agent 创建 SSH profile、连接服务器，并在启动时默认打开 Agent 与 PowerShell。">
+  <meta property="og:title" content="WispTerm 使用案例">
+  <meta property="og:description" content="让内置 AI Agent 在 WispTerm 里配置 SSH profile 并驱动终端工作流。">
+  <meta property="og:image" content="assets/wispterm.png">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#1b1e28">
   <link rel="icon" href="assets/favicon.ico">
-  <link rel="apple-touch-icon" href="assets/phantty.png">
+  <link rel="apple-touch-icon" href="assets/wispterm.png">
   <link rel="alternate" hreflang="en" href="./use-cases.html">
   <link rel="alternate" hreflang="zh-CN" href="./use-cases.zh.html">
   <link rel="stylesheet" href="style.css?v=6">
@@ -20,8 +20,8 @@
   <header class="site-header">
     <div class="container nav">
       <a class="brand" href="./zh.html">
-        <img src="assets/phantty.png" alt="" width="28" height="28">
-        <span>Phantty</span>
+        <img src="assets/wispterm.png" alt="" width="28" height="28">
+        <span>WispTerm</span>
       </a>
       <nav class="nav-links">
         <a href="./zh.html#features">特性</a>
@@ -35,7 +35,7 @@
           <a class="lang" href="./use-cases.html">EN</a>
           <a class="lang active" href="./use-cases.zh.html" aria-current="page">中文</a>
         </span>
-        <a class="github" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+        <a class="github" href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </div>
   </header>
@@ -46,7 +46,7 @@
         <div class="ai-hero-copy">
           <p class="eyebrow">实用 Agent 工作流</p>
           <h1>让 Agent 帮你配置终端</h1>
-          <p class="tagline">Phantty 的 Agent 现在可以用内置工具保存 SSH server profile、连接已保存 profile、读取终端现场，并在首次启动时把 Agent 和 PowerShell 放在一起。</p>
+          <p class="tagline">WispTerm 的 Agent 现在可以用内置工具保存 SSH server profile、连接已保存 profile、读取终端现场，并在首次启动时把 Agent 和 PowerShell 放在一起。</p>
           <div class="cta-row left">
             <a class="cta primary" href="#ssh-profile">配置 SSH Profile</a>
             <a class="cta secondary" href="./ai.zh.html">Agent 工具</a>
@@ -58,7 +58,7 @@
             <span class="tp-dot red"></span>
             <span class="tp-dot yellow"></span>
             <span class="tp-dot green"></span>
-            <span class="tp-title">phantty — Agent + PowerShell</span>
+            <span class="tp-title">wispterm — Agent + PowerShell</span>
           </div>
           <div class="tp-tabs">
             <div class="tp-tab active">agent</div>
@@ -67,7 +67,7 @@
           </div>
           <div class="tp-body">
             <pre><span class="prompt">你</span> <span class="cmd">帮我创建一个 SSH profile：lab，alice@192.0.2.10:2222。</span>
-<span class="muted">Phantty 工具请求</span>
+<span class="muted">WispTerm 工具请求</span>
 <span class="branch">ssh_profile_save</span> <span class="muted">name=lab host=192.0.2.10 user=alice port=2222 password=&lt;redacted&gt;</span>
 <span class="ok">saved profile="lab" password_saved=true</span>
 
@@ -81,7 +81,7 @@
     <section id="ssh-profile" class="section">
       <div class="container">
         <h2>用一句话创建 SSH Profile</h2>
-        <p class="section-lead">这个案例来自 <a href="https://github.com/xuzhougeng/phantty/issues/33" target="_blank" rel="noopener">issue #33</a>：SSH 新建界面对新手不够直观，但 Agent 可以把自然语言请求转换成已保存的 profile。</p>
+        <p class="section-lead">这个案例来自 <a href="https://github.com/xuzhougeng/wispterm/issues/33" target="_blank" rel="noopener">issue #33</a>：SSH 新建界面对新手不够直观，但 Agent 可以把自然语言请求转换成已保存的 profile。</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>怎么说</h3>
@@ -89,7 +89,7 @@
           </div>
           <div class="feature">
             <h3>保存到哪里</h3>
-            <p>profile 会进入 Phantty 正常的 SSH server 列表。已有 profile 会按名称或 host 更新；新 profile 默认端口是 <code>22</code>。</p>
+            <p>profile 会进入 WispTerm 正常的 SSH server 列表。已有 profile 会按名称或 host 更新；新 profile 默认端口是 <code>22</code>。</p>
           </div>
           <div class="feature">
             <h3>密码处理</h3>
@@ -110,7 +110,7 @@ ssh_profile_connect</code></pre>
     <section id="startup" class="section alt">
       <div class="container">
         <h2>启动时默认有 Agent 和 PowerShell</h2>
-        <p class="section-lead">普通首次启动 Phantty 时，第一个入口是 AI Agent，第二个入口是 PowerShell。session restore 和显式 cwd 启动会保留原来的行为。</p>
+        <p class="section-lead">普通首次启动 WispTerm 时，第一个入口是 AI Agent，第二个入口是 PowerShell。session restore 和显式 cwd 启动会保留原来的行为。</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>已有 AI Profile</h3>
@@ -118,11 +118,11 @@ ssh_profile_connect</code></pre>
           </div>
           <div class="feature">
             <h3>还没有 AI Profile</h3>
-            <p>Phantty 会创建一个终端占位并在上面打开 AI profile 配置表单，同时仍然创建旁边的 PowerShell tab。</p>
+            <p>WispTerm 会创建一个终端占位并在上面打开 AI profile 配置表单，同时仍然创建旁边的 PowerShell tab。</p>
           </div>
           <div class="feature">
             <h3>Restore 优先</h3>
-            <p>当 <code>restore-tabs-on-startup = true</code> 且成功恢复上次 session 时，Phantty 不会额外添加默认 Agent 或 PowerShell tab。</p>
+            <p>当 <code>restore-tabs-on-startup = true</code> 且成功恢复上次 session 时，WispTerm 不会额外添加默认 Agent 或 PowerShell tab。</p>
           </div>
         </div>
       </div>
@@ -154,14 +154,14 @@ port 22
   <footer class="site-footer">
     <div class="container footer-inner">
       <div>
-        <img src="assets/phantty.png" alt="" width="20" height="20">
-        <span>Phantty · MIT 协议</span>
+        <img src="assets/wispterm.png" alt="" width="20" height="20">
+        <span>WispTerm · MIT 协议</span>
       </div>
       <div class="footer-links">
         <a href="./zh.html">首页</a>
         <a href="./ai.zh.html">AI</a>
         <a href="./themes.html">主题</a>
-        <a href="https://github.com/xuzhougeng/phantty/issues/33" target="_blank" rel="noopener">Issue #33</a>
+        <a href="https://github.com/xuzhougeng/wispterm/issues/33" target="_blank" rel="noopener">Issue #33</a>
       </div>
     </div>
   </footer>

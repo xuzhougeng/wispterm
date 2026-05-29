@@ -1,6 +1,6 @@
-# Phantty docs site
+# WispTerm docs site
 
-This folder is the source for the Phantty GitHub Pages site.
+This folder is the source for the WispTerm GitHub Pages site.
 
 ## Files
 
@@ -15,8 +15,8 @@ This folder is the source for the Phantty GitHub Pages site.
 - `development.md` — build, architecture, packaging, and GitHub release notes.
 - `faq.md` — desktop and remote FAQ entries that are too detailed for the root README.
 - `style.css` — Poimandres-inspired dark styling.
-- `assets/phantty.png` — logo (mirrored from repo `assets/phantty.png`).
-- `assets/favicon.ico` — favicon (mirrored from repo `assets/phantty.ico`).
+- `assets/wispterm.png` — logo (mirrored from repo `assets/wispterm.png`).
+- `assets/favicon.ico` — favicon (mirrored from repo `assets/wispterm.ico`).
 - `.nojekyll` — disables Jekyll so the raw HTML/CSS is served as-is.
 
 ## Enable GitHub Pages
@@ -32,7 +32,7 @@ In the GitHub repo settings:
    Jekyll and breaks on the Primer theme's missing `assets/css/style.scss`.)
 3. Push to `main`; the workflow runs whenever `docs/**` changes.
 
-The site publishes at `https://<user>.github.io/phantty/`.
+The site publishes at `https://<user>.github.io/wispterm/`.
 
 For a custom domain, add a `CNAME` file to this folder containing the domain
 and configure DNS at the registrar.

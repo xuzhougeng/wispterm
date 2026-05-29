@@ -1,6 +1,6 @@
 # Decoupling Guide: UI vs. functionality, and the path to macOS
 
-This guide is the engineering playbook for separating Phantty's **functionality**
+This guide is the engineering playbook for separating WispTerm's **functionality**
 from its **UI/platform layer**, so the macOS (and later Linux) port reuses the
 terminal core and only swaps the host + GPU backend.
 
@@ -138,7 +138,7 @@ The fix for Gap 1 is the abstraction Ghostty already ships and that
 - **`cell.zig` / `cursor.zig` / `image.zig` / `row.zig`** stay API-agnostic —
   they build geometry/instances, not GL/Metal calls.
 
-### Phantty target layout
+### WispTerm target layout
 
 Mirror Ghostty (per `AGENTS.md`) under `src/renderer/gpu/`:
 
@@ -324,7 +324,7 @@ that gets real runtime coverage on Linux.
 
 ## 7. Ghostty cross-reference
 
-| Phantty (target) | Ghostty | Notes |
+| WispTerm (target) | Ghostty | Notes |
 |------------------|---------|-------|
 | `src/renderer/gpu/gpu.zig` | `src/renderer/generic.zig` | Renderer generic over a `GraphicsAPI`; documented abstraction hierarchy |
 | `src/renderer/gpu/backend.zig` | `src/renderer/backend.zig` | `Backend{opengl,metal,webgl}`; `default(target)` → Metal on Darwin |

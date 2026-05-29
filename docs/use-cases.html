@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phantty Use Cases — Let the AI Agent help</title>
-  <meta name="description" content="Practical Phantty AI Agent use cases: ask the agent to create SSH profiles, open saved servers, and start with an Agent plus PowerShell workspace.">
-  <meta property="og:title" content="Phantty Use Cases">
-  <meta property="og:description" content="Let the built-in AI Agent configure SSH profiles and drive terminal workflows from Phantty.">
-  <meta property="og:image" content="assets/phantty.png">
+  <title>WispTerm Use Cases — Let the AI Agent help</title>
+  <meta name="description" content="Practical WispTerm AI Agent use cases: ask the agent to create SSH profiles, open saved servers, and start with an Agent plus PowerShell workspace.">
+  <meta property="og:title" content="WispTerm Use Cases">
+  <meta property="og:description" content="Let the built-in AI Agent configure SSH profiles and drive terminal workflows from WispTerm.">
+  <meta property="og:image" content="assets/wispterm.png">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#1b1e28">
   <link rel="icon" href="assets/favicon.ico">
-  <link rel="apple-touch-icon" href="assets/phantty.png">
+  <link rel="apple-touch-icon" href="assets/wispterm.png">
   <link rel="alternate" hreflang="en" href="./use-cases.html">
   <link rel="alternate" hreflang="zh-CN" href="./use-cases.zh.html">
   <link rel="stylesheet" href="style.css?v=6">
@@ -20,8 +20,8 @@
   <header class="site-header">
     <div class="container nav">
       <a class="brand" href="./">
-        <img src="assets/phantty.png" alt="" width="28" height="28">
-        <span>Phantty</span>
+        <img src="assets/wispterm.png" alt="" width="28" height="28">
+        <span>WispTerm</span>
       </a>
       <nav class="nav-links">
         <a href="./#features">Features</a>
@@ -35,7 +35,7 @@
           <a class="lang active" href="./use-cases.html" aria-current="page">EN</a>
           <a class="lang" href="./use-cases.zh.html">中文</a>
         </span>
-        <a class="github" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+        <a class="github" href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </div>
   </header>
@@ -46,7 +46,7 @@
         <div class="ai-hero-copy">
           <p class="eyebrow">Practical Agent workflows</p>
           <h1>Let the Agent set up your terminal</h1>
-          <p class="tagline">Phantty's Agent can now save SSH server profiles with a built-in tool, connect those profiles, inspect terminals, and keep PowerShell beside the Agent on first launch.</p>
+          <p class="tagline">WispTerm's Agent can now save SSH server profiles with a built-in tool, connect those profiles, inspect terminals, and keep PowerShell beside the Agent on first launch.</p>
           <div class="cta-row left">
             <a class="cta primary" href="#ssh-profile">SSH profile setup</a>
             <a class="cta secondary" href="./ai.html">Agent tools</a>
@@ -58,7 +58,7 @@
             <span class="tp-dot red"></span>
             <span class="tp-dot yellow"></span>
             <span class="tp-dot green"></span>
-            <span class="tp-title">phantty — Agent + PowerShell</span>
+            <span class="tp-title">wispterm — Agent + PowerShell</span>
           </div>
           <div class="tp-tabs">
             <div class="tp-tab active">agent</div>
@@ -67,7 +67,7 @@
           </div>
           <div class="tp-body">
             <pre><span class="prompt">You</span> <span class="cmd">Create an SSH profile named lab for alice@192.0.2.10:2222.</span>
-<span class="muted">Phantty tool request</span>
+<span class="muted">WispTerm tool request</span>
 <span class="branch">ssh_profile_save</span> <span class="muted">name=lab host=192.0.2.10 user=alice port=2222 password=&lt;redacted&gt;</span>
 <span class="ok">saved profile="lab" password_saved=true</span>
 
@@ -81,7 +81,7 @@
     <section id="ssh-profile" class="section">
       <div class="container">
         <h2>Create SSH profiles by asking</h2>
-        <p class="section-lead">This use case came from <a href="https://github.com/xuzhougeng/phantty/issues/33" target="_blank" rel="noopener">issue #33</a>: the SSH profile form is not obvious for new users, but an Agent can turn a natural-language request into a saved profile.</p>
+        <p class="section-lead">This use case came from <a href="https://github.com/xuzhougeng/wispterm/issues/33" target="_blank" rel="noopener">issue #33</a>: the SSH profile form is not obvious for new users, but an Agent can turn a natural-language request into a saved profile.</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>What to ask</h3>
@@ -89,7 +89,7 @@
           </div>
           <div class="feature">
             <h3>What gets saved</h3>
-            <p>The profile is stored in Phantty's normal SSH profile list. Existing profiles are updated by name or host, and new profiles default to port <code>22</code>.</p>
+            <p>The profile is stored in WispTerm's normal SSH profile list. Existing profiles are updated by name or host, and new profiles default to port <code>22</code>.</p>
           </div>
           <div class="feature">
             <h3>Password handling</h3>
@@ -110,7 +110,7 @@ ssh_profile_connect</code></pre>
     <section id="startup" class="section alt">
       <div class="container">
         <h2>Start with Agent and PowerShell</h2>
-        <p class="section-lead">On a plain first launch, Phantty opens the AI Agent first and PowerShell second. Session restore and explicit working-directory launches keep their existing behavior.</p>
+        <p class="section-lead">On a plain first launch, WispTerm opens the AI Agent first and PowerShell second. Session restore and explicit working-directory launches keep their existing behavior.</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>Profile exists</h3>
@@ -118,11 +118,11 @@ ssh_profile_connect</code></pre>
           </div>
           <div class="feature">
             <h3>No AI profile yet</h3>
-            <p>Phantty opens a terminal placeholder, opens the AI profile setup form on it, and still creates the PowerShell tab beside it.</p>
+            <p>WispTerm opens a terminal placeholder, opens the AI profile setup form on it, and still creates the PowerShell tab beside it.</p>
           </div>
           <div class="feature">
             <h3>Restore wins</h3>
-            <p>When <code>restore-tabs-on-startup = true</code> successfully restores a previous session, Phantty does not add default Agent or PowerShell tabs.</p>
+            <p>When <code>restore-tabs-on-startup = true</code> successfully restores a previous session, WispTerm does not add default Agent or PowerShell tabs.</p>
           </div>
         </div>
       </div>
@@ -155,14 +155,14 @@ only the failures that need my attention.</code></pre>
   <footer class="site-footer">
     <div class="container footer-inner">
       <div>
-        <img src="assets/phantty.png" alt="" width="20" height="20">
-        <span>Phantty · MIT License</span>
+        <img src="assets/wispterm.png" alt="" width="20" height="20">
+        <span>WispTerm · MIT License</span>
       </div>
       <div class="footer-links">
         <a href="./">Home</a>
         <a href="./ai.html">AI</a>
         <a href="./themes.html">Themes</a>
-        <a href="https://github.com/xuzhougeng/phantty/issues/33" target="_blank" rel="noopener">Issue #33</a>
+        <a href="https://github.com/xuzhougeng/wispterm/issues/33" target="_blank" rel="noopener">Issue #33</a>
       </div>
     </div>
   </footer>

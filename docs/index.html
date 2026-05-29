@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phantty — A terminal for Windows &amp; macOS, powered by Ghostty</title>
-  <meta name="description" content="Phantty is a fast, modern terminal emulator for Windows and macOS, written in Zig and powered by libghostty-vt. Splits, tabs, AI agent tools, themes, background images, and more.">
-  <meta property="og:title" content="Phantty — A terminal for Windows &amp; macOS, powered by Ghostty">
+  <title>WispTerm — A terminal for Windows &amp; macOS, powered by Ghostty</title>
+  <meta name="description" content="WispTerm is a fast, modern terminal emulator for Windows and macOS, written in Zig and powered by libghostty-vt. Splits, tabs, AI agent tools, themes, background images, and more.">
+  <meta property="og:title" content="WispTerm — A terminal for Windows &amp; macOS, powered by Ghostty">
   <meta property="og:description" content="A fast, modern terminal for Windows and macOS, written in Zig, powered by libghostty-vt.">
-  <meta property="og:image" content="assets/phantty.png">
+  <meta property="og:image" content="assets/wispterm.png">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#1b1e28">
   <link rel="icon" href="assets/favicon.ico">
-  <link rel="apple-touch-icon" href="assets/phantty.png">
+  <link rel="apple-touch-icon" href="assets/wispterm.png">
   <link rel="alternate" hreflang="en" href="./">
   <link rel="alternate" hreflang="zh-CN" href="./zh.html">
   <link rel="stylesheet" href="style.css?v=6">
@@ -20,8 +20,8 @@
   <header class="site-header">
     <div class="container nav">
       <a class="brand" href="#top">
-        <img src="assets/phantty.png" alt="" width="28" height="28">
-        <span>Phantty</span>
+        <img src="assets/wispterm.png" alt="" width="28" height="28">
+        <span>WispTerm</span>
       </a>
       <nav class="nav-links">
         <a href="#features">Features</a>
@@ -36,7 +36,7 @@
           <a class="lang active" href="./" aria-current="page">EN</a>
           <a class="lang" href="./zh.html">中文</a>
         </span>
-        <a class="github" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+        <a class="github" href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </div>
   </header>
@@ -44,12 +44,12 @@
   <main id="top">
     <section class="hero">
       <div class="container hero-inner">
-        <img class="hero-logo" src="assets/phantty.png" alt="Phantty logo" width="128" height="128">
-        <h1>Phantty</h1>
+        <img class="hero-logo" src="assets/wispterm.png" alt="WispTerm logo" width="128" height="128">
+        <h1>WispTerm</h1>
         <p class="tagline">A fast, modern terminal for <strong>Windows and macOS</strong>, written in Zig, powered by <a href="https://github.com/ghostty-org/ghostty" target="_blank" rel="noopener">libghostty-vt</a>.</p>
         <div class="cta-row">
-          <a class="cta primary" href="https://github.com/xuzhougeng/phantty/releases/latest" target="_blank" rel="noopener">Download latest release</a>
-          <a class="cta secondary" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">View on GitHub</a>
+          <a class="cta primary" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Download latest release</a>
+          <a class="cta secondary" href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">View on GitHub</a>
         </div>
         <p class="platform-note">Ships for <strong>Windows</strong> and <strong>macOS</strong> (Apple Silicon &amp; Intel). Linux port in progress.</p>
       </div>
@@ -60,7 +60,7 @@
             <span class="tp-dot red"></span>
             <span class="tp-dot yellow"></span>
             <span class="tp-dot green"></span>
-            <span class="tp-title">phantty — pwsh</span>
+            <span class="tp-title">wispterm — pwsh</span>
           </div>
           <div class="tp-tabs">
             <div class="tp-tab active">pwsh</div>
@@ -68,8 +68,8 @@
             <div class="tp-tab">ssh: workstation</div>
           </div>
           <div class="tp-body">
-            <pre><span class="prompt">PS C:\Users\you&gt;</span> <span class="cmd">phantty --theme Poimandres</span>
-<span class="muted">  loading config from %APPDATA%\phantty\config</span>
+            <pre><span class="prompt">PS C:\Users\you&gt;</span> <span class="cmd">wispterm --theme Poimandres</span>
+<span class="muted">  loading config from %APPDATA%\wispterm\config</span>
 <span class="muted">  fonts: Cascadia Code (DirectWrite + FreeType)</span>
 <span class="muted">  themes: 453 built-in</span>
 <span class="ok">  ready.</span>
@@ -87,7 +87,7 @@ nothing to commit, working tree clean
     <section id="features" class="section">
       <div class="container">
         <h2>Built for daily work</h2>
-        <p class="section-lead">Phantty layers practical features on top of Ghostty's terminal core — splits, tabs, AI agent tools, a file explorer, themes, background images, and an opt-in remote-access client.</p>
+        <p class="section-lead">WispTerm layers practical features on top of Ghostty's terminal core — splits, tabs, AI agent tools, a file explorer, themes, background images, and an opt-in remote-access client.</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>Ghostty's emulation</h3>
@@ -103,7 +103,7 @@ nothing to commit, working tree clean
           </div>
           <div class="feature">
             <h3>AI agent tabs</h3>
-            <p>Chat tabs can act as local agents: read terminal snapshots, run shell commands (PowerShell on Windows, shell on macOS), work with WSL and SSH sessions, load skills, keep tool approval inside Phantty, and export full or clean Markdown records. <a href="./ai.html">Explore the AI workflow</a> or <a href="./use-cases.html">see use cases</a>.</p>
+            <p>Chat tabs can act as local agents: read terminal snapshots, run shell commands (PowerShell on Windows, shell on macOS), work with WSL and SSH sessions, load skills, keep tool approval inside WispTerm, and export full or clean Markdown records. <a href="./ai.html">Explore the AI workflow</a> or <a href="./use-cases.html">see use cases</a>.</p>
           </div>
           <div class="feature">
             <h3>453 themes built-in</h3>
@@ -153,27 +153,27 @@ nothing to commit, working tree clean
           <div class="install-card">
             <span class="badge">Windows · Recommended</span>
             <h3>Portable</h3>
-            <p>Single executable — download the zip, extract, and run <code>phantty.exe</code>.</p>
-            <a class="cta primary small" href="https://github.com/xuzhougeng/phantty/releases/latest" target="_blank" rel="noopener">Latest release →</a>
+            <p>Single executable — download the zip, extract, and run <code>wispterm.exe</code>.</p>
+            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Latest release →</a>
           </div>
           <div class="install-card">
             <span class="badge">Windows · With browser</span>
             <h3>Portable + WebView2</h3>
             <p>Bundles <code>WebView2Loader.dll</code> for the embedded browser side panel.</p>
-            <a class="cta primary small" href="https://github.com/xuzhougeng/phantty/releases/latest" target="_blank" rel="noopener">Latest release →</a>
+            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Latest release →</a>
           </div>
           <div class="install-card">
             <span class="badge">macOS · Beta</span>
             <h3>macOS DMG</h3>
-            <p>Signed and notarized <code>.dmg</code> for Apple Silicon and Intel. Requires macOS 13+. Open the DMG and drag <code>Phantty.app</code> to Applications.</p>
-            <a class="cta primary small" href="https://github.com/xuzhougeng/phantty/releases/latest" target="_blank" rel="noopener">Latest release →</a>
+            <p>Signed and notarized <code>.dmg</code> for Apple Silicon and Intel. Requires macOS 13+. Open the DMG and drag <code>WispTerm.app</code> to Applications.</p>
+            <a class="cta primary small" href="https://github.com/xuzhougeng/wispterm/releases/latest" target="_blank" rel="noopener">Latest release →</a>
           </div>
           <div class="install-card">
             <span class="badge">Source</span>
             <h3>Build from source</h3>
             <p>Clone the repo and build with Zig. On Windows: <code>zig build</code>. On macOS: <code>zig build macos-app -Dtarget=aarch64-macos</code>.</p>
-<pre class="code-block"><code>git clone https://github.com/xuzhougeng/phantty
-cd phantty
+<pre class="code-block"><code>git clone https://github.com/xuzhougeng/wispterm
+cd wispterm
 # Windows
 zig build -Doptimize=ReleaseFast
 # macOS (Apple Silicon)
@@ -186,7 +186,7 @@ zig build macos-app -Dtarget=aarch64-macos</code></pre>
     <section id="config" class="section">
       <div class="container">
         <h2>Configure with a single file</h2>
-        <p class="section-lead">Phantty uses a Ghostty-compatible <code>key = value</code> config. Default path: <code>%APPDATA%\phantty\config</code> on Windows, <code>~/Library/Application Support/phantty/config</code> on macOS. Press <kbd>Ctrl</kbd>+<kbd>,</kbd> (<kbd>Cmd</kbd>+<kbd>,</kbd> on macOS) to open it; CLI flags override file values.</p>
+        <p class="section-lead">WispTerm uses a Ghostty-compatible <code>key = value</code> config. Default path: <code>%APPDATA%\wispterm\config</code> on Windows, <code>~/Library/Application Support/wispterm/config</code> on macOS. Press <kbd>Ctrl</kbd>+<kbd>,</kbd> (<kbd>Cmd</kbd>+<kbd>,</kbd> on macOS) to open it; CLI flags override file values.</p>
 <pre class="code-block"><code>font-family            = Cascadia Code
 font-size              = 14
 cursor-style           = bar
@@ -212,7 +212,7 @@ remote-session-key     = Workstation
 ai-agent-enabled       = true
 ai-agent-permission    = confirm   # confirm | full
 ai-agent-output-limit  = 16384</code></pre>
-        <p class="section-foot">Run <code>phantty --help</code> for the full flag list, or <code>phantty --show-config-path</code> to print the resolved config path.</p>
+        <p class="section-foot">Run <code>wispterm --help</code> for the full flag list, or <code>wispterm --show-config-path</code> to print the resolved config path.</p>
       </div>
     </section>
 
@@ -253,15 +253,15 @@ ai-agent-output-limit  = 16384</code></pre>
         <div class="feature-grid">
           <div class="feature">
             <h3>Why isn’t my default PowerShell Administrator?</h3>
-            <p>Shells inherit Phantty’s privilege level. A normal launch uses a standard token (even for admin accounts under UAC). Phantty does not auto-elevate new tabs.</p>
+            <p>Shells inherit WispTerm’s privilege level. A normal launch uses a standard token (even for admin accounts under UAC). WispTerm does not auto-elevate new tabs.</p>
           </div>
           <div class="feature">
             <h3>How do I get an elevated shell?</h3>
-            <p>Right-click <code>phantty.exe</code> or your shortcut and choose <strong>Run as administrator</strong>; new tabs in that window stay elevated. For a one-off elevated console elsewhere, use <code>Start-Process pwsh -Verb RunAs</code> (UAC prompt).</p>
+            <p>Right-click <code>wispterm.exe</code> or your shortcut and choose <strong>Run as administrator</strong>; new tabs in that window stay elevated. For a one-off elevated console elsewhere, use <code>Start-Process pwsh -Verb RunAs</code> (UAC prompt).</p>
           </div>
           <div class="feature">
             <h3>How do I enable copy on select and paste on right-click?</h3>
-            <p>Set <code>copy-on-select = true</code> and <code>right-click-action = paste</code> in your config file (<code>%APPDATA%\phantty\config</code> on Windows, <code>~/Library/Application Support/phantty/config</code> on macOS). If you want right-click to copy when a selection is active and paste otherwise, use <code>right-click-action = copy-or-paste</code> instead.</p>
+            <p>Set <code>copy-on-select = true</code> and <code>right-click-action = paste</code> in your config file (<code>%APPDATA%\wispterm\config</code> on Windows, <code>~/Library/Application Support/wispterm/config</code> on macOS). If you want right-click to copy when a selection is active and paste otherwise, use <code>right-click-action = copy-or-paste</code> instead.</p>
           </div>
           <div class="feature">
             <h3>How do I connect to older bastions or SSH servers?</h3>
@@ -269,15 +269,15 @@ ai-agent-output-limit  = 16384</code></pre>
           </div>
           <div class="feature" id="ssh-current-directory">
             <h3>Why did an SSH download or upload lose the current directory?</h3>
-            <p>Phantty can download relative SSH paths and upload dragged files into the interactive SSH shell's current directory only when the remote shell reports OSC 7. If OSC 7 is missing, helper <code>ssh.exe</code> / <code>scp.exe</code> commands start a fresh session that usually sees the login directory, not the directory you <code>cd</code>'d to. Configure your remote shell to emit OSC 7; see the <a href="https://github.com/xuzhougeng/phantty#ssh-current-directory-for-downloads-and-uploads" target="_blank" rel="noopener">setup snippets in README</a>.</p>
+            <p>WispTerm can download relative SSH paths and upload dragged files into the interactive SSH shell's current directory only when the remote shell reports OSC 7. If OSC 7 is missing, helper <code>ssh.exe</code> / <code>scp.exe</code> commands start a fresh session that usually sees the login directory, not the directory you <code>cd</code>'d to. Configure your remote shell to emit OSC 7; see the <a href="https://github.com/xuzhougeng/wispterm#ssh-current-directory-for-downloads-and-uploads" target="_blank" rel="noopener">setup snippets in README</a>.</p>
           </div>
           <div class="feature">
             <h3>What is the AI Chat / Agent prompt length limit?</h3>
-            <p>Phantty now allows up to <code>65536 bytes</code> for one draft in the AI Chat / Agent input box. This is the per-message input limit before you press Enter, not the full conversation context limit.</p>
+            <p>WispTerm now allows up to <code>65536 bytes</code> for one draft in the AI Chat / Agent input box. This is the per-message input limit before you press Enter, not the full conversation context limit.</p>
           </div>
           <div class="feature">
             <h3>Why does Remote mirror the local terminal size on phones?</h3>
-            <p>The desktop Phantty app is the source of truth for PTY state, Ghostty VT state, scrollback, cursor position, and split layout. The browser receives layout snapshots and output bytes from that local session, so it can rearrange panels for mobile, but it does not create an independent phone-sized terminal grid. True mobile reflow would require resizing the local terminal itself or adding a separate remote PTY/viewport model.</p>
+            <p>The desktop WispTerm app is the source of truth for PTY state, Ghostty VT state, scrollback, cursor position, and split layout. The browser receives layout snapshots and output bytes from that local session, so it can rearrange panels for mobile, but it does not create an independent phone-sized terminal grid. True mobile reflow would require resizing the local terminal itself or adding a separate remote PTY/viewport model.</p>
           </div>
         </div>
       </div>
@@ -298,15 +298,15 @@ ai-agent-output-limit  = 16384</code></pre>
   <footer class="site-footer">
     <div class="container footer-inner">
       <div>
-        <img src="assets/phantty.png" alt="" width="20" height="20">
-        <span>Phantty · MIT License</span>
+        <img src="assets/wispterm.png" alt="" width="20" height="20">
+        <span>WispTerm · MIT License</span>
       </div>
       <div class="footer-links">
-        <a href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">GitHub</a>
         <a href="./ai.html">AI</a>
         <a href="./use-cases.html">Use Cases</a>
-        <a href="https://github.com/xuzhougeng/phantty/releases" target="_blank" rel="noopener">Releases</a>
-        <a href="https://github.com/xuzhougeng/phantty/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/xuzhougeng/wispterm/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/xuzhougeng/wispterm/issues" target="_blank" rel="noopener">Issues</a>
         <a href="https://ghostty.org/" target="_blank" rel="noopener">Ghostty</a>
       </div>
     </div>

@@ -1,13 +1,13 @@
 # Architecture: the core ↔ host surface API
 
-Phantty is split into a platform-agnostic **core** and a per-platform **host**.
+WispTerm is split into a platform-agnostic **core** and a per-platform **host**.
 This document names that seam as an explicit contract so it stays a deliberate
 boundary rather than an implicit convention. It is the reference for the
 portability work tracked in [`TODO.md`](../TODO.md).
 
-Phantty follows Ghostty's core/host split: Ghostty keeps terminal behavior in a
+WispTerm follows Ghostty's core/host split: Ghostty keeps terminal behavior in a
 platform-agnostic core and drives it from native hosts (AppKit on macOS, GTK on
-Linux) that own their own event loops and supply platform services. Phantty's
+Linux) that own their own event loops and supply platform services. WispTerm's
 core is the same idea with a Win32 host today and macOS/Linux hosts planned.
 
 ## The three layers

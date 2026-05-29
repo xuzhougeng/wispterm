@@ -2,21 +2,21 @@
 
 ## Overview
 
-Phantty is a terminal emulator written in Zig, currently shipping on Windows. It uses [libghostty-vt](https://github.com/ghostty-org/ghostty) (Ghostty's VT parser and terminal state machine) for terminal emulation, with its own rendering pipeline (OpenGL + FreeType, plus DirectWrite for font discovery on Windows).
+WispTerm is a terminal emulator written in Zig, currently shipping on Windows. It uses [libghostty-vt](https://github.com/ghostty-org/ghostty) (Ghostty's VT parser and terminal state machine) for terminal emulation, with its own rendering pipeline (OpenGL + FreeType, plus DirectWrite for font discovery on Windows).
 
 Windows is the **primary and default development target** (`x86_64-windows-gnu`), and day-to-day development happens on Windows in PowerShell. Platform-specific code lives behind narrow interfaces in `src/platform/` (per-platform implementations plus `_unsupported`/`_posix` stubs) so that macOS and Linux ports become possible without rewriting the terminal core. Those native ports are not yet implemented; see `TODO.md` for the portability roadmap.
 
 ## Architecture
 
-Phantty is split into a platform-agnostic **core** (terminal state, IO, rendering) and a per-platform **host** (window, event loop, input) that drives the core through a narrow surface API. The host interface is `src/platform/window_backend.zig`; OS facilities go through capability facades in `src/platform/`. The named contract — what the host implements, what services it supplies, and the invariants that keep the seam intact — is documented in [docs/architecture.md](docs/architecture.md). Read it before touching the platform boundary or starting a port.
+WispTerm is split into a platform-agnostic **core** (terminal state, IO, rendering) and a per-platform **host** (window, event loop, input) that drives the core through a narrow surface API. The host interface is `src/platform/window_backend.zig`; OS facilities go through capability facades in `src/platform/`. The named contract — what the host implements, what services it supplies, and the invariants that keep the seam intact — is documented in [docs/architecture.md](docs/architecture.md). Read it before touching the platform boundary or starting a port.
 
 ## Hard Rules
 
 When changing application **keyboard shortcuts** (bindings in `src/input.zig` and related input paths), **update `README.md`** so the [Keyboard shortcuts](README.md#keyboard-shortcuts) section stays accurate. Also update user-visible shortcut text in `src/renderer/overlays.zig` (startup overlay, command palette entries) when those strings describe the same bindings.
 
-When publishing a new **desktop app version**, keep the desktop version surfaces synchronized before tagging or releasing: `build.zig.zon`, matching tests, release notes under `release-notes/`, package `version.txt` output, `phantty.exe --version`, and the command center `Version` entry. The compiled desktop app reads its version from `build.zig.zon` through `build_options.app_version`; do not hard-code a second desktop version constant.
+When publishing a new **desktop app version**, keep the desktop version surfaces synchronized before tagging or releasing: `build.zig.zon`, matching tests, release notes under `release-notes/`, package `version.txt` output, `wispterm.exe --version`, and the command center `Version` entry. The compiled desktop app reads its version from `build.zig.zon` through `build_options.app_version`; do not hard-code a second desktop version constant.
 
-Do **not** change version files under `remote/` (`remote/package.json`, `remote/package-lock.json`, `remote/src/client/version.ts`, or the Phantty Remote web UI version label) unless the user explicitly says the remote web console is part of the release. When a remote release is explicitly requested, keep those remote version surfaces synchronized, and ensure the web UI renders its release version via `remoteBrandMarkup()`/`webVersionLabel()` on both login and console shells, even when a build-time label is injected.
+Do **not** change version files under `remote/` (`remote/package.json`, `remote/package-lock.json`, `remote/src/client/version.ts`, or the WispTerm Remote web UI version label) unless the user explicitly says the remote web console is part of the release. When a remote release is explicitly requested, keep those remote version surfaces synchronized, and ensure the web UI renders its release version via `remoteBrandMarkup()`/`webVersionLabel()` on both login and console shells, even when a build-time label is injected.
 
 When working on implementing a plan from the plans directory:
  * never deviate from the plan without asking for clear consent
@@ -30,7 +30,7 @@ This is the gold standard, we want to be as close to their implementation as pos
 
 Use the github cli gh to browse https://github.com/ghostty-org/ghostty and always add descriptions on how ghostty does things. 
 
-Exception: work under `remote/` is Phantty's own web remote console and relay implementation. Ghostty does not have an equivalent feature, so `remote/` planning and implementation **does not need to compare against or reference Ghostty**. For `remote/`, follow the existing `remote/` architecture, browser platform constraints, and the user-approved design/plan for that feature.
+Exception: work under `remote/` is WispTerm's own web remote console and relay implementation. Ghostty does not have an equivalent feature, so `remote/` planning and implementation **does not need to compare against or reference Ghostty**. For `remote/`, follow the existing `remote/` architecture, browser platform constraints, and the user-approved design/plan for that feature.
 
 ## Build Commands
 
@@ -40,11 +40,11 @@ Tests have two steps. `zig build test` is the fast inner loop: it builds and run
 
 ## Windows UI Automation
 
-When debugging UI behavior, automate Phantty as a real visible Windows app from PowerShell using Win32-driven automation rather than shell-only assumptions. The checked-in scripts and conventions are in [docs/development.md](docs/development.md#windows-ui-automation).
+When debugging UI behavior, automate WispTerm as a real visible Windows app from PowerShell using Win32-driven automation rather than shell-only assumptions. The checked-in scripts and conventions are in [docs/development.md](docs/development.md#windows-ui-automation).
 
 ## Windows SSH/SCP Compatibility
 
-When changing SSH/SCP code paths (`src/scp.zig`, SSH clipboard image paste, remote file explorer, or SSH session metadata), test against the real profile in `%APPDATA%\phantty\ssh_hosts` when available — but never print or commit the password. Two hard rules: do **not** add OpenSSH connection sharing (`ControlMaster`/`ControlPersist`/`ControlPath`) to helper `ssh.exe`/`scp.exe` commands (it breaks SCP on Windows OpenSSH), and keep the underlying OpenSSH stderr visible rather than collapsing it to a generic failure. Test commands and the full rationale are in [docs/development.md](docs/development.md#windows-sshscp-compatibility).
+When changing SSH/SCP code paths (`src/scp.zig`, SSH clipboard image paste, remote file explorer, or SSH session metadata), test against the real profile in `%APPDATA%\wispterm\ssh_hosts` when available — but never print or commit the password. Two hard rules: do **not** add OpenSSH connection sharing (`ControlMaster`/`ControlPersist`/`ControlPath`) to helper `ssh.exe`/`scp.exe` commands (it breaks SCP on Windows OpenSSH), and keep the underlying OpenSSH stderr visible rather than collapsing it to a generic failure. Test commands and the full rationale are in [docs/development.md](docs/development.md#windows-sshscp-compatibility).
 
 ## Windows Development Compatibility
 
@@ -62,7 +62,7 @@ src/                         # Windows desktop terminal application
 ├── config.zig               # Config loading (file + CLI), theme resolution, key=value parser
 ├── config_watcher.zig       # Hot-reload via ReadDirectoryChangesW
 ├── pty.zig                  # App-facing PTY API (re-exports src/platform/pty.zig)
-├── remote_client.zig        # Outbound Phantty Remote relay client
+├── remote_client.zig        # Outbound WispTerm Remote relay client
 ├── file_explorer.zig        # Local/SSH file explorer state and operations
 ├── browser_panel.zig        # Embedded browser panel and SSH tunnel handling
 ├── themes.zig               # Embedded Ghostty-compatible themes
@@ -77,7 +77,7 @@ src/                         # Windows desktop terminal application
 ├── renderer/                # OpenGL renderer, cell renderer, overlays, titlebar, panels
 └── termio/                  # PTY read/write threads and terminal IO mailbox
 
-remote/                      # Phantty-specific web remote console and relay
+remote/                      # WispTerm-specific web remote console and relay
 ├── src/client/              # Browser app: xterm surfaces, layout, virtual keyboard, styles
 │   ├── views/               # Login and remote console views
 │   └── styles/              # Base, console, responsive, token, and virtual keyboard CSS
@@ -111,13 +111,13 @@ vendor/                      # Vendored source code
 
 ## Ghostty Reference
 
-Phantty intentionally follows Ghostty's design and behavior for terminal emulator functionality. When implementing or modifying features in the main Zig terminal app, **cross-reference the Ghostty source** at https://github.com/ghostty-org/ghostty.
+WispTerm intentionally follows Ghostty's design and behavior for terminal emulator functionality. When implementing or modifying features in the main Zig terminal app, **cross-reference the Ghostty source** at https://github.com/ghostty-org/ghostty.
 
-This Ghostty reference requirement does **not** apply to `remote/`. The `remote/` directory contains Phantty-specific web remote console and relay code; develop it from the existing remote codebase, web/mobile UX requirements, and local plans rather than trying to match Ghostty.
+This Ghostty reference requirement does **not** apply to `remote/`. The `remote/` directory contains WispTerm-specific web remote console and relay code; develop it from the existing remote codebase, web/mobile UX requirements, and local plans rather than trying to match Ghostty.
 
-Key mapping of Phantty files to Ghostty counterparts:
+Key mapping of WispTerm files to Ghostty counterparts:
 
-| Phantty | Ghostty Reference | Notes |
+| WispTerm | Ghostty Reference | Notes |
 |---------|-------------------|-------|
 | `src/config.zig` | [`src/config/Config.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/config/Config.zig) | Same `key = value` format, same key names where applicable |
 | `src/config_watcher.zig` | Ghostty's config reload mechanism | Hot-reload on file change |
@@ -127,7 +127,7 @@ Key mapping of Phantty files to Ghostty counterparts:
 | `src/font/embedded.zig` | Ghostty's embedded Cozette font | Same fallback font |
 | `src/main.zig` (rendering) | [`src/renderer/OpenGL.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/renderer/OpenGL.zig) | OpenGL rendering, cell grid, shaders |
 | `src/main.zig` (input) | [`src/apprt/glfw.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/apprt/glfw.zig) | GLFW key/mouse handling |
-| `src/platform/font_discovery_windows.zig` | [`src/font/discovery.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/font/discovery.zig) | Font discovery (Phantty uses DirectWrite directly on Windows) |
+| `src/platform/font_discovery_windows.zig` | [`src/font/discovery.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/font/discovery.zig) | Font discovery (WispTerm uses DirectWrite directly on Windows) |
 
 When adding features:
 - Check how Ghostty implements it first
@@ -137,7 +137,7 @@ When adding features:
 
 ## Config System
 
-Config lives at `%APPDATA%\phantty\config`, is loaded defaults → config file → CLI flags (last wins), and hot-reloads via the file watcher (`Ctrl+,` to edit). Full details — path resolution order, portable profile, and all keys — are in [docs/configuration.md](docs/configuration.md).
+Config lives at `%APPDATA%\wispterm\config`, is loaded defaults → config file → CLI flags (last wins), and hot-reloads via the file watcher (`Ctrl+,` to edit). Full details — path resolution order, portable profile, and all keys — are in [docs/configuration.md](docs/configuration.md).
 
 ## Dependencies
 

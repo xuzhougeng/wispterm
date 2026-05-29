@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phantty AI Agent：DeepSeek 优先的终端工作流</title>
-  <meta name="description" content="在 Phantty 中配置 DeepSeek V4 AI Agent：本地终端工具、WSL/SSH 支持、Skills 和带确认的命令执行。">
-  <meta property="og:title" content="Phantty AI Agent">
+  <title>WispTerm AI Agent：DeepSeek 优先的终端工作流</title>
+  <meta name="description" content="在 WispTerm 中配置 DeepSeek V4 AI Agent：本地终端工具、WSL/SSH 支持、Skills 和带确认的命令执行。">
+  <meta property="og:title" content="WispTerm AI Agent">
   <meta property="og:description" content="内置在 Windows 与 macOS 原生终端里的 DeepSeek 优先 AI Agent 会话。">
-  <meta property="og:image" content="assets/phantty.png">
+  <meta property="og:image" content="assets/wispterm.png">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#1b1e28">
   <link rel="icon" href="assets/favicon.ico">
-  <link rel="apple-touch-icon" href="assets/phantty.png">
+  <link rel="apple-touch-icon" href="assets/wispterm.png">
   <link rel="alternate" hreflang="en" href="./ai.html">
   <link rel="alternate" hreflang="zh-CN" href="./ai.zh.html">
   <link rel="stylesheet" href="style.css?v=6">
@@ -20,8 +20,8 @@
   <header class="site-header">
     <div class="container nav">
       <a class="brand" href="./zh.html">
-        <img src="assets/phantty.png" alt="" width="28" height="28">
-        <span>Phantty</span>
+        <img src="assets/wispterm.png" alt="" width="28" height="28">
+        <span>WispTerm</span>
       </a>
       <nav class="nav-links">
         <a href="./zh.html#features">特性</a>
@@ -35,7 +35,7 @@
           <a class="lang" href="./ai.html">EN</a>
           <a class="lang active" href="./ai.zh.html" aria-current="page">中文</a>
         </span>
-        <a class="github" href="https://github.com/xuzhougeng/phantty" target="_blank" rel="noopener">GitHub</a>
+        <a class="github" href="https://github.com/xuzhougeng/wispterm" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </div>
   </header>
@@ -45,7 +45,7 @@
       <div class="container ai-hero-grid">
         <div class="ai-hero-copy">
           <p class="eyebrow">DeepSeek 优先的 Agent 会话</p>
-          <h1>在 Phantty 里完成 Agent 工作</h1>
+          <h1>在 WispTerm 里完成 Agent 工作</h1>
           <p class="tagline">打开一个原生 AI Agent 标签，让它读取终端上下文、运行本地 PowerShell 或 cmd 工具、配合 WSL/SSH 会话、加载本地 Skills，并把工具确认留在终端 UI 内。</p>
           <div class="cta-row left">
             <a class="cta primary" href="#setup">配置 DeepSeek</a>
@@ -58,7 +58,7 @@
             <span class="tp-dot red"></span>
             <span class="tp-dot yellow"></span>
             <span class="tp-dot green"></span>
-            <span class="tp-title">phantty — AI Agent</span>
+            <span class="tp-title">wispterm — AI Agent</span>
           </div>
           <div class="tp-tabs">
             <div class="tp-tab active">agent</div>
@@ -67,7 +67,7 @@
           </div>
           <div class="tp-body">
             <pre><span class="prompt">你</span> <span class="cmd">检查这个仓库，找出测试命令。</span>
-<span class="muted">Phantty 工具请求</span>
+<span class="muted">WispTerm 工具请求</span>
 <span class="branch">terminal_list</span> <span class="muted">可见 surface: pwsh, ssh: lab</span>
 <span class="branch">terminal_select</span> <span class="muted">surface=pwsh</span>
 <span class="branch">powershell_exec</span> <span class="muted">rg -n "test" README.md build.zig</span>
@@ -82,7 +82,7 @@
     <section id="overview" class="section">
       <div class="container">
         <h2>理解终端现场的 AI</h2>
-        <p class="section-lead">Phantty 把 Agent 工作留在你已经打开的 Shell 状态旁边。它不需要额外的浏览器工作区，就能理解标签、分屏、本地命令、WSL 和 SSH 会话。</p>
+        <p class="section-lead">WispTerm 把 Agent 工作留在你已经打开的 Shell 状态旁边。它不需要额外的浏览器工作区，就能理解标签、分屏、本地命令、WSL 和 SSH 会话。</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>DeepSeek V4 Profile</h3>
@@ -94,7 +94,7 @@
           </div>
           <div class="feature">
             <h3>带确认的执行</h3>
-            <p>当权限为 <code>confirm</code> 时，工具请求会先显示在 Phantty 中再执行。只有在可信任务和可信工作区中，才建议切到 <code>full</code>。</p>
+            <p>当权限为 <code>confirm</code> 时，工具请求会先显示在 WispTerm 中再执行。只有在可信任务和可信工作区中，才建议切到 <code>full</code>。</p>
           </div>
           <div class="feature">
             <h3>可恢复的对话</h3>
@@ -102,7 +102,7 @@
           </div>
           <div class="feature">
             <h3>Markdown 导出</h3>
-            <p>运行 <code>Export AI Chat Markdown</code> 可保存完整对话；运行 <code>Export AI Chat Markdown Clean</code> 会只保存用户输入和最后结果，不包含 thinking 或工具细节。Phantty 会弹出保存对话框，并复制保存路径。</p>
+            <p>运行 <code>Export AI Chat Markdown</code> 可保存完整对话；运行 <code>Export AI Chat Markdown Clean</code> 会只保存用户输入和最后结果，不包含 thinking 或工具细节。WispTerm 会弹出保存对话框，并复制保存路径。</p>
           </div>
         </div>
       </div>
@@ -111,7 +111,7 @@
     <section id="setup" class="section alt">
       <div class="container">
         <h2>配置 DeepSeek V4</h2>
-        <p class="section-lead">按 <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd> 打开会话启动器，选择 <code>AI Agent</code>，然后填写 AI Profile。如果还没有 Profile，Phantty 会在首次启动 Agent 前先打开配置表单。</p>
+        <p class="section-lead">按 <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd> 打开会话启动器，选择 <code>AI Agent</code>，然后填写 AI Profile。如果还没有 Profile，WispTerm 会在首次启动 Agent 前先打开配置表单。</p>
         <div class="ai-setup-grid">
           <div class="setup-panel">
             <h3>推荐 Agent Profile</h3>
@@ -123,7 +123,7 @@
                 <tr><th>Model</th><td><code>deepseek-v4-pro</code></td></tr>
                 <tr><th>Protocol</th><td><code>chat_completions</code>；OpenAI Responses API Provider 使用 <code>responses</code></td></tr>
                 <tr><th>Thinking</th><td><code>enabled</code></td></tr>
-                <tr><th>Effort</th><td>重度编码 Agent 建议 <code>max</code>；Phantty 内置默认值是 <code>high</code></td></tr>
+                <tr><th>Effort</th><td>重度编码 Agent 建议 <code>max</code>；WispTerm 内置默认值是 <code>high</code></td></tr>
                 <tr><th>Stream</th><td><code>false</code></td></tr>
                 <tr><th>Agent</th><td><code>true</code></td></tr>
               </tbody>
@@ -131,7 +131,7 @@
           </div>
           <div class="setup-panel">
             <h3>环境变量 API Key</h3>
-            <p>当 Profile 的 Base URL 指向 DeepSeek，并且 Profile 内没有保存 API Key 时，Phantty 会从进程环境中读取 <code>DEEPSEEK_API_KEY</code>。</p>
+            <p>当 Profile 的 Base URL 指向 DeepSeek，并且 Profile 内没有保存 API Key 时，WispTerm 会从进程环境中读取 <code>DEEPSEEK_API_KEY</code>。</p>
 <pre class="code-block"><code># Windows（PowerShell）
 $env:DEEPSEEK_API_KEY = "sk-your-deepseek-api-key"
 # 持久保存：
@@ -149,7 +149,7 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
     <section id="tools" class="section">
       <div class="container">
         <h2>Agent 工具与边界</h2>
-        <p class="section-lead">Agent 可以辅助本地工作，同时不会混淆它正在控制哪个终端。Phantty 要求写入类工具先明确选择目标 terminal surface。</p>
+        <p class="section-lead">Agent 可以辅助本地工作，同时不会混淆它正在控制哪个终端。WispTerm 要求写入类工具先明确选择目标 terminal surface。</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>本地命令</h3>
@@ -157,7 +157,7 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
           </div>
           <div class="feature">
             <h3>WSL 与 SSH 路由</h3>
-            <p>Agent 可以检查可见终端 surface，用 <code>ssh_profile_save</code> 保存 Phantty SSH profile，并把写入路由到选中的 WSL 或 SSH 会话，而不是只依赖当前焦点猜测。</p>
+            <p>Agent 可以检查可见终端 surface，用 <code>ssh_profile_save</code> 保存 WispTerm SSH profile，并把写入路由到选中的 WSL 或 SSH 会话，而不是只依赖当前焦点猜测。</p>
           </div>
           <div class="feature">
             <h3>明确选择终端</h3>
@@ -183,7 +183,7 @@ ai-agent-output-limit       = 16384</code></pre>
         <div class="feature-grid">
           <div class="feature">
             <h3>Skill 搜索位置</h3>
-            <p>Phantty 会在平台配置目录（Windows：<code>%APPDATA%\phantty</code>，macOS：<code>~/Library/Application Support/phantty</code>）的 <code>skills/</code> 和 <code>plugins/skills/</code> 子目录，以及可执行文件同级和当前工作目录下发现 <code>SKILL.md</code>。</p>
+            <p>WispTerm 会在平台配置目录（Windows：<code>%APPDATA%\wispterm</code>，macOS：<code>~/Library/Application Support/wispterm</code>）的 <code>skills/</code> 和 <code>plugins/skills/</code> 子目录，以及可执行文件同级和当前工作目录下发现 <code>SKILL.md</code>。</p>
           </div>
           <div class="feature">
             <h3>加载 Skill</h3>
@@ -207,7 +207,7 @@ ai-agent-output-limit       = 16384</code></pre>
         <div class="feature-grid">
           <div class="feature">
             <h3>Missing API key</h3>
-            <p>启动 Phantty 前设置 <code>DEEPSEEK_API_KEY</code>，或把 API Key 保存到 AI Profile。</p>
+            <p>启动 WispTerm 前设置 <code>DEEPSEEK_API_KEY</code>，或把 API Key 保存到 AI Profile。</p>
           </div>
           <div class="feature">
             <h3>认证或余额错误</h3>
@@ -230,15 +230,15 @@ ai-agent-output-limit       = 16384</code></pre>
   <footer class="site-footer">
     <div class="container footer-inner">
       <div>
-        <img src="assets/phantty.png" alt="" width="20" height="20">
-        <span>Phantty · MIT 协议</span>
+        <img src="assets/wispterm.png" alt="" width="20" height="20">
+        <span>WispTerm · MIT 协议</span>
       </div>
       <div class="footer-links">
         <a href="./zh.html">首页</a>
         <a href="./themes.html">主题</a>
         <a href="./use-cases.zh.html">案例</a>
-        <a href="https://github.com/xuzhougeng/phantty/releases" target="_blank" rel="noopener">发布版本</a>
-        <a href="https://github.com/xuzhougeng/phantty/issues" target="_blank" rel="noopener">问题反馈</a>
+        <a href="https://github.com/xuzhougeng/wispterm/releases" target="_blank" rel="noopener">发布版本</a>
+        <a href="https://github.com/xuzhougeng/wispterm/issues" target="_blank" rel="noopener">问题反馈</a>
       </div>
     </div>
   </footer>
