@@ -921,7 +921,13 @@ pub const Session = struct {
         self.skill_suggestions_owned = false;
     }
 
+    /// Public entry point to drop cached skill suggestions so they are re-read
+    /// from disk on next use. Unlike `freeSkillSuggestions` (a locked helper),
+    /// this acquires the session mutex itself — callers (e.g. the UI thread
+    /// after a skill update) must NOT hold it.
     pub fn reloadSkillSuggestions(self: *Session) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         self.freeSkillSuggestions();
     }
 
