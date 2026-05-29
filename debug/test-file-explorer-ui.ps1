@@ -15,7 +15,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ($ExePath.Length -eq 0) {
-    $ExePath = Join-Path $repoRoot "zig-out\bin\phantty.exe"
+    $ExePath = Join-Path $repoRoot "zig-out\bin\wispterm.exe"
 }
 if ($WorkingDirectory.Length -eq 0) {
     $WorkingDirectory = $repoRoot
@@ -25,7 +25,7 @@ if ($OutDir.Length -eq 0) {
 }
 
 if (!(Test-Path -LiteralPath $ExePath)) {
-    throw "Phantty executable not found: $ExePath. Run zig build first."
+    throw "WispTerm executable not found: $ExePath. Run zig build first."
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -36,7 +36,7 @@ using System;
 using System.Text;
 using System.Runtime.InteropServices;
 
-public static class PhanttyUiAutomation {
+public static class WispTermUiAutomation {
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
   [StructLayout(LayoutKind.Sequential)]
@@ -62,40 +62,40 @@ public static class PhanttyUiAutomation {
 }
 "@
 
-[PhanttyUiAutomation]::SetProcessDPIAware() | Out-Null
+[WispTermUiAutomation]::SetProcessDPIAware() | Out-Null
 
 function Get-WindowRectValue([IntPtr]$Hwnd) {
-    [PhanttyUiAutomation+RECT]$rect = New-Object PhanttyUiAutomation+RECT
-    [PhanttyUiAutomation]::GetWindowRect($Hwnd, [ref]$rect) | Out-Null
+    [WispTermUiAutomation+RECT]$rect = New-Object WispTermUiAutomation+RECT
+    [WispTermUiAutomation]::GetWindowRect($Hwnd, [ref]$rect) | Out-Null
     return $rect
 }
 
-function Get-PhanttyWindowHandle([System.Diagnostics.Process]$Process) {
-    $script:phanttyWindowHandle = [IntPtr]::Zero
-    $script:phanttyProcessId = $Process.Id
-    $callback = [PhanttyUiAutomation+EnumWindowsProc]{
+function Get-WispTermWindowHandle([System.Diagnostics.Process]$Process) {
+    $script:wisptermWindowHandle = [IntPtr]::Zero
+    $script:wisptermProcessId = $Process.Id
+    $callback = [WispTermUiAutomation+EnumWindowsProc]{
         param([IntPtr]$Hwnd, [IntPtr]$LParam)
-        if (![PhanttyUiAutomation]::IsWindowVisible($Hwnd)) {
+        if (![WispTermUiAutomation]::IsWindowVisible($Hwnd)) {
             return $true
         }
 
         [uint32]$windowProcessId = 0
-        [PhanttyUiAutomation]::GetWindowThreadProcessId($Hwnd, [ref]$windowProcessId) | Out-Null
-        if ($windowProcessId -ne [uint32]$script:phanttyProcessId) {
+        [WispTermUiAutomation]::GetWindowThreadProcessId($Hwnd, [ref]$windowProcessId) | Out-Null
+        if ($windowProcessId -ne [uint32]$script:wisptermProcessId) {
             return $true
         }
 
         $className = [System.Text.StringBuilder]::new(256)
-        [PhanttyUiAutomation]::GetClassNameW($Hwnd, $className, $className.Capacity) | Out-Null
-        if ($className.ToString() -eq "PhanttyWindowClass") {
-            $script:phanttyWindowHandle = $Hwnd
+        [WispTermUiAutomation]::GetClassNameW($Hwnd, $className, $className.Capacity) | Out-Null
+        if ($className.ToString() -eq "WispTermWindowClass") {
+            $script:wisptermWindowHandle = $Hwnd
             return $false
         }
         return $true
     }
 
-    [PhanttyUiAutomation]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
-    return $script:phanttyWindowHandle
+    [WispTermUiAutomation]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
+    return $script:wisptermWindowHandle
 }
 
 function Capture-Window([IntPtr]$Hwnd, [string]$Path) {
@@ -201,27 +201,27 @@ function Click-WindowCenter([IntPtr]$Hwnd) {
     $rect = Get-WindowRectValue $Hwnd
     $x = [int](($rect.Left + $rect.Right) / 2)
     $y = [int](($rect.Top + $rect.Bottom) / 2)
-    [PhanttyUiAutomation]::SetCursorPos($x, $y) | Out-Null
-    [PhanttyUiAutomation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    [WispTermUiAutomation]::SetCursorPos($x, $y) | Out-Null
+    [WispTermUiAutomation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
-    [PhanttyUiAutomation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    [WispTermUiAutomation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 }
 
 function Send-CtrlShiftAltE() {
     $keyUp = 0x0002
-    [PhanttyUiAutomation]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl
+    [WispTermUiAutomation]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl
     Start-Sleep -Milliseconds 80
-    [PhanttyUiAutomation]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero) # Shift
+    [WispTermUiAutomation]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero) # Shift
     Start-Sleep -Milliseconds 80
-    [PhanttyUiAutomation]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero) # Alt
+    [WispTermUiAutomation]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero) # Alt
     Start-Sleep -Milliseconds 80
-    [PhanttyUiAutomation]::keybd_event(0x45, 0, 0, [UIntPtr]::Zero) # E
+    [WispTermUiAutomation]::keybd_event(0x45, 0, 0, [UIntPtr]::Zero) # E
     Start-Sleep -Milliseconds 120
-    [PhanttyUiAutomation]::keybd_event(0x45, 0, $keyUp, [UIntPtr]::Zero)
+    [WispTermUiAutomation]::keybd_event(0x45, 0, $keyUp, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 60
-    [PhanttyUiAutomation]::keybd_event(0x12, 0, $keyUp, [UIntPtr]::Zero)
-    [PhanttyUiAutomation]::keybd_event(0x10, 0, $keyUp, [UIntPtr]::Zero)
-    [PhanttyUiAutomation]::keybd_event(0x11, 0, $keyUp, [UIntPtr]::Zero)
+    [WispTermUiAutomation]::keybd_event(0x12, 0, $keyUp, [UIntPtr]::Zero)
+    [WispTermUiAutomation]::keybd_event(0x10, 0, $keyUp, [UIntPtr]::Zero)
+    [WispTermUiAutomation]::keybd_event(0x11, 0, $keyUp, [UIntPtr]::Zero)
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -234,31 +234,31 @@ $proc = Start-Process -FilePath $ExePath -ArgumentList @("--shell", $Shell) -Wor
 
 try {
     $deadline = (Get-Date).AddSeconds(12)
-    [IntPtr]$phanttyWindow = [IntPtr]::Zero
+    [IntPtr]$wisptermWindow = [IntPtr]::Zero
     do {
         Start-Sleep -Milliseconds 250
         $proc.Refresh()
-        $phanttyWindow = Get-PhanttyWindowHandle $proc
-    } while ($phanttyWindow -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
+        $wisptermWindow = Get-WispTermWindowHandle $proc
+    } while ($wisptermWindow -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
 
-    if ($phanttyWindow -eq [IntPtr]::Zero) {
-        throw "Phantty window did not appear"
+    if ($wisptermWindow -eq [IntPtr]::Zero) {
+        throw "WispTerm window did not appear"
     }
 
-    [PhanttyUiAutomation]::ShowWindow($phanttyWindow, 5) | Out-Null
-    [PhanttyUiAutomation]::SetWindowPos($phanttyWindow, [IntPtr]::Zero, $WindowX, $WindowY, $WindowWidth, $WindowHeight, 0x0040) | Out-Null
-    [PhanttyUiAutomation]::SetForegroundWindow($phanttyWindow) | Out-Null
+    [WispTermUiAutomation]::ShowWindow($wisptermWindow, 5) | Out-Null
+    [WispTermUiAutomation]::SetWindowPos($wisptermWindow, [IntPtr]::Zero, $WindowX, $WindowY, $WindowWidth, $WindowHeight, 0x0040) | Out-Null
+    [WispTermUiAutomation]::SetForegroundWindow($wisptermWindow) | Out-Null
     Start-Sleep -Milliseconds 900
-    Click-WindowCenter $phanttyWindow
+    Click-WindowCenter $wisptermWindow
     Start-Sleep -Milliseconds 500
 
-    $beforeSize = Capture-Window $phanttyWindow $beforeFull
+    $beforeSize = Capture-Window $wisptermWindow $beforeFull
     Crop-LeftExplorerArea $beforeFull $beforeCrop $ExplorerCropWidth | Out-Null
 
     Send-CtrlShiftAltE
     Start-Sleep -Milliseconds 1800
 
-    $afterSize = Capture-Window $phanttyWindow $afterFull
+    $afterSize = Capture-Window $wisptermWindow $afterFull
     Crop-LeftExplorerArea $afterFull $afterCrop $ExplorerCropWidth | Out-Null
     $metrics = Analyze-ExplorerCrop $beforeCrop $afterCrop
 

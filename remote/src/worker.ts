@@ -20,14 +20,14 @@ type RelayMessage = {
   encoding?: string;
   surfaceId?: string;
   message?: string;
-  phanttyConnected?: boolean;
+  wisptermConnected?: boolean;
 };
 
-const COOKIE_NAME = "phantty_remote";
+const COOKIE_NAME = "wispterm_remote";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
 
 export class RemoteSession extends DurableObject<Env> {
-  private phantty: WebSocket | null = null;
+  private wispterm: WebSocket | null = null;
   private browsers = new Set<WebSocket>();
   private lastLayout: RelayMessage | null = null;
 
@@ -38,7 +38,7 @@ export class RemoteSession extends DurableObject<Env> {
     }
 
     const role = url.searchParams.get("role");
-    if (role !== "browser" && role !== "phantty") {
+    if (role !== "browser" && role !== "wispterm") {
       return json({ error: "invalid role" }, 400);
     }
 
@@ -46,8 +46,8 @@ export class RemoteSession extends DurableObject<Env> {
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     server.accept();
 
-    if (role === "phantty") {
-      this.attachPhantty(server);
+    if (role === "wispterm") {
+      this.attachWispTerm(server);
     } else {
       this.attachBrowser(server);
     }
@@ -55,10 +55,10 @@ export class RemoteSession extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private attachPhantty(socket: WebSocket): void {
-    this.phantty?.close(1012, "replaced by a new Phantty connection");
-    this.phantty = socket;
-    this.broadcast({ type: "notice", message: "Phantty connected" });
+  private attachWispTerm(socket: WebSocket): void {
+    this.wispterm?.close(1012, "replaced by a new WispTerm connection");
+    this.wispterm = socket;
+    this.broadcast({ type: "notice", message: "WispTerm connected" });
     this.broadcastPeerStatus();
 
     socket.addEventListener("message", (event) => {
@@ -88,9 +88,9 @@ export class RemoteSession extends DurableObject<Env> {
     });
 
     socket.addEventListener("close", () => {
-      if (this.phantty !== socket) return;
-      this.phantty = null;
-      this.broadcast({ type: "notice", message: "Phantty disconnected" });
+      if (this.wispterm !== socket) return;
+      this.wispterm = null;
+      this.broadcast({ type: "notice", message: "WispTerm disconnected" });
       this.broadcastPeerStatus();
     });
   }
@@ -99,7 +99,7 @@ export class RemoteSession extends DurableObject<Env> {
     this.browsers.add(socket);
     socket.send(JSON.stringify({ type: "notice", message: "Browser paired; input enabled" }));
     this.sendPeerStatus(socket);
-    if (this.phantty) socket.send(JSON.stringify({ type: "notice", message: "Phantty connected" }));
+    if (this.wispterm) socket.send(JSON.stringify({ type: "notice", message: "WispTerm connected" }));
     if (this.lastLayout) socket.send(JSON.stringify(this.lastLayout));
 
     socket.addEventListener("message", (event) => {
@@ -118,7 +118,7 @@ export class RemoteSession extends DurableObject<Env> {
         typeof message.surfaceId === "string" &&
         typeof message.data === "string"
       ) {
-        this.phantty?.send(
+        this.wispterm?.send(
           JSON.stringify({
             type: "input-bytes",
             surfaceId: message.surfaceId,
@@ -146,11 +146,11 @@ export class RemoteSession extends DurableObject<Env> {
   }
 
   private sendPeerStatus(socket: WebSocket): void {
-    socket.send(JSON.stringify({ type: "peer-status", phanttyConnected: this.phantty !== null }));
+    socket.send(JSON.stringify({ type: "peer-status", wisptermConnected: this.wispterm !== null }));
   }
 
   private broadcastPeerStatus(): void {
-    this.broadcast({ type: "peer-status", phanttyConnected: this.phantty !== null });
+    this.broadcast({ type: "peer-status", wisptermConnected: this.wispterm !== null });
   }
 }
 
@@ -177,10 +177,10 @@ export default {
       if (!session) return json({ error: "login required" }, 401);
       return routeWebSocket(request, env, "browser");
     }
-    if (url.pathname === "/ws/phantty") {
-      // Phase 1 scaffold: the future Phantty client must add device
+    if (url.pathname === "/ws/wispterm") {
+      // Phase 1 scaffold: the future WispTerm client must add device
       // challenge/response before this route is trusted for production.
-      return routeWebSocket(request, env, "phantty");
+      return routeWebSocket(request, env, "wispterm");
     }
 
     return env.ASSETS.fetch(request);
@@ -224,7 +224,7 @@ function logout(): Response {
   );
 }
 
-async function routeWebSocket(request: Request, env: Env, role: "browser" | "phantty"): Promise<Response> {
+async function routeWebSocket(request: Request, env: Env, role: "browser" | "wispterm"): Promise<Response> {
   if (request.headers.get("upgrade") !== "websocket") {
     return json({ error: "websocket required" }, 426);
   }

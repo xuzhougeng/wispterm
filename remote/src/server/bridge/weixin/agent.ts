@@ -28,7 +28,7 @@ export async function routeWeixinText(input: WeixinRouteInput): Promise<WeixinRo
   if (!text) return { text: "" };
   if (isPing(text)) return { text: "pong" };
 
-  const activeSessions = input.sessions.filter(({ session }) => session.isPhanttyConnected());
+  const activeSessions = input.sessions.filter(({ session }) => session.isWispTermConnected());
   const [cmd, arg] = splitCommand(text);
   if (cmd === "/help") return { text: helpText() };
   if (cmd === "/sessions") return { text: sessionsText(input.sessions) };
@@ -70,7 +70,7 @@ function resolveTargetSession(settings: WeixinSettings, sessions: RoutedSession[
     return { session: matched.session, error: "" };
   }
   if (sessions.length === 1) return { session: sessions[0].session, error: "" };
-  if (sessions.length === 0) return { session: null, error: "当前没有在线的 Phantty Remote session。请先在 Phantty 中启用 remote 并连接到该后台。" };
+  if (sessions.length === 0) return { session: null, error: "当前没有在线的 WispTerm Remote session。请先在 WispTerm 中启用 remote 并连接到该后台。" };
   return { session: null, error: `当前有多个在线 session：\n${sessionsText(sessions)}\n\n请先发送 \`/use <编号>\` 选择目标。` };
 }
 
@@ -96,22 +96,22 @@ async function sendAi(session: RemoteSession, text: string, timeoutMs = AI_AGENT
   if (ai) return sendAiToSurface(session, ai, text);
 
   const result = await session.requestAiAgentOpen(nextAiAgentOpenRequestId(), timeoutMs);
-  if (result === "no-profile") return { text: "Phantty 尚未配置 AI Chat profile。请先在桌面端创建 AI Chat profile。" };
-  if (result === "failed") return { text: "Phantty 无法打开 AI Agent。请检查桌面端配置后重试。" };
-  if (result === "offline") return { text: "Phantty 当前离线，无法打开 AI Agent。" };
-  if (result === "timeout") return { text: "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
+  if (result === "no-profile") return { text: "WispTerm 尚未配置 AI Chat profile。请先在桌面端创建 AI Chat profile。" };
+  if (result === "failed") return { text: "WispTerm 无法打开 AI Agent。请检查桌面端配置后重试。" };
+  if (result === "offline") return { text: "WispTerm 当前离线，无法打开 AI Agent。" };
+  if (result === "timeout") return { text: "已请求 WispTerm 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
 
   const openedAi = await waitForAiChatSurface(session, timeoutMs);
   if (!openedAi) {
-    if (!session.isPhanttyConnected()) return { text: "Phantty 当前离线，无法打开 AI Agent。" };
-    return { text: "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
+    if (!session.isWispTermConnected()) return { text: "WispTerm 当前离线，无法打开 AI Agent。" };
+    return { text: "已请求 WispTerm 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。" };
   }
   return sendAiToSurface(session, openedAi, text);
 }
 
 function sendAiToSurface(session: RemoteSession, ai: { id: string; title: string }, text: string): WeixinRouteReply {
   const baselineTranscript = session.latestAiChatTranscript();
-  if (!session.sendInput(ai.id, `${text}\r`)) return { text: "Phantty 当前离线，无法发送给 AI Agent。" };
+  if (!session.sendInput(ai.id, `${text}\r`)) return { text: "WispTerm 当前离线，无法发送给 AI Agent。" };
   return {
     text: AI_ACK_TEXT,
     ai: {
@@ -124,7 +124,7 @@ function sendAiToSurface(session: RemoteSession, ai: { id: string; title: string
 function stopAi(session: RemoteSession): WeixinRouteReply {
   const ai = session.findAiChatSurface();
   if (!ai) return { text: "当前没有 AI Agent 可停止。" };
-  if (!session.sendInput(ai.id, ESC)) return { text: "Phantty 当前离线，无法停止 AI Agent。" };
+  if (!session.sendInput(ai.id, ESC)) return { text: "WispTerm 当前离线，无法停止 AI Agent。" };
   return { text: "已发送停止指令。" };
 }
 
@@ -164,7 +164,7 @@ function sendTerminal(session: RemoteSession, text: string, enter: boolean): Wei
   const terminal = session.findDefaultWritableSurface();
   if (!terminal) return { text: "当前 Remote session 没有可写终端 surface。" };
   const payload = enter ? `${text}\r` : text;
-  if (!session.sendInput(terminal.id, payload)) return { text: "Phantty 当前离线，无法发送到终端。" };
+  if (!session.sendInput(terminal.id, payload)) return { text: "WispTerm 当前离线，无法发送到终端。" };
   return { text: `已发送到终端：${terminal.title}` };
 }
 
@@ -172,7 +172,7 @@ function sessionsText(sessions: RoutedSession[]): string {
   if (sessions.length === 0) return "当前没有在线 Remote session。";
   return [
     "Remote session：",
-    ...sessions.map(({ key, session }, index) => `${index + 1}. ${maskSessionKey(key)} ${session.isPhanttyConnected() ? "online" : "offline"}`),
+    ...sessions.map(({ key, session }, index) => `${index + 1}. ${maskSessionKey(key)} ${session.isWispTermConnected() ? "online" : "offline"}`),
     "",
     "发送 `/use <编号>` 切换目标，例如 `/use 1`。",
   ].join("\n");
@@ -205,7 +205,7 @@ function statusText(settings: WeixinSettings, sessions: RoutedSession[]): string
 
 function helpText(): string {
   return [
-    "Phantty Weixin Bridge 命令：",
+    "WispTerm Weixin Bridge 命令：",
     "/ping 验证微信绑定",
     "/status 查看状态",
     "/sessions 查看 Remote session",

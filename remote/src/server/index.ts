@@ -22,7 +22,7 @@ type LoginBody = {
   password?: string;
 };
 
-const COOKIE_NAME = "phantty_remote";
+const COOKIE_NAME = "wispterm_remote";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -75,7 +75,7 @@ server.listen(PORT, HOST, () => {
 
 async function handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
-  if (url.pathname !== "/ws/browser" && url.pathname !== "/ws/phantty") {
+  if (url.pathname !== "/ws/browser" && url.pathname !== "/ws/wispterm") {
     return rejectUpgrade(socket, 404, "not found");
   }
 
@@ -89,7 +89,7 @@ async function handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer)
 
   wss.handleUpgrade(req, socket, head, (ws) => {
     const remote = getSession(sessionKey);
-    if (url.pathname === "/ws/phantty") remote.attachPhantty(ws);
+    if (url.pathname === "/ws/wispterm") remote.attachWispTerm(ws);
     else remote.attachBrowser(ws);
   });
 }

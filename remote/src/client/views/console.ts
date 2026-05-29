@@ -183,7 +183,7 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
           <div class="sidebar-user">
             <span class="sidebar-user-avatar">P</span>
             <span class="sidebar-user-copy">
-              <strong>Phantty</strong>
+              <strong>WispTerm</strong>
               <small>Remote console</small>
             </span>
           </div>
@@ -202,7 +202,7 @@ export function renderConsole(app: HTMLElement, onLogout: () => void): void {
             ${iconMenu()}
           </button>
           <div class="mobile-bar-main">
-            <span class="mobile-bar-title" id="mobile-workspace-title">Phantty Remote</span>
+            <span class="mobile-bar-title" id="mobile-workspace-title">WispTerm Remote</span>
             <div class="mobile-surface-selector" id="mobile-surface-selector" data-collapsed="false" data-open="false" hidden>
               <div class="mobile-surface-strip" id="mobile-surface-strip" aria-label="Surfaces"></div>
               <button type="button" class="mobile-surface-menu-toggle" id="mobile-surface-menu-toggle" aria-expanded="false" aria-controls="mobile-surface-menu"></button>

@@ -126,7 +126,7 @@ test("WeixinPoller discards updates after stop during an in-flight poll", async 
     () => [{
       key: "alpha",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         latestAiChatTranscript: () => "Status:\r\nReady",
         sendInput: () => true,
@@ -202,7 +202,7 @@ test("WeixinPoller stops message processing before send when stopped during rout
     () => [{
       key: "alpha",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         latestAiChatTranscript: () => "Status:\r\nReady",
         sendInput: () => true,
@@ -257,7 +257,7 @@ test("WeixinPoller does not save cursor after stop during an in-flight send", as
     () => [{
       key: "alpha",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         latestAiChatTranscript: () => "Status:\r\nReady",
         sendInput: () => true,
@@ -306,7 +306,7 @@ test("WeixinPoller replies pong to /ping without routing to AI chat", async () =
     () => [{
       key: "alpha",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         latestAiChatTranscript: () => "Status:\r\nReady",
         sendInput: () => {
@@ -351,7 +351,7 @@ test("WeixinPoller sends AI progress checkpoints at 10, 30, 60, and 120 seconds 
     () => [{
       key: "alpha",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         latestAiChatTranscript: () => transcript,
         sendInput: (_surfaceId: string, text: string) => {
@@ -408,7 +408,7 @@ test("WeixinPoller sends the final AI reply when it completes after all progress
     () => [{
       key: "alpha",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         latestAiChatTranscript: () => transcript,
         onLayout: (listener: () => void) => {
@@ -475,7 +475,7 @@ test("WeixinPoller sends the final AI reply when completion status is done after
     () => [{
       key: "alpha",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         latestAiChatTranscript: () => transcript,
         onLayout: (listener: () => void) => {
@@ -542,7 +542,7 @@ test("WeixinPoller sends the final AI reply when the current transcript was comp
     () => [{
       key: "alpha",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         latestAiChatTranscript: () => transcript,
         onLayout: (listener: () => void) => {
@@ -837,7 +837,7 @@ test("WeixinPoller does not save stale route target session after restart", asyn
     () => [{
       key: "beta",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         sendInput: () => true,
       },
@@ -896,7 +896,7 @@ test("WeixinPoller cancels stale route target session save after restart", async
     () => [{
       key: "beta",
       session: {
-        isPhanttyConnected: () => true,
+        isWispTermConnected: () => true,
         findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
         sendInput: () => true,
       },

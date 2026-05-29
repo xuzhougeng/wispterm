@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ($ExePath.Length -eq 0) {
-    $ExePath = Join-Path $repoRoot "zig-out\bin\phantty.exe"
+    $ExePath = Join-Path $repoRoot "zig-out\bin\wispterm.exe"
 }
 if ($WorkingDirectory.Length -eq 0) {
     $WorkingDirectory = $repoRoot
@@ -36,18 +36,18 @@ if ($Label.Length -eq 0) {
 }
 
 if (!(Test-Path -LiteralPath $ExePath)) {
-    throw "Phantty executable not found: $ExePath. Run zig build first."
+    throw "WispTerm executable not found: $ExePath. Run zig build first."
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-if (-not ("PhanttyResizeBenchNative" -as [type])) {
+if (-not ("WispTermResizeBenchNative" -as [type])) {
     Add-Type @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
 
-public static class PhanttyResizeBenchNative {
+public static class WispTermResizeBenchNative {
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
   [StructLayout(LayoutKind.Sequential)]
@@ -71,39 +71,39 @@ public static class PhanttyResizeBenchNative {
 "@
 }
 
-[PhanttyResizeBenchNative]::SetProcessDPIAware() | Out-Null
+[WispTermResizeBenchNative]::SetProcessDPIAware() | Out-Null
 
-function Get-PhanttyWindowHandle([System.Diagnostics.Process]$Process) {
-    $script:phanttyResizeBenchWindowHandle = [IntPtr]::Zero
-    $script:phanttyResizeBenchProcessId = $Process.Id
-    $callback = [PhanttyResizeBenchNative+EnumWindowsProc]{
+function Get-WispTermWindowHandle([System.Diagnostics.Process]$Process) {
+    $script:wisptermResizeBenchWindowHandle = [IntPtr]::Zero
+    $script:wisptermResizeBenchProcessId = $Process.Id
+    $callback = [WispTermResizeBenchNative+EnumWindowsProc]{
         param([IntPtr]$Hwnd, [IntPtr]$LParam)
-        if (![PhanttyResizeBenchNative]::IsWindowVisible($Hwnd)) {
+        if (![WispTermResizeBenchNative]::IsWindowVisible($Hwnd)) {
             return $true
         }
 
         [uint32]$windowProcessId = 0
-        [PhanttyResizeBenchNative]::GetWindowThreadProcessId($Hwnd, [ref]$windowProcessId) | Out-Null
-        if ($windowProcessId -ne [uint32]$script:phanttyResizeBenchProcessId) {
+        [WispTermResizeBenchNative]::GetWindowThreadProcessId($Hwnd, [ref]$windowProcessId) | Out-Null
+        if ($windowProcessId -ne [uint32]$script:wisptermResizeBenchProcessId) {
             return $true
         }
 
         $className = [System.Text.StringBuilder]::new(256)
-        [PhanttyResizeBenchNative]::GetClassNameW($Hwnd, $className, $className.Capacity) | Out-Null
-        if ($className.ToString() -eq "PhanttyWindowClass") {
-            $script:phanttyResizeBenchWindowHandle = $Hwnd
+        [WispTermResizeBenchNative]::GetClassNameW($Hwnd, $className, $className.Capacity) | Out-Null
+        if ($className.ToString() -eq "WispTermWindowClass") {
+            $script:wisptermResizeBenchWindowHandle = $Hwnd
             return $false
         }
         return $true
     }
 
-    [PhanttyResizeBenchNative]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
-    return $script:phanttyResizeBenchWindowHandle
+    [WispTermResizeBenchNative]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
+    return $script:wisptermResizeBenchWindowHandle
 }
 
 function Invoke-WindowResize([IntPtr]$Hwnd, [int]$X, [int]$Y, [int]$Width, [int]$Height) {
     $flags = 0x0040 -bor 0x0004 # SWP_SHOWWINDOW | SWP_NOZORDER
-    if (![PhanttyResizeBenchNative]::SetWindowPos($Hwnd, [IntPtr]::Zero, $X, $Y, $Width, $Height, $flags)) {
+    if (![WispTermResizeBenchNative]::SetWindowPos($Hwnd, [IntPtr]::Zero, $X, $Y, $Width, $Height, $flags)) {
         throw "SetWindowPos failed for ${Width}x${Height}"
     }
 }
@@ -192,8 +192,8 @@ $jsonPath = Join-Path $OutDir "resize-benchmark-$safeLabel-$timestamp.json"
 $csvPath = Join-Path $OutDir "resize-benchmark-$safeLabel-$timestamp.csv"
 Remove-Item -LiteralPath $stderrPath, $stdoutPath -Force -ErrorAction SilentlyContinue
 
-$oldPerf = $env:PHANTTY_UI_PERF
-$env:PHANTTY_UI_PERF = "1"
+$oldPerf = $env:WISPTERM_UI_PERF
+$env:WISPTERM_UI_PERF = "1"
 $proc = $null
 
 try {
@@ -205,20 +205,20 @@ try {
         -PassThru
 
     $deadline = (Get-Date).AddSeconds(12)
-    [IntPtr]$phanttyWindow = [IntPtr]::Zero
+    [IntPtr]$wisptermWindow = [IntPtr]::Zero
     do {
         Start-Sleep -Milliseconds 150
         $proc.Refresh()
-        $phanttyWindow = Get-PhanttyWindowHandle $proc
-    } while ($phanttyWindow -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
+        $wisptermWindow = Get-WispTermWindowHandle $proc
+    } while ($wisptermWindow -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
 
-    if ($phanttyWindow -eq [IntPtr]::Zero) {
-        throw "Phantty window did not appear"
+    if ($wisptermWindow -eq [IntPtr]::Zero) {
+        throw "WispTerm window did not appear"
     }
 
-    [PhanttyResizeBenchNative]::ShowWindow($phanttyWindow, 5) | Out-Null
-    [PhanttyResizeBenchNative]::SetForegroundWindow($phanttyWindow) | Out-Null
-    Invoke-WindowResize $phanttyWindow $WindowX $WindowY $StartWidth $StartHeight
+    [WispTermResizeBenchNative]::ShowWindow($wisptermWindow, 5) | Out-Null
+    [WispTermResizeBenchNative]::SetForegroundWindow($wisptermWindow) | Out-Null
+    Invoke-WindowResize $wisptermWindow $WindowX $WindowY $StartWidth $StartHeight
     Start-Sleep -Milliseconds $WarmupMs
     if ($ManualSetupSeconds -gt 0) {
         Write-Host "Manual setup window: $ManualSetupSeconds seconds. Prepare the UI state to benchmark, then wait."
@@ -230,7 +230,7 @@ try {
     $total = [System.Diagnostics.Stopwatch]::StartNew()
     foreach ($size in $sequence) {
         $step = [System.Diagnostics.Stopwatch]::StartNew()
-        Invoke-WindowResize $phanttyWindow $WindowX $WindowY $size.width $size.height
+        Invoke-WindowResize $wisptermWindow $WindowX $WindowY $size.width $size.height
         $step.Stop()
         $durations.Add($step.Elapsed.TotalMilliseconds)
         if ($StepDelayMs -gt 0) {
@@ -276,9 +276,9 @@ try {
     $result | ConvertTo-Json -Depth 5
 } finally {
     if ($null -eq $oldPerf) {
-        Remove-Item Env:\PHANTTY_UI_PERF -ErrorAction SilentlyContinue
+        Remove-Item Env:\WISPTERM_UI_PERF -ErrorAction SilentlyContinue
     } else {
-        $env:PHANTTY_UI_PERF = $oldPerf
+        $env:WISPTERM_UI_PERF = $oldPerf
     }
 
     if (!$KeepOpen -and $null -ne $proc -and !$proc.HasExited) {

@@ -1,12 +1,12 @@
 import { normalizeMobileVisualZoom } from "./mobile_visual_zoom";
 import type { DesktopPanelMode, MobileVisualZoom, ThemeMode } from "./types";
 
-const SESSION_KEY_STORAGE_KEY = "phantty.remote.sessionKey";
-const KBD_VISIBLE_STORAGE_KEY = "phantty.remote.kbdVisible";
-const THEME_STORAGE_KEY = "phantty.remote.theme";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "phantty.remote.sidebarCollapsed";
-const DESKTOP_PANEL_MODE_STORAGE_KEY = "phantty.remote.desktopPanelMode";
-const MOBILE_VISUAL_ZOOM_STORAGE_KEY = "phantty.remote.mobileVisualZoom";
+const SESSION_KEY_STORAGE_KEY = "wispterm.remote.sessionKey";
+const KBD_VISIBLE_STORAGE_KEY = "wispterm.remote.kbdVisible";
+const THEME_STORAGE_KEY = "wispterm.remote.theme";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "wispterm.remote.sidebarCollapsed";
+const DESKTOP_PANEL_MODE_STORAGE_KEY = "wispterm.remote.desktopPanelMode";
+const MOBILE_VISUAL_ZOOM_STORAGE_KEY = "wispterm.remote.mobileVisualZoom";
 
 export function readSavedSessionKey(): string {
   try {

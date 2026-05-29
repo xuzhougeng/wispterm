@@ -53,7 +53,7 @@ export class WeixinClient {
     const result = await this.post<WeixinSendMessageResponse>("/ilink/bot/sendmessage", {
       msg: {
         to_user_id: toUserId,
-        client_id: `phantty-weixin-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+        client_id: `wispterm-weixin-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
         message_type: 2,
         message_state: 2,
         context_token: contextToken,

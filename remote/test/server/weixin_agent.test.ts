@@ -55,7 +55,7 @@ function sessionWithLayout(): RemoteSession {
       ],
     }],
   });
-  session.attachPhantty(new FakeSocket() as never);
+  session.attachWispTerm(new FakeSocket() as never);
   return session;
 }
 
@@ -72,19 +72,19 @@ function sessionWithoutAiChat(): RemoteSession {
       ],
     }],
   });
-  session.attachPhantty(new FakeSocket() as never);
+  session.attachWispTerm(new FakeSocket() as never);
   return session;
 }
 
 function offlineSessionWithLayout(): RemoteSession {
   const session = sessionWithLayout();
-  session.phantty = null;
+  session.wispterm = null;
   return session;
 }
 
-function phanttySocket(session: RemoteSession): FakeSocket {
-  assert.ok(session.phantty);
-  return session.phantty as never as FakeSocket;
+function wisptermSocket(session: RemoteSession): FakeSocket {
+  assert.ok(session.wispterm);
+  return session.wispterm as never as FakeSocket;
 }
 
 async function waitForSentType(type: string): Promise<Record<string, unknown>> {
@@ -127,7 +127,7 @@ test("plain text auto-opens AI Agent when no AI Chat exists", async () => {
 
   const openRequest = await waitForSentType("open-ai-agent");
   assert.match(openRequest.requestId as string, /^weixin-ai-/);
-  phanttySocket(session).emit(
+  wisptermSocket(session).emit(
     "message",
     Buffer.from(JSON.stringify({
       type: "open-ai-agent-result",
@@ -166,7 +166,7 @@ test("/ai auto-opens AI Agent and sends only the command content", async () => {
   });
 
   const openRequest = await waitForSentType("open-ai-agent");
-  phanttySocket(session).emit(
+  wisptermSocket(session).emit(
     "message",
     Buffer.from(JSON.stringify({
       type: "open-ai-agent-result",
@@ -204,7 +204,7 @@ test("AI Agent open no-profile result returns setup guidance", async () => {
   });
 
   const openRequest = await waitForSentType("open-ai-agent");
-  phanttySocket(session).emit(
+  wisptermSocket(session).emit(
     "message",
     Buffer.from(JSON.stringify({
       type: "open-ai-agent-result",
@@ -213,7 +213,7 @@ test("AI Agent open no-profile result returns setup guidance", async () => {
     })),
   );
 
-  assert.equal(await pending.then((reply) => reply.text), "Phantty 尚未配置 AI Chat profile。请先在桌面端创建 AI Chat profile。");
+  assert.equal(await pending.then((reply) => reply.text), "WispTerm 尚未配置 AI Chat profile。请先在桌面端创建 AI Chat profile。");
 });
 
 test("AI Agent open failed result returns retry guidance", async () => {
@@ -227,7 +227,7 @@ test("AI Agent open failed result returns retry guidance", async () => {
   });
 
   const openRequest = await waitForSentType("open-ai-agent");
-  phanttySocket(session).emit(
+  wisptermSocket(session).emit(
     "message",
     Buffer.from(JSON.stringify({
       type: "open-ai-agent-result",
@@ -236,13 +236,13 @@ test("AI Agent open failed result returns retry guidance", async () => {
     })),
   );
 
-  assert.equal(await pending.then((reply) => reply.text), "Phantty 无法打开 AI Agent。请检查桌面端配置后重试。");
+  assert.equal(await pending.then((reply) => reply.text), "WispTerm 无法打开 AI Agent。请检查桌面端配置后重试。");
 });
 
 test("AI Agent open offline result returns offline message", async () => {
   sent = [];
   const session = sessionWithoutAiChat();
-  session.attachPhantty(new ThrowingSocket() as never);
+  session.attachWispTerm(new ThrowingSocket() as never);
 
   const reply = await routeWeixinText({
     text: "hello ai",
@@ -251,7 +251,7 @@ test("AI Agent open offline result returns offline message", async () => {
     aiAgentOpenTimeoutMs: 100,
   });
 
-  assert.equal(reply.text, "Phantty 当前离线，无法打开 AI Agent。");
+  assert.equal(reply.text, "WispTerm 当前离线，无法打开 AI Agent。");
 });
 
 test("opened AI Agent result without later AI Chat layout returns layout timeout message", async () => {
@@ -265,7 +265,7 @@ test("opened AI Agent result without later AI Chat layout returns layout timeout
   });
 
   const openRequest = await waitForSentType("open-ai-agent");
-  phanttySocket(session).emit(
+  wisptermSocket(session).emit(
     "message",
     Buffer.from(JSON.stringify({
       type: "open-ai-agent-result",
@@ -274,10 +274,10 @@ test("opened AI Agent result without later AI Chat layout returns layout timeout
     })),
   );
 
-  assert.equal(await pending.then((reply) => reply.text), "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。");
+  assert.equal(await pending.then((reply) => reply.text), "已请求 WispTerm 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。");
 });
 
-test("opened AI Agent result followed by Phantty disconnect returns offline message", async () => {
+test("opened AI Agent result followed by WispTerm disconnect returns offline message", async () => {
   sent = [];
   const session = sessionWithoutAiChat();
   const pending = routeWeixinText({
@@ -288,7 +288,7 @@ test("opened AI Agent result followed by Phantty disconnect returns offline mess
   });
 
   const openRequest = await waitForSentType("open-ai-agent");
-  phanttySocket(session).emit(
+  wisptermSocket(session).emit(
     "message",
     Buffer.from(JSON.stringify({
       type: "open-ai-agent-result",
@@ -296,9 +296,9 @@ test("opened AI Agent result followed by Phantty disconnect returns offline mess
       status: "opened",
     })),
   );
-  phanttySocket(session).emit("close");
+  wisptermSocket(session).emit("close");
 
-  assert.equal(await pending.then((reply) => reply.text), "Phantty 当前离线，无法打开 AI Agent。");
+  assert.equal(await pending.then((reply) => reply.text), "WispTerm 当前离线，无法打开 AI Agent。");
 });
 
 test("AI Agent open request timeout returns layout timeout message", async () => {
@@ -310,7 +310,7 @@ test("AI Agent open request timeout returns layout timeout message", async () =>
     aiAgentOpenTimeoutMs: 5,
   });
 
-  assert.equal(reply.text, "已请求 Phantty 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。");
+  assert.equal(reply.text, "已请求 WispTerm 打开 AI Agent，但未等到 AI Chat tab。请检查桌面端配置后重试。");
 });
 
 test("/term against session without AI Chat sends to terminal and does not open AI Agent", async () => {
@@ -470,7 +470,7 @@ test("unknown slash command returns help before resolving a target session", asy
     ],
   });
   assert.match(reply.text, /未知命令：\/bogus/);
-  assert.match(reply.text, /Phantty Weixin Bridge 命令/);
+  assert.match(reply.text, /WispTerm Weixin Bridge 命令/);
 });
 
 test("/use refuses offline sessions and does not save them", async () => {

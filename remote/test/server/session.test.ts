@@ -102,14 +102,14 @@ test("RemoteSession notifies layout listeners and supports unsubscribe", () => {
   assert.equal(calls, 1);
 });
 
-test("RemoteSession sends utf8 input bytes to connected Phantty socket", () => {
+test("RemoteSession sends utf8 input bytes to connected WispTerm socket", () => {
   const session = new RemoteSession("alpha");
-  const phantty = new FakeSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new FakeSocket();
+  session.attachWispTerm(wispterm as never);
 
   assert.equal(session.sendInput("surface1", "pwd\r"), true);
-  assert.equal(phantty.sent.length, 1);
-  assert.deepEqual(JSON.parse(phantty.sent[0]), {
+  assert.equal(wispterm.sent.length, 1);
+  assert.deepEqual(JSON.parse(wispterm.sent[0]), {
     type: "input-bytes",
     surfaceId: "surface1",
     encoding: "hex",
@@ -117,31 +117,31 @@ test("RemoteSession sends utf8 input bytes to connected Phantty socket", () => {
   });
 });
 
-test("RemoteSession refuses input when Phantty socket is disconnected", () => {
+test("RemoteSession refuses input when WispTerm socket is disconnected", () => {
   const session = new RemoteSession("alpha");
   assert.equal(session.sendInput("surface1", "pwd\r"), false);
 });
 
-test("RemoteSession refuses input when Phantty socket is not open or send fails", () => {
+test("RemoteSession refuses input when WispTerm socket is not open or send fails", () => {
   const session = new RemoteSession("alpha");
-  const closedPhantty = new FakeSocket();
-  closedPhantty.readyState = 3;
-  session.attachPhantty(closedPhantty as never);
+  const closedWispTerm = new FakeSocket();
+  closedWispTerm.readyState = 3;
+  session.attachWispTerm(closedWispTerm as never);
 
   assert.equal(session.sendInput("surface1", "pwd\r"), false);
 
-  const throwingPhantty = new ThrowingSocket();
-  session.attachPhantty(throwingPhantty as never);
+  const throwingWispTerm = new ThrowingSocket();
+  session.attachWispTerm(throwingWispTerm as never);
 
   assert.equal(session.sendInput("surface1", "pwd\r"), false);
 });
 
-test("RemoteSession handles Phantty socket errors without throwing", () => {
+test("RemoteSession handles WispTerm socket errors without throwing", () => {
   const session = new RemoteSession("alpha");
-  const phantty = new FakeSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new FakeSocket();
+  session.attachWispTerm(wispterm as never);
 
-  assert.doesNotThrow(() => phantty.emit("error", new Error("invalid websocket frame")));
+  assert.doesNotThrow(() => wispterm.emit("error", new Error("invalid websocket frame")));
 });
 
 test("RemoteSession handles browser socket errors without throwing", () => {
@@ -152,44 +152,44 @@ test("RemoteSession handles browser socket errors without throwing", () => {
   assert.doesNotThrow(() => browser.emit("error", new Error("invalid websocket frame")));
 });
 
-test("RemoteSession reports Phantty peer status to browsers", () => {
+test("RemoteSession reports WispTerm peer status to browsers", () => {
   const session = new RemoteSession("alpha");
   const browser = new FakeSocket();
   session.attachBrowser(browser as never);
 
   assert.deepEqual(JSON.parse(browser.sent.at(-1) ?? "{}"), {
     type: "peer-status",
-    phanttyConnected: false,
+    wisptermConnected: false,
   });
 
-  const phantty = new FakeSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new FakeSocket();
+  session.attachWispTerm(wispterm as never);
 
   assert.deepEqual(JSON.parse(browser.sent.at(-1) ?? "{}"), {
     type: "peer-status",
-    phanttyConnected: true,
+    wisptermConnected: true,
   });
 
-  phantty.emit("close");
+  wispterm.emit("close");
 
   assert.deepEqual(JSON.parse(browser.sent.at(-1) ?? "{}"), {
     type: "peer-status",
-    phanttyConnected: false,
+    wisptermConnected: false,
   });
 });
 
 test("RemoteSession requests AI Agent open and resolves the matching result", async () => {
   const session = new RemoteSession("alpha");
-  const phantty = new FakeSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new FakeSocket();
+  session.attachWispTerm(wispterm as never);
 
   const pending = session.requestAiAgentOpen("req-1", 50);
-  assert.deepEqual(JSON.parse(phantty.sent.at(-1) ?? "{}"), {
+  assert.deepEqual(JSON.parse(wispterm.sent.at(-1) ?? "{}"), {
     type: "open-ai-agent",
     requestId: "req-1",
   });
 
-  phantty.emit(
+  wispterm.emit(
     "message",
     Buffer.from(
       JSON.stringify({
@@ -205,11 +205,11 @@ test("RemoteSession requests AI Agent open and resolves the matching result", as
 
 test("RemoteSession ignores AI Agent open results with unknown statuses", async () => {
   const session = new RemoteSession("alpha");
-  const phantty = new FakeSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new FakeSocket();
+  session.attachWispTerm(wispterm as never);
 
   const pending = session.requestAiAgentOpen("req-invalid", 10);
-  phantty.emit(
+  wispterm.emit(
     "message",
     Buffer.from(
       JSON.stringify({
@@ -225,13 +225,13 @@ test("RemoteSession ignores AI Agent open results with unknown statuses", async 
 
 test("RemoteSession AI Agent open request times out without a matching result", async () => {
   const session = new RemoteSession("alpha");
-  const phantty = new FakeSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new FakeSocket();
+  session.attachWispTerm(wispterm as never);
 
   assert.equal(await session.requestAiAgentOpen("req-timeout", 5), "timeout");
 });
 
-test("RemoteSession AI Agent open request reports offline when Phantty is disconnected", async () => {
+test("RemoteSession AI Agent open request reports offline when WispTerm is disconnected", async () => {
   const session = new RemoteSession("alpha");
 
   assert.equal(await session.requestAiAgentOpen("req-offline", 5), "offline");
@@ -239,8 +239,8 @@ test("RemoteSession AI Agent open request reports offline when Phantty is discon
 
 test("RemoteSession AI Agent open request reports offline when send fails", async () => {
   const session = new RemoteSession("alpha");
-  const phantty = new ThrowingSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new ThrowingSocket();
+  session.attachWispTerm(wispterm as never);
 
   assert.equal(await session.requestAiAgentOpen("req-send-fails", 50), "offline");
 });
@@ -248,12 +248,12 @@ test("RemoteSession AI Agent open request reports offline when send fails", asyn
 test("RemoteSession consumes AI Agent open results without broadcasting them to browsers", () => {
   const session = new RemoteSession("alpha");
   const browser = new FakeSocket();
-  const phantty = new FakeSocket();
+  const wispterm = new FakeSocket();
   session.attachBrowser(browser as never);
-  session.attachPhantty(phantty as never);
+  session.attachWispTerm(wispterm as never);
   const sentBefore = browser.sent.length;
 
-  phantty.emit(
+  wispterm.emit(
     "message",
     Buffer.from(
       JSON.stringify({
@@ -267,36 +267,36 @@ test("RemoteSession consumes AI Agent open results without broadcasting them to 
   assert.equal(browser.sent.length, sentBefore);
 });
 
-test("RemoteSession resolves pending AI Agent open requests offline when Phantty closes", async () => {
+test("RemoteSession resolves pending AI Agent open requests offline when WispTerm closes", async () => {
   const session = new RemoteSession("alpha");
-  const phantty = new FakeSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new FakeSocket();
+  session.attachWispTerm(wispterm as never);
 
   const pending = session.requestAiAgentOpen("req-close", 50);
-  phantty.emit("close");
+  wispterm.emit("close");
 
   assert.equal(await pending, "offline");
 });
 
-test("RemoteSession resolves pending AI Agent open requests offline when Phantty errors", async () => {
+test("RemoteSession resolves pending AI Agent open requests offline when WispTerm errors", async () => {
   const session = new RemoteSession("alpha");
-  const phantty = new FakeSocket();
-  session.attachPhantty(phantty as never);
+  const wispterm = new FakeSocket();
+  session.attachWispTerm(wispterm as never);
 
   const pending = session.requestAiAgentOpen("req-error", 50);
-  phantty.emit("error", new Error("socket failed"));
+  wispterm.emit("error", new Error("socket failed"));
 
   assert.equal(await pending, "offline");
 });
 
-test("RemoteSession resolves pending AI Agent open requests offline when Phantty is replaced", async () => {
+test("RemoteSession resolves pending AI Agent open requests offline when WispTerm is replaced", async () => {
   const session = new RemoteSession("alpha");
-  const firstPhantty = new FakeSocket();
-  const nextPhantty = new FakeSocket();
-  session.attachPhantty(firstPhantty as never);
+  const firstWispTerm = new FakeSocket();
+  const nextWispTerm = new FakeSocket();
+  session.attachWispTerm(firstWispTerm as never);
 
   const pending = session.requestAiAgentOpen("req-replaced", 50);
-  session.attachPhantty(nextPhantty as never);
+  session.attachWispTerm(nextWispTerm as never);
 
   assert.equal(await pending, "offline");
 });

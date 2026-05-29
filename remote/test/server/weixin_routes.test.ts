@@ -60,7 +60,7 @@ async function routeContext(store: WeixinBindingStore, overrides: {
 }
 
 async function tempStore() {
-  return new WeixinBindingStore(await mkdtemp(join(tmpdir(), "phantty-weixin-route-")));
+  return new WeixinBindingStore(await mkdtemp(join(tmpdir(), "wispterm-weixin-route-")));
 }
 
 test("GET /api/weixin/settings returns settings and binding summary", async () => {

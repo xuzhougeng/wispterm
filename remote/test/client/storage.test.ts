@@ -43,7 +43,7 @@ test("desktop panel mode preference round-trips through storage", () => {
 test("desktop panel mode ignores invalid stored values", () => {
   installLocalStorage();
 
-  store.set("phantty.remote.desktopPanelMode", "wide");
+  store.set("wispterm.remote.desktopPanelMode", "wide");
 
   assert.equal(readSavedDesktopPanelMode(), "layout");
 });
@@ -63,7 +63,7 @@ test("mobile visual zoom preference round-trips through storage", () => {
 test("mobile visual zoom ignores invalid stored values", () => {
   installLocalStorage();
 
-  store.set("phantty.remote.mobileVisualZoom", "0.9");
+  store.set("wispterm.remote.mobileVisualZoom", "0.9");
 
   assert.equal(readSavedMobileVisualZoom(), 1);
 });

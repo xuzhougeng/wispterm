@@ -8,7 +8,7 @@ import {
   latencyDisclosureText,
 } from "../../src/client/connection_status";
 
-test("connection status uses red when Phantty peer is not connected", () => {
+test("connection status uses red when WispTerm peer is not connected", () => {
   assert.deepEqual(connectionStatusWithoutPeer(null), {
     kind: "offline",
     text: "Not connected",

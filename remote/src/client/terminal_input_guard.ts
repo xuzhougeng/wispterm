@@ -1,10 +1,10 @@
 import type { MobileInputMode } from "./types";
 
-const GUARD_ATTR = "data-phantty-native-input-guard";
-const PREV_READONLY_ATTR = "data-phantty-prev-readonly";
-const PREV_DISABLED_ATTR = "data-phantty-prev-disabled";
-const PREV_INPUTMODE_ATTR = "data-phantty-prev-inputmode";
-const PREV_TABINDEX_ATTR = "data-phantty-prev-tabindex";
+const GUARD_ATTR = "data-wispterm-native-input-guard";
+const PREV_READONLY_ATTR = "data-wispterm-prev-readonly";
+const PREV_DISABLED_ATTR = "data-wispterm-prev-disabled";
+const PREV_INPUTMODE_ATTR = "data-wispterm-prev-inputmode";
+const PREV_TABINDEX_ATTR = "data-wispterm-prev-tabindex";
 
 type NativeInputRoot = {
   querySelectorAll<E extends Element = Element>(selectors: string): ArrayLike<E>;

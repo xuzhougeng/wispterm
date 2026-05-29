@@ -1,5 +1,5 @@
 param(
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Phantty'),
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\WispTerm'),
     [switch]$Quiet,
     [switch]$NoLaunch
 )
@@ -7,7 +7,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Get-PhanttyVersion {
+function Get-WispTermVersion {
     $versionFile = Join-Path $PSScriptRoot 'version.txt'
     if (Test-Path $versionFile) {
         $raw = (Get-Content $versionFile -Raw).Trim()
@@ -36,9 +36,9 @@ function New-Shortcut {
     $shortcut.Save()
 }
 
-$appName = 'Phantty'
-$publisher = 'Phantty'
-$exeName = 'phantty.exe'
+$appName = 'WispTerm'
+$publisher = 'WispTerm'
+$exeName = 'wispterm.exe'
 $sourceExe = Join-Path $PSScriptRoot $exeName
 $sourceWebView2Loader = Join-Path $PSScriptRoot 'WebView2Loader.dll'
 
@@ -49,7 +49,7 @@ if (-not (Test-Path $sourceExe)) {
 $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $installedExe = Join-Path $resolvedInstallDir $exeName
 $installedWebView2Loader = Join-Path $resolvedInstallDir 'WebView2Loader.dll'
-$version = Get-PhanttyVersion
+$version = Get-WispTermVersion
 
 New-Item -ItemType Directory -Path $resolvedInstallDir -Force | Out-Null
 Copy-Item -Path $sourceExe -Destination $installedExe -Force
@@ -58,24 +58,24 @@ if (Test-Path $sourceWebView2Loader) {
 }
 Set-Content -Path (Join-Path $resolvedInstallDir 'version.txt') -Value $version -Encoding ASCII
 
-$startMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Phantty'
+$startMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WispTerm'
 New-Item -ItemType Directory -Path $startMenuDir -Force | Out-Null
 
-$startMenuShortcut = Join-Path $startMenuDir 'Phantty.lnk'
+$startMenuShortcut = Join-Path $startMenuDir 'WispTerm.lnk'
 New-Shortcut -ShortcutPath $startMenuShortcut -TargetPath $installedExe -WorkingDirectory $resolvedInstallDir
 
-$uninstallScript = Join-Path $resolvedInstallDir 'Uninstall-Phantty.ps1'
-$uninstallCmd = Join-Path $resolvedInstallDir 'Uninstall-Phantty.cmd'
-$appPathsKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\phantty.exe'
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Phantty'
+$uninstallScript = Join-Path $resolvedInstallDir 'Uninstall-WispTerm.ps1'
+$uninstallCmd = Join-Path $resolvedInstallDir 'Uninstall-WispTerm.cmd'
+$appPathsKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\wispterm.exe'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WispTerm'
 
 $uninstallScriptBody = @'
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $installDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$startMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Phantty'
-$appPathsKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\phantty.exe'
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Phantty'
+$startMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WispTerm'
+$appPathsKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\wispterm.exe'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WispTerm'
 
 if (Test-Path $startMenuDir) {
     Remove-Item -Path $startMenuDir -Recurse -Force
@@ -96,7 +96,7 @@ Set-Content -Path $uninstallScript -Value $uninstallScriptBody -Encoding ASCII
 
 $uninstallCmdBody = @'
 @echo off
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Uninstall-Phantty.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Uninstall-WispTerm.ps1"
 '@
 Set-Content -Path $uninstallCmd -Value $uninstallCmdBody -Encoding ASCII
 
@@ -115,8 +115,8 @@ New-ItemProperty -Path $uninstallKey -Name 'NoRepair' -Value 1 -PropertyType DWo
 New-ItemProperty -Path $uninstallKey -Name 'UninstallString' -Value ('"{0}"' -f $uninstallCmd) -PropertyType String -Force | Out-Null
 
 if (-not $Quiet) {
-    Write-Host "Installed Phantty to $resolvedInstallDir"
-    Write-Host 'Start menu entry created: Phantty'
+    Write-Host "Installed WispTerm to $resolvedInstallDir"
+    Write-Host 'Start menu entry created: WispTerm'
 }
 
 if (-not $NoLaunch) {

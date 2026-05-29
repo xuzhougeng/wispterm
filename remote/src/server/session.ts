@@ -9,7 +9,7 @@ export type RelayMessage = {
   message?: string;
   requestId?: string;
   status?: string;
-  phanttyConnected?: boolean;
+  wisptermConnected?: boolean;
   activeTab?: number;
   tabs?: Array<{
     index: number;
@@ -51,13 +51,13 @@ export function getSession(key: string): RemoteSession {
 export function listSessions(): Array<{ key: string; connected: boolean }> {
   return [...sessions.entries()].map(([key, session]) => ({
     key,
-    connected: session.isPhanttyConnected(),
+    connected: session.isWispTermConnected(),
   }));
 }
 
 export class RemoteSession {
   readonly key: string;
-  phantty: WebSocket | null = null;
+  wispterm: WebSocket | null = null;
   browsers = new Set<WebSocket>();
   lastLayout: RelayMessage | null = null;
   private layoutListeners = new Set<() => void>();
@@ -67,8 +67,8 @@ export class RemoteSession {
     this.key = key;
   }
 
-  isPhanttyConnected(): boolean {
-    return isSocketOpen(this.phantty);
+  isWispTermConnected(): boolean {
+    return isSocketOpen(this.wispterm);
   }
 
   applyLayout(message: RelayMessage): void {
@@ -126,8 +126,8 @@ export class RemoteSession {
   }
 
   sendInput(surfaceId: string, text: string): boolean {
-    if (!isSocketOpen(this.phantty)) return false;
-    return safeSend(this.phantty, {
+    if (!isSocketOpen(this.wispterm)) return false;
+    return safeSend(this.wispterm, {
       type: "input-bytes",
       surfaceId,
       encoding: "hex",
@@ -136,10 +136,10 @@ export class RemoteSession {
   }
 
   async requestAiAgentOpen(requestId: string, timeoutMs = 2000): Promise<AiAgentOpenResult> {
-    if (!isSocketOpen(this.phantty)) return "offline";
+    if (!isSocketOpen(this.wispterm)) return "offline";
 
     const wait = this.registerAiAgentOpenWait(requestId, timeoutMs);
-    if (!safeSend(this.phantty, { type: "open-ai-agent", requestId })) {
+    if (!safeSend(this.wispterm, { type: "open-ai-agent", requestId })) {
       wait.cancel();
       return "offline";
     }
@@ -202,24 +202,24 @@ export class RemoteSession {
     }
   }
 
-  attachPhantty(socket: WebSocket): void {
-    if (this.phantty) this.resolvePendingAiAgentOpenRequests("offline");
+  attachWispTerm(socket: WebSocket): void {
+    if (this.wispterm) this.resolvePendingAiAgentOpenRequests("offline");
     try {
-      this.phantty?.close(1012, "replaced by a new Phantty connection");
+      this.wispterm?.close(1012, "replaced by a new WispTerm connection");
     } catch {
       // ignore
     }
-    this.phantty = socket;
+    this.wispterm = socket;
     trackHeartbeat(socket);
-    this.broadcast({ type: "notice", message: "Phantty connected" });
+    this.broadcast({ type: "notice", message: "WispTerm connected" });
     this.broadcastPeerStatus();
 
     socket.on("error", (err) => {
-      if (this.phantty !== socket) return;
-      console.warn(`[remote] Phantty websocket error: ${socketErrorMessage(err)}`);
+      if (this.wispterm !== socket) return;
+      console.warn(`[remote] WispTerm websocket error: ${socketErrorMessage(err)}`);
       this.resolvePendingAiAgentOpenRequests("offline");
-      this.phantty = null;
-      this.broadcast({ type: "notice", message: "Phantty disconnected" });
+      this.wispterm = null;
+      this.broadcast({ type: "notice", message: "WispTerm disconnected" });
       this.broadcastPeerStatus();
       terminateSocket(socket);
     });
@@ -252,10 +252,10 @@ export class RemoteSession {
     });
 
     socket.on("close", () => {
-      if (this.phantty !== socket) return;
+      if (this.wispterm !== socket) return;
       this.resolvePendingAiAgentOpenRequests("offline");
-      this.phantty = null;
-      this.broadcast({ type: "notice", message: "Phantty disconnected" });
+      this.wispterm = null;
+      this.broadcast({ type: "notice", message: "WispTerm disconnected" });
       this.broadcastPeerStatus();
     });
   }
@@ -265,7 +265,7 @@ export class RemoteSession {
     trackHeartbeat(socket);
     safeSend(socket, { type: "notice", message: "Browser paired; input enabled" });
     this.sendPeerStatus(socket);
-    if (this.isPhanttyConnected()) safeSend(socket, { type: "notice", message: "Phantty connected" });
+    if (this.isWispTermConnected()) safeSend(socket, { type: "notice", message: "WispTerm connected" });
     if (this.lastLayout) safeSend(socket, this.lastLayout);
 
     socket.on("error", (err) => {
@@ -287,8 +287,8 @@ export class RemoteSession {
         typeof message.surfaceId === "string" &&
         typeof message.data === "string"
       ) {
-        if (this.phantty) {
-          safeSend(this.phantty, {
+        if (this.wispterm) {
+          safeSend(this.wispterm, {
             type: "input-bytes",
             surfaceId: message.surfaceId,
             encoding: message.encoding,
@@ -315,11 +315,11 @@ export class RemoteSession {
   }
 
   private sendPeerStatus(socket: WebSocket): void {
-    safeSend(socket, { type: "peer-status", phanttyConnected: this.isPhanttyConnected() });
+    safeSend(socket, { type: "peer-status", wisptermConnected: this.isWispTermConnected() });
   }
 
   private broadcastPeerStatus(): void {
-    this.broadcast({ type: "peer-status", phanttyConnected: this.isPhanttyConnected() });
+    this.broadcast({ type: "peer-status", wisptermConnected: this.isWispTermConnected() });
   }
 }
 

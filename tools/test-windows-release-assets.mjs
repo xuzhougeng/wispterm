@@ -19,7 +19,7 @@ assert.ok(fs.existsSync("plugins/skills/inspect-computer-config/scripts/inspect_
 assert.ok(!fs.existsSync("plugins/computer-config/skills/inspect-computer-config/SKILL.md"));
 
 assert.match(workflow, /portable-no-webview/);
-assert.match(workflow, /phantty-windows-portable-no-webview-\$tag\.zip/);
+assert.match(workflow, /wispterm-windows-portable-no-webview-\$tag\.zip/);
 assert.match(workflow, /Upload portable no-WebView artifact/);
 assert.match(workflow, /Portable no-WebView:/);
 assert.match(workflow, /plugins\\skills\\inspect-computer-config\\SKILL\.md/);
@@ -27,4 +27,4 @@ assert.match(workflow, /plugins\\skills\\inspect-computer-config\\scripts\\inspe
 
 assert.match(readme, /docs\/development\.md/);
 assert.match(developmentDocs, /portable-no-webview/);
-assert.match(developmentDocs, /phantty-windows-portable-no-webview-vX\.Y\.Z\.zip/);
+assert.match(developmentDocs, /wispterm-windows-portable-no-webview-vX\.Y\.Z\.zip/);

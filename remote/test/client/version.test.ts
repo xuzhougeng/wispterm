@@ -13,5 +13,5 @@ test("web version label always includes the release version", () => {
 });
 
 test("remote brand markup exposes the web version for shell views", () => {
-  assert.equal(remoteBrandMarkup(), 'Phantty Remote <span class="web-version">Web v0.32.0</span>');
+  assert.equal(remoteBrandMarkup(), 'WispTerm Remote <span class="web-version">Web v0.32.0</span>');
 });

@@ -1,10 +1,10 @@
 services:
-  phantty-remote:
+  wispterm-remote:
     build:
       context: .
       dockerfile: Dockerfile
-    image: phantty-remote:latest
-    container_name: phantty-remote
+    image: wispterm-remote:latest
+    container_name: wispterm-remote
     restart: unless-stopped
     env_file:
       - .env

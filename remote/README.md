@@ -1,21 +1,21 @@
-# Phantty Remote Console
+# WispTerm Remote Console
 
-Relay server for Phantty remote access. Provides:
+Relay server for WispTerm remote access. Provides:
 
 - Single-user login API.
 - Signed login cookie.
 - Static `xterm.js` browser console.
-- WebSocket relay between Phantty and one or more browsers.
+- WebSocket relay between WispTerm and one or more browsers.
 - Browser input forwarding after the session is paired.
 
-The browser mirrors Phantty tabs and split panels from layout snapshots, then
+The browser mirrors WispTerm tabs and split panels from layout snapshots, then
 routes input back to the selected surface.
 
 ## Deployment Options
 
 Two parallel deployment targets are supported. Pick either one — they share
 the same client (`src/client/`), the same routes, and the same on-the-wire
-protocol, so the Phantty client and browser behave identically.
+protocol, so the WispTerm client and browser behave identically.
 
 | Option            | Runtime                | TLS / Routing                                        | State                           |
 |-------------------|------------------------|------------------------------------------------------|---------------------------------|
@@ -24,7 +24,7 @@ protocol, so the Phantty client and browser behave identically.
 
 Both can be served on the same domain — just point DNS at whichever one you
 want active. The Docker variant does **not** persist relay state across
-container restarts; the Phantty client reconnects and re-sends layout, so
+container restarts; the WispTerm client reconnects and re-sends layout, so
 this is harmless in practice.
 
 ---
@@ -107,10 +107,10 @@ only sees the published image.
 
 ```bash
 # Replace <user>/<image> with your registry path.
-docker build -t <user>/phantty-remote:0.1.0 -t <user>/phantty-remote:latest .
+docker build -t <user>/wispterm-remote:0.1.0 -t <user>/wispterm-remote:latest .
 
-docker push <user>/phantty-remote:0.1.0
-docker push <user>/phantty-remote:latest
+docker push <user>/wispterm-remote:0.1.0
+docker push <user>/wispterm-remote:latest
 ```
 
 If your host architecture might differ from your build machine, build
@@ -119,13 +119,13 @@ multi-arch instead:
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  -t <user>/phantty-remote:0.1.0 \
+  -t <user>/wispterm-remote:0.1.0 \
   --push .
 ```
 
 Then in the host's control panel:
 
-- Point the service at `<user>/phantty-remote:<tag>`.
+- Point the service at `<user>/wispterm-remote:<tag>`.
 - Set the env vars from the table above (in the host's secret/env UI — do
   **not** bake them into the image).
 - Forward the host's public HTTPS port to container port `8787`.
@@ -147,9 +147,9 @@ Then put nginx in front (see `nginx.conf.example` — covers HTTP→HTTPS
 redirect, TLS, and the WebSocket upgrade headers needed for `/ws/*`):
 
 ```bash
-sudo cp nginx.conf.example /etc/nginx/sites-available/phantty-remote
-sudo $EDITOR /etc/nginx/sites-available/phantty-remote   # set server_name + cert paths
-sudo ln -s /etc/nginx/sites-available/phantty-remote /etc/nginx/sites-enabled/
+sudo cp nginx.conf.example /etc/nginx/sites-available/wispterm-remote
+sudo $EDITOR /etc/nginx/sites-available/wispterm-remote   # set server_name + cert paths
+sudo ln -s /etc/nginx/sites-available/wispterm-remote /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -193,7 +193,7 @@ production must keep cookies marked `Secure` and front the server with HTTPS.
 - `POST /api/logout` clears the login cookie.
 - `GET /api/me` checks login state.
 - `GET /ws/browser?session=<key>` connects the browser after login.
-- `GET /ws/phantty?session=<key>` connects the shared Phantty RemoteClient.
+- `GET /ws/wispterm?session=<key>` connects the shared WispTerm RemoteClient.
 
 ## Weixin iLink Bridge
 
@@ -218,8 +218,8 @@ Authenticated routes:
 Send `/ping` from Weixin to confirm that the binding and server reply path are
 working; the server replies `pong` without touching AI Chat. Plain Weixin text
 is routed to the selected Remote session's AI Chat surface. If that session has
-no AI Chat surface, the relay asks Phantty to open a default Agent tab first;
-Phantty uses the desktop `New Agent` default profile path and reports a setup
+no AI Chat surface, the relay asks WispTerm to open a default Agent tab first;
+WispTerm uses the desktop `New Agent` default profile path and reports a setup
 message if no AI profile exists. After the prompt is routed to an AI Chat
 surface, the server confirms receipt; setup, offline, or timeout errors can be
 returned instead. The server checks the AI Chat snapshot at 10, 30, 60, and 120
@@ -230,13 +230,13 @@ latest assistant message. Direct terminal input requires `/term <command>` or
 
 ## Relay Messages
 
-The Phantty client sends PTY bytes as:
+The WispTerm client sends PTY bytes as:
 
 ```json
 { "type": "output-bytes", "surfaceId": "0000000000000001", "encoding": "hex", "data": "..." }
 ```
 
-Phantty also sends layout snapshots so the browser can render tabs and split
+WispTerm also sends layout snapshots so the browser can render tabs and split
 panels separately. Each surface may include the current visible screen snapshot
 so a newly opened browser can show the latest terminal content without replaying
 scrollback history:
@@ -251,14 +251,14 @@ Browser input is routed back to the selected surface:
 { "type": "input-bytes", "surfaceId": "0000000000000001", "encoding": "hex", "data": "0d" }
 ```
 
-The relay can also ask Phantty to create an Agent tab when Weixin input has no
+The relay can also ask WispTerm to create an Agent tab when Weixin input has no
 AI Chat target:
 
 ```json
 { "type": "open-ai-agent", "requestId": "weixin-ai-1" }
 ```
 
-Phantty replies with the matching request id and a status of `opened`,
+WispTerm replies with the matching request id and a status of `opened`,
 `no-profile`, or `failed`:
 
 ```json
@@ -268,7 +268,7 @@ Phantty replies with the matching request id and a status of `opened`,
 The browser also accepts the older mock format:
 
 ```json
-{ "type": "output", "data": "hello from mock Phantty\r\n" }
+{ "type": "output", "data": "hello from mock WispTerm\r\n" }
 ```
 
 ## Security Notes
@@ -276,7 +276,7 @@ The browser also accepts the older mock format:
 - Do not commit Worker secrets or the Docker `.env` file.
 - Do not load third-party browser scripts into the console page.
 - Replace the Phase 1 password hash format with a slow KDF before production.
-- Add Phantty device challenge/response before trusting `/ws/phantty`.
+- Add WispTerm device challenge/response before trusting `/ws/wispterm`.
 - The Docker container speaks plain HTTP — never expose its port to the public
   internet directly. Always front it with a TLS terminator (your platform's
   proxy, or your own nginx) so browsers see HTTPS and the `Secure` cookie flag

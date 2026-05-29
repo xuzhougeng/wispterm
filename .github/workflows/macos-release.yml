@@ -59,7 +59,7 @@ jobs:
           MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYCHAIN_PATH="${RUNNER_TEMP}/phantty-build.keychain-db"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/wispterm-build.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
           python3 -c 'import base64, os; open("cert.p12", "wb").write(base64.b64decode(os.environ["MAC_CERT_P12_BASE64"].strip()))'
 
@@ -80,7 +80,7 @@ jobs:
             exit 1
           fi
           {
-            echo "PHANTTY_MACOS_SIGN_IDENTITY=${codesign_identity}"
+            echo "WISPTERM_MACOS_SIGN_IDENTITY=${codesign_identity}"
             echo "CODESIGN_KEYCHAIN=${KEYCHAIN_PATH}"
           } >> "${GITHUB_ENV}"
           rm -f cert.p12
@@ -93,16 +93,16 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          xcrun notarytool store-credentials "phantty-notarytool" \
+          xcrun notarytool store-credentials "wispterm-notarytool" \
             --apple-id "${APPLE_ID}" \
             --team-id "${APPLE_TEAM_ID}" \
             --password "${APPLE_APP_PASSWORD}"
-          echo "PHANTTY_MACOS_NOTARY_PROFILE=phantty-notarytool" >> "${GITHUB_ENV}"
+          echo "WISPTERM_MACOS_NOTARY_PROFILE=wispterm-notarytool" >> "${GITHUB_ENV}"
 
       - name: Fetch dependencies and build release
         shell: bash
         env:
-          PHANTTY_MACOS_VERSION: ${{ github.ref_name }}
+          WISPTERM_MACOS_VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -138,14 +138,14 @@ jobs:
           tag="${{ github.ref_name }}"
           dmg_tag="$tag"
           [[ "$dmg_tag" != v* ]] && dmg_tag="v$dmg_tag"
-          dmg_path="zig-out/dist/macos/phantty-macos-${dmg_tag}.dmg"
+          dmg_path="zig-out/dist/macos/wispterm-macos-${dmg_tag}.dmg"
 
           if [[ ! -f "$dmg_path" ]]; then
             echo "DMG not found: $dmg_path" >&2
             exit 1
           fi
 
-          codesign --verify --strict --verbose=2 "zig-out/bin/Phantty.app"
+          codesign --verify --strict --verbose=2 "zig-out/bin/WispTerm.app"
           hdiutil verify "$dmg_path"
           xcrun stapler validate "$dmg_path"
           spctl -a -vv --type open "$dmg_path" || true
@@ -157,15 +157,15 @@ jobs:
           tag="${{ github.ref_name }}"
           dmg_tag="$tag"
           [[ "$dmg_tag" != v* ]] && dmg_tag="v$dmg_tag"
-          src="zig-out/dist/macos/phantty-macos-${dmg_tag}.dmg"
-          dst="phantty-macos-${{ matrix.arch }}-${tag}.dmg"
+          src="zig-out/dist/macos/wispterm-macos-${dmg_tag}.dmg"
+          dst="wispterm-macos-${{ matrix.arch }}-${tag}.dmg"
           cp "$src" "$dst"
           echo "ASSET_PATH=${dst}" >> "${GITHUB_ENV}"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: phantty-macos-${{ matrix.arch }}-${{ github.ref_name }}
+          name: wispterm-macos-${{ matrix.arch }}-${{ github.ref_name }}
           path: ${{ env.ASSET_PATH }}
           if-no-files-found: error
 

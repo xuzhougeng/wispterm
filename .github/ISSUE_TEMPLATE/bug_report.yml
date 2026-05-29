@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to file a bug report! Please search [existing issues](https://github.com/xuzhougeng/phantty/issues) first to avoid duplicates.
+        Thanks for taking the time to file a bug report! Please search [existing issues](https://github.com/xuzhougeng/wispterm/issues) first to avoid duplicates.
 
   - type: textarea
     id: description
@@ -22,7 +22,7 @@ body:
       label: Steps to reproduce
       description: Tell us exactly how to trigger the bug.
       placeholder: |
-        1. Open phantty
+        1. Open wispterm
         2. Run '...'
         3. See error
     validations:
@@ -50,7 +50,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Phantty version
+      label: WispTerm version
       description: Output of the version command, or the commit/release you built from.
     validations:
       required: true

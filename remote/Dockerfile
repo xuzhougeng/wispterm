@@ -1,4 +1,4 @@
-# Multi-stage build for the Phantty Remote Console (Docker variant).
+# Multi-stage build for the WispTerm Remote Console (Docker variant).
 # This produces a standalone Node.js relay that mirrors the Cloudflare Worker.
 
 FROM node:22-alpine AS build
@@ -9,8 +9,8 @@ RUN npm ci
 
 COPY . .
 
-ARG PHANTTY_WEB_BUILD_TIME
-RUN VITE_PHANTTY_WEB_BUILD_TIME="${PHANTTY_WEB_BUILD_TIME:-$(date '+%Y %m %d %H:%M')}" npm run build:docker
+ARG WISPTERM_WEB_BUILD_TIME
+RUN VITE_WISPTERM_WEB_BUILD_TIME="${WISPTERM_WEB_BUILD_TIME:-$(date '+%Y %m %d %H:%M')}" npm run build:docker
 
 FROM node:22-alpine AS runtime
 WORKDIR /app

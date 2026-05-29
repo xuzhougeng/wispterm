@@ -1,7 +1,7 @@
-# Example nginx reverse proxy for the Phantty Remote Console (Docker variant).
+# Example nginx reverse proxy for the WispTerm Remote Console (Docker variant).
 #
-# Place this in /etc/nginx/sites-available/phantty-remote (Debian/Ubuntu) or
-# /etc/nginx/conf.d/phantty-remote.conf (RHEL/Alpine), then symlink/enable and
+# Place this in /etc/nginx/sites-available/wispterm-remote (Debian/Ubuntu) or
+# /etc/nginx/conf.d/wispterm-remote.conf (RHEL/Alpine), then symlink/enable and
 # `nginx -t && systemctl reload nginx`.
 #
 # Assumes:
@@ -10,7 +10,7 @@
 #
 # Replace `remote.example.com` with your actual hostname before deploying.
 
-upstream phantty_remote {
+upstream wispterm_remote {
     server 127.0.0.1:8787;
     keepalive 32;
 }
@@ -54,7 +54,7 @@ server {
 
     # WebSocket endpoints — long-lived, need upgrade headers and disabled buffering.
     location ~ ^/ws/ {
-        proxy_pass http://phantty_remote;
+        proxy_pass http://wispterm_remote;
         proxy_http_version 1.1;
         proxy_set_header Upgrade            $http_upgrade;
         proxy_set_header Connection         $connection_upgrade;
@@ -70,7 +70,7 @@ server {
 
     # Login API + static SPA assets.
     location / {
-        proxy_pass http://phantty_remote;
+        proxy_pass http://wispterm_remote;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;

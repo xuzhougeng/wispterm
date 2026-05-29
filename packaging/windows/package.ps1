@@ -85,7 +85,7 @@ function Copy-PortablePayload {
     )
 
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
-    Copy-Item -Path $BinaryPath -Destination (Join-Path $TargetDir 'phantty.exe') -Force
+    Copy-Item -Path $BinaryPath -Destination (Join-Path $TargetDir 'wispterm.exe') -Force
     Set-Content -Path (Join-Path $TargetDir 'version.txt') -Value $ReleaseVersion -Encoding ASCII
 
     $targetPluginsDir = Join-Path $TargetDir 'plugins'
@@ -125,11 +125,11 @@ if (-not $SkipBuild) {
     }
 }
 
-$binaryPath = Join-Path $repoRoot 'zig-out\bin\phantty.exe'
+$binaryPath = Join-Path $repoRoot 'zig-out\bin\wispterm.exe'
 if (-not (Test-Path $binaryPath)) {
     throw "Expected release binary was not found: $binaryPath"
 }
-$noWebViewBinaryPath = Join-Path $noWebViewInstallDir 'bin\phantty.exe'
+$noWebViewBinaryPath = Join-Path $noWebViewInstallDir 'bin\wispterm.exe'
 if (-not $SkipNoWebViewBundle -and -not (Test-Path $noWebViewBinaryPath)) {
     throw "Expected no-WebView release binary was not found: $noWebViewBinaryPath"
 }
@@ -139,9 +139,9 @@ $portableWebView2Dir = Join-Path $resolvedOutputDir 'portable-webview2'
 $portableNoWebViewDir = Join-Path $resolvedOutputDir 'portable-no-webview'
 $installerDir = Join-Path $resolvedOutputDir 'installer'
 $stagingDir = Join-Path $installerDir 'staging'
-$setupExe = Join-Path $installerDir 'phantty-setup.exe'
+$setupExe = Join-Path $installerDir 'wispterm-setup.exe'
 $versionFile = Join-Path $stagingDir 'version.txt'
-$sedFile = Join-Path $installerDir 'phantty-installer.sed'
+$sedFile = Join-Path $installerDir 'wispterm-installer.sed'
 $webView2LoaderPath = $null
 
 if (-not $SkipWebView2Bundle) {
@@ -159,12 +159,12 @@ if (-not $SkipNoWebViewBundle) {
 }
 
 if ($SkipInstaller) {
-    Write-Host "Portable build: $(Join-Path $portableDir 'phantty.exe')"
+    Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
     if ($webView2LoaderPath) {
-        Write-Host "Portable WebView2 build: $(Join-Path $portableWebView2Dir 'phantty.exe')"
+        Write-Host "Portable WebView2 build: $(Join-Path $portableWebView2Dir 'wispterm.exe')"
     }
     if (-not $SkipNoWebViewBundle) {
-        Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'phantty.exe')"
+        Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'wispterm.exe')"
     }
     Write-Host 'Installer build skipped. Unsigned IExpress installers are prone to Windows Defender false positives.'
     exit 0
@@ -172,8 +172,8 @@ if ($SkipInstaller) {
 
 New-Item -ItemType Directory -Path $installerDir, $stagingDir -Force | Out-Null
 
-Copy-Item -Path $binaryPath -Destination (Join-Path $stagingDir 'phantty.exe') -Force
-Copy-Item -Path (Join-Path $PSScriptRoot 'Install-Phantty.ps1') -Destination (Join-Path $stagingDir 'Install-Phantty.ps1') -Force
+Copy-Item -Path $binaryPath -Destination (Join-Path $stagingDir 'wispterm.exe') -Force
+Copy-Item -Path (Join-Path $PSScriptRoot 'Install-WispTerm.ps1') -Destination (Join-Path $stagingDir 'Install-WispTerm.ps1') -Force
 Copy-Item -Path (Join-Path $PSScriptRoot 'install.cmd') -Destination (Join-Path $stagingDir 'install.cmd') -Force
 if ($webView2LoaderPath) {
     Copy-Item -Path $webView2LoaderPath -Destination (Join-Path $stagingDir 'WebView2Loader.dll') -Force
@@ -181,8 +181,8 @@ if ($webView2LoaderPath) {
 Set-Content -Path $versionFile -Value $releaseVersion -Encoding ASCII
 
 $sedFiles = @(
-    'FILE0=phantty.exe',
-    'FILE1=Install-Phantty.ps1',
+    'FILE0=wispterm.exe',
+    'FILE1=Install-WispTerm.ps1',
     'FILE2=install.cmd',
     'FILE3=version.txt'
 )
@@ -212,7 +212,7 @@ CAB_ResvCodeSigning=0
 RebootMode=N
 InstallPrompt=
 DisplayLicense=
-FinishMessage=Phantty has been installed to your user profile and added to the Start menu.
+FinishMessage=WispTerm has been installed to your user profile and added to the Start menu.
 TargetName=%TargetName%
 FriendlyName=%FriendlyName%
 AppLaunched=%AppLaunched%
@@ -222,7 +222,7 @@ UserQuietInstCmd=%UserQuietInstCmd%
 SourceFiles=SourceFiles
 [Strings]
 TargetName=$setupExe
-FriendlyName=Phantty Setup
+FriendlyName=WispTerm Setup
 AppLaunched=cmd.exe /c install.cmd
 AdminQuietInstCmd=cmd.exe /c install.cmd /quiet
 UserQuietInstCmd=cmd.exe /c install.cmd /quiet
@@ -245,11 +245,11 @@ try {
     Pop-Location
 }
 
-Write-Host "Portable build: $(Join-Path $portableDir 'phantty.exe')"
+Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
 if ($webView2LoaderPath) {
-    Write-Host "Portable WebView2 build: $(Join-Path $portableWebView2Dir 'phantty.exe')"
+    Write-Host "Portable WebView2 build: $(Join-Path $portableWebView2Dir 'wispterm.exe')"
 }
 if (-not $SkipNoWebViewBundle) {
-    Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'phantty.exe')"
+    Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'wispterm.exe')"
 }
 Write-Host "Installer build: $setupExe"

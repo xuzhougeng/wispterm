@@ -1,7 +1,7 @@
 declare module "*.css";
 
 interface ImportMetaEnv {
-  readonly VITE_PHANTTY_WEB_BUILD_TIME?: string;
+  readonly VITE_WISPTERM_WEB_BUILD_TIME?: string;
 }
 
 interface ImportMeta {

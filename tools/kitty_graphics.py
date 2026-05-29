@@ -11,7 +11,7 @@ ESC = "\x1b"
 ST = "\x1b\\"
 OSC = "\x1b]"
 BEL = "\x07"
-PHANTTY_IMAGE_OSC = "7747;PhanttyImage="
+WISPTERM_IMAGE_OSC = "7747;WispTermImage="
 
 
 def _chunk_bytes(data: bytes, chunk_size: int = 4096):
@@ -26,7 +26,7 @@ def emit_png(
     rows: int | None = None,
     move_cursor: bool = True,
     image_id: int | None = None,
-    phantty_fallback: bool = True,
+    wispterm_fallback: bool = True,
     stream=None,
 ):
     if stream is None:
@@ -53,8 +53,8 @@ def emit_png(
         command = ",".join(parts)
         payload = chunk.decode("ascii")
         stream.write(f"{ESC}_G{command};{payload}{ST}")
-        if phantty_fallback:
-            stream.write(f"{OSC}{PHANTTY_IMAGE_OSC}{command};{payload}{BEL}")
+        if wispterm_fallback:
+            stream.write(f"{OSC}{WISPTERM_IMAGE_OSC}{command};{payload}{BEL}")
     stream.flush()
 
 
@@ -82,7 +82,7 @@ def ensure_png(path: Path) -> bytes:
             "non-PNG input requires Pillow or ImageMagick (`magick`/`convert`)"
         )
 
-    with tempfile.TemporaryDirectory(prefix="phantty-imgcat-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="wispterm-imgcat-") as tmp_dir:
         out_path = Path(tmp_dir) / "converted.png"
         subprocess.run(
             [magick, str(path), str(out_path)],
@@ -100,7 +100,7 @@ def render_pdf_page(pdf_path: Path, page: int) -> bytes:
 
     pdftoppm = shutil.which("pdftoppm")
     if pdftoppm is not None:
-        with tempfile.TemporaryDirectory(prefix="phantty-pdfcat-") as tmp_dir:
+        with tempfile.TemporaryDirectory(prefix="wispterm-pdfcat-") as tmp_dir:
             prefix = Path(tmp_dir) / "page"
             subprocess.run(
                 [
@@ -121,7 +121,7 @@ def render_pdf_page(pdf_path: Path, page: int) -> bytes:
 
     mutool = shutil.which("mutool")
     if mutool is not None:
-        with tempfile.TemporaryDirectory(prefix="phantty-pdfcat-") as tmp_dir:
+        with tempfile.TemporaryDirectory(prefix="wispterm-pdfcat-") as tmp_dir:
             out_path = Path(tmp_dir) / "page.png"
             subprocess.run(
                 [
@@ -143,7 +143,7 @@ def render_pdf_page(pdf_path: Path, page: int) -> bytes:
 
     magick = shutil.which("magick")
     if magick is not None:
-        with tempfile.TemporaryDirectory(prefix="phantty-pdfcat-") as tmp_dir:
+        with tempfile.TemporaryDirectory(prefix="wispterm-pdfcat-") as tmp_dir:
             out_path = Path(tmp_dir) / "page.png"
             subprocess.run(
                 [magick, f"{pdf_path}[{page - 1}]", str(out_path)],

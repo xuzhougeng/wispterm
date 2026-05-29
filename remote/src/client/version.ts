@@ -1,5 +1,5 @@
 export const WEB_VERSION = "v0.32.0";
-export const WEB_BUILD_TIME = normalizedBuildTime(import.meta.env?.VITE_PHANTTY_WEB_BUILD_TIME);
+export const WEB_BUILD_TIME = normalizedBuildTime(import.meta.env?.VITE_WISPTERM_WEB_BUILD_TIME);
 
 export function webVersionLabel(buildTime: string | null = WEB_BUILD_TIME): string {
   const normalized = normalizedBuildTime(buildTime);
@@ -7,7 +7,7 @@ export function webVersionLabel(buildTime: string | null = WEB_BUILD_TIME): stri
 }
 
 export function remoteBrandMarkup(buildTime: string | null = WEB_BUILD_TIME): string {
-  return `Phantty Remote <span class="web-version">${escapeHtml(webVersionLabel(buildTime))}</span>`;
+  return `WispTerm Remote <span class="web-version">${escapeHtml(webVersionLabel(buildTime))}</span>`;
 }
 
 function normalizedBuildTime(value: string | null | undefined): string | null {

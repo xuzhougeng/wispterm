@@ -1,7 +1,7 @@
 # Remote Web Viewport Development Notes
 
 This document records the viewport and panning rules learned while stabilizing
-Phantty Remote web rendering across mobile browsers, desktop browsers, IME
+WispTerm Remote web rendering across mobile browsers, desktop browsers, IME
 input, zoomed desktop layouts, and xterm's DOM renderer.
 
 The important rule is simple: mobile and desktop do not share the same viewport

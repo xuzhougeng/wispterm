@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the suggestion! Please search [existing issues](https://github.com/xuzhougeng/phantty/issues) first to see if it has already been proposed.
+        Thanks for the suggestion! Please search [existing issues](https://github.com/xuzhougeng/wispterm/issues) first to see if it has already been proposed.
 
   - type: textarea
     id: problem

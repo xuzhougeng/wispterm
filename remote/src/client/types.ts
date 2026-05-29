@@ -39,7 +39,7 @@ export type RelayMessage = {
   encoding?: unknown;
   message?: unknown;
   surfaceId?: unknown;
-  phanttyConnected?: unknown;
+  wisptermConnected?: unknown;
   activeTab?: unknown;
   tabs?: unknown;
 };

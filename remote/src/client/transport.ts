@@ -55,7 +55,7 @@ let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 let lastMessageAt = 0;
 let lastPingSentAt = 0;
 let lastLatencyMs: number | null = null;
-let phanttyPeerConnected = false;
+let wisptermPeerConnected = false;
 
 export function api(path: string, init?: RequestInit): Promise<Response> {
   return fetch(path, {
@@ -101,7 +101,7 @@ export function connect(sessionKey: string): void {
     if (state.socket !== ws) return;
     reconnectAttempts = 0;
     updateConnectionStatus();
-    pushNotice("Connected. Waiting for Phantty layout...");
+    pushNotice("Connected. Waiting for WispTerm layout...");
     hooks.onNoticesChanged();
     hooks.onInputUiChanged();
     startHeartbeat(ws);
@@ -141,14 +141,14 @@ export function connect(sessionKey: string): void {
     }
 
     if (message.type === "peer-status") {
-      phanttyPeerConnected = message.phanttyConnected === true;
+      wisptermPeerConnected = message.wisptermConnected === true;
       updateConnectionStatus();
       hooks.onInputUiChanged();
       return;
     }
 
     if (isLayoutMessage(message)) {
-      phanttyPeerConnected = true;
+      wisptermPeerConnected = true;
       updateConnectionStatus();
       state.layoutState = normalizeLayout(message);
       if (!state.hasSeenLayout) {
@@ -292,7 +292,7 @@ function updateConnectionStatus(): void {
     hooks.setStatus(connectionStatusOffline("Disconnected"));
     return;
   }
-  if (!phanttyPeerConnected) {
+  if (!wisptermPeerConnected) {
     hooks.setStatus(connectionStatusWithoutPeer(lastLatencyMs));
     return;
   }
@@ -306,5 +306,5 @@ function updateConnectionStatus(): void {
 function resetConnectionHealth(): void {
   lastPingSentAt = 0;
   lastLatencyMs = null;
-  phanttyPeerConnected = false;
+  wisptermPeerConnected = false;
 }

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { WeixinBindingStore } from "../../src/server/bridge/weixin/binding.js";
 
 test("WeixinBindingStore persists binding, settings, and sync buffer", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const dir = await mkdtemp(join(tmpdir(), "wispterm-weixin-"));
   const store = new WeixinBindingStore(dir);
 
   assert.equal(await store.loadBinding(), null);
@@ -32,7 +32,7 @@ test("WeixinBindingStore persists binding, settings, and sync buffer", async () 
 });
 
 test("WeixinBindingStore public summary hides token", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const dir = await mkdtemp(join(tmpdir(), "wispterm-weixin-"));
   const store = new WeixinBindingStore(dir);
   await store.saveBinding({
     token: "secret-token",
@@ -52,7 +52,7 @@ test("WeixinBindingStore public summary hides token", async () => {
 });
 
 test("WeixinBindingStore saveSettings returns true and preserves existing caller behavior without guard", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const dir = await mkdtemp(join(tmpdir(), "wispterm-weixin-"));
   const store = new WeixinBindingStore(dir);
 
   const saved = await store.saveSettings({ enabled: true, target_session: "alpha", reply_timeout_ms: 45000 });
@@ -62,7 +62,7 @@ test("WeixinBindingStore saveSettings returns true and preserves existing caller
 });
 
 test("WeixinBindingStore saveSettings cancels before writing when guard is false", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const dir = await mkdtemp(join(tmpdir(), "wispterm-weixin-"));
   const store = new WeixinBindingStore(dir);
   await store.saveSettings({ enabled: true, target_session: "alpha", reply_timeout_ms: 45000 });
 
@@ -77,7 +77,7 @@ test("WeixinBindingStore saveSettings cancels before writing when guard is false
 });
 
 test("WeixinBindingStore unbind removes binding and sync buffer", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const dir = await mkdtemp(join(tmpdir(), "wispterm-weixin-"));
   const store = new WeixinBindingStore(dir);
   await store.saveBinding({
     token: "secret-token",
@@ -95,7 +95,7 @@ test("WeixinBindingStore unbind removes binding and sync buffer", async () => {
 });
 
 test("WeixinBindingStore handles concurrent same-path sync buffer writes", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const dir = await mkdtemp(join(tmpdir(), "wispterm-weixin-"));
   const store = new WeixinBindingStore(dir);
   const originalDateNow = Date.now;
   Date.now = () => 1234567890;
@@ -109,7 +109,7 @@ test("WeixinBindingStore handles concurrent same-path sync buffer writes", async
 });
 
 test("WeixinBindingStore preserves sync buffer bytes exactly", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const dir = await mkdtemp(join(tmpdir(), "wispterm-weixin-"));
   const store = new WeixinBindingStore(dir);
   const cursor = "  \nopaque cursor\nwith trailing whitespace\t \n";
 
@@ -122,7 +122,7 @@ test("WeixinBindingStore preserves sync buffer bytes exactly", async () => {
 test("WeixinBindingStore writes sensitive files with owner-only mode on POSIX", async () => {
   if (process.platform === "win32") return;
 
-  const dir = await mkdtemp(join(tmpdir(), "phantty-weixin-"));
+  const dir = await mkdtemp(join(tmpdir(), "wispterm-weixin-"));
   const store = new WeixinBindingStore(dir);
   await store.saveBinding({
     token: "secret-token",

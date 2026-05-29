@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 💬 Questions & Discussions
-    url: https://github.com/xuzhougeng/phantty/discussions
+    url: https://github.com/xuzhougeng/wispterm/discussions
     about: Have a question or want to discuss an idea? Please use Discussions instead of opening an issue.
   - name: 📖 Documentation
-    url: https://github.com/xuzhougeng/phantty#readme
+    url: https://github.com/xuzhougeng/wispterm#readme
     about: Please check the README before filing an issue.
