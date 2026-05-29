@@ -71,6 +71,7 @@ const RawMouseButtonEvent = extern struct {
     ctrl: bool,
     shift: bool,
     alt: bool,
+    super: bool,
 };
 
 const RawMouseMoveEvent = extern struct {
@@ -79,6 +80,7 @@ const RawMouseMoveEvent = extern struct {
     ctrl: bool,
     shift: bool,
     alt: bool,
+    super: bool,
 };
 
 const RawMouseWheelEvent = extern struct {
@@ -305,6 +307,7 @@ pub const Window = struct {
                 .ctrl = button.ctrl,
                 .shift = button.shift,
                 .alt = button.alt,
+                .super = button.super,
             });
         }
 
@@ -318,6 +321,7 @@ pub const Window = struct {
                 .ctrl = move.ctrl,
                 .shift = move.shift,
                 .alt = move.alt,
+                .super = move.super,
             });
         }
 
@@ -394,6 +398,17 @@ test "macOS backend normalizes control-modified shortcut key codes" {
     try std.testing.expectEqual(@as(usize, 'P'), wispterm_macos_window_test_map_key_code(35, "P"));
     try std.testing.expectEqual(@as(usize, 'P'), wispterm_macos_window_test_map_key_code(35, "p"));
     try std.testing.expectEqual(@as(usize, 0xC0), wispterm_macos_window_test_map_key_code(50, null));
+
+    // Punctuation keys must map to their Windows virtual-key codes (not the
+    // raw character) so Cmd shortcuts on them match: "="/"+" -> 0xBB,
+    // "-"/"_" -> 0xBD, "," -> 0xBC, "[" -> 0xDB, "]" -> 0xDD.
+    try std.testing.expectEqual(@as(usize, 0xBB), wispterm_macos_window_test_map_key_code(24, "="));
+    try std.testing.expectEqual(@as(usize, 0xBB), wispterm_macos_window_test_map_key_code(24, "+"));
+    try std.testing.expectEqual(@as(usize, 0xBD), wispterm_macos_window_test_map_key_code(27, "-"));
+    try std.testing.expectEqual(@as(usize, 0xBD), wispterm_macos_window_test_map_key_code(27, "_"));
+    try std.testing.expectEqual(@as(usize, 0xBC), wispterm_macos_window_test_map_key_code(43, ","));
+    try std.testing.expectEqual(@as(usize, 0xDB), wispterm_macos_window_test_map_key_code(33, "["));
+    try std.testing.expectEqual(@as(usize, 0xDD), wispterm_macos_window_test_map_key_code(30, "]"));
 }
 
 test "macOS backend drains text, mouse, wheel, and IME preedit events" {

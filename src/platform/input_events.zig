@@ -53,6 +53,7 @@ pub const MouseButtonEvent = struct {
     ctrl: bool = false,
     shift: bool = false,
     alt: bool = false,
+    super: bool = false,
 };
 
 pub const MouseMoveEvent = struct {
@@ -61,6 +62,7 @@ pub const MouseMoveEvent = struct {
     ctrl: bool = false,
     shift: bool = false,
     alt: bool = false,
+    super: bool = false,
 };
 
 pub const MouseWheelEvent = struct {

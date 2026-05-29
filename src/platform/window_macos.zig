@@ -98,6 +98,7 @@ pub fn dpiForWindow(hwnd: NativeHandle) u32 {
 }
 
 pub fn showRestored(hwnd: NativeHandle) bool {
+    if (wispterm_macos_window_is_zoomed(hwnd)) wispterm_macos_window_zoom(hwnd);
     wispterm_macos_window_show(hwnd);
     return true;
 }

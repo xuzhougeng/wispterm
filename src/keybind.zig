@@ -407,6 +407,8 @@ pub const default_bindings = [_]Binding{
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'W' }, .action = .close_panel_or_tab },
     .{ .trigger = .{ .mods = .{ .alt = true }, .key_code = Key.enter }, .action = .toggle_maximize },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = Key.plus }, .action = .font_size_increase },
+    // The "+" glyph needs Shift on most layouts, so accept the shifted chord too.
+    .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = Key.plus }, .action = .font_size_increase },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = Key.minus }, .action = .font_size_decrease },
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'C' }, .action = .copy },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = 'V' }, .action = .paste },

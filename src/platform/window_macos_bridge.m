@@ -38,6 +38,7 @@ typedef struct WispTermMacMouseButtonEvent {
     bool ctrl;
     bool shift;
     bool alt;
+    bool super;
 } WispTermMacMouseButtonEvent;
 
 typedef struct WispTermMacMouseMoveEvent {
@@ -46,6 +47,7 @@ typedef struct WispTermMacMouseMoveEvent {
     bool ctrl;
     bool shift;
     bool alt;
+    bool super;
 } WispTermMacMouseMoveEvent;
 
 typedef struct WispTermMacMouseWheelEvent {
@@ -506,17 +508,20 @@ static uintptr_t wispterm_macos_map_key_code(unsigned short key_code, NSString *
         default: break;
     }
 
+    // Keybindings and the Windows backend both key on Windows virtual-key
+    // codes tied to the physical key, so prefer the physical-key mapping.
+    // Punctuation keys like "=" and "-" produce VK codes (0xBB/0xBD) that do
+    // not equal their ASCII character; matching them by character breaks Cmd
+    // shortcuts (font size, open config, splits, Quake). Typed text is
+    // delivered separately via char events, so this never affects input.
+    uintptr_t ansi = wispterm_macos_map_ansi_key_code(key_code);
+    if (ansi != 0) return ansi;
+
     if (characters.length > 0) {
         unichar ch = [characters characterAtIndex:0];
-        if (ch < 0x20 || ch == 0x7F || (ch >= 0xF700 && ch <= 0xF8FF)) {
-            uintptr_t ansi = wispterm_macos_map_ansi_key_code(key_code);
-            if (ansi != 0) return ansi;
-        }
         if (ch >= 'a' && ch <= 'z') return (uintptr_t)(ch - ('a' - 'A'));
         return (uintptr_t)ch;
     }
-    uintptr_t ansi = wispterm_macos_map_ansi_key_code(key_code);
-    if (ansi != 0) return ansi;
     return (uintptr_t)key_code;
 }
 
@@ -710,8 +715,9 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
         .ctrl = false,
         .shift = false,
         .alt = false,
+        .super = false,
     };
-    wispterm_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, NULL);
+    wispterm_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, &out.super);
     return out;
 }
 
@@ -747,8 +753,9 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
         .ctrl = false,
         .shift = false,
         .alt = false,
+        .super = false,
     };
-    wispterm_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, NULL);
+    wispterm_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, &out.super);
     wispterm_macos_push_mouse_move_event(self.state, out);
 }
 

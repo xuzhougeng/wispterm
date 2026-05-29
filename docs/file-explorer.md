@@ -7,22 +7,22 @@ active environment:
 - WSL sessions browse the default WSL distro through `wsl.exe`.
 - WispTerm SSH profile sessions browse the remote host through OpenSSH helpers.
 
-Hold `Ctrl` and click a `.md`, `.txt`, `.csv`, `.tsv`, or supported image file
-in terminal output, or double-click a supported file in the File Explorer, to
-open the right-side preview panel.
+Hold `Ctrl` (`Cmd` on macOS) and click a `.md`, `.txt`, `.csv`, `.tsv`, or
+supported image file in terminal output, or double-click a supported file in
+the File Explorer, to open the right-side preview panel.
 Markdown previews render headings, lists, blockquotes, code blocks, inline code,
 links, and horizontal rules. Text files are shown as plain text. CSV and TSV
 files are shown as a grid table. Image previews decode PNG, JPEG, GIF, BMP, and
 WebP bytes directly into the panel.
 
-In SSH profile sessions, hold `Ctrl+Shift` over a file path in terminal output
-to underline it, then click to download that remote file to
+In SSH profile sessions, hold `Ctrl+Shift` (`Cmd+Shift` on macOS) over a file
+path in terminal output to underline it, then click to download that remote file to
 `%USERPROFILE%\Downloads`. Downloads run in the background.
 
 Open the command center with `Ctrl+Shift+P` and run `Toggle Browser` to open
 the embedded WebView2 browser panel when WebView2 support is available.
-`Ctrl`-clicking an `http://` or `https://` URL in terminal output opens it in
-the same right-side WebView2 panel when available; builds without embedded
+`Ctrl`-clicking (`Cmd`-click on macOS) an `http://` or `https://` URL in terminal
+output opens it in the same right-side WebView2 panel when available; builds without embedded
 WebView2 support, or without a usable WebView2 loader/runtime, open URLs in the
 system default browser instead. Set `url-open-mode = system-browser` to always
 open web URLs in the Windows default browser, including when embedded WebView2
