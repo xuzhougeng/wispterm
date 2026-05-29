@@ -664,6 +664,7 @@ pub const Session = struct {
     skill_suggestions_loaded: bool = false,
     skill_suggestions_owned: bool = false,
     custom_commands: []command_registry.CustomCommand = &.{},
+    custom_command_suggestions: []SlashCommandSuggestion = &.{},
     transcript_select_all: bool = false,
     transcript_selection: ?TranscriptSelection = null,
     status_buf: [512]u8 = undefined,
@@ -854,6 +855,7 @@ pub const Session = struct {
         }
         self.messages.deinit(self.allocator);
         self.freeSkillSuggestions();
+        self.freeCustomCommandSuggestions();
         command_registry.freeCommandList(self.allocator, self.custom_commands);
         self.allocator.destroy(self);
     }
@@ -904,22 +906,26 @@ pub const Session = struct {
         return self.input_cursor;
     }
 
+    fn customCommandSuggestions(self: *Session) []const SlashCommandSuggestion {
+        return self.custom_command_suggestions;
+    }
+
     pub fn slashCommandSuggestionCount(self: *Session) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return slashCommandSuggestionCountForInput(self.input(), self.input_cursor);
+        return slashCommandSuggestionCountForInput(self.input(), self.input_cursor, self.customCommandSuggestions());
     }
 
     pub fn slashCommandSuggestionAt(self: *Session, index: usize) ?SlashCommandSuggestion {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return slashCommandSuggestionAtForInput(self.input(), self.input_cursor, index);
+        return slashCommandSuggestionAtForInput(self.input(), self.input_cursor, index, self.customCommandSuggestions());
     }
 
     pub fn slashCommandSuggestionSelectedIndex(self: *Session) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
-        const count = slashCommandSuggestionCountForInput(self.input(), self.input_cursor);
+        const count = slashCommandSuggestionCountForInput(self.input(), self.input_cursor, self.customCommandSuggestions());
         if (count == 0) return 0;
         return @min(self.suggestion_selected, count - 1);
     }
@@ -928,14 +934,14 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.ensureSkillSuggestionsForInputLocked();
-        return composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions);
+        return composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions());
     }
 
     pub fn composerSuggestionAt(self: *Session, index: usize) ?ComposerSuggestion {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.ensureSkillSuggestionsForInputLocked();
-        return composerSuggestionAtForInput(self.input(), self.input_cursor, self.skill_suggestions, index);
+        return composerSuggestionAtForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions(), index);
     }
 
     fn loadSkillSuggestionsFromRoots(self: *Session, root_paths: []const []const u8) !void {
@@ -1027,6 +1033,46 @@ pub const Session = struct {
         }
         command_registry.freeCommandList(self.allocator, self.custom_commands);
         self.custom_commands = merged.toOwnedSlice(self.allocator) catch &.{};
+        self.rebuildCustomCommandSuggestions();
+    }
+
+    /// Rebuilds the composer suggestion cache from `self.custom_commands`. Each
+    /// suggestion OWNS both its `/`-prefixed command string and its description
+    /// dupe (so it doesn't borrow into `custom_commands`, avoiding lifetime/order
+    /// hazards). Best-effort: any allocation failure falls back to `&.{}`.
+    fn rebuildCustomCommandSuggestions(self: *Session) void {
+        self.freeCustomCommandSuggestions();
+        if (self.custom_commands.len == 0) return;
+        const suggestions = self.allocator.alloc(SlashCommandSuggestion, self.custom_commands.len) catch return;
+        var built: usize = 0;
+        for (self.custom_commands) |cmd| {
+            const command = std.fmt.allocPrint(self.allocator, "/{s}", .{cmd.name}) catch break;
+            const description = self.allocator.dupe(u8, cmd.description) catch {
+                self.allocator.free(command);
+                break;
+            };
+            suggestions[built] = .{ .command = command, .description = description };
+            built += 1;
+        }
+        if (built == self.custom_commands.len) {
+            self.custom_command_suggestions = suggestions;
+            return;
+        }
+        // Allocation failure mid-build: free everything and fall back to empty.
+        for (suggestions[0..built]) |s| {
+            self.allocator.free(@constCast(s.command));
+            self.allocator.free(@constCast(s.description));
+        }
+        self.allocator.free(suggestions);
+    }
+
+    fn freeCustomCommandSuggestions(self: *Session) void {
+        for (self.custom_command_suggestions) |s| {
+            self.allocator.free(@constCast(s.command));
+            self.allocator.free(@constCast(s.description));
+        }
+        self.allocator.free(self.custom_command_suggestions);
+        self.custom_command_suggestions = &.{};
     }
 
     pub fn status(self: *const Session) []const u8 {
@@ -1793,7 +1839,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.ensureSkillSuggestionsForInputLocked();
 
-        const count = composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions);
+        const count = composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions());
         if (count == 0) return false;
         const current = @min(self.suggestion_selected, count - 1);
         self.suggestion_selected = if (delta < 0)
@@ -1812,10 +1858,10 @@ pub const Session = struct {
         self.ensureSkillSuggestionsForInputLocked();
 
         const prefix = composerSuggestionPrefix(self.input(), self.input_cursor) orelse return false;
-        const count = composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions);
+        const count = composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions());
         if (count == 0) return false;
         const selected = @min(self.suggestion_selected, count - 1);
-        const suggestion = composerSuggestionAtForInput(self.input(), self.input_cursor, self.skill_suggestions, selected) orelse return false;
+        const suggestion = composerSuggestionAtForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions(), selected) orelse return false;
         if (trigger == .enter and suggestion.kind == .slash_command and std.mem.eql(u8, prefix.prefix, suggestion.text)) {
             return false;
         }
@@ -4410,6 +4456,29 @@ test "ai chat slash command suggestions show and filter from input" {
     session.appendInputText("c");
     try std.testing.expectEqual(@as(usize, 2), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/commands", session.slashCommandSuggestionAt(0).?.command);
+}
+
+test "ai chat slash suggestions include cached custom commands" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    // Cache owns both strings, mirroring rebuildCustomCommandSuggestions; deinit
+    // path is exercised via freeCustomCommandSuggestions below.
+    const suggestions = try allocator.alloc(SlashCommandSuggestion, 1);
+    suggestions[0] = .{
+        .command = try allocator.dupe(u8, "/review"),
+        .description = try allocator.dupe(u8, "review diff"),
+    };
+    session.custom_command_suggestions = suggestions;
+
+    try std.testing.expectEqual(@as(usize, 1), session.customCommandSuggestions().len);
+
+    session.appendInputText("/rev");
+    // No built-in matches "/rev", so the custom command is the only suggestion.
+    try std.testing.expectEqual(@as(usize, 1), session.slashCommandSuggestionCount());
+    try std.testing.expectEqualStrings("/review", session.slashCommandSuggestionAt(0).?.command);
+
+    session.freeCustomCommandSuggestions();
+    try std.testing.expectEqual(@as(usize, 0), session.customCommandSuggestions().len);
 }
 
 test "ai chat slash command suggestions use arrows and tab completion" {

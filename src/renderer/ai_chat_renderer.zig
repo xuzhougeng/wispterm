@@ -1108,7 +1108,7 @@ fn permissionDisplayName(permission: ai_chat.AgentPermission) []const u8 {
 
 fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout) void {
     const input_text = session.input();
-    const count = ai_chat.composerSuggestionCountForInput(input_text, session.input_cursor, session.skill_suggestions);
+    const count = ai_chat.composerSuggestionCountForInput(input_text, session.input_cursor, session.skill_suggestions, session.custom_command_suggestions);
     if (count == 0) return;
 
     const bg = AppWindow.g_theme.background;
@@ -1135,7 +1135,7 @@ fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout) voi
             ui_pipeline.fillQuadAlpha(popup_x + 4, row_y + 2, popup_w - 8, SUGGESTION_ROW_H - 4, mixColor(bg, accent, 0.18), 0.90);
             ui_pipeline.fillQuadAlpha(popup_x + 4, row_y + 2, 3, SUGGESTION_ROW_H - 4, accent, 0.82);
         }
-        const suggestion = ai_chat.composerSuggestionAtForInput(input_text, session.input_cursor, session.skill_suggestions, i) orelse continue;
+        const suggestion = ai_chat.composerSuggestionAtForInput(input_text, session.input_cursor, session.skill_suggestions, session.custom_command_suggestions, i) orelse continue;
         const text_y = row_y + @round((SUGGESTION_ROW_H - font.g_titlebar_cell_height) / 2);
         var label_buf: [160]u8 = undefined;
         const label = suggestionLabel(&label_buf, suggestion);

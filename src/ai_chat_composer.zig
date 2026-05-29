@@ -103,6 +103,22 @@ pub fn parseSlashCommand(input: []const u8) ?SlashCommand {
     return .unknown;
 }
 
+pub fn exactBuiltinCommand(token: []const u8) ?SlashCommand {
+    for (slash_command_entries) |entry| {
+        if (std.mem.eql(u8, token, entry.suggestion.command)) return entry.action;
+    }
+    return null;
+}
+
+pub fn matchCustomCommandIndex(input: []const u8, custom: []const SlashCommandSuggestion) ?usize {
+    const trimmed = std.mem.trim(u8, input, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "/")) return null;
+    const tok_end = slashCommandTokenEnd(trimmed);
+    const tok = trimmed[0..tok_end];
+    for (custom, 0..) |c, i| if (std.mem.eql(u8, tok, c.command)) return i;
+    return null;
+}
+
 pub fn composerSuggestionPrefix(input: []const u8, cursor_raw: usize) ?ComposerSuggestionPrefix {
     if (input.len == 0) return null;
     const kind: ComposerSuggestionKind = switch (input[0]) {
@@ -133,16 +149,19 @@ pub fn slashCommandTokenEnd(input: []const u8) usize {
     return end;
 }
 
-pub fn slashCommandSuggestionCountForInput(input: []const u8, cursor: usize) usize {
+pub fn slashCommandSuggestionCountForInput(input: []const u8, cursor: usize, custom: []const SlashCommandSuggestion) usize {
     const prefix = slashCommandSuggestionPrefix(input, cursor) orelse return 0;
     var count: usize = 0;
     for (slash_command_entries) |entry| {
         if (std.mem.startsWith(u8, entry.suggestion.command, prefix)) count += 1;
     }
+    for (custom) |c| {
+        if (std.mem.startsWith(u8, c.command, prefix)) count += 1;
+    }
     return count;
 }
 
-pub fn slashCommandSuggestionAtForInput(input: []const u8, cursor: usize, suggestion_index: usize) ?SlashCommandSuggestion {
+pub fn slashCommandSuggestionAtForInput(input: []const u8, cursor: usize, suggestion_index: usize, custom: []const SlashCommandSuggestion) ?SlashCommandSuggestion {
     const prefix = slashCommandSuggestionPrefix(input, cursor) orelse return null;
     var match_index: usize = 0;
     for (slash_command_entries) |entry| {
@@ -150,13 +169,23 @@ pub fn slashCommandSuggestionAtForInput(input: []const u8, cursor: usize, sugges
         if (match_index == suggestion_index) return entry.suggestion;
         match_index += 1;
     }
+    for (custom) |c| {
+        if (!std.mem.startsWith(u8, c.command, prefix)) continue;
+        if (match_index == suggestion_index) return c;
+        match_index += 1;
+    }
     return null;
 }
 
-pub fn composerSuggestionCountForInput(input: []const u8, cursor: usize, skills: []const skill_registry.SkillMeta) usize {
+pub fn composerSuggestionCountForInput(
+    input: []const u8,
+    cursor: usize,
+    skills: []const skill_registry.SkillMeta,
+    custom: []const SlashCommandSuggestion,
+) usize {
     const prefix = composerSuggestionPrefix(input, cursor) orelse return 0;
     return switch (prefix.kind) {
-        .slash_command => slashCommandSuggestionCountForInput(input, cursor),
+        .slash_command => slashCommandSuggestionCountForInput(input, cursor, custom),
         .skill => skillSuggestionCountForPrefix(prefix.prefix, skills),
     };
 }
@@ -165,11 +194,12 @@ pub fn composerSuggestionAtForInput(
     input: []const u8,
     cursor: usize,
     skills: []const skill_registry.SkillMeta,
+    custom: []const SlashCommandSuggestion,
     suggestion_index: usize,
 ) ?ComposerSuggestion {
     const prefix = composerSuggestionPrefix(input, cursor) orelse return null;
     return switch (prefix.kind) {
-        .slash_command => if (slashCommandSuggestionAtForInput(input, cursor, suggestion_index)) |suggestion| .{
+        .slash_command => if (slashCommandSuggestionAtForInput(input, cursor, suggestion_index, custom)) |suggestion| .{
             .kind = .slash_command,
             .text = suggestion.command,
             .description = suggestion.description,
@@ -291,9 +321,15 @@ test "composerSuggestionPrefix distinguishes / and $ and rejects others" {
 }
 
 test "slash command suggestions filter by prefix" {
-    try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/sk", 3));
-    const s = slashCommandSuggestionAtForInput("/sk", 3, 0).?;
+    try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/sk", 3, &.{}));
+    const s = slashCommandSuggestionAtForInput("/sk", 3, 0, &.{}).?;
     try std.testing.expectEqualStrings("/skills", s.command);
+}
+
+test "slash suggestions include custom commands" {
+    const custom = [_]SlashCommandSuggestion{.{ .command = "/review", .description = "review diff" }};
+    try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/rev", 4, &custom));
+    try std.testing.expectEqualStrings("/review", slashCommandSuggestionAtForInput("/rev", 4, 0, &custom).?.command);
 }
 
 test "skill suggestions filter by prefix against a fixture" {
