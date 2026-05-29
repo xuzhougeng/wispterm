@@ -45,6 +45,7 @@ test {
     _ = @import("ai_chat_layout.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("ai_chat_protocol.zig");
+    _ = @import("command_registry.zig");
     // Generic POSIX SSH/WSL command builder: asserts native (non-Windows)
     // command-line shapes, so it runs here rather than in test-full's Windows
     // cross-compile path. (The Windows backend stays in test-full.)
