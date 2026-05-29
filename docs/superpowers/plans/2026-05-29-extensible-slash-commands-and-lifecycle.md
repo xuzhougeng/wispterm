@@ -561,27 +561,70 @@ pub fn slashCommandSuggestionCount(self: *Session) usize {
 ```
 (and `slashCommandSuggestionAt`, `slashCommandSuggestionSelectedIndex` similarly). `customCommandSuggestions()` builds a stack/temature slice — since the suggestion list must outlive the call, store a cached `[]SlashCommandSuggestion` rebuilt in `reloadCustomCommands` alongside `custom_commands`.
 
-- [ ] **Step 6: Update dispatch** at `ai_chat.zig:1371`. After the built-in `if (parseSlashCommand(prompt_raw)) |command|` block, before the API-key check (`:1401`), add custom-command handling:
+- [ ] **Step 6: Update dispatch** at `ai_chat.zig:1371`. Built-in commands must support an optional argument (`/permission full`, `/export full`). `parseSlashCommand` (`:64`) rejects any input containing a space, so the dispatch must **exact-match the first token** for built-ins, while preserving today's fall-through for non-command inputs like `/help me` (which should still be sent to the model, not treated as a command).
+
+Add a pure helper in `ai_chat_composer.zig` that exact-matches the first token to a built-in entry and NEVER returns `.unknown`:
 
 ```zig
-if (matchCustomCommandIndex(prompt_raw, self.customCommandSuggestions())) |idx| {
-    const cmd = self.custom_commands[idx];
-    if (cmd.action) |av| {
-        if (knownActionFromName(av)) |builtin| {
-            // re-enter the built-in path
-            return self.runBuiltinCommandLocked(builtin); // extract :1371-1398 body into this helper
-        }
+pub fn exactBuiltinCommand(token: []const u8) ?SlashCommand {
+    for (slash_command_entries) |entry| {
+        if (std.mem.eql(u8, token, entry.suggestion.command)) return entry.action;
     }
-    // prompt template: expand body as a user prompt and fall through to submit
-    // (replace the input with cmd.body, then continue to the normal submit path)
-    self.setInputText(cmd.body);
-    // do NOT return; let the normal user-message submit run below
+    return null;
 }
 ```
 
-Also extend the built-in block: when `command == .clear` call `self.clearContext()` (note: the block appends the output message first, so call clearContext BEFORE appending the confirmation, or have clearContext skip the just-appended line — simplest: handle `.clear` specially by clearing then appending the confirmation). When `command == .reload_commands` call `self.reloadCustomCommands()`. When `command == .resume_session` fire `g_session_resume_trigger`. When `command == .export_markdown` parse the optional `full` arg and fire `g_markdown_export_trigger`.
+Replace the dispatch head at `:1371` (the `if (parseSlashCommand(prompt_raw)) |command| { ... }` block) with first-token resolution:
 
-> Implementer note: refactor the existing dispatch body (`:1371-1398`) into `fn runBuiltinCommandLocked(self, command, arg) void` so both built-in and custom-action paths share it. The `arg` is the text after the first token (for `/permission full`, `/export full`).
+```zig
+const tok_end = ai_chat_composer.slashCommandTokenEnd(prompt_raw);
+const first_tok = prompt_raw[0..tok_end];
+const arg = std.mem.trim(u8, prompt_raw[tok_end..], " \t\r\n");
+
+// 1) Built-in command (with optional argument), exact first-token match.
+if (exactBuiltinCommand(first_tok)) |command| {
+    self.runBuiltinCommandLocked(command, arg);
+    history_change = null;
+    self.mutex.unlock();
+    return;
+}
+// 2) Custom command, matched by first token.
+if (matchCustomCommandIndex(first_tok, self.customCommandSuggestions())) |idx| {
+    const cmd = self.custom_commands[idx];
+    if (cmd.action) |av| {
+        if (knownActionFromName(av)) |builtin| {
+            self.runBuiltinCommandLocked(builtin, arg);
+            history_change = null;
+            self.mutex.unlock();
+            return;
+        }
+    }
+    // prompt template: replace input with the template body, then fall through to
+    // the normal user-message submit path below (do NOT return).
+    self.setInputText(cmd.body);
+}
+// 3) Legacy: a no-arg unknown slash like "/help" still shows "Unknown command".
+else if (arg.len == 0) {
+    if (parseSlashCommand(prompt_raw)) |command| { // returns .unknown for "/help"
+        self.runBuiltinCommandLocked(command, "");
+        history_change = null;
+        self.mutex.unlock();
+        return;
+    }
+}
+// Otherwise (e.g. "/help me", "/usr/bin path"): fall through to normal model submit.
+```
+
+`runBuiltinCommandLocked(self, command, arg)` extracts the existing `:1377-1398` body (append `slashCommandOutput`, `clearSubmittedInputLocked`, set status) and adds the side-effects:
+- `.clear` → call `self.clearContext()` **before** appending the confirmation line (clearContext empties `messages`; the confirmation is appended after so it survives).
+- `.reload_commands` → `self.reloadCustomCommands()`.
+- `.reload_skills` → `self.freeSkillSuggestions()` (as today).
+- `.update_skills` → fire `g_skill_update_trigger` (as today).
+- `.permission` → `applyPermissionArg(arg)` (Task 7) **before** producing the `.permission` output, so the status line reflects the new value.
+- `.resume_session` → fire `g_session_resume_trigger` (Task 8).
+- `.export_markdown` → `fireExportCommand(arg)` (Task 8; default mode clean).
+
+> Note: this preserves all current behavior — `/skills`,`/commands`,`/reload-skills`,`/update-skills` exact-match as before; `/help` (no arg) still shows "Unknown command"; `/help me` and slashes containing `/` still fall through to the model. New: `/permission full`, `/export full`, and `/<custom> args` now route correctly.
 
 - [ ] **Step 7: Run tests to verify they pass**
 
