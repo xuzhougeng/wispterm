@@ -389,20 +389,74 @@ fn buildAnthropicRequestJsonForMessages(
 
 fn appendAnthropicMessages(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), messages: []const RequestMessage) !void {
     var first = true;
-    for (messages) |msg| {
-        if (msg.role == .tool) continue; // handled in Task 4
+    var i: usize = 0;
+    while (i < messages.len) {
+        const msg = messages[i];
+        if (msg.role == .tool) {
+            // Anthropic requires tool results grouped into one user turn: collapse
+            // consecutive .tool messages into a single user message of tool_result blocks.
+            if (!first) try out.append(allocator, ',');
+            first = false;
+            try out.appendSlice(allocator, "{\"role\":\"user\",\"content\":[");
+            var jt: usize = i;
+            var block_first = true;
+            while (jt < messages.len and messages[jt].role == .tool) : (jt += 1) {
+                if (!block_first) try out.append(allocator, ',');
+                block_first = false;
+                try out.appendSlice(allocator, "{\"type\":\"tool_result\",\"tool_use_id\":");
+                try appendJsonString(allocator, out, messages[jt].tool_call_id orelse "");
+                try out.appendSlice(allocator, ",\"content\":");
+                try appendJsonString(allocator, out, messages[jt].content);
+                try out.append(allocator, '}');
+            }
+            try out.appendSlice(allocator, "]}");
+            i = jt;
+            continue;
+        }
         if (!first) try out.append(allocator, ',');
         first = false;
         try out.appendSlice(allocator, "{\"role\":");
         try appendJsonString(allocator, out, msg.role.apiName());
-        try out.appendSlice(allocator, ",\"content\":");
-        try appendJsonString(allocator, out, msg.content);
-        try out.append(allocator, '}');
+        if (msg.role == .assistant and msg.tool_calls != null and msg.tool_calls.?.len > 0) {
+            try out.appendSlice(allocator, ",\"content\":[");
+            var wrote = false;
+            if (msg.content.len > 0) {
+                try out.appendSlice(allocator, "{\"type\":\"text\",\"text\":");
+                try appendJsonString(allocator, out, msg.content);
+                try out.append(allocator, '}');
+                wrote = true;
+            }
+            for (msg.tool_calls.?) |call| {
+                if (wrote) try out.append(allocator, ',');
+                wrote = true;
+                try out.appendSlice(allocator, "{\"type\":\"tool_use\",\"id\":");
+                try appendJsonString(allocator, out, call.id);
+                try out.appendSlice(allocator, ",\"name\":");
+                try appendJsonString(allocator, out, call.name);
+                try out.appendSlice(allocator, ",\"input\":");
+                // arguments is already a JSON object string; embed verbatim.
+                if (call.arguments.len > 0) {
+                    try out.appendSlice(allocator, call.arguments);
+                } else {
+                    try out.appendSlice(allocator, "{}");
+                }
+                try out.append(allocator, '}');
+            }
+            try out.appendSlice(allocator, "]}");
+        } else {
+            try out.appendSlice(allocator, ",\"content\":");
+            try appendJsonString(allocator, out, msg.content);
+            try out.append(allocator, '}');
+        }
+        i += 1;
     }
 }
 
 fn appendAnthropicTools(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
-    _ = allocator; _ = out; // filled in Task 4
+    try out.appendSlice(allocator, ",\"tools\":[");
+    var ctx = AnthropicToolEmitter{ .allocator = allocator, .out = out };
+    try forEachToolSpec(*AnthropicToolEmitter, &ctx, AnthropicToolEmitter.emit);
+    try out.append(allocator, ']');
 }
 
 fn appendResponseMessage(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), role: Role, content: []const u8) !void {
@@ -436,146 +490,104 @@ fn appendResponseFunctionCallOutput(
     try out.append(allocator, '}');
 }
 
+// Single source of truth for the agent tool set. Each tool's name, description,
+// and JSON Schema `properties` object is defined exactly once here and yielded to
+// a per-format emitter (OpenAI chat-completions, OpenAI responses, Anthropic), so
+// the schema text is never duplicated across protocols.
+//
+// `Ctx` is the emitter's context type; `emit` receives `(ctx, name, description,
+// properties)` for every active tool, in order.
+fn forEachToolSpec(
+    comptime Ctx: type,
+    ctx: Ctx,
+    comptime emit: fn (Ctx, []const u8, []const u8, []const u8) anyerror!void,
+) !void {
+    try emit(ctx, "terminal_list", "List WispTerm terminal surfaces visible to the agent, including the current agent-selected write context. Before any terminal write, use terminal_select to choose the intended surface_id; use focused=true only as a default hint.", "{}");
+    try emit(ctx, "terminal_snapshot", "Read a bounded text snapshot from one terminal surface or all surfaces.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Optional surface id from terminal_list.\"}}");
+    try emit(ctx, "terminal_select", platform_pty_command.terminalSelectToolDescription(), "{\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list to make the current agent write context.\"}}");
+    try emit(ctx, platform_process.localCommandToolName(), platform_process.localCommandToolDescription(), "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}");
+    try emit(ctx, "ssh_session_exec", "Run a POSIX shell command in the selected already-open SSH terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}");
+    if (platform_pty_command.wslSessionToolsEnabled()) {
+        try emit(ctx, platform_pty_command.wslSessionToolName(), platform_pty_command.wslSessionToolDescription(), platform_pty_command.wslSessionToolPropertiesJson());
+    }
+    try emit(ctx, "terminal_repl_exec", "Send code or text to the selected already-open interactive REPL/app terminal without shell syntax. The surface_id must match the current terminal_select context. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit.\"},\"timeout_ms\":{\"type\":\"integer\"}}");
+    try emit(ctx, "ssh_profile_save", "Create or update a saved WispTerm SSH server profile. Use before ssh_profile_connect when the user provides SSH host, user, port, or password details.", "{\"name\":{\"type\":\"string\",\"description\":\"Optional profile name; defaults to host for new profiles.\"},\"host\":{\"type\":\"string\",\"description\":\"SSH host name or IP address.\"},\"user\":{\"type\":\"string\",\"description\":\"SSH username.\"},\"password\":{\"type\":\"string\",\"description\":\"Optional SSH password; omit when using keys.\"},\"port\":{\"type\":\"string\",\"description\":\"Optional SSH port; defaults to 22 for new profiles.\"},\"proxy_jump\":{\"type\":\"string\",\"description\":\"Optional OpenSSH ProxyJump/jump host: [user@]host[:port], comma-separated for multi-hop. Omit for a direct connection.\"}}");
+    try emit(ctx, "ssh_profile_connect", "Create a new tab connected to a saved WispTerm SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}");
+    try emit(ctx, "tab_new", platform_pty_command.tabNewToolDescription(), platform_pty_command.tabNewToolPropertiesJson());
+    try emit(ctx, "tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}");
+    try emit(ctx, "skill_info", "Load a WispTerm skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}");
+    try emit(ctx, "wispterm_docs", "Read WispTerm's own documentation (features, configuration, shortcuts, AI agent, file explorer, media). Call with no topic to list available topics, then call again with a topic to read its full text.", "{\"topic\":{\"type\":\"string\",\"description\":\"Topic name from the list. Omit to list available topics.\"}}");
+}
+
+const ToolSchemaEmitter = struct {
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    first: bool = true,
+
+    fn emit(self: *ToolSchemaEmitter, name: []const u8, description: []const u8, properties: []const u8) !void {
+        if (!self.first) try self.out.append(self.allocator, ',');
+        self.first = false;
+        try self.out.appendSlice(self.allocator, "{\"type\":\"function\",\"function\":{\"name\":");
+        try appendJsonString(self.allocator, self.out, name);
+        try self.out.appendSlice(self.allocator, ",\"description\":");
+        try appendJsonString(self.allocator, self.out, description);
+        try self.out.appendSlice(self.allocator, ",\"parameters\":{\"type\":\"object\",\"properties\":");
+        try self.out.appendSlice(self.allocator, properties);
+        try self.out.appendSlice(self.allocator, ",\"additionalProperties\":false}}}");
+    }
+};
+
+const ResponseToolSchemaEmitter = struct {
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    first: bool = true,
+
+    fn emit(self: *ResponseToolSchemaEmitter, name: []const u8, description: []const u8, properties: []const u8) !void {
+        if (!self.first) try self.out.append(self.allocator, ',');
+        self.first = false;
+        try self.out.appendSlice(self.allocator, "{\"type\":\"function\",\"name\":");
+        try appendJsonString(self.allocator, self.out, name);
+        try self.out.appendSlice(self.allocator, ",\"description\":");
+        try appendJsonString(self.allocator, self.out, description);
+        try self.out.appendSlice(self.allocator, ",\"parameters\":{\"type\":\"object\",\"properties\":");
+        try self.out.appendSlice(self.allocator, properties);
+        try self.out.appendSlice(self.allocator, ",\"additionalProperties\":false}}");
+    }
+};
+
+const AnthropicToolEmitter = struct {
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    first: bool = true,
+
+    fn emit(self: *AnthropicToolEmitter, name: []const u8, description: []const u8, properties: []const u8) !void {
+        if (!self.first) try self.out.append(self.allocator, ',');
+        self.first = false;
+        try self.out.appendSlice(self.allocator, "{\"name\":");
+        try appendJsonString(self.allocator, self.out, name);
+        try self.out.appendSlice(self.allocator, ",\"description\":");
+        try appendJsonString(self.allocator, self.out, description);
+        // input_schema reuses the SAME JSON Schema object the OpenAI `parameters` uses.
+        try self.out.appendSlice(self.allocator, ",\"input_schema\":{\"type\":\"object\",\"properties\":");
+        try self.out.appendSlice(self.allocator, properties);
+        try self.out.appendSlice(self.allocator, ",\"additionalProperties\":false}}");
+    }
+};
+
 fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
     try out.appendSlice(allocator, ",\"tools\":[");
-    try out.appendSlice(allocator, toolSchema("terminal_list", "List WispTerm terminal surfaces visible to the agent, including the current agent-selected write context. Before any terminal write, use terminal_select to choose the intended surface_id; use focused=true only as a default hint.", "{}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("terminal_snapshot", "Read a bounded text snapshot from one terminal surface or all surfaces.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Optional surface id from terminal_list.\"}}"));
-    try out.append(allocator, ',');
-    try appendToolSchema(
-        allocator,
-        out,
-        "terminal_select",
-        platform_pty_command.terminalSelectToolDescription(),
-        "{\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list to make the current agent write context.\"}}",
-    );
-    try out.append(allocator, ',');
-    try appendToolSchema(
-        allocator,
-        out,
-        platform_process.localCommandToolName(),
-        platform_process.localCommandToolDescription(),
-        "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}",
-    );
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("ssh_session_exec", "Run a POSIX shell command in the selected already-open SSH terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
-    if (platform_pty_command.wslSessionToolsEnabled()) {
-        try out.append(allocator, ',');
-        try appendToolSchema(
-            allocator,
-            out,
-            platform_pty_command.wslSessionToolName(),
-            platform_pty_command.wslSessionToolDescription(),
-            platform_pty_command.wslSessionToolPropertiesJson(),
-        );
-    }
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("terminal_repl_exec", "Send code or text to the selected already-open interactive REPL/app terminal without shell syntax. The surface_id must match the current terminal_select context. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit.\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("ssh_profile_save", "Create or update a saved WispTerm SSH server profile. Use before ssh_profile_connect when the user provides SSH host, user, port, or password details.", "{\"name\":{\"type\":\"string\",\"description\":\"Optional profile name; defaults to host for new profiles.\"},\"host\":{\"type\":\"string\",\"description\":\"SSH host name or IP address.\"},\"user\":{\"type\":\"string\",\"description\":\"SSH username.\"},\"password\":{\"type\":\"string\",\"description\":\"Optional SSH password; omit when using keys.\"},\"port\":{\"type\":\"string\",\"description\":\"Optional SSH port; defaults to 22 for new profiles.\"},\"proxy_jump\":{\"type\":\"string\",\"description\":\"Optional OpenSSH ProxyJump/jump host: [user@]host[:port], comma-separated for multi-hop. Omit for a direct connection.\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("ssh_profile_connect", "Create a new tab connected to a saved WispTerm SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}"));
-    try out.append(allocator, ',');
-    try appendToolSchema(
-        allocator,
-        out,
-        "tab_new",
-        platform_pty_command.tabNewToolDescription(),
-        platform_pty_command.tabNewToolPropertiesJson(),
-    );
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("skill_info", "Load a WispTerm skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, toolSchema("wispterm_docs", "Read WispTerm's own documentation (features, configuration, shortcuts, AI agent, file explorer, media). Call with no topic to list available topics, then call again with a topic to read its full text.", "{\"topic\":{\"type\":\"string\",\"description\":\"Topic name from the list. Omit to list available topics.\"}}"));
+    var ctx = ToolSchemaEmitter{ .allocator = allocator, .out = out };
+    try forEachToolSpec(*ToolSchemaEmitter, &ctx, ToolSchemaEmitter.emit);
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
 
 fn appendResponseToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
     try out.appendSlice(allocator, ",\"tools\":[");
-    try out.appendSlice(allocator, responseToolSchema("terminal_list", "List WispTerm terminal surfaces visible to the agent, including the current agent-selected write context. Before any terminal write, use terminal_select to choose the intended surface_id; use focused=true only as a default hint.", "{}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, responseToolSchema("terminal_snapshot", "Read a bounded text snapshot from one terminal surface or all surfaces.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Optional surface id from terminal_list.\"}}"));
-    try out.append(allocator, ',');
-    try appendResponseToolSchema(
-        allocator,
-        out,
-        "terminal_select",
-        platform_pty_command.terminalSelectToolDescription(),
-        "{\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list to make the current agent write context.\"}}",
-    );
-    try out.append(allocator, ',');
-    try appendResponseToolSchema(
-        allocator,
-        out,
-        platform_process.localCommandToolName(),
-        platform_process.localCommandToolDescription(),
-        "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}",
-    );
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, responseToolSchema("ssh_session_exec", "Run a POSIX shell command in the selected already-open SSH terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
-    if (platform_pty_command.wslSessionToolsEnabled()) {
-        try out.append(allocator, ',');
-        try appendResponseToolSchema(
-            allocator,
-            out,
-            platform_pty_command.wslSessionToolName(),
-            platform_pty_command.wslSessionToolDescription(),
-            platform_pty_command.wslSessionToolPropertiesJson(),
-        );
-    }
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, responseToolSchema("terminal_repl_exec", "Send code or text to the selected already-open interactive REPL/app terminal without shell syntax. The surface_id must match the current terminal_select context. Use repl=r for R, repl=python for Python, repl=codex for Codex, repl=claude_code for Claude Code, or repl=plain for raw text input.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"repl\":{\"type\":\"string\",\"description\":\"r, python, codex, claude_code, or plain\"},\"code\":{\"type\":\"string\",\"description\":\"Code or plain text to submit.\"},\"timeout_ms\":{\"type\":\"integer\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, responseToolSchema("ssh_profile_save", "Create or update a saved WispTerm SSH server profile. Use before ssh_profile_connect when the user provides SSH host, user, port, or password details.", "{\"name\":{\"type\":\"string\",\"description\":\"Optional profile name; defaults to host for new profiles.\"},\"host\":{\"type\":\"string\",\"description\":\"SSH host name or IP address.\"},\"user\":{\"type\":\"string\",\"description\":\"SSH username.\"},\"password\":{\"type\":\"string\",\"description\":\"Optional SSH password; omit when using keys.\"},\"port\":{\"type\":\"string\",\"description\":\"Optional SSH port; defaults to 22 for new profiles.\"},\"proxy_jump\":{\"type\":\"string\",\"description\":\"Optional OpenSSH ProxyJump/jump host: [user@]host[:port], comma-separated for multi-hop. Omit for a direct connection.\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, responseToolSchema("ssh_profile_connect", "Create a new tab connected to a saved WispTerm SSH server profile by its profile name or host.", "{\"profile_name\":{\"type\":\"string\",\"description\":\"Saved SSH profile name or host to open in a new tab.\"}}"));
-    try out.append(allocator, ',');
-    try appendResponseToolSchema(
-        allocator,
-        out,
-        "tab_new",
-        platform_pty_command.tabNewToolDescription(),
-        platform_pty_command.tabNewToolPropertiesJson(),
-    );
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, responseToolSchema("tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, responseToolSchema("skill_info", "Load a WispTerm skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}"));
-    try out.append(allocator, ',');
-    try out.appendSlice(allocator, responseToolSchema("wispterm_docs", "Read WispTerm's own documentation (features, configuration, shortcuts, AI agent, file explorer, media). Call with no topic to list available topics, then call again with a topic to read its full text.", "{\"topic\":{\"type\":\"string\",\"description\":\"Topic name from the list. Omit to list available topics.\"}}"));
+    var ctx = ResponseToolSchemaEmitter{ .allocator = allocator, .out = out };
+    try forEachToolSpec(*ResponseToolSchemaEmitter, &ctx, ResponseToolSchemaEmitter.emit);
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
-}
-
-fn toolSchema(comptime name: []const u8, comptime description: []const u8, comptime properties: []const u8) []const u8 {
-    return "{\"type\":\"function\",\"function\":{\"name\":\"" ++ name ++ "\",\"description\":\"" ++ description ++ "\",\"parameters\":{\"type\":\"object\",\"properties\":" ++ properties ++ ",\"additionalProperties\":false}}}";
-}
-
-fn responseToolSchema(comptime name: []const u8, comptime description: []const u8, comptime properties: []const u8) []const u8 {
-    return "{\"type\":\"function\",\"name\":\"" ++ name ++ "\",\"description\":\"" ++ description ++ "\",\"parameters\":{\"type\":\"object\",\"properties\":" ++ properties ++ ",\"additionalProperties\":false}}";
-}
-
-fn appendToolSchema(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), name: []const u8, description: []const u8, properties: []const u8) !void {
-    try out.appendSlice(allocator, "{\"type\":\"function\",\"function\":{\"name\":");
-    try appendJsonString(allocator, out, name);
-    try out.appendSlice(allocator, ",\"description\":");
-    try appendJsonString(allocator, out, description);
-    try out.appendSlice(allocator, ",\"parameters\":{\"type\":\"object\",\"properties\":");
-    try out.appendSlice(allocator, properties);
-    try out.appendSlice(allocator, ",\"additionalProperties\":false}}}");
-}
-
-fn appendResponseToolSchema(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), name: []const u8, description: []const u8, properties: []const u8) !void {
-    try out.appendSlice(allocator, "{\"type\":\"function\",\"name\":");
-    try appendJsonString(allocator, out, name);
-    try out.appendSlice(allocator, ",\"description\":");
-    try appendJsonString(allocator, out, description);
-    try out.appendSlice(allocator, ",\"parameters\":{\"type\":\"object\",\"properties\":");
-    try out.appendSlice(allocator, properties);
-    try out.appendSlice(allocator, ",\"additionalProperties\":false}}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,4 +1012,23 @@ test "buildRequestJson anthropic puts system top-level and includes max_tokens" 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"role\":\"user\"") != null);
     // system must NOT be inside the messages array as a role
     try std.testing.expect(std.mem.indexOf(u8, json, "\"role\":\"system\"") == null);
+}
+
+test "anthropic maps tool_calls to tool_use and tool results to grouped tool_result" {
+    const a = std.testing.allocator;
+    var calls = [_]ToolCall{.{ .id = @constCast("call_1"), .name = @constCast("shell_exec"), .arguments = @constCast("{\"cmd\":\"ls\"}") }};
+    var msgs = [_]RequestMessage{
+        .{ .role = .user, .content = @constCast("run ls") },
+        .{ .role = .assistant, .content = @constCast(""), .tool_calls = &calls },
+        .{ .role = .tool, .content = @constCast("file.txt"), .tool_call_id = @constCast("call_1") },
+    };
+    const params = RequestParams{ .model = "claude-x", .system_prompt = "", .protocol = .anthropic, .thinking_enabled = false, .reasoning_effort = "", .stream = false, .max_tokens = 8192 };
+    const json = try buildRequestJson(a, params, &msgs, true);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"tool_use\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"id\":\"call_1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"input\":{\"cmd\":\"ls\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"tool_result\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_use_id\":\"call_1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"input_schema\"") != null);
 }
