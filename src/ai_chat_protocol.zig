@@ -198,6 +198,10 @@ pub fn isDeepSeekBaseUrl(base_url: []const u8) bool {
     return std.ascii.indexOfIgnoreCase(base_url, "deepseek.com") != null;
 }
 
+pub fn isAnthropicBaseUrl(base_url: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(base_url, "api.anthropic.com") != null;
+}
+
 pub fn apiEndpoint(allocator: std.mem.Allocator, base_url_raw: []const u8, protocol: ApiProtocol) ![]u8 {
     return switch (protocol) {
         .chat_completions => chatEndpoint(allocator, base_url_raw),
@@ -1033,6 +1037,11 @@ test "parseApiResponse surfaces an error object as content" {
 test "isDeepSeekBaseUrl" {
     try std.testing.expect(isDeepSeekBaseUrl("https://api.deepseek.com/v1"));
     try std.testing.expect(!isDeepSeekBaseUrl("https://api.openai.com/v1"));
+}
+
+test "isAnthropicBaseUrl detects the anthropic api host" {
+    try std.testing.expect(isAnthropicBaseUrl("https://api.anthropic.com"));
+    try std.testing.expect(!isAnthropicBaseUrl("https://api.openai.com"));
 }
 
 test "buildRequestJson chat_completions emits tool_calls when present" {

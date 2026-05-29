@@ -835,6 +835,9 @@ pub const Session = struct {
         session.copyBaseUrl(if (base_url.len > 0) base_url else DEFAULT_BASE_URL);
         session.copyModel(if (model_name.len > 0) model_name else DEFAULT_MODEL);
         session.protocol = ApiProtocol.parse(protocol);
+        if (session.protocol == .chat_completions and isAnthropicBaseUrl(session.baseUrl())) {
+            session.protocol = .anthropic;
+        }
         session.copySystemPrompt(if (system_prompt.len > 0) system_prompt else DEFAULT_SYSTEM_PROMPT);
         session.thinking_enabled = !std.mem.eql(u8, thinking, "disabled");
         session.copyReasoningEffort(if (reasoning_effort.len > 0) reasoning_effort else DEFAULT_REASONING_EFFORT);
@@ -3199,14 +3202,20 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
     var resp_buf: std.Io.Writer.Allocating = .init(allocator);
     defer resp_buf.deinit();
 
+    const is_anthropic = request.protocol == .anthropic;
+    const anthropic_headers = [_]std.http.Header{
+        .{ .name = "x-api-key", .value = request.api_key },
+        .{ .name = "anthropic-version", .value = "2023-06-01" },
+    };
     const result = client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
         .payload = body,
         .headers = .{
             .content_type = .{ .override = "application/json" },
-            .authorization = .{ .override = bearer },
+            .authorization = if (is_anthropic) .omit else .{ .override = bearer },
         },
+        .extra_headers = if (is_anthropic) &anthropic_headers else &.{},
         .response_writer = &resp_buf.writer,
     }) catch return error.RequestFailed;
     if (requestCancelled(request)) return error.Canceled;
@@ -3244,12 +3253,18 @@ fn runChatRequestStreaming(request: *const ChatRequest) !void {
     };
     defer client.deinit();
 
+    const is_anthropic = request.protocol == .anthropic;
+    const anthropic_headers = [_]std.http.Header{
+        .{ .name = "x-api-key", .value = request.api_key },
+        .{ .name = "anthropic-version", .value = "2023-06-01" },
+    };
     const uri = try std.Uri.parse(endpoint);
     var req = try client.request(.POST, uri, .{
         .headers = .{
             .content_type = .{ .override = "application/json" },
-            .authorization = .{ .override = bearer },
+            .authorization = if (is_anthropic) .omit else .{ .override = bearer },
         },
+        .extra_headers = if (is_anthropic) &anthropic_headers else &.{},
         .keep_alive = false,
     });
     defer req.deinit();
@@ -3302,6 +3317,7 @@ const apiEndpoint = ai_chat_protocol.apiEndpoint;
 const chatEndpoint = ai_chat_protocol.chatEndpoint;
 const appendJsonString = ai_chat_protocol.appendJsonString;
 const isDeepSeekBaseUrl = ai_chat_protocol.isDeepSeekBaseUrl;
+const isAnthropicBaseUrl = ai_chat_protocol.isAnthropicBaseUrl;
 
 fn buildRequestJson(allocator: std.mem.Allocator, request: *const ChatRequest) ![]u8 {
     return ai_chat_protocol.buildRequestJson(allocator, request.toParams(), request.messages, request.agent_enabled);
@@ -4867,6 +4883,42 @@ test "ai_chat: session serializes to history record" {
     try std.testing.expectEqualStrings(DEFAULT_PROTOCOL, record.protocol);
     try std.testing.expectEqual(@as(usize, 1), record.messages.len);
     try std.testing.expectEqualStrings("hello", record.messages[0].content);
+}
+
+test "ai_chat: anthropic base url auto-detects the anthropic protocol" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "Anthropic Test",
+        "https://api.anthropic.com",
+        "secret",
+        "claude-3-5-sonnet",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "false",
+    );
+    defer session.deinit();
+    try std.testing.expectEqual(ApiProtocol.anthropic, session.protocol);
+}
+
+test "ai_chat: non-anthropic base url keeps chat_completions protocol" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "OpenAI Test",
+        "https://api.openai.com/v1",
+        "secret",
+        "gpt-4o",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "false",
+    );
+    defer session.deinit();
+    try std.testing.expectEqual(ApiProtocol.chat_completions, session.protocol);
 }
 
 test "ai_chat: response protocol survives history record round trip" {
