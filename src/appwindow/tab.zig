@@ -320,6 +320,7 @@ pub fn spawnAiChatTab(
     reasoning_effort: []const u8,
     stream_val: []const u8,
     agent_val: []const u8,
+    max_tokens: u32,
 ) bool {
     if (g_tab_count >= MAX_TABS) return false;
 
@@ -339,6 +340,7 @@ pub fn spawnAiChatTab(
         std.debug.print("Failed to create AI Chat session\n", .{});
         return false;
     };
+    session.setMaxTokens(max_tokens);
     installAiChatHistoryHook(session);
 
     const t = allocator.create(TabState) catch {

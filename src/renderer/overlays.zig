@@ -1347,7 +1347,7 @@ const SSH_FIELD_COUNT = 6;
 const SSH_FIELD_MAX = 128;
 const SSH_PROFILE_MAX = 16;
 const SSH_PROFILE_NONE = std.math.maxInt(usize);
-const AI_FIELD_COUNT = 10;
+const AI_FIELD_COUNT = 11;
 const AI_FIELD_MAX = 8192;
 const AI_PROFILE_MAX = 16;
 const AI_PROFILE_NONE = std.math.maxInt(usize);
@@ -1371,6 +1371,7 @@ const AiField = enum(usize) {
     stream = 7,
     agent = 8,
     protocol = 9,
+    max_tokens = 10,
 };
 
 const SessionAction = enum {
@@ -2363,6 +2364,10 @@ pub fn openAiConfigForSession(session: *AppWindow.ai_chat.Session) void {
     setAiDefault(.stream, session.streamConfigValue());
     setAiDefault(.agent, session.agentConfigValue());
     setAiDefault(.protocol, session.apiProtocolName());
+    var max_tokens_buf: [16]u8 = undefined;
+    if (std.fmt.bufPrint(max_tokens_buf[0..], "{d}", .{session.maxTokens()})) |s| {
+        setAiDefault(.max_tokens, s);
+    } else |_| {}
     session.mutex.unlock();
 
     g_ai_edit_index = AI_PROFILE_NONE;
@@ -2425,6 +2430,7 @@ fn clearAiForm() void {
     setAiDefault(.stream, AppWindow.ai_chat.DEFAULT_STREAM);
     setAiDefault(.agent, AppWindow.ai_chat.DEFAULT_AGENT);
     setAiDefault(.protocol, AppWindow.ai_chat.DEFAULT_PROTOCOL);
+    setAiDefault(.max_tokens, AppWindow.ai_chat.DEFAULT_MAX_TOKENS);
 }
 
 fn appendAiFormCodepoint(field: usize, codepoint: u21) void {
@@ -2650,11 +2656,12 @@ fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool
     const stream_val = aiProfileField(profile, .stream);
     const agent_val = agent_override orelse aiProfileField(profile, .agent);
     const protocol = aiProfileField(profile, .protocol);
+    const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
     if (base_url.len == 0 or model.len == 0) return false;
     if (!isHttpUrlish(base_url)) return false;
 
     sessionLauncherClose();
-    return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val);
+    return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens);
 }
 
 threadlocal var g_ai_default_name_buf: [256]u8 = undefined;
@@ -2726,27 +2733,35 @@ fn loadAiProfiles() void {
         if (g_ai_profile_count >= AI_PROFILE_MAX) break;
         const line = std.mem.trimRight(u8, line_raw, "\r");
         if (line.len == 0 or line[0] == '#') continue;
-        var profile = AiProfile{};
-        var parts = std.mem.splitScalar(u8, line, '\t');
-        var field_idx: usize = 0;
-        var ok = true;
-        while (field_idx < AI_FIELD_COUNT) : (field_idx += 1) {
-            const part = parts.next() orelse break;
-            const decoded = decodeHexFieldToSlice(part, profile.fields[field_idx][0..]) orelse {
-                ok = false;
-                break;
-            };
-            profile.lens[field_idx] = decoded;
-        }
-        if (!ok or field_idx < 5) continue;
-        if (profile.lens[@intFromEnum(AiField.thinking)] == 0) setProfileDefault(&profile, .thinking, AppWindow.ai_chat.DEFAULT_THINKING);
-        if (profile.lens[@intFromEnum(AiField.reasoning_effort)] == 0) setProfileDefault(&profile, .reasoning_effort, AppWindow.ai_chat.DEFAULT_REASONING_EFFORT);
-        if (profile.lens[@intFromEnum(AiField.stream)] == 0) setProfileDefault(&profile, .stream, AppWindow.ai_chat.DEFAULT_STREAM);
-        if (profile.lens[@intFromEnum(AiField.agent)] == 0) setProfileDefault(&profile, .agent, AppWindow.ai_chat.DEFAULT_AGENT);
-        if (profile.lens[@intFromEnum(AiField.protocol)] == 0) setProfileDefault(&profile, .protocol, AppWindow.ai_chat.DEFAULT_PROTOCOL);
+        const profile = decodeAiProfileLine(line) orelse continue;
         g_ai_profiles[g_ai_profile_count] = profile;
         g_ai_profile_count += 1;
     }
+}
+
+/// Decode one tab-separated, hex-encoded AI profile line into an `AiProfile`,
+/// then fill defaults for any empty optional field. Returns null when a present
+/// field contains malformed hex or fewer than five fields are present. Trailing
+/// fields absent from the line (e.g. `protocol`/`max_tokens` from older builds)
+/// are defaulted rather than misaligned, so profiles written before the schema
+/// grew still load correctly.
+fn decodeAiProfileLine(line: []const u8) ?AiProfile {
+    var profile = AiProfile{};
+    var parts = std.mem.splitScalar(u8, line, '\t');
+    var field_idx: usize = 0;
+    while (field_idx < AI_FIELD_COUNT) : (field_idx += 1) {
+        const part = parts.next() orelse break;
+        const decoded = decodeHexFieldToSlice(part, profile.fields[field_idx][0..]) orelse return null;
+        profile.lens[field_idx] = decoded;
+    }
+    if (field_idx < 5) return null;
+    if (profile.lens[@intFromEnum(AiField.thinking)] == 0) setProfileDefault(&profile, .thinking, AppWindow.ai_chat.DEFAULT_THINKING);
+    if (profile.lens[@intFromEnum(AiField.reasoning_effort)] == 0) setProfileDefault(&profile, .reasoning_effort, AppWindow.ai_chat.DEFAULT_REASONING_EFFORT);
+    if (profile.lens[@intFromEnum(AiField.stream)] == 0) setProfileDefault(&profile, .stream, AppWindow.ai_chat.DEFAULT_STREAM);
+    if (profile.lens[@intFromEnum(AiField.agent)] == 0) setProfileDefault(&profile, .agent, AppWindow.ai_chat.DEFAULT_AGENT);
+    if (profile.lens[@intFromEnum(AiField.protocol)] == 0) setProfileDefault(&profile, .protocol, AppWindow.ai_chat.DEFAULT_PROTOCOL);
+    if (profile.lens[@intFromEnum(AiField.max_tokens)] == 0) setProfileDefault(&profile, .max_tokens, AppWindow.ai_chat.DEFAULT_MAX_TOKENS);
+    return profile;
 }
 
 fn saveAiProfiles(allocator: std.mem.Allocator) void {
@@ -2758,7 +2773,7 @@ fn saveAiProfiles(allocator: std.mem.Allocator) void {
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
-    out.appendSlice(allocator, "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol.\n") catch return;
+    out.appendSlice(allocator, "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens.\n") catch return;
     for (g_ai_profiles[0..g_ai_profile_count]) |profile| {
         for (0..AI_FIELD_COUNT) |i| {
             if (i > 0) out.append(allocator, '\t') catch return;
@@ -2932,6 +2947,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("Effort", aiField(.reasoning_effort)));
         desired = @max(desired, sessionTwoColumnWidth("Stream", aiField(.stream)));
         desired = @max(desired, sessionTwoColumnWidth("Protocol", aiField(.protocol)));
+        desired = @max(desired, sessionTwoColumnWidth("Max Tokens", aiField(.max_tokens)));
         desired = @max(desired, sessionTwoColumnWidth("Save & Open", "agent"));
         desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
         desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
@@ -3306,6 +3322,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.stream), "Stream", aiField(.stream), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.agent), "Agent", aiField(.agent), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), "Protocol", aiField(.protocol), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.max_tokens), "Max Tokens", aiField(.max_tokens), false);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT, "Save & Open", "agent", g_ai_focus == AI_FIELD_COUNT);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, "Save", "profile", g_ai_focus == AI_FIELD_COUNT + 1);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, "Cancel", "Esc", g_ai_focus == AI_FIELD_COUNT + 2);
@@ -4213,6 +4230,43 @@ test "overlays: SSH profile line decode accepts legacy lines without a proxy jum
 
 test "overlays: SSH profile line decode rejects malformed hex" {
     try std.testing.expect(decodeSshProfileLine("not-hex\tzz") == null);
+}
+
+test "overlays: AI profile line decode round-trips all fields including max_tokens" {
+    var buf: [1024]u8 = undefined;
+    const line = testEncodeProfileLine(&buf, &.{
+        "Claude", "https://api.anthropic.com", "sk-key", "claude-x",
+        "sys", "enabled", "high", "false", "true", "anthropic", "4096",
+    });
+    const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("Claude", aiProfileField(&profile, .name));
+    try std.testing.expectEqualStrings("anthropic", aiProfileField(&profile, .protocol));
+    try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));
+}
+
+test "overlays: AI profile line decode defaults max_tokens for legacy 10-field profiles" {
+    // Profiles written before max_tokens existed have only the first ten fields
+    // (indices 0-9). They must still load, with the new trailing field defaulted
+    // to 8192, and the existing positional fields staying aligned.
+    var buf: [1024]u8 = undefined;
+    const legacy = testEncodeProfileLine(&buf, &.{
+        "Legacy", "https://api.anthropic.com", "sk-key", "claude-x",
+        "sys", "enabled", "high", "false", "true", "anthropic",
+    });
+    const profile = decodeAiProfileLine(legacy) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("Legacy", aiProfileField(&profile, .name));
+    try std.testing.expectEqualStrings("anthropic", aiProfileField(&profile, .protocol));
+    try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
+}
+
+test "overlays: AI profile line decode defaults max_tokens when the field is empty" {
+    var buf: [1024]u8 = undefined;
+    const line = testEncodeProfileLine(&buf, &.{
+        "Empty", "https://api.anthropic.com", "sk-key", "claude-x",
+        "sys", "enabled", "high", "false", "true", "anthropic", "",
+    });
+    const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
 }
 
 fn showVersionToast() void {

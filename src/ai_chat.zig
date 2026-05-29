@@ -30,6 +30,7 @@ pub const DEFAULT_REASONING_EFFORT = "high";
 pub const DEFAULT_STREAM = "false";
 pub const DEFAULT_AGENT = "true";
 pub const DEFAULT_PROTOCOL = ai_chat_protocol.DEFAULT_PROTOCOL;
+pub const DEFAULT_MAX_TOKENS = "8192";
 
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
 const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
