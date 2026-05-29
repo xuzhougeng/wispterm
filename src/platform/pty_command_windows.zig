@@ -218,6 +218,13 @@ pub fn configuredLocalShellCommandForShell(shell_cmd: CommandLine) []const u8 {
     return "powershell.exe";
 }
 
+/// Always-present shell to fall back to when the preferred local shell
+/// (PowerShell/pwsh) cannot be launched — e.g. PowerShell removed from PATH
+/// (issue #65). cmd.exe ships with every Windows install.
+pub fn guaranteedLocalShellCommand() []const u8 {
+    return "cmd.exe";
+}
+
 pub fn tabCommandForKind(kind: []const u8, current_shell: CommandLine) ![]const u8 {
     if (std.ascii.eqlIgnoreCase(kind, "powershell")) return configuredLocalShellCommandForShell(current_shell);
     if (std.ascii.eqlIgnoreCase(kind, "pwsh")) return "pwsh.exe -NoLogo -NoProfile";

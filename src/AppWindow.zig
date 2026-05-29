@@ -917,15 +917,29 @@ pub fn configuredLocalShellSessionDetail() []const u8 {
 
 pub fn spawnConfiguredLocalShellTab() bool {
     const shell_cmd = tab.getShellCmd();
+
+    // When the configured shell already is PowerShell/pwsh, launch it directly.
     if (platform_pty_command.shellCommandLooksLikeConfiguredLocalShell(shell_cmd)) {
-        const allocator = g_allocator orelse return false;
-        var cwd_buf: platform_pty_command.CwdBuffer = undefined;
-        const cwd = getActiveCwd(&cwd_buf);
-        if (!tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, shell_cmd, g_cursor_style, g_cursor_blink, cwd)) return false;
-        clearUiStateOnTabChange();
-        return true;
+        if (spawnLocalShellCommandLine(shell_cmd)) return true;
+        // Configured PowerShell/pwsh is unavailable (e.g. removed from PATH):
+        // fall back to cmd.exe so the local-shell tab still opens (issue #65).
+        return spawnTabWithCommandUtf8(platform_pty_command.guaranteedLocalShellCommand());
     }
-    return spawnTabWithCommandUtf8(platform_pty_command.configuredLocalShellCommandForShell(shell_cmd));
+
+    // Otherwise the startup "local shell" tab prefers PowerShell. If that is not
+    // installed/on PATH, fall back to the user's actual configured shell (e.g.
+    // cmd.exe) instead of failing to open any local-shell tab (issue #65).
+    if (spawnTabWithCommandUtf8(platform_pty_command.configuredLocalShellCommandForShell(shell_cmd))) return true;
+    return spawnLocalShellCommandLine(shell_cmd);
+}
+
+fn spawnLocalShellCommandLine(shell_cmd: platform_pty_command.CommandLine) bool {
+    const allocator = g_allocator orelse return false;
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
+    const cwd = getActiveCwd(&cwd_buf);
+    if (!tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, shell_cmd, g_cursor_style, g_cursor_blink, cwd)) return false;
+    clearUiStateOnTabChange();
+    return true;
 }
 
 fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {

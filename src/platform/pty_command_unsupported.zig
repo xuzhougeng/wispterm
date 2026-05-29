@@ -134,6 +134,15 @@ pub fn configuredLocalShellCommandForShell(shell_cmd: CommandLine) []const u8 {
     };
 }
 
+/// Always-present shell to fall back to when the preferred local shell cannot
+/// be launched (issue #65). Uses absolute paths guaranteed by POSIX.
+pub fn guaranteedLocalShellCommand() []const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "/bin/zsh",
+        else => "/bin/sh",
+    };
+}
+
 pub fn tabCommandForKind(kind: []const u8, current_shell: CommandLine) ![]const u8 {
     _ = kind;
     _ = current_shell;

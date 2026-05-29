@@ -126,11 +126,29 @@ pub const Pty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
-        ClosePseudoConsole(self.pseudo_console);
-        if (self.out_pipe != INVALID_HANDLE_VALUE) windows.CloseHandle(self.out_pipe);
-        if (self.in_pipe != INVALID_HANDLE_VALUE) windows.CloseHandle(self.in_pipe);
-        windows.CloseHandle(self.out_pipe_pty);
-        windows.CloseHandle(self.in_pipe_pty);
+        // Idempotent: every handle is cleared after release so a second deinit
+        // (or a double cleanup path) cannot close an already-closed handle, which
+        // on Windows corrupts the heap (STATUS_HEAP_CORRUPTION, 0xc0000374).
+        if (self.pseudo_console != INVALID_HANDLE_VALUE) {
+            ClosePseudoConsole(self.pseudo_console);
+            self.pseudo_console = INVALID_HANDLE_VALUE;
+        }
+        if (self.out_pipe != INVALID_HANDLE_VALUE) {
+            windows.CloseHandle(self.out_pipe);
+            self.out_pipe = INVALID_HANDLE_VALUE;
+        }
+        if (self.in_pipe != INVALID_HANDLE_VALUE) {
+            windows.CloseHandle(self.in_pipe);
+            self.in_pipe = INVALID_HANDLE_VALUE;
+        }
+        if (self.out_pipe_pty != INVALID_HANDLE_VALUE) {
+            windows.CloseHandle(self.out_pipe_pty);
+            self.out_pipe_pty = INVALID_HANDLE_VALUE;
+        }
+        if (self.in_pipe_pty != INVALID_HANDLE_VALUE) {
+            windows.CloseHandle(self.in_pipe_pty);
+            self.in_pipe_pty = INVALID_HANDLE_VALUE;
+        }
     }
 
     pub fn getSize(self: *const Pty) winsize {

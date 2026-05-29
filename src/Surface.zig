@@ -346,18 +346,16 @@ pub fn init(
     surface.terminal.modes.set(.cursor_blinking, cursor_blink);
 
     // Open PTY, then ask the PTY backend to attach the child process.
-    surface.pty = Pty.open(.{ .ws_col = cols, .ws_row = rows }) catch |err| {
-        surface.terminal.deinit(allocator);
-        return err;
-    };
+    // Cleanup on any later failure is handled exclusively by errdefer; catch
+    // blocks must NOT also deinit manually or resources get torn down twice
+    // (double ClosePseudoConsole/CloseHandle = heap corruption on Windows; see
+    // issue #65, where a missing PowerShell made command.start fail).
+    surface.pty = try Pty.open(.{ .ws_col = cols, .ws_row = rows });
     errdefer surface.pty.deinit();
 
     surface.command = .{};
-    surface.command.start(&surface.pty, shell_cmd, cwd) catch |err| {
-        surface.pty.deinit();
-        surface.terminal.deinit(allocator);
-        return err;
-    };
+    try surface.command.start(&surface.pty, shell_cmd, cwd);
+    errdefer surface.command.deinit();
 
     // Init remaining fields
     surface.allocator = allocator;
@@ -375,12 +373,8 @@ pub fn init(
     surface.resize_in_progress = std.atomic.Value(bool).init(false);
 
     // Initialize mailbox for main thread → IO writer communication
-    surface.mailbox = termio.Mailbox.init() catch |err| {
-        surface.command.deinit();
-        surface.pty.deinit();
-        surface.terminal.deinit(allocator);
-        return err;
-    };
+    surface.mailbox = try termio.Mailbox.init();
+    errdefer surface.mailbox.deinit();
     surface.io_thread_state = null;
     surface.io_writer_thread = null;
     surface.io_reader_thread = null;
@@ -429,47 +423,26 @@ pub fn init(
     surface.ref_count = 1;
 
     // Initialize IO writer thread state (xev loop, async handles)
-    const thread_state = allocator.create(termio.Thread) catch |err| {
-        surface.mailbox.deinit();
-        surface.command.deinit();
-        surface.pty.deinit();
-        surface.terminal.deinit(allocator);
-        return err;
-    };
-    thread_state.* = termio.Thread.init() catch |err| {
-        allocator.destroy(thread_state);
-        surface.mailbox.deinit();
-        surface.command.deinit();
-        surface.pty.deinit();
-        surface.terminal.deinit(allocator);
-        return err;
-    };
+    const thread_state = try allocator.create(termio.Thread);
+    errdefer allocator.destroy(thread_state);
+    thread_state.* = try termio.Thread.init();
+    errdefer thread_state.deinit();
     surface.io_thread_state = thread_state;
 
     // Spawn IO writer thread (xev event loop — handles resize, future messages)
     surface.io_writer_thread = std.Thread.spawn(threading.surface_thread_spawn_config, termio.Thread.threadMain, .{ thread_state, surface }) catch |err| {
         std.debug.print("Failed to spawn IO writer thread: {}\n", .{err});
-        thread_state.deinit();
-        allocator.destroy(thread_state);
-        surface.mailbox.deinit();
-        surface.command.deinit();
-        surface.pty.deinit();
-        surface.terminal.deinit(allocator);
         return err;
     };
+    errdefer {
+        // Stop the writer thread before any deeper cleanup runs.
+        if (surface.io_thread_state) |st| st.stop.notify() catch {};
+        if (surface.io_writer_thread) |t| t.join();
+    }
 
     // Spawn IO reader thread (blocking PTY output loop)
     surface.io_reader_thread = std.Thread.spawn(threading.surface_thread_spawn_config, termio.ReadThread.threadMain, .{surface}) catch |err| {
         std.debug.print("Failed to spawn IO reader thread: {}\n", .{err});
-        // Stop writer thread since we can't proceed without reader
-        thread_state.stop.notify() catch {};
-        if (surface.io_writer_thread) |t| t.join();
-        thread_state.deinit();
-        allocator.destroy(thread_state);
-        surface.mailbox.deinit();
-        surface.command.deinit();
-        surface.pty.deinit();
-        surface.terminal.deinit(allocator);
         return err;
     };
 

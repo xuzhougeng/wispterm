@@ -90,6 +90,10 @@ pub fn configuredLocalShellCommandForShell(shell_cmd: CommandLine) []const u8 {
     return impl.configuredLocalShellCommandForShell(shell_cmd);
 }
 
+pub fn guaranteedLocalShellCommand() []const u8 {
+    return impl.guaranteedLocalShellCommand();
+}
+
 pub fn sessionLauncherDetail() []const u8 {
     return session_launcher_detail;
 }
@@ -487,6 +491,10 @@ test "platform pty command detects configured local shell flavor" {
     const cmd_line = commandLineFromOwned(cmd);
     try std.testing.expect(!shellCommandLooksLikeConfiguredLocalShell(cmd_line));
     try std.testing.expectEqualStrings("powershell.exe", configuredLocalShellCommandForShell(cmd_line));
+
+    // The guaranteed fallback (issue #65) must point at cmd.exe, which always
+    // ships with Windows, so a missing PowerShell can never leave us shell-less.
+    try std.testing.expectEqualStrings("cmd.exe", guaranteedLocalShellCommand());
 }
 
 test "platform pty command maps tab kinds to native command lines" {
