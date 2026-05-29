@@ -109,6 +109,86 @@ pub fn skillNamesFromPaths(allocator: std.mem.Allocator, paths: []const []const 
     return out.toOwnedSlice(allocator);
 }
 
+/// GET the Git Trees API and return the owned response body. Caller frees.
+fn fetchTreeJson(allocator: std.mem.Allocator) ![]u8 {
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .write_buffer_size = 16 * 1024,
+    };
+    defer client.deinit();
+
+    var body: std.Io.Writer.Allocating = .init(allocator);
+    defer body.deinit();
+
+    const response = try client.fetch(.{
+        .location = .{ .url = skills_tree_api_url },
+        .method = .GET,
+        .keep_alive = false,
+        .headers = .{ .user_agent = .{ .override = "phantty" } },
+        .response_writer = &body.writer,
+    });
+    if (response.status != .ok) return error.TreeFetchFailed;
+
+    var list = body.toArrayList();
+    errdefer list.deinit(allocator);
+    return list.toOwnedSlice(allocator);
+}
+
+/// Fetch the remote skills tree, download each skill file into a temp staging
+/// dir under `<config>/plugins/skills/.update-tmp`, then atomically replace
+/// each same-named local skill directory. On any failure the staging dir is
+/// removed and local skills are left unchanged. Returns the number of skills
+/// installed (0 means "nothing to update", treated as success).
+pub fn downloadAndInstall(allocator: std.mem.Allocator) Outcome {
+    const skills_dir = platform_dirs.pluginSkillsDir(allocator) catch return .{ .state = .failed };
+    defer allocator.free(skills_dir);
+
+    const tree_json = fetchTreeJson(allocator) catch return .{ .state = .failed };
+    defer allocator.free(tree_json);
+
+    const paths = parseSkillPaths(allocator, tree_json) catch return .{ .state = .failed };
+    defer freeStringList(allocator, paths);
+
+    if (paths.len == 0) return .{ .state = .done, .count = 0 };
+
+    const names = skillNamesFromPaths(allocator, paths) catch return .{ .state = .failed };
+    defer freeStringList(allocator, names);
+
+    const tmp_dir = std.fs.path.join(allocator, &.{ skills_dir, ".update-tmp" }) catch
+        return .{ .state = .failed };
+    defer allocator.free(tmp_dir);
+
+    // Clear any leftover staging dir from a previous interrupted run.
+    std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+    defer std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+
+    // Stage every file into the temp dir.
+    for (paths) |path| {
+        const sub = installSubpath(path) orelse continue;
+        const url = rawUrlForPath(allocator, path) catch return .{ .state = .failed };
+        defer allocator.free(url);
+        const dest = std.fs.path.join(allocator, &.{ tmp_dir, sub }) catch
+            return .{ .state = .failed };
+        defer allocator.free(dest);
+        update_install.downloadAsset(allocator, url, dest) catch return .{ .state = .failed };
+    }
+
+    // Per-skill atomic replace: drop the old dir, move the staged one in.
+    for (names) |name| {
+        const final = std.fs.path.join(allocator, &.{ skills_dir, name }) catch
+            return .{ .state = .failed };
+        defer allocator.free(final);
+        const staged = std.fs.path.join(allocator, &.{ tmp_dir, name }) catch
+            return .{ .state = .failed };
+        defer allocator.free(staged);
+
+        std.fs.deleteTreeAbsolute(final) catch {};
+        std.fs.renameAbsolute(staged, final) catch return .{ .state = .failed };
+    }
+
+    return .{ .state = .done, .count = names.len };
+}
+
 const testing = std.testing;
 
 const sample_tree =
