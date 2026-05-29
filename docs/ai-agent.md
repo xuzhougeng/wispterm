@@ -10,10 +10,18 @@ platform config directory (`ai_profiles/`) — `%APPDATA%\wispterm\ai_profiles` 
 Windows, `~/Library/Application Support/wispterm/ai_profiles` on macOS — with
 fields hex encoded on disk.
 
-AI Chat can speak either OpenAI-compatible Chat Completions or the OpenAI
-Responses API. Set the profile Protocol field to `chat_completions` (default)
-or `responses`; Responses profiles should use a base URL such as
-`https://api.openai.com/v1` or a full endpoint ending in `/responses`.
+AI Chat can speak OpenAI-compatible Chat Completions, the OpenAI Responses API,
+or the Anthropic Messages API. Set the profile Protocol field to
+`chat_completions` (default), `responses`, or `anthropic`:
+
+- `responses` profiles should use a base URL such as `https://api.openai.com/v1`
+  or a full endpoint ending in `/responses`.
+- `anthropic` profiles call `<base_url>/v1/messages`, authenticate with
+  `x-api-key` + `anthropic-version` (not a Bearer token), and require a
+  `Max Tokens` value (the profile default is `8192`). A base URL containing
+  `api.anthropic.com` auto-selects the `anthropic` protocol; Anthropic-compatible
+  third parties on other hosts (e.g. GLM/Zhipu) should set `anthropic` explicitly.
+  Streaming is not yet supported for this protocol.
 
 The built-in defaults are:
 
