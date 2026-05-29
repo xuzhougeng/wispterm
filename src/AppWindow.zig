@@ -931,20 +931,27 @@ pub fn spawnConfiguredLocalShellTab() bool {
 fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {
     const first_tab_index = tab.g_tab_count;
     const has_ai_profile = overlays.hasAiProfiles();
-    const first_opened = if (has_ai_profile)
+
+    // Open the local shell first so it is the leftmost, default-focused tab.
+    const local_shell_opened = spawnConfiguredLocalShellTab();
+
+    // Then open the Agent session to the right of the shell. With no AI profile
+    // there is no agent to open, so fall back to a second local shell tab.
+    const second_opened = if (has_ai_profile)
         overlays.openDefaultAgentSessionForStartup() == .opened
     else
         spawnTabWithCwd(allocator, null);
 
-    const local_shell_opened = spawnConfiguredLocalShellTab();
-    if (!first_opened and !local_shell_opened) return false;
+    if (!local_shell_opened and !second_opened) return false;
 
-    if (first_opened and local_shell_opened and first_tab_index < tab.g_tab_count) {
+    // Focus the shell (the first tab).
+    if (first_tab_index < tab.g_tab_count) {
         switchTab(first_tab_index);
     }
 
-    if (!has_ai_profile and first_tab_index < tab.g_tab_count) {
-        switchTab(first_tab_index);
+    // No AI profile yet: surface the profile-creation form so the user can set
+    // one up (the form is an overlay, not a tab).
+    if (!has_ai_profile) {
         _ = overlays.openDefaultAgentSessionForStartup();
     }
 
