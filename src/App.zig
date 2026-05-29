@@ -767,6 +767,17 @@ fn joinDownloadThread(self: *App) void {
     if (thread) |t| t.join();
 }
 
+fn joinSkillUpdateThread(self: *App) void {
+    var thread: ?std.Thread = null;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        thread = self.skill_update_thread;
+        self.skill_update_thread = null;
+    }
+    if (thread) |t| t.join();
+}
+
 // ============================================================================
 // Window Management
 // ============================================================================
@@ -988,6 +999,7 @@ pub fn deinit(self: *App) void {
     self.joinAllWindowThreads();
     self.joinUpdateThread();
     self.joinDownloadThread();
+    self.joinSkillUpdateThread();
 
     if (self.remote_client) |client| {
         client.destroy();
