@@ -38,6 +38,7 @@ typedef struct PhanttyMacMouseButtonEvent {
     bool ctrl;
     bool shift;
     bool alt;
+    bool super;
 } PhanttyMacMouseButtonEvent;
 
 typedef struct PhanttyMacMouseMoveEvent {
@@ -46,6 +47,7 @@ typedef struct PhanttyMacMouseMoveEvent {
     bool ctrl;
     bool shift;
     bool alt;
+    bool super;
 } PhanttyMacMouseMoveEvent;
 
 typedef struct PhanttyMacMouseWheelEvent {
@@ -713,8 +715,9 @@ static void phantty_macos_set_preedit(PhanttyMacWindowState *state, id string_or
         .ctrl = false,
         .shift = false,
         .alt = false,
+        .super = false,
     };
-    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, NULL);
+    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, &out.super);
     return out;
 }
 
@@ -750,8 +753,9 @@ static void phantty_macos_set_preedit(PhanttyMacWindowState *state, id string_or
         .ctrl = false,
         .shift = false,
         .alt = false,
+        .super = false,
     };
-    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, NULL);
+    phantty_macos_mods(event.modifierFlags, &out.ctrl, &out.shift, &out.alt, &out.super);
     phantty_macos_push_mouse_move_event(self.state, out);
 }
 

@@ -95,10 +95,27 @@ test "panel toggles request coalesced layout resize" {
     try std.testing.expectEqual(LayoutResizeUrgency.coalesced, panelToggleResizeUrgency());
 }
 
-fn terminalPathClickAction(launch_kind: Surface.LaunchKind, has_ssh_conn: bool, ctrl: bool, shift: bool, alt: bool) TerminalPathClickAction {
-    if (ctrl and shift and !alt and launch_kind == .ssh and has_ssh_conn) return .download_ssh_file;
-    if (ctrl and !shift and !alt) return .open_url_or_preview;
+/// The modifier that opens URLs / previews files / downloads SSH paths when
+/// clicking or hovering terminal text. macOS uses Cmd (super) — Ctrl+click is
+/// the system secondary-click — while other platforms use Ctrl.
+fn primaryOpenMod(ctrl: bool, super: bool) bool {
+    return if (builtin.target.os.tag == .macos) super else ctrl;
+}
+
+fn terminalPathClickAction(launch_kind: Surface.LaunchKind, has_ssh_conn: bool, mod: bool, shift: bool, alt: bool) TerminalPathClickAction {
+    if (mod and shift and !alt and launch_kind == .ssh and has_ssh_conn) return .download_ssh_file;
+    if (mod and !shift and !alt) return .open_url_or_preview;
     return .pass_through;
+}
+
+test "primary open modifier is Cmd on macOS, Ctrl elsewhere" {
+    if (builtin.target.os.tag == .macos) {
+        try std.testing.expect(primaryOpenMod(false, true)); // Cmd-click opens
+        try std.testing.expect(!primaryOpenMod(true, false)); // Ctrl-click does not
+    } else {
+        try std.testing.expect(primaryOpenMod(true, false)); // Ctrl-click opens
+        try std.testing.expect(!primaryOpenMod(false, true)); // Win/Super does not
+    }
 }
 
 test "terminal path click action maps ctrl shift ssh to download" {
@@ -1222,12 +1239,14 @@ fn aiChatInputWrapCols() usize {
 }
 
 fn handleBrowserUrlBarKey(ev: platform_input.KeyEvent) void {
-    if (ev.ctrl and !ev.shift and !ev.alt and ev.key_code == 0x41) { // Ctrl+A
+    // Accept Cmd (super, macOS) or Ctrl (Windows) for text-field editing keys.
+    const mod = ev.ctrl or ev.super;
+    if (mod and !ev.shift and !ev.alt and ev.key_code == 0x41) { // Ctrl/Cmd+A
         browser_panel.selectAllUrlBar();
         markBrowserUrlBarDirty();
         return;
     }
-    if (ev.ctrl and !ev.shift and !ev.alt and ev.key_code == 0x56) { // Ctrl+V
+    if (mod and !ev.shift and !ev.alt and ev.key_code == 0x56) { // Ctrl/Cmd+V
         if (pasteClipboardIntoBrowserUrlBar()) markBrowserUrlBarDirty();
         return;
     }
@@ -1519,14 +1538,14 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             return true;
         },
         0x52 => { // 'R' key = rename
-            if (!ev.ctrl and !ev.alt) {
+            if (!ev.ctrl and !ev.alt and !ev.super) {
                 file_explorer.startRename();
                 return true;
             }
             return false;
         },
         0x4E => { // 'N' key = new file, Shift+N = new dir
-            if (!ev.ctrl and !ev.alt) {
+            if (!ev.ctrl and !ev.alt and !ev.super) {
                 if (ev.shift) {
                     file_explorer.startNewDir();
                 } else {
@@ -1537,14 +1556,14 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             return false;
         },
         0x44 => { // 'D' key = delete
-            if (!ev.ctrl and !ev.alt and !ev.shift) {
+            if (!ev.ctrl and !ev.alt and !ev.shift and !ev.super) {
                 file_explorer.startDelete();
                 return true;
             }
             return false;
         },
-        0x53 => { // 'S' key: Ctrl+S = download selected file
-            if (ev.ctrl and !ev.alt and !ev.shift) {
+        0x53 => { // 'S' key: Ctrl/Cmd+S = download selected file
+            if ((ev.ctrl or ev.super) and !ev.alt and !ev.shift) {
                 if (file_explorer.g_mode == .remote) {
                     // Download to user's Downloads folder
                     var dl_buf: [260]u8 = undefined;
@@ -1558,7 +1577,7 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             return false;
         },
         0x55 => { // 'U' key = upload local file to remote
-            if (!ev.ctrl and !ev.alt and !ev.shift) {
+            if (!ev.ctrl and !ev.alt and !ev.shift and !ev.super) {
                 if (file_explorer.g_mode == .remote) {
                     openFileDialogAndUpload();
                     return true;
@@ -1593,7 +1612,7 @@ fn handleAgentHistoryKey(ev: platform_input.KeyEvent) bool {
             return true;
         },
         0x44 => { // 'D' key = delete history row
-            if (!ev.ctrl and !ev.alt and !ev.shift) {
+            if (!ev.ctrl and !ev.alt and !ev.shift and !ev.super) {
                 deleteSelectedAgentHistoryRow();
                 return true;
             }
@@ -1628,7 +1647,7 @@ fn openFileDialogAndUpload() void {
     file_explorer.uploadFile(path);
 }
 
-fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool) void {
+fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool, super: bool) void {
     file_explorer.g_focused = true;
 
     // Check resize handle first
@@ -1666,7 +1685,7 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
     if (row_idx < file_explorer.g_entry_count) {
         const click_count = nextLeftClickCount(xpos, ypos);
         file_explorer.g_selected = row_idx;
-        if (!file_explorer.g_entries[row_idx].is_dir and ((ctrl and !shift and !alt) or click_count == 2)) {
+        if (!file_explorer.g_entries[row_idx].is_dir and ((primaryOpenMod(ctrl, super) and !shift and !alt) or click_count == 2)) {
             if (openFileExplorerPreview(row_idx)) {
                 AppWindow.g_force_rebuild = true;
                 return;
@@ -2127,7 +2146,7 @@ fn openUrlAtCell(surface: *Surface, cell_pos: CellPos) bool {
     return opened;
 }
 
-fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool) void {
+fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool, super: bool) void {
     if (g_selecting or overlays.scrollbar.g_scrollbar_dragging or g_divider_dragging) {
         clearUrlUnderline();
         return;
@@ -2148,7 +2167,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     const allocator = AppWindow.g_allocator orelse return;
     const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
 
-    const action = terminalPathClickAction(surface.launch_kind, surface.ssh_connection != null, ctrl, shift, alt);
+    const action = terminalPathClickAction(surface.launch_kind, surface.ssh_connection != null, primaryOpenMod(ctrl, super), shift, alt);
     const token = extractInteractiveUnderlineRangeAtCell(allocator, surface, cell_pos, action) orelse {
         clearUrlUnderline();
         return;
@@ -2392,7 +2411,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         const titlebar_h: f64 = titlebarHeight();
         const ypos: f64 = @floatFromInt(ev.y);
         if (hitTestFileExplorer(xpos, ypos)) {
-            handleFileExplorerPress(xpos, ypos, ev.ctrl, ev.shift, ev.alt);
+            handleFileExplorerPress(xpos, ypos, ev.ctrl, ev.shift, ev.alt, ev.super);
             return;
         }
         if (ypos < titlebar_h) {
@@ -2516,7 +2535,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
 
             // File explorer left sidebar click
             if (hitTestFileExplorer(xpos, ypos)) {
-                handleFileExplorerPress(xpos, ypos, ev.ctrl, ev.shift, ev.alt);
+                handleFileExplorerPress(xpos, ypos, ev.ctrl, ev.shift, ev.alt, ev.super);
                 return;
             }
 
@@ -2739,7 +2758,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
 
             const cell_pos = mouseToSurfaceCell(clicked_surface, xpos, ypos);
-            switch (terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, ev.ctrl, ev.shift, ev.alt)) {
+            switch (terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, primaryOpenMod(ev.ctrl, ev.super), ev.shift, ev.alt)) {
                 .download_ssh_file => {
                     if (downloadTerminalFileAtCell(clicked_surface, cell_pos)) return;
                 },
@@ -3223,7 +3242,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     if (AppWindow.g_focus_follows_mouse) {
         updateFocusFromMouse(@intFromFloat(xpos), @intFromFloat(ypos));
     }
-    updateInteractiveUnderlineAtMouse(xpos, ypos, ev.ctrl, ev.shift, ev.alt);
+    updateInteractiveUnderlineAtMouse(xpos, ypos, ev.ctrl, ev.shift, ev.alt, ev.super);
 
     // Update scrollbar hover state
     const win = AppWindow.g_window orelse return;

@@ -71,6 +71,7 @@ const RawMouseButtonEvent = extern struct {
     ctrl: bool,
     shift: bool,
     alt: bool,
+    super: bool,
 };
 
 const RawMouseMoveEvent = extern struct {
@@ -79,6 +80,7 @@ const RawMouseMoveEvent = extern struct {
     ctrl: bool,
     shift: bool,
     alt: bool,
+    super: bool,
 };
 
 const RawMouseWheelEvent = extern struct {
@@ -305,6 +307,7 @@ pub const Window = struct {
                 .ctrl = button.ctrl,
                 .shift = button.shift,
                 .alt = button.alt,
+                .super = button.super,
             });
         }
 
@@ -318,6 +321,7 @@ pub const Window = struct {
                 .ctrl = move.ctrl,
                 .shift = move.shift,
                 .alt = move.alt,
+                .super = move.super,
             });
         }
 
