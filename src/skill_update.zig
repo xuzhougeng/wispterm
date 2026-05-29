@@ -136,8 +136,10 @@ fn fetchTreeJson(allocator: std.mem.Allocator) ![]u8 {
 
 /// Fetch the remote skills tree, download each skill file into a temp staging
 /// dir under `<config>/plugins/skills/.update-tmp`, then atomically replace
-/// each same-named local skill directory. On any failure the staging dir is
-/// removed and local skills are left unchanged. Returns the number of skills
+/// each same-named local skill directory. The staging dir is always removed.
+/// If anything fails during staging, local skills are left unchanged. Once the
+/// per-skill replace pass begins, a mid-pass failure may leave some skills
+/// already updated and the rest untouched. Returns the number of skills
 /// installed (0 means "nothing to update", treated as success).
 pub fn downloadAndInstall(allocator: std.mem.Allocator) Outcome {
     const skills_dir = platform_dirs.pluginSkillsDir(allocator) catch return .{ .state = .failed };
@@ -182,7 +184,9 @@ pub fn downloadAndInstall(allocator: std.mem.Allocator) Outcome {
             return .{ .state = .failed };
         defer allocator.free(staged);
 
-        std.fs.deleteTreeAbsolute(final) catch {};
+        // deleteTreeAbsolute succeeds when the dir is absent, so any error here
+        // is a real failure (e.g. permissions) worth surfacing.
+        std.fs.deleteTreeAbsolute(final) catch return .{ .state = .failed };
         std.fs.renameAbsolute(staged, final) catch return .{ .state = .failed };
     }
 
