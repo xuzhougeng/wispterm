@@ -218,6 +218,14 @@ fn spawnSshTunnel(allocator: std.mem.Allocator, conn: *const Surface.SshConnecti
     } else {
         appendSshOption(&argv_buf, &argc, "BatchMode=yes");
     }
+    // Route the forwarding connection through the same jump host as the
+    // interactive session so loopback tunnels reach the real destination.
+    // `proxy_opt_buf` must outlive the child spawn below, which it does.
+    var proxy_opt_buf: [288]u8 = undefined;
+    if (conn.proxyJump().len > 0) {
+        const opt = std.fmt.bufPrint(&proxy_opt_buf, "ProxyJump={s}", .{conn.proxyJump()}) catch return null;
+        appendSshOption(&argv_buf, &argc, opt);
+    }
     if (conn.port().len > 0) {
         argv_buf[argc] = "-p";
         argc += 1;

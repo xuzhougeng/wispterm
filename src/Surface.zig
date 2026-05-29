@@ -74,11 +74,17 @@ pub const SshConnection = struct {
     port_len: usize = 0,
     password_buf: [128]u8 = undefined,
     password_len: usize = 0,
+    proxy_jump_buf: [256]u8 = undefined,
+    proxy_jump_len: usize = 0,
     password_auth: bool = false,
     legacy_algorithms: bool = false,
 
     pub fn user(self: *const SshConnection) []const u8 {
         return self.user_buf[0..self.user_len];
+    }
+
+    pub fn proxyJump(self: *const SshConnection) []const u8 {
+        return self.proxy_jump_buf[0..self.proxy_jump_len];
     }
 
     pub fn host(self: *const SshConnection) []const u8 {
@@ -527,6 +533,7 @@ pub fn setSshConnection(
     host: []const u8,
     port: []const u8,
     password: []const u8,
+    proxy_jump: []const u8,
     password_auth: bool,
     legacy_algorithms: bool,
 ) void {
@@ -535,10 +542,12 @@ pub fn setSshConnection(
     conn.host_len = @min(host.len, conn.host_buf.len);
     conn.port_len = @min(port.len, conn.port_buf.len);
     conn.password_len = @min(password.len, conn.password_buf.len);
+    conn.proxy_jump_len = @min(proxy_jump.len, conn.proxy_jump_buf.len);
     @memcpy(conn.user_buf[0..conn.user_len], user[0..conn.user_len]);
     @memcpy(conn.host_buf[0..conn.host_len], host[0..conn.host_len]);
     @memcpy(conn.port_buf[0..conn.port_len], port[0..conn.port_len]);
     @memcpy(conn.password_buf[0..conn.password_len], password[0..conn.password_len]);
+    @memcpy(conn.proxy_jump_buf[0..conn.proxy_jump_len], proxy_jump[0..conn.proxy_jump_len]);
     conn.password_auth = password_auth;
     conn.legacy_algorithms = legacy_algorithms;
 

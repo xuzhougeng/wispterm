@@ -24,6 +24,7 @@ pub const SshCommandOptions = struct {
     port: []const u8 = "",
     password_auth: bool = false,
     legacy_algorithms: bool = false,
+    proxy_jump: []const u8 = "",
 };
 
 const HANDLE = windows.HANDLE;
@@ -306,11 +307,16 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
         "-o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc "
     else
         "";
+    var proxy_buf: [320]u8 = undefined;
+    const proxy_flags = if (options.proxy_jump.len > 0)
+        (std.fmt.bufPrint(&proxy_buf, "-o ProxyJump={s} ", .{options.proxy_jump}) catch return null)
+    else
+        "";
 
     return if (options.port.len > 0)
-        std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}-p {s} {s}@{s}", .{ auth_flags, legacy_flags, options.port, options.user, options.host }) catch null
+        std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}-p {s} {s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.port, options.user, options.host }) catch null
     else
-        std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}@{s}", .{ auth_flags, legacy_flags, options.user, options.host }) catch null;
+        std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}{s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.user, options.host }) catch null;
 }
 
 pub fn launchKindForCommand(command: CommandLine) LaunchKind {
@@ -543,6 +549,17 @@ test "windows pty command builds SSH interactive command lines" {
             .port = "",
             .password_auth = true,
             .legacy_algorithms = true,
+        }).?,
+    );
+
+    // ProxyJump is inserted after the auth/legacy flags, before any port flag.
+    try std.testing.expectEqualStrings(
+        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
+        sshInteractiveCommand(&buf, .{
+            .user = "user",
+            .host = "example.test",
+            .port = "2222",
+            .proxy_jump = "admin@jump.test:2200",
         }).?,
     );
 }

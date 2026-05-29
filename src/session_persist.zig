@@ -27,6 +27,10 @@ pub const SurfaceSnap = union(enum) {
         user: []const u8,
         host: []const u8,
         port: u16 = 22,
+        // OpenSSH ProxyJump spec ([user@]host[:port], comma-separated for
+        // multi-hop). Defaulted so older session files without it still load.
+        // Not a secret, so persisting it does not violate invariant I1.
+        proxy_jump: []const u8 = "",
         // SECURITY INVARIANT (I1): NO password field. Adding one would
         // cause SSH passwords to be persisted to disk on every close.
     };
@@ -296,6 +300,57 @@ test "session_persist: round-trip nested split with SSH leaf" {
     try std.testing.expectEqualStrings("/var/log", ssh.cwd.?);
     try std.testing.expectEqualStrings("work", parsed.value.tabs[0].title_override.?);
     try std.testing.expectEqual(@as(u32, 1), parsed.value.tabs[0].focused_leaf);
+}
+
+test "session_persist: SSH leaf round-trips its proxy jump host" {
+    const allocator = std.testing.allocator;
+
+    const leaf = NodeSnap{ .leaf = .{ .surface = .{ .ssh = .{
+        .user = "root",
+        .host = "internal.box",
+        .port = 22,
+        .proxy_jump = "admin@bastion.example.com:2200",
+    } } } };
+    const tabs = [_]TabSnap{.{ .focused_leaf = 0, .tree = leaf }};
+    const original: Session = .{ .active_tab = 0, .tabs = @constCast(&tabs) };
+
+    const json = try dumpSessionToString(allocator, original);
+    defer allocator.free(json);
+
+    var parsed = try loadSessionFromString(allocator, json);
+    defer parsed.deinit();
+
+    const ssh = switch (parsed.value.tabs[0].tree) {
+        .leaf => |l| switch (l.surface) {
+            .ssh => |s| s,
+            .local_shell => return error.UnexpectedShell,
+        },
+        .split => return error.UnexpectedSplit,
+    };
+    try std.testing.expectEqualStrings("admin@bastion.example.com:2200", ssh.proxy_jump);
+}
+
+test "session_persist: SSH leaf without a proxy jump field defaults to empty" {
+    const allocator = std.testing.allocator;
+
+    // Older session files predate the proxy_jump field; they must still load.
+    const json =
+        \\{ "active_tab": 0, "tabs": [ { "title_override": null, "focused_leaf": 0,
+        \\  "zoomed_leaf": null, "ai_session_id": null,
+        \\  "tree": { "leaf": { "surface": { "ssh": {
+        \\    "cwd": null, "user": "root", "host": "legacy.box", "port": 22 } } } } } ] }
+    ;
+    var parsed = try loadSessionFromString(allocator, json);
+    defer parsed.deinit();
+
+    const ssh = switch (parsed.value.tabs[0].tree) {
+        .leaf => |l| switch (l.surface) {
+            .ssh => |s| s,
+            .local_shell => return error.UnexpectedShell,
+        },
+        .split => return error.UnexpectedSplit,
+    };
+    try std.testing.expectEqualStrings("", ssh.proxy_jump);
 }
 
 test "session_persist: corrupt JSON returns error" {

@@ -209,6 +209,7 @@ pub const SshProfileSaveArgs = struct {
     user: []const u8,
     password: []const u8 = "",
     port: []const u8 = "",
+    proxy_jump: []const u8 = "",
 };
 
 pub const SavedSshProfile = struct {
@@ -3109,6 +3110,7 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
             .user = user,
             .password = jsonStringArg(args.value, "password") orelse "",
             .port = jsonStringArg(args.value, "port") orelse "",
+            .proxy_jump = jsonStringArg(args.value, "proxy_jump") orelse "",
         });
     }
     if (std.mem.eql(u8, call.name, "ssh_profile_connect")) {
@@ -3809,12 +3811,13 @@ fn waitForSentinelResult(
 fn sshProfileSaveApprovalText(allocator: std.mem.Allocator, args: SshProfileSaveArgs) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "name=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" password={s}",
+        "name=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" proxy_jump=\"{s}\" password={s}",
         .{
             if (args.name.len > 0) args.name else "<default>",
             args.host,
             args.user,
             if (args.port.len > 0) args.port else "22",
+            if (args.proxy_jump.len > 0) args.proxy_jump else "<none>",
             if (args.password.len > 0) "<redacted>" else "<empty>",
         },
     );
@@ -4893,6 +4896,7 @@ test "ai chat agent request json includes tool schemas" {
     }
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_repl_exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_save\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"proxy_jump\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, platform_pty_command.tabNewToolPropertiesJson()) != null);
@@ -4991,6 +4995,7 @@ test "ai chat ssh profile save approval text redacts password" {
         .user = "alice",
         .password = "super-secret",
         .port = "2222",
+        .proxy_jump = "admin@bastion.example.com:22",
     };
     const text = try sshProfileSaveApprovalText(allocator, args);
     defer allocator.free(text);
@@ -4999,6 +5004,7 @@ test "ai chat ssh profile save approval text redacts password" {
     try std.testing.expect(std.mem.indexOf(u8, text, "192.0.2.10") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "alice") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "2222") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "admin@bastion.example.com:22") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "super-secret") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "<redacted>") != null);
 }

@@ -1343,7 +1343,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
 // New session / SSH launcher
 // ============================================================================
 
-const SSH_FIELD_COUNT = 5;
+const SSH_FIELD_COUNT = 6;
 const SSH_FIELD_MAX = 128;
 const SSH_PROFILE_MAX = 16;
 const SSH_PROFILE_NONE = std.math.maxInt(usize);
@@ -1357,6 +1357,7 @@ const SshField = enum(usize) {
     user = 2,
     password = 3,
     port = 4,
+    proxy_jump = 5,
 };
 
 const AiField = enum(usize) {
@@ -1919,9 +1920,11 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     const name_raw = std.mem.trim(u8, args.name, " \t\r\n");
     const port_raw = std.mem.trim(u8, args.port, " \t\r\n");
     const port = if (port_raw.len > 0) port_raw else "22";
+    const proxy_jump = std.mem.trim(u8, args.proxy_jump, " \t\r\n");
     if (host.len == 0 or user.len == 0) return error.InvalidProfile;
     if (!isSshTokenSafe(host) or !isSshTokenSafe(user)) return error.InvalidProfile;
     if (!isPortTokenSafe(port)) return error.InvalidProfile;
+    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return error.InvalidProfile;
 
     const lookup = if (name_raw.len > 0) name_raw else host;
     const found_idx = findSshProfileIndex(lookup) orelse findSshProfileIndex(host);
@@ -1946,6 +1949,9 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     copySshProfileField(profile, .user, user);
     if (args.password.len > 0 or !updated_existing) {
         copySshProfileField(profile, .password, args.password);
+    }
+    if (proxy_jump.len > 0 or !updated_existing) {
+        copySshProfileField(profile, .proxy_jump, proxy_jump);
     }
     copySshProfileField(profile, .port, port);
 
@@ -2052,6 +2058,7 @@ fn saveSshFormProfile() ?usize {
     if (ip.len == 0 or user.len == 0) return null;
     if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
     if (port.len > 0 and !isPortTokenSafe(port)) return null;
+    if (!command_palette_model.isProxyJumpSafe(sshField(.proxy_jump))) return null;
 
     const idx = if (g_ssh_edit_index != SSH_PROFILE_NONE)
         g_ssh_edit_index
@@ -2089,10 +2096,12 @@ fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
     const user = profileField(profile, .user);
     const port = profileField(profile, .port);
     const password = profileField(profile, .password);
+    const proxy_jump = profileField(profile, .proxy_jump);
     const server_name = profileField(profile, .name);
     if (ip.len == 0 or user.len == 0) return null;
     if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
     if (port.len > 0 and !isPortTokenSafe(port)) return null;
+    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return null;
 
     var command_buf: [512]u8 = undefined;
     const command = platform_pty_command.sshInteractiveCommand(command_buf[0..], .{
@@ -2101,11 +2110,12 @@ fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
         .port = port,
         .password_auth = password.len > 0,
         .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
+        .proxy_jump = proxy_jump,
     }) orelse return null;
 
     sessionLauncherClose();
     if (AppWindow.spawnTabWithCommandUtf8ReturningSurface(command)) |surface| {
-        surface.setSshConnection(user, ip, port, password, password.len > 0, AppWindow.g_ssh_legacy_algorithms);
+        surface.setSshConnection(user, ip, port, password, proxy_jump, password.len > 0, AppWindow.g_ssh_legacy_algorithms);
         if (server_name.len > 0) {
             surface.setTitleOverride(server_name);
         }
@@ -2781,25 +2791,26 @@ fn loadSshProfiles() void {
         if (g_ssh_profile_count >= SSH_PROFILE_MAX) break;
         const line = std.mem.trimRight(u8, line_raw, "\r");
         if (line.len == 0 or line[0] == '#') continue;
-        var profile = SshProfile{};
-        var parts = std.mem.splitScalar(u8, line, '\t');
-        var field_idx: usize = 0;
-        var ok = true;
-        while (field_idx < SSH_FIELD_COUNT) : (field_idx += 1) {
-            const part = parts.next() orelse {
-                ok = false;
-                break;
-            };
-            const decoded = decodeHexField(part, &profile.fields[field_idx]) orelse {
-                ok = false;
-                break;
-            };
-            profile.lens[field_idx] = decoded;
-        }
-        if (!ok) continue;
+        const profile = decodeSshProfileLine(line) orelse continue;
         g_ssh_profiles[g_ssh_profile_count] = profile;
         g_ssh_profile_count += 1;
     }
+}
+
+/// Decode one tab-separated, hex-encoded SSH profile line into an `SshProfile`.
+/// Returns null only when a present field contains malformed hex; trailing
+/// fields absent from the line are left empty so profiles written by older
+/// builds (with fewer fields) still load after the schema grows.
+fn decodeSshProfileLine(line: []const u8) ?SshProfile {
+    var profile = SshProfile{};
+    var parts = std.mem.splitScalar(u8, line, '\t');
+    var field_idx: usize = 0;
+    while (field_idx < SSH_FIELD_COUNT) : (field_idx += 1) {
+        const part = parts.next() orelse break;
+        const decoded = decodeHexField(part, &profile.fields[field_idx]) orelse return null;
+        profile.lens[field_idx] = decoded;
+    }
+    return profile;
 }
 
 fn saveSshProfiles(allocator: std.mem.Allocator) void {
@@ -2811,7 +2822,7 @@ fn saveSshProfiles(allocator: std.mem.Allocator) void {
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
-    out.appendSlice(allocator, "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port.\n") catch return;
+    out.appendSlice(allocator, "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump.\n") catch return;
     for (g_ssh_profiles[0..g_ssh_profile_count]) |profile| {
         for (0..SSH_FIELD_COUNT) |i| {
             if (i > 0) out.append(allocator, '\t') catch return;
@@ -2933,6 +2944,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("User", sshField(.user)));
         desired = @max(desired, sessionTwoColumnWidth("Password", sshField(.password)));
         desired = @max(desired, sessionTwoColumnWidth("Port", sshField(.port)));
+        desired = @max(desired, sessionTwoColumnWidth("Jump host", sshField(.proxy_jump)));
         desired = @max(desired, sessionTwoColumnWidth("Save & Connect", platform_pty_command.sshLauncherDetail()));
         desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
         desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
@@ -3305,6 +3317,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderSessionField(layout, window_height, @intFromEnum(SshField.user), "User", sshField(.user), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.password), "Password", sshField(.password), true);
     renderSessionField(layout, window_height, @intFromEnum(SshField.port), "Port", sshField(.port), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), "Jump host", sshField(.proxy_jump), false);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT, "Save & Connect", platform_pty_command.sshLauncherDetail(), g_ssh_focus == SSH_FIELD_COUNT);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, "Save", "profile", g_ssh_focus == SSH_FIELD_COUNT + 1);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, "Cancel", "Esc", g_ssh_focus == SSH_FIELD_COUNT + 2);
@@ -4155,6 +4168,51 @@ test "overlays: SSH list filter backspace restores matching rows" {
     try std.testing.expectEqual(@as(usize, 1), sshVisibleProfileCount());
     try std.testing.expectEqual(@as(?usize, 0), sshVisibleProfileIndexAt(0));
     try std.testing.expectEqual(@as(usize, 2), sshListRowCount());
+}
+
+fn testEncodeProfileLine(buf: []u8, fields: []const []const u8) []const u8 {
+    const hex = "0123456789ABCDEF";
+    var len: usize = 0;
+    for (fields, 0..) |field, fi| {
+        if (fi > 0) {
+            buf[len] = '\t';
+            len += 1;
+        }
+        for (field) |ch| {
+            buf[len] = hex[ch >> 4];
+            buf[len + 1] = hex[ch & 0x0f];
+            len += 2;
+        }
+    }
+    return buf[0..len];
+}
+
+test "overlays: SSH profile line decode preserves all fields including proxy jump" {
+    var buf: [512]u8 = undefined;
+    const line = testEncodeProfileLine(&buf, &.{ "Prod", "10.0.0.9", "root", "secret", "2222", "admin@jump.test:22" });
+    const profile = decodeSshProfileLine(line) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("Prod", profileField(&profile, .name));
+    try std.testing.expectEqualStrings("10.0.0.9", profileField(&profile, .ip));
+    try std.testing.expectEqualStrings("root", profileField(&profile, .user));
+    try std.testing.expectEqualStrings("secret", profileField(&profile, .password));
+    try std.testing.expectEqualStrings("2222", profileField(&profile, .port));
+    try std.testing.expectEqualStrings("admin@jump.test:22", profileField(&profile, .proxy_jump));
+}
+
+test "overlays: SSH profile line decode accepts legacy lines without a proxy jump field" {
+    // Profiles saved before ProxyJump existed have only the first five fields.
+    // They must still load, with an empty proxy jump, rather than being dropped.
+    var buf: [512]u8 = undefined;
+    const legacy = testEncodeProfileLine(&buf, &.{ "Old", "10.0.0.1", "user", "", "22" });
+    const profile = decodeSshProfileLine(legacy) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("Old", profileField(&profile, .name));
+    try std.testing.expectEqualStrings("10.0.0.1", profileField(&profile, .ip));
+    try std.testing.expectEqualStrings("22", profileField(&profile, .port));
+    try std.testing.expectEqualStrings("", profileField(&profile, .proxy_jump));
+}
+
+test "overlays: SSH profile line decode rejects malformed hex" {
+    try std.testing.expect(decodeSshProfileLine("not-hex\tzz") == null);
 }
 
 fn showVersionToast() void {
