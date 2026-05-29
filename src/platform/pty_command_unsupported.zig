@@ -24,6 +24,7 @@ pub const SshCommandOptions = struct {
     port: []const u8 = "",
     password_auth: bool = false,
     legacy_algorithms: bool = false,
+    proxy_jump: []const u8 = "",
 };
 
 pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usize {
@@ -167,15 +168,51 @@ pub fn scpExecutableName() []const u8 {
 }
 
 pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
-    return if (options.port.len > 0)
-        std.fmt.bufPrint(buf, "ssh -tt -p {s} {s}@{s}", .{ options.port, options.user, options.host }) catch null
+    var proxy_buf: [320]u8 = undefined;
+    const proxy = if (options.proxy_jump.len > 0)
+        (std.fmt.bufPrint(&proxy_buf, "-o ProxyJump={s} ", .{options.proxy_jump}) catch return null)
     else
-        std.fmt.bufPrint(buf, "ssh -tt {s}@{s}", .{ options.user, options.host }) catch null;
+        "";
+
+    return if (options.port.len > 0)
+        std.fmt.bufPrint(buf, "ssh -tt {s}-p {s} {s}@{s}", .{ proxy, options.port, options.user, options.host }) catch null
+    else
+        std.fmt.bufPrint(buf, "ssh -tt {s}{s}@{s}", .{ proxy, options.user, options.host }) catch null;
 }
 
 pub fn launchKindForCommand(command: CommandLine) LaunchKind {
     if (std.mem.startsWith(u8, command, "ssh ")) return .ssh;
     return .local;
+}
+
+test "unsupported backend builds SSH interactive command lines with ProxyJump" {
+    var buf: [512]u8 = undefined;
+
+    // No jump host keeps the existing bare invocation shape.
+    try std.testing.expectEqualStrings(
+        "ssh -tt user@example.test",
+        sshInteractiveCommand(&buf, .{ .user = "user", .host = "example.test" }).?,
+    );
+
+    // ProxyJump is inserted before the destination, after any port flag.
+    try std.testing.expectEqualStrings(
+        "ssh -tt -o ProxyJump=admin@jump.test user@example.test",
+        sshInteractiveCommand(&buf, .{
+            .user = "user",
+            .host = "example.test",
+            .proxy_jump = "admin@jump.test",
+        }).?,
+    );
+
+    try std.testing.expectEqualStrings(
+        "ssh -tt -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
+        sshInteractiveCommand(&buf, .{
+            .user = "user",
+            .host = "example.test",
+            .port = "2222",
+            .proxy_jump = "admin@jump.test:2200",
+        }).?,
+    );
 }
 
 test "unsupported backend uses UTF-8 native command and cwd storage" {

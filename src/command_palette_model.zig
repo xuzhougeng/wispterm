@@ -48,6 +48,23 @@ pub fn sshProfileNameMatchesFilter(name: []const u8, filter: []const u8) bool {
     return shouldSearchSshProfiles(filter) and containsIgnoreCase(name, filter);
 }
 
+/// Whitelist validator for an OpenSSH `ProxyJump` specification before it is
+/// spliced into a spawned `ssh` command line. An empty spec is valid (no jump
+/// host). A non-empty spec must consist only of characters that appear in
+/// `[user@]host[:port]` hops, optionally comma-separated for multi-hop chains:
+/// alphanumerics plus `. - _ @ : ,`. This rejects spaces, quotes, and shell
+/// metacharacters that could break out of the argument.
+pub fn isProxyJumpSafe(spec: []const u8) bool {
+    if (spec.len == 0) return true;
+    for (spec) |ch| {
+        const ok = std.ascii.isAlphanumeric(ch) or
+            ch == '.' or ch == '-' or ch == '_' or
+            ch == '@' or ch == ':' or ch == ',';
+        if (!ok) return false;
+    }
+    return true;
+}
+
 /// True when a non-empty filter should surface an AI profile launch row.
 /// Any filter that is a substring of "ai" (i.e. "a", "i", or "ai") lists
 /// every profile; otherwise the filter must match part of the name.
@@ -78,6 +95,23 @@ test "command palette model hides SSH profiles when filter is empty" {
 test "command palette model does not match non-name SSH profile fields" {
     try std.testing.expect(!sshProfileNameMatchesFilter("ProdBox", "needle-host"));
     try std.testing.expect(!sshProfileNameMatchesFilter("ProdBox", "needle-user"));
+}
+
+test "proxy jump validator accepts empty and well-formed hop specs" {
+    try std.testing.expect(isProxyJumpSafe("")); // optional field
+    try std.testing.expect(isProxyJumpSafe("jump.example.test"));
+    try std.testing.expect(isProxyJumpSafe("admin@jump.example.test"));
+    try std.testing.expect(isProxyJumpSafe("admin@jump.example.test:2200"));
+    try std.testing.expect(isProxyJumpSafe("admin@first.test,user@second.test:22"));
+}
+
+test "proxy jump validator rejects shell metacharacters and whitespace" {
+    try std.testing.expect(!isProxyJumpSafe("jump.test; rm -rf /"));
+    try std.testing.expect(!isProxyJumpSafe("jump.test && evil"));
+    try std.testing.expect(!isProxyJumpSafe("jump.test $(whoami)"));
+    try std.testing.expect(!isProxyJumpSafe("jump.test|cat"));
+    try std.testing.expect(!isProxyJumpSafe("two hosts"));
+    try std.testing.expect(!isProxyJumpSafe("`backtick`"));
 }
 
 test "command palette model orders SSH results after commands and before themes" {

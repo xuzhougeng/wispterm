@@ -639,6 +639,7 @@ comptime {
     _ = @import("weixin/qr_code.zig");
     _ = @import("weixin/qr_panel.zig");
     _ = @import("renderer/overlay_keys.zig");
+    _ = @import("renderer/overlays.zig");
     _ = @import("selection_unit.zig");
     _ = @import("session_persist.zig");
     _ = @import("skill_registry.zig");

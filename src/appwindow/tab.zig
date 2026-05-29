@@ -220,6 +220,7 @@ fn splitSshCommand(
         .port = conn.port(),
         .password_auth = conn.password_auth,
         .legacy_algorithms = conn.legacy_algorithms,
+        .proxy_jump = conn.proxyJump(),
     }) orelse return null;
 
     return platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch null;
@@ -610,7 +611,7 @@ fn splitFocusedSurfaceWithCommand(
 
     if (inherit_ssh_connection) {
         if (focused_surface.ssh_connection) |conn| {
-            new_surface.setSshConnection(conn.user(), conn.host(), conn.port(), conn.password(), conn.password_auth, conn.legacy_algorithms);
+            new_surface.setSshConnection(conn.user(), conn.host(), conn.port(), conn.password(), conn.proxyJump(), conn.password_auth, conn.legacy_algorithms);
         }
     }
 
@@ -1022,6 +1023,7 @@ fn snapshotSurface(arena: std.mem.Allocator, surface: *const Surface) !session_p
                 .user = try arena.dupe(u8, conn.user()),
                 .host = try arena.dupe(u8, conn.host()),
                 .port = port_num,
+                .proxy_jump = try arena.dupe(u8, conn.proxyJump()),
             } };
         },
     };
@@ -1125,6 +1127,7 @@ fn surfaceFromSnapImpl(
                 .host = s.host,
                 .port = port_slice,
                 .legacy_algorithms = g_ssh_legacy_algorithms,
+                .proxy_jump = s.proxy_jump,
             }) orelse return error.CommandTooLong;
             var final_len: usize = base.len;
 
@@ -1146,7 +1149,7 @@ fn surfaceFromSnapImpl(
             // the native SSH client prompts interactively if key auth fails;
             // the in-app password-autofill flow (which requires password_auth=true)
             // does not engage here.
-            surface.setSshConnection(s.user, s.host, port_slice, "", false, g_ssh_legacy_algorithms);
+            surface.setSshConnection(s.user, s.host, port_slice, "", s.proxy_jump, false, g_ssh_legacy_algorithms);
             return surface;
         },
     }
