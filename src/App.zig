@@ -24,6 +24,7 @@ const platform_dirs = @import("platform/dirs.zig");
 const platform_open_url = @import("platform/open_url.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
+const skill_update = @import("skill_update.zig");
 
 const App = @This();
 
@@ -120,6 +121,9 @@ update_check_in_flight: bool,
 download_thread: ?std.Thread,
 download_in_flight: bool,
 download_worker_running: bool,
+skill_update_thread: ?std.Thread,
+skill_update_in_flight: bool,
+skill_update_result: skill_update.Outcome,
 startup_update_check_started: bool,
 
 // Window management
@@ -247,6 +251,9 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .download_thread = null,
         .download_in_flight = false,
         .download_worker_running = false,
+        .skill_update_thread = null,
+        .skill_update_in_flight = false,
+        .skill_update_result = .{ .state = .idle },
         .startup_update_check_started = false,
         .windows = .empty,
         .mutex = .{},
@@ -665,6 +672,64 @@ fn joinFinishedDownloadThread(self: *App) void {
         }
     }
     if (thread) |t| t.join();
+}
+
+fn joinFinishedSkillUpdateThread(self: *App) void {
+    var thread: ?std.Thread = null;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        if (!self.skill_update_in_flight and self.skill_update_thread != null) {
+            thread = self.skill_update_thread;
+            self.skill_update_thread = null;
+        }
+    }
+    if (thread) |t| t.join();
+}
+
+pub fn requestSkillUpdate(self: *App) void {
+    self.joinFinishedSkillUpdateThread();
+
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        if (self.skill_update_in_flight) return;
+        self.skill_update_in_flight = true;
+        self.skill_update_result = .{ .state = .downloading };
+    }
+
+    const thread = std.Thread.spawn(.{}, skillUpdateThreadMain, .{self}) catch |err| {
+        std.debug.print("Skill update: failed to spawn thread: {}\n", .{err});
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        self.skill_update_in_flight = false;
+        self.skill_update_result = .{ .state = .failed };
+        return;
+    };
+
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+    self.skill_update_thread = thread;
+}
+
+fn skillUpdateThreadMain(app: *App) void {
+    const outcome = skill_update.downloadAndInstall(app.allocator);
+    app.update_mutex.lock();
+    defer app.update_mutex.unlock();
+    app.skill_update_result = outcome;
+    app.skill_update_in_flight = false;
+}
+
+/// Returns the latest skill-update outcome and resets it to idle. While a
+/// download is still running this returns `.downloading` without resetting.
+pub fn consumeSkillUpdateResult(self: *App) skill_update.Outcome {
+    self.update_mutex.lock();
+    defer self.update_mutex.unlock();
+
+    const result = self.skill_update_result;
+    if (result.state == .idle or result.state == .downloading) return result;
+    self.skill_update_result = .{ .state = .idle };
+    return result;
 }
 
 fn joinFinishedUpdateThread(self: *App) void {
