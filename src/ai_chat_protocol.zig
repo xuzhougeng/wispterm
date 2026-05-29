@@ -594,7 +594,7 @@ fn appendResponseToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUn
 // Response parsing
 // ---------------------------------------------------------------------------
 
-pub fn parseApiResponse(allocator: std.mem.Allocator, body: []const u8) !ApiResult {
+pub fn parseApiResponse(allocator: std.mem.Allocator, body: []const u8, protocol: ApiProtocol) !ApiResult {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
         const trimmed = std.mem.trim(u8, body, " \t\r\n");
         if (trimmed.len == 0) return error.EmptyResponse;
@@ -607,6 +607,7 @@ pub fn parseApiResponse(allocator: std.mem.Allocator, body: []const u8) !ApiResu
     const obj = root.object;
 
     if (try parseApiErrorResult(allocator, root)) |result| return result;
+    if (protocol == .anthropic) return parseAnthropicResponse(allocator, root);
     if (obj.get("choices") != null) return parseChatCompletionsResponse(allocator, root);
     if (obj.get("output") != null or obj.get("output_text") != null) return parseResponsesResponse(allocator, root);
     return error.MissingChoices;
@@ -694,6 +695,77 @@ fn parseResponsesResponse(allocator: std.mem.Allocator, root: std.json.Value) !A
         .tool_calls = tool_calls,
         .usage = parseApiUsage(root),
     };
+}
+
+fn parseAnthropicResponse(allocator: std.mem.Allocator, root: std.json.Value) !ApiResult {
+    if (root != .object) return error.InvalidResponse;
+
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer content.deinit(allocator);
+
+    const tool_calls = try parseAnthropicToolCalls(allocator, root);
+    errdefer if (tool_calls) |calls| {
+        for (calls) |call| call.deinit(allocator);
+        allocator.free(calls);
+    };
+
+    if (root.object.get("content")) |content_value| {
+        if (content_value == .array) {
+            for (content_value.array.items) |item| {
+                if (item != .object) continue;
+                const typ = jsonStringValue(item.object.get("type")) orelse "";
+                if (!std.mem.eql(u8, typ, "text")) continue;
+                if (jsonStringValue(item.object.get("text"))) |text| {
+                    if (text.len > 0) try content.appendSlice(allocator, text);
+                }
+            }
+        }
+    }
+
+    return .{
+        .content = try content.toOwnedSlice(allocator),
+        .reasoning = null,
+        .tool_calls = tool_calls,
+        .usage = parseApiUsage(root),
+    };
+}
+
+fn parseAnthropicToolCalls(allocator: std.mem.Allocator, root: std.json.Value) !?[]ToolCall {
+    if (root != .object) return null;
+    const content_value = root.object.get("content") orelse return null;
+    if (content_value != .array or content_value.array.items.len == 0) return null;
+
+    const calls = try allocator.alloc(ToolCall, content_value.array.items.len);
+    errdefer allocator.free(calls);
+    var written: usize = 0;
+    errdefer {
+        for (calls[0..written]) |call| call.deinit(allocator);
+    }
+
+    for (content_value.array.items) |item| {
+        if (item != .object) continue;
+        const typ = jsonStringValue(item.object.get("type")) orelse continue;
+        if (!std.mem.eql(u8, typ, "tool_use")) continue;
+        const id = jsonStringValue(item.object.get("id")) orelse continue;
+        const name = jsonStringValue(item.object.get("name")) orelse continue;
+        const arguments = if (item.object.get("input")) |input_value|
+            try std.json.Stringify.valueAlloc(allocator, input_value, .{})
+        else
+            try allocator.dupe(u8, "{}");
+        errdefer allocator.free(arguments);
+        calls[written] = .{
+            .id = try allocator.dupe(u8, id),
+            .name = try allocator.dupe(u8, name),
+            .arguments = arguments,
+        };
+        written += 1;
+    }
+
+    if (written == 0) {
+        allocator.free(calls);
+        return null;
+    }
+    return try allocator.realloc(calls, written);
 }
 
 pub fn appendResponsesOutputText(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), root: std.json.Value) !void {
@@ -942,7 +1014,7 @@ test "parseApiResponse reads chat_completions content + usage" {
     const body =
         \\{"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}
     ;
-    var result = try parseApiResponse(a, body);
+    var result = try parseApiResponse(a, body, .chat_completions);
     defer result.deinit(a);
     try std.testing.expectEqualStrings("hello", result.content);
     try std.testing.expectEqual(@as(u64, 8), result.usage.?.total_tokens);
@@ -953,7 +1025,7 @@ test "parseApiResponse surfaces an error object as content" {
     const body =
         \\{"error":{"message":"boom"}}
     ;
-    var result = try parseApiResponse(a, body);
+    var result = try parseApiResponse(a, body, .chat_completions);
     defer result.deinit(a);
     try std.testing.expectEqualStrings("boom", result.content);
 }
@@ -994,9 +1066,23 @@ test "parseApiResponse reads responses-protocol output text" {
     const body =
         \\{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi there"}]}]}
     ;
-    var result = try parseApiResponse(a, body);
+    var result = try parseApiResponse(a, body, .responses);
     defer result.deinit(a);
     try std.testing.expectEqualStrings("hi there", result.content);
+}
+
+test "parseApiResponse anthropic reads text, tool_use, and usage" {
+    const a = std.testing.allocator;
+    const body =
+        \\{"content":[{"type":"text","text":"hello"},{"type":"tool_use","id":"call_1","name":"shell_exec","input":{"cmd":"ls"}}],"stop_reason":"tool_use","usage":{"input_tokens":12,"output_tokens":7}}
+    ;
+    var result = try parseApiResponse(a, body, .anthropic);
+    defer result.deinit(a);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "hello") != null);
+    try std.testing.expect(result.tool_calls != null);
+    try std.testing.expectEqualStrings("shell_exec", result.tool_calls.?[0].name);
+    try std.testing.expectEqualStrings("call_1", result.tool_calls.?[0].id);
+    try std.testing.expect(result.usage != null);
 }
 
 test "buildRequestJson anthropic puts system top-level and includes max_tokens" {

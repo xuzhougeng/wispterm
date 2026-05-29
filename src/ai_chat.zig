@@ -3209,7 +3209,7 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
     return if (request.stream)
         parseApiStreamResponse(allocator, resp_list.items)
     else
-        parseApiResponse(allocator, resp_list.items);
+        parseApiResponse(allocator, resp_list.items, request.protocol);
 }
 
 fn runChatRequestStreaming(request: *const ChatRequest) !void {
@@ -5552,7 +5552,7 @@ test "ai chat parses OpenAI tool calls" {
     const body =
         \\{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"terminal_list","arguments":"{}"}}]}}]}
     ;
-    const result = try parseApiResponse(allocator, body);
+    const result = try parseApiResponse(allocator, body, .chat_completions);
     defer result.deinit(allocator);
     try std.testing.expect(result.tool_calls != null);
     try std.testing.expectEqual(@as(usize, 1), result.tool_calls.?.len);
@@ -5566,7 +5566,7 @@ test "ai chat parses token usage from OpenAI responses" {
     const body =
         \\{"usage":{"prompt_tokens":12,"completion_tokens":34,"prompt_cache_hit_tokens":5,"prompt_cache_miss_tokens":7,"total_tokens":46},"choices":[{"message":{"role":"assistant","content":"done"}}]}
     ;
-    const result = try parseApiResponse(allocator, body);
+    const result = try parseApiResponse(allocator, body, .chat_completions);
     defer result.deinit(allocator);
     try std.testing.expect(result.usage != null);
     try std.testing.expectEqual(@as(u64, 12), result.usage.?.prompt_tokens);
@@ -5581,7 +5581,7 @@ test "ai chat parses Responses API output text tool calls and usage" {
     const body =
         \\{"usage":{"input_tokens":20,"output_tokens":8,"total_tokens":28,"input_tokens_details":{"cached_tokens":6}},"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"checked"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},{"type":"function_call","call_id":"call_1","name":"terminal_list","arguments":"{}"}]}
     ;
-    const result = try parseApiResponse(allocator, body);
+    const result = try parseApiResponse(allocator, body, .responses);
     defer result.deinit(allocator);
     try std.testing.expectEqualStrings("done", result.content);
     try std.testing.expect(result.reasoning != null);
