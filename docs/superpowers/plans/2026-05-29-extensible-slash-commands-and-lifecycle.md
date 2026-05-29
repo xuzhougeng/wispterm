@@ -158,66 +158,78 @@ git commit -m "feat(ai-chat): slashCommandOutput handles lifecycle commands"
 
 ---
 
-## Task 3: `Session.clearContext` for `/clear`
+## Task 3: Reuse `clearMessages` for `/clear` (mutex-held split)
 
 **Files:**
-- Modify: `src/ai_chat.zig` (Session methods, near `:962`)
+- Modify: `src/ai_chat.zig` (`clearMessages` at `:1545`)
 - Test: `src/ai_chat.zig` (inline)
 
-`/clear` must drop all transcript messages while keeping the tab and the session settings (`base_url`/`api_key`/`model`/`protocol`/`system_prompt`). Messages are stored in `self.messages` (an `ArrayListUnmanaged(Message)`; each element has a `deinit(allocator)` — see the dispatch code at `:1377` and message cleanup patterns).
+**Do NOT add a new `clearContext`.** `Session.clearMessages` (`:1545`) already does exactly what `/clear` needs — frees messages, resets scroll + `suggestion_selected`, clears selection, sets status, and fires the history-change notification, guarded by `request_inflight`. The problem: it **locks `self.mutex` itself**, but the slash-command dispatch (Task 6) runs with the mutex already held, so calling it there would **deadlock**. So split it into a mutex-held core + a locking wrapper, and have Task 6 call the core.
 
-- [ ] **Step 1: Write the failing test** (inline in `ai_chat.zig`):
+If a `clearContext` was added in an earlier attempt, **remove it** (it duplicates `clearMessages` and skips the inflight guard / history notification).
+
+- [ ] **Step 1: Write the failing test** (inline). Adapt the `Session.init` call to the REAL signature: `Session.init(allocator, name, base_url, api_key, model_name, system_prompt, thinking, reasoning_effort, stream_val, agent_val)`:
 
 ```zig
-test "clearContext empties messages but keeps system prompt and model" {
+test "clearMessages empties transcript but keeps settings" {
     const a = std.testing.allocator;
-    var session = try Session.initWithSystemPrompt(a, "https://api.example.com", "key", "chat_completions", "m1", "false", "sys");
+    var session = try Session.init(a, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
     defer session.deinit();
-    session.appendInputText("hello");
-    session.appendUserMessageForTest("hi");  // helper: see note
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
     try std.testing.expect(session.messages.items.len > 0);
 
-    session.clearContext();
+    session.clearMessages();
     try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
     try std.testing.expectEqualStrings("sys", session.systemPrompt());
     try std.testing.expectEqualStrings("m1", session.model());
 }
 ```
 
-Note: if no test helper to append a user message exists, append directly in the test:
-`try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });`
-(Match the exact `Message` literal used at `ai_chat.zig:1428`.)
+(Match the exact `Message` literal shape used at `ai_chat.zig:1428`; adjust the `init` args to the real signature/accessor names you find.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails or passes**
 
-Run: `zig build test 2>&1 | head -40`
-Expected: FAIL — `no member named 'clearContext'`.
+Run: `zig build test 2>&1 | head -40`. (`clearMessages` already exists, so this test may PASS immediately — that's fine; its purpose is to lock in the keep-settings behavior. If it fails, fix the test to the real signatures.)
 
-- [ ] **Step 3: Implement `clearContext`** as a public Session method. Free each message, reset the list, and reset scroll. Use the same per-message cleanup already used elsewhere (search for where `self.messages` items are freed on deinit; reuse that helper if present, otherwise loop `msg.deinit(self.allocator)`):
+- [ ] **Step 3: Split `clearMessages` into a mutex-held core + wrapper.** Replace the existing `clearMessages` (`:1545`) with:
 
 ```zig
-pub fn clearContext(self: *Session) void {
-    self.mutex.lock();
-    defer self.mutex.unlock();
-    for (self.messages.items) |*msg| msg.deinit(self.allocator);
+/// Assumes self.mutex is held. Returns the captured history change for the
+/// caller to notify after unlocking.
+fn clearMessagesLocked(self: *Session) ?PendingHistoryChange {
+    for (self.messages.items) |msg| msg.deinit(self.allocator);
     self.messages.clearRetainingCapacity();
     self.scroll_px = 0;
-    self.setStatusLocked("Ready");
+    self.suggestion_selected = 0;
+    self.clearSelectionLocked();
+    self.setStatusLocked("Cleared");
+    return self.captureHistoryChangeLocked();
+}
+
+fn clearMessages(self: *Session) void {
+    self.mutex.lock();
+    if (self.request_inflight) {
+        self.mutex.unlock();
+        return;
+    }
+    const history_change = self.clearMessagesLocked();
+    self.mutex.unlock();
+    self.notifyHistoryChange(history_change);
 }
 ```
 
-If `setStatusLocked` requires the mutex held (it does — see callers), the above is correct (lock held). Confirm the `Message.deinit` signature against the struct near `ai_chat.zig:40-62`.
+This preserves the existing caller at `:1103` (`self.clearMessages()`) unchanged. Task 6 will call `clearMessagesLocked()` from the mutex-held dispatch.
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `zig build test 2>&1 | tail -20`
-Expected: PASS.
+Expected: PASS (no deadlock, no leak — leak-checking allocator).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/ai_chat.zig
-git commit -m "feat(ai-chat): add Session.clearContext for /clear"
+git commit -m "refactor(ai-chat): split clearMessages into mutex-held core for /clear reuse"
 ```
 
 ---
@@ -462,7 +474,7 @@ Add a Session field (near the other suggestion state, e.g. by `skill_suggestions
 custom_commands: []command_registry.CustomCommand = &.{},
 ```
 
-Add a loader method that scans all roots, concatenates, and validates each `action` against the known vocabulary (unknown action → skip + log; first-seen name wins; built-in name collision → skip + log). Implement `customCommandSuggestions()` returning `[]SlashCommandSuggestion` built from `self.custom_commands` for the composer (Task 6). Free `custom_commands` in `Session.deinit` via `command_registry.freeCommandList`.
+Add a loader method that scans all roots, concatenates, and validates each `action` against the known vocabulary (unknown action → skip + log; first-seen name wins; built-in name collision → skip + log). Free `custom_commands` in `Session.deinit` via `command_registry.freeCommandList`. (The `customCommandSuggestions()` projection used by the composer is built in Task 6, not here — Task 5 only loads/stores `custom_commands`.)
 
 ```zig
 fn knownActionFromName(value: []const u8) ?SlashCommand {
@@ -487,7 +499,10 @@ pub fn reloadCustomCommands(self: *Session) void {
             // skip if it duplicates a built-in or an already-loaded custom name,
             // or declares an unknown action
             if (c.action) |av| if (knownActionFromName(av) == null) { c.deinit(self.allocator); continue; };
-            if (isBuiltinCommandName(c.name) or self.hasCustomCommandNamed(c.name) or hasName(merged.items, c.name)) { c.deinit(self.allocator); continue; }
+            // Dedup ONLY against built-ins and commands already merged in THIS reload.
+            // Do NOT check self.custom_commands — it is the old list being replaced;
+            // checking it would reject everything on a reload.
+            if (isBuiltinCommandName(c.name) or hasName(merged.items, c.name)) { c.deinit(self.allocator); continue; }
             merged.append(self.allocator, c) catch { c.deinit(self.allocator); break; };
         }
     }
@@ -496,7 +511,7 @@ pub fn reloadCustomCommands(self: *Session) void {
 }
 ```
 
-> Implementer notes: `openDirectoryPath` already exists (`:506`). `listCommands(dir, "")` scans `dir` itself — adjust `listCommands` to accept `""` meaning "this dir" (the `openDir("", ...)` case) or pass the leaf "commands" and root the parent; pick one and keep it consistent with `defaultCommandRootPaths`. Add small helpers `isBuiltinCommandName` (compare against `slash_command_entries`), `hasName`, `hasCustomCommandNamed`. Call `reloadCustomCommands` once during session init after settings are copied.
+> Implementer notes: `openDirectoryPath` already exists (`:506`). `listCommands(dir, "")` scans `dir` itself — adjust `listCommands` to accept `""` meaning "this dir" (the `openDir("", ...)` case) or pass the leaf "commands" and root the parent; pick one and keep it consistent with `defaultCommandRootPaths`. Add small helpers `isBuiltinCommandName` (compare `"/" ++ name` against `slash_command_entries` commands) and `hasName` (scan `merged.items`). Call `reloadCustomCommands` once during session init after settings are copied.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -616,7 +631,7 @@ else if (arg.len == 0) {
 ```
 
 `runBuiltinCommandLocked(self, command, arg)` extracts the existing `:1377-1398` body (append `slashCommandOutput`, `clearSubmittedInputLocked`, set status) and adds the side-effects:
-- `.clear` → call `self.clearContext()` **before** appending the confirmation line (clearContext empties `messages`; the confirmation is appended after so it survives).
+- `.clear` → call `self.clearMessagesLocked()` (mutex already held in dispatch) **before** appending the confirmation line; capture its returned `?PendingHistoryChange` into the dispatch's `history_change` so it is notified after unlock (instead of setting `history_change = null` for this command). The confirmation line is appended after the clear so it survives.
 - `.reload_commands` → `self.reloadCustomCommands()`.
 - `.reload_skills` → `self.freeSkillSuggestions()` (as today).
 - `.update_skills` → fire `g_skill_update_trigger` (as today).
