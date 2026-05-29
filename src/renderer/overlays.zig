@@ -481,6 +481,14 @@ fn executeCommand(action: CommandAction) void {
             }
         },
         .open_latest_release => openLatestRelease(),
+        .update_skills => {
+            if (AppWindow.g_app) |app| {
+                showStatusToast("Updating skills...");
+                app.requestSkillUpdate();
+            } else {
+                showStatusToast("Update Skills unavailable");
+            }
+        },
     }
 }
 

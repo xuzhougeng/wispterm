@@ -37,6 +37,7 @@ pub const CommandAction = enum {
     check_for_updates,
     download_update,
     open_latest_release,
+    update_skills,
 };
 
 pub const CommandEntry = struct {
@@ -81,6 +82,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Check for Updates", .detail = "Check GitHub Releases for a newer Phantty version", .shortcut = "", .action = .check_for_updates },
     .{ .title = "Download Update", .detail = "Download the latest update to your Downloads folder", .shortcut = "", .action = .download_update },
     .{ .title = "Open Latest Release", .detail = "Open the latest Phantty GitHub Release", .shortcut = "", .action = .open_latest_release },
+    .{ .title = "Update Skills", .detail = "Download the latest skills from GitHub", .shortcut = "", .action = .update_skills },
 };
 
 pub const CommandPaletteMode = enum {
