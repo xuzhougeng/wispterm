@@ -805,15 +805,6 @@ pub const Session = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn clearContext(self: *Session) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (self.messages.items) |msg| msg.deinit(self.allocator);
-        self.messages.clearRetainingCapacity();
-        self.scroll_px = 0;
-        self.setStatusLocked("Ready");
-    }
-
     pub fn title(self: *const Session) []const u8 {
         return self.title_buf[0..self.title_len];
     }
@@ -1542,20 +1533,25 @@ pub const Session = struct {
         if (skill_preload_appended) self.notifyHistoryChange(history_change);
     }
 
-    fn clearMessages(self: *Session) void {
-        var history_change: ?PendingHistoryChange = null;
-        self.mutex.lock();
-        if (self.request_inflight) {
-            self.mutex.unlock();
-            return;
-        }
+    /// Assumes self.mutex is held. Returns the captured history change for the
+    /// caller to notify after unlocking.
+    fn clearMessagesLocked(self: *Session) ?PendingHistoryChange {
         for (self.messages.items) |msg| msg.deinit(self.allocator);
         self.messages.clearRetainingCapacity();
         self.scroll_px = 0;
         self.suggestion_selected = 0;
         self.clearSelectionLocked();
         self.setStatusLocked("Cleared");
-        history_change = self.captureHistoryChangeLocked();
+        return self.captureHistoryChangeLocked();
+    }
+
+    fn clearMessages(self: *Session) void {
+        self.mutex.lock();
+        if (self.request_inflight) {
+            self.mutex.unlock();
+            return;
+        }
+        const history_change = self.clearMessagesLocked();
         self.mutex.unlock();
         self.notifyHistoryChange(history_change);
     }
@@ -6135,30 +6131,14 @@ test "ai chat cut input returns text and clears when selected" {
     try std.testing.expect(cut_again == null);
 }
 
-test "clearContext empties messages but keeps system prompt and model" {
+test "clearMessages empties transcript but keeps settings" {
     const a = std.testing.allocator;
-    const session = try Session.init(
-        a,
-        "Test",
-        "https://api.example.com",
-        "key",
-        "m1",
-        "sys",
-        "disabled",
-        "high",
-        "false",
-        "false",
-    );
+    var session = try Session.init(a, "chat", "https://api.example.com", "key", "m1", "sys", "disabled", "", "false", "false");
     defer session.deinit();
-
-    session.mutex.lock();
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
-    session.mutex.unlock();
-
     try std.testing.expect(session.messages.items.len > 0);
 
-    session.clearContext();
-
+    session.clearMessages();
     try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
     try std.testing.expectEqualStrings("sys", session.systemPrompt());
     try std.testing.expectEqualStrings("m1", session.model());
