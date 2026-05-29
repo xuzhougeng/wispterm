@@ -3,7 +3,7 @@
 const std = @import("std");
 const skill_registry = @import("skill_registry.zig");
 
-pub const SlashCommand = enum { skills, commands, reload_skills, unknown };
+pub const SlashCommand = enum { skills, commands, reload_skills, update_skills, unknown };
 
 pub const ComposerSuggestionKind = enum {
     slash_command,
@@ -38,6 +38,10 @@ pub const slash_command_entries = [_]SlashCommandEntry{
     .{
         .suggestion = .{ .command = "/reload-skills", .description = "rescan skills for future calls" },
         .action = .reload_skills,
+    },
+    .{
+        .suggestion = .{ .command = "/update-skills", .description = "download latest skills from GitHub" },
+        .action = .update_skills,
     },
 };
 

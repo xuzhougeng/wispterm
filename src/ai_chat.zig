@@ -313,6 +313,13 @@ const PendingHistoryChange = struct {
 var g_agent_mutex: std.Thread.Mutex = .{};
 var g_agent_settings: AgentSettings = .{};
 var g_session_id_counter = std.atomic.Value(u64).init(1);
+var g_skill_update_trigger: ?*const fn () void = null;
+
+/// Wire the callback that the `/update-skills` slash command fires. Set once at
+/// startup by the app layer (mirrors `configureAgent` / `setToolHost`).
+pub fn setSkillUpdateTrigger(cb: *const fn () void) void {
+    g_skill_update_trigger = cb;
+}
 threadlocal var g_tool_host: ?ToolHost = null;
 
 pub fn configureAgent(settings: AgentSettings) void {
@@ -357,6 +364,7 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
     return switch (command) {
         .commands => slashCommandListOutput(allocator),
         .reload_skills => allocator.dupe(u8, "Skills will be re-read from disk on the next skill call."),
+        .update_skills => allocator.dupe(u8, "Downloading the latest skills from GitHub in the background..."),
         .unknown => allocator.dupe(u8, "Unknown command. Use /commands to list commands."),
         .skills => listSkillsForDisplay(allocator),
     };
@@ -913,6 +921,10 @@ pub const Session = struct {
         self.skill_suggestions_owned = false;
     }
 
+    pub fn reloadSkillSuggestions(self: *Session) void {
+        self.freeSkillSuggestions();
+    }
+
     pub fn status(self: *const Session) []const u8 {
         return self.status_buf[0..self.status_len];
     }
@@ -1370,6 +1382,9 @@ pub const Session = struct {
             };
             self.clearSubmittedInputLocked();
             if (command == .reload_skills) self.freeSkillSuggestions();
+            if (command == .update_skills) {
+                if (g_skill_update_trigger) |trigger| trigger();
+            }
             self.setStatusLocked("Ready");
             history_change = null;
             self.mutex.unlock();
@@ -4262,6 +4277,7 @@ test "ai chat recognizes local slash commands" {
     try std.testing.expect(parseSlashCommand("/skills").? == .skills);
     try std.testing.expect(parseSlashCommand("/commands").? == .commands);
     try std.testing.expect(parseSlashCommand("/reload-skills").? == .reload_skills);
+    try std.testing.expect(parseSlashCommand("/update-skills").? == .update_skills);
     try std.testing.expect(parseSlashCommand("/unknown").? == .unknown);
     try std.testing.expect(parseSlashCommand("hello") == null);
 }
@@ -4277,7 +4293,7 @@ test "ai chat slash command suggestions show and filter from input" {
     var session = Session{ .allocator = allocator };
     session.appendInputText("/");
 
-    try std.testing.expectEqual(@as(usize, 3), session.slashCommandSuggestionCount());
+    try std.testing.expectEqual(@as(usize, 4), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/skills", session.slashCommandSuggestionAt(0).?.command);
 
     session.appendInputText("c");
