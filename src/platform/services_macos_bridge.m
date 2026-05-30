@@ -369,3 +369,61 @@ void wispterm_macos_global_hotkey_unregister(void *window_handle, int32_t id) {
     slot->window_handle = NULL;
     slot->ref = NULL;
 }
+
+#import <UserNotifications/UserNotifications.h>
+
+// Cached authorization status: 0 = unavailable/not-determined, 1 = denied, 2 = authorized.
+static int g_wispterm_notif_auth = 0;
+
+// Delegate so notifications also present while WispTerm is the foreground app
+// (needed for the "focused window, background tab" case).
+@interface WisptermNotifDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+@implementation WisptermNotifDelegate
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
+}
+@end
+
+static WisptermNotifDelegate *g_wispterm_notif_delegate = nil;
+
+static UNUserNotificationCenter *wispterm_notif_center(void) {
+    // UNUserNotificationCenter requires a bundle identifier; un-bundled dev
+    // runs have none -> report unavailable and skip.
+    if ([[NSBundle mainBundle] bundleIdentifier] == nil) return nil;
+    return [UNUserNotificationCenter currentNotificationCenter];
+}
+
+void wispterm_macos_notif_request_auth(void) {
+    UNUserNotificationCenter *center = wispterm_notif_center();
+    if (center == nil) { g_wispterm_notif_auth = 0; return; }
+    if (g_wispterm_notif_delegate == nil) {
+        g_wispterm_notif_delegate = [[WisptermNotifDelegate alloc] init];
+    }
+    center.delegate = g_wispterm_notif_delegate;
+    [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                          completionHandler:^(BOOL granted, NSError *_Nullable error) {
+        (void)error;
+        g_wispterm_notif_auth = granted ? 2 : 1;
+    }];
+}
+
+int wispterm_macos_notif_auth_status(void) {
+    return g_wispterm_notif_auth;
+}
+
+void wispterm_macos_notif_show(const char *title, const char *body) {
+    UNUserNotificationCenter *center = wispterm_notif_center();
+    if (center == nil) return;
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = [NSString stringWithUTF8String:(title ? title : "")];
+    content.body = [NSString stringWithUTF8String:(body ? body : "")];
+    content.sound = [UNNotificationSound defaultSound];
+    UNNotificationRequest *req =
+        [UNNotificationRequest requestWithIdentifier:[[NSUUID UUID] UUIDString]
+                                             content:content
+                                             trigger:nil];
+    [center addNotificationRequest:req withCompletionHandler:nil];
+}

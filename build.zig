@@ -35,6 +35,7 @@ const macos_app_frameworks = [_][]const u8{
     "CoreText",
     "CoreGraphics",
     "Foundation",
+    "UserNotifications",
     "CoreFoundation",
     "Carbon",
 };
@@ -290,7 +291,7 @@ test "windows system libraries are gated by platform" {
 
 test "macOS platform advertises required app frameworks" {
     const frameworks = appFrameworksFor(PlatformFeatures.forOs(.macos));
-    try std.testing.expectEqual(@as(usize, 8), frameworks.len);
+    try std.testing.expectEqual(@as(usize, 9), frameworks.len);
     try expectContainsString(frameworks, "Metal");
     try expectContainsString(frameworks, "QuartzCore");
     try expectContainsString(frameworks, "AppKit");
@@ -299,6 +300,7 @@ test "macOS platform advertises required app frameworks" {
     try expectContainsString(frameworks, "Foundation");
     try expectContainsString(frameworks, "CoreFoundation");
     try expectContainsString(frameworks, "Carbon");
+    try expectContainsString(frameworks, "UserNotifications");
 
     try std.testing.expectEqual(@as(usize, 0), appFrameworksFor(PlatformFeatures.forOs(.windows)).len);
     try std.testing.expectEqual(@as(usize, 0), appFrameworksFor(PlatformFeatures.forOs(.linux)).len);
