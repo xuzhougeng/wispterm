@@ -39,14 +39,20 @@ pub fn setWidth(w: f32, window_width: f32) bool {
 }
 
 /// Width the panel should occupy for a given window, leaving MIN_CONTENT_WIDTH
-/// for the terminal. Assumes the panel is visible; the caller gates visibility.
+/// for the terminal. PURE MATH — does NOT check visibility. Callers MUST gate
+/// on visibility themselves; the only supported caller is AppWindow, which
+/// checks `aiCopilotVisible()` (g_visible AND active tab is a terminal) before
+/// using this result. The terminal-tab half of that gate cannot live here
+/// because this module deliberately avoids importing `tab`/`AppWindow` so it
+/// stays in the fast test suite.
 pub fn panelWidthForWindow(window_width: i32, left_offset: f32, right_offset: f32) f32 {
     const win_w: f32 = @floatFromInt(window_width);
     const max_width = @max(MIN_WIDTH, @min(MAX_WIDTH, win_w - left_offset - right_offset - MIN_CONTENT_WIDTH));
     return @max(MIN_WIDTH, @min(g_width, max_width));
 }
 
-/// Pixel bounds of the panel (right-docked). Assumes visible; caller gates.
+/// Pixel bounds of the panel (right-docked). PURE MATH — assumes the caller has
+/// already confirmed visibility (see panelWidthForWindow's contract note).
 pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) Bounds {
     const win_w: f32 = @floatFromInt(window_width);
     const win_h: f32 = @floatFromInt(window_height);
@@ -66,25 +72,33 @@ pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f
 pub fn show() void {
     g_visible = true;
 }
+
 pub fn hide() void {
     g_visible = false;
 }
+
 pub fn toggle() void {
     g_visible = !g_visible;
 }
 
 test "panelWidthForWindow clamps to g_width when it fits" {
+    const saved = g_width;
+    defer g_width = saved;
     g_width = 480;
     try std.testing.expectApproxEqAbs(@as(f32, 480), panelWidthForWindow(1600, 0, 0), 0.001);
 }
 
 test "panelWidthForWindow shrinks to keep MIN_CONTENT_WIDTH" {
+    const saved = g_width;
+    defer g_width = saved;
     g_width = 1200;
     // 800 - 0 - 0 - 320 = 480 available; clamped down from 1200.
     try std.testing.expectApproxEqAbs(@as(f32, 480), panelWidthForWindow(800, 0, 0), 0.001);
 }
 
 test "panelWidthForWindow never goes below MIN_WIDTH" {
+    const saved = g_width;
+    defer g_width = saved;
     g_width = 320;
     // Even a tiny window keeps at least MIN_WIDTH.
     try std.testing.expectApproxEqAbs(MIN_WIDTH, panelWidthForWindow(300, 0, 0), 0.001);
@@ -99,12 +113,23 @@ test "setWidth clamps and reports change" {
 }
 
 test "boundsForWindow right-docks the panel" {
+    const saved = g_width;
+    defer g_width = saved;
     g_width = 480;
     const b = boundsForWindow(1600, 900, 30, 0, 0);
     try std.testing.expectEqual(@as(i32, 1600), b.right);
     try std.testing.expectEqual(@as(i32, 1120), b.left); // 1600 - 480
     try std.testing.expectEqual(@as(i32, 30), b.top);
     try std.testing.expectEqual(@as(i32, 900), b.bottom);
+}
+
+test "boundsForWindow respects left_offset and right_offset" {
+    const saved = g_width;
+    defer g_width = saved;
+    g_width = 480;
+    const b = boundsForWindow(1600, 900, 30, 200, 100);
+    try std.testing.expectEqual(@as(i32, 1500), b.right); // 1600 - 100
+    try std.testing.expectEqual(@as(i32, 1020), b.left); // 1500 - 480
 }
 
 test "toggle flips visibility" {
