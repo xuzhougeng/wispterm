@@ -283,6 +283,11 @@ theme: ?[]const u8 = null,
 /// Enable agent tools for AI Chat profiles by default.
 @"ai-agent-enabled": bool = false,
 
+/// Show native desktop notifications for OSC 9 / OSC 777 sequences (macOS).
+/// When false, such sequences are ignored entirely (no toast, no bell badge).
+/// Does not affect the plain terminal bell.
+@"desktop-notifications": bool = true,
+
 /// Agent command permission mode: confirm (deny until approved UI exists) or full.
 @"ai-agent-permission": ai_chat.AgentPermission = .confirm,
 
