@@ -3723,20 +3723,20 @@ fn rememberClosedTab(request: *ChatRequest, closed: ToolClosedTab) !void {
 fn localCommandExecTool(request: *const ChatRequest, command: []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
     const settings = currentAgentSettings();
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
-    if (settings.permission != .full) {
-        if (!request.session.requestApproval(platform_process.localCommandToolName(), command, platform_process.localCommandApprovalLabel())) {
+    const dangerous = isDangerousCommand(command);
+    if (settings.permission != .full or dangerous) {
+        const reason = if (dangerous) DANGEROUS_COMMAND_APPROVAL_REASON else platform_process.localCommandApprovalLabel();
+        if (!request.session.requestApproval(platform_process.localCommandToolName(), command, reason)) {
             return deniedResult(request.allocator, command, platform_process.localCommandDeniedReason());
         }
     }
-    const warning = if (isDangerousCommand(command)) "warning: command matched a dangerous-command pattern; full-permission allowed it.\n" else "";
     const result = runShellCommand(request.allocator, command, cwd, settings.output_limit, timeout_ms, request.session) catch |err| {
-        return std.fmt.allocPrint(request.allocator, "{s}{s} failed: {}", .{ warning, platform_process.localCommandFailureLabel(), err });
+        return std.fmt.allocPrint(request.allocator, "{s} failed: {}", .{ platform_process.localCommandFailureLabel(), err });
     };
     defer request.allocator.free(result.stdout);
     defer request.allocator.free(result.stderr);
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(request.allocator);
-    try out.appendSlice(request.allocator, warning);
     if (result.timed_out) try out.appendSlice(request.allocator, "timed_out=true\n");
     try out.print(request.allocator, "exit_code={d}\nstdout:\n{s}\nstderr:\n{s}", .{ result.exit_code, result.stdout, result.stderr });
     return truncateOwned(request.allocator, try out.toOwnedSlice(request.allocator));
@@ -3962,9 +3962,13 @@ fn terminalReplExecTool(request: *ChatRequest, surface_id: []const u8, repl_name
     const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(request.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, or plain.", .{repl_name});
     const settings = currentAgentSettings();
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
-    if (settings.permission != .full) {
+    const dangerous = isDangerousCommand(code);
+    if (settings.permission != .full or dangerous) {
         var reason_buf: [96]u8 = undefined;
-        const reason = std.fmt.bufPrint(&reason_buf, "Type input into opened {s} REPL/app terminal", .{repl.label()}) catch "Type input into terminal";
+        const reason = if (dangerous)
+            DANGEROUS_COMMAND_APPROVAL_REASON
+        else
+            std.fmt.bufPrint(&reason_buf, "Type input into opened {s} REPL/app terminal", .{repl.label()}) catch "Type input into terminal";
         if (!request.session.requestApproval("terminal_repl_exec", code, reason)) {
             return deniedResult(request.allocator, code, "operator rejected REPL terminal input");
         }
@@ -4084,9 +4088,13 @@ fn doubleQuotedStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]
 fn unixSessionExecTool(request: *ChatRequest, kind: UnixSessionKind, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     const settings = currentAgentSettings();
     if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
-    if (settings.permission != .full) {
+    const dangerous = isDangerousCommand(command);
+    if (settings.permission != .full or dangerous) {
         var reason_buf: [64]u8 = undefined;
-        const reason = std.fmt.bufPrint(&reason_buf, "Type command into opened {s} terminal", .{kind.label()}) catch "Type command into terminal";
+        const reason = if (dangerous)
+            DANGEROUS_COMMAND_APPROVAL_REASON
+        else
+            std.fmt.bufPrint(&reason_buf, "Type command into opened {s} terminal", .{kind.label()}) catch "Type command into terminal";
         if (!request.session.requestApproval(kind.toolName(), command, reason)) {
             return deniedResult(request.allocator, command, if (kind == .ssh) "operator rejected SSH PTY command" else "operator rejected WSL PTY command");
         }
@@ -4101,9 +4109,18 @@ fn unixSessionExecTool(request: *ChatRequest, kind: UnixSessionKind, surface_id:
     }
 
     const nonce = std.time.milliTimestamp();
+    // Keep the agent's injected command out of the user's shell history. We
+    // enable ignore-space (zsh HIST_IGNORE_SPACE / bash HISTCONTROL=ignorespace)
+    // and prefix the whole line with a single leading space. An interactive
+    // shell decides whether to record a line at submit time, so the option must
+    // be on *before* the line is read: once the first agent command in a session
+    // has run, the option stays set and every subsequent space-prefixed line is
+    // dropped from history. At most the very first line can leak. The user's own
+    // typed commands are unaffected. (fish is not supported here, as it already
+    // isn't by the bash-syntax wrapper.)
     const wrapped = try std.fmt.allocPrint(
         request.allocator,
-        "printf '\\n__WISPTERM_AGENT_START_{d}__\\n'; {{ {s}; }} 2>&1; __wispterm_agent_status=$?; printf '\\n__WISPTERM_AGENT_END_{d}__:%s\\n' \"$__wispterm_agent_status\"\r",
+        " setopt hist_ignore_space 2>/dev/null; HISTCONTROL=ignorespace; printf '\\n__WISPTERM_AGENT_START_{d}__\\n'; {{ {s}; }} 2>&1; __wispterm_agent_status=$?; printf '\\n__WISPTERM_AGENT_END_{d}__:%s\\n' \"$__wispterm_agent_status\"\r",
         .{ nonce, command, nonce },
     );
     defer request.allocator.free(wrapped);
@@ -4430,23 +4447,72 @@ fn truncateOwned(allocator: std.mem.Allocator, text: []u8) ![]u8 {
     return truncated;
 }
 
+const DANGEROUS_COMMAND_APPROVAL_REASON = "Destructive command (delete/rename/format) - confirm to run";
+
+/// Whether a command is destructive enough to always require operator approval,
+/// even under full-permission mode: deletes, renames/moves, disk formatting,
+/// and a few other irreversible operations.
 fn isDangerousCommand(command: []const u8) bool {
-    const needles = [_][]const u8{
-        "rm -rf",
-        "Remove-Item -Recurse -Force",
-        "format ",
-        "mkfs",
-        "shutdown",
+    // Distinctive multi-token / punctuated patterns: a plain substring scan is
+    // safe here (these cannot collide with ordinary words).
+    const patterns = [_][]const u8{
+        "Remove-Item",
+        "Format-Volume",
         "Stop-Computer",
         "Restart-Computer",
         "git push --force",
+        "git push -f",
+        "git reset --hard",
+        "git clean -f",
+        "git clean -d",
         ":(){",
-        "del /s",
+        "dd if=",
+        "of=/dev/",
+        "> /dev/sd",
+        "mkswap",
     };
-    for (needles) |needle| {
+    for (patterns) |needle| {
         if (std.ascii.indexOfIgnoreCase(command, needle) != null) return true;
     }
+    // Bare destructive verbs, matched as whole words so "rm file", "mv a b"
+    // (rename) and "format c:" trigger while "confirm", "perform", "arm" and
+    // option flags like "--format"/"--force" do not (we treat '-' as part of a
+    // word). Safety-biased: a false positive only adds an extra confirm prompt.
+    const verbs = [_][]const u8{
+        // delete
+        "rm",       "rmdir",  "unlink", "shred",  "trash", "del", "rd",
+        // rename / move
+        "mv",       "move",   "rename", "ren",
+        // format / wipe disk
+        "format",   "mkfs",   "fdisk",  "diskpart",
+        // power
+        "shutdown", "reboot", "halt",   "poweroff",
+    };
+    for (verbs) |verb| {
+        if (containsWord(command, verb)) return true;
+    }
     return false;
+}
+
+/// True if `word` appears in `haystack` as a whole token (case-insensitive):
+/// not flanked by other word characters. '-' counts as a word character so
+/// option flags such as "--format" are not mistaken for the bare "format" verb.
+fn containsWord(haystack: []const u8, word: []const u8) bool {
+    if (word.len == 0 or word.len > haystack.len) return false;
+    const last = haystack.len - word.len;
+    var pos: usize = 0;
+    while (pos <= last) : (pos += 1) {
+        if (!std.ascii.eqlIgnoreCase(haystack[pos .. pos + word.len], word)) continue;
+        const before_ok = pos == 0 or !isWordChar(haystack[pos - 1]);
+        const after = pos + word.len;
+        const after_ok = after == haystack.len or !isWordChar(haystack[after]);
+        if (before_ok and after_ok) return true;
+    }
+    return false;
+}
+
+fn isWordChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-';
 }
 
 // Response parsing delegates to ai_chat_protocol
@@ -6659,9 +6725,29 @@ test "ai chat request state exposes in-flight stop status for remote layout" {
 }
 
 test "ai chat detects dangerous shell commands" {
+    // delete
     try std.testing.expect(isDangerousCommand("rm -rf /tmp/demo"));
+    try std.testing.expect(isDangerousCommand("rm report.csv"));
+    try std.testing.expect(isDangerousCommand("find . -name '*.tmp' -exec rm {} \\;"));
+    try std.testing.expect(isDangerousCommand("rmdir build"));
+    try std.testing.expect(isDangerousCommand("del C:\\temp\\old.log"));
+    // rename / move
+    try std.testing.expect(isDangerousCommand("mv old.txt new.txt"));
+    try std.testing.expect(isDangerousCommand("rename a.txt b.txt"));
+    // format / disk
+    try std.testing.expect(isDangerousCommand("format C:"));
+    try std.testing.expect(isDangerousCommand("mkfs.ext4 /dev/sdb1"));
+    try std.testing.expect(isDangerousCommand("dd if=/dev/zero of=/dev/sda"));
+    // power + git
     try std.testing.expect(isDangerousCommand("git push --force origin main"));
+    try std.testing.expect(isDangerousCommand("git reset --hard HEAD~3"));
+    try std.testing.expect(isDangerousCommand("shutdown -h now"));
+    // must NOT false-positive on look-alikes
     try std.testing.expect(!isDangerousCommand("Get-ComputerInfo | Select-Object OsName"));
+    try std.testing.expect(!isDangerousCommand("ls -la"));
+    try std.testing.expect(!isDangerousCommand("git commit -m 'confirm the fix'"));
+    try std.testing.expect(!isDangerousCommand("git log --format=oneline"));
+    try std.testing.expect(!isDangerousCommand("echo perform a dry run"));
 }
 
 test "ai chat stream response aggregates content and reasoning chunks" {
