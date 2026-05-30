@@ -35,6 +35,9 @@ const impl = switch (backendForOs(builtin.os.tag)) {
     .unsupported => @import("notifications_unsupported.zig"),
 };
 
+/// True on platforms with a native desktop-notification backend (macOS only today).
+pub const supports_desktop_notifications = backendForOs(builtin.os.tag) == .macos;
+
 /// Native handle of the window a notification is associated with.
 pub const NativeHandle = platform_window.NativeHandle;
 

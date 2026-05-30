@@ -28,8 +28,7 @@ const platform_file_dialog = @import("platform/file_dialog.zig");
 const platform_global_hotkey = @import("platform/global_hotkey.zig");
 const platform_menu = @import("platform/menu.zig");
 const platform_notifications = @import("platform/notifications.zig");
-const notification = @import("notification.zig");
-const builtin = @import("builtin");
+const notif_mod = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_window_state = @import("platform/window_state.zig");
 const platform_wsl = @import("platform/wsl.zig");
@@ -3470,7 +3469,7 @@ fn handleBell(surface: *Surface, win: *window_backend.Window, is_active_tab: boo
 
 /// Drain and handle queued desktop notifications for one surface.
 /// `is_active_surface` means this is the focused surface of the active tab.
-/// Window focus is applied separately inside `notification.decideRoute`, which
+/// Window focus is applied separately inside `notif_mod.decideRoute`, which
 /// only suppresses the toast when the window is focused AND this is true.
 fn handleNotification(surface: *Surface, is_active_surface: bool) void {
     if (!g_desktop_notifications) {
@@ -3479,28 +3478,28 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
         return;
     }
 
-    const is_macos = builtin.os.tag == .macos;
+    const native_toast = platform_notifications.supports_desktop_notifications;
 
     while (surface.notif_queue.pop()) |item| {
         const now = std.time.milliTimestamp();
-        const h = notification.contentHash(item.title(), item.body());
-        if (!notification.shouldDeliver(now, h, surface.last_notif_time, surface.last_notif_hash)) {
+        const h = notif_mod.contentHash(item.title(), item.body());
+        if (!notif_mod.shouldDeliver(now, h, surface.last_notif_time, surface.last_notif_hash)) {
             continue;
         }
 
         // Lazy authorization request (macOS): first time we'd want a toast,
         // ask once. This delivery falls back to badge until the user answers.
-        if (is_macos and !g_notif_auth_requested) {
+        if (native_toast and !g_notif_auth_requested) {
             platform_notifications.requestNotificationAuth();
             g_notif_auth_requested = true;
         }
 
-        const auth: notification.AuthStatus = @enumFromInt(
+        const auth: notif_mod.AuthStatus = @enumFromInt(
             @intFromEnum(platform_notifications.notificationAuthStatus()),
         );
-        const route = notification.decideRoute(
+        const route = notif_mod.decideRoute(
             true, // g_desktop_notifications already checked above
-            is_macos,
+            native_toast,
             auth,
             window_focused,
             is_active_surface,
@@ -3509,8 +3508,8 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
         switch (route) {
             .none => {},
             .toast => {
-                var title_z: [notification.max_title + 1]u8 = undefined;
-                var body_z: [notification.max_body + 1]u8 = undefined;
+                var title_z: [notif_mod.max_title + 1]u8 = undefined;
+                var body_z: [notif_mod.max_body + 1]u8 = undefined;
                 const t = item.title();
                 const b = item.body();
                 @memcpy(title_z[0..t.len], t);

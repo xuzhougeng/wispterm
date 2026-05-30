@@ -106,18 +106,19 @@ pub const AuthStatus = enum(u8) { unavailable = 0, denied = 1, authorized = 2 };
 /// What to do with a deliverable notification.
 pub const Route = enum { none, toast, badge };
 
-/// Pure routing decision. `.toast` only on macOS + authorized + not looking
-/// right at it; `.badge` everywhere else; `.none` only when disabled.
+/// Pure routing decision. `.toast` only when the platform supports native
+/// toasts (macOS) AND authorized AND you're not looking right at it; `.badge`
+/// everywhere else; `.none` only when disabled.
 pub fn decideRoute(
     notif_enabled: bool,
-    is_macos: bool,
+    native_toast_supported: bool,
     auth: AuthStatus,
     window_focused: bool,
     is_active_surface: bool,
 ) Route {
     if (!notif_enabled) return .none;
     const suppress = window_focused and is_active_surface;
-    if (is_macos and auth == .authorized and !suppress) return .toast;
+    if (native_toast_supported and auth == .authorized and !suppress) return .toast;
     return .badge;
 }
 
