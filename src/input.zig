@@ -2453,7 +2453,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 @floatFromInt(fb.width),
                 @floatFromInt(fb.height),
                 AppWindow.leftPanelsWidth(),
-                AppWindow.rightPanelsWidthForWindow(fb.width),
+                @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
             ) != null) {
                 pasteFromClipboardIntoAiChat(chat);
                 return;
@@ -2567,7 +2567,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.width),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) {
                     chat.stopRequest();
                     AppWindow.g_force_rebuild = true;
@@ -2581,7 +2581,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.width),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) {
                     overlays.openAiConfigForSession(chat);
                     AppWindow.g_force_rebuild = true;
@@ -2596,7 +2596,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.height),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) |target| {
                     switch (target) {
                         .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
@@ -2619,7 +2619,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.width),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) {
                     toggleAiAgentPermission();
                     return;
@@ -2632,7 +2632,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.height),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) |drag_offset| {
                     g_ai_transcript_scroll_dragging = true;
                     g_ai_transcript_scroll_chat = chat;
@@ -2652,7 +2652,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         @floatFromInt(fb.height),
                         @floatCast(titlebarHeight()),
                         AppWindow.leftPanelsWidth(),
-                        AppWindow.rightPanelsWidthForWindow(fb.width),
+                        @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                     )) |hit| {
                         chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
                         g_ai_transcript_selecting = true;
@@ -2671,7 +2671,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.width),
                     @floatFromInt(fb.height),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) |hit| {
                     g_ai_input_scroll_dragging = true;
                     g_ai_input_scroll_chat = chat;
@@ -3018,7 +3018,7 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
         @floatFromInt(size.width),
         @floatFromInt(size.height),
         AppWindow.leftPanelsWidth(),
-        AppWindow.rightPanelsWidthForWindow(size.width),
+        @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width),
         g_ai_input_scroll_drag_offset,
     )) |drag| {
         _ = chat.setInputScrollRow(drag.row, drag.max_cols, drag.visible_rows);
@@ -3037,7 +3037,7 @@ fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) v
         @floatFromInt(size.height),
         @floatCast(titlebarHeight()),
         AppWindow.leftPanelsWidth(),
-        AppWindow.rightPanelsWidthForWindow(size.width),
+        @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width),
         g_ai_transcript_scroll_drag_offset,
     )) |px| {
         chat.scrollToPx(px);
@@ -3057,7 +3057,7 @@ fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, 
         @floatFromInt(fb.height),
         @floatCast(titlebarHeight()),
         AppWindow.leftPanelsWidth(),
-        AppWindow.rightPanelsWidthForWindow(fb.width),
+        @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
     )) |hit| {
         chat.updateTranscriptSelection(hit.message_index, hit.byte_offset);
         AppWindow.g_force_rebuild = true;
@@ -3124,7 +3124,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
                 @floatFromInt(hover_fb.height),
                 @floatCast(titlebarHeight()),
                 AppWindow.leftPanelsWidth(),
-                AppWindow.rightPanelsWidthForWindow(hover_fb.width),
+                @as(f32, @floatFromInt(hover_fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(hover_fb.width),
             ) != null;
             if (over != AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
                 AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = over;
@@ -3401,7 +3401,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                 @floatFromInt(size.width),
                 @floatFromInt(size.height),
                 AppWindow.leftPanelsWidth(),
-                AppWindow.rightPanelsWidthForWindow(size.width),
+                @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width),
             )) |metrics| {
                 const units: i32 = @intCast(mouseWheelUnits(ev.delta));
                 const rows = if (ev.delta > 0) -units else units;

@@ -569,13 +569,15 @@ fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, le
     markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     if (activeAiChat()) |session| {
+        const chat_x = left_panels_w;
+        const chat_w = @as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w;
         ai_chat_renderer.render(
             session,
             @floatFromInt(fb_width),
             @floatFromInt(fb_height),
             titlebar_offset,
-            left_panels_w,
-            right_panels_w,
+            chat_x,
+            chat_w,
         );
     }
 }
