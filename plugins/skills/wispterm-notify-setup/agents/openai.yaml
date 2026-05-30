@@ -1,0 +1,4 @@
+interface:
+  display_name: "WispTerm Notify Setup"
+  short_description: "Install WispTerm notify hooks for Claude Code + Codex"
+  default_prompt: "Use $wispterm-notify-setup to install WispTerm Stop/Notification reminders on this machine."
