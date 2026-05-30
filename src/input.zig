@@ -309,6 +309,22 @@ threadlocal var g_markdown_preview_image_drag_last_y: f64 = 0;
 pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
 pub threadlocal var g_url_open_mode: link_open.Mode = .embedded;
+
+/// Whether the AI copilot sidebar currently owns keyboard/mouse focus. Set by
+/// AppWindow.toggleAiCopilot; full key/mouse routing lands in a later task.
+threadlocal var g_ai_copilot_focused: bool = false;
+
+pub fn focusAiCopilot() void {
+    g_ai_copilot_focused = true;
+}
+
+pub fn blurAiCopilot() void {
+    g_ai_copilot_focused = false;
+}
+
+pub fn aiCopilotFocused() bool {
+    return g_ai_copilot_focused;
+}
 const SIDEBAR_TAB_DRAG_THRESHOLD_PX: f64 = 6.0;
 threadlocal var g_sidebar_tab_drag_pressed: ?usize = null;
 threadlocal var g_sidebar_tab_drag_current: ?usize = null;

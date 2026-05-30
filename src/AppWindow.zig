@@ -582,6 +582,16 @@ fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, le
     }
 }
 
+fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32) void {
+    if (!aiCopilotVisible()) return;
+    const session = ensureActiveCopilotSession() orelse return;
+    const left = leftPanelsWidth();
+    const bounds = ai_sidebar.boundsForWindow(@intCast(fb_width), @intCast(fb_height), titlebar_offset, left, 0);
+    const chat_x: f32 = @floatFromInt(bounds.left);
+    const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
+    ai_chat_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w);
+}
+
 pub fn activeTab() ?*TabState {
     return tab.activeTab();
 }
@@ -638,19 +648,63 @@ pub fn leftPanelsWidth() f32 {
     return titlebar.sidebarWidth() + file_explorer.width();
 }
 
+pub fn aiCopilotVisible() bool {
+    return ai_sidebar.g_visible and isActiveTabTerminal();
+}
+
+pub fn aiCopilotWidth(window_width: i32) f32 {
+    if (!aiCopilotVisible()) return 0;
+    return ai_sidebar.panelWidthForWindow(window_width, leftPanelsWidth(), 0);
+}
+
+fn makeCopilotSession() ?*ai_chat.Session {
+    return overlays.makeCopilotSessionForDefaultProfile();
+}
+
+fn ensureActiveCopilotSession() ?*ai_chat.Session {
+    const session = tab.activeCopilotSession(makeCopilotSession) orelse return null;
+    if (g_agent_context_surface_id_len > 0) {
+        session.setBoundSurface(g_agent_context_surface_id[0..g_agent_context_surface_id_len]);
+    }
+    return session;
+}
+
+/// Input layer getter: the active terminal tab's copilot session, only when the
+/// copilot panel is visible. Used by input routing (next task).
+pub fn activeCopilotSessionForInput() ?*ai_chat.Session {
+    if (!aiCopilotVisible()) return null;
+    const t = tab.activeTab() orelse return null;
+    return t.copilot_session;
+}
+
 pub fn toggleAiCopilot() void {
-    // Implemented fully in a later task (arbiter + focus). Stub keeps the build green.
-    ai_sidebar.toggle();
+    if (!isActiveTabTerminal()) return; // copilot is terminal-only
+    if (ai_sidebar.g_visible) {
+        ai_sidebar.hide();
+        input.blurAiCopilot();
+        g_force_rebuild = true;
+        g_cells_valid = false;
+        return;
+    }
+    // Exclusive right slot: close the other right panels first.
+    browser_panel.close();
+    markdown_preview_panel.close();
+    ai_sidebar.show();
+    _ = ensureActiveCopilotSession();
+    input.focusAiCopilot();
+    g_force_rebuild = true;
+    g_cells_valid = false;
 }
 
 pub fn rightPanelsWidth() f32 {
-    return markdown_preview_panel.width() + browser_panel.width();
+    const copilot_w = if (aiCopilotVisible()) ai_sidebar.g_width else 0;
+    return markdown_preview_panel.width() + browser_panel.width() + copilot_w;
 }
 
 pub fn rightPanelsWidthForWindow(window_width: i32) f32 {
     const preview_w = markdown_preview_panel.width();
     const browser_w = browser_panel.panelWidthForWindow(window_width, leftPanelsWidth(), preview_w);
-    return preview_w + browser_w;
+    return preview_w + browser_w + aiCopilotWidth(window_width);
 }
 
 pub fn browserPanelRightOffset() f32 {
@@ -751,6 +805,11 @@ fn syncActiveSurfaceCaches() void {
     if (surface) |s| {
         @memcpy(g_agent_context_surface_id[0..], s.remote_id[0..]);
         g_agent_context_surface_id_len = s.remote_id.len;
+        if (tab.activeTab()) |t| {
+            if (t.kind == .terminal) {
+                if (t.copilot_session) |session| session.setBoundSurface(s.remote_id[0..]);
+            }
+        }
     }
 }
 
@@ -1522,6 +1581,11 @@ fn onPlatformResize(width: i32, height: i32) void {
         markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
         file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     }
+
+    // Copilot panel draws on top of the reserved right region (terminal tabs only;
+    // renderAiCopilotPanel gates on aiCopilotVisible). Placed after the terminal
+    // content + markdown preview so it occupies the exclusive right slot.
+    renderAiCopilotPanel(fb_width, fb_height, titlebar_offset);
 
     overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -4044,6 +4108,12 @@ fn runMainLoop(self: *AppWindow) !void {
 
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
         gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        // Copilot panel draws on top of the reserved right region (terminal tabs
+        // only; renderAiCopilotPanel gates on aiCopilotVisible). Placed after the
+        // full-window viewport/projection are restored — so it is unaffected by the
+        // per-split viewport and the post-process framebuffer paths above — and
+        // after terminal content, occupying the exclusive right slot.
+        renderAiCopilotPanel(fb_width, fb_height, titlebar_offset);
         overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderStartupShortcutsOverlay(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
