@@ -52,5 +52,47 @@ printf '' | WISPTERM_NOTIFY_TTY="$t" sh "$NOTIFY"; rc=$?
 [ "$rc" -eq 0 ] && ok "empty payload exits 0" || fail "empty payload exit code ($rc)"
 [ ! -s "$t" ] && ok "empty payload writes nothing" || fail "empty payload wrote output"
 
+
+# ================= installer: Claude Code settings.json =================
+# Run installer against a throwaway HOME with a pre-existing PreToolUse hook.
+FAKE="$(mktemp -d)"
+mkdir -p "$FAKE/.claude"
+cat > "$FAKE/.claude/settings.json" <<'JSON'
+{ "model": "opus", "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "/existing/rtk.sh" } ] } ] } }
+JSON
+HOME="$FAKE" sh "$INSTALL" >/dev/null 2>&1
+
+CC="$FAKE/.claude/settings.json"
+DEST="$FAKE/.config/wispterm/wispterm-notify.sh"
+[ -x "$DEST" ] && ok "installer copied notify program (executable)" || fail "notify program not installed at $DEST"
+if command -v python3 >/dev/null 2>&1; then
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CC" 2>/dev/null \
+    && ok "settings.json is valid JSON after merge" || fail "settings.json invalid JSON"
+fi
+assert_contains "$CC" '/existing/rtk.sh' "preserved pre-existing PreToolUse hook"
+assert_contains "$CC" "$DEST" "wired notify command into settings.json"
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$CC" "$DEST" <<'PY'
+import json,sys
+cfg=json.load(open(sys.argv[1])); dest=sys.argv[2]
+def has(ev):
+    return any(h.get("command")==dest for e in cfg.get("hooks",{}).get(ev,[]) for h in e.get("hooks",[]))
+sys.exit(0 if has("Stop") and has("Notification") else 1)
+PY
+  [ $? -eq 0 ] && ok "Stop and Notification both wired" || fail "Stop/Notification not both wired"
+fi
+
+# Idempotency: run again, assert exactly one command per event (no duplication).
+HOME="$FAKE" sh "$INSTALL" >/dev/null 2>&1
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$CC" "$DEST" <<'PY'
+import json,sys
+cfg=json.load(open(sys.argv[1])); dest=sys.argv[2]
+n=sum(1 for ev in ("Stop","Notification") for e in cfg["hooks"].get(ev,[]) for h in e.get("hooks",[]) if h.get("command")==dest)
+sys.exit(0 if n==2 else 1)
+PY
+  [ $? -eq 0 ] && ok "re-run is idempotent (no duplicate CC hooks)" || fail "CC hooks duplicated on re-run"
+fi
+
 printf '\n%s test(s) failed\n' "$FAILS"
 [ "$FAILS" -eq 0 ]
