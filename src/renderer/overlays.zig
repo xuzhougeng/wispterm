@@ -2499,14 +2499,14 @@ fn cycleAiFormProtocol(forward: bool) void {
     setAiDefault(.protocol, current.cycle(forward).name());
 }
 
-/// Protocol row display: the current protocol name plus a ←/→ toggle affordance
-/// and the base-URL hint for that protocol (so switching guides the Base URL).
+/// Protocol row display: the current protocol name plus a small ASCII toggle
+/// affordance (←/→ switches between the three valid protocols).
 fn aiProtocolDisplay() []const u8 {
     const S = struct {
-        threadlocal var buf: [192]u8 = undefined;
+        threadlocal var buf: [48]u8 = undefined;
     };
     const p = AppWindow.ai_chat.ApiProtocol.parse(aiField(.protocol));
-    return std.fmt.bufPrint(&S.buf, "{s}   <-/->   {s}", .{ p.name(), p.baseUrlHint() }) catch p.name();
+    return std.fmt.bufPrint(&S.buf, "{s}   <-/->", .{p.name()}) catch p.name();
 }
 
 fn handleAiListKey(ev: input_key.KeyEvent) void {

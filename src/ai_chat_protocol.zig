@@ -43,17 +43,6 @@ pub const ApiProtocol = enum {
         };
     }
 
-    /// A short base-URL hint shown in the AI profile form when this protocol is
-    /// selected, including the endpoint path so users avoid version mistakes
-    /// (e.g. the anthropic /v1/messages vs an OpenAI /paas/v4 base).
-    pub fn baseUrlHint(self: ApiProtocol) []const u8 {
-        return switch (self) {
-            .chat_completions => "base → /chat/completions (e.g. https://api.deepseek.com)",
-            .responses => "base → /responses (e.g. https://api.openai.com/v1)",
-            .anthropic => "base → /v1/messages (e.g. https://api.deepseek.com/anthropic)",
-        };
-    }
-
     /// Cycle to the next/previous valid protocol (wraps). Used by the AI profile
     /// form so the Protocol field is a toggle over valid values, not free text.
     pub fn cycle(self: ApiProtocol, forward: bool) ApiProtocol {
@@ -83,13 +72,6 @@ test "ApiProtocol.cycle toggles forward and backward through the valid set, wrap
     try std.testing.expectEqual(ApiProtocol.responses, ApiProtocol.anthropic.cycle(false));
     // a full forward loop returns to start
     try std.testing.expectEqual(ApiProtocol.chat_completions, ApiProtocol.chat_completions.cycle(true).cycle(true).cycle(true));
-}
-
-test "ApiProtocol.baseUrlHint mentions the protocol's endpoint path" {
-    try std.testing.expect(std.mem.indexOf(u8, ApiProtocol.anthropic.baseUrlHint(), "/v1/messages") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ApiProtocol.anthropic.baseUrlHint(), "api.deepseek.com/anthropic") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ApiProtocol.chat_completions.baseUrlHint(), "/chat/completions") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ApiProtocol.responses.baseUrlHint(), "/responses") != null);
 }
 
 pub const Role = enum {
