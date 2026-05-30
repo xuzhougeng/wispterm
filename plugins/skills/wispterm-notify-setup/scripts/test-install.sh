@@ -140,5 +140,15 @@ assert_contains "$FAKE3/.codex/config.toml" '/some/other/notifier.sh' "codex: ex
 assert_not_contains "$FAKE3/.codex/config.toml" 'wispterm-notify.sh' "codex: did not clobber existing notify"
 printf '%s' "$out" | grep -qi 'warn' && ok "codex: warned about existing notify" || fail "codex: no warning on conflict"
 
+# Case B': indented top-level notify (legal TOML) -> detected, not duplicated.
+FAKE5="$(mktemp -d)"
+mkdir -p "$FAKE5/.claude" "$FAKE5/.codex"
+printf '{}\n' > "$FAKE5/.claude/settings.json"
+printf '  notify = ["/some/indented/notifier.sh"]\n' > "$FAKE5/.codex/config.toml"
+out5="$(HOME="$FAKE5" sh "$INSTALL" 2>/dev/null)"
+assert_contains "$FAKE5/.codex/config.toml" '/some/indented/notifier.sh' "codex: indented top-level notify preserved"
+[ "$(grep -cE '^[[:space:]]*notify[[:space:]]*=' "$FAKE5/.codex/config.toml")" -eq 1 ] \
+  && ok "codex: no duplicate notify for indented top-level" || fail "codex: duplicated indented notify"
+
 printf '\n%s test(s) failed\n' "$FAILS"
 [ "$FAILS" -eq 0 ]

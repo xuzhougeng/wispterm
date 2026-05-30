@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # install-wispterm-notify.sh — idempotently install the WispTerm notify program
-# and wire Claude Code Stop/Notification hooks. (Codex wiring added later.)
+# and wire Claude Code Stop/Notification hooks plus Codex config.toml notify.
 # Unix only (Linux/WSL + macOS). Backs up before editing; only adds, never deletes.
 set -eu
 
@@ -70,7 +70,11 @@ cp "$CODEX" "$CODEX.bak"
 
 # A top-level bare key appended after a [section] would bind to that section,
 # so we PREPEND the notify line to keep it top-level.
-existing="$(grep -nE '^notify[[:space:]]*=' "$CODEX" | head -1 || true)"
+# Only the top-level region (before the first [section]) defines a top-level
+# `notify`. Scan just that region so we catch an indented top-level key without
+# false-matching a `notify` key inside some [table].
+toplevel="$(awk '/^[[:space:]]*\[/{exit} {print}' "$CODEX")"
+existing="$(printf '%s\n' "$toplevel" | grep -nE '^[[:space:]]*notify[[:space:]]*=' | head -1 || true)"
 if [ -z "$existing" ]; then
   tmp="$(mktemp)"
   printf 'notify = ["%s"]\n' "$DEST" >"$tmp"
