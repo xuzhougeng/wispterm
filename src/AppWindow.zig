@@ -3227,8 +3227,25 @@ fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
         // Freeze the caret during composition so the IMM popup, anchored when
         // the composition started, doesn't drift with local UI relayout.
         if (win.ime_composing) return;
-        syncAiChatImeCaret(win, session);
+        const size = window_backend.clientSize(win);
+        const left = leftPanelsWidth();
+        const chat_w = @max(1.0, @as(f32, @floatFromInt(size.width)) - left - rightPanelsWidthForWindow(size.width));
+        syncAiChatImeCaret(win, session, left, chat_w);
         return;
+    }
+
+    // Copilot sidebar (on a terminal tab): anchor the IME caret to the panel's
+    // composer, not the terminal cursor.
+    if (aiCopilotVisible() and input.aiCopilotFocused()) {
+        if (activeCopilotSessionForInput()) |session| {
+            if (win.ime_composing) return;
+            const size = window_backend.clientSize(win);
+            const bounds = ai_sidebar.boundsForWindow(size.width, size.height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+            const chat_x: f32 = @floatFromInt(bounds.left);
+            const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
+            syncAiChatImeCaret(win, session, chat_x, chat_w);
+            return;
+        }
     }
 
     const surface = activeSurface() orelse return;
@@ -3365,16 +3382,12 @@ fn isInverseBlankImeCell(p: anytype, cell: anytype) bool {
     return style.flags.inverse;
 }
 
-fn syncAiChatImeCaret(win: *window_backend.Window, session: *ai_chat.Session) void {
+fn syncAiChatImeCaret(win: *window_backend.Window, session: *ai_chat.Session, chat_x: f32, chat_w: f32) void {
     const size = window_backend.clientSize(win);
     const wh: f32 = @floatFromInt(size.height);
-    const ww: f32 = @floatFromInt(size.width);
-    const left_panels_w = leftPanelsWidth();
-    const right_panels_w = rightPanelsWidthForWindow(size.width);
-    const panel_w = @max(1.0, ww - left_panels_w - right_panels_w);
     session.mutex.lock();
     const input_text = session.input();
-    const layout = ai_chat_renderer.inputLayout(left_panels_w, panel_w, input_text);
+    const layout = ai_chat_renderer.inputLayout(chat_x, chat_w, input_text);
     const cursor = ai_chat_renderer.inputCursorRect(input_text, session.input_cursor, layout.text_x, layout.text_w);
     const scrolled_row = session.input_scroll_row;
     const follow_cursor = session.input_scroll_follow_cursor;

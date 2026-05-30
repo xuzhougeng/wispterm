@@ -35,7 +35,7 @@ const PERMISSION_CHIP_H: f32 = 24;
 const STATUS_SLOT_W: f32 = 280;
 const STOP_BUTTON_W: f32 = 104;
 const STOP_BUTTON_H: f32 = 28;
-const MODE_SLOT_W: f32 = 112;
+const MODE_SLOT_W: f32 = 76;
 const INPUT_SCROLLBAR_GUTTER: f32 = 10;
 const INPUT_SCROLLBAR_W: f32 = 4;
 const INPUT_SCROLLBAR_PAD: f32 = 7;
@@ -141,12 +141,19 @@ pub fn render(
     const header_y = window_height - top - HEADER_H;
     ui_pipeline.fillQuadAlpha(x, header_y, w, HEADER_H, panel, 0.95);
     ui_pipeline.fillQuadAlpha(x, header_y, w, 1, line, 0.8);
-    _ = titlebar.renderTextLimited(session.model(), x + LINE_PAD_X, header_y + 10, mixColor(fg, accent, 0.12), w * 0.48);
-
     const permission = ai_chat.agentPermission();
     const chip_x = permissionChipX(x, w);
     const mode_text = if (session.agent_enabled) "Agent" else "Chat";
-    const mode_x = chip_x - MODE_SLOT_W - 8;
+    const mode_x = @max(x + LINE_PAD_X, chip_x - MODE_SLOT_W - 8);
+
+    // Model label fills the space left of the mode slot; it is hidden when the
+    // panel (e.g. the narrow copilot sidebar) is too tight to show it without
+    // overlapping the controls.
+    const model_x = x + LINE_PAD_X;
+    const model_limit = mode_x - model_x - 12;
+    if (model_limit > 24) {
+        _ = titlebar.renderTextLimited(session.model(), model_x, header_y + 10, mixColor(fg, accent, 0.12), model_limit);
+    }
     _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), MODE_SLOT_W);
 
     const perm_text = permissionDisplayName(permission);
@@ -1072,7 +1079,11 @@ fn copyButtonRectForBubble(bubble_x: f32, top_px: f32, bubble_w: f32) CopyButton
 }
 
 fn permissionChipX(x: f32, w: f32) f32 {
-    return ai_chat_layout.permissionChipX(x, w, LINE_PAD_X, STATUS_SLOT_W, 12, PERMISSION_CHIP_W);
+    // Reserve a status slot that shrinks on narrow panels (the copilot sidebar)
+    // so the right-anchored [mode][chip] cluster can't collapse onto the
+    // left-aligned model label. On wide tabs this matches the old ~280 reserve.
+    const status_reserve = @min(STATUS_SLOT_W, @max(72.0, w * 0.22));
+    return ai_chat_layout.permissionChipX(x, w, LINE_PAD_X, status_reserve, 12, PERMISSION_CHIP_W);
 }
 
 fn stopButtonRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
@@ -1080,9 +1091,14 @@ fn stopButtonRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
 }
 
 fn statusActionRect(x: f32, w: f32, titlebar_offset: f32, text: []const u8) Rect {
-    const status_w = @min(measureText(text), STATUS_SLOT_W);
+    // Keep status to the right of the permission chip; clamp its width to the
+    // space available there so long status text can't overlap the chip on a
+    // narrow panel.
+    const right = x + w - LINE_PAD_X;
+    const avail = @max(1.0, right - (permissionChipX(x, w) + PERMISSION_CHIP_W + 12));
+    const status_w = @min(@min(measureText(text), STATUS_SLOT_W), avail);
     return .{
-        .x = x + w - LINE_PAD_X - status_w,
+        .x = right - status_w,
         .top_px = titlebar_offset + 8,
         .w = @max(1.0, status_w),
         .h = 32,
