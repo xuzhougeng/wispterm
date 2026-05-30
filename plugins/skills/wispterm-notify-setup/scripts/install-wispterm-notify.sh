@@ -60,3 +60,29 @@ else
   echo "  hooks.Stop[]   -> { \"hooks\": [ { \"type\": \"command\", \"command\": \"$DEST\" } ] }"
   echo "  hooks.Notification[] -> (same)"
 fi
+
+# --- 3. Wire Codex config.toml `notify` (idempotent, top-level, no-clobber) ---
+CODEX_DIR="$HOME/.codex"
+CODEX="$CODEX_DIR/config.toml"
+mkdir -p "$CODEX_DIR"
+[ -f "$CODEX" ] || : >"$CODEX"
+cp "$CODEX" "$CODEX.bak"
+
+# A top-level bare key appended after a [section] would bind to that section,
+# so we PREPEND the notify line to keep it top-level.
+existing="$(grep -nE '^[[:space:]]*notify[[:space:]]*=' "$CODEX" | head -1 || true)"
+if [ -z "$existing" ]; then
+  tmp="$(mktemp)"
+  printf 'notify = ["%s"]\n' "$DEST" >"$tmp"
+  cat "$CODEX" >>"$tmp"
+  mv "$tmp" "$CODEX"
+  echo "codex: notify added -> $DEST"
+elif printf '%s' "$existing" | grep -qF "$DEST"; then
+  echo "codex: notify already set to wispterm-notify"
+else
+  echo "WARN: codex already has a different notify (left untouched): ${existing#*:}"
+fi
+
+echo
+echo "Verify in WispTerm:"
+echo "  echo '{\"hook_event_name\":\"Notification\",\"title\":\"WispTerm\",\"message\":\"setup ok\"}' | $DEST"

@@ -94,5 +94,42 @@ PY
   [ $? -eq 0 ] && ok "re-run is idempotent (no duplicate CC hooks)" || fail "CC hooks duplicated on re-run"
 fi
 
+
+# ---- carryover (Task 2 review): backup + unrelated-key preservation ----
+[ -f "$CC.bak" ] && ok "installer wrote settings.json.bak backup" || fail "no settings.json.bak"
+assert_contains "$CC" '"opus"' "preserved unrelated top-level key (model)"
+
+# ================= installer: Codex config.toml =================
+# Case A: no prior notify -> added, top-level (before any [section]).
+FAKE2="$(mktemp -d)"
+mkdir -p "$FAKE2/.claude" "$FAKE2/.codex"
+printf '{}\n' > "$FAKE2/.claude/settings.json"
+cat > "$FAKE2/.codex/config.toml" <<'TOML'
+model = "gpt-5"
+
+[history]
+persistence = "save-all"
+TOML
+HOME="$FAKE2" sh "$INSTALL" >/dev/null 2>&1
+CODEX="$FAKE2/.codex/config.toml"
+DEST2="$FAKE2/.config/wispterm/wispterm-notify.sh"
+assert_contains "$CODEX" "notify = [\"$DEST2\"]" "codex: notify added"
+firstsec="$(grep -n '^\[' "$CODEX" | head -1 | cut -d: -f1)"
+notifyln="$(grep -n '^notify' "$CODEX" | head -1 | cut -d: -f1)"
+[ -n "$notifyln" ] && [ -n "$firstsec" ] && [ "$notifyln" -lt "$firstsec" ] \
+  && ok "codex: notify is top-level (before [section])" || fail "codex: notify not top-level"
+HOME="$FAKE2" sh "$INSTALL" >/dev/null 2>&1
+[ "$(grep -c '^notify' "$CODEX")" -eq 1 ] && ok "codex: idempotent (one notify line)" || fail "codex: notify duplicated"
+
+# Case B: pre-existing DIFFERENT notify -> left untouched + warning.
+FAKE3="$(mktemp -d)"
+mkdir -p "$FAKE3/.claude" "$FAKE3/.codex"
+printf '{}\n' > "$FAKE3/.claude/settings.json"
+printf 'notify = ["/some/other/notifier.sh"]\n' > "$FAKE3/.codex/config.toml"
+out="$(HOME="$FAKE3" sh "$INSTALL" 2>&1)"
+assert_contains "$FAKE3/.codex/config.toml" '/some/other/notifier.sh' "codex: existing notify preserved"
+assert_not_contains "$FAKE3/.codex/config.toml" 'wispterm-notify.sh' "codex: did not clobber existing notify"
+printf '%s' "$out" | grep -qi 'warn' && ok "codex: warned about existing notify" || fail "codex: no warning on conflict"
+
 printf '\n%s test(s) failed\n' "$FAILS"
 [ "$FAILS" -eq 0 ]
