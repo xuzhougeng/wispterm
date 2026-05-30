@@ -17,6 +17,7 @@ const markdown_preview = @import("markdown_preview.zig");
 const markdown_preview_panel = AppWindow.markdown_preview_panel;
 const preview_token = @import("preview_token.zig");
 const browser_panel = AppWindow.browser_panel;
+const ai_sidebar = @import("ai_sidebar.zig");
 const ui_perf = AppWindow.ui_perf;
 const render_diagnostics = @import("render_diagnostics.zig");
 const link_open = @import("link_open.zig");
@@ -850,6 +851,20 @@ fn handleChar(ev: platform_input.CharEvent) void {
         }
         return;
     }
+    // AI copilot sidebar (terminal tabs): when the copilot owns focus, route
+    // text input to its composer. `activeCopilotSessionForInput` is non-null
+    // only when the panel is visible on the active terminal tab.
+    if (aiCopilotFocused()) {
+        if (AppWindow.activeCopilotSessionForInput()) |chat| {
+            if (!ev.ctrl and !ev.alt) {
+                AppWindow.resetCursorBlink();
+                chat.handleChar(ev.codepoint);
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+            }
+            return;
+        }
+    }
     if (!AppWindow.isActiveTabTerminal()) return;
     // Skip chars when Alt is held without Ctrl — those are part of Alt+key
     // combos (e.g. Shift+Alt+4) and shouldn't produce text input.
@@ -999,6 +1014,12 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .paste => {
             if (AppWindow.activeAiChat()) |chat| {
                 pasteFromClipboardIntoAiChat(chat);
+            } else if (aiCopilotFocused()) {
+                if (AppWindow.activeCopilotSessionForInput()) |chat| {
+                    pasteFromClipboardIntoAiChat(chat);
+                } else {
+                    pasteFromClipboard();
+                }
             } else {
                 pasteFromClipboard();
             }
@@ -1135,6 +1156,27 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             return;
         }
     }
+    // AI copilot sidebar editing-mod keys (select-all / copy / cut), mirroring
+    // the ai_chat tab block above but for the copilot session.
+    if (aiCopilotFocused()) {
+        if (AppWindow.activeCopilotSessionForInput()) |chat| {
+            const mod = ev.ctrl or ev.super;
+            if (mod and !ev.alt and ev.key_code == 0x41) { // select all
+                chat.selectAll();
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
+            if (mod and !ev.alt and ev.key_code == 0x43) { // copy
+                copyAiChatToClipboard(chat);
+                return;
+            }
+            if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
+                copyAiChatCutToClipboard(chat);
+                return;
+            }
+        }
+    }
     if (action) |app_action| {
         if (handleConfiguredKeybindAction(app_action, .late)) return;
     }
@@ -1146,6 +1188,31 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
             return;
+        }
+    }
+
+    // AI copilot sidebar (terminal tabs): route editing/navigation keys to the
+    // copilot composer. Esc is intercepted specially so it never reaches the
+    // terminal — it stops an in-flight request, or hides the panel when idle.
+    if (aiCopilotFocused()) {
+        if (AppWindow.activeCopilotSessionForInput()) |chat| {
+            if (ev.key_code == platform_input.key_escape) {
+                if (chat.requestState().inflight) {
+                    chat.stopRequest();
+                } else {
+                    AppWindow.hideAiCopilot();
+                }
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
+            if (isAiChatKey(ev)) {
+                AppWindow.resetCursorBlink();
+                chat.handleKeyWithWrapCols(key_event, aiCopilotInputWrapCols());
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
         }
     }
 
@@ -1253,6 +1320,16 @@ fn aiChatInputWrapCols() usize {
     const size = clientSize(win);
     const ww: f32 = @floatFromInt(size.width);
     const panel_w = @max(1.0, ww - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidth());
+    return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
+}
+
+/// Wrap columns for the AI copilot sidebar's composer. Mirrors
+/// `aiChatInputWrapCols` but uses the sidebar/copilot panel width rather than
+/// the full-tab chat width.
+fn aiCopilotInputWrapCols() usize {
+    const win = AppWindow.g_window orelse return std.math.maxInt(usize);
+    const size = clientSize(win);
+    const panel_w = AppWindow.aiCopilotWidth(size.width);
     return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
 }
 
@@ -2575,6 +2652,109 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             file_explorer.g_focused = false;
             if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
 
+            // AI copilot sidebar (terminal tabs). When the panel is visible,
+            // a click inside its rect focuses the copilot and routes one-shot
+            // interactions (stop / missing-api-key / message toggle / copy /
+            // permission chip). A click outside the panel blurs the copilot and
+            // falls through to normal terminal handling. Drag-based interactions
+            // (transcript text selection, scrollbar drags) are intentionally not
+            // wired here: their continue-handlers recompute the full-tab rect and
+            // would mis-track against the narrower sidebar rect.
+            if (AppWindow.aiCopilotVisible()) {
+                if (AppWindow.activeCopilotSessionForInput()) |chat| {
+                    const win = AppWindow.g_window orelse return;
+                    const fb = window_backend.framebufferSize(win);
+                    const bounds = ai_sidebar.boundsForWindow(
+                        @intCast(fb.width),
+                        @intCast(fb.height),
+                        @floatCast(titlebarHeight()),
+                        AppWindow.leftPanelsWidth(),
+                        0,
+                    );
+                    const bx_left: f64 = @floatFromInt(bounds.left);
+                    const bx_right: f64 = @floatFromInt(bounds.right);
+                    const by_top: f64 = @floatFromInt(bounds.top);
+                    const by_bottom: f64 = @floatFromInt(bounds.bottom);
+                    if (xpos >= bx_left and xpos < bx_right and ypos >= by_top and ypos < by_bottom) {
+                        focusAiCopilot();
+                        const chat_x: f32 = @floatFromInt(bounds.left);
+                        const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
+                        if (AppWindow.ai_chat_renderer.stopButtonHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) {
+                            chat.stopRequest();
+                            AppWindow.g_force_rebuild = true;
+                            AppWindow.g_cells_valid = false;
+                            return;
+                        }
+                        if (AppWindow.ai_chat_renderer.missingApiKeyStatusHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) {
+                            overlays.openAiConfigForSession(chat);
+                            AppWindow.g_force_rebuild = true;
+                            AppWindow.g_cells_valid = false;
+                            return;
+                        }
+                        if (AppWindow.ai_chat_renderer.interactionHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatFromInt(fb.height),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) |target| {
+                            switch (target) {
+                                .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
+                                .toggle_tool => |message_index| {
+                                    chat.toggleToolMessageCollapsed(message_index);
+                                    AppWindow.g_force_rebuild = true;
+                                    AppWindow.g_cells_valid = false;
+                                },
+                                .toggle_reasoning => |message_index| {
+                                    chat.toggleReasoningCollapsed(message_index);
+                                    AppWindow.g_force_rebuild = true;
+                                    AppWindow.g_cells_valid = false;
+                                },
+                            }
+                            return;
+                        }
+                        if (AppWindow.ai_chat_renderer.permissionChipHitTest(
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) {
+                            toggleAiAgentPermission();
+                            return;
+                        }
+                        // Click landed in the panel but not on an interactive
+                        // element: keep focus, clear any selection, consume it.
+                        chat.clearSelection();
+                        AppWindow.g_force_rebuild = true;
+                        AppWindow.g_cells_valid = false;
+                        return;
+                    }
+                    // Click outside the sidebar: hand focus back to the terminal.
+                    blurAiCopilot();
+                }
+            }
+
             if (AppWindow.activeAiChat()) |chat| {
                 const win = AppWindow.g_window orelse return;
                 const fb = window_backend.framebufferSize(win);
@@ -3432,6 +3612,47 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             chat.scrollBy(delta);
             AppWindow.g_force_rebuild = true;
             return;
+        }
+    }
+    // AI copilot sidebar (terminal tabs): scroll the copilot transcript (or its
+    // composer when the cursor is over the input field) when the wheel event
+    // falls inside the sidebar rect. Uses the same clientSize source as the
+    // ai_chat-tab wheel path above so the rect matches what was hit-tested.
+    if (AppWindow.aiCopilotVisible()) {
+        if (AppWindow.activeCopilotSessionForInput()) |chat| {
+            const win = AppWindow.g_window orelse return;
+            const size = clientSize(win);
+            const bounds = ai_sidebar.boundsForWindow(
+                size.width,
+                size.height,
+                @floatCast(titlebarHeight()),
+                AppWindow.leftPanelsWidth(),
+                0,
+            );
+            if (ev.xpos >= bounds.left and ev.xpos < bounds.right and ev.ypos >= bounds.top and ev.ypos < bounds.bottom) {
+                const chat_x: f32 = @floatFromInt(bounds.left);
+                const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
+                if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
+                    chat,
+                    @floatFromInt(ev.xpos),
+                    @floatFromInt(ev.ypos),
+                    @floatFromInt(size.width),
+                    @floatFromInt(size.height),
+                    chat_x,
+                    chat_w,
+                )) |metrics| {
+                    const units: i32 = @intCast(mouseWheelUnits(ev.delta));
+                    const rows = if (ev.delta > 0) -units else units;
+                    _ = chat.scrollInputRows(rows, metrics.max_cols, metrics.visible_rows);
+                    AppWindow.g_force_rebuild = true;
+                    AppWindow.g_cells_valid = false;
+                    return;
+                }
+                const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
+                chat.scrollBy(delta);
+                AppWindow.g_force_rebuild = true;
+                return;
+            }
         }
     }
     // Scroll the surface under the mouse cursor (like Ghostty), not the focused surface.
