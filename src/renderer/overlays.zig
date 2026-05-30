@@ -1629,6 +1629,12 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
         switch (ev.key) {
             .tab, .arrow_down => g_ai_focus = (g_ai_focus + 1) % (AI_FIELD_COUNT + 3),
             .arrow_up => g_ai_focus = if (g_ai_focus == 0) AI_FIELD_COUNT + 2 else g_ai_focus - 1,
+            .arrow_right => {
+                if (g_ai_focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(true);
+            },
+            .arrow_left => {
+                if (g_ai_focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(false);
+            },
             .backspace => {
                 if (g_ai_focus < AI_FIELD_COUNT) backspaceAiFormField(g_ai_focus);
             },
@@ -2435,6 +2441,8 @@ fn clearAiForm() void {
 
 fn appendAiFormCodepoint(field: usize, codepoint: u21) void {
     if (field >= AI_FIELD_COUNT) return;
+    // Protocol is a ←/→ toggle over the valid protocols, not a free-text field.
+    if (field == @intFromEnum(AiField.protocol)) return;
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
     if (g_ai_lens[field] + len > AI_FIELD_MAX) return;
@@ -2474,10 +2482,31 @@ fn appendSshFormText(field: usize, text: []const u8) void {
 
 fn backspaceAiFormField(field: usize) void {
     if (field >= AI_FIELD_COUNT or g_ai_lens[field] == 0) return;
+    // Protocol is a toggle field; it is not text-editable.
+    if (field == @intFromEnum(AiField.protocol)) return;
     g_ai_lens[field] -= 1;
     while (g_ai_lens[field] > 0 and (g_ai_bufs[field][g_ai_lens[field]] & 0xC0) == 0x80) {
         g_ai_lens[field] -= 1;
     }
+}
+
+/// Cycle the Protocol form field to the next/previous valid protocol. The field
+/// is constrained to valid values (chat_completions / responses / anthropic),
+/// so users toggle with ←/→ instead of typing an arbitrary string.
+fn cycleAiFormProtocol(forward: bool) void {
+    const idx = @intFromEnum(AiField.protocol);
+    const current = AppWindow.ai_chat.ApiProtocol.parse(g_ai_bufs[idx][0..g_ai_lens[idx]]);
+    setAiDefault(.protocol, current.cycle(forward).name());
+}
+
+/// Protocol row display: the current protocol name plus a ←/→ toggle affordance
+/// and the base-URL hint for that protocol (so switching guides the Base URL).
+fn aiProtocolDisplay() []const u8 {
+    const S = struct {
+        threadlocal var buf: [192]u8 = undefined;
+    };
+    const p = AppWindow.ai_chat.ApiProtocol.parse(aiField(.protocol));
+    return std.fmt.bufPrint(&S.buf, "{s}   <-/->   {s}", .{ p.name(), p.baseUrlHint() }) catch p.name();
 }
 
 fn handleAiListKey(ev: input_key.KeyEvent) void {
@@ -2946,7 +2975,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("Thinking", aiField(.thinking)));
         desired = @max(desired, sessionTwoColumnWidth("Effort", aiField(.reasoning_effort)));
         desired = @max(desired, sessionTwoColumnWidth("Stream", aiField(.stream)));
-        desired = @max(desired, sessionTwoColumnWidth("Protocol", aiField(.protocol)));
+        desired = @max(desired, sessionTwoColumnWidth("Protocol", aiProtocolDisplay()));
         desired = @max(desired, sessionTwoColumnWidth("Max Tokens", aiField(.max_tokens)));
         desired = @max(desired, sessionTwoColumnWidth("Save & Open", "agent"));
         desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
@@ -3321,7 +3350,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.reasoning_effort), "Effort", aiField(.reasoning_effort), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.stream), "Stream", aiField(.stream), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.agent), "Agent", aiField(.agent), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), "Protocol", aiField(.protocol), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), "Protocol", aiProtocolDisplay(), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.max_tokens), "Max Tokens", aiField(.max_tokens), false);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT, "Save & Open", "agent", g_ai_focus == AI_FIELD_COUNT);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, "Save", "profile", g_ai_focus == AI_FIELD_COUNT + 1);
