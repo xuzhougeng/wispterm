@@ -397,17 +397,19 @@ static UNUserNotificationCenter *wispterm_notif_center(void) {
 }
 
 void wispterm_macos_notif_request_auth(void) {
-    UNUserNotificationCenter *center = wispterm_notif_center();
-    if (center == nil) { g_wispterm_notif_auth = 0; return; }
-    if (g_wispterm_notif_delegate == nil) {
-        g_wispterm_notif_delegate = [[WisptermNotifDelegate alloc] init];
+    @autoreleasepool {
+        UNUserNotificationCenter *center = wispterm_notif_center();
+        if (center == nil) { g_wispterm_notif_auth = 0; return; }
+        if (g_wispterm_notif_delegate == nil) {
+            g_wispterm_notif_delegate = [[WisptermNotifDelegate alloc] init];
+        }
+        center.delegate = g_wispterm_notif_delegate;
+        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                              completionHandler:^(BOOL granted, NSError *_Nullable error) {
+            (void)error;
+            g_wispterm_notif_auth = granted ? 2 : 1;
+        }];
     }
-    center.delegate = g_wispterm_notif_delegate;
-    [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
-                          completionHandler:^(BOOL granted, NSError *_Nullable error) {
-        (void)error;
-        g_wispterm_notif_auth = granted ? 2 : 1;
-    }];
 }
 
 int wispterm_macos_notif_auth_status(void) {
@@ -415,15 +417,18 @@ int wispterm_macos_notif_auth_status(void) {
 }
 
 void wispterm_macos_notif_show(const char *title, const char *body) {
-    UNUserNotificationCenter *center = wispterm_notif_center();
-    if (center == nil) return;
-    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
-    content.title = [NSString stringWithUTF8String:(title ? title : "")];
-    content.body = [NSString stringWithUTF8String:(body ? body : "")];
-    content.sound = [UNNotificationSound defaultSound];
-    UNNotificationRequest *req =
-        [UNNotificationRequest requestWithIdentifier:[[NSUUID UUID] UUIDString]
-                                             content:content
-                                             trigger:nil];
-    [center addNotificationRequest:req withCompletionHandler:nil];
+    @autoreleasepool {
+        UNUserNotificationCenter *center = wispterm_notif_center();
+        if (center == nil) return;
+        UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+        content.title = [NSString stringWithUTF8String:(title ? title : "")];
+        content.body = [NSString stringWithUTF8String:(body ? body : "")];
+        content.sound = [UNNotificationSound defaultSound];
+        UNNotificationRequest *req =
+            [UNNotificationRequest requestWithIdentifier:[[NSUUID UUID] UUIDString]
+                                                 content:content
+                                                 trigger:nil];
+        [center addNotificationRequest:req withCompletionHandler:nil];
+        [content release];
+    }
 }
