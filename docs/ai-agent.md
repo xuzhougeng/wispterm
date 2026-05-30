@@ -46,6 +46,30 @@ the assistant reply. This follows DeepSeek's
 Completed requests show elapsed time in the AI Chat status area, and token usage
 when the provider returns OpenAI-compatible `usage` fields.
 
+## In-context Copilot Sidebar
+
+Press `Ctrl+Shift+A` (`Cmd+Shift+A` on macOS) on a terminal tab to toggle a
+right-side AI copilot bound to the currently focused terminal. The copilot is
+terminal-only — it does not open on AI Agent or other non-terminal tabs.
+
+- Each terminal tab keeps its own copilot conversation. The conversation is
+  per-tab, and closing the tab discards it.
+- Terminal actions default to the current terminal, so there is no tab to pick
+  before asking. The copilot can still operate other terminals when you
+  explicitly ask it to.
+- Every message automatically includes a lightweight snapshot — the bound
+  terminal's working directory plus its recent output — so the copilot has
+  context without you pasting it.
+- The copilot shares the default AI profile (same provider, model, and key) as
+  the AI Agent.
+- It occupies the right panel slot exclusively: opening the copilot hides the
+  browser panel and the Markdown preview, and opening either of those hides the
+  copilot.
+- `Esc` stops an in-flight request. Pressing `Esc` again while idle hides the
+  panel and returns focus to the terminal.
+- Drag the panel's left edge to resize it; the width is shared across terminal
+  tabs.
+
 ## Markdown Export
 
 Use the command center to run `Export AI Chat Markdown` for the full transcript,

@@ -17,6 +17,7 @@ const markdown_preview = @import("markdown_preview.zig");
 const markdown_preview_panel = AppWindow.markdown_preview_panel;
 const preview_token = @import("preview_token.zig");
 const browser_panel = AppWindow.browser_panel;
+const ai_sidebar = @import("ai_sidebar.zig");
 const ui_perf = AppWindow.ui_perf;
 const render_diagnostics = @import("render_diagnostics.zig");
 const link_open = @import("link_open.zig");
@@ -308,7 +309,25 @@ threadlocal var g_markdown_preview_image_drag_last_x: f64 = 0;
 threadlocal var g_markdown_preview_image_drag_last_y: f64 = 0;
 pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
+pub threadlocal var g_ai_copilot_resize_hover: bool = false; // Mouse is over the AI copilot left edge
+pub threadlocal var g_ai_copilot_resize_dragging: bool = false; // Currently dragging the AI copilot edge
 pub threadlocal var g_url_open_mode: link_open.Mode = .embedded;
+
+/// Whether the AI copilot sidebar currently owns keyboard/mouse focus. Set by
+/// AppWindow.toggleAiCopilot; full key/mouse routing lands in a later task.
+threadlocal var g_ai_copilot_focused: bool = false;
+
+pub fn focusAiCopilot() void {
+    g_ai_copilot_focused = true;
+}
+
+pub fn blurAiCopilot() void {
+    g_ai_copilot_focused = false;
+}
+
+pub fn aiCopilotFocused() bool {
+    return g_ai_copilot_focused;
+}
 const SIDEBAR_TAB_DRAG_THRESHOLD_PX: f64 = 6.0;
 threadlocal var g_sidebar_tab_drag_pressed: ?usize = null;
 threadlocal var g_sidebar_tab_drag_current: ?usize = null;
@@ -422,6 +441,8 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_markdown_preview_image_drag_last_y = 0;
     g_browser_resize_hover = false;
     g_browser_resize_dragging = false;
+    g_ai_copilot_resize_hover = false;
+    g_ai_copilot_resize_dragging = false;
     g_selecting = false;
     plus_btn_pressed = false;
     tab.g_tab_close_pressed = null;
@@ -481,6 +502,7 @@ pub fn toggleBrowserPanel() void {
         _ = platform_open_url.open(allocator, .{ .url = target });
         return;
     }
+    if (!browser_panel.isVisibleForActiveTab()) AppWindow.hideAiCopilot();
     if (!browser_panel.toggleForSurface(allocator, parent, surface)) return;
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
@@ -833,6 +855,20 @@ fn handleChar(ev: platform_input.CharEvent) void {
         }
         return;
     }
+    // AI copilot sidebar (terminal tabs): when the copilot owns focus, route
+    // text input to its composer. `activeCopilotSessionForInput` is non-null
+    // only when the panel is visible on the active terminal tab.
+    if (aiCopilotFocused()) {
+        if (AppWindow.activeCopilotSessionForInput()) |chat| {
+            if (!ev.ctrl and !ev.alt) {
+                AppWindow.resetCursorBlink();
+                chat.handleChar(ev.codepoint);
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+            }
+            return;
+        }
+    }
     if (!AppWindow.isActiveTabTerminal()) return;
     // Skip chars when Alt is held without Ctrl — those are part of Alt+key
     // combos (e.g. Shift+Alt+4) and shouldn't produce text input.
@@ -973,6 +1009,7 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .split_right => AppWindow.splitFocused(.right),
         .toggle_file_explorer => toggleFileExplorer(),
         .toggle_sidebar => toggleSidebar(),
+        .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
         .close_panel_or_tab => closePanelOrTab(),
         .toggle_maximize => toggleMaximize(),
         .font_size => |delta| adjustFontSize(delta),
@@ -981,6 +1018,12 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .paste => {
             if (AppWindow.activeAiChat()) |chat| {
                 pasteFromClipboardIntoAiChat(chat);
+            } else if (aiCopilotFocused()) {
+                if (AppWindow.activeCopilotSessionForInput()) |chat| {
+                    pasteFromClipboardIntoAiChat(chat);
+                } else {
+                    pasteFromClipboard();
+                }
             } else {
                 pasteFromClipboard();
             }
@@ -1117,6 +1160,27 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             return;
         }
     }
+    // AI copilot sidebar editing-mod keys (select-all / copy / cut), mirroring
+    // the ai_chat tab block above but for the copilot session.
+    if (aiCopilotFocused()) {
+        if (AppWindow.activeCopilotSessionForInput()) |chat| {
+            const mod = ev.ctrl or ev.super;
+            if (mod and !ev.alt and ev.key_code == 0x41) { // select all
+                chat.selectAll();
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
+            if (mod and !ev.alt and ev.key_code == 0x43) { // copy
+                copyAiChatToClipboard(chat);
+                return;
+            }
+            if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
+                copyAiChatCutToClipboard(chat);
+                return;
+            }
+        }
+    }
     if (action) |app_action| {
         if (handleConfiguredKeybindAction(app_action, .late)) return;
     }
@@ -1128,6 +1192,31 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
             return;
+        }
+    }
+
+    // AI copilot sidebar (terminal tabs): route editing/navigation keys to the
+    // copilot composer. Esc is intercepted specially so it never reaches the
+    // terminal — it stops an in-flight request, or hides the panel when idle.
+    if (aiCopilotFocused()) {
+        if (AppWindow.activeCopilotSessionForInput()) |chat| {
+            if (ev.key_code == platform_input.key_escape) {
+                if (chat.requestState().inflight) {
+                    chat.stopRequest();
+                } else {
+                    AppWindow.hideAiCopilot();
+                }
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
+            if (isAiChatKey(ev)) {
+                AppWindow.resetCursorBlink();
+                chat.handleKeyWithWrapCols(key_event, aiCopilotInputWrapCols());
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
         }
     }
 
@@ -1235,6 +1324,16 @@ fn aiChatInputWrapCols() usize {
     const size = clientSize(win);
     const ww: f32 = @floatFromInt(size.width);
     const panel_w = @max(1.0, ww - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidth());
+    return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
+}
+
+/// Wrap columns for the AI copilot sidebar's composer. Mirrors
+/// `aiChatInputWrapCols` but uses the sidebar/copilot panel width rather than
+/// the full-tab chat width.
+fn aiCopilotInputWrapCols() usize {
+    const win = AppWindow.g_window orelse return std.math.maxInt(usize);
+    const size = clientSize(win);
+    const panel_w = AppWindow.aiCopilotWidth(size.width);
     return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
 }
 
@@ -1437,6 +1536,41 @@ fn applyBrowserWidthFromMouse(xpos: f64) void {
     const new_width = right_edge - xpos;
     const available_width: f32 = @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.browserPanelRightOffset();
     if (!browser_panel.setWidth(@floatCast(new_width), available_width)) return;
+    syncGridFromWindow(win);
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
+// AI copilot panel resize grip. The copilot is right-docked (right_offset 0)
+// and its bounds are computed against framebufferSize everywhere (renderer +
+// click handling), so the hit-test/apply mirror the browser resize structure
+// but read the framebuffer size to track the panel's actual left edge.
+fn hitTestAiCopilotResizeHandle(xpos: f64, ypos: f64) bool {
+    if (!AppWindow.aiCopilotVisible()) return false;
+    if (ypos < titlebarHeight()) return false;
+    const win = AppWindow.g_window orelse return false;
+    const fb = window_backend.framebufferSize(win);
+    const bounds = ai_sidebar.boundsForWindow(
+        @intCast(fb.width),
+        @intCast(fb.height),
+        @floatCast(titlebarHeight()),
+        AppWindow.leftPanelsWidth(),
+        0,
+    );
+    const panel_x: f64 = @floatFromInt(bounds.left);
+    const half_hit: f64 = @as(f64, @floatCast(ai_sidebar.RESIZE_HIT_WIDTH)) / 2;
+    return xpos >= panel_x - half_hit and xpos <= panel_x + half_hit;
+}
+
+fn applyAiCopilotWidthFromMouse(xpos: f64) void {
+    const win = AppWindow.g_window orelse return;
+    const fb = window_backend.framebufferSize(win);
+    // Right-docked at the far right edge (right_offset 0): width grows as the
+    // mouse moves left, same as the browser's right-edge math.
+    const right_edge = @as(f64, @floatFromInt(fb.width));
+    const new_width = right_edge - xpos;
+    const available_width: f32 = @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth();
+    if (!ai_sidebar.setWidth(@floatCast(new_width), available_width)) return;
     syncGridFromWindow(win);
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
@@ -2181,6 +2315,7 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
     const perf = ui_perf.begin("input.open_preview_async");
     defer perf.end();
 
+    AppWindow.hideAiCopilot();
     if (!markdown_preview_panel.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -2452,7 +2587,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 @floatFromInt(fb.width),
                 @floatFromInt(fb.height),
                 AppWindow.leftPanelsWidth(),
-                AppWindow.rightPanelsWidthForWindow(fb.width),
+                @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
             ) != null) {
                 pasteFromClipboardIntoAiChat(chat);
                 return;
@@ -2510,6 +2645,12 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 platform_cursor.set(.size_we);
                 return;
             }
+            if (hitTestAiCopilotResizeHandle(xpos, ypos)) {
+                g_ai_copilot_resize_dragging = true;
+                g_ai_copilot_resize_hover = true;
+                platform_cursor.set(.size_we);
+                return;
+            }
 
             if (over_browser_url_bar) {
                 file_explorer.g_focused = false;
@@ -2556,6 +2697,109 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             file_explorer.g_focused = false;
             if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
 
+            // AI copilot sidebar (terminal tabs). When the panel is visible,
+            // a click inside its rect focuses the copilot and routes one-shot
+            // interactions (stop / missing-api-key / message toggle / copy /
+            // permission chip). A click outside the panel blurs the copilot and
+            // falls through to normal terminal handling. Drag-based interactions
+            // (transcript text selection, scrollbar drags) are intentionally not
+            // wired here: their continue-handlers recompute the full-tab rect and
+            // would mis-track against the narrower sidebar rect.
+            if (AppWindow.aiCopilotVisible()) {
+                if (AppWindow.activeCopilotSessionForInput()) |chat| {
+                    const win = AppWindow.g_window orelse return;
+                    const fb = window_backend.framebufferSize(win);
+                    const bounds = ai_sidebar.boundsForWindow(
+                        @intCast(fb.width),
+                        @intCast(fb.height),
+                        @floatCast(titlebarHeight()),
+                        AppWindow.leftPanelsWidth(),
+                        0,
+                    );
+                    const bx_left: f64 = @floatFromInt(bounds.left);
+                    const bx_right: f64 = @floatFromInt(bounds.right);
+                    const by_top: f64 = @floatFromInt(bounds.top);
+                    const by_bottom: f64 = @floatFromInt(bounds.bottom);
+                    if (xpos >= bx_left and xpos < bx_right and ypos >= by_top and ypos < by_bottom) {
+                        focusAiCopilot();
+                        const chat_x: f32 = @floatFromInt(bounds.left);
+                        const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
+                        if (AppWindow.ai_chat_renderer.stopButtonHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) {
+                            chat.stopRequest();
+                            AppWindow.g_force_rebuild = true;
+                            AppWindow.g_cells_valid = false;
+                            return;
+                        }
+                        if (AppWindow.ai_chat_renderer.missingApiKeyStatusHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) {
+                            overlays.openAiConfigForSession(chat);
+                            AppWindow.g_force_rebuild = true;
+                            AppWindow.g_cells_valid = false;
+                            return;
+                        }
+                        if (AppWindow.ai_chat_renderer.interactionHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatFromInt(fb.height),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) |target| {
+                            switch (target) {
+                                .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
+                                .toggle_tool => |message_index| {
+                                    chat.toggleToolMessageCollapsed(message_index);
+                                    AppWindow.g_force_rebuild = true;
+                                    AppWindow.g_cells_valid = false;
+                                },
+                                .toggle_reasoning => |message_index| {
+                                    chat.toggleReasoningCollapsed(message_index);
+                                    AppWindow.g_force_rebuild = true;
+                                    AppWindow.g_cells_valid = false;
+                                },
+                            }
+                            return;
+                        }
+                        if (AppWindow.ai_chat_renderer.permissionChipHitTest(
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) {
+                            toggleAiAgentPermission();
+                            return;
+                        }
+                        // Click landed in the panel but not on an interactive
+                        // element: keep focus, clear any selection, consume it.
+                        chat.clearSelection();
+                        AppWindow.g_force_rebuild = true;
+                        AppWindow.g_cells_valid = false;
+                        return;
+                    }
+                    // Click outside the sidebar: hand focus back to the terminal.
+                    blurAiCopilot();
+                }
+            }
+
             if (AppWindow.activeAiChat()) |chat| {
                 const win = AppWindow.g_window orelse return;
                 const fb = window_backend.framebufferSize(win);
@@ -2566,7 +2810,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.width),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) {
                     chat.stopRequest();
                     AppWindow.g_force_rebuild = true;
@@ -2580,7 +2824,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.width),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) {
                     overlays.openAiConfigForSession(chat);
                     AppWindow.g_force_rebuild = true;
@@ -2595,7 +2839,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.height),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) |target| {
                     switch (target) {
                         .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
@@ -2618,7 +2862,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.width),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) {
                     toggleAiAgentPermission();
                     return;
@@ -2631,7 +2875,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.height),
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) |drag_offset| {
                     g_ai_transcript_scroll_dragging = true;
                     g_ai_transcript_scroll_chat = chat;
@@ -2651,7 +2895,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         @floatFromInt(fb.height),
                         @floatCast(titlebarHeight()),
                         AppWindow.leftPanelsWidth(),
-                        AppWindow.rightPanelsWidthForWindow(fb.width),
+                        @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                     )) |hit| {
                         chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
                         g_ai_transcript_selecting = true;
@@ -2670,7 +2914,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatFromInt(fb.width),
                     @floatFromInt(fb.height),
                     AppWindow.leftPanelsWidth(),
-                    AppWindow.rightPanelsWidthForWindow(fb.width),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) |hit| {
                     g_ai_input_scroll_dragging = true;
                     g_ai_input_scroll_chat = chat;
@@ -2852,6 +3096,12 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 platform_cursor.set(if (g_browser_resize_hover) .size_we else .arrow);
                 return;
             }
+            if (g_ai_copilot_resize_dragging) {
+                g_ai_copilot_resize_dragging = false;
+                g_ai_copilot_resize_hover = hitTestAiCopilotResizeHandle(xpos, ypos);
+                platform_cursor.set(if (g_ai_copilot_resize_hover) .size_we else .arrow);
+                return;
+            }
 
             // Handle divider drag release
             if (g_divider_dragging) {
@@ -3017,7 +3267,7 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
         @floatFromInt(size.width),
         @floatFromInt(size.height),
         AppWindow.leftPanelsWidth(),
-        AppWindow.rightPanelsWidthForWindow(size.width),
+        @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width),
         g_ai_input_scroll_drag_offset,
     )) |drag| {
         _ = chat.setInputScrollRow(drag.row, drag.max_cols, drag.visible_rows);
@@ -3036,7 +3286,7 @@ fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) v
         @floatFromInt(size.height),
         @floatCast(titlebarHeight()),
         AppWindow.leftPanelsWidth(),
-        AppWindow.rightPanelsWidthForWindow(size.width),
+        @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width),
         g_ai_transcript_scroll_drag_offset,
     )) |px| {
         chat.scrollToPx(px);
@@ -3056,7 +3306,7 @@ fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, 
         @floatFromInt(fb.height),
         @floatCast(titlebarHeight()),
         AppWindow.leftPanelsWidth(),
-        AppWindow.rightPanelsWidthForWindow(fb.width),
+        @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
     )) |hit| {
         chat.updateTranscriptSelection(hit.message_index, hit.byte_offset);
         AppWindow.g_force_rebuild = true;
@@ -3084,6 +3334,11 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     }
     if (g_browser_resize_dragging) {
         applyBrowserWidthFromMouse(xpos);
+        platform_cursor.set(.size_we);
+        return;
+    }
+    if (g_ai_copilot_resize_dragging) {
+        applyAiCopilotWidthFromMouse(xpos);
         platform_cursor.set(.size_we);
         return;
     }
@@ -3123,7 +3378,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
                 @floatFromInt(hover_fb.height),
                 @floatCast(titlebarHeight()),
                 AppWindow.leftPanelsWidth(),
-                AppWindow.rightPanelsWidthForWindow(hover_fb.width),
+                @as(f32, @floatFromInt(hover_fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(hover_fb.width),
             ) != null;
             if (over != AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
                 AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = over;
@@ -3230,6 +3485,15 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         } else if (g_browser_resize_hover) {
             platform_cursor.set(.arrow);
             g_browser_resize_hover = false;
+        }
+        const over_ai_copilot_resize = hitTestAiCopilotResizeHandle(xpos, ypos);
+        if (over_ai_copilot_resize) {
+            platform_cursor.set(.size_we);
+            g_ai_copilot_resize_hover = true;
+            return;
+        } else if (g_ai_copilot_resize_hover) {
+            platform_cursor.set(.arrow);
+            g_ai_copilot_resize_hover = false;
         }
     }
 
@@ -3400,7 +3664,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                 @floatFromInt(size.width),
                 @floatFromInt(size.height),
                 AppWindow.leftPanelsWidth(),
-                AppWindow.rightPanelsWidthForWindow(size.width),
+                @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width),
             )) |metrics| {
                 const units: i32 = @intCast(mouseWheelUnits(ev.delta));
                 const rows = if (ev.delta > 0) -units else units;
@@ -3413,6 +3677,47 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             chat.scrollBy(delta);
             AppWindow.g_force_rebuild = true;
             return;
+        }
+    }
+    // AI copilot sidebar (terminal tabs): scroll the copilot transcript (or its
+    // composer when the cursor is over the input field) when the wheel event
+    // falls inside the sidebar rect. Uses the same clientSize source as the
+    // ai_chat-tab wheel path above so the rect matches what was hit-tested.
+    if (AppWindow.aiCopilotVisible()) {
+        if (AppWindow.activeCopilotSessionForInput()) |chat| {
+            const win = AppWindow.g_window orelse return;
+            const size = clientSize(win);
+            const bounds = ai_sidebar.boundsForWindow(
+                size.width,
+                size.height,
+                @floatCast(titlebarHeight()),
+                AppWindow.leftPanelsWidth(),
+                0,
+            );
+            if (ev.xpos >= bounds.left and ev.xpos < bounds.right and ev.ypos >= bounds.top and ev.ypos < bounds.bottom) {
+                const chat_x: f32 = @floatFromInt(bounds.left);
+                const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
+                if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
+                    chat,
+                    @floatFromInt(ev.xpos),
+                    @floatFromInt(ev.ypos),
+                    @floatFromInt(size.width),
+                    @floatFromInt(size.height),
+                    chat_x,
+                    chat_w,
+                )) |metrics| {
+                    const units: i32 = @intCast(mouseWheelUnits(ev.delta));
+                    const rows = if (ev.delta > 0) -units else units;
+                    _ = chat.scrollInputRows(rows, metrics.max_cols, metrics.visible_rows);
+                    AppWindow.g_force_rebuild = true;
+                    AppWindow.g_cells_valid = false;
+                    return;
+                }
+                const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
+                chat.scrollBy(delta);
+                AppWindow.g_force_rebuild = true;
+                return;
+            }
         }
     }
     // Scroll the surface under the mouse cursor (like Ghostty), not the focused surface.

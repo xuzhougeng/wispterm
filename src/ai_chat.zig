@@ -25,6 +25,7 @@ pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
 pub const DEFAULT_MODEL = "deepseek-v4-pro";
 pub const DEFAULT_SYSTEM_PROMPT = platform_agent_prompt.defaultSystemPrompt;
+pub const COPILOT_SYSTEM_PROMPT = platform_agent_prompt.copilotSystemPrompt;
 pub const DEFAULT_THINKING = "enabled";
 pub const DEFAULT_REASONING_EFFORT = "high";
 pub const DEFAULT_STREAM = "false";
@@ -37,6 +38,8 @@ const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
 const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
 const INPUT_PROMPT_MAX_BYTES: usize = 64 * 1024;
 const SYSTEM_PROMPT_MAX_BYTES: usize = 16 * 1024;
+
+pub const COPILOT_CONTEXT_LINES: usize = 40;
 
 pub const ApiProtocol = ai_chat_protocol.ApiProtocol;
 pub const Role = ai_chat_protocol.Role;
@@ -255,6 +258,7 @@ const ChatRequest = struct {
     stream: bool,
     max_tokens: u32 = 8192,
     agent_enabled: bool,
+    copilot: bool = false,
     tool_host: ?ToolHost,
     tool_snapshot: ?ToolSnapshot,
     started_ms: i64,
@@ -761,6 +765,11 @@ pub const Session = struct {
     approval_command_len: usize = 0,
     approval_reason_buf: [256]u8 = undefined,
     approval_reason_len: usize = 0,
+    /// Copilot mode: when true, requests pre-target the bound surface and exec
+    /// tools fall back to it when the model omits surface_id (Issue #98).
+    copilot: bool = false,
+    bound_surface_id_buf: [16]u8 = undefined,
+    bound_surface_id_len: usize = 0,
 
     pub const RequestState = struct {
         inflight: bool,
@@ -783,6 +792,16 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.history_on_change = hook;
+    }
+
+    pub fn setBoundSurface(self: *Session, surface_id: []const u8) void {
+        const n = @min(surface_id.len, self.bound_surface_id_buf.len);
+        @memcpy(self.bound_surface_id_buf[0..n], surface_id[0..n]);
+        self.bound_surface_id_len = n;
+    }
+
+    pub fn boundSurfaceId(self: *const Session) []const u8 {
+        return self.bound_surface_id_buf[0..self.bound_surface_id_len];
     }
 
     pub fn init(
@@ -2193,6 +2212,44 @@ pub const Session = struct {
         const req = try self.allocator.create(ChatRequest);
         errdefer self.allocator.destroy(req);
 
+        const settings = currentAgentSettings();
+        const agent_enabled = self.agent_enabled or settings.enabled;
+        const tool_host = if (agent_enabled) currentToolHost() else null;
+        var tool_snapshot: ?ToolSnapshot = null;
+        errdefer if (tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
+        if (tool_host) |host| {
+            // The tab model is thread-local to the UI thread. Capture the agent
+            // view before spawning the request worker so tools do not read an
+            // empty thread-local copy from the background thread.
+            tool_snapshot = host.collectSnapshot(host.ctx, self.allocator) catch null;
+        }
+
+        // Each copilot user message carries a lightweight snapshot of the bound
+        // terminal (cwd + recent output). Append it to the latest user message
+        // rather than emitting a separate trailing message, which would break the
+        // role-alternation requirement of the Anthropic protocol.
+        var copilot_ctx: ?[]u8 = null;
+        defer if (copilot_ctx) |c| self.allocator.free(c);
+        var copilot_target_idx: ?usize = null;
+        if (self.copilot and self.bound_surface_id_len > 0) {
+            if (tool_snapshot) |snap| {
+                if (findSurface(snap, self.boundSurfaceId())) |surface| {
+                    copilot_ctx = buildCopilotContext(self.allocator, surface.cwd, surface.snapshot) catch null;
+                    if (copilot_ctx != null) {
+                        // index of the LAST user message in self.messages
+                        var k: usize = self.messages.items.len;
+                        while (k > 0) {
+                            k -= 1;
+                            if (self.messages.items[k].role == .user) {
+                                copilot_target_idx = k;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         var visible_count: usize = 0;
         for (self.messages.items) |msg| {
             if (msg.role != .tool) {
@@ -2213,7 +2270,7 @@ pub const Session = struct {
             for (messages[0..written]) |msg| msg.deinit(self.allocator);
         }
 
-        for (self.messages.items) |msg| {
+        for (self.messages.items, 0..) |msg, idx| {
             if (msg.role == .tool) {
                 if (!msg.replay_to_model) continue;
                 const id = msg.tool_call_id orelse continue;
@@ -2227,20 +2284,14 @@ pub const Session = struct {
                 continue;
             }
 
-            messages[written] = try requestMessageWithClonedFields(self.allocator, msg.role, msg.content, msg.reasoning, null, null);
+            if (copilot_target_idx != null and idx == copilot_target_idx.? and copilot_ctx != null) {
+                const combined = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ msg.content, copilot_ctx.? });
+                defer self.allocator.free(combined);
+                messages[written] = try requestMessageWithClonedFields(self.allocator, msg.role, combined, msg.reasoning, null, null);
+            } else {
+                messages[written] = try requestMessageWithClonedFields(self.allocator, msg.role, msg.content, msg.reasoning, null, null);
+            }
             written += 1;
-        }
-
-        const settings = currentAgentSettings();
-        const agent_enabled = self.agent_enabled or settings.enabled;
-        const tool_host = if (agent_enabled) currentToolHost() else null;
-        var tool_snapshot: ?ToolSnapshot = null;
-        errdefer if (tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
-        if (tool_host) |host| {
-            // The tab model is thread-local to the UI thread. Capture the agent
-            // view before spawning the request worker so tools do not read an
-            // empty thread-local copy from the background thread.
-            tool_snapshot = host.collectSnapshot(host.ctx, self.allocator) catch null;
         }
 
         const base_url = try self.allocator.dupe(u8, self.baseUrl());
@@ -2273,6 +2324,7 @@ pub const Session = struct {
             .stream = self.stream and !agent_enabled and self.protocol != .anthropic,
             .max_tokens = self.max_tokens,
             .agent_enabled = agent_enabled,
+            .copilot = self.copilot,
             .tool_host = tool_host,
             .tool_snapshot = tool_snapshot,
             .started_ms = std.time.milliTimestamp(),
@@ -2282,6 +2334,9 @@ pub const Session = struct {
         model_owned = false;
         system_prompt_owned = false;
         reasoning_effort_owned = false;
+        if (self.copilot and self.bound_surface_id_len > 0) {
+            setWriteContext(req, self.boundSurfaceId());
+        }
         return req;
     }
 
@@ -3356,7 +3411,7 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
     if (std.mem.eql(u8, call.name, "ssh_session_exec")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
-        const surface_id = jsonStringArg(args.value, "surface_id") orelse return request.allocator.dupe(u8, "Missing surface_id");
+        const surface_id = jsonStringArg(args.value, "surface_id") orelse defaultExecSurfaceId(request) orelse return request.allocator.dupe(u8, "Missing surface_id");
         const command = jsonStringArg(args.value, "command") orelse return request.allocator.dupe(u8, "Missing command");
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
         return sshSessionExecTool(request, surface_id, command, timeout_ms);
@@ -3364,7 +3419,7 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
     if (std.mem.eql(u8, call.name, "wsl_session_exec")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
-        const surface_id = jsonStringArg(args.value, "surface_id") orelse return request.allocator.dupe(u8, "Missing surface_id");
+        const surface_id = jsonStringArg(args.value, "surface_id") orelse defaultExecSurfaceId(request) orelse return request.allocator.dupe(u8, "Missing surface_id");
         const command = jsonStringArg(args.value, "command") orelse return request.allocator.dupe(u8, "Missing command");
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
         return wslSessionExecTool(request, surface_id, command, timeout_ms);
@@ -3372,7 +3427,7 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
     if (std.mem.eql(u8, call.name, "terminal_repl_exec")) {
         const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
-        const surface_id = jsonStringArg(args.value, "surface_id") orelse return request.allocator.dupe(u8, "Missing surface_id");
+        const surface_id = jsonStringArg(args.value, "surface_id") orelse defaultExecSurfaceId(request) orelse return request.allocator.dupe(u8, "Missing surface_id");
         const repl = jsonStringArg(args.value, "repl") orelse return request.allocator.dupe(u8, "Missing repl");
         const code = jsonStringArg(args.value, "code") orelse return request.allocator.dupe(u8, "Missing code");
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse currentAgentSettings().command_timeout_ms;
@@ -4262,6 +4317,48 @@ fn findSurface(snapshot: ToolSnapshot, surface_id: []const u8) ?ToolSurface {
     return null;
 }
 
+/// Build the per-message copilot context block from a full surface snapshot:
+/// the cwd plus the last COPILOT_CONTEXT_LINES lines of output. Owned result.
+fn buildCopilotContext(allocator: std.mem.Allocator, cwd: []const u8, snapshot: []const u8) ![]u8 {
+    const trimmed = std.mem.trimRight(u8, snapshot, "\n");
+    var start: usize = trimmed.len;
+    var newlines: usize = 0;
+    while (start > 0) {
+        const c = trimmed[start - 1];
+        if (c == '\n') {
+            newlines += 1;
+            if (newlines > COPILOT_CONTEXT_LINES) break;
+        }
+        start -= 1;
+    }
+    const tail = trimmed[start..];
+    return std.fmt.allocPrint(
+        allocator,
+        "[wispterm current terminal]\ncwd: {s}\nrecent output:\n{s}",
+        .{ cwd, tail },
+    );
+}
+
+test "buildCopilotContext keeps cwd and the last N lines" {
+    const snap = "l1\nl2\nl3\nl4\nl5\n";
+    const out = try buildCopilotContext(std.testing.allocator, "/home/u", snap);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "cwd: /home/u") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "l5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "l1") != null);
+}
+
+test "buildCopilotContext truncates to the last COPILOT_CONTEXT_LINES" {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var i: usize = 0;
+    while (i < 100) : (i += 1) try buf.print(std.testing.allocator, "line{d}\n", .{i});
+    const out = try buildCopilotContext(std.testing.allocator, "/x", buf.items);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "line99") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "line0\n") == null);
+}
+
 fn selectedWriteContext(request: *const ChatRequest) ?[]const u8 {
     if (request.write_context_surface_id_len == 0) return null;
     return request.write_context_surface_id[0..request.write_context_surface_id_len];
@@ -4271,6 +4368,15 @@ fn setWriteContext(request: *ChatRequest, surface_id: []const u8) void {
     const len = @min(surface_id.len, request.write_context_surface_id.len);
     @memcpy(request.write_context_surface_id[0..len], surface_id[0..len]);
     request.write_context_surface_id_len = len;
+}
+
+/// Copilot fallback: when an exec tool omits surface_id, use the request's
+/// pre-seeded write-context (the bound/focused terminal). Non-copilot requests
+/// keep the original "Missing surface_id" behavior.
+fn defaultExecSurfaceId(request: *const ChatRequest) ?[]const u8 {
+    if (!request.copilot) return null;
+    if (request.write_context_surface_id_len == 0) return null;
+    return request.write_context_surface_id[0..request.write_context_surface_id_len];
 }
 
 fn ensureWriteContext(request: *ChatRequest, surface: ToolSurface) !?[]u8 {
@@ -5251,6 +5357,12 @@ test "ai chat default system prompt comes from platform agent prompt" {
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "uv --version") != null);
 }
 
+test "copilot prompt keeps tool guidance and adds the binding clause" {
+    try std.testing.expect(std.mem.indexOf(u8, COPILOT_SYSTEM_PROMPT, "CURRENTLY FOCUSED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, COPILOT_SYSTEM_PROMPT, "ssh_session_exec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, COPILOT_SYSTEM_PROMPT, "terminal_select") != null);
+}
+
 test "ai chat empty profile system prompt uses full embedded default" {
     const allocator = std.testing.allocator;
     const session = try Session.init(
@@ -5423,6 +5535,95 @@ test "ai chat agent request json includes stable skill_info tool schema" {
     try std.testing.expect(std.mem.indexOf(u8, json, "skill_name") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "pdf") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\\u0070df") == null);
+}
+
+const CopilotTestHost = struct {
+    fn collectSnapshot(_: *anyopaque, allocator: std.mem.Allocator) anyerror!ToolSnapshot {
+        const surfaces = try allocator.alloc(ToolSurface, 1);
+        errdefer allocator.free(surfaces);
+        surfaces[0] = .{
+            .id = try allocator.dupe(u8, "surface-1"),
+            .title = try allocator.dupe(u8, "shell"),
+            .cwd = try allocator.dupe(u8, "/home/tester/work"),
+            .snapshot = try allocator.dupe(u8, "$ ls\nalpha.txt\nbeta.txt\n$ cat beta.txt\nUNIQUE_OUTPUT_LINE\n"),
+            .tab_index = 0,
+            .focused = true,
+            .is_ssh = false,
+            .is_wsl = false,
+            .ptr = undefined,
+        };
+        return .{ .surfaces = surfaces, .active_tab = 0 };
+    }
+    fn unsupportedSurfaceSnapshot(_: *anyopaque, _: std.mem.Allocator, _: *anyopaque) anyerror![]u8 {
+        return error.Unsupported;
+    }
+    fn unsupportedWrite(_: *anyopaque, _: *anyopaque, _: []const u8) bool {
+        return false;
+    }
+    fn unsupportedSpawn(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?[]const u8) anyerror!ToolSurface {
+        return error.Unsupported;
+    }
+    fn unsupportedClose(_: *anyopaque, _: std.mem.Allocator, _: ?usize, _: ?[]const u8, _: ?[]const u8) anyerror!ToolClosedTab {
+        return error.Unsupported;
+    }
+    fn unsupportedSaveSsh(_: *anyopaque, _: std.mem.Allocator, _: SshProfileSaveArgs) anyerror!SavedSshProfile {
+        return error.Unsupported;
+    }
+    fn unsupportedConnectSsh(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!ToolSurface {
+        return error.Unsupported;
+    }
+
+    var ctx_sentinel: u8 = 0;
+
+    fn host() ToolHost {
+        return .{
+            .ctx = @ptrCast(&ctx_sentinel),
+            .collectSnapshot = collectSnapshot,
+            .surfaceSnapshot = unsupportedSurfaceSnapshot,
+            .writeSurface = unsupportedWrite,
+            .spawnTab = unsupportedSpawn,
+            .closeTab = unsupportedClose,
+            .saveSshProfile = unsupportedSaveSsh,
+            .connectSshProfile = unsupportedConnectSsh,
+        };
+    }
+};
+
+test "copilot request appends bound-terminal snapshot to latest user message" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "Test",
+        DEFAULT_BASE_URL,
+        "test-key",
+        DEFAULT_MODEL,
+        DEFAULT_SYSTEM_PROMPT,
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    session.copilot = true;
+    session.setBoundSurface("surface-1");
+
+    setToolHost(CopilotTestHost.host());
+    defer setToolHost(null);
+
+    session.mutex.lock();
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "what files are here?") });
+    const request = try session.buildRequestLocked();
+    session.mutex.unlock();
+    defer request.deinit();
+
+    try std.testing.expect(request.messages.len == 1);
+    const user_content = request.messages[0].content;
+    // Original user text is preserved.
+    try std.testing.expect(std.mem.indexOf(u8, user_content, "what files are here?") != null);
+    // Snapshot block is appended: cwd + recent output line.
+    try std.testing.expect(std.mem.indexOf(u8, user_content, "cwd: /home/tester/work") != null);
+    try std.testing.expect(std.mem.indexOf(u8, user_content, "UNIQUE_OUTPUT_LINE") != null);
 }
 
 test "ai chat ssh profile save approval text redacts password" {
@@ -5901,6 +6102,21 @@ test "ai chat write context requires explicit selection and can switch surfaces"
     const switched = (try ensureWriteContext(&request, snapshot.surfaces[1])).?;
     defer allocator.free(switched);
     try std.testing.expect(std.mem.indexOf(u8, switched, "selected agent terminal context is surface_id=surface-a") != null);
+}
+
+test "copilot session pre-targets the bound surface in its request" {
+    const session = try Session.init(
+        std.testing.allocator,
+        "copilot", "", "", "", "", "", "", "", "",
+    );
+    defer session.deinit();
+    session.copilot = true;
+    session.setBoundSurface("abc123");
+
+    const req = try session.buildRequestLocked();
+    defer req.deinit();
+
+    try std.testing.expectEqualStrings("abc123", req.write_context_surface_id[0..req.write_context_surface_id_len]);
 }
 
 test "ai chat R string literal escapes code for REPL eval" {

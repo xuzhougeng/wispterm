@@ -116,9 +116,10 @@ pub fn render(
     window_width: f32,
     window_height: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) void {
+    _ = window_width;
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
@@ -126,8 +127,8 @@ pub fn render(
     const panel = mixColor(bg, fg, 0.045);
     const line = mixColor(bg, fg, 0.18);
 
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     const top = @round(titlebar_offset);
     const h = @round(@max(1.0, window_height - top));
     if (w <= 1 or h <= 1) return;
@@ -331,11 +332,12 @@ pub fn interactionHitTest(
     window_width: f32,
     window_height: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) ?HitTarget {
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     if (w <= 1) return null;
 
     session.mutex.lock();
@@ -410,11 +412,12 @@ pub fn transcriptTextHitTest(
     window_width: f32,
     window_height: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) ?TranscriptTextHit {
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     if (w <= 1) return null;
 
     session.mutex.lock();
@@ -484,16 +487,17 @@ pub fn stopButtonHitTest(
     ypos: f64,
     window_width: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) bool {
+    _ = window_width;
     session.mutex.lock();
     const visible = session.request_inflight;
     session.mutex.unlock();
     if (!visible) return false;
 
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     const rect = stopButtonRect(x, w, titlebar_offset);
     return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
 }
@@ -503,11 +507,12 @@ pub fn permissionChipHitTest(
     ypos: f64,
     window_width: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) bool {
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     const chip_x = permissionChipX(x, w);
     return pointInRect(@floatCast(xpos), @floatCast(ypos), .{
         .x = chip_x,
@@ -523,16 +528,17 @@ pub fn missingApiKeyStatusHitTest(
     ypos: f64,
     window_width: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) bool {
+    _ = window_width;
     session.mutex.lock();
     const clickable = !session.request_inflight and session.missingApiKey();
     session.mutex.unlock();
     if (!clickable) return false;
 
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     const rect = statusActionRect(x, w, titlebar_offset, MISSING_API_KEY_ACTION_TEXT);
     return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
 }
@@ -543,11 +549,12 @@ pub fn inputFieldMetricsAt(
     ypos: f64,
     window_width: f32,
     window_height: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) ?InputFieldMetrics {
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     if (w <= 1) return null;
 
     session.mutex.lock();
@@ -572,11 +579,12 @@ pub fn inputScrollbarHitTest(
     ypos: f64,
     window_width: f32,
     window_height: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) ?InputScrollbarHit {
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     if (w <= 1) return null;
 
     session.mutex.lock();
@@ -607,12 +615,13 @@ pub fn inputScrollbarDragRowAt(
     ypos: f64,
     window_width: f32,
     window_height: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
     drag_offset_px: f32,
 ) ?InputScrollbarDrag {
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     if (w <= 1) return null;
 
     session.mutex.lock();
@@ -648,11 +657,12 @@ fn transcriptLayoutLocked(
     window_width: f32,
     window_height: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) ?TranscriptLayout {
-    const x = @round(left_panels_w);
-    const w = @round(@max(1.0, window_width - left_panels_w - right_panels_w));
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
     if (w <= 1) return null;
 
     const approval = session.approvalView();
@@ -693,11 +703,11 @@ pub fn transcriptScrollbarHitTest(
     window_width: f32,
     window_height: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
 ) ?f32 {
     session.mutex.lock();
-    const layout = transcriptLayoutLocked(session, window_width, window_height, titlebar_offset, left_panels_w, right_panels_w);
+    const layout = transcriptLayoutLocked(session, window_width, window_height, titlebar_offset, chat_x, chat_w);
     const scroll_px = session.scroll_px;
     session.mutex.unlock();
 
@@ -716,12 +726,12 @@ pub fn transcriptScrollbarScrollPxAt(
     window_width: f32,
     window_height: f32,
     titlebar_offset: f32,
-    left_panels_w: f32,
-    right_panels_w: f32,
+    chat_x: f32,
+    chat_w: f32,
     drag_offset: f32,
 ) ?f32 {
     session.mutex.lock();
-    const layout = transcriptLayoutLocked(session, window_width, window_height, titlebar_offset, left_panels_w, right_panels_w);
+    const layout = transcriptLayoutLocked(session, window_width, window_height, titlebar_offset, chat_x, chat_w);
     const scroll_px = session.scroll_px;
     session.mutex.unlock();
 

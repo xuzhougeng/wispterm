@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub const defaultSystemPrompt = defaultSystemPromptForOs(builtin.os.tag);
+pub const copilotSystemPrompt = copilotSystemPromptForOs(builtin.os.tag);
 
 pub fn defaultSystemPromptForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (os_tag) {
@@ -10,6 +11,24 @@ pub fn defaultSystemPromptForOs(os_tag: std.Target.Os.Tag) []const u8 {
         else => posix_prompt,
     };
 }
+
+pub fn copilotSystemPromptForOs(os_tag: std.Target.Os.Tag) []const u8 {
+    return switch (os_tag) {
+        .windows => windows_copilot_prompt,
+        .macos => macos_copilot_prompt,
+        else => posix_copilot_prompt,
+    };
+}
+
+const copilot_binding_clause =
+    \\
+    \\
+    \\You are the in-context copilot for the user's CURRENTLY FOCUSED terminal. Default every terminal action to that terminal — you do not need terminal_list or terminal_select first, and may omit surface_id (it resolves to the focused terminal). Only call terminal_list/terminal_select when the user explicitly asks you to act on a different terminal or server. Each message includes a lightweight snapshot (cwd + recent output) of that terminal.
+;
+
+const posix_copilot_prompt = posix_prompt ++ copilot_binding_clause;
+const macos_copilot_prompt = macos_prompt ++ copilot_binding_clause;
+const windows_copilot_prompt = windows_prompt ++ copilot_binding_clause;
 
 const common_tools_before_wsl =
     \\- Be direct and concise. Inspect the current directory before making changes.

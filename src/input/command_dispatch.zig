@@ -23,6 +23,7 @@ pub const Command = union(enum) {
     split_right,
     toggle_file_explorer,
     toggle_sidebar,
+    toggle_ai_copilot,
     close_panel_or_tab,
     toggle_maximize,
     font_size: i32,
@@ -50,6 +51,7 @@ pub fn resolve(action: keybind.Action, phase: Phase) ?Command {
             .split_right => .split_right,
             .toggle_file_explorer => .toggle_file_explorer,
             .toggle_sidebar => .toggle_sidebar,
+            .toggle_ai_copilot => .toggle_ai_copilot,
             .close_panel_or_tab => .close_panel_or_tab,
             .toggle_maximize => .toggle_maximize,
             .font_size_increase => .{ .font_size = 1 },
@@ -119,4 +121,9 @@ test "switch_tab_N maps to a zero-based index" {
     try std.testing.expectEqual(Command{ .switch_tab = 0 }, resolve(.switch_tab_1, .late).?);
     try std.testing.expectEqual(Command{ .switch_tab = 8 }, resolve(.switch_tab_9, .late).?);
     try std.testing.expectEqual(@as(?Command, null), resolve(.switch_tab_1, .early));
+}
+
+test "toggle_ai_copilot resolves in the early phase" {
+    try std.testing.expectEqual(Command.toggle_ai_copilot, resolve(.toggle_ai_copilot, .early).?);
+    try std.testing.expectEqual(@as(?Command, null), resolve(.toggle_ai_copilot, .late));
 }

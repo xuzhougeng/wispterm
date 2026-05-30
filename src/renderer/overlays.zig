@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
+const ai_chat = @import("../ai_chat.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
@@ -2691,6 +2692,44 @@ fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool
 
     sessionLauncherClose();
     return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens);
+}
+
+/// Build a standalone copilot Session from the default AI profile (Issue #98).
+/// Mirrors spawnAiProfileWithAgentOverride's profile reading but returns a
+/// Session with copilot mode + the copilot system prompt, instead of a tab.
+pub fn makeCopilotSessionForDefaultProfile() ?*ai_chat.Session {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) return null;
+    const idx = defaultAiProfileIndex();
+    if (idx >= g_ai_profile_count) return null;
+    const profile = &g_ai_profiles[idx];
+    const base_url = aiProfileField(profile, .base_url);
+    const api_key = aiProfileField(profile, .api_key);
+    const model = aiProfileField(profile, .model);
+    const thinking = aiProfileField(profile, .thinking);
+    const reasoning_effort = aiProfileField(profile, .reasoning_effort);
+    const stream_val = aiProfileField(profile, .stream);
+    const protocol = aiProfileField(profile, .protocol);
+    const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
+    if (base_url.len == 0 or model.len == 0) return null;
+    if (!isHttpUrlish(base_url)) return null;
+    const allocator = AppWindow.g_allocator orelse return null;
+    const session = ai_chat.Session.initWithProtocol(
+        allocator,
+        "Copilot",
+        base_url,
+        api_key,
+        model,
+        protocol,
+        ai_chat.COPILOT_SYSTEM_PROMPT,
+        thinking,
+        reasoning_effort,
+        stream_val,
+        "true", // agent_enabled
+    ) catch return null;
+    session.max_tokens = max_tokens;
+    session.copilot = true;
+    return session;
 }
 
 threadlocal var g_ai_default_name_buf: [256]u8 = undefined;

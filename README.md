@@ -116,6 +116,7 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Toggle tab sidebar | **Ctrl+Shift+B** | **Cmd+Shift+B** |
 | Split to the right | **Ctrl+Shift+O** | **Cmd+Shift+O** |
 | Toggle file explorer sidebar | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
+| Toggle AI Copilot sidebar (current terminal) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
 | Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |
 | Download SSH remote file | Ctrl+Shift-click path in SSH output | Cmd+Shift-click path in SSH output |
 | Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+Shift+W** |

@@ -42,6 +42,10 @@ pub const TabState = struct {
     tree: SplitTree,
     focused: SplitTree.Node.Handle = .root,
     ai_chat_session: ?*ai_chat.Session = null,
+    /// Copilot conversation for a terminal tab (Issue #98). Distinct from
+    /// `ai_chat_session`, which backs a dedicated AI-chat tab. Lazily created
+    /// the first time the copilot sidebar is opened on this tab.
+    copilot_session: ?*ai_chat.Session = null,
 
     pub const Kind = enum {
         terminal,
@@ -76,7 +80,13 @@ pub const TabState = struct {
     pub fn deinit(self: *TabState, allocator: std.mem.Allocator) void {
         _ = allocator;
         switch (self.kind) {
-            .terminal => self.tree.deinit(),
+            .terminal => {
+                self.tree.deinit();
+                if (self.copilot_session) |session| {
+                    session.deinit();
+                    self.copilot_session = null;
+                }
+            },
             .ai_chat => {
                 if (self.ai_chat_session) |session| {
                     session.deinit();
@@ -169,6 +179,20 @@ pub fn activeAiChat() ?*ai_chat.Session {
     const t = g_tabs[g_active_tab] orelse return null;
     if (t.kind != .ai_chat) return null;
     return t.ai_chat_session;
+}
+
+/// Get (creating if needed) the copilot session for the active terminal tab.
+/// Returns null on non-terminal tabs or if creation fails. `make` builds a
+/// fresh Session (AppWindow supplies it so this module stays UI-free).
+pub fn activeCopilotSession(
+    make: *const fn () ?*ai_chat.Session,
+) ?*ai_chat.Session {
+    const t = activeTab() orelse return null;
+    if (t.kind != .terminal) return null;
+    if (t.copilot_session == null) {
+        t.copilot_session = make() orelse return null;
+    }
+    return t.copilot_session;
 }
 
 pub fn findAiTabBySessionId(session_id: []const u8) ?usize {
