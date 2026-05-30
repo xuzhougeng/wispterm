@@ -5,9 +5,12 @@ pub const max_title: usize = 256;
 pub const max_body: usize = 1024;
 /// Bounded queue capacity. When full, the oldest item is dropped.
 pub const queue_cap: usize = 8;
-/// Rate-limit / dedup window: drop notifications arriving within this many ms
-/// of the last delivered one.
-pub const window_ms: i64 = 1000;
+/// Rate limit: at most one notification per this many ms, regardless of content.
+pub const rate_limit_ms: i64 = 1000;
+/// Content dedup: an identical (same-hash) notification is suppressed for this
+/// many ms — longer than the rate limit, so a program re-emitting the same
+/// notification stays quiet even at intervals that clear the rate limit.
+pub const dedup_ms: i64 = 5000;
 
 /// One queued notification, owning fixed-size copies of title/body so the
 /// transient slices handed to us by the VT parser can be safely retained.
@@ -83,15 +86,17 @@ pub fn contentHash(title_in: []const u8, body_in: []const u8) u64 {
     return h.final();
 }
 
-/// True if this notification should be delivered now. Drops anything within
-/// `window_ms` of the last delivered notification (rate limit), and identical
-/// content within the window (dedup). `last_time_ms == 0` means "none yet".
+/// True if this notification should be delivered now. Two rules, both keyed off
+/// the last *delivered* notification's time/hash:
+///   1. Rate limit: drop anything within `rate_limit_ms` (≤ 1 per second).
+///   2. Content dedup: drop an identical (same-hash) notification within the
+///      longer `dedup_ms` window.
+/// `last_time_ms == 0` means "none delivered yet" → always allow.
 pub fn shouldDeliver(now_ms: i64, h: u64, last_time_ms: i64, last_hash: u64) bool {
-    if (last_time_ms != 0 and (now_ms - last_time_ms) < window_ms) {
-        _ = h;
-        _ = last_hash;
-        return false;
-    }
+    if (last_time_ms == 0) return true;
+    const dt = now_ms - last_time_ms;
+    if (dt < rate_limit_ms) return false; // rate limit (any content)
+    if (h == last_hash and dt < dedup_ms) return false; // identical-content dedup
     return true;
 }
 
@@ -149,17 +154,21 @@ test "contentHash distinguishes title vs body boundary" {
     try std.testing.expectEqual(contentHash("x", "y"), contentHash("x", "y"));
 }
 
-test "shouldDeliver: rate-limit and dedup within window, allow after" {
+test "shouldDeliver: rate limit (any content) + longer content dedup" {
     const h1: u64 = 111;
     const h2: u64 = 222;
-    // First ever (last_ms = 0 sentinel) -> allowed
+    // First ever (last_time = 0 sentinel) -> allowed
     try std.testing.expect(shouldDeliver(10_000, h1, 0, 0));
-    // Same hash within 1s -> dropped (dedup)
+    // Within rate-limit window, same content -> dropped (rate limit)
     try std.testing.expect(!shouldDeliver(10_500, h1, 10_000, h1));
-    // Different hash within 1s -> dropped (rate limit)
+    // Within rate-limit window, different content -> dropped (rate limit dominates)
     try std.testing.expect(!shouldDeliver(10_500, h2, 10_000, h1));
-    // After 1s -> allowed
+    // Past rate limit, different content -> allowed
     try std.testing.expect(shouldDeliver(11_000, h2, 10_000, h1));
+    // Past rate limit but identical content within dedup window -> dropped (dedup)
+    try std.testing.expect(!shouldDeliver(13_000, h1, 10_000, h1));
+    // Past dedup window, identical content -> allowed
+    try std.testing.expect(shouldDeliver(16_000, h1, 10_000, h1));
 }
 
 test "decideRoute matrix" {
