@@ -3469,8 +3469,9 @@ fn handleBell(surface: *Surface, win: *window_backend.Window, is_active_tab: boo
 }
 
 /// Drain and handle queued desktop notifications for one surface.
-/// `is_active_surface` is true only when the window is focused AND this is the
-/// focused surface of the active tab (so we suppress the toast you'd see anyway).
+/// `is_active_surface` means this is the focused surface of the active tab.
+/// Window focus is applied separately inside `notification.decideRoute`, which
+/// only suppresses the toast when the window is focused AND this is true.
 fn handleNotification(surface: *Surface, is_active_surface: bool) void {
     if (!g_desktop_notifications) {
         // Drain and discard so the queue can't grow while disabled.
@@ -3522,15 +3523,16 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
                 );
                 surface.bell_indicator = true; // also badge the tab
                 surface.bell_indicator_time = now;
+                surface.last_notif_hash = h;
+                surface.last_notif_time = now;
             },
             .badge => {
                 surface.bell_indicator = true;
                 surface.bell_indicator_time = now;
+                surface.last_notif_hash = h;
+                surface.last_notif_time = now;
             },
         }
-
-        surface.last_notif_hash = h;
-        surface.last_notif_time = now;
     }
 }
 
