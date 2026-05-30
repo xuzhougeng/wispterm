@@ -8,3 +8,14 @@ pub fn bell() void {}
 pub fn requestAttention(handle: platform_window.NativeHandle) void {
     _ = handle;
 }
+
+pub fn showDesktopNotification(title: [:0]const u8, body: [:0]const u8) void {
+    _ = title;
+    _ = body;
+}
+
+pub fn notificationAuthStatus() u8 {
+    return 0; // unavailable
+}
+
+pub fn requestNotificationAuth() void {}

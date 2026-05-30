@@ -17,6 +17,10 @@ pub const Backend = enum {
     unsupported,
 };
 
+/// Cached desktop-notification authorization status. Mirrors the macOS
+/// bridge contract: 0 = unavailable/not-determined, 1 = denied, 2 = authorized.
+pub const NotifAuthStatus = enum(u8) { unavailable = 0, denied = 1, authorized = 2 };
+
 pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
     return switch (os_tag) {
         .windows => .windows,
@@ -47,6 +51,22 @@ pub fn requestAttention(handle: NativeHandle) void {
     impl.requestAttention(handle);
 }
 
+/// Post a native desktop notification (macOS toast). No-op where unsupported.
+pub fn showDesktopNotification(title: [:0]const u8, body: [:0]const u8) void {
+    impl.showDesktopNotification(title, body);
+}
+
+/// Current cached authorization status (synchronous, cheap).
+pub fn notificationAuthStatus() NotifAuthStatus {
+    return @enumFromInt(impl.notificationAuthStatus());
+}
+
+/// Ask the OS for notification permission (shows the system prompt once).
+/// Safe to call repeatedly; the OS only prompts on the first undetermined call.
+pub fn requestNotificationAuth() void {
+    impl.requestNotificationAuth();
+}
+
 test "notifications selects backend by target OS" {
     try std.testing.expectEqual(Backend.windows, backendForOs(.windows));
     try std.testing.expectEqual(Backend.unsupported, backendForOs(.linux));
@@ -62,4 +82,12 @@ test "notifications exposes bell and attention API shape" {
     try std.testing.expectEqual(@as(usize, 1), attention_info.params.len);
     try std.testing.expect(attention_info.params[0].type.? == NativeHandle);
     try std.testing.expect(attention_info.return_type.? == void);
+
+    const show_info = @typeInfo(@TypeOf(showDesktopNotification)).@"fn";
+    try std.testing.expectEqual(@as(usize, 2), show_info.params.len);
+    try std.testing.expect(show_info.return_type.? == void);
+
+    const status_info = @typeInfo(@TypeOf(notificationAuthStatus)).@"fn";
+    try std.testing.expectEqual(@as(usize, 0), status_info.params.len);
+    try std.testing.expectEqual(NotifAuthStatus, status_info.return_type.?);
 }

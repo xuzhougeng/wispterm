@@ -43,3 +43,15 @@ pub fn requestAttention(handle: NativeHandle) void {
     };
     _ = FlashWindowEx(&fwi);
 }
+
+pub fn showDesktopNotification(title: [:0]const u8, body: [:0]const u8) void {
+    // Windows uses the title-bar bell badge fallback (no native toast in v1).
+    _ = title;
+    _ = body;
+}
+
+pub fn notificationAuthStatus() u8 {
+    return 0; // unavailable -> caller falls back to badge
+}
+
+pub fn requestNotificationAuth() void {}
