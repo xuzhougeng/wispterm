@@ -334,6 +334,7 @@ const DeferredAction = union(enum) {
 const BuiltinResult = struct {
     history_change: ?PendingHistoryChange = null,
     deferred: DeferredAction = .none,
+    suppress_output: bool = false,
 };
 
 /// Fires a deferred built-in side-effect. Call ONLY after `self.mutex` has been
@@ -429,6 +430,7 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         .reload_commands => allocator.dupe(u8, "Custom commands will be re-read from the commands directory."),
         .update_skills => allocator.dupe(u8, "Downloading the latest skills from GitHub in the background..."),
         .clear => allocator.dupe(u8, "Cleared the conversation context."),
+        .rewind_picker => allocator.dupe(u8, "No previous user messages to rewind."),
         .resume_session => allocator.dupe(u8, "Opening saved conversation history..."),
         .permission => permissionStatusOutput(allocator),
         .export_markdown => allocator.dupe(u8, "Exporting the conversation as Markdown..."),
@@ -1313,8 +1315,8 @@ pub const Session = struct {
 
         if (self.rewind_open) {
             switch (ev.key) {
-                .arrow_up => self.moveRewindSelection(-1),
-                .arrow_down => self.moveRewindSelection(1),
+                .arrow_up => self.moveRewindSelection(1),
+                .arrow_down => self.moveRewindSelection(-1),
                 .enter => self.confirmRewind(),
                 else => self.closeRewindPicker(), // Esc 及其它键一律关闭
             }
@@ -1823,6 +1825,17 @@ pub const Session = struct {
             .reload_skills => self.freeSkillSuggestions(),
             // update_skills only spawns a background thread, so it is safe inline.
             .update_skills => if (g_skill_update_trigger) |trigger| trigger(),
+            .rewind_picker => {
+                const count = self.rewindPointCountLocked();
+                self.clearSubmittedInputLocked();
+                self.last_esc_ms = 0;
+                if (count > 0) {
+                    self.rewind_selected = count - 1;
+                    self.rewind_open = true;
+                    self.setStatusLocked("Ready");
+                    result.suppress_output = true;
+                }
+            },
             .permission => applyPermissionArg(arg),
             .resume_session => result.deferred = .resume_picker,
             .export_markdown => result.deferred = .{
@@ -1830,6 +1843,7 @@ pub const Session = struct {
             },
             else => {},
         }
+        if (result.suppress_output) return result;
         const output = slashCommandOutput(self.allocator, command) catch {
             self.setStatusLocked("Could not run command");
             return result;
@@ -4912,12 +4926,21 @@ test "ai chat slash command suggestions show and filter from input" {
     var session = Session{ .allocator = allocator };
     session.appendInputText("/");
 
-    try std.testing.expectEqual(@as(usize, 9), session.slashCommandSuggestionCount());
+    try std.testing.expectEqual(@as(usize, 10), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/skills", session.slashCommandSuggestionAt(0).?.command);
 
     session.appendInputText("c");
     try std.testing.expectEqual(@as(usize, 2), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/commands", session.slashCommandSuggestionAt(0).?.command);
+}
+
+test "ai chat slash command suggestions include rewind" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    session.appendInputText("/rew");
+
+    try std.testing.expectEqual(@as(usize, 1), session.slashCommandSuggestionCount());
+    try std.testing.expectEqualStrings("/rewind", session.slashCommandSuggestionAt(0).?.command);
 }
 
 test "ai chat slash suggestions include cached custom commands" {
@@ -5006,6 +5029,26 @@ test "ai chat enter submits slash commands instead of completing suggestions" {
 
     for (session.messages.items) |msg| msg.deinit(allocator);
     session.messages.deinit(allocator);
+}
+
+test "/rewind via submit opens picker without adding transcript noise" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "first prompt") });
+    try session.messages.append(allocator, .{ .role = .assistant, .content = try allocator.dupe(u8, "first reply") });
+    session.appendInputText("/rewind");
+
+    session.submit();
+
+    try std.testing.expect(session.rewind_open);
+    try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
+    try std.testing.expectEqualStrings("", session.input());
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
 }
 
 test "/clear via submit empties the transcript and shows confirmation" {
@@ -7170,8 +7213,8 @@ test "ai chat esc during generation only stops and does not open picker" {
     try std.testing.expect(session.request_stopping);
 }
 
-// 方向约定：rewind_selected 0=最早、count-1=最近。moveRewindSelection(-1)（arrow_up）
-// 朝更早、(+1)（arrow_down）朝更近。openRewindPicker 后 selected=count-1（最近）。
+// The picker renders recent prompts first, so Down moves visually down to older
+// prompts and Up moves visually up toward newer prompts.
 test "ai chat rewind picker arrow and enter via handleKey" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
@@ -7184,7 +7227,7 @@ test "ai chat rewind picker arrow and enter via handleKey" {
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "beta") });
 
     session.openRewindPicker(); // selected = 1 ("beta")
-    session.handleKey(.{ .key = input_key.Key.arrow_up }); // -1 -> 0 ("alpha")
+    session.handleKey(.{ .key = input_key.Key.arrow_down }); // visually down -> 0 ("alpha")
     try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
     session.handleKey(.{ .key = input_key.Key.enter });
     try std.testing.expect(!session.rewind_open);

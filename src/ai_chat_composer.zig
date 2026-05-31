@@ -10,6 +10,7 @@ pub const SlashCommand = enum {
     update_skills,
     reload_commands,
     clear,
+    rewind_picker,
     resume_session,
     permission,
     export_markdown,
@@ -57,6 +58,10 @@ pub const slash_command_entries = [_]SlashCommandEntry{
     .{
         .suggestion = .{ .command = "/clear", .description = "clear the conversation context" },
         .action = .clear,
+    },
+    .{
+        .suggestion = .{ .command = "/rewind", .description = "choose an earlier user prompt to edit" },
+        .action = .rewind_picker,
     },
     .{
         .suggestion = .{ .command = "/resume", .description = "resume a saved conversation" },
