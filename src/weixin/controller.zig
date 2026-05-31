@@ -10,6 +10,7 @@ const poller = @import("poller.zig");
 const control_mod = @import("control.zig");
 
 const SHUTDOWN_JOIN_TIMEOUT_MS: u32 = 1500;
+const NOTIFY_TEXT_MAX: usize = 2000;
 pub const ThreadControl = poller.ThreadControl;
 
 pub const Controller = struct {
@@ -260,6 +261,24 @@ pub const Controller = struct {
         try self.persistBinding(.{});
     }
 
+    /// Forward one notification to the bound owner's WeChat. No-op unless a
+    /// binding is live with a bound owner. The network send runs on a detached
+    /// one-shot thread so this never blocks the caller (the UI thread).
+    /// Best-effort: allocation/spawn/send failures only log.
+    pub fn enqueueNotify(self: *Controller, title: []const u8, body: []const u8) void {
+        if (!self.running or self.owner.len == 0 or self.token.len == 0) return;
+
+        var text_buf: [NOTIFY_TEXT_MAX]u8 = undefined;
+        const text = buildNotifyText(title, body, &text_buf);
+
+        const job = PushJob.create(self.allocator, self.base_url, self.token, self.owner, text) catch return;
+        const th = std.Thread.spawn(.{}, PushJob.run, .{job}) catch {
+            job.destroy();
+            return;
+        };
+        th.detach();
+    }
+
     // --- login (driven by the QR panel) ---
 
     /// Step 1 of login: fetch a QR code. The returned value borrows from `arena`.
@@ -386,6 +405,69 @@ pub const Controller = struct {
     }
 };
 
+/// Builds the WeChat push text "<title>\n<body>" into `out`, truncating to fit.
+/// Pure (no allocation/IO) so it is unit-tested directly.
+fn buildNotifyText(title: []const u8, body: []const u8, out: []u8) []const u8 {
+    var n: usize = 0;
+    const tcopy = title[0..@min(title.len, out.len)];
+    @memcpy(out[0..tcopy.len], tcopy);
+    n = tcopy.len;
+    if (body.len != 0 and n < out.len) {
+        out[n] = '\n';
+        n += 1;
+        const bcopy = body[0..@min(body.len, out.len - n)];
+        @memcpy(out[n..][0..bcopy.len], bcopy);
+        n += bcopy.len;
+    }
+    return out[0..n];
+}
+
+/// A self-contained, owned copy of everything one push needs, so the send can
+/// run on a detached thread without touching mutable Controller state.
+const PushJob = struct {
+    allocator: std.mem.Allocator,
+    base_url: []u8,
+    token: []u8,
+    owner: []u8,
+    text: []u8,
+
+    fn create(
+        allocator: std.mem.Allocator,
+        base_url: []const u8,
+        token: []const u8,
+        owner: []const u8,
+        text: []const u8,
+    ) !*PushJob {
+        const self = try allocator.create(PushJob);
+        errdefer allocator.destroy(self);
+        self.allocator = allocator;
+        self.base_url = try allocator.dupe(u8, base_url);
+        errdefer allocator.free(self.base_url);
+        self.token = try allocator.dupe(u8, token);
+        errdefer allocator.free(self.token);
+        self.owner = try allocator.dupe(u8, owner);
+        errdefer allocator.free(self.owner);
+        self.text = try allocator.dupe(u8, text);
+        return self;
+    }
+
+    fn destroy(self: *PushJob) void {
+        self.allocator.free(self.base_url);
+        self.allocator.free(self.token);
+        self.allocator.free(self.owner);
+        self.allocator.free(self.text);
+        self.allocator.destroy(self);
+    }
+
+    fn run(self: *PushJob) void {
+        var client = ilink.Client.init(self.allocator, self.base_url, self.token);
+        client.sendText(self.owner, self.text, "") catch |err| {
+            std.debug.print("weixin notify forward failed: {}\n", .{err});
+        };
+        self.destroy();
+    }
+};
+
 const ilink_default_base_url = @import("ilink_codec.zig").DEFAULT_BASE_URL;
 
 fn freeOwned(allocator: std.mem.Allocator, slot: *[]u8) void {
@@ -486,4 +568,31 @@ test "cancelled login cannot later confirm and persist a binding" {
         .bot_id = "bot",
     }));
     try t.expect(!ctrl.statusSnapshot().has_token);
+}
+
+test "buildNotifyText joins title and body with a newline" {
+    var buf: [64]u8 = undefined;
+    try t.expectEqualStrings("Claude Code\n完成", buildNotifyText("Claude Code", "完成", &buf));
+}
+
+test "buildNotifyText omits the newline when body is empty" {
+    var buf: [64]u8 = undefined;
+    try t.expectEqualStrings("Codex", buildNotifyText("Codex", "", &buf));
+}
+
+test "buildNotifyText truncates to fit the output buffer" {
+    var buf: [5]u8 = undefined;
+    try t.expectEqualStrings("Title", buildNotifyText("Title", "body", &buf));
+}
+
+test "enqueueNotify is a no-op when no binding is active (owner unbound)" {
+    const path = "zig-cache-tmp-weixin-ctrl-enqueue.json";
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    const ctrl = try Controller.create(t.allocator, path, NoopControl.iface(), .{});
+    defer ctrl.destroy();
+
+    // Never started → running=false, owner empty: must not spawn a thread or crash.
+    ctrl.enqueueNotify("Claude Code", "完成");
+    try t.expect(!ctrl.running);
 }
