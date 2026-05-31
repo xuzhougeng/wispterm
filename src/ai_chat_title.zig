@@ -226,6 +226,12 @@ fn trimIncompleteUtf8(s: []const u8) []const u8 {
     return s[0..i]; // incomplete tail
 }
 
+fn looksLikeApiErrorJson(s: []const u8) bool {
+    const trimmed = std.mem.trim(u8, s, " \t\r\n");
+    return std.mem.startsWith(u8, trimmed, "{") and
+        std.mem.indexOf(u8, trimmed, "\"error\"") != null;
+}
+
 /// Clean a raw model response into a display title written into `out`
 /// (must be >= `max_title_bytes`). Returns the populated slice, or null if the
 /// cleaned title is empty.
@@ -234,7 +240,10 @@ fn trimIncompleteUtf8(s: []const u8) []const u8 {
 /// a UTF-8 boundary), then strip trailing whitespace / sentence punctuation.
 pub fn cleanTitle(raw: []const u8, out: []u8) ?[]const u8 {
     std.debug.assert(out.len >= max_title_bytes);
-    var line = raw;
+    const trimmed_raw = std.mem.trim(u8, raw, " \t\r\n");
+    if (looksLikeApiErrorJson(trimmed_raw)) return null;
+
+    var line = trimmed_raw;
     if (std.mem.indexOfScalar(u8, line, '\n')) |nl| line = line[0..nl];
     line = std.mem.trim(u8, line, " \t\r\n");
     line = stripSurroundingQuotes(line);
@@ -285,6 +294,14 @@ test "cleanTitle: empty / whitespace returns null" {
     var buf: [max_title_bytes]u8 = undefined;
     try std.testing.expect(cleanTitle("   \n  ", &buf) == null);
     try std.testing.expect(cleanTitle("", &buf) == null);
+}
+
+test "cleanTitle: rejects raw API error JSON" {
+    var buf: [max_title_bytes]u8 = undefined;
+    try std.testing.expect(cleanTitle(
+        "{\"error\":{\"message\":\"thinking options type cannot be disabled when reasoning_effort is set\"}}",
+        &buf,
+    ) == null);
 }
 
 test "cleanTitle: clamps to max_title_bytes on UTF-8 boundary" {

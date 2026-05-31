@@ -323,8 +323,11 @@ fn buildChatCompletionsRequestJsonForMessages(
     }
     try out.appendSlice(allocator, "],\"thinking\":{\"type\":");
     try appendJsonString(allocator, &out, if (params.thinking_enabled) "enabled" else "disabled");
-    try out.appendSlice(allocator, "},\"reasoning_effort\":");
-    try appendJsonString(allocator, &out, if (params.reasoning_effort.len > 0) params.reasoning_effort else "high");
+    try out.append(allocator, '}');
+    if (params.thinking_enabled) {
+        try out.appendSlice(allocator, ",\"reasoning_effort\":");
+        try appendJsonString(allocator, &out, if (params.reasoning_effort.len > 0) params.reasoning_effort else "high");
+    }
     try out.appendSlice(allocator, ",\"stream\":");
     try out.appendSlice(allocator, if (params.stream) "true" else "false");
     if (params.stream) {
@@ -1031,6 +1034,16 @@ test "buildRequestJson chat_completions emits model, roles, flags" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"role\":\"system\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"role\":\"user\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"stream\":false") != null);
+}
+
+test "buildRequestJson chat_completions omits reasoning_effort when thinking disabled" {
+    const a = std.testing.allocator;
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("hi") }};
+    const params = RequestParams{ .model = "m1", .system_prompt = "", .protocol = .chat_completions, .thinking_enabled = false, .reasoning_effort = "low", .stream = false };
+    const json = try buildRequestJson(a, params, &msgs, false);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"thinking\":{\"type\":\"disabled\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"reasoning_effort\"") == null);
 }
 
 test "buildRequestJson responses uses input + instructions" {
