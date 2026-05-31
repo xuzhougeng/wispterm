@@ -621,7 +621,15 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
 }
 
 - (void)keyDown:(NSEvent *)event {
-    if (self.state != NULL) {
+    // While an IME composition is active, every keystroke belongs to the input
+    // method, not the app: Return commits the highlighted candidate, space and
+    // number keys pick candidates, arrows page the candidate window, backspace
+    // edits the preedit. Forwarding the raw key event in that state is exactly
+    // the "Enter commits 你好 but also fires send" bug — the committed text
+    // arrives separately via -insertText:, so the raw Return must not also reach
+    // the app. Only push the raw key event when there is no composition; let
+    // -interpretKeyEvents: route composing keystrokes to the IME.
+    if (self.state != NULL && ![self hasMarkedText]) {
         NSString *characters = wispterm_macos_key_characters(event);
         uintptr_t key_code = wispterm_macos_map_key_code(event.keyCode, characters);
         wispterm_macos_push_key_event(self.state, wispterm_macos_key_event(key_code, event.modifierFlags));
