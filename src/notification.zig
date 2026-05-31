@@ -19,6 +19,9 @@ pub const Item = struct {
     title_len: usize = 0,
     body_buf: [max_body]u8 = undefined,
     body_len: usize = 0,
+    /// True when the body carried the WispTerm notifier's WeChat-forward marker
+    /// (stripped before storage). Read by AppWindow.handleNotification.
+    forward_wechat: bool = false,
 
     pub fn title(self: *const Item) []const u8 {
         return self.title_buf[0..self.title_len];
@@ -28,13 +31,25 @@ pub const Item = struct {
     }
 };
 
+/// Zero-width space (U+200B) the WispTerm notifier appends to a notification's
+/// OSC 777 body to mark it for forwarding to the bound WeChat owner. It is
+/// invisible in every renderer, so a build that does not strip it still shows a
+/// clean toast. We strip it here so the stored/hashed/displayed body is clean.
+pub const wechat_marker = "\u{200b}"; // bytes E2 80 8B
+
 /// Copy + truncate raw (transient) title/body slices into an owned Item.
 pub fn makeItem(title_in: []const u8, body_in: []const u8) Item {
     var item: Item = .{};
     item.title_len = @min(title_in.len, max_title);
     @memcpy(item.title_buf[0..item.title_len], title_in[0..item.title_len]);
-    item.body_len = @min(body_in.len, max_body);
-    @memcpy(item.body_buf[0..item.body_len], body_in[0..item.body_len]);
+
+    var body = body_in;
+    if (std.mem.endsWith(u8, body, wechat_marker)) {
+        item.forward_wechat = true;
+        body = body[0 .. body.len - wechat_marker.len];
+    }
+    item.body_len = @min(body.len, max_body);
+    @memcpy(item.body_buf[0..item.body_len], body[0..item.body_len]);
     return item;
 }
 
@@ -181,4 +196,18 @@ test "decideRoute matrix" {
     try std.testing.expectEqual(Route.badge, decideRoute(true, true, .denied, false, false));
     try std.testing.expectEqual(Route.badge, decideRoute(true, true, .unavailable, false, false));
     try std.testing.expectEqual(Route.badge, decideRoute(true, false, A, false, false));
+}
+
+test "makeItem strips the trailing wechat marker and sets forward_wechat" {
+    const marked = "完成，轮到你了" ++ wechat_marker;
+    const item = makeItem("Claude Code", marked);
+    try std.testing.expect(item.forward_wechat);
+    try std.testing.expectEqualStrings("完成，轮到你了", item.body());
+    try std.testing.expectEqualStrings("Claude Code", item.title());
+}
+
+test "makeItem without the marker keeps body intact and forward_wechat false" {
+    const item = makeItem("t", "完成，轮到你了");
+    try std.testing.expect(!item.forward_wechat);
+    try std.testing.expectEqualStrings("完成，轮到你了", item.body());
 }
