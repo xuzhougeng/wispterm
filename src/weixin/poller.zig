@@ -13,6 +13,23 @@ const AI_REPLY_CHECKPOINTS_MS = [_]u64{ 10_000, 30_000, 60_000, 120_000 };
 const AI_REPLY_POLL_MS: u64 = 1_000;
 const POLL_ERROR_BACKOFF_MS: u64 = 1_000;
 const SHUTDOWN_JOIN_TIMEOUT_MS: u32 = 1500;
+/// The WeChat `context_token` that lets the bot reply to an inbound message is
+/// only valid for ~30 minutes. A reply sent with an expired token is rejected by
+/// the server and the user silently receives nothing — the root cause of "the
+/// bot just stops replying" for slow AI tasks. The follow-up must therefore
+/// finish (or hand back) within this window, regardless of reply_timeout_ms.
+const CONTEXT_TOKEN_WINDOW_MS: u64 = 30 * 60 * 1000;
+/// Send the final answer / heartbeat / resend notice this far before the hard
+/// expiry so it still goes out on a valid token.
+const EXPIRY_NOTICE_MARGIN_MS: u64 = 30 * 1000;
+/// Latest elapsed time at which the follow-up still sends on the original token.
+const AI_REPLY_DEADLINE_MS: u64 = CONTEXT_TOKEN_WINDOW_MS - EXPIRY_NOTICE_MARGIN_MS;
+/// After the dense early checkpoints, ping "still working" this often so the
+/// user knows a long-running task is alive.
+const AI_REPLY_HEARTBEAT_MS: u64 = 5 * 60 * 1000;
+/// Sent once when the window closes with no final answer: the token is about to
+/// expire, so a fresh inbound message is needed to keep the conversation going.
+const AI_REPLY_WINDOW_EXPIRED_NOTICE = "AI 处理已超过 30 分钟仍未完成，微信回复窗口即将关闭。请重新发送一条消息以继续接收回复。";
 
 pub const RouteResult = struct {
     expect_ai_progress: bool = false,
@@ -360,14 +377,14 @@ pub const Poller = struct {
             self.allocator.destroy(job);
         }
 
-        const max_checkpoint = AI_REPLY_CHECKPOINTS_MS[AI_REPLY_CHECKPOINTS_MS.len - 1];
-        const deadline_ms = @max(@as(u64, self.settings.reply_timeout_ms), max_checkpoint);
+        var schedule = ProgressSchedule{};
         var elapsed_ms: u64 = 0;
-        var checkpoint_index: usize = 0;
 
+        // Wait for the AI's answer up to the context_token's validity window, not
+        // the old reply_timeout_ms (<= 3 min) cap that abandoned slow tasks.
         while (!self.stop_requested.load(.acquire) and
             self.followup_generation.load(.acquire) == generation and
-            elapsed_ms <= deadline_ms)
+            elapsed_ms < AI_REPLY_DEADLINE_MS)
         {
             std.Thread.sleep(AI_REPLY_POLL_MS * std.time.ns_per_ms);
             elapsed_ms += AI_REPLY_POLL_MS;
@@ -388,21 +405,30 @@ pub const Poller = struct {
                 return;
             }
 
-            if (checkpoint_index < AI_REPLY_CHECKPOINTS_MS.len and elapsed_ms >= AI_REPLY_CHECKPOINTS_MS[checkpoint_index]) {
-                checkpoint_index += 1;
-                if (progress.text.len != 0) {
-                    std.debug.print(
-                        "weixin send({d}): kind=ai_progress generation={d} checkpoint={d} to_len={d} to_hash={x} bytes={d} context={}\n",
-                        .{ debugNowMs(), generation, checkpoint_index, job.to_user_id.len, debugHash(job.to_user_id), progress.text.len, job.context_token.len != 0 },
-                    );
-                    self.sendTextLocked(job.to_user_id, progress.text, job.context_token) catch |err| {
-                        std.debug.print("weixin send({d}): kind=ai_progress generation={d} checkpoint={d} status=failed err={}\n", .{ debugNowMs(), generation, checkpoint_index, err });
-                        continue;
-                    };
-                    std.debug.print("weixin send({d}): kind=ai_progress generation={d} checkpoint={d} status=sent bytes={d}\n", .{ debugNowMs(), generation, checkpoint_index, progress.text.len });
-                }
+            if (schedule.pingDue(elapsed_ms) and progress.text.len != 0) {
+                std.debug.print(
+                    "weixin send({d}): kind=ai_progress generation={d} elapsed_ms={d} to_len={d} to_hash={x} bytes={d} context={}\n",
+                    .{ debugNowMs(), generation, elapsed_ms, job.to_user_id.len, debugHash(job.to_user_id), progress.text.len, job.context_token.len != 0 },
+                );
+                self.sendTextLocked(job.to_user_id, progress.text, job.context_token) catch |err| {
+                    std.debug.print("weixin send({d}): kind=ai_progress generation={d} status=failed err={}\n", .{ debugNowMs(), generation, err });
+                    continue;
+                };
+                std.debug.print("weixin send({d}): kind=ai_progress generation={d} status=sent bytes={d}\n", .{ debugNowMs(), generation, progress.text.len });
             }
         }
+
+        // Reached the window's edge with no final answer (the loop ran out, not a
+        // stop/refresh). The token is about to expire, so prompt the user to send
+        // a fresh message — a silent stop here looks exactly like the old bug.
+        if (self.stop_requested.load(.acquire) or self.followup_generation.load(.acquire) != generation) return;
+        std.debug.print(
+            "weixin send({d}): kind=ai_window_expired generation={d} to_len={d} to_hash={x} context={}\n",
+            .{ debugNowMs(), generation, job.to_user_id.len, debugHash(job.to_user_id), job.context_token.len != 0 },
+        );
+        self.sendTextLocked(job.to_user_id, AI_REPLY_WINDOW_EXPIRED_NOTICE, job.context_token) catch |err| {
+            std.debug.print("weixin send({d}): kind=ai_window_expired generation={d} status=failed err={}\n", .{ debugNowMs(), generation, err });
+        };
     }
 
     fn allocProgressText(self: *Poller, baseline_transcript: []const u8) !struct { done: bool, text: []u8 } {
@@ -427,6 +453,29 @@ fn debugHash(bytes: []const u8) u64 {
 fn debugNowMs() i64 {
     return std.time.milliTimestamp();
 }
+
+/// Decides when an AI follow-up should ping progress: dense early checkpoints for
+/// quick feedback, then a steady heartbeat for long tasks. Pure and
+/// state-advancing so each checkpoint/heartbeat fires exactly once; the caller
+/// drives it with monotonically increasing `elapsed_ms` at AI_REPLY_POLL_MS steps.
+const ProgressSchedule = struct {
+    checkpoint_index: usize = 0,
+    next_heartbeat_ms: u64 = AI_REPLY_HEARTBEAT_MS,
+
+    fn pingDue(self: *ProgressSchedule, elapsed_ms: u64) bool {
+        if (self.checkpoint_index < AI_REPLY_CHECKPOINTS_MS.len and
+            elapsed_ms >= AI_REPLY_CHECKPOINTS_MS[self.checkpoint_index])
+        {
+            self.checkpoint_index += 1;
+            return true;
+        }
+        if (elapsed_ms >= self.next_heartbeat_ms) {
+            self.next_heartbeat_ms += AI_REPLY_HEARTBEAT_MS;
+            return true;
+        }
+        return false;
+    }
+};
 
 const FollowupJob = struct {
     baseline_transcript: []u8 = &.{},
@@ -662,4 +711,42 @@ test "poller bootstrap advances cursor without replying to historical messages" 
     try t.expect(!p.bootstrap_skip_pending);
     try t.expectEqualStrings("NEXT", p.sync_buf);
     try t.expectEqualStrings("NEXT", sync.value.items);
+}
+
+test "ai reply window extends to the 30-minute context-token validity with a resend margin" {
+    // The bug: replies were abandoned after deadline = max(reply_timeout_ms, 120s)
+    // <= 180s, so any AI task slower than ~3 minutes never delivered its answer.
+    // The real ceiling is the WeChat context_token validity (~30 minutes).
+    try t.expectEqual(@as(u64, 30 * 60 * 1000), CONTEXT_TOKEN_WINDOW_MS);
+    // We keep waiting (and can deliver a final answer) far beyond the old cap.
+    try t.expect(AI_REPLY_DEADLINE_MS > 180_000);
+    try t.expect(AI_REPLY_DEADLINE_MS >= 25 * 60 * 1000);
+    // The resend notice still goes out on a valid token, before the hard expiry.
+    try t.expect(AI_REPLY_DEADLINE_MS < CONTEXT_TOKEN_WINDOW_MS);
+    try t.expectEqual(CONTEXT_TOKEN_WINDOW_MS - EXPIRY_NOTICE_MARGIN_MS, AI_REPLY_DEADLINE_MS);
+}
+
+test "progress schedule pings at dense early checkpoints then a steady heartbeat" {
+    var sched = ProgressSchedule{};
+    var pings: std.ArrayListUnmanaged(u64) = .empty;
+    defer pings.deinit(t.allocator);
+
+    var elapsed_ms: u64 = 0;
+    while (elapsed_ms < AI_REPLY_DEADLINE_MS) {
+        elapsed_ms += AI_REPLY_POLL_MS;
+        if (sched.pingDue(elapsed_ms)) try pings.append(t.allocator, elapsed_ms);
+    }
+
+    // Dense early feedback at the fixed checkpoints.
+    try t.expectEqual(@as(u64, 10_000), pings.items[0]);
+    try t.expectEqual(@as(u64, 30_000), pings.items[1]);
+    try t.expectEqual(@as(u64, 60_000), pings.items[2]);
+    try t.expectEqual(@as(u64, 120_000), pings.items[3]);
+    // Then a "still working" heartbeat every AI_REPLY_HEARTBEAT_MS (5 min).
+    try t.expectEqual(@as(u64, AI_REPLY_HEARTBEAT_MS), pings.items[4]);
+    try t.expectEqual(@as(u64, 2 * AI_REPLY_HEARTBEAT_MS), pings.items[5]);
+    // Heartbeats run right up to — but never past — the send deadline.
+    const last = pings.items[pings.items.len - 1];
+    try t.expect(last <= AI_REPLY_DEADLINE_MS);
+    try t.expect(last + AI_REPLY_HEARTBEAT_MS > AI_REPLY_DEADLINE_MS);
 }

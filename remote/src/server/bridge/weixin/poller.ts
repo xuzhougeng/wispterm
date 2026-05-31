@@ -36,6 +36,23 @@ export type WeixinPollerOptions = {
 };
 
 const DEFAULT_AI_REPLY_CHECKPOINTS_MS = [10000, 30000, 60000, 120000];
+/** The WeChat context_token that lets the bot reply to an inbound message is only
+ * valid for ~30 minutes; a reply sent with an expired token is rejected by the
+ * server and the user silently receives nothing — the root cause of "the bot just
+ * stops replying" for slow AI tasks. The follow-up must finish (or hand back)
+ * within this window, regardless of reply_timeout_ms. */
+const CONTEXT_TOKEN_WINDOW_MS = 30 * 60 * 1000;
+/** Send the final answer / heartbeat / resend notice this far before the hard
+ * expiry so it still goes out on a valid token. */
+const AI_REPLY_EXPIRY_NOTICE_MARGIN_MS = 30 * 1000;
+/** Latest elapsed time at which the follow-up still sends on the original token. */
+const AI_REPLY_DEADLINE_MS = CONTEXT_TOKEN_WINDOW_MS - AI_REPLY_EXPIRY_NOTICE_MARGIN_MS;
+/** After the dense early checkpoints, ping "still working" this often so the user
+ * knows a long-running task is alive. */
+const AI_REPLY_HEARTBEAT_MS = 5 * 60 * 1000;
+/** Sent once when the window closes with no final answer: the token is about to
+ * expire, so a fresh inbound message is needed to keep the conversation going. */
+const AI_REPLY_WINDOW_EXPIRED_NOTICE = "AI 处理已超过 30 分钟仍未完成，微信回复窗口即将关闭。请重新发送一条消息以继续接收回复。";
 
 export function shouldHandleWeixinMessage(binding: WeixinBindingRecord, message: WeixinMessage): HandleDecision {
   const from = (message.from_user_id ?? "").trim();
@@ -191,7 +208,6 @@ export class WeixinPoller {
             client,
             contextToken: message.context_token ?? "",
             generation,
-            replyTimeoutMs: settings.reply_timeout_ms,
             toUserId: message.from_user_id ?? "",
           });
         },
@@ -219,17 +235,22 @@ export class WeixinPoller {
       client: WeixinPollerClient;
       contextToken: string;
       generation: number;
-      replyTimeoutMs: number;
       toUserId: string;
     },
   ): void {
     if (!options.toUserId || this.isStale(options.generation)) return;
-    const maxCheckpointMs = Math.max(0, ...this.aiReplyCheckpointsMs);
-    const effectiveReplyTimeoutMs = Math.max(options.replyTimeoutMs, maxCheckpointMs);
+    // Dense early checkpoints for quick feedback, then a steady heartbeat — all
+    // within the context_token's ~30-minute validity. The old code stopped after
+    // max(reply_timeout_ms, 120s) <= 3 min, so slower AI tasks never delivered
+    // their final answer (the "no reply" bug).
     const checkpoints = this.aiReplyCheckpointsMs
-      .filter((ms) => ms > 0 && ms <= effectiveReplyTimeoutMs)
+      .filter((ms) => ms > 0 && ms < AI_REPLY_DEADLINE_MS)
       .sort((a, b) => a - b);
-    if (checkpoints.length === 0) return;
+    const heartbeats: number[] = [];
+    for (let ms = AI_REPLY_HEARTBEAT_MS; ms < AI_REPLY_DEADLINE_MS; ms += AI_REPLY_HEARTBEAT_MS) {
+      heartbeats.push(ms);
+    }
+    const progressDelays = [...checkpoints, ...heartbeats];
 
     const timers = new Set<unknown>();
     const observableSession = ai.session as WeixinAiFollowup["session"] & {
@@ -267,6 +288,23 @@ export class WeixinPoller {
         }
       })();
     };
+    // Reached the token's expiry margin with no final answer: deliver it if it
+    // just landed, otherwise prompt the user to resend. A silent stop here looks
+    // exactly like the original "no reply" bug.
+    const handleDeadline = () => {
+      if (finished || this.isStale(options.generation)) return;
+      finish();
+      void (async () => {
+        const progress = aiReplyProgress(ai.baselineTranscript, ai.session.latestAiChatTranscript());
+        const text = progress.done && progress.text ? progress.text : AI_REPLY_WINDOW_EXPIRED_NOTICE;
+        try {
+          if (this.isStale(options.generation)) return;
+          await options.client.sendTextMessage(options.toUserId, text, options.contextToken);
+        } catch (err) {
+          if (!this.isStale(options.generation)) this.logger.warn("weixin ai followup deadline send failed", err);
+        }
+      })();
+    };
 
     cleanup = finish;
     this.aiReplyCleanups.add(cleanup);
@@ -274,7 +312,7 @@ export class WeixinPoller {
       unsubscribeLayout = observableSession.onLayout(() => checkProgress(false));
     }
 
-    for (const delay of checkpoints) {
+    for (const delay of progressDelays) {
       let timer: unknown = null;
       timer = this.scheduler.setTimeout(() => {
         if (timer !== null) {
@@ -287,6 +325,17 @@ export class WeixinPoller {
       timers.add(timer);
       this.aiReplyTimers.add(timer);
     }
+
+    let deadlineTimer: unknown = null;
+    deadlineTimer = this.scheduler.setTimeout(() => {
+      if (deadlineTimer !== null) {
+        timers.delete(deadlineTimer);
+        this.aiReplyTimers.delete(deadlineTimer);
+      }
+      handleDeadline();
+    }, AI_REPLY_DEADLINE_MS);
+    timers.add(deadlineTimer);
+    this.aiReplyTimers.add(deadlineTimer);
   }
 }
 

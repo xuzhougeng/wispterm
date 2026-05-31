@@ -396,6 +396,76 @@ test("WeixinPoller sends AI progress checkpoints at 10, 30, 60, and 120 seconds 
   assert.equal(events.filter((event) => event === "send:还在处理中，工具调用仍在执行。").length, 4);
 });
 
+test("WeixinPoller keeps the AI reply window open for ~30 minutes and asks the user to resend on timeout", async () => {
+  const expiredNotice = "AI 处理已超过 30 分钟仍未完成，微信回复窗口即将关闭。请重新发送一条消息以继续接收回复。";
+  const events: string[] = [];
+  let transcript = "Model:\r\nDeepSeek\r\n\r\nStatus:\r\nReady\r\n\r\nAI:\r\nready";
+  const scheduler = fakeManualScheduler();
+  const poller = new WeixinPoller(
+    fakeStore({
+      loadSettings: async () => ({ enabled: true, target_session: "alpha", reply_timeout_ms: 60000 }),
+    }),
+    () => [{
+      key: "alpha",
+      session: {
+        isWispTermConnected: () => true,
+        findAiChatSurface: () => ({ id: "ai", title: "AI", kind: "ai_chat" }),
+        latestAiChatTranscript: () => transcript,
+        onLayout: () => () => {},
+        sendInput: (_surfaceId: string, text: string) => {
+          events.push(`input:${text}`);
+          transcript = `${transcript}\r\n\r\nYou:\r\n${text.trim()}`;
+          return true;
+        },
+      },
+    }] as never,
+    { warn: () => {} },
+    {
+      createClient: () => ({
+        getUpdates: async () => ({
+          ret: 0,
+          get_updates_buf: "next-cursor",
+          longpolling_timeout_ms: 1000,
+          msgs: [{
+            from_user_id: "user@im.wechat",
+            to_user_id: "bot@im.bot",
+            context_token: "ctx",
+            item_list: [{ type: 1, text_item: { text: "slow task" } }],
+          }],
+        }),
+        sendTextMessage: async (_to, text) => {
+          events.push(`send:${text}`);
+        },
+      }),
+      scheduler,
+    },
+  );
+
+  await poller.runOnceForTest();
+  assert.deepEqual(events, ["input:slow task\r", `send:${AI_ACK_TEXT}`]);
+
+  const delays = scheduler.delays();
+  // Dense early checkpoints, then a "still working" heartbeat every 5 minutes.
+  assert.deepEqual(delays.slice(0, 4), [10000, 30000, 60000, 120000]);
+  assert.equal(delays[4], 300000);
+  assert.equal(delays[5], 600000);
+  // The resend prompt is the longest-lived timer, fired just before the
+  // 30-minute context_token expiry — far beyond the old <= 3 min cap.
+  const deadlineDelay = 30 * 60 * 1000 - 30 * 1000;
+  assert.equal(Math.max(...delays), deadlineDelay);
+
+  // A heartbeat reports the task is still running, not done.
+  transcript = `${transcript}\r\n\r\nStatus:\r\nRunning tools...\r\n\r\nTool:\r\nterminal_snapshot`;
+  scheduler.fire(4);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(events.at(-1), "send:还在处理中，工具调用仍在执行。");
+
+  // Window closes with no final answer → prompt the user to resend.
+  scheduler.fire(delays.indexOf(deadlineDelay));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(events.at(-1), `send:${expiredNotice}`);
+});
+
 test("WeixinPoller sends the final AI reply when it completes after all progress checkpoints", async () => {
   const events: string[] = [];
   let transcript = "Model:\r\nDeepSeek\r\n\r\nStatus:\r\nReady\r\n\r\nAI:\r\nready";
