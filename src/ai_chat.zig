@@ -1311,6 +1311,16 @@ pub const Session = struct {
     pub fn handleKeyWithWrapCols(self: *Session, ev: input_key.KeyEvent, max_cols: usize) void {
         if (self.handleApprovalKey(ev)) return;
 
+        if (self.rewind_open) {
+            switch (ev.key) {
+                .arrow_up => self.moveRewindSelection(-1),
+                .arrow_down => self.moveRewindSelection(1),
+                .enter => self.confirmRewind(),
+                else => self.closeRewindPicker(), // Esc 及其它键一律关闭
+            }
+            return;
+        }
+
         if (ev.ctrl and !ev.alt and ev.key == .key_a) {
             self.selectAll();
             return;
@@ -1342,10 +1352,22 @@ pub const Session = struct {
             .end => self.moveInputCursorEnd(),
             .tab => _ = self.completeComposerSuggestion(.tab),
             .escape => {
+                const now = self.now_ms_override orelse std.time.milliTimestamp();
                 if (self.request_inflight) {
+                    // 生成中：仅停止，不参与双击；停止后变空闲再双击才进选择器。
                     self.stopRequest();
+                    self.last_esc_ms = 0;
+                } else if (self.last_esc_ms != 0 and
+                    now - self.last_esc_ms <= DOUBLE_ESC_WINDOW_MS and
+                    !self.hasSelection() and
+                    self.rewindPointCount() > 0)
+                {
+                    self.last_esc_ms = 0;
+                    self.openRewindPicker();
                 } else {
+                    // 单次 ESC：保持现状（有选区则清选区），并记录时间以备双击。
                     self.clearSelection();
+                    self.last_esc_ms = now;
                 }
             },
             .enter => {
@@ -7091,4 +7113,92 @@ test "/permission full flips the global agent permission" {
     try std.testing.expectEqual(AgentPermission.confirm, currentAgentSettings().permission);
     applyPermissionArg("bogus"); // invalid → no change
     try std.testing.expectEqual(AgentPermission.confirm, currentAgentSettings().permission);
+}
+
+test "ai chat double esc opens rewind picker when idle" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 第一次：记录时间
+    try std.testing.expect(!session.rewind_open);
+
+    session.now_ms_override = 1000 + DOUBLE_ESC_WINDOW_MS; // 窗口内
+    session.handleKey(.{ .key = input_key.Key.escape });
+    try std.testing.expect(session.rewind_open);
+}
+
+test "ai chat slow double esc does not open rewind picker" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape });
+    session.now_ms_override = 1000 + DOUBLE_ESC_WINDOW_MS + 1; // 超窗口
+    session.handleKey(.{ .key = input_key.Key.escape });
+    try std.testing.expect(!session.rewind_open);
+}
+
+test "ai chat esc during generation only stops and does not open picker" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+    session.request_inflight = true;
+
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape });
+    session.now_ms_override = 1100;
+    session.handleKey(.{ .key = input_key.Key.escape });
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expect(session.request_stopping);
+}
+
+// 方向约定：rewind_selected 0=最早、count-1=最近。moveRewindSelection(-1)（arrow_up）
+// 朝更早、(+1)（arrow_down）朝更近。openRewindPicker 后 selected=count-1（最近）。
+test "ai chat rewind picker arrow and enter via handleKey" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "alpha") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "ra") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "beta") });
+
+    session.openRewindPicker(); // selected = 1 ("beta")
+    session.handleKey(.{ .key = input_key.Key.arrow_up }); // -1 -> 0 ("alpha")
+    try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
+    session.handleKey(.{ .key = input_key.Key.enter });
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
+    try std.testing.expectEqualStrings("alpha", session.input());
+}
+
+test "ai chat rewind picker esc closes without change" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "keep") });
+    session.openRewindPicker();
+    session.handleKey(.{ .key = input_key.Key.escape });
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
 }
