@@ -146,7 +146,12 @@ pub const Client = struct {
         });
         if (w.ret) |ret| {
             if (ret != 0) {
-                std.debug.print("weixin send({d}): kind=sendmessage status=failed ret={} errcode={} message={s}\n", .{ std.time.milliTimestamp(), ret, w.errcode, w.message });
+                std.debug.print("weixin send({d}): kind=sendmessage status=failed ret={} errcode={} message={s}\n", .{
+                    std.time.milliTimestamp(),
+                    ret,
+                    w.errcode,
+                    logSafeDiagnosticText(a, w.message),
+                });
                 return error.IlinkSendMessageFailed;
             }
         }
@@ -253,7 +258,7 @@ pub const Client = struct {
                 kind.name(),
                 upload.ret,
                 upload.errcode,
-                upload.message,
+                logSafeDiagnosticText(arena, upload.message),
             });
             return error.WeixinGetUploadUrlFailed;
         }
@@ -263,7 +268,7 @@ pub const Client = struct {
                 kind.name(),
                 upload.ret,
                 upload.errcode,
-                upload.message,
+                logSafeDiagnosticText(arena, upload.message),
             });
             return error.WeixinGetUploadUrlMissingUrl;
         }
@@ -352,7 +357,12 @@ pub const Client = struct {
             return error.IlinkSendMessageMalformed;
         };
         if (ret != 0) {
-            std.debug.print("weixin send({d}): kind=attachment status=failed ret={} errcode={} message={s}\n", .{ std.time.milliTimestamp(), ret, w.errcode, w.message });
+            std.debug.print("weixin send({d}): kind=attachment status=failed ret={} errcode={} message={s}\n", .{
+                std.time.milliTimestamp(),
+                ret,
+                w.errcode,
+                logSafeDiagnosticText(arena, w.message),
+            });
             return error.IlinkSendMessageFailed;
         }
     }
@@ -556,10 +566,14 @@ fn readResponseBodyExcerpt(allocator: std.mem.Allocator, reader: *std.Io.Reader)
 }
 
 fn logSafeResponseExcerpt(allocator: std.mem.Allocator, body: []const u8) []const u8 {
-    return safeResponseExcerptAlloc(allocator, body) catch "[response excerpt unavailable]";
+    return logSafeDiagnosticText(allocator, body);
 }
 
-fn safeResponseExcerptAlloc(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+fn logSafeDiagnosticText(allocator: std.mem.Allocator, text: []const u8) []const u8 {
+    return safeDiagnosticTextAlloc(allocator, text) catch "[diagnostic text unavailable]";
+}
+
+fn safeDiagnosticTextAlloc(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     const capped = body[0..@min(body.len, Client.ERROR_BODY_EXCERPT_BYTES)];
     if (looksBinary(capped)) return allocator.dupe(u8, "[binary body omitted]");
 
@@ -575,6 +589,7 @@ fn safeResponseExcerptAlloc(allocator: std.mem.Allocator, body: []const u8) ![]u
 }
 
 fn looksBinary(bytes: []const u8) bool {
+    if (!std.unicode.utf8ValidateSlice(bytes)) return true;
     for (bytes) |b| {
         if (b == 0 or b == 0x7f) return true;
         if (b < 0x20 and b != '\n' and b != '\r' and b != '\t') return true;
@@ -588,42 +603,43 @@ fn appendRedactedJsonField(
     input: []const u8,
     index: *usize,
 ) !bool {
-    const fields = [_][]const u8{
-        "context_token",
-        "aes_key",
-        "encrypt_query_param",
-        "token",
-        "bot_token",
-        "access_token",
-        "authorization",
-        "Authorization",
-        "ticket",
-    };
-    for (fields) |field| {
-        if (jsonStringValueStart(input, index.*, field)) |value_quote| {
-            try out.appendSlice(allocator, input[index.* .. value_quote + 1]);
+    if (jsonStringValueStart(input, index.*)) |field| {
+        if (isSensitiveDiagnosticField(field.key)) {
+            try out.appendSlice(allocator, input[index.* .. field.value_quote + 1]);
             try out.appendSlice(allocator, "[redacted]");
             try out.append(allocator, '"');
-            index.* = skipJsonString(input, value_quote + 1);
+            index.* = skipJsonString(input, field.value_quote + 1);
+            return true;
+        }
+    }
+    if (plainValueStart(input, index.*)) |field| {
+        if (isSensitiveDiagnosticField(field.key)) {
+            try out.appendSlice(allocator, input[index.*..field.value_start]);
+            try out.appendSlice(allocator, "[redacted]");
+            index.* = skipPlainValue(input, field.value_start);
             return true;
         }
     }
     return false;
 }
 
-fn jsonStringValueStart(input: []const u8, start: usize, field: []const u8) ?usize {
+const JsonDiagnosticField = struct {
+    key: []const u8,
+    value_quote: usize,
+};
+
+fn jsonStringValueStart(input: []const u8, start: usize) ?JsonDiagnosticField {
     if (start >= input.len or input[start] != '"') return null;
-    const key_end = start + 1 + field.len;
-    if (key_end >= input.len) return null;
-    if (!std.mem.eql(u8, input[start + 1 .. key_end], field)) return null;
-    if (input[key_end] != '"') return null;
-    var i = key_end + 1;
+    const key_quote_end = skipJsonString(input, start + 1);
+    if (key_quote_end <= start + 1 or key_quote_end > input.len or input[key_quote_end - 1] != '"') return null;
+    const key = input[start + 1 .. key_quote_end - 1];
+    var i = key_quote_end;
     while (i < input.len and std.ascii.isWhitespace(input[i])) : (i += 1) {}
     if (i >= input.len or input[i] != ':') return null;
     i += 1;
     while (i < input.len and std.ascii.isWhitespace(input[i])) : (i += 1) {}
     if (i >= input.len or input[i] != '"') return null;
-    return i;
+    return .{ .key = key, .value_quote = i };
 }
 
 fn skipJsonString(input: []const u8, start: usize) usize {
@@ -636,6 +652,69 @@ fn skipJsonString(input: []const u8, start: usize) usize {
         if (input[i] == '"') return i + 1;
     }
     return input.len;
+}
+
+const PlainDiagnosticField = struct {
+    key: []const u8,
+    value_start: usize,
+};
+
+fn plainValueStart(input: []const u8, start: usize) ?PlainDiagnosticField {
+    if (start >= input.len or !isDiagnosticKeyChar(input[start])) return null;
+    var key_end = start + 1;
+    while (key_end < input.len and isDiagnosticKeyChar(input[key_end])) : (key_end += 1) {}
+    var i = key_end;
+    while (i < input.len and std.ascii.isWhitespace(input[i])) : (i += 1) {}
+    if (i >= input.len or (input[i] != ':' and input[i] != '=')) return null;
+    i += 1;
+    while (i < input.len and std.ascii.isWhitespace(input[i])) : (i += 1) {}
+    return .{ .key = input[start..key_end], .value_start = i };
+}
+
+fn isDiagnosticKeyChar(b: u8) bool {
+    return std.ascii.isAlphanumeric(b) or b == '_' or b == '-' or b == '.';
+}
+
+fn skipPlainValue(input: []const u8, start: usize) usize {
+    if (start < input.len and input[start] == '"') return skipJsonString(input, start + 1);
+    var i = start;
+    while (i < input.len) : (i += 1) {
+        switch (input[i]) {
+            ' ', '\t', '\r', '\n', ',', ';', '&', '}' => return i,
+            else => {},
+        }
+    }
+    return input.len;
+}
+
+fn isSensitiveDiagnosticField(field: []const u8) bool {
+    const sensitive = [_][]const u8{
+        "contexttoken",
+        "aeskey",
+        "encryptqueryparam",
+        "encryptedparam",
+        "xencryptedparam",
+        "token",
+        "bottoken",
+        "accesstoken",
+        "authorization",
+        "ticket",
+    };
+    for (sensitive) |canonical| {
+        if (normalizedDiagnosticFieldEquals(field, canonical)) return true;
+    }
+    return false;
+}
+
+fn normalizedDiagnosticFieldEquals(field: []const u8, canonical: []const u8) bool {
+    var j: usize = 0;
+    for (field) |raw| {
+        if (raw == '_' or raw == '-' or raw == '.') continue;
+        if (j >= canonical.len) return false;
+        if (std.ascii.toLower(raw) != canonical[j]) return false;
+        j += 1;
+    }
+    return j == canonical.len;
 }
 
 fn appendLogEscapedByte(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, b: u8) !void {
@@ -755,18 +834,30 @@ test "readLocalFileAlloc rejects directories" {
 }
 
 test "safe response excerpts redact sensitive fields and omit binary bodies" {
-    const redacted = try safeResponseExcerptAlloc(std.testing.allocator, "{\"context_token\":\"ctx-1\",\"aes_key\":\"secret\",\"encrypt_query_param\":\"param\",\"bot_token\":\"bot\",\"message\":\"line\nnext\"}");
+    const redacted = try safeDiagnosticTextAlloc(std.testing.allocator, "{\"context_token\":\"ctx-1\",\"aesKey\":\"secret\",\"encryptQueryParam\":\"param\",\"x-encrypted-param\":\"header-param\",\"accessToken\":\"access\",\"bot_token\":\"bot\",\"message\":\"line\nnext\"}");
     defer std.testing.allocator.free(redacted);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "ctx-1") == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "secret") == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "\":\"param\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "header-param") == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "\":\"access\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "\":\"bot\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "[redacted]") != null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "\\n") != null);
 
-    const binary = try safeResponseExcerptAlloc(std.testing.allocator, "abc\x00def");
+    const message = try safeDiagnosticTextAlloc(std.testing.allocator, "failed contextToken=ctx-2 aes_key=key-2 encrypted_param=param-2");
+    defer std.testing.allocator.free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "ctx-2") == null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "key-2") == null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "param-2") == null);
+
+    const binary = try safeDiagnosticTextAlloc(std.testing.allocator, "abc\x00def");
     defer std.testing.allocator.free(binary);
     try std.testing.expectEqualStrings("[binary body omitted]", binary);
+
+    const invalid_utf8 = try safeDiagnosticTextAlloc(std.testing.allocator, "abc\xffdef");
+    defer std.testing.allocator.free(invalid_utf8);
+    try std.testing.expectEqualStrings("[binary body omitted]", invalid_utf8);
 }
 
 test "readResponseBodyExcerpt caps diagnostic body reads" {
@@ -776,6 +867,7 @@ test "readResponseBodyExcerpt caps diagnostic body reads" {
     const excerpt = try readResponseBodyExcerpt(std.testing.allocator, &reader);
     defer std.testing.allocator.free(excerpt);
     try std.testing.expectEqual(@as(usize, Client.ERROR_BODY_EXCERPT_BYTES), excerpt.len);
+    try std.testing.expectError(error.EndOfStream, reader.takeByte());
 }
 
 test "voice attachment uploads as a file item through injected transport" {
