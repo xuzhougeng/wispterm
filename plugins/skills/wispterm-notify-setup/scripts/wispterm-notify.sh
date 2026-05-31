@@ -73,9 +73,12 @@ fi
 [ -z "$notify_tty" ] && exit 0
 
 # --- 5. Emit one OSC 777 (title+body) + BEL. Only OSC 777 (not OSC 9) to avoid
-#        double-notifying terminals that support both. ---
+#        double-notifying terminals that support both.
+# A trailing zero-width space (U+200B) in the body marks the notification for
+# WeChat forwarding; WispTerm strips it (notification.zig). Other terminals show
+# nothing extra. The bare BEL after is the bell-badge fallback. ---
 {
-  printf '\033]777;notify;%s;%s\007' "$title" "$body"
+  printf '\033]777;notify;%s;%s\342\200\213\007' "$title" "$body"
   printf '\a'
 } >"$notify_tty" 2>/dev/null || true
 exit 0
