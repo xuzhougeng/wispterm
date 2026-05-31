@@ -2117,6 +2117,86 @@ pub const Session = struct {
         self.clearSelectionLocked();
     }
 
+    /// 用 text 覆盖输入框内容，光标置于末尾。纯缓冲区操作、无 IO。
+    fn setInputTextLocked(self: *Session, text: []const u8) void {
+        self.input_len = 0;
+        self.input_cursor = 0;
+        self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
+        self.suggestion_selected = 0;
+        self.clearSelectionLocked();
+        self.insertInputBytesLocked(text);
+    }
+
+    /// 打开回溯选择器：仅在空闲且至少有一个回溯点时；默认选中最近一条。
+    pub fn openRewindPicker(self: *Session) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.request_inflight) return;
+        const count = self.rewindPointCountLocked();
+        if (count == 0) return;
+        self.clearSelectionLocked();
+        self.rewind_selected = count - 1;
+        self.rewind_open = true;
+    }
+
+    pub fn closeRewindPicker(self: *Session) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.rewind_open = false;
+    }
+
+    /// 在 [0, count) 内移动选中项，到边界停住（不回绕）。
+    pub fn moveRewindSelection(self: *Session, delta: i32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.rewind_open) return;
+        const count = self.rewindPointCountLocked();
+        if (count == 0) {
+            self.rewind_open = false;
+            return;
+        }
+        const cur: i64 = @intCast(@min(self.rewind_selected, count - 1));
+        var next = cur + delta;
+        if (next < 0) next = 0;
+        const max_i: i64 = @intCast(count - 1);
+        if (next > max_i) next = max_i;
+        self.rewind_selected = @intCast(next);
+    }
+
+    /// 确认回溯：把对话回退到选中用户消息之前，将其文本回填输入框，删除该
+    /// 消息及其后所有消息，关闭选择器并同步历史。仅空闲时有效。
+    pub fn confirmRewind(self: *Session) void {
+        var history_change: ?PendingHistoryChange = null;
+        self.mutex.lock();
+        if (self.request_inflight or !self.rewind_open) {
+            self.mutex.unlock();
+            return;
+        }
+        const count = self.rewindPointCountLocked();
+        if (count == 0) {
+            self.rewind_open = false;
+            self.mutex.unlock();
+            return;
+        }
+        const sel = @min(self.rewind_selected, count - 1);
+        const idx = self.rewindPointMessageIndexLocked(sel);
+        if (idx >= self.messages.items.len) {
+            self.rewind_open = false;
+            self.mutex.unlock();
+            return;
+        }
+        // insertInputBytesLocked 会立即把字节拷入 input_buf，随后 rollback 才释放
+        // messages[idx]，两块缓冲区不重叠，安全。
+        self.setInputTextLocked(self.messages.items[idx].content);
+        self.rollbackMessagesFromLocked(idx);
+        self.rewind_open = false;
+        self.scroll_px = 1_000_000;
+        history_change = self.captureHistoryChangeLocked();
+        self.mutex.unlock();
+        self.notifyHistoryChange(history_change);
+    }
+
     fn rollbackMessagesFromLocked(self: *Session, start: usize) void {
         while (self.messages.items.len > start) {
             var msg = self.messages.pop().?;
@@ -6777,6 +6857,80 @@ test "ai chat rewind point count and index map user messages" {
     defer session.mutex.unlock();
     try std.testing.expectEqual(@as(usize, 0), session.rewindPointMessageIndexLocked(0));
     try std.testing.expectEqual(@as(usize, 2), session.rewindPointMessageIndexLocked(1));
+}
+
+test "ai chat rewind open requires idle and points" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+
+    // 无回溯点：不打开。
+    session.openRewindPicker();
+    try std.testing.expect(!session.rewind_open);
+
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "one") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "r1") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "two") });
+
+    // 生成中：不打开。
+    session.request_inflight = true;
+    session.openRewindPicker();
+    try std.testing.expect(!session.rewind_open);
+
+    // 空闲：打开，默认选中最近一条（序号 count-1）。
+    session.request_inflight = false;
+    session.openRewindPicker();
+    try std.testing.expect(session.rewind_open);
+    try std.testing.expectEqual(@as(usize, 1), session.rewind_selected);
+}
+
+test "ai chat rewind move selection clamps" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "one") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "two") });
+    session.openRewindPicker(); // selected = 1
+    session.moveRewindSelection(1); // clamp at top
+    try std.testing.expectEqual(@as(usize, 1), session.rewind_selected);
+    session.moveRewindSelection(-1);
+    try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
+    session.moveRewindSelection(-1); // clamp at 0
+    try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
+}
+
+test "ai chat confirm rewind truncates and restores composer" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "first prompt") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "first reply") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "second prompt") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "partial") });
+
+    session.openRewindPicker(); // selected = 1 (最近一条 "second prompt", idx 2)
+    session.confirmRewind();
+
+    // 删除 idx 2 及之后：仅剩前两条。
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expectEqualStrings("second prompt", session.input());
+
+    // 回退到更早一条。
+    session.openRewindPicker(); // 现在 count = 1, selected = 0 (idx 0)
+    session.moveRewindSelection(-1);
+    session.confirmRewind();
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
+    try std.testing.expectEqualStrings("first prompt", session.input());
 }
 
 test "ai chat request state exposes in-flight stop status for remote layout" {
