@@ -1207,6 +1207,22 @@ pub const Session = struct {
         self.notifyHistoryChange(history_change);
     }
 
+    /// Set the title only if it is still the default name. Returns true if it
+    /// changed. Used by auto-title so a concurrent manual rename always wins.
+    pub fn setTitleIfDefault(self: *Session, title_text: []const u8) bool {
+        var history_change: ?PendingHistoryChange = null;
+        self.mutex.lock();
+        if (!std.mem.eql(u8, self.title_buf[0..self.title_len], DEFAULT_NAME)) {
+            self.mutex.unlock();
+            return false;
+        }
+        self.copyTitle(title_text);
+        history_change = self.captureHistoryChangeLocked();
+        self.mutex.unlock();
+        self.notifyHistoryChange(history_change);
+        return true;
+    }
+
     pub fn toHistoryRecord(self: *Session, allocator: std.mem.Allocator) !agent_history.SessionRecord {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -2857,6 +2873,16 @@ fn finishStoppedRequest(session: *Session) void {
     session.stop_requested.store(false, .release);
     session.collapseAutoExpandedDetailsLocked();
     session.setStatusLocked("Stopped");
+}
+
+/// Clean a raw model title response and apply it to the session, but only if the
+/// title is still the default (a manual rename in the meantime always wins) and
+/// the session is not closing.
+fn applyGeneratedTitle(session: *Session, raw: []const u8) void {
+    if (session.closing.load(.acquire)) return;
+    var buf: [ai_chat_title.max_title_bytes]u8 = undefined;
+    const cleaned = ai_chat_title.cleanTitle(raw, &buf) orelse return;
+    _ = session.setTitleIfDefault(cleaned);
 }
 
 fn runAgentRequest(request: *ChatRequest) !ApiResult {
@@ -5456,6 +5482,63 @@ test "ai_chat: fresh session has auto_title_attempted=false" {
     );
     defer session.deinit();
     try std.testing.expect(!session.auto_title_attempted);
+}
+
+test "ai_chat: applyGeneratedTitle cleans and sets title when still default" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        DEFAULT_NAME,
+        "https://api.example.com",
+        "secret",
+        "model-a",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+    applyGeneratedTitle(session, "  \"Deploy the App\"  \nignored second line ");
+    try std.testing.expectEqualStrings("Deploy the App", session.title());
+}
+
+test "ai_chat: applyGeneratedTitle leaves a renamed title untouched" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "My Custom Name",
+        "https://api.example.com",
+        "secret",
+        "model-a",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+    applyGeneratedTitle(session, "Generated Title");
+    try std.testing.expectEqualStrings("My Custom Name", session.title());
+}
+
+test "ai_chat: applyGeneratedTitle ignores empty model output" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        DEFAULT_NAME,
+        "https://api.example.com",
+        "secret",
+        "model-a",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+    applyGeneratedTitle(session, "   \n  ");
+    try std.testing.expectEqualStrings(DEFAULT_NAME, session.title());
 }
 
 test "ai chat endpoint normalization" {
