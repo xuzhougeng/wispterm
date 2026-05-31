@@ -329,7 +329,11 @@ pub fn render(
     if (approval) |view| {
         renderApprovalCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, APPROVAL_H);
     }
-    renderComposerSuggestions(session, layout);
+    if (session.rewind_open) {
+        renderRewindPicker(session, layout);
+    } else {
+        renderComposerSuggestions(session, layout);
+    }
 }
 
 pub fn interactionHitTest(
@@ -1130,6 +1134,84 @@ fn permissionDisplayName(permission: ai_chat.AgentPermission) []const u8 {
         .confirm => "Ask",
         .full => "Full",
     };
+}
+
+const REWIND_MAX_ROWS: usize = 8;
+
+fn firstLine(text: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+    return text[0..end];
+}
+
+fn renderRewindPicker(session: *ai_chat.Session, layout: InputLayout) void {
+    var total: usize = 0;
+    for (session.messages.items) |msg| {
+        if (msg.role == .user) total += 1;
+    }
+    if (total == 0) return;
+
+    const selected = @min(session.rewind_selected, total - 1);
+    const visible = @min(total, REWIND_MAX_ROWS);
+
+    // 以"recency"（0 = 最近一条，显示在最底部、紧邻输入框）做窗口化，
+    // 保证选中项可见。
+    const selected_r = total - 1 - selected;
+    var r_lo: usize = 0;
+    if (selected_r >= visible) r_lo = selected_r - visible + 1;
+    if (r_lo > total - visible) r_lo = total - visible;
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const popup_w = @min(layout.field_w, SUGGESTION_MAX_W);
+    const popup_x = layout.field_x;
+    const popup_y = layout.field_y + layout.field_h + SUGGESTION_GAP;
+    const row_count: f32 = @floatFromInt(visible + 1); // +1 标题行
+    const popup_h = SUGGESTION_PAD_Y * 2 + SUGGESTION_ROW_H * row_count;
+    const popup_bg = mixColor(bg, fg, 0.085);
+    const border = mixColor(bg, accent, 0.36);
+
+    ui_pipeline.fillQuadAlpha(popup_x, popup_y, popup_w, popup_h, popup_bg, 0.98);
+    ui_pipeline.fillQuadAlpha(popup_x, popup_y + popup_h - 1, popup_w, 1, border, 0.78);
+    ui_pipeline.fillQuadAlpha(popup_x, popup_y, popup_w, 1, mixColor(bg, fg, 0.20), 0.82);
+    ui_pipeline.fillQuadAlpha(popup_x, popup_y, 1, popup_h, mixColor(bg, fg, 0.16), 0.72);
+    ui_pipeline.fillQuadAlpha(popup_x + popup_w - 1, popup_y, 1, popup_h, mixColor(bg, fg, 0.16), 0.72);
+
+    const top = popup_y + popup_h - SUGGESTION_PAD_Y;
+
+    // 标题行（最顶部）。
+    const title_row_y = top - @as(f32, @floatFromInt(visible + 1)) * SUGGESTION_ROW_H;
+    const title_text_y = title_row_y + @round((SUGGESTION_ROW_H - font.g_titlebar_cell_height) / 2);
+    _ = titlebar.renderTextLimited(
+        "rewind  ^v select  Enter confirm  Esc cancel",
+        popup_x + 14,
+        title_text_y,
+        mixColor(bg, fg, 0.55),
+        popup_w - 28,
+    );
+
+    var ord: usize = 0; // 用户消息序号（0 = 最早）
+    for (session.messages.items) |msg| {
+        if (msg.role != .user) continue;
+        const this_ord = ord;
+        ord += 1;
+        const r = total - 1 - this_ord; // recency：0 = 最近
+        if (r < r_lo or r >= r_lo + visible) continue;
+        const row = r - r_lo; // 0 = 最底部（最近）
+        const row_y = top - @as(f32, @floatFromInt(row + 1)) * SUGGESTION_ROW_H;
+        if (this_ord == selected) {
+            ui_pipeline.fillQuadAlpha(popup_x + 4, row_y + 2, popup_w - 8, SUGGESTION_ROW_H - 4, mixColor(bg, accent, 0.18), 0.90);
+            ui_pipeline.fillQuadAlpha(popup_x + 4, row_y + 2, 3, SUGGESTION_ROW_H - 4, accent, 0.82);
+        }
+        const text_y = row_y + @round((SUGGESTION_ROW_H - font.g_titlebar_cell_height) / 2);
+        _ = titlebar.renderTextLimited(
+            firstLine(msg.content),
+            popup_x + 14,
+            text_y,
+            if (this_ord == selected) mixColor(fg, accent, 0.14) else fg,
+            popup_w - 28,
+        );
+    }
 }
 
 fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout) void {
