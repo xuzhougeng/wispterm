@@ -20,6 +20,7 @@ const wispterm_docs = @import("wispterm_docs.zig");
 const markdown_text = @import("markdown_text.zig");
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_chat_composer = @import("ai_chat_composer.zig");
+const weixin_types = @import("weixin/types.zig");
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -247,6 +248,34 @@ pub const ToolHost = struct {
     connectSshProfile: *const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!ToolSurface,
 };
 
+const WeixinReplyContext = struct {
+    sender: weixin_types.AttachmentSender,
+    to_user_id: []u8,
+    context_token: []u8,
+
+    fn init(allocator: std.mem.Allocator, ctx: weixin_types.ReplyContext) !WeixinReplyContext {
+        return .{
+            .sender = ctx.sender,
+            .to_user_id = try allocator.dupe(u8, ctx.to_user_id),
+            .context_token = try allocator.dupe(u8, ctx.context_token),
+        };
+    }
+
+    fn clone(self: WeixinReplyContext, allocator: std.mem.Allocator) !WeixinReplyContext {
+        return .{
+            .sender = self.sender,
+            .to_user_id = try allocator.dupe(u8, self.to_user_id),
+            .context_token = try allocator.dupe(u8, self.context_token),
+        };
+    }
+
+    fn deinit(self: *WeixinReplyContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.to_user_id);
+        allocator.free(self.context_token);
+        self.* = undefined;
+    }
+};
+
 const ChatRequest = struct {
     allocator: std.mem.Allocator,
     session: *Session,
@@ -264,6 +293,7 @@ const ChatRequest = struct {
     copilot: bool = false,
     tool_host: ?ToolHost,
     tool_snapshot: ?ToolSnapshot,
+    weixin_reply_context: ?WeixinReplyContext = null,
     started_ms: i64,
     write_context_surface_id: [64]u8 = undefined,
     write_context_surface_id_len: usize = 0,
@@ -277,6 +307,7 @@ const ChatRequest = struct {
         for (self.messages) |msg| msg.deinit(self.allocator);
         self.allocator.free(self.messages);
         if (self.tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
+        if (self.weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -771,6 +802,7 @@ pub const Session = struct {
     request_stopping: bool = false,
     request_thread: ?std.Thread = null,
     title_thread: ?std.Thread = null,
+    pending_weixin_reply_context: ?WeixinReplyContext = null,
     auto_title_attempted: bool = false,
     closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -971,6 +1003,7 @@ pub const Session = struct {
         self.freeSkillSuggestions();
         self.freeCustomCommandSuggestions();
         command_registry.freeCommandList(self.allocator, self.custom_commands);
+        if (self.pending_weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -1339,6 +1372,19 @@ pub const Session = struct {
         if (text_start < data.len) self.appendInputText(data[text_start..]);
     }
 
+    pub fn applyWeixinInput(self: *Session, data: []const u8, ctx: weixin_types.ReplyContext) void {
+        self.mutex.lock();
+        if (self.pending_weixin_reply_context) |*old| old.deinit(self.allocator);
+        self.pending_weixin_reply_context = WeixinReplyContext.init(self.allocator, ctx) catch null;
+        self.mutex.unlock();
+        self.applyRemoteInput(data);
+    }
+
+    fn clearPendingWeixinReplyContextLocked(self: *Session) void {
+        if (self.pending_weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
+        self.pending_weixin_reply_context = null;
+    }
+
     pub fn handleKey(self: *Session, ev: input_key.KeyEvent) void {
         self.handleKeyWithWrapCols(ev, std.math.maxInt(usize));
     }
@@ -1667,6 +1713,7 @@ pub const Session = struct {
         self.mutex.lock();
         if (self.request_thread) |thread| {
             if (self.request_inflight) {
+                self.clearPendingWeixinReplyContextLocked();
                 self.mutex.unlock();
                 return;
             }
@@ -1678,6 +1725,7 @@ pub const Session = struct {
 
         var prompt_raw = std.mem.trim(u8, self.input(), " \t\r\n");
         if (prompt_raw.len == 0) {
+            self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
             return;
         }
@@ -1689,6 +1737,7 @@ pub const Session = struct {
         // 1) Built-in command (with optional argument), exact first-token match.
         if (ai_chat_composer.exactBuiltinCommand(first_tok)) |command| {
             const r = self.runBuiltinCommandLocked(command, arg);
+            self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
             self.notifyHistoryChange(r.history_change);
             fireDeferredAction(r.deferred);
@@ -1700,6 +1749,7 @@ pub const Session = struct {
             if (cmd.action) |av| {
                 if (knownActionFromName(av)) |builtin_command| {
                     const r = self.runBuiltinCommandLocked(builtin_command, arg);
+                    self.clearPendingWeixinReplyContextLocked();
                     self.mutex.unlock();
                     self.notifyHistoryChange(r.history_change);
                     fireDeferredAction(r.deferred);
@@ -1713,6 +1763,7 @@ pub const Session = struct {
             // legacy: a no-arg unknown slash like "/help" still shows "Unknown command".
             if (parseSlashCommand(prompt_raw)) |command| {
                 const r = self.runBuiltinCommandLocked(command, "");
+                self.clearPendingWeixinReplyContextLocked();
                 self.mutex.unlock();
                 self.notifyHistoryChange(r.history_change);
                 fireDeferredAction(r.deferred);
@@ -1723,6 +1774,7 @@ pub const Session = struct {
 
         if (self.api_key_len == 0) {
             self.setStatusLocked("Missing API key. Edit the AI Chat profile or set DEEPSEEK_API_KEY.");
+            self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
             return;
         }
@@ -1733,6 +1785,7 @@ pub const Session = struct {
         if (invocation) |parsed| {
             skill_preload_content = loadSkillPreloadContent(self.allocator, parsed.skill_name) catch {
                 self.setStatusLocked("Could not load skill");
+                self.clearPendingWeixinReplyContextLocked();
                 self.mutex.unlock();
                 return;
             };
@@ -1745,6 +1798,7 @@ pub const Session = struct {
         const prompt = self.allocator.dupe(u8, prompt_for_history) catch {
             if (skill_preload_content) |content| self.allocator.free(content);
             self.setStatusLocked("Out of memory");
+            self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
             return;
         };
@@ -1752,6 +1806,7 @@ pub const Session = struct {
             if (skill_preload_content) |content| self.allocator.free(content);
             self.allocator.free(prompt);
             self.setStatusLocked("Out of memory");
+            self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
             return;
         };
@@ -1763,6 +1818,7 @@ pub const Session = struct {
                 var user_msg = self.messages.pop().?;
                 user_msg.deinit(self.allocator);
                 self.setStatusLocked("Out of memory");
+                self.clearPendingWeixinReplyContextLocked();
                 self.mutex.unlock();
                 return;
             };
@@ -1772,6 +1828,7 @@ pub const Session = struct {
                 var user_msg = self.messages.pop().?;
                 user_msg.deinit(self.allocator);
                 self.setStatusLocked("Out of memory");
+                self.clearPendingWeixinReplyContextLocked();
                 self.mutex.unlock();
                 return;
             };
@@ -1791,6 +1848,7 @@ pub const Session = struct {
                 var user_msg = self.messages.pop().?;
                 user_msg.deinit(self.allocator);
                 self.setStatusLocked("Out of memory");
+                self.clearPendingWeixinReplyContextLocked();
                 self.mutex.unlock();
                 return;
             };
@@ -1807,10 +1865,12 @@ pub const Session = struct {
             if (skill_preload_appended) {
                 self.rollbackMessagesFromLocked(message_start);
                 self.setStatusLocked("Could not prepare request");
+                self.clearPendingWeixinReplyContextLocked();
                 self.mutex.unlock();
                 return;
             }
             self.setStatusLocked("Could not prepare request");
+            self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
             self.notifyHistoryChange(history_change);
             return;
@@ -2430,6 +2490,13 @@ pub const Session = struct {
             tool_snapshot = host.collectSnapshot(host.ctx, self.allocator) catch null;
         }
 
+        var weixin_ctx: ?WeixinReplyContext = null;
+        errdefer if (weixin_ctx) |*ctx| ctx.deinit(self.allocator);
+        if (self.pending_weixin_reply_context) |ctx| {
+            weixin_ctx = try ctx.clone(self.allocator);
+            self.clearPendingWeixinReplyContextLocked();
+        }
+
         // Each copilot user message carries a lightweight snapshot of the bound
         // terminal (cwd + recent output). Append it to the latest user message
         // rather than emitting a separate trailing message, which would break the
@@ -2533,6 +2600,7 @@ pub const Session = struct {
             .copilot = self.copilot,
             .tool_host = tool_host,
             .tool_snapshot = tool_snapshot,
+            .weixin_reply_context = weixin_ctx,
             .started_ms = std.time.milliTimestamp(),
         };
         base_url_owned = false;
@@ -2540,6 +2608,7 @@ pub const Session = struct {
         model_owned = false;
         system_prompt_owned = false;
         reasoning_effort_owned = false;
+        weixin_ctx = null;
         if (self.copilot and self.bound_surface_id_len > 0) {
             setWriteContext(req, self.boundSurfaceId());
         }
@@ -3810,6 +3879,15 @@ fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
         const topic = if (args) |parsed| jsonStringArg(parsed.value, "topic") else null;
         return wisptermDocsTool(request.allocator, topic);
     }
+    if (std.mem.eql(u8, call.name, "weixin_send_attachment")) {
+        const args = parseArgs(request.allocator, call.arguments) orelse return request.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const kind_text = jsonStringArg(args.value, "kind") orelse return request.allocator.dupe(u8, "Missing kind");
+        const kind = weixin_types.AttachmentKind.parse(kind_text) orelse return request.allocator.dupe(u8, "Invalid kind; expected file, image, or voice");
+        const path = jsonStringArg(args.value, "path") orelse return request.allocator.dupe(u8, "Missing path");
+        const display_name = jsonStringArg(args.value, "display_name") orelse "";
+        return weixinSendAttachmentTool(request, kind, path, display_name);
+    }
     return std.fmt.allocPrint(request.allocator, "Unknown tool: {s}", .{call.name});
 }
 
@@ -3878,6 +3956,22 @@ fn wisptermDocsTool(allocator: std.mem.Allocator, topic: ?[]const u8) ![]u8 {
         return out.toOwnedSlice(allocator);
     }
     return wispterm_docs.listTopics(allocator);
+}
+
+fn weixinSendAttachmentTool(
+    request: *ChatRequest,
+    kind: weixin_types.AttachmentKind,
+    path: []const u8,
+    display_name: []const u8,
+) ![]u8 {
+    const ctx = request.weixin_reply_context orelse {
+        return request.allocator.dupe(u8, "No active Weixin reply context; cannot send attachment.");
+    };
+    ctx.sender.sendAttachment(kind, path, display_name, ctx.to_user_id, ctx.context_token) catch |err| {
+        return std.fmt.allocPrint(request.allocator, "Failed to send {s} to Weixin: {}", .{ kind.name(), err });
+    };
+    const shown = if (display_name.len != 0) display_name else std.fs.path.basename(path);
+    return std.fmt.allocPrint(request.allocator, "Sent {s} to Weixin: {s}", .{ kind.name(), shown });
 }
 
 fn toolSurfaceKind(surface: ToolSurface) []const u8 {
@@ -5343,6 +5437,151 @@ test "wispterm_docs tool reports unknown topic with the topic list" {
     defer a.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "Unknown topic") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "faq") != null);
+}
+
+const WeixinAttachmentCapture = struct {
+    called: bool = false,
+    kind: weixin_types.AttachmentKind = .file,
+    path: []const u8 = "",
+    display_name: []const u8 = "",
+    to_user_id: []const u8 = "",
+    context_token: []const u8 = "",
+    path_buf: [512]u8 = undefined,
+    display_name_buf: [256]u8 = undefined,
+    to_user_id_buf: [256]u8 = undefined,
+    context_token_buf: [256]u8 = undefined,
+
+    fn copyField(buf: []u8, value: []const u8) []const u8 {
+        const n = @min(buf.len, value.len);
+        @memcpy(buf[0..n], value[0..n]);
+        return buf[0..n];
+    }
+
+    fn send(
+        ctx: *anyopaque,
+        kind: weixin_types.AttachmentKind,
+        path: []const u8,
+        display_name: []const u8,
+        to_user_id: []const u8,
+        context_token: []const u8,
+    ) anyerror!void {
+        const self: *WeixinAttachmentCapture = @ptrCast(@alignCast(ctx));
+        self.called = true;
+        self.kind = kind;
+        self.path = copyField(&self.path_buf, path);
+        self.display_name = copyField(&self.display_name_buf, display_name);
+        self.to_user_id = copyField(&self.to_user_id_buf, to_user_id);
+        self.context_token = copyField(&self.context_token_buf, context_token);
+    }
+};
+
+fn testWeixinSender(capture: *WeixinAttachmentCapture) weixin_types.AttachmentSender {
+    return .{ .ctx = capture, .send_attachment = WeixinAttachmentCapture.send };
+}
+
+test "weixin_send_attachment without reply context returns a clear tool result" {
+    var session = try Session.init(
+        std.testing.allocator,
+        "test",
+        "https://api.example",
+        "key",
+        "model",
+        "prompt",
+        "enabled",
+        "medium",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    const request = try std.testing.allocator.create(ChatRequest);
+    request.* = .{
+        .allocator = std.testing.allocator,
+        .session = session,
+        .base_url = try std.testing.allocator.dupe(u8, "https://api.example"),
+        .api_key = try std.testing.allocator.dupe(u8, "key"),
+        .model = try std.testing.allocator.dupe(u8, "model"),
+        .system_prompt = try std.testing.allocator.dupe(u8, "prompt"),
+        .messages = &.{},
+        .thinking_enabled = false,
+        .reasoning_effort = try std.testing.allocator.dupe(u8, "medium"),
+        .stream = false,
+        .agent_enabled = true,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .started_ms = 0,
+    };
+    defer request.deinit();
+
+    var call = ToolCall{
+        .id = try std.testing.allocator.dupe(u8, "call_1"),
+        .name = try std.testing.allocator.dupe(u8, "weixin_send_attachment"),
+        .arguments = try std.testing.allocator.dupe(u8, "{\"kind\":\"image\",\"path\":\"C:\\\\tmp\\\\plot.png\"}"),
+    };
+    defer call.deinit(std.testing.allocator);
+
+    const result = try executeToolCall(request, call);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("No active Weixin reply context; cannot send attachment.", result);
+}
+
+test "weixin_send_attachment calls the active Weixin sender" {
+    var capture = WeixinAttachmentCapture{};
+    var session = try Session.init(
+        std.testing.allocator,
+        "test",
+        "https://api.example",
+        "key",
+        "model",
+        "prompt",
+        "enabled",
+        "medium",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    const request = try std.testing.allocator.create(ChatRequest);
+    request.* = .{
+        .allocator = std.testing.allocator,
+        .session = session,
+        .base_url = try std.testing.allocator.dupe(u8, "https://api.example"),
+        .api_key = try std.testing.allocator.dupe(u8, "key"),
+        .model = try std.testing.allocator.dupe(u8, "model"),
+        .system_prompt = try std.testing.allocator.dupe(u8, "prompt"),
+        .messages = &.{},
+        .thinking_enabled = false,
+        .reasoning_effort = try std.testing.allocator.dupe(u8, "medium"),
+        .stream = false,
+        .agent_enabled = true,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .started_ms = 0,
+        .weixin_reply_context = try WeixinReplyContext.init(std.testing.allocator, .{
+            .sender = testWeixinSender(&capture),
+            .to_user_id = "wx-user",
+            .context_token = "ctx-1",
+        }),
+    };
+    defer request.deinit();
+
+    var call = ToolCall{
+        .id = try std.testing.allocator.dupe(u8, "call_1"),
+        .name = try std.testing.allocator.dupe(u8, "weixin_send_attachment"),
+        .arguments = try std.testing.allocator.dupe(u8, "{\"kind\":\"file\",\"path\":\"C:\\\\tmp\\\\report.pdf\",\"display_name\":\"report.pdf\"}"),
+    };
+    defer call.deinit(std.testing.allocator);
+
+    const result = try executeToolCall(request, call);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expect(capture.called);
+    try std.testing.expectEqual(weixin_types.AttachmentKind.file, capture.kind);
+    try std.testing.expectEqualStrings("C:\\tmp\\report.pdf", capture.path);
+    try std.testing.expectEqualStrings("report.pdf", capture.display_name);
+    try std.testing.expectEqualStrings("wx-user", capture.to_user_id);
+    try std.testing.expectEqualStrings("ctx-1", capture.context_token);
+    try std.testing.expectEqualStrings("Sent file to Weixin: report.pdf", result);
 }
 
 test "ai chat skill_info loads from explicit root paths" {
