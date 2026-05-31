@@ -358,7 +358,7 @@ git commit -m "feat(ai-chat): rewind picker open/move/confirm + composer restore
             },
 ```
 
-替换为：
+替换为（清选区是独立动作、**不**计入双击计时——与设计文档"有选区先清选区，之后再双击才进选择器"一致）：
 
 ```zig
             .escape => {
@@ -367,16 +367,19 @@ git commit -m "feat(ai-chat): rewind picker open/move/confirm + composer restore
                     // 生成中：仅停止，不参与双击；停止后变空闲再双击才进选择器。
                     self.stopRequest();
                     self.last_esc_ms = 0;
+                } else if (self.hasSelection()) {
+                    // 有选区：单次 ESC 先清选区（保持现有手感），且不计入双击计时——
+                    // 清选区之后需要重新双击才进选择器。
+                    self.clearSelection();
+                    self.last_esc_ms = 0;
                 } else if (self.last_esc_ms != 0 and
                     now - self.last_esc_ms <= DOUBLE_ESC_WINDOW_MS and
-                    !self.hasSelection() and
                     self.rewindPointCount() > 0)
                 {
                     self.last_esc_ms = 0;
                     self.openRewindPicker();
                 } else {
-                    // 单次 ESC：保持现状（有选区则清选区），并记录时间以备双击。
-                    self.clearSelection();
+                    // 无选区的单次 ESC：记录时间以备双击。
                     self.last_esc_ms = now;
                 }
             },
@@ -474,12 +477,61 @@ test "ai chat rewind picker esc closes without change" {
     try std.testing.expect(!session.rewind_open);
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
 }
+
+// 清选区是独立动作、不计入双击计时：ESC 清选区后需要重新双击才开选择器。
+test "ai chat esc clearing selection does not prime rewind double-tap" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+    session.transcript_select_all = true; // 制造一个选区
+
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 清选区，不计时
+    try std.testing.expect(!session.transcript_select_all);
+    try std.testing.expectEqual(@as(i64, 0), session.last_esc_ms);
+
+    session.now_ms_override = 1100;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 仅 arming，不开
+    try std.testing.expect(!session.rewind_open);
+
+    session.now_ms_override = 1200;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 窗口内 → 打开
+    try std.testing.expect(session.rewind_open);
+}
+
+// 生成中的 ESC 不作为双击起点：停止后变空闲，需要重新双击才开选择器。
+test "ai chat double esc after stop opens rewind picker" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+
+    session.request_inflight = true;
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 停止；last_esc_ms 归零
+    try std.testing.expectEqual(@as(i64, 0), session.last_esc_ms);
+
+    session.request_inflight = false; // 模拟已停止变空闲
+    session.now_ms_override = 1100;
+    session.handleKey(.{ .key = input_key.Key.escape }); // arming，不开
+    try std.testing.expect(!session.rewind_open);
+    session.now_ms_override = 1200;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 窗口内 → 打开
+    try std.testing.expect(session.rewind_open);
+}
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `zig build test-full`
-Expected: 全部 PASS，包含 5 个新 ESC/选择器测试，且既有 "ai chat escape stops in-flight request" 仍 PASS。
+Expected: 全部 PASS，包含 7 个新 ESC/选择器测试，且既有 "ai chat escape stops in-flight request" 仍 PASS。
 
 - [ ] **Step 5: 提交**
 
