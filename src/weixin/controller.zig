@@ -265,6 +265,9 @@ pub const Controller = struct {
     /// binding is live with a bound owner. The network send runs on a detached
     /// one-shot thread so this never blocks the caller (the UI thread).
     /// Best-effort: allocation/spawn/send failures only log.
+    /// Reads the live binding fields (owner/token/base_url) without locking;
+    /// safe because callers are on the UI thread and the only background mutator
+    /// is the one-time QR login.
     pub fn enqueueNotify(self: *Controller, title: []const u8, body: []const u8) void {
         if (!self.running or self.owner.len == 0 or self.token.len == 0) return;
 
@@ -300,8 +303,9 @@ pub const Controller = struct {
         const binding = types.Binding{
             .bot_token = status.bot_token,
             .base_url = if (status.base_url.len != 0) status.base_url else self.configuredBaseUrl(),
-            // owner is auto-bound from the first inbound 1:1 message, unless the
-            // config pins an allowed user (settings.allowed_user).
+            // owner comes from settings.allowed_user (weixin-allowed-user). The
+            // first-sender auto-bind described by ownerForBind is not yet wired,
+            // so owner stays empty unless allowed_user is configured.
             .owner_user_id = self.settings.allowed_user,
             .bot_id = status.bot_id,
             .sync_buf = "",

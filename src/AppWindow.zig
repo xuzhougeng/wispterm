@@ -132,6 +132,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     input.g_url_open_mode = app.url_open_mode;
     g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     tab.g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
+    g_weixin_notify_forward = app.weixin_notify_forward;
     overlays.g_split_divider_color = app.split_divider_color;
 
     // Apply window size from config
