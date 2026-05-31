@@ -144,6 +144,14 @@ fn macosBundleIconBundlePath() []const u8 {
     return "WispTerm.app/Contents/Resources/WispTerm.icns";
 }
 
+fn macosBundlePluginsSourcePath() []const u8 {
+    return "plugins";
+}
+
+fn macosBundlePluginsBundlePath() []const u8 {
+    return "WispTerm.app/Contents/Resources/plugins";
+}
+
 fn macosBundleIconNameInPlist() []const u8 {
     // CFBundleIconFile is stored without the .icns extension.
     return "WispTerm";
@@ -938,6 +946,10 @@ fn addMacosAppBundle(
     _ = bundle.add(macosBundleResourcesKeepPath(), "");
     _ = bundle.addCopyFile(exe.getEmittedBin(), macosBundleExecutablePath());
     _ = bundle.addCopyFile(b.path(macosBundleIconSourcePath()), macosBundleIconBundlePath());
+    // Ship the bundled default skills/commands so a packaged .app has them even
+    // before the user populates ~/Library/Application Support. The runtime looks
+    // for these under <exe_dir>/../Resources (see defaultSkillRootPaths).
+    _ = bundle.addCopyDirectory(b.path(macosBundlePluginsSourcePath()), macosBundlePluginsBundlePath(), .{});
 
     const install_bundle = b.addInstallDirectory(.{
         .source_dir = bundle.getDirectory(),

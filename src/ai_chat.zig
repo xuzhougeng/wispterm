@@ -602,6 +602,13 @@ fn defaultSkillRootPaths(allocator: std.mem.Allocator) ![][]const u8 {
         try appendOwnedSkillRootPath(allocator, &roots, exe_skills);
         const exe_plugin_skills = try std.fs.path.join(allocator, &.{ exe_dir, "plugins", "skills" });
         try appendOwnedSkillRootPath(allocator, &roots, exe_plugin_skills);
+
+        // macOS .app bundle layout: the executable lives in Contents/MacOS and
+        // the bundled plugins are shipped under Contents/Resources/plugins.
+        const res_skills = try std.fs.path.join(allocator, &.{ exe_dir, "..", "Resources", "skills" });
+        try appendOwnedSkillRootPath(allocator, &roots, res_skills);
+        const res_plugin_skills = try std.fs.path.join(allocator, &.{ exe_dir, "..", "Resources", "plugins", "skills" });
+        try appendOwnedSkillRootPath(allocator, &roots, res_plugin_skills);
     } else |_| {}
 
     return roots.toOwnedSlice(allocator);
