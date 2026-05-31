@@ -172,6 +172,9 @@ test "AttachmentKind parses accepted tool values" {
     try t.expectEqualStrings("file", AttachmentKind.file.name());
     try t.expectEqualStrings("image", AttachmentKind.image.name());
     try t.expectEqualStrings("voice", AttachmentKind.voice.name());
+    try t.expectEqual(@as(i64, 1), AttachmentKind.image.uploadMediaType());
+    try t.expectEqual(@as(i64, 3), AttachmentKind.file.uploadMediaType());
+    try t.expectEqual(@as(i64, 4), AttachmentKind.voice.uploadMediaType());
 }
 
 test "AttachmentSender forwards typed send calls" {
