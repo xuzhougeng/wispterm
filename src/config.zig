@@ -334,8 +334,9 @@ shell: []const u8 = platform_pty_command.default_shell_name,
 /// Override for the ilink API base URL. Defaults to the public endpoint.
 @"weixin-base-url": ?[]const u8 = null,
 
-/// Max time (ms) to keep streaming AI-reply progress to WeChat. Clamped to
-/// [5000, 180000]. Matches the TS bridge default.
+/// Deprecated (no-op): AI-reply delivery now waits until the WeChat
+/// context_token window (~30 min) closes, then prompts the user to resend.
+/// Retained so existing configs keep parsing; the value no longer affects timing.
 @"weixin-reply-timeout-ms": u32 = 120000,
 
 /// When set, only this ilink user_id may control the terminal/AI. When empty,
@@ -1234,7 +1235,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --remote-session-key <key>   Fixed remote key base; later instances append _1, _2
         \\  --weixin-direct-enabled <bool> Enable embedded WeChat ilink direct path
         \\  --weixin-base-url <url>      Override ilink API base URL
-        \\  --weixin-reply-timeout-ms <n> AI-reply streaming window in ms
+        \\  --weixin-reply-timeout-ms <n> Deprecated (no-op); AI-reply window is ~30 min
         \\  --weixin-allowed-user <id>   Restrict control to one ilink user_id
         \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
         \\
