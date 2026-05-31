@@ -31,14 +31,14 @@ const macos_copilot_prompt = macos_prompt ++ copilot_binding_clause;
 const windows_copilot_prompt = windows_prompt ++ copilot_binding_clause;
 
 const common_tools_before_wsl =
-    \\- Be direct and concise. Inspect the current directory before making changes.
-    \\- Preserve user work. Do not overwrite files, reset Git state, or delete data unless the user asks.
+    \\- Be direct. Inspect the current directory before changes.
+    \\- Preserve user work; do not overwrite, reset, or delete unless asked.
     \\
     \\Terminal tools:
-    \\- Use `terminal_list` to inspect open WispTerm terminals before writing to one.
-    \\- Use `terminal_select` before any selected-terminal write.
-    \\- Use `ssh_session_exec` only for commands at an already-open SSH shell prompt.
-    \\- Use `ssh_profile_save` to create/update a saved WispTerm SSH profile when the user gives SSH details; use `ssh_profile_connect` to open it.
+    \\- Use `terminal_list` before terminal writes.
+    \\- Use `terminal_select` before selected-terminal writes.
+    \\- Use `ssh_session_exec` only at an already-open SSH shell prompt.
+    \\- Use `ssh_profile_save` for saved SSH details; use `ssh_profile_connect` to open them.
 ;
 
 const wsl_tool_guidance =
@@ -46,19 +46,20 @@ const wsl_tool_guidance =
 ;
 
 const common_tools_after_wsl =
-    \\- If the target terminal is Codex, Claude Code, Python, R, or another app/REPL, use `terminal_repl_exec`.
-    \\- Do not paste shell commands into Codex or Claude Code; send user-facing text there, not shell commands.
-    \\- Open a new local terminal with `tab_new` only when no suitable terminal exists.
-    \\- For questions about WispTerm itself (features, config, shortcuts), call `wispterm_docs` to list and read the built-in docs.
+    \\- Use `terminal_repl_exec` for Codex, Claude Code, Python, R, or other REPL/app terminals.
+    \\- Do not paste shell commands into Codex or Claude Code; send user-facing text.
+    \\- Use `tab_new` only when no suitable terminal exists.
+    \\- For WispTerm questions, call `wispterm_docs` to list and read built-in docs.
+    \\- When the request came from Weixin and the user asks you to send a generated or local artifact, call `weixin_send_attachment`.
+    \\- Use `kind=image` for image previews and `kind=file` for ordinary attachments; voice files are sent as file attachments.
+    \\- `kind=voice` is accepted for Weixin, but it behaves like `kind=file` and does not create an in-chat voice message.
     \\
     \\Python:
-    \\- Use uv for Python environments and dependencies.
-    \\- Before Python work, run `uv --version`.
-    \\- Verify installation with `uv --version`.
+    \\- Use uv for Python environments; run `uv --version` first.
     \\- Prefer `uv sync`, `uv run`, `uv add`, `uv remove`, and `uvx`.
     \\- Do not use global `pip install` unless the user explicitly asks.
     \\
-    \\After changes, run the smallest useful verification command and report what changed.
+    \\After changes, run focused verification and report what changed.
 ;
 
 const common_tools = common_tools_before_wsl ++ common_tools_after_wsl;
@@ -127,5 +128,15 @@ test "platform agent prompt points at the wispterm_docs tool on every OS" {
     for ([_]std.Target.Os.Tag{ .windows, .linux, .macos }) |os| {
         const p = defaultSystemPromptForOs(os);
         try std.testing.expect(std.mem.indexOf(u8, p, "wispterm_docs") != null);
+    }
+}
+
+test "platform agent prompt describes the Weixin attachment tool" {
+    for ([_]std.Target.Os.Tag{ .windows, .linux, .macos }) |os| {
+        const p = defaultSystemPromptForOs(os);
+        try std.testing.expect(std.mem.indexOf(u8, p, "weixin_send_attachment") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "kind=image") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "voice files are sent as file attachments") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "kind=file") != null);
     }
 }

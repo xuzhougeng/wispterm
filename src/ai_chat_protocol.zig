@@ -554,6 +554,7 @@ fn forEachToolSpec(
     try emit(ctx, "tab_close", "Close a terminal tab by zero-based tab_index, surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index from terminal_list.\"},\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number, accepted as a convenience.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}");
     try emit(ctx, "skill_info", "Load a WispTerm skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}");
     try emit(ctx, "wispterm_docs", "Read WispTerm's own documentation (features, configuration, shortcuts, AI agent, file explorer, media). Call with no topic to list available topics, then call again with a topic to read its full text.", "{\"topic\":{\"type\":\"string\",\"description\":\"Topic name from the list. Omit to list available topics.\"}}");
+    try emit(ctx, "weixin_send_attachment", "Send a local file back to the active Weixin conversation that triggered this agent request. Use only when the current request came from Weixin; normal local chat requests have no Weixin reply context. Audio and voice files are sent as ordinary file attachments.", "{\"kind\":{\"type\":\"string\",\"description\":\"Attachment kind: file, image, or voice. Voice is accepted as an alias for file.\"},\"path\":{\"type\":\"string\",\"description\":\"Readable local file path to send.\"},\"display_name\":{\"type\":\"string\",\"description\":\"Optional filename shown in Weixin for file attachments; defaults to the path basename.\"}}");
 }
 
 const ToolSchemaEmitter = struct {
@@ -1111,6 +1112,24 @@ test "buildRequestJson includes wispterm_docs tool for both protocols" {
     const resp_json = try buildRequestJson(a, resp, &msgs, true);
     defer a.free(resp_json);
     try std.testing.expect(std.mem.indexOf(u8, resp_json, "\"wispterm_docs\"") != null);
+}
+
+test "tool schemas include weixin_send_attachment" {
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("send the report") }};
+    const params = RequestParams{
+        .model = "m",
+        .system_prompt = "",
+        .protocol = .chat_completions,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+    };
+    const json = try buildRequestJson(std.testing.allocator, params, &msgs, true);
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"weixin_send_attachment\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"kind\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"path\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"display_name\"") != null);
 }
 
 test "parseApiResponse reads responses-protocol output text" {
