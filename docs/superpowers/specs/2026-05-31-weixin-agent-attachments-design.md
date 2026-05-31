@@ -8,6 +8,8 @@
 Add typed attachment sending to the desktop direct Weixin path in `src/weixin/`.
 The AI Agent should be able to send local files back to the active Weixin
 conversation by calling a tool, rather than relying on a manual `/file` command.
+Outbound audio/voice paths are sent as ordinary file attachments in v1, not as
+Weixin `voice_item` messages.
 
 This design applies only to the Zig desktop direct bridge. The `remote/` Node
 bridge remains out of scope for this change.
@@ -55,7 +57,9 @@ Weixin attachments.
 - Scope is `src/weixin/` desktop direct only.
 - Expose attachment sending as an Agent tool.
 - Tool name: `weixin_send_attachment`.
-- Support typed attachments in v1: `file`, `image`, and `voice`.
+- Support typed attachment inputs in v1: `file`, `image`, and `voice`.
+- Treat outbound `kind=voice` as a file attachment alias. Do not probe audio
+  metadata or send iLink `voice_item` messages in v1.
 - Do not add extra local path restrictions. The tool may send any readable
   local file path.
 - Do not add a separate manual `/file` command in v1.
@@ -78,7 +82,8 @@ Semantics:
 
 - `kind=file` sends a generic iLink `file_item`.
 - `kind=image` sends an iLink `image_item`.
-- `kind=voice` sends an iLink `voice_item` and probes audio metadata.
+- `kind=voice` sends the bytes as a generic iLink `file_item`, same as
+  `kind=file`.
 - `display_name` is optional. If omitted, the basename of `path` is used where
   the iLink item supports a filename.
 - The tool is usable only while handling a Weixin-triggered Agent request. A
@@ -104,7 +109,7 @@ Mapping:
 | --- | ---: | --- |
 | `image` | `1` | `image_item` |
 | `file` | `3` | `file_item` |
-| `voice` | `4` | `voice_item` |
+| `voice` | `3` | `file_item` |
 
 The media metadata follows the CiteBox wire shape:
 
@@ -114,8 +119,8 @@ The media metadata follows the CiteBox wire shape:
 - `file_item.file_name`: display name or path basename.
 - `file_item.len`: raw file size as a decimal string.
 - `image_item.mid_size`: encrypted file size.
-- `voice_item.encode_type`, `sample_rate`, and `playtime`: probed audio
-  metadata.
+No outbound voice metadata is required in v1 because audio/voice paths are sent
+as files.
 
 ## Architecture
 
@@ -125,22 +130,11 @@ New media helper module.
 
 Responsibilities:
 
-- Build `getuploadurl` request bodies.
 - Build CDN upload URLs.
 - AES-ECB encrypt with PKCS7 padding.
 - Encode AES keys in the iLink-compatible form.
-- Build typed `sendmessage` payloads for file, image, and voice.
-- Parse `ffprobe` JSON output into voice metadata.
-- Map voice codecs/extensions to iLink encode types:
-  - PCM/WAV -> `1`
-  - AMR -> `5`
-  - SILK -> `6`
-  - MP3 -> `7`
-  - OGG/Speex -> `8`
-
-The pure parts should be unit-tested without network access. The `ffprobe`
-process execution wrapper can stay in `ilink_client.zig` or a small helper, but
-the JSON parsing and codec mapping should be pure.
+- Keep upload crypto and URL helpers pure; JSON request/response shapes stay in
+  `ilink_codec.zig`.
 
 ### `src/weixin/types.zig`
 
@@ -149,7 +143,8 @@ Extend the in-memory iLink model with:
 - `AttachmentKind = enum { file, image, voice }`
 - upload URL request/response structs
 - CDN media struct
-- typed uploaded media structs for file/image/voice
+- typed uploaded media structs for file/image; voice input is sent with the file
+  attachment path.
 
 ### `src/weixin/ilink_codec.zig`
 
@@ -158,9 +153,10 @@ Extend JSON builders/parsers:
 - `buildGetUploadUrlBody(...)`
 - `buildSendUploadedFileBody(...)`
 - `buildSendUploadedImageBody(...)`
-- `buildSendUploadedVoiceBody(...)`
 - keep existing `voice_item.text` parsing for inbound messages and add direct
   tests for it.
+- do not add outbound `voice_item` builders in v1; `kind=voice` is sent with
+  the file payload path.
 
 ### `src/weixin/ilink_client.zig`
 
@@ -183,10 +179,11 @@ The real `Client` implements:
 - `uploadBufferToCDN`
 - `sendUploadedFileAttachment`
 - `sendUploadedImage`
-- `sendUploadedVoice`
 - `sendAttachment`
 
 `sendAttachment` is the high-level entry point used by the Agent tool.
+It maps `AttachmentKind.voice` to the same generic file attachment flow as
+`AttachmentKind.file`.
 
 ### `src/ai_chat.zig`
 
@@ -225,10 +222,9 @@ Add guidance to the Agent prompt:
 
 - If the request came from Weixin and the user asks for a generated or local
   artifact, call `weixin_send_attachment`.
-- Use `kind=image` for image previews, `kind=voice` for playable voice files,
-  and `kind=file` for ordinary attachments.
-- If voice metadata probing fails, use `kind=file` when the user's intent is to
-  receive the bytes rather than play an in-chat voice message.
+- Use `kind=image` for image previews and `kind=file` for ordinary attachments,
+  including audio/voice files. `kind=voice` is accepted as an alias that still
+  sends a file attachment.
 
 ### `src/weixin/poller.zig`
 
@@ -245,9 +241,6 @@ Weixin-triggered request.
 ## Error Handling
 
 - Missing file, non-regular file, or read failure: return a clear tool error.
-- `kind=voice` and `ffprobe` is missing: return a clear tool error suggesting
-  `kind=file` if playback as a voice message is not required.
-- Unsupported voice codec: return a clear tool error with the detected codec.
 - `getuploadurl` failure: return `ret`, `errcode`, and message when available.
 - CDN upload failure: return HTTP status and a short response body excerpt.
 - Missing `x-encrypted-param`: return a specific CDN protocol error.
@@ -268,11 +261,9 @@ Pure tests:
   - AES-ECB/PKCS7 encrypted size and round-trip decrypt helper in test code.
   - CDN upload URL construction.
   - AES key iLink encoding.
-  - voice metadata JSON parsing.
-  - codec/extension to voice encode type mapping.
 - `ilink_codec.zig`
   - build `getuploadurl` JSON.
-  - build `file_item`, `image_item`, and `voice_item` sendmessage JSON.
+  - build `file_item` and `image_item` sendmessage JSON.
   - parse inbound `voice_item.text` into `MessageItem.voice_text`.
 - `binding.zig`
   - keep/extend voice transcript extraction test.

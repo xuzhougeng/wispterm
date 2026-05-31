@@ -1,6 +1,7 @@
 //! Boundary between WeChat routing and the live WispTerm surfaces. The real
 //! vtable is supplied by controller.zig; tests supply a fake.
 const std = @import("std");
+const types = @import("types.zig");
 
 pub const Surface = struct { id: [16]u8, title: []const u8 };
 
@@ -15,7 +16,7 @@ pub const Control = struct {
         find_ai_surface: *const fn (ctx: *anyopaque) ?Surface,
         find_terminal_surface: *const fn (ctx: *anyopaque) ?Surface,
         open_ai_agent: *const fn (ctx: *anyopaque, timeout_ms: u32) OpenResult,
-        send_input: *const fn (ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8) bool,
+        send_input: *const fn (ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) bool,
         latest_transcript: *const fn (ctx: *anyopaque) []const u8,
     };
 
@@ -31,8 +32,8 @@ pub const Control = struct {
     pub fn openAiAgent(self: Control, timeout_ms: u32) OpenResult {
         return self.vtable.open_ai_agent(self.ctx, timeout_ms);
     }
-    pub fn sendInput(self: Control, surface_id: [16]u8, bytes: []const u8) bool {
-        return self.vtable.send_input(self.ctx, surface_id, bytes);
+    pub fn sendInput(self: Control, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) bool {
+        return self.vtable.send_input(self.ctx, surface_id, bytes, reply_context);
     }
     pub fn latestTranscript(self: Control) []const u8 {
         return self.vtable.latest_transcript(self.ctx);

@@ -55,7 +55,14 @@ pub const ProcessInput = struct {
     route_ctx: *anyopaque,
     /// Fills `reply` with the response text; returns true if the caller should
     /// begin AI-reply progress streaming.
-    route_fn: *const fn (ctx: *anyopaque, text: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult,
+    route_fn: *const fn (
+        ctx: *anyopaque,
+        text: []const u8,
+        to_user_id: []const u8,
+        context_token: []const u8,
+        allocator: std.mem.Allocator,
+        reply: *std.ArrayListUnmanaged(u8),
+    ) anyerror!RouteResult,
     send_ctx: *anyopaque,
     send_fn: *const fn (ctx: *anyopaque, to_user_id: []const u8, text: []const u8, context_token: []const u8) anyerror!void,
     progress_ctx: ?*anyopaque = null,
@@ -93,7 +100,7 @@ pub fn processUpdates(input: ProcessInput) !void {
 
         var reply: std.ArrayListUnmanaged(u8) = .empty;
         defer reply.deinit(input.allocator);
-        const route_result = input.route_fn(input.route_ctx, text, input.allocator, &reply) catch |err| {
+        const route_result = input.route_fn(input.route_ctx, text, msg.from_user_id, msg.context_token, input.allocator, &reply) catch |err| {
             std.debug.print("weixin process({d}): index={d} route=failed err={}\n", .{ debugNowMs(), i, err });
             continue;
         };
@@ -244,7 +251,14 @@ pub const Poller = struct {
         });
     }
 
-    fn routeAdapter(ctx: *anyopaque, text: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
+    fn routeAdapter(
+        ctx: *anyopaque,
+        text: []const u8,
+        to_user_id: []const u8,
+        context_token: []const u8,
+        allocator: std.mem.Allocator,
+        reply: *std.ArrayListUnmanaged(u8),
+    ) anyerror!RouteResult {
         const self: *Poller = @ptrCast(@alignCast(ctx));
         if (self.stop_requested.load(.acquire)) return error.PollerStopped;
         const baseline = try self.allocTranscriptSnapshot(allocator);
@@ -252,7 +266,12 @@ pub const Poller = struct {
 
         var r = agent.Reply.init(allocator);
         defer r.deinit();
-        try agent.route(allocator, self.control, self.settings, text, &r);
+        const reply_context = types.ReplyContext{
+            .sender = .{ .ctx = self, .send_attachment = pollerSendAttachment },
+            .to_user_id = to_user_id,
+            .context_token = context_token,
+        };
+        try agent.route(allocator, self.control, self.settings, text, reply_context, &r);
         try reply.appendSlice(allocator, r.text.items);
         if (!r.expect_ai_progress) {
             if (baseline.len != 0) allocator.free(baseline);
@@ -262,6 +281,19 @@ pub const Poller = struct {
             .expect_ai_progress = true,
             .baseline_transcript = baseline,
         };
+    }
+
+    fn pollerSendAttachment(
+        ctx: *anyopaque,
+        kind: types.AttachmentKind,
+        path: []const u8,
+        display_name: []const u8,
+        to_user_id: []const u8,
+        context_token: []const u8,
+    ) anyerror!void {
+        const self: *Poller = @ptrCast(@alignCast(ctx));
+        if (self.stop_requested.load(.acquire)) return error.PollerStopped;
+        try self.client.sendAttachment(kind, path, display_name, to_user_id, context_token);
     }
 
     fn sendAdapter(ctx: *anyopaque, to_user_id: []const u8, text: []const u8, context_token: []const u8) anyerror!void {
@@ -496,19 +528,27 @@ const codec = @import("ilink_codec.zig");
 const Captured = struct {
     sent: std.ArrayListUnmanaged([]u8) = .empty,
     routed: std.ArrayListUnmanaged([]u8) = .empty,
+    routed_to: std.ArrayListUnmanaged([]u8) = .empty,
+    routed_context: std.ArrayListUnmanaged([]u8) = .empty,
     fn deinit(self: *Captured) void {
         for (self.sent.items) |s| t.allocator.free(s);
         for (self.routed.items) |s| t.allocator.free(s);
+        for (self.routed_to.items) |s| t.allocator.free(s);
+        for (self.routed_context.items) |s| t.allocator.free(s);
         self.sent.deinit(t.allocator);
         self.routed.deinit(t.allocator);
+        self.routed_to.deinit(t.allocator);
+        self.routed_context.deinit(t.allocator);
     }
 };
 
 const RouteCtx = struct {
     cap: *Captured,
-    fn route(ctx: *anyopaque, text: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
+    fn route(ctx: *anyopaque, text: []const u8, to_user_id: []const u8, context_token: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
         const self: *RouteCtx = @ptrCast(@alignCast(ctx));
         try self.cap.routed.append(t.allocator, try t.allocator.dupe(u8, text));
+        try self.cap.routed_to.append(t.allocator, try t.allocator.dupe(u8, to_user_id));
+        try self.cap.routed_context.append(t.allocator, try t.allocator.dupe(u8, context_token));
         try reply.appendSlice(allocator, "ok");
         return .{};
     }
@@ -552,6 +592,7 @@ const FakeClient = struct {
         return .{ .ctx = self, .vtable = &.{
             .get_updates = getUpdates,
             .send_text = sendText,
+            .send_attachment = sendAttachment,
         } };
     }
 
@@ -568,6 +609,17 @@ const FakeClient = struct {
     fn sendText(ctx: *anyopaque, _: []const u8, _: []const u8, _: []const u8) anyerror!void {
         const self: *FakeClient = @ptrCast(@alignCast(ctx));
         self.send_count += 1;
+    }
+
+    fn sendAttachment(
+        ctx: *anyopaque,
+        _: types.AttachmentKind,
+        _: []const u8,
+        _: []const u8,
+        _: []const u8,
+        _: []const u8,
+    ) anyerror!void {
+        _ = ctx;
     }
 };
 
@@ -598,7 +650,7 @@ const NoopControl = struct {
     fn openAiAgent(_: *anyopaque, _: u32) control_mod.OpenResult {
         return .offline;
     }
-    fn sendInput(_: *anyopaque, _: [16]u8, _: []const u8) bool {
+    fn sendInput(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
         return false;
     }
     fn latestTranscript(_: *anyopaque) []const u8 {
@@ -641,13 +693,15 @@ test "processUpdates routes accepted text and sends replies" {
 
     try t.expectEqual(@as(usize, 1), cap.routed.items.len);
     try t.expectEqualStrings("hi", cap.routed.items[0]);
+    try t.expectEqualStrings("u1", cap.routed_to.items[0]);
+    try t.expectEqualStrings("c", cap.routed_context.items[0]);
     try t.expectEqual(@as(usize, 1), cap.sent.items.len);
     try t.expectEqualStrings("ok", cap.sent.items[0]);
 }
 
 test "processUpdates starts AI followup after ack reply is sent" {
     const Route = struct {
-        fn route(_: *anyopaque, _: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
+        fn route(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
             try reply.appendSlice(allocator, "ack");
             return .{
                 .expect_ai_progress = true,
@@ -684,6 +738,33 @@ test "processUpdates starts AI followup after ack reply is sent" {
     try t.expectEqualStrings("Status:\nReady\n", pctx.baseline.items);
     try t.expectEqualStrings("u1", pctx.to_user_id.items);
     try t.expectEqualStrings("ctx", pctx.context_token.items);
+}
+
+test "processUpdates routes inbound voice transcript as message text" {
+    var cap = Captured{};
+    defer cap.deinit();
+    var rctx = RouteCtx{ .cap = &cap };
+    var sctx = SendCtx{ .cap = &cap };
+
+    const msgs = [_]types.Message{
+        .{ .from_user_id = "u1", .context_token = "voice-ctx", .item_list = &.{.{ .type = 3, .voice_text = "transcribed command" }} },
+    };
+
+    try processUpdates(.{
+        .allocator = t.allocator,
+        .owner = "u1",
+        .account_id = "",
+        .messages = &msgs,
+        .route_ctx = &rctx,
+        .route_fn = RouteCtx.route,
+        .send_ctx = &sctx,
+        .send_fn = SendCtx.send,
+    });
+
+    try t.expectEqual(@as(usize, 1), cap.routed.items.len);
+    try t.expectEqualStrings("transcribed command", cap.routed.items[0]);
+    try t.expectEqualStrings("u1", cap.routed_to.items[0]);
+    try t.expectEqualStrings("voice-ctx", cap.routed_context.items[0]);
 }
 
 test "poller bootstrap advances cursor without replying to historical messages" {

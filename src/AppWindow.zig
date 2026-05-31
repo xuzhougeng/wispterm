@@ -18,6 +18,7 @@ const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
 const remote_snapshot = @import("remote_snapshot.zig");
 const weixin_control = @import("weixin/control.zig");
+const weixin_types = @import("weixin/types.zig");
 const memory_debug = @import("memory_debug.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
@@ -2280,6 +2281,7 @@ const WeixinRequest = struct {
     // send_input input (valid for the duration of the synchronous call):
     surface_id: [16]u8 = [_]u8{0} ** 16,
     bytes: []const u8 = "",
+    reply_context: ?weixin_types.ReplyContext = null,
     // outputs filled by the UI-thread handler:
     found: bool = false,
     out_surface_id: [16]u8 = [_]u8{0} ** 16,
@@ -2368,7 +2370,11 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
                 const tab_state = tab.g_tabs[idx] orelse return;
                 if (tab_state.kind != .ai_chat) return;
                 const session = tab_state.ai_chat_session orelse return;
-                session.applyRemoteInput(req.bytes);
+                if (req.reply_context) |ctx| {
+                    session.applyWeixinInput(req.bytes, ctx);
+                } else {
+                    session.applyRemoteInput(req.bytes);
+                }
                 g_force_rebuild = true;
                 req.sent = true;
                 return;
@@ -2420,8 +2426,8 @@ fn wxOpenAiAgent(_: *anyopaque, _: u32) weixin_control.OpenResult {
     return req.open_result;
 }
 
-fn wxSendInput(_: *anyopaque, surface_id: [16]u8, bytes: []const u8) bool {
-    var req = WeixinRequest{ .op = .send_input, .surface_id = surface_id, .bytes = bytes };
+fn wxSendInput(_: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?weixin_types.ReplyContext) bool {
+    var req = WeixinRequest{ .op = .send_input, .surface_id = surface_id, .bytes = bytes, .reply_context = reply_context };
     if (!weixinDispatch(&req)) return false;
     return req.sent;
 }

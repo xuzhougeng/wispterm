@@ -48,6 +48,10 @@ test {
     _ = @import("ai_sidebar.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("ai_chat_protocol.zig");
+    _ = @import("weixin/types.zig");
+    _ = @import("weixin/ilink_codec.zig");
+    _ = @import("weixin/media.zig");
+    _ = @import("weixin/binding.zig");
     _ = @import("ai_chat_title.zig");
     _ = @import("command_registry.zig");
     // Generic POSIX SSH/WSL command builder: asserts native (non-Windows)

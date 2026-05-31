@@ -495,7 +495,7 @@ const NoopControl = struct {
     fn open_ai_agent(_: *anyopaque, _: u32) control_mod.OpenResult {
         return .offline;
     }
-    fn send_input(_: *anyopaque, _: [16]u8, _: []const u8) bool {
+    fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
         return false;
     }
     fn latest_transcript(_: *anyopaque) []const u8 {

@@ -51,6 +51,7 @@ pub fn route(
     ctrl: control.Control,
     settings: types.Settings,
     raw_text: []const u8,
+    reply_context: ?types.ReplyContext,
     out: *Reply,
 ) !void {
     _ = allocator;
@@ -78,11 +79,11 @@ pub fn route(
     if (eqIgnoreCase(cmd, "/stop")) return stopAi(ctrl, out);
     if (eqIgnoreCase(cmd, "/term")) return sendTerminal(ctrl, parts.arg, true, out);
     if (eqIgnoreCase(cmd, "/keys")) return sendTerminal(ctrl, parts.arg, false, out);
-    if (eqIgnoreCase(cmd, "/ai")) return sendAi(ctrl, parts.arg, out);
-    return sendAi(ctrl, text, out);
+    if (eqIgnoreCase(cmd, "/ai")) return sendAi(ctrl, parts.arg, reply_context, out);
+    return sendAi(ctrl, text, reply_context, out);
 }
 
-fn sendAi(ctrl: control.Control, text: []const u8, out: *Reply) !void {
+fn sendAi(ctrl: control.Control, text: []const u8, reply_context: ?types.ReplyContext, out: *Reply) !void {
     const ai = ctrl.findAiSurface() orelse blk: {
         switch (ctrl.openAiAgent(AI_OPEN_TIMEOUT_MS)) {
             .no_profile => return out.set("WispTerm 尚未配置 AI Chat profile。"),
@@ -98,14 +99,14 @@ fn sendAi(ctrl: control.Control, text: []const u8, out: *Reply) !void {
     defer buf.deinit(out.allocator);
     try buf.appendSlice(out.allocator, text);
     try buf.append(out.allocator, '\r');
-    if (!ctrl.sendInput(ai.id, buf.items)) return out.set("WispTerm 当前离线，无法发送给 AI Agent。");
+    if (!ctrl.sendInput(ai.id, buf.items, reply_context)) return out.set("WispTerm 当前离线，无法发送给 AI Agent。");
     try out.set(AI_ACK);
     out.expect_ai_progress = true;
 }
 
 fn stopAi(ctrl: control.Control, out: *Reply) !void {
     const ai = ctrl.findAiSurface() orelse return out.set("当前没有 AI Agent 可停止。");
-    if (!ctrl.sendInput(ai.id, ESC)) return out.set("WispTerm 当前离线，无法停止 AI Agent。");
+    if (!ctrl.sendInput(ai.id, ESC, null)) return out.set("WispTerm 当前离线，无法停止 AI Agent。");
     return out.set("已发送停止指令。");
 }
 
@@ -115,7 +116,7 @@ fn sendTerminal(ctrl: control.Control, text: []const u8, enter: bool, out: *Repl
     defer buf.deinit(out.allocator);
     try buf.appendSlice(out.allocator, text);
     if (enter) try buf.append(out.allocator, '\r');
-    if (!ctrl.sendInput(term.id, buf.items)) return out.set("WispTerm 当前离线，无法发送到终端。");
+    if (!ctrl.sendInput(term.id, buf.items, null)) return out.set("WispTerm 当前离线，无法发送到终端。");
     return out.set("已发送到终端。");
 }
 
@@ -144,6 +145,7 @@ const FakeControl = struct {
     buf: [256]u8 = undefined,
     len: usize = 0,
     last_surface: [16]u8 = [_]u8{0} ** 16,
+    last_reply_context: ?types.ReplyContext = null,
 
     /// Bytes captured from the last send_input. send_input borrows its argument
     /// (production consumes it synchronously), so the fake copies for inspection.
@@ -163,10 +165,11 @@ const FakeControl = struct {
     fn open_ai_agent(_: *anyopaque, _: u32) control.OpenResult {
         return .opened;
     }
-    fn send_input(ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8) bool {
+    fn send_input(ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) bool {
         const self = cast(ctx);
         if (!self.connected) return false;
         self.last_surface = surface_id;
+        self.last_reply_context = reply_context;
         const n = @min(bytes.len, self.buf.len);
         @memcpy(self.buf[0..n], bytes[0..n]);
         self.len = n;
@@ -200,7 +203,7 @@ test "ping returns pong without touching surfaces" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "ping", &out);
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "ping", null, &out);
     try t.expectEqualStrings("pong", out.text.items);
     try t.expect(!out.expect_ai_progress);
 }
@@ -209,22 +212,49 @@ test "default text goes to the AI surface with a carriage return" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "hello world", &out);
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "hello world", null, &out);
     try t.expectEqualStrings("hello world\r", fake.lastInput());
     try t.expectEqualSlices(u8, &FakeControl.aiId(), &fake.last_surface);
     try t.expect(out.expect_ai_progress);
+}
+
+test "default AI route forwards Weixin reply context only to AI surface" {
+    const Sender = struct {
+        fn sendAttachment(ctx: *anyopaque, kind: types.AttachmentKind, path: []const u8, display_name: []const u8, to_user_id: []const u8, context_token: []const u8) anyerror!void {
+            _ = ctx;
+            _ = kind;
+            _ = path;
+            _ = display_name;
+            _ = to_user_id;
+            _ = context_token;
+        }
+    };
+
+    var fake = FakeControl{};
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    const reply_ctx = types.ReplyContext{
+        .sender = .{ .ctx = &fake, .send_attachment = Sender.sendAttachment },
+        .to_user_id = "wx-user",
+        .context_token = "ctx-1",
+    };
+
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "make a chart", reply_ctx, &out);
+    try t.expect(fake.last_reply_context != null);
+    try t.expectEqualStrings("wx-user", fake.last_reply_context.?.to_user_id);
+    try t.expectEqualStrings("ctx-1", fake.last_reply_context.?.context_token);
 }
 
 test "/term sends to terminal with enter, /keys without" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/term ls", &out);
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/term ls", null, &out);
     try t.expectEqualStrings("ls\r", fake.lastInput());
 
     var out2 = Reply.init(t.allocator);
     defer out2.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/keys abc", &out2);
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/keys abc", null, &out2);
     try t.expectEqualStrings("abc", fake.lastInput());
 }
 
@@ -232,7 +262,7 @@ test "offline control yields an offline message and no progress" {
     var fake = FakeControl{ .connected = false };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "do a thing", &out);
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "do a thing", null, &out);
     try t.expect(!out.expect_ai_progress);
     try t.expect(std.mem.indexOf(u8, out.text.items, "离线") != null);
 }

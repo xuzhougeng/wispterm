@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let the desktop direct Weixin bridge route inbound text and voice transcripts into AI Chat, and let AI Chat call `weixin_send_attachment` to send local `file`, `image`, or `voice` attachments back to the active Weixin conversation.
+**Goal:** Let the desktop direct Weixin bridge route inbound text and voice transcripts into AI Chat, and let AI Chat call `weixin_send_attachment` to send local `file`, `image`, or `voice` inputs back to the active Weixin conversation. Outbound `voice` is sent as a normal file attachment in v1.
 
 **Architecture:** Keep iLink upload protocol code inside `src/weixin/`, keep terminal/VT/rendering unaware of Weixin, and pass a short-lived reply context from the poller through the app control boundary into the AI Chat request. The Agent tool dispatch uses that context only when the current request came from Weixin; normal local AI Chat requests return a clear no-context tool result.
 
@@ -21,9 +21,23 @@ CiteBox reference mapping:
 - `internal/weixin/cdn.go`: confirms `media.aes_key` is base64 of the hex-encoded AES key.
 - `internal/service/weixin_im_bridge.go`: confirms inbound `voice_item.text` is the transcript used as ordinary text.
 
+## Approved Change: Outbound Voice As File
+
+After Task 4 review, the user clarified that outbound `voice` should be treated
+as `file`. Keep accepting `kind=voice` as a tool input for convenience, but send
+it through the generic `file_item` path:
+
+- Do not call `ffprobe` from the iLink client.
+- Do not send outbound iLink `voice_item` messages in v1.
+- Use media type `3` and `file_item` for both `kind=file` and `kind=voice`.
+- Inbound Weixin voice transcription remains unchanged: continue extracting
+  `voice_item.text` as ordinary message text.
+- Do not pre-block oversized files in v1. If iLink rejects the file, surface
+  that API error.
+
 ## File Structure
 
-- Create `src/weixin/media.zig`: pure media helpers plus narrow `ffprobe` parsing helpers. No bot token storage.
+- Create `src/weixin/media.zig`: pure media helpers. No bot token storage.
 - Modify `src/weixin/types.zig`: attachment kinds, upload URL response, CDN media structs, uploaded media structs, sender and reply context structs.
 - Modify `src/weixin/ilink_codec.zig`: JSON builders for upload URL and typed sendmessage bodies; parser for upload URL response.
 - Modify `src/weixin/ilink_client.zig`: high-level attachment send flow and `ClientApi.send_attachment`.
@@ -146,7 +160,7 @@ pub const AttachmentKind = enum {
         return switch (self) {
             .image => 1,
             .file => 3,
-            .voice => 4,
+            .voice => 3,
         };
     }
 };
@@ -169,13 +183,6 @@ pub const CdnMedia = struct {
     file_key: []const u8 = "",
 };
 
-pub const VoiceMetadata = struct {
-    encode_type: i64,
-    sample_rate: i64,
-    playtime: i64,
-    codec: []const u8 = "",
-};
-
 pub const UploadedFileAttachment = struct {
     media: CdnMedia,
     file_name: []const u8,
@@ -185,13 +192,6 @@ pub const UploadedFileAttachment = struct {
 pub const UploadedImage = struct {
     media: CdnMedia,
     mid_size: u64,
-};
-
-pub const UploadedVoice = struct {
-    media: CdnMedia,
-    encode_type: i64,
-    sample_rate: i64,
-    playtime: i64,
 };
 
 pub const AttachmentSender = struct {
@@ -307,19 +307,6 @@ pub fn uploadUrlWithTicket(allocator: std.mem.Allocator, base_url: []const u8, t
     @compileError("uploadUrlWithTicket is not implemented");
 }
 
-pub fn voiceEncodeType(codec: []const u8, path: []const u8) !i64 {
-    _ = codec;
-    _ = path;
-    @compileError("voiceEncodeType is not implemented");
-}
-
-pub fn parseFfprobeVoiceMetadata(allocator: std.mem.Allocator, json: []const u8, path: []const u8) !types.VoiceMetadata {
-    _ = allocator;
-    _ = json;
-    _ = path;
-    @compileError("parseFfprobeVoiceMetadata is not implemented");
-}
-
 const t = std.testing;
 
 test "pkcs7 padding always adds at least one AES block" {
@@ -361,27 +348,6 @@ test "uploadUrlWithTicket appends ticket query using question mark or ampersand"
     const b = try uploadUrlWithTicket(t.allocator, "https://cdn.example/upload?x=1", "ticket=abc");
     defer t.allocator.free(b);
     try t.expectEqualStrings("https://cdn.example/upload?x=1&ticket=abc", b);
-}
-
-test "voiceEncodeType maps codec and extension values" {
-    try t.expectEqual(@as(i64, 1), try voiceEncodeType("pcm_s16le", "note.wav"));
-    try t.expectEqual(@as(i64, 5), try voiceEncodeType("amr_nb", "note.amr"));
-    try t.expectEqual(@as(i64, 6), try voiceEncodeType("silk", "note.silk"));
-    try t.expectEqual(@as(i64, 7), try voiceEncodeType("mp3", "note.mp3"));
-    try t.expectEqual(@as(i64, 8), try voiceEncodeType("speex", "note.ogg"));
-    try t.expectError(error.UnsupportedVoiceCodec, voiceEncodeType("aac", "note.m4a"));
-}
-
-test "parseFfprobeVoiceMetadata reads codec sample rate and duration" {
-    const json =
-        \\{"streams":[{"codec_type":"audio","codec_name":"mp3","sample_rate":"44100","duration":"2.700000"}],
-        \\"format":{"duration":"2.700000"}}
-    ;
-    const meta = try parseFfprobeVoiceMetadata(t.allocator, json, "voice.mp3");
-    try t.expectEqual(@as(i64, 7), meta.encode_type);
-    try t.expectEqual(@as(i64, 44100), meta.sample_rate);
-    try t.expectEqual(@as(i64, 2700), meta.playtime);
-    try t.expectEqualStrings("mp3", meta.codec);
 }
 ```
 
@@ -459,59 +425,6 @@ pub fn md5Hex(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
 pub fn uploadUrlWithTicket(allocator: std.mem.Allocator, base_url: []const u8, ticket: []const u8) ![]u8 {
     const sep: []const u8 = if (std.mem.indexOfScalar(u8, base_url, '?') == null) "?" else "&";
     return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ base_url, sep, ticket });
-}
-
-pub fn voiceEncodeType(codec: []const u8, path: []const u8) !i64 {
-    const ext = std.fs.path.extension(path);
-    if (std.ascii.eqlIgnoreCase(codec, "pcm_s16le") or std.ascii.eqlIgnoreCase(codec, "pcm_u8") or std.ascii.eqlIgnoreCase(ext, ".wav")) return 1;
-    if (std.ascii.eqlIgnoreCase(codec, "amr_nb") or std.ascii.eqlIgnoreCase(codec, "amr_wb") or std.ascii.eqlIgnoreCase(ext, ".amr")) return 5;
-    if (std.ascii.eqlIgnoreCase(codec, "silk") or std.ascii.eqlIgnoreCase(ext, ".silk")) return 6;
-    if (std.ascii.eqlIgnoreCase(codec, "mp3") or std.ascii.eqlIgnoreCase(ext, ".mp3")) return 7;
-    if (std.ascii.eqlIgnoreCase(codec, "speex") or std.ascii.eqlIgnoreCase(codec, "opus") or std.ascii.eqlIgnoreCase(codec, "vorbis") or std.ascii.eqlIgnoreCase(ext, ".ogg")) return 8;
-    return error.UnsupportedVoiceCodec;
-}
-
-fn voiceCodecLabel(encode_type: i64) []const u8 {
-    return switch (encode_type) {
-        1 => "pcm",
-        5 => "amr",
-        6 => "silk",
-        7 => "mp3",
-        8 => "ogg",
-        else => "unknown",
-    };
-}
-
-pub fn parseFfprobeVoiceMetadata(allocator: std.mem.Allocator, json: []const u8, path: []const u8) !types.VoiceMetadata {
-    const Probe = struct {
-        streams: []struct {
-            codec_type: []const u8 = "",
-            codec_name: []const u8 = "",
-            sample_rate: []const u8 = "",
-            duration: []const u8 = "",
-        } = &.{},
-        format: struct { duration: []const u8 = "" } = .{},
-    };
-    var parsed = try std.json.parseFromSlice(Probe, allocator, json, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-
-    for (parsed.value.streams) |stream| {
-        if (!std.mem.eql(u8, stream.codec_type, "audio")) continue;
-        const sample_rate = std.fmt.parseInt(i64, stream.sample_rate, 10) catch 0;
-        const duration_text = if (stream.duration.len != 0) stream.duration else parsed.value.format.duration;
-        const seconds = std.fmt.parseFloat(f64, duration_text) catch 0;
-        const encode_type = try voiceEncodeType(stream.codec_name, path);
-        return .{
-            .encode_type = encode_type,
-            .sample_rate = sample_rate,
-            .playtime = @as(i64, @intFromFloat(@round(seconds * 1000.0))),
-            .codec = voiceCodecLabel(encode_type),
-        };
-    }
-    return error.NoAudioStream;
 }
 ```
 
@@ -607,28 +520,6 @@ test "builds uploaded image sendmessage body" {
     try t.expect(std.mem.indexOf(u8, body, "\"type\":2") != null);
     try t.expect(std.mem.indexOf(u8, body, "\"image_item\"") != null);
     try t.expect(std.mem.indexOf(u8, body, "\"mid_size\":64") != null);
-}
-
-test "builds uploaded voice sendmessage body" {
-    const media = types.CdnMedia{
-        .encrypt_query_param = "encrypted-param",
-        .aes_key = "encoded-key",
-        .md5 = "md5",
-        .size = 64,
-        .file_key = "file-key",
-    };
-    const body = try buildSendUploadedVoiceBody(t.allocator, "u1", "ctx", "cid", .{
-        .media = media,
-        .encode_type = 7,
-        .sample_rate = 44100,
-        .playtime = 2700,
-    });
-    defer t.allocator.free(body);
-    try t.expect(std.mem.indexOf(u8, body, "\"type\":3") != null);
-    try t.expect(std.mem.indexOf(u8, body, "\"voice_item\"") != null);
-    try t.expect(std.mem.indexOf(u8, body, "\"encode_type\":7") != null);
-    try t.expect(std.mem.indexOf(u8, body, "\"sample_rate\":44100") != null);
-    try t.expect(std.mem.indexOf(u8, body, "\"playtime\":2700") != null);
 }
 
 test "parses inbound voice transcription into message item" {
@@ -802,46 +693,6 @@ pub fn buildSendUploadedImageBody(
     const items = [_]Item{.{ .image_item = .{
         .media = wireMedia(image.media),
         .mid_size = image.mid_size,
-    } }};
-    return std.json.Stringify.valueAlloc(allocator, Body{
-        .msg = .{
-            .to_user_id = to_user_id,
-            .client_id = client_id,
-            .context_token = context_token,
-            .item_list = &items,
-        },
-        .base_info = .{ .channel_version = CHANNEL_VERSION },
-    }, .{});
-}
-
-pub fn buildSendUploadedVoiceBody(
-    allocator: std.mem.Allocator,
-    to_user_id: []const u8,
-    context_token: []const u8,
-    client_id: []const u8,
-    voice: types.UploadedVoice,
-) ![]u8 {
-    const VoiceItem = struct {
-        media: WireCdnMedia,
-        encode_type: i64,
-        sample_rate: i64,
-        playtime: i64,
-    };
-    const Item = struct { type: i64 = 3, voice_item: VoiceItem };
-    const Msg = struct {
-        to_user_id: []const u8,
-        client_id: []const u8,
-        message_type: i64 = 2,
-        message_state: i64 = 2,
-        context_token: []const u8,
-        item_list: []const Item,
-    };
-    const Body = struct { msg: Msg, base_info: BaseInfo };
-    const items = [_]Item{.{ .voice_item = .{
-        .media = wireMedia(voice.media),
-        .encode_type = voice.encode_type,
-        .sample_rate = voice.sample_rate,
-        .playtime = voice.playtime,
     } }};
     return std.json.Stringify.valueAlloc(allocator, Body{
         .msg = .{
@@ -1029,7 +880,7 @@ Add these functions inside `Client`.
         return switch (kind) {
             .file => self.sendFileAttachment(path, displayNameOrBasename(display_name, path), to_user_id, context_token),
             .image => self.sendImageFile(path, to_user_id, context_token),
-            .voice => self.sendVoiceFile(path, to_user_id, context_token),
+            .voice => self.sendFileAttachment(path, displayNameOrBasename(display_name, path), to_user_id, context_token),
         };
     }
 
@@ -1062,22 +913,6 @@ Add these functions inside `Client`.
         try self.postSendMessage(a, body);
     }
 
-    fn sendVoiceFile(self: *Client, path: []const u8, to_user_id: []const u8, context_token: []const u8) !void {
-        var req_arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer req_arena.deinit();
-        const a = req_arena.allocator();
-
-        const uploaded = try self.uploadLocalFile(a, .voice, path);
-        const meta = try self.probeVoiceFile(a, path);
-        const client_id = try self.clientId(a);
-        const body = try codec.buildSendUploadedVoiceBody(a, to_user_id, context_token, client_id, .{
-            .media = uploaded.media,
-            .encode_type = meta.encode_type,
-            .sample_rate = meta.sample_rate,
-            .playtime = meta.playtime,
-        });
-        try self.postSendMessage(a, body);
-    }
 ```
 
 Add these helper functions inside `Client`.
@@ -1199,28 +1034,6 @@ Add these helper functions inside `Client`.
                 return error.IlinkSendMessageFailed;
             }
         }
-    }
-
-    fn probeVoiceFile(self: *Client, arena: std.mem.Allocator, path: []const u8) !types.VoiceMetadata {
-        _ = self;
-        var child = std.process.Child.init(&.{
-            "ffprobe",
-            "-v", "error",
-            "-show_entries", "stream=codec_type,codec_name,sample_rate,duration:format=duration",
-            "-of", "json",
-            path,
-        }, arena);
-        child.stdin_behavior = .Ignore;
-        child.stderr_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        const result = child.run() catch |err| switch (err) {
-            error.FileNotFound => return error.FfprobeNotFound,
-            else => return err,
-        };
-        defer arena.free(result.stdout);
-        defer arena.free(result.stderr);
-        if (result.term != .Exited or result.term.Exited != 0) return error.FfprobeFailed;
-        return media.parseFfprobeVoiceMetadata(arena, result.stdout, path);
     }
 
     fn randomBytes(self: *Client, out: []u8) void {
@@ -1352,7 +1165,7 @@ test "platform agent prompt describes the Weixin attachment tool" {
         const p = defaultSystemPromptForOs(os);
         try std.testing.expect(std.mem.indexOf(u8, p, "weixin_send_attachment") != null);
         try std.testing.expect(std.mem.indexOf(u8, p, "kind=image") != null);
-        try std.testing.expect(std.mem.indexOf(u8, p, "kind=voice") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "voice files are sent as file attachments") != null);
         try std.testing.expect(std.mem.indexOf(u8, p, "kind=file") != null);
     }
 }
@@ -1374,7 +1187,7 @@ Expected: both fail because the schema and prompt do not mention `weixin_send_at
 In `src/ai_chat_protocol.zig`, add this `emit` call inside `forEachToolSpec`, after `wispterm_docs`.
 
 ```zig
-    try emit(ctx, "weixin_send_attachment", "Send a local file back to the active Weixin conversation that triggered this agent request. Use only when the current request came from Weixin; normal local chat requests have no Weixin reply context.", "{\"kind\":{\"type\":\"string\",\"description\":\"Attachment kind: file, image, or voice.\"},\"path\":{\"type\":\"string\",\"description\":\"Readable local file path to send.\"},\"display_name\":{\"type\":\"string\",\"description\":\"Optional filename shown in Weixin for file attachments; defaults to the path basename.\"}}");
+    try emit(ctx, "weixin_send_attachment", "Send a local file back to the active Weixin conversation that triggered this agent request. Use only when the current request came from Weixin; normal local chat requests have no Weixin reply context. Audio and voice files are sent as ordinary file attachments.", "{\"kind\":{\"type\":\"string\",\"description\":\"Attachment kind: file, image, or voice. Voice is accepted as an alias for file.\"},\"path\":{\"type\":\"string\",\"description\":\"Readable local file path to send.\"},\"display_name\":{\"type\":\"string\",\"description\":\"Optional filename shown in Weixin for file attachments; defaults to the path basename.\"}}");
 ```
 
 - [ ] **Step 4: Add prompt guidance**
@@ -1383,8 +1196,8 @@ In `src/platform/agent_prompt.zig`, insert these lines in `common_tools_after_ws
 
 ```zig
     \\- When the request came from Weixin and the user asks you to send a generated or local artifact, call `weixin_send_attachment`.
-    \\- Use `kind=image` for image previews, `kind=voice` only for playable voice messages, and `kind=file` for ordinary attachments.
-    \\- If voice metadata probing fails or playback as an in-chat voice message is not required, send the same path with `kind=file`.
+    \\- Use `kind=image` for image previews and `kind=file` for ordinary attachments; voice files are sent as file attachments.
+    \\- `kind=voice` is accepted for Weixin, but it behaves like `kind=file` and does not create an in-chat voice message.
 ```
 
 - [ ] **Step 5: Run tests and commit**

@@ -53,6 +53,119 @@ pub fn buildSendTextBody(
     }, .{});
 }
 
+const WireCdnMedia = struct {
+    encrypt_query_param: []const u8,
+    aes_key: []const u8,
+    encrypt_type: i64 = 1,
+};
+
+fn wireMedia(media: types.CdnMedia) WireCdnMedia {
+    return .{
+        .encrypt_query_param = media.encrypt_query_param,
+        .aes_key = media.aes_key,
+        .encrypt_type = media.encrypt_type,
+    };
+}
+
+pub fn buildSendUploadedFileBody(
+    allocator: std.mem.Allocator,
+    to_user_id: []const u8,
+    context_token: []const u8,
+    client_id: []const u8,
+    file: types.UploadedFileAttachment,
+) ![]u8 {
+    const FileItem = struct {
+        media: WireCdnMedia,
+        file_name: []const u8,
+        len: []const u8,
+    };
+    const Item = struct { type: i64 = 4, file_item: FileItem };
+    const Msg = struct {
+        to_user_id: []const u8,
+        client_id: []const u8,
+        message_type: i64 = 2,
+        message_state: i64 = 2,
+        context_token: []const u8,
+        item_list: []const Item,
+    };
+    const Body = struct { msg: Msg, base_info: BaseInfo };
+    const len_text = try std.fmt.allocPrint(allocator, "{d}", .{file.len});
+    defer allocator.free(len_text);
+    const items = [_]Item{.{ .file_item = .{
+        .media = wireMedia(file.media),
+        .file_name = file.file_name,
+        .len = len_text,
+    } }};
+    return std.json.Stringify.valueAlloc(allocator, Body{
+        .msg = .{
+            .to_user_id = to_user_id,
+            .client_id = client_id,
+            .context_token = context_token,
+            .item_list = &items,
+        },
+        .base_info = .{ .channel_version = CHANNEL_VERSION },
+    }, .{});
+}
+
+pub fn buildSendUploadedImageBody(
+    allocator: std.mem.Allocator,
+    to_user_id: []const u8,
+    context_token: []const u8,
+    client_id: []const u8,
+    image: types.UploadedImage,
+) ![]u8 {
+    const ImageItem = struct {
+        media: WireCdnMedia,
+        mid_size: u64,
+    };
+    const Item = struct { type: i64 = 2, image_item: ImageItem };
+    const Msg = struct {
+        to_user_id: []const u8,
+        client_id: []const u8,
+        message_type: i64 = 2,
+        message_state: i64 = 2,
+        context_token: []const u8,
+        item_list: []const Item,
+    };
+    const Body = struct { msg: Msg, base_info: BaseInfo };
+    const items = [_]Item{.{ .image_item = .{
+        .media = wireMedia(image.media),
+        .mid_size = image.mid_size,
+    } }};
+    return std.json.Stringify.valueAlloc(allocator, Body{
+        .msg = .{
+            .to_user_id = to_user_id,
+            .client_id = client_id,
+            .context_token = context_token,
+            .item_list = &items,
+        },
+        .base_info = .{ .channel_version = CHANNEL_VERSION },
+    }, .{});
+}
+
+pub fn buildGetUploadUrlBody(
+    allocator: std.mem.Allocator,
+    kind: types.AttachmentKind,
+    size: u64,
+    md5: []const u8,
+    file_key: []const u8,
+) ![]u8 {
+    const Body = struct {
+        media_type: i64,
+        size: u64,
+        md5: []const u8,
+        file_key: []const u8,
+        base_info: BaseInfo,
+    };
+    return std.json.Stringify.valueAlloc(allocator, Body{
+        .media_type = kind.uploadMediaType(),
+        .size = size,
+        .md5 = md5,
+        .file_key = file_key,
+        .base_info = .{ .channel_version = CHANNEL_VERSION },
+    }, .{});
+}
+
 pub fn statusKindFromString(s: []const u8) types.QrStatusKind {
     if (std.mem.eql(u8, s, "wait")) return .wait;
     if (std.mem.eql(u8, s, "scaned")) return .scaned;
@@ -92,6 +205,44 @@ pub const ParsedUpdates = struct {
         self.parsed.deinit();
     }
 };
+
+const WireUploadUrl = struct {
+    ret: i64 = 0,
+    errcode: i64 = 0,
+    message: []const u8 = "",
+    url: []const u8 = "",
+    ticket: []const u8 = "",
+    file_key: []const u8 = "",
+};
+
+pub const ParsedUploadUrl = struct {
+    parsed: std.json.Parsed(WireUploadUrl),
+    value: types.UploadUrl,
+
+    pub fn deinit(self: *ParsedUploadUrl) void {
+        self.parsed.deinit();
+    }
+};
+
+pub fn parseGetUploadUrl(allocator: std.mem.Allocator, json: []const u8) !ParsedUploadUrl {
+    const parsed = try std.json.parseFromSlice(WireUploadUrl, allocator, json, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    errdefer parsed.deinit();
+    const wire = parsed.value;
+    return .{
+        .parsed = parsed,
+        .value = .{
+            .ret = wire.ret,
+            .errcode = wire.errcode,
+            .message = wire.message,
+            .url = wire.url,
+            .ticket = wire.ticket,
+            .file_key = wire.file_key,
+        },
+    };
+}
 
 pub fn parseGetUpdates(allocator: std.mem.Allocator, json: []const u8) !ParsedUpdates {
     const parsed = try std.json.parseFromSlice(WireUpdates, allocator, json, .{
@@ -166,4 +317,90 @@ test "maps qrcode status strings to the enum" {
     try t.expectEqual(types.QrStatusKind.scaned, statusKindFromString("scaned"));
     try t.expectEqual(types.QrStatusKind.confirmed, statusKindFromString("confirmed"));
     try t.expectEqual(types.QrStatusKind.unknown, statusKindFromString("nonsense"));
+}
+
+test "builds getuploadurl body for file media" {
+    const body = try buildGetUploadUrlBody(t.allocator, .file, 123, "900150983cd24fb0d6963f7d28e17f72", "file-key");
+    defer t.allocator.free(body);
+    try t.expect(std.mem.indexOf(u8, body, "\"media_type\":3") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"size\":123") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"md5\":\"900150983cd24fb0d6963f7d28e17f72\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"file_key\":\"file-key\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"channel_version\":\"1.0.2\"") != null);
+}
+
+test "parses getuploadurl response" {
+    var parsed = try parseGetUploadUrl(t.allocator,
+        \\{"ret":0,"errcode":42,"url":"https://cdn.example/upload","ticket":"ticket=abc","file_key":"file-key"}
+    );
+    defer parsed.deinit();
+    try t.expectEqual(@as(i64, 0), parsed.value.ret);
+    try t.expectEqual(@as(i64, 42), parsed.value.errcode);
+    try t.expectEqualStrings("https://cdn.example/upload", parsed.value.url);
+    try t.expectEqualStrings("ticket=abc", parsed.value.ticket);
+    try t.expectEqualStrings("file-key", parsed.value.file_key);
+}
+
+test "builds uploaded file sendmessage body" {
+    const media = types.CdnMedia{
+        .encrypt_query_param = "encrypted-param",
+        .aes_key = "encoded-key",
+        .md5 = "md5",
+        .size = 64,
+        .file_key = "file-key",
+    };
+    const body = try buildSendUploadedFileBody(t.allocator, "u1", "ctx", "cid", .{
+        .media = media,
+        .file_name = "report.pdf",
+        .len = 123,
+    });
+    defer t.allocator.free(body);
+    try t.expect(std.mem.indexOf(u8, body, "\"to_user_id\":\"u1\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"client_id\":\"cid\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"message_type\":2") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"message_state\":2") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"context_token\":\"ctx\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"item_list\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"type\":4") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"file_item\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"file_name\":\"report.pdf\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"len\":\"123\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"encrypt_query_param\":\"encrypted-param\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"channel_version\":\"1.0.2\"") != null);
+}
+
+test "builds uploaded image sendmessage body" {
+    const media = types.CdnMedia{
+        .encrypt_query_param = "encrypted-param",
+        .aes_key = "encoded-key",
+        .md5 = "md5",
+        .size = 64,
+        .file_key = "file-key",
+    };
+    const body = try buildSendUploadedImageBody(t.allocator, "u1", "ctx", "cid", .{
+        .media = media,
+        .mid_size = 64,
+    });
+    defer t.allocator.free(body);
+    try t.expect(std.mem.indexOf(u8, body, "\"to_user_id\":\"u1\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"client_id\":\"cid\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"message_type\":2") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"message_state\":2") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"context_token\":\"ctx\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"item_list\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"type\":2") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"image_item\"") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"mid_size\":64") != null);
+    try t.expect(std.mem.indexOf(u8, body, "\"channel_version\":\"1.0.2\"") != null);
+}
+
+test "parses inbound voice transcription into message item" {
+    const json =
+        \\{"ret":0,"msgs":[{"from_user_id":"u1","context_token":"ctx",
+        \\"item_list":[{"type":3,"voice_item":{"text":"transcribed voice"}}]}]}
+    ;
+    var parsed = try parseGetUpdates(t.allocator, json);
+    defer parsed.deinit();
+    try t.expectEqual(@as(i64, 3), parsed.value.msgs[0].item_list[0].type);
+    try t.expectEqualStrings("transcribed voice", parsed.value.msgs[0].item_list[0].voice_text);
 }
