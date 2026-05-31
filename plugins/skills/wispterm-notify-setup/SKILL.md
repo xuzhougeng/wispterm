@@ -38,6 +38,32 @@ supported.
      | ~/.config/wispterm/wispterm-notify.sh
    ```
 
+## WeChat forwarding (optional)
+
+In addition to the in-terminal toast/bell, WispTerm can forward each agent
+finish / confirmation notification to a WeChat account you've already bound to
+WispTerm's built-in iLink direct connection — no third-party relay.
+
+**Prerequisites (all required):**
+1. A WispTerm build that includes notification → WeChat forwarding.
+2. `weixin-direct-enabled = true` in your WispTerm config.
+3. Scan the QR (WispTerm's WeChat panel) to bind your WeChat account.
+4. Set `weixin-allowed-user = <your iLink user id>` — forwarding needs a bound
+   owner as the push destination. The "auto-bind the first sender as owner" path
+   is not yet wired, so the owner must be set explicitly here; while it is empty,
+   pushes are silently skipped.
+5. `weixin-notify-forward = true` in your WispTerm config.
+6. Keep `desktop-notifications = on` (default) — forwarding rides the same
+   notification pipeline and is skipped when desktop notifications are off.
+
+**Behavior:** a push is sent only when the notification is from this notifier,
+the binding is live with a bound owner, and you are **not** actively viewing
+that pane (window unfocused, or a different tab/split). The phone message is
+`<title>\n<body>`, e.g. `Claude Code` / `完成，轮到你了`.
+
+**Verify:** run the test command below to trigger one notification while the
+WispTerm window is unfocused, and confirm the message arrives in WeChat.
+
 ## Notes
 
 - **Where it shows:** only when Claude Code / Codex run *inside* WispTerm. The
