@@ -3534,6 +3534,19 @@ fn handleNotification(surface: *Surface, is_active_surface: bool) void {
                 surface.last_notif_time = now;
             },
         }
+
+        // Forward to the bound WeChat owner when the notifier marked it, the
+        // opt-in is on, and you are not looking right at this surface. The
+        // controller self-guards on an active binding + bound owner and sends
+        // off-thread, so this never blocks. (Reaches here only after the
+        // shouldDeliver gate above, so it inherits rate-limit/dedup.)
+        if (item.forward_wechat and g_weixin_notify_forward and
+            !(window_focused and is_active_surface))
+        {
+            if (g_app) |app| {
+                if (app.weixin_controller) |ctrl| ctrl.enqueueNotify(item.title(), item.body());
+            }
+        }
     }
 }
 
