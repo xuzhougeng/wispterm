@@ -93,6 +93,7 @@ struct WispTermMacWindowState {
     int32_t ime_caret_height;
     char ime_preedit[1024];
     size_t ime_preedit_len;
+    NSEventModifierFlags insert_text_modifier_flags;
     WispTermMacKeyEvent key_events[64];
     size_t key_head;
     size_t key_count;
@@ -426,6 +427,15 @@ static void wispterm_macos_mods(NSEventModifierFlags flags, bool *ctrl, bool *sh
     if (super != NULL) *super = (flags & NSEventModifierFlagCommand) != 0;
 }
 
+static NSEventModifierFlags wispterm_macos_flags_from_bools(bool ctrl, bool shift, bool alt, bool super) {
+    NSEventModifierFlags flags = 0;
+    if (ctrl) flags |= NSEventModifierFlagControl;
+    if (shift) flags |= NSEventModifierFlagShift;
+    if (alt) flags |= NSEventModifierFlagOption;
+    if (super) flags |= NSEventModifierFlagCommand;
+    return flags;
+}
+
 static WispTermMacKeyEvent wispterm_macos_key_event(uintptr_t key_code, NSEventModifierFlags flags) {
     return (WispTermMacKeyEvent){
         .key_code = key_code,
@@ -589,6 +599,31 @@ static void wispterm_macos_push_string(WispTermMacWindowState *state, id string_
     }
 }
 
+void wispterm_macos_window_test_insert_text_after_key(void *handle, uint32_t codepoint, bool ctrl, bool shift, bool alt) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL) return;
+    @autoreleasepool {
+        state->insert_text_modifier_flags = wispterm_macos_flags_from_bools(ctrl, shift, alt, false);
+        NSString *string = nil;
+        if (codepoint <= 0xFFFF) {
+            unichar ch = (unichar)codepoint;
+            string = [[NSString alloc] initWithCharacters:&ch length:1];
+        } else if (codepoint <= 0x10FFFF) {
+            uint32_t value = codepoint - 0x10000;
+            unichar pair[2] = {
+                (unichar)(0xD800 + (value >> 10)),
+                (unichar)(0xDC00 + (value & 0x3FF)),
+            };
+            string = [[NSString alloc] initWithCharacters:pair length:2];
+        }
+        if (string != nil) {
+            wispterm_macos_push_string(state, string, state->insert_text_modifier_flags);
+            [string release];
+        }
+        state->insert_text_modifier_flags = 0;
+    }
+}
+
 static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_or_attributed) {
     if (state == NULL) return;
     NSString *string = nil;
@@ -629,12 +664,14 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
     // arrives separately via -insertText:, so the raw Return must not also reach
     // the app. Only push the raw key event when there is no composition; let
     // -interpretKeyEvents: route composing keystrokes to the IME.
+    if (self.state != NULL) self.state->insert_text_modifier_flags = event.modifierFlags;
     if (self.state != NULL && ![self hasMarkedText]) {
         NSString *characters = wispterm_macos_key_characters(event);
         uintptr_t key_code = wispterm_macos_map_key_code(event.keyCode, characters);
         wispterm_macos_push_key_event(self.state, wispterm_macos_key_event(key_code, event.modifierFlags));
     }
     [self interpretKeyEvents:@[event]];
+    if (self.state != NULL) self.state->insert_text_modifier_flags = 0;
 }
 
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
@@ -651,7 +688,8 @@ static void wispterm_macos_set_preedit(WispTermMacWindowState *state, id string_
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     (void)replacementRange;
-    wispterm_macos_push_string(self.state, string, 0);
+    NSEventModifierFlags flags = self.state != NULL ? self.state->insert_text_modifier_flags : 0;
+    wispterm_macos_push_string(self.state, string, flags);
     wispterm_macos_set_preedit(self.state, nil);
 }
 
