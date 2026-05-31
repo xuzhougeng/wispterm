@@ -38,6 +38,8 @@ const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
 const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
 const INPUT_PROMPT_MAX_BYTES: usize = 64 * 1024;
 const SYSTEM_PROMPT_MAX_BYTES: usize = 16 * 1024;
+/// 两次 ESC 间隔不超过此毫秒数时判定为"双击"，用于打开回溯选择器。
+const DOUBLE_ESC_WINDOW_MS: i64 = 400;
 
 pub const COPILOT_CONTEXT_LINES: usize = 40;
 
@@ -333,6 +335,7 @@ const DeferredAction = union(enum) {
 const BuiltinResult = struct {
     history_change: ?PendingHistoryChange = null,
     deferred: DeferredAction = .none,
+    suppress_output: bool = false,
 };
 
 /// Fires a deferred built-in side-effect. Call ONLY after `self.mutex` has been
@@ -428,6 +431,7 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         .reload_commands => allocator.dupe(u8, "Custom commands will be re-read from the commands directory."),
         .update_skills => allocator.dupe(u8, "Downloading the latest skills from GitHub in the background..."),
         .clear => allocator.dupe(u8, "Cleared the conversation context."),
+        .rewind_picker => allocator.dupe(u8, "No previous user messages to rewind."),
         .resume_session => allocator.dupe(u8, "Opening saved conversation history..."),
         .permission => permissionStatusOutput(allocator),
         .export_markdown => allocator.dupe(u8, "Exporting the conversation as Markdown..."),
@@ -733,6 +737,14 @@ pub const Session = struct {
     custom_command_suggestions: []SlashCommandSuggestion = &.{},
     transcript_select_all: bool = false,
     transcript_selection: ?TranscriptSelection = null,
+    // 双击 ESC 回溯选择器（rewind picker）。
+    // last_esc_ms 为上一次 ESC 的时间戳（0 = 无）；空闲时若两次 ESC 间隔
+    // <= DOUBLE_ESC_WINDOW_MS 则打开选择器。rewind_selected 是回溯点序号
+    // （0 = 最早的用户消息，count-1 = 最近一条）。now_ms_override 为测试时钟。
+    rewind_open: bool = false,
+    rewind_selected: usize = 0,
+    last_esc_ms: i64 = 0,
+    now_ms_override: ?i64 = null,
     status_buf: [512]u8 = undefined,
     status_len: usize = 0,
     title_buf: [128]u8 = undefined,
@@ -1334,6 +1346,16 @@ pub const Session = struct {
     pub fn handleKeyWithWrapCols(self: *Session, ev: input_key.KeyEvent, max_cols: usize) void {
         if (self.handleApprovalKey(ev)) return;
 
+        if (self.rewind_open) {
+            switch (ev.key) {
+                .arrow_up => self.moveRewindSelection(1),
+                .arrow_down => self.moveRewindSelection(-1),
+                .enter => self.confirmRewind(),
+                else => self.closeRewindPicker(), // Esc 及其它键一律关闭
+            }
+            return;
+        }
+
         if (ev.ctrl and !ev.alt and ev.key == .key_a) {
             self.selectAll();
             return;
@@ -1365,10 +1387,25 @@ pub const Session = struct {
             .end => self.moveInputCursorEnd(),
             .tab => _ = self.completeComposerSuggestion(.tab),
             .escape => {
+                const now = self.now_ms_override orelse std.time.milliTimestamp();
                 if (self.request_inflight) {
+                    // 生成中：仅停止，不参与双击；停止后变空闲再双击才进选择器。
                     self.stopRequest();
-                } else {
+                    self.last_esc_ms = 0;
+                } else if (self.hasSelection()) {
+                    // 有选区：单次 ESC 先清选区（保持现有手感），且不计入双击计时——
+                    // 清选区之后需要重新双击才进选择器。
                     self.clearSelection();
+                    self.last_esc_ms = 0;
+                } else if (self.last_esc_ms != 0 and
+                    now - self.last_esc_ms <= DOUBLE_ESC_WINDOW_MS and
+                    self.rewindPointCount() > 0)
+                {
+                    self.last_esc_ms = 0;
+                    self.openRewindPicker();
+                } else {
+                    // 无选区的单次 ESC：记录时间以备双击。
+                    self.last_esc_ms = now;
                 }
             },
             .enter => {
@@ -1821,6 +1858,17 @@ pub const Session = struct {
             .reload_skills => self.freeSkillSuggestions(),
             // update_skills only spawns a background thread, so it is safe inline.
             .update_skills => if (g_skill_update_trigger) |trigger| trigger(),
+            .rewind_picker => {
+                const count = self.rewindPointCountLocked();
+                self.clearSubmittedInputLocked();
+                self.last_esc_ms = 0;
+                if (count > 0) {
+                    self.rewind_selected = count - 1;
+                    self.rewind_open = true;
+                    self.setStatusLocked("Ready");
+                    result.suppress_output = true;
+                }
+            },
             .permission => applyPermissionArg(arg),
             .resume_session => result.deferred = .resume_picker,
             .export_markdown => result.deferred = .{
@@ -1828,6 +1876,7 @@ pub const Session = struct {
             },
             else => {},
         }
+        if (result.suppress_output) return result;
         const output = slashCommandOutput(self.allocator, command) catch {
             self.setStatusLocked("Could not run command");
             return result;
@@ -2140,11 +2189,120 @@ pub const Session = struct {
         self.clearSelectionLocked();
     }
 
+    /// 用 text 覆盖输入框内容，光标置于末尾。纯缓冲区操作、无 IO。
+    fn setInputTextLocked(self: *Session, text: []const u8) void {
+        self.input_len = 0;
+        self.input_cursor = 0;
+        self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
+        self.suggestion_selected = 0;
+        self.clearSelectionLocked();
+        self.insertInputBytesLocked(text);
+    }
+
+    /// 打开回溯选择器：仅在空闲且至少有一个回溯点时；默认选中最近一条。
+    pub fn openRewindPicker(self: *Session) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.request_inflight) return;
+        const count = self.rewindPointCountLocked();
+        if (count == 0) return;
+        self.clearSelectionLocked();
+        self.rewind_selected = count - 1;
+        self.rewind_open = true;
+    }
+
+    pub fn closeRewindPicker(self: *Session) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.rewind_open = false;
+    }
+
+    /// 在 [0, count) 内移动选中项，到边界停住（不回绕）。
+    pub fn moveRewindSelection(self: *Session, delta: i32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.rewind_open) return;
+        const count = self.rewindPointCountLocked();
+        if (count == 0) {
+            self.rewind_open = false;
+            return;
+        }
+        const cur: i64 = @intCast(@min(self.rewind_selected, count - 1));
+        var next = cur + delta;
+        if (next < 0) next = 0;
+        const max_i: i64 = @intCast(count - 1);
+        if (next > max_i) next = max_i;
+        self.rewind_selected = @intCast(next);
+    }
+
+    /// 确认回溯：把对话回退到选中用户消息之前，将其文本回填输入框，删除该
+    /// 消息及其后所有消息，关闭选择器并同步历史。仅空闲时有效。
+    pub fn confirmRewind(self: *Session) void {
+        var history_change: ?PendingHistoryChange = null;
+        self.mutex.lock();
+        if (self.request_inflight or !self.rewind_open) {
+            self.mutex.unlock();
+            return;
+        }
+        const count = self.rewindPointCountLocked();
+        if (count == 0) {
+            self.rewind_open = false;
+            self.mutex.unlock();
+            return;
+        }
+        const sel = @min(self.rewind_selected, count - 1);
+        const idx = self.rewindPointMessageIndexLocked(sel);
+        if (idx >= self.messages.items.len) {
+            self.rewind_open = false;
+            self.mutex.unlock();
+            return;
+        }
+        // insertInputBytesLocked 会立即把字节拷入 input_buf，随后 rollback 才释放
+        // messages[idx]，两块缓冲区不重叠，安全。
+        self.setInputTextLocked(self.messages.items[idx].content);
+        self.rollbackMessagesFromLocked(idx);
+        self.rewind_open = false;
+        self.scroll_px = 1_000_000;
+        history_change = self.captureHistoryChangeLocked();
+        self.mutex.unlock();
+        self.notifyHistoryChange(history_change);
+    }
+
     fn rollbackMessagesFromLocked(self: *Session, start: usize) void {
         while (self.messages.items.len > start) {
             var msg = self.messages.pop().?;
             msg.deinit(self.allocator);
         }
+    }
+
+    /// 对话中 role == .user 的消息条数（回溯点数量）。持锁内部版本。
+    fn rewindPointCountLocked(self: *Session) usize {
+        var n: usize = 0;
+        for (self.messages.items) |msg| {
+            if (msg.role == .user) n += 1;
+        }
+        return n;
+    }
+
+    /// 供 ESC handler（未持锁）调用：自行加锁返回回溯点数量。
+    pub fn rewindPointCount(self: *Session) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.rewindPointCountLocked();
+    }
+
+    /// 第 n 个回溯点在 messages 中的索引（n 为 0-based 用户消息序号）。
+    /// 调用方需保证 n < rewindPointCountLocked()。找不到返回 messages.items.len。
+    fn rewindPointMessageIndexLocked(self: *Session, n: usize) usize {
+        var seen: usize = 0;
+        for (self.messages.items, 0..) |msg, i| {
+            if (msg.role == .user) {
+                if (seen == n) return i;
+                seen += 1;
+            }
+        }
+        return self.messages.items.len;
     }
 
     fn collapseAutoExpandedDetailsLocked(self: *Session) void {
@@ -4920,12 +5078,21 @@ test "ai chat slash command suggestions show and filter from input" {
     var session = Session{ .allocator = allocator };
     session.appendInputText("/");
 
-    try std.testing.expectEqual(@as(usize, 9), session.slashCommandSuggestionCount());
+    try std.testing.expectEqual(@as(usize, 10), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/skills", session.slashCommandSuggestionAt(0).?.command);
 
     session.appendInputText("c");
     try std.testing.expectEqual(@as(usize, 2), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/commands", session.slashCommandSuggestionAt(0).?.command);
+}
+
+test "ai chat slash command suggestions include rewind" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    session.appendInputText("/rew");
+
+    try std.testing.expectEqual(@as(usize, 1), session.slashCommandSuggestionCount());
+    try std.testing.expectEqualStrings("/rewind", session.slashCommandSuggestionAt(0).?.command);
 }
 
 test "ai chat slash suggestions include cached custom commands" {
@@ -5014,6 +5181,26 @@ test "ai chat enter submits slash commands instead of completing suggestions" {
 
     for (session.messages.items) |msg| msg.deinit(allocator);
     session.messages.deinit(allocator);
+}
+
+test "/rewind via submit opens picker without adding transcript noise" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "first prompt") });
+    try session.messages.append(allocator, .{ .role = .assistant, .content = try allocator.dupe(u8, "first reply") });
+    session.appendInputText("/rewind");
+
+    session.submit();
+
+    try std.testing.expect(session.rewind_open);
+    try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
+    try std.testing.expectEqualStrings("", session.input());
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
 }
 
 test "/clear via submit empties the transcript and shows confirmation" {
@@ -6974,6 +7161,99 @@ test "ai chat escape stops in-flight request" {
     try std.testing.expectEqualStrings("Stopping...", session.status());
 }
 
+test "ai chat rewind point count and index map user messages" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "first") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "reply-1") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "second") });
+
+    try std.testing.expectEqual(@as(usize, 2), session.rewindPointCount());
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqual(@as(usize, 0), session.rewindPointMessageIndexLocked(0));
+    try std.testing.expectEqual(@as(usize, 2), session.rewindPointMessageIndexLocked(1));
+}
+
+test "ai chat rewind open requires idle and points" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+
+    // 无回溯点：不打开。
+    session.openRewindPicker();
+    try std.testing.expect(!session.rewind_open);
+
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "one") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "r1") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "two") });
+
+    // 生成中：不打开。
+    session.request_inflight = true;
+    session.openRewindPicker();
+    try std.testing.expect(!session.rewind_open);
+
+    // 空闲：打开，默认选中最近一条（序号 count-1）。
+    session.request_inflight = false;
+    session.openRewindPicker();
+    try std.testing.expect(session.rewind_open);
+    try std.testing.expectEqual(@as(usize, 1), session.rewind_selected);
+}
+
+test "ai chat rewind move selection clamps" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "one") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "two") });
+    session.openRewindPicker(); // selected = 1
+    session.moveRewindSelection(1); // clamp at top
+    try std.testing.expectEqual(@as(usize, 1), session.rewind_selected);
+    session.moveRewindSelection(-1);
+    try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
+    session.moveRewindSelection(-1); // clamp at 0
+    try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
+}
+
+test "ai chat confirm rewind truncates and restores composer" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "first prompt") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "first reply") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "second prompt") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "partial") });
+
+    session.openRewindPicker(); // selected = 1 (最近一条 "second prompt", idx 2)
+    session.confirmRewind();
+
+    // 删除 idx 2 及之后：仅剩前两条。
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expectEqualStrings("second prompt", session.input());
+
+    // 回退到更早一条。
+    session.openRewindPicker(); // 现在 count = 1, selected = 0 (idx 0)
+    session.moveRewindSelection(-1);
+    session.confirmRewind();
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
+    try std.testing.expectEqualStrings("first prompt", session.input());
+}
+
 test "ai chat request state exposes in-flight stop status for remote layout" {
     var session = Session{ .allocator = std.testing.allocator };
     session.request_inflight = true;
@@ -7132,4 +7412,141 @@ test "/permission full flips the global agent permission" {
     try std.testing.expectEqual(AgentPermission.confirm, currentAgentSettings().permission);
     applyPermissionArg("bogus"); // invalid → no change
     try std.testing.expectEqual(AgentPermission.confirm, currentAgentSettings().permission);
+}
+
+test "ai chat double esc opens rewind picker when idle" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 第一次：记录时间
+    try std.testing.expect(!session.rewind_open);
+
+    session.now_ms_override = 1000 + DOUBLE_ESC_WINDOW_MS; // 窗口内
+    session.handleKey(.{ .key = input_key.Key.escape });
+    try std.testing.expect(session.rewind_open);
+}
+
+test "ai chat slow double esc does not open rewind picker" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape });
+    session.now_ms_override = 1000 + DOUBLE_ESC_WINDOW_MS + 1; // 超窗口
+    session.handleKey(.{ .key = input_key.Key.escape });
+    try std.testing.expect(!session.rewind_open);
+}
+
+test "ai chat esc during generation only stops and does not open picker" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+    session.request_inflight = true;
+
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape });
+    session.now_ms_override = 1100;
+    session.handleKey(.{ .key = input_key.Key.escape });
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expect(session.request_stopping);
+}
+
+// The picker renders recent prompts first, so Down moves visually down to older
+// prompts and Up moves visually up toward newer prompts.
+test "ai chat rewind picker arrow and enter via handleKey" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "alpha") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "ra") });
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "beta") });
+
+    session.openRewindPicker(); // selected = 1 ("beta")
+    session.handleKey(.{ .key = input_key.Key.arrow_down }); // visually down -> 0 ("alpha")
+    try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
+    session.handleKey(.{ .key = input_key.Key.enter });
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
+    try std.testing.expectEqualStrings("alpha", session.input());
+}
+
+test "ai chat rewind picker esc closes without change" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "keep") });
+    session.openRewindPicker();
+    session.handleKey(.{ .key = input_key.Key.escape });
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+}
+
+// 清选区是独立动作、不计入双击计时：ESC 清选区后需要重新双击才开选择器。
+test "ai chat esc clearing selection does not prime rewind double-tap" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+    session.transcript_select_all = true; // 制造一个选区
+
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 清选区，不计时
+    try std.testing.expect(!session.transcript_select_all);
+    try std.testing.expectEqual(@as(i64, 0), session.last_esc_ms);
+
+    session.now_ms_override = 1100;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 仅 arming，不开
+    try std.testing.expect(!session.rewind_open);
+
+    session.now_ms_override = 1200;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 窗口内 → 打开
+    try std.testing.expect(session.rewind_open);
+}
+
+// 生成中的 ESC 不作为双击起点：停止后变空闲，需要重新双击才开选择器。
+test "ai chat double esc after stop opens rewind picker" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+
+    session.request_inflight = true;
+    session.now_ms_override = 1000;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 停止；last_esc_ms 归零
+    try std.testing.expectEqual(@as(i64, 0), session.last_esc_ms);
+
+    session.request_inflight = false; // 模拟已停止变空闲
+    session.now_ms_override = 1100;
+    session.handleKey(.{ .key = input_key.Key.escape }); // arming，不开
+    try std.testing.expect(!session.rewind_open);
+    session.now_ms_override = 1200;
+    session.handleKey(.{ .key = input_key.Key.escape }); // 窗口内 → 打开
+    try std.testing.expect(session.rewind_open);
 }
