@@ -2818,6 +2818,7 @@ fn requestThreadMain(request: *ChatRequest) void {
             return;
         }
         appendAssistantResult(request.session, result, request.started_ms);
+        maybeAutoTitle(request.session);
         return;
     }
 
@@ -2835,6 +2836,7 @@ fn requestThreadMain(request: *ChatRequest) void {
             finishStoppedRequest(request.session);
             return;
         }
+        maybeAutoTitle(request.session);
         return;
     }
 
@@ -2853,6 +2855,7 @@ fn requestThreadMain(request: *ChatRequest) void {
         return;
     }
     appendAssistantResult(request.session, result, request.started_ms);
+    maybeAutoTitle(request.session);
 }
 
 fn requestCancelled(request: *const ChatRequest) bool {
@@ -2883,6 +2886,112 @@ fn applyGeneratedTitle(session: *Session, raw: []const u8) void {
     var buf: [ai_chat_title.max_title_bytes]u8 = undefined;
     const cleaned = ai_chat_title.cleanTitle(raw, &buf) orelse return;
     _ = session.setTitleIfDefault(cleaned);
+}
+
+/// Build a standalone, tool-free, non-streaming ChatRequest for title
+/// generation, reusing the session's endpoint/key/model/protocol. Must be
+/// called with `session.mutex` held (reads session config + first turn).
+/// Caller owns the returned request and must `req.deinit()` it.
+fn buildTitleRequestLocked(session: *Session, turn: ai_chat_title.FirstTurn) !*ChatRequest {
+    const allocator = session.allocator;
+    const req = try allocator.create(ChatRequest);
+    errdefer allocator.destroy(req);
+
+    const base_url = try allocator.dupe(u8, session.baseUrl());
+    errdefer allocator.free(base_url);
+    const api_key = try allocator.dupe(u8, session.apiKey());
+    errdefer allocator.free(api_key);
+    const model = try allocator.dupe(u8, session.model());
+    errdefer allocator.free(model);
+    const system_prompt = try allocator.dupe(u8, ai_chat_title.system_prompt);
+    errdefer allocator.free(system_prompt);
+    const reasoning_effort = try allocator.dupe(u8, "low");
+    errdefer allocator.free(reasoning_effort);
+
+    const user_content = try ai_chat_title.buildUserContent(allocator, turn);
+    errdefer allocator.free(user_content);
+
+    const messages = try allocator.alloc(RequestMessage, 1);
+    errdefer allocator.free(messages);
+    // ownership of user_content moves into messages[0]; freed by req.deinit()
+    messages[0] = .{ .role = .user, .content = user_content };
+
+    req.* = .{
+        .allocator = allocator,
+        .session = session,
+        .base_url = base_url,
+        .api_key = api_key,
+        .model = model,
+        .protocol = session.protocol,
+        .system_prompt = system_prompt,
+        .messages = messages,
+        .thinking_enabled = false,
+        .reasoning_effort = reasoning_effort,
+        .stream = false,
+        .max_tokens = 64,
+        .agent_enabled = false,
+        .copilot = false,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .started_ms = 0,
+    };
+    return req;
+}
+
+/// Background worker for one title request. Owns `req` and frees it on exit.
+fn titleThreadMain(req: *ChatRequest) void {
+    defer req.deinit();
+    const session = req.session;
+    const allocator = req.allocator;
+    if (session.closing.load(.acquire)) return;
+
+    const result = runChatRequestForMessages(req, req.messages, false) catch return;
+    defer result.deinit(allocator);
+    if (session.closing.load(.acquire)) return;
+
+    applyGeneratedTitle(session, result.content);
+}
+
+/// After a completed turn, generate a title in the background if the gate
+/// passes. Called from the request worker (`requestThreadMain`) with no lock
+/// held. The worker thread that calls this is `session.request_thread`, which
+/// `deinit` joins before it joins `title_thread`, so storing the handle here
+/// races neither deinit nor the title worker.
+fn maybeAutoTitle(session: *Session) void {
+    if (session.closing.load(.acquire)) return;
+    const allocator = session.allocator;
+
+    session.mutex.lock();
+    var spawned_req: ?*ChatRequest = null;
+    locked: {
+        const turns = allocator.alloc(ai_chat_title.TurnMessage, session.messages.items.len) catch break :locked;
+        defer allocator.free(turns);
+        for (session.messages.items, 0..) |m, i| {
+            turns[i] = .{ .role = m.role, .content = m.content };
+        }
+        const turn = ai_chat_title.extractFirstTurn(turns);
+        const gate = ai_chat_title.TitleGate{
+            .attempted = session.auto_title_attempted,
+            .has_api_key = session.api_key_len > 0,
+            .title = session.title_buf[0..session.title_len],
+            .default_name = DEFAULT_NAME,
+        };
+        if (!ai_chat_title.shouldAutoTitle(gate, turn)) break :locked;
+
+        const req = buildTitleRequestLocked(session, turn.?) catch break :locked;
+        session.auto_title_attempted = true;
+        spawned_req = req;
+    }
+    session.mutex.unlock();
+
+    const req = spawned_req orelse return;
+    const thread = std.Thread.spawn(.{}, titleThreadMain, .{req}) catch {
+        req.deinit();
+        return;
+    };
+    session.mutex.lock();
+    session.title_thread = thread;
+    session.mutex.unlock();
 }
 
 fn runAgentRequest(request: *ChatRequest) !ApiResult {
