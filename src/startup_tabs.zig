@@ -19,6 +19,13 @@ pub fn initialTabPlan(input: InitialTabPlanInput) InitialTabPlan {
     return .single_terminal;
 }
 
+/// Whether the startup AI-agent setup form should auto-open. True only when no AI
+/// profile exists AND the form has not been shown on a previous launch. Pure so it
+/// is unit-testable without the GUI.
+pub fn shouldAutoShowAgentForm(has_ai_profile: bool, already_prompted: bool) bool {
+    return !has_ai_profile and !already_prompted;
+}
+
 test "startup tabs open the default pair only for a plain launch" {
     try std.testing.expectEqual(InitialTabPlan.restored_session, initialTabPlan(.{
         .restored_session = true,
@@ -40,4 +47,11 @@ test "startup tabs open the default pair only for a plain launch" {
         .initial_cwd_present = false,
         .first_plain_window = false,
     }));
+}
+
+test "startup AI form auto-shows only when no profile and not yet prompted" {
+    try std.testing.expect(shouldAutoShowAgentForm(false, false));
+    try std.testing.expect(!shouldAutoShowAgentForm(true, false));
+    try std.testing.expect(!shouldAutoShowAgentForm(false, true));
+    try std.testing.expect(!shouldAutoShowAgentForm(true, true));
 }

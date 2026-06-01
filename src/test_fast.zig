@@ -31,6 +31,8 @@ test {
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("command_palette_model.zig");
     _ = @import("command_center_state.zig");
+    _ = @import("platform/window_state_codec.zig");
+    _ = @import("startup_tabs.zig");
     _ = @import("config.zig");
     _ = @import("ai_agent_config.zig");
     _ = @import("ssh_connection.zig");

@@ -1057,10 +1057,13 @@ fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {
         switchTab(first_tab_index);
     }
 
-    // No AI profile yet: surface the profile-creation form so the user can set
-    // one up (the form is an overlay, not a tab).
-    if (!has_ai_profile) {
+    // No AI profile yet: surface the profile-creation form so the user can set one
+    // up (the form is an overlay, not a tab) — but only on the first launch. After
+    // it has been shown once, the persisted flag suppresses it so it does not
+    // reappear every launch. Users can still open setup via the session launcher.
+    if (startup_tabs.shouldAutoShowAgentForm(has_ai_profile, platform_window_state.aiSetupPrompted(allocator))) {
         _ = overlays.openDefaultAgentSessionForStartup();
+        platform_window_state.setAiSetupPrompted(allocator);
     }
 
     return true;
@@ -1329,7 +1332,7 @@ pub threadlocal var window_focused: bool = true; // Track window focus state
 
 // Window state persistence.
 const loadWindowState = platform_window_state.loadWindowState;
-const saveWindowState = platform_window_state.saveWindowState;
+const saveWindowGeometry = platform_window_state.saveWindowGeometry;
 
 // Pending resize state (resize is deferred to main loop to avoid PageList integrity issues)
 // Ghostty coalesces resize events with a 25ms timer to batch rapid resizes
@@ -3613,12 +3616,21 @@ fn runMainLoop(self: *AppWindow) !void {
         }
         app.mutex.unlock();
     }
-    // Fall back to saved state if no cascade position
-    if (init_x == null or init_y == null) {
+    // Restore saved geometry. Position only fills gaps left by a cascade; size is
+    // restored only for a non-cascade (first/primary) window, so a new window
+    // opened over an existing one does not snap to the last session's size.
+    const restore_saved_size = init_x == null or init_y == null;
+    var saved_fb_w: ?i32 = null;
+    var saved_fb_h: ?i32 = null;
+    {
         const saved_state = loadWindowState(allocator);
         if (saved_state) |s| {
             if (init_x == null) init_x = s.x;
             if (init_y == null) init_y = s.y;
+            if (restore_saved_size) {
+                saved_fb_w = s.width;
+                saved_fb_h = s.height;
+            }
         }
     }
     var backend_window = window_backend.create(allocator, .{
@@ -3859,20 +3871,25 @@ fn runMainLoop(self: *AppWindow) !void {
     // For height: ph = fb_height - (render_padding + titlebar) - render_padding, then subtract explicit_padding
     const total_height_padding = (render_padding + titlebar_height) + render_padding + explicit_top + explicit_bottom; // 44 + 10 + 20 = 74
 
+    // Initial sizing precedence:
+    //   1. quake mode -> quake frame
+    //   2. explicit window-width/height in config -> fit that cell grid
+    //   3. remembered window size from last session -> restore it (framebuffer px)
+    //   4. otherwise -> default cell grid (first-ever launch)
+    const size_from_config = if (g_app) |app| app.window_size_from_config else false;
+    // Grid size needed for term_cols/term_rows (used by branches 2 and 4).
+    const desired_grid_width = font.cell_width * @as(f32, @floatFromInt(term_cols));
+    const desired_grid_height = font.cell_height * @as(f32, @floatFromInt(term_rows));
+    const target_fb_width: i32 = @intFromFloat(desired_grid_width + total_width_padding);
+    const target_fb_height: i32 = @intFromFloat(desired_grid_height + total_height_padding);
+
     if (g_quake_mode) {
         applyQuakeFrame(&backend_window, false);
+    } else if (size_from_config and term_cols > 0 and term_rows > 0) {
+        window_backend.resizeClientArea(&backend_window, target_fb_width, target_fb_height);
+    } else if (saved_fb_w) |sw| {
+        window_backend.resizeClientArea(&backend_window, sw, saved_fb_h.?);
     } else if (term_cols > 0 and term_rows > 0) {
-        // If config specifies window-width/window-height, resize window to fit that grid.
-        // term_cols/term_rows were set from config at init.
-        // Calculate window size needed for desired grid
-        const desired_grid_width = font.cell_width * @as(f32, @floatFromInt(term_cols));
-        const desired_grid_height = font.cell_height * @as(f32, @floatFromInt(term_rows));
-
-        // Work backwards: fb_width = grid_width + total_width_padding
-        //                 fb_height = grid_height + total_height_padding
-        const target_fb_width: i32 = @intFromFloat(desired_grid_width + total_width_padding);
-        const target_fb_height: i32 = @intFromFloat(desired_grid_height + total_height_padding);
-
         window_backend.resizeClientArea(&backend_window, target_fb_width, target_fb_height);
     }
 
@@ -4277,16 +4294,18 @@ fn runMainLoop(self: *AppWindow) !void {
         window_backend.swapBuffers(win);
     }
 
-    // Save window position for next session
+    // Save window position + size for next session
     if (!g_quake_mode and g_window != null) {
         const w = g_window.?;
         if (window_backend.windowRect(w)) |rect| {
             const is_maximized = window_backend.isMaximized(w);
             if (!is_maximized and !window_backend.isFullscreen(w)) {
-                saveWindowState(allocator, .{ .x = rect.left, .y = rect.top });
+                const fb = window_backend.framebufferSize(w);
+                saveWindowGeometry(allocator, rect.left, rect.top, fb.width, fb.height);
             } else {
-                // Save the last known windowed position before maximize/fullscreen
-                saveWindowState(allocator, .{ .x = platform_window_state.g_windowed_x, .y = platform_window_state.g_windowed_y });
+                // Save the last known windowed position; preserve the remembered
+                // windowed size (null leaves the saved width/height untouched).
+                saveWindowGeometry(allocator, platform_window_state.g_windowed_x, platform_window_state.g_windowed_y, null, null);
             }
         }
     }
