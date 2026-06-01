@@ -9,7 +9,6 @@ const builtin = @import("builtin");
 const ai_chat_input_text = @import("ai_chat_input_text.zig");
 const input_key = @import("input/key.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
-const platform_dirs = @import("platform/dirs.zig");
 const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const agent_detector = @import("agent_detector.zig");
@@ -20,6 +19,7 @@ const wispterm_docs = @import("wispterm_docs.zig");
 const markdown_text = @import("markdown_text.zig");
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_chat_composer = @import("ai_chat_composer.zig");
+const ai_chat_skills = @import("ai_chat_skills.zig");
 const weixin_types = @import("weixin/types.zig");
 
 pub const DEFAULT_NAME = "DeepSeek";
@@ -457,7 +457,7 @@ pub const composerSuggestionAtForInput = ai_chat_composer.composerSuggestionAtFo
 
 fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8 {
     return switch (command) {
-        .commands => slashCommandListOutput(allocator),
+        .commands => ai_chat_skills.slashCommandListOutput(allocator),
         .reload_skills => allocator.dupe(u8, "Skills will be re-read from disk on the next skill call."),
         .reload_commands => allocator.dupe(u8, "Custom commands will be re-read from the commands directory."),
         .update_skills => allocator.dupe(u8, "Downloading the latest skills from GitHub in the background..."),
@@ -467,281 +467,13 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         .permission => permissionStatusOutput(allocator),
         .export_markdown => allocator.dupe(u8, "Exporting the conversation as Markdown..."),
         .unknown => allocator.dupe(u8, "Unknown command. Use /commands to list commands."),
-        .skills => listSkillsForDisplay(allocator),
+        .skills => ai_chat_skills.listSkillsForDisplay(allocator),
     };
 }
 
 fn permissionStatusOutput(allocator: std.mem.Allocator) ![]u8 {
     const current = currentAgentSettings().permission;
     return std.fmt.allocPrint(allocator, "Agent permission is '{s}'. Use /permission confirm or /permission full to change it.", .{current.name()});
-}
-
-fn slashCommandListOutput(allocator: std.mem.Allocator) ![]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try out.appendSlice(allocator, "Available commands:");
-    for (slash_command_entries) |entry| {
-        try out.print(allocator, "\n{s} - {s}", .{ entry.suggestion.command, entry.suggestion.description });
-    }
-    return out.toOwnedSlice(allocator);
-}
-
-fn listSkillsForDisplay(allocator: std.mem.Allocator) ![]u8 {
-    const roots = try defaultSkillRootPaths(allocator);
-    defer freeSkillRootPaths(allocator, roots);
-
-    return listSkillsForDisplayFromRoots(allocator, roots);
-}
-
-fn listSkillsForDisplayFromRoots(allocator: std.mem.Allocator, root_paths: []const []const u8) ![]u8 {
-    const merged = try loadSkillSuggestionListFromRoots(allocator, root_paths);
-    defer {
-        freeOwnedSkillMetaList(allocator, merged);
-        allocator.free(merged);
-    }
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-    if (merged.len == 0) {
-        try out.appendSlice(allocator, "No skills found under configured skill roots.");
-    } else {
-        try out.appendSlice(allocator, "Available skills:\n");
-        for (merged) |meta| {
-            try out.print(allocator, "- ${s}: {s}\n", .{ meta.name, meta.description });
-        }
-    }
-    return out.toOwnedSlice(allocator);
-}
-
-fn loadSkillSuggestionListFromRoots(allocator: std.mem.Allocator, root_paths: []const []const u8) ![]skill_registry.SkillMeta {
-    var merged: std.ArrayListUnmanaged(skill_registry.SkillMeta) = .empty;
-    errdefer {
-        freeOwnedSkillMetaList(allocator, merged.items);
-        merged.deinit(allocator);
-    }
-
-    for (root_paths) |root_path| {
-        var root = openSkillRoot(root_path) catch |err| switch (err) {
-            error.FileNotFound, error.NotDir => continue,
-            else => |e| return e,
-        };
-        defer root.deinit();
-
-        const list = try skill_registry.listSkills(allocator, root.dir, root.skills_rel);
-        defer allocator.free(list);
-        for (list) |*meta| {
-            if (skillMetaNameExists(merged.items, meta.name)) {
-                meta.deinit(allocator);
-                continue;
-            }
-            try merged.append(allocator, meta.*);
-            meta.* = undefined;
-        }
-    }
-
-    std.sort.insertion(skill_registry.SkillMeta, merged.items, {}, skillMetaNameLessThan);
-    return merged.toOwnedSlice(allocator);
-}
-
-fn loadSkillPreloadContent(allocator: std.mem.Allocator, skill_name: []const u8) !?[]u8 {
-    const roots = try defaultSkillRootPaths(allocator);
-    defer freeSkillRootPaths(allocator, roots);
-    return loadSkillPreloadContentFromRoots(allocator, skill_name, roots);
-}
-
-fn loadSkillPreloadContentFromRoots(allocator: std.mem.Allocator, skill_name: []const u8, root_paths: []const []const u8) !?[]u8 {
-    var snapshot = loadSkillSnapshotFromRoots(allocator, skill_name, root_paths) catch |err| switch (err) {
-        skill_registry.LookupError.SkillNotFound,
-        skill_registry.LookupError.DuplicateSkillName,
-        skill_registry.LookupError.InvalidSkillMarkdown,
-        skill_registry.LookupError.SkillTooLarge,
-        => return null,
-        else => |e| return e,
-    };
-    defer snapshot.deinit(allocator);
-    return try allocator.dupe(u8, snapshot.content);
-}
-
-fn loadSkillSnapshotFromRoots(
-    allocator: std.mem.Allocator,
-    skill_name: []const u8,
-    root_paths: []const []const u8,
-) !skill_registry.Snapshot {
-    for (root_paths) |root_path| {
-        var root = openSkillRoot(root_path) catch |err| switch (err) {
-            error.FileNotFound, error.NotDir => continue,
-            else => |e| return e,
-        };
-        defer root.deinit();
-
-        return skill_registry.loadSkillSnapshot(allocator, root.dir, root.skills_rel, skill_name) catch |err| switch (err) {
-            skill_registry.LookupError.SkillNotFound => continue,
-            else => |e| return e,
-        };
-    }
-    return skill_registry.LookupError.SkillNotFound;
-}
-
-const SkillRoot = struct {
-    dir: std.fs.Dir,
-    skills_rel: []const u8,
-    owns_dir: bool,
-
-    fn deinit(self: *SkillRoot) void {
-        if (self.owns_dir) self.dir.close();
-        self.* = undefined;
-    }
-};
-
-fn openSkillRoot(root_path: []const u8) !SkillRoot {
-    if (std.fs.path.dirname(root_path)) |parent| {
-        return .{
-            .dir = try openDirectoryPath(parent),
-            .skills_rel = std.fs.path.basename(root_path),
-            .owns_dir = true,
-        };
-    }
-    return .{
-        .dir = std.fs.cwd(),
-        .skills_rel = root_path,
-        .owns_dir = false,
-    };
-}
-
-fn openDirectoryPath(path: []const u8) !std.fs.Dir {
-    if (std.fs.path.isAbsolute(path)) {
-        return std.fs.openDirAbsolute(path, .{ .iterate = true });
-    }
-    return std.fs.cwd().openDir(path, .{ .iterate = true });
-}
-
-fn defaultSkillRootPaths(allocator: std.mem.Allocator) ![][]const u8 {
-    var roots: std.ArrayListUnmanaged([]const u8) = .empty;
-    errdefer {
-        for (roots.items) |root| allocator.free(root);
-        roots.deinit(allocator);
-    }
-
-    if (platform_dirs.skillsDir(allocator)) |appdata_skills| {
-        try appendOwnedSkillRootPath(allocator, &roots, appdata_skills);
-    } else |_| {}
-    if (platform_dirs.pluginSkillsDir(allocator)) |appdata_plugin_skills| {
-        try appendOwnedSkillRootPath(allocator, &roots, appdata_plugin_skills);
-    } else |_| {}
-
-    try appendSkillRootPath(allocator, &roots, "skills");
-    try appendSkillRootPath(allocator, &roots, "plugins/skills");
-
-    if (std.fs.selfExeDirPathAlloc(allocator)) |exe_dir| {
-        defer allocator.free(exe_dir);
-        const exe_skills = try std.fs.path.join(allocator, &.{ exe_dir, "skills" });
-        try appendOwnedSkillRootPath(allocator, &roots, exe_skills);
-        const exe_plugin_skills = try std.fs.path.join(allocator, &.{ exe_dir, "plugins", "skills" });
-        try appendOwnedSkillRootPath(allocator, &roots, exe_plugin_skills);
-
-        // macOS .app bundle layout: the executable lives in Contents/MacOS and
-        // the bundled plugins are shipped under Contents/Resources/plugins.
-        const res_skills = try std.fs.path.join(allocator, &.{ exe_dir, "..", "Resources", "skills" });
-        try appendOwnedSkillRootPath(allocator, &roots, res_skills);
-        const res_plugin_skills = try std.fs.path.join(allocator, &.{ exe_dir, "..", "Resources", "plugins", "skills" });
-        try appendOwnedSkillRootPath(allocator, &roots, res_plugin_skills);
-    } else |_| {}
-
-    return roots.toOwnedSlice(allocator);
-}
-
-fn defaultCommandRootPaths(allocator: std.mem.Allocator) ![][]const u8 {
-    var roots: std.ArrayListUnmanaged([]const u8) = .empty;
-    errdefer {
-        for (roots.items) |r| allocator.free(r);
-        roots.deinit(allocator);
-    }
-    if (platform_dirs.commandsDir(allocator)) |d| {
-        try appendOwnedSkillRootPath(allocator, &roots, d);
-    } else |_| {}
-    try appendSkillRootPath(allocator, &roots, "commands");
-    return roots.toOwnedSlice(allocator);
-}
-
-fn appendSkillRootPath(
-    allocator: std.mem.Allocator,
-    roots: *std.ArrayListUnmanaged([]const u8),
-    root_path: []const u8,
-) !void {
-    const owned = try allocator.dupe(u8, root_path);
-    errdefer allocator.free(owned);
-    try appendOwnedSkillRootPath(allocator, roots, owned);
-}
-
-fn appendOwnedSkillRootPath(
-    allocator: std.mem.Allocator,
-    roots: *std.ArrayListUnmanaged([]const u8),
-    owned_root_path: []const u8,
-) !void {
-    for (roots.items) |existing| {
-        if (std.mem.eql(u8, existing, owned_root_path)) {
-            allocator.free(owned_root_path);
-            return;
-        }
-    }
-    errdefer allocator.free(owned_root_path);
-    try roots.append(allocator, owned_root_path);
-}
-
-fn freeSkillRootPaths(allocator: std.mem.Allocator, roots: [][]const u8) void {
-    for (roots) |root| allocator.free(root);
-    allocator.free(roots);
-}
-
-/// Maps a custom command's `action:` frontmatter value to the built-in slash
-/// command it triggers. Returns null for unrecognized actions (those commands
-/// are dropped during load).
-fn knownActionFromName(value: []const u8) ?SlashCommand {
-    if (std.mem.eql(u8, value, "clear_context")) return .clear;
-    if (std.mem.eql(u8, value, "restore_session")) return .resume_session;
-    if (std.mem.eql(u8, value, "set_permission")) return .permission;
-    if (std.mem.eql(u8, value, "export_markdown")) return .export_markdown;
-    return null;
-}
-
-/// True when `name` (without a leading slash) collides with a built-in slash
-/// command. The registry stores names without a slash (e.g. "review"); built-in
-/// entries store them with one (e.g. "/clear").
-fn isBuiltinCommandName(name: []const u8) bool {
-    if (name.len == 0) return false;
-    var buf: [128]u8 = undefined;
-    if (name.len + 1 > buf.len) return false;
-    buf[0] = '/';
-    @memcpy(buf[1 .. 1 + name.len], name);
-    const slashed = buf[0 .. 1 + name.len];
-    for (slash_command_entries) |entry| {
-        if (std.mem.eql(u8, slashed, entry.suggestion.command)) return true;
-    }
-    return false;
-}
-
-fn hasName(items: []const command_registry.CustomCommand, name: []const u8) bool {
-    for (items) |c| {
-        if (std.mem.eql(u8, c.name, name)) return true;
-    }
-    return false;
-}
-
-fn freeOwnedSkillMetaList(allocator: std.mem.Allocator, list: []skill_registry.SkillMeta) void {
-    for (list) |*skill| {
-        skill.deinit(allocator);
-    }
-}
-
-fn skillMetaNameExists(list: []const skill_registry.SkillMeta, name: []const u8) bool {
-    for (list) |meta| {
-        if (std.mem.eql(u8, meta.name, name)) return true;
-    }
-    return false;
-}
-
-fn skillMetaNameLessThan(_: void, lhs: skill_registry.SkillMeta, rhs: skill_registry.SkillMeta) bool {
-    return std.mem.lessThan(u8, lhs.name, rhs.name);
 }
 
 pub fn agentPermission() AgentPermission {
@@ -1100,9 +832,9 @@ pub const Session = struct {
     }
 
     fn loadSkillSuggestionsFromRoots(self: *Session, root_paths: []const []const u8) !void {
-        const suggestions = try loadSkillSuggestionListFromRoots(self.allocator, root_paths);
+        const suggestions = try ai_chat_skills.loadSkillSuggestionListFromRoots(self.allocator, root_paths);
         errdefer {
-            freeOwnedSkillMetaList(self.allocator, suggestions);
+            ai_chat_skills.freeOwnedSkillMetaList(self.allocator, suggestions);
             self.allocator.free(suggestions);
         }
 
@@ -1115,13 +847,13 @@ pub const Session = struct {
         const prefix = composerSuggestionPrefix(self.input(), self.input_cursor) orelse return;
         if (prefix.kind != .skill or self.skill_suggestions_loaded) return;
 
-        const roots = defaultSkillRootPaths(self.allocator) catch {
+        const roots = ai_chat_skills.defaultSkillRootPaths(self.allocator) catch {
             self.skill_suggestions_loaded = true;
             return;
         };
-        defer freeSkillRootPaths(self.allocator, roots);
+        defer ai_chat_skills.freeSkillRootPaths(self.allocator, roots);
 
-        const suggestions = loadSkillSuggestionListFromRoots(self.allocator, roots) catch {
+        const suggestions = ai_chat_skills.loadSkillSuggestionListFromRoots(self.allocator, roots) catch {
             self.skill_suggestions_loaded = true;
             return;
         };
@@ -1138,7 +870,7 @@ pub const Session = struct {
 
     fn freeSkillSuggestions(self: *Session) void {
         if (self.skill_suggestions_owned) {
-            freeOwnedSkillMetaList(self.allocator, self.skill_suggestions);
+            ai_chat_skills.freeOwnedSkillMetaList(self.allocator, self.skill_suggestions);
             self.allocator.free(self.skill_suggestions);
         }
         self.skill_suggestions = &.{};
@@ -1160,23 +892,23 @@ pub const Session = struct {
     /// name, and replaces `self.custom_commands`. Best-effort: missing dirs or
     /// allocation failures leave the session usable (possibly with no commands).
     pub fn reloadCustomCommands(self: *Session) void {
-        const roots = defaultCommandRootPaths(self.allocator) catch return;
-        defer freeSkillRootPaths(self.allocator, roots);
+        const roots = ai_chat_skills.defaultCommandRootPaths(self.allocator) catch return;
+        defer ai_chat_skills.freeSkillRootPaths(self.allocator, roots);
         var merged: std.ArrayListUnmanaged(command_registry.CustomCommand) = .empty;
         for (roots) |root| {
-            var dir = openDirectoryPath(root) catch continue;
+            var dir = ai_chat_skills.openDirectoryPath(root) catch continue;
             defer dir.close();
             const cmds = command_registry.listCommands(self.allocator, dir, "") catch continue;
             defer self.allocator.free(cmds); // free the slice; item ownership moves to `merged` or is deinit'd below
             for (cmds) |cmd| {
                 var c = cmd;
-                if (c.action) |av| if (knownActionFromName(av) == null) {
+                if (c.action) |av| if (ai_chat_skills.knownActionFromName(av) == null) {
                     c.deinit(self.allocator);
                     continue;
                 };
                 // Dedup ONLY against built-ins + commands already merged in THIS reload.
                 // Do NOT check self.custom_commands (it is the old list being replaced).
-                if (isBuiltinCommandName(c.name) or hasName(merged.items, c.name)) {
+                if (ai_chat_skills.isBuiltinCommandName(c.name) or ai_chat_skills.hasName(merged.items, c.name)) {
                     c.deinit(self.allocator);
                     continue;
                 }
@@ -1747,7 +1479,7 @@ pub const Session = struct {
         if (ai_chat_composer.matchCustomCommandIndex(first_tok, self.customCommandSuggestions())) |idx| {
             const cmd = self.custom_commands[idx];
             if (cmd.action) |av| {
-                if (knownActionFromName(av)) |builtin_command| {
+                if (ai_chat_skills.knownActionFromName(av)) |builtin_command| {
                     const r = self.runBuiltinCommandLocked(builtin_command, arg);
                     self.clearPendingWeixinReplyContextLocked();
                     self.mutex.unlock();
@@ -1783,7 +1515,7 @@ pub const Session = struct {
         const invocation = parseSkillInvocation(prompt_raw);
         var skill_preload_content: ?[]u8 = null;
         if (invocation) |parsed| {
-            skill_preload_content = loadSkillPreloadContent(self.allocator, parsed.skill_name) catch {
+            skill_preload_content = ai_chat_skills.loadSkillPreloadContent(self.allocator, parsed.skill_name) catch {
                 self.setStatusLocked("Could not load skill");
                 self.clearPendingWeixinReplyContextLocked();
                 self.mutex.unlock();
@@ -3925,13 +3657,13 @@ fn jsonIndexArg(root: std.json.Value, name: []const u8) ?usize {
 }
 
 fn skillInfoTool(allocator: std.mem.Allocator, skill_name: []const u8) ![]u8 {
-    const roots = try defaultSkillRootPaths(allocator);
-    defer freeSkillRootPaths(allocator, roots);
+    const roots = try ai_chat_skills.defaultSkillRootPaths(allocator);
+    defer ai_chat_skills.freeSkillRootPaths(allocator, roots);
     return skillInfoToolFromRoots(allocator, skill_name, roots);
 }
 
 fn skillInfoToolFromRoots(allocator: std.mem.Allocator, skill_name: []const u8, root_paths: []const []const u8) ![]u8 {
-    var snapshot = loadSkillSnapshotFromRoots(allocator, skill_name, root_paths) catch |err| switch (err) {
+    var snapshot = ai_chat_skills.loadSkillSnapshotFromRoots(allocator, skill_name, root_paths) catch |err| switch (err) {
         skill_registry.LookupError.SkillNotFound => return std.fmt.allocPrint(allocator, "Skill not found: {s}", .{skill_name}),
         skill_registry.LookupError.DuplicateSkillName => return std.fmt.allocPrint(allocator, "Duplicate skill name: {s}", .{skill_name}),
         skill_registry.LookupError.InvalidSkillMarkdown => return std.fmt.allocPrint(allocator, "Invalid SKILL.md for skill: {s}", .{skill_name}),
@@ -5545,29 +5277,6 @@ test "/export via submit fires the export trigger with parsed mode" {
     try std.testing.expectEqual(MarkdownExportMode.clean, test_export_mode.?);
 }
 
-test "session loads custom commands from a commands directory" {
-    const a = std.testing.allocator;
-    const root = ".zig-cache/tmp/cmdtest";
-    std.fs.cwd().deleteTree(root) catch {};
-    try std.fs.cwd().makePath(root ++ "/commands");
-    defer std.fs.cwd().deleteTree(root) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = root ++ "/commands/review.md", .data = "---\nname: review\ndescription: review diff\n---\nReview the diff." });
-
-    var dir = try std.fs.cwd().openDir(root, .{});
-    defer dir.close();
-    const cmds = try command_registry.listCommands(a, dir, "commands");
-    defer command_registry.freeCommandList(a, cmds);
-    try std.testing.expectEqual(@as(usize, 1), cmds.len);
-    try std.testing.expectEqualStrings("review", cmds[0].name);
-}
-
-test "isBuiltinCommandName recognizes built-in slash commands only" {
-    try std.testing.expect(isBuiltinCommandName("clear"));
-    try std.testing.expect(isBuiltinCommandName("commands"));
-    try std.testing.expect(!isBuiltinCommandName("review"));
-    try std.testing.expect(!isBuiltinCommandName(""));
-}
-
 test "ai chat dollar skill suggestions filter and enter completes with trailing space" {
     const allocator = std.testing.allocator;
     const root = ".zig-cache/skill-suggestion-test";
@@ -5607,28 +5316,6 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
     try std.testing.expectEqualStrings("$pdf ", session.input());
     try std.testing.expectEqual(@as(usize, "$pdf ".len), session.inputCursor());
     try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
-}
-
-test "ai chat lists skills from explicit root paths" {
-    const allocator = std.testing.allocator;
-    const root = ".zig-cache/skill-root-list-test";
-    std.fs.cwd().deleteTree(root) catch {};
-    defer std.fs.cwd().deleteTree(root) catch {};
-
-    try std.fs.cwd().makePath(root ++ "/exe/skills/pdf");
-    try std.fs.cwd().writeFile(.{
-        .sub_path = root ++ "/exe/skills/pdf/SKILL.md",
-        .data = "---\nname: pdf\ndescription: Work with PDF files.\n---\n# PDF\n",
-    });
-
-    const roots = [_][]const u8{
-        root ++ "/missing/skills",
-        root ++ "/exe/skills",
-    };
-    const output = try listSkillsForDisplayFromRoots(allocator, roots[0..]);
-    defer allocator.free(output);
-
-    try std.testing.expect(std.mem.indexOf(u8, output, "- $pdf: Work with PDF files.") != null);
 }
 
 test "wispterm_docs tool lists topics when no topic is given" {
@@ -5820,21 +5507,6 @@ test "ai chat skill_info loads from explicit root paths" {
 
     try std.testing.expect(std.mem.indexOf(u8, output, "# Skill: web") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "# Web Skill") != null);
-}
-
-test "ai chat default skill roots include plugin skills directory" {
-    const roots = try defaultSkillRootPaths(std.testing.allocator);
-    defer freeSkillRootPaths(std.testing.allocator, roots);
-
-    var found_plugins_skills = false;
-    for (roots) |root| {
-        if (std.mem.eql(u8, root, "plugins/skills")) {
-            found_plugins_skills = true;
-            break;
-        }
-    }
-
-    try std.testing.expect(found_plugins_skills);
 }
 
 test "ai_chat: session serializes to history record" {
