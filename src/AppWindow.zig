@@ -4125,6 +4125,11 @@ fn runMainLoop(self: *AppWindow) !void {
                             (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
                         handleNotification(entry.surface, is_active_surface);
                     }
+                    // Apply any OSC 52 clipboard write staged by the IO reader thread.
+                    if (entry.surface.takeClipboardWrite()) |text| {
+                        _ = input.copyTextToClipboard(text);
+                        entry.surface.allocator.free(text);
+                    }
                 }
             }
         }
