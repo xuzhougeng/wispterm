@@ -7,6 +7,7 @@ const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const gl_init = AppWindow.gpu.gl_init;
 const keybind = @import("../../keybind.zig");
+const i18n = @import("../../i18n.zig");
 const primitives = @import("primitives.zig");
 const mixColor = primitives.mixColor;
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
@@ -36,31 +37,42 @@ const StartupShortcut = struct {
     fourth: ?keybind.Action = null,
     separator: []const u8 = " / ",
     action: []const u8,
+    /// Simplified-Chinese variant of `action`, shown when the UI language is zh-CN
+    /// (mirrors the `keys_macos` variant-field pattern). English `action` is the source.
+    action_zh: ?[]const u8 = null,
 };
 
+/// The action label in the active UI language (English source, zh override).
+fn localizedAction(entry: StartupShortcut) []const u8 {
+    if (i18n.lang() == .zh_CN) {
+        if (entry.action_zh) |zh| return zh;
+    }
+    return entry.action;
+}
+
 const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
-    .{ .keys = "Ctrl+Backquote", .kind = .action, .first = .toggle_quake, .action = "Show / hide Quake window" },
-    .{ .keys = "Ctrl+Shift+P", .kind = .action, .first = .toggle_command_palette, .action = "Command center" },
-    .{ .keys = "Ctrl+Shift+T", .kind = .action, .first = .new_session, .action = "New session" },
-    .{ .keys = "Ctrl+Shift+B", .kind = .action, .first = .toggle_sidebar, .action = "Toggle sidebar" },
-    .{ .keys = "Ctrl+Shift+O", .kind = .action, .first = .split_right, .action = "Split right" },
-    .{ .keys = "Ctrl+Shift+Alt+E", .kind = .action, .first = .toggle_file_explorer, .action = "File explorer" },
-    .{ .keys = "Ctrl/double-click file", .keys_macos = "Cmd/double-click file", .action = "Preview file" },
-    .{ .keys = "Ctrl+Shift-click SSH file", .keys_macos = "Cmd+Shift-click SSH file", .action = "Download file" },
-    .{ .keys = "Ctrl+Shift+[ / Ctrl+Shift+]", .kind = .pair, .first = .focus_previous, .second = .focus_next, .action = "Previous / next panel" },
-    .{ .keys = "Alt+Left / Alt+Right / Alt+Up / Alt+Down", .kind = .quad, .first = .focus_left, .second = .focus_right, .third = .focus_up, .fourth = .focus_down, .action = "Focus panel" },
-    .{ .keys = "Ctrl+Shift+Z", .kind = .action, .first = .equalize_splits, .action = "Equalize panels" },
-    .{ .keys = "Ctrl+Shift+W", .kind = .action, .first = .close_panel_or_tab, .action = "Close panel / tab; confirm last" },
-    .{ .keys = "Ctrl+Shift+C / Ctrl+V", .kind = .pair, .first = .copy, .second = .paste, .action = "Copy / paste text" },
-    .{ .keys = "Shift-click text", .action = "Select from anchor" },
-    .{ .keys = "Drag in AI / Ctrl+C", .keys_macos = "Drag in AI / Cmd+C", .action = "Copy answer selection" },
-    .{ .keys = "Shift-drag in AI", .action = "Copy answer selection" },
-    .{ .keys = "Ctrl+A / Ctrl+C in AI", .keys_macos = "Cmd+A / Cmd+C in AI", .action = "Select / copy chat" },
-    .{ .keys = "Right-click selection", .action = "Copy selection" },
-    .{ .keys = "Ctrl+Shift+V", .kind = .action, .first = .paste_image, .action = "Paste image" },
-    .{ .keys = "Ctrl+,", .kind = .action, .first = .open_config, .action = "Open config" },
-    .{ .keys = "Ctrl++ / Ctrl+-", .kind = .pair, .first = .font_size_increase, .second = .font_size_decrease, .action = "Font size" },
-    .{ .keys = "Alt+Enter", .kind = .action, .first = .toggle_maximize, .action = "Maximize / restore" },
+    .{ .keys = "Ctrl+Backquote", .kind = .action, .first = .toggle_quake, .action = "Show / hide Quake window", .action_zh = "显示 / 隐藏 Quake 窗口" },
+    .{ .keys = "Ctrl+Shift+P", .kind = .action, .first = .toggle_command_palette, .action = "Command center", .action_zh = "命令中心" },
+    .{ .keys = "Ctrl+Shift+T", .kind = .action, .first = .new_session, .action = "New session", .action_zh = "新建会话" },
+    .{ .keys = "Ctrl+Shift+B", .kind = .action, .first = .toggle_sidebar, .action = "Toggle sidebar", .action_zh = "切换侧边栏" },
+    .{ .keys = "Ctrl+Shift+O", .kind = .action, .first = .split_right, .action = "Split right", .action_zh = "向右分屏" },
+    .{ .keys = "Ctrl+Shift+Alt+E", .kind = .action, .first = .toggle_file_explorer, .action = "File explorer", .action_zh = "文件浏览器" },
+    .{ .keys = "Ctrl/double-click file", .keys_macos = "Cmd/double-click file", .action = "Preview file", .action_zh = "预览文件" },
+    .{ .keys = "Ctrl+Shift-click SSH file", .keys_macos = "Cmd+Shift-click SSH file", .action = "Download file", .action_zh = "下载文件" },
+    .{ .keys = "Ctrl+Shift+[ / Ctrl+Shift+]", .kind = .pair, .first = .focus_previous, .second = .focus_next, .action = "Previous / next panel", .action_zh = "上一个 / 下一个面板" },
+    .{ .keys = "Alt+Left / Alt+Right / Alt+Up / Alt+Down", .kind = .quad, .first = .focus_left, .second = .focus_right, .third = .focus_up, .fourth = .focus_down, .action = "Focus panel", .action_zh = "聚焦面板" },
+    .{ .keys = "Ctrl+Shift+Z", .kind = .action, .first = .equalize_splits, .action = "Equalize panels", .action_zh = "均分面板" },
+    .{ .keys = "Ctrl+Shift+W", .kind = .action, .first = .close_panel_or_tab, .action = "Close panel / tab; confirm last", .action_zh = "关闭面板 / 标签页；最后一个需确认" },
+    .{ .keys = "Ctrl+Shift+C / Ctrl+V", .kind = .pair, .first = .copy, .second = .paste, .action = "Copy / paste text", .action_zh = "复制 / 粘贴文本" },
+    .{ .keys = "Shift-click text", .action = "Select from anchor", .action_zh = "从锚点开始选择" },
+    .{ .keys = "Drag in AI / Ctrl+C", .keys_macos = "Drag in AI / Cmd+C", .action = "Copy answer selection", .action_zh = "复制回答选区" },
+    .{ .keys = "Shift-drag in AI", .action = "Copy answer selection", .action_zh = "复制回答选区" },
+    .{ .keys = "Ctrl+A / Ctrl+C in AI", .keys_macos = "Cmd+A / Cmd+C in AI", .action = "Select / copy chat", .action_zh = "选择 / 复制对话" },
+    .{ .keys = "Right-click selection", .action = "Copy selection", .action_zh = "复制选区" },
+    .{ .keys = "Ctrl+Shift+V", .kind = .action, .first = .paste_image, .action = "Paste image", .action_zh = "粘贴图片" },
+    .{ .keys = "Ctrl+,", .kind = .action, .first = .open_config, .action = "Open config", .action_zh = "打开配置" },
+    .{ .keys = "Ctrl++ / Ctrl+-", .kind = .pair, .first = .font_size_increase, .second = .font_size_decrease, .action = "Font size", .action_zh = "字号" },
+    .{ .keys = "Alt+Enter", .kind = .action, .first = .toggle_maximize, .action = "Maximize / restore", .action_zh = "最大化 / 还原" },
 };
 
 pub threadlocal var g_startup_shortcuts_visible: bool = false;
@@ -97,8 +109,13 @@ fn overlayLineHeight() f32 {
 
 fn measureTitlebarText(text: []const u8) f32 {
     var text_width: f32 = 0;
-    for (text) |ch| {
-        text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
+    var view = std.unicode.Utf8View.init(text) catch {
+        for (text) |ch| text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
+        return text_width;
+    };
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        text_width += titlebar.titlebarGlyphAdvance(cp);
     }
     return text_width;
 }
@@ -106,9 +123,17 @@ fn measureTitlebarText(text: []const u8) f32 {
 fn renderTitlebarText(text: []const u8, x_start: f32, y: f32, color: [3]f32) void {
     var x = @round(x_start);
     const y_aligned = @round(y);
-    for (text) |ch| {
-        titlebar.renderTitlebarChar(@intCast(ch), x, y_aligned, color);
-        x += titlebar.titlebarGlyphAdvance(@intCast(ch));
+    var view = std.unicode.Utf8View.init(text) catch {
+        for (text) |ch| {
+            titlebar.renderTitlebarChar(@intCast(ch), x, y_aligned, color);
+            x += titlebar.titlebarGlyphAdvance(@intCast(ch));
+        }
+        return;
+    };
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        titlebar.renderTitlebarChar(cp, x, y_aligned, color);
+        x += titlebar.titlebarGlyphAdvance(cp);
     }
 }
 
@@ -117,17 +142,24 @@ fn renderTitlebarTextLimited(text: []const u8, x_start: f32, y: f32, color: [3]f
 
     var x = @round(x_start);
     const y_aligned = @round(y);
-    for (text, 0..) |ch, idx| {
-        const advance = titlebar.titlebarGlyphAdvance(@intCast(ch));
+    var view = std.unicode.Utf8View.init(text) catch {
+        renderTitlebarText(text, x, y_aligned, color);
+        return;
+    };
+    var it = view.iterator();
+    var drew_any = false;
+    while (it.nextCodepoint()) |cp| {
+        const advance = titlebar.titlebarGlyphAdvance(cp);
         if (x + advance > x_start + max_w) {
             const ellipsis_w = titlebar.titlebarGlyphAdvance('.') * 3;
-            if (idx > 0 and x + ellipsis_w <= x_start + max_w) {
+            if (drew_any and x + ellipsis_w <= x_start + max_w) {
                 renderTitlebarText("...", x, y_aligned, color);
             }
             return;
         }
-        titlebar.renderTitlebarChar(@intCast(ch), x, y_aligned, color);
+        titlebar.renderTitlebarChar(cp, x, y_aligned, color);
         x += advance;
+        drew_any = true;
     }
 }
 
@@ -169,7 +201,7 @@ fn startupShortcutKeys(entry: StartupShortcut, buf: []u8) []const u8 {
             break :blk true;
         },
     };
-    return if (ok) stream.getWritten() else "unbound";
+    return if (ok) stream.getWritten() else i18n.s().shortcuts_unbound;
 }
 
 /// Render a centered startup overlay listing common keyboard shortcuts.
@@ -183,7 +215,7 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
         var keys_buf: [256]u8 = undefined;
         const keys = startupShortcutKeys(entry, &keys_buf);
         max_keys_width = @max(max_keys_width, measureTitlebarText(keys));
-        max_action_width = @max(max_action_width, measureTitlebarText(entry.action));
+        max_action_width = @max(max_action_width, measureTitlebarText(localizedAction(entry)));
     }
 
     const pad_x: f32 = 24;
@@ -193,8 +225,8 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
     const line_height = overlayLineHeight();
     const heading_gap: f32 = 16;
     const hint_gap: f32 = 12;
-    const hint = "Press any key or click to hide";
-    const heading = "Keyboard shortcuts";
+    const hint = i18n.s().shortcuts_hint;
+    const heading = i18n.s().shortcuts_heading;
     const content_height = @max(1.0, window_height - top_offset);
     const available_height = @max(line_height, content_height - 24.0);
     const fixed_height = pad_y * 2 + overlayTextHeight() + heading_gap + hint_gap + overlayTextHeight();
@@ -250,7 +282,7 @@ pub fn renderStartupShortcutsOverlay(window_width: f32, window_height: f32, top_
         const action_x = @round(col_x + keys_w + pair_gap);
         const y = @round(heading_y - heading_gap - line_height - @as(f32, @floatFromInt(row)) * line_height);
         renderTitlebarTextLimited(keys, col_x, y, keys_color, keys_w);
-        renderTitlebarTextLimited(entry.action, action_x, y, action_color, action_w);
+        renderTitlebarTextLimited(localizedAction(entry), action_x, y, action_color, action_w);
     }
 
     const hint_w = measureTitlebarText(hint);

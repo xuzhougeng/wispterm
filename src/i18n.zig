@@ -98,6 +98,11 @@ pub const Strings = struct {
     sl_ssh_jump_host: []const u8,
     sl_mode_chat: []const u8,
     sl_default_suffix: []const u8,
+
+    // —— 键盘快捷键浮层 ——
+    shortcuts_heading: []const u8,
+    shortcuts_hint: []const u8,
+    shortcuts_unbound: []const u8,
 };
 
 const en = Strings{
@@ -186,6 +191,10 @@ const en = Strings{
     .sl_ssh_jump_host = "Jump host",
     .sl_mode_chat = "Chat",
     .sl_default_suffix = " (default)",
+
+    .shortcuts_heading = "Keyboard shortcuts",
+    .shortcuts_hint = "Press any key or click to hide",
+    .shortcuts_unbound = "unbound",
 };
 
 const zh_CN = Strings{
@@ -274,6 +283,10 @@ const zh_CN = Strings{
     .sl_ssh_jump_host = "跳板机",
     .sl_mode_chat = "对话",
     .sl_default_suffix = "（默认）",
+
+    .shortcuts_heading = "键盘快捷键",
+    .shortcuts_hint = "按任意键或点击隐藏",
+    .shortcuts_unbound = "未绑定",
 };
 
 // Set once at startup before any UI thread exists (see main.zig startup wiring).
