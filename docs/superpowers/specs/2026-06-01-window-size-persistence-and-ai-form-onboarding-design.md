@@ -83,15 +83,22 @@ Add `App.window_size_from_config: bool`, computed as
 (`src/App.zig:~202`) and reconfigure (`src/App.zig:~373`), and read in
 `AppWindow` to choose branch 2 vs 3.
 
-### Validation / clamp
+### Validation
 
 Before applying a saved size:
 - Reject degenerate sizes (`width < 200` or `height < 150` ⇒ treat as "no saved
-  size", fall through to default).
-- Clamp width/height to the target monitor's work area (reuse
-  `nearestMonitorWorkArea` / equivalent already used for position validation) so a
-  smaller or different monitor cannot restore an oversized or effectively
-  off-screen window.
+  size", fall through to default). Pure, DPI-independent.
+- The existing position off-screen guard (`isPointOnAnyDisplay` on the restored
+  origin, `window_state.zig:57-61`) already keeps the window's top-left reachable,
+  so an over-large restored size is still grab-and-resizable.
+
+**Work-area clamp deferred.** Clamping the restored size to the monitor's work
+area would require converting the saved framebuffer px against the work-area rect,
+but that rect is in *logical points* on macOS (`window frame`) and *physical px* on
+Windows — so a correct clamp needs per-platform DPI conversion. Introducing that
+risks a new DPI bug for an edge case (saving on a large monitor, restoring on a
+smaller/different-DPI one). Deferred until needed; the min-size check plus the
+position guard cover the common cases.
 
 ### Rationale: framebuffer px vs logical points
 
@@ -135,9 +142,14 @@ AI agent entry; only the *automatic* popup is suppressed after the first launch.
 
 ## Components touched
 
-- `src/platform/window_state.zig` — generalize struct + load/save to include
-  width, height, ai_setup_prompted; add validation helpers; add read-modify-write
-  partial updaters.
+- `src/platform/window_state_codec.zig` *(new, pure std-only)* — `PersistedState`
+  struct, line parse/format, `sizeIsValid`, and a `mergeGeometry` pure updater.
+  Imported into `src/test_fast.zig` and unit-tested there (matches the existing
+  `*_codec.zig`/`*_model.zig` fast-suite pattern).
+- `src/platform/window_state.zig` — thin I/O layer over the codec: load/save the
+  whole file (x, y, width, height, ai_setup_prompted), read-modify-write partial
+  updaters (`saveWindowGeometry`, `setAiSetupPrompted`, `aiSetupPrompted`), keeping
+  the existing position off-screen guard.
 - `src/App.zig` — add `window_size_from_config` field (construct + reconfigure).
 - `src/AppWindow.zig` — restore saved size (new precedence branch), save size on
   close, gate the startup AI form on the persisted flag, persist the flag on first
@@ -163,4 +175,5 @@ AI agent entry; only the *automatic* popup is suppressed after the first launch.
 - No config option to toggle the AI-form behavior (chosen: persistent
   first-launch-only flag).
 - No DPI-aware logical-size storage / per-monitor remembered sizes.
+- No work-area clamp of the restored size (deferred; see Validation).
 - No change to maximize/fullscreen restore beyond preserving the windowed size.
