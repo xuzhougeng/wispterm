@@ -560,6 +560,157 @@ test "macOS backend sendMessage runs the handler on the event-loop thread and re
     try std.testing.expectEqual(@as(platform_window.MessageResult, 1007), probe.result);
 }
 
+const MessageRaceContext = struct {
+    hwnd: NativeHandle,
+    total: usize,
+    inflight_cap: usize,
+    // Number of slots the consumer has popped. The producer reads this to
+    // bound in-flight messages below the ring capacity so the queue never
+    // legitimately overwrites — any lost/duplicated message is therefore a
+    // synchronization bug, not expected ring-buffer eviction.
+    consumed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+};
+
+fn messageRaceProducer(ctx: *MessageRaceContext) void {
+    var i: usize = 0;
+    while (i < ctx.total) : (i += 1) {
+        // Throttle on the consumer's own atomic counter (never the bridge's
+        // internal, racy count) so in-flight stays < ring capacity.
+        while (i -% ctx.consumed.load(.acquire) >= ctx.inflight_cap) {
+            if (ctx.stop.load(.acquire)) return;
+            std.atomic.spinLoopHint();
+        }
+        if (ctx.stop.load(.acquire)) return;
+        _ = platform_window.postMessage(ctx.hwnd, platform_window.hotkey_message, i, 0);
+    }
+}
+
+test "macOS message queue survives concurrent push and pop" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Message Race");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    const total: usize = 200_000;
+    var ctx = MessageRaceContext{
+        .hwnd = window.hwnd,
+        .total = total,
+        .inflight_cap = 16, // < message ring capacity (32) so no legitimate eviction
+    };
+
+    const allocator = std.testing.allocator;
+    const seen = try allocator.alloc(bool, total);
+    defer allocator.free(seen);
+    @memset(seen, false);
+
+    const producer = try std.Thread.spawn(.{}, messageRaceProducer, .{&ctx});
+
+    var received: usize = 0;
+    var duplicates: usize = 0;
+    var corrupt: usize = 0;
+    var popped: usize = 0;
+    var timer = try std.time.Timer.start();
+    const timeout_ns: u64 = 30 * std.time.ns_per_s;
+
+    while (received < total) {
+        var ev: RawMessageEvent = undefined;
+        if (wispterm_macos_window_pop_message_event(window.hwnd, &ev)) {
+            popped += 1;
+            ctx.consumed.store(popped, .release);
+            if (ev.message != platform_window.hotkey_message or ev.wparam >= total) {
+                corrupt += 1;
+            } else if (seen[ev.wparam]) {
+                duplicates += 1;
+            } else {
+                seen[ev.wparam] = true;
+                received += 1;
+            }
+        } else {
+            std.atomic.spinLoopHint();
+        }
+        if (timer.read() > timeout_ns) break;
+    }
+
+    ctx.stop.store(true, .release);
+    producer.join();
+
+    try std.testing.expectEqual(@as(usize, 0), corrupt);
+    try std.testing.expectEqual(@as(usize, 0), duplicates);
+    try std.testing.expectEqual(total, received);
+}
+
+fn keyRaceProducer(ctx: *MessageRaceContext) void {
+    var i: usize = 0;
+    while (i < ctx.total) : (i += 1) {
+        while (i -% ctx.consumed.load(.acquire) >= ctx.inflight_cap) {
+            if (ctx.stop.load(.acquire)) return;
+            std.atomic.spinLoopHint();
+        }
+        if (ctx.stop.load(.acquire)) return;
+        // Encode the sequence number in the key code so the consumer can
+        // detect loss/duplication/torn reads.
+        wispterm_macos_window_test_push_key(ctx.hwnd, i, false, false, false);
+    }
+}
+
+// Mirrors the message-queue race test for an input queue: with additional
+// windows the main thread pushes input events (AppKit dispatch during
+// pumpAppEvents) while the per-window worker thread pops them, so the input
+// rings must serialize too. Uses the key ring as the representative for the
+// shared input_lock.
+test "macOS input queue survives concurrent push and pop" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Input Race");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    const total: usize = 200_000;
+    var ctx = MessageRaceContext{
+        .hwnd = window.hwnd,
+        .total = total,
+        .inflight_cap = 32, // < key ring capacity (64) so no legitimate eviction
+    };
+
+    const allocator = std.testing.allocator;
+    const seen = try allocator.alloc(bool, total);
+    defer allocator.free(seen);
+    @memset(seen, false);
+
+    const producer = try std.Thread.spawn(.{}, keyRaceProducer, .{&ctx});
+
+    var received: usize = 0;
+    var duplicates: usize = 0;
+    var corrupt: usize = 0;
+    var popped: usize = 0;
+    var timer = try std.time.Timer.start();
+    const timeout_ns: u64 = 30 * std.time.ns_per_s;
+
+    while (received < total) {
+        var ev: RawKeyEvent = undefined;
+        if (wispterm_macos_window_pop_key_event(window.hwnd, &ev)) {
+            popped += 1;
+            ctx.consumed.store(popped, .release);
+            if (ev.key_code >= total) {
+                corrupt += 1;
+            } else if (seen[ev.key_code]) {
+                duplicates += 1;
+            } else {
+                seen[ev.key_code] = true;
+                received += 1;
+            }
+        } else {
+            std.atomic.spinLoopHint();
+        }
+        if (timer.read() > timeout_ns) break;
+    }
+
+    ctx.stop.store(true, .release);
+    producer.join();
+
+    try std.testing.expectEqual(@as(usize, 0), corrupt);
+    try std.testing.expectEqual(@as(usize, 0), duplicates);
+    try std.testing.expectEqual(total, received);
+}
+
 fn testFileDropCallback(path: []const u8, x: i32, y: i32) bool {
     test_drop_seen = std.mem.eql(u8, path, "/tmp/wispterm-drop.txt");
     test_drop_x = x;
