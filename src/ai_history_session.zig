@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("ai_history_types.zig");
 const source_mod = @import("ai_history_source.zig");
+const session_persist = @import("session_persist.zig");
 
 pub const LoadState = enum { idle, scanning, ready, failed };
 
@@ -28,6 +29,27 @@ pub const Session = struct {
     pub fn deinit(self: *Session) void {
         self.rows.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    pub fn persistSnap(self: *const Session, allocator: std.mem.Allocator) !session_persist.AiHistorySnap {
+        const source_id = try allocator.dupe(u8, self.source.id);
+        errdefer allocator.free(source_id);
+
+        const target_kind = try allocator.dupe(u8, switch (self.source.target) {
+            .local => "local",
+            .wsl => "wsl",
+            .ssh => "ssh",
+        });
+        errdefer allocator.free(target_kind);
+
+        const target_name = try allocator.dupe(u8, self.source.name);
+        errdefer allocator.free(target_name);
+
+        return .{
+            .source_id = source_id,
+            .target_kind = target_kind,
+            .target_name = target_name,
+        };
     }
 
     pub fn beginScan(self: *Session) void {
@@ -107,6 +129,36 @@ test "ai_history_session: replacing rows sorts by last active time" {
 
     try std.testing.expectEqual(LoadState.ready, session.state);
     try std.testing.expectEqualStrings("new", session.rows.items[0].session_id);
+}
+
+test "ai_history_session: persistSnap duplicates source identity" {
+    const allocator = std.testing.allocator;
+    var session = Session.init(allocator, .{ .id = "local-codex", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    const snap = try session.persistSnap(allocator);
+    defer {
+        allocator.free(snap.source_id);
+        allocator.free(snap.target_kind);
+        allocator.free(snap.target_name);
+    }
+
+    try std.testing.expectEqualStrings("local-codex", snap.source_id);
+    try std.testing.expectEqualStrings("local", snap.target_kind);
+    try std.testing.expectEqualStrings("Local", snap.target_name);
+    try std.testing.expect(snap.source_id.ptr != session.source.id.ptr);
+    try std.testing.expect(snap.target_name.ptr != session.source.name.ptr);
+}
+
+test "ai_history_session: persistSnap frees partial duplicates on allocation failure" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 1,
+    });
+    var session = Session.init(failing_allocator.allocator(), .{ .id = "local-codex", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, session.persistSnap(failing_allocator.allocator()));
+    try std.testing.expect(failing_allocator.has_induced_failure);
 }
 
 test "ai_history_session: metadata filter controls visible rows" {
