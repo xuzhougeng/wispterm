@@ -24,6 +24,8 @@ test {
     _ = @import("input/click_tracker.zig");
     _ = @import("input/hit_test.zig");
     _ = @import("input/mouse_report.zig");
+    _ = @import("input/preview_path.zig");
+    _ = @import("input/terminal_link_action.zig");
     _ = @import("command_palette_model.zig");
     _ = @import("command_center_state.zig");
     _ = @import("config.zig");

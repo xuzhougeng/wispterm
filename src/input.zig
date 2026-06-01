@@ -46,6 +46,7 @@ const clipboard = @import("input/clipboard.zig");
 const click_tracker = @import("input/click_tracker.zig");
 const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
+const terminal_link_action = @import("input/terminal_link_action.zig");
 const mouse_report = @import("input/mouse_report.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
@@ -68,13 +69,11 @@ const resolveTerminalPreviewPath = preview_source.resolveTerminalPreviewPath;
 const basenameForPreview = preview_source.basenameForPreview;
 const buildPreviewCommand = preview_source.buildPreviewCommand;
 
-const LayoutResizeUrgency = enum { coalesced, immediate };
-const TerminalPathClickAction = enum { pass_through, open_url_or_preview, download_ssh_file };
-const InteractiveUnderlineTokenKind = enum { none, url, preview_path };
+const LayoutResizeUrgency = terminal_link_action.LayoutResizeUrgency;
+const TerminalPathClickAction = terminal_link_action.TerminalPathClickAction;
+const InteractiveUnderlineTokenKind = terminal_link_action.InteractiveUnderlineTokenKind;
 
-fn panelToggleResizeUrgency() LayoutResizeUrgency {
-    return .coalesced;
-}
+const panelToggleResizeUrgency = terminal_link_action.panelToggleResizeUrgency;
 
 fn clientSize(win: anytype) window_backend.Size {
     return window_backend.clientSize(win);
@@ -94,94 +93,11 @@ fn syncSidebarWidthToBackend(win: anytype) void {
     window_backend.setSidebarWidth(win, @intFromFloat(titlebar.sidebarWidth()));
 }
 
-test "panel toggles request coalesced layout resize" {
-    try std.testing.expectEqual(LayoutResizeUrgency.coalesced, panelToggleResizeUrgency());
-}
+const primaryOpenMod = terminal_link_action.primaryOpenMod;
+const terminalPathClickAction = terminal_link_action.terminalPathClickAction;
 
-/// The modifier that opens URLs / previews files / downloads SSH paths when
-/// clicking or hovering terminal text. macOS uses Cmd (super) — Ctrl+click is
-/// the system secondary-click — while other platforms use Ctrl.
-fn primaryOpenMod(ctrl: bool, super: bool) bool {
-    return if (builtin.target.os.tag == .macos) super else ctrl;
-}
-
-fn terminalPathClickAction(launch_kind: Surface.LaunchKind, has_ssh_conn: bool, mod: bool, shift: bool, alt: bool) TerminalPathClickAction {
-    if (mod and shift and !alt and launch_kind == .ssh and has_ssh_conn) return .download_ssh_file;
-    if (mod and !shift and !alt) return .open_url_or_preview;
-    return .pass_through;
-}
-
-test "primary open modifier is Cmd on macOS, Ctrl elsewhere" {
-    if (builtin.target.os.tag == .macos) {
-        try std.testing.expect(primaryOpenMod(false, true)); // Cmd-click opens
-        try std.testing.expect(!primaryOpenMod(true, false)); // Ctrl-click does not
-    } else {
-        try std.testing.expect(primaryOpenMod(true, false)); // Ctrl-click opens
-        try std.testing.expect(!primaryOpenMod(false, true)); // Win/Super does not
-    }
-}
-
-test "terminal path click action maps ctrl shift ssh to download" {
-    try std.testing.expectEqual(
-        TerminalPathClickAction.download_ssh_file,
-        terminalPathClickAction(.ssh, true, true, true, false),
-    );
-    try std.testing.expectEqual(
-        TerminalPathClickAction.pass_through,
-        terminalPathClickAction(.ssh, false, true, true, false),
-    );
-    try std.testing.expectEqual(
-        TerminalPathClickAction.pass_through,
-        terminalPathClickAction(.wsl, false, true, true, false),
-    );
-    try std.testing.expectEqual(
-        TerminalPathClickAction.open_url_or_preview,
-        terminalPathClickAction(.ssh, true, true, false, false),
-    );
-}
-
-fn interactiveUnderlineTokenKind(action: TerminalPathClickAction, text: []const u8) InteractiveUnderlineTokenKind {
-    return switch (action) {
-        .pass_through => .none,
-        .download_ssh_file => if (looksLikeDownloadPath(text)) .preview_path else .none,
-        .open_url_or_preview => if (looksLikeUrl(text))
-            .url
-        else if (looksLikePreviewPath(text))
-            .preview_path
-        else
-            .none,
-    };
-}
-
-fn looksLikeDownloadPath(text: []const u8) bool {
-    if (text.len == 0 or looksLikeUrl(text)) return false;
-    if (looksLikePreviewPath(text)) return true;
-
-    const dot_idx = std.mem.lastIndexOfScalar(u8, text, '.') orelse return false;
-    return dot_idx > 0 and dot_idx + 1 < text.len;
-}
-
-test "interactive underline includes preview paths for ctrl hover" {
-    try std.testing.expectEqual(
-        InteractiveUnderlineTokenKind.preview_path,
-        interactiveUnderlineTokenKind(.open_url_or_preview, "README.md"),
-    );
-    try std.testing.expectEqual(
-        InteractiveUnderlineTokenKind.url,
-        interactiveUnderlineTokenKind(.open_url_or_preview, "https://example.com/README.md"),
-    );
-    try std.testing.expectEqual(
-        InteractiveUnderlineTokenKind.none,
-        interactiveUnderlineTokenKind(.pass_through, "README.md"),
-    );
-}
-
-test "interactive underline includes plain filenames for ssh download hover" {
-    try std.testing.expectEqual(
-        InteractiveUnderlineTokenKind.preview_path,
-        interactiveUnderlineTokenKind(.download_ssh_file, "xx.h5ad"),
-    );
-}
+const interactiveUnderlineTokenKind = terminal_link_action.interactiveUnderlineTokenKind;
+const looksLikeDownloadPath = terminal_link_action.looksLikeDownloadPath;
 
 test "input: WeChat QR panel consumes text input while visible" {
     AppWindow.weixin_qr_panel.g_visible = true;
@@ -2158,11 +2074,7 @@ fn extractTokenAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos:
     return token.text;
 }
 
-fn looksLikeUrl(text: []const u8) bool {
-    return std.mem.startsWith(u8, text, "http://") or
-        std.mem.startsWith(u8, text, "https://") or
-        std.mem.startsWith(u8, text, "www.");
-}
+const looksLikeUrl = terminal_link_action.looksLikeUrl;
 
 fn extractUrlRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?TokenAtCell {
     const token = extractTokenRangeAtCell(allocator, surface, cell_pos) orelse return null;
