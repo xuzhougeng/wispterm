@@ -13,6 +13,9 @@ pub const Reply = struct {
     text: std.ArrayListUnmanaged(u8) = .empty,
     /// true ⇒ caller should start AI-reply progress streaming.
     expect_ai_progress: bool = false,
+    /// true ⇒ caller should cancel any active AI-reply progress streaming
+    /// (set by /stop), so no further progress/final replies are sent.
+    stop_followup: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Reply {
         return .{ .allocator = allocator };
@@ -105,6 +108,10 @@ fn sendAi(ctrl: control.Control, text: []const u8, reply_context: ?types.ReplyCo
 }
 
 fn stopAi(ctrl: control.Control, out: *Reply) !void {
+    // /stop halts the active AI run; also tell the poller to cancel any
+    // in-flight weixin reply streaming so no further progress/final reply is
+    // sent after the stop (otherwise a trailing reply looks like /stop failed).
+    out.stop_followup = true;
     const ai = ctrl.findAiSurface() orelse return out.set("当前没有 AI Agent 可停止。");
     if (!ctrl.sendInput(ai.id, ESC, null)) return out.set("WispTerm 当前离线，无法停止 AI Agent。");
     return out.set("已发送停止指令。");
@@ -265,4 +272,14 @@ test "offline control yields an offline message and no progress" {
     try route(t.allocator, fake.control_iface(), defaultSettings(), "do a thing", null, &out);
     try t.expect(!out.expect_ai_progress);
     try t.expect(std.mem.indexOf(u8, out.text.items, "离线") != null);
+}
+
+test "/stop sends ESC to the AI surface and requests followup cancellation" {
+    var fake = FakeControl{};
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/stop", null, &out);
+    try t.expectEqualStrings(ESC, fake.lastInput());
+    try t.expect(out.stop_followup);
+    try t.expect(!out.expect_ai_progress);
 }

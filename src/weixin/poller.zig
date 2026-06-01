@@ -33,6 +33,8 @@ const AI_REPLY_WINDOW_EXPIRED_NOTICE = "AI 处理已超过 30 分钟仍未完成
 
 pub const RouteResult = struct {
     expect_ai_progress: bool = false,
+    /// true ⇒ cancel any active AI-reply progress streaming (set by /stop).
+    stop_followup: bool = false,
     /// Heap-owned by ProcessInput. Freed after start_progress_fn returns.
     baseline_transcript: []u8 = &.{},
 };
@@ -67,6 +69,9 @@ pub const ProcessInput = struct {
     send_fn: *const fn (ctx: *anyopaque, to_user_id: []const u8, text: []const u8, context_token: []const u8) anyerror!void,
     progress_ctx: ?*anyopaque = null,
     start_progress_fn: ?*const fn (ctx: *anyopaque, baseline_transcript: []const u8, to_user_id: []const u8, context_token: []const u8) anyerror!void = null,
+    /// Cancels any active AI-reply progress streaming. Invoked (with progress_ctx)
+    /// when a routed message reports stop_followup (e.g. /stop).
+    stop_progress_fn: ?*const fn (ctx: *anyopaque) void = null,
 };
 
 /// Mirror of processWeixinUpdates: filter, extract, route, reply.
@@ -109,6 +114,18 @@ pub fn processUpdates(input: ProcessInput) !void {
             "weixin process({d}): index={d} route=done reply_bytes={d} ai_followup={} baseline_bytes={d}\n",
             .{ debugNowMs(), i, reply.items.len, route_result.expect_ai_progress, route_result.baseline_transcript.len },
         );
+
+        // /stop (and any stop_followup route) cancels active reply streaming
+        // before the confirmation reply is sent, so no stale progress/final
+        // reply trails the stop.
+        if (route_result.stop_followup) {
+            if (input.progress_ctx) |ctx| {
+                if (input.stop_progress_fn) |stop| {
+                    std.debug.print("weixin process({d}): index={d} ai_followup=cancel\n", .{ debugNowMs(), i });
+                    stop(ctx);
+                }
+            }
+        }
 
         const trimmed = std.mem.trim(u8, reply.items, " \t\r\n");
         if (trimmed.len != 0) {
@@ -248,6 +265,7 @@ pub const Poller = struct {
             .send_fn = sendAdapter,
             .progress_ctx = self,
             .start_progress_fn = startProgressAdapter,
+            .stop_progress_fn = stopProgressAdapter,
         });
     }
 
@@ -275,7 +293,7 @@ pub const Poller = struct {
         try reply.appendSlice(allocator, r.text.items);
         if (!r.expect_ai_progress) {
             if (baseline.len != 0) allocator.free(baseline);
-            return .{};
+            return .{ .stop_followup = r.stop_followup };
         }
         return .{
             .expect_ai_progress = true,
@@ -305,6 +323,11 @@ pub const Poller = struct {
     fn startProgressAdapter(ctx: *anyopaque, baseline_transcript: []const u8, to_user_id: []const u8, context_token: []const u8) anyerror!void {
         const self: *Poller = @ptrCast(@alignCast(ctx));
         try self.startAiFollowup(baseline_transcript, to_user_id, context_token);
+    }
+
+    fn stopProgressAdapter(ctx: *anyopaque) void {
+        const self: *Poller = @ptrCast(@alignCast(ctx));
+        self.cancelAiFollowup();
     }
 
     fn getUpdatesLocked(self: *Poller, sync_buf_value: []const u8) !@import("ilink_codec.zig").ParsedUpdates {
@@ -565,6 +588,7 @@ const SendCtx = struct {
 
 const ProgressCtx = struct {
     started: bool = false,
+    stopped: bool = false,
     baseline: std.ArrayListUnmanaged(u8) = .empty,
     to_user_id: std.ArrayListUnmanaged(u8) = .empty,
     context_token: std.ArrayListUnmanaged(u8) = .empty,
@@ -581,6 +605,11 @@ const ProgressCtx = struct {
         try self.baseline.appendSlice(t.allocator, baseline_transcript);
         try self.to_user_id.appendSlice(t.allocator, to_user_id);
         try self.context_token.appendSlice(t.allocator, context_token);
+    }
+
+    fn stop(ctx: *anyopaque) void {
+        const self: *ProgressCtx = @ptrCast(@alignCast(ctx));
+        self.stopped = true;
     }
 };
 
@@ -765,6 +794,43 @@ test "processUpdates routes inbound voice transcript as message text" {
     try t.expectEqualStrings("transcribed command", cap.routed.items[0]);
     try t.expectEqualStrings("u1", cap.routed_to.items[0]);
     try t.expectEqualStrings("voice-ctx", cap.routed_context.items[0]);
+}
+
+test "processUpdates cancels AI followup when a routed message reports stop_followup" {
+    const Route = struct {
+        fn route(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
+            try reply.appendSlice(allocator, "已发送停止指令。");
+            return .{ .stop_followup = true };
+        }
+    };
+    var cap = Captured{};
+    defer cap.deinit();
+    var sctx = SendCtx{ .cap = &cap };
+    var pctx = ProgressCtx{};
+    defer pctx.deinit();
+    var route_ctx: u8 = 0;
+
+    const msgs = [_]types.Message{
+        .{ .from_user_id = "u1", .context_token = "ctx", .item_list = &.{.{ .type = 1, .text = "/stop" }} },
+    };
+
+    try processUpdates(.{
+        .allocator = t.allocator,
+        .owner = "u1",
+        .account_id = "",
+        .messages = &msgs,
+        .route_ctx = &route_ctx,
+        .route_fn = Route.route,
+        .send_ctx = &sctx,
+        .send_fn = SendCtx.send,
+        .progress_ctx = &pctx,
+        .start_progress_fn = ProgressCtx.start,
+        .stop_progress_fn = ProgressCtx.stop,
+    });
+
+    try t.expect(pctx.stopped);
+    try t.expect(!pctx.started);
+    try t.expectEqualStrings("已发送停止指令。", cap.sent.items[0]);
 }
 
 test "poller bootstrap advances cursor without replying to historical messages" {

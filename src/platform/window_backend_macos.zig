@@ -1,6 +1,7 @@
 const std = @import("std");
 const platform_input = @import("input_events.zig");
 const platform_window = @import("window.zig");
+const window_macos = @import("window_macos.zig");
 
 pub const FileDropHandler = *const fn (path: []const u8, x: i32, y: i32) bool;
 const MessageCallback = *const fn (
@@ -145,6 +146,8 @@ var test_message_value: platform_window.WordParam = 0;
 var test_drop_seen: bool = false;
 var test_drop_x: i32 = 0;
 var test_drop_y: i32 = 0;
+var sync_test_message: platform_window.MessageId = 0;
+var sync_test_wparam: platform_window.WordParam = 0;
 
 pub const Window = struct {
     pub const FramebufferSize = struct {
@@ -348,6 +351,20 @@ pub const Window = struct {
     fn drainMessageEvents(self: *Window) void {
         var msg: RawMessageEvent = undefined;
         while (wispterm_macos_window_pop_message_event(self.hwnd, &msg)) {
+            // Synchronous cross-thread sends (window_macos.sendMessage) arrive
+            // tagged as sync_message and carry a *SyncCall in lparam. Run the
+            // real handler here — on the event-loop thread that owns the
+            // threadlocal UI state — then hand the result back to the blocked
+            // caller, emulating Win32's synchronous SendMessage.
+            if (msg.message == window_macos.sync_message) {
+                const call = window_macos.syncCallFromLparam(msg.lparam);
+                var result: platform_window.MessageResult = 0;
+                if (self.on_message) |callback| {
+                    result = callback(call.message, call.wparam, call.lparam) orelse 0;
+                }
+                window_macos.completeSyncCall(call, result);
+                continue;
+            }
             if (self.on_message) |callback| {
                 _ = callback(msg.message, msg.wparam, msg.lparam);
             }
@@ -491,6 +508,56 @@ test "macOS backend drains posted platform messages" {
 
     try std.testing.expect(test_message_seen);
     try std.testing.expectEqual(@as(platform_window.WordParam, 42), test_message_value);
+}
+
+fn syncTestCallback(
+    message: platform_window.MessageId,
+    wparam: platform_window.WordParam,
+    lparam: platform_window.LongParam,
+) ?platform_window.MessageResult {
+    _ = lparam;
+    sync_test_message = message;
+    sync_test_wparam = wparam;
+    return @as(platform_window.MessageResult, @intCast(wparam)) + 1000;
+}
+
+const SyncSendProbe = struct {
+    hwnd: NativeHandle,
+    result: platform_window.MessageResult = 0,
+    finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn run(self: *SyncSendProbe) void {
+        self.result = platform_window.sendMessage(self.hwnd, platform_window.appMessage(0x10), 7, 0);
+        self.finished.store(true, .release);
+    }
+};
+
+test "macOS backend sendMessage runs the handler on the event-loop thread and returns its result" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Sync Send Smoke");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    sync_test_message = 0;
+    sync_test_wparam = 0;
+    window.on_message = syncTestCallback;
+
+    // sendMessage must block the caller until the event-loop thread drains the
+    // queue and runs the handler, so the call has to come from a worker thread
+    // while this thread plays the role of the event loop and pumps.
+    var probe = SyncSendProbe{ .hwnd = window.hwnd };
+    const sender = try std.Thread.spawn(.{}, SyncSendProbe.run, .{&probe});
+    defer sender.join();
+
+    var spins: usize = 0;
+    while (!probe.finished.load(.acquire) and spins < 2000) : (spins += 1) {
+        _ = window.pollEvents();
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+
+    try std.testing.expect(probe.finished.load(.acquire));
+    try std.testing.expectEqual(platform_window.appMessage(0x10), sync_test_message);
+    try std.testing.expectEqual(@as(platform_window.WordParam, 7), sync_test_wparam);
+    try std.testing.expectEqual(@as(platform_window.MessageResult, 1007), probe.result);
 }
 
 fn testFileDropCallback(path: []const u8, x: i32, y: i32) bool {
