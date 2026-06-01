@@ -20,6 +20,7 @@ const ai_chat_composer = @import("ai_chat_composer.zig");
 const ai_chat_skills = @import("ai_chat_skills.zig");
 const ai_chat_types = @import("ai_chat_types.zig");
 const ai_chat_tools = @import("ai_chat_tools.zig");
+const ai_chat_markdown = @import("ai_chat_markdown.zig");
 const weixin_types = @import("weixin/types.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
@@ -2380,138 +2381,12 @@ const visualRowAt = ai_chat_input_text.visualRowAt;
 const byteOffsetForVisualPosition = ai_chat_input_text.byteOffsetForVisualPosition;
 pub const inputWrappedLineCount = ai_chat_input_text.inputWrappedLineCount;
 
-fn appendClipboardSection(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    label: []const u8,
-    text: []const u8,
-) !void {
-    if (out.items.len > 0) try out.appendSlice(allocator, "\r\n\r\n");
-    try out.appendSlice(allocator, label);
-    try out.appendSlice(allocator, ":\r\n");
-    try out.appendSlice(allocator, text);
-}
-
-fn appendMarkdownDocumentHeader(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    title: []const u8,
-    model: []const u8,
-    session_id: []const u8,
-    include_metadata: bool,
-) !void {
-    try out.appendSlice(allocator, "# ");
-    try appendMarkdownInline(allocator, out, if (title.len > 0) title else "WispTerm AI Chat");
-    try out.appendSlice(allocator, "\n\n");
-    if (!include_metadata) return;
-    if (model.len > 0) {
-        try out.appendSlice(allocator, "- Model: `");
-        try appendMarkdownInline(allocator, out, model);
-        try out.appendSlice(allocator, "`\n");
-    }
-    if (session_id.len > 0) {
-        try out.appendSlice(allocator, "- Session: `");
-        try appendMarkdownInline(allocator, out, session_id);
-        try out.appendSlice(allocator, "`\n");
-    }
-    try out.appendSlice(allocator, "\n");
-}
-
-fn appendMarkdownSection(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    label: []const u8,
-    text: []const u8,
-) !void {
-    try out.appendSlice(allocator, "## ");
-    try appendMarkdownInline(allocator, out, label);
-    try out.appendSlice(allocator, "\n\n");
-    try appendMarkdownBody(allocator, out, text);
-    try out.appendSlice(allocator, "\n\n");
-}
-
-fn appendMarkdownCodeSection(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    label: []const u8,
-    text: []const u8,
-) !void {
-    try out.appendSlice(allocator, "## ");
-    try appendMarkdownInline(allocator, out, label);
-    try out.appendSlice(allocator, "\n\n");
-    try appendMarkdownFence(allocator, out, text);
-    try out.appendSlice(allocator, "\n");
-}
-
-fn appendMarkdownInline(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    text: []const u8,
-) !void {
-    var previous_space = false;
-    for (text) |ch| {
-        if (ch == '\r' or ch == '\n' or ch == '\t') {
-            if (!previous_space) {
-                try out.append(allocator, ' ');
-                previous_space = true;
-            }
-            continue;
-        }
-        try out.append(allocator, ch);
-        previous_space = ch == ' ';
-    }
-}
-
-fn appendMarkdownBody(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    text: []const u8,
-) !void {
-    if (text.len == 0) {
-        try out.appendSlice(allocator, "_(empty)_\n");
-        return;
-    }
-    try out.appendSlice(allocator, text);
-    if (text[text.len - 1] != '\n') try out.append(allocator, '\n');
-}
-
-fn appendMarkdownFence(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    text: []const u8,
-) !void {
-    const fence_len = @max(@as(usize, 3), longestBacktickRun(text) + 1);
-    try appendRepeatedByte(allocator, out, '`', fence_len);
-    try out.appendSlice(allocator, "text\n");
-    try out.appendSlice(allocator, text);
-    if (text.len == 0 or text[text.len - 1] != '\n') try out.append(allocator, '\n');
-    try appendRepeatedByte(allocator, out, '`', fence_len);
-    try out.appendSlice(allocator, "\n");
-}
-
-fn appendRepeatedByte(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    byte: u8,
-    count: usize,
-) !void {
-    var i: usize = 0;
-    while (i < count) : (i += 1) try out.append(allocator, byte);
-}
-
-fn longestBacktickRun(text: []const u8) usize {
-    var longest: usize = 0;
-    var current: usize = 0;
-    for (text) |ch| {
-        if (ch == '`') {
-            current += 1;
-            longest = @max(longest, current);
-        } else {
-            current = 0;
-        }
-    }
-    return longest;
-}
+// Markdown export helpers — defined in ai_chat_markdown.zig (pure leaf, no Session).
+const appendClipboardSection = ai_chat_markdown.appendClipboardSection;
+const appendMarkdownDocumentHeader = ai_chat_markdown.appendMarkdownDocumentHeader;
+const appendMarkdownSection = ai_chat_markdown.appendMarkdownSection;
+const appendMarkdownCodeSection = ai_chat_markdown.appendMarkdownCodeSection;
+const appendMarkdownBody = ai_chat_markdown.appendMarkdownBody;
 
 fn latestAssistantContent(messages: []const Message) ?[]const u8 {
     var i = messages.len;
@@ -2972,7 +2847,7 @@ pub fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const
 // adapters (toolApprove, toolCancelled, toolContextFromRequest, executeToolCall)
 // have moved to ai_chat_request.zig.
 
-// Protocol aliases still referenced internally (e.g. parseApiStreamResponse, tests).
+// Protocol aliases still referenced internally (e.g. in tests).
 const apiEndpoint = ai_chat_protocol.apiEndpoint;
 const chatEndpoint = ai_chat_protocol.chatEndpoint;
 const isDeepSeekBaseUrl = ai_chat_protocol.isDeepSeekBaseUrl;
@@ -3016,10 +2891,6 @@ const parseApiResponse = ai_chat_protocol.parseApiResponse;
 const parseApiErrorResult = ai_chat_protocol.parseApiErrorResult;
 const parseApiUsage = ai_chat_protocol.parseApiUsage;
 const jsonStringValue = ai_chat_protocol.jsonStringValue;
-const appendResponsesOutputText = ai_chat_protocol.appendResponsesOutputText;
-const appendResponsesReasoningText = ai_chat_protocol.appendResponsesReasoningText;
-pub const parseApiStreamResponse = ai_chat_protocol.parseApiStreamResponse;
-
 pub fn applyApiStreamLineToSession(
     allocator: std.mem.Allocator,
     session: *Session,

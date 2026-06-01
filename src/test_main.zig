@@ -600,6 +600,7 @@ comptime {
     _ = @import("ai_chat_skills.zig");
     _ = @import("ai_chat_types.zig");
     _ = @import("ai_chat_protocol.zig");
+    _ = @import("ai_chat_markdown.zig");
     _ = @import("agent_history.zig");
     _ = @import("ai_chat_composer_layout.zig");
     _ = @import("ai_chat_input_text.zig");
