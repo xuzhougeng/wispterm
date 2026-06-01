@@ -4,6 +4,7 @@ const std = @import("std");
 const markdown_preview = @import("markdown_preview.zig");
 const preview_source = @import("input/preview_source.zig");
 const tab = @import("appwindow/tab.zig");
+const active_tab_state = @import("appwindow/active_tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 440;
 pub const MIN_WIDTH: f32 = 280;
@@ -68,7 +69,7 @@ pub fn width() f32 {
 
 pub fn isVisibleForActiveTab() bool {
     const owner = g_owner_tab orelse return false;
-    return g_visible and owner == tab.g_active_tab;
+    return g_visible and owner == active_tab_state.g_active_tab;
 }
 
 pub fn onTabClosed(closed_idx: usize) void {
@@ -104,7 +105,7 @@ pub fn setWidth(w: f32, window_width: f32) bool {
 
 pub fn open(kind: markdown_preview.Kind, preview_title: []const u8, preview_path: []const u8, source_text: []const u8) void {
     g_preview_request_id +%= 1;
-    applyContentForOwner(tab.g_active_tab, kind, preview_title, preview_path, source_text, .ready);
+    applyContentForOwner(active_tab_state.g_active_tab, kind, preview_title, preview_path, source_text, .ready);
 }
 
 fn applyContentForOwner(owner_tab: usize, kind: markdown_preview.Kind, preview_title: []const u8, preview_path: []const u8, source_text: []const u8, status: LoadStatus) void {
@@ -242,7 +243,7 @@ pub fn beginAsyncLoad(kind: markdown_preview.Kind, preview_title: []const u8, pr
 fn beginAsyncLoadWithReader(kind: markdown_preview.Kind, preview_title: []const u8, preview_path: []const u8, source_kind: PreviewSourceKind, read_fn: PreviewReadFn) bool {
     g_preview_request_id +%= 1;
     const request_id = g_preview_request_id;
-    const owner_tab = tab.g_active_tab;
+    const owner_tab = active_tab_state.g_active_tab;
 
     if (preview_path.len > 512) {
         applyContentForOwner(owner_tab, kind, preview_title, preview_path, FAILED_SOURCE, .failed);
@@ -320,7 +321,7 @@ pub fn tickAsync() bool {
             const result_source = if (job.status == .too_large) TOO_LARGE_SOURCE else FAILED_SOURCE;
             applyContentForOwner(job.owner_tab, job.kind, job.title_buf[0..job.title_len], job.path_buf[0..job.path_len], result_source, job.status);
         }
-        changed = changed or job.owner_tab == tab.g_active_tab;
+        changed = changed or job.owner_tab == active_tab_state.g_active_tab;
     }
     return changed;
 }
@@ -398,24 +399,24 @@ fn resetAsyncForTest() void {
 test "markdown_preview_panel: visible only on owning active tab" {
     const saved_visible = g_visible;
     const saved_owner = g_owner_tab;
-    const saved_active_tab = tab.g_active_tab;
+    const saved_active_tab = active_tab_state.g_active_tab;
     defer {
         g_visible = saved_visible;
         g_owner_tab = saved_owner;
-        tab.g_active_tab = saved_active_tab;
+        active_tab_state.g_active_tab = saved_active_tab;
     }
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     open(.markdown, "README.md", "README.md", "# Title\n");
 
     try std.testing.expect(isVisibleForActiveTab());
     try std.testing.expectEqual(DEFAULT_WIDTH, width());
 
-    tab.g_active_tab = 1;
+    active_tab_state.g_active_tab = 1;
     try std.testing.expect(!isVisibleForActiveTab());
     try std.testing.expectEqual(@as(f32, 0), width());
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     try std.testing.expect(isVisibleForActiveTab());
 }
 
@@ -478,14 +479,14 @@ fn tickPreviewJobsUntilIdleForTest() void {
 }
 
 test "markdown_preview_panel: async load shows loading then applies content" {
-    const saved_active_tab = tab.g_active_tab;
+    const saved_active_tab = active_tab_state.g_active_tab;
     resetAsyncForTest();
     defer {
         resetAsyncForTest();
-        tab.g_active_tab = saved_active_tab;
+        active_tab_state.g_active_tab = saved_active_tab;
     }
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     try std.testing.expect(beginAsyncLoadForTest(.markdown, "README.md", "README.md", .local, previewReadOkForTest));
     try std.testing.expectEqual(LoadStatus.loading, g_load_status);
     try std.testing.expectEqualStrings("Loading preview...", source());
@@ -498,14 +499,14 @@ test "markdown_preview_panel: async load shows loading then applies content" {
 }
 
 test "markdown_preview_panel: stale async load does not overwrite newer request" {
-    const saved_active_tab = tab.g_active_tab;
+    const saved_active_tab = active_tab_state.g_active_tab;
     resetAsyncForTest();
     defer {
         resetAsyncForTest();
-        tab.g_active_tab = saved_active_tab;
+        active_tab_state.g_active_tab = saved_active_tab;
     }
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     try std.testing.expect(beginAsyncLoadForTest(.markdown, "old.md", "old.md", .local, previewReadSlowOkForTest));
     try std.testing.expect(beginAsyncLoadForTest(.markdown, "new.md", "new.md", .local, previewReadOkForTest));
 

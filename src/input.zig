@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const AppWindow = @import("AppWindow.zig");
 const tab = AppWindow.tab;
+const active_tab_state = @import("appwindow/active_tab.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const overlays = AppWindow.overlays;
@@ -1052,9 +1053,9 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
             .next => AppWindow.gotoSplit(.next_wrapped),
         },
         .equalize_splits => AppWindow.equalizeSplits(),
-        .next_tab => AppWindow.switchTab((tab.g_active_tab + 1) % tab.g_tab_count),
+        .next_tab => AppWindow.switchTab((active_tab_state.g_active_tab + 1) % tab.g_tab_count),
         .previous_tab => {
-            if (tab.g_active_tab > 0) AppWindow.switchTab(tab.g_active_tab - 1) else AppWindow.switchTab(tab.g_tab_count - 1);
+            if (active_tab_state.g_active_tab > 0) AppWindow.switchTab(active_tab_state.g_active_tab - 1) else AppWindow.switchTab(tab.g_tab_count - 1);
         },
         .open_config => {
             std.debug.print("[keybind] open_config pressed\n", .{});

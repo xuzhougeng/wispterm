@@ -29,6 +29,10 @@ test {
     _ = @import("config.zig");
     _ = @import("ai_agent_config.zig");
     _ = @import("ssh_connection.zig");
+    _ = @import("appwindow/active_tab.zig");
+    _ = @import("scp.zig");
+    _ = @import("file_backend.zig");
+    _ = @import("file_explorer.zig");
     _ = @import("i18n.zig");
     _ = @import("markdown_text.zig");
     _ = @import("ai_chat_composer_layout.zig");

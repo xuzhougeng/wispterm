@@ -14,6 +14,7 @@ const session_persist = @import("../session_persist.zig");
 const ai_chat = @import("../ai_chat.zig");
 const agent_history = @import("../agent_history.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
+const active_tab_state = @import("active_tab.zig");
 
 const CursorStyle = Config.CursorStyle;
 const Selection = Surface.Selection;
@@ -103,7 +104,6 @@ pub const TabState = struct {
 
 pub threadlocal var g_tabs: [MAX_TABS]?*TabState = .{null} ** MAX_TABS;
 pub threadlocal var g_tab_count: usize = 0;
-pub threadlocal var g_active_tab: usize = 0;
 
 // Shell command for spawning new tabs (set once at startup from config)
 pub threadlocal var g_shell_cmd_buf: platform_pty_command.CommandLineBuffer = undefined;
@@ -165,18 +165,18 @@ pub fn getShellCmd() platform_pty_command.CommandLine {
 
 pub fn activeTab() ?*TabState {
     if (g_tab_count == 0) return null;
-    return g_tabs[g_active_tab];
+    return g_tabs[active_tab_state.g_active_tab];
 }
 
 pub fn activeSurface() ?*Surface {
     if (g_tab_count == 0) return null;
-    const t = g_tabs[g_active_tab] orelse return null;
+    const t = g_tabs[active_tab_state.g_active_tab] orelse return null;
     return t.focusedSurface();
 }
 
 pub fn activeAiChat() ?*ai_chat.Session {
     if (g_tab_count == 0) return null;
-    const t = g_tabs[g_active_tab] orelse return null;
+    const t = g_tabs[active_tab_state.g_active_tab] orelse return null;
     if (t.kind != .ai_chat) return null;
     return t.ai_chat_session;
 }
@@ -253,7 +253,7 @@ fn splitSshCommand(
 /// Get the active tab's focused surface's selection
 pub fn activeSelection() *Selection {
     if (g_tab_count > 0) {
-        if (g_tabs[g_active_tab]) |t| {
+        if (g_tabs[active_tab_state.g_active_tab]) |t| {
             if (t.kind != .terminal) {
                 const S = struct {
                     var dummy: Selection = .{};
@@ -273,7 +273,7 @@ pub fn activeSelection() *Selection {
 
 pub fn isActiveTabTerminal() bool {
     if (g_tab_count == 0) return false;
-    const t = g_tabs[g_active_tab] orelse return false;
+    const t = g_tabs[active_tab_state.g_active_tab] orelse return false;
     return t.kind == .terminal;
 }
 
@@ -326,10 +326,10 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     t.copilot_session = null;
 
     g_tabs[g_tab_count] = t;
-    g_active_tab = g_tab_count;
+    active_tab_state.g_active_tab = g_tab_count;
     g_tab_count += 1;
 
-    std.debug.print("New tab spawned (count={}), active: {}\n", .{ g_tab_count, g_active_tab });
+    std.debug.print("New tab spawned (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
     return true;
 }
 
@@ -379,10 +379,10 @@ pub fn spawnAiChatTab(
     t.copilot_session = null;
 
     g_tabs[g_tab_count] = t;
-    g_active_tab = g_tab_count;
+    active_tab_state.g_active_tab = g_tab_count;
     g_tab_count += 1;
 
-    std.debug.print("New AI Chat tab spawned (count={}), active: {}\n", .{ g_tab_count, g_active_tab });
+    std.debug.print("New AI Chat tab spawned (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
     return true;
 }
 
@@ -407,10 +407,10 @@ pub fn spawnAiChatTabFromHistoryRecord(allocator: std.mem.Allocator, record: age
     t.copilot_session = null;
 
     g_tabs[g_tab_count] = t;
-    g_active_tab = g_tab_count;
+    active_tab_state.g_active_tab = g_tab_count;
     g_tab_count += 1;
 
-    std.debug.print("Restored AI Chat tab from history (count={}), active: {}\n", .{ g_tab_count, g_active_tab });
+    std.debug.print("Restored AI Chat tab from history (count={}), active: {}\n", .{ g_tab_count, active_tab_state.g_active_tab });
     return true;
 }
 
@@ -435,12 +435,12 @@ pub fn closeTab(idx: usize, allocator: std.mem.Allocator) void {
     g_tab_close_opacity[g_tab_count - 1] = 0;
     g_tab_count -= 1;
 
-    if (g_active_tab == idx) {
-        if (g_active_tab >= g_tab_count) {
-            g_active_tab = g_tab_count - 1;
+    if (active_tab_state.g_active_tab == idx) {
+        if (active_tab_state.g_active_tab >= g_tab_count) {
+            active_tab_state.g_active_tab = g_tab_count - 1;
         }
-    } else if (g_active_tab > idx) {
-        g_active_tab -= 1;
+    } else if (active_tab_state.g_active_tab > idx) {
+        active_tab_state.g_active_tab -= 1;
     }
 }
 
@@ -471,7 +471,7 @@ fn setVisualStateAt(idx: usize, state: TabVisualState) void {
 }
 
 /// Move a tab from one index to another.
-/// Keeps g_active_tab attached to the same logical tab after the move.
+/// Keeps active_tab_state.g_active_tab attached to the same logical tab after the move.
 pub fn reorderTab(from_idx: usize, to_idx: usize) bool {
     if (g_tab_count <= 1) return false;
     if (from_idx >= g_tab_count or to_idx >= g_tab_count) return false;
@@ -497,12 +497,12 @@ pub fn reorderTab(from_idx: usize, to_idx: usize) bool {
     g_tabs[to_idx] = moved_tab;
     setVisualStateAt(to_idx, moved_visual);
 
-    if (g_active_tab == from_idx) {
-        g_active_tab = to_idx;
-    } else if (from_idx < to_idx and g_active_tab > from_idx and g_active_tab <= to_idx) {
-        g_active_tab -= 1;
-    } else if (from_idx > to_idx and g_active_tab >= to_idx and g_active_tab < from_idx) {
-        g_active_tab += 1;
+    if (active_tab_state.g_active_tab == from_idx) {
+        active_tab_state.g_active_tab = to_idx;
+    } else if (from_idx < to_idx and active_tab_state.g_active_tab > from_idx and active_tab_state.g_active_tab <= to_idx) {
+        active_tab_state.g_active_tab -= 1;
+    } else if (from_idx > to_idx and active_tab_state.g_active_tab >= to_idx and active_tab_state.g_active_tab < from_idx) {
+        active_tab_state.g_active_tab += 1;
     }
 
     return true;
@@ -512,7 +512,7 @@ pub fn reorderTab(from_idx: usize, to_idx: usize) bool {
 /// The caller is responsible for clearing selection/divider/resize state and setting rebuild flags.
 pub fn switchTab(idx: usize) void {
     if (idx >= g_tab_count) return;
-    g_active_tab = idx;
+    active_tab_state.g_active_tab = idx;
     // Clear bell indicator and force rebuild for surfaces in this tab
     if (g_tabs[idx]) |t| {
         if (t.kind != .terminal) return;
@@ -700,7 +700,7 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
     const t = activeTab() orelse return .no_op;
     if (t.kind == .ai_chat) {
         if (g_tab_count <= 1) return .close_window;
-        closeTab(g_active_tab, allocator);
+        closeTab(active_tab_state.g_active_tab, allocator);
         return .closed_tab;
     }
 
@@ -708,7 +708,7 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
         if (g_tab_count <= 1) {
             return .close_window;
         } else {
-            closeTab(g_active_tab, allocator);
+            closeTab(active_tab_state.g_active_tab, allocator);
             return .closed_tab;
         }
     }
@@ -728,7 +728,7 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
         if (g_tab_count <= 1) {
             return .close_window;
         } else {
-            closeTab(g_active_tab, allocator);
+            closeTab(active_tab_state.g_active_tab, allocator);
             return .closed_tab;
         }
     }
@@ -1234,7 +1234,7 @@ pub fn restoreTab(
     t.copilot_session = null;
 
     g_tabs[g_tab_count] = t;
-    g_active_tab = g_tab_count;
+    active_tab_state.g_active_tab = g_tab_count;
     g_tab_count += 1;
     return true;
 }
@@ -1284,7 +1284,7 @@ pub fn collectSessionSnapshot(arena: *std.heap.ArenaAllocator) !session_persist.
 
     return .{
         .version = session_persist.SCHEMA_VERSION,
-        .active_tab = @intCast(@min(g_active_tab, written - 1)),
+        .active_tab = @intCast(@min(active_tab_state.g_active_tab, written - 1)),
         .tabs = tabs[0..written],
     };
 }
@@ -1355,7 +1355,7 @@ fn resetTestTabGlobals() void {
         g_tab_text_y_end[idx] = 0;
     }
     g_tab_count = 0;
-    g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     g_tab_close_pressed = null;
     g_last_frame_time_ms = 0;
     g_tab_rename_active = false;
@@ -1425,7 +1425,7 @@ test "tab: reorder moves active tab forward" {
     g_tabs[1] = &b;
     g_tabs[2] = &c;
     g_tab_count = 3;
-    g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     g_tab_close_opacity[0] = 0.1;
     g_tab_close_opacity[1] = 0.2;
     g_tab_close_opacity[2] = 0.3;
@@ -1447,7 +1447,7 @@ test "tab: reorder moves active tab forward" {
     try std.testing.expect(g_tabs[0].? == &b);
     try std.testing.expect(g_tabs[1].? == &c);
     try std.testing.expect(g_tabs[2].? == &a);
-    try std.testing.expectEqual(@as(usize, 2), g_active_tab);
+    try std.testing.expectEqual(@as(usize, 2), active_tab_state.g_active_tab);
     try std.testing.expectEqual(@as(f32, 0.2), g_tab_close_opacity[0]);
     try std.testing.expectEqual(@as(f32, 0.3), g_tab_close_opacity[1]);
     try std.testing.expectEqual(@as(f32, 0.1), g_tab_close_opacity[2]);
@@ -1489,14 +1489,14 @@ test "tab: reorder moves active tab backward" {
     g_tabs[1] = &b;
     g_tabs[2] = &c;
     g_tab_count = 3;
-    g_active_tab = 2;
+    active_tab_state.g_active_tab = 2;
 
     try std.testing.expect(reorderTab(2, 0));
 
     try std.testing.expect(g_tabs[0].? == &c);
     try std.testing.expect(g_tabs[1].? == &a);
     try std.testing.expect(g_tabs[2].? == &b);
-    try std.testing.expectEqual(@as(usize, 0), g_active_tab);
+    try std.testing.expectEqual(@as(usize, 0), active_tab_state.g_active_tab);
 }
 
 test "tab: reorder preserves selected logical tab when another tab moves" {
@@ -1508,15 +1508,15 @@ test "tab: reorder preserves selected logical tab when another tab moves" {
     g_tabs[1] = &b;
     g_tabs[2] = &c;
     g_tab_count = 3;
-    g_active_tab = 1;
+    active_tab_state.g_active_tab = 1;
 
     try std.testing.expect(reorderTab(0, 2));
-    try std.testing.expect(g_tabs[g_active_tab].? == &b);
-    try std.testing.expectEqual(@as(usize, 0), g_active_tab);
+    try std.testing.expect(g_tabs[active_tab_state.g_active_tab].? == &b);
+    try std.testing.expectEqual(@as(usize, 0), active_tab_state.g_active_tab);
 
     try std.testing.expect(reorderTab(2, 0));
-    try std.testing.expect(g_tabs[g_active_tab].? == &b);
-    try std.testing.expectEqual(@as(usize, 1), g_active_tab);
+    try std.testing.expect(g_tabs[active_tab_state.g_active_tab].? == &b);
+    try std.testing.expectEqual(@as(usize, 1), active_tab_state.g_active_tab);
 }
 
 test "tab: reorder rejects invalid and no-op moves" {
@@ -1524,11 +1524,11 @@ test "tab: reorder rejects invalid and no-op moves" {
     var a = makeTestTabState();
     g_tabs[0] = &a;
     g_tab_count = 1;
-    g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
 
     try std.testing.expect(!reorderTab(0, 0));
     try std.testing.expect(!reorderTab(0, 1));
     try std.testing.expect(!reorderTab(1, 0));
     try std.testing.expect(g_tabs[0].? == &a);
-    try std.testing.expectEqual(@as(usize, 0), g_active_tab);
+    try std.testing.expectEqual(@as(usize, 0), active_tab_state.g_active_tab);
 }

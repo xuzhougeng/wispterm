@@ -11,6 +11,7 @@ const AppWindow = @import("../AppWindow.zig");
 const ui_pipeline = AppWindow.ui_pipeline;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
+const active_tab_state = @import("../appwindow/active_tab.zig");
 const cell_renderer = AppWindow.cell_renderer;
 const gl_init = AppWindow.gpu.gl_init;
 const font_backend = @import("../platform/font_backend.zig");
@@ -547,7 +548,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
     tab.g_last_frame_time_ms = now_ms;
 
     for (0..num_tabs) |tab_idx| {
-        const is_active = (tab_idx == tab.g_active_tab);
+        const is_active = (tab_idx == active_tab_state.g_active_tab);
 
         // Check if mouse is hovering this tab
         const tab_hovered = mouseInTitlebarRange(titlebar_h, cursor_x, cursor_x + tab_w);
@@ -924,7 +925,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         }
 
         // Left border — skip when last tab is active (no visual break needed)
-        if (tab.g_active_tab != num_tabs - 1) {
+        if (active_tab_state.g_active_tab != num_tabs - 1) {
             gl_init.renderQuad(cursor_x, tb_top, bdr, titlebar_h, border_color);
         }
 
@@ -1042,7 +1043,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         if (row_top_px >= window_height) break;
         const row_h = @min(row_h_full, window_height - row_top_px);
         const row_y = window_height - row_top_px - row_h;
-        const is_active = tab_idx == tab.g_active_tab;
+        const is_active = tab_idx == active_tab_state.g_active_tab;
 
         const row_hovered = mouseInRect(0, row_top_px, sidebar_w, row_h);
 

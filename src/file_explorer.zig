@@ -11,7 +11,7 @@ const scp = @import("scp.zig");
 const file_backend = @import("file_backend.zig");
 const platform_local_path = @import("platform/local_path.zig");
 const ui_perf = @import("ui_perf.zig");
-const tab = @import("appwindow/tab.zig");
+const active_tab_state = @import("appwindow/active_tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 240;
 pub const MIN_WIDTH: f32 = 160;
@@ -193,12 +193,12 @@ pub fn width() f32 {
 
 pub fn isVisibleForActiveTab() bool {
     const owner = g_owner_tab orelse return false;
-    return g_visible and owner == tab.g_active_tab;
+    return g_visible and owner == active_tab_state.g_active_tab;
 }
 
 pub fn openForActiveTab() void {
     g_visible = true;
-    g_owner_tab = tab.g_active_tab;
+    g_owner_tab = active_tab_state.g_active_tab;
 }
 
 pub fn close() void {
@@ -1773,25 +1773,25 @@ test "file_explorer: visible only on owning active tab" {
     const saved_visible = g_visible;
     const saved_owner = g_owner_tab;
     const saved_focused = g_focused;
-    const saved_active_tab = tab.g_active_tab;
+    const saved_active_tab = active_tab_state.g_active_tab;
     defer {
         g_visible = saved_visible;
         g_owner_tab = saved_owner;
         g_focused = saved_focused;
-        tab.g_active_tab = saved_active_tab;
+        active_tab_state.g_active_tab = saved_active_tab;
     }
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     openForActiveTab();
 
     try std.testing.expect(isVisibleForActiveTab());
     try std.testing.expectEqual(DEFAULT_WIDTH, width());
 
-    tab.g_active_tab = 1;
+    active_tab_state.g_active_tab = 1;
     try std.testing.expect(!isVisibleForActiveTab());
     try std.testing.expectEqual(@as(f32, 0), width());
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     try std.testing.expect(isVisibleForActiveTab());
 }
 
@@ -1799,12 +1799,12 @@ test "file_explorer: owner follows tab close and reorder" {
     const saved_visible = g_visible;
     const saved_owner = g_owner_tab;
     const saved_focused = g_focused;
-    const saved_active_tab = tab.g_active_tab;
+    const saved_active_tab = active_tab_state.g_active_tab;
     defer {
         g_visible = saved_visible;
         g_owner_tab = saved_owner;
         g_focused = saved_focused;
-        tab.g_active_tab = saved_active_tab;
+        active_tab_state.g_active_tab = saved_active_tab;
     }
 
     g_visible = true;
@@ -1812,7 +1812,7 @@ test "file_explorer: owner follows tab close and reorder" {
     onTabClosed(1);
     try std.testing.expectEqual(@as(?usize, 1), g_owner_tab);
 
-    tab.g_active_tab = 1;
+    active_tab_state.g_active_tab = 1;
     try std.testing.expect(isVisibleForActiveTab());
 
     onTabReordered(1, 3);
