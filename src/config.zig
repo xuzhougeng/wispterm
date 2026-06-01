@@ -1532,6 +1532,10 @@ const default_config_template =
     \\# fullscreen = false
     \\# quake-mode = true   # toggle_quake controls the top drop-down window
     \\
+    \\# Restore the previous tab/split layout (and working dirs) on next launch.
+    \\# Saved to session.json on close; off by default (file neither read nor written).
+    \\# restore-tabs-on-startup = false
+    \\
     \\# Keyboard shortcuts
     \\# Syntax: keybind = [global:]modifier+key=action
     \\# keybind = ctrl+shift+p=toggle_command_palette

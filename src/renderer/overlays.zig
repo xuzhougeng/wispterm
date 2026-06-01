@@ -3421,7 +3421,7 @@ const SETTINGS_THEME_PRESETS = [_]ThemePreset{
 
 const SETTINGS_THEME_ROW = 1;
 const SETTINGS_CONTROL_ROW_START = SETTINGS_THEME_ROW + 1;
-const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 9;
+const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 10;
 
 const SettingsAction = enum {
     font_size_minus,
@@ -3434,6 +3434,7 @@ const SettingsAction = enum {
     cycle_default_ai_profile,
     toggle_weixin_direct,
     cycle_language,
+    toggle_restore_tabs,
     open_raw_config,
     close,
 };
@@ -3574,8 +3575,9 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
         4 => .cycle_default_ai_profile,
         5 => .toggle_weixin_direct,
         6 => .cycle_language,
-        7 => .open_raw_config,
-        8 => .close,
+        7 => .toggle_restore_tabs,
+        8 => .open_raw_config,
+        9 => .close,
         else => null,
     };
 }
@@ -3609,6 +3611,7 @@ fn executeSettingsAction(action: SettingsAction) void {
         },
         .toggle_weixin_direct => Config.setConfigValue(allocator, "weixin-direct-enabled", if (cfg.@"weixin-direct-enabled") "false" else "true") catch {},
         .cycle_language => Config.setConfigValue(allocator, "language", nextLanguageSetting(cfg.language)) catch {},
+        .toggle_restore_tabs => Config.setConfigValue(allocator, "restore-tabs-on-startup", if (cfg.@"restore-tabs-on-startup") "false" else "true") catch {},
         .open_raw_config => Config.openConfigInEditor(allocator),
         .close => settingsPageClose(),
     }
@@ -3633,8 +3636,9 @@ fn runSettingsFocusPrimary() void {
         SETTINGS_CONTROL_ROW_START + 4 => executeSettingsAction(.cycle_default_ai_profile),
         SETTINGS_CONTROL_ROW_START + 5 => executeSettingsAction(.toggle_weixin_direct),
         SETTINGS_CONTROL_ROW_START + 6 => executeSettingsAction(.cycle_language),
-        SETTINGS_CONTROL_ROW_START + 7 => executeSettingsAction(.open_raw_config),
-        SETTINGS_CONTROL_ROW_START + 8 => executeSettingsAction(.close),
+        SETTINGS_CONTROL_ROW_START + 7 => executeSettingsAction(.toggle_restore_tabs),
+        SETTINGS_CONTROL_ROW_START + 8 => executeSettingsAction(.open_raw_config),
+        SETTINGS_CONTROL_ROW_START + 9 => executeSettingsAction(.close),
         else => {},
     }
 }
@@ -3854,8 +3858,9 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, i18n.s().settings_default_ai, ai_default_value, ai_default_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, i18n.s().settings_weixin_direct, boolText(cfg.@"weixin-direct-enabled"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 8);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_restore_tabs, boolText(cfg.@"restore-tabs-on-startup"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 8);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 9);
 }
 
 // ============================================================================
