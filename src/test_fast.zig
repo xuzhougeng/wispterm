@@ -27,6 +27,7 @@ test {
     _ = @import("command_palette_model.zig");
     _ = @import("command_center_state.zig");
     _ = @import("config.zig");
+    _ = @import("i18n.zig");
     _ = @import("markdown_text.zig");
     _ = @import("ai_chat_composer_layout.zig");
     _ = @import("ai_chat_input_text.zig");

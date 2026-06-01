@@ -1,0 +1,293 @@
+//! UI 文案国际化（i18n）核心：扁平字段目录 + 当前语言。
+//! 设计见 docs/superpowers/specs/2026-06-01-i18n-infrastructure-design.md
+const std = @import("std");
+const builtin = @import("builtin");
+const command_center_state = @import("command_center_state.zig");
+const CommandAction = command_center_state.CommandAction;
+
+pub const Lang = enum { en, zh_CN };
+
+/// 调用点直接替换的扁平文案。字段无默认值 → 任一 locale 漏填某字段编译期报错，
+/// 这是「方案 A」comptime 完整性保证的落地（无需手写 assert）。
+pub const Strings = struct {
+    /// 预留给未来的语言选择 UI；当前仅用于演示 catalog 与测试，生产代码暂未读取。
+    language_name: []const u8,
+    toast_wechat_not_connected: []const u8,
+    toast_wechat_poller_started: []const u8,
+    toast_wechat_poller_stopped: []const u8,
+    toast_wechat_direct_disabled: []const u8,
+};
+
+const en = Strings{
+    .language_name = "English",
+    .toast_wechat_not_connected = "WeChat not connected",
+    .toast_wechat_poller_started = "WeChat poller started",
+    .toast_wechat_poller_stopped = "WeChat poller stopped",
+    .toast_wechat_direct_disabled = "WeChat direct disabled",
+};
+
+const zh_CN = Strings{
+    .language_name = "中文",
+    .toast_wechat_not_connected = "微信未连接",
+    .toast_wechat_poller_started = "微信轮询已启动",
+    .toast_wechat_poller_stopped = "微信轮询已停止",
+    .toast_wechat_direct_disabled = "微信直连已禁用",
+};
+
+// Set once at startup before any UI thread exists (see main.zig startup wiring).
+// Not thread-safe; do not call setLang after App.init.
+var current: *const Strings = &en;
+var active_lang: Lang = .en;
+
+/// 当前语言的文案表。调用点：`i18n.s().language_name`。
+pub fn s() *const Strings {
+    return current;
+}
+
+pub fn lang() Lang {
+    return active_lang;
+}
+
+pub fn setLang(l: Lang) void {
+    active_lang = l;
+    current = switch (l) {
+        .en => &en,
+        .zh_CN => &zh_CN,
+    };
+}
+
+/// config `language` 取值。auto = 跟随系统 locale。
+pub const LanguageSetting = enum {
+    auto,
+    en,
+    zh_CN,
+
+    /// 解析 config 值；大小写/分隔符兼容；未知返回 null。
+    pub fn parse(value: []const u8) ?LanguageSetting {
+        var buf: [16]u8 = undefined;
+        if (value.len > buf.len) return null;
+        for (value, 0..) |c, i| {
+            buf[i] = switch (c) {
+                'A'...'Z' => c + 32, // tolower
+                '_' => '-',
+                else => c,
+            };
+        }
+        const v = buf[0..value.len];
+        if (std.mem.eql(u8, v, "auto")) return .auto;
+        if (std.mem.eql(u8, v, "en")) return .en;
+        if (std.mem.eql(u8, v, "zh-cn") or std.mem.eql(u8, v, "zh")) return .zh_CN;
+        return null;
+    }
+};
+
+/// 把 locale 标签（如 "zh_CN.UTF-8" / "en_US" / "zh"）映射到支持的语言。
+/// 以 "zh" 开头（不分大小写）→ zh_CN；其余 → en。
+/// 注意：这里对 `zh*` 是宽松前缀匹配（自动检测应尽量识别中文，含 zh_TW），
+/// 与 `LanguageSetting.parse` 的严格匹配（显式 `zh-TW` 视为非法并告警）有意不同。
+pub fn langFromLocaleTag(tag: []const u8) Lang {
+    if (tag.len >= 2) {
+        const a = tag[0];
+        const b = tag[1];
+        const la = if (a >= 'A' and a <= 'Z') a + 32 else a;
+        const lb = if (b >= 'A' and b <= 'Z') b + 32 else b;
+        if (la == 'z' and lb == 'h') return .zh_CN;
+    }
+    return .en;
+}
+
+// Windows 在 env 缺失 LANG/LC_* 时，从用户界面语言（LANGID）兜底。
+// 主语言号 = LANGID & 0x3FF；LANG_CHINESE = 0x04。仅由 Windows 构建验证，
+// 原生（Linux）测试不覆盖此分支。
+extern "kernel32" fn GetUserDefaultUILanguage() callconv(.winapi) u16;
+
+/// 读系统 locale 环境变量（LC_ALL → LC_MESSAGES → LANG），映射到语言。
+/// 都读不到时：Windows 回落到 GetUserDefaultUILanguage，其余平台 → en。
+/// 调用方提供 allocator；本函数内部释放临时串。
+pub fn detectSystemLang(allocator: std.mem.Allocator) Lang {
+    const vars = [_][]const u8{ "LC_ALL", "LC_MESSAGES", "LANG" };
+    for (vars) |name| {
+        const val = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+            error.OutOfMemory => return .en, // allocator exhausted; safe fallback
+            else => continue, // missing var / invalid encoding → try next
+        };
+        defer allocator.free(val);
+        if (val.len == 0) continue;
+        return langFromLocaleTag(val);
+    }
+    if (builtin.os.tag == .windows) {
+        if ((GetUserDefaultUILanguage() & 0x3ff) == 0x04) return .zh_CN; // LANG_CHINESE
+    }
+    return .en;
+}
+
+/// 按优先级解析最终语言：config 显式值优先；auto 跟随系统 locale；
+/// 任何不可解析情形回退 en。
+pub fn resolve(allocator: std.mem.Allocator, setting: LanguageSetting) Lang {
+    return switch (setting) {
+        .en => .en,
+        .zh_CN => .zh_CN,
+        .auto => detectSystemLang(allocator),
+    };
+}
+
+/// 启动时调用一次：解析 config 的 language 设定并设置当前语言。
+pub fn applyConfig(allocator: std.mem.Allocator, setting: LanguageSetting) void {
+    setLang(resolve(allocator, setting));
+}
+
+/// 命令中心标题的本地化覆盖。en（及未来源语言）返回 null，调用点用英文原表值。
+pub fn commandTitle(action: CommandAction) ?[]const u8 {
+    if (active_lang != .zh_CN) return null;
+    return switch (action) {
+        .new_tab => "新建会话",
+        .new_agent => "新建智能体",
+        .manage_ai_profiles => "管理 AI 配置",
+        .select_agent_history => "选择智能体历史",
+        .split_right => "向右分屏",
+        .split_down => "向下分屏",
+        .split_left => "向左分屏",
+        .split_up => "向上分屏",
+        .focus_previous => "上一个面板",
+        .focus_next => "下一个面板",
+        .equalize_splits => "均分面板",
+        .close_split_or_tab => "关闭面板 / 标签页",
+        .toggle_sidebar => "切换侧边栏",
+        .toggle_file_explorer => "切换文件浏览器",
+        .toggle_browser_panel => "切换浏览器",
+        .toggle_quake => "切换下拉终端",
+        .open_settings => "设置",
+        .show_shortcuts => "键盘快捷键",
+        .open_config => "打开配置文件",
+        .font_size_decrease => "减小字号",
+        .font_size_increase => "增大字号",
+        .toggle_maximize => "切换最大化",
+        .copy_remote_key => "复制远程密钥",
+        .connect_wechat => "连接微信",
+        .start_wechat => "微信：启动",
+        .stop_wechat => "微信：停止",
+        .wechat_status => "微信：状态",
+        .unbind_wechat => "微信：解绑",
+        .export_ai_chat_markdown => "导出 AI 对话 Markdown",
+        .export_ai_chat_markdown_clean => "导出 AI 对话 Markdown 精简版",
+        .show_version => "版本",
+        .check_for_updates => "检查更新",
+        .download_update => "下载更新",
+        .open_latest_release => "打开最新发布",
+        .update_skills => "更新技能",
+    };
+}
+
+/// 命令中心详情的本地化覆盖。约定同 commandTitle。
+/// 注意：命令面板当前只渲染 title，不渲染 detail —— 这些译文仅用于过滤匹配
+///（让 zh 用户能用中文搜索命中），UI 上不直接显示。
+pub fn commandDetail(action: CommandAction) ?[]const u8 {
+    if (active_lang != .zh_CN) return null;
+    return switch (action) {
+        .new_tab => "选择 Shell、SSH、WSL 或 AI 智能体",
+        .new_agent => "用默认 AI 配置打开一个新的智能体标签页",
+        .manage_ai_profiles => "创建、编辑或删除已保存的 AI 配置",
+        .select_agent_history => "打开命令中心的智能体历史选择器",
+        .split_right => "在右侧创建一个面板",
+        .split_down => "在下方创建一个面板",
+        .split_left => "在左侧创建一个面板",
+        .split_up => "在上方创建一个面板",
+        .focus_previous => "把焦点移到上一个面板",
+        .focus_next => "把焦点移到下一个面板",
+        .equalize_splits => "重置当前标签页的分屏大小",
+        .close_split_or_tab => "关闭当前面板或标签页；再按一次关闭最后一个面板",
+        .toggle_sidebar => "显示或隐藏标签页侧边栏",
+        .toggle_file_explorer => "显示或隐藏左侧文件浏览器",
+        .toggle_browser_panel => "为本地或 SSH 网址打开已配置的浏览器",
+        .toggle_quake => "显示或隐藏下拉式终端窗口",
+        .open_settings => "打开设置页",
+        .show_shortcuts => "显示快捷键参考浮层",
+        .open_config => "打开 WispTerm 配置文件",
+        .font_size_decrease => "把终端文字调小",
+        .font_size_increase => "把终端文字调大",
+        .toggle_maximize => "最大化或还原窗口",
+        .copy_remote_key => "复制当前 WispTerm 远程会话密钥",
+        .connect_wechat => "扫码连接微信直连控制",
+        .start_wechat => "用已保存的微信绑定开始轮询",
+        .stop_wechat => "停止轮询并保留已保存的微信绑定",
+        .wechat_status => "显示微信直连连接状态",
+        .unbind_wechat => "清除已存储的微信直连绑定",
+        .export_ai_chat_markdown => "把当前 AI 对话保存为 Markdown",
+        .export_ai_chat_markdown_clean => "保存用户提问与最终回答（不含思考过程）",
+        .show_version => "显示 WispTerm 版本",
+        .check_for_updates => "在 GitHub Releases 检查是否有新版本",
+        .download_update => "把最新更新下载到「下载」文件夹",
+        .open_latest_release => "打开最新的 WispTerm GitHub Release",
+        .update_skills => "从 GitHub 下载最新技能",
+    };
+}
+
+test "commandTitle/Detail: null on en, zh string on zh_CN" {
+    defer setLang(.en);
+    setLang(.en);
+    try std.testing.expect(commandTitle(.open_settings) == null);
+    try std.testing.expect(commandDetail(.open_settings) == null);
+    setLang(.zh_CN);
+    try std.testing.expectEqualStrings("设置", commandTitle(.open_settings).?);
+    try std.testing.expectEqualStrings("打开设置页", commandDetail(.open_settings).?);
+}
+
+test "setLang switches the active strings table" {
+    defer setLang(.en); // 复位，避免污染其它测试
+    setLang(.en);
+    try std.testing.expectEqualStrings("English", s().language_name);
+    try std.testing.expect(lang() == .en);
+    setLang(.zh_CN);
+    try std.testing.expectEqualStrings("中文", s().language_name);
+    try std.testing.expect(lang() == .zh_CN);
+}
+
+test "langFromLocaleTag maps zh* to zh_CN, others to en" {
+    try std.testing.expect(langFromLocaleTag("zh_CN.UTF-8") == .zh_CN);
+    try std.testing.expect(langFromLocaleTag("zh") == .zh_CN);
+    try std.testing.expect(langFromLocaleTag("ZH-cn") == .zh_CN);
+    try std.testing.expect(langFromLocaleTag("zh_TW") == .zh_CN); // v1 唯一中文落点
+    try std.testing.expect(langFromLocaleTag("en_US.UTF-8") == .en);
+    try std.testing.expect(langFromLocaleTag("fr") == .en);
+    try std.testing.expect(langFromLocaleTag("") == .en);
+    try std.testing.expect(langFromLocaleTag("z") == .en);
+}
+
+test "LanguageSetting.parse handles aliases and invalid" {
+    try std.testing.expect(LanguageSetting.parse("auto").? == .auto);
+    try std.testing.expect(LanguageSetting.parse("en").? == .en);
+    try std.testing.expect(LanguageSetting.parse("zh-CN").? == .zh_CN);
+    try std.testing.expect(LanguageSetting.parse("zh_CN").? == .zh_CN);
+    try std.testing.expect(LanguageSetting.parse("ZH").? == .zh_CN);
+    try std.testing.expect(LanguageSetting.parse("de") == null);
+    try std.testing.expect(LanguageSetting.parse("") == null);
+}
+
+test "applyConfig sets active language" {
+    const a = std.testing.allocator;
+    defer setLang(.en);
+    applyConfig(a, .zh_CN);
+    try std.testing.expect(lang() == .zh_CN);
+    applyConfig(a, .en);
+    try std.testing.expect(lang() == .en);
+}
+
+test "resolve: explicit setting beats system; auto follows env-mapping" {
+    const a = std.testing.allocator;
+    try std.testing.expect(resolve(a, .en) == .en);
+    try std.testing.expect(resolve(a, .zh_CN) == .zh_CN);
+    // auto 取决于运行环境 env，至少应返回二者之一且不崩溃。
+    const auto = resolve(a, .auto);
+    try std.testing.expect(auto == .en or auto == .zh_CN);
+}
+
+test "toast strings: en source and zh translation both present" {
+    defer setLang(.en);
+    setLang(.en);
+    try std.testing.expectEqualStrings("WeChat not connected", s().toast_wechat_not_connected);
+    setLang(.zh_CN);
+    try std.testing.expectEqualStrings("微信未连接", s().toast_wechat_not_connected);
+    try std.testing.expectEqualStrings("微信轮询已启动", s().toast_wechat_poller_started);
+    try std.testing.expectEqualStrings("微信轮询已停止", s().toast_wechat_poller_stopped);
+    try std.testing.expectEqualStrings("微信直连已禁用", s().toast_wechat_direct_disabled);
+}

@@ -569,6 +569,7 @@ comptime {
     _ = @import("command_center_state.zig");
     _ = @import("command_palette_model.zig");
     _ = @import("config.zig");
+    _ = @import("i18n.zig");
     _ = @import("config_watcher.zig");
     _ = @import("file_backend.zig");
     _ = @import("file_explorer.zig");

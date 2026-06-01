@@ -30,6 +30,7 @@ const keybind = @import("../keybind.zig");
 const overlay_keys = @import("overlay_keys.zig");
 const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
+const i18n = @import("../i18n.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");
 
@@ -529,11 +530,11 @@ fn startWeixinDirect() void {
     };
     const after = controller.statusSnapshot();
     if (after.running) {
-        showStatusToast("WeChat poller started");
+        showStatusToast(i18n.s().toast_wechat_poller_started);
     } else if (after.has_token) {
         showStatusToast("WeChat binding saved; poller stopped");
     } else {
-        showStatusToast("WeChat not connected");
+        showStatusToast(i18n.s().toast_wechat_not_connected);
     }
 }
 
@@ -544,12 +545,12 @@ fn stopWeixinDirect() void {
     };
     const before = controller.statusSnapshot();
     if (!before.running and !before.has_token and !before.login_active) {
-        showStatusToast("WeChat not connected");
+        showStatusToast(i18n.s().toast_wechat_not_connected);
         return;
     }
     controller.stop();
     if (before.running) {
-        showStatusToast("WeChat poller stopped");
+        showStatusToast(i18n.s().toast_wechat_poller_stopped);
     } else if (before.login_active) {
         showStatusToast("WeChat login is still waiting");
     } else {
@@ -559,7 +560,7 @@ fn stopWeixinDirect() void {
 
 fn showWeixinDirectStatus() void {
     const controller = activeWeixinController() orelse {
-        showStatusToast("WeChat direct disabled");
+        showStatusToast(i18n.s().toast_wechat_direct_disabled);
         return;
     };
     const s = controller.statusSnapshot();
@@ -654,12 +655,12 @@ fn commandEntryMatches(entry: CommandEntry) bool {
 }
 
 fn commandEntryTitleMatches(entry: CommandEntry, filter: []const u8) bool {
-    return containsIgnoreCase(entry.title, filter);
+    return containsIgnoreCase(i18n.commandTitle(entry.action) orelse entry.title, filter);
 }
 
 fn commandEntrySecondaryMatches(entry: CommandEntry, filter: []const u8) bool {
     var shortcut_buf: [64]u8 = undefined;
-    return containsIgnoreCase(entry.detail, filter) or
+    return containsIgnoreCase(i18n.commandDetail(entry.action) orelse entry.detail, filter) or
         containsIgnoreCase(commandEntryShortcut(entry, &shortcut_buf), filter);
 }
 
@@ -1292,7 +1293,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                             shortcut_left = @round(layout.box_x + layout.box_w - pad_x - shortcut_w);
                             renderTitlebarText(shortcut, shortcut_left, text_y, shortcut_color);
                         }
-                        renderTitlebarTextLimited(entry.title, title_x, text_y, row_title_color, shortcut_left - title_x - 18);
+                        renderTitlebarTextLimited(i18n.commandTitle(entry.action) orelse entry.title, title_x, text_y, row_title_color, shortcut_left - title_x - 18);
                     },
                     .ssh_profile => |profile_idx| {
                         if (profile_idx >= g_ssh_profile_count) continue;

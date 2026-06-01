@@ -26,6 +26,7 @@ const platform_dirs = @import("platform/dirs.zig");
 const platform_editor = @import("platform/editor.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const themes = @import("themes.zig");
+const i18n = @import("i18n.zig");
 
 const log = std.log.scoped(.config);
 
@@ -305,6 +306,9 @@ shell: []const u8 = platform_pty_command.default_shell_name,
 /// remote auto-open, and the "New Agent" command. Empty falls back to the
 /// first saved profile.
 @"ai-default-profile": []const u8 = "",
+
+/// UI language. auto follows the system locale. Restart required.
+language: i18n.LanguageSetting = .auto,
 
 // ============================================================================
 // Remote Access (opt-in foundations)
@@ -749,6 +753,12 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"right-click-action" = action;
         } else {
             log.warn("invalid right-click-action: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "language")) {
+        if (i18n.LanguageSetting.parse(value)) |setting| {
+            self.language = setting;
+        } else {
+            log.warn("invalid language: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "url-open-mode")) {
         if (UrlOpenMode.parse(value)) |mode| {
@@ -1232,6 +1242,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --copy-on-select <bool>      Copy terminal selection when mouse selection completes
         \\  --right-click-action <mode>  ignore | copy | paste | copy-or-paste
         \\  --url-open-mode <mode>       embedded | system-browser
+        \\  --language <lang>            UI language: auto | en | zh-CN (default: auto)
         \\  --ssh-legacy-algorithms <bool> Enable legacy ssh-rsa/ssh-dss OpenSSH options
         \\  --ai-agent-enabled <bool>    Enable AI Chat agent tools by default
         \\  --ai-agent-permission <mode> Agent tool permission: confirm | full
@@ -1549,6 +1560,9 @@ const default_config_template =
     \\# copy-on-select = false
     \\# right-click-action = copy   # ignore | copy | paste | copy-or-paste
     \\# url-open-mode = embedded    # embedded | system-browser
+    \\
+    \\# UI language (auto follows the system locale; restart required)
+    \\# language = auto             # auto | en | zh-CN
     \\
     \\# SSH compatibility for older bastions/servers.
     \\# Adds ssh-rsa/ssh-dss and legacy KEX/cipher options to profile/helper SSH.
@@ -1896,4 +1910,26 @@ test "config: ai-default-profile parses" {
     try std.testing.expectEqualStrings("", cfg.@"ai-default-profile");
     cfg.applyKeyValue(allocator, "ai-default-profile", "GPT-4o", ".");
     try std.testing.expectEqualStrings("GPT-4o", cfg.@"ai-default-profile");
+}
+
+test "config: language parses auto/en/zh-CN and rejects invalid" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+
+    // 默认应为 auto
+    try std.testing.expect(cfg.language == .auto);
+
+    cfg.applyKeyValue(allocator, "language", "zh-CN", ".");
+    try std.testing.expect(cfg.language == .zh_CN);
+
+    cfg.applyKeyValue(allocator, "language", "en", ".");
+    try std.testing.expect(cfg.language == .en);
+
+    // 非法值保持上一次有效值（en），仅告警
+    cfg.applyKeyValue(allocator, "language", "klingon", ".");
+    try std.testing.expect(cfg.language == .en);
+
+    cfg.applyKeyValue(allocator, "language", "auto", ".");
+    try std.testing.expect(cfg.language == .auto);
 }
