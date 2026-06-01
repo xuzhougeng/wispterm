@@ -5,7 +5,7 @@
 //! Supports local (std.fs), WSL, and remote SSH/SCP modes.
 
 const std = @import("std");
-const Surface = @import("Surface.zig");
+const ssh_connection = @import("ssh_connection.zig");
 const agent_history = @import("agent_history.zig");
 const scp = @import("scp.zig");
 const file_backend = @import("file_backend.zig");
@@ -37,7 +37,7 @@ pub const HistoryRow = struct {
 
 pub const TerminalPanelTarget = union(enum) {
     remote: struct {
-        conn: *const Surface.SshConnection,
+        conn: *const ssh_connection.SshConnection,
         cwd: []const u8,
     },
     wsl: []const u8,
@@ -54,7 +54,7 @@ pub threadlocal var g_row_height: f32 = ROW_HEIGHT;
 pub threadlocal var g_header_height: f32 = HEADER_HEIGHT;
 
 // Remote SSH connection state (copied from surface when entering remote mode)
-pub threadlocal var g_ssh_conn: Surface.SshConnection = .{};
+pub threadlocal var g_ssh_conn: ssh_connection.SshConnection = .{};
 pub threadlocal var g_has_ssh_conn: bool = false;
 
 // Transfer status
@@ -107,7 +107,7 @@ const AsyncListKind = enum { rescan, expand };
 
 const AsyncListJob = struct {
     kind: AsyncListKind,
-    conn: Surface.SshConnection,
+    conn: ssh_connection.SshConnection,
     context_id: u64,
     path_buf: [512]u8 = undefined,
     path_len: usize = 0,
@@ -137,7 +137,7 @@ threadlocal var g_async_job: ?*AsyncListJob = null;
 threadlocal var g_pending_async_list: ?PendingAsyncList = null;
 threadlocal var g_async_context_id: u64 = 1;
 
-const TransferFn = *const fn (std.mem.Allocator, *const Surface.SshConnection, []const u8, []const u8, *scp.TransferControl) scp.TransferResult;
+const TransferFn = *const fn (std.mem.Allocator, *const ssh_connection.SshConnection, []const u8, []const u8, *scp.TransferControl) scp.TransferResult;
 pub const TransferSuccessCallback = *const fn (?*anyopaque) void;
 pub const TransferDestroyCallback = *const fn (?*anyopaque) void;
 const TRANSFER_PATH_MAX: usize = 1024;
@@ -151,7 +151,7 @@ pub const TransferCompletion = struct {
 
 const TransferRequest = struct {
     kind: TransferKind,
-    conn: Surface.SshConnection,
+    conn: ssh_connection.SshConnection,
     context_id: u64,
     src_buf: [TRANSFER_PATH_MAX]u8 = undefined,
     src_len: usize = 0,
@@ -460,7 +460,7 @@ fn terminalTargetMatchesCurrentState(target: TerminalPanelTarget) bool {
     };
 }
 
-fn sshConnectionsEqual(a: *const Surface.SshConnection, b: *const Surface.SshConnection) bool {
+fn sshConnectionsEqual(a: *const ssh_connection.SshConnection, b: *const ssh_connection.SshConnection) bool {
     return std.mem.eql(u8, a.user(), b.user()) and
         std.mem.eql(u8, a.host(), b.host()) and
         std.mem.eql(u8, a.port(), b.port()) and
@@ -504,7 +504,7 @@ fn copyRootPathOnly(path: []const u8) void {
 }
 
 /// Enter remote mode with the given SSH connection.
-pub fn enterRemoteMode(conn: *const Surface.SshConnection, remote_cwd: []const u8) void {
+pub fn enterRemoteMode(conn: *const ssh_connection.SshConnection, remote_cwd: []const u8) void {
     g_async_context_id +%= 1;
     g_mode = .remote;
     g_ssh_conn = conn.*;
@@ -927,11 +927,11 @@ fn destroyAsyncJob(job: *AsyncListJob) void {
     allocator.destroy(job);
 }
 
-fn startTransferJob(kind: TransferKind, conn: *const Surface.SshConnection, src: []const u8, dst: []const u8, display: []const u8, transfer_fn: TransferFn) bool {
+fn startTransferJob(kind: TransferKind, conn: *const ssh_connection.SshConnection, src: []const u8, dst: []const u8, display: []const u8, transfer_fn: TransferFn) bool {
     return startTransferJobWithCompletion(kind, conn, src, dst, display, transfer_fn, .{});
 }
 
-fn startTransferJobWithCompletion(kind: TransferKind, conn: *const Surface.SshConnection, src: []const u8, dst: []const u8, display: []const u8, transfer_fn: TransferFn, completion: TransferCompletion) bool {
+fn startTransferJobWithCompletion(kind: TransferKind, conn: *const ssh_connection.SshConnection, src: []const u8, dst: []const u8, display: []const u8, transfer_fn: TransferFn, completion: TransferCompletion) bool {
     if (src.len > TRANSFER_PATH_MAX or dst.len > TRANSFER_PATH_MAX) {
         destroyTransferCompletion(completion);
         setTransferStatusForKind(kind, .failed, "Path too long");
@@ -1142,7 +1142,7 @@ fn destroyTransferJob(job: *TransferJob) void {
     std.heap.page_allocator.destroy(job);
 }
 
-fn startTransferJobForTest(kind: TransferKind, conn: *const Surface.SshConnection, src: []const u8, dst: []const u8, display: []const u8, transfer_fn: TransferFn) bool {
+fn startTransferJobForTest(kind: TransferKind, conn: *const ssh_connection.SshConnection, src: []const u8, dst: []const u8, display: []const u8, transfer_fn: TransferFn) bool {
     return startTransferJob(kind, conn, src, dst, display, transfer_fn);
 }
 
@@ -1527,11 +1527,11 @@ pub fn uploadFile(local_path: []const u8) void {
     _ = startTransferJob(.upload, &g_ssh_conn, local_path, dst, filename, scp.transferWithControl);
 }
 
-pub fn uploadLocalFileToRemoteSpec(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const Surface.SshConnection) bool {
+pub fn uploadLocalFileToRemoteSpec(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection) bool {
     return uploadLocalFileToRemoteSpecWithTransfer(local_path, dst_spec, display_name, conn, scp.transferWithControl);
 }
 
-fn uploadLocalFileToRemoteSpecWithTransfer(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const Surface.SshConnection, transfer_fn: TransferFn) bool {
+fn uploadLocalFileToRemoteSpecWithTransfer(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection, transfer_fn: TransferFn) bool {
     return startTransferJob(.upload, conn, local_path, dst_spec, display_name, transfer_fn);
 }
 
@@ -1539,7 +1539,7 @@ fn uploadLocalFileToRemoteSpecWithTransferAndCallback(
     local_path: []const u8,
     dst_spec: []const u8,
     display_name: []const u8,
-    conn: *const Surface.SshConnection,
+    conn: *const ssh_connection.SshConnection,
     transfer_fn: TransferFn,
     callback: TransferSuccessCallback,
 ) bool {
@@ -1550,17 +1550,17 @@ pub fn uploadLocalFileToRemoteSpecWithCompletion(
     local_path: []const u8,
     dst_spec: []const u8,
     display_name: []const u8,
-    conn: *const Surface.SshConnection,
+    conn: *const ssh_connection.SshConnection,
     completion: TransferCompletion,
 ) bool {
     return startTransferJobWithCompletion(.upload, conn, local_path, dst_spec, display_name, scp.transferWithControl, completion);
 }
 
-pub fn downloadRemoteFileToPath(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const Surface.SshConnection) bool {
+pub fn downloadRemoteFileToPath(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection) bool {
     return downloadRemoteFileToPathWithTransfer(remote_path, local_path, display_name, conn, scp.transferWithControl);
 }
 
-fn downloadRemoteFileToPathWithTransfer(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const Surface.SshConnection, transfer_fn: TransferFn) bool {
+fn downloadRemoteFileToPathWithTransfer(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection, transfer_fn: TransferFn) bool {
     if (conn.user_len + conn.host_len + remote_path.len + 2 > 512) {
         setTransferStatusForKind(.download, .failed, "Path too long");
         return false;
@@ -1581,7 +1581,7 @@ test "setTransferStatus stores message" {
     try std.testing.expectEqualStrings("test_file.txt", g_transfer_msg[0..g_transfer_msg_len]);
 }
 
-fn transferOkForTest(_: std.mem.Allocator, _: *const Surface.SshConnection, _: []const u8, _: []const u8, _: *scp.TransferControl) scp.TransferResult {
+fn transferOkForTest(_: std.mem.Allocator, _: *const ssh_connection.SshConnection, _: []const u8, _: []const u8, _: *scp.TransferControl) scp.TransferResult {
     return .ok;
 }
 
@@ -1603,7 +1603,7 @@ test "file_explorer: transfer job starts without completing on input thread" {
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
-    var conn: Surface.SshConnection = .{};
+    var conn: ssh_connection.SshConnection = .{};
     try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", "local", "file.txt", transferOkForTest));
     try std.testing.expectEqual(TransferStatus.in_progress, g_transfer_status);
     try std.testing.expectEqualStrings("file.txt - calculating...", g_transfer_msg[0..g_transfer_msg_len]);
@@ -1614,7 +1614,7 @@ test "file_explorer: completed transfer job updates status on tick" {
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
-    var conn: Surface.SshConnection = .{};
+    var conn: ssh_connection.SshConnection = .{};
     try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", "local", "file.txt", transferOkForTest));
 
     var attempts: usize = 0;
@@ -1632,7 +1632,7 @@ test "file_explorer: second transfer is queued while one is active" {
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
-    var conn: Surface.SshConnection = .{};
+    var conn: ssh_connection.SshConnection = .{};
     try std.testing.expect(startTransferJobForTest(.download, &conn, "remote-a", "local-a", "a.txt", transferOkForTest));
     try std.testing.expect(startTransferJobForTest(.upload, &conn, "local-b", "remote-b", "b.txt", transferOkForTest));
     try std.testing.expectEqual(@as(usize, 1), transferQueueLenForTest());
@@ -1650,7 +1650,7 @@ test "file_explorer: transfer success callback is deferred until upload succeeds
     defer resetTransferStateForTest();
     g_transfer_success_callback_count_for_test = 0;
 
-    var conn: Surface.SshConnection = .{};
+    var conn: ssh_connection.SshConnection = .{};
     try std.testing.expect(uploadLocalFileToRemoteSpecWithTransferAndCallback(
         "local.txt",
         "user@host:/tmp",
@@ -1671,7 +1671,7 @@ test "file_explorer: upload helper starts transfer with explicit remote spec" {
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
-    var conn: Surface.SshConnection = .{};
+    var conn: ssh_connection.SshConnection = .{};
     try std.testing.expect(uploadLocalFileToRemoteSpecWithTransfer("local.txt", "user@host:/tmp", "local.txt", &conn, transferOkForTest));
     try std.testing.expectEqual(TransferStatus.in_progress, g_transfer_status);
     try std.testing.expectEqualStrings("local.txt", g_transfer_msg[0..g_transfer_msg_len]);
@@ -1682,7 +1682,7 @@ test "file_explorer: download helper starts transfer with explicit remote path" 
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
-    var conn: Surface.SshConnection = .{};
+    var conn: ssh_connection.SshConnection = .{};
     conn.user_buf[0] = 'u';
     conn.user_len = 1;
     conn.host_buf[0] = 'h';
@@ -1698,7 +1698,7 @@ test "file_explorer: download transfer emits notification" {
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
-    var conn: Surface.SshConnection = .{};
+    var conn: ssh_connection.SshConnection = .{};
     conn.user_buf[0] = 'u';
     conn.user_len = 1;
     conn.host_buf[0] = 'h';
@@ -1727,7 +1727,7 @@ test "file_explorer: download progress message includes transfer speed" {
     );
 }
 
-fn transferWaitForCancelForTest(_: std.mem.Allocator, _: *const Surface.SshConnection, _: []const u8, _: []const u8, control: *scp.TransferControl) scp.TransferResult {
+fn transferWaitForCancelForTest(_: std.mem.Allocator, _: *const ssh_connection.SshConnection, _: []const u8, _: []const u8, control: *scp.TransferControl) scp.TransferResult {
     var attempts: usize = 0;
     while (!control.cancelRequested() and attempts < 200) : (attempts += 1) {
         std.Thread.sleep(std.time.ns_per_ms);
@@ -1739,7 +1739,7 @@ test "file_explorer: active download transfer can be cancelled" {
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
-    var conn: Surface.SshConnection = .{};
+    var conn: ssh_connection.SshConnection = .{};
     try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", "local", "file.txt", transferWaitForCancelForTest));
     try std.testing.expect(cancelActiveDownloadForTest());
 
@@ -1910,7 +1910,7 @@ test "file_explorer: syncPanelForTabKind resets focus and mode" {
 }
 
 test "file_explorer: applyTerminalTargetState updates terminal backend and root" {
-    const conn: Surface.SshConnection = .{
+    const conn: ssh_connection.SshConnection = .{
         .user_len = 4,
         .host_len = 4,
         .port_len = 2,
@@ -1997,7 +1997,7 @@ test "file_explorer: unchanged terminal target preserves file state" {
 }
 
 test "file_explorer: terminal target equality checks ssh identity and cwd" {
-    const conn_a: Surface.SshConnection = .{
+    const conn_a: ssh_connection.SshConnection = .{
         .user_buf = [_]u8{ 'r', 'o', 'o', 't' } ++ [_]u8{0} ** 124,
         .user_len = 4,
         .host_buf = [_]u8{ 'h', 'o', 's', 't' } ++ [_]u8{0} ** 124,
@@ -2009,7 +2009,7 @@ test "file_explorer: terminal target equality checks ssh identity and cwd" {
         .password_auth = true,
         .legacy_algorithms = false,
     };
-    const conn_b: Surface.SshConnection = .{
+    const conn_b: ssh_connection.SshConnection = .{
         .user_buf = [_]u8{ 'r', 'o', 'o', 't' } ++ [_]u8{0} ** 124,
         .user_len = 4,
         .host_buf = [_]u8{ 'h', 'o', 's', 't' } ++ [_]u8{0} ** 124,

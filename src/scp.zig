@@ -5,8 +5,8 @@
 //! image paste path and the file explorer remote operations.
 
 const std = @import("std");
-const Surface = @import("Surface.zig");
-const SshConnection = Surface.SshConnection;
+const ssh_connection = @import("ssh_connection.zig");
+const SshConnection = ssh_connection.SshConnection;
 const platform_dirs = @import("platform/dirs.zig");
 const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");

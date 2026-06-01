@@ -5,7 +5,7 @@
 //! adding extra filesystem/SSH dependencies.
 
 const std = @import("std");
-const Surface = @import("Surface.zig");
+const ssh_connection = @import("ssh_connection.zig");
 const scp = @import("scp.zig");
 const platform_remote_file = @import("platform/remote_file.zig");
 
@@ -14,7 +14,7 @@ pub const MAX_NAME_LEN = 255;
 pub const Backend = union(enum) {
     local,
     wsl,
-    ssh: *const Surface.SshConnection,
+    ssh: *const ssh_connection.SshConnection,
 };
 
 pub const Entry = struct {
@@ -117,7 +117,7 @@ fn listWsl(
 
 fn listSsh(
     allocator: std.mem.Allocator,
-    conn: *const Surface.SshConnection,
+    conn: *const ssh_connection.SshConnection,
     path: []const u8,
     out: []Entry,
 ) ListResult {
@@ -143,7 +143,7 @@ fn listSsh(
 
 fn sshPwd(
     allocator: std.mem.Allocator,
-    conn: *const Surface.SshConnection,
+    conn: *const ssh_connection.SshConnection,
     out: []u8,
 ) ?usize {
     const output = scp.sshExec(allocator, conn, "pwd") orelse return null;
