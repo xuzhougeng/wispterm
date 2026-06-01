@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#include <os/lock.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -94,6 +95,14 @@ struct WispTermMacWindowState {
     char ime_preedit[1024];
     size_t ime_preedit_len;
     NSEventModifierFlags insert_text_modifier_flags;
+    // Guards the key/char/mouse/file-drop rings below. For windows running on
+    // a worker thread (every window past the first: Dock reopen / new-window),
+    // AppKit dispatches input on the main thread while that window's worker
+    // thread drains via pollEvents, so these rings are cross-thread too. One
+    // shared lock suffices: the worker drains them sequentially and AppKit
+    // dispatch on main is itself serialized, so there is no cross-queue
+    // contention to gain from per-ring locks.
+    os_unfair_lock input_lock;
     WispTermMacKeyEvent key_events[64];
     size_t key_head;
     size_t key_count;
@@ -112,6 +121,13 @@ struct WispTermMacWindowState {
     WispTermMacMessageEvent message_events[32];
     size_t message_head;
     size_t message_count;
+    // The message ring is the one event queue written from arbitrary caller
+    // threads (remote-client / poller threads via
+    // wispterm_macos_window_post_message) and drained from the per-window
+    // worker thread (windowThreadMain -> pollEvents -> drainMessageEvents).
+    // Without a lock, the non-atomic head/count are a data race: concurrent
+    // RMW loses/duplicates messages and torn reads hand the consumer garbage.
+    os_unfair_lock message_lock;
     WispTermMacFileDropEvent file_drop_events[16];
     size_t file_drop_head;
     size_t file_drop_count;
@@ -268,6 +284,7 @@ static double wispterm_macos_scale(WispTermMacWindowState *state) {
 static void wispterm_macos_push_key_event(WispTermMacWindowState *state, WispTermMacKeyEvent event) {
     if (state == NULL) return;
     const size_t capacity = sizeof(state->key_events) / sizeof(state->key_events[0]);
+    os_unfair_lock_lock(&state->input_lock);
     const size_t idx = (state->key_head + state->key_count) % capacity;
     state->key_events[idx] = event;
     if (state->key_count < capacity) {
@@ -275,20 +292,27 @@ static void wispterm_macos_push_key_event(WispTermMacWindowState *state, WispTer
     } else {
         state->key_head = (state->key_head + 1) % capacity;
     }
+    os_unfair_lock_unlock(&state->input_lock);
 }
 
 static bool wispterm_macos_pop_key_event(WispTermMacWindowState *state, WispTermMacKeyEvent *out) {
-    if (state == NULL || out == NULL || state->key_count == 0) return false;
+    if (state == NULL || out == NULL) return false;
     const size_t capacity = sizeof(state->key_events) / sizeof(state->key_events[0]);
-    *out = state->key_events[state->key_head];
-    state->key_head = (state->key_head + 1) % capacity;
-    state->key_count -= 1;
-    return true;
+    os_unfair_lock_lock(&state->input_lock);
+    bool has_event = state->key_count != 0;
+    if (has_event) {
+        *out = state->key_events[state->key_head];
+        state->key_head = (state->key_head + 1) % capacity;
+        state->key_count -= 1;
+    }
+    os_unfair_lock_unlock(&state->input_lock);
+    return has_event;
 }
 
 static void wispterm_macos_push_char_event(WispTermMacWindowState *state, WispTermMacCharEvent event) {
     if (state == NULL) return;
     const size_t capacity = sizeof(state->char_events) / sizeof(state->char_events[0]);
+    os_unfair_lock_lock(&state->input_lock);
     const size_t idx = (state->char_head + state->char_count) % capacity;
     state->char_events[idx] = event;
     if (state->char_count < capacity) {
@@ -296,20 +320,27 @@ static void wispterm_macos_push_char_event(WispTermMacWindowState *state, WispTe
     } else {
         state->char_head = (state->char_head + 1) % capacity;
     }
+    os_unfair_lock_unlock(&state->input_lock);
 }
 
 static bool wispterm_macos_pop_char_event(WispTermMacWindowState *state, WispTermMacCharEvent *out) {
-    if (state == NULL || out == NULL || state->char_count == 0) return false;
+    if (state == NULL || out == NULL) return false;
     const size_t capacity = sizeof(state->char_events) / sizeof(state->char_events[0]);
-    *out = state->char_events[state->char_head];
-    state->char_head = (state->char_head + 1) % capacity;
-    state->char_count -= 1;
-    return true;
+    os_unfair_lock_lock(&state->input_lock);
+    bool has_event = state->char_count != 0;
+    if (has_event) {
+        *out = state->char_events[state->char_head];
+        state->char_head = (state->char_head + 1) % capacity;
+        state->char_count -= 1;
+    }
+    os_unfair_lock_unlock(&state->input_lock);
+    return has_event;
 }
 
 static void wispterm_macos_push_mouse_button_event(WispTermMacWindowState *state, WispTermMacMouseButtonEvent event) {
     if (state == NULL) return;
     const size_t capacity = sizeof(state->mouse_button_events) / sizeof(state->mouse_button_events[0]);
+    os_unfair_lock_lock(&state->input_lock);
     const size_t idx = (state->mouse_button_head + state->mouse_button_count) % capacity;
     state->mouse_button_events[idx] = event;
     if (state->mouse_button_count < capacity) {
@@ -317,20 +348,27 @@ static void wispterm_macos_push_mouse_button_event(WispTermMacWindowState *state
     } else {
         state->mouse_button_head = (state->mouse_button_head + 1) % capacity;
     }
+    os_unfair_lock_unlock(&state->input_lock);
 }
 
 static bool wispterm_macos_pop_mouse_button_event(WispTermMacWindowState *state, WispTermMacMouseButtonEvent *out) {
-    if (state == NULL || out == NULL || state->mouse_button_count == 0) return false;
+    if (state == NULL || out == NULL) return false;
     const size_t capacity = sizeof(state->mouse_button_events) / sizeof(state->mouse_button_events[0]);
-    *out = state->mouse_button_events[state->mouse_button_head];
-    state->mouse_button_head = (state->mouse_button_head + 1) % capacity;
-    state->mouse_button_count -= 1;
-    return true;
+    os_unfair_lock_lock(&state->input_lock);
+    bool has_event = state->mouse_button_count != 0;
+    if (has_event) {
+        *out = state->mouse_button_events[state->mouse_button_head];
+        state->mouse_button_head = (state->mouse_button_head + 1) % capacity;
+        state->mouse_button_count -= 1;
+    }
+    os_unfair_lock_unlock(&state->input_lock);
+    return has_event;
 }
 
 static void wispterm_macos_push_mouse_move_event(WispTermMacWindowState *state, WispTermMacMouseMoveEvent event) {
     if (state == NULL) return;
     const size_t capacity = sizeof(state->mouse_move_events) / sizeof(state->mouse_move_events[0]);
+    os_unfair_lock_lock(&state->input_lock);
     const size_t idx = (state->mouse_move_head + state->mouse_move_count) % capacity;
     state->mouse_move_events[idx] = event;
     if (state->mouse_move_count < capacity) {
@@ -338,20 +376,27 @@ static void wispterm_macos_push_mouse_move_event(WispTermMacWindowState *state, 
     } else {
         state->mouse_move_head = (state->mouse_move_head + 1) % capacity;
     }
+    os_unfair_lock_unlock(&state->input_lock);
 }
 
 static bool wispterm_macos_pop_mouse_move_event(WispTermMacWindowState *state, WispTermMacMouseMoveEvent *out) {
-    if (state == NULL || out == NULL || state->mouse_move_count == 0) return false;
+    if (state == NULL || out == NULL) return false;
     const size_t capacity = sizeof(state->mouse_move_events) / sizeof(state->mouse_move_events[0]);
-    *out = state->mouse_move_events[state->mouse_move_head];
-    state->mouse_move_head = (state->mouse_move_head + 1) % capacity;
-    state->mouse_move_count -= 1;
-    return true;
+    os_unfair_lock_lock(&state->input_lock);
+    bool has_event = state->mouse_move_count != 0;
+    if (has_event) {
+        *out = state->mouse_move_events[state->mouse_move_head];
+        state->mouse_move_head = (state->mouse_move_head + 1) % capacity;
+        state->mouse_move_count -= 1;
+    }
+    os_unfair_lock_unlock(&state->input_lock);
+    return has_event;
 }
 
 static void wispterm_macos_push_mouse_wheel_event(WispTermMacWindowState *state, WispTermMacMouseWheelEvent event) {
     if (state == NULL) return;
     const size_t capacity = sizeof(state->mouse_wheel_events) / sizeof(state->mouse_wheel_events[0]);
+    os_unfair_lock_lock(&state->input_lock);
     const size_t idx = (state->mouse_wheel_head + state->mouse_wheel_count) % capacity;
     state->mouse_wheel_events[idx] = event;
     if (state->mouse_wheel_count < capacity) {
@@ -359,20 +404,31 @@ static void wispterm_macos_push_mouse_wheel_event(WispTermMacWindowState *state,
     } else {
         state->mouse_wheel_head = (state->mouse_wheel_head + 1) % capacity;
     }
+    os_unfair_lock_unlock(&state->input_lock);
 }
 
 static bool wispterm_macos_pop_mouse_wheel_event(WispTermMacWindowState *state, WispTermMacMouseWheelEvent *out) {
-    if (state == NULL || out == NULL || state->mouse_wheel_count == 0) return false;
+    if (state == NULL || out == NULL) return false;
     const size_t capacity = sizeof(state->mouse_wheel_events) / sizeof(state->mouse_wheel_events[0]);
-    *out = state->mouse_wheel_events[state->mouse_wheel_head];
-    state->mouse_wheel_head = (state->mouse_wheel_head + 1) % capacity;
-    state->mouse_wheel_count -= 1;
-    return true;
+    os_unfair_lock_lock(&state->input_lock);
+    bool has_event = state->mouse_wheel_count != 0;
+    if (has_event) {
+        *out = state->mouse_wheel_events[state->mouse_wheel_head];
+        state->mouse_wheel_head = (state->mouse_wheel_head + 1) % capacity;
+        state->mouse_wheel_count -= 1;
+    }
+    os_unfair_lock_unlock(&state->input_lock);
+    return has_event;
 }
 
+// The message ring is the only event queue with producers off the window
+// worker thread, so push/pop must serialize on state->message_lock. The lock
+// is held only for the few non-blocking ring operations below — never across
+// an AppKit call or a callback — so contention is negligible.
 static void wispterm_macos_push_message_event(WispTermMacWindowState *state, WispTermMacMessageEvent event) {
     if (state == NULL) return;
     const size_t capacity = sizeof(state->message_events) / sizeof(state->message_events[0]);
+    os_unfair_lock_lock(&state->message_lock);
     const size_t idx = (state->message_head + state->message_count) % capacity;
     state->message_events[idx] = event;
     if (state->message_count < capacity) {
@@ -380,24 +436,31 @@ static void wispterm_macos_push_message_event(WispTermMacWindowState *state, Wis
     } else {
         state->message_head = (state->message_head + 1) % capacity;
     }
+    os_unfair_lock_unlock(&state->message_lock);
 }
 
 static bool wispterm_macos_pop_message_event(WispTermMacWindowState *state, WispTermMacMessageEvent *out) {
-    if (state == NULL || out == NULL || state->message_count == 0) return false;
+    if (state == NULL || out == NULL) return false;
     const size_t capacity = sizeof(state->message_events) / sizeof(state->message_events[0]);
-    *out = state->message_events[state->message_head];
-    state->message_head = (state->message_head + 1) % capacity;
-    state->message_count -= 1;
-    return true;
+    os_unfair_lock_lock(&state->message_lock);
+    bool has_event = state->message_count != 0;
+    if (has_event) {
+        *out = state->message_events[state->message_head];
+        state->message_head = (state->message_head + 1) % capacity;
+        state->message_count -= 1;
+    }
+    os_unfair_lock_unlock(&state->message_lock);
+    return has_event;
 }
 
 static bool wispterm_macos_push_file_drop_event(WispTermMacWindowState *state, const char *path, int32_t x, int32_t y) {
     if (state == NULL || path == NULL) return false;
     const size_t capacity = sizeof(state->file_drop_events) / sizeof(state->file_drop_events[0]);
+    const size_t source_len = strlen(path);
+    const size_t len = source_len < sizeof(state->file_drop_events[0].path) ? source_len : sizeof(state->file_drop_events[0].path) - 1;
+    os_unfair_lock_lock(&state->input_lock);
     const size_t idx = (state->file_drop_head + state->file_drop_count) % capacity;
     WispTermMacFileDropEvent *event = &state->file_drop_events[idx];
-    const size_t source_len = strlen(path);
-    const size_t len = source_len < sizeof(event->path) ? source_len : sizeof(event->path) - 1;
     memcpy(event->path, path, len);
     event->path[len] = 0;
     event->path_len = len;
@@ -408,16 +471,22 @@ static bool wispterm_macos_push_file_drop_event(WispTermMacWindowState *state, c
     } else {
         state->file_drop_head = (state->file_drop_head + 1) % capacity;
     }
+    os_unfair_lock_unlock(&state->input_lock);
     return true;
 }
 
 static bool wispterm_macos_pop_file_drop_event(WispTermMacWindowState *state, WispTermMacFileDropEvent *out) {
-    if (state == NULL || out == NULL || state->file_drop_count == 0) return false;
+    if (state == NULL || out == NULL) return false;
     const size_t capacity = sizeof(state->file_drop_events) / sizeof(state->file_drop_events[0]);
-    *out = state->file_drop_events[state->file_drop_head];
-    state->file_drop_head = (state->file_drop_head + 1) % capacity;
-    state->file_drop_count -= 1;
-    return true;
+    os_unfair_lock_lock(&state->input_lock);
+    bool has_event = state->file_drop_count != 0;
+    if (has_event) {
+        *out = state->file_drop_events[state->file_drop_head];
+        state->file_drop_head = (state->file_drop_head + 1) % capacity;
+        state->file_drop_count -= 1;
+    }
+    os_unfair_lock_unlock(&state->input_lock);
+    return has_event;
 }
 
 static void wispterm_macos_mods(NSEventModifierFlags flags, bool *ctrl, bool *shift, bool *alt, bool *super) {
@@ -939,6 +1008,8 @@ void *wispterm_macos_window_create(
             state->layer = [layer retain];
             state->delegate = delegate;
             state->close_requested = false;
+            state->input_lock = OS_UNFAIR_LOCK_INIT;
+            state->message_lock = OS_UNFAIR_LOCK_INIT;
             state->ime_caret_x = 0;
             state->ime_caret_y = 0;
             state->ime_caret_height = 16;
