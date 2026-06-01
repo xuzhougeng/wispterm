@@ -5,11 +5,8 @@
 **WispTerm**（原名 Phantty）是一个面向远程开发与 AI 智能体工作流的跨平台终端工作区。它用 Zig 编写，终端模拟由 [libghostty-vt](https://github.com/ghostty-org/ghostty) 驱动。
 
 > [!NOTE]
-> WispTerm 提供 **Windows** 版本，并自 v0.35.0 起支持 **macOS**（Apple Silicon 与
-> Intel）。**macOS 支持是新加入的，可能仍有 bug** —— AppKit/Metal、多窗口与渲染
-> 路径都还很年轻，在我们尚未覆盖的场景下可能出错。如果你在 macOS 上需要磐石般的
-> 日常稳定性，目前请优先使用 [Ghostty](https://ghostty.org/)，并欢迎反馈你遇到的
-> 任何问题。**Linux** 移植仍在进行中（见 [TODO.md](TODO.md)）。
+> WispTerm 提供 **Windows** 与 **macOS**（Apple Silicon 与 Intel）版本。**Linux**
+> 移植仍在进行中（见 [TODO.md](TODO.md)）。
 
 ## 功能特性
 
