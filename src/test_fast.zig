@@ -45,6 +45,7 @@ test {
     _ = @import("ai_chat_composer_layout.zig");
     _ = @import("ai_chat_input_text.zig");
     _ = @import("ai_chat_composer.zig");
+    _ = @import("ai_history_types.zig");
     _ = @import("browser_url.zig");
     _ = @import("ssh_prompt.zig");
     _ = @import("selection_unit.zig");
