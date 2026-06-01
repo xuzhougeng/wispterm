@@ -11,14 +11,26 @@ pub const Lang = enum { en, zh_CN };
 /// 这是「方案 A」comptime 完整性保证的落地（无需手写 assert）。
 pub const Strings = struct {
     language_name: []const u8,
+    toast_wechat_not_connected: []const u8,
+    toast_wechat_poller_started: []const u8,
+    toast_wechat_poller_stopped: []const u8,
+    toast_wechat_direct_disabled: []const u8,
 };
 
 const en = Strings{
     .language_name = "English",
+    .toast_wechat_not_connected = "WeChat not connected",
+    .toast_wechat_poller_started = "WeChat poller started",
+    .toast_wechat_poller_stopped = "WeChat poller stopped",
+    .toast_wechat_direct_disabled = "WeChat direct disabled",
 };
 
 const zh_CN = Strings{
     .language_name = "中文",
+    .toast_wechat_not_connected = "微信未连接",
+    .toast_wechat_poller_started = "微信轮询已启动",
+    .toast_wechat_poller_stopped = "微信轮询已停止",
+    .toast_wechat_direct_disabled = "微信直连已禁用",
 };
 
 // Set once at startup before any UI thread exists (see main.zig startup wiring).
@@ -262,4 +274,15 @@ test "resolve: explicit setting beats system; auto follows env-mapping" {
     // auto 取决于运行环境 env，至少应返回二者之一且不崩溃。
     const auto = resolve(a, .auto);
     try std.testing.expect(auto == .en or auto == .zh_CN);
+}
+
+test "toast strings: en source and zh translation both present" {
+    defer setLang(.en);
+    setLang(.en);
+    try std.testing.expectEqualStrings("WeChat not connected", s().toast_wechat_not_connected);
+    setLang(.zh_CN);
+    try std.testing.expectEqualStrings("微信未连接", s().toast_wechat_not_connected);
+    try std.testing.expect(s().toast_wechat_poller_started.len > 0);
+    try std.testing.expect(s().toast_wechat_poller_stopped.len > 0);
+    try std.testing.expect(s().toast_wechat_direct_disabled.len > 0);
 }

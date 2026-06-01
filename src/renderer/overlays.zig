@@ -530,11 +530,11 @@ fn startWeixinDirect() void {
     };
     const after = controller.statusSnapshot();
     if (after.running) {
-        showStatusToast("WeChat poller started");
+        showStatusToast(i18n.s().toast_wechat_poller_started);
     } else if (after.has_token) {
         showStatusToast("WeChat binding saved; poller stopped");
     } else {
-        showStatusToast("WeChat not connected");
+        showStatusToast(i18n.s().toast_wechat_not_connected);
     }
 }
 
@@ -545,12 +545,12 @@ fn stopWeixinDirect() void {
     };
     const before = controller.statusSnapshot();
     if (!before.running and !before.has_token and !before.login_active) {
-        showStatusToast("WeChat not connected");
+        showStatusToast(i18n.s().toast_wechat_not_connected);
         return;
     }
     controller.stop();
     if (before.running) {
-        showStatusToast("WeChat poller stopped");
+        showStatusToast(i18n.s().toast_wechat_poller_stopped);
     } else if (before.login_active) {
         showStatusToast("WeChat login is still waiting");
     } else {
@@ -560,7 +560,7 @@ fn stopWeixinDirect() void {
 
 fn showWeixinDirectStatus() void {
     const controller = activeWeixinController() orelse {
-        showStatusToast("WeChat direct disabled");
+        showStatusToast(i18n.s().toast_wechat_direct_disabled);
         return;
     };
     const s = controller.statusSnapshot();
