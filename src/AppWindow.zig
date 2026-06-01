@@ -3236,6 +3236,26 @@ const ImeCaret = struct {
 };
 
 fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
+    // The command palette is a modal overlay on top of every tab; anchor the IME
+    // caret to its text filter, not the underlying terminal/AI-chat cursor.
+    if (overlays.commandPaletteVisible()) {
+        if (win.ime_composing) return; // freeze during composition (avoid drift)
+        const size = window_backend.clientSize(win);
+        if (overlays.commandPaletteImeCaret(
+            @floatFromInt(size.width),
+            @floatFromInt(size.height),
+            currentTitlebarHeight(),
+        )) |caret| {
+            window_backend.setImeCaret(
+                win,
+                @intFromFloat(@round(caret.x)),
+                @intFromFloat(@round(caret.y)),
+                @intFromFloat(@max(1.0, @round(caret.h))),
+            );
+        }
+        return;
+    }
+
     if (activeAiChat()) |session| {
         // Freeze the caret during composition so the IMM popup, anchored when
         // the composition started, doesn't drift with local UI relayout.
