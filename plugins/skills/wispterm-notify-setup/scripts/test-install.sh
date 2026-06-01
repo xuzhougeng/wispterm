@@ -17,6 +17,9 @@ assert_contains() { # file needle desc
 assert_not_contains() {
   if LC_ALL=C grep -qF -- "$2" "$1"; then fail "$3 (unexpected: $2)"; else ok "$3"; fi
 }
+assert_file_exists() {
+  if [ -f "$1" ]; then ok "$2"; else fail "$2 (missing: $1)"; fi
+}
 
 # ---- notify: Claude Code Notification on stdin ----
 t="$(mktemp)"
@@ -150,6 +153,33 @@ out5="$(HOME="$FAKE5" sh "$INSTALL" 2>/dev/null)"
 assert_contains "$FAKE5/.codex/config.toml" '/some/indented/notifier.sh' "codex: indented top-level notify preserved"
 [ "$(grep -cE '^[[:space:]]*notify[[:space:]]*=' "$FAKE5/.codex/config.toml")" -eq 1 ] \
   && ok "codex: no duplicate notify for indented top-level" || fail "codex: duplicated indented notify"
+
+# ================= skill workflow guardrails =================
+SKILL="$HERE/../SKILL.md"
+PS_NOTIFY="$HERE/wispterm-notify.ps1"
+PS_INSTALL="$HERE/install-wispterm-notify.ps1"
+PS_REMOTE_INSTALL="$HERE/install-wispterm-notify-remote.ps1"
+assert_contains "$SKILL" 'terminal_list' "skill tells agents to inspect WispTerm surfaces"
+assert_contains "$SKILL" 'ssh_profile_connect' "skill tells agents to connect saved SSH profiles"
+assert_contains "$SKILL" 'wsl_session_exec' "skill tells agents to install inside WSL surfaces"
+assert_contains "$SKILL" 'powershell_exec' "skill tells agents to install from PowerShell"
+assert_contains "$SKILL" 'scp' "skill requires scp transfer for remote SSH profiles"
+assert_contains "$SKILL" 'Never ask the user to re-provide SSH host/user/port/password' "skill forbids re-asking for saved profile credentials"
+assert_file_exists "$PS_NOTIFY" "PowerShell notifier script is bundled"
+assert_file_exists "$PS_INSTALL" "PowerShell installer script is bundled"
+assert_file_exists "$PS_REMOTE_INSTALL" "PowerShell remote profile installer is bundled"
+if [ -f "$PS_NOTIFY" ]; then
+  assert_contains "$PS_NOTIFY" 'CONOUT$' "PowerShell notifier writes to attached console"
+fi
+if [ -f "$PS_INSTALL" ]; then
+  assert_contains "$PS_INSTALL" 'settings.json' "PowerShell installer wires Claude settings"
+  assert_contains "$PS_INSTALL" 'config.toml' "PowerShell installer wires Codex config"
+fi
+if [ -f "$PS_REMOTE_INSTALL" ]; then
+  assert_contains "$PS_REMOTE_INSTALL" 'ssh_hosts' "remote installer reads WispTerm SSH profiles"
+  assert_contains "$PS_REMOTE_INSTALL" 'scp.exe' "remote installer transfers scripts with scp"
+  assert_contains "$PS_REMOTE_INSTALL" 'SSH_ASKPASS' "remote installer supports saved password profiles"
+fi
 
 printf '\n%s test(s) failed\n' "$FAILS"
 [ "$FAILS" -eq 0 ]
