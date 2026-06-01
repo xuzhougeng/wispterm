@@ -16,6 +16,31 @@ pub const Strings = struct {
     toast_wechat_poller_started: []const u8,
     toast_wechat_poller_stopped: []const u8,
     toast_wechat_direct_disabled: []const u8,
+
+    // —— 设置页 ——
+    settings_title: []const u8,
+    settings_subtitle: []const u8,
+    settings_font_size: []const u8,
+    settings_theme: []const u8,
+    settings_cursor_style: []const u8,
+    settings_cursor_blink: []const u8,
+    settings_focus_follows_mouse: []const u8,
+    settings_shell: []const u8,
+    settings_default_ai: []const u8,
+    settings_weixin_direct: []const u8,
+    settings_language: []const u8,
+    settings_raw_config: []const u8,
+    settings_close: []const u8,
+    settings_hint_left_right: []const u8,
+    settings_hint_enter_cycle: []const u8,
+    settings_hint_advanced_editor: []const u8,
+    settings_hint_add_profiles: []const u8,
+    settings_hint_restart: []const u8,
+    settings_value_on: []const u8,
+    settings_value_off: []const u8,
+    settings_value_open: []const u8,
+    settings_value_none: []const u8,
+    settings_lang_auto: []const u8,
 };
 
 const en = Strings{
@@ -24,6 +49,30 @@ const en = Strings{
     .toast_wechat_poller_started = "WeChat poller started",
     .toast_wechat_poller_stopped = "WeChat poller stopped",
     .toast_wechat_direct_disabled = "WeChat direct disabled",
+
+    .settings_title = "Settings",
+    .settings_subtitle = "Config changes save immediately",
+    .settings_font_size = "Font size",
+    .settings_theme = "Theme",
+    .settings_cursor_style = "Cursor style",
+    .settings_cursor_blink = "Cursor blink",
+    .settings_focus_follows_mouse = "Focus follows mouse",
+    .settings_shell = "Shell for new tabs",
+    .settings_default_ai = "Default AI",
+    .settings_weixin_direct = "WeChat direct",
+    .settings_language = "Language",
+    .settings_raw_config = "Raw config file",
+    .settings_close = "Close settings",
+    .settings_hint_left_right = "Left / Right",
+    .settings_hint_enter_cycle = "Enter / Right",
+    .settings_hint_advanced_editor = "Advanced editor",
+    .settings_hint_add_profiles = "Add profiles via Command Center",
+    .settings_hint_restart = "restart to apply",
+    .settings_value_on = "on",
+    .settings_value_off = "off",
+    .settings_value_open = "open",
+    .settings_value_none = "(none)",
+    .settings_lang_auto = "Auto",
 };
 
 const zh_CN = Strings{
@@ -32,6 +81,30 @@ const zh_CN = Strings{
     .toast_wechat_poller_started = "微信轮询已启动",
     .toast_wechat_poller_stopped = "微信轮询已停止",
     .toast_wechat_direct_disabled = "微信直连已禁用",
+
+    .settings_title = "设置",
+    .settings_subtitle = "配置更改立即保存",
+    .settings_font_size = "字号",
+    .settings_theme = "主题",
+    .settings_cursor_style = "光标样式",
+    .settings_cursor_blink = "光标闪烁",
+    .settings_focus_follows_mouse = "焦点跟随鼠标",
+    .settings_shell = "新标签页 Shell",
+    .settings_default_ai = "默认 AI",
+    .settings_weixin_direct = "微信直连",
+    .settings_language = "语言",
+    .settings_raw_config = "原始配置文件",
+    .settings_close = "关闭设置",
+    .settings_hint_left_right = "← / →",
+    .settings_hint_enter_cycle = "回车切换",
+    .settings_hint_advanced_editor = "高级编辑器",
+    .settings_hint_add_profiles = "在命令中心添加配置",
+    .settings_hint_restart = "重启生效",
+    .settings_value_on = "开",
+    .settings_value_off = "关",
+    .settings_value_open = "打开",
+    .settings_value_none = "（无）",
+    .settings_lang_auto = "自动",
 };
 
 // Set once at startup before any UI thread exists (see main.zig startup wiring).
@@ -290,4 +363,16 @@ test "toast strings: en source and zh translation both present" {
     try std.testing.expectEqualStrings("微信轮询已启动", s().toast_wechat_poller_started);
     try std.testing.expectEqualStrings("微信轮询已停止", s().toast_wechat_poller_stopped);
     try std.testing.expectEqualStrings("微信直连已禁用", s().toast_wechat_direct_disabled);
+}
+
+test "settings strings: en source and zh translation present" {
+    defer setLang(.en);
+    setLang(.en);
+    try std.testing.expectEqualStrings("Settings", s().settings_title);
+    try std.testing.expectEqualStrings("Language", s().settings_language);
+    setLang(.zh_CN);
+    try std.testing.expectEqualStrings("设置", s().settings_title);
+    try std.testing.expectEqualStrings("语言", s().settings_language);
+    try std.testing.expectEqualStrings("重启生效", s().settings_hint_restart);
+    try std.testing.expect(s().settings_close.len > 0);
 }

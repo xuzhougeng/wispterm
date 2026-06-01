@@ -3452,7 +3452,7 @@ const SETTINGS_THEME_PRESETS = [_]ThemePreset{
 
 const SETTINGS_THEME_ROW = 1;
 const SETTINGS_CONTROL_ROW_START = SETTINGS_THEME_ROW + 1;
-const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 8;
+const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 9;
 
 const SettingsAction = enum {
     font_size_minus,
@@ -3464,6 +3464,7 @@ const SettingsAction = enum {
     cycle_shell,
     cycle_default_ai_profile,
     toggle_weixin_direct,
+    cycle_language,
     open_raw_config,
     close,
 };
@@ -3603,8 +3604,9 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
         3 => .cycle_shell,
         4 => .cycle_default_ai_profile,
         5 => .toggle_weixin_direct,
-        6 => .open_raw_config,
-        7 => .close,
+        6 => .cycle_language,
+        7 => .open_raw_config,
+        8 => .close,
         else => null,
     };
 }
@@ -3637,6 +3639,7 @@ fn executeSettingsAction(action: SettingsAction) void {
             }
         },
         .toggle_weixin_direct => Config.setConfigValue(allocator, "weixin-direct-enabled", if (cfg.@"weixin-direct-enabled") "false" else "true") catch {},
+        .cycle_language => Config.setConfigValue(allocator, "language", nextLanguageSetting(cfg.language)) catch {},
         .open_raw_config => Config.openConfigInEditor(allocator),
         .close => settingsPageClose(),
     }
@@ -3660,8 +3663,9 @@ fn runSettingsFocusPrimary() void {
         SETTINGS_CONTROL_ROW_START + 3 => executeSettingsAction(.cycle_shell),
         SETTINGS_CONTROL_ROW_START + 4 => executeSettingsAction(.cycle_default_ai_profile),
         SETTINGS_CONTROL_ROW_START + 5 => executeSettingsAction(.toggle_weixin_direct),
-        SETTINGS_CONTROL_ROW_START + 6 => executeSettingsAction(.open_raw_config),
-        SETTINGS_CONTROL_ROW_START + 7 => executeSettingsAction(.close),
+        SETTINGS_CONTROL_ROW_START + 6 => executeSettingsAction(.cycle_language),
+        SETTINGS_CONTROL_ROW_START + 7 => executeSettingsAction(.open_raw_config),
+        SETTINGS_CONTROL_ROW_START + 8 => executeSettingsAction(.close),
         else => {},
     }
 }
@@ -3763,7 +3767,26 @@ fn nextCursorStyle(style: Config.CursorStyle) []const u8 {
 }
 
 fn boolText(value: bool) []const u8 {
-    return if (value) "on" else "off";
+    return if (value) i18n.s().settings_value_on else i18n.s().settings_value_off;
+}
+
+/// Config value string for the next language in the cycle (auto → en → zh-CN → auto).
+fn nextLanguageSetting(setting: i18n.LanguageSetting) []const u8 {
+    return switch (setting) {
+        .auto => "en",
+        .en => "zh-CN",
+        .zh_CN => "auto",
+    };
+}
+
+/// Display label for the Language settings row. Language names show natively;
+/// only "Auto" is localized.
+fn languageSettingText(setting: i18n.LanguageSetting) []const u8 {
+    return switch (setting) {
+        .auto => i18n.s().settings_lang_auto,
+        .en => "English",
+        .zh_CN => "简体中文",
+    };
 }
 
 fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, title: []const u8, value: []const u8, hint: []const u8, clickable: bool, selected: bool) void {
@@ -3834,35 +3857,36 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
 
     const title_y = textYFromTop(window_height, layout.box_top_px + 18);
     const subtitle_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
-    renderTitlebarText("Settings", layout.box_x + 24, title_y, mixColor(fg, accent, 0.14));
-    renderTitlebarTextLimited("Config changes save immediately", layout.box_x + 24, subtitle_y, muted_color, layout.box_w - 96);
+    renderTitlebarText(i18n.s().settings_title, layout.box_x + 24, title_y, mixColor(fg, accent, 0.14));
+    renderTitlebarTextLimited(i18n.s().settings_subtitle, layout.box_x + 24, subtitle_y, muted_color, layout.box_w - 96);
     renderTitlebarText("Esc", layout.box_x + layout.box_w - 52, title_y, mixColor(bg, fg, 0.72));
 
     var font_buf: [24]u8 = undefined;
     const font_value = std.fmt.bufPrint(&font_buf, "-  {d}  +", .{cfg.@"font-size"}) catch "";
-    renderSettingsRow(layout, window_height, 0, "Font size", font_value, "Left / Right", true, g_settings_focus == 0);
+    renderSettingsRow(layout, window_height, 0, i18n.s().settings_font_size, font_value, i18n.s().settings_hint_left_right, true, g_settings_focus == 0);
 
     var theme_buf: [96]u8 = undefined;
     const theme_value = std.fmt.bufPrint(&theme_buf, "< {s} >", .{currentThemePresetLabel(cfg)}) catch currentThemePresetLabel(cfg);
-    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, "Theme", theme_value, currentThemePresetDetail(cfg), true, g_settings_focus == SETTINGS_THEME_ROW);
+    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, i18n.s().settings_theme, theme_value, currentThemePresetDetail(cfg), true, g_settings_focus == SETTINGS_THEME_ROW);
 
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, "Cursor style", cursorStyleText(cfg.@"cursor-style"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, "Cursor blink", boolText(cfg.@"cursor-style-blink"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, "Focus follows mouse", boolText(cfg.@"focus-follows-mouse"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, "Shell for new tabs", cfg.shell, platform_pty_command.shellSettingChoicesHint(), true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, i18n.s().settings_cursor_style, cursorStyleText(cfg.@"cursor-style"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, i18n.s().settings_cursor_blink, boolText(cfg.@"cursor-style-blink"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, i18n.s().settings_focus_follows_mouse, boolText(cfg.@"focus-follows-mouse"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, i18n.s().settings_shell, cfg.shell, platform_pty_command.shellSettingChoicesHint(), true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
     loadAiProfiles();
     const ai_default_value = if (g_ai_profile_count > 0)
         aiProfileField(&g_ai_profiles[defaultAiProfileIndex()], .name)
     else
-        "(none)";
+        i18n.s().settings_value_none;
     const ai_default_hint = if (g_ai_profile_count > 0)
         aiProfileModeLabel(&g_ai_profiles[defaultAiProfileIndex()])
     else
-        "Add profiles via Command Center";
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, "Default AI", ai_default_value, ai_default_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, "WeChat direct", boolText(cfg.@"weixin-direct-enabled"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, "Raw config file", "open", "Advanced editor", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, "Close settings", "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
+        i18n.s().settings_hint_add_profiles;
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, i18n.s().settings_default_ai, ai_default_value, ai_default_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, i18n.s().settings_weixin_direct, boolText(cfg.@"weixin-direct-enabled"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 8);
 }
 
 // ============================================================================
