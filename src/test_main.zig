@@ -512,33 +512,55 @@ comptime {
     }
 
     const ai_chat_source = @embedFile("ai_chat.zig");
+    const ai_chat_tools_source = @embedFile("ai_chat_tools.zig");
     if (std.mem.indexOf(u8, ai_chat_source, "toolSchema(\"powershell_exec\"") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "toolSchema(\"powershell_exec\"") != null or
         std.mem.indexOf(u8, ai_chat_source, "toolSchema(\"wsl_session_exec\"") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "toolSchema(\"wsl_session_exec\"") != null or
         std.mem.indexOf(u8, ai_chat_source, "std.mem.eql(u8, call.name, \"powershell_exec\")") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "std.mem.eql(u8, call.name, \"powershell_exec\")") != null or
         std.mem.indexOf(u8, ai_chat_source, "requestApproval(\"powershell_exec\"") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "requestApproval(\"powershell_exec\"") != null or
         std.mem.indexOf(u8, ai_chat_source, "powershellExecTool") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "powershellExecTool") != null or
         std.mem.indexOf(u8, ai_chat_source, "@embedFile(\"prompt.md\")") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "@embedFile(\"prompt.md\")") != null or
         std.mem.indexOf(u8, ai_chat_source, "defaultSystemPromptForOs(.windows)") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "defaultSystemPromptForOs(.windows)") != null or
         std.mem.indexOf(u8, ai_chat_source, "tabNewToolPropertiesJsonForOs(.windows)") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "tabNewToolPropertiesJsonForOs(.windows)") != null or
         std.mem.indexOf(u8, ai_chat_source, "tabKindUsageForOs(.windows)") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "tabKindUsageForOs(.windows)") != null or
         std.mem.indexOf(u8, ai_chat_source, ".windows_create_process") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, ".windows_create_process") != null or
         std.mem.indexOf(u8, ai_chat_source, "Use kind=default, powershell, pwsh, cmd, wsl, or command") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "Use kind=default, powershell, pwsh, cmd, wsl, or command") != null or
         std.mem.indexOf(u8, ai_chat_source, "Optional explicit Windows command line") != null or
-        std.mem.indexOf(u8, ai_chat_source, "Use default, powershell, pwsh, cmd, wsl, or command") != null)
+        std.mem.indexOf(u8, ai_chat_tools_source, "Optional explicit Windows command line") != null or
+        std.mem.indexOf(u8, ai_chat_source, "Use default, powershell, pwsh, cmd, wsl, or command") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "Use default, powershell, pwsh, cmd, wsl, or command") != null)
     {
         @compileError("ai_chat.zig must get local command tool names, labels, default prompts, and tab kind text from platform modules");
     }
     if (std.mem.indexOf(u8, ai_chat_source, "localShellFallback(") != null or
-        std.mem.indexOf(u8, ai_chat_source, "localShellCommandArgv(") != null)
+        std.mem.indexOf(u8, ai_chat_tools_source, "localShellFallback(") != null or
+        std.mem.indexOf(u8, ai_chat_source, "localShellCommandArgv(") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "localShellCommandArgv(") != null)
     {
         @compileError("ai_chat.zig must ask platform/process.zig for fallback argv without handling shell variants directly");
     }
     if (std.mem.indexOf(u8, ai_chat_source, ".title = try allocator.dupe(u8, \"PowerShell\")") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, ".title = try allocator.dupe(u8, \"PowerShell\")") != null or
         std.mem.indexOf(u8, ai_chat_source, ".cwd = try allocator.dupe(u8, \"C:\\\\Users\")") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, ".cwd = try allocator.dupe(u8, \"C:\\\\Users\")") != null or
         std.mem.indexOf(u8, ai_chat_source, ".snapshot = try allocator.dupe(u8, \"PS C:\\\\Users>\")") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, ".snapshot = try allocator.dupe(u8, \"PS C:\\\\Users>\")") != null or
         std.mem.indexOf(u8, ai_chat_source, ".tool_name = try allocator.dupe(u8, \"powershell_exec\")") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, ".tool_name = try allocator.dupe(u8, \"powershell_exec\")") != null or
         std.mem.indexOf(u8, ai_chat_source, "running powershell_exec") != null or
-        std.mem.indexOf(u8, ai_chat_source, "Get-ChildItem") != null)
+        std.mem.indexOf(u8, ai_chat_tools_source, "running powershell_exec") != null or
+        std.mem.indexOf(u8, ai_chat_source, "Get-ChildItem") != null or
+        std.mem.indexOf(u8, ai_chat_tools_source, "Get-ChildItem") != null)
     {
         @compileError("ai_chat.zig shared tests must use platform-neutral terminal fixtures unless explicitly testing platform prompt variants");
     }
@@ -551,6 +573,7 @@ comptime {
 
 comptime {
     _ = @import("ai_chat.zig");
+    _ = @import("ai_chat_tools.zig");
     _ = @import("ai_chat_skills.zig");
     _ = @import("ai_chat_types.zig");
     _ = @import("ai_chat_protocol.zig");

@@ -202,7 +202,7 @@ pub const ToolContext = struct {
     approve: *const fn (ctx: *anyopaque, tool: []const u8, command: []const u8, reason: []const u8) bool,
     cancelled: *const fn (ctx: *anyopaque) bool,
 
-    pub fn requestApproval(self: *ToolContext, tool: []const u8, command: []const u8, reason: []const u8) bool {
+    pub fn requestApproval(self: *const ToolContext, tool: []const u8, command: []const u8, reason: []const u8) bool {
         return self.approve(self.ctx, tool, command, reason);
     }
     pub fn isCancelled(self: *const ToolContext) bool {
