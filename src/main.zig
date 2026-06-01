@@ -13,6 +13,7 @@ const app_metadata = @import("app_metadata.zig");
 const platform_console = @import("platform/console.zig");
 const font_backend = @import("platform/font_backend.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
+const i18n = @import("i18n.zig");
 
 // ============================================================================
 // Font Discovery Test Functions (use --list-fonts or --test-font-discovery)
@@ -157,6 +158,10 @@ pub fn main() !void {
     } else {
         std.debug.print("No config file found, using defaults\n", .{});
     }
+
+    // Resolve UI language (explicit config > system locale > en) before any
+    // window/UI renders. Restart-applied (no live switch in v1).
+    i18n.applyConfig(allocator, cfg.language);
 
     // Honor the config opt-in for render diagnostics before any window/GL
     // exists, so the very first WM_SIZE/WM_DPICHANGED events are captured.
