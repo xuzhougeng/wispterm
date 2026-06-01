@@ -1189,3 +1189,141 @@ test "anthropic maps tool_calls to tool_use and tool results to grouped tool_res
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_use_id\":\"call_1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"input_schema\"") != null);
 }
+
+// ---------------------------------------------------------------------------
+// Stream-response parser
+// ---------------------------------------------------------------------------
+
+/// Parse an SSE/streaming response body into an ApiResult.
+/// Handles both OpenAI chat-completions streaming (choices[].delta) and the
+/// Responses API event stream (response.output_text.delta, response.completed,
+/// etc.).  Pure w.r.t. Session — only touches ApiResult/ApiUsage/std.
+pub fn parseApiStreamResponse(allocator: std.mem.Allocator, body: []const u8) !ApiResult {
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer content.deinit(allocator);
+    var reasoning: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer reasoning.deinit(allocator);
+    var usage: ?ApiUsage = null;
+
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (!std.mem.startsWith(u8, line, "data:")) continue;
+
+        const data = std.mem.trim(u8, line["data:".len..], " \t");
+        if (data.len == 0) continue;
+        if (std.mem.eql(u8, data, "[DONE]")) break;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch continue;
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) continue;
+        const obj = root.object;
+        if (parseApiUsage(root)) |u| usage = u;
+
+        if (try parseApiErrorResult(allocator, root)) |result| return result;
+
+        if (jsonStringValue(obj.get("type"))) |event_type| {
+            if (std.mem.eql(u8, event_type, "response.output_text.delta")) {
+                if (jsonStringValue(obj.get("delta"))) |delta| {
+                    if (delta.len > 0) try content.appendSlice(allocator, delta);
+                }
+                continue;
+            }
+            if (std.mem.eql(u8, event_type, "response.reasoning_summary_text.delta") or
+                std.mem.eql(u8, event_type, "response.reasoning_text.delta"))
+            {
+                if (jsonStringValue(obj.get("delta"))) |delta| {
+                    if (delta.len > 0) try reasoning.appendSlice(allocator, delta);
+                }
+                continue;
+            }
+            if (std.mem.eql(u8, event_type, "response.completed")) {
+                if (obj.get("response")) |response_value| {
+                    if (parseApiUsage(response_value)) |u| usage = u;
+                    if (content.items.len == 0) try appendResponsesOutputText(allocator, &content, response_value);
+                    if (reasoning.items.len == 0) try appendResponsesReasoningText(allocator, &reasoning, response_value);
+                }
+                break;
+            }
+            if (std.mem.eql(u8, event_type, "response.failed")) {
+                if (obj.get("response")) |response_value| {
+                    if (response_value == .object) {
+                        if (try parseApiErrorResult(allocator, response_value)) |result| return result;
+                    }
+                }
+                return ApiResult{ .content = try allocator.dupe(u8, "API returned an error") };
+            }
+        }
+
+        const choices_value = obj.get("choices") orelse continue;
+        if (choices_value != .array or choices_value.array.items.len == 0) continue;
+        const choice = choices_value.array.items[0];
+        if (choice != .object) continue;
+        const delta_value = choice.object.get("delta") orelse continue;
+        if (delta_value != .object) continue;
+
+        if (delta_value.object.get("content")) |content_value| {
+            if (content_value == .string and content_value.string.len > 0) {
+                try content.appendSlice(allocator, content_value.string);
+            }
+        }
+        if (delta_value.object.get("reasoning_content")) |reasoning_value| {
+            if (reasoning_value == .string and reasoning_value.string.len > 0) {
+                try reasoning.appendSlice(allocator, reasoning_value.string);
+            }
+        }
+    }
+
+    if (content.items.len == 0 and reasoning.items.len == 0) {
+        const trimmed = std.mem.trim(u8, body, " \t\r\n");
+        if (trimmed.len == 0) return error.EmptyResponse;
+        return ApiResult{ .content = try allocator.dupe(u8, trimmed) };
+    }
+
+    return .{
+        .content = try content.toOwnedSlice(allocator),
+        .reasoning = if (reasoning.items.len > 0) try reasoning.toOwnedSlice(allocator) else null,
+        .usage = usage,
+    };
+}
+
+test "ai chat stream response aggregates content and reasoning chunks" {
+    const allocator = std.testing.allocator;
+    const body =
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Think\"}}]}\n\n" ++
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"ing\",\"content\":null}}]}\n\n" ++
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" ++
+        "data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}\n\n" ++
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":34,\"prompt_cache_hit_tokens\":5,\"prompt_cache_miss_tokens\":7,\"total_tokens\":46}}\n\n" ++
+        "data: [DONE]\n\n";
+
+    const result = try parseApiStreamResponse(allocator, body);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("Hello!", result.content);
+    try std.testing.expect(result.reasoning != null);
+    try std.testing.expectEqualStrings("Thinking", result.reasoning.?);
+    try std.testing.expect(result.usage != null);
+    try std.testing.expectEqual(@as(u64, 46), result.usage.?.total_tokens);
+    try std.testing.expectEqual(@as(u64, 5), result.usage.?.prompt_cache_hit_tokens);
+    try std.testing.expectEqual(@as(u64, 7), result.usage.?.prompt_cache_miss_tokens);
+}
+
+test "ai chat Responses API stream aggregates output text and usage" {
+    const allocator = std.testing.allocator;
+    const body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n" ++
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n" ++
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"Checked\"}\n\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"total_tokens\":12,\"input_tokens_details\":{\"cached_tokens\":2}},\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]}]}}\n\n";
+    const result = try parseApiStreamResponse(allocator, body);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("Hello", result.content);
+    try std.testing.expect(result.reasoning != null);
+    try std.testing.expectEqualStrings("Checked", result.reasoning.?);
+    try std.testing.expect(result.usage != null);
+    try std.testing.expectEqual(@as(u64, 12), result.usage.?.total_tokens);
+    try std.testing.expectEqual(@as(u64, 2), result.usage.?.prompt_cache_hit_tokens);
+    try std.testing.expectEqual(@as(u64, 7), result.usage.?.prompt_cache_miss_tokens);
+}

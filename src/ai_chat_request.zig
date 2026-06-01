@@ -223,7 +223,7 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
     }
 
     return if (request.stream)
-        ai_chat.parseApiStreamResponse(allocator, resp_list.items)
+        ai_chat_protocol.parseApiStreamResponse(allocator, resp_list.items)
     else
         ai_chat_protocol.parseApiResponse(allocator, resp_list.items, request.protocol);
 }
