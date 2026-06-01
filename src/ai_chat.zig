@@ -20,7 +20,20 @@ const markdown_text = @import("markdown_text.zig");
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_chat_composer = @import("ai_chat_composer.zig");
 const ai_chat_skills = @import("ai_chat_skills.zig");
+const ai_chat_types = @import("ai_chat_types.zig");
 const weixin_types = @import("weixin/types.zig");
+
+pub const AgentSettings = ai_chat_types.AgentSettings;
+pub const AgentPermission = ai_chat_types.AgentPermission;
+pub const ToolSurface = ai_chat_types.ToolSurface;
+pub const ToolSnapshot = ai_chat_types.ToolSnapshot;
+pub const ToolClosedTab = ai_chat_types.ToolClosedTab;
+pub const SshProfileSaveArgs = ai_chat_types.SshProfileSaveArgs;
+pub const SavedSshProfile = ai_chat_types.SavedSshProfile;
+pub const ToolHost = ai_chat_types.ToolHost;
+pub const ApprovalView = ai_chat_types.ApprovalView;
+const WeixinReplyContext = ai_chat_types.WeixinReplyContext;
+pub const ToolContext = ai_chat_types.ToolContext;
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -34,8 +47,6 @@ pub const DEFAULT_AGENT = "true";
 pub const DEFAULT_PROTOCOL = ai_chat_protocol.DEFAULT_PROTOCOL;
 pub const DEFAULT_MAX_TOKENS = "8192";
 
-const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
-const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
 const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
 const INPUT_PROMPT_MAX_BYTES: usize = 64 * 1024;
 const SYSTEM_PROMPT_MAX_BYTES: usize = 16 * 1024;
@@ -103,178 +114,6 @@ const RequestMessage = ai_chat_protocol.RequestMessage;
 const ai_chat_title = @import("ai_chat_title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 
-pub const AgentPermission = enum {
-    confirm,
-    full,
-
-    pub fn parse(value: []const u8) ?AgentPermission {
-        if (std.mem.eql(u8, value, "confirm")) return .confirm;
-        if (std.mem.eql(u8, value, "full") or std.mem.eql(u8, value, "full-permission")) return .full;
-        return null;
-    }
-
-    pub fn name(self: AgentPermission) []const u8 {
-        return switch (self) {
-            .confirm => "confirm",
-            .full => "full",
-        };
-    }
-};
-
-pub const AgentSettings = struct {
-    enabled: bool = false,
-    permission: AgentPermission = .confirm,
-    command_timeout_ms: u32 = DEFAULT_AGENT_TIMEOUT_MS,
-    output_limit: u32 = DEFAULT_AGENT_OUTPUT_LIMIT,
-};
-
-pub const ToolSurface = struct {
-    id: []u8,
-    title: []u8,
-    cwd: []u8,
-    snapshot: []u8,
-    tab_index: usize,
-    focused: bool,
-    is_ssh: bool,
-    is_wsl: bool,
-    agent_app: agent_detector.App = .none,
-    agent_state: agent_detector.State = .none,
-    agent_confidence: u8 = 0,
-    ptr: *anyopaque,
-
-    pub fn deinit(self: ToolSurface, allocator: std.mem.Allocator) void {
-        allocator.free(self.id);
-        allocator.free(self.title);
-        allocator.free(self.cwd);
-        allocator.free(self.snapshot);
-    }
-
-    pub fn clone(self: ToolSurface, allocator: std.mem.Allocator) !ToolSurface {
-        const id = try allocator.dupe(u8, self.id);
-        errdefer allocator.free(id);
-        const title = try allocator.dupe(u8, self.title);
-        errdefer allocator.free(title);
-        const cwd = try allocator.dupe(u8, self.cwd);
-        errdefer allocator.free(cwd);
-        const snapshot = try allocator.dupe(u8, self.snapshot);
-        errdefer allocator.free(snapshot);
-        return .{
-            .id = id,
-            .title = title,
-            .cwd = cwd,
-            .snapshot = snapshot,
-            .tab_index = self.tab_index,
-            .focused = self.focused,
-            .is_ssh = self.is_ssh,
-            .is_wsl = self.is_wsl,
-            .agent_app = self.agent_app,
-            .agent_state = self.agent_state,
-            .agent_confidence = self.agent_confidence,
-            .ptr = self.ptr,
-        };
-    }
-};
-
-pub const ToolSnapshot = struct {
-    surfaces: []ToolSurface,
-    active_tab: usize,
-
-    pub fn deinit(self: ToolSnapshot, allocator: std.mem.Allocator) void {
-        for (self.surfaces) |surface| surface.deinit(allocator);
-        allocator.free(self.surfaces);
-    }
-
-    pub fn clone(self: ToolSnapshot, allocator: std.mem.Allocator) !ToolSnapshot {
-        const surfaces = try allocator.alloc(ToolSurface, self.surfaces.len);
-        errdefer allocator.free(surfaces);
-        var written: usize = 0;
-        errdefer {
-            for (surfaces[0..written]) |surface| surface.deinit(allocator);
-        }
-        for (self.surfaces) |surface| {
-            surfaces[written] = try surface.clone(allocator);
-            written += 1;
-        }
-        return .{
-            .surfaces = surfaces,
-            .active_tab = self.active_tab,
-        };
-    }
-};
-
-pub const ToolClosedTab = struct {
-    tab_index: usize,
-    active_tab: usize,
-    title: []u8,
-
-    pub fn deinit(self: ToolClosedTab, allocator: std.mem.Allocator) void {
-        allocator.free(self.title);
-    }
-};
-
-pub const SshProfileSaveArgs = struct {
-    name: []const u8 = "",
-    host: []const u8,
-    user: []const u8,
-    password: []const u8 = "",
-    port: []const u8 = "",
-    proxy_jump: []const u8 = "",
-};
-
-pub const SavedSshProfile = struct {
-    name: []u8,
-    host: []u8,
-    user: []u8,
-    port: []u8,
-    updated_existing: bool,
-    password_saved: bool,
-
-    pub fn deinit(self: SavedSshProfile, allocator: std.mem.Allocator) void {
-        allocator.free(self.name);
-        allocator.free(self.host);
-        allocator.free(self.user);
-        allocator.free(self.port);
-    }
-};
-
-pub const ToolHost = struct {
-    ctx: *anyopaque,
-    collectSnapshot: *const fn (*anyopaque, std.mem.Allocator) anyerror!ToolSnapshot,
-    surfaceSnapshot: *const fn (*anyopaque, std.mem.Allocator, *anyopaque) anyerror![]u8,
-    writeSurface: *const fn (*anyopaque, *anyopaque, []const u8) bool,
-    spawnTab: *const fn (*anyopaque, std.mem.Allocator, []const u8, ?[]const u8) anyerror!ToolSurface,
-    closeTab: *const fn (*anyopaque, std.mem.Allocator, ?usize, ?[]const u8, ?[]const u8) anyerror!ToolClosedTab,
-    saveSshProfile: *const fn (*anyopaque, std.mem.Allocator, SshProfileSaveArgs) anyerror!SavedSshProfile,
-    connectSshProfile: *const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!ToolSurface,
-};
-
-const WeixinReplyContext = struct {
-    sender: weixin_types.AttachmentSender,
-    to_user_id: []u8,
-    context_token: []u8,
-
-    fn init(allocator: std.mem.Allocator, ctx: weixin_types.ReplyContext) !WeixinReplyContext {
-        return .{
-            .sender = ctx.sender,
-            .to_user_id = try allocator.dupe(u8, ctx.to_user_id),
-            .context_token = try allocator.dupe(u8, ctx.context_token),
-        };
-    }
-
-    fn clone(self: WeixinReplyContext, allocator: std.mem.Allocator) !WeixinReplyContext {
-        return .{
-            .sender = self.sender,
-            .to_user_id = try allocator.dupe(u8, self.to_user_id),
-            .context_token = try allocator.dupe(u8, self.context_token),
-        };
-    }
-
-    fn deinit(self: *WeixinReplyContext, allocator: std.mem.Allocator) void {
-        allocator.free(self.to_user_id);
-        allocator.free(self.context_token);
-        self.* = undefined;
-    }
-};
 
 const ChatRequest = struct {
     allocator: std.mem.Allocator,
@@ -326,12 +165,6 @@ const ChatRequest = struct {
 
 const ApiResult = ai_chat_protocol.ApiResult;
 pub const ApiUsage = ai_chat_protocol.ApiUsage;
-
-pub const ApprovalView = struct {
-    tool: []const u8,
-    command: []const u8,
-    reason: []const u8,
-};
 
 /// History hooks may run on request worker threads as well as the UI thread.
 /// Consumers must treat the callback as asynchronous cross-thread delivery and
