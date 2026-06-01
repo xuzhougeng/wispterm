@@ -90,7 +90,10 @@ extern "kernel32" fn GetUserDefaultUILanguage() callconv(.winapi) u16;
 pub fn detectSystemLang(allocator: std.mem.Allocator) Lang {
     const vars = [_][]const u8{ "LC_ALL", "LC_MESSAGES", "LANG" };
     for (vars) |name| {
-        const val = std.process.getEnvVarOwned(allocator, name) catch continue;
+        const val = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+            error.OutOfMemory => return .en, // allocator exhausted; safe fallback
+            else => continue, // missing var / invalid encoding → try next
+        };
         defer allocator.free(val);
         if (val.len == 0) continue;
         return langFromLocaleTag(val);
@@ -145,6 +148,15 @@ test "LanguageSetting.parse handles aliases and invalid" {
     try std.testing.expect(LanguageSetting.parse("ZH").? == .zh_CN);
     try std.testing.expect(LanguageSetting.parse("de") == null);
     try std.testing.expect(LanguageSetting.parse("") == null);
+}
+
+test "applyConfig sets active language" {
+    const a = std.testing.allocator;
+    defer setLang(.en);
+    applyConfig(a, .zh_CN);
+    try std.testing.expect(lang() == .zh_CN);
+    applyConfig(a, .en);
+    try std.testing.expect(lang() == .en);
 }
 
 test "resolve: explicit setting beats system; auto follows env-mapping" {
