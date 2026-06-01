@@ -1,14 +1,12 @@
+English | [简体中文](README.zh-CN.md)
+
 # WispTerm
 
 **WispTerm**, formerly Phantty, is a cross-platform terminal workspace for remote development and AI agent workflows. It is written in Zig and powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
 
 > [!NOTE]
-> WispTerm ships for **Windows** and, as of v0.35.0, **macOS** (Apple Silicon and
-> Intel). **macOS support is new and may still have bugs** — the AppKit/Metal,
-> multi-window, and rendering paths are young and can misbehave in scenarios we
-> haven't covered yet. If you need rock-solid daily stability on macOS, prefer
-> [Ghostty](https://ghostty.org/) for now and please report any issues you hit.
-> The **Linux** port is still in progress (see [TODO.md](TODO.md)).
+> WispTerm ships for **Windows** and **macOS** (Apple Silicon and Intel). The
+> **Linux** port is still in progress (see [TODO.md](TODO.md)).
 
 ## Features
 
