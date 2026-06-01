@@ -171,12 +171,12 @@ showStatusToast(i18n.s().toast_wechat_login_failed);
 
 ## 9. 验收标准
 
-- [ ] `src/i18n.zig` 提供 `Lang` / `Strings` / `s()` / `setLang()`，comptime 强制每个 locale 完整。
-- [ ] 启动时按 §4 顺序解析语言并设置当前语言。
-- [ ] `Config` 新增 `language` 字段，`--language` CLI flag 可用。
-- [ ] 命令中心与状态 toast 两个样板面完成迁移，en 行为不变、zh-CN 显示中文。
-- [ ] 新增单测覆盖 §8，`zig build test` 与 `zig build test-full` 均通过、0 失败。
-- [ ] 运行 app（zh-CN）目检通过：中文正确渲染、布局无破。
+- [x] `src/i18n.zig` 提供 `Lang` / `Strings` / `s()` / `setLang()`，comptime 强制每个 locale 完整。（Task 1/2）
+- [x] 启动时按 §4 顺序解析语言并设置当前语言。（Task 4：`main.zig` 在 `Config.load` 后、`App.init` 前调用 `i18n.applyConfig`）
+- [x] `Config` 新增 `language` 字段，`--language` CLI flag 可用（并已加入 `--help` 与示例配置）。（Task 3）
+- [x] 命令中心与状态 toast 两个样板面完成迁移，en 行为不变（`orelse` 回退英文）、zh-CN 提供中文。（Task 5/6，代码层）
+- [x] 新增单测覆盖 §8，`zig build test` 与 `zig build test-full` 均通过、0 失败。（2026-06-01 实测两套件 EXIT=0）
+- [ ] **运行 app（zh-CN）目检通过：中文正确渲染、布局无破。** ⏳ 待在 macOS / Windows 上人工验证 —— 本仓库无 Linux GUI 后端（`backendForOs(.linux) == .unsupported`），无法在当前 WSL2/Linux 环境运行 GUI。命令见 §8「GUI 目检」。
 
 ## 10. 后续工作（追踪，不在本 PR）
 
