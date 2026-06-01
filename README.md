@@ -1,3 +1,5 @@
+English | [简体中文](README.zh-CN.md)
+
 # WispTerm
 
 **WispTerm**, formerly Phantty, is a cross-platform terminal workspace for remote development and AI agent workflows. It is written in Zig and powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
