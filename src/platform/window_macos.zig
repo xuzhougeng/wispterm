@@ -28,6 +28,11 @@ pub const hotkey_message: MessageId = 0x0312;
 const wm_close: u32 = 0x0010;
 const wm_app: u32 = 0x8000;
 
+/// Reserved message id for the synchronous-send shim (see `sendMessage`).
+/// Distinct from the app-message range thread_message uses (wm_app + 0x51..0x57)
+/// and from `hotkey_message`, so it never collides with a real posted message.
+pub const sync_message: MessageId = wm_app + 0x7e;
+
 extern fn wispterm_macos_window_request_close(handle: NativeHandle) void;
 extern fn wispterm_macos_window_post_message(handle: NativeHandle, message: MessageId, wparam: WordParam, lparam: LongParam) bool;
 extern fn wispterm_macos_window_get_frame(handle: NativeHandle, rect: *Rect) bool;
@@ -85,12 +90,75 @@ pub fn postMessage(hwnd: NativeHandle, message: MessageId, wparam: WordParam, lp
     return wispterm_macos_window_post_message(hwnd, message, wparam, lparam);
 }
 
+/// Wall-clock cap for a blocked `sendMessage` caller. A backstop only: the
+/// window's event loop drains its message queue every frame, so a live window
+/// answers within ~1 frame. The cap bounds the wait if the target window is
+/// tearing down (its native handle is published as 0 first, so callers normally
+/// skip this path) or if the bounded message queue ever overflowed the request.
+const send_message_timeout_ns: u64 = 5 * std.time.ns_per_s;
+
+/// Cross-thread synchronous-call envelope used to emulate Win32 `SendMessage`
+/// on macOS. `sendMessage` posts one of these through the normal async message
+/// queue and blocks until the window's event-loop thread drains it, runs the
+/// real handler on that thread (where the threadlocal UI state lives), records
+/// the result, and signals `done`.
+///
+/// Heap-owned and reference counted (init 2: caller + worker) so that a
+/// timed-out caller and the later-draining worker never use-after-free: each
+/// side releases its reference once and the last release frees the envelope.
+pub const SyncCall = struct {
+    message: MessageId,
+    wparam: WordParam,
+    lparam: LongParam,
+    result: MessageResult = 0,
+    done: std.Thread.ResetEvent = .{},
+    refs: std.atomic.Value(u8) = std.atomic.Value(u8).init(2),
+};
+
+pub fn syncCallFromLparam(lparam: LongParam) *SyncCall {
+    return @ptrFromInt(ptrValueFromLongParam(lparam));
+}
+
+fn releaseSyncCall(call: *SyncCall) void {
+    if (call.refs.fetchSub(1, .acq_rel) == 1) {
+        std.heap.page_allocator.destroy(call);
+    }
+}
+
+/// Event-loop side: called by the window backend's message drain when it pops a
+/// `sync_message`. Records the handler's result, wakes the blocked caller, and
+/// drops the worker's reference.
+pub fn completeSyncCall(call: *SyncCall, result: MessageResult) void {
+    call.result = result;
+    call.done.set();
+    releaseSyncCall(call);
+}
+
+/// Synchronous cross-thread message dispatch. AppKit has no Win32-style
+/// `SendMessage`, so this marshals the message onto the window's event-loop
+/// thread (via the async queue) and blocks until that thread runs the handler
+/// and reports back. Must be called from another thread than the event loop;
+/// every in-tree caller does (weixin poller, remote client, AI tool host's
+/// cross-window path), guarded by the same-thread checks at their call sites.
 pub fn sendMessage(hwnd: NativeHandle, message: MessageId, wparam: WordParam, lparam: LongParam) MessageResult {
-    _ = hwnd;
-    _ = message;
-    _ = wparam;
-    _ = lparam;
-    return 0;
+    if (message == wm_close) {
+        _ = postCloseMessage(hwnd);
+        return 0;
+    }
+    const call = std.heap.page_allocator.create(SyncCall) catch return 0;
+    call.* = .{ .message = message, .wparam = wparam, .lparam = lparam };
+    if (!wispterm_macos_window_post_message(hwnd, sync_message, 0, longParamFromPtrValue(@intFromPtr(call)))) {
+        // Never queued, so the event loop will never touch it: drop both refs.
+        releaseSyncCall(call);
+        releaseSyncCall(call);
+        return 0;
+    }
+    const result: MessageResult = if (call.done.timedWait(send_message_timeout_ns)) |_|
+        call.result
+    else |_|
+        0;
+    releaseSyncCall(call);
+    return result;
 }
 
 pub fn dpiForWindow(hwnd: NativeHandle) u32 {
