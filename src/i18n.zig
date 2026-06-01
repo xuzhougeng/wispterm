@@ -282,7 +282,7 @@ test "toast strings: en source and zh translation both present" {
     try std.testing.expectEqualStrings("WeChat not connected", s().toast_wechat_not_connected);
     setLang(.zh_CN);
     try std.testing.expectEqualStrings("微信未连接", s().toast_wechat_not_connected);
-    try std.testing.expect(s().toast_wechat_poller_started.len > 0);
-    try std.testing.expect(s().toast_wechat_poller_stopped.len > 0);
-    try std.testing.expect(s().toast_wechat_direct_disabled.len > 0);
+    try std.testing.expectEqualStrings("微信轮询已启动", s().toast_wechat_poller_started);
+    try std.testing.expectEqualStrings("微信轮询已停止", s().toast_wechat_poller_stopped);
+    try std.testing.expectEqualStrings("微信直连已禁用", s().toast_wechat_direct_disabled);
 }
