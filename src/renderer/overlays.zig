@@ -116,7 +116,8 @@ threadlocal var g_transfer_cancel_confirm_visible: bool = false;
 const UPDATE_PROMPT_DURATION_MS: i64 = 10000;
 const UPDATE_STATUS_DURATION_MS: i64 = 2500;
 const SSH_CWD_HELP_URL = "https://github.com/xuzhougeng/wispterm#ssh-current-directory-for-downloads-and-uploads";
-const UpdatePromptAction = enum { none, open_release, download_update };
+const update_prompt_model = @import("overlays/update_prompt_model.zig");
+const UpdatePromptAction = update_prompt_model.UpdatePromptAction;
 threadlocal var g_update_prompt_until_ms: i64 = 0;
 threadlocal var g_update_prompt_buf: [128]u8 = undefined;
 threadlocal var g_update_prompt_len: usize = 0;
@@ -3984,33 +3985,10 @@ pub fn showStatusToast(message: []const u8) void {
     AppWindow.g_cells_valid = false;
 }
 
-fn transferToastVerb(kind: AppWindow.file_explorer.TransferKind, status: AppWindow.file_explorer.TransferStatus) []const u8 {
-    return switch (kind) {
-        .download => switch (status) {
-            .in_progress => "Downloading",
-            .success => "Downloaded",
-            .failed => "Download failed",
-            .cancelled => "Download interrupted",
-            .idle => "Download",
-        },
-        .upload => switch (status) {
-            .in_progress => "Uploading",
-            .success => "Uploaded",
-            .failed => "Upload failed",
-            .cancelled => "Upload interrupted",
-            .idle => "Upload",
-        },
-    };
-}
+const transferToastVerb = transfer_toast_model.transferToastVerb;
 
-fn formatTransferToast(
-    buf: []u8,
-    kind: AppWindow.file_explorer.TransferKind,
-    status: AppWindow.file_explorer.TransferStatus,
-    message: []const u8,
-) ![]u8 {
-    return std.fmt.bufPrint(buf, "{s}: {s}", .{ transferToastVerb(kind, status), message });
-}
+const transfer_toast_model = @import("overlays/transfer_toast_model.zig");
+const formatTransferToast = transfer_toast_model.formatTransferToast;
 
 pub fn showTransferToast(
     kind: AppWindow.file_explorer.TransferKind,
@@ -4024,23 +4002,6 @@ pub fn showTransferToast(
     g_transfer_toast_clickable = kind == .download and status == .in_progress;
     if (status != .in_progress) transferCancelConfirmClose();
     g_transfer_toast_until_ms = std.time.milliTimestamp() + TRANSFER_TOAST_DURATION_MS;
-}
-
-test "overlays: transfer toast text describes download states" {
-    var buf: [160]u8 = undefined;
-
-    try std.testing.expectEqualStrings(
-        "Downloading: file.txt",
-        try formatTransferToast(&buf, .download, .in_progress, "file.txt"),
-    );
-    try std.testing.expectEqualStrings(
-        "Downloaded: file.txt",
-        try formatTransferToast(&buf, .download, .success, "file.txt"),
-    );
-    try std.testing.expectEqualStrings(
-        "Download failed: file.txt",
-        try formatTransferToast(&buf, .download, .failed, "file.txt"),
-    );
 }
 
 test "overlays: command center Settings command opens settings page" {
@@ -4183,28 +4144,6 @@ test "overlays: transfer interruption prompt returns explicit actions" {
     );
 }
 
-test "overlays: update prompt action selection prefers downloadable asset" {
-    try std.testing.expectEqual(
-        UpdatePromptAction.download_update,
-        updatePromptActionForResult(.{
-            .state = .update_available,
-            .release_url = "https://example.test/releases/v0.28.0",
-            .asset_download_url = "https://example.test/portable.zip",
-        }),
-    );
-    try std.testing.expectEqual(
-        UpdatePromptAction.open_release,
-        updatePromptActionForResult(.{
-            .state = .download_failed,
-            .release_url = "https://example.test/releases/v0.28.0",
-        }),
-    );
-    try std.testing.expectEqual(
-        UpdatePromptAction.none,
-        updatePromptActionForResult(.{ .state = .up_to_date }),
-    );
-}
-
 test "overlays: stored prompt URL does not affect latest release command URL" {
     showSshCwdFallbackPrompt();
 
@@ -4279,18 +4218,7 @@ pub fn showUpdateCheckResult(result: update_check.CheckResult) void {
     showUpdatePrompt(result, updatePromptActionForResult(result));
 }
 
-fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromptAction {
-    return if (result.state == .update_available and result.asset_download_url.len > 0)
-        .download_update
-    else if (result.state == .update_available and result.release_url.len > 0)
-        .open_release
-    else if (result.state == .failed and result.release_url.len > 0)
-        .open_release
-    else if (result.state == .download_failed and result.release_url.len > 0)
-        .open_release
-    else
-        .none;
-}
+const updatePromptActionForResult = update_prompt_model.updatePromptActionForResult;
 
 fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction) void {
     var status_buf: [96]u8 = undefined;
