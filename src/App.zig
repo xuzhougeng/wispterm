@@ -53,6 +53,9 @@ shader_path: ?[]const u8,
 // Terminal dimensions from config
 initial_cols: u16,
 initial_rows: u16,
+/// True when window-width/window-height were explicitly set in config (>0).
+/// When set, the configured cell grid wins over a remembered window size.
+window_size_from_config: bool,
 
 // Window state options
 maximize: bool,
@@ -201,6 +204,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .shader_path = shader_path,
         .initial_cols = if (cfg.@"window-width" > 0) cfg.@"window-width" else 80,
         .initial_rows = if (cfg.@"window-height" > 0) cfg.@"window-height" else 24,
+        .window_size_from_config = cfg.@"window-width" > 0 or cfg.@"window-height" > 0,
         .maximize = cfg.maximize,
         .fullscreen = cfg.fullscreen,
         .title = title,
@@ -372,6 +376,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.replaceOptStr(&self.shader_path, cfg.@"custom-shader");
     self.initial_cols = if (cfg.@"window-width" > 0) cfg.@"window-width" else 80;
     self.initial_rows = if (cfg.@"window-height" > 0) cfg.@"window-height" else 24;
+    self.window_size_from_config = cfg.@"window-width" > 0 or cfg.@"window-height" > 0;
     self.debug_fps = cfg.@"wispterm-debug-fps";
     self.debug_draw_calls = cfg.@"wispterm-debug-draw-calls";
     self.debug_memory = cfg.@"wispterm-debug-memory";

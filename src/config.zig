@@ -19,7 +19,7 @@ const Config = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
-const ai_chat = @import("ai_chat.zig");
+const ai_agent_config = @import("ai_agent_config.zig");
 const keybind = @import("keybind.zig");
 const link_open = @import("link_open.zig");
 const platform_dirs = @import("platform/dirs.zig");
@@ -290,7 +290,7 @@ theme: ?[]const u8 = null,
 @"desktop-notifications": bool = true,
 
 /// Agent command permission mode: confirm (deny until approved UI exists) or full.
-@"ai-agent-permission": ai_chat.AgentPermission = .confirm,
+@"ai-agent-permission": ai_agent_config.AgentPermission = .confirm,
 
 /// Timeout budget for agent shell/SSH commands.
 @"ai-agent-command-timeout-ms": u32 = 60_000,
@@ -783,7 +783,7 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             log.warn("invalid ai-agent-enabled: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "ai-agent-permission")) {
-        if (ai_chat.AgentPermission.parse(value)) |permission| {
+        if (ai_agent_config.AgentPermission.parse(value)) |permission| {
             self.@"ai-agent-permission" = permission;
         } else {
             log.warn("invalid ai-agent-permission: {s}", .{value});
@@ -1842,7 +1842,7 @@ test "config: ai agent options parse" {
     var cfg: Config = .{};
 
     try std.testing.expectEqual(false, cfg.@"ai-agent-enabled");
-    try std.testing.expectEqual(ai_chat.AgentPermission.confirm, cfg.@"ai-agent-permission");
+    try std.testing.expectEqual(ai_agent_config.AgentPermission.confirm, cfg.@"ai-agent-permission");
 
     cfg.applyKeyValue(allocator, "ai-agent-enabled", "true", ".");
     cfg.applyKeyValue(allocator, "ai-agent-permission", "full", ".");
@@ -1850,7 +1850,7 @@ test "config: ai agent options parse" {
     cfg.applyKeyValue(allocator, "ai-agent-output-limit", "4096", ".");
 
     try std.testing.expectEqual(true, cfg.@"ai-agent-enabled");
-    try std.testing.expectEqual(ai_chat.AgentPermission.full, cfg.@"ai-agent-permission");
+    try std.testing.expectEqual(ai_agent_config.AgentPermission.full, cfg.@"ai-agent-permission");
     try std.testing.expectEqual(@as(u32, 120000), cfg.@"ai-agent-command-timeout-ms");
     try std.testing.expectEqual(@as(u32, 4096), cfg.@"ai-agent-output-limit");
 }

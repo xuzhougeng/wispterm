@@ -7,6 +7,7 @@ const ssh_tunnel = @import("ssh_tunnel.zig");
 const window_backend = @import("platform/window_backend.zig");
 const ui_perf = @import("ui_perf.zig");
 const tab = @import("appwindow/tab.zig");
+const active_tab_state = @import("appwindow/active_tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 720;
 pub const MIN_WIDTH: f32 = 360;
@@ -72,7 +73,7 @@ pub fn width() f32 {
 
 pub fn isVisibleForActiveTab() bool {
     const owner = g_owner_tab orelse return false;
-    return g_visible and owner == tab.g_active_tab;
+    return g_visible and owner == active_tab_state.g_active_tab;
 }
 
 pub fn onTabClosed(closed_idx: usize) void {
@@ -129,7 +130,7 @@ pub fn open(parent: ?window_backend.NativeHandle, url: []const u8) void {
 
     setUrl(url);
     g_visible = true;
-    g_owner_tab = tab.g_active_tab;
+    g_owner_tab = active_tab_state.g_active_tab;
 
     if (g_browser) |browser| {
         navigateCurrentUrl(browser);
@@ -418,25 +419,25 @@ fn copyBounded(dest: []u8, text: []const u8) usize {
 test "browser_panel: visible only on owning active tab" {
     const saved_visible = g_visible;
     const saved_owner = g_owner_tab;
-    const saved_active_tab = tab.g_active_tab;
+    const saved_active_tab = active_tab_state.g_active_tab;
     defer {
         g_visible = saved_visible;
         g_owner_tab = saved_owner;
-        tab.g_active_tab = saved_active_tab;
+        active_tab_state.g_active_tab = saved_active_tab;
     }
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     g_visible = true;
     g_owner_tab = 0;
 
     try std.testing.expect(isVisibleForActiveTab());
     try std.testing.expectEqual(DEFAULT_WIDTH, width());
 
-    tab.g_active_tab = 1;
+    active_tab_state.g_active_tab = 1;
     try std.testing.expect(!isVisibleForActiveTab());
     try std.testing.expectEqual(@as(f32, 0), width());
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     try std.testing.expect(isVisibleForActiveTab());
 }
 

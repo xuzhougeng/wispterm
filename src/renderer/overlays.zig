@@ -116,7 +116,8 @@ threadlocal var g_transfer_cancel_confirm_visible: bool = false;
 const UPDATE_PROMPT_DURATION_MS: i64 = 10000;
 const UPDATE_STATUS_DURATION_MS: i64 = 2500;
 const SSH_CWD_HELP_URL = "https://github.com/xuzhougeng/wispterm#ssh-current-directory-for-downloads-and-uploads";
-const UpdatePromptAction = enum { none, open_release, download_update };
+const update_prompt_model = @import("overlays/update_prompt_model.zig");
+const UpdatePromptAction = update_prompt_model.UpdatePromptAction;
 threadlocal var g_update_prompt_until_ms: i64 = 0;
 threadlocal var g_update_prompt_buf: [128]u8 = undefined;
 threadlocal var g_update_prompt_len: usize = 0;
@@ -299,7 +300,10 @@ pub fn commandPaletteLeaveAgentHistory() void {
 pub fn commandPaletteBackspace() void {
     if (commandPaletteIsHistoryMode()) return;
     if (g_command_palette_filter_len == 0) return;
-    g_command_palette_filter_len -= 1;
+    // Remove a whole UTF-8 codepoint: walk back over continuation bytes (0b10xxxxxx).
+    var n = g_command_palette_filter_len - 1;
+    while (n > 0 and (g_command_palette_filter[n] & 0xC0) == 0x80) n -= 1;
+    g_command_palette_filter_len = n;
     commandPaletteClampSelection();
 }
 
@@ -312,13 +316,15 @@ pub fn commandPaletteClearFilter() void {
 pub fn commandPaletteInsertChar(codepoint: u21) void {
     if (commandPaletteIsHistoryMode()) return;
     if (codepoint < 0x20 or codepoint == 0x7f) return;
-    if (g_command_palette_filter_len >= g_command_palette_filter.len) return;
 
-    if (codepoint <= 0x7f) {
-        g_command_palette_filter[g_command_palette_filter_len] = @intCast(codepoint);
-        g_command_palette_filter_len += 1;
-        commandPaletteClampSelection();
-    }
+    // UTF-8-encode the codepoint so CJK (e.g. IME-committed 中文) is accepted,
+    // not just ASCII. Mirrors the terminal char path's utf8Encode.
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
+    if (g_command_palette_filter_len + len > g_command_palette_filter.len) return;
+    @memcpy(g_command_palette_filter[g_command_palette_filter_len..][0..len], buf[0..len]);
+    g_command_palette_filter_len += len;
+    commandPaletteClampSelection();
 }
 
 pub fn commandPaletteExecuteSelected() void {
@@ -485,10 +491,10 @@ fn executeCommand(action: CommandAction) void {
         .open_latest_release => openLatestRelease(),
         .update_skills => {
             if (AppWindow.g_app) |app| {
-                showStatusToast("Updating skills...");
+                showStatusToast(i18n.s().toast_updating_skills);
                 app.requestSkillUpdate();
             } else {
-                showStatusToast("Update Skills unavailable");
+                showStatusToast(i18n.s().toast_update_skills_unavailable);
             }
         },
     }
@@ -502,11 +508,11 @@ fn activeWeixinController() ?*weixin_qr_panel.Controller {
 fn connectWeixinDirect() void {
     const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
     const controller = activeWeixinController() orelse {
-        showStatusToast("Enable weixin-direct-enabled first");
+        showStatusToast(i18n.s().toast_enable_weixin_first);
         return;
     };
     weixin_qr_panel.start(allocator, controller) catch {
-        showStatusToast("WeChat login failed to start");
+        showStatusToast(i18n.s().toast_wechat_login_failed);
         return;
     };
     AppWindow.g_force_rebuild = true;
@@ -515,24 +521,24 @@ fn connectWeixinDirect() void {
 
 fn startWeixinDirect() void {
     const controller = activeWeixinController() orelse {
-        showStatusToast("Enable weixin-direct-enabled first");
+        showStatusToast(i18n.s().toast_enable_weixin_first);
         return;
     };
     const before = controller.statusSnapshot();
     if (before.running) {
-        showStatusToast("WeChat poller already running");
+        showStatusToast(i18n.s().toast_wechat_poller_already_running);
         return;
     }
     controller.start() catch |err| {
         std.debug.print("weixin direct start failed from command palette: {}\n", .{err});
-        showStatusToast("WeChat start failed");
+        showStatusToast(i18n.s().toast_wechat_start_failed);
         return;
     };
     const after = controller.statusSnapshot();
     if (after.running) {
         showStatusToast(i18n.s().toast_wechat_poller_started);
     } else if (after.has_token) {
-        showStatusToast("WeChat binding saved; poller stopped");
+        showStatusToast(i18n.s().toast_wechat_binding_saved_stopped);
     } else {
         showStatusToast(i18n.s().toast_wechat_not_connected);
     }
@@ -540,7 +546,7 @@ fn startWeixinDirect() void {
 
 fn stopWeixinDirect() void {
     const controller = activeWeixinController() orelse {
-        showStatusToast("WeChat direct is not active");
+        showStatusToast(i18n.s().toast_wechat_not_active);
         return;
     };
     const before = controller.statusSnapshot();
@@ -552,9 +558,9 @@ fn stopWeixinDirect() void {
     if (before.running) {
         showStatusToast(i18n.s().toast_wechat_poller_stopped);
     } else if (before.login_active) {
-        showStatusToast("WeChat login is still waiting");
+        showStatusToast(i18n.s().toast_wechat_login_waiting);
     } else {
-        showStatusToast("WeChat poller already stopped");
+        showStatusToast(i18n.s().toast_wechat_poller_already_stopped);
     }
 }
 
@@ -596,15 +602,15 @@ fn weixinLoginStatusName(status: weixin_types.QrStatusKind) []const u8 {
 
 fn unbindWeixinDirect() void {
     const controller = activeWeixinController() orelse {
-        showStatusToast("WeChat direct is not active");
+        showStatusToast(i18n.s().toast_wechat_not_active);
         return;
     };
     controller.unbind() catch {
-        showStatusToast("WeChat unbind failed");
+        showStatusToast(i18n.s().toast_wechat_unbind_failed);
         return;
     };
     weixin_qr_panel.close();
-    showStatusToast("WeChat unbound");
+    showStatusToast(i18n.s().toast_wechat_unbound);
 }
 
 pub fn weixinQrPanelHandleAction(action: weixin_qr_panel.Action) void {
@@ -619,11 +625,11 @@ pub fn weixinQrPanelHandleAction(action: weixin_qr_panel.Action) void {
         .retry => {
             const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
             const controller = weixin_qr_panel.controller() orelse activeWeixinController() orelse {
-                showStatusToast("WeChat direct is not active");
+                showStatusToast(i18n.s().toast_wechat_not_active);
                 return;
             };
             weixin_qr_panel.start(allocator, controller) catch {
-                showStatusToast("WeChat login failed to start");
+                showStatusToast(i18n.s().toast_wechat_login_failed);
                 return;
             };
             AppWindow.g_force_rebuild = true;
@@ -655,13 +661,54 @@ fn commandEntryMatches(entry: CommandEntry) bool {
 }
 
 fn commandEntryTitleMatches(entry: CommandEntry, filter: []const u8) bool {
-    return containsIgnoreCase(i18n.commandTitle(entry.action) orelse entry.title, filter);
+    // Match the English source title always (so e.g. typing "settings" finds 设置),
+    // plus the localized title (so 中文 search works too).
+    if (containsIgnoreCase(entry.title, filter)) return true;
+    if (i18n.commandTitle(entry.action)) |localized| {
+        if (containsIgnoreCase(localized, filter)) return true;
+    }
+    return false;
 }
 
 fn commandEntrySecondaryMatches(entry: CommandEntry, filter: []const u8) bool {
     var shortcut_buf: [64]u8 = undefined;
-    return containsIgnoreCase(i18n.commandDetail(entry.action) orelse entry.detail, filter) or
-        containsIgnoreCase(commandEntryShortcut(entry, &shortcut_buf), filter);
+    if (containsIgnoreCase(entry.detail, filter)) return true;
+    if (i18n.commandDetail(entry.action)) |localized| {
+        if (containsIgnoreCase(localized, filter)) return true;
+    }
+    return containsIgnoreCase(commandEntryShortcut(entry, &shortcut_buf), filter);
+}
+
+test "command palette filter accepts UTF-8 CJK and backspaces whole codepoints" {
+    commandPaletteClearFilter();
+    defer commandPaletteClearFilter();
+    commandPaletteInsertChar('a'); // ASCII (1 byte)
+    commandPaletteInsertChar(0x8BBE); // 设 (3 bytes)
+    commandPaletteInsertChar(0x7F6E); // 置 (3 bytes)
+    try std.testing.expectEqualStrings("a设置", commandPaletteFilter());
+    commandPaletteBackspace(); // removes 置 as one codepoint, not one byte
+    try std.testing.expectEqualStrings("a设", commandPaletteFilter());
+    commandPaletteBackspace();
+    try std.testing.expectEqualStrings("a", commandPaletteFilter());
+    commandPaletteBackspace();
+    try std.testing.expectEqualStrings("", commandPaletteFilter());
+}
+
+test "command palette matches English source even when title is localized" {
+    defer i18n.setLang(.en);
+    const entry = CommandEntry{
+        .title = "Settings",
+        .detail = "Open the settings page",
+        .shortcut = "",
+        .action = .open_settings,
+    };
+    i18n.setLang(.zh_CN);
+    try std.testing.expect(commandEntryTitleMatches(entry, "settings")); // English finds the zh-labeled command
+    try std.testing.expect(commandEntryTitleMatches(entry, "设置")); // Chinese also matches
+    try std.testing.expect(!commandEntryTitleMatches(entry, "zzz"));
+    i18n.setLang(.en);
+    try std.testing.expect(commandEntryTitleMatches(entry, "Settings"));
+    try std.testing.expect(!commandEntryTitleMatches(entry, "设置")); // no localized title under en
 }
 
 fn commandEntryKeybindAction(action: CommandAction) ?keybind.Action {
@@ -890,6 +937,26 @@ fn commandPaletteLayout(window_width: f32, window_height: f32, top_offset: f32) 
         .row_top_px = row_top_px,
         .row_h = row_h,
         .rendered_rows = rendered_rows,
+    };
+}
+
+pub const ImeCaretPx = struct { x: f32, y: f32, h: f32 };
+
+/// Pixel position (top-down client coords) of the command-palette filter caret,
+/// so the OS IME composition/candidate window anchors to the filter — not the
+/// underlying terminal/AI-chat cursor. Returns null when the palette is not in
+/// text-filter mode. Inputs must match what renderCommandPalette is called with.
+pub fn commandPaletteImeCaret(window_width: f32, window_height: f32, top_offset: f32) ?ImeCaretPx {
+    if (!g_command_palette_visible) return null;
+    if (commandPaletteIsHistoryMode()) return null; // history mode has no text filter
+    const layout = commandPaletteLayout(window_width, window_height, top_offset);
+    const pad_x: f32 = 24; // must match renderCommandPalette
+    const text_x = @round(layout.box_x + pad_x) + 12;
+    const cell_h = font.g_titlebar_cell_height;
+    return .{
+        .x = text_x + measureTitlebarText(commandPaletteFilter()),
+        .y = layout.box_top_px + layout.header_h + (layout.filter_h - cell_h) / 2,
+        .h = cell_h,
     };
 }
 
@@ -1216,8 +1283,8 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
 
     const pad_x: f32 = 24;
     const title_y = textYFromTop(window_height, layout.box_top_px + 16);
-    renderTitlebarText(if (commandPaletteIsHistoryMode()) "Agent History" else "Command Center", layout.box_x + pad_x, title_y, title_color);
-    const esc_hint = if (commandPaletteIsHistoryMode()) "Esc returns" else "Esc closes";
+    renderTitlebarText(if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_history_title else i18n.s().cmd_palette_title, layout.box_x + pad_x, title_y, title_color);
+    const esc_hint = if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_esc_returns else i18n.s().cmd_palette_esc_closes;
     renderTitlebarText(esc_hint, layout.box_x + layout.box_w - pad_x - measureTitlebarText(esc_hint), title_y, muted);
 
     const filter_x = @round(layout.box_x + pad_x);
@@ -1229,22 +1296,22 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
     const filter_text_y = rowTextY(filter_box_y, layout.filter_h);
     if (commandPaletteIsHistoryMode()) {
         const history_hint = if (g_command_palette_history_rows.len == 0)
-            "No saved agent sessions yet"
+            i18n.s().cmd_palette_no_sessions_yet
         else
-            "Recent agent sessions";
+            i18n.s().cmd_palette_recent_sessions;
         renderTitlebarTextLimited(history_hint, filter_x + 12, filter_text_y, dim, filter_w - 24);
     } else {
         const filter = commandPaletteFilter();
         if (filter.len > 0) {
             renderTitlebarTextLimited(filter, filter_x + 12, filter_text_y, fg, filter_w - 24);
         } else {
-            renderTitlebarTextLimited("Filter commands or themes", filter_x + 12, filter_text_y, dim, filter_w - 24);
+            renderTitlebarTextLimited(i18n.s().cmd_palette_filter_placeholder, filter_x + 12, filter_text_y, dim, filter_w - 24);
         }
     }
 
     if (commandPaletteIsHistoryMode()) {
         if (g_command_palette_history_rows.len == 0) {
-            const empty_text = "No saved agent sessions";
+            const empty_text = i18n.s().cmd_palette_no_sessions;
             const empty_y = @round(window_height - layout.row_top_px - layout.row_h + (layout.row_h - overlayTextHeight()) / 2);
             renderTitlebarText(empty_text, layout.box_x + (layout.box_w - measureTitlebarText(empty_text)) / 2, empty_y, muted);
         } else {
@@ -1360,7 +1427,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
         }
     }
 
-    const footer = if (commandPaletteIsHistoryMode()) "Up/Down selects, Enter reopens, Delete removes, Esc returns" else "Up/Down + Enter applies";
+    const footer = if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_footer_history else i18n.s().cmd_palette_footer;
     renderTitlebarTextLimited(footer, layout.box_x + pad_x, rowTextY(box_y, layout.footer_h), muted, layout.box_w - pad_x * 2);
 }
 
@@ -1368,36 +1435,17 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
 // New session / SSH launcher
 // ============================================================================
 
-const SSH_FIELD_COUNT = 6;
-const SSH_FIELD_MAX = 128;
+const profile_codec = @import("overlays/profile_codec.zig");
+const SSH_FIELD_COUNT = profile_codec.SSH_FIELD_COUNT;
+const SSH_FIELD_MAX = profile_codec.SSH_FIELD_MAX;
 const SSH_PROFILE_MAX = 16;
 const SSH_PROFILE_NONE = std.math.maxInt(usize);
-const AI_FIELD_COUNT = 11;
-const AI_FIELD_MAX = 8192;
+const AI_FIELD_COUNT = profile_codec.AI_FIELD_COUNT;
+const AI_FIELD_MAX = profile_codec.AI_FIELD_MAX;
 const AI_PROFILE_MAX = 16;
 const AI_PROFILE_NONE = std.math.maxInt(usize);
-const SshField = enum(usize) {
-    name = 0,
-    ip = 1,
-    user = 2,
-    password = 3,
-    port = 4,
-    proxy_jump = 5,
-};
-
-const AiField = enum(usize) {
-    name = 0,
-    base_url = 1,
-    api_key = 2,
-    model = 3,
-    system_prompt = 4,
-    thinking = 5,
-    reasoning_effort = 6,
-    stream = 7,
-    agent = 8,
-    protocol = 9,
-    max_tokens = 10,
-};
+const SshField = profile_codec.SshField;
+const AiField = profile_codec.AiField;
 
 const SessionAction = enum {
     local_shell,
@@ -1431,10 +1479,7 @@ const AiListMode = enum {
     delete_select,
 };
 
-const SshProfile = struct {
-    fields: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined,
-    lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT,
-};
+const SshProfile = profile_codec.SshProfile;
 pub const AgentSshConnectResult = union(enum) {
     connected: *Surface,
     not_found,
@@ -1447,10 +1492,7 @@ pub const DefaultAgentOpenResult = enum {
     failed,
 };
 
-const AiProfile = struct {
-    fields: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
-    lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT,
-};
+const AiProfile = profile_codec.AiProfile;
 
 const SessionLayout = struct {
     box_x: f32,
@@ -1898,10 +1940,7 @@ fn sshField(field: SshField) []const u8 {
     return g_ssh_bufs[idx][0..g_ssh_lens[idx]];
 }
 
-fn profileField(profile: *const SshProfile, field: SshField) []const u8 {
-    const idx: usize = @intFromEnum(field);
-    return profile.fields[idx][0..profile.lens[idx]];
-}
+const profileField = profile_codec.profileField;
 
 fn findSshProfileIndex(identifier_raw: []const u8) ?usize {
     loadSshProfiles();
@@ -1928,21 +1967,9 @@ pub fn agentConnectSshProfile(identifier: []const u8) AgentSshConnectResult {
     return .{ .connected = surface };
 }
 
-fn copySshProfileField(profile: *SshProfile, field: SshField, value: []const u8) void {
-    const idx: usize = @intFromEnum(field);
-    const len = @min(value.len, SSH_FIELD_MAX);
-    @memcpy(profile.fields[idx][0..len], value[0..len]);
-    profile.lens[idx] = len;
-}
+const copySshProfileField = profile_codec.copySshProfileField;
 
-fn makeSshProfile(name: []const u8, host: []const u8, user: []const u8, port: []const u8) SshProfile {
-    var profile = SshProfile{};
-    copySshProfileField(&profile, .name, name);
-    copySshProfileField(&profile, .ip, host);
-    copySshProfileField(&profile, .user, user);
-    copySshProfileField(&profile, .port, port);
-    return profile;
-}
+const makeSshProfile = profile_codec.makeSshProfile;
 
 pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat.SshProfileSaveArgs) !AppWindow.ai_chat.SavedSshProfile {
     loadSshProfiles();
@@ -2443,12 +2470,7 @@ fn setAiDefault(field: AiField, value: []const u8) void {
     g_ai_lens[idx] = len;
 }
 
-fn setProfileDefault(profile: *AiProfile, field: AiField, value: []const u8) void {
-    const idx: usize = @intFromEnum(field);
-    const len = @min(value.len, AI_FIELD_MAX);
-    @memcpy(profile.fields[idx][0..len], value[0..len]);
-    profile.lens[idx] = len;
-}
+const setProfileDefault = profile_codec.setProfileDefault;
 
 fn clearAiForm() void {
     g_ai_lens = .{0} ** AI_FIELD_COUNT;
@@ -2556,10 +2578,7 @@ fn aiField(field: AiField) []const u8 {
     return g_ai_bufs[idx][0..g_ai_lens[idx]];
 }
 
-fn aiProfileField(profile: *const AiProfile, field: AiField) []const u8 {
-    const idx: usize = @intFromEnum(field);
-    return profile.fields[idx][0..profile.lens[idx]];
-}
+const aiProfileField = profile_codec.aiProfileField;
 
 fn runAiListRow(row: usize) void {
     switch (g_ai_list_mode) {
@@ -2837,24 +2856,7 @@ fn loadAiProfiles() void {
 /// fields absent from the line (e.g. `protocol`/`max_tokens` from older builds)
 /// are defaulted rather than misaligned, so profiles written before the schema
 /// grew still load correctly.
-fn decodeAiProfileLine(line: []const u8) ?AiProfile {
-    var profile = AiProfile{};
-    var parts = std.mem.splitScalar(u8, line, '\t');
-    var field_idx: usize = 0;
-    while (field_idx < AI_FIELD_COUNT) : (field_idx += 1) {
-        const part = parts.next() orelse break;
-        const decoded = decodeHexFieldToSlice(part, profile.fields[field_idx][0..]) orelse return null;
-        profile.lens[field_idx] = decoded;
-    }
-    if (field_idx < 5) return null;
-    if (profile.lens[@intFromEnum(AiField.thinking)] == 0) setProfileDefault(&profile, .thinking, AppWindow.ai_chat.DEFAULT_THINKING);
-    if (profile.lens[@intFromEnum(AiField.reasoning_effort)] == 0) setProfileDefault(&profile, .reasoning_effort, AppWindow.ai_chat.DEFAULT_REASONING_EFFORT);
-    if (profile.lens[@intFromEnum(AiField.stream)] == 0) setProfileDefault(&profile, .stream, AppWindow.ai_chat.DEFAULT_STREAM);
-    if (profile.lens[@intFromEnum(AiField.agent)] == 0) setProfileDefault(&profile, .agent, AppWindow.ai_chat.DEFAULT_AGENT);
-    if (profile.lens[@intFromEnum(AiField.protocol)] == 0) setProfileDefault(&profile, .protocol, AppWindow.ai_chat.DEFAULT_PROTOCOL);
-    if (profile.lens[@intFromEnum(AiField.max_tokens)] == 0) setProfileDefault(&profile, .max_tokens, AppWindow.ai_chat.DEFAULT_MAX_TOKENS);
-    return profile;
-}
+const decodeAiProfileLine = profile_codec.decodeAiProfileLine;
 
 fn saveAiProfiles(allocator: std.mem.Allocator) void {
     const path = aiProfilesPath(allocator) catch return;
@@ -2904,21 +2906,7 @@ fn loadSshProfiles() void {
     }
 }
 
-/// Decode one tab-separated, hex-encoded SSH profile line into an `SshProfile`.
-/// Returns null only when a present field contains malformed hex; trailing
-/// fields absent from the line are left empty so profiles written by older
-/// builds (with fewer fields) still load after the schema grows.
-fn decodeSshProfileLine(line: []const u8) ?SshProfile {
-    var profile = SshProfile{};
-    var parts = std.mem.splitScalar(u8, line, '\t');
-    var field_idx: usize = 0;
-    while (field_idx < SSH_FIELD_COUNT) : (field_idx += 1) {
-        const part = parts.next() orelse break;
-        const decoded = decodeHexField(part, &profile.fields[field_idx]) orelse return null;
-        profile.lens[field_idx] = decoded;
-    }
-    return profile;
-}
+const decodeSshProfileLine = profile_codec.decodeSshProfileLine;
 
 fn saveSshProfiles(allocator: std.mem.Allocator) void {
     const path = sshProfilesPath(allocator) catch return;
@@ -2951,28 +2939,9 @@ fn appendHexField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)
     }
 }
 
-fn decodeHexField(value: []const u8, out: *[SSH_FIELD_MAX]u8) ?usize {
-    return decodeHexFieldToSlice(value, out[0..]);
-}
-
-fn decodeHexFieldToSlice(value: []const u8, out: []u8) ?usize {
-    if (value.len % 2 != 0) return null;
-    const len = @min(value.len / 2, out.len);
-    var i: usize = 0;
-    while (i < len) : (i += 1) {
-        const hi = hexValue(value[i * 2]) orelse return null;
-        const lo = hexValue(value[i * 2 + 1]) orelse return null;
-        out[i] = (hi << 4) | lo;
-    }
-    return len;
-}
-
-fn hexValue(ch: u8) ?u8 {
-    if (ch >= '0' and ch <= '9') return ch - '0';
-    if (ch >= 'a' and ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' and ch <= 'F') return ch - 'A' + 10;
-    return null;
-}
+const decodeHexField = profile_codec.decodeHexField;
+const decodeHexFieldToSlice = profile_codec.decodeHexFieldToSlice;
+const hexValue = profile_codec.hexValue;
 
 fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
     const right_w = if (right.len > 0) measureTitlebarText(right) + 36.0 else 0.0;
@@ -2981,47 +2950,47 @@ fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
 
 fn sessionLauncherTitle() []const u8 {
     if (g_ai_form_visible) {
-        return "AI Agent";
+        return i18n.s().sl_ai_agent;
     }
     if (g_ai_list_visible) {
         return switch (g_ai_list_mode) {
-            .manage => "LLM Providers",
-            .edit_select => "Edit LLM Provider",
-            .delete_select => "Delete LLM Provider",
+            .manage => i18n.s().sl_llm_providers,
+            .edit_select => i18n.s().sl_edit_llm_provider,
+            .delete_select => i18n.s().sl_delete_llm_provider,
         };
     }
-    if (g_ssh_form_visible) return "SSH Server";
+    if (g_ssh_form_visible) return i18n.s().sl_ssh_server;
     if (g_ssh_list_visible) {
         return switch (g_ssh_list_mode) {
-            .manage => "SSH Servers",
-            .edit_select => "Edit SSH Server",
-            .delete_select => "Delete SSH Server",
+            .manage => i18n.s().sl_ssh_servers,
+            .edit_select => i18n.s().sl_edit_ssh_server,
+            .delete_select => i18n.s().sl_delete_ssh_server,
         };
     }
-    return "New Session";
+    return i18n.s().sl_new_session;
 }
 
 fn sessionLauncherHint() []const u8 {
     if (g_ai_form_visible) {
-        return "Configure once, then Enter opens";
+        return i18n.s().sl_hint_ai_form;
     }
     if (g_ai_list_visible) {
         return switch (g_ai_list_mode) {
-            .manage => "Enter opens, New/Edit/Delete manage",
-            .edit_select => "Choose a profile to edit",
-            .delete_select => "Choose a profile to delete",
+            .manage => i18n.s().sl_hint_ai_manage,
+            .edit_select => i18n.s().sl_hint_choose_profile_edit,
+            .delete_select => i18n.s().sl_hint_choose_profile_delete,
         };
     }
-    if (g_ssh_form_visible) return "Tab changes field, Enter connects";
+    if (g_ssh_form_visible) return i18n.s().sl_hint_ssh_form;
     if (g_ssh_list_visible) {
         const has_filter = g_ssh_list_filter_len > 0;
         return switch (g_ssh_list_mode) {
-            .manage => if (has_filter) "Type to filter, Backspace edits, Enter connects" else "Type to filter, Enter connects, New/Edit/Delete manage",
-            .edit_select => if (has_filter) "Type to filter, Choose a server to edit" else "Choose a server to edit",
-            .delete_select => if (has_filter) "Type to filter, Choose a server to delete" else "Choose a server to delete",
+            .manage => if (has_filter) i18n.s().sl_hint_ssh_filter_edits else i18n.s().sl_hint_ssh_filter_manage,
+            .edit_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_edit else i18n.s().sl_hint_choose_server_edit,
+            .delete_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_delete else i18n.s().sl_hint_choose_server_delete,
         };
     }
-    return "Up/Down select, Enter starts";
+    return i18n.s().sl_hint_main;
 }
 
 fn sessionDesiredBoxWidth() f32 {
@@ -3030,32 +2999,32 @@ fn sessionDesiredBoxWidth() f32 {
     var desired = @max(measureTitlebarText(title), measureTitlebarText(hint)) + 48.0;
 
     if (g_ai_form_visible) {
-        desired = @max(desired, sessionTwoColumnWidth("Profile name", aiField(.name)));
-        desired = @max(desired, sessionTwoColumnWidth("Base URL", aiField(.base_url)));
-        desired = @max(desired, sessionTwoColumnWidth("API key", aiField(.api_key)));
-        desired = @max(desired, sessionTwoColumnWidth("Model", aiField(.model)));
-        desired = @max(desired, sessionTwoColumnWidth("System", aiField(.system_prompt)));
-        desired = @max(desired, sessionTwoColumnWidth("Thinking", aiField(.thinking)));
-        desired = @max(desired, sessionTwoColumnWidth("Effort", aiField(.reasoning_effort)));
-        desired = @max(desired, sessionTwoColumnWidth("Stream", aiField(.stream)));
-        desired = @max(desired, sessionTwoColumnWidth("Protocol", aiProtocolDisplay()));
-        desired = @max(desired, sessionTwoColumnWidth("Max Tokens", aiField(.max_tokens)));
-        desired = @max(desired, sessionTwoColumnWidth("Save & Open", "agent"));
-        desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
-        desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_profile_name, aiField(.name)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_base_url, aiField(.base_url)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_api_key, aiField(.api_key)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_model, aiField(.model)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_system, aiField(.system_prompt)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_thinking, aiField(.thinking)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_effort, aiField(.reasoning_effort)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_stream, aiField(.stream)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_protocol, aiProtocolDisplay()));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_max_tokens, aiField(.max_tokens)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save_open, i18n.s().sl_v_agent));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save, i18n.s().sl_v_profile));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_cancel, "Esc"));
         return desired;
     }
 
     if (g_ssh_form_visible) {
-        desired = @max(desired, sessionTwoColumnWidth("Server name", sshField(.name)));
-        desired = @max(desired, sessionTwoColumnWidth("IP / host", sshField(.ip)));
-        desired = @max(desired, sessionTwoColumnWidth("User", sshField(.user)));
-        desired = @max(desired, sessionTwoColumnWidth("Password", sshField(.password)));
-        desired = @max(desired, sessionTwoColumnWidth("Port", sshField(.port)));
-        desired = @max(desired, sessionTwoColumnWidth("Jump host", sshField(.proxy_jump)));
-        desired = @max(desired, sessionTwoColumnWidth("Save & Connect", platform_pty_command.sshLauncherDetail()));
-        desired = @max(desired, sessionTwoColumnWidth("Save", "profile"));
-        desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_server_name, sshField(.name)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_ip_host, sshField(.ip)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_user, sshField(.user)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_password, sshField(.password)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_port, sshField(.port)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_jump_host, sshField(.proxy_jump)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail()));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save, i18n.s().sl_v_profile));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_cancel, "Esc"));
         return desired;
     }
 
@@ -3074,13 +3043,13 @@ fn sessionDesiredBoxWidth() f32 {
         }
         switch (g_ai_list_mode) {
             .manage => {
-                desired = @max(desired, sessionTwoColumnWidth("New LLM Provider", "add"));
-                desired = @max(desired, sessionTwoColumnWidth("Edit LLM Provider", if (g_ai_profile_count > 0) "choose" else "no profile"));
-                desired = @max(desired, sessionTwoColumnWidth("Delete LLM Provider", if (g_ai_profile_count > 0) "choose" else "no profile"));
-                desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_new_llm_provider, i18n.s().sl_v_add));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_cancel, "Esc"));
             },
             .edit_select, .delete_select => {
-                desired = @max(desired, sessionTwoColumnWidth("Back", "manage"));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_v_manage));
             },
         }
         return desired;
@@ -3103,24 +3072,24 @@ fn sessionDesiredBoxWidth() f32 {
         }
         switch (g_ssh_list_mode) {
             .manage => {
-                desired = @max(desired, sessionTwoColumnWidth("New SSH Server", "add"));
-                desired = @max(desired, sessionTwoColumnWidth("Edit SSH Server", if (g_ssh_profile_count > 0) "choose" else "no server"));
-                desired = @max(desired, sessionTwoColumnWidth("Delete SSH Server", if (g_ssh_profile_count > 0) "choose" else "no server"));
-                desired = @max(desired, sessionTwoColumnWidth("Cancel", "Esc"));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_new_ssh_server, i18n.s().sl_v_add));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_cancel, "Esc"));
             },
             .edit_select, .delete_select => {
-                desired = @max(desired, sessionTwoColumnWidth("Back", "manage"));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_v_manage));
             },
         }
         return desired;
     }
 
     desired = @max(desired, sessionTwoColumnWidth(platform_pty_command.localShellLauncherTitle(), AppWindow.configuredLocalShellSessionDetail()));
-    desired = @max(desired, sessionTwoColumnWidth("SSH", "connect server"));
+    desired = @max(desired, sessionTwoColumnWidth("SSH", i18n.s().sl_v_connect_server));
     if (platform_pty_command.sessionLauncherWslRow() != null) {
         desired = @max(desired, sessionTwoColumnWidth("WSL", platform_pty_command.wslLauncherDetail()));
     }
-    desired = @max(desired, sessionTwoColumnWidth("AI Agent", defaultAiModeLabel()));
+    desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_agent, defaultAiModeLabel()));
     return desired;
 }
 
@@ -3294,17 +3263,17 @@ fn sshProfileTarget(profile: *const SshProfile, target_buf: []u8) []const u8 {
 fn renderAiProfileRow(layout: SessionLayout, window_height: f32, row: usize, profile: *const AiProfile, selected: bool) void {
     const name = aiProfileField(profile, .name);
     const mode = aiProfileModeLabel(profile);
-    var detail_buf: [24]u8 = undefined;
+    var detail_buf: [48]u8 = undefined;
     const detail = if (row == defaultAiProfileIndex())
-        (std.fmt.bufPrint(detail_buf[0..], "{s} (default)", .{mode}) catch mode)
+        (std.fmt.bufPrint(detail_buf[0..], "{s}{s}", .{ mode, i18n.s().sl_default_suffix }) catch mode)
     else
         mode;
     renderSessionRow(layout, window_height, row, name, detail, selected);
 }
 
 fn aiModeText(value: []const u8) []const u8 {
-    if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "enabled")) return "Agent";
-    return "Chat";
+    if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "enabled")) return i18n.s().sl_ai_agent_field;
+    return i18n.s().sl_mode_chat;
 }
 
 fn aiProfileModeLabel(profile: *const AiProfile) []const u8 {
@@ -3350,16 +3319,16 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             }
             switch (g_ai_list_mode) {
                 .manage => {
-                    renderSessionRow(layout, window_height, row, "New LLM Provider", "add", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_new_llm_provider, i18n.s().sl_v_add, g_ai_list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, "Edit LLM Provider", if (g_ai_profile_count > 0) "choose" else "no profile", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_edit_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, g_ai_list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, "Delete LLM Provider", if (g_ai_profile_count > 0) "choose" else "no profile", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_delete_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, g_ai_list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, "Cancel", "Esc", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_cancel, "Esc", g_ai_list_selected == row);
                 },
                 .edit_select, .delete_select => {
-                    renderSessionRow(layout, window_height, row, "Back", "manage", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, g_ai_list_selected == row);
                 },
             }
             return;
@@ -3375,16 +3344,16 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             }
             switch (g_ssh_list_mode) {
                 .manage => {
-                    renderSessionRow(layout, window_height, row, "New SSH Server", "add", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_new_ssh_server, i18n.s().sl_v_add, g_ssh_list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, "Edit SSH Server", if (g_ssh_profile_count > 0) "choose" else "no server", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_edit_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server, g_ssh_list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, "Delete SSH Server", if (g_ssh_profile_count > 0) "choose" else "no server", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_delete_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server, g_ssh_list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, "Cancel", "Esc", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_cancel, "Esc", g_ssh_list_selected == row);
                 },
                 .edit_select, .delete_select => {
-                    renderSessionRow(layout, window_height, row, "Back", "manage", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, g_ssh_list_selected == row);
                 },
             }
             return;
@@ -3392,44 +3361,44 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         var row: usize = 0;
         renderSessionRow(layout, window_height, row, platform_pty_command.localShellLauncherTitle(), AppWindow.configuredLocalShellSessionDetail(), g_session_launcher_selected == row);
         row += 1;
-        renderSessionRow(layout, window_height, row, "SSH", "connect server", g_session_launcher_selected == row);
+        renderSessionRow(layout, window_height, row, "SSH", i18n.s().sl_v_connect_server, g_session_launcher_selected == row);
         row += 1;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             row = wsl_row;
             renderSessionRow(layout, window_height, row, "WSL", platform_pty_command.wslLauncherDetail(), g_session_launcher_selected == row);
             row += 1;
         }
-        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT, "AI Agent", defaultAiModeLabel(), g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT);
+        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT, i18n.s().sl_ai_agent, defaultAiModeLabel(), g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT);
         return;
     }
 
     if (g_ai_form_visible) {
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.name), "Profile name", aiField(.name), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.base_url), "Base URL", aiField(.base_url), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.api_key), "API key", aiField(.api_key), true);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.model), "Model", aiField(.model), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.system_prompt), "System", aiField(.system_prompt), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.thinking), "Thinking", aiField(.thinking), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.reasoning_effort), "Effort", aiField(.reasoning_effort), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.stream), "Stream", aiField(.stream), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.agent), "Agent", aiField(.agent), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), "Protocol", aiProtocolDisplay(), false);
-        renderAiSessionField(layout, window_height, @intFromEnum(AiField.max_tokens), "Max Tokens", aiField(.max_tokens), false);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT, "Save & Open", "agent", g_ai_focus == AI_FIELD_COUNT);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, "Save", "profile", g_ai_focus == AI_FIELD_COUNT + 1);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, "Cancel", "Esc", g_ai_focus == AI_FIELD_COUNT + 2);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.name), i18n.s().sl_ai_profile_name, aiField(.name), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.base_url), i18n.s().sl_ai_base_url, aiField(.base_url), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.api_key), i18n.s().sl_ai_api_key, aiField(.api_key), true);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.model), i18n.s().sl_ai_model, aiField(.model), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.system_prompt), i18n.s().sl_ai_system, aiField(.system_prompt), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.thinking), i18n.s().sl_ai_thinking, aiField(.thinking), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.reasoning_effort), i18n.s().sl_ai_effort, aiField(.reasoning_effort), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.stream), i18n.s().sl_ai_stream, aiField(.stream), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.agent), i18n.s().sl_ai_agent_field, aiField(.agent), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), i18n.s().sl_ai_protocol, aiProtocolDisplay(), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.max_tokens), i18n.s().sl_ai_max_tokens, aiField(.max_tokens), false);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT, i18n.s().sl_save_open, i18n.s().sl_v_agent, g_ai_focus == AI_FIELD_COUNT);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, g_ai_focus == AI_FIELD_COUNT + 1);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, i18n.s().sl_cancel, "Esc", g_ai_focus == AI_FIELD_COUNT + 2);
         return;
     }
 
-    renderSessionField(layout, window_height, @intFromEnum(SshField.name), "Server name", sshField(.name), false);
-    renderSessionField(layout, window_height, @intFromEnum(SshField.ip), "IP / host", sshField(.ip), false);
-    renderSessionField(layout, window_height, @intFromEnum(SshField.user), "User", sshField(.user), false);
-    renderSessionField(layout, window_height, @intFromEnum(SshField.password), "Password", sshField(.password), true);
-    renderSessionField(layout, window_height, @intFromEnum(SshField.port), "Port", sshField(.port), false);
-    renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), "Jump host", sshField(.proxy_jump), false);
-    renderSessionRow(layout, window_height, SSH_FIELD_COUNT, "Save & Connect", platform_pty_command.sshLauncherDetail(), g_ssh_focus == SSH_FIELD_COUNT);
-    renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, "Save", "profile", g_ssh_focus == SSH_FIELD_COUNT + 1);
-    renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, "Cancel", "Esc", g_ssh_focus == SSH_FIELD_COUNT + 2);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.name), i18n.s().sl_ssh_server_name, sshField(.name), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.ip), i18n.s().sl_ssh_ip_host, sshField(.ip), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.user), i18n.s().sl_ssh_user, sshField(.user), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.password), i18n.s().sl_ssh_password, sshField(.password), true);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.port), i18n.s().sl_ssh_port, sshField(.port), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), i18n.s().sl_ssh_jump_host, sshField(.proxy_jump), false);
+    renderSessionRow(layout, window_height, SSH_FIELD_COUNT, i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail(), g_ssh_focus == SSH_FIELD_COUNT);
+    renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, g_ssh_focus == SSH_FIELD_COUNT + 1);
+    renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, i18n.s().sl_cancel, "Esc", g_ssh_focus == SSH_FIELD_COUNT + 2);
 }
 
 // ============================================================================
@@ -3452,7 +3421,7 @@ const SETTINGS_THEME_PRESETS = [_]ThemePreset{
 
 const SETTINGS_THEME_ROW = 1;
 const SETTINGS_CONTROL_ROW_START = SETTINGS_THEME_ROW + 1;
-const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 8;
+const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 9;
 
 const SettingsAction = enum {
     font_size_minus,
@@ -3464,6 +3433,7 @@ const SettingsAction = enum {
     cycle_shell,
     cycle_default_ai_profile,
     toggle_weixin_direct,
+    cycle_language,
     open_raw_config,
     close,
 };
@@ -3603,8 +3573,9 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
         3 => .cycle_shell,
         4 => .cycle_default_ai_profile,
         5 => .toggle_weixin_direct,
-        6 => .open_raw_config,
-        7 => .close,
+        6 => .cycle_language,
+        7 => .open_raw_config,
+        8 => .close,
         else => null,
     };
 }
@@ -3637,6 +3608,7 @@ fn executeSettingsAction(action: SettingsAction) void {
             }
         },
         .toggle_weixin_direct => Config.setConfigValue(allocator, "weixin-direct-enabled", if (cfg.@"weixin-direct-enabled") "false" else "true") catch {},
+        .cycle_language => Config.setConfigValue(allocator, "language", nextLanguageSetting(cfg.language)) catch {},
         .open_raw_config => Config.openConfigInEditor(allocator),
         .close => settingsPageClose(),
     }
@@ -3660,8 +3632,9 @@ fn runSettingsFocusPrimary() void {
         SETTINGS_CONTROL_ROW_START + 3 => executeSettingsAction(.cycle_shell),
         SETTINGS_CONTROL_ROW_START + 4 => executeSettingsAction(.cycle_default_ai_profile),
         SETTINGS_CONTROL_ROW_START + 5 => executeSettingsAction(.toggle_weixin_direct),
-        SETTINGS_CONTROL_ROW_START + 6 => executeSettingsAction(.open_raw_config),
-        SETTINGS_CONTROL_ROW_START + 7 => executeSettingsAction(.close),
+        SETTINGS_CONTROL_ROW_START + 6 => executeSettingsAction(.cycle_language),
+        SETTINGS_CONTROL_ROW_START + 7 => executeSettingsAction(.open_raw_config),
+        SETTINGS_CONTROL_ROW_START + 8 => executeSettingsAction(.close),
         else => {},
     }
 }
@@ -3763,7 +3736,26 @@ fn nextCursorStyle(style: Config.CursorStyle) []const u8 {
 }
 
 fn boolText(value: bool) []const u8 {
-    return if (value) "on" else "off";
+    return if (value) i18n.s().settings_value_on else i18n.s().settings_value_off;
+}
+
+/// Config value string for the next language in the cycle (auto → en → zh-CN → auto).
+fn nextLanguageSetting(setting: i18n.LanguageSetting) []const u8 {
+    return switch (setting) {
+        .auto => "en",
+        .en => "zh-CN",
+        .zh_CN => "auto",
+    };
+}
+
+/// Display label for the Language settings row. Language names show natively;
+/// only "Auto" is localized.
+fn languageSettingText(setting: i18n.LanguageSetting) []const u8 {
+    return switch (setting) {
+        .auto => i18n.s().settings_lang_auto,
+        .en => "English",
+        .zh_CN => "简体中文",
+    };
 }
 
 fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, title: []const u8, value: []const u8, hint: []const u8, clickable: bool, selected: bool) void {
@@ -3834,35 +3826,36 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
 
     const title_y = textYFromTop(window_height, layout.box_top_px + 18);
     const subtitle_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
-    renderTitlebarText("Settings", layout.box_x + 24, title_y, mixColor(fg, accent, 0.14));
-    renderTitlebarTextLimited("Config changes save immediately", layout.box_x + 24, subtitle_y, muted_color, layout.box_w - 96);
+    renderTitlebarText(i18n.s().settings_title, layout.box_x + 24, title_y, mixColor(fg, accent, 0.14));
+    renderTitlebarTextLimited(i18n.s().settings_subtitle, layout.box_x + 24, subtitle_y, muted_color, layout.box_w - 96);
     renderTitlebarText("Esc", layout.box_x + layout.box_w - 52, title_y, mixColor(bg, fg, 0.72));
 
     var font_buf: [24]u8 = undefined;
     const font_value = std.fmt.bufPrint(&font_buf, "-  {d}  +", .{cfg.@"font-size"}) catch "";
-    renderSettingsRow(layout, window_height, 0, "Font size", font_value, "Left / Right", true, g_settings_focus == 0);
+    renderSettingsRow(layout, window_height, 0, i18n.s().settings_font_size, font_value, i18n.s().settings_hint_left_right, true, g_settings_focus == 0);
 
     var theme_buf: [96]u8 = undefined;
     const theme_value = std.fmt.bufPrint(&theme_buf, "< {s} >", .{currentThemePresetLabel(cfg)}) catch currentThemePresetLabel(cfg);
-    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, "Theme", theme_value, currentThemePresetDetail(cfg), true, g_settings_focus == SETTINGS_THEME_ROW);
+    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, i18n.s().settings_theme, theme_value, currentThemePresetDetail(cfg), true, g_settings_focus == SETTINGS_THEME_ROW);
 
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, "Cursor style", cursorStyleText(cfg.@"cursor-style"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, "Cursor blink", boolText(cfg.@"cursor-style-blink"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, "Focus follows mouse", boolText(cfg.@"focus-follows-mouse"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, "Shell for new tabs", cfg.shell, platform_pty_command.shellSettingChoicesHint(), true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, i18n.s().settings_cursor_style, cursorStyleText(cfg.@"cursor-style"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, i18n.s().settings_cursor_blink, boolText(cfg.@"cursor-style-blink"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, i18n.s().settings_focus_follows_mouse, boolText(cfg.@"focus-follows-mouse"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, i18n.s().settings_shell, cfg.shell, platform_pty_command.shellSettingChoicesHint(), true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
     loadAiProfiles();
     const ai_default_value = if (g_ai_profile_count > 0)
         aiProfileField(&g_ai_profiles[defaultAiProfileIndex()], .name)
     else
-        "(none)";
+        i18n.s().settings_value_none;
     const ai_default_hint = if (g_ai_profile_count > 0)
         aiProfileModeLabel(&g_ai_profiles[defaultAiProfileIndex()])
     else
-        "Add profiles via Command Center";
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, "Default AI", ai_default_value, ai_default_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, "WeChat direct", boolText(cfg.@"weixin-direct-enabled"), "Enter / Right", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, "Raw config file", "open", "Advanced editor", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, "Close settings", "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
+        i18n.s().settings_hint_add_profiles;
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, i18n.s().settings_default_ai, ai_default_value, ai_default_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, i18n.s().settings_weixin_direct, boolText(cfg.@"weixin-direct-enabled"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 8);
 }
 
 // ============================================================================
@@ -4044,7 +4037,7 @@ pub fn remoteKeyCopiedFlash() void {
 }
 
 pub fn showCopyToast(byte_count: usize) void {
-    const msg = std.fmt.bufPrint(&g_copy_toast_buf, "Copied ({d} bytes)", .{byte_count}) catch return;
+    const msg = std.fmt.bufPrint(&g_copy_toast_buf, "{s}{d}{s}", .{ i18n.s().toast_copied_prefix, byte_count, i18n.s().toast_copied_bytes_suffix }) catch return;
     g_copy_toast_len = msg.len;
     g_copy_toast_until_ms = std.time.milliTimestamp() + COPY_TOAST_DURATION_MS;
 }
@@ -4058,33 +4051,10 @@ pub fn showStatusToast(message: []const u8) void {
     AppWindow.g_cells_valid = false;
 }
 
-fn transferToastVerb(kind: AppWindow.file_explorer.TransferKind, status: AppWindow.file_explorer.TransferStatus) []const u8 {
-    return switch (kind) {
-        .download => switch (status) {
-            .in_progress => "Downloading",
-            .success => "Downloaded",
-            .failed => "Download failed",
-            .cancelled => "Download interrupted",
-            .idle => "Download",
-        },
-        .upload => switch (status) {
-            .in_progress => "Uploading",
-            .success => "Uploaded",
-            .failed => "Upload failed",
-            .cancelled => "Upload interrupted",
-            .idle => "Upload",
-        },
-    };
-}
+const transferToastVerb = transfer_toast_model.transferToastVerb;
 
-fn formatTransferToast(
-    buf: []u8,
-    kind: AppWindow.file_explorer.TransferKind,
-    status: AppWindow.file_explorer.TransferStatus,
-    message: []const u8,
-) ![]u8 {
-    return std.fmt.bufPrint(buf, "{s}: {s}", .{ transferToastVerb(kind, status), message });
-}
+const transfer_toast_model = @import("overlays/transfer_toast_model.zig");
+const formatTransferToast = transfer_toast_model.formatTransferToast;
 
 pub fn showTransferToast(
     kind: AppWindow.file_explorer.TransferKind,
@@ -4098,23 +4068,6 @@ pub fn showTransferToast(
     g_transfer_toast_clickable = kind == .download and status == .in_progress;
     if (status != .in_progress) transferCancelConfirmClose();
     g_transfer_toast_until_ms = std.time.milliTimestamp() + TRANSFER_TOAST_DURATION_MS;
-}
-
-test "overlays: transfer toast text describes download states" {
-    var buf: [160]u8 = undefined;
-
-    try std.testing.expectEqualStrings(
-        "Downloading: file.txt",
-        try formatTransferToast(&buf, .download, .in_progress, "file.txt"),
-    );
-    try std.testing.expectEqualStrings(
-        "Downloaded: file.txt",
-        try formatTransferToast(&buf, .download, .success, "file.txt"),
-    );
-    try std.testing.expectEqualStrings(
-        "Download failed: file.txt",
-        try formatTransferToast(&buf, .download, .failed, "file.txt"),
-    );
 }
 
 test "overlays: command center Settings command opens settings page" {
@@ -4257,28 +4210,6 @@ test "overlays: transfer interruption prompt returns explicit actions" {
     );
 }
 
-test "overlays: update prompt action selection prefers downloadable asset" {
-    try std.testing.expectEqual(
-        UpdatePromptAction.download_update,
-        updatePromptActionForResult(.{
-            .state = .update_available,
-            .release_url = "https://example.test/releases/v0.28.0",
-            .asset_download_url = "https://example.test/portable.zip",
-        }),
-    );
-    try std.testing.expectEqual(
-        UpdatePromptAction.open_release,
-        updatePromptActionForResult(.{
-            .state = .download_failed,
-            .release_url = "https://example.test/releases/v0.28.0",
-        }),
-    );
-    try std.testing.expectEqual(
-        UpdatePromptAction.none,
-        updatePromptActionForResult(.{ .state = .up_to_date }),
-    );
-}
-
 test "overlays: stored prompt URL does not affect latest release command URL" {
     showSshCwdFallbackPrompt();
 
@@ -4326,88 +4257,6 @@ test "overlays: SSH list filter backspace restores matching rows" {
     try std.testing.expectEqual(@as(usize, 2), sshListRowCount());
 }
 
-fn testEncodeProfileLine(buf: []u8, fields: []const []const u8) []const u8 {
-    const hex = "0123456789ABCDEF";
-    var len: usize = 0;
-    for (fields, 0..) |field, fi| {
-        if (fi > 0) {
-            buf[len] = '\t';
-            len += 1;
-        }
-        for (field) |ch| {
-            buf[len] = hex[ch >> 4];
-            buf[len + 1] = hex[ch & 0x0f];
-            len += 2;
-        }
-    }
-    return buf[0..len];
-}
-
-test "overlays: SSH profile line decode preserves all fields including proxy jump" {
-    var buf: [512]u8 = undefined;
-    const line = testEncodeProfileLine(&buf, &.{ "Prod", "10.0.0.9", "root", "secret", "2222", "admin@jump.test:22" });
-    const profile = decodeSshProfileLine(line) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("Prod", profileField(&profile, .name));
-    try std.testing.expectEqualStrings("10.0.0.9", profileField(&profile, .ip));
-    try std.testing.expectEqualStrings("root", profileField(&profile, .user));
-    try std.testing.expectEqualStrings("secret", profileField(&profile, .password));
-    try std.testing.expectEqualStrings("2222", profileField(&profile, .port));
-    try std.testing.expectEqualStrings("admin@jump.test:22", profileField(&profile, .proxy_jump));
-}
-
-test "overlays: SSH profile line decode accepts legacy lines without a proxy jump field" {
-    // Profiles saved before ProxyJump existed have only the first five fields.
-    // They must still load, with an empty proxy jump, rather than being dropped.
-    var buf: [512]u8 = undefined;
-    const legacy = testEncodeProfileLine(&buf, &.{ "Old", "10.0.0.1", "user", "", "22" });
-    const profile = decodeSshProfileLine(legacy) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("Old", profileField(&profile, .name));
-    try std.testing.expectEqualStrings("10.0.0.1", profileField(&profile, .ip));
-    try std.testing.expectEqualStrings("22", profileField(&profile, .port));
-    try std.testing.expectEqualStrings("", profileField(&profile, .proxy_jump));
-}
-
-test "overlays: SSH profile line decode rejects malformed hex" {
-    try std.testing.expect(decodeSshProfileLine("not-hex\tzz") == null);
-}
-
-test "overlays: AI profile line decode round-trips all fields including max_tokens" {
-    var buf: [1024]u8 = undefined;
-    const line = testEncodeProfileLine(&buf, &.{
-        "Claude", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic", "4096",
-    });
-    const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("Claude", aiProfileField(&profile, .name));
-    try std.testing.expectEqualStrings("anthropic", aiProfileField(&profile, .protocol));
-    try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));
-}
-
-test "overlays: AI profile line decode defaults max_tokens for legacy 10-field profiles" {
-    // Profiles written before max_tokens existed have only the first ten fields
-    // (indices 0-9). They must still load, with the new trailing field defaulted
-    // to 8192, and the existing positional fields staying aligned.
-    var buf: [1024]u8 = undefined;
-    const legacy = testEncodeProfileLine(&buf, &.{
-        "Legacy", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic",
-    });
-    const profile = decodeAiProfileLine(legacy) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("Legacy", aiProfileField(&profile, .name));
-    try std.testing.expectEqualStrings("anthropic", aiProfileField(&profile, .protocol));
-    try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
-}
-
-test "overlays: AI profile line decode defaults max_tokens when the field is empty" {
-    var buf: [1024]u8 = undefined;
-    const line = testEncodeProfileLine(&buf, &.{
-        "Empty", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic", "",
-    });
-    const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
-}
-
 fn showVersionToast() void {
     const msg = app_metadata.versionLine(&g_copy_toast_buf) catch return;
     g_copy_toast_len = msg.len;
@@ -4435,18 +4284,7 @@ pub fn showUpdateCheckResult(result: update_check.CheckResult) void {
     showUpdatePrompt(result, updatePromptActionForResult(result));
 }
 
-fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromptAction {
-    return if (result.state == .update_available and result.asset_download_url.len > 0)
-        .download_update
-    else if (result.state == .update_available and result.release_url.len > 0)
-        .open_release
-    else if (result.state == .failed and result.release_url.len > 0)
-        .open_release
-    else if (result.state == .download_failed and result.release_url.len > 0)
-        .open_release
-    else
-        .none;
-}
+const updatePromptActionForResult = update_prompt_model.updatePromptActionForResult;
 
 fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction) void {
     var status_buf: [96]u8 = undefined;

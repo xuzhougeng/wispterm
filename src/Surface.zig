@@ -24,6 +24,7 @@ const sync_output = @import("sync_output.zig");
 const notification = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_process = @import("platform/process.zig");
+const ssh_connection_mod = @import("ssh_connection.zig");
 
 const Surface = @This();
 
@@ -66,40 +67,7 @@ const WISPTERM_IMAGE_OSC_MAX = 16 * 1024;
 /// Coarse launch environment for terminal-side integrations such as path paste.
 pub const LaunchKind = platform_pty_command.LaunchKind;
 
-pub const SshConnection = struct {
-    user_buf: [128]u8 = undefined,
-    user_len: usize = 0,
-    host_buf: [128]u8 = undefined,
-    host_len: usize = 0,
-    port_buf: [16]u8 = undefined,
-    port_len: usize = 0,
-    password_buf: [128]u8 = undefined,
-    password_len: usize = 0,
-    proxy_jump_buf: [256]u8 = undefined,
-    proxy_jump_len: usize = 0,
-    password_auth: bool = false,
-    legacy_algorithms: bool = false,
-
-    pub fn user(self: *const SshConnection) []const u8 {
-        return self.user_buf[0..self.user_len];
-    }
-
-    pub fn proxyJump(self: *const SshConnection) []const u8 {
-        return self.proxy_jump_buf[0..self.proxy_jump_len];
-    }
-
-    pub fn host(self: *const SshConnection) []const u8 {
-        return self.host_buf[0..self.host_len];
-    }
-
-    pub fn port(self: *const SshConnection) []const u8 {
-        return self.port_buf[0..self.port_len];
-    }
-
-    pub fn password(self: *const SshConnection) []const u8 {
-        return self.password_buf[0..self.password_len];
-    }
-};
+pub const SshConnection = ssh_connection_mod.SshConnection;
 
 // ============================================================================
 // VT stream handler — wraps ghostty's readonly handler to intercept bell

@@ -15,23 +15,9 @@ pub const AgentSettings = struct {
     output_limit: u32 = DEFAULT_AGENT_OUTPUT_LIMIT,
 };
 
-pub const AgentPermission = enum {
-    confirm,
-    full,
-
-    pub fn parse(value: []const u8) ?AgentPermission {
-        if (std.mem.eql(u8, value, "confirm")) return .confirm;
-        if (std.mem.eql(u8, value, "full") or std.mem.eql(u8, value, "full-permission")) return .full;
-        return null;
-    }
-
-    pub fn name(self: AgentPermission) []const u8 {
-        return switch (self) {
-            .confirm => "confirm",
-            .full => "full",
-        };
-    }
-};
+// AgentPermission lives in ai_agent_config.zig (extracted on main so config.zig
+// stays out of the ai_chat dependency graph). Re-export the single source of truth.
+pub const AgentPermission = @import("ai_agent_config.zig").AgentPermission;
 
 pub const ToolSurface = struct {
     id: []u8,

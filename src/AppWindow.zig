@@ -41,6 +41,7 @@ const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
+const active_tab_state = @import("appwindow/active_tab.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
 pub const cell_pipeline = @import("renderer/cell_pipeline.zig");
@@ -1056,10 +1057,13 @@ fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {
         switchTab(first_tab_index);
     }
 
-    // No AI profile yet: surface the profile-creation form so the user can set
-    // one up (the form is an overlay, not a tab).
-    if (!has_ai_profile) {
+    // No AI profile yet: surface the profile-creation form so the user can set one
+    // up (the form is an overlay, not a tab) — but only on the first launch. After
+    // it has been shown once, the persisted flag suppresses it so it does not
+    // reappear every launch. Users can still open setup via the session launcher.
+    if (startup_tabs.shouldAutoShowAgentForm(has_ai_profile, platform_window_state.aiSetupPrompted(allocator))) {
         _ = overlays.openDefaultAgentSessionForStartup();
+        platform_window_state.setAiSetupPrompted(allocator);
     }
 
     return true;
@@ -1267,7 +1271,7 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
 
 pub fn closeFocusedSplit() void {
     const allocator = g_allocator orelse return;
-    const closing_tab_idx = tab.g_active_tab;
+    const closing_tab_idx = active_tab_state.g_active_tab;
     switch (tab.closeFocusedSplit(allocator)) {
         .closed_split => {
             input.g_selecting = false;
@@ -1328,7 +1332,7 @@ pub threadlocal var window_focused: bool = true; // Track window focus state
 
 // Window state persistence.
 const loadWindowState = platform_window_state.loadWindowState;
-const saveWindowState = platform_window_state.saveWindowState;
+const saveWindowGeometry = platform_window_state.saveWindowGeometry;
 
 // Pending resize state (resize is deferred to main loop to avoid PageList integrity issues)
 // Ghostty coalesces resize events with a 25ms timer to batch rapid resizes
@@ -1868,7 +1872,7 @@ fn maybePrintMemoryDebug(now: i64) void {
 
         var it = tab_state.tree.iterator();
         while (it.next()) |entry| {
-            const visible = tab_index == tab.g_active_tab;
+            const visible = tab_index == active_tab_state.g_active_tab;
             const stats = collectSurfaceMemoryDebug(entry.surface);
 
             totals.surfaces += 1;
@@ -2024,7 +2028,7 @@ fn appendAgentDetectionJson(
 
 fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
     try out.appendSlice(allocator, "{\"type\":\"layout\",\"activeTab\":");
-    try out.print(allocator, "{d}", .{tab.g_active_tab});
+    try out.print(allocator, "{d}", .{active_tab_state.g_active_tab});
     try out.appendSlice(allocator, ",\"tabs\":[");
 
     var wrote_tab = false;
@@ -2293,9 +2297,9 @@ const WeixinRequest = struct {
 /// Index of the AI-chat tab to target: the active tab if it is AI chat, else the
 /// first AI-chat tab. UI-thread only (reads threadlocal tab state).
 fn weixinActiveAiTabIndex() ?usize {
-    if (tab.g_active_tab < tab.g_tab_count) {
-        if (tab.g_tabs[tab.g_active_tab]) |ts| {
-            if (ts.kind == .ai_chat) return tab.g_active_tab;
+    if (active_tab_state.g_active_tab < tab.g_tab_count) {
+        if (tab.g_tabs[active_tab_state.g_active_tab]) |ts| {
+            if (ts.kind == .ai_chat) return active_tab_state.g_active_tab;
         }
     }
     for (0..tab.g_tab_count) |i| {
@@ -2312,8 +2316,8 @@ fn weixinTabIndexFromSurfaceId(id: [16]u8) ?usize {
 }
 
 fn weixinActiveTerminalSurface() ?*Surface {
-    if (tab.g_active_tab < tab.g_tab_count) {
-        if (tab.g_tabs[tab.g_active_tab]) |ts| {
+    if (active_tab_state.g_active_tab < tab.g_tab_count) {
+        if (tab.g_tabs[active_tab_state.g_active_tab]) |ts| {
             if (ts.kind == .terminal) {
                 if (ts.focusedSurface()) |surface| return surface;
             }
@@ -2489,7 +2493,7 @@ fn findAgentSurfaceLocation(surface: *const Surface) ?AgentSurfaceLocation {
             if (entry.surface == surface) {
                 return .{
                     .tab_index = tab_index,
-                    .focused = tab_index == tab.g_active_tab and entry.handle == tab_state.focused,
+                    .focused = tab_index == active_tab_state.g_active_tab and entry.handle == tab_state.focused,
                 };
             }
         }
@@ -2527,7 +2531,7 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
         surfaces.deinit(allocator);
     }
 
-    var active_tab = tab.g_active_tab;
+    var active_tab = active_tab_state.g_active_tab;
     const context_surface_id = g_agent_context_surface_id[0..g_agent_context_surface_id_len];
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
@@ -2760,7 +2764,7 @@ fn resolveAgentCloseTabIndex(request: *const AgentTabCloseRequest) ?usize {
     if (request.title) |title_text| {
         if (findTabIndexByTitle(title_text)) |idx| return idx;
     }
-    return tab.g_active_tab;
+    return active_tab_state.g_active_tab;
 }
 
 fn handleAgentTabCloseRequest(request: *AgentTabCloseRequest) void {
@@ -2795,7 +2799,7 @@ fn handleAgentTabCloseRequest(request: *AgentTabCloseRequest) void {
     closeTab(idx);
     request.result = .{
         .tab_index = idx,
-        .active_tab = tab.g_active_tab,
+        .active_tab = active_tab_state.g_active_tab,
         .title = title_copy,
     };
 }
@@ -2856,6 +2860,18 @@ fn rememberQuakeFrame(win: *window_backend.Window) void {
         if (!quick_terminal.frameIntersectsWorkArea(frame, work_area)) return;
     }
     g_quake_frame = frame;
+}
+
+/// Record the window's top-left while it is in a normal windowed state, so the
+/// save-on-close path can persist a real position when the window is closed while
+/// maximized or fullscreen (those report a maximized rect, not the user's windowed
+/// origin). Skipped in quake mode, which manages its own frame.
+fn rememberWindowedPosition(win: *window_backend.Window) void {
+    if (g_quake_mode) return;
+    if (window_backend.isMinimized(win) or window_backend.isMaximized(win) or window_backend.isFullscreen(win)) return;
+    const rect = window_backend.windowRect(win) orelse return;
+    platform_window_state.g_windowed_x = rect.left;
+    platform_window_state.g_windowed_y = rect.top;
 }
 
 fn applyQuakeFrame(win: *window_backend.Window, use_cached_frame: bool) void {
@@ -3236,6 +3252,26 @@ const ImeCaret = struct {
 };
 
 fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
+    // The command palette is a modal overlay on top of every tab; anchor the IME
+    // caret to its text filter, not the underlying terminal/AI-chat cursor.
+    if (overlays.commandPaletteVisible()) {
+        if (win.ime_composing) return; // freeze during composition (avoid drift)
+        const size = window_backend.clientSize(win);
+        if (overlays.commandPaletteImeCaret(
+            @floatFromInt(size.width),
+            @floatFromInt(size.height),
+            currentTitlebarHeight(),
+        )) |caret| {
+            window_backend.setImeCaret(
+                win,
+                @intFromFloat(@round(caret.x)),
+                @intFromFloat(@round(caret.y)),
+                @intFromFloat(@max(1.0, @round(caret.h))),
+            );
+        }
+        return;
+    }
+
     if (activeAiChat()) |session| {
         // Freeze the caret during composition so the IMM popup, anchored when
         // the composition started, doesn't drift with local UI relayout.
@@ -3592,12 +3628,26 @@ fn runMainLoop(self: *AppWindow) !void {
         }
         app.mutex.unlock();
     }
-    // Fall back to saved state if no cascade position
-    if (init_x == null or init_y == null) {
+    // Restore saved geometry. Position only fills gaps left by a cascade; size is
+    // restored only for a non-cascade (first/primary) window, so a new window
+    // opened over an existing one does not snap to the last session's size.
+    const restore_saved_size = init_x == null or init_y == null;
+    var saved_fb_w: ?i32 = null;
+    var saved_fb_h: ?i32 = null;
+    {
         const saved_state = loadWindowState(allocator);
         if (saved_state) |s| {
             if (init_x == null) init_x = s.x;
             if (init_y == null) init_y = s.y;
+            // Seed the last-windowed position so a session that stays maximized the
+            // whole time still persists a real origin on close (otherwise (0,0)).
+            // rememberWindowedPosition overwrites this on the first windowed frame.
+            platform_window_state.g_windowed_x = s.x;
+            platform_window_state.g_windowed_y = s.y;
+            if (restore_saved_size) {
+                saved_fb_w = s.width;
+                saved_fb_h = s.height;
+            }
         }
     }
     var backend_window = window_backend.create(allocator, .{
@@ -3838,20 +3888,25 @@ fn runMainLoop(self: *AppWindow) !void {
     // For height: ph = fb_height - (render_padding + titlebar) - render_padding, then subtract explicit_padding
     const total_height_padding = (render_padding + titlebar_height) + render_padding + explicit_top + explicit_bottom; // 44 + 10 + 20 = 74
 
+    // Initial sizing precedence:
+    //   1. quake mode -> quake frame
+    //   2. explicit window-width/height in config -> fit that cell grid
+    //   3. remembered window size from last session -> restore it (framebuffer px)
+    //   4. otherwise -> default cell grid (first-ever launch)
+    const size_from_config = if (g_app) |app| app.window_size_from_config else false;
+    // Grid size needed for term_cols/term_rows (used by branches 2 and 4).
+    const desired_grid_width = font.cell_width * @as(f32, @floatFromInt(term_cols));
+    const desired_grid_height = font.cell_height * @as(f32, @floatFromInt(term_rows));
+    const target_fb_width: i32 = @intFromFloat(desired_grid_width + total_width_padding);
+    const target_fb_height: i32 = @intFromFloat(desired_grid_height + total_height_padding);
+
     if (g_quake_mode) {
         applyQuakeFrame(&backend_window, false);
+    } else if (size_from_config and term_cols > 0 and term_rows > 0) {
+        window_backend.resizeClientArea(&backend_window, target_fb_width, target_fb_height);
+    } else if (saved_fb_w) |sw| {
+        window_backend.resizeClientArea(&backend_window, sw, saved_fb_h.?);
     } else if (term_cols > 0 and term_rows > 0) {
-        // If config specifies window-width/window-height, resize window to fit that grid.
-        // term_cols/term_rows were set from config at init.
-        // Calculate window size needed for desired grid
-        const desired_grid_width = font.cell_width * @as(f32, @floatFromInt(term_cols));
-        const desired_grid_height = font.cell_height * @as(f32, @floatFromInt(term_rows));
-
-        // Work backwards: fb_width = grid_width + total_width_padding
-        //                 fb_height = grid_height + total_height_padding
-        const target_fb_width: i32 = @intFromFloat(desired_grid_width + total_width_padding);
-        const target_fb_height: i32 = @intFromFloat(desired_grid_height + total_height_padding);
-
         window_backend.resizeClientArea(&backend_window, target_fb_width, target_fb_height);
     }
 
@@ -4028,6 +4083,10 @@ fn runMainLoop(self: *AppWindow) !void {
         // Process all queued input events (keyboard, mouse, resize)
         input.processEvents(win);
 
+        // Track the last windowed position so a maximized/fullscreen close still
+        // persists where the window was, not (0,0).
+        rememberWindowedPosition(win);
+
         // Update focus state
         const focused = window_backend.isFocused(win);
         if (window_focused != focused) g_force_rebuild = true;
@@ -4059,10 +4118,10 @@ fn runMainLoop(self: *AppWindow) !void {
                 var it = tb.tree.iterator();
                 while (it.next()) |entry| {
                     if (entry.surface.bell_pending.swap(false, .acquire)) {
-                        handleBell(entry.surface, win, ti == tab.g_active_tab);
+                        handleBell(entry.surface, win, ti == active_tab_state.g_active_tab);
                     }
                     {
-                        const is_active_surface = (ti == tab.g_active_tab) and
+                        const is_active_surface = (ti == active_tab_state.g_active_tab) and
                             (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
                         handleNotification(entry.surface, is_active_surface);
                     }
@@ -4256,16 +4315,18 @@ fn runMainLoop(self: *AppWindow) !void {
         window_backend.swapBuffers(win);
     }
 
-    // Save window position for next session
+    // Save window position + size for next session
     if (!g_quake_mode and g_window != null) {
         const w = g_window.?;
         if (window_backend.windowRect(w)) |rect| {
             const is_maximized = window_backend.isMaximized(w);
             if (!is_maximized and !window_backend.isFullscreen(w)) {
-                saveWindowState(allocator, .{ .x = rect.left, .y = rect.top });
+                const fb = window_backend.framebufferSize(w);
+                saveWindowGeometry(allocator, rect.left, rect.top, fb.width, fb.height);
             } else {
-                // Save the last known windowed position before maximize/fullscreen
-                saveWindowState(allocator, .{ .x = platform_window_state.g_windowed_x, .y = platform_window_state.g_windowed_y });
+                // Save the last known windowed position; preserve the remembered
+                // windowed size (null leaves the saved width/height untouched).
+                saveWindowGeometry(allocator, platform_window_state.g_windowed_x, platform_window_state.g_windowed_y, null, null);
             }
         }
     }

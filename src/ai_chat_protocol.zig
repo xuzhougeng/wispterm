@@ -7,6 +7,11 @@ const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 
 pub const DEFAULT_PROTOCOL = "chat_completions";
+pub const DEFAULT_THINKING = "enabled";
+pub const DEFAULT_REASONING_EFFORT = "high";
+pub const DEFAULT_STREAM = "false";
+pub const DEFAULT_AGENT = "true";
+pub const DEFAULT_MAX_TOKENS = "8192";
 pub const TOOL_CALL_REASONING_FALLBACK = "Tool call is required before answering.";
 
 // ---------------------------------------------------------------------------
