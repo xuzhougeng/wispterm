@@ -1060,8 +1060,14 @@ fn pointInTopRect(xpos: f64, ypos: f64, x: f32, top_px: f32, w: f32, h: f32) boo
 
 fn measureTitlebarText(text: []const u8) f32 {
     var text_width: f32 = 0;
-    for (text) |ch| {
-        text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
+    var view = std.unicode.Utf8View.init(text) catch {
+        // Malformed UTF-8: fall back to per-byte measurement.
+        for (text) |ch| text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
+        return text_width;
+    };
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        text_width += titlebar.titlebarGlyphAdvance(cp);
     }
     return text_width;
 }
@@ -1069,9 +1075,18 @@ fn measureTitlebarText(text: []const u8) f32 {
 fn renderTitlebarText(text: []const u8, x_start: f32, y: f32, color: [3]f32) void {
     var x = @round(x_start);
     const y_aligned = @round(y);
-    for (text) |ch| {
-        titlebar.renderTitlebarChar(@intCast(ch), x, y_aligned, color);
-        x += titlebar.titlebarGlyphAdvance(@intCast(ch));
+    var view = std.unicode.Utf8View.init(text) catch {
+        // Malformed UTF-8: fall back to per-byte rendering.
+        for (text) |ch| {
+            titlebar.renderTitlebarChar(@intCast(ch), x, y_aligned, color);
+            x += titlebar.titlebarGlyphAdvance(@intCast(ch));
+        }
+        return;
+    };
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        titlebar.renderTitlebarChar(cp, x, y_aligned, color);
+        x += titlebar.titlebarGlyphAdvance(cp);
     }
 }
 
@@ -1087,17 +1102,25 @@ fn renderTitlebarTextLimited(text: []const u8, x_start: f32, y: f32, color: [3]f
 
     var x = @round(x_start);
     const y_aligned = @round(y);
-    for (text, 0..) |ch, idx| {
-        const advance = titlebar.titlebarGlyphAdvance(@intCast(ch));
+    var view = std.unicode.Utf8View.init(text) catch {
+        // Malformed UTF-8: best-effort byte render (no codepoint truncation).
+        renderTitlebarText(text, x, y_aligned, color);
+        return;
+    };
+    var it = view.iterator();
+    var drew_any = false;
+    while (it.nextCodepoint()) |cp| {
+        const advance = titlebar.titlebarGlyphAdvance(cp);
         if (x + advance > x_start + max_w) {
             const ellipsis_w = titlebar.titlebarGlyphAdvance('.') * 3;
-            if (idx > 0 and x + ellipsis_w <= x_start + max_w) {
+            if (drew_any and x + ellipsis_w <= x_start + max_w) {
                 renderTitlebarText("...", x, y_aligned, color);
             }
             return;
         }
-        titlebar.renderTitlebarChar(@intCast(ch), x, y_aligned, color);
+        titlebar.renderTitlebarChar(cp, x, y_aligned, color);
         x += advance;
+        drew_any = true;
     }
 }
 
@@ -4601,10 +4624,7 @@ pub fn renderCopyToast(window_width: f32, window_height: f32) void {
     const pad_v: f32 = 6;
     const line_h = font.g_titlebar_cell_height + pad_v * 2;
 
-    var text_width: f32 = 0;
-    for (text) |ch| {
-        text_width += titlebar.titlebarGlyphAdvance(@intCast(ch));
-    }
+    const text_width = measureTitlebarText(text);
 
     const bg_w = text_width + pad_h * 2;
     const bg_x = (window_width - bg_w) / 2;
@@ -4612,13 +4632,10 @@ pub fn renderCopyToast(window_width: f32, window_height: f32) void {
 
     ui_pipeline.fillQuad(bg_x, bg_y, bg_w, line_h, .{ 0.10, 0.14, 0.10 });
 
-    var x = bg_x + pad_h;
+    const x = bg_x + pad_h;
     const y = bg_y + pad_v;
     const text_color: [3]f32 = .{ 0.55, 0.95, 0.55 };
-    for (text) |ch| {
-        titlebar.renderTitlebarChar(@intCast(ch), x, y, text_color);
-        x += titlebar.titlebarGlyphAdvance(@intCast(ch));
-    }
+    renderTitlebarText(text, x, y, text_color);
 }
 
 fn transferToastLayout(window_width: f32, text: []const u8) DebugLineRect {
