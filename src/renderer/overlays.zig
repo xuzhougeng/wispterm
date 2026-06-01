@@ -299,7 +299,10 @@ pub fn commandPaletteLeaveAgentHistory() void {
 pub fn commandPaletteBackspace() void {
     if (commandPaletteIsHistoryMode()) return;
     if (g_command_palette_filter_len == 0) return;
-    g_command_palette_filter_len -= 1;
+    // Remove a whole UTF-8 codepoint: walk back over continuation bytes (0b10xxxxxx).
+    var n = g_command_palette_filter_len - 1;
+    while (n > 0 and (g_command_palette_filter[n] & 0xC0) == 0x80) n -= 1;
+    g_command_palette_filter_len = n;
     commandPaletteClampSelection();
 }
 
@@ -312,13 +315,15 @@ pub fn commandPaletteClearFilter() void {
 pub fn commandPaletteInsertChar(codepoint: u21) void {
     if (commandPaletteIsHistoryMode()) return;
     if (codepoint < 0x20 or codepoint == 0x7f) return;
-    if (g_command_palette_filter_len >= g_command_palette_filter.len) return;
 
-    if (codepoint <= 0x7f) {
-        g_command_palette_filter[g_command_palette_filter_len] = @intCast(codepoint);
-        g_command_palette_filter_len += 1;
-        commandPaletteClampSelection();
-    }
+    // UTF-8-encode the codepoint so CJK (e.g. IME-committed 中文) is accepted,
+    // not just ASCII. Mirrors the terminal char path's utf8Encode.
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
+    if (g_command_palette_filter_len + len > g_command_palette_filter.len) return;
+    @memcpy(g_command_palette_filter[g_command_palette_filter_len..][0..len], buf[0..len]);
+    g_command_palette_filter_len += len;
+    commandPaletteClampSelection();
 }
 
 pub fn commandPaletteExecuteSelected() void {
@@ -655,13 +660,54 @@ fn commandEntryMatches(entry: CommandEntry) bool {
 }
 
 fn commandEntryTitleMatches(entry: CommandEntry, filter: []const u8) bool {
-    return containsIgnoreCase(i18n.commandTitle(entry.action) orelse entry.title, filter);
+    // Match the English source title always (so e.g. typing "settings" finds 设置),
+    // plus the localized title (so 中文 search works too).
+    if (containsIgnoreCase(entry.title, filter)) return true;
+    if (i18n.commandTitle(entry.action)) |localized| {
+        if (containsIgnoreCase(localized, filter)) return true;
+    }
+    return false;
 }
 
 fn commandEntrySecondaryMatches(entry: CommandEntry, filter: []const u8) bool {
     var shortcut_buf: [64]u8 = undefined;
-    return containsIgnoreCase(i18n.commandDetail(entry.action) orelse entry.detail, filter) or
-        containsIgnoreCase(commandEntryShortcut(entry, &shortcut_buf), filter);
+    if (containsIgnoreCase(entry.detail, filter)) return true;
+    if (i18n.commandDetail(entry.action)) |localized| {
+        if (containsIgnoreCase(localized, filter)) return true;
+    }
+    return containsIgnoreCase(commandEntryShortcut(entry, &shortcut_buf), filter);
+}
+
+test "command palette filter accepts UTF-8 CJK and backspaces whole codepoints" {
+    commandPaletteClearFilter();
+    defer commandPaletteClearFilter();
+    commandPaletteInsertChar('a'); // ASCII (1 byte)
+    commandPaletteInsertChar(0x8BBE); // 设 (3 bytes)
+    commandPaletteInsertChar(0x7F6E); // 置 (3 bytes)
+    try std.testing.expectEqualStrings("a设置", commandPaletteFilter());
+    commandPaletteBackspace(); // removes 置 as one codepoint, not one byte
+    try std.testing.expectEqualStrings("a设", commandPaletteFilter());
+    commandPaletteBackspace();
+    try std.testing.expectEqualStrings("a", commandPaletteFilter());
+    commandPaletteBackspace();
+    try std.testing.expectEqualStrings("", commandPaletteFilter());
+}
+
+test "command palette matches English source even when title is localized" {
+    defer i18n.setLang(.en);
+    const entry = CommandEntry{
+        .title = "Settings",
+        .detail = "Open the settings page",
+        .shortcut = "",
+        .action = .open_settings,
+    };
+    i18n.setLang(.zh_CN);
+    try std.testing.expect(commandEntryTitleMatches(entry, "settings")); // English finds the zh-labeled command
+    try std.testing.expect(commandEntryTitleMatches(entry, "设置")); // Chinese also matches
+    try std.testing.expect(!commandEntryTitleMatches(entry, "zzz"));
+    i18n.setLang(.en);
+    try std.testing.expect(commandEntryTitleMatches(entry, "Settings"));
+    try std.testing.expect(!commandEntryTitleMatches(entry, "设置")); // no localized title under en
 }
 
 fn commandEntryKeybindAction(action: CommandAction) ?keybind.Action {
@@ -890,6 +936,26 @@ fn commandPaletteLayout(window_width: f32, window_height: f32, top_offset: f32) 
         .row_top_px = row_top_px,
         .row_h = row_h,
         .rendered_rows = rendered_rows,
+    };
+}
+
+pub const ImeCaretPx = struct { x: f32, y: f32, h: f32 };
+
+/// Pixel position (top-down client coords) of the command-palette filter caret,
+/// so the OS IME composition/candidate window anchors to the filter — not the
+/// underlying terminal/AI-chat cursor. Returns null when the palette is not in
+/// text-filter mode. Inputs must match what renderCommandPalette is called with.
+pub fn commandPaletteImeCaret(window_width: f32, window_height: f32, top_offset: f32) ?ImeCaretPx {
+    if (!g_command_palette_visible) return null;
+    if (commandPaletteIsHistoryMode()) return null; // history mode has no text filter
+    const layout = commandPaletteLayout(window_width, window_height, top_offset);
+    const pad_x: f32 = 24; // must match renderCommandPalette
+    const text_x = @round(layout.box_x + pad_x) + 12;
+    const cell_h = font.g_titlebar_cell_height;
+    return .{
+        .x = text_x + measureTitlebarText(commandPaletteFilter()),
+        .y = layout.box_top_px + layout.header_h + (layout.filter_h - cell_h) / 2,
+        .h = cell_h,
     };
 }
 
