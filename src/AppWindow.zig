@@ -41,6 +41,7 @@ const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
 pub const ai_chat = @import("ai_chat.zig");
 pub const tab = @import("appwindow/tab.zig");
+const active_tab_state = @import("appwindow/active_tab.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
 pub const cell_pipeline = @import("renderer/cell_pipeline.zig");
@@ -1267,7 +1268,7 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
 
 pub fn closeFocusedSplit() void {
     const allocator = g_allocator orelse return;
-    const closing_tab_idx = tab.g_active_tab;
+    const closing_tab_idx = active_tab_state.g_active_tab;
     switch (tab.closeFocusedSplit(allocator)) {
         .closed_split => {
             input.g_selecting = false;
@@ -1868,7 +1869,7 @@ fn maybePrintMemoryDebug(now: i64) void {
 
         var it = tab_state.tree.iterator();
         while (it.next()) |entry| {
-            const visible = tab_index == tab.g_active_tab;
+            const visible = tab_index == active_tab_state.g_active_tab;
             const stats = collectSurfaceMemoryDebug(entry.surface);
 
             totals.surfaces += 1;
@@ -2024,7 +2025,7 @@ fn appendAgentDetectionJson(
 
 fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
     try out.appendSlice(allocator, "{\"type\":\"layout\",\"activeTab\":");
-    try out.print(allocator, "{d}", .{tab.g_active_tab});
+    try out.print(allocator, "{d}", .{active_tab_state.g_active_tab});
     try out.appendSlice(allocator, ",\"tabs\":[");
 
     var wrote_tab = false;
@@ -2293,9 +2294,9 @@ const WeixinRequest = struct {
 /// Index of the AI-chat tab to target: the active tab if it is AI chat, else the
 /// first AI-chat tab. UI-thread only (reads threadlocal tab state).
 fn weixinActiveAiTabIndex() ?usize {
-    if (tab.g_active_tab < tab.g_tab_count) {
-        if (tab.g_tabs[tab.g_active_tab]) |ts| {
-            if (ts.kind == .ai_chat) return tab.g_active_tab;
+    if (active_tab_state.g_active_tab < tab.g_tab_count) {
+        if (tab.g_tabs[active_tab_state.g_active_tab]) |ts| {
+            if (ts.kind == .ai_chat) return active_tab_state.g_active_tab;
         }
     }
     for (0..tab.g_tab_count) |i| {
@@ -2312,8 +2313,8 @@ fn weixinTabIndexFromSurfaceId(id: [16]u8) ?usize {
 }
 
 fn weixinActiveTerminalSurface() ?*Surface {
-    if (tab.g_active_tab < tab.g_tab_count) {
-        if (tab.g_tabs[tab.g_active_tab]) |ts| {
+    if (active_tab_state.g_active_tab < tab.g_tab_count) {
+        if (tab.g_tabs[active_tab_state.g_active_tab]) |ts| {
             if (ts.kind == .terminal) {
                 if (ts.focusedSurface()) |surface| return surface;
             }
@@ -2489,7 +2490,7 @@ fn findAgentSurfaceLocation(surface: *const Surface) ?AgentSurfaceLocation {
             if (entry.surface == surface) {
                 return .{
                     .tab_index = tab_index,
-                    .focused = tab_index == tab.g_active_tab and entry.handle == tab_state.focused,
+                    .focused = tab_index == active_tab_state.g_active_tab and entry.handle == tab_state.focused,
                 };
             }
         }
@@ -2527,7 +2528,7 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
         surfaces.deinit(allocator);
     }
 
-    var active_tab = tab.g_active_tab;
+    var active_tab = active_tab_state.g_active_tab;
     const context_surface_id = g_agent_context_surface_id[0..g_agent_context_surface_id_len];
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
@@ -2760,7 +2761,7 @@ fn resolveAgentCloseTabIndex(request: *const AgentTabCloseRequest) ?usize {
     if (request.title) |title_text| {
         if (findTabIndexByTitle(title_text)) |idx| return idx;
     }
-    return tab.g_active_tab;
+    return active_tab_state.g_active_tab;
 }
 
 fn handleAgentTabCloseRequest(request: *AgentTabCloseRequest) void {
@@ -2795,7 +2796,7 @@ fn handleAgentTabCloseRequest(request: *AgentTabCloseRequest) void {
     closeTab(idx);
     request.result = .{
         .tab_index = idx,
-        .active_tab = tab.g_active_tab,
+        .active_tab = active_tab_state.g_active_tab,
         .title = title_copy,
     };
 }
@@ -4079,10 +4080,10 @@ fn runMainLoop(self: *AppWindow) !void {
                 var it = tb.tree.iterator();
                 while (it.next()) |entry| {
                     if (entry.surface.bell_pending.swap(false, .acquire)) {
-                        handleBell(entry.surface, win, ti == tab.g_active_tab);
+                        handleBell(entry.surface, win, ti == active_tab_state.g_active_tab);
                     }
                     {
-                        const is_active_surface = (ti == tab.g_active_tab) and
+                        const is_active_surface = (ti == active_tab_state.g_active_tab) and
                             (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
                         handleNotification(entry.surface, is_active_surface);
                     }

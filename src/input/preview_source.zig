@@ -7,6 +7,7 @@ const markdown_preview = @import("../markdown_preview.zig");
 const platform_remote_file = @import("../platform/remote_file.zig");
 const scp = @import("../scp.zig");
 const ui_perf = @import("../ui_perf.zig");
+const preview_path = @import("preview_path.zig");
 
 fn endsWithIgnoreCase(text: []const u8, suffix: []const u8) bool {
     if (text.len < suffix.len) return false;
@@ -23,16 +24,7 @@ pub const SourceKind = union(enum) {
     remote: Surface.SshConnection,
 };
 
-pub fn looksLikePreviewPath(path: []const u8) bool {
-    if (path.len == 0) return false;
-    if (std.mem.startsWith(u8, path, "http://") or std.mem.startsWith(u8, path, "https://")) return false;
-    if (markdown_preview.detectKind(path) != null) return true;
-    if (path[0] == '~') return true;
-    if (path.len >= 2 and path[1] == ':') return true;
-    if (std.mem.indexOfScalar(u8, path, '/') != null) return true;
-    if (std.mem.indexOfScalar(u8, path, '\\') != null) return true;
-    return endsWithIgnoreCase(path, ".pdf") or isPreviewImagePath(path);
-}
+pub const looksLikePreviewPath = preview_path.looksLikePreviewPath;
 
 fn appendShellQuoted(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, text: []const u8) !void {
     try list.append(allocator, '\'');

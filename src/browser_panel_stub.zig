@@ -5,6 +5,7 @@ const Surface = @import("Surface.zig");
 const ssh_tunnel = @import("ssh_tunnel.zig");
 const window_backend = @import("platform/window_backend.zig");
 const tab = @import("appwindow/tab.zig");
+const active_tab_state = @import("appwindow/active_tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 720;
 pub const MIN_WIDTH: f32 = 360;
@@ -59,7 +60,7 @@ pub fn width() f32 {
 
 pub fn isVisibleForActiveTab() bool {
     const owner = g_owner_tab orelse return false;
-    return g_visible and owner == tab.g_active_tab;
+    return g_visible and owner == active_tab_state.g_active_tab;
 }
 
 pub fn onTabClosed(closed_idx: usize) void {
@@ -227,19 +228,19 @@ pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f
 test "browser_panel_stub: visible only on owning active tab" {
     const saved_visible = g_visible;
     const saved_owner = g_owner_tab;
-    const saved_active_tab = tab.g_active_tab;
+    const saved_active_tab = active_tab_state.g_active_tab;
     defer {
         g_visible = saved_visible;
         g_owner_tab = saved_owner;
-        tab.g_active_tab = saved_active_tab;
+        active_tab_state.g_active_tab = saved_active_tab;
     }
 
-    tab.g_active_tab = 0;
+    active_tab_state.g_active_tab = 0;
     g_visible = true;
     g_owner_tab = 0;
     try std.testing.expect(isVisibleForActiveTab());
 
-    tab.g_active_tab = 1;
+    active_tab_state.g_active_tab = 1;
     try std.testing.expect(!isVisibleForActiveTab());
 }
 

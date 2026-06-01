@@ -116,7 +116,8 @@ threadlocal var g_transfer_cancel_confirm_visible: bool = false;
 const UPDATE_PROMPT_DURATION_MS: i64 = 10000;
 const UPDATE_STATUS_DURATION_MS: i64 = 2500;
 const SSH_CWD_HELP_URL = "https://github.com/xuzhougeng/wispterm#ssh-current-directory-for-downloads-and-uploads";
-const UpdatePromptAction = enum { none, open_release, download_update };
+const update_prompt_model = @import("overlays/update_prompt_model.zig");
+const UpdatePromptAction = update_prompt_model.UpdatePromptAction;
 threadlocal var g_update_prompt_until_ms: i64 = 0;
 threadlocal var g_update_prompt_buf: [128]u8 = undefined;
 threadlocal var g_update_prompt_len: usize = 0;
@@ -1434,36 +1435,17 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
 // New session / SSH launcher
 // ============================================================================
 
-const SSH_FIELD_COUNT = 6;
-const SSH_FIELD_MAX = 128;
+const profile_codec = @import("overlays/profile_codec.zig");
+const SSH_FIELD_COUNT = profile_codec.SSH_FIELD_COUNT;
+const SSH_FIELD_MAX = profile_codec.SSH_FIELD_MAX;
 const SSH_PROFILE_MAX = 16;
 const SSH_PROFILE_NONE = std.math.maxInt(usize);
-const AI_FIELD_COUNT = 11;
-const AI_FIELD_MAX = 8192;
+const AI_FIELD_COUNT = profile_codec.AI_FIELD_COUNT;
+const AI_FIELD_MAX = profile_codec.AI_FIELD_MAX;
 const AI_PROFILE_MAX = 16;
 const AI_PROFILE_NONE = std.math.maxInt(usize);
-const SshField = enum(usize) {
-    name = 0,
-    ip = 1,
-    user = 2,
-    password = 3,
-    port = 4,
-    proxy_jump = 5,
-};
-
-const AiField = enum(usize) {
-    name = 0,
-    base_url = 1,
-    api_key = 2,
-    model = 3,
-    system_prompt = 4,
-    thinking = 5,
-    reasoning_effort = 6,
-    stream = 7,
-    agent = 8,
-    protocol = 9,
-    max_tokens = 10,
-};
+const SshField = profile_codec.SshField;
+const AiField = profile_codec.AiField;
 
 const SessionAction = enum {
     local_shell,
@@ -1497,10 +1479,7 @@ const AiListMode = enum {
     delete_select,
 };
 
-const SshProfile = struct {
-    fields: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined,
-    lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT,
-};
+const SshProfile = profile_codec.SshProfile;
 pub const AgentSshConnectResult = union(enum) {
     connected: *Surface,
     not_found,
@@ -1513,10 +1492,7 @@ pub const DefaultAgentOpenResult = enum {
     failed,
 };
 
-const AiProfile = struct {
-    fields: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined,
-    lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT,
-};
+const AiProfile = profile_codec.AiProfile;
 
 const SessionLayout = struct {
     box_x: f32,
@@ -1964,10 +1940,7 @@ fn sshField(field: SshField) []const u8 {
     return g_ssh_bufs[idx][0..g_ssh_lens[idx]];
 }
 
-fn profileField(profile: *const SshProfile, field: SshField) []const u8 {
-    const idx: usize = @intFromEnum(field);
-    return profile.fields[idx][0..profile.lens[idx]];
-}
+const profileField = profile_codec.profileField;
 
 fn findSshProfileIndex(identifier_raw: []const u8) ?usize {
     loadSshProfiles();
@@ -1994,21 +1967,9 @@ pub fn agentConnectSshProfile(identifier: []const u8) AgentSshConnectResult {
     return .{ .connected = surface };
 }
 
-fn copySshProfileField(profile: *SshProfile, field: SshField, value: []const u8) void {
-    const idx: usize = @intFromEnum(field);
-    const len = @min(value.len, SSH_FIELD_MAX);
-    @memcpy(profile.fields[idx][0..len], value[0..len]);
-    profile.lens[idx] = len;
-}
+const copySshProfileField = profile_codec.copySshProfileField;
 
-fn makeSshProfile(name: []const u8, host: []const u8, user: []const u8, port: []const u8) SshProfile {
-    var profile = SshProfile{};
-    copySshProfileField(&profile, .name, name);
-    copySshProfileField(&profile, .ip, host);
-    copySshProfileField(&profile, .user, user);
-    copySshProfileField(&profile, .port, port);
-    return profile;
-}
+const makeSshProfile = profile_codec.makeSshProfile;
 
 pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat.SshProfileSaveArgs) !AppWindow.ai_chat.SavedSshProfile {
     loadSshProfiles();
@@ -2509,12 +2470,7 @@ fn setAiDefault(field: AiField, value: []const u8) void {
     g_ai_lens[idx] = len;
 }
 
-fn setProfileDefault(profile: *AiProfile, field: AiField, value: []const u8) void {
-    const idx: usize = @intFromEnum(field);
-    const len = @min(value.len, AI_FIELD_MAX);
-    @memcpy(profile.fields[idx][0..len], value[0..len]);
-    profile.lens[idx] = len;
-}
+const setProfileDefault = profile_codec.setProfileDefault;
 
 fn clearAiForm() void {
     g_ai_lens = .{0} ** AI_FIELD_COUNT;
@@ -2622,10 +2578,7 @@ fn aiField(field: AiField) []const u8 {
     return g_ai_bufs[idx][0..g_ai_lens[idx]];
 }
 
-fn aiProfileField(profile: *const AiProfile, field: AiField) []const u8 {
-    const idx: usize = @intFromEnum(field);
-    return profile.fields[idx][0..profile.lens[idx]];
-}
+const aiProfileField = profile_codec.aiProfileField;
 
 fn runAiListRow(row: usize) void {
     switch (g_ai_list_mode) {
@@ -2903,24 +2856,7 @@ fn loadAiProfiles() void {
 /// fields absent from the line (e.g. `protocol`/`max_tokens` from older builds)
 /// are defaulted rather than misaligned, so profiles written before the schema
 /// grew still load correctly.
-fn decodeAiProfileLine(line: []const u8) ?AiProfile {
-    var profile = AiProfile{};
-    var parts = std.mem.splitScalar(u8, line, '\t');
-    var field_idx: usize = 0;
-    while (field_idx < AI_FIELD_COUNT) : (field_idx += 1) {
-        const part = parts.next() orelse break;
-        const decoded = decodeHexFieldToSlice(part, profile.fields[field_idx][0..]) orelse return null;
-        profile.lens[field_idx] = decoded;
-    }
-    if (field_idx < 5) return null;
-    if (profile.lens[@intFromEnum(AiField.thinking)] == 0) setProfileDefault(&profile, .thinking, AppWindow.ai_chat.DEFAULT_THINKING);
-    if (profile.lens[@intFromEnum(AiField.reasoning_effort)] == 0) setProfileDefault(&profile, .reasoning_effort, AppWindow.ai_chat.DEFAULT_REASONING_EFFORT);
-    if (profile.lens[@intFromEnum(AiField.stream)] == 0) setProfileDefault(&profile, .stream, AppWindow.ai_chat.DEFAULT_STREAM);
-    if (profile.lens[@intFromEnum(AiField.agent)] == 0) setProfileDefault(&profile, .agent, AppWindow.ai_chat.DEFAULT_AGENT);
-    if (profile.lens[@intFromEnum(AiField.protocol)] == 0) setProfileDefault(&profile, .protocol, AppWindow.ai_chat.DEFAULT_PROTOCOL);
-    if (profile.lens[@intFromEnum(AiField.max_tokens)] == 0) setProfileDefault(&profile, .max_tokens, AppWindow.ai_chat.DEFAULT_MAX_TOKENS);
-    return profile;
-}
+const decodeAiProfileLine = profile_codec.decodeAiProfileLine;
 
 fn saveAiProfiles(allocator: std.mem.Allocator) void {
     const path = aiProfilesPath(allocator) catch return;
@@ -2970,21 +2906,7 @@ fn loadSshProfiles() void {
     }
 }
 
-/// Decode one tab-separated, hex-encoded SSH profile line into an `SshProfile`.
-/// Returns null only when a present field contains malformed hex; trailing
-/// fields absent from the line are left empty so profiles written by older
-/// builds (with fewer fields) still load after the schema grows.
-fn decodeSshProfileLine(line: []const u8) ?SshProfile {
-    var profile = SshProfile{};
-    var parts = std.mem.splitScalar(u8, line, '\t');
-    var field_idx: usize = 0;
-    while (field_idx < SSH_FIELD_COUNT) : (field_idx += 1) {
-        const part = parts.next() orelse break;
-        const decoded = decodeHexField(part, &profile.fields[field_idx]) orelse return null;
-        profile.lens[field_idx] = decoded;
-    }
-    return profile;
-}
+const decodeSshProfileLine = profile_codec.decodeSshProfileLine;
 
 fn saveSshProfiles(allocator: std.mem.Allocator) void {
     const path = sshProfilesPath(allocator) catch return;
@@ -3017,28 +2939,9 @@ fn appendHexField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)
     }
 }
 
-fn decodeHexField(value: []const u8, out: *[SSH_FIELD_MAX]u8) ?usize {
-    return decodeHexFieldToSlice(value, out[0..]);
-}
-
-fn decodeHexFieldToSlice(value: []const u8, out: []u8) ?usize {
-    if (value.len % 2 != 0) return null;
-    const len = @min(value.len / 2, out.len);
-    var i: usize = 0;
-    while (i < len) : (i += 1) {
-        const hi = hexValue(value[i * 2]) orelse return null;
-        const lo = hexValue(value[i * 2 + 1]) orelse return null;
-        out[i] = (hi << 4) | lo;
-    }
-    return len;
-}
-
-fn hexValue(ch: u8) ?u8 {
-    if (ch >= '0' and ch <= '9') return ch - '0';
-    if (ch >= 'a' and ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' and ch <= 'F') return ch - 'A' + 10;
-    return null;
-}
+const decodeHexField = profile_codec.decodeHexField;
+const decodeHexFieldToSlice = profile_codec.decodeHexFieldToSlice;
+const hexValue = profile_codec.hexValue;
 
 fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
     const right_w = if (right.len > 0) measureTitlebarText(right) + 36.0 else 0.0;
@@ -4148,33 +4051,10 @@ pub fn showStatusToast(message: []const u8) void {
     AppWindow.g_cells_valid = false;
 }
 
-fn transferToastVerb(kind: AppWindow.file_explorer.TransferKind, status: AppWindow.file_explorer.TransferStatus) []const u8 {
-    return switch (kind) {
-        .download => switch (status) {
-            .in_progress => "Downloading",
-            .success => "Downloaded",
-            .failed => "Download failed",
-            .cancelled => "Download interrupted",
-            .idle => "Download",
-        },
-        .upload => switch (status) {
-            .in_progress => "Uploading",
-            .success => "Uploaded",
-            .failed => "Upload failed",
-            .cancelled => "Upload interrupted",
-            .idle => "Upload",
-        },
-    };
-}
+const transferToastVerb = transfer_toast_model.transferToastVerb;
 
-fn formatTransferToast(
-    buf: []u8,
-    kind: AppWindow.file_explorer.TransferKind,
-    status: AppWindow.file_explorer.TransferStatus,
-    message: []const u8,
-) ![]u8 {
-    return std.fmt.bufPrint(buf, "{s}: {s}", .{ transferToastVerb(kind, status), message });
-}
+const transfer_toast_model = @import("overlays/transfer_toast_model.zig");
+const formatTransferToast = transfer_toast_model.formatTransferToast;
 
 pub fn showTransferToast(
     kind: AppWindow.file_explorer.TransferKind,
@@ -4188,23 +4068,6 @@ pub fn showTransferToast(
     g_transfer_toast_clickable = kind == .download and status == .in_progress;
     if (status != .in_progress) transferCancelConfirmClose();
     g_transfer_toast_until_ms = std.time.milliTimestamp() + TRANSFER_TOAST_DURATION_MS;
-}
-
-test "overlays: transfer toast text describes download states" {
-    var buf: [160]u8 = undefined;
-
-    try std.testing.expectEqualStrings(
-        "Downloading: file.txt",
-        try formatTransferToast(&buf, .download, .in_progress, "file.txt"),
-    );
-    try std.testing.expectEqualStrings(
-        "Downloaded: file.txt",
-        try formatTransferToast(&buf, .download, .success, "file.txt"),
-    );
-    try std.testing.expectEqualStrings(
-        "Download failed: file.txt",
-        try formatTransferToast(&buf, .download, .failed, "file.txt"),
-    );
 }
 
 test "overlays: command center Settings command opens settings page" {
@@ -4347,28 +4210,6 @@ test "overlays: transfer interruption prompt returns explicit actions" {
     );
 }
 
-test "overlays: update prompt action selection prefers downloadable asset" {
-    try std.testing.expectEqual(
-        UpdatePromptAction.download_update,
-        updatePromptActionForResult(.{
-            .state = .update_available,
-            .release_url = "https://example.test/releases/v0.28.0",
-            .asset_download_url = "https://example.test/portable.zip",
-        }),
-    );
-    try std.testing.expectEqual(
-        UpdatePromptAction.open_release,
-        updatePromptActionForResult(.{
-            .state = .download_failed,
-            .release_url = "https://example.test/releases/v0.28.0",
-        }),
-    );
-    try std.testing.expectEqual(
-        UpdatePromptAction.none,
-        updatePromptActionForResult(.{ .state = .up_to_date }),
-    );
-}
-
 test "overlays: stored prompt URL does not affect latest release command URL" {
     showSshCwdFallbackPrompt();
 
@@ -4416,88 +4257,6 @@ test "overlays: SSH list filter backspace restores matching rows" {
     try std.testing.expectEqual(@as(usize, 2), sshListRowCount());
 }
 
-fn testEncodeProfileLine(buf: []u8, fields: []const []const u8) []const u8 {
-    const hex = "0123456789ABCDEF";
-    var len: usize = 0;
-    for (fields, 0..) |field, fi| {
-        if (fi > 0) {
-            buf[len] = '\t';
-            len += 1;
-        }
-        for (field) |ch| {
-            buf[len] = hex[ch >> 4];
-            buf[len + 1] = hex[ch & 0x0f];
-            len += 2;
-        }
-    }
-    return buf[0..len];
-}
-
-test "overlays: SSH profile line decode preserves all fields including proxy jump" {
-    var buf: [512]u8 = undefined;
-    const line = testEncodeProfileLine(&buf, &.{ "Prod", "10.0.0.9", "root", "secret", "2222", "admin@jump.test:22" });
-    const profile = decodeSshProfileLine(line) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("Prod", profileField(&profile, .name));
-    try std.testing.expectEqualStrings("10.0.0.9", profileField(&profile, .ip));
-    try std.testing.expectEqualStrings("root", profileField(&profile, .user));
-    try std.testing.expectEqualStrings("secret", profileField(&profile, .password));
-    try std.testing.expectEqualStrings("2222", profileField(&profile, .port));
-    try std.testing.expectEqualStrings("admin@jump.test:22", profileField(&profile, .proxy_jump));
-}
-
-test "overlays: SSH profile line decode accepts legacy lines without a proxy jump field" {
-    // Profiles saved before ProxyJump existed have only the first five fields.
-    // They must still load, with an empty proxy jump, rather than being dropped.
-    var buf: [512]u8 = undefined;
-    const legacy = testEncodeProfileLine(&buf, &.{ "Old", "10.0.0.1", "user", "", "22" });
-    const profile = decodeSshProfileLine(legacy) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("Old", profileField(&profile, .name));
-    try std.testing.expectEqualStrings("10.0.0.1", profileField(&profile, .ip));
-    try std.testing.expectEqualStrings("22", profileField(&profile, .port));
-    try std.testing.expectEqualStrings("", profileField(&profile, .proxy_jump));
-}
-
-test "overlays: SSH profile line decode rejects malformed hex" {
-    try std.testing.expect(decodeSshProfileLine("not-hex\tzz") == null);
-}
-
-test "overlays: AI profile line decode round-trips all fields including max_tokens" {
-    var buf: [1024]u8 = undefined;
-    const line = testEncodeProfileLine(&buf, &.{
-        "Claude", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic", "4096",
-    });
-    const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("Claude", aiProfileField(&profile, .name));
-    try std.testing.expectEqualStrings("anthropic", aiProfileField(&profile, .protocol));
-    try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));
-}
-
-test "overlays: AI profile line decode defaults max_tokens for legacy 10-field profiles" {
-    // Profiles written before max_tokens existed have only the first ten fields
-    // (indices 0-9). They must still load, with the new trailing field defaulted
-    // to 8192, and the existing positional fields staying aligned.
-    var buf: [1024]u8 = undefined;
-    const legacy = testEncodeProfileLine(&buf, &.{
-        "Legacy", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic",
-    });
-    const profile = decodeAiProfileLine(legacy) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("Legacy", aiProfileField(&profile, .name));
-    try std.testing.expectEqualStrings("anthropic", aiProfileField(&profile, .protocol));
-    try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
-}
-
-test "overlays: AI profile line decode defaults max_tokens when the field is empty" {
-    var buf: [1024]u8 = undefined;
-    const line = testEncodeProfileLine(&buf, &.{
-        "Empty", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic", "",
-    });
-    const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
-    try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
-}
-
 fn showVersionToast() void {
     const msg = app_metadata.versionLine(&g_copy_toast_buf) catch return;
     g_copy_toast_len = msg.len;
@@ -4525,18 +4284,7 @@ pub fn showUpdateCheckResult(result: update_check.CheckResult) void {
     showUpdatePrompt(result, updatePromptActionForResult(result));
 }
 
-fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromptAction {
-    return if (result.state == .update_available and result.asset_download_url.len > 0)
-        .download_update
-    else if (result.state == .update_available and result.release_url.len > 0)
-        .open_release
-    else if (result.state == .failed and result.release_url.len > 0)
-        .open_release
-    else if (result.state == .download_failed and result.release_url.len > 0)
-        .open_release
-    else
-        .none;
-}
+const updatePromptActionForResult = update_prompt_model.updatePromptActionForResult;
 
 fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction) void {
     var status_buf: [96]u8 = undefined;

@@ -27,12 +27,12 @@ pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
 pub const DEFAULT_MODEL = "deepseek-v4-pro";
 pub const DEFAULT_SYSTEM_PROMPT = platform_agent_prompt.defaultSystemPrompt;
 pub const COPILOT_SYSTEM_PROMPT = platform_agent_prompt.copilotSystemPrompt;
-pub const DEFAULT_THINKING = "enabled";
-pub const DEFAULT_REASONING_EFFORT = "high";
-pub const DEFAULT_STREAM = "false";
-pub const DEFAULT_AGENT = "true";
+pub const DEFAULT_THINKING = ai_chat_protocol.DEFAULT_THINKING;
+pub const DEFAULT_REASONING_EFFORT = ai_chat_protocol.DEFAULT_REASONING_EFFORT;
+pub const DEFAULT_STREAM = ai_chat_protocol.DEFAULT_STREAM;
+pub const DEFAULT_AGENT = ai_chat_protocol.DEFAULT_AGENT;
 pub const DEFAULT_PROTOCOL = ai_chat_protocol.DEFAULT_PROTOCOL;
-pub const DEFAULT_MAX_TOKENS = "8192";
+pub const DEFAULT_MAX_TOKENS = ai_chat_protocol.DEFAULT_MAX_TOKENS;
 
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
 const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
@@ -103,23 +103,7 @@ const RequestMessage = ai_chat_protocol.RequestMessage;
 const ai_chat_title = @import("ai_chat_title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 
-pub const AgentPermission = enum {
-    confirm,
-    full,
-
-    pub fn parse(value: []const u8) ?AgentPermission {
-        if (std.mem.eql(u8, value, "confirm")) return .confirm;
-        if (std.mem.eql(u8, value, "full") or std.mem.eql(u8, value, "full-permission")) return .full;
-        return null;
-    }
-
-    pub fn name(self: AgentPermission) []const u8 {
-        return switch (self) {
-            .confirm => "confirm",
-            .full => "full",
-        };
-    }
-};
+pub const AgentPermission = @import("ai_agent_config.zig").AgentPermission;
 
 pub const AgentSettings = struct {
     enabled: bool = false,
