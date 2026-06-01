@@ -297,6 +297,12 @@ pub fn detect(title: []const u8, recent_output: []const u8) Detection {
         "waited for background terminal",
     });
     const failure_idx = lastAnyIgnoreCase(recent_output, &.{ "permission denied", "command failed" });
+    const ready_idx = lastAnyIgnoreCase(recent_output, &.{
+        "openai codex",
+        "model:",
+        "directory:",
+        "/model to change",
+    });
 
     if (halted_idx) |idx| {
         if (newerThan(idx, done_idx)) {
@@ -324,6 +330,11 @@ pub fn detect(title: []const u8, recent_output: []const u8) Detection {
     }
     if (titleHasRunningMarker(title)) {
         return .{ .app = .codex, .state = .running, .confidence = 82 };
+    }
+    if (ready_idx) |idx| {
+        if (newerThan(idx, running_idx) and newerThan(idx, done_idx) and newerThan(idx, halted_idx) and newerThan(idx, failure_idx)) {
+            return .{ .app = .codex, .state = .needs_input, .confidence = 74 };
+        }
     }
 
     return .{ .app = .codex, .state = .none, .confidence = 45 };
@@ -434,4 +445,15 @@ test "agent detector ignores normal shell output" {
     try std.testing.expectEqual(App.none, detection.app);
     try std.testing.expectEqual(State.none, detection.state);
     try std.testing.expect(!detection.visible());
+}
+
+test "agent detector recognizes Codex ready screen" {
+    const output =
+        \\OpenAI Codex (v0.135.0)
+        \\model:     gpt-5.5 xhigh   /model to change
+        \\directory: ~
+    ;
+    const detection = detect("xzg", output);
+    try std.testing.expectEqual(App.codex, detection.app);
+    try std.testing.expectEqual(State.needs_input, detection.state);
 }

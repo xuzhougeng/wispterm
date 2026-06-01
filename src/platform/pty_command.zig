@@ -168,7 +168,7 @@ pub fn wslSessionToolName() []const u8 {
 }
 
 pub fn wslSessionToolDescription() []const u8 {
-    return "Run a POSIX shell command in the selected already-open WSL terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt; for R, Python, Codex, Claude Code, or other REPLs use terminal_repl_exec.";
+    return "Run a POSIX shell command in the selected already-open WSL terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt and the command returns; for R, Python, Codex, Claude Code, other REPLs, or launching full-screen agent apps, use terminal_repl_exec.";
 }
 
 pub fn wslSessionToolPropertiesJson() []const u8 {

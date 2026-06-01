@@ -47,6 +47,7 @@ const wsl_tool_guidance =
 
 const common_tools_after_wsl =
     \\- Use `terminal_repl_exec` for Codex, Claude Code, Python, R, or other REPL/app terminals.
+    \\- Start Codex or Claude Code via `terminal_repl_exec repl=plain`, not shell exec.
     \\- Do not paste shell commands into Codex or Claude Code; send user-facing text.
     \\- Use `tab_new` only when no suitable terminal exists.
     \\- For WispTerm questions, call `wispterm_docs` to list and read built-in docs.

@@ -4331,6 +4331,78 @@ const UnixSessionKind = enum {
     }
 };
 
+fn agentAppDisplayName(app: agent_detector.App) []const u8 {
+    return switch (app) {
+        .none => "terminal app",
+        .codex => "Codex",
+        .claude_code => "Claude Code",
+    };
+}
+
+fn agentAppReplName(app: agent_detector.App) []const u8 {
+    return switch (app) {
+        .none => "plain",
+        .codex => "codex",
+        .claude_code => "claude_code",
+    };
+}
+
+fn shellExecAgentAppRefusal(allocator: std.mem.Allocator, kind: UnixSessionKind, surface: ToolSurface) !?[]u8 {
+    if (surface.agent_app == .none or surface.agent_state == .none or surface.agent_confidence < 60) return null;
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Refusing to run {s} shell command in an active {s} terminal (agent={s}:{s}, confidence={d}). Use terminal_repl_exec with repl={s} to send user-facing text, or exit {s} before using {s}.",
+        .{
+            kind.label(),
+            agentAppDisplayName(surface.agent_app),
+            surface.agent_app.label(),
+            surface.agent_state.label(),
+            surface.agent_confidence,
+            agentAppReplName(surface.agent_app),
+            agentAppDisplayName(surface.agent_app),
+            kind.toolName(),
+        },
+    );
+    return message;
+}
+
+fn commandWordApp(command: []const u8) ?agent_detector.App {
+    const trimmed = std.mem.trimLeft(u8, command, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    var end: usize = 0;
+    while (end < trimmed.len and !std.ascii.isWhitespace(trimmed[end]) and trimmed[end] != ';') : (end += 1) {}
+    var word = std.mem.trim(u8, trimmed[0..end], "\"'");
+    if (std.mem.lastIndexOfAny(u8, word, "/\\")) |slash| word = word[slash + 1 ..];
+    if (std.ascii.eqlIgnoreCase(word, "codex")) return .codex;
+    if (std.ascii.eqlIgnoreCase(word, "claude") or std.ascii.eqlIgnoreCase(word, "claude-code")) return .claude_code;
+    return null;
+}
+
+fn commandHasNonInteractiveAgentFlag(command: []const u8) bool {
+    return containsWord(command, "--help") or
+        containsWord(command, "-h") or
+        containsWord(command, "--version") or
+        containsWord(command, "-V") or
+        containsWord(command, "version");
+}
+
+fn shellExecInteractiveAgentCommandRefusal(allocator: std.mem.Allocator, kind: UnixSessionKind, command: []const u8) !?[]u8 {
+    const app = commandWordApp(command) orelse return null;
+    if (commandHasNonInteractiveAgentFlag(command)) return null;
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Refusing to start interactive {s} with {s}. {s} wraps commands with sentinels and waits for them to exit, which corrupts full-screen agent apps. Use terminal_repl_exec with repl=plain to type `{s}` at the shell prompt, then use terminal_repl_exec with repl={s} to send prompts.",
+        .{
+            agentAppDisplayName(app),
+            kind.toolName(),
+            kind.toolName(),
+            command,
+            agentAppReplName(app),
+        },
+    );
+    return message;
+}
+
 fn sshSessionExecTool(request: *ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     return unixSessionExecTool(request, .ssh, surface_id, command, timeout_ms);
 }
@@ -4418,6 +4490,10 @@ fn plainReplInputTool(request: *const ChatRequest, host: ToolHost, surface: Tool
         return request.allocator.dupe(u8, "Failed to write to terminal surface.");
     }
 
+    if (repl == .codex or repl == .claude_code) {
+        return waitForAgentAppReplResult(request, host, surface, repl, timeout_ms);
+    }
+
     const wait_ms = @min(@max(timeout_ms, 500), 5000);
     const deadline = std.time.milliTimestamp() + @as(i64, @intCast(wait_ms));
     while (std.time.milliTimestamp() < deadline) {
@@ -4427,6 +4503,131 @@ fn plainReplInputTool(request: *const ChatRequest, host: ToolHost, surface: Tool
 
     const latest = host.surfaceSnapshot(host.ctx, request.allocator, surface.ptr) catch return request.allocator.dupe(u8, "Input sent; failed to read terminal snapshot.");
     return truncateOwned(request.allocator, latest);
+}
+
+fn agentAppStateIsTerminal(state: agent_detector.State) bool {
+    return switch (state) {
+        .waiting_approval, .needs_input, .halted, .failed, .done => true,
+        .none, .running => false,
+    };
+}
+
+fn replSnapshotLooksBusy(repl: ReplKind, snapshot: []const u8) bool {
+    return switch (repl) {
+        .codex => std.ascii.indexOfIgnoreCase(snapshot, "working (") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "esc to interrupt") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "waited for background terminal") != null,
+        .claude_code => std.ascii.indexOfIgnoreCase(snapshot, "thinking") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "esc to interrupt") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "Update(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "Edit(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "MultiEdit(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "Write(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "Bash(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "Read(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "Grep(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "Glob(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "Task(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "TodoWrite(") != null or
+            std.ascii.indexOfIgnoreCase(snapshot, "WebFetch(") != null,
+        .r, .python, .plain => false,
+    };
+}
+
+fn allocAgentAppReplResult(
+    allocator: std.mem.Allocator,
+    repl: ReplKind,
+    app: agent_detector.App,
+    state: agent_detector.State,
+    confidence: u8,
+    note: []const u8,
+    snapshot: []const u8,
+) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.print(
+        allocator,
+        "Input sent; {s} {s} (agent={s}:{s}, confidence={d}).\nLatest snapshot:\n",
+        .{ repl.label(), note, app.label(), state.label(), confidence },
+    );
+    try out.appendSlice(allocator, snapshot);
+    return truncateOwned(allocator, try out.toOwnedSlice(allocator));
+}
+
+fn waitForAgentAppReplResult(request: *const ChatRequest, host: ToolHost, surface: ToolSurface, repl: ReplKind, timeout_ms: u32) ![]u8 {
+    const wait_ms = @max(timeout_ms, 1000);
+    const quiet_ms: i64 = 1500;
+    const min_wait_ms: i64 = 750;
+    const started = std.time.milliTimestamp();
+    const deadline = started + @as(i64, @intCast(wait_ms));
+    var last_change_ms = started;
+    var changed_once = false;
+    var last_app = surface.agent_app;
+    var last_state = surface.agent_state;
+    var last_confidence = surface.agent_confidence;
+    var last_snapshot = try request.allocator.dupe(u8, surface.snapshot);
+    defer request.allocator.free(last_snapshot);
+
+    while (std.time.milliTimestamp() < deadline) {
+        if (requestCancelled(request)) return request.allocator.dupe(u8, "Canceled.");
+        const now = std.time.milliTimestamp();
+        const live = host.collectSnapshot(host.ctx, request.allocator) catch null;
+        if (live) |snapshot| {
+            defer snapshot.deinit(request.allocator);
+            if (findSurface(snapshot, surface.id)) |latest| {
+                last_app = latest.agent_app;
+                last_state = latest.agent_state;
+                last_confidence = latest.agent_confidence;
+                if (!std.mem.eql(u8, last_snapshot, latest.snapshot)) {
+                    const new_snapshot = try request.allocator.dupe(u8, latest.snapshot);
+                    request.allocator.free(last_snapshot);
+                    last_snapshot = new_snapshot;
+                    last_change_ms = now;
+                    changed_once = true;
+                }
+                if (agentAppStateIsTerminal(latest.agent_state)) {
+                    return allocAgentAppReplResult(
+                        request.allocator,
+                        repl,
+                        latest.agent_app,
+                        latest.agent_state,
+                        latest.agent_confidence,
+                        "reported a terminal state",
+                        latest.snapshot,
+                    );
+                }
+                const settled = changed_once and now >= started + min_wait_ms and now - last_change_ms >= quiet_ms;
+                if (settled and !replSnapshotLooksBusy(repl, latest.snapshot)) {
+                    return allocAgentAppReplResult(
+                        request.allocator,
+                        repl,
+                        latest.agent_app,
+                        latest.agent_state,
+                        latest.agent_confidence,
+                        "screen settled without an active busy marker",
+                        latest.snapshot,
+                    );
+                }
+            }
+        }
+        std.Thread.sleep(250 * std.time.ns_per_ms);
+    }
+
+    const note = try std.fmt.allocPrint(
+        request.allocator,
+        "is still waiting after {d} ms; treat this as in progress, not a final result",
+        .{wait_ms},
+    );
+    defer request.allocator.free(note);
+    return allocAgentAppReplResult(
+        request.allocator,
+        repl,
+        last_app,
+        last_state,
+        last_confidence,
+        note,
+        last_snapshot,
+    );
 }
 
 fn rSessionEvalTool(request: *const ChatRequest, host: ToolHost, surface: ToolSurface, code: []const u8, timeout_ms: u32) ![]u8 {
@@ -4529,6 +4730,8 @@ fn unixSessionExecTool(request: *ChatRequest, kind: UnixSessionKind, surface_id:
     if (!kind.matches(surface)) {
         return std.fmt.allocPrint(request.allocator, "Target surface is not an opened {s} session.", .{kind.label()});
     }
+    if (try shellExecAgentAppRefusal(request.allocator, kind, surface)) |message| return message;
+    if (try shellExecInteractiveAgentCommandRefusal(request.allocator, kind, command)) |message| return message;
 
     const nonce = std.time.milliTimestamp();
     // Keep the agent's injected command out of the user's shell history. We
@@ -6954,6 +7157,71 @@ test "copilot session pre-targets the bound surface in its request" {
     try std.testing.expectEqualStrings("abc123", req.write_context_surface_id[0..req.write_context_surface_id_len]);
 }
 
+test "shell exec refuses interactive Codex launcher commands" {
+    const allocator = std.testing.allocator;
+    const refused = (try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "codex --model o4-mini")).?;
+    defer allocator.free(refused);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "Refusing to start interactive Codex") != null);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "terminal_repl_exec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "repl=plain") != null);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "repl=codex") != null);
+
+    try std.testing.expect(try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "which codex") == null);
+    try std.testing.expect(try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "codex --version") == null);
+}
+
+test "wsl_session_exec refuses to paste shell wrapper into Claude Code" {
+    const allocator = std.testing.allocator;
+    const saved_settings = currentAgentSettings();
+    defer configureAgent(saved_settings);
+    configureAgent(.{ .enabled = true, .permission = .full });
+    const session = try Session.init(allocator, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+
+    var surfaces = try allocator.alloc(ToolSurface, 1);
+    surfaces[0] = .{
+        .id = try allocator.dupe(u8, "surface-claude"),
+        .title = try allocator.dupe(u8, "\xe2\x9c\xbb Claude Code"),
+        .cwd = try allocator.dupe(u8, "/home/xzg"),
+        .snapshot = try allocator.dupe(u8, "Claude Code v2.1.159\n> "),
+        .tab_index = 2,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = true,
+        .agent_app = .claude_code,
+        .agent_state = .running,
+        .agent_confidence = 82,
+        .ptr = @ptrFromInt(1),
+    };
+    const snapshot = ToolSnapshot{ .surfaces = surfaces, .active_tab = 2 };
+    defer snapshot.deinit(allocator);
+
+    var messages = [_]RequestMessage{};
+    var request = ChatRequest{
+        .allocator = allocator,
+        .session = session,
+        .base_url = @constCast(""),
+        .api_key = @constCast(""),
+        .model = @constCast(""),
+        .system_prompt = @constCast(""),
+        .messages = messages[0..],
+        .thinking_enabled = false,
+        .reasoning_effort = @constCast(""),
+        .stream = false,
+        .agent_enabled = true,
+        .tool_host = CopilotTestHost.host(),
+        .tool_snapshot = snapshot,
+        .started_ms = 0,
+    };
+    setWriteContext(&request, "surface-claude");
+
+    const result = try wslSessionExecTool(&request, "surface-claude", "which claude", 1000);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Refusing to run WSL shell command") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "terminal_repl_exec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "repl=claude_code") != null);
+}
+
 test "ai chat R string literal escapes code for REPL eval" {
     const allocator = std.testing.allocator;
     const literal = try rStringLiteral(allocator, "print(\"hello\")\npath <- \"C:\\\\tmp\"");
@@ -6996,6 +7264,126 @@ test "ai chat Codex running REPL input queues with tab instead of enter" {
     const idle_input = try allocPlainReplInput(allocator, .codex, idle_surface, "/status");
     defer allocator.free(idle_input);
     try std.testing.expectEqualStrings("/status\r", idle_input);
+}
+
+const ReplWaitTestHost = struct {
+    const Ctx = struct {
+        collect_calls: usize = 0,
+        write_calls: usize = 0,
+        done_after: usize = 2,
+        last_write: [256]u8 = undefined,
+        last_write_len: usize = 0,
+    };
+
+    fn collectSnapshot(ctx_ptr: *anyopaque, allocator: std.mem.Allocator) anyerror!ToolSnapshot {
+        const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr));
+        ctx.collect_calls += 1;
+        const done = ctx.collect_calls >= ctx.done_after;
+        var surfaces = try allocator.alloc(ToolSurface, 1);
+        surfaces[0] = .{
+            .id = try allocator.dupe(u8, "surface-claude"),
+            .title = try allocator.dupe(u8, "Claude Code"),
+            .cwd = try allocator.dupe(u8, "/home/xzg"),
+            .snapshot = try allocator.dupe(u8, if (done) "Claude Code\nFINISHED" else "Claude Code\nthinking"),
+            .tab_index = 0,
+            .focused = true,
+            .is_ssh = false,
+            .is_wsl = true,
+            .agent_app = .claude_code,
+            .agent_state = if (done) .done else .running,
+            .agent_confidence = 82,
+            .ptr = @ptrCast(ctx),
+        };
+        return .{ .surfaces = surfaces, .active_tab = 0 };
+    }
+
+    fn surfaceSnapshot(_: *anyopaque, allocator: std.mem.Allocator, _: *anyopaque) anyerror![]u8 {
+        return allocator.dupe(u8, "fallback snapshot");
+    }
+
+    fn writeSurface(ctx_ptr: *anyopaque, _: *anyopaque, data: []const u8) bool {
+        const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr));
+        const len = @min(data.len, ctx.last_write.len);
+        @memcpy(ctx.last_write[0..len], data[0..len]);
+        ctx.last_write_len = len;
+        ctx.write_calls += 1;
+        return true;
+    }
+
+    fn unsupportedSpawn(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?[]const u8) anyerror!ToolSurface {
+        return error.Unsupported;
+    }
+
+    fn unsupportedClose(_: *anyopaque, _: std.mem.Allocator, _: ?usize, _: ?[]const u8, _: ?[]const u8) anyerror!ToolClosedTab {
+        return error.Unsupported;
+    }
+
+    fn unsupportedSaveSsh(_: *anyopaque, _: std.mem.Allocator, _: SshProfileSaveArgs) anyerror!SavedSshProfile {
+        return error.Unsupported;
+    }
+
+    fn unsupportedConnectSsh(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!ToolSurface {
+        return error.Unsupported;
+    }
+
+    fn host(ctx: *Ctx) ToolHost {
+        return .{
+            .ctx = @ptrCast(ctx),
+            .collectSnapshot = collectSnapshot,
+            .surfaceSnapshot = surfaceSnapshot,
+            .writeSurface = writeSurface,
+            .spawnTab = unsupportedSpawn,
+            .closeTab = unsupportedClose,
+            .saveSshProfile = unsupportedSaveSsh,
+            .connectSshProfile = unsupportedConnectSsh,
+        };
+    }
+};
+
+test "Claude Code REPL input waits for app state before returning" {
+    const allocator = std.testing.allocator;
+    var ctx = ReplWaitTestHost.Ctx{ .done_after = 2 };
+    const session = try Session.init(allocator, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+    var messages = [_]RequestMessage{};
+    const request = ChatRequest{
+        .allocator = allocator,
+        .session = session,
+        .base_url = @constCast(""),
+        .api_key = @constCast(""),
+        .model = @constCast(""),
+        .system_prompt = @constCast(""),
+        .messages = messages[0..],
+        .thinking_enabled = false,
+        .reasoning_effort = @constCast(""),
+        .stream = false,
+        .agent_enabled = true,
+        .tool_host = ReplWaitTestHost.host(&ctx),
+        .tool_snapshot = null,
+        .started_ms = 0,
+    };
+    const surface = ToolSurface{
+        .id = @constCast("surface-claude"),
+        .title = @constCast("Claude Code"),
+        .cwd = @constCast("/home/xzg"),
+        .snapshot = @constCast("Claude Code\n> "),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = true,
+        .agent_app = .claude_code,
+        .agent_state = .none,
+        .agent_confidence = 45,
+        .ptr = @ptrCast(&ctx),
+    };
+
+    const result = try plainReplInputTool(&request, ReplWaitTestHost.host(&ctx), surface, .claude_code, "analyze system", 2000);
+    defer allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 1), ctx.write_calls);
+    try std.testing.expect(ctx.collect_calls >= 2);
+    try std.testing.expectEqualStrings("analyze system\r", ctx.last_write[0..ctx.last_write_len]);
+    try std.testing.expect(std.mem.indexOf(u8, result, "reported a terminal state") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "FINISHED") != null);
 }
 
 test "ai chat Python string literal escapes code for REPL eval" {
