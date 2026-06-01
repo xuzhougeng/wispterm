@@ -4475,6 +4475,7 @@ fn terminalReplExecTool(request: *ChatRequest, surface_id: []const u8, repl_name
 
 fn plainReplSubmitKey(repl: ReplKind, surface: ToolSurface) []const u8 {
     if (repl == .codex and surface.agent_state == .running) return "\t";
+    if (repl == .codex) return "\n";
     return "\r";
 }
 
@@ -7263,7 +7264,7 @@ test "ai chat Codex running REPL input queues with tab instead of enter" {
     idle_surface.agent_state = .done;
     const idle_input = try allocPlainReplInput(allocator, .codex, idle_surface, "/status");
     defer allocator.free(idle_input);
-    try std.testing.expectEqualStrings("/status\r", idle_input);
+    try std.testing.expectEqualStrings("/status\n", idle_input);
 }
 
 const ReplWaitTestHost = struct {
