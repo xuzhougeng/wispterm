@@ -1284,9 +1284,16 @@ pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f3
     ui_pipeline.fillQuadAlpha(panel_x, bar_y, panel_w, bar_h, panel_bg, 0.98);
 
     const margin = browser_panel.URL_BAR_MARGIN;
-    const close_btn_w: f32 = @floatCast(hit_test.PANEL_HEADER_CLOSE_BTN_W);
-    const close_margin: f32 = @floatCast(hit_test.PANEL_HEADER_CLOSE_MARGIN);
-    const close_x = @round(@as(f32, @floatFromInt(url_bar.right)) - close_margin - close_btn_w);
+    const close_layout: hit_test.PanelHeaderLayout = .{
+        .visible = true,
+        .left = @floatFromInt(url_bar.left),
+        .right = @floatFromInt(url_bar.right),
+        .top = @floatFromInt(url_bar.top),
+        .height = @floatFromInt(url_bar.bottom - url_bar.top),
+    };
+    const close = hit_test.panelCloseButtonRect(close_layout) orelse return;
+    const close_btn_w: f32 = @floatCast(close.width);
+    const close_x = @round(@as(f32, @floatCast(close.left)));
     const input_x = @round(@as(f32, @floatFromInt(url_bar.left)) + margin);
     const input_w = @max(1.0, close_x - input_x - margin);
     const input_h = @max(24.0, bar_h - margin * 2);
@@ -1314,13 +1321,7 @@ pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f3
     const close_hovered = blk: {
         const win = AppWindow.g_window orelse break :blk false;
         if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
-        break :blk hit_test.panelHeaderCloseButton(.{
-            .visible = true,
-            .left = @floatFromInt(url_bar.left),
-            .right = @floatFromInt(url_bar.right),
-            .top = @floatFromInt(url_bar.top),
-            .height = @floatFromInt(url_bar.bottom - url_bar.top),
-        }, @floatFromInt(win.mouse_x), @floatFromInt(win.mouse_y));
+        break :blk hit_test.panelHeaderCloseButton(close_layout, @floatFromInt(win.mouse_x), @floatFromInt(win.mouse_y));
     };
     if (close_hovered) {
         ui_pipeline.fillQuadAlpha(close_x + 6, bar_y + @round((bar_h - 20) / 2), 20, 20, mixColor(bg, fg, 0.14), 0.95);

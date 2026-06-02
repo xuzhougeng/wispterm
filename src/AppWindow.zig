@@ -40,6 +40,7 @@ const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
+const hit_test = @import("input/hit_test.zig");
 pub const ai_chat = @import("ai_chat.zig");
 const ai_history_cache = @import("ai_history_cache.zig");
 const ai_history_resume = @import("ai_history_resume.zig");
@@ -742,6 +743,44 @@ fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32)
     const chat_x: f32 = @floatFromInt(bounds.left);
     const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
     ai_chat_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w);
+    renderAiCopilotCloseButton(bounds, @floatFromInt(fb_height));
+}
+
+fn renderAiCopilotCloseButton(bounds: ai_sidebar.Bounds, window_height: f32) void {
+    const layout: hit_test.PanelHeaderLayout = .{
+        .visible = true,
+        .left = @floatFromInt(bounds.left),
+        .right = @floatFromInt(bounds.right),
+        .top = @floatFromInt(bounds.top),
+        .height = ai_chat_renderer.HEADER_H,
+    };
+    const close = hit_test.panelCloseButtonRect(layout) orelse return;
+    const close_x: f32 = @floatCast(close.left);
+    const close_w: f32 = @floatCast(close.width);
+    const close_h: f32 = @floatCast(close.height);
+    const close_y = window_height - @as(f32, @floatCast(close.top + close.height));
+
+    const bg = g_theme.background;
+    const fg = g_theme.foreground;
+    const hovered = blk: {
+        const win = g_window orelse break :blk false;
+        const mouse = window_backend.mousePosition(win);
+        if (mouse.x < 0 or mouse.y < 0) break :blk false;
+        break :blk hit_test.panelHeaderCloseButton(layout, @floatFromInt(mouse.x), @floatFromInt(mouse.y));
+    };
+    if (hovered) {
+        ui_pipeline.fillQuadAlpha(close_x + 6, close_y + @round((close_h - 20) / 2), 20, 20, mixColor(bg, fg, 0.14), 0.95);
+    }
+    titlebar.renderCloseIcon(close_x, close_y, close_w, close_h, if (hovered) fg else mixColor(bg, fg, 0.68));
+}
+
+fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
+    const clamped = @max(0.0, @min(1.0, t));
+    return .{
+        a[0] + (b[0] - a[0]) * clamped,
+        a[1] + (b[1] - a[1]) * clamped,
+        a[2] + (b[2] - a[2]) * clamped,
+    };
 }
 
 pub fn activeTab() ?*TabState {

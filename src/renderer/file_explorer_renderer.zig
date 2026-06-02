@@ -40,12 +40,14 @@ const HeaderCloseRect = struct {
 };
 
 fn headerCloseRect(panel_x: f32, panel_w: f32) HeaderCloseRect {
-    const close_w: f32 = @floatCast(hit_test.PANEL_HEADER_CLOSE_BTN_W);
-    const close_margin: f32 = @floatCast(hit_test.PANEL_HEADER_CLOSE_MARGIN);
-    return .{
-        .x = panel_x + panel_w - close_margin - close_w,
-        .w = close_w,
-    };
+    const rect = hit_test.panelCloseButtonRect(.{
+        .visible = true,
+        .left = panel_x,
+        .right = panel_x + panel_w,
+        .top = 0,
+        .height = 1,
+    }) orelse return .{ .x = panel_x + panel_w, .w = 0 };
+    return .{ .x = @floatCast(rect.left), .w = @floatCast(rect.width) };
 }
 
 fn renderHeaderCloseButton(

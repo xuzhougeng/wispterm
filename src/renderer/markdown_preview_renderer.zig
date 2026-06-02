@@ -4,6 +4,7 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const panel = @import("../markdown_preview_panel.zig");
 const markdown_preview = @import("../markdown_preview.zig");
+const hit_test = @import("../input/hit_test.zig");
 const ui_perf = @import("../ui_perf.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
@@ -14,6 +15,7 @@ const c = @cImport({
 });
 
 const FOOTER_HEIGHT: f32 = 44;
+pub const HEADER_HEIGHT: f32 = 42;
 const PAD_X: f32 = 16;
 const PAD_Y: f32 = 18;
 const LINE_GAP: f32 = 6;
@@ -78,9 +80,46 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32, right_offs
     ui_pipeline.fillQuad(panel_x, 0, panel_w, side_h, panel_bg);
     ui_pipeline.fillQuad(panel_x, 0, if (resize_hovered or AppWindow.input.g_markdown_preview_resize_dragging) 2 else 1, side_h, edge_color);
 
+    renderHeader(panel_x, panel_w, window_height, titlebar_h, card_bg, border, muted, normal);
     renderFooter(panel_x, panel_w, card_bg, border, muted, normal, accent);
 
     renderDocument(panel_x, panel_w, window_height, titlebar_h, normal, muted, strong, accent, code_bg, border);
+}
+
+fn renderHeader(
+    panel_x: f32,
+    panel_w: f32,
+    window_height: f32,
+    titlebar_h: f32,
+    card_bg: [3]f32,
+    border: [3]f32,
+    muted: [3]f32,
+    normal: [3]f32,
+) void {
+    const header_y = window_height - titlebar_h - HEADER_HEIGHT;
+    ui_pipeline.fillQuad(panel_x, header_y, panel_w, HEADER_HEIGHT, card_bg);
+    ui_pipeline.fillQuad(panel_x, header_y, panel_w, 1, border);
+
+    const layout: hit_test.PanelHeaderLayout = .{
+        .visible = true,
+        .left = panel_x,
+        .right = panel_x + panel_w,
+        .top = titlebar_h,
+        .height = HEADER_HEIGHT,
+    };
+    const close = hit_test.panelCloseButtonRect(layout) orelse return;
+    const close_x: f32 = @floatCast(close.left);
+    const close_w: f32 = @floatCast(close.width);
+
+    const hovered = blk: {
+        const win = AppWindow.g_window orelse break :blk false;
+        if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
+        break :blk hit_test.panelHeaderCloseButton(layout, @floatFromInt(win.mouse_x), @floatFromInt(win.mouse_y));
+    };
+    if (hovered) {
+        ui_pipeline.fillQuadAlpha(close_x + 6, header_y + @round((HEADER_HEIGHT - 20) / 2), 20, 20, blend(AppWindow.g_theme.background, AppWindow.g_theme.foreground, 0.14), 0.95);
+    }
+    titlebar.renderCloseIcon(close_x, header_y, close_w, HEADER_HEIGHT, if (hovered) normal else muted);
 }
 
 fn renderFooter(
@@ -128,7 +167,7 @@ fn renderDocument(
     code_bg: [3]f32,
     border: [3]f32,
 ) void {
-    const body_top = titlebar_h + PAD_Y;
+    const body_top = titlebar_h + HEADER_HEIGHT + PAD_Y;
     const body_bottom = FOOTER_HEIGHT + PAD_Y;
     const body_h = window_height - body_top - body_bottom;
     if (body_h <= 0) return;

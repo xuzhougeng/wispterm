@@ -26,7 +26,7 @@ const ui_pipeline = @import("ui_pipeline.zig");
 const ai_chat_layout = @import("../ai_chat_layout.zig");
 
 pub const LINE_PAD_X: f32 = 18;
-const HEADER_H: f32 = 54;
+pub const HEADER_H: f32 = 54;
 pub const INPUT_H: f32 = composer_layout.input_min_h;
 pub const INPUT_MAX_H: f32 = composer_layout.input_max_h;
 pub const INPUT_FIELD_PAD_TOP: f32 = composer_layout.Field.pad_top;

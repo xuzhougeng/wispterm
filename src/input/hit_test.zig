@@ -27,6 +27,13 @@ pub const PanelHeaderLayout = struct {
     close_margin: f64 = PANEL_HEADER_CLOSE_MARGIN,
 };
 
+pub const Rect = struct {
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+};
+
 fn listTop(l: SidebarLayout) f64 {
     return l.titlebar_h + l.header_h + 6;
 }
@@ -84,14 +91,23 @@ pub fn sidebarResizeHandle(l: SidebarLayout, x: f64, y: f64) bool {
 }
 
 pub fn panelHeaderCloseButton(l: PanelHeaderLayout, x: f64, y: f64) bool {
-    if (!l.visible) return false;
-    if (l.right <= l.left or l.height <= 0) return false;
-    if (l.close_btn_w <= 0 or l.close_margin < 0) return false;
-    if ((l.right - l.left) <= l.close_btn_w + l.close_margin) return false;
+    const rect = panelCloseButtonRect(l) orelse return false;
+    return x >= rect.left and x < rect.left + rect.width and
+        y >= rect.top and y < rect.top + rect.height;
+}
 
-    const close_x = l.right - l.close_margin - l.close_btn_w;
-    return x >= close_x and x < close_x + l.close_btn_w and
-        y >= l.top and y < l.top + l.height;
+pub fn panelCloseButtonRect(l: PanelHeaderLayout) ?Rect {
+    if (!l.visible) return null;
+    if (l.right <= l.left or l.height <= 0) return null;
+    if (l.close_btn_w <= 0 or l.close_margin < 0) return null;
+    if ((l.right - l.left) <= l.close_btn_w + l.close_margin) return null;
+
+    return .{
+        .left = l.right - l.close_margin - l.close_btn_w,
+        .top = l.top,
+        .width = l.close_btn_w,
+        .height = l.height,
+    };
 }
 
 const sample: SidebarLayout = .{
@@ -185,4 +201,16 @@ test "panelHeaderCloseButton: invisible or collapsed panels never hit" {
     var collapsed = sample_panel;
     collapsed.right = collapsed.left + collapsed.close_btn_w;
     try std.testing.expect(!panelHeaderCloseButton(collapsed, 390, 50));
+}
+
+test "panelCloseButtonRect: returns a reusable right-aligned rect" {
+    const rect = panelCloseButtonRect(sample_panel).?;
+    try std.testing.expectEqual(@as(f64, 382), rect.left);
+    try std.testing.expectEqual(@as(f64, 40), rect.top);
+    try std.testing.expectEqual(@as(f64, 32), rect.width);
+    try std.testing.expectEqual(@as(f64, 38), rect.height);
+
+    var collapsed = sample_panel;
+    collapsed.right = collapsed.left + collapsed.close_btn_w;
+    try std.testing.expectEqual(@as(?Rect, null), panelCloseButtonRect(collapsed));
 }

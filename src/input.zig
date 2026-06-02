@@ -459,21 +459,32 @@ fn closeBrowserPanel() void {
     AppWindow.g_cells_valid = false;
 }
 
+fn closeMarkdownPreviewPanel() void {
+    g_close_shortcut_confirm_until_ms = 0;
+    markdown_preview_panel.close();
+    if (AppWindow.g_window) |win| {
+        syncPanelGridFromWindow(win);
+    }
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
+fn closeAiCopilotPanel() void {
+    AppWindow.hideAiCopilot();
+    if (AppWindow.g_window) |win| {
+        syncPanelGridFromWindow(win);
+    }
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
 pub fn closePanelOrTab() void {
     if (markdown_preview_panel.isVisibleForActiveTab()) {
-        g_close_shortcut_confirm_until_ms = 0;
-        markdown_preview_panel.close();
-        if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        closeMarkdownPreviewPanel();
         return;
     }
     if (browser_panel.isVisibleForActiveTab()) {
-        g_close_shortcut_confirm_until_ms = 0;
-        browser_panel.close();
-        if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        closeBrowserPanel();
         return;
     }
     if (AppWindow.closeFocusedSplitWouldCloseWindow()) {
@@ -1544,6 +1555,31 @@ fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
     return xpos >= panel_x and xpos < panel_x + preview_w;
 }
 
+fn markdownPreviewHeaderLayout() ?hit_test.PanelHeaderLayout {
+    if (!markdown_preview_panel.isVisibleForActiveTab()) return null;
+    const win = AppWindow.g_window orelse return null;
+    const size = clientSize(win);
+    const preview_w: f64 = @floatCast(markdown_preview_panel.width());
+    const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
+    return .{
+        .visible = true,
+        .left = panel_x,
+        .right = panel_x + preview_w,
+        .top = titlebarHeight(),
+        .height = @floatCast(AppWindow.markdown_preview_renderer.HEADER_HEIGHT),
+    };
+}
+
+fn hitTestMarkdownPreviewCloseButton(xpos: f64, ypos: f64) bool {
+    return hit_test.panelHeaderCloseButton(markdownPreviewHeaderLayout() orelse return false, xpos, ypos);
+}
+
+fn hitTestMarkdownPreviewHeader(xpos: f64, ypos: f64) bool {
+    const layout = markdownPreviewHeaderLayout() orelse return false;
+    return xpos >= layout.left and xpos < layout.right and
+        ypos >= layout.top and ypos < layout.top + layout.height;
+}
+
 fn browserPanelBounds() ?browser_panel.Bounds {
     if (!browser_panel.isVisibleForActiveTab()) return null;
     const win = AppWindow.g_window orelse return null;
@@ -1588,6 +1624,30 @@ fn browserHeaderLayout() ?hit_test.PanelHeaderLayout {
 
 fn hitTestBrowserCloseButton(xpos: f64, ypos: f64) bool {
     return hit_test.panelHeaderCloseButton(browserHeaderLayout() orelse return false, xpos, ypos);
+}
+
+fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
+    if (!AppWindow.aiCopilotVisible()) return null;
+    const win = AppWindow.g_window orelse return null;
+    const fb = window_backend.framebufferSize(win);
+    const bounds = ai_sidebar.boundsForWindow(
+        @intCast(fb.width),
+        @intCast(fb.height),
+        @floatCast(titlebarHeight()),
+        AppWindow.leftPanelsWidth(),
+        0,
+    );
+    return .{
+        .visible = true,
+        .left = @floatFromInt(bounds.left),
+        .right = @floatFromInt(bounds.right),
+        .top = @floatFromInt(bounds.top),
+        .height = @floatCast(AppWindow.ai_chat_renderer.HEADER_H),
+    };
+}
+
+fn hitTestAiCopilotCloseButton(xpos: f64, ypos: f64) bool {
+    return hit_test.panelHeaderCloseButton(aiCopilotHeaderLayout() orelse return false, xpos, ypos);
 }
 
 fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
@@ -2720,6 +2780,14 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 closeBrowserPanel();
                 return;
             }
+            if (hitTestMarkdownPreviewCloseButton(xpos, ypos)) {
+                closeMarkdownPreviewPanel();
+                return;
+            }
+            if (hitTestAiCopilotCloseButton(xpos, ypos)) {
+                closeAiCopilotPanel();
+                return;
+            }
             const over_browser_url_bar = hitTestBrowserUrlBar(xpos, ypos);
             if (!over_browser_url_bar) blurBrowserUrlBarIfFocused();
             if (hitTestSidebarResizeHandle(xpos, ypos)) {
@@ -2784,6 +2852,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             if (hitTestMarkdownPreviewPanel(xpos, ypos)) {
                 file_explorer.g_focused = false;
                 if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+                if (hitTestMarkdownPreviewHeader(xpos, ypos)) return;
                 if (markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready) {
                     g_markdown_preview_image_dragging = true;
                     g_markdown_preview_image_hover = true;
@@ -3553,6 +3622,13 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         return;
     }
     if (!g_selecting and !overlays.scrollbar.g_scrollbar_dragging) {
+        if (hitTestMarkdownPreviewHeader(xpos, ypos) or hitTestAiCopilotCloseButton(xpos, ypos)) {
+            if (g_markdown_preview_image_hover) {
+                g_markdown_preview_image_hover = false;
+            }
+            platform_cursor.set(.arrow);
+            return;
+        }
         const over_sidebar_resize = hitTestSidebarResizeHandle(xpos, ypos);
         if (over_sidebar_resize) {
             platform_cursor.set(.size_we);
