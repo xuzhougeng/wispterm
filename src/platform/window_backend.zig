@@ -368,6 +368,10 @@ pub fn enterBorderlessFullscreen(window: *Window, restore: *FullscreenRestoreSta
         .style = platform_window.getWindowStyle(handle),
     };
 
+    // Mark fullscreen before the style/frame change: setWindowStyle/setWindowFrame
+    // dispatch WM_NCCALCSIZE + WM_SIZE synchronously, and those handlers branch on
+    // is_fullscreen (e.g. the maximized border inset must be skipped in fullscreen).
+    setFullscreen(window, true);
     const new_style = restore.style & ~platform_window.overlapped_window_style;
     _ = platform_window.setWindowStyle(handle, new_style);
     _ = platform_window.setWindowFrame(
@@ -375,19 +379,20 @@ pub fn enterBorderlessFullscreen(window: *Window, restore: *FullscreenRestoreSta
         monitor_rect,
         platform_window.frame_changed | platform_window.show_window,
     );
-    setFullscreen(window, true);
     return true;
 }
 
 pub fn exitBorderlessFullscreen(window: *Window, restore: FullscreenRestoreState) void {
     const handle = nativeHandle(window);
+    // Clear fullscreen first so the synchronous WM_NCCALCSIZE/WM_SIZE from the
+    // restore below see windowed state (e.g. re-apply the maximized border inset).
+    setFullscreen(window, false);
     _ = platform_window.setWindowStyle(handle, restore.style);
     _ = platform_window.setWindowFrame(
         handle,
         rectToPlatform(restore.rect),
         platform_window.frame_changed | platform_window.show_window,
     );
-    setFullscreen(window, false);
 }
 
 pub fn markVisibleAndSizeChanged(window: *Window) void {

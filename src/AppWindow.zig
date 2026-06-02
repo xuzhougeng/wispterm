@@ -61,6 +61,7 @@ pub const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
+const resize_throttle = @import("appwindow/resize_throttle.zig");
 pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
@@ -534,6 +535,28 @@ const RemoteAiAgentOpenRequest = struct {
 fn clearWithBackground(fb_w: c_int, fb_h: c_int) void {
     gpu.state.clear(g_theme.background[0], g_theme.background[1], g_theme.background[2], 1.0);
     background_image.drawFullscreen(@floatFromInt(fb_w), @floatFromInt(fb_h));
+}
+
+/// Force the whole backbuffer opaque (alpha = 1) just before present.
+///
+/// We extend the DWM frame into the entire client area (`cyTopHeight = -1`, for
+/// the custom titlebar + window shadow), so DWM composites the window using the
+/// GL backbuffer's alpha channel. UI chrome drawn in the `.alpha` blend mode
+/// (caption-button icons, overlays) drives dst-alpha below 1 where it touches,
+/// which DWM then renders translucent: the top-right caption icons "ghost" when
+/// the window is dragged across monitors, and the surface darkens to black in
+/// borderless fullscreen (nothing is behind the window). Masking RGB and clearing
+/// alpha to 1 makes composition solid regardless of per-draw alpha, without
+/// disturbing the rendered colors. OpenGL backend only — the Metal backend
+/// composites opaquely on its own, and its clear would wipe the frame here.
+fn forceOpaqueBackbufferForPresent() void {
+    if (comptime gpu.active == .opengl) {
+        // glClear honors the scissor box; drop it so the whole surface is covered.
+        gpu.state.disableScissor();
+        gpu.state.setColorMask(false, false, false, true);
+        gpu.state.clear(0, 0, 0, 1.0);
+        gpu.state.setColorMask(true, true, true, true);
+    }
 }
 
 threadlocal var g_diag_last_fb_w: c_int = -1;
@@ -2088,7 +2111,22 @@ fn updateCursorBlinkForRenderer(rend: *Renderer) void {
 /// Performs a full render cycle: resize terminal → snapshot → rebuild → draw.
 /// This runs synchronously on the main thread (which owns the GL context)
 /// while the backend's modal drag loop is active.
+/// Registered as the platform `on_resize` callback. The platform's modal resize
+/// loop delivers resize events far faster than a full frame renders, so throttle
+/// the heavy paint to ~60Hz here (that loop blocks our main loop, so an
+/// un-throttled paint per event stutters the drag). One-shot resizes (DPI change,
+/// font reload) call `renderResizeFrame` directly so they always paint immediately.
+threadlocal var g_resize_throttle: resize_throttle.ResizeThrottle = .{};
+
 fn onPlatformResize(width: i32, height: i32) void {
+    if (width <= 0 or height <= 0) return;
+    const now = std.time.milliTimestamp();
+    if (!g_resize_throttle.shouldRender(now)) return;
+    g_resize_throttle.noteRendered(now);
+    renderResizeFrame(width, height);
+}
+
+fn renderResizeFrame(width: i32, height: i32) void {
     if (width <= 0 or height <= 0) return;
     if (g_allocator == null) return;
     const resize_perf = ui_perf.begin("appwindow.on_platform_resize");
@@ -2304,6 +2342,7 @@ fn onPlatformResize(width: i32, height: i32) void {
         "platform-resize swap fb={}x{} term={}x{} draw_calls={}",
         .{ fb_width, fb_height, term_cols, term_rows, gpu.gl_init.g_draw_call_count },
     );
+    forceOpaqueBackbufferForPresent();
     if (g_window) |w| window_backend.swapBuffers(w);
 }
 
@@ -2451,7 +2490,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
                 const is_os_sized = window_backend.isFullscreen(w) or window_backend.isMaximized(w);
                 if (is_os_sized) {
                     const size = window_backend.clientSize(w);
-                    onPlatformResize(size.width, size.height);
+                    renderResizeFrame(size.width, size.height);
                 } else {
                     if (cfg.@"window-width" > 0) term_cols = cfg.@"window-width";
                     if (cfg.@"window-height" > 0) term_rows = cfg.@"window-height";
@@ -3862,7 +3901,7 @@ fn handleWindowDpiChanged(
             "dpi-change same-dpi render-refresh client={}x{} font_dpi={} cell={d:.2}x{d:.2}",
             .{ size.width, size.height, font.g_dpi, font.cell_width, font.cell_height },
         );
-        onPlatformResize(size.width, size.height);
+        renderResizeFrame(size.width, size.height);
         return;
     }
 
@@ -3876,7 +3915,7 @@ fn handleWindowDpiChanged(
             "dpi-change font-reloaded client={}x{} fb={}x{} font_dpi={} cell={d:.2}x{d:.2} term={}x{}",
             .{ size.width, size.height, fb_after.width, fb_after.height, font.g_dpi, font.cell_width, font.cell_height, term_cols, term_rows },
         );
-        onPlatformResize(size.width, size.height);
+        renderResizeFrame(size.width, size.height);
     } else {
         font.g_dpi = old_font_dpi;
         const size = window_backend.clientSize(win);
@@ -3885,7 +3924,7 @@ fn handleWindowDpiChanged(
             .{ new_dpi, old_font_dpi, font.cell_width, font.cell_height },
         );
         std.debug.print("DPI font reload failed, keeping previous font\n", .{});
-        onPlatformResize(size.width, size.height);
+        renderResizeFrame(size.width, size.height);
     }
 }
 
@@ -5046,6 +5085,7 @@ fn runMainLoop(self: *AppWindow) !void {
         renderImePreedit(win, fb_width, fb_height);
 
         logSwapDiagnosticsIfChanged(win, fb_width, fb_height);
+        forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
         window_backend.swapBuffers(win);
     }

@@ -181,6 +181,8 @@ const WM_DESTROY: UINT = 0x0002;
 const WM_CLOSE: UINT = 0x0010;
 const WM_SIZE: UINT = 0x0005;
 const WM_PAINT: UINT = 0x000F;
+const WM_ENTERSIZEMOVE: UINT = 0x0231;
+const WM_EXITSIZEMOVE: UINT = 0x0232;
 const WM_KEYDOWN: UINT = 0x0100;
 const WM_KEYUP: UINT = 0x0101;
 const WM_SYSKEYDOWN: UINT = 0x0104;
@@ -664,6 +666,24 @@ extern "opengl32" fn wglMakeCurrent(hdc: HDC, hglrc: ?HGLRC) callconv(.winapi) B
 extern "opengl32" fn wglDeleteContext(hglrc: HGLRC) callconv(.winapi) BOOL;
 extern "opengl32" fn wglGetProcAddress(lpszProc: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 
+/// wglSwapIntervalEXT (WGL_EXT_swap_control), loaded lazily once a context is
+/// current. We keep vsync on for steady-state rendering but drop it (interval 0)
+/// during the modal resize loop: with vsync on, every synchronous WM_SIZE paint
+/// blocks ~one refresh on SwapBuffers, which makes a window-border drag feel
+/// laggy. `null` if the driver lacks the extension — callers simply no-op.
+var g_wgl_swap_interval: ?*const fn (c_int) callconv(.winapi) BOOL = null;
+var g_swap_interval_loaded: bool = false;
+
+fn setSwapInterval(interval: c_int) void {
+    if (!g_swap_interval_loaded) {
+        g_swap_interval_loaded = true;
+        if (wglGetProcAddress("wglSwapIntervalEXT")) |p| {
+            g_wgl_swap_interval = @ptrCast(p);
+        }
+    }
+    if (g_wgl_swap_interval) |f| _ = f(interval);
+}
+
 // DWM (Desktop Window Manager)
 extern "dwmapi" fn DwmSetWindowAttribute(hWnd: HWND, dwAttribute: DWORD, pvAttribute: *const anyopaque, cbAttribute: DWORD) callconv(.winapi) windows.HRESULT;
 extern "dwmapi" fn DwmExtendFrameIntoClientArea(hWnd: HWND, pMarInset: *const MARGINS) callconv(.winapi) windows.HRESULT;
@@ -1127,6 +1147,10 @@ pub const Window = struct {
             _ = DestroyWindow(hwnd);
             return error.WGLMakeCurrentFailed;
         }
+
+        // Vsync on for steady-state rendering; the modal resize loop drops it to 0
+        // (see WM_ENTERSIZEMOVE) so border-drag paints don't block on vblank.
+        setSwapInterval(1);
 
         // Get actual client area size
         var rect: RECT = undefined;
@@ -1692,6 +1716,18 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
         },
         WM_ERASEBKGND => {
             return 1;
+        },
+
+        // A move/resize drag is starting: the OS runs its own modal message loop
+        // and blocks our main loop. Drop vsync so the synchronous WM_SIZE paints
+        // (Window.on_resize) don't each stall on vblank during the drag.
+        WM_ENTERSIZEMOVE => {
+            setSwapInterval(0);
+            return 0;
+        },
+        WM_EXITSIZEMOVE => {
+            setSwapInterval(1);
+            return 0;
         },
 
         WM_IME_SETCONTEXT => {

@@ -30,6 +30,13 @@ pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
     Context.gl.Clear.?(c.GL_COLOR_BUFFER_BIT);
 }
 
+/// Restrict which color channels subsequent draws/clears may write. Used to
+/// force the backbuffer alpha opaque before present (DWM composites our custom
+/// frame via that alpha) without disturbing the already-rendered RGB.
+pub fn setColorMask(r: bool, g: bool, b: bool, a: bool) void {
+    Context.gl.ColorMask.?(@intFromBool(r), @intFromBool(g), @intFromBool(b), @intFromBool(a));
+}
+
 pub fn setViewport(x: i32, y: i32, w: i32, h: i32) void {
     Context.gl.Viewport.?(@intCast(x), @intCast(y), @intCast(w), @intCast(h));
 }
