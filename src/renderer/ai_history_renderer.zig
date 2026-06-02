@@ -82,11 +82,42 @@ pub fn hitTest(layout: Layout, x: f32, y_from_top: f32, row_top: f32, row_h: f32
     return .none;
 }
 
-pub fn listVisibleCapacity(window_height: f32, titlebar_offset: f32) usize {
+// Vertical band metrics scale with the UI font's cell height so the layout
+// stays readable on high-DPI displays. The fixed constants act as floors so
+// behaviour at the default (~16px) cell height is unchanged.
+fn rowHeight(cell_h: f32) f32 {
+    // Fits two stacked text lines (title + path) plus padding; see rowTextLayout.
+    return @max(ROW_H, cell_h * 2 + 22);
+}
+
+fn filterHeight(cell_h: f32) f32 {
+    return @max(FILTER_H, cell_h + 18);
+}
+
+fn headerHeight(cell_h: f32) f32 {
+    return @max(HEADER_H, cell_h + 18);
+}
+
+const RowTextLayout = struct {
+    title_top: f32,
+    detail_top: f32,
+};
+
+// Offsets (from the row's top edge) of the two text lines drawn in a list row:
+// the provider+title line on top and the project-path line below it.
+fn rowTextLayout(cell_h: f32) RowTextLayout {
+    const rh = rowHeight(cell_h);
+    return .{
+        .title_top = 8,
+        .detail_top = rh - 9 - cell_h,
+    };
+}
+
+pub fn listVisibleCapacity(window_height: f32, titlebar_offset: f32, cell_h: f32) usize {
     const top = @round(titlebar_offset);
     const content_h = @round(@max(1.0, window_height - top));
-    const visible_h = @max(0, content_h - FILTER_H);
-    return @intFromFloat(@max(0, @floor(visible_h / ROW_H)));
+    const visible_h = @max(0, content_h - filterHeight(cell_h));
+    return @intFromFloat(@max(0, @floor(visible_h / rowHeight(cell_h))));
 }
 
 pub fn interactionHitTest(
@@ -121,10 +152,10 @@ pub fn interactionHitTest(
         }
     }
 
-    const max_rows = listVisibleCapacity(window_height, top);
+    const max_rows = listVisibleCapacity(window_height, top, cell_h);
     const start = session.listWindowStart(max_rows);
     const row_count = if (visible_count > start) @min(max_rows, visible_count - start) else 0;
-    return switch (hitTest(layout, mx, my, top + FILTER_H, ROW_H, row_count)) {
+    return switch (hitTest(layout, mx, my, top + filterHeight(cell_h), rowHeight(cell_h), row_count)) {
         .row => |idx| .{ .row = start + idx },
         else => .none,
     };
@@ -181,11 +212,12 @@ fn renderLeftColumn(
     panel_strong: [3]f32,
     line: [3]f32,
 ) void {
-    draw.fillQuadAlpha(layout.left_x, yFromTop(window_height, top, HEADER_H), layout.left_w, HEADER_H, panel_strong, 0.9);
-    draw.fillQuad(layout.left_x, yFromTop(window_height, top + HEADER_H, 1), layout.left_w, 1, line);
+    const header_h = headerHeight(draw.cell_h);
+    draw.fillQuadAlpha(layout.left_x, yFromTop(window_height, top, header_h), layout.left_w, header_h, panel_strong, 0.9);
+    draw.fillQuad(layout.left_x, yFromTop(window_height, top + header_h, 1), layout.left_w, 1, line);
     _ = draw.renderTextLimited("AI History", layout.left_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.left_w - PAD_X * 2);
 
-    var y = top + HEADER_H + 18;
+    var y = top + header_h + 18;
     _ = draw.renderTextLimited(session.source.name, layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), fg, layout.left_w - PAD_X * 2);
     y += draw.cell_h + 8;
     _ = draw.renderTextLimited(targetLabel(session.source.target), layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.left_w - PAD_X * 2);
@@ -214,18 +246,21 @@ fn renderList(
     selected_bg: [3]f32,
     line: [3]f32,
 ) void {
-    const filter_y = yFromTop(window_height, top, FILTER_H);
-    draw.fillQuadAlpha(layout.list_x, filter_y, layout.list_w, FILTER_H, mixColor(draw.bg, fg, 0.055), 0.98);
-    draw.fillQuad(layout.list_x, yFromTop(window_height, top + FILTER_H, 1), layout.list_w, 1, line);
+    const filter_h = filterHeight(draw.cell_h);
+    const filter_y = yFromTop(window_height, top, filter_h);
+    draw.fillQuadAlpha(layout.list_x, filter_y, layout.list_w, filter_h, mixColor(draw.bg, fg, 0.055), 0.98);
+    draw.fillQuad(layout.list_x, yFromTop(window_height, top + filter_h, 1), layout.list_w, 1, line);
 
     const query = session.filter[0..session.filter_len];
     const filter_label = if (query.len == 0) "Search sessions" else query;
     const filter_color = if (query.len == 0) muted else fg;
     _ = draw.renderTextLimited(filter_label, layout.list_x + PAD_X, yTextFromTop(draw, window_height, top + 11), filter_color, layout.list_w - PAD_X * 2);
 
-    const row_top = top + FILTER_H;
+    const row_h = rowHeight(draw.cell_h);
+    const lines = rowTextLayout(draw.cell_h);
+    const row_top = top + filter_h;
     _ = content_h;
-    const max_rows = listVisibleCapacity(window_height, top);
+    const max_rows = listVisibleCapacity(window_height, top, draw.cell_h);
     const start = session.listWindowStart(max_rows);
     var visible_index: usize = 0;
     var rendered: usize = 0;
@@ -237,20 +272,22 @@ fn renderList(
         }
         if (rendered >= max_rows) break;
 
-        const row_top_px = row_top + @as(f32, @floatFromInt(rendered)) * ROW_H;
-        const row_y = yFromTop(window_height, row_top_px, ROW_H);
+        const row_top_px = row_top + @as(f32, @floatFromInt(rendered)) * row_h;
+        const row_y = yFromTop(window_height, row_top_px, row_h);
         const selected = visible_index == session.selected;
         if (selected) {
-            draw.fillQuadAlpha(layout.list_x, row_y, layout.list_w, ROW_H, selected_bg, 0.92);
-            draw.fillQuad(layout.list_x, row_y, 3, ROW_H, accent);
+            draw.fillQuadAlpha(layout.list_x, row_y, layout.list_w, row_h, selected_bg, 0.92);
+            draw.fillQuad(layout.list_x, row_y, 3, row_h, accent);
         }
         draw.fillQuadAlpha(layout.list_x, row_y, layout.list_w, 1, line, 0.55);
 
         const title = displayTitle(row);
-        const provider_end = draw.renderTextLimited(row.provider.label(), layout.list_x + PAD_X, row_y + ROW_H - draw.cell_h - 8, accent, 86);
-        _ = draw.renderTextLimited(title, provider_end + 8, row_y + ROW_H - draw.cell_h - 8, fg, layout.list_w - (provider_end - layout.list_x) - PAD_X - 8);
+        const title_y = yTextFromTop(draw, window_height, row_top_px + lines.title_top);
+        const provider_end = draw.renderTextLimited(row.provider.label(), layout.list_x + PAD_X, title_y, accent, 86);
+        _ = draw.renderTextLimited(title, provider_end + 8, title_y, fg, layout.list_w - (provider_end - layout.list_x) - PAD_X - 8);
         const detail = if (row.project_dir.len > 0) row.project_dir else row.source_path;
-        _ = draw.renderTextLimited(detail, layout.list_x + PAD_X, row_y + 9, muted, layout.list_w - PAD_X * 2);
+        const detail_y = yTextFromTop(draw, window_height, row_top_px + lines.detail_top);
+        _ = draw.renderTextLimited(detail, layout.list_x + PAD_X, detail_y, muted, layout.list_w - PAD_X * 2);
 
         rendered += 1;
         visible_index += 1;
@@ -280,16 +317,17 @@ fn renderDetail(
     panel_strong: [3]f32,
     line: [3]f32,
 ) void {
-    draw.fillQuadAlpha(layout.detail_x, yFromTop(window_height, top, HEADER_H), layout.detail_w, HEADER_H, panel_strong, 0.82);
-    draw.fillQuad(layout.detail_x, yFromTop(window_height, top + HEADER_H, 1), layout.detail_w, 1, line);
+    const header_h = headerHeight(draw.cell_h);
+    draw.fillQuadAlpha(layout.detail_x, yFromTop(window_height, top, header_h), layout.detail_w, header_h, panel_strong, 0.82);
+    draw.fillQuad(layout.detail_x, yFromTop(window_height, top + header_h, 1), layout.detail_w, 1, line);
     _ = draw.renderTextLimited("Transcript Preview", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.detail_w - PAD_X * 2);
 
     const selected = session.selectedVisible() orelse {
-        _ = draw.renderTextLimited("Select a session", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + HEADER_H + 24), muted, layout.detail_w - PAD_X * 2);
+        _ = draw.renderTextLimited("Select a session", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + header_h + 24), muted, layout.detail_w - PAD_X * 2);
         return;
     };
 
-    var y = top + HEADER_H + 18;
+    var y = top + header_h + 18;
     _ = draw.renderTextLimited(displayTitle(selected), layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), fg, layout.detail_w - PAD_X * 2);
     y += draw.cell_h + 8;
     _ = draw.renderTextLimited(selected.provider.label(), layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.detail_w - PAD_X * 2);
@@ -430,7 +468,7 @@ fn buttonHeight(cell_h: f32) f32 {
 }
 
 fn refreshButtonTop(top: f32, cell_h: f32) f32 {
-    return top + HEADER_H + 18 +
+    return top + headerHeight(cell_h) + 18 +
         (cell_h + 8) +
         (cell_h + 18) +
         (cell_h + 5) +
@@ -438,7 +476,7 @@ fn refreshButtonTop(top: f32, cell_h: f32) f32 {
 }
 
 fn resumeButtonTop(top: f32, cell_h: f32) f32 {
-    return top + HEADER_H + 18 +
+    return top + headerHeight(cell_h) + 18 +
         (cell_h + 8) +
         (cell_h + 8) +
         (cell_h + 8) +
@@ -454,6 +492,18 @@ fn rectContains(x: f32, y: f32, left: f32, top: f32, width: f32, height: f32) bo
 fn transcriptPreviewRowCapacity(window_height: f32, start_top: f32, row_h: f32) usize {
     if (row_h <= 0) return 0;
     return @intFromFloat(@max(0, @floor(@max(0, window_height - start_top) / row_h)));
+}
+
+test "ai_history_renderer: list row lines never overlap as ui font grows" {
+    const cell_heights = [_]f32{ 12, 16, 18, 22, 28, 32, 40 };
+    for (cell_heights) |cell_h| {
+        const lines = rowTextLayout(cell_h);
+        // The path line must begin at or below the bottom of the title line.
+        try std.testing.expect(lines.detail_top >= lines.title_top + cell_h);
+        // Both lines must stay inside the row box.
+        try std.testing.expect(lines.title_top >= 0);
+        try std.testing.expect(lines.detail_top + cell_h <= rowHeight(cell_h) + 0.001);
+    }
 }
 
 test "ai_history_renderer: hit test maps list rows" {
