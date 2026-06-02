@@ -116,9 +116,9 @@ pub const WslScannerHost = struct {
         return remote_file.wslExec(allocator, command) orelse error.RemoteExecFailed;
     }
 
-    fn scan(ctx: *anyopaque, allocator: std.mem.Allocator, source: source_mod.Source, _: ?ScanSink) !ScanResult {
+    fn scan(ctx: *anyopaque, allocator: std.mem.Allocator, source: source_mod.Source, sink: ?ScanSink) !ScanResult {
         const host = RemoteExecHost{ .ctx = ctx, .exec = exec };
-        return try scanRemoteFilesystem(allocator, source, host);
+        return try scanRemoteFilesystemSink(allocator, source, host, sink);
     }
 
     fn loadTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, meta: types.SessionMeta) ![]types.TranscriptMessage {
@@ -143,9 +143,9 @@ pub const SshScannerHost = struct {
         return try remote_file.sshExecCapture(allocator, self.conn, command);
     }
 
-    fn scan(ctx: *anyopaque, allocator: std.mem.Allocator, source: source_mod.Source, _: ?ScanSink) !ScanResult {
+    fn scan(ctx: *anyopaque, allocator: std.mem.Allocator, source: source_mod.Source, sink: ?ScanSink) !ScanResult {
         const host = RemoteExecHost{ .ctx = ctx, .exec = exec };
-        return try scanRemoteFilesystem(allocator, source, host);
+        return try scanRemoteFilesystemSink(allocator, source, host, sink);
     }
 
     fn loadTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, meta: types.SessionMeta) ![]types.TranscriptMessage {
@@ -768,6 +768,10 @@ pub fn remoteCatCommand(path: []const u8, out: []u8) ![]const u8 {
 }
 
 pub fn scanRemoteFilesystem(allocator: std.mem.Allocator, source: source_mod.Source, host: RemoteExecHost) !ScanResult {
+    return scanRemoteFilesystemSink(allocator, source, host, null);
+}
+
+pub fn scanRemoteFilesystemSink(allocator: std.mem.Allocator, source: source_mod.Source, host: RemoteExecHost, sink: ?ScanSink) !ScanResult {
     const home_raw = try host.exec(host.ctx, allocator, remote_file.wslHomeCommand());
     defer allocator.free(home_raw);
     const home = std.mem.trim(u8, home_raw, " \t\r\n");
@@ -776,6 +780,7 @@ pub fn scanRemoteFilesystem(allocator: std.mem.Allocator, source: source_mod.Sou
     var scanner = RemoteScan{
         .allocator = allocator,
         .host = host,
+        .emitter = .{ .allocator = allocator, .sink = sink },
     };
     errdefer scanner.deinit();
 
@@ -807,10 +812,15 @@ pub fn scanRemoteFilesystem(allocator: std.mem.Allocator, source: source_mod.Sou
         if (!providerEnabled(source, root.provider)) continue;
         try scanner.scanProviderRoot(root.provider, root.path);
     }
+    try scanner.emitter.flush();
 
-    const rows = try scanner.rows.toOwnedSlice(allocator);
+    const rows = if (sink == null)
+        try scanner.emitter.rows.toOwnedSlice(allocator)
+    else
+        try allocator.alloc(types.SessionMeta, 0);
     return .{
         .rows = rows,
+        .authoritative = (sink == null),
         .warning_count = scanner.warning_count,
         .owns_row_strings = true,
     };
@@ -1085,12 +1095,11 @@ fn providerRootForPath(source: source_mod.Source, provider: types.ProviderId, so
 const RemoteScan = struct {
     allocator: std.mem.Allocator,
     host: RemoteExecHost,
-    rows: std.ArrayListUnmanaged(types.SessionMeta) = .empty,
+    emitter: RowEmitter,
     warning_count: u32 = 0,
 
     fn deinit(self: *RemoteScan) void {
-        freeRows(self.allocator, self.rows.items);
-        self.rows.deinit(self.allocator);
+        self.emitter.deinit();
     }
 
     fn scanProviderRoot(self: *RemoteScan, provider: types.ProviderId, root: []const u8) !void {
@@ -1113,6 +1122,7 @@ const RemoteScan = struct {
             const path = std.mem.trim(u8, line_raw, " \t\r\n");
             if (path.len == 0) continue;
             try self.scanPath(provider, path);
+            if (self.emitter.aborted) break;
         }
     }
 
@@ -1146,9 +1156,8 @@ const RemoteScan = struct {
             self.warning_count += 1;
             return;
         }
-        errdefer freeMetadata(self.allocator, meta);
 
-        try self.rows.append(self.allocator, meta);
+        try self.emitter.emit(meta);
     }
 };
 
@@ -2408,4 +2417,27 @@ test "ai_history_session: local scan with sink streams rows and returns empty no
     try std.testing.expectEqual(@as(usize, 0), result.rows.len);
     try std.testing.expectEqual(@as(usize, 1), collect.rows.items.len);
     try std.testing.expectEqualStrings("codex-one", collect.rows.items[0].session_id);
+}
+
+test "ai_history_session: remote scan with sink streams rows and returns empty non-authoritative result" {
+    const allocator = std.testing.allocator;
+
+    var fake = FakeRemoteHost{};
+    const host = fake.remoteExecHost();
+
+    var collect = TestCollectSink{ .allocator = allocator };
+    defer collect.deinit();
+
+    const result = try scanRemoteFilesystemSink(allocator, .{
+        .id = "wsl",
+        .name = "WSL",
+        .target = .{ .wsl = .{} },
+        .providers = .{ .codex = true, .claude = false },
+    }, host, collect.sink());
+    defer freeScanResult(allocator, result);
+
+    try std.testing.expect(!result.authoritative);
+    try std.testing.expectEqual(@as(usize, 0), result.rows.len);
+    try std.testing.expectEqual(@as(usize, 1), collect.rows.items.len);
+    try std.testing.expectEqualStrings("codex-abc", collect.rows.items[0].session_id);
 }
