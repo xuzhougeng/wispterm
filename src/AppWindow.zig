@@ -869,7 +869,7 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
     const left = leftPanelsWidth();
     const right = rightPanelsWidthForWindow(fb.width);
     const width = @as(f32, @floatFromInt(fb.width)) - left - right;
-    const visible_rows = ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight());
+    const visible_rows = ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
     const hit = ai_history_renderer.interactionHitTest(
         session,
         @floatFromInt(fb.width),
@@ -911,7 +911,7 @@ fn markUiDirty() void {
 fn aiHistoryListVisibleRowsForWindow() usize {
     const win = g_window orelse return 1;
     const fb = window_backend.framebufferSize(win);
-    return ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight());
+    return ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
 }
 
 fn localHomeForAiHistory(allocator: std.mem.Allocator) ![]u8 {
