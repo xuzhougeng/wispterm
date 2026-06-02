@@ -1,4 +1,5 @@
 const std = @import("std");
+const ai_history_session = @import("../ai_history_session.zig");
 const types = @import("../ai_history_types.zig");
 
 const HEADER_H: f32 = 54;
@@ -343,7 +344,12 @@ fn renderLeftColumn(
     _ = draw.renderTextLimited(session.source.name, layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.source_name_top), fg, layout.left_w - PAD_X * 2);
     _ = draw.renderTextLimited(targetLabel(session.source.target), layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.target_top), muted, layout.left_w - PAD_X * 2);
     _ = draw.renderTextLimited("Status", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_label_top), muted, layout.left_w - PAD_X * 2);
-    _ = draw.renderTextLimited(statusText(session), layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_value_top), accent, layout.left_w - PAD_X * 2);
+    var status_buf: [48]u8 = undefined;
+    const status_label = if (session.state == .scanning)
+        ai_history_session.scanningStatusLabel(&status_buf, session.rows.items.len)
+    else
+        statusText(session);
+    _ = draw.renderTextLimited(status_label, layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_value_top), accent, layout.left_w - PAD_X * 2);
     _ = draw.renderTextLimited("CATEGORY", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.category_heading_top), muted, layout.left_w - PAD_X * 2);
 
     const query = session.filter[0..session.filter_len];

@@ -453,7 +453,7 @@ fullscreen: bool = false,
 
 /// Start in Quake-style drop-down terminal mode. The toggle shortcut comes
 /// from the `toggle_quake` keybind, which is global by default.
-@"quake-mode": bool = true,
+@"quake-mode": bool = false,
 
 /// Application-level keyboard shortcuts. Values use Ghostty-style
 /// `keybind = trigger=action` syntax; `global:` registers a native hotkey.
@@ -1438,20 +1438,10 @@ pub fn setConfigValue(allocator: std.mem.Allocator, key: []const u8, value: []co
     try file.writeAll(out.items);
 }
 
-/// Remove active `key = value` lines from the main config file. Comments are left
-/// intact, so the generated template remains useful after UI changes.
-pub fn removeConfigKeys(allocator: std.mem.Allocator, keys: []const []const u8) !void {
-    ensureConfigExists(allocator);
-
-    const path = try configFilePath(allocator);
-    defer allocator.free(path);
-
-    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| switch (err) {
-        error.FileNotFound => "",
-        else => return err,
-    };
-    defer if (content.len > 0) allocator.free(content);
-
+/// Pure: return a copy of `content` with active `key = value` lines for any of
+/// `keys` removed. Comments and unrelated lines are preserved. Caller owns the
+/// returned slice.
+pub fn stripConfigKeys(allocator: std.mem.Allocator, content: []const u8, keys: []const []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
 
@@ -1471,9 +1461,53 @@ pub fn removeConfigKeys(allocator: std.mem.Allocator, keys: []const []const u8) 
         }
     }
 
+    return out.toOwnedSlice(allocator);
+}
+
+/// Remove active `key = value` lines from the main config file. Comments are left
+/// intact, so the generated template remains useful after UI changes.
+pub fn removeConfigKeys(allocator: std.mem.Allocator, keys: []const []const u8) !void {
+    ensureConfigExists(allocator);
+
+    const path = try configFilePath(allocator);
+    defer allocator.free(path);
+
+    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| switch (err) {
+        error.FileNotFound => "",
+        else => return err,
+    };
+    defer if (content.len > 0) allocator.free(content);
+
+    const out = try stripConfigKeys(allocator, content, keys);
+    defer allocator.free(out);
+
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
-    try file.writeAll(out.items);
+    try file.writeAll(out);
+}
+
+/// Config keys backing the settings page. "Restore default settings" removes
+/// these active lines so each reverts to its built-in default. Intentionally
+/// excludes `quake-mode` (not a settings-page row) and anything carrying user
+/// data such as AI profiles, custom keybinds, or `font-family`.
+pub const settings_reset_keys = [_][]const u8{
+    "font-size",
+    "theme",
+    "cursor-style",
+    "cursor-style-blink",
+    "focus-follows-mouse",
+    "shell",
+    "ai-default-profile",
+    "weixin-direct-enabled",
+    "language",
+    "restore-tabs-on-startup",
+};
+
+/// Revert every settings-page option to its built-in default by removing its
+/// active line from the main config file. Non-destructive: comments, custom
+/// keybinds, AI profiles, font-family, and window geometry are all preserved.
+pub fn resetSettingsToDefaults(allocator: std.mem.Allocator) !void {
+    try removeConfigKeys(allocator, &settings_reset_keys);
 }
 
 fn configLineMatchesKey(line: []const u8, key: []const u8) bool {
@@ -1530,7 +1564,7 @@ const default_config_template =
     \\# title =
     \\# maximize = false
     \\# fullscreen = false
-    \\# quake-mode = true   # toggle_quake controls the top drop-down window
+    \\# quake-mode = false   # toggle_quake controls the top drop-down window
     \\
     \\# Restore the previous tab/split layout (and working dirs) on next launch.
     \\# Saved to session.json on close; off by default (file neither read nor written).
@@ -1784,11 +1818,11 @@ test "config: auto update check option parses true false" {
     try std.testing.expectEqual(true, cfg.@"auto-update-check");
 }
 
-test "config: quake mode defaults enabled and parses true false" {
+test "config: quake mode defaults disabled and parses true false" {
     const allocator = std.testing.allocator;
     var cfg: Config = .{};
 
-    try std.testing.expectEqual(true, cfg.@"quake-mode");
+    try std.testing.expectEqual(false, cfg.@"quake-mode");
 
     cfg.applyKeyValue(allocator, "quake-mode", "false", ".");
     try std.testing.expectEqual(false, cfg.@"quake-mode");
@@ -1798,6 +1832,47 @@ test "config: quake mode defaults enabled and parses true false" {
 
     cfg.applyKeyValue(allocator, "quake-mode", "maybe", ".");
     try std.testing.expectEqual(true, cfg.@"quake-mode");
+}
+
+test "config: settings reset strips settings-page keys but preserves everything else" {
+    const allocator = std.testing.allocator;
+    const original =
+        \\# WispTerm config
+        \\font-size = 18
+        \\theme = dracula
+        \\cursor-style = bar
+        \\cursor-style-blink = false
+        \\focus-follows-mouse = true
+        \\shell = /bin/zsh
+        \\ai-default-profile = work
+        \\weixin-direct-enabled = true
+        \\language = zh-CN
+        \\restore-tabs-on-startup = true
+        \\font-family = JetBrains Mono
+        \\keybind = ctrl+shift+p=toggle_command_palette
+        \\quake-mode = true
+        \\
+    ;
+    const stripped = try stripConfigKeys(allocator, original, &settings_reset_keys);
+    defer allocator.free(stripped);
+
+    // Every settings-page key's active line is gone → reverts to built-in default.
+    for (settings_reset_keys) |key| {
+        var lines = std.mem.splitScalar(u8, stripped, '\n');
+        while (lines.next()) |line| {
+            if (configLineMatchesKey(std.mem.trimRight(u8, line, "\r"), key)) {
+                std.debug.print("reset left an active line for key: {s}\n", .{key});
+                return error.SettingKeyNotStripped;
+            }
+        }
+    }
+
+    // Untouched: comments, unrelated keys, custom keybinds, and quake-mode
+    // (intentionally excluded — it is not a settings-page row).
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "# WispTerm config") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "font-family = JetBrains Mono") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "keybind = ctrl+shift+p=toggle_command_palette") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "quake-mode = true") != null);
 }
 
 test "config: inline comments after values are ignored" {

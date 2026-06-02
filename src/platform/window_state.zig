@@ -18,6 +18,15 @@ pub const WindowState = struct {
     height: ?i32 = null,
 };
 
+/// Saved quake-mode drop-down outer frame (screen coords). All fields required —
+/// loadQuakeFrame returns null unless a complete, plausibly-sized frame is stored.
+pub const QuakeFrame = struct {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+};
+
 // Last known windowed (non-maximized/fullscreen) top-left, in screen coords.
 // Updated each frame while the window is windowed (see rememberWindowedPosition
 // in AppWindow.zig) so the save-on-close path has a real position to persist when
@@ -81,6 +90,27 @@ pub fn loadWindowState(allocator: std.mem.Allocator) ?WindowState {
 pub fn saveWindowGeometry(allocator: std.mem.Allocator, x: i32, y: i32, width: ?i32, height: ?i32) void {
     const current = loadPersisted(allocator);
     savePersisted(allocator, codec.mergeGeometry(current, x, y, width, height));
+}
+
+/// Load the saved quake drop-down frame. Returns null unless all four fields are
+/// stored and the size is non-degenerate. The caller is responsible for
+/// validating the frame against the current monitor work area (resolution /
+/// monitor changes), as `applyQuakeFrame` already does for the in-session frame.
+pub fn loadQuakeFrame(allocator: std.mem.Allocator) ?QuakeFrame {
+    const state = loadPersisted(allocator);
+    const x = state.quake_x orelse return null;
+    const y = state.quake_y orelse return null;
+    const w = state.quake_width orelse return null;
+    const h = state.quake_height orelse return null;
+    if (!codec.sizeIsValid(w, h)) return null;
+    return .{ .x = x, .y = y, .width = w, .height = h };
+}
+
+/// Save the quake drop-down outer frame (read-modify-write to preserve windowed
+/// geometry + the onboarding flag).
+pub fn saveQuakeFrame(allocator: std.mem.Allocator, x: i32, y: i32, width: i32, height: i32) void {
+    const current = loadPersisted(allocator);
+    savePersisted(allocator, codec.mergeQuakeFrame(current, x, y, width, height));
 }
 
 /// Whether the first-launch AI-agent setup form has already been shown.

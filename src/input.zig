@@ -1063,6 +1063,12 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         }
         return;
     }
+    if (overlays.restoreDefaultsConfirmVisible()) {
+        overlays.restoreDefaultsConfirmHandleKey(key_event);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
     if (overlays.settingsPageVisible()) {
         overlays.settingsPageHandleKey(key_event);
         return;
@@ -2479,6 +2485,18 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             if (!overlays.sessionLauncherContainsPoint(xpos, ypos, w_f, h_f, top_offset)) {
                 overlays.sessionLauncherClose();
             }
+        }
+        return;
+    }
+    if (overlays.restoreDefaultsConfirmVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = window_backend.framebufferSize(win);
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            _ = overlays.restoreDefaultsConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
         }
         return;
     }

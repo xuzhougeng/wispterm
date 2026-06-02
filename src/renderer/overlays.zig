@@ -132,6 +132,9 @@ threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
 threadlocal var g_window_close_confirm_visible: bool = false;
 
+// "Restore default settings" confirmation, shown on top of the settings page.
+threadlocal var g_restore_defaults_confirm_visible: bool = false;
+
 const WindowCloseConfirmLayout = struct {
     panel_x: f32,
     panel_top_px: f32,
@@ -390,6 +393,56 @@ pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, wind
     }
     if (pointInTopRect(xpos, ypos, layout.cancel_x, layout.cancel_top_px, layout.cancel_w, layout.cancel_h)) {
         windowCloseConfirmClose();
+        return true;
+    }
+    return pointInTopRect(xpos, ypos, layout.panel_x, layout.panel_top_px, layout.panel_w, layout.panel_h);
+}
+
+pub fn restoreDefaultsConfirmOpen() void {
+    g_restore_defaults_confirm_visible = true;
+}
+
+pub fn restoreDefaultsConfirmClose() void {
+    g_restore_defaults_confirm_visible = false;
+}
+
+pub fn restoreDefaultsConfirmVisible() bool {
+    return g_restore_defaults_confirm_visible;
+}
+
+/// Reset the settings-page keys to their defaults, then refresh the live config
+/// so the settings page reflects the change immediately, and close the dialog.
+fn restoreDefaultsConfirmApply() void {
+    const allocator = AppWindow.g_allocator orelse {
+        restoreDefaultsConfirmClose();
+        return;
+    };
+    Config.resetSettingsToDefaults(allocator) catch {};
+    settingsPageReloadCfg();
+    restoreDefaultsConfirmClose();
+}
+
+pub fn restoreDefaultsConfirmHandleKey(ev: input_key.KeyEvent) void {
+    if (!g_restore_defaults_confirm_visible) return;
+    switch (ev.key) {
+        .enter => restoreDefaultsConfirmApply(),
+        .escape => restoreDefaultsConfirmClose(),
+        else => {},
+    }
+}
+
+/// Mouse handling for the restore-defaults dialog. Returns true when the click
+/// was consumed (a button or anywhere inside the panel), mirroring
+/// windowCloseConfirmExecuteAt so clicks never fall through to the settings page.
+pub fn restoreDefaultsConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
+    if (!g_restore_defaults_confirm_visible) return false;
+    const layout = windowCloseConfirmLayout(window_width, window_height);
+    if (pointInTopRect(xpos, ypos, layout.close_x, layout.close_top_px, layout.close_w, layout.close_h)) {
+        restoreDefaultsConfirmApply();
+        return true;
+    }
+    if (pointInTopRect(xpos, ypos, layout.cancel_x, layout.cancel_top_px, layout.cancel_w, layout.cancel_h)) {
+        restoreDefaultsConfirmClose();
         return true;
     }
     return pointInTopRect(xpos, ypos, layout.panel_x, layout.panel_top_px, layout.panel_w, layout.panel_h);
@@ -3649,7 +3702,7 @@ const SETTINGS_THEME_PRESETS = [_]ThemePreset{
 
 const SETTINGS_THEME_ROW = 1;
 const SETTINGS_CONTROL_ROW_START = SETTINGS_THEME_ROW + 1;
-const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 10;
+const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 11;
 
 const SettingsAction = enum {
     font_size_minus,
@@ -3664,6 +3717,7 @@ const SettingsAction = enum {
     cycle_language,
     toggle_restore_tabs,
     open_raw_config,
+    restore_defaults,
     close,
 };
 
@@ -3805,7 +3859,8 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
         6 => .cycle_language,
         7 => .toggle_restore_tabs,
         8 => .open_raw_config,
-        9 => .close,
+        9 => .restore_defaults,
+        10 => .close,
         else => null,
     };
 }
@@ -3841,6 +3896,7 @@ fn executeSettingsAction(action: SettingsAction) void {
         .cycle_language => Config.setConfigValue(allocator, "language", nextLanguageSetting(cfg.language)) catch {},
         .toggle_restore_tabs => Config.setConfigValue(allocator, "restore-tabs-on-startup", if (cfg.@"restore-tabs-on-startup") "false" else "true") catch {},
         .open_raw_config => Config.openConfigInEditor(allocator),
+        .restore_defaults => restoreDefaultsConfirmOpen(),
         .close => settingsPageClose(),
     }
     settingsPageReloadCfg();
@@ -3866,7 +3922,8 @@ fn runSettingsFocusPrimary() void {
         SETTINGS_CONTROL_ROW_START + 6 => executeSettingsAction(.cycle_language),
         SETTINGS_CONTROL_ROW_START + 7 => executeSettingsAction(.toggle_restore_tabs),
         SETTINGS_CONTROL_ROW_START + 8 => executeSettingsAction(.open_raw_config),
-        SETTINGS_CONTROL_ROW_START + 9 => executeSettingsAction(.close),
+        SETTINGS_CONTROL_ROW_START + 9 => executeSettingsAction(.restore_defaults),
+        SETTINGS_CONTROL_ROW_START + 10 => executeSettingsAction(.close),
         else => {},
     }
 }
@@ -4088,7 +4145,8 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_restore_tabs, boolText(cfg.@"restore-tabs-on-startup"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 8);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 9);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_restore_defaults, "Enter", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 9);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 10);
 }
 
 // ============================================================================
@@ -4614,6 +4672,67 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
     renderRoundedQuadAlpha(layout.cancel_x, cancel_y, layout.cancel_w, layout.cancel_h, 7, mixColor(bg, accent, 0.22), 0.96);
     const cancel_label = "Cancel";
     renderTitlebarTextStrong(cancel_label, layout.cancel_x + (layout.cancel_w - measureTitlebarText(cancel_label)) / 2, rowTextY(cancel_y, layout.cancel_h), mixColor(fg, accent, 0.18));
+}
+
+pub fn renderRestoreDefaultsConfirm(window_width: f32, window_height: f32) void {
+    if (!g_restore_defaults_confirm_visible) return;
+
+    // Reuses the window-close panel/button geometry; close_* is the Restore
+    // button, cancel_* is Cancel.
+    const layout = windowCloseConfirmLayout(window_width, window_height);
+    const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
+    const apply_y = @round(window_height - layout.close_top_px - layout.close_h);
+    const cancel_y = @round(window_height - layout.cancel_top_px - layout.cancel_h);
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const panel = mixColor(bg, fg, 0.050);
+    const panel_top = mixColor(bg, fg, 0.073);
+    const panel_border = mixColor(bg, fg, 0.24);
+    const quiet_border = mixColor(bg, fg, 0.15);
+    const muted = mixColor(bg, fg, 0.56);
+    const body = mixColor(bg, fg, 0.80);
+    const accent_soft = mixColor(bg, accent, 0.20);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.46);
+    renderRoundedQuadAlpha(layout.panel_x + 10, panel_y - 10, layout.panel_w, layout.panel_h, 13, .{ 0.0, 0.0, 0.0 }, 0.26);
+    renderRoundedQuadAlpha(layout.panel_x - 1, panel_y - 1, layout.panel_w + 2, layout.panel_h + 2, 13, panel_border, 0.42);
+    renderRoundedQuadAlpha(layout.panel_x, panel_y, layout.panel_w, layout.panel_h, 12, panel, 0.99);
+    renderRoundedQuadAlpha(layout.panel_x + 1, panel_y + layout.panel_h - 76, layout.panel_w - 2, 75, 12, panel_top, 0.78);
+    ui_pipeline.fillQuadAlpha(layout.panel_x + 1, panel_y + layout.panel_h - 76, layout.panel_w - 2, 1, quiet_border, 0.40);
+    renderRoundedQuadAlpha(layout.panel_x, panel_y, 5, layout.panel_h, 12, accent, 0.84);
+
+    const pad: f32 = 34;
+    const icon_size: f32 = 34;
+    const icon_x = layout.panel_x + pad;
+    const title_y = @round(panel_y + layout.panel_h - 52);
+    const icon_y = @round(title_y - (icon_size - overlayTextHeight()) / 2.0 - 2.0);
+    renderRoundedQuadAlpha(icon_x, icon_y, icon_size, icon_size, 17, accent, 0.18);
+    renderRoundedQuadAlpha(icon_x + 5, icon_y + 5, icon_size - 10, icon_size - 10, 12, accent, 0.88);
+
+    const text_x = icon_x + icon_size + 18;
+    const text_right = layout.panel_x + layout.panel_w - pad;
+    renderTitlebarTextStrongLimited(i18n.s().restore_defaults_title, text_x, title_y, fg, text_right - text_x);
+
+    const body_y = title_y - overlayTextHeight() - 16;
+    renderTitlebarTextLimited(i18n.s().restore_defaults_body, text_x, body_y, body, text_right - text_x);
+
+    const hint_y = body_y - overlayTextHeight() - 8;
+    renderTitlebarTextLimited(i18n.s().restore_defaults_hint, text_x, hint_y, muted, text_right - text_x);
+
+    const footer_y = apply_y + layout.close_h + 20;
+    ui_pipeline.fillQuadAlpha(layout.panel_x + 5, footer_y, layout.panel_w - 5, 1, quiet_border, 0.46);
+
+    renderRoundedQuadAlpha(layout.close_x - 1, apply_y - 1, layout.close_w + 2, layout.close_h + 2, 8, mixColor(accent, fg, 0.20), 0.80);
+    renderRoundedQuadAlpha(layout.close_x, apply_y, layout.close_w, layout.close_h, 7, accent_soft, 0.96);
+    const apply_label = i18n.s().restore_defaults_apply;
+    renderTitlebarTextStrong(apply_label, layout.close_x + (layout.close_w - measureTitlebarText(apply_label)) / 2, rowTextY(apply_y, layout.close_h), mixColor(fg, accent, 0.18));
+
+    renderRoundedQuadAlpha(layout.cancel_x - 1, cancel_y - 1, layout.cancel_w + 2, layout.cancel_h + 2, 8, quiet_border, 0.76);
+    renderRoundedQuadAlpha(layout.cancel_x, cancel_y, layout.cancel_w, layout.cancel_h, 7, mixColor(bg, fg, 0.10), 0.96);
+    const cancel_label = i18n.s().restore_defaults_cancel;
+    renderTitlebarTextStrong(cancel_label, layout.cancel_x + (layout.cancel_w - measureTitlebarText(cancel_label)) / 2, rowTextY(cancel_y, layout.cancel_h), body);
 }
 
 pub fn renderTransferCancelConfirm(window_width: f32, window_height: f32) void {
