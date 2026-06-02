@@ -888,7 +888,10 @@ fn startAiHistoryTranscript(allocator: std.mem.Allocator, session: *ai_history_s
     session.mutex.lock();
     const selected = session.selectedVisible();
     const meta_clone: ?ai_history_types.SessionMeta = if (selected) |m|
-        (ai_history_session.cloneMetadata(allocator, m) catch null)
+        (ai_history_session.cloneMetadata(allocator, m) catch |err| blk: {
+            log.warn("failed to clone ai history metadata for transcript: {}", .{err});
+            break :blk null;
+        })
     else
         null;
     session.mutex.unlock();
@@ -905,12 +908,16 @@ fn startAiHistoryTranscript(allocator: std.mem.Allocator, session: *ai_history_s
     };
     const job = allocator.create(AiHistoryTranscriptJob) catch {
         ai_history_session.freeMetadata(allocator, meta);
+        session.mutex.lock();
+        session.transcript_state = .failed;
+        session.transcript_status = "Transcript failed";
+        session.mutex.unlock();
         return;
     };
     job.* = .{ .target = target, .meta = meta };
     session.loadTranscriptAsync(.{
         .ctx = job,
-        .provider = meta.provider,
+        .provider = job.meta.provider,
         .run = AiHistoryTranscriptJob.run,
         .destroy = AiHistoryTranscriptJob.destroy,
     });
