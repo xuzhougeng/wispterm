@@ -10,6 +10,7 @@ const titlebar = AppWindow.titlebar;
 const ui_pipeline = @import("ui_pipeline.zig");
 const font = AppWindow.font;
 const file_explorer = @import("../file_explorer.zig");
+const hit_test = @import("../input/hit_test.zig");
 
 fn blend(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const clamped = @max(0.0, @min(1.0, t));
@@ -32,6 +33,46 @@ const Palette = struct {
     selected_bg: [3]f32,
     accent: [3]f32,
 };
+
+const HeaderCloseRect = struct {
+    x: f32,
+    w: f32,
+};
+
+fn headerCloseRect(panel_x: f32, panel_w: f32) HeaderCloseRect {
+    const close_w: f32 = @floatCast(hit_test.PANEL_HEADER_CLOSE_BTN_W);
+    const close_margin: f32 = @floatCast(hit_test.PANEL_HEADER_CLOSE_MARGIN);
+    return .{
+        .x = panel_x + panel_w - close_margin - close_w,
+        .w = close_w,
+    };
+}
+
+fn renderHeaderCloseButton(
+    titlebar_h: f32,
+    header_y: f32,
+    header_h: f32,
+    panel_x: f32,
+    panel_w: f32,
+    palette: Palette,
+) void {
+    const close = headerCloseRect(panel_x, panel_w);
+    const hovered = blk: {
+        const win = AppWindow.g_window orelse break :blk false;
+        if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
+        break :blk hit_test.panelHeaderCloseButton(.{
+            .visible = true,
+            .left = panel_x,
+            .right = panel_x + panel_w,
+            .top = titlebar_h,
+            .height = header_h,
+        }, @floatFromInt(win.mouse_x), @floatFromInt(win.mouse_y));
+    };
+    if (hovered) {
+        ui_pipeline.fillQuad(close.x + 6, header_y + @round((header_h - 20) / 2), 20, 20, blend(palette.bg, palette.fg, 0.14));
+    }
+    titlebar.renderCloseIcon(close.x, header_y, close.w, header_h, if (hovered) palette.fg else palette.text_muted);
+}
 
 pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
     if (!file_explorer.isVisibleForActiveTab()) return;
@@ -122,8 +163,10 @@ fn renderFiles(
     };
     const mode_color = if (file_explorer.g_mode == .local) header_text else accent;
     const header_text_y = header_y + (header_h - font.g_titlebar_cell_height) / 2;
-    const label_end = titlebar.renderTextLimited(mode_label, panel_x + 12, header_text_y, mode_color, explorer_w - 24);
-    _ = titlebar.renderTextLimited(" Explorer", label_end, header_text_y, header_text, explorer_w - (label_end - panel_x) - 12);
+    const close = headerCloseRect(panel_x, explorer_w);
+    const label_end = titlebar.renderTextLimited(mode_label, panel_x + 12, header_text_y, mode_color, @max(1.0, close.x - panel_x - 20));
+    _ = titlebar.renderTextLimited(" Explorer", label_end, header_text_y, header_text, @max(1.0, close.x - label_end - 8));
+    renderHeaderCloseButton(titlebar_h, header_y, header_h, panel_x, explorer_w, palette);
     ui_pipeline.fillQuad(panel_x, header_y, explorer_w, 1, border_color);
 
     // File entries
@@ -247,8 +290,10 @@ fn renderAgentHistory(
 ) void {
     const header_y = window_height - titlebar_h - header_h;
     const header_text_y = header_y + (header_h - font.g_titlebar_cell_height) / 2;
-    const agent_end = titlebar.renderTextLimited("AGENT", panel_x + 12, header_text_y, palette.accent, explorer_w - 24);
-    _ = titlebar.renderTextLimited(" History", agent_end, header_text_y, palette.header_text, explorer_w - (agent_end - panel_x) - 12);
+    const close = headerCloseRect(panel_x, explorer_w);
+    const agent_end = titlebar.renderTextLimited("AGENT", panel_x + 12, header_text_y, palette.accent, @max(1.0, close.x - panel_x - 20));
+    _ = titlebar.renderTextLimited(" History", agent_end, header_text_y, palette.header_text, @max(1.0, close.x - agent_end - 8));
+    renderHeaderCloseButton(titlebar_h, header_y, header_h, panel_x, explorer_w, palette);
     ui_pipeline.fillQuad(panel_x, header_y, explorer_w, 1, palette.border_color);
 
     const list_top_px = titlebar_h + header_h;

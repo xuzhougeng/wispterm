@@ -17,6 +17,7 @@ const SplitTree = @import("../split_tree.zig");
 const Config = @import("../config.zig");
 const themes_embed = @import("../themes.zig");
 const input_key = @import("../input/key.zig");
+const hit_test = @import("../input/hit_test.zig");
 const ssh_prompt = @import("../ssh_prompt.zig");
 const ssh_connection = @import("../ssh_connection.zig");
 const app_metadata = @import("../app_metadata.zig");
@@ -1283,8 +1284,11 @@ pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f3
     ui_pipeline.fillQuadAlpha(panel_x, bar_y, panel_w, bar_h, panel_bg, 0.98);
 
     const margin = browser_panel.URL_BAR_MARGIN;
+    const close_btn_w: f32 = @floatCast(hit_test.PANEL_HEADER_CLOSE_BTN_W);
+    const close_margin: f32 = @floatCast(hit_test.PANEL_HEADER_CLOSE_MARGIN);
+    const close_x = @round(@as(f32, @floatFromInt(url_bar.right)) - close_margin - close_btn_w);
     const input_x = @round(@as(f32, @floatFromInt(url_bar.left)) + margin);
-    const input_w = @max(1.0, @as(f32, @floatFromInt(url_bar.right - url_bar.left)) - margin * 2);
+    const input_w = @max(1.0, close_x - input_x - margin);
     const input_h = @max(24.0, bar_h - margin * 2);
     const input_y = @round(bar_y + margin);
     renderRoundedQuadAlpha(input_x - 1, input_y - 1, input_w + 2, input_h + 2, 6, field_border, if (browser_panel.urlBarFocused()) 0.70 else 0.34);
@@ -1306,6 +1310,22 @@ pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f3
         const cursor_x = @min(input_x + input_w - 10, @max(text_x, text_end + 1));
         ui_pipeline.fillQuadAlpha(cursor_x, input_y + 6, 1.5, @max(8.0, input_h - 12), accent, 0.90);
     }
+
+    const close_hovered = blk: {
+        const win = AppWindow.g_window orelse break :blk false;
+        if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
+        break :blk hit_test.panelHeaderCloseButton(.{
+            .visible = true,
+            .left = @floatFromInt(url_bar.left),
+            .right = @floatFromInt(url_bar.right),
+            .top = @floatFromInt(url_bar.top),
+            .height = @floatFromInt(url_bar.bottom - url_bar.top),
+        }, @floatFromInt(win.mouse_x), @floatFromInt(win.mouse_y));
+    };
+    if (close_hovered) {
+        ui_pipeline.fillQuadAlpha(close_x + 6, bar_y + @round((bar_h - 20) / 2), 20, 20, mixColor(bg, fg, 0.14), 0.95);
+    }
+    titlebar.renderCloseIcon(close_x, bar_y, close_btn_w, bar_h, if (close_hovered) fg else mixColor(bg, fg, 0.68));
 
     ui_pipeline.fillQuadAlpha(panel_x, bar_y, panel_w, 1, mixColor(bg, fg, 0.18), 0.55);
 }

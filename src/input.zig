@@ -417,6 +417,16 @@ pub fn toggleFileExplorer() void {
     AppWindow.g_cells_valid = false;
 }
 
+fn closeFileExplorerPanel() void {
+    file_explorer.close();
+    blurBrowserUrlBarIfFocused();
+    if (AppWindow.g_window) |win| {
+        syncPanelGridFromWindow(win);
+    }
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
 pub fn toggleBrowserPanel() void {
     const perf = ui_perf.begin("input.toggle_browser_panel");
     defer perf.end();
@@ -432,6 +442,16 @@ pub fn toggleBrowserPanel() void {
     }
     if (!browser_panel.isVisibleForActiveTab()) AppWindow.hideAiCopilot();
     if (!browser_panel.toggleForSurface(allocator, parent, surface)) return;
+    if (AppWindow.g_window) |win| {
+        syncPanelGridFromWindow(win);
+    }
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
+fn closeBrowserPanel() void {
+    g_close_shortcut_confirm_until_ms = 0;
+    browser_panel.close();
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
@@ -1497,6 +1517,23 @@ fn hitTestFileExplorer(xpos: f64, ypos: f64) bool {
     return xpos >= panel_x and xpos < panel_right;
 }
 
+fn fileExplorerHeaderLayout() ?hit_test.PanelHeaderLayout {
+    if (!file_explorer.isVisibleForActiveTab()) return null;
+    const panel_x: f64 = @floatCast(titlebar.sidebarWidth());
+    const panel_right = panel_x + @as(f64, @floatCast(file_explorer.width()));
+    return .{
+        .visible = true,
+        .left = panel_x,
+        .right = panel_right,
+        .top = titlebarHeight(),
+        .height = @floatCast(file_explorer.headerHeight()),
+    };
+}
+
+fn hitTestFileExplorerCloseButton(xpos: f64, ypos: f64) bool {
+    return hit_test.panelHeaderCloseButton(fileExplorerHeaderLayout() orelse return false, xpos, ypos);
+}
+
 fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
     if (!markdown_preview_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
@@ -1535,6 +1572,22 @@ fn hitTestBrowserUrlBar(xpos: f64, ypos: f64) bool {
         xpos < @as(f64, @floatFromInt(url_bar.right)) and
         ypos >= @as(f64, @floatFromInt(url_bar.top)) and
         ypos < @as(f64, @floatFromInt(url_bar.bottom));
+}
+
+fn browserHeaderLayout() ?hit_test.PanelHeaderLayout {
+    const bounds = browserPanelBounds() orelse return null;
+    const url_bar = browser_panel.urlBarBounds(bounds) orelse return null;
+    return .{
+        .visible = true,
+        .left = @floatFromInt(url_bar.left),
+        .right = @floatFromInt(url_bar.right),
+        .top = @floatFromInt(url_bar.top),
+        .height = @floatFromInt(url_bar.bottom - url_bar.top),
+    };
+}
+
+fn hitTestBrowserCloseButton(xpos: f64, ypos: f64) bool {
+    return hit_test.panelHeaderCloseButton(browserHeaderLayout() orelse return false, xpos, ypos);
 }
 
 fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
@@ -2657,6 +2710,14 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             if (ypos < titlebar_h) {
                 blurBrowserUrlBarIfFocused();
                 handleTopbarPress(xpos);
+                return;
+            }
+            if (hitTestFileExplorerCloseButton(xpos, ypos)) {
+                closeFileExplorerPanel();
+                return;
+            }
+            if (hitTestBrowserCloseButton(xpos, ypos)) {
+                closeBrowserPanel();
                 return;
             }
             const over_browser_url_bar = hitTestBrowserUrlBar(xpos, ypos);

@@ -279,7 +279,7 @@ fn renderPlusIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     gl_init.renderQuad(cx - t / 2, cy - arm, t, arm * 2, color);
 }
 
-fn renderCloseIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
+pub fn renderCloseIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     if (font.icon_face != null) {
         if (font.loadIconGlyph(font_backend.titlebarIconGlyph(.close))) |ch| {
             renderIconGlyph(ch, x, y, w, h, color, 0.95);

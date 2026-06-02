@@ -14,6 +14,19 @@ pub const SidebarLayout = struct {
     close_btn_w: f64, // tab.TAB_CLOSE_BTN_W
 };
 
+pub const PANEL_HEADER_CLOSE_BTN_W: f64 = 32;
+pub const PANEL_HEADER_CLOSE_MARGIN: f64 = 6;
+
+pub const PanelHeaderLayout = struct {
+    visible: bool,
+    left: f64,
+    right: f64,
+    top: f64,
+    height: f64,
+    close_btn_w: f64 = PANEL_HEADER_CLOSE_BTN_W,
+    close_margin: f64 = PANEL_HEADER_CLOSE_MARGIN,
+};
+
 fn listTop(l: SidebarLayout) f64 {
     return l.titlebar_h + l.header_h + 6;
 }
@@ -68,6 +81,17 @@ pub fn sidebarResizeHandle(l: SidebarLayout, x: f64, y: f64) bool {
     if (y < l.titlebar_h) return false;
     const half_hit = l.resize_hit_width / 2;
     return x >= l.width - half_hit and x <= l.width + half_hit;
+}
+
+pub fn panelHeaderCloseButton(l: PanelHeaderLayout, x: f64, y: f64) bool {
+    if (!l.visible) return false;
+    if (l.right <= l.left or l.height <= 0) return false;
+    if (l.close_btn_w <= 0 or l.close_margin < 0) return false;
+    if ((l.right - l.left) <= l.close_btn_w + l.close_margin) return false;
+
+    const close_x = l.right - l.close_margin - l.close_btn_w;
+    return x >= close_x and x < close_x + l.close_btn_w and
+        y >= l.top and y < l.top + l.height;
 }
 
 const sample: SidebarLayout = .{
@@ -132,4 +156,33 @@ test "sidebarResizeHandle: band around the right edge" {
     try std.testing.expect(sidebarResizeHandle(sample, 204, 100));
     try std.testing.expect(!sidebarResizeHandle(sample, 195, 100)); // left of band
     try std.testing.expect(!sidebarResizeHandle(sample, 200, 20)); // above titlebar
+}
+
+const sample_panel: PanelHeaderLayout = .{
+    .visible = true,
+    .left = 220,
+    .right = 420,
+    .top = 40,
+    .height = 38,
+    .close_btn_w = 32,
+    .close_margin = 6,
+};
+
+test "panelHeaderCloseButton: hits the right-aligned header close button" {
+    // close_x = 420 - 6 - 32 = 382; spans [382, 414); y in [40, 78)
+    try std.testing.expect(panelHeaderCloseButton(sample_panel, 390, 50));
+    try std.testing.expect(panelHeaderCloseButton(sample_panel, 413, 77));
+    try std.testing.expect(!panelHeaderCloseButton(sample_panel, 381, 50)); // left of button
+    try std.testing.expect(!panelHeaderCloseButton(sample_panel, 414, 50)); // margin before resize edge
+    try std.testing.expect(!panelHeaderCloseButton(sample_panel, 390, 78)); // below header
+}
+
+test "panelHeaderCloseButton: invisible or collapsed panels never hit" {
+    var hidden = sample_panel;
+    hidden.visible = false;
+    try std.testing.expect(!panelHeaderCloseButton(hidden, 390, 50));
+
+    var collapsed = sample_panel;
+    collapsed.right = collapsed.left + collapsed.close_btn_w;
+    try std.testing.expect(!panelHeaderCloseButton(collapsed, 390, 50));
 }
