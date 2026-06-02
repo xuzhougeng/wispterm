@@ -6,6 +6,7 @@ const codex_provider = @import("ai_history_provider_codex.zig");
 const claude_provider = @import("ai_history_provider_claude.zig");
 
 pub const LoadState = enum { idle, scanning, ready, failed };
+pub const TranscriptState = enum { idle, loading, ready, failed };
 pub const MAX_METADATA_FILE_BYTES = 2 * 1024 * 1024;
 pub const MAX_SCAN_METADATA_FILES: usize = 256;
 pub const MAX_SCAN_METADATA_BYTES: u64 = 48 * 1024 * 1024;
@@ -64,9 +65,14 @@ pub const Session = struct {
     /// Rows own duplicated SessionMeta string fields.
     rows: std.ArrayListUnmanaged(types.SessionMeta) = .empty,
     selected: usize = 0,
+    list_offset: usize = 0,
     filter: [128]u8 = undefined,
     filter_len: usize = 0,
     status: []const u8 = "",
+    transcript_state: TranscriptState = .idle,
+    transcript_status: []const u8 = "",
+    transcript_provider: ?types.ProviderId = null,
+    transcript: []types.TranscriptMessage = &.{},
 
     pub fn init(allocator: std.mem.Allocator, source: source_mod.Source) Session {
         return .{
@@ -84,6 +90,7 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
+        self.clearTranscript();
         freeRows(self.allocator, self.rows.items);
         self.rows.deinit(self.allocator);
         if (self.source_owned) {
@@ -137,6 +144,8 @@ pub const Session = struct {
         self.rows.deinit(self.allocator);
         self.rows = next;
         self.selected = 0;
+        self.list_offset = 0;
+        self.clearTranscript();
         self.state = .ready;
         self.status = "Ready";
     }
@@ -154,15 +163,111 @@ pub const Session = struct {
         self.status = if (result.warning_count == 0) "Ready" else "Ready with warnings";
     }
 
-    pub fn loadSelectedTranscript(self: *Session, host: ScannerHost) ![]types.TranscriptMessage {
+    pub fn loadSelectedTranscript(self: *Session, host: ScannerHost) !void {
         const selected = self.selectedVisible() orelse return error.NoSelection;
-        return try host.loadTranscript(host.ctx, self.allocator, selected);
+        self.clearTranscript();
+        self.transcript_state = .loading;
+        self.transcript_status = "Loading transcript";
+        errdefer {
+            self.transcript_state = .failed;
+            self.transcript_status = "Transcript failed";
+        }
+        self.transcript = try host.loadTranscript(host.ctx, self.allocator, selected);
+        self.transcript_provider = selected.provider;
+        self.transcript_state = .ready;
+        self.transcript_status = "Transcript ready";
     }
 
     pub fn setFilter(self: *Session, text: []const u8) void {
         self.filter_len = @min(text.len, self.filter.len);
         @memcpy(self.filter[0..self.filter_len], text[0..self.filter_len]);
         self.selected = 0;
+        self.list_offset = 0;
+        self.clearTranscript();
+    }
+
+    pub fn appendFilterBytes(self: *Session, bytes: []const u8) void {
+        if (bytes.len == 0 or bytes.len > self.filter.len - self.filter_len) return;
+        @memcpy(self.filter[self.filter_len..][0..bytes.len], bytes);
+        self.filter_len += bytes.len;
+        self.selected = 0;
+        self.list_offset = 0;
+        self.clearTranscript();
+    }
+
+    pub fn backspaceFilter(self: *Session) void {
+        if (self.filter_len == 0) return;
+        self.filter_len = previousUtf8Boundary(self.filter[0..self.filter_len], self.filter_len);
+        self.selected = 0;
+        self.list_offset = 0;
+        self.clearTranscript();
+    }
+
+    pub fn moveSelection(self: *Session, delta: isize) void {
+        const count = self.visibleCount();
+        if (count == 0) {
+            self.selected = 0;
+            self.list_offset = 0;
+            self.clearTranscript();
+            return;
+        }
+        const old = @min(self.selected, count - 1);
+        const next = if (delta < 0)
+            old - @min(old, @as(usize, @intCast(-delta)))
+        else
+            @min(count - 1, old + @as(usize, @intCast(delta)));
+        if (next != self.selected) self.clearTranscript();
+        self.selected = next;
+    }
+
+    pub fn selectVisibleIndex(self: *Session, index: usize) void {
+        const count = self.visibleCount();
+        if (count == 0) {
+            self.selected = 0;
+            self.list_offset = 0;
+            self.clearTranscript();
+            return;
+        }
+        const next = @min(index, count - 1);
+        if (next != self.selected) self.clearTranscript();
+        self.selected = next;
+        if (self.list_offset > next) self.list_offset = next;
+    }
+
+    pub fn ensureSelectionVisible(self: *Session, max_visible_rows: usize) void {
+        const count = self.visibleCount();
+        if (count == 0 or max_visible_rows == 0) {
+            self.list_offset = 0;
+            return;
+        }
+
+        self.selected = @min(self.selected, count - 1);
+        const window_rows = @min(max_visible_rows, count);
+        if (self.selected < self.list_offset) {
+            self.list_offset = self.selected;
+        } else if (self.selected >= self.list_offset + window_rows) {
+            self.list_offset = self.selected + 1 - window_rows;
+        }
+
+        const max_offset = count - window_rows;
+        self.list_offset = @min(self.list_offset, max_offset);
+    }
+
+    pub fn listWindowStart(self: *const Session, max_visible_rows: usize) usize {
+        const count = self.visibleCount();
+        if (count == 0 or max_visible_rows == 0) return 0;
+        const window_rows = @min(max_visible_rows, count);
+        return @min(self.list_offset, count - window_rows);
+    }
+
+    pub fn clearTranscript(self: *Session) void {
+        if (self.transcript_provider) |provider| {
+            freeTranscript(self.allocator, provider, self.transcript);
+        }
+        self.transcript = &.{};
+        self.transcript_provider = null;
+        self.transcript_state = .idle;
+        self.transcript_status = "";
     }
 
     pub fn visibleCount(self: *const Session) usize {
@@ -187,6 +292,13 @@ pub const Session = struct {
         return null;
     }
 };
+
+fn previousUtf8Boundary(bytes: []const u8, from: usize) usize {
+    if (from == 0) return 0;
+    var idx = from - 1;
+    while (idx > 0 and (bytes[idx] & 0b1100_0000) == 0b1000_0000) : (idx -= 1) {}
+    return idx;
+}
 
 pub fn scanLocalFilesystem(
     allocator: std.mem.Allocator,
@@ -550,6 +662,30 @@ fn freeSlice(allocator: std.mem.Allocator, value: []const u8) void {
     if (value.len > 0) allocator.free(value);
 }
 
+const TestTranscriptHost = struct {
+    pub fn scannerHost(self: *TestTranscriptHost) ScannerHost {
+        return .{
+            .ctx = self,
+            .scan = scan,
+            .loadTranscript = loadTranscript,
+        };
+    }
+
+    fn scan(_: *anyopaque, allocator: std.mem.Allocator, _: source_mod.Source) !ScanResult {
+        return .{ .rows = try allocator.alloc(types.SessionMeta, 0) };
+    }
+
+    fn loadTranscript(_: *anyopaque, allocator: std.mem.Allocator, _: types.SessionMeta) ![]types.TranscriptMessage {
+        const messages = try allocator.alloc(types.TranscriptMessage, 1);
+        errdefer allocator.free(messages);
+        messages[0] = .{
+            .role = .user,
+            .content = try allocator.dupe(u8, "hello"),
+        };
+        return messages;
+    }
+};
+
 test "ai_history_session: replacing rows sorts by last active time" {
     var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
     defer session.deinit();
@@ -699,6 +835,37 @@ test "ai_history_session: metadata filter controls visible rows" {
     try std.testing.expectEqualStrings("b", selected.session_id);
 }
 
+test "ai_history_session: loading selected transcript stores and clears owned messages" {
+    const allocator = std.testing.allocator;
+    var session = Session.init(allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    const rows = [_]types.SessionMeta{
+        .{
+            .provider = .codex,
+            .session_id = "a",
+            .title = "Renderer",
+            .source_path = "a.jsonl",
+            .resume_kind = .codex_resume,
+        },
+    };
+    try session.replaceRows(&rows);
+
+    var host_state = TestTranscriptHost{};
+    const host = host_state.scannerHost();
+    try session.loadSelectedTranscript(host);
+
+    try std.testing.expectEqual(TranscriptState.ready, session.transcript_state);
+    try std.testing.expectEqual(types.ProviderId.codex, session.transcript_provider.?);
+    try std.testing.expectEqual(@as(usize, 1), session.transcript.len);
+    try std.testing.expectEqualStrings("hello", session.transcript[0].content);
+
+    try session.replaceRows(&.{});
+    try std.testing.expectEqual(TranscriptState.idle, session.transcript_state);
+    try std.testing.expectEqual(@as(?types.ProviderId, null), session.transcript_provider);
+    try std.testing.expectEqual(@as(usize, 0), session.transcript.len);
+}
+
 test "ai_history_session: replace rows preserves existing state on allocation failure" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
         .fail_index = 4,
@@ -772,6 +939,32 @@ test "ai_history_session: selected visible returns null when selection is unavai
     session.selected = 1;
     try std.testing.expectEqual(@as(usize, 1), session.visibleCount());
     try std.testing.expectEqual(null, session.selectedVisible());
+}
+
+test "ai_history_session: list offset keeps selected row in rendered window" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 4 },
+        .{ .provider = .codex, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 3 },
+        .{ .provider = .codex, .session_id = "c", .title = "C", .source_path = "c.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 2 },
+        .{ .provider = .codex, .session_id = "d", .title = "D", .source_path = "d.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 1 },
+    };
+    try session.replaceRows(&rows);
+
+    session.moveSelection(3);
+    session.ensureSelectionVisible(2);
+    try std.testing.expectEqual(@as(usize, 3), session.selected);
+    try std.testing.expectEqual(@as(usize, 2), session.listWindowStart(2));
+
+    session.moveSelection(-2);
+    session.ensureSelectionVisible(2);
+    try std.testing.expectEqual(@as(usize, 1), session.selected);
+    try std.testing.expectEqual(@as(usize, 1), session.listWindowStart(2));
+
+    session.setFilter("A");
+    try std.testing.expectEqual(@as(usize, 0), session.listWindowStart(2));
 }
 
 test "ai_history_session: filter truncates to fixed buffer length" {
@@ -882,7 +1075,7 @@ test "ai_history_session: scan host rows are owned after provider result is free
     try std.testing.expectEqualStrings("/tmp/a.jsonl", session.rows.items[0].source_path);
 }
 
-test "ai_history_session: loadSelectedTranscript returns fake transcript for selected row" {
+test "ai_history_session: loadSelectedTranscript stores fake transcript for selected row" {
     const allocator = std.testing.allocator;
     var fake = struct {
         fn scan(_: *anyopaque, alloc: std.mem.Allocator, _: source_mod.Source) !ScanResult {
@@ -899,7 +1092,8 @@ test "ai_history_session: loadSelectedTranscript returns fake transcript for sel
         fn load(_: *anyopaque, alloc: std.mem.Allocator, meta: types.SessionMeta) ![]types.TranscriptMessage {
             try std.testing.expectEqualStrings("abc", meta.session_id);
             const messages = try alloc.alloc(types.TranscriptMessage, 1);
-            messages[0] = .{ .role = .user, .content = "hello" };
+            errdefer alloc.free(messages);
+            messages[0] = .{ .role = .user, .content = try alloc.dupe(u8, "hello") };
             return messages;
         }
     }{};
@@ -908,12 +1102,12 @@ test "ai_history_session: loadSelectedTranscript returns fake transcript for sel
     const host: ScannerHost = .{ .ctx = &fake, .scan = @TypeOf(fake).scan, .loadTranscript = @TypeOf(fake).load };
     try session.scanNow(host);
 
-    const transcript = try session.loadSelectedTranscript(host);
-    defer allocator.free(transcript);
+    try session.loadSelectedTranscript(host);
 
-    try std.testing.expectEqual(@as(usize, 1), transcript.len);
-    try std.testing.expectEqual(types.MessageRole.user, transcript[0].role);
-    try std.testing.expectEqualStrings("hello", transcript[0].content);
+    try std.testing.expectEqual(TranscriptState.ready, session.transcript_state);
+    try std.testing.expectEqual(@as(usize, 1), session.transcript.len);
+    try std.testing.expectEqual(types.MessageRole.user, session.transcript[0].role);
+    try std.testing.expectEqualStrings("hello", session.transcript[0].content);
 }
 
 test "ai_history_session: loadSelectedTranscript returns NoSelection without visible row" {

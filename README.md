@@ -127,6 +127,10 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Select AI Chat input; select transcript when input is empty | **Ctrl+A** in AI Chat | **Cmd+A** in AI Chat |
 | Copy AI Chat selection or full transcript | **Ctrl+C** in AI Chat | **Cmd+C** in AI Chat |
 | Delete the selected saved Agent session | **D** / **Delete** in Agent History | **D** / **Delete** in Agent History |
+| Edit AI History filter | Type / Backspace in AI History | Type / Backspace in AI History |
+| Move selected AI History session | Up / Down in AI History | Up / Down in AI History |
+| Preview selected AI History transcript | Enter in AI History | Enter in AI History |
+| Refresh local AI History scan | **R** in local AI History | **R** in local AI History |
 | Edit AI Chat input cursor | Left/Right/Home/End/Delete/Backspace | Left/Right/Home/End/Delete/Backspace |
 | Stop in-flight AI Chat or Agent request | **Esc** in AI Chat while working | **Esc** in AI Chat while working |
 | Copy selection (right-click) | Right-click a selection | Right-click a selection |

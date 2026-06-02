@@ -40,6 +40,7 @@ const thread_message = @import("appwindow/thread_message.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
 pub const ai_chat = @import("ai_chat.zig");
+pub const ai_history_session = @import("ai_history_session.zig");
 pub const ai_history_source = @import("ai_history_source.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
@@ -601,7 +602,17 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
     markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     if (active_tab.ai_history_session) |session| {
+        const draw: ai_history_renderer.DrawContext = .{
+            .bg = g_theme.background,
+            .fg = g_theme.foreground,
+            .accent = g_theme.cursor_color,
+            .cell_h = font.g_titlebar_cell_height,
+            .fillQuad = ui_pipeline.fillQuad,
+            .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+            .renderTextLimited = titlebar.renderTextLimited,
+        };
         ai_history_renderer.render(
+            draw,
             session,
             @floatFromInt(fb_width),
             @floatFromInt(fb_height),
@@ -632,6 +643,145 @@ pub fn activeSurface() ?*Surface {
 
 pub fn activeAiChat() ?*ai_chat.Session {
     return tab.activeAiChat();
+}
+
+pub fn activeAiHistory() ?*ai_history_session.Session {
+    const active = activeTab() orelse return null;
+    if (active.kind != .ai_history) return null;
+    return active.ai_history_session;
+}
+
+pub fn aiHistoryInsertCodepoint(codepoint: u21) bool {
+    const session = activeAiHistory() orelse return false;
+    if (codepoint < 0x20 or codepoint == 0x7f) return false;
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(codepoint, &buf) catch return false;
+    session.appendFilterBytes(buf[0..len]);
+    markUiDirty();
+    return true;
+}
+
+pub fn aiHistoryBackspaceFilter() bool {
+    const session = activeAiHistory() orelse return false;
+    session.backspaceFilter();
+    markUiDirty();
+    return true;
+}
+
+pub fn aiHistoryMoveSelection(delta: isize) bool {
+    const session = activeAiHistory() orelse return false;
+    session.moveSelection(delta);
+    session.ensureSelectionVisible(aiHistoryListVisibleRowsForWindow());
+    markUiDirty();
+    return true;
+}
+
+pub fn aiHistoryLoadSelectedTranscript() bool {
+    const session = activeAiHistory() orelse return false;
+    const allocator = g_allocator orelse return false;
+    const home = localHomeForAiHistory(allocator) catch |err| {
+        log.warn("failed to resolve local home for AI History transcript load: {}", .{err});
+        session.transcript_state = .failed;
+        session.transcript_status = "Home unavailable";
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(home);
+
+    var host_state = ai_history_session.LocalScannerHost{ .home = home };
+    const host = host_state.scannerHost();
+    session.loadSelectedTranscript(host) catch |err| {
+        log.warn("failed to load AI History transcript: {}", .{err});
+    };
+    markUiDirty();
+    return true;
+}
+
+pub fn aiHistoryScanLocalNow() bool {
+    const session = activeAiHistory() orelse return false;
+    if (session.source.target != .local) return false;
+    const allocator = g_allocator orelse return false;
+    const home = localHomeForAiHistory(allocator) catch |err| {
+        log.warn("failed to resolve local home for AI History scan: {}", .{err});
+        session.state = .failed;
+        session.status = "Home unavailable";
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(home);
+
+    var host_state = ai_history_session.LocalScannerHost{ .home = home };
+    const host = host_state.scannerHost();
+    session.scanNow(host) catch |err| {
+        log.warn("failed to scan local AI History: {}", .{err});
+    };
+    markUiDirty();
+    return true;
+}
+
+pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
+    const session = activeAiHistory() orelse return false;
+    const win = g_window orelse return true;
+    const fb = window_backend.framebufferSize(win);
+    const left = leftPanelsWidth();
+    const right = rightPanelsWidthForWindow(fb.width);
+    const width = @as(f32, @floatFromInt(fb.width)) - left - right;
+    const visible_rows = ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight());
+    const hit = ai_history_renderer.interactionHitTest(
+        session,
+        @floatFromInt(fb.width),
+        @floatFromInt(fb.height),
+        currentTitlebarHeight(),
+        left,
+        width,
+        font.g_titlebar_cell_height,
+        xpos,
+        ypos,
+    );
+    switch (hit) {
+        .none => {},
+        .refresh => {
+            _ = aiHistoryScanLocalNow();
+            return true;
+        },
+        .@"resume" => {
+            // Resume is wired in the next task; consume the click so AI History
+            // tabs never fall through to terminal mouse handling.
+            markUiDirty();
+            return true;
+        },
+        .row => |visible_index| {
+            session.selectVisibleIndex(visible_index);
+            session.ensureSelectionVisible(visible_rows);
+            markUiDirty();
+            return true;
+        },
+    }
+    markUiDirty();
+    return true;
+}
+
+fn markUiDirty() void {
+    g_force_rebuild = true;
+    g_cells_valid = false;
+}
+
+fn aiHistoryListVisibleRowsForWindow() usize {
+    const win = g_window orelse return 1;
+    const fb = window_backend.framebufferSize(win);
+    return ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight());
+}
+
+fn localHomeForAiHistory(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |value| {
+        if (value.len > 0) return value;
+        allocator.free(value);
+    } else |_| {}
+    if (std.process.getEnvVarOwned(allocator, "HOME")) |value| {
+        if (value.len > 0) return value;
+        allocator.free(value);
+    } else |_| {}
+    return error.NoHomeDirectory;
 }
 
 pub fn exportActiveAiChatMarkdown(mode: ai_chat.MarkdownExportMode) void {
