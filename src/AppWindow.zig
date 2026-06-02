@@ -40,6 +40,11 @@ const thread_message = @import("appwindow/thread_message.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
 pub const ai_chat = @import("ai_chat.zig");
+const ai_history_cache = @import("ai_history_cache.zig");
+const ai_history_resume = @import("ai_history_resume.zig");
+const ai_history_types = @import("ai_history_types.zig");
+pub const ai_history_session = @import("ai_history_session.zig");
+pub const ai_history_source = @import("ai_history_source.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
 pub const font = @import("font/manager.zig");
@@ -66,6 +71,7 @@ pub const browser_panel = if (build_options.webview)
 else
     @import("browser_panel_stub.zig");
 pub const ai_chat_renderer = @import("renderer/ai_chat_renderer.zig");
+pub const ai_history_renderer = @import("renderer/ai_history_renderer.zig");
 const ai_sidebar = @import("ai_sidebar.zig");
 pub const ui_perf = @import("ui_perf.zig");
 const log = std.log.scoped(.app_window);
@@ -596,6 +602,40 @@ fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, le
     }
 }
 
+fn aiHistoryContentWidth(fb_width: c_int, left_panels_w: f32, right_panels_w: f32) f32 {
+    return @max(0, @as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w);
+}
+
+fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
+    file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    if (active_tab.ai_history_session) |session| {
+        const draw: ai_history_renderer.DrawContext = .{
+            .bg = g_theme.background,
+            .fg = g_theme.foreground,
+            .accent = g_theme.cursor_color,
+            .cell_h = font.g_titlebar_cell_height,
+            .fillQuad = ui_pipeline.fillQuad,
+            .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+            .renderTextLimited = titlebar.renderTextLimited,
+        };
+        ai_history_renderer.render(
+            draw,
+            session,
+            @floatFromInt(fb_width),
+            @floatFromInt(fb_height),
+            titlebar_offset,
+            left_panels_w,
+            aiHistoryContentWidth(fb_width, left_panels_w, right_panels_w),
+        );
+    }
+}
+
 fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32) void {
     if (!aiCopilotVisible()) return;
     const session = ensureActiveCopilotSession() orelse return;
@@ -616,6 +656,274 @@ pub fn activeSurface() ?*Surface {
 
 pub fn activeAiChat() ?*ai_chat.Session {
     return tab.activeAiChat();
+}
+
+pub fn activeAiHistory() ?*ai_history_session.Session {
+    const active = activeTab() orelse return null;
+    if (active.kind != .ai_history) return null;
+    return active.ai_history_session;
+}
+
+pub fn aiHistoryInsertCodepoint(codepoint: u21) bool {
+    const session = activeAiHistory() orelse return false;
+    if (codepoint == ' ') return aiHistoryPreviewSelectedTranscript();
+    if (codepoint < 0x20 or codepoint == 0x7f) return false;
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(codepoint, &buf) catch return false;
+    session.appendFilterBytes(buf[0..len]);
+    markUiDirty();
+    return true;
+}
+
+pub fn aiHistoryBackspaceFilter() bool {
+    const session = activeAiHistory() orelse return false;
+    session.backspaceFilter();
+    markUiDirty();
+    return true;
+}
+
+pub fn aiHistoryMoveSelection(delta: isize) bool {
+    const session = activeAiHistory() orelse return false;
+    session.moveSelection(delta);
+    session.ensureSelectionVisible(aiHistoryListVisibleRowsForWindow());
+    markUiDirty();
+    return true;
+}
+
+pub fn aiHistoryPreviewSelectedTranscript() bool {
+    const session = activeAiHistory() orelse return false;
+    const allocator = g_allocator orelse return false;
+    return withAiHistoryScannerHost(allocator, session, .preview, PreviewTranscriptRunner.run);
+}
+
+pub fn aiHistoryLoadSelectedTranscript() bool {
+    return resumeAiHistorySelection();
+}
+
+pub fn resumeAiHistorySelection() bool {
+    const active = tab.activeTab() orelse return false;
+    if (active.kind != .ai_history) return false;
+    const session = active.ai_history_session orelse return false;
+    const meta = session.selectedVisible() orelse return false;
+    return spawnResumeTerminal(session.source.target, meta);
+}
+
+pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_types.SessionMeta) bool {
+    var resume_buf: [512]u8 = undefined;
+    const resume_cmd = ai_history_resume.resumeCommand(meta, &resume_buf) catch |err| {
+        log.warn("failed to build AI History provider resume command for {s}: {}", .{ meta.session_id, err });
+        return failAiHistoryResumePathUnavailable();
+    };
+
+    var checked_buf: [2048]u8 = undefined;
+    const checked_cmd = ai_history_resume.checkedPosixResume(resume_cmd, meta.project_dir, &checked_buf) catch |err| {
+        log.warn("failed to build AI History checked resume command for {s}: {}", .{ meta.session_id, err });
+        return failAiHistoryResumePathUnavailable();
+    };
+
+    var command_buf: [4096]u8 = undefined;
+    switch (target) {
+        .local => {
+            var native_checked_buf: [2048]u8 = undefined;
+            const local_checked_cmd = switch (platform_pty_command.backend()) {
+                .windows => ai_history_resume.checkedPowerShellResume(meta, &native_checked_buf) catch |err| {
+                    log.warn("failed to build AI History PowerShell resume command for {s}: {}", .{ meta.session_id, err });
+                    return failAiHistoryResumePathUnavailable();
+                },
+                .unsupported => checked_cmd,
+            };
+            const command = platform_pty_command.localShellInitialCommand(command_buf[0..], tab.getShellCmd(), local_checked_cmd) orelse return failAiHistoryResumePathUnavailable();
+            if (spawnTabWithCommandUtf8(command)) return true;
+            overlays.showStatusToast("AI History resume failed");
+            return false;
+        },
+        .wsl => {
+            const command = platform_pty_command.wslShellCommand(command_buf[0..], checked_cmd) orelse return failAiHistoryResumePathUnavailable();
+            if (spawnTabWithCommandUtf8(command)) return true;
+            overlays.showStatusToast("AI History resume failed");
+            return false;
+        },
+        .ssh => |ssh| {
+            return switch (overlays.aiHistoryConnectSshProfile(ssh.profile_name, checked_cmd)) {
+                .connected => true,
+                .not_found => {
+                    overlays.showStatusToast("AI History resume failed: SSH profile unavailable");
+                    return false;
+                },
+                .failed => {
+                    overlays.showStatusToast("AI History resume failed");
+                    return false;
+                },
+            };
+        },
+    }
+}
+
+fn failAiHistoryResumePathUnavailable() bool {
+    overlays.showStatusToast("AI History resume failed: project path unavailable");
+    markUiDirty();
+    return false;
+}
+
+pub fn aiHistoryScanLocalNow() bool {
+    const session = activeAiHistory() orelse return false;
+    const allocator = g_allocator orelse return false;
+    return withAiHistoryScannerHost(allocator, session, .scan, ScanRunner.run);
+}
+
+const AiHistoryHostAction = enum { scan, preview };
+const AiHistoryHostRunner = *const fn (*ai_history_session.Session, ai_history_session.ScannerHost) bool;
+
+const PreviewTranscriptRunner = struct {
+    fn run(session: *ai_history_session.Session, host: ai_history_session.ScannerHost) bool {
+        session.loadSelectedTranscript(host) catch |err| {
+            log.warn("failed to load AI History transcript: {}", .{err});
+            session.transcript_state = .failed;
+            session.transcript_status = "Transcript failed";
+            markUiDirty();
+            return true;
+        };
+        markUiDirty();
+        return true;
+    }
+};
+
+const ScanRunner = struct {
+    fn run(session: *ai_history_session.Session, host: ai_history_session.ScannerHost) bool {
+        const result = session.scanNowReturningResult(host) catch |err| {
+            log.warn("failed to scan AI History: {}", .{err});
+            markUiDirty();
+            return true;
+        };
+        defer ai_history_session.freeScanResult(session.allocator, result);
+        saveAiHistoryMetadataCache(session.allocator, result.cache_update);
+        markUiDirty();
+        return true;
+    }
+};
+
+fn withAiHistoryScannerHost(allocator: std.mem.Allocator, session: *ai_history_session.Session, action: AiHistoryHostAction, runner: AiHistoryHostRunner) bool {
+    switch (session.source.target) {
+        .local => {
+            const home = localHomeForAiHistory(allocator) catch |err| {
+                log.warn("failed to resolve local home for AI History scan: {}", .{err});
+                failAiHistoryHostUnavailable(session, action, "Home unavailable");
+                markUiDirty();
+                return true;
+            };
+            defer allocator.free(home);
+            var parsed_cache: ?std.json.Parsed(ai_history_cache.CacheFile) = null;
+            if (action == .scan) {
+                parsed_cache = ai_history_cache.loadDefault(allocator) catch |err| blk: {
+                    log.warn("failed to load AI History metadata cache: {}", .{err});
+                    break :blk null;
+                };
+            }
+            defer if (parsed_cache) |*cache| cache.deinit();
+            var host_state = ai_history_session.LocalScannerHost{
+                .home = home,
+                .cache = if (parsed_cache) |cache| cache.value else null,
+            };
+            return runner(session, host_state.scannerHost());
+        },
+        .wsl => {
+            var host_state = ai_history_session.WslScannerHost{};
+            return runner(session, host_state.scannerHost());
+        },
+        .ssh => |ssh| {
+            const conn = overlays.aiHistorySshConnection(ssh.profile_name) orelse {
+                failAiHistoryHostUnavailable(session, action, "SSH profile unavailable");
+                markUiDirty();
+                return true;
+            };
+            var host_state = ai_history_session.SshScannerHost{ .conn = conn };
+            return runner(session, host_state.scannerHost());
+        },
+    }
+}
+
+fn saveAiHistoryMetadataCache(allocator: std.mem.Allocator, cache_update: ai_history_session.CacheUpdate) void {
+    if (cache_update.records.len == 0) return;
+    ai_history_cache.saveDefault(allocator, .{ .records = cache_update.records }) catch |err| {
+        log.warn("failed to save AI History metadata cache: {}", .{err});
+    };
+}
+
+fn failAiHistoryHostUnavailable(session: *ai_history_session.Session, action: AiHistoryHostAction, status: []const u8) void {
+    switch (action) {
+        .scan => {
+            session.state = .failed;
+            session.status = status;
+        },
+        .preview => {
+            session.transcript_state = .failed;
+            session.transcript_status = status;
+        },
+    }
+}
+
+pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
+    const session = activeAiHistory() orelse return false;
+    const win = g_window orelse return true;
+    const fb = window_backend.framebufferSize(win);
+    const left = leftPanelsWidth();
+    const right = rightPanelsWidthForWindow(fb.width);
+    const width = @as(f32, @floatFromInt(fb.width)) - left - right;
+    const visible_rows = ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight());
+    const hit = ai_history_renderer.interactionHitTest(
+        session,
+        @floatFromInt(fb.width),
+        @floatFromInt(fb.height),
+        currentTitlebarHeight(),
+        left,
+        width,
+        font.g_titlebar_cell_height,
+        xpos,
+        ypos,
+    );
+    switch (hit) {
+        .none => {},
+        .refresh => {
+            _ = aiHistoryScanLocalNow();
+            return true;
+        },
+        .@"resume" => {
+            _ = resumeAiHistorySelection();
+            markUiDirty();
+            return true;
+        },
+        .row => |visible_index| {
+            session.selectVisibleIndex(visible_index);
+            session.ensureSelectionVisible(visible_rows);
+            markUiDirty();
+            return true;
+        },
+    }
+    markUiDirty();
+    return true;
+}
+
+fn markUiDirty() void {
+    g_force_rebuild = true;
+    g_cells_valid = false;
+}
+
+fn aiHistoryListVisibleRowsForWindow() usize {
+    const win = g_window orelse return 1;
+    const fb = window_backend.framebufferSize(win);
+    return ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight());
+}
+
+fn localHomeForAiHistory(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |value| {
+        if (value.len > 0) return value;
+        allocator.free(value);
+    } else |_| {}
+    if (std.process.getEnvVarOwned(allocator, "HOME")) |value| {
+        if (value.len > 0) return value;
+        allocator.free(value);
+    } else |_| {}
+    return error.NoHomeDirectory;
 }
 
 pub fn exportActiveAiChatMarkdown(mode: ai_chat.MarkdownExportMode) void {
@@ -1098,6 +1406,13 @@ pub fn spawnAiChatTab(
     return true;
 }
 
+pub fn spawnAiHistoryTab(source: ai_history_source.Source) bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.spawnAiHistoryTab(allocator, source)) return false;
+    clearUiStateOnTabChange();
+    return true;
+}
+
 pub fn reopenAiChatTabFromHistorySessionId(session_id: []const u8) bool {
     if (tab.switchToAiTabBySessionId(session_id)) {
         clearUiStateOnTabChange();
@@ -1527,6 +1842,8 @@ fn onPlatformResize(width: i32, height: i32) void {
         if (split_count <= 1) {
             if (active_tab.kind == .ai_chat) {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .ai_history) {
+                renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (activeSurface()) |surface| {
                 // Single surface: simple render path
                 const rend = &surface.surface_renderer;
@@ -2051,6 +2368,10 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
             try appendRemoteAiChatTabJson(allocator, out, tab_state, tab_index);
             continue;
         }
+        if (tab_state.kind == .ai_history) {
+            try appendRemoteAiHistoryTabJson(allocator, out, tab_state, tab_index);
+            continue;
+        }
 
         try out.appendSlice(allocator, "{\"index\":");
         try out.print(allocator, "{d}", .{tab_index});
@@ -2130,6 +2451,12 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
 fn remoteAiSurfaceId(tab_index: usize) [16]u8 {
     var id: [16]u8 = undefined;
     _ = std.fmt.bufPrint(&id, "aichat{d:0>10}", .{tab_index}) catch unreachable;
+    return id;
+}
+
+fn remoteAiHistorySurfaceId(tab_index: usize) [16]u8 {
+    var id: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&id, "aihist{d:0>10}", .{tab_index}) catch unreachable;
     return id;
 }
 
@@ -2239,6 +2566,36 @@ fn appendRemoteAiChatTabJson(
     try out.appendSlice(allocator, ",\"requestStopping\":");
     try out.appendSlice(allocator, if (request_state.stopping) "true" else "false");
     try out.appendSlice(allocator, ",\"x\":0,\"y\":0,\"w\":1,\"h\":1}]}");
+}
+
+fn appendRemoteAiHistoryTabJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    tab_state: *tab.TabState,
+    tab_index: usize,
+) !void {
+    const surface_id = remoteAiHistorySurfaceId(tab_index);
+    const title_text = tab_state.getTitle();
+
+    try out.appendSlice(allocator, "{\"index\":");
+    try out.print(allocator, "{d}", .{tab_index});
+    try out.appendSlice(allocator, ",\"title\":\"");
+    try remote.appendJsonString(out, allocator, title_text);
+    try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
+    try remote.appendJsonString(out, allocator, surface_id[0..]);
+    try out.append(allocator, '"');
+    try appendAgentDetectionJson(allocator, out, null);
+    try out.appendSlice(allocator, ",\"surfaces\":[{\"id\":\"");
+    try remote.appendJsonString(out, allocator, surface_id[0..]);
+    try out.appendSlice(allocator, "\",\"title\":\"");
+    try remote.appendJsonString(out, allocator, title_text);
+    try out.appendSlice(allocator, "\",\"focused\":true");
+    try appendAgentDetectionJson(allocator, out, null);
+    // AI History is read-only in remote layouts. Keep it terminal-style so the
+    // remote client does not show AI Chat composer/input affordances.
+    try out.appendSlice(allocator, ",\"kind\":\"terminal\",\"readOnly\":true,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"AI History\\n");
+    try remote.appendJsonString(out, allocator, title_text);
+    try out.appendSlice(allocator, "\",\"x\":0,\"y\":0,\"w\":1,\"h\":1}]}");
 }
 
 fn handleRemoteAiInputRequest(request: *RemoteAiInputRequest) void {
@@ -4166,7 +4523,7 @@ fn runMainLoop(self: *AppWindow) !void {
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
             syncRemoteLayout(allocator);
             syncImeCaretPosition(win, split_count);
-            if (active_tab.kind != .ai_chat and synchronizedOutputPendingForVisibleSplits(split_count)) {
+            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 std.Thread.sleep(std.time.ns_per_ms);
                 continue;
             }
@@ -4175,6 +4532,8 @@ fn runMainLoop(self: *AppWindow) !void {
             // GL rendering
             if (active_tab.kind == .ai_chat) {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .ai_history) {
+                renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (post_process.g_post_enabled) {
                 // Post-processing path: only render focused surface for now
                 if (activeSurface()) |surface| {
@@ -4380,4 +4739,47 @@ test "appwindow: syncDefaultShellCommandFromConfig refreshes tab default shell" 
     const expected_len = platform_pty_command.resolveShellCommandLine(&expected_buf, test_shell);
     const CommandUnit = @TypeOf(expected_buf[0]);
     try testing.expectEqualSlices(CommandUnit, expected_buf[0..expected_len], tab.getShellCmd());
+}
+
+test "appwindow: ai history content width accounts for right panels" {
+    try std.testing.expectEqual(@as(f32, 700), aiHistoryContentWidth(1000, 200, 100));
+    try std.testing.expectEqual(@as(f32, 0), aiHistoryContentWidth(250, 200, 100));
+}
+
+test "appwindow: remote layout serializes ai_history as non-terminal surface" {
+    const allocator = std.testing.allocator;
+    for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    defer {
+        for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+        tab.g_tab_count = 0;
+        active_tab_state.g_active_tab = 0;
+    }
+
+    var session = @import("ai_history_session.zig").Session.init(allocator, .{
+        .id = "local-history",
+        .name = "Local History",
+        .target = .local,
+    });
+    defer session.deinit();
+    var tab_state = tab.TabState{
+        .kind = .ai_history,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = &session,
+        .copilot_session = null,
+    };
+    tab.g_tabs[0] = &tab_state;
+    tab.g_tab_count = 1;
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+    try buildRemoteLayoutJson(allocator, &out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"kind\":\"terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"kind\":\"ai_chat\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"readOnly\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"surfaces\":[]") == null);
 }

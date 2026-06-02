@@ -25,6 +25,7 @@ pub const SshCommandOptions = struct {
     password_auth: bool = false,
     legacy_algorithms: bool = false,
     proxy_jump: []const u8 = "",
+    remote_command: []const u8 = "",
 };
 
 const HANDLE = windows.HANDLE;
@@ -276,8 +277,24 @@ pub fn wslInteractiveCommand(buf: []u8, cwd: ?[]const u8) ?[]const u8 {
     return buf[0..pos];
 }
 
+pub fn wslShellCommand(buf: []u8, command: []const u8) ?[]const u8 {
+    var pos: usize = 0;
+    if (!appendAscii(buf, &pos, "wsl.exe --exec sh -lc ")) return null;
+    if (!appendCommandLineQuotedArg(buf, &pos, command)) return null;
+    return buf[0..pos];
+}
+
 pub fn wslExecArgv(command: []const u8) [5][]const u8 {
     return .{ "wsl.exe", "--exec", "sh", "-lc", command };
+}
+
+pub fn localShellInitialCommand(buf: []u8, current_shell: CommandLine, command: []const u8) ?[]const u8 {
+    if (!shellCommandLooksLikeConfiguredLocalShell(current_shell)) return null;
+    var pos: usize = 0;
+    if (!appendAscii(buf, &pos, configuredLocalShellCommandForShell(current_shell))) return null;
+    if (!appendAscii(buf, &pos, " -NoLogo -NoExit -Command ")) return null;
+    if (!appendCommandLineQuotedArg(buf, &pos, command)) return null;
+    return buf[0..pos];
 }
 
 pub fn sshLauncherDetail() []const u8 {
@@ -313,10 +330,16 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
     else
         "";
 
-    return if (options.port.len > 0)
+    const base = (if (options.port.len > 0)
         std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}-p {s} {s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.port, options.user, options.host }) catch null
     else
-        std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}{s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.user, options.host }) catch null;
+        std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}{s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.user, options.host }) catch null) orelse return null;
+    var pos = base.len;
+    if (options.remote_command.len > 0) {
+        if (!appendAscii(buf, &pos, " ")) return null;
+        if (!appendCommandLineQuotedArg(buf, &pos, options.remote_command)) return null;
+    }
+    return buf[0..pos];
 }
 
 pub fn launchKindForCommand(command: CommandLine) LaunchKind {

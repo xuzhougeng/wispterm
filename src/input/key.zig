@@ -19,6 +19,7 @@ pub const Key = enum {
     key_a,
     key_c,
     key_e,
+    key_h,
     key_k,
     key_l,
     key_u,

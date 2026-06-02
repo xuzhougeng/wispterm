@@ -25,6 +25,7 @@ pub const SshCommandOptions = struct {
     password_auth: bool = false,
     legacy_algorithms: bool = false,
     proxy_jump: []const u8 = "",
+    remote_command: []const u8 = "",
 };
 
 pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usize {
@@ -156,8 +157,43 @@ pub fn wslInteractiveCommand(buf: []u8, cwd: ?[]const u8) ?[]const u8 {
     return null;
 }
 
+pub fn wslShellCommand(buf: []u8, command: []const u8) ?[]const u8 {
+    _ = buf;
+    _ = command;
+    return null;
+}
+
 pub fn wslExecArgv(command: []const u8) [5][]const u8 {
     return .{ "sh", "-lc", command, "", "" };
+}
+
+fn appendAscii(buf: []u8, pos: *usize, text: []const u8) bool {
+    if (pos.* + text.len > buf.len) return false;
+    @memcpy(buf[pos.*..][0..text.len], text);
+    pos.* += text.len;
+    return true;
+}
+
+fn appendPosixSingleQuotedArg(buf: []u8, pos: *usize, value: []const u8) bool {
+    if (!appendAscii(buf, pos, "'")) return false;
+    for (value) |ch| {
+        if (ch == '\'') {
+            if (!appendAscii(buf, pos, "'\\''")) return false;
+        } else {
+            if (pos.* >= buf.len) return false;
+            buf[pos.*] = ch;
+            pos.* += 1;
+        }
+    }
+    return appendAscii(buf, pos, "'");
+}
+
+pub fn localShellInitialCommand(buf: []u8, current_shell: CommandLine, command: []const u8) ?[]const u8 {
+    var pos: usize = 0;
+    if (!appendAscii(buf, &pos, configuredLocalShellCommandForShell(current_shell))) return null;
+    if (!appendAscii(buf, &pos, " -lc ")) return null;
+    if (!appendPosixSingleQuotedArg(buf, &pos, command)) return null;
+    return buf[0..pos];
 }
 
 pub fn sshLauncherDetail() []const u8 {
@@ -183,10 +219,16 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
     else
         "";
 
-    return if (options.port.len > 0)
+    const base = (if (options.port.len > 0)
         std.fmt.bufPrint(buf, "ssh -tt {s}-p {s} {s}@{s}", .{ proxy, options.port, options.user, options.host }) catch null
     else
-        std.fmt.bufPrint(buf, "ssh -tt {s}{s}@{s}", .{ proxy, options.user, options.host }) catch null;
+        std.fmt.bufPrint(buf, "ssh -tt {s}{s}@{s}", .{ proxy, options.user, options.host }) catch null) orelse return null;
+    var pos = base.len;
+    if (options.remote_command.len > 0) {
+        if (!appendAscii(buf, &pos, " ")) return null;
+        if (!appendPosixSingleQuotedArg(buf, &pos, options.remote_command)) return null;
+    }
+    return buf[0..pos];
 }
 
 pub fn launchKindForCommand(command: CommandLine) LaunchKind {

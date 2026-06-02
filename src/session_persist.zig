@@ -52,6 +52,12 @@ pub const NodeSnap = union(enum) {
     };
 };
 
+pub const AiHistorySnap = struct {
+    source_id: []const u8,
+    target_kind: []const u8,
+    target_name: []const u8 = "",
+};
+
 pub const TabSnap = struct {
     title_override: ?[]const u8 = null,
     focused_leaf: u32 = 0,
@@ -62,6 +68,7 @@ pub const TabSnap = struct {
     // agent history store, not in this snapshot), and `tree` is an ignored
     // placeholder. Absent in older snapshots → null → ordinary terminal tab.
     ai_session_id: ?[]const u8 = null,
+    ai_history: ?AiHistorySnap = null,
 };
 
 pub const Session = struct {
@@ -231,6 +238,33 @@ test "session_persist: AI chat tab round-trips its ai_session_id" {
     try std.testing.expectEqualStrings("sess-abc-123", parsed.value.tabs[0].ai_session_id.?);
 }
 
+test "session_persist: AI history tab round-trips its source snapshot" {
+    const allocator = std.testing.allocator;
+
+    const placeholder = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    const tabs = [_]TabSnap{.{
+        .tree = placeholder,
+        .ai_history = .{
+            .source_id = "local-codex",
+            .target_kind = "local",
+            .target_name = "Local",
+        },
+    }};
+    const original: Session = .{ .active_tab = 0, .tabs = @constCast(&tabs) };
+
+    const json = try dumpSessionToString(allocator, original);
+    defer allocator.free(json);
+
+    var parsed = try loadSessionFromString(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.tabs.len);
+    try std.testing.expect(parsed.value.tabs[0].ai_history != null);
+    const history = parsed.value.tabs[0].ai_history.?;
+    try std.testing.expectEqualStrings("local-codex", history.source_id);
+    try std.testing.expectEqualStrings("local", history.target_kind);
+}
+
 test "session_persist: tab without ai_session_id defaults to null (back-compat)" {
     const allocator = std.testing.allocator;
 
@@ -246,6 +280,19 @@ test "session_persist: tab without ai_session_id defaults to null (back-compat)"
 
     try std.testing.expectEqual(@as(usize, 1), parsed.value.tabs.len);
     try std.testing.expect(parsed.value.tabs[0].ai_session_id == null);
+}
+
+test "session_persist: old tab without ai_history defaults to null" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{"version":1,"active_tab":0,"tabs":[{"tree":{"leaf":{"surface":{"local_shell":{}}}}}]}
+    ;
+    var parsed = try loadSessionFromString(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.tabs.len);
+    try std.testing.expect(parsed.value.tabs[0].ai_history == null);
 }
 
 test "session_persist: round-trip nested split with SSH leaf" {

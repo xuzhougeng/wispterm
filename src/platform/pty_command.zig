@@ -102,8 +102,8 @@ pub const session_launcher_detail = sessionLauncherDetailForOs(builtin.os.tag);
 
 pub fn sessionLauncherDetailForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
-        .windows => "Choose PowerShell, SSH, WSL, or AI Agent",
-        .unsupported => "Choose Shell, SSH, or AI Agent",
+        .windows => "Choose PowerShell, SSH, WSL, AI Agent, or AI History",
+        .unsupported => "Choose Shell, SSH, AI Agent, or AI History",
     };
 }
 
@@ -115,8 +115,8 @@ pub const session_launcher_row_count = sessionLauncherRowCountForOs(builtin.os.t
 
 pub fn sessionLauncherRowCountForOs(os_tag: std.Target.Os.Tag) usize {
     return switch (backendForOs(os_tag)) {
-        .windows => 4,
-        .unsupported => 3,
+        .windows => 5,
+        .unsupported => 4,
     };
 }
 
@@ -130,6 +130,19 @@ pub fn sessionLauncherAiAgentRowForOs(os_tag: std.Target.Os.Tag) usize {
     return switch (backendForOs(os_tag)) {
         .windows => 3,
         .unsupported => 2,
+    };
+}
+
+pub fn sessionLauncherAiHistoryRow() usize {
+    return session_launcher_ai_history_row;
+}
+
+pub const session_launcher_ai_history_row = sessionLauncherAiHistoryRowForOs(builtin.os.tag);
+
+pub fn sessionLauncherAiHistoryRowForOs(os_tag: std.Target.Os.Tag) usize {
+    return switch (backendForOs(os_tag)) {
+        .windows => 4,
+        .unsupported => 3,
     };
 }
 
@@ -345,8 +358,16 @@ pub fn wslInteractiveCommand(buf: []u8, cwd: ?[]const u8) ?[]const u8 {
     return impl.wslInteractiveCommand(buf, cwd);
 }
 
+pub fn wslShellCommand(buf: []u8, command: []const u8) ?[]const u8 {
+    return impl.wslShellCommand(buf, command);
+}
+
 pub fn wslExecArgv(command: []const u8) [5][]const u8 {
     return impl.wslExecArgv(command);
+}
+
+pub fn localShellInitialCommand(buf: []u8, current_shell: CommandLine, command: []const u8) ?[]const u8 {
+    return impl.localShellInitialCommand(buf, current_shell, command);
 }
 
 pub fn sshLauncherDetail() []const u8 {
@@ -597,16 +618,19 @@ test "platform pty command maps native shell titles to friendly display labels" 
 }
 
 test "platform pty command exposes session launcher layout by target OS" {
-    try std.testing.expectEqual(@as(usize, 4), sessionLauncherRowCountForOs(.windows));
-    try std.testing.expectEqual(@as(usize, 3), sessionLauncherRowCountForOs(.linux));
-    try std.testing.expectEqual(@as(usize, 3), sessionLauncherRowCountForOs(.macos));
+    try std.testing.expectEqual(@as(usize, 5), sessionLauncherRowCountForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 4), sessionLauncherRowCountForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 4), sessionLauncherRowCountForOs(.macos));
 
     try std.testing.expectEqual(@as(usize, 3), sessionLauncherAiAgentRowForOs(.windows));
     try std.testing.expectEqual(@as(usize, 2), sessionLauncherAiAgentRowForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 4), sessionLauncherAiHistoryRowForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 3), sessionLauncherAiHistoryRowForOs(.linux));
     try std.testing.expectEqual(@as(?usize, 2), sessionLauncherWslRowForOs(.windows));
     try std.testing.expectEqual(@as(?usize, null), sessionLauncherWslRowForOs(.linux));
 
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.windows), "WSL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.windows), "AI History") != null);
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.linux), "WSL") == null);
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.macos), "Shell") != null);
 
@@ -619,6 +643,50 @@ test "platform pty command exposes session launcher layout by target OS" {
 test "platform pty command exposes OpenSSH helper executable names" {
     try std.testing.expect(sshExecutableName().len > 0);
     try std.testing.expect(scpExecutableName().len > 0);
+}
+
+test "platform pty command builds shell command lines for AI History resume" {
+    var buf: [1024]u8 = undefined;
+    const checked_resume = "test -d '/home/me/project' && cd '/home/me/project' && codex resume abc";
+
+    const current_shell_owned = try allocCommandLineFromUtf8(std.testing.allocator, "pwsh.exe");
+    defer freeCommandLine(std.testing.allocator, current_shell_owned);
+    const local_command = localShellInitialCommand(&buf, commandLineFromOwned(current_shell_owned), checked_resume) orelse return error.ExpectedCommand;
+    switch (backendForOs(builtin.os.tag)) {
+        .windows => {
+            try std.testing.expect(std.mem.startsWith(u8, local_command, "pwsh.exe -NoLogo -NoExit -Command "));
+            try std.testing.expect(std.mem.indexOf(u8, local_command, checked_resume) != null);
+        },
+        .unsupported => {
+            try std.testing.expect(std.mem.indexOf(u8, local_command, " -lc ") != null);
+            try std.testing.expect(std.mem.indexOf(u8, local_command, "codex resume abc") != null);
+        },
+    }
+
+    if (builtin.os.tag == .windows) {
+        const cmd_owned = try allocCommandLineFromUtf8(std.testing.allocator, "cmd.exe");
+        defer freeCommandLine(std.testing.allocator, cmd_owned);
+        try std.testing.expect(localShellInitialCommand(&buf, commandLineFromOwned(cmd_owned), checked_resume) == null);
+    }
+
+    const wsl_command = wslShellCommand(&buf, checked_resume);
+    switch (backendForOs(builtin.os.tag)) {
+        .windows => {
+            try std.testing.expect(wsl_command != null);
+            try std.testing.expect(std.mem.startsWith(u8, wsl_command.?, "wsl.exe --exec sh -lc "));
+            try std.testing.expect(std.mem.indexOf(u8, wsl_command.?, checked_resume) != null);
+        },
+        .unsupported => try std.testing.expect(wsl_command == null),
+    }
+
+    const ssh_command = sshInteractiveCommand(&buf, .{
+        .user = "user",
+        .host = "example.test",
+        .remote_command = checked_resume,
+    }) orelse return error.ExpectedCommand;
+    try std.testing.expect(std.mem.indexOf(u8, ssh_command, "ssh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ssh_command, "user@example.test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ssh_command, "codex resume abc") != null);
 }
 
 test "platform pty command selects backend by target OS" {

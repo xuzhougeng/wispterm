@@ -163,6 +163,18 @@ pub fn agentHistoryPathFromEnvForOs(
     return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "agent-history.json");
 }
 
+pub fn aiHistoryCachePath(allocator: std.mem.Allocator) ![]const u8 {
+    return pathInConfigDir(allocator, "ai_history_cache.json");
+}
+
+pub fn aiHistoryCachePathFromEnvForOs(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    env: Env,
+) ![]const u8 {
+    return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "ai_history_cache.json");
+}
+
 pub fn skillsDir(allocator: std.mem.Allocator) ![]const u8 {
     return pathInConfigDir(allocator, "skills");
 }
@@ -478,6 +490,12 @@ test "platform dirs expose app data paths for shared features" {
     const expected_history = try std.fs.path.join(allocator, &.{ "/home/alice", ".config", app_dir_name, "agent-history.json" });
     defer allocator.free(expected_history);
     try std.testing.expectEqualStrings(expected_history, history);
+
+    const ai_history_cache = try aiHistoryCachePathFromEnvForOs(allocator, .linux, env);
+    defer allocator.free(ai_history_cache);
+    const expected_ai_history_cache = try std.fs.path.join(allocator, &.{ "/home/alice", ".config", app_dir_name, "ai_history_cache.json" });
+    defer allocator.free(expected_ai_history_cache);
+    try std.testing.expectEqualStrings(expected_ai_history_cache, ai_history_cache);
 }
 
 test "platform dirs expose app skill roots" {

@@ -18,6 +18,7 @@ const Config = @import("../config.zig");
 const themes_embed = @import("../themes.zig");
 const input_key = @import("../input/key.zig");
 const ssh_prompt = @import("../ssh_prompt.zig");
+const ssh_connection = @import("../ssh_connection.zig");
 const app_metadata = @import("../app_metadata.zig");
 const command_center_state = @import("../command_center_state.zig");
 const command_palette_model = @import("../command_palette_model.zig");
@@ -1452,6 +1453,10 @@ const SessionAction = enum {
     ssh,
     wsl,
     ai_chat,
+    ai_history,
+    ai_history_local,
+    ai_history_wsl,
+    ai_history_ssh,
     connect_selected,
     new_ssh,
     edit_selected,
@@ -1471,6 +1476,7 @@ const SshListMode = enum {
     manage,
     edit_select,
     delete_select,
+    ai_history_select,
 };
 
 const AiListMode = enum {
@@ -1478,6 +1484,8 @@ const AiListMode = enum {
     edit_select,
     delete_select,
 };
+
+const AiHistorySourceChoice = enum { local, wsl, ssh };
 
 const SshProfile = profile_codec.SshProfile;
 pub const AgentSshConnectResult = union(enum) {
@@ -1510,6 +1518,8 @@ threadlocal var g_ssh_list_visible: bool = false;
 threadlocal var g_ssh_form_visible: bool = false;
 threadlocal var g_ai_list_visible: bool = false;
 threadlocal var g_ai_form_visible: bool = false;
+threadlocal var g_ai_history_source_visible: bool = false;
+threadlocal var g_ai_history_source_selected: usize = 0;
 threadlocal var g_ssh_focus: usize = @intFromEnum(SshField.name);
 threadlocal var g_ssh_bufs: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined;
 threadlocal var g_ssh_lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT;
@@ -1565,6 +1575,7 @@ fn commandCenterStateSnapshot() command_center_state.State {
         .ssh_form_visible = g_ssh_form_visible,
         .ai_list_visible = g_ai_list_visible,
         .ai_form_visible = g_ai_form_visible,
+        .ai_history_source_visible = g_ai_history_source_visible,
         .settings_visible = g_settings_visible,
     };
 }
@@ -1590,6 +1601,7 @@ fn commandCenterStateApply(state: command_center_state.State) void {
     g_ssh_form_visible = state.ssh_form_visible;
     g_ai_list_visible = state.ai_list_visible;
     g_ai_form_visible = state.ai_form_visible;
+    g_ai_history_source_visible = state.ai_history_source_visible;
     g_settings_visible = state.settings_visible;
 }
 
@@ -1599,6 +1611,7 @@ pub fn sessionLauncherOpen() void {
     commandCenterStateCommit(state);
     g_ssh_list_mode = .manage;
     g_ai_list_mode = .manage;
+    g_ai_history_source_selected = 0;
 }
 
 pub fn sessionLauncherClose() void {
@@ -1607,6 +1620,7 @@ pub fn sessionLauncherClose() void {
     commandCenterStateCommit(state);
     g_ssh_list_mode = .manage;
     g_ai_list_mode = .manage;
+    g_ai_history_source_selected = 0;
 }
 
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
@@ -1648,10 +1662,50 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
     return false;
 }
 
+fn aiHistorySourceSshRow() usize {
+    return if (platform_pty_command.sessionLauncherWslRow() != null) 2 else 1;
+}
+
+fn aiHistorySourceCancelRow() usize {
+    return aiHistorySourceSshRow() + 1;
+}
+
+fn aiHistorySourceRowCount() usize {
+    return aiHistorySourceCancelRow() + 1;
+}
+
+fn aiHistorySourceChoiceForRow(row: usize) ?AiHistorySourceChoice {
+    if (row == 0) return .local;
+    if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
+        if (row == wsl_row - 1) return .wsl;
+    }
+    if (row == aiHistorySourceSshRow()) return .ssh;
+    return null;
+}
+
+fn handleAiHistorySourceKey(ev: input_key.KeyEvent) void {
+    const row_count = aiHistorySourceRowCount();
+    switch (ev.key) {
+        .arrow_down, .tab => g_ai_history_source_selected = (g_ai_history_source_selected + 1) % row_count,
+        .arrow_up => g_ai_history_source_selected = if (g_ai_history_source_selected == 0) row_count - 1 else g_ai_history_source_selected - 1,
+        .enter => runAiHistorySourceRow(g_ai_history_source_selected),
+        .key_l => runAiHistorySourceRow(0),
+        .key_w => {
+            if (platform_pty_command.sessionLauncherWslRow() != null) runAiHistorySourceRow(1);
+        },
+        .key_s => runAiHistorySourceRow(aiHistorySourceSshRow()),
+        else => {},
+    }
+}
+
 pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
     if (ev.key == .escape) {
         if (g_ssh_list_visible and g_ssh_list_filter_len > 0) {
             clearSshListFilter();
+            return;
+        }
+        if (g_ssh_list_visible and g_ssh_list_mode == .ai_history_select) {
+            openAiHistorySourcePicker();
             return;
         }
         cancelAiFormOrLauncher();
@@ -1659,6 +1713,10 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
     }
 
     if (!g_ssh_form_visible and !g_ai_form_visible) {
+        if (g_ai_history_source_visible) {
+            handleAiHistorySourceKey(ev);
+            return;
+        }
         if (g_ssh_list_visible) {
             handleSshListKey(ev);
             return;
@@ -1680,11 +1738,17 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
                 runSessionLauncherRow(g_session_launcher_selected);
             },
             .key_w => {
-                g_session_launcher_selected = 2;
-                runSessionLauncherRow(g_session_launcher_selected);
+                if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
+                    g_session_launcher_selected = wsl_row;
+                    runSessionLauncherRow(g_session_launcher_selected);
+                }
             },
             .key_a => {
-                g_session_launcher_selected = 3;
+                g_session_launcher_selected = command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT;
+                runSessionLauncherRow(g_session_launcher_selected);
+            },
+            .key_h => {
+                g_session_launcher_selected = command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY;
                 runSessionLauncherRow(g_session_launcher_selected);
             },
             else => {},
@@ -1737,6 +1801,10 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
         .ssh => openSshList(),
         .wsl => openWslSession(),
         .ai_chat => openDefaultAiSession(),
+        .ai_history => openAiHistorySourcePicker(),
+        .ai_history_local => openLocalAiHistorySession(),
+        .ai_history_wsl => openWslAiHistorySession(),
+        .ai_history_ssh => openAiHistorySshPicker(),
         .connect_selected => runSshListRow(g_ssh_list_selected),
         .new_ssh => openSshFormNew(),
         .edit_selected => openSshEditPicker(),
@@ -1766,6 +1834,63 @@ fn openWslSession() void {
     _ = AppWindow.spawnTabWithCommandUtf8(command);
 }
 
+fn openAiHistorySourcePicker() void {
+    g_session_launcher_visible = false;
+    g_ssh_list_visible = false;
+    g_ssh_form_visible = false;
+    g_ai_list_visible = false;
+    g_ai_form_visible = false;
+    g_ai_history_source_visible = true;
+    g_ai_history_source_selected = 0;
+}
+
+fn openLocalAiHistorySession() void {
+    sessionLauncherClose();
+    _ = AppWindow.spawnAiHistoryTab(.{
+        .id = "local",
+        .name = "Local",
+        .target = .local,
+    });
+}
+
+fn openWslAiHistorySession() void {
+    sessionLauncherClose();
+    _ = AppWindow.spawnAiHistoryTab(.{
+        .id = "wsl-default",
+        .name = "WSL",
+        .target = .{ .wsl = .{} },
+    });
+}
+
+fn openAiHistorySshPicker() void {
+    loadSshProfiles();
+    openSshProfilePicker(.ai_history_select);
+}
+
+fn openSshAiHistorySession(profile_idx: usize) void {
+    if (profile_idx >= g_ssh_profile_count) return;
+    const profile = &g_ssh_profiles[profile_idx];
+    const name = profileField(profile, .name);
+    sessionLauncherClose();
+    _ = AppWindow.spawnAiHistoryTab(.{
+        .id = name,
+        .name = name,
+        .target = .{ .ssh = .{ .profile_name = name } },
+    });
+}
+
+fn runAiHistorySourceRow(row: usize) void {
+    if (aiHistorySourceChoiceForRow(row)) |choice| {
+        switch (choice) {
+            .local => openLocalAiHistorySession(),
+            .wsl => openWslAiHistorySession(),
+            .ssh => openAiHistorySshPicker(),
+        }
+    } else {
+        sessionLauncherClose();
+    }
+}
+
 fn runSessionLauncherRow(row: usize) void {
     if (row == 0) {
         openLocalShellSession();
@@ -1779,12 +1904,15 @@ fn runSessionLauncherRow(row: usize) void {
     }
     if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT) {
         openDefaultAiSession();
+    } else if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY) {
+        openAiHistorySourcePicker();
     }
 }
 
 fn openSshList() void {
     loadSshProfiles();
     g_session_launcher_visible = false;
+    g_ai_history_source_visible = false;
     g_ssh_list_visible = true;
     g_ssh_form_visible = false;
     g_ssh_list_mode = .manage;
@@ -1801,8 +1929,9 @@ fn openSshDeletePicker() void {
 }
 
 fn openSshProfilePicker(mode: SshListMode) void {
-    if (g_ssh_profile_count == 0) return;
+    if (g_ssh_profile_count == 0 and mode != .ai_history_select) return;
     g_session_launcher_visible = false;
+    g_ai_history_source_visible = false;
     g_ssh_list_visible = true;
     g_ssh_form_visible = false;
     g_ssh_list_mode = mode;
@@ -1830,6 +1959,7 @@ fn openSshFormEdit(index: usize) void {
 fn openSshForm() void {
     g_ssh_list_visible = false;
     g_session_launcher_visible = false;
+    g_ai_history_source_visible = false;
     g_ssh_form_visible = true;
     g_ssh_focus = @intFromEnum(SshField.name);
     if (g_ssh_lens[@intFromEnum(SshField.port)] == 0) {
@@ -1860,7 +1990,7 @@ fn handleSshListKey(ev: input_key.KeyEvent) void {
 fn sshListRowCount() usize {
     return switch (g_ssh_list_mode) {
         .manage => sshVisibleProfileCount() + 4,
-        .edit_select, .delete_select => sshVisibleProfileCount() + 1,
+        .edit_select, .delete_select, .ai_history_select => sshVisibleProfileCount() + 1,
     };
 }
 
@@ -1965,6 +2095,42 @@ pub fn agentConnectSshProfile(identifier: []const u8) AgentSshConnectResult {
     const idx = findSshProfileIndex(identifier) orelse return .not_found;
     const surface = connectSshProfileReturningSurface(idx) orelse return .failed;
     return .{ .connected = surface };
+}
+
+pub fn aiHistoryConnectSshProfile(identifier: []const u8, remote_command: []const u8) AgentSshConnectResult {
+    const idx = findSshProfileIndex(identifier) orelse return .not_found;
+    const surface = connectSshProfileReturningSurfaceWithCommand(idx, remote_command) orelse return .failed;
+    return .{ .connected = surface };
+}
+
+pub fn aiHistorySshConnection(identifier: []const u8) ?ssh_connection.SshConnection {
+    const idx = findSshProfileIndex(identifier) orelse return null;
+    if (idx >= g_ssh_profile_count) return null;
+    const profile = &g_ssh_profiles[idx];
+    const ip = profileField(profile, .ip);
+    const user = profileField(profile, .user);
+    const port = profileField(profile, .port);
+    const password = profileField(profile, .password);
+    const proxy_jump = profileField(profile, .proxy_jump);
+    if (ip.len == 0 or user.len == 0) return null;
+    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
+    if (port.len > 0 and !isPortTokenSafe(port)) return null;
+    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return null;
+
+    var conn: ssh_connection.SshConnection = .{};
+    conn.user_len = @min(user.len, conn.user_buf.len);
+    conn.host_len = @min(ip.len, conn.host_buf.len);
+    conn.port_len = @min(port.len, conn.port_buf.len);
+    conn.password_len = @min(password.len, conn.password_buf.len);
+    conn.proxy_jump_len = @min(proxy_jump.len, conn.proxy_jump_buf.len);
+    @memcpy(conn.user_buf[0..conn.user_len], user[0..conn.user_len]);
+    @memcpy(conn.host_buf[0..conn.host_len], ip[0..conn.host_len]);
+    @memcpy(conn.port_buf[0..conn.port_len], port[0..conn.port_len]);
+    @memcpy(conn.password_buf[0..conn.password_len], password[0..conn.password_len]);
+    @memcpy(conn.proxy_jump_buf[0..conn.proxy_jump_len], proxy_jump[0..conn.proxy_jump_len]);
+    conn.password_auth = password.len > 0;
+    conn.legacy_algorithms = AppWindow.g_ssh_legacy_algorithms;
+    return conn;
 }
 
 const copySshProfileField = profile_codec.copySshProfileField;
@@ -2072,6 +2238,14 @@ fn runSshListRow(row: usize) void {
                 openSshList();
             }
         },
+        .ai_history_select => {
+            if (row < visible_profile_count) {
+                const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
+                openSshAiHistorySession(profile_idx);
+            } else {
+                openAiHistorySourcePicker();
+            }
+        },
     }
 }
 
@@ -2149,6 +2323,10 @@ fn connectSshProfile(idx: usize) void {
 }
 
 fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
+    return connectSshProfileReturningSurfaceWithCommand(idx, "");
+}
+
+fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []const u8) ?*Surface {
     if (idx >= g_ssh_profile_count) return null;
     const profile = &g_ssh_profiles[idx];
     const ip = profileField(profile, .ip);
@@ -2162,7 +2340,7 @@ fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
     if (port.len > 0 and !isPortTokenSafe(port)) return null;
     if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return null;
 
-    var command_buf: [512]u8 = undefined;
+    var command_buf: [4096]u8 = undefined;
     const command = platform_pty_command.sshInteractiveCommand(command_buf[0..], .{
         .user = user,
         .host = ip,
@@ -2170,6 +2348,7 @@ fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
         .password_auth = password.len > 0,
         .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
         .proxy_jump = proxy_jump,
+        .remote_command = remote_command,
     }) orelse return null;
 
     sessionLauncherClose();
@@ -2318,6 +2497,7 @@ fn openAiList() void {
     g_session_launcher_visible = false;
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
+    g_ai_history_source_visible = false;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
     g_ai_list_mode = .manage;
@@ -2949,6 +3129,7 @@ fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
 }
 
 fn sessionLauncherTitle() []const u8 {
+    if (g_ai_history_source_visible) return "AI History";
     if (g_ai_form_visible) {
         return i18n.s().sl_ai_agent;
     }
@@ -2965,12 +3146,14 @@ fn sessionLauncherTitle() []const u8 {
             .manage => i18n.s().sl_ssh_servers,
             .edit_select => i18n.s().sl_edit_ssh_server,
             .delete_select => i18n.s().sl_delete_ssh_server,
+            .ai_history_select => "AI History SSH Profile",
         };
     }
     return i18n.s().sl_new_session;
 }
 
 fn sessionLauncherHint() []const u8 {
+    if (g_ai_history_source_visible) return "Choose a source";
     if (g_ai_form_visible) {
         return i18n.s().sl_hint_ai_form;
     }
@@ -2988,6 +3171,7 @@ fn sessionLauncherHint() []const u8 {
             .manage => if (has_filter) i18n.s().sl_hint_ssh_filter_edits else i18n.s().sl_hint_ssh_filter_manage,
             .edit_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_edit else i18n.s().sl_hint_choose_server_edit,
             .delete_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_delete else i18n.s().sl_hint_choose_server_delete,
+            .ai_history_select => if (has_filter) "Filter profiles" else "Choose a profile or go back",
         };
     }
     return i18n.s().sl_hint_main;
@@ -3080,7 +3264,20 @@ fn sessionDesiredBoxWidth() f32 {
             .edit_select, .delete_select => {
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_v_manage));
             },
+            .ai_history_select => {
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, "AI History"));
+            },
         }
+        return desired;
+    }
+
+    if (g_ai_history_source_visible) {
+        desired = @max(desired, sessionTwoColumnWidth("Local", "This computer"));
+        if (platform_pty_command.sessionLauncherWslRow() != null) {
+            desired = @max(desired, sessionTwoColumnWidth("WSL", "Default distro"));
+        }
+        desired = @max(desired, sessionTwoColumnWidth("SSH Profile...", "Choose server"));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_cancel, "Esc"));
         return desired;
     }
 
@@ -3090,6 +3287,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("WSL", platform_pty_command.wslLauncherDetail()));
     }
     desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_agent, defaultAiModeLabel()));
+    desired = @max(desired, sessionTwoColumnWidth("AI History", "Browse Codex / Claude Code"));
     return desired;
 }
 
@@ -3105,6 +3303,8 @@ fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) Session
         AI_FIELD_COUNT + 3
     else if (g_ai_list_visible)
         aiListRowCount()
+    else if (g_ai_history_source_visible)
+        aiHistorySourceRowCount()
     else if (g_ssh_form_visible)
         SSH_FIELD_COUNT + 3
     else if (g_ssh_list_visible)
@@ -3132,6 +3332,16 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     if (x < layout.box_x or x > layout.box_x + layout.box_w) return null;
     if (y < layout.first_row_top_px) return null;
     const row: usize = @intFromFloat(@floor((y - layout.first_row_top_px) / layout.row_h));
+
+    if (g_ai_history_source_visible) {
+        if (row >= aiHistorySourceRowCount()) return null;
+        g_ai_history_source_selected = row;
+        return switch (aiHistorySourceChoiceForRow(row) orelse return .cancel) {
+            .local => .ai_history_local,
+            .wsl => .ai_history_wsl,
+            .ssh => .ai_history_ssh,
+        };
+    }
 
     if (g_ssh_list_visible) {
         if (row >= sshListRowCount()) return null;
@@ -3168,6 +3378,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
             if (row == wsl_row) return .wsl;
         }
         if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT) return .ai_chat;
+        if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY) return .ai_history;
         return null;
     }
 
@@ -3312,6 +3523,19 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderTitlebarTextStrongLimited(hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
 
     if (!g_ssh_form_visible and !g_ai_form_visible) {
+        if (g_ai_history_source_visible) {
+            var row: usize = 0;
+            renderSessionRow(layout, window_height, row, "Local", "This computer", g_ai_history_source_selected == row);
+            row += 1;
+            if (platform_pty_command.sessionLauncherWslRow() != null) {
+                renderSessionRow(layout, window_height, row, "WSL", "Default distro", g_ai_history_source_selected == row);
+                row += 1;
+            }
+            renderSessionRow(layout, window_height, row, "SSH Profile...", "Choose server", g_ai_history_source_selected == row);
+            row += 1;
+            renderSessionRow(layout, window_height, row, i18n.s().sl_cancel, "Esc", g_ai_history_source_selected == row);
+            return;
+        }
         if (g_ai_list_visible) {
             var row: usize = 0;
             while (row < g_ai_profile_count) : (row += 1) {
@@ -3355,6 +3579,9 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
                 .edit_select, .delete_select => {
                     renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, g_ssh_list_selected == row);
                 },
+                .ai_history_select => {
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, "AI History", g_ssh_list_selected == row);
+                },
             }
             return;
         }
@@ -3369,6 +3596,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             row += 1;
         }
         renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT, i18n.s().sl_ai_agent, defaultAiModeLabel(), g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT);
+        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY, "AI History", "Browse Codex / Claude Code", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY);
         return;
     }
 

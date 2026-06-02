@@ -97,6 +97,7 @@ pub const NewAgentLaunchAction = enum {
 
 pub const SESSION_LAUNCHER_ROW_COUNT: usize = platform_pty_command.session_launcher_row_count;
 pub const SESSION_LAUNCHER_ROW_AI_AGENT: usize = platform_pty_command.session_launcher_ai_agent_row;
+pub const SESSION_LAUNCHER_ROW_AI_HISTORY: usize = platform_pty_command.session_launcher_ai_history_row;
 
 pub const State = struct {
     command_palette_visible: bool = false,
@@ -111,10 +112,11 @@ pub const State = struct {
     ssh_form_visible: bool = false,
     ai_list_visible: bool = false,
     ai_form_visible: bool = false,
+    ai_history_source_visible: bool = false,
     settings_visible: bool = false,
 
     pub fn sessionLauncherVisible(self: *const State) bool {
-        return self.session_launcher_visible or self.ssh_list_visible or self.ssh_form_visible or self.ai_list_visible or self.ai_form_visible;
+        return self.session_launcher_visible or self.ssh_list_visible or self.ssh_form_visible or self.ai_list_visible or self.ai_form_visible or self.ai_history_source_visible;
     }
 
     pub fn commandPaletteIsHistoryMode(self: *const State) bool {
@@ -155,6 +157,7 @@ pub const State = struct {
         self.ssh_form_visible = false;
         self.ai_list_visible = false;
         self.ai_form_visible = false;
+        self.ai_history_source_visible = false;
     }
 
     pub fn commandPaletteLeaveAgentHistory(self: *State) void {
@@ -210,6 +213,7 @@ pub const State = struct {
         self.ssh_form_visible = false;
         self.ai_list_visible = false;
         self.ai_form_visible = false;
+        self.ai_history_source_visible = false;
         self.command_palette_visible = false;
         self.settings_visible = false;
         self.startup_shortcuts_visible = false;
@@ -221,6 +225,7 @@ pub const State = struct {
         self.ssh_form_visible = false;
         self.ai_list_visible = false;
         self.ai_form_visible = false;
+        self.ai_history_source_visible = false;
     }
 
     pub fn settingsPageOpen(self: *State) void {

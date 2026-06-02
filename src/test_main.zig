@@ -469,6 +469,12 @@ comptime {
     {
         @compileError("renderer/overlays.zig must get optional WSL session launcher layout from platform/pty_command.zig");
     }
+    if (std.mem.indexOf(u8, overlays_source, ".codex") != null or
+        std.mem.indexOf(u8, overlays_source, ".claude") != null or
+        std.mem.indexOf(u8, overlays_source, "parseMetadata") != null)
+    {
+        @compileError("renderer/overlays.zig must only launch AI History sources; provider scanning belongs in ai_history modules");
+    }
 
     const titlebar_source = @embedFile("renderer/titlebar.zig");
     if (std.mem.indexOf(u8, titlebar_source, "Windows Terminal-style caption button") != null or
@@ -605,6 +611,14 @@ comptime {
     _ = @import("ai_chat_composer_layout.zig");
     _ = @import("ai_chat_input_text.zig");
     _ = @import("ai_chat_composer.zig");
+    _ = @import("ai_history_types.zig");
+    _ = @import("ai_history_provider_codex.zig");
+    _ = @import("ai_history_provider_claude.zig");
+    _ = @import("ai_history_source.zig");
+    _ = @import("ai_history_cache.zig");
+    _ = @import("ai_history_resume.zig");
+    _ = @import("ai_history_session.zig");
+    _ = @import("renderer/ai_history_renderer.zig");
     _ = @import("agent_detector.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");

@@ -20,6 +20,7 @@ English | [简体中文](README.zh-CN.md)
 - **File Explorer and previews** - browse local, WSL, and SSH files; preview Markdown/text/tables/images without leaving the terminal
 - **Embedded browser panel** - open web URLs in a side WebView2 panel or the default browser, with persistent SSH loopback port forwarding for profile sessions
 - **AI Agent sessions** - launch OpenAI-compatible Agent tabs, configure profiles, restore history, and export full or clean Markdown transcripts
+- **AI history browser** - browse local, WSL, and SSH Codex / Claude Code history and resume sessions from their original project directories
 - **Kitty Graphics protocol** - display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
 - **Opt-in remote access** - share a session key over a Cloudflare-hosted relay (disabled by default)
 
@@ -127,6 +128,11 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Select AI Chat input; select transcript when input is empty | **Ctrl+A** in AI Chat | **Cmd+A** in AI Chat |
 | Copy AI Chat selection or full transcript | **Ctrl+C** in AI Chat | **Cmd+C** in AI Chat |
 | Delete the selected saved Agent session | **D** / **Delete** in Agent History | **D** / **Delete** in Agent History |
+| Edit AI History filter | Type / Backspace in AI History | Type / Backspace in AI History |
+| Move selected AI History session | Up / Down in AI History | Up / Down in AI History |
+| Resume selected AI History session | Enter in AI History | Enter in AI History |
+| Preview selected AI History transcript | Space in AI History | Space in AI History |
+| Refresh local AI History scan | **R** in local AI History | **R** in local AI History |
 | Edit AI Chat input cursor | Left/Right/Home/End/Delete/Backspace | Left/Right/Home/End/Delete/Backspace |
 | Stop in-flight AI Chat or Agent request | **Esc** in AI Chat while working | **Esc** in AI Chat while working |
 | Copy selection (right-click) | Right-click a selection | Right-click a selection |

@@ -46,6 +46,17 @@ the assistant reply. This follows DeepSeek's
 Completed requests show elapsed time in the AI Chat status area, and token usage
 when the provider returns OpenAI-compatible `usage` fields.
 
+## AI History Sessions
+
+Open the session launcher with `Ctrl+Shift+T` and choose `AI History` to browse
+Codex and Claude Code transcripts stored on a Local, WSL, or SSH target. WispTerm
+connects to the selected target, scans `$HOME/.codex` and `$HOME/.claude` for
+metadata, and loads a transcript only when you open that row.
+
+Use `Resume` to open a real terminal tab on the same target. WispTerm first
+checks the original project directory recorded in the history file; if that
+directory is missing, resume stops instead of falling back to `$HOME`.
+
 ## In-context Copilot Sidebar
 
 Press `Ctrl+Shift+A` (`Cmd+Shift+A` on macOS) on a terminal tab to toggle a

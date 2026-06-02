@@ -1,6 +1,7 @@
 const std = @import("std");
 const pty_command = @import("pty_command.zig");
 const platform_wsl = @import("wsl.zig");
+const platform_process = @import("process.zig");
 
 pub fn wslHomeCommand() []const u8 {
     return "printf %s \"$HOME\"";
@@ -37,6 +38,117 @@ pub fn wslExec(allocator: std.mem.Allocator, command: []const u8) ?[]u8 {
     if (!ok) return null;
 
     return output.toOwnedSlice(allocator) catch null;
+}
+
+pub fn sshExecCapture(allocator: std.mem.Allocator, conn: anytype, command: []const u8) ![]u8 {
+    var askpass_path: ?[]const u8 = null;
+    defer if (askpass_path) |p| allocator.free(p);
+    var env_map: ?std.process.EnvMap = null;
+    defer if (env_map) |*map| map.deinit();
+
+    if (conn.password_auth) {
+        askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return error.SpawnFailed;
+        env_map = try std.process.getEnvMap(allocator);
+        if (env_map) |*map| {
+            try map.put("SSH_ASKPASS", askpass_path.?);
+            try map.put("SSH_ASKPASS_REQUIRE", "force");
+            try map.put("DISPLAY", "wispterm");
+            try map.put("WISPTERM_SSH_PASSWORD", conn.password());
+        }
+    }
+
+    var destination_buf: [272]u8 = undefined;
+    const destination = std.fmt.bufPrint(destination_buf[0..], "{s}@{s}", .{ conn.user(), conn.host() }) catch return error.CommandTooLong;
+
+    var argv_buf: [32][]const u8 = undefined;
+    var argc: usize = 0;
+    argv_buf[argc] = pty_command.sshExecutableName();
+    argc += 1;
+    argv_buf[argc] = "-o";
+    argc += 1;
+    argv_buf[argc] = "StrictHostKeyChecking=accept-new";
+    argc += 1;
+    argv_buf[argc] = "-o";
+    argc += 1;
+    argv_buf[argc] = "ConnectTimeout=8";
+    argc += 1;
+    if (conn.password_auth) {
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = "PreferredAuthentications=publickey,password,keyboard-interactive";
+        argc += 1;
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = "NumberOfPasswordPrompts=1";
+        argc += 1;
+    } else {
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = "BatchMode=yes";
+        argc += 1;
+    }
+    if (conn.legacy_algorithms) {
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = "HostkeyAlgorithms=+ssh-rsa,ssh-dss";
+        argc += 1;
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = "PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss";
+        argc += 1;
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = "KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1";
+        argc += 1;
+        argv_buf[argc] = "-o";
+        argc += 1;
+        argv_buf[argc] = "Ciphers=+aes128-cbc,3des-cbc";
+        argc += 1;
+    }
+    var proxy_buf: [272]u8 = undefined;
+    if (conn.proxyJump().len > 0) {
+        argv_buf[argc] = "-o";
+        argc += 1;
+        const proxy = std.fmt.bufPrint(proxy_buf[0..], "ProxyJump={s}", .{conn.proxyJump()}) catch return error.CommandTooLong;
+        argv_buf[argc] = proxy;
+        argc += 1;
+    }
+    if (conn.port().len > 0) {
+        argv_buf[argc] = "-p";
+        argc += 1;
+        argv_buf[argc] = conn.port();
+        argc += 1;
+    }
+    argv_buf[argc] = destination;
+    argc += 1;
+    argv_buf[argc] = command;
+    argc += 1;
+
+    var child = std.process.Child.init(argv_buf[0..argc], allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.create_no_window = true;
+    if (env_map) |*map| child.env_map = map;
+    try child.spawn();
+
+    const stdout = child.stdout orelse return error.SpawnFailed;
+    const stderr = child.stderr orelse return error.SpawnFailed;
+    const stdout_output = try stdout.readToEndAlloc(allocator, 2 * 1024 * 1024);
+    errdefer allocator.free(stdout_output);
+    const stderr_output = stderr.readToEndAlloc(allocator, 16 * 1024) catch null;
+    defer if (stderr_output) |bytes| allocator.free(bytes);
+
+    const term = try child.wait();
+    const ok = switch (term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    if (!ok) {
+        logSshFailure(stderr_output);
+        return error.RemoteExecFailed;
+    }
+    return stdout_output;
 }
 
 pub fn wslPathExpr(buf: *[1024]u8, path: []const u8) ?[]const u8 {
@@ -103,6 +215,17 @@ fn appendShellQuoted(buf: *[1024]u8, pos: *usize, arg: []const u8) bool {
     buf[pos.*] = '\'';
     pos.* += 1;
     return true;
+}
+
+fn logSshFailure(stderr_output: ?[]const u8) void {
+    if (stderr_output) |stderr| {
+        const trimmed = std.mem.trim(u8, stderr, " \t\r\n");
+        if (trimmed.len > 0) {
+            std.debug.print("SSH command failed: {s}\n", .{trimmed});
+            return;
+        }
+    }
+    std.debug.print("SSH command failed\n", .{});
 }
 
 test "platform remote file shell paths keep home expandable and quote literals" {
