@@ -720,14 +720,59 @@ pub const ReplKind = enum {
     }
 };
 
+/// If `code` (trimmed) is exactly one recognized control-key token, return the
+/// raw byte to send. Whole-string match only, so ordinary text that merely
+/// contains a token is sent verbatim.
+fn controlKeyByte(code: []const u8) ?u8 {
+    const trimmed = std.mem.trim(u8, code, " \t\r\n");
+    const Pair = struct { token: []const u8, byte: u8 };
+    const pairs = [_]Pair{
+        .{ .token = "<ctrl-c>", .byte = 0x03 },
+        .{ .token = "<ctrl-d>", .byte = 0x04 },
+        .{ .token = "<ctrl-u>", .byte = 0x15 },
+        .{ .token = "<esc>", .byte = 0x1b },
+        .{ .token = "<enter>", .byte = 0x0d },
+        .{ .token = "<cr>", .byte = 0x0d },
+    };
+    for (pairs) |p| {
+        if (std.ascii.eqlIgnoreCase(trimmed, p.token)) return p.byte;
+    }
+    return null;
+}
+
+/// Send a single raw control byte (no submit key appended), wait briefly for the
+/// terminal to react, and return a fresh snapshot so the model sees the
+/// recovered state.
+fn sendControlKey(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, label: []const u8, byte: u8) ![]u8 {
+    const bytes = [_]u8{byte};
+    if (!host.writeSurface(host.ctx, surface.ptr, &bytes)) {
+        return ctx.allocator.dupe(u8, "Failed to write control key to terminal surface.");
+    }
+
+    const deadline = std.time.milliTimestamp() + 400;
+    while (std.time.milliTimestamp() < deadline) {
+        if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+    }
+
+    const latest = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+        return std.fmt.allocPrint(ctx.allocator, "Sent {s}; failed to read terminal snapshot.", .{label});
+    defer ctx.allocator.free(latest);
+    const out = try std.fmt.allocPrint(ctx.allocator, "Sent {s} to terminal.\nLatest snapshot:\n{s}", .{ label, latest });
+    return truncateOwned(ctx.allocator, ctx.settings, out);
+}
+
 fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []const u8, code: []const u8, timeout_ms: u32) ![]u8 {
     const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(ctx.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, or plain.", .{repl_name});
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+    const control = controlKeyByte(code);
     const dangerous = isDangerousCommand(code);
     if (ctx.settings.permission != .full or dangerous) {
         var reason_buf: [96]u8 = undefined;
         const reason = if (dangerous)
             DANGEROUS_COMMAND_APPROVAL_REASON
+        else if (control != null)
+            std.fmt.bufPrint(&reason_buf, "Send control key {s} to terminal", .{std.mem.trim(u8, code, " \t\r\n")}) catch "Send control key to terminal"
         else
             std.fmt.bufPrint(&reason_buf, "Type input into opened {s} REPL/app terminal", .{repl.label()}) catch "Type input into terminal";
         if (!ctx.requestApproval("terminal_repl_exec", code, reason)) {
@@ -740,6 +785,10 @@ fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []
     const host = ctx.tool_host orelse return ctx.allocator.dupe(u8, "No terminal tool host is available.");
     const surface = findSurface(snapshot, surface_id) orelse return ctx.allocator.dupe(u8, "No matching terminal surface.");
     if (try ensureWriteContext(ctx, surface)) |message| return message;
+
+    if (control) |byte| {
+        return sendControlKey(ctx, host, surface, std.mem.trim(u8, code, " \t\r\n"), byte);
+    }
 
     return switch (repl) {
         .r => rSessionEvalTool(ctx, host, surface, code, timeout_ms),
@@ -1762,6 +1811,19 @@ test "ai chat Python string literal escapes code for REPL eval" {
     defer allocator.free(literal);
 
     try std.testing.expectEqualStrings("\"print(\\\"hello\\\")\\npath = \\\"C:\\\\\\\\tmp\\\"\"", literal);
+}
+
+test "agent control-key tokens parse to raw bytes, plain text is unaffected" {
+    try std.testing.expectEqual(@as(?u8, 0x03), controlKeyByte("<ctrl-c>"));
+    try std.testing.expectEqual(@as(?u8, 0x03), controlKeyByte("  <Ctrl-C> "));
+    try std.testing.expectEqual(@as(?u8, 0x04), controlKeyByte("<ctrl-d>"));
+    try std.testing.expectEqual(@as(?u8, 0x15), controlKeyByte("<ctrl-u>"));
+    try std.testing.expectEqual(@as(?u8, 0x1b), controlKeyByte("<esc>"));
+    try std.testing.expectEqual(@as(?u8, 0x0d), controlKeyByte("<enter>"));
+    try std.testing.expectEqual(@as(?u8, 0x0d), controlKeyByte("<cr>"));
+    // A substring inside real text must NOT be interpreted as a control key.
+    try std.testing.expectEqual(@as(?u8, null), controlKeyByte("echo <ctrl-c>"));
+    try std.testing.expectEqual(@as(?u8, null), controlKeyByte("ls -la"));
 }
 
 test "agent exec detects a still-pending previous command" {
