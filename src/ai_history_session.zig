@@ -1661,26 +1661,34 @@ test "ai_history_session: scanLocalFilesystem reuses unchanged cached metadata" 
         ,
     });
 
-    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const home = try tmp.dir.realpath(".", &home_buf);
-    const path = try std.fs.path.join(allocator, &.{ home, ".codex", "sessions", "a.jsonl" });
-    defer allocator.free(path);
-    const stat = try tmp.dir.statFile(".codex/sessions/a.jsonl");
     const cached_meta: types.SessionMeta = .{
         .provider = .codex,
         .session_id = "codex-cached",
         .title = "Cached title",
         .project_dir = "/tmp/cached",
-        .source_path = path,
+        .source_path = "cached.jsonl",
         .resume_kind = .codex_resume,
         .message_count = 1,
     };
+
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = try tmp.dir.realpath(".", &home_buf);
+    const first = try scanLocalFilesystemWithCache(allocator, .{
+        .id = "local",
+        .name = "Local",
+        .target = .local,
+        .providers = .{ .codex = true, .claude = false },
+    }, home, .{}, null);
+    defer freeScanResult(allocator, first);
+    try std.testing.expectEqual(@as(usize, 1), first.cache_update.records.len);
+    const first_record = first.cache_update.records[0];
+
     const records = [_]ai_history_cache.CacheRecord{.{
-        .source_id = "local",
-        .provider = .codex,
-        .root_path = "",
-        .source_path = path,
-        .stamp = .{ .size = stat.size, .mtime_ns = stat.mtime },
+        .source_id = first_record.source_id,
+        .provider = first_record.provider,
+        .root_path = first_record.root_path,
+        .source_path = first_record.source_path,
+        .stamp = first_record.stamp,
         .meta = cached_meta,
     }};
 

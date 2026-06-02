@@ -194,7 +194,7 @@ fn renderLeftColumn(
     y += draw.cell_h + 5;
     _ = draw.renderTextLimited(statusText(session), layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.left_w - PAD_X * 2);
     y += draw.cell_h + 18;
-    _ = draw.renderTextLimited("r  Refresh local", layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited("r  Retry scan", layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.left_w - PAD_X * 2);
 
     const footer = "Enter resumes  Space previews";
     _ = draw.renderTextLimited(footer, layout.left_x + PAD_X, 12, muted, layout.left_w - PAD_X * 2);
@@ -257,7 +257,12 @@ fn renderList(
     }
 
     if (session.visibleCount() == 0) {
-        const empty = if (session.rows.items.len == 0) "No sessions scanned" else "No sessions match filter";
+        const empty = if (session.state == .scanning)
+            "Scanning AI history..."
+        else if (session.rows.items.len == 0)
+            "No Codex or Claude Code history found"
+        else
+            "No sessions match filter";
         _ = draw.renderTextLimited(empty, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top + 24), muted, layout.list_w - PAD_X * 2);
     }
 }
@@ -294,8 +299,9 @@ fn renderDetail(
     _ = draw.renderTextLimited(selected.source_path, layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.detail_w - PAD_X * 2);
     y += draw.cell_h + 16;
     const resume_top = resumeButtonTop(top, draw.cell_h);
+    const can_resume = selected.project_dir.len > 0;
     draw.fillQuadAlpha(layout.detail_x + PAD_X, yFromTop(window_height, resume_top, buttonHeight(draw.cell_h)), RESUME_BUTTON_W, buttonHeight(draw.cell_h), panel_strong, 0.72);
-    _ = draw.renderTextLimited("Resume", layout.detail_x + PAD_X + 12, yTextFromTop(draw, window_height, y), accent, RESUME_BUTTON_W - 24);
+    _ = draw.renderTextLimited(if (can_resume) "Resume" else "Resume unavailable", layout.detail_x + PAD_X + 12, yTextFromTop(draw, window_height, y), if (can_resume) accent else muted, RESUME_BUTTON_W - 24);
 
     y += draw.cell_h + 20;
     draw.fillQuadAlpha(layout.detail_x + PAD_X, yFromTop(window_height, y, 1), layout.detail_w - PAD_X * 2, 1, line, 0.78);
@@ -304,7 +310,7 @@ fn renderDetail(
     switch (session.transcript_state) {
         .idle => _ = draw.renderTextLimited("Press Space to load transcript", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.detail_w - PAD_X * 2),
         .loading => _ = draw.renderTextLimited("Loading transcript", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.detail_w - PAD_X * 2),
-        .failed => _ = draw.renderTextLimited("Transcript failed to load", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.detail_w - PAD_X * 2),
+        .failed => _ = draw.renderTextLimited("Transcript failed to load - press Space to retry", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.detail_w - PAD_X * 2),
         .ready => renderTranscriptMessages(draw, session.transcript, layout, window_height, y, content_h, fg, muted, accent),
     }
 }
@@ -347,12 +353,15 @@ fn displayTitle(row: anytype) []const u8 {
 }
 
 fn statusText(session: anytype) []const u8 {
-    if (session.status.len > 0) return session.status;
+    if (session.status.len > 0) {
+        if (std.mem.eql(u8, session.status, "Ready with warnings")) return "Scan completed with warnings";
+        return session.status;
+    }
     return switch (session.state) {
         .idle => "Idle",
-        .scanning => "Scanning",
+        .scanning => "Scanning AI history...",
         .ready => "Ready",
-        .failed => "Scan failed",
+        .failed => "Connection failed - press r to retry",
     };
 }
 
