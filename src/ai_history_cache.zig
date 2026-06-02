@@ -32,7 +32,14 @@ pub fn dump(allocator: std.mem.Allocator, cache: CacheFile) ![]u8 {
 }
 
 pub fn load(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(CacheFile) {
-    return std.json.parseFromSlice(CacheFile, allocator, bytes, .{ .ignore_unknown_fields = true });
+    // `.alloc_always` makes the parse copy every string into its own arena.
+    // The default for slice input is `.alloc_if_needed`, which aliases `bytes`
+    // for escape-free strings; loadFromPath frees `bytes`, leaving those slices
+    // (e.g. record.source_id) dangling and crashing findRecord later.
+    return std.json.parseFromSlice(CacheFile, allocator, bytes, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
 }
 
 pub fn defaultPath(allocator: std.mem.Allocator) ![]const u8 {
@@ -180,6 +187,43 @@ test "ai_history_cache: json round trip keeps metadata only" {
     var parsed = try load(allocator, json);
     defer parsed.deinit();
     try std.testing.expectEqualStrings("abc", parsed.value.records[0].meta.session_id);
+}
+
+test "ai_history_cache: parsed records own their strings after source bytes freed" {
+    const allocator = std.testing.allocator;
+    const meta: types.SessionMeta = .{
+        .provider = .codex,
+        .session_id = "abc",
+        .title = "A",
+        .source_path = "/home/me/.codex/sessions/a.jsonl",
+        .resume_kind = .codex_resume,
+    };
+    const records = [_]CacheRecord{.{
+        .source_id = "local-history",
+        .provider = .codex,
+        .root_path = "/home/me/.codex",
+        .source_path = "/home/me/.codex/sessions/a.jsonl",
+        .stamp = .{ .size = 10, .mtime_ns = 20 },
+        .meta = meta,
+    }};
+
+    // Mirror loadFromPath: build the on-disk JSON into a heap buffer, parse it,
+    // then free the buffer. The parse must NOT alias `bytes`, otherwise the
+    // returned record strings dangle (the crash in findRecord).
+    const bytes = try dump(allocator, .{ .records = @constCast(&records) });
+
+    var parsed = try load(allocator, bytes);
+    defer parsed.deinit();
+
+    const buf_start = @intFromPtr(bytes.ptr);
+    const buf_end = buf_start + bytes.len;
+    const sid = @intFromPtr(parsed.value.records[0].source_id.ptr);
+    try std.testing.expect(sid < buf_start or sid >= buf_end);
+
+    allocator.free(bytes);
+
+    try std.testing.expectEqualStrings("local-history", parsed.value.records[0].source_id);
+    try std.testing.expect(findRecord(parsed.value, "local-history", .codex, "/home/me/.codex/sessions/a.jsonl", .{ .size = 10, .mtime_ns = 20 }) != null);
 }
 
 test "ai_history_cache: finds records by source path and stamp" {
