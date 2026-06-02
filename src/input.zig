@@ -48,6 +48,7 @@ const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
 const mouse_report = @import("input/mouse_report.zig");
+const close_confirm = @import("close_confirm.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
@@ -487,6 +488,13 @@ pub fn closePanelOrTab() void {
         closeBrowserPanel();
         return;
     }
+    if (close_confirm.shouldConfirm(AppWindow.g_confirm_close_running_program, AppWindow.activeSurfaceHasRunningProgram())) {
+        g_close_shortcut_confirm_until_ms = 0;
+        overlays.closeConfirmOpen(.focused_split, .running_program);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
     if (AppWindow.closeFocusedSplitWouldCloseWindow()) {
         const now = std.time.milliTimestamp();
         if (now < g_close_shortcut_confirm_until_ms) {
@@ -502,6 +510,24 @@ pub fn closePanelOrTab() void {
     }
     g_close_shortcut_confirm_until_ms = 0;
     AppWindow.closeFocusedSplit();
+}
+
+/// Close a tab via a pointer gesture (middle-click or the × button), honoring
+/// the running-program confirmation. `tab_idx` is the tab to close.
+fn requestCloseTabGesture(tab_idx: usize) void {
+    const closes_window = tab.g_tab_count <= 1;
+    if (close_confirm.shouldConfirm(AppWindow.g_confirm_close_running_program, AppWindow.tabHasRunningProgram(tab_idx))) {
+        const action: close_confirm.PendingClose = if (closes_window) .window else .{ .tab = tab_idx };
+        overlays.closeConfirmOpen(action, .running_program);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
+    if (closes_window) {
+        AppWindow.g_should_close = true;
+    } else {
+        AppWindow.closeTab(tab_idx);
+    }
 }
 
 pub fn adjustFontSize(delta: i32) void {
@@ -2723,11 +2749,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         const xpos: f64 = @floatFromInt(ev.x);
         const ypos: f64 = @floatFromInt(ev.y);
         if (hitTestSidebarTab(xpos, ypos)) |tab_idx| {
-            if (tab.g_tab_count <= 1) {
-                AppWindow.g_should_close = true;
-            } else {
-                AppWindow.closeTab(tab_idx);
-            }
+            requestCloseTabGesture(tab_idx);
             return;
         }
         if (AppWindow.activeAiChat()) |chat| {
@@ -3301,11 +3323,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             if (tab.g_tab_close_pressed) |pressed_idx| {
                 tab.g_tab_close_pressed = null;
                 if (pressed_idx < tab.g_tab_count and hitTestSidebarTabCloseButton(xpos, ypos, pressed_idx)) {
-                    if (tab.g_tab_count <= 1) {
-                        AppWindow.g_should_close = true;
-                    } else {
-                        AppWindow.closeTab(pressed_idx);
-                    }
+                    requestCloseTabGesture(pressed_idx);
                 }
                 return;
             }

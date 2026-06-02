@@ -289,6 +289,10 @@ theme: ?[]const u8 = null,
 /// Does not affect the plain terminal bell.
 @"desktop-notifications": bool = true,
 
+/// When true, show a confirmation dialog before closing a terminal surface
+/// that is running a full-screen (non-shell) program.
+@"confirm-close-running-program": bool = true,
+
 /// Agent command permission mode: confirm (deny until approved UI exists) or full.
 @"ai-agent-permission": ai_agent_config.AgentPermission = .confirm,
 
@@ -747,6 +751,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"copy-on-select" = false;
         } else {
             log.warn("invalid copy-on-select: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "confirm-close-running-program")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"confirm-close-running-program" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"confirm-close-running-program" = false;
+        } else {
+            log.warn("invalid confirm-close-running-program: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "right-click-action")) {
         if (RightClickAction.parse(value)) |action| {
@@ -2011,4 +2023,12 @@ test "config: language parses auto/en/zh-CN and rejects invalid" {
 
     cfg.applyKeyValue(allocator, "language", "auto", ".");
     try std.testing.expect(cfg.language == .auto);
+}
+
+test "config: confirm-close-running-program defaults true and parses false" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    try std.testing.expect(cfg.@"confirm-close-running-program");
+    cfg.applyKeyValue(allocator, "confirm-close-running-program", "false", ".");
+    try std.testing.expect(!cfg.@"confirm-close-running-program");
 }

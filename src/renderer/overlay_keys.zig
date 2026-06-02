@@ -3,25 +3,12 @@ const input_key = @import("../input/key.zig");
 
 pub const TransferCancelConfirmAction = enum { none, keep, interrupt };
 
-pub fn windowCloseConfirmDismisses(ev: input_key.KeyEvent) bool {
-    return switch (ev.key) {
-        .escape, .enter => true,
-        else => false,
-    };
-}
-
 pub fn transferCancelConfirmAction(ev: input_key.KeyEvent) TransferCancelConfirmAction {
     return switch (ev.key) {
         .escape => .keep,
         .enter => .interrupt,
         else => .none,
     };
-}
-
-test "overlay close confirmation handles platform-neutral keys" {
-    try std.testing.expect(windowCloseConfirmDismisses(.{ .key = .escape }));
-    try std.testing.expect(windowCloseConfirmDismisses(.{ .key = .enter }));
-    try std.testing.expect(!windowCloseConfirmDismisses(.{ .key = .tab }));
 }
 
 test "overlay transfer cancellation maps platform-neutral keys to actions" {

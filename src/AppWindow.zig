@@ -22,6 +22,7 @@ const weixin_types = @import("weixin/types.zig");
 const memory_debug = @import("memory_debug.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
+const close_confirm = @import("close_confirm.zig");
 const font_backend = @import("platform/font_backend.zig");
 const platform_display = @import("platform/display.zig");
 const platform_dirs = @import("platform/dirs.zig");
@@ -812,6 +813,41 @@ pub fn activeTab() ?*TabState {
 
 pub fn activeSurface() ?*Surface {
     return tab.activeSurface();
+}
+
+fn surfaceOnAltScreen(s: *const Surface) bool {
+    return s.terminal.screens.active_key == .alternate;
+}
+
+/// True if the focused surface is running a full-screen program (alt-screen).
+pub fn activeSurfaceHasRunningProgram() bool {
+    const s = activeSurface() orelse return false;
+    return surfaceOnAltScreen(s);
+}
+
+fn tabStateHasRunningProgram(t: *const TabState) bool {
+    if (t.kind != .terminal) return false;
+    var it = t.tree.iterator();
+    while (it.next()) |entry| {
+        if (surfaceOnAltScreen(entry.surface)) return true;
+    }
+    return false;
+}
+
+/// True if any surface in the given tab is running a full-screen program.
+pub fn tabHasRunningProgram(idx: usize) bool {
+    if (idx >= tab.g_tab_count) return false;
+    const t = tab.g_tabs[idx] orelse return false;
+    return tabStateHasRunningProgram(t);
+}
+
+/// True if any surface in any tab in the window is running a full-screen program.
+pub fn anyTabHasRunningProgram() bool {
+    for (0..tab.g_tab_count) |ti| {
+        const t = tab.g_tabs[ti] orelse continue;
+        if (tabStateHasRunningProgram(t)) return true;
+    }
+    return false;
 }
 
 pub fn activeAiChat() ?*ai_chat.Session {
@@ -2075,6 +2111,7 @@ pub threadlocal var g_copy_on_select: bool = false;
 pub threadlocal var g_right_click_action: Config.RightClickAction = .copy;
 pub threadlocal var g_ssh_legacy_algorithms: bool = false;
 pub threadlocal var g_desktop_notifications: bool = true;
+pub threadlocal var g_confirm_close_running_program: bool = true;
 pub threadlocal var g_weixin_notify_forward: bool = false;
 threadlocal var g_notif_auth_requested: bool = false;
 
@@ -2439,6 +2476,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     input.g_url_open_mode = cfg.@"url-open-mode";
     g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     g_desktop_notifications = cfg.@"desktop-notifications";
+    g_confirm_close_running_program = cfg.@"confirm-close-running-program";
     g_weixin_notify_forward = cfg.@"weixin-notify-forward";
     tab.g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     overlays.g_split_divider_color = cfg.@"split-divider-color";
@@ -4824,7 +4862,10 @@ fn runMainLoop(self: *AppWindow) !void {
         }
         if (window_backend.closeRequested(win)) {
             window_backend.clearCloseRequested(win);
-            if (!window_backend.closeRequestPromptsConfirmation()) {
+            const running_program = anyTabHasRunningProgram();
+            const confirm_for_program = close_confirm.shouldConfirm(g_confirm_close_running_program, running_program);
+            const want_confirm = window_backend.closeRequestPromptsConfirmation() or confirm_for_program;
+            if (!want_confirm) {
                 // Backend tears the window down immediately with no in-app
                 // prompt; closing this window does not necessarily end the app
                 // session (the backend owns process lifecycle).
@@ -4832,7 +4873,8 @@ fn runMainLoop(self: *AppWindow) !void {
                 running = false;
                 continue;
             }
-            overlays.windowCloseConfirmOpen();
+            const variant: overlays.CloseConfirmVariant = if (confirm_for_program) .running_program else .window_generic;
+            overlays.closeConfirmOpen(.window, variant);
             g_force_rebuild = true;
             g_cells_valid = false;
         }

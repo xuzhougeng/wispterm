@@ -30,6 +30,7 @@ const platform_pty_command = @import("../platform/pty_command.zig");
 const update_check = @import("../update_check.zig");
 const keybind = @import("../keybind.zig");
 const overlay_keys = @import("overlay_keys.zig");
+const close_confirm = @import("../close_confirm.zig");
 const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
@@ -131,7 +132,10 @@ threadlocal var g_update_prompt_rect: ?DebugLineRect = null;
 
 threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
+pub const CloseConfirmVariant = enum { running_program, window_generic };
 threadlocal var g_window_close_confirm_visible: bool = false;
+threadlocal var g_close_confirm_pending: close_confirm.PendingClose = .window;
+threadlocal var g_close_confirm_variant: CloseConfirmVariant = .window_generic;
 
 // "Restore default settings" confirmation, shown on top of the settings page.
 threadlocal var g_restore_defaults_confirm_visible: bool = false;
@@ -367,12 +371,23 @@ pub fn commandPaletteContainsPoint(xpos: f64, ypos: f64, window_width: f32, wind
         y >= layout.box_top_px and y <= layout.box_top_px + layout.box_h;
 }
 
-pub fn windowCloseConfirmOpen() void {
+pub fn closeConfirmOpen(action: close_confirm.PendingClose, variant: CloseConfirmVariant) void {
+    g_close_confirm_pending = action;
+    g_close_confirm_variant = variant;
     g_window_close_confirm_visible = true;
 }
 
 pub fn windowCloseConfirmClose() void {
     g_window_close_confirm_visible = false;
+}
+
+fn closeConfirmConfirm() void {
+    g_window_close_confirm_visible = false;
+    switch (g_close_confirm_pending) {
+        .window => AppWindow.g_should_close = true,
+        .focused_split => AppWindow.closeFocusedSplit(),
+        .tab => |idx| AppWindow.closeTab(idx),
+    }
 }
 
 pub fn windowCloseConfirmVisible() bool {
@@ -381,15 +396,18 @@ pub fn windowCloseConfirmVisible() bool {
 
 pub fn windowCloseConfirmHandleKey(ev: input_key.KeyEvent) void {
     if (!g_window_close_confirm_visible) return;
-    if (overlay_keys.windowCloseConfirmDismisses(ev)) windowCloseConfirmClose();
+    switch (close_confirm.keyOutcome(ev)) {
+        .confirm => closeConfirmConfirm(),
+        .cancel => windowCloseConfirmClose(),
+        .none => {},
+    }
 }
 
 pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
     if (!g_window_close_confirm_visible) return false;
     const layout = windowCloseConfirmLayout(window_width, window_height);
     if (pointInTopRect(xpos, ypos, layout.close_x, layout.close_top_px, layout.close_w, layout.close_h)) {
-        g_window_close_confirm_visible = false;
-        AppWindow.g_should_close = true;
+        closeConfirmConfirm();
         return true;
     }
     if (pointInTopRect(xpos, ypos, layout.cancel_x, layout.cancel_top_px, layout.cancel_w, layout.cancel_h)) {
@@ -4673,13 +4691,22 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
 
     const text_x = icon_x + icon_size + 18;
     const text_right = layout.panel_x + layout.panel_w - pad;
-    renderTitlebarTextStrongLimited("Close WispTerm?", text_x, title_y, fg, text_right - text_x);
+    const title_text = switch (g_close_confirm_variant) {
+        .running_program => "A program is still running",
+        .window_generic => "Close WispTerm?",
+    };
+    const body_text = switch (g_close_confirm_variant) {
+        .running_program => "Closing now will end it.",
+        .window_generic => "Running panels in this window will be terminated.",
+    };
+    const hint_text = "Press Enter or Close to proceed, Esc to cancel.";
+    renderTitlebarTextStrongLimited(title_text, text_x, title_y, fg, text_right - text_x);
 
     const body_y = title_y - overlayTextHeight() - 16;
-    renderTitlebarTextLimited("Running panels in this window will be terminated.", text_x, body_y, body, text_right - text_x);
+    renderTitlebarTextLimited(body_text, text_x, body_y, body, text_right - text_x);
 
     const hint_y = body_y - overlayTextHeight() - 8;
-    renderTitlebarTextLimited("Press Esc or Cancel to keep working.", text_x, hint_y, muted, text_right - text_x);
+    renderTitlebarTextLimited(hint_text, text_x, hint_y, muted, text_right - text_x);
 
     const footer_y = close_y + layout.close_h + 20;
     ui_pipeline.fillQuadAlpha(layout.panel_x + 5, footer_y, layout.panel_w - 5, 1, quiet_border, 0.46);
