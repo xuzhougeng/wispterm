@@ -699,6 +699,14 @@ pub fn aiHistoryMoveSelection(delta: isize) bool {
     return true;
 }
 
+pub fn aiHistoryCycleCategory(delta: isize) bool {
+    const session = activeAiHistory() orelse return false;
+    session.cycleCategory(delta);
+    session.ensureSelectionVisible(aiHistoryListVisibleRowsForWindow());
+    markUiDirty();
+    return true;
+}
+
 pub fn aiHistoryPreviewSelectedTranscript() bool {
     const session = activeAiHistory() orelse return false;
     const allocator = g_allocator orelse return false;
@@ -973,6 +981,12 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
         },
         .@"resume" => {
             _ = resumeAiHistorySelection();
+            markUiDirty();
+            return true;
+        },
+        .category => |cat| {
+            session.setCategory(cat);
+            session.ensureSelectionVisible(visible_rows);
             markUiDirty();
             return true;
         },

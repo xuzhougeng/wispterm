@@ -154,6 +154,7 @@ pub const Session = struct {
     list_offset: usize = 0,
     filter: [128]u8 = undefined,
     filter_len: usize = 0,
+    category: types.CategoryFilter = .all,
     status: []const u8 = "",
     transcript_state: TranscriptState = .idle,
     transcript_status: []const u8 = "",
@@ -504,11 +505,15 @@ pub const Session = struct {
         self.transcript_status = "";
     }
 
+    pub fn rowVisible(self: *const Session, row: types.SessionMeta, query: []const u8) bool {
+        return types.categoryMatches(self.category, row.provider) and types.metadataMatches(row, query);
+    }
+
     pub fn visibleCount(self: *const Session) usize {
         var count: usize = 0;
         const query = self.filter[0..self.filter_len];
         for (self.rows.items) |row| {
-            if (types.metadataMatches(row, query)) count += 1;
+            if (self.rowVisible(row, query)) count += 1;
         }
         return count;
     }
@@ -519,11 +524,41 @@ pub const Session = struct {
         const query = self.filter[0..self.filter_len];
         var visible_index: usize = 0;
         for (self.rows.items) |row| {
-            if (!types.metadataMatches(row, query)) continue;
+            if (!self.rowVisible(row, query)) continue;
             if (visible_index == self.selected) return row;
             visible_index += 1;
         }
         return null;
+    }
+
+    pub fn setCategory(self: *Session, category: types.CategoryFilter) void {
+        if (self.category == category) return;
+        self.category = category;
+        self.selected = 0;
+        self.list_offset = 0;
+        self.clearTranscript();
+    }
+
+    pub fn cycleCategory(self: *Session, delta: isize) void {
+        const count: isize = 3;
+        const cur: isize = @intFromEnum(self.category);
+        const next: usize = @intCast(@mod(cur + delta, count));
+        self.setCategory(@enumFromInt(next));
+    }
+
+    pub fn categoryCounts(self: *const Session, query: []const u8) struct { all: usize, codex: usize, claude: usize } {
+        var all: usize = 0;
+        var codex: usize = 0;
+        var claude: usize = 0;
+        for (self.rows.items) |row| {
+            if (!types.metadataMatches(row, query)) continue;
+            all += 1;
+            switch (row.provider) {
+                .codex => codex += 1,
+                .claude => claude += 1,
+            }
+        }
+        return .{ .all = all, .codex = codex, .claude = claude };
     }
 };
 
@@ -1876,6 +1911,83 @@ test "ai_history_session: scanLocalFilesystem reuses unchanged cached metadata" 
     try std.testing.expectEqualStrings("Cached title", result.rows[0].title);
     try std.testing.expectEqual(@as(usize, 1), result.cache_update.records.len);
     try std.testing.expectEqualStrings("codex-cached", result.cache_update.records[0].meta.session_id);
+}
+
+test "ai_history_session: category filter limits visible rows" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "cx", .title = "Codex one", .source_path = "a.jsonl", .resume_kind = .codex_resume },
+        .{ .provider = .claude, .session_id = "cl", .title = "Claude one", .source_path = "b.jsonl", .resume_kind = .claude_resume },
+    };
+    try session.replaceRows(&rows);
+
+    try std.testing.expectEqual(@as(usize, 2), session.visibleCount());
+
+    session.setCategory(.codex);
+    try std.testing.expectEqual(@as(usize, 1), session.visibleCount());
+    const sel = session.selectedVisible() orelse return error.ExpectedSelection;
+    try std.testing.expectEqual(types.ProviderId.codex, sel.provider);
+
+    session.setCategory(.claude);
+    const sel2 = session.selectedVisible() orelse return error.ExpectedSelection;
+    try std.testing.expectEqual(types.ProviderId.claude, sel2.provider);
+}
+
+test "ai_history_session: categoryCounts splits by provider and respects query" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "Renderer fix", .source_path = "a.jsonl", .resume_kind = .codex_resume },
+        .{ .provider = .codex, .session_id = "b", .title = "Docs", .source_path = "b.jsonl", .resume_kind = .codex_resume },
+        .{ .provider = .claude, .session_id = "c", .title = "Renderer test", .source_path = "c.jsonl", .resume_kind = .claude_resume },
+    };
+    try session.replaceRows(&rows);
+
+    const counts = session.categoryCounts("");
+    try std.testing.expectEqual(@as(usize, 3), counts.all);
+    try std.testing.expectEqual(@as(usize, 2), counts.codex);
+    try std.testing.expectEqual(@as(usize, 1), counts.claude);
+
+    const filtered = session.categoryCounts("renderer");
+    try std.testing.expectEqual(@as(usize, 2), filtered.all);
+    try std.testing.expectEqual(@as(usize, 1), filtered.codex);
+    try std.testing.expectEqual(@as(usize, 1), filtered.claude);
+}
+
+test "ai_history_session: setCategory resets selection" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume },
+        .{ .provider = .claude, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .claude_resume },
+    };
+    try session.replaceRows(&rows);
+    session.selected = 1;
+    session.list_offset = 1;
+
+    session.setCategory(.codex);
+    try std.testing.expectEqual(types.CategoryFilter.codex, session.category);
+    try std.testing.expectEqual(@as(usize, 0), session.selected);
+    try std.testing.expectEqual(@as(usize, 0), session.list_offset);
+}
+
+test "ai_history_session: cycleCategory wraps forward and backward" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    try std.testing.expectEqual(types.CategoryFilter.all, session.category);
+    session.cycleCategory(1);
+    try std.testing.expectEqual(types.CategoryFilter.codex, session.category);
+    session.cycleCategory(1);
+    try std.testing.expectEqual(types.CategoryFilter.claude, session.category);
+    session.cycleCategory(1);
+    try std.testing.expectEqual(types.CategoryFilter.all, session.category);
+    session.cycleCategory(-1);
+    try std.testing.expectEqual(types.CategoryFilter.claude, session.category);
 }
 
 test "ai_history_session: publishScanResult applies rows when generation current" {

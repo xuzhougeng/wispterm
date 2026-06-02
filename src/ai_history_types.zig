@@ -12,6 +12,28 @@ pub const ProviderId = enum {
     }
 };
 
+pub const CategoryFilter = enum {
+    all,
+    codex,
+    claude,
+};
+
+pub fn categoryMatches(category: CategoryFilter, provider: ProviderId) bool {
+    return switch (category) {
+        .all => true,
+        .codex => provider == .codex,
+        .claude => provider == .claude,
+    };
+}
+
+pub fn categoryLabel(category: CategoryFilter) []const u8 {
+    return switch (category) {
+        .all => "All",
+        .codex => "Codex",
+        .claude => "Claude Code",
+    };
+}
+
 pub const MessageRole = enum { user, assistant, system, tool };
 pub const MessageKind = enum { normal, tool_call, tool_result, meta };
 pub const ScanStatus = enum { ok, partial, not_found, invalid };
@@ -126,4 +148,19 @@ test "ai_history_types: recent sort is descending with session id tie break" {
     try std.testing.expectEqualStrings("c", rows[0].session_id);
     try std.testing.expectEqualStrings("a", rows[1].session_id);
     try std.testing.expectEqualStrings("b", rows[2].session_id);
+}
+
+test "ai_history_types: categoryMatches respects provider" {
+    try std.testing.expect(categoryMatches(.all, .codex));
+    try std.testing.expect(categoryMatches(.all, .claude));
+    try std.testing.expect(categoryMatches(.codex, .codex));
+    try std.testing.expect(!categoryMatches(.codex, .claude));
+    try std.testing.expect(categoryMatches(.claude, .claude));
+    try std.testing.expect(!categoryMatches(.claude, .codex));
+}
+
+test "ai_history_types: categoryLabel is stable" {
+    try std.testing.expectEqualStrings("All", categoryLabel(.all));
+    try std.testing.expectEqualStrings("Codex", categoryLabel(.codex));
+    try std.testing.expectEqualStrings("Claude Code", categoryLabel(.claude));
 }

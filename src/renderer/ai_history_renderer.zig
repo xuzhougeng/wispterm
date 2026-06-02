@@ -1,4 +1,5 @@
 const std = @import("std");
+const types = @import("../ai_history_types.zig");
 
 const HEADER_H: f32 = 54;
 const FILTER_H: f32 = 42;
@@ -32,8 +33,49 @@ pub const Hit = union(enum) {
     none,
     refresh,
     @"resume",
+    category: types.CategoryFilter,
     row: usize,
 };
+
+pub const LeftColumnLayout = struct {
+    source_name_top: f32,
+    target_top: f32,
+    status_label_top: f32,
+    status_value_top: f32,
+    category_heading_top: f32,
+    category_rows_top: f32,
+    category_row_h: f32,
+    retry_text_top: f32,
+};
+
+pub fn leftColumnLayout(top: f32, cell_h: f32) LeftColumnLayout {
+    var y = top + headerHeight(cell_h) + 18;
+    const source_name_top = y;
+    y += cell_h + 8;
+    const target_top = y;
+    y += cell_h + 18;
+    const status_label_top = y;
+    y += cell_h + 5;
+    const status_value_top = y;
+    y += cell_h + 18;
+    const category_heading_top = y;
+    y += cell_h + 8;
+    const category_rows_top = y;
+    const category_row_h = cell_h + 10;
+    y += category_row_h * 3;
+    y += 12;
+    const retry_text_top = y;
+    return .{
+        .source_name_top = source_name_top,
+        .target_top = target_top,
+        .status_label_top = status_label_top,
+        .status_value_top = status_value_top,
+        .category_heading_top = category_heading_top,
+        .category_rows_top = category_rows_top,
+        .category_row_h = category_row_h,
+        .retry_text_top = retry_text_top,
+    };
+}
 
 pub fn computeLayout(x: f32, width: f32) Layout {
     const available = @max(0, width);
@@ -139,6 +181,15 @@ pub fn interactionHitTest(
     const mx: f32 = @floatCast(mouse_x);
     const my: f32 = @floatCast(mouse_y);
 
+    const lc = leftColumnLayout(top, cell_h);
+    const categories = [_]types.CategoryFilter{ .all, .codex, .claude };
+    for (categories, 0..) |cat, i| {
+        const cat_top = lc.category_rows_top + @as(f32, @floatFromInt(i)) * lc.category_row_h;
+        if (rectContains(mx, my, layout.left_x, cat_top, layout.left_w, lc.category_row_h)) {
+            return .{ .category = cat };
+        }
+    }
+
     const refresh_top = refreshButtonTop(top, cell_h);
     if (rectContains(mx, my, layout.left_x + PAD_X, refresh_top, @max(0, layout.left_w - PAD_X * 2), buttonHeight(cell_h))) {
         return .refresh;
@@ -217,16 +268,42 @@ fn renderLeftColumn(
     draw.fillQuad(layout.left_x, yFromTop(window_height, top + header_h, 1), layout.left_w, 1, line);
     _ = draw.renderTextLimited("AI History", layout.left_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.left_w - PAD_X * 2);
 
-    var y = top + header_h + 18;
-    _ = draw.renderTextLimited(session.source.name, layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), fg, layout.left_w - PAD_X * 2);
-    y += draw.cell_h + 8;
-    _ = draw.renderTextLimited(targetLabel(session.source.target), layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.left_w - PAD_X * 2);
-    y += draw.cell_h + 18;
-    _ = draw.renderTextLimited("Status", layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.left_w - PAD_X * 2);
-    y += draw.cell_h + 5;
-    _ = draw.renderTextLimited(statusText(session), layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.left_w - PAD_X * 2);
-    y += draw.cell_h + 18;
-    _ = draw.renderTextLimited("r  Retry scan", layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.left_w - PAD_X * 2);
+    const lc = leftColumnLayout(top, draw.cell_h);
+    _ = draw.renderTextLimited(session.source.name, layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.source_name_top), fg, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited(targetLabel(session.source.target), layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.target_top), muted, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited("Status", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_label_top), muted, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited(statusText(session), layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_value_top), accent, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited("CATEGORY", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.category_heading_top), muted, layout.left_w - PAD_X * 2);
+
+    const query = session.filter[0..session.filter_len];
+    const counts = session.categoryCounts(query);
+    const selected_bg = mixColor(draw.bg, accent, 0.18);
+    const categories = [_]types.CategoryFilter{ .all, .codex, .claude };
+    for (categories, 0..) |cat, i| {
+        const row_top = lc.category_rows_top + @as(f32, @floatFromInt(i)) * lc.category_row_h;
+        const active = session.category == cat;
+        if (active) {
+            const row_y = yFromTop(window_height, row_top, lc.category_row_h);
+            draw.fillQuadAlpha(layout.left_x, row_y, layout.left_w, lc.category_row_h, selected_bg, 0.92);
+            draw.fillQuad(layout.left_x, row_y, 3, lc.category_row_h, accent);
+        }
+        const text_top = row_top + (lc.category_row_h - draw.cell_h) / 2;
+        const label_color = if (active) fg else muted;
+        const count = switch (cat) {
+            .all => counts.all,
+            .codex => counts.codex,
+            .claude => counts.claude,
+        };
+        var num_buf: [16]u8 = undefined;
+        const num_text = std.fmt.bufPrint(&num_buf, "{d}", .{count}) catch "";
+        const count_w: f32 = 44;
+        const count_x = layout.left_x + layout.left_w - PAD_X - count_w;
+        const label_x = layout.left_x + PAD_X + 6;
+        _ = draw.renderTextLimited(categoryLabelText(cat), label_x, yTextFromTop(draw, window_height, text_top), label_color, @max(0, count_x - label_x - 6));
+        _ = draw.renderTextLimited(num_text, count_x, yTextFromTop(draw, window_height, text_top), muted, count_w);
+    }
+
+    _ = draw.renderTextLimited("r  Retry scan", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.retry_text_top), muted, layout.left_w - PAD_X * 2);
 
     const footer = "Enter resumes  Space previews";
     _ = draw.renderTextLimited(footer, layout.left_x + PAD_X, 12, muted, layout.left_w - PAD_X * 2);
@@ -265,6 +342,7 @@ fn renderList(
     var visible_index: usize = 0;
     var rendered: usize = 0;
     for (session.rows.items) |row| {
+        if (!types.categoryMatches(session.category, row.provider)) continue;
         if (!metadataMatches(row, query)) continue;
         if (visible_index < start) {
             visible_index += 1;
@@ -298,8 +376,11 @@ fn renderList(
             "Scanning AI history..."
         else if (session.rows.items.len == 0)
             "No Codex or Claude Code history found"
-        else
-            "No sessions match filter";
+        else switch (session.category) {
+            .all => "No sessions match filter",
+            .codex => "No Codex sessions",
+            .claude => "No Claude Code sessions",
+        };
         _ = draw.renderTextLimited(empty, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top + 24), muted, layout.list_w - PAD_X * 2);
     }
 }
@@ -411,6 +492,10 @@ fn targetLabel(target: anytype) []const u8 {
     };
 }
 
+fn categoryLabelText(category: types.CategoryFilter) []const u8 {
+    return types.categoryLabel(category);
+}
+
 fn roleLabel(role: anytype) []const u8 {
     return switch (role) {
         .user => "user:",
@@ -468,11 +553,7 @@ fn buttonHeight(cell_h: f32) f32 {
 }
 
 fn refreshButtonTop(top: f32, cell_h: f32) f32 {
-    return top + headerHeight(cell_h) + 18 +
-        (cell_h + 8) +
-        (cell_h + 18) +
-        (cell_h + 5) +
-        (cell_h + 18) - BUTTON_PAD_Y;
+    return leftColumnLayout(top, cell_h).retry_text_top - BUTTON_PAD_Y;
 }
 
 fn resumeButtonTop(top: f32, cell_h: f32) f32 {
@@ -572,4 +653,48 @@ test "ai_history_renderer: interaction hit test maps buttons and row offset" {
     );
     const row_hit = interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.list_x + 8, top + FILTER_H + ROW_H + 2);
     try std.testing.expectEqual(@as(usize, 4), row_hit.row);
+}
+
+test "ai_history_renderer: left column layout is ordered top to bottom" {
+    const lc = leftColumnLayout(40, 16);
+    try std.testing.expect(lc.source_name_top < lc.target_top);
+    try std.testing.expect(lc.target_top < lc.status_label_top);
+    try std.testing.expect(lc.status_label_top < lc.status_value_top);
+    try std.testing.expect(lc.status_value_top < lc.retry_text_top);
+    try std.testing.expectEqual(lc.retry_text_top - BUTTON_PAD_Y, refreshButtonTop(40, 16));
+}
+
+test "ai_history_renderer: interaction hit test maps category rows" {
+    const FakeSession = struct {
+        fn visibleCount(_: @This()) usize {
+            return 0;
+        }
+        fn listWindowStart(_: @This(), _: usize) usize {
+            return 0;
+        }
+    };
+
+    const session = FakeSession{};
+    const layout = computeLayout(0, 1000);
+    const cell_h: f32 = 16;
+    const top: f32 = 40;
+    const lc = leftColumnLayout(top, cell_h);
+
+    const all_y = lc.category_rows_top + lc.category_row_h * 0.5;
+    try std.testing.expectEqual(
+        Hit{ .category = .all },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, all_y),
+    );
+
+    const codex_y = lc.category_rows_top + lc.category_row_h * 1.5;
+    try std.testing.expectEqual(
+        Hit{ .category = .codex },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, codex_y),
+    );
+
+    const claude_y = lc.category_rows_top + lc.category_row_h * 2.5;
+    try std.testing.expectEqual(
+        Hit{ .category = .claude },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, claude_y),
+    );
 }

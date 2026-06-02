@@ -1158,6 +1158,14 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 _ = AppWindow.aiHistoryMoveSelection(1);
                 return;
             },
+            platform_input.key_left => {
+                _ = AppWindow.aiHistoryCycleCategory(-1);
+                return;
+            },
+            platform_input.key_right => {
+                _ = AppWindow.aiHistoryCycleCategory(1);
+                return;
+            },
             platform_input.key_enter => {
                 _ = AppWindow.aiHistoryLoadSelectedTranscript();
                 return;
