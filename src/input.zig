@@ -1162,6 +1162,22 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 _ = AppWindow.aiHistoryLoadSelectedTranscript();
                 return;
             },
+            platform_input.key_page_up => {
+                _ = AppWindow.aiHistoryScrollTranscript(-8);
+                return;
+            },
+            platform_input.key_page_down => {
+                _ = AppWindow.aiHistoryScrollTranscript(8);
+                return;
+            },
+            platform_input.key_home => {
+                _ = AppWindow.aiHistoryScrollTranscript(-(1 << 30));
+                return;
+            },
+            platform_input.key_end => {
+                _ = AppWindow.aiHistoryScrollTranscript(1 << 30);
+                return;
+            },
             0x20 => if (plain) {
                 _ = AppWindow.aiHistoryPreviewSelectedTranscript();
                 return;
@@ -3821,6 +3837,24 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             file_explorer.scrollBy(delta);
             return;
         }
+    }
+    // AI History transcript preview: scroll the wrapped transcript when the
+    // wheel is over the detail (rightmost) pane.
+    if (AppWindow.activeAiHistory() != null) {
+        const win = AppWindow.g_window orelse return;
+        const size = clientSize(win);
+        const left_f = AppWindow.leftPanelsWidth();
+        const right_f = @as(f32, @floatFromInt(size.width)) - AppWindow.rightPanelsWidthForWindow(size.width);
+        const content_w = @max(0, right_f - left_f);
+        const layout = AppWindow.ai_history_renderer.computeLayout(left_f, content_w);
+        const x: f32 = @floatFromInt(ev.xpos);
+        if (x >= layout.detail_x and x < layout.detail_x + layout.detail_w) {
+            const units: i32 = @intCast(mouseWheelUnits(ev.delta));
+            const step = units * 3;
+            _ = AppWindow.aiHistoryScrollTranscript(if (ev.delta > 0) -step else step);
+            return;
+        }
+        return;
     }
     if (AppWindow.activeAiChat()) |chat| {
         const win = AppWindow.g_window orelse return;
