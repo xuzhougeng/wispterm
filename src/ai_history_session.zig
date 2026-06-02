@@ -155,6 +155,14 @@ pub const Session = struct {
     filter: [128]u8 = undefined,
     filter_len: usize = 0,
     category: types.CategoryFilter = .all,
+    /// Active day filter (`null` = all dates). Combines with `category`.
+    date_filter: ?types.DateKey = null,
+    /// Scroll offset into the DATE navigator's day list. The renderer clamps
+    /// this against the visible capacity each frame.
+    date_offset: usize = 0,
+    /// Local UTC offset (seconds east of UTC) used to bucket rows by local day.
+    /// Defaults to 0 (UTC); the app injects the real offset at creation.
+    tz_offset_seconds: i32 = 0,
     status: []const u8 = "",
     transcript_state: TranscriptState = .idle,
     transcript_status: []const u8 = "",
@@ -255,6 +263,7 @@ pub const Session = struct {
         self.rows = next;
         self.selected = 0;
         self.list_offset = 0;
+        self.date_offset = 0;
         self.clearTranscript();
         self.transcript_generation +%= 1;
         self.state = .ready;
@@ -522,7 +531,10 @@ pub const Session = struct {
     }
 
     pub fn rowVisible(self: *const Session, row: types.SessionMeta, query: []const u8) bool {
-        return types.categoryMatches(self.category, row.provider) and types.metadataMatches(row, query);
+        const key = types.dateKeyFromMs(row.last_active_at_ms, self.tz_offset_seconds);
+        return types.categoryMatches(self.category, row.provider) and
+            types.dateMatches(self.date_filter, key) and
+            types.metadataMatches(row, query);
     }
 
     pub fn visibleCount(self: *const Session) usize {
@@ -560,6 +572,22 @@ pub const Session = struct {
         const cur: isize = @intFromEnum(self.category);
         const next: usize = @intCast(@mod(cur + delta, count));
         self.setCategory(@enumFromInt(next));
+    }
+
+    pub fn setDateFilter(self: *Session, filter: ?types.DateKey) void {
+        if (self.date_filter == filter) return;
+        self.date_filter = filter;
+        self.selected = 0;
+        self.list_offset = 0;
+        self.clearTranscript();
+    }
+
+    pub fn scrollDateBy(self: *Session, delta: isize) void {
+        if (delta < 0) {
+            self.date_offset -|= @intCast(-delta);
+        } else {
+            self.date_offset +|= @intCast(delta);
+        }
     }
 
     pub fn categoryCounts(self: *const Session, query: []const u8) struct { all: usize, codex: usize, claude: usize } {
@@ -2229,4 +2257,59 @@ test "ai_history_session: deinit joins an in-flight scan worker" {
 
     session.deinit(); // sets closing, joins the worker — must not leak or crash
     releaser.join();
+}
+
+test "ai_history_session: rowVisible honors the date filter with category and query" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    // 1780315200000 = 2026-06-01 12:00 UTC; +86400000 = 2026-06-02.
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 1780315200000 },
+        .{ .provider = .claude, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .claude_resume, .last_active_at_ms = 1780315200000 + 86400000 },
+    };
+    try session.replaceRows(&rows);
+    try std.testing.expectEqual(@as(usize, 2), session.visibleCount());
+
+    session.setDateFilter(20260601);
+    try std.testing.expectEqual(@as(usize, 1), session.visibleCount());
+    const sel = session.selectedVisible() orelse return error.ExpectedSelection;
+    try std.testing.expectEqualStrings("a", sel.session_id);
+
+    // Date AND category combine.
+    session.setCategory(.claude);
+    try std.testing.expectEqual(@as(usize, 0), session.visibleCount());
+    session.setDateFilter(null);
+    try std.testing.expectEqual(@as(usize, 1), session.visibleCount());
+}
+
+test "ai_history_session: setDateFilter resets selection and is a no-op when unchanged" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 1780315200000 },
+        .{ .provider = .codex, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 1780315200000 },
+    };
+    try session.replaceRows(&rows);
+    session.selected = 1;
+    session.list_offset = 1;
+    session.setDateFilter(20260601);
+    try std.testing.expectEqual(@as(usize, 0), session.selected);
+    try std.testing.expectEqual(@as(usize, 0), session.list_offset);
+
+    // No-op path: setting the same filter again must not move selection.
+    session.selected = 1;
+    session.setDateFilter(20260601);
+    try std.testing.expectEqual(@as(usize, 1), session.selected);
+}
+
+test "ai_history_session: scrollDateBy saturates at zero" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    try std.testing.expectEqual(@as(usize, 0), session.date_offset);
+    session.scrollDateBy(-3);
+    try std.testing.expectEqual(@as(usize, 0), session.date_offset);
+    session.scrollDateBy(4);
+    try std.testing.expectEqual(@as(usize, 4), session.date_offset);
+    session.scrollDateBy(-1);
+    try std.testing.expectEqual(@as(usize, 3), session.date_offset);
 }
