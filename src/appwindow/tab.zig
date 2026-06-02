@@ -1162,6 +1162,7 @@ threadlocal var g_restore_cols: u16 = 80;
 threadlocal var g_restore_rows: u16 = 24;
 threadlocal var g_restore_cursor_style: CursorStyle = .block;
 threadlocal var g_restore_cursor_blink: bool = true;
+const SSH_RESTORE_COMMAND_BUF_SIZE: usize = 4096;
 
 /// Free-function factory passed to SplitTree.fromSnapshot. Reads dimensions
 /// and cursor settings from the thread-local restore context populated by
@@ -1200,38 +1201,12 @@ fn surfaceFromSnapImpl(
             return surface;
         },
         .ssh => |s| {
-            // Build the platform SSH command with an optional trailing
-            // `cd <cwd>` argument when cwd is present. Mirrors the
-            // password_auth=false branch since persisted SSH snaps do not
-            // carry the password_auth flag. SSH password is never persisted.
-            var stack_buf: [1024]u8 = undefined;
+            var stack_buf: [SSH_RESTORE_COMMAND_BUF_SIZE]u8 = undefined;
+            const command_text = try buildSshRestoreCommand(gpa, &stack_buf, s);
 
-            // Render the port to a stable scratch buffer first; we need the
-            // port string both inside the spawned command and to pass to
-            // setSshConnection below.
             var port_buf: [8]u8 = undefined;
             const port_slice = std.fmt.bufPrint(&port_buf, "{}", .{s.port}) catch return error.CommandTooLong;
-
-            const base = platform_pty_command.sshInteractiveCommand(stack_buf[0..], .{
-                .user = s.user,
-                .host = s.host,
-                .port = port_slice,
-                .legacy_algorithms = g_ssh_legacy_algorithms,
-                .proxy_jump = s.proxy_jump,
-            }) orelse return error.CommandTooLong;
-            var final_len: usize = base.len;
-
-            if (s.cwd) |cwd_str| {
-                const escaped = try session_persist.shellSingleQuoteEscape(gpa, cwd_str);
-                defer gpa.free(escaped);
-                var trailing_buf: [768]u8 = undefined;
-                const trail = std.fmt.bufPrint(&trailing_buf, " \"cd '{s}' 2>/dev/null; exec $SHELL -l\"", .{escaped}) catch return error.CommandTooLong;
-                if (final_len + trail.len > stack_buf.len) return error.CommandTooLong;
-                @memcpy(stack_buf[final_len..][0..trail.len], trail);
-                final_len += trail.len;
-            }
-
-            const command = try platform_pty_command.allocCommandLineFromUtf8(gpa, stack_buf[0..final_len]);
+            const command = try platform_pty_command.allocCommandLineFromUtf8(gpa, command_text);
             defer platform_pty_command.freeCommandLine(gpa, command);
             const surface = try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(command), g_scrollback_limit, cursor_style, cursor_blink, null);
             surface.attachRemoteClient(g_remote_client);
@@ -1243,6 +1218,35 @@ fn surfaceFromSnapImpl(
             return surface;
         },
     }
+}
+
+fn buildSshRestoreCommand(
+    allocator: std.mem.Allocator,
+    buf: []u8,
+    s: session_persist.SurfaceSnap.SshSnap,
+) ![]const u8 {
+    // Mirrors the password_auth=false branch: persisted SSH snaps never carry
+    // passwords, so restored sessions rely on keys or the native ssh prompt.
+    var port_buf: [8]u8 = undefined;
+    const port_slice = std.fmt.bufPrint(&port_buf, "{}", .{s.port}) catch return error.CommandTooLong;
+
+    const base = platform_pty_command.sshInteractiveCommand(buf, .{
+        .user = s.user,
+        .host = s.host,
+        .port = port_slice,
+        .legacy_algorithms = g_ssh_legacy_algorithms,
+        .proxy_jump = s.proxy_jump,
+    }) orelse return error.CommandTooLong;
+    var final_len: usize = base.len;
+
+    if (s.cwd) |cwd_str| {
+        const escaped = try session_persist.shellSingleQuoteEscape(allocator, cwd_str);
+        defer allocator.free(escaped);
+        const trail = std.fmt.bufPrint(buf[final_len..], " \"cd '{s}' 2>/dev/null; exec $SHELL -l\"", .{escaped}) catch return error.CommandTooLong;
+        final_len += trail.len;
+    }
+
+    return buf[0..final_len];
 }
 
 /// Materialize one TabSnap into a new live tab. Returns true on success.
@@ -1532,6 +1536,36 @@ test "tab: restoreTab skips an ai_history tab when no restore hook is installed"
     };
     try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
     try std.testing.expectEqual(@as(usize, 0), g_tab_count);
+}
+
+test "tab: SSH restore command accepts the longest persisted connection fields and cwd" {
+    const allocator = std.testing.allocator;
+
+    var user_buf: [128]u8 = undefined;
+    @memset(&user_buf, 'u');
+    var host_buf: [128]u8 = undefined;
+    @memset(&host_buf, 'h');
+    var proxy_buf: [256]u8 = undefined;
+    @memset(&proxy_buf, 'p');
+    var cwd_buf: [512]u8 = undefined;
+    @memset(&cwd_buf, 'd');
+
+    var command_buf: [SSH_RESTORE_COMMAND_BUF_SIZE]u8 = undefined;
+    const command = try buildSshRestoreCommand(
+        allocator,
+        &command_buf,
+        .{
+            .cwd = cwd_buf[0..],
+            .user = user_buf[0..],
+            .host = host_buf[0..],
+            .port = 65535,
+            .proxy_jump = proxy_buf[0..],
+        },
+    );
+
+    try std.testing.expect(std.mem.indexOf(u8, command, "ssh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, command, "-p 65535") != null);
+    try std.testing.expect(std.mem.indexOf(u8, command, "cd '") != null);
 }
 
 test "tab: spawnAiHistoryTab creates active ai_history tab" {

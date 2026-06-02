@@ -34,6 +34,7 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const platform_window_state = @import("platform/window_state.zig");
 const platform_wsl = @import("platform/wsl.zig");
 const startup_tabs = @import("startup_tabs.zig");
+const session_persist = @import("session_persist.zig");
 const quick_terminal = @import("quick_terminal.zig");
 const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
@@ -119,10 +120,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
 
     try ensureGlobalAgentHistoryStore(allocator);
     tab.g_ai_history_change_hook = saveAiHistoryChangeEvent;
-    // Let session restore reopen AI Chat tabs from their persisted history
-    // session id. AppWindow owns the agent history store, so it supplies the
-    // hook tab.zig calls from restoreTab (which only knows the session id).
-    tab.g_ai_restore_hook = reopenAiChatTabFromHistorySessionId;
+    installSessionRestoreHooks();
 
     // Apply config from App to globals
     g_theme = app.theme;
@@ -238,6 +236,7 @@ pub fn deinit(self: *AppWindow) void {
             is_last_window = self.app.windows.items.len == 0;
         }
         if (restore_enabled and is_last_window) {
+            persistOpenAiChatTabsToHistoryStore(self.allocator);
             tab.dumpSessionToFile(self.allocator);
         }
     }
@@ -308,6 +307,101 @@ test "AppWindow: platform window callbacks use backend-neutral names" {
     try std.testing.expect(message_info.params[1].type.? == window_backend.WordParam);
     try std.testing.expect(message_info.params[2].type.? == window_backend.LongParam);
     try std.testing.expect(message_info.return_type.? == ?window_backend.MessageResult);
+}
+
+test "AppWindow: session restore hooks include AI chat and AI history tabs" {
+    const previous_chat_hook = tab.g_ai_restore_hook;
+    const previous_history_hook = tab.g_ai_history_restore_hook;
+    defer {
+        tab.g_ai_restore_hook = previous_chat_hook;
+        tab.g_ai_history_restore_hook = previous_history_hook;
+    }
+
+    tab.g_ai_restore_hook = null;
+    tab.g_ai_history_restore_hook = null;
+
+    installSessionRestoreHooks();
+
+    try std.testing.expect(tab.g_ai_restore_hook != null);
+    try std.testing.expect(tab.g_ai_history_restore_hook != null);
+}
+
+test "AppWindow: AI history restore snapshot rebuilds an SSH source" {
+    const source = aiHistorySourceFromSnap(.{
+        .source_id = "buildbox",
+        .target_kind = "ssh",
+        .target_name = "buildbox",
+    }) orelse return error.ExpectedSource;
+
+    try std.testing.expectEqualStrings("buildbox", source.id);
+    try std.testing.expectEqualStrings("buildbox", source.name);
+    switch (source.target) {
+        .ssh => |ssh| try std.testing.expectEqualStrings("buildbox", ssh.profile_name),
+        else => return error.ExpectedSshTarget,
+    }
+}
+
+test "AppWindow: open AI chat tabs are persisted to agent history before session dump" {
+    const allocator = std.testing.allocator;
+
+    const previous_store = g_agent_history;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_agent_history = previous_store;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+
+    var store = agent_history.Store.init(allocator);
+    defer store.deinit();
+    g_agent_history = &store;
+
+    const session = try ai_chat.Session.init(
+        allocator,
+        "Agent",
+        "https://api.example.test",
+        "key",
+        "model",
+        "system",
+        "enabled",
+        "",
+        "false",
+        "true",
+    );
+
+    const tab_state = try allocator.create(tab.TabState);
+    tab_state.* = .{
+        .kind = .ai_chat,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = session,
+        .ai_history_session = null,
+        .copilot_session = null,
+    };
+    defer {
+        tab_state.deinit(allocator);
+        allocator.destroy(tab_state);
+        tab.g_tabs[0] = null;
+        tab.g_tab_count = 0;
+    }
+
+    tab.g_tabs[0] = tab_state;
+    tab.g_tab_count = 1;
+
+    persistOpenAiChatTabsToHistoryStore(allocator);
+
+    var restored = try store.cloneRecordBySessionId(allocator, session.sessionId()) orelse return error.ExpectedHistoryRecord;
+    defer agent_history.freeOwnedRecord(allocator, &restored);
+
+    try std.testing.expectEqualStrings("Agent", restored.title);
+    try std.testing.expect(restored.agent_enabled);
 }
 
 // ============================================================================
@@ -1322,6 +1416,13 @@ fn ensureGlobalAgentHistoryStore(allocator: std.mem.Allocator) !void {
     g_agent_history_revision = 0;
 }
 
+fn installSessionRestoreHooks() void {
+    // AppWindow owns the stores needed to rebuild non-terminal tab kinds, so
+    // tab.zig routes persisted AI snapshots back through these hooks.
+    tab.g_ai_restore_hook = reopenAiChatTabFromHistorySessionId;
+    tab.g_ai_history_restore_hook = reopenAiHistoryTabFromSnapshot;
+}
+
 fn deinitGlobalAgentHistoryStore(allocator: std.mem.Allocator) void {
     flushAgentHistoryStoreIfDirty(true);
 
@@ -1350,6 +1451,31 @@ fn saveAiHistoryChangeEvent(event: ai_chat.HistoryChangeEvent) void {
         return;
     };
     markAgentHistoryDirtyLocked();
+}
+
+fn persistOpenAiChatTabsToHistoryStore(allocator: std.mem.Allocator) void {
+    for (0..tab.g_tab_count) |idx| {
+        const tab_state = tab.g_tabs[idx] orelse continue;
+        if (tab_state.kind != .ai_chat) continue;
+        const session = tab_state.ai_chat_session orelse continue;
+
+        var record = session.toHistoryRecord(allocator) catch |err| {
+            log.warn("failed to snapshot open AI tab for session restore: {}", .{err});
+            continue;
+        };
+
+        g_agent_history_mutex.lock();
+        if (g_agent_history) |store| {
+            if (store.upsertRecord(record)) {
+                markAgentHistoryDirtyLocked();
+            } else |err| {
+                log.warn("failed to persist open AI tab {s}: {}", .{ record.session_id, err });
+            }
+        }
+        g_agent_history_mutex.unlock();
+
+        agent_history.freeOwnedRecord(allocator, &record);
+    }
 }
 
 fn markAgentHistoryDirtyLocked() void {
@@ -1549,6 +1675,39 @@ pub fn reopenAiChatTabFromHistorySessionId(session_id: []const u8) bool {
     if (!tab.spawnAiChatTabFromHistoryRecord(allocator, owned_record)) return false;
     clearUiStateOnTabChange();
     return true;
+}
+
+fn aiHistorySourceFromSnap(snap: session_persist.AiHistorySnap) ?ai_history_source.Source {
+    if (snap.source_id.len == 0) return null;
+    const name = if (snap.target_name.len > 0) snap.target_name else snap.source_id;
+
+    if (std.ascii.eqlIgnoreCase(snap.target_kind, "local")) {
+        return .{
+            .id = snap.source_id,
+            .name = name,
+            .target = .local,
+        };
+    }
+    if (std.ascii.eqlIgnoreCase(snap.target_kind, "wsl")) {
+        return .{
+            .id = snap.source_id,
+            .name = name,
+            .target = .{ .wsl = .{} },
+        };
+    }
+    if (std.ascii.eqlIgnoreCase(snap.target_kind, "ssh")) {
+        return .{
+            .id = snap.source_id,
+            .name = name,
+            .target = .{ .ssh = .{ .profile_name = name } },
+        };
+    }
+    return null;
+}
+
+fn reopenAiHistoryTabFromSnapshot(snap: session_persist.AiHistorySnap) bool {
+    const source = aiHistorySourceFromSnap(snap) orelse return false;
+    return spawnAiHistoryTab(source);
 }
 
 pub fn deleteAiChatHistorySessionId(session_id: []const u8) bool {
