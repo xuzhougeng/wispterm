@@ -167,6 +167,15 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
+        self.closing.store(true, .release);
+        if (self.scan_thread) |t| {
+            t.join();
+            self.scan_thread = null;
+        }
+        if (self.transcript_thread) |t| {
+            t.join();
+            self.transcript_thread = null;
+        }
         self.clearTranscript();
         freeRows(self.allocator, self.rows.items);
         self.rows.deinit(self.allocator);
@@ -1767,6 +1776,7 @@ test "ai_history_session: publishScanResult applies rows when generation current
     session.publishScanResult(7, .{ .rows = rows, .owns_row_strings = true });
 
     try std.testing.expectEqual(LoadState.ready, session.state);
+    try std.testing.expectEqualStrings("Ready", session.status);
     try std.testing.expectEqual(@as(usize, 1), session.rows.items.len);
     try std.testing.expectEqualStrings("live", session.rows.items[0].session_id);
 }
