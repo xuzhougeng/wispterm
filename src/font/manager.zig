@@ -319,7 +319,7 @@ fn measureFaceMetrics(face: freetype.Face) MeasuredFaceMetrics {
     };
     const ic_width = blk: {
         const glyph_index = face.getCharIndex(0x6C34) orelse break :blk @min(ascii_height, 2.0 * max_advance);
-        face.loadGlyph(glyph_index, .{ .target = .normal }) catch break :blk @min(ascii_height, 2.0 * max_advance);
+        face.loadGlyph(glyph_index, .{ .target = .normal, .no_autohint = skip_autohint_x86_macos }) catch break :blk @min(ascii_height, 2.0 * max_advance);
         break :blk f26dot6ToF64(face.handle.*.glyph.*.advance.x);
     };
 
@@ -337,12 +337,18 @@ fn measureFaceMetrics(face: freetype.Face) MeasuredFaceMetrics {
 
 // Issue #114: on x86_64 macOS, the Zig 0.15.2 toolchain emits a malformed
 // `af_cjk_metrics_init` — the first function in __text — whose symbol/entry sits
-// 8 bytes ahead of its real prologue. FreeType's CJK auto-hinter dispatches into
-// those 8 garbage bytes and crashes deterministically. Until the toolchain is
-// fixed, skip the auto-hinter for CJK glyphs on that target so the broken
-// function is never invoked (FreeType falls back to native/no hinting). Other
-// targets keep auto-hinting, so their CJK rendering quality is unchanged.
-const skip_cjk_autohint = builtin.os.tag == .macos and builtin.cpu.arch == .x86_64;
+// 8 bytes ahead of its real prologue. FreeType's auto-hinter dispatches into
+// those 8 garbage bytes and crashes deterministically the moment any CJK glyph
+// is auto-hinted (e.g. opening any AI-agent overlay with zh-CN labels).
+//
+// `FT_LOAD_NO_AUTOHINT` makes FreeType skip the auto-hinter entirely (see
+// ftobjs.c FT_Load_Glyph), so the broken function is never invoked. We can't
+// reliably predict which codepoint first trips the CJK style — FreeType's own
+// script classifier decides, and it doesn't match a simple Unicode-range test —
+// so on the affected target we disable the auto-hinter for ALL glyph loads
+// rather than gating on a CJK predicate. FreeType falls back to native/no
+// hinting. Other targets are unaffected and keep auto-hinting.
+const skip_autohint_x86_macos = builtin.os.tag == .macos and builtin.cpu.arch == .x86_64;
 
 fn isCjkCodepoint(codepoint: u32) bool {
     return (codepoint >= 0x2E80 and codepoint <= 0x2FDF) or
@@ -759,7 +765,7 @@ pub fn loadGlyph(codepoint: u32) ?Character {
     face_to_use.loadGlyph(@intCast(glyph_index), .{
         .target = target,
         .color = is_color_face,
-        .no_autohint = skip_cjk_autohint and isCjkCodepoint(codepoint),
+        .no_autohint = skip_autohint_x86_macos,
     }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(codepoint)) .normal else .light) catch return null;
 
@@ -953,7 +959,7 @@ pub fn loadGraphemeGlyph(base_cp: u21, extra_cps: []const u21) ?Character {
     face_to_use.loadGlyph(@intCast(shaped_glyph_index), .{
         .target = target,
         .color = is_color_face,
-        .no_autohint = skip_cjk_autohint and isCjkCodepoint(@intCast(base_cp)),
+        .no_autohint = skip_autohint_x86_macos,
     }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(@intCast(base_cp))) .normal else .light) catch return null;
 
@@ -1097,7 +1103,7 @@ pub fn loadTitlebarGlyph(codepoint: u32) ?Character {
     }
 
     const target = glyphTargetForCodepoint(codepoint);
-    face_to_use.loadGlyph(@intCast(glyph_index), .{ .target = target, .no_autohint = skip_cjk_autohint and isCjkCodepoint(codepoint) }) catch return null;
+    face_to_use.loadGlyph(@intCast(glyph_index), .{ .target = target, .no_autohint = skip_autohint_x86_macos }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(codepoint)) .normal else .light) catch return null;
 
     const glyph = face_to_use.handle.*.glyph;
