@@ -607,6 +607,14 @@ pub const Session = struct {
     }
 };
 
+/// Renders the scanning status label into `buf`. Returns "Scanning…" for zero,
+/// "Scanning… N" otherwise. `buf` should be at least 32 bytes; on overflow falls
+/// back to the plain label.
+pub fn scanningStatusLabel(buf: []u8, count: usize) []const u8 {
+    if (count == 0) return "Scanning…";
+    return std.fmt.bufPrint(buf, "Scanning… {d}", .{count}) catch "Scanning…";
+}
+
 const StreamCtx = struct {
     session: *Session,
     generation: u64,
@@ -2440,4 +2448,10 @@ test "ai_history_session: remote scan with sink streams rows and returns empty n
     try std.testing.expectEqual(@as(usize, 0), result.rows.len);
     try std.testing.expectEqual(@as(usize, 1), collect.rows.items.len);
     try std.testing.expectEqualStrings("codex-abc", collect.rows.items[0].session_id);
+}
+
+test "ai_history_session: scanningStatusLabel formats count" {
+    var buf: [48]u8 = undefined;
+    try std.testing.expectEqualStrings("Scanning…", scanningStatusLabel(&buf, 0));
+    try std.testing.expectEqualStrings("Scanning… 7", scanningStatusLabel(&buf, 7));
 }

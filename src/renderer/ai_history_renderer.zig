@@ -1,4 +1,5 @@
 const std = @import("std");
+const ai_history_session = @import("../ai_history_session.zig");
 
 const HEADER_H: f32 = 54;
 const FILTER_H: f32 = 42;
@@ -224,7 +225,12 @@ fn renderLeftColumn(
     y += draw.cell_h + 18;
     _ = draw.renderTextLimited("Status", layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.left_w - PAD_X * 2);
     y += draw.cell_h + 5;
-    _ = draw.renderTextLimited(statusText(session), layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.left_w - PAD_X * 2);
+    var status_buf: [48]u8 = undefined;
+    const status_label = if (session.state == .scanning)
+        ai_history_session.scanningStatusLabel(&status_buf, session.rows.items.len)
+    else
+        statusText(session);
+    _ = draw.renderTextLimited(status_label, layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.left_w - PAD_X * 2);
     y += draw.cell_h + 18;
     _ = draw.renderTextLimited("r  Retry scan", layout.left_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.left_w - PAD_X * 2);
 
