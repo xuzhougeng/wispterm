@@ -1,42 +1,49 @@
-name: Publish macOS Release
+name: Publish macOS Release (x86_64)
+
+# Manually-triggered Intel (x86_64) macOS release build.
+#
+# The automatic tag-triggered release (macos-release.yml) ships Apple Silicon
+# (aarch64) only. The Intel build is produced here on demand because of a
+# toolchain issue affecting the x86_64 binary (see issue #114). This workflow
+# builds, signs, and notarizes the x86_64 DMG and attaches it to the existing
+# GitHub release for the given tag.
+#
+# Trigger: Actions tab -> "Publish macOS Release (x86_64)" -> Run workflow,
+# then enter the release tag (e.g. v1.6.0). The release for that tag must
+# already exist (created by the aarch64 tag-triggered release).
 
 on:
-  push:
-    tags:
-      - '[0-9]*'
-      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build the x86_64 DMG for (e.g. v1.6.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
-  build-macos:
-    name: Build macOS (${{ matrix.arch }})
+  build-macos-x86_64:
+    name: Build macOS (x86_64)
     runs-on: macos-latest
-    # x86_64 (Intel) is built on demand via macos-release-x86_64.yml, not here,
-    # because of a toolchain issue affecting the Intel build (see issue #114).
-    # The automatic tag-triggered release ships Apple Silicon (aarch64) only.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: aarch64
-            target: aarch64-macos
     env:
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Validate release tag
         shell: bash
         run: |
-          tag="${{ github.ref_name }}"
+          tag="${{ github.event.inputs.tag }}"
           if [[ ! "$tag" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
             echo "Release tag must match vX.Y.Z, X.Y, or X.Y.Z. Received: $tag" >&2
             exit 1
           fi
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
@@ -49,9 +56,9 @@ jobs:
           path: |
             .zig-cache/p
             .zig-global-cache
-          key: ${{ runner.os }}-${{ matrix.arch }}-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'pkg/**/build.zig.zon') }}
+          key: ${{ runner.os }}-x86_64-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'pkg/**/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-zig-0.15.2-
+            ${{ runner.os }}-x86_64-zig-0.15.2-
 
       - name: Import macOS signing certificate
         shell: bash
@@ -103,7 +110,7 @@ jobs:
       - name: Fetch dependencies and build release
         shell: bash
         env:
-          WISPTERM_MACOS_VERSION: ${{ github.ref_name }}
+          WISPTERM_MACOS_VERSION: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
 
@@ -130,13 +137,13 @@ jobs:
           retry "zig dependency fetch" zig build -Doptimize=ReleaseFast --fetch
           retry "macos packaging" zig build macos-dist \
             -Doptimize=ReleaseFast \
-            -Dtarget=${{ matrix.target }}
+            -Dtarget=x86_64-macos
 
       - name: Validate packaged outputs
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ github.ref_name }}"
+          tag="${{ github.event.inputs.tag }}"
           dmg_tag="$tag"
           [[ "$dmg_tag" != v* ]] && dmg_tag="v$dmg_tag"
           dmg_path="zig-out/dist/macos/wispterm-macos-${dmg_tag}.dmg"
@@ -155,18 +162,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ github.ref_name }}"
+          tag="${{ github.event.inputs.tag }}"
           dmg_tag="$tag"
           [[ "$dmg_tag" != v* ]] && dmg_tag="v$dmg_tag"
           src="zig-out/dist/macos/wispterm-macos-${dmg_tag}.dmg"
-          dst="wispterm-macos-${{ matrix.arch }}-${tag}.dmg"
+          dst="wispterm-macos-x86_64-${tag}.dmg"
           cp "$src" "$dst"
           echo "ASSET_PATH=${dst}" >> "${GITHUB_ENV}"
 
-      - name: Upload macOS artifact
+      - name: Upload x86_64 DMG to the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag }}"
+          if ! gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            echo "::error::Release ${tag} does not exist yet. Create it first via the tag-triggered (aarch64) release, then re-run this workflow." >&2
+            exit 1
+          fi
+          gh release upload "${tag}" "${ASSET_PATH}" --clobber --repo "${GH_REPO}"
+
+      - name: Also upload as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wispterm-macos-${{ matrix.arch }}-${{ github.ref_name }}
+          name: wispterm-macos-x86_64-${{ github.event.inputs.tag }}
           path: ${{ env.ASSET_PATH }}
           if-no-files-found: error
 
@@ -176,69 +197,4 @@ jobs:
         run: |
           if [[ -n "${CODESIGN_KEYCHAIN:-}" && -f "${CODESIGN_KEYCHAIN}" ]]; then
             security delete-keychain "${CODESIGN_KEYCHAIN}" || true
-          fi
-
-  publish:
-    name: Publish GitHub release
-    needs: build-macos
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-
-      - name: Publish GitHub release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          tag="${{ github.ref_name }}"
-
-          files=()
-          while IFS= read -r -d '' f; do
-            files+=("$f")
-          done < <(find release-assets -type f -name '*.dmg' -print0 | sort -z)
-
-          if [[ ${#files[@]} -eq 0 ]]; then
-            echo "No macOS DMG assets found" >&2
-            exit 1
-          fi
-
-          asset_notes=$(printf '%s\n' \
-            'macOS assets included in this release:' \
-            '' \
-            '- aarch64 DMG: native build for Apple Silicon Macs' \
-            '' \
-            'The Intel (x86_64) DMG is published separately on demand via the "Publish macOS Release (x86_64)" workflow.' \
-            '' \
-            'DMGs are signed with a Developer ID Application certificate and notarized by Apple.')
-
-          release_notes_path="release-notes/${tag}.md"
-          if [[ -f "${release_notes_path}" ]]; then
-            curated="$(cat "${release_notes_path}")"
-            curated_trimmed="$(printf '%s' "${curated}" | awk 'NF {found=1} found' )"
-            if [[ -n "${curated_trimmed}" ]]; then
-              notes="$(printf '%s\n\n%s\n' "${curated}" "${asset_notes}")"
-            else
-              notes="${asset_notes}"
-            fi
-          else
-            notes="${asset_notes}"
-          fi
-
-          if gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
-            gh release upload "${tag}" "${files[@]}" --clobber --repo "${GH_REPO}"
-          else
-            gh release create "${tag}" "${files[@]}" \
-              --repo "${GH_REPO}" \
-              --verify-tag \
-              --generate-notes \
-              --notes "${notes}"
           fi
