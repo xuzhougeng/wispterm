@@ -161,8 +161,9 @@ pub const Session = struct {
     transcript: []types.TranscriptMessage = &.{},
 
     // Async scan/transcript support. `mutex` guards state/status/rows/selected/
-    // list_offset/transcript*/generation fields. Workers run host I/O without the
-    // lock and take it only to publish. `closing` + join-on-deinit give UAF safety.
+    // list_offset/filter/filter_len/transcript*/generation fields. Workers run host
+    // I/O without the lock and take it only to publish. `closing` + join-on-deinit
+    // give UAF safety.
     mutex: std.Thread.Mutex = .{},
     scan_thread: ?std.Thread = null,
     transcript_thread: ?std.Thread = null,

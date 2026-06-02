@@ -977,6 +977,9 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
             return true;
         },
         .row => |visible_index| {
+            // Re-lock independently of the hit-test above: a worker may have
+            // replaced rows in between, but selectVisibleIndex clamps to the
+            // current visible count, so a now-stale index is safe.
             session.mutex.lock();
             session.selectVisibleIndex(visible_index);
             session.ensureSelectionVisible(visible_rows);
