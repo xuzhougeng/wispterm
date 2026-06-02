@@ -160,6 +160,9 @@ pub const Session = struct {
     transcript_status: []const u8 = "",
     transcript_provider: ?types.ProviderId = null,
     transcript: []types.TranscriptMessage = &.{},
+    /// Scroll offset into the transcript preview, in wrapped visual lines. The
+    /// renderer clamps this against the actual content height each frame.
+    transcript_scroll: usize = 0,
 
     // Async scan/transcript support. `mutex` guards state/status/rows/selected/
     // list_offset/filter/filter_len/transcript*/generation fields. Workers run host
@@ -503,6 +506,19 @@ pub const Session = struct {
         self.transcript_provider = null;
         self.transcript_state = .idle;
         self.transcript_status = "";
+        self.transcript_scroll = 0;
+    }
+
+    /// Adjust the transcript preview scroll offset by `delta` visual lines,
+    /// saturating at the top. The high end is clamped by the renderer against
+    /// the wrapped content height. Callers must hold `mutex`.
+    pub fn scrollTranscriptBy(self: *Session, delta: isize) void {
+        if (delta < 0) {
+            const down: usize = @intCast(-delta);
+            self.transcript_scroll -|= down;
+        } else {
+            self.transcript_scroll +|= @intCast(delta);
+        }
     }
 
     pub fn rowVisible(self: *const Session, row: types.SessionMeta, query: []const u8) bool {

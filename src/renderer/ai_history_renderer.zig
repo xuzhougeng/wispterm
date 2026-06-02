@@ -18,6 +18,9 @@ pub const DrawContext = struct {
     fillQuad: *const fn (f32, f32, f32, f32, [3]f32) void,
     fillQuadAlpha: *const fn (f32, f32, f32, f32, [3]f32, f32) void,
     renderTextLimited: *const fn ([]const u8, f32, f32, [3]f32, f32) f32,
+    // Advance width (px) of a single glyph in the UI font, used to wrap
+    // transcript text. Must use the same metric as renderTextLimited.
+    glyphAdvance: *const fn (u32) f32,
 };
 
 pub const Layout = struct {
@@ -430,8 +433,97 @@ fn renderDetail(
         .idle => _ = draw.renderTextLimited("Press Space to load transcript", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.detail_w - PAD_X * 2),
         .loading => _ = draw.renderTextLimited("Loading transcript", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), muted, layout.detail_w - PAD_X * 2),
         .failed => _ = draw.renderTextLimited("Transcript failed to load - press Space to retry", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, y), accent, layout.detail_w - PAD_X * 2),
-        .ready => renderTranscriptMessages(draw, session.transcript, layout, window_height, y, content_h, fg, muted, accent),
+        .ready => {
+            // Clamp the stored scroll against the actual wrapped height every
+            // frame so it self-corrects (e.g. after the window or font resizes),
+            // then render from that offset. Safe to write back: render runs while
+            // the session mutex is held.
+            const line_h = draw.cell_h + 4;
+            const wrap_w = @max(1.0, layout.detail_w - PAD_X * 2 - 12);
+            const total = transcriptLineTotal(session.transcript, wrap_w, draw.glyphAdvance);
+            const visible: usize = @intFromFloat(@max(0, @floor((window_height - y) / line_h)));
+            const scroll = clampScroll(session.transcript_scroll, total, visible);
+            session.transcript_scroll = scroll;
+            renderTranscriptMessages(draw, session.transcript, layout, window_height, y, content_h, fg, muted, accent, scroll);
+        },
     }
+}
+
+// Wraps a single message's text into visual lines that each fit within `max_w`,
+// using the caller-supplied glyph advance metric. Breaks on explicit '\n' and,
+// when a line overflows, at the last space if one exists (word wrap) or at the
+// codepoint boundary otherwise (hard wrap). At least one glyph is emitted per
+// line so an oversized glyph can never stall iteration.
+const LineWrap = struct {
+    text: []const u8,
+    max_w: f32,
+    advance: *const fn (u32) f32,
+    pos: usize = 0,
+
+    fn next(self: *LineWrap) ?[]const u8 {
+        if (self.max_w <= 0) return null;
+        if (self.pos >= self.text.len) return null;
+
+        const start = self.pos;
+        var i = start;
+        var width: f32 = 0;
+        var last_space: ?usize = null;
+        while (i < self.text.len) {
+            const seq_len = std.unicode.utf8ByteSequenceLength(self.text[i]) catch 1;
+            const end = @min(i + seq_len, self.text.len);
+            const cp = std.unicode.utf8Decode(self.text[i..end]) catch 0xFFFD;
+
+            if (cp == '\n') {
+                self.pos = i + 1;
+                return self.text[start..i];
+            }
+
+            const adv = self.advance(cp);
+            if (width + adv > self.max_w and i > start) {
+                if (last_space) |sp| {
+                    if (sp > start) {
+                        self.pos = sp + 1;
+                        return self.text[start..sp];
+                    }
+                }
+                self.pos = i;
+                return self.text[start..i];
+            }
+
+            if (cp == ' ') last_space = i;
+            width += adv;
+            i = end;
+        }
+
+        self.pos = self.text.len;
+        return self.text[start..];
+    }
+};
+
+fn wrappedLineCount(text: []const u8, max_w: f32, advance: *const fn (u32) f32) usize {
+    var it = LineWrap{ .text = text, .max_w = max_w, .advance = advance };
+    var count: usize = 0;
+    while (it.next()) |_| count += 1;
+    return count;
+}
+
+// Total visual lines a transcript occupies: one role-label line plus the
+// wrapped content lines for every message. Matches the line accounting in
+// renderTranscriptMessages so scroll offsets stay consistent.
+fn transcriptLineTotal(messages: anytype, wrap_w: f32, advance: *const fn (u32) f32) usize {
+    var total: usize = 0;
+    for (messages) |msg| {
+        total += 1 + wrappedLineCount(msg.content, wrap_w, advance);
+    }
+    return total;
+}
+
+// Clamp a requested scroll offset (in visual lines) to the range that keeps at
+// least `visible` lines on screen; returns 0 when everything already fits.
+fn clampScroll(requested: usize, total: usize, visible: usize) usize {
+    if (total <= visible) return 0;
+    const max_scroll = total - visible;
+    return @min(requested, max_scroll);
 }
 
 fn renderTranscriptMessages(
@@ -444,24 +536,49 @@ fn renderTranscriptMessages(
     fg: [3]f32,
     muted: [3]f32,
     accent: [3]f32,
+    scroll_lines: usize,
 ) void {
     if (messages.len == 0) {
         _ = draw.renderTextLimited("Transcript is empty", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, start_top), muted, layout.detail_w - PAD_X * 2);
         return;
     }
 
-    const row_h = draw.cell_h + 8;
     _ = content_h;
-    const max_rows = transcriptPreviewRowCapacity(window_height, start_top, row_h);
-    const count = @min(messages.len, max_rows);
-    var i: usize = 0;
-    while (i < count) : (i += 1) {
-        const msg = messages[i];
-        const y = yTextFromTop(draw, window_height, start_top + @as(f32, @floatFromInt(i)) * row_h);
-        const role_text = roleLabel(msg.role);
-        const role_color = if (msg.role == .assistant) accent else muted;
-        const role_end = draw.renderTextLimited(role_text, layout.detail_x + PAD_X, y, role_color, 78);
-        _ = draw.renderTextLimited(msg.content, role_end + SMALL_GAP, y, fg, layout.detail_w - (role_end - layout.detail_x) - PAD_X - SMALL_GAP);
+    const line_h = draw.cell_h + 4;
+    const text_x = layout.detail_x + PAD_X;
+    const content_w = @max(1.0, layout.detail_w - PAD_X * 2);
+    const indent: f32 = 12;
+    const wrap_w = @max(1.0, content_w - indent);
+
+    // Draw messages top-to-bottom, wrapping each message's content across as
+    // many visual lines as it needs. The role label gets its own full-width
+    // line so it is never truncated. `scroll_lines` visual lines are skipped
+    // from the top; drawing stops once we run out of vertical space. The line
+    // accounting here must match transcriptLineTotal.
+    var vis_index: usize = 0;
+    var top_px = start_top;
+    var drew_any = false;
+    for (messages) |msg| {
+        if (vis_index >= scroll_lines) {
+            if (top_px + line_h > window_height) return;
+            const role_color = if (msg.role == .assistant) accent else muted;
+            _ = draw.renderTextLimited(roleLabel(msg.role), text_x, yTextFromTop(draw, window_height, top_px), role_color, content_w);
+            top_px += line_h;
+            drew_any = true;
+        }
+        vis_index += 1;
+
+        var it = LineWrap{ .text = msg.content, .max_w = wrap_w, .advance = draw.glyphAdvance };
+        while (it.next()) |line| {
+            if (vis_index >= scroll_lines) {
+                if (top_px + line_h > window_height) return;
+                _ = draw.renderTextLimited(line, text_x + indent, yTextFromTop(draw, window_height, top_px), fg, wrap_w);
+                top_px += line_h;
+                drew_any = true;
+            }
+            vis_index += 1;
+        }
+        if (drew_any) top_px += SMALL_GAP;
     }
 }
 
@@ -570,11 +687,6 @@ fn rectContains(x: f32, y: f32, left: f32, top: f32, width: f32, height: f32) bo
         y >= top and y < top + height;
 }
 
-fn transcriptPreviewRowCapacity(window_height: f32, start_top: f32, row_h: f32) usize {
-    if (row_h <= 0) return 0;
-    return @intFromFloat(@max(0, @floor(@max(0, window_height - start_top) / row_h)));
-}
-
 test "ai_history_renderer: list row lines never overlap as ui font grows" {
     const cell_heights = [_]f32{ 12, 16, 18, 22, 28, 32, 40 };
     for (cell_heights) |cell_h| {
@@ -622,11 +734,6 @@ test "ai_history_renderer: zero width layout has no columns" {
     try std.testing.expectEqual(@as(f32, 20), layout.detail_x);
 }
 
-test "ai_history_renderer: transcript row capacity uses absolute window bottom" {
-    try std.testing.expectEqual(@as(usize, 10), transcriptPreviewRowCapacity(600, 300, 30));
-    try std.testing.expectEqual(@as(usize, 0), transcriptPreviewRowCapacity(300, 300, 30));
-}
-
 test "ai_history_renderer: interaction hit test maps buttons and row offset" {
     const FakeSession = struct {
         fn visibleCount(_: @This()) usize {
@@ -653,6 +760,78 @@ test "ai_history_renderer: interaction hit test maps buttons and row offset" {
     );
     const row_hit = interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.list_x + 8, top + FILTER_H + ROW_H + 2);
     try std.testing.expectEqual(@as(usize, 4), row_hit.row);
+}
+
+// A fixed-advance metric so wrapping tests are deterministic without a font.
+fn tenPxAdvance(_: u32) f32 {
+    return 10;
+}
+
+fn collectWrapped(text: []const u8, max_w: f32, out: *std.ArrayList([]const u8)) !void {
+    var it = LineWrap{ .text = text, .max_w = max_w, .advance = tenPxAdvance };
+    while (it.next()) |line| try out.append(std.testing.allocator, line);
+}
+
+test "ai_history_renderer: LineWrap hard-wraps when text exceeds width" {
+    var lines: std.ArrayList([]const u8) = .empty;
+    defer lines.deinit(std.testing.allocator);
+    // max_w 35 fits three 10px glyphs (30) but not four (40).
+    try collectWrapped("abcdefg", 35, &lines);
+    try std.testing.expectEqual(@as(usize, 3), lines.items.len);
+    try std.testing.expectEqualStrings("abc", lines.items[0]);
+    try std.testing.expectEqualStrings("def", lines.items[1]);
+    try std.testing.expectEqualStrings("g", lines.items[2]);
+}
+
+test "ai_history_renderer: LineWrap breaks on explicit newlines" {
+    var lines: std.ArrayList([]const u8) = .empty;
+    defer lines.deinit(std.testing.allocator);
+    try collectWrapped("ab\n\ncd", 1000, &lines);
+    try std.testing.expectEqual(@as(usize, 3), lines.items.len);
+    try std.testing.expectEqualStrings("ab", lines.items[0]);
+    try std.testing.expectEqualStrings("", lines.items[1]);
+    try std.testing.expectEqualStrings("cd", lines.items[2]);
+}
+
+test "ai_history_renderer: LineWrap prefers a space boundary when wrapping" {
+    var lines: std.ArrayList([]const u8) = .empty;
+    defer lines.deinit(std.testing.allocator);
+    // "ab cd ef" at max_w 55: "ab cd " would need 60px, so break at the first space.
+    try collectWrapped("ab cd ef", 55, &lines);
+    try std.testing.expectEqual(@as(usize, 2), lines.items.len);
+    try std.testing.expectEqualStrings("ab", lines.items[0]);
+    try std.testing.expectEqualStrings("cd ef", lines.items[1]);
+}
+
+test "ai_history_renderer: LineWrap always advances past an oversized glyph" {
+    var lines: std.ArrayList([]const u8) = .empty;
+    defer lines.deinit(std.testing.allocator);
+    // max_w smaller than one glyph must still emit one glyph per line, not loop.
+    try collectWrapped("abc", 5, &lines);
+    try std.testing.expectEqual(@as(usize, 3), lines.items.len);
+}
+
+test "ai_history_renderer: LineWrap counts wrapped lines" {
+    try std.testing.expectEqual(@as(usize, 3), wrappedLineCount("abcdefg", 35, tenPxAdvance));
+    try std.testing.expectEqual(@as(usize, 1), wrappedLineCount("ab", 1000, tenPxAdvance));
+    try std.testing.expectEqual(@as(usize, 0), wrappedLineCount("", 1000, tenPxAdvance));
+}
+
+test "ai_history_renderer: transcriptLineTotal counts a role line plus wrapped content per message" {
+    const Msg = struct { content: []const u8 };
+    const msgs = [_]Msg{
+        .{ .content = "abcdefg" }, // 1 role + 3 wrapped = 4
+        .{ .content = "ab" }, // 1 role + 1 wrapped = 2
+        .{ .content = "" }, // 1 role + 0 content = 1
+    };
+    try std.testing.expectEqual(@as(usize, 7), transcriptLineTotal(&msgs, 35, tenPxAdvance));
+}
+
+test "ai_history_renderer: clampScroll keeps scroll within the scrollable range" {
+    try std.testing.expectEqual(@as(usize, 0), clampScroll(5, 3, 10)); // everything fits
+    try std.testing.expectEqual(@as(usize, 2), clampScroll(5, 12, 10)); // clamped to max
+    try std.testing.expectEqual(@as(usize, 1), clampScroll(1, 12, 10)); // within range
+    try std.testing.expectEqual(@as(usize, 0), clampScroll(0, 12, 10));
 }
 
 test "ai_history_renderer: left column layout is ordered top to bottom" {
