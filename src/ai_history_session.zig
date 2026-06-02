@@ -823,7 +823,44 @@ pub fn providerFindCommand(provider: types.ProviderId, root: []const u8, out: []
     _ = provider;
     var quoted_buf: [1024]u8 = undefined;
     const quoted = remote_file.shellQuote(&quoted_buf, root) orelse return error.CommandTooLong;
+    // GNU find: emit "mtime<TAB>size<TAB>path", newest first, capped. The \t and \n
+    // are literal escapes for find -printf (single-quoted so the shell preserves them).
+    return std.fmt.bufPrint(out, "find {s} -type f -name '*.jsonl' -size -2048k -printf '%T@\\t%s\\t%p\\n' 2>/dev/null | sort -rn | head -500", .{quoted}) catch error.CommandTooLong;
+}
+
+/// Fallback for environments without GNU `find -printf` (e.g. BSD): path-only,
+/// no stamps. Used when the primary command returns nothing.
+pub fn providerFindCommandPlain(provider: types.ProviderId, root: []const u8, out: []u8) ![]const u8 {
+    _ = provider;
+    var quoted_buf: [1024]u8 = undefined;
+    const quoted = remote_file.shellQuote(&quoted_buf, root) orelse return error.CommandTooLong;
     return std.fmt.bufPrint(out, "find {s} -type f -name '*.jsonl' -size -2048k | head -500", .{quoted}) catch error.CommandTooLong;
+}
+
+const RemoteCandidate = struct {
+    path: []const u8,
+    stamp: ai_history_cache.FileStamp,
+};
+
+/// Parse one `find` output line. Primary form is "<mtime>\t<size>\t<path>"
+/// (mtime is `%T@` seconds, possibly fractional). Fallback form (plain find) is
+/// just "<path>" → stamp zeroed. `path` borrows from `line`.
+fn parseRemoteStamp(line: []const u8) RemoteCandidate {
+    var it = std.mem.splitScalar(u8, line, '\t');
+    const first = it.next() orelse return .{ .path = line, .stamp = .{ .size = 0, .mtime_ns = 0 } };
+    const second = it.next();
+    const third = it.next();
+    if (second == null or third == null) {
+        // Plain path (no tabs) → fallback stamp.
+        return .{ .path = std.mem.trim(u8, line, " \t\r\n"), .stamp = .{ .size = 0, .mtime_ns = 0 } };
+    }
+    const secs_str = std.mem.sliceTo(first, '.'); // integer seconds, drop fraction
+    const secs = std.fmt.parseInt(i128, secs_str, 10) catch 0;
+    const size = std.fmt.parseInt(u64, std.mem.trim(u8, second.?, " "), 10) catch 0;
+    return .{
+        .path = std.mem.trim(u8, third.?, " \t\r\n"),
+        .stamp = .{ .size = size, .mtime_ns = secs * std.time.ns_per_s },
+    };
 }
 
 pub fn remoteCatCommand(path: []const u8, out: []u8) ![]const u8 {
@@ -1219,25 +1256,44 @@ const RemoteScan = struct {
             self.warning_count += 1;
             return;
         };
-        const listing = self.host.exec(self.host.ctx, self.allocator, find_cmd) catch |err| switch (err) {
+        var listing = self.host.exec(self.host.ctx, self.allocator, find_cmd) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 self.warning_count += 1;
                 return;
             },
         };
+        if (std.mem.trim(u8, listing, " \t\r\n").len == 0) {
+            // Primary (GNU -printf) produced nothing; retry path-only.
+            self.allocator.free(listing);
+            var plain_buf: [2048]u8 = undefined;
+            const plain_cmd = providerFindCommandPlain(provider, root, plain_buf[0..]) catch {
+                self.warning_count += 1;
+                return;
+            };
+            listing = self.host.exec(self.host.ctx, self.allocator, plain_cmd) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    self.warning_count += 1;
+                    return;
+                },
+            };
+        }
         defer self.allocator.free(listing);
 
         var lines = std.mem.splitScalar(u8, listing, '\n');
         while (lines.next()) |line_raw| {
-            const path = std.mem.trim(u8, line_raw, " \t\r\n");
-            if (path.len == 0) continue;
-            try self.scanPath(provider, path);
+            const trimmed = std.mem.trim(u8, line_raw, " \t\r\n");
+            if (trimmed.len == 0) continue;
+            const candidate = parseRemoteStamp(line_raw);
+            if (candidate.path.len == 0) continue;
+            try self.scanPath(provider, candidate.path, candidate.stamp);
             if (self.emitter.aborted) break;
         }
     }
 
-    fn scanPath(self: *RemoteScan, provider: types.ProviderId, path: []const u8) !void {
+    fn scanPath(self: *RemoteScan, provider: types.ProviderId, path: []const u8, stamp: ai_history_cache.FileStamp) !void {
+        _ = stamp; // used in Task 5 (cache lookup)
         var cat_buf: [2048]u8 = undefined;
         const cat_cmd = remoteCatCommand(path, cat_buf[0..]) catch {
             self.warning_count += 1;
@@ -1444,11 +1500,15 @@ const FakeRemoteHost = struct {
         if (std.mem.eql(u8, command, remote_file.wslHomeCommand())) {
             return try allocator.dupe(u8, "/home/me\n");
         }
-        if (std.mem.eql(u8, command, "find '/home/me/.codex' -type f -name '*.jsonl' -size -2048k | head -500")) {
-            return try allocator.dupe(u8, codex_path ++ "\n");
-        }
-        if (std.mem.eql(u8, command, "find '/home/me/.claude' -type f -name '*.jsonl' -size -2048k | head -500")) {
-            return try allocator.dupe(u8, claude_path ++ "\n");
+        if (std.mem.startsWith(u8, command, "find")) {
+            // Emit "<mtime>\t<size>\t<path>" (the new -printf form) for the matching root.
+            if (std.mem.indexOf(u8, command, "/home/me/.codex") != null) {
+                return try allocator.dupe(u8, "1700000000\t100\t" ++ codex_path ++ "\n");
+            }
+            if (std.mem.indexOf(u8, command, "/home/me/.claude") != null) {
+                return try allocator.dupe(u8, "1700000001\t100\t" ++ claude_path ++ "\n");
+            }
+            return try allocator.dupe(u8, "");
         }
         if (std.mem.eql(u8, command, "cat '" ++ codex_path ++ "'")) {
             return try allocator.dupe(u8, codex_jsonl);
@@ -1643,8 +1703,12 @@ test "ai_history_session: loading selected transcript stores and clears owned me
 test "ai_history_session: remote provider find command quotes root" {
     var out: [512]u8 = undefined;
     try std.testing.expectEqualStrings(
-        "find '/home/me/it'\\''s/.codex' -type f -name '*.jsonl' -size -2048k | head -500",
+        "find '/home/me/it'\\''s/.codex' -type f -name '*.jsonl' -size -2048k -printf '%T@\\t%s\\t%p\\n' 2>/dev/null | sort -rn | head -500",
         try providerFindCommand(.codex, "/home/me/it's/.codex", &out),
+    );
+    try std.testing.expectEqualStrings(
+        "find '/home/me/it'\\''s/.codex' -type f -name '*.jsonl' -size -2048k | head -500",
+        try providerFindCommandPlain(.codex, "/home/me/it's/.codex", &out),
     );
 }
 
@@ -2733,4 +2797,24 @@ test "ai_history_session: local scan warm cache publishes provisional batch then
     try std.testing.expect(result.authoritative);
     try std.testing.expectEqual(@as(usize, 1), result.rows.len);
     try std.testing.expectEqualStrings("codex-real", result.rows[0].session_id);
+}
+
+test "ai_history_session: providerFindCommand emits sorted mtime/size/path" {
+    var buf: [2048]u8 = undefined;
+    const cmd = try providerFindCommand(.codex, "/home/me/.codex", &buf);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "-printf '%T@\\t%s\\t%p\\n'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "sort -rn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "'/home/me/.codex'") != null);
+}
+
+test "ai_history_session: parseRemoteStamp parses tab fields and tolerates plain paths" {
+    const a = parseRemoteStamp("1717300000.5\t2048\t/p/a.jsonl");
+    try std.testing.expectEqualStrings("/p/a.jsonl", a.path);
+    try std.testing.expectEqual(@as(u64, 2048), a.stamp.size);
+    try std.testing.expectEqual(@as(i128, 1717300000 * std.time.ns_per_s), a.stamp.mtime_ns);
+
+    const b = parseRemoteStamp("/p/b.jsonl"); // fallback (plain find, no tabs)
+    try std.testing.expectEqualStrings("/p/b.jsonl", b.path);
+    try std.testing.expectEqual(@as(u64, 0), b.stamp.size);
+    try std.testing.expectEqual(@as(i128, 0), b.stamp.mtime_ns);
 }
