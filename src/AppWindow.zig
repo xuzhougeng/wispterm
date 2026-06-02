@@ -45,6 +45,7 @@ const ai_history_resume = @import("ai_history_resume.zig");
 const ai_history_types = @import("ai_history_types.zig");
 pub const ai_history_session = @import("ai_history_session.zig");
 pub const ai_history_source = @import("ai_history_source.zig");
+const ssh_connection = @import("ssh_connection.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
 pub const font = @import("font/manager.zig");
@@ -693,7 +694,8 @@ pub fn aiHistoryMoveSelection(delta: isize) bool {
 pub fn aiHistoryPreviewSelectedTranscript() bool {
     const session = activeAiHistory() orelse return false;
     const allocator = g_allocator orelse return false;
-    return withAiHistoryScannerHost(allocator, session, .preview, PreviewTranscriptRunner.run);
+    startAiHistoryTranscript(allocator, session);
+    return true;
 }
 
 pub fn aiHistoryLoadSelectedTranscript() bool {
@@ -768,98 +770,150 @@ fn failAiHistoryResumePathUnavailable() bool {
 pub fn aiHistoryScanLocalNow() bool {
     const session = activeAiHistory() orelse return false;
     const allocator = g_allocator orelse return false;
-    return withAiHistoryScannerHost(allocator, session, .scan, ScanRunner.run);
+    startAiHistoryScan(allocator, session);
+    return true;
 }
 
-const AiHistoryHostAction = enum { scan, preview };
-const AiHistoryHostRunner = *const fn (*ai_history_session.Session, ai_history_session.ScannerHost) bool;
-
-const PreviewTranscriptRunner = struct {
-    fn run(session: *ai_history_session.Session, host: ai_history_session.ScannerHost) bool {
-        session.loadSelectedTranscript(host) catch |err| {
-            log.warn("failed to load AI History transcript: {}", .{err});
-            session.transcript_state = .failed;
-            session.transcript_status = "Transcript failed";
-            markUiDirty();
-            return true;
-        };
-        markUiDirty();
-        return true;
-    }
+/// Everything a background AI History worker needs, snapshotted on the UI thread.
+/// `ssh` carries a copied `SshConnection` value (inline buffers, no threadlocal
+/// pointers). `local`/`wsl` resolve their inputs inside the worker.
+const AiHistoryTarget = union(enum) {
+    local,
+    wsl,
+    ssh: ssh_connection.SshConnection,
 };
 
-const ScanRunner = struct {
-    fn run(session: *ai_history_session.Session, host: ai_history_session.ScannerHost) bool {
-        const result = session.scanNowReturningResult(host) catch |err| {
-            log.warn("failed to scan AI History: {}", .{err});
-            markUiDirty();
-            return true;
-        };
-        defer ai_history_session.freeScanResult(session.allocator, result);
-        saveAiHistoryMetadataCache(session.allocator, result.cache_update);
-        markUiDirty();
-        return true;
-    }
-};
+const AiHistoryScanJob = struct {
+    target: AiHistoryTarget,
 
-fn withAiHistoryScannerHost(allocator: std.mem.Allocator, session: *ai_history_session.Session, action: AiHistoryHostAction, runner: AiHistoryHostRunner) bool {
-    switch (session.source.target) {
-        .local => {
-            const home = localHomeForAiHistory(allocator) catch |err| {
-                log.warn("failed to resolve local home for AI History scan: {}", .{err});
-                failAiHistoryHostUnavailable(session, action, "Home unavailable");
-                markUiDirty();
-                return true;
-            };
-            defer allocator.free(home);
-            var parsed_cache: ?std.json.Parsed(ai_history_cache.CacheFile) = null;
-            if (action == .scan) {
-                parsed_cache = ai_history_cache.loadDefault(allocator) catch |err| blk: {
-                    log.warn("failed to load AI History metadata cache: {}", .{err});
-                    break :blk null;
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator, source: ai_history_source.Source) anyerror!ai_history_session.ScanResult {
+        const job: *AiHistoryScanJob = @ptrCast(@alignCast(ctx));
+        switch (job.target) {
+            .local => {
+                const home = try localHomeForAiHistory(allocator);
+                defer allocator.free(home);
+                var parsed_cache = ai_history_cache.loadDefault(allocator) catch null;
+                defer if (parsed_cache) |*cache| cache.deinit();
+                var host_state = ai_history_session.LocalScannerHost{
+                    .home = home,
+                    .cache = if (parsed_cache) |cache| cache.value else null,
                 };
-            }
-            defer if (parsed_cache) |*cache| cache.deinit();
-            var host_state = ai_history_session.LocalScannerHost{
-                .home = home,
-                .cache = if (parsed_cache) |cache| cache.value else null,
-            };
-            return runner(session, host_state.scannerHost());
-        },
-        .wsl => {
-            var host_state = ai_history_session.WslScannerHost{};
-            return runner(session, host_state.scannerHost());
-        },
-        .ssh => |ssh| {
-            const conn = overlays.aiHistorySshConnection(ssh.profile_name) orelse {
-                failAiHistoryHostUnavailable(session, action, "SSH profile unavailable");
-                markUiDirty();
-                return true;
-            };
-            var host_state = ai_history_session.SshScannerHost{ .conn = conn };
-            return runner(session, host_state.scannerHost());
-        },
+                const host = host_state.scannerHost();
+                return host.scan(host.ctx, allocator, source);
+            },
+            .wsl => {
+                var host_state = ai_history_session.WslScannerHost{};
+                const host = host_state.scannerHost();
+                return host.scan(host.ctx, allocator, source);
+            },
+            .ssh => |conn| {
+                var host_state = ai_history_session.SshScannerHost{ .conn = conn };
+                const host = host_state.scannerHost();
+                return host.scan(host.ctx, allocator, source);
+            },
+        }
     }
-}
 
-fn saveAiHistoryMetadataCache(allocator: std.mem.Allocator, cache_update: ai_history_session.CacheUpdate) void {
-    if (cache_update.records.len == 0) return;
-    ai_history_cache.saveDefault(allocator, .{ .records = cache_update.records }) catch |err| {
-        log.warn("failed to save AI History metadata cache: {}", .{err});
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *AiHistoryScanJob = @ptrCast(@alignCast(ctx));
+        allocator.destroy(job);
+    }
+};
+
+const AiHistoryTranscriptJob = struct {
+    target: AiHistoryTarget,
+    meta: ai_history_types.SessionMeta, // owned clone
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror![]ai_history_types.TranscriptMessage {
+        const job: *AiHistoryTranscriptJob = @ptrCast(@alignCast(ctx));
+        switch (job.target) {
+            .local => {
+                var host_state = ai_history_session.LocalScannerHost{ .home = "" };
+                const host = host_state.scannerHost();
+                return host.loadTranscript(host.ctx, allocator, job.meta);
+            },
+            .wsl => {
+                var host_state = ai_history_session.WslScannerHost{};
+                const host = host_state.scannerHost();
+                return host.loadTranscript(host.ctx, allocator, job.meta);
+            },
+            .ssh => |conn| {
+                var host_state = ai_history_session.SshScannerHost{ .conn = conn };
+                const host = host_state.scannerHost();
+                return host.loadTranscript(host.ctx, allocator, job.meta);
+            },
+        }
+    }
+
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *AiHistoryTranscriptJob = @ptrCast(@alignCast(ctx));
+        ai_history_session.freeMetadata(allocator, job.meta);
+        allocator.destroy(job);
+    }
+};
+
+/// Snapshot the source's target into a worker-safe value (UI thread). Returns
+/// null only when an SSH profile cannot be resolved.
+fn aiHistoryTargetSnapshot(target: ai_history_source.Target) ?AiHistoryTarget {
+    return switch (target) {
+        .local => .local,
+        .wsl => .wsl,
+        .ssh => |ssh| .{ .ssh = overlays.aiHistorySshConnection(ssh.profile_name) orelse return null },
     };
 }
 
-fn failAiHistoryHostUnavailable(session: *ai_history_session.Session, action: AiHistoryHostAction, status: []const u8) void {
-    switch (action) {
-        .scan => {
-            session.state = .failed;
-            session.status = status;
-        },
-        .preview => {
-            session.transcript_state = .failed;
-            session.transcript_status = status;
-        },
-    }
+/// Kick off an async scan for `session`. UI thread. On setup failure marks the
+/// session failed instead of spawning a doomed worker.
+fn startAiHistoryScan(allocator: std.mem.Allocator, session: *ai_history_session.Session) void {
+    const target = aiHistoryTargetSnapshot(session.source.target) orelse {
+        session.mutex.lock();
+        session.state = .failed;
+        session.status = "SSH profile unavailable";
+        session.mutex.unlock();
+        return;
+    };
+    const job = allocator.create(AiHistoryScanJob) catch {
+        session.mutex.lock();
+        session.state = .failed;
+        session.status = "Scan failed";
+        session.mutex.unlock();
+        return;
+    };
+    job.* = .{ .target = target };
+    session.scanAsync(.{ .ctx = job, .run = AiHistoryScanJob.run, .destroy = AiHistoryScanJob.destroy });
+}
+
+/// Kick off an async transcript load for the selected row. UI thread.
+fn startAiHistoryTranscript(allocator: std.mem.Allocator, session: *ai_history_session.Session) void {
+    session.mutex.lock();
+    const selected = session.selectedVisible();
+    const meta_clone: ?ai_history_types.SessionMeta = if (selected) |m|
+        (ai_history_session.cloneMetadata(allocator, m) catch null)
+    else
+        null;
+    session.mutex.unlock();
+
+    const meta = meta_clone orelse return;
+
+    const target = aiHistoryTargetSnapshot(session.source.target) orelse {
+        ai_history_session.freeMetadata(allocator, meta);
+        session.mutex.lock();
+        session.transcript_state = .failed;
+        session.transcript_status = "SSH profile unavailable";
+        session.mutex.unlock();
+        return;
+    };
+    const job = allocator.create(AiHistoryTranscriptJob) catch {
+        ai_history_session.freeMetadata(allocator, meta);
+        return;
+    };
+    job.* = .{ .target = target, .meta = meta };
+    session.loadTranscriptAsync(.{
+        .ctx = job,
+        .provider = meta.provider,
+        .run = AiHistoryTranscriptJob.run,
+        .destroy = AiHistoryTranscriptJob.destroy,
+    });
 }
 
 pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
