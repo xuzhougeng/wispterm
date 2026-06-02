@@ -825,7 +825,7 @@ const AiHistoryTarget = union(enum) {
 const AiHistoryScanJob = struct {
     target: AiHistoryTarget,
 
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator, source: ai_history_source.Source) anyerror!ai_history_session.ScanResult {
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator, source: ai_history_source.Source, _: ?ai_history_session.ScanSink) anyerror!ai_history_session.ScanResult {
         const job: *AiHistoryScanJob = @ptrCast(@alignCast(ctx));
         switch (job.target) {
             .local => {
@@ -838,17 +838,17 @@ const AiHistoryScanJob = struct {
                     .cache = if (parsed_cache) |cache| cache.value else null,
                 };
                 const host = host_state.scannerHost();
-                return host.scan(host.ctx, allocator, source);
+                return host.scan(host.ctx, allocator, source, null);
             },
             .wsl => {
                 var host_state = ai_history_session.WslScannerHost{};
                 const host = host_state.scannerHost();
-                return host.scan(host.ctx, allocator, source);
+                return host.scan(host.ctx, allocator, source, null);
             },
             .ssh => |conn| {
                 var host_state = ai_history_session.SshScannerHost{ .conn = conn };
                 const host = host_state.scannerHost();
-                return host.scan(host.ctx, allocator, source);
+                return host.scan(host.ctx, allocator, source, null);
             },
         }
     }
