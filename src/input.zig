@@ -48,6 +48,7 @@ const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
 const mouse_report = @import("input/mouse_report.zig");
+const close_confirm = @import("close_confirm.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
@@ -485,6 +486,13 @@ pub fn closePanelOrTab() void {
     }
     if (browser_panel.isVisibleForActiveTab()) {
         closeBrowserPanel();
+        return;
+    }
+    if (close_confirm.shouldConfirm(AppWindow.g_confirm_close_running_program, AppWindow.activeSurfaceHasRunningProgram())) {
+        g_close_shortcut_confirm_until_ms = 0;
+        overlays.closeConfirmOpen(.focused_split, .running_program);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
         return;
     }
     if (AppWindow.closeFocusedSplitWouldCloseWindow()) {
