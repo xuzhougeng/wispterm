@@ -720,14 +720,59 @@ pub const ReplKind = enum {
     }
 };
 
+/// If `code` (trimmed) is exactly one recognized control-key token, return the
+/// raw byte to send. Whole-string match only, so ordinary text that merely
+/// contains a token is sent verbatim.
+fn controlKeyByte(code: []const u8) ?u8 {
+    const trimmed = std.mem.trim(u8, code, " \t\r\n");
+    const Pair = struct { token: []const u8, byte: u8 };
+    const pairs = [_]Pair{
+        .{ .token = "<ctrl-c>", .byte = 0x03 },
+        .{ .token = "<ctrl-d>", .byte = 0x04 },
+        .{ .token = "<ctrl-u>", .byte = 0x15 },
+        .{ .token = "<esc>", .byte = 0x1b },
+        .{ .token = "<enter>", .byte = 0x0d },
+        .{ .token = "<cr>", .byte = 0x0d },
+    };
+    for (pairs) |p| {
+        if (std.ascii.eqlIgnoreCase(trimmed, p.token)) return p.byte;
+    }
+    return null;
+}
+
+/// Send a single raw control byte (no submit key appended), wait briefly for the
+/// terminal to react, and return a fresh snapshot so the model sees the
+/// recovered state.
+fn sendControlKey(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, label: []const u8, byte: u8) ![]u8 {
+    const bytes = [_]u8{byte};
+    if (!host.writeSurface(host.ctx, surface.ptr, &bytes)) {
+        return ctx.allocator.dupe(u8, "Failed to write control key to terminal surface.");
+    }
+
+    const deadline = std.time.milliTimestamp() + 400;
+    while (std.time.milliTimestamp() < deadline) {
+        if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+    }
+
+    const latest = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+        return std.fmt.allocPrint(ctx.allocator, "Sent {s}; failed to read terminal snapshot.", .{label});
+    defer ctx.allocator.free(latest);
+    const out = try std.fmt.allocPrint(ctx.allocator, "Sent {s} to terminal.\nLatest snapshot:\n{s}", .{ label, latest });
+    return truncateOwned(ctx.allocator, ctx.settings, out);
+}
+
 fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []const u8, code: []const u8, timeout_ms: u32) ![]u8 {
     const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(ctx.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, or plain.", .{repl_name});
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+    const control = controlKeyByte(code);
     const dangerous = isDangerousCommand(code);
     if (ctx.settings.permission != .full or dangerous) {
         var reason_buf: [96]u8 = undefined;
         const reason = if (dangerous)
             DANGEROUS_COMMAND_APPROVAL_REASON
+        else if (control != null)
+            std.fmt.bufPrint(&reason_buf, "Send control key {s} to terminal", .{std.mem.trim(u8, code, " \t\r\n")}) catch "Send control key to terminal"
         else
             std.fmt.bufPrint(&reason_buf, "Type input into opened {s} REPL/app terminal", .{repl.label()}) catch "Type input into terminal";
         if (!ctx.requestApproval("terminal_repl_exec", code, reason)) {
@@ -740,6 +785,10 @@ fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []
     const host = ctx.tool_host orelse return ctx.allocator.dupe(u8, "No terminal tool host is available.");
     const surface = findSurface(snapshot, surface_id) orelse return ctx.allocator.dupe(u8, "No matching terminal surface.");
     if (try ensureWriteContext(ctx, surface)) |message| return message;
+
+    if (control) |byte| {
+        return sendControlKey(ctx, host, surface, std.mem.trim(u8, code, " \t\r\n"), byte);
+    }
 
     return switch (repl) {
         .r => rSessionEvalTool(ctx, host, surface, code, timeout_ms),
@@ -989,6 +1038,26 @@ fn doubleQuotedStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]
     return out.toOwnedSlice(allocator);
 }
 
+const AGENT_START_PREFIX = "__WISPTERM_AGENT_START_";
+
+/// Whether the surface's most recent agent command is still running: find the
+/// last START marker, read its nonce, and report true if no completed END
+/// (`__WISPTERM_AGENT_END_<nonce>__:<digit>`) appears after it. If the start has
+/// scrolled out of the snapshot we report false (idle) — an acceptable
+/// false-negative; a stale false-positive self-heals via <ctrl-c> + retry.
+fn hasPendingAgentCommand(snapshot: []const u8) bool {
+    const last_start = std.mem.lastIndexOf(u8, snapshot, AGENT_START_PREFIX) orelse return false;
+    const nonce_start = last_start + AGENT_START_PREFIX.len;
+    var i = nonce_start;
+    while (i < snapshot.len and std.ascii.isDigit(snapshot[i])) : (i += 1) {}
+    const nonce = snapshot[nonce_start..i];
+    if (nonce.len == 0) return false;
+
+    var buf: [64]u8 = undefined;
+    const end_marker = std.fmt.bufPrint(&buf, "__WISPTERM_AGENT_END_{s}__", .{nonce}) catch return false;
+    return findCompletedEnd(snapshot[last_start..], end_marker) == null;
+}
+
 fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
     const dangerous = isDangerousCommand(command);
@@ -1012,6 +1081,17 @@ fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []c
     }
     if (try shellExecAgentAppRefusal(ctx.allocator, kind, surface)) |message| return message;
     if (try shellExecInteractiveAgentCommandRefusal(ctx.allocator, kind, command)) |message| return message;
+
+    // Refuse to inject a new command while the previous one is still running:
+    // interleaved sentinels confuse parsing and the model tends to re-issue,
+    // duplicating side effects (e.g. a second git clone). A fresh snapshot is
+    // authoritative; the cached surface snapshot may be stale.
+    if (host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch null) |guard_snapshot| {
+        defer ctx.allocator.free(guard_snapshot);
+        if (hasPendingAgentCommand(guard_snapshot)) {
+            return std.fmt.allocPrint(ctx.allocator, "A previous command is still running in this {s} terminal. Do not start another command. Wait and re-check with terminal_snapshot, or interrupt it first with terminal_repl_exec repl=plain code=<ctrl-c>.", .{kind.label()});
+        }
+    }
 
     const nonce = std.time.milliTimestamp();
     // Keep the agent's injected command out of the user's shell history. We
@@ -1041,6 +1121,17 @@ fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []c
     return waitForSentinelResult(ctx, host, surface, kind.label(), start_marker, end_marker, timeout_ms);
 }
 
+/// Timeout result for a sentinel command that never reported completion. Frames
+/// it as "still running, do not re-issue" with recovery hints, so the model
+/// waits/re-checks instead of re-running the command (which duplicates side
+/// effects, e.g. a second git clone).
+fn allocStillRunningTimeout(allocator: std.mem.Allocator, label: []const u8, elapsed_s: i64, snapshot: ?[]const u8) ![]u8 {
+    if (snapshot) |text| {
+        return std.fmt.allocPrint(allocator, "The {s} command has not returned after {d}s; it is most likely still running. Do NOT re-issue it. Re-check later with terminal_snapshot, or interrupt with terminal_repl_exec repl=plain code=<ctrl-c>.\nLatest snapshot:\n{s}", .{ label, elapsed_s, text });
+    }
+    return std.fmt.allocPrint(allocator, "The {s} command has not returned after {d}s; it is most likely still running. Do NOT re-issue it. Re-check later with terminal_snapshot, or interrupt with terminal_repl_exec repl=plain code=<ctrl-c>.", .{ label, elapsed_s });
+}
+
 fn waitForSentinelResult(
     ctx: *const ToolContext,
     host: ToolHost,
@@ -1050,7 +1141,8 @@ fn waitForSentinelResult(
     end_marker: []const u8,
     timeout_ms: u32,
 ) ![]u8 {
-    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(@max(timeout_ms, 1000)));
+    const started = std.time.milliTimestamp();
+    const deadline = started + @as(i64, @intCast(@max(timeout_ms, 1000)));
     var last: ?[]u8 = null;
     defer if (last) |text| ctx.allocator.free(text);
 
@@ -1059,17 +1151,15 @@ fn waitForSentinelResult(
         if (last) |old| ctx.allocator.free(old);
         last = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch null;
         if (last) |text| {
-            if (std.mem.indexOf(u8, text, end_marker) != null) {
+            if (findCompletedEnd(text, end_marker) != null) {
                 return extractUnixCommandResult(ctx.allocator, text, start_marker, end_marker);
             }
         }
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
 
-    if (last) |text| {
-        return std.fmt.allocPrint(ctx.allocator, "Timed out waiting for {s} command sentinel.\nLatest snapshot:\n{s}", .{ label, text });
-    }
-    return std.fmt.allocPrint(ctx.allocator, "Timed out waiting for {s} command sentinel.", .{label});
+    const elapsed_s = @divFloor(std.time.milliTimestamp() - started, 1000);
+    return allocStillRunningTimeout(ctx.allocator, label, elapsed_s, last);
 }
 
 // ---------------------------------------------------------------------------
@@ -1323,11 +1413,41 @@ pub fn ensureWriteContext(ctx: *ToolContext, surface: ToolSurface) !?[]u8 {
 // Utility helpers
 // ---------------------------------------------------------------------------
 
+/// Find the END sentinel that marks real completion: the first occurrence of
+/// `end_marker` immediately followed by `:` and an ASCII digit (the exit
+/// status). The shell echoes the wrapped command line, which contains the bare
+/// marker followed by `:%s` (or, for R, `:"`); those never satisfy the digit
+/// test, so the echo is ignored. Returns the byte index of the marker, or null
+/// if the command has not completed yet.
+fn findCompletedEnd(text: []const u8, end_marker: []const u8) ?usize {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, text, from, end_marker)) |idx| {
+        const colon = idx + end_marker.len;
+        if (colon + 1 < text.len and text[colon] == ':' and std.ascii.isDigit(text[colon + 1])) {
+            return idx;
+        }
+        from = idx + 1;
+    }
+    return null;
+}
+
 fn extractUnixCommandResult(allocator: std.mem.Allocator, text: []const u8, start_marker: []const u8, end_marker: []const u8) ![]u8 {
-    const start = std.mem.indexOf(u8, text, start_marker) orelse return allocator.dupe(u8, text);
-    const body_start = start + start_marker.len;
-    const end = std.mem.indexOfPos(u8, text, body_start, end_marker) orelse return allocator.dupe(u8, text[body_start..]);
-    return allocator.dupe(u8, std.mem.trim(u8, text[body_start..end], " \t\r\n"));
+    const end = findCompletedEnd(text, end_marker) orelse return allocator.dupe(u8, text);
+
+    // Exit status: digits after the matched marker's ':'.
+    const status_start = end + end_marker.len + 1;
+    var status_end = status_start;
+    while (status_end < text.len and std.ascii.isDigit(text[status_end])) : (status_end += 1) {}
+    const status = text[status_start..status_end];
+
+    // The real START sits just above the output; the echo's START is further up.
+    // Take the last START before the completed END.
+    const start = std.mem.lastIndexOf(u8, text[0..end], start_marker) orelse {
+        const body = std.mem.trim(u8, text[0..end], " \t\r\n");
+        return std.fmt.allocPrint(allocator, "exit_status={s}\n{s}", .{ status, body });
+    };
+    const body = std.mem.trim(u8, text[start + start_marker.len .. end], " \t\r\n");
+    return std.fmt.allocPrint(allocator, "exit_status={s}\n{s}", .{ status, body });
 }
 
 fn deniedResult(allocator: std.mem.Allocator, command: []const u8, reason: []const u8) ![]u8 {
@@ -1691,6 +1811,87 @@ test "ai chat Python string literal escapes code for REPL eval" {
     defer allocator.free(literal);
 
     try std.testing.expectEqualStrings("\"print(\\\"hello\\\")\\npath = \\\"C:\\\\\\\\tmp\\\"\"", literal);
+}
+
+test "agent control-key tokens parse to raw bytes, plain text is unaffected" {
+    try std.testing.expectEqual(@as(?u8, 0x03), controlKeyByte("<ctrl-c>"));
+    try std.testing.expectEqual(@as(?u8, 0x03), controlKeyByte("  <Ctrl-C> "));
+    try std.testing.expectEqual(@as(?u8, 0x04), controlKeyByte("<ctrl-d>"));
+    try std.testing.expectEqual(@as(?u8, 0x15), controlKeyByte("<ctrl-u>"));
+    try std.testing.expectEqual(@as(?u8, 0x1b), controlKeyByte("<esc>"));
+    try std.testing.expectEqual(@as(?u8, 0x0d), controlKeyByte("<enter>"));
+    try std.testing.expectEqual(@as(?u8, 0x0d), controlKeyByte("<cr>"));
+    // A substring inside real text must NOT be interpreted as a control key.
+    try std.testing.expectEqual(@as(?u8, null), controlKeyByte("echo <ctrl-c>"));
+    try std.testing.expectEqual(@as(?u8, null), controlKeyByte("ls -la"));
+}
+
+test "agent exec detects a still-pending previous command" {
+    // Real START present, no completed END -> pending.
+    const pending = "__WISPTERM_AGENT_START_222__\nCloning into 'x'...\n";
+    try std.testing.expect(hasPendingAgentCommand(pending));
+
+    // Echo end (:%s) only, no real :<digit> -> still pending.
+    const echo_only =
+        "$  printf '\\n__WISPTERM_AGENT_END_222__:%s\\n'\n__WISPTERM_AGENT_START_222__\nfoo\n";
+    try std.testing.expect(hasPendingAgentCommand(echo_only));
+
+    // Completed END present -> not pending.
+    const done = "__WISPTERM_AGENT_START_222__\nhi\n__WISPTERM_AGENT_END_222__:0\n$ ";
+    try std.testing.expect(!hasPendingAgentCommand(done));
+
+    // No agent markers at all -> not pending.
+    try std.testing.expect(!hasPendingAgentCommand("(base) u@h:~$ "));
+}
+
+test "agent exec timeout message says still running, do not re-issue" {
+    const allocator = std.testing.allocator;
+    const msg = try allocStillRunningTimeout(allocator, "SSH", 60, "Cloning into 'x'...");
+    defer allocator.free(msg);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "still running") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "Do NOT re-issue") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "code=<ctrl-c>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "Cloning into 'x'...") != null);
+}
+
+test "agent exec sentinel ignores the echoed command line" {
+    const allocator = std.testing.allocator;
+    // The shell echoes the whole wrapped command (with literal \n and %s) above
+    // the real printf output. Only the real END line ends in `:<digit>`.
+    const snapshot =
+        "(base) u@h:~$  printf '\\n__WISPTERM_AGENT_START_111__\\n'; { echo hi; } 2>&1;" ++
+        " __wispterm_agent_status=$?; printf '\\n__WISPTERM_AGENT_END_111__:%s\\n' \"$s\"\n" ++
+        "\n__WISPTERM_AGENT_START_111__\n" ++
+        "hi\n" ++
+        "\n__WISPTERM_AGENT_END_111__:0\n" ++
+        "(base) u@h:~$ ";
+
+    // findCompletedEnd points at the real END (the `:0` one), not the echo.
+    const end = findCompletedEnd(snapshot, "__WISPTERM_AGENT_END_111__").?;
+    try std.testing.expect(std.mem.startsWith(u8, snapshot[end..], "__WISPTERM_AGENT_END_111__:0"));
+
+    const result = try extractUnixCommandResult(allocator, snapshot, "__WISPTERM_AGENT_START_111__", "__WISPTERM_AGENT_END_111__");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("exit_status=0\nhi", result);
+}
+
+test "agent exec sentinel treats echo-only snapshot as not finished" {
+    const incomplete =
+        "(base) u@h:~$  printf '\\n__WISPTERM_AGENT_END_222__:%s\\n' \"$s\"\n" ++
+        "\n__WISPTERM_AGENT_START_222__\n" ++
+        "Cloning into 'x'...\n";
+    try std.testing.expect(findCompletedEnd(incomplete, "__WISPTERM_AGENT_END_222__") == null);
+}
+
+test "agent exec sentinel parses multi-digit exit status" {
+    const allocator = std.testing.allocator;
+    const snapshot =
+        "\n__WISPTERM_AGENT_START_333__\n" ++
+        "boom\n" ++
+        "\n__WISPTERM_AGENT_END_333__:128\n";
+    const result = try extractUnixCommandResult(allocator, snapshot, "__WISPTERM_AGENT_START_333__", "__WISPTERM_AGENT_END_333__");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("exit_status=128\nboom", result);
 }
 
 test "ai chat detects dangerous shell commands" {

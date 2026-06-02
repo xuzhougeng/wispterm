@@ -49,6 +49,8 @@ const common_tools_after_wsl =
     \\- Use `terminal_repl_exec` for Codex, Claude Code, Python, R, or other REPL/app terminals.
     \\- Start Codex or Claude Code via `terminal_repl_exec repl=plain`, not shell exec.
     \\- Do not paste shell commands into Codex or Claude Code; send user-facing text.
+    \\- A slow session/exec command is usually still running, not broken; do not re-issue it. Wait, then re-check with `terminal_snapshot`.
+    \\- To recover a stuck terminal (`>` prompt, unclosed quote, hung command, or pager), send `terminal_repl_exec repl=plain code=<ctrl-c>` (or `<ctrl-u>`/`<esc>`/`<ctrl-d>`). Do not keep typing.
     \\- Use `tab_new` only when no suitable terminal exists.
     \\- For WispTerm questions, call `wispterm_docs` to list and read built-in docs.
     \\- When the request came from Weixin and the user asks you to send a generated or local artifact, call `weixin_send_attachment`.
@@ -129,6 +131,14 @@ test "platform agent prompt points at the wispterm_docs tool on every OS" {
     for ([_]std.Target.Os.Tag{ .windows, .linux, .macos }) |os| {
         const p = defaultSystemPromptForOs(os);
         try std.testing.expect(std.mem.indexOf(u8, p, "wispterm_docs") != null);
+    }
+}
+
+test "platform agent prompt teaches stuck-terminal interrupt recovery" {
+    for ([_]std.Target.Os.Tag{ .windows, .linux, .macos }) |os| {
+        const p = defaultSystemPromptForOs(os);
+        try std.testing.expect(std.mem.indexOf(u8, p, "code=<ctrl-c>") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "still running") != null);
     }
 }
 
