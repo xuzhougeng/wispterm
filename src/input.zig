@@ -3880,6 +3880,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             _ = AppWindow.aiHistoryScrollTranscript(if (ev.delta > 0) -step else step);
             return;
         }
+        if (x >= layout.left_x and x < layout.left_x + layout.left_w) {
+            const units: i32 = @intCast(mouseWheelUnits(ev.delta));
+            _ = AppWindow.aiHistoryScrollDateList(if (ev.delta > 0) -units else units);
+            return;
+        }
         return;
     }
     if (AppWindow.activeAiChat()) |chat| {

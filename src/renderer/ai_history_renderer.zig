@@ -10,6 +10,7 @@ const SMALL_GAP: f32 = 6;
 const BUTTON_PAD_Y: f32 = 4;
 const BUTTON_EXTRA_H: f32 = 10;
 const RESUME_BUTTON_W: f32 = 104;
+const MAX_DATE_BUCKETS: usize = 256;
 
 pub const DrawContext = struct {
     bg: [3]f32,
@@ -38,6 +39,7 @@ pub const Hit = union(enum) {
     refresh,
     @"resume",
     category: types.CategoryFilter,
+    date: ?types.DateKey,
     row: usize,
 };
 
@@ -50,6 +52,9 @@ pub const LeftColumnLayout = struct {
     category_rows_top: f32,
     category_row_h: f32,
     retry_text_top: f32,
+    date_heading_top: f32,
+    date_rows_top: f32,
+    date_row_h: f32,
 };
 
 pub fn leftColumnLayout(top: f32, cell_h: f32) LeftColumnLayout {
@@ -69,6 +74,14 @@ pub fn leftColumnLayout(top: f32, cell_h: f32) LeftColumnLayout {
     y += category_row_h * 3;
     y += 12;
     const retry_text_top = y;
+    // DATE navigator: below the Refresh button, filling the rest of the column.
+    // `cell_h + 16` clears the retry text plus the refresh button body
+    // (buttonHeight = cell_h + BUTTON_EXTRA_H, lifted by BUTTON_PAD_Y).
+    y += cell_h + 16;
+    const date_heading_top = y;
+    y += cell_h + 8;
+    const date_rows_top = y;
+    const date_row_h = category_row_h;
     return .{
         .source_name_top = source_name_top,
         .target_top = target_top,
@@ -78,6 +91,9 @@ pub fn leftColumnLayout(top: f32, cell_h: f32) LeftColumnLayout {
         .category_rows_top = category_rows_top,
         .category_row_h = category_row_h,
         .retry_text_top = retry_text_top,
+        .date_heading_top = date_heading_top,
+        .date_rows_top = date_rows_top,
+        .date_row_h = date_row_h,
     };
 }
 
@@ -199,6 +215,28 @@ pub fn interactionHitTest(
         return .refresh;
     }
 
+    // DATE navigator rows (below the Refresh button). Row 0 = pinned "All dates"
+    // (-> null); rows 1.. map to the windowed day buckets.
+    {
+        var bucket_buf: [MAX_DATE_BUCKETS]types.DateBucket = undefined;
+        const buckets = session.buildDateBuckets(&bucket_buf);
+        const cap = dateVisibleCapacity(window_height, lc.date_rows_top, cell_h);
+        if (cap > 0) {
+            if (rectContains(mx, my, layout.left_x, lc.date_rows_top, layout.left_w, lc.date_row_h)) {
+                return .{ .date = null };
+            }
+            const day_slots = cap - 1;
+            const offset = clampDateOffset(session.date_offset, buckets.len, day_slots);
+            var j: usize = 0;
+            while (j < day_slots and offset + j < buckets.len) : (j += 1) {
+                const row_top = lc.date_rows_top + @as(f32, @floatFromInt(j + 1)) * lc.date_row_h;
+                if (rectContains(mx, my, layout.left_x, row_top, layout.left_w, lc.date_row_h)) {
+                    return .{ .date = buckets[offset + j].key };
+                }
+            }
+        }
+    }
+
     const visible_count = session.visibleCount();
     if (visible_count > 0) {
         const resume_top = resumeButtonTop(top, cell_h);
@@ -252,6 +290,36 @@ pub fn render(
     renderLeftColumn(draw, session, layout, window_height, top, content_h, fg, muted, accent, panel_strong, line);
     renderList(draw, session, layout, window_height, top, content_h, fg, muted, accent, selected_bg, line);
     renderDetail(draw, session, layout, window_height, top, content_h, fg, muted, accent, panel_strong, line);
+}
+
+fn drawDateRow(
+    draw: DrawContext,
+    layout: Layout,
+    window_height: f32,
+    row_top: f32,
+    row_h: f32,
+    label: []const u8,
+    count: usize,
+    active: bool,
+    fg: [3]f32,
+    muted: [3]f32,
+    accent: [3]f32,
+    selected_bg: [3]f32,
+) void {
+    if (active) {
+        const row_y = yFromTop(window_height, row_top, row_h);
+        draw.fillQuadAlpha(layout.left_x, row_y, layout.left_w, row_h, selected_bg, 0.92);
+        draw.fillQuad(layout.left_x, row_y, 3, row_h, accent);
+    }
+    const text_top = row_top + (row_h - draw.cell_h) / 2;
+    const label_color = if (active) fg else muted;
+    var num_buf: [16]u8 = undefined;
+    const num_text = std.fmt.bufPrint(&num_buf, "{d}", .{count}) catch "";
+    const count_w: f32 = 44;
+    const count_x = layout.left_x + layout.left_w - PAD_X - count_w;
+    const label_x = layout.left_x + PAD_X + 6;
+    _ = draw.renderTextLimited(label, label_x, yTextFromTop(draw, window_height, text_top), label_color, @max(0, count_x - label_x - 6));
+    _ = draw.renderTextLimited(num_text, count_x, yTextFromTop(draw, window_height, text_top), muted, count_w);
 }
 
 fn renderLeftColumn(
@@ -314,6 +382,25 @@ fn renderLeftColumn(
 
     _ = draw.renderTextLimited("r  Retry scan", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.retry_text_top), muted, layout.left_w - PAD_X * 2);
 
+    _ = draw.renderTextLimited("DATE", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.date_heading_top), muted, layout.left_w - PAD_X * 2);
+    var bucket_buf: [MAX_DATE_BUCKETS]types.DateBucket = undefined;
+    const buckets = session.buildDateBuckets(&bucket_buf);
+    const date_cap = dateVisibleCapacity(window_height, lc.date_rows_top, draw.cell_h);
+    if (date_cap > 0) {
+        drawDateRow(draw, layout, window_height, lc.date_rows_top, lc.date_row_h, "All dates", session.dateAllCount(), session.date_filter == null, fg, muted, accent, selected_bg);
+        const day_slots = date_cap - 1;
+        const offset = clampDateOffset(session.date_offset, buckets.len, day_slots);
+        var j: usize = 0;
+        while (j < day_slots and offset + j < buckets.len) : (j += 1) {
+            const bucket = buckets[offset + j];
+            const row_top = lc.date_rows_top + @as(f32, @floatFromInt(j + 1)) * lc.date_row_h;
+            var label_buf: [16]u8 = undefined;
+            const label = types.formatDateKey(bucket.key, &label_buf);
+            const active = session.date_filter != null and session.date_filter.? == bucket.key;
+            drawDateRow(draw, layout, window_height, row_top, lc.date_row_h, label, bucket.count, active, fg, muted, accent, selected_bg);
+        }
+    }
+
     const footer = "Enter resumes  Space previews";
     _ = draw.renderTextLimited(footer, layout.left_x + PAD_X, 12, muted, layout.left_w - PAD_X * 2);
     _ = content_h;
@@ -351,8 +438,10 @@ fn renderList(
     var visible_index: usize = 0;
     var rendered: usize = 0;
     for (session.rows.items) |row| {
-        if (!types.categoryMatches(session.category, row.provider)) continue;
-        if (!metadataMatches(row, query)) continue;
+        // Use the same visibility predicate as visibleCount/selectedVisible/
+        // listWindowStart so the rendered rows, the selection index, and the
+        // hit-test all agree (category AND date AND text query).
+        if (!session.rowVisible(row, query)) continue;
         if (visible_index < start) {
             visible_index += 1;
             continue;
@@ -687,6 +776,23 @@ fn resumeButtonTop(top: f32, cell_h: f32) f32 {
         (cell_h + 16) - BUTTON_PAD_Y;
 }
 
+/// How many DATE rows (including the pinned "All dates" row) fit between
+/// `date_rows_top` and the bottom of the left column, reserving the footer.
+pub fn dateVisibleCapacity(window_height: f32, date_rows_top: f32, cell_h: f32) usize {
+    const footer_reserve = cell_h + 20; // bottom "Enter resumes  Space previews"
+    const bottom_limit = window_height - footer_reserve;
+    if (bottom_limit <= date_rows_top) return 0;
+    const row_h = cell_h + 10; // == leftColumnLayout(...).date_row_h
+    return @intFromFloat(@max(0.0, @floor((bottom_limit - date_rows_top) / row_h)));
+}
+
+/// Clamp a stored date scroll offset so the windowed day list never scrolls
+/// past its end. `day_slots` is the visible capacity minus the pinned All row.
+fn clampDateOffset(offset: usize, bucket_count: usize, day_slots: usize) usize {
+    if (bucket_count <= day_slots) return 0;
+    return @min(offset, bucket_count - day_slots);
+}
+
 fn rectContains(x: f32, y: f32, left: f32, top: f32, width: f32, height: f32) bool {
     return width > 0 and height > 0 and
         x >= left and x < left + width and
@@ -742,12 +848,17 @@ test "ai_history_renderer: zero width layout has no columns" {
 
 test "ai_history_renderer: interaction hit test maps buttons and row offset" {
     const FakeSession = struct {
+        date_offset: usize = 0,
         fn visibleCount(_: @This()) usize {
             return 8;
         }
 
         fn listWindowStart(_: @This(), _: usize) usize {
             return 3;
+        }
+
+        fn buildDateBuckets(_: @This(), buf: []types.DateBucket) []types.DateBucket {
+            return buf[0..0];
         }
     };
 
@@ -851,11 +962,15 @@ test "ai_history_renderer: left column layout is ordered top to bottom" {
 
 test "ai_history_renderer: interaction hit test maps category rows" {
     const FakeSession = struct {
+        date_offset: usize = 0,
         fn visibleCount(_: @This()) usize {
             return 0;
         }
         fn listWindowStart(_: @This(), _: usize) usize {
             return 0;
+        }
+        fn buildDateBuckets(_: @This(), buf: []types.DateBucket) []types.DateBucket {
+            return buf[0..0];
         }
     };
 
@@ -881,5 +996,49 @@ test "ai_history_renderer: interaction hit test maps category rows" {
     try std.testing.expectEqual(
         Hit{ .category = .claude },
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, claude_y),
+    );
+}
+
+test "ai_history_renderer: interaction hit test maps date rows" {
+    const FakeSession = struct {
+        date_offset: usize = 0,
+        fn visibleCount(_: @This()) usize {
+            return 0;
+        }
+        fn listWindowStart(_: @This(), _: usize) usize {
+            return 0;
+        }
+        fn buildDateBuckets(_: @This(), buf: []types.DateBucket) []types.DateBucket {
+            buf[0] = .{ .key = 20260602, .count = 3 };
+            buf[1] = .{ .key = 20260601, .count = 5 };
+            return buf[0..2];
+        }
+    };
+
+    const session = FakeSession{};
+    const layout = computeLayout(0, 1000);
+    const cell_h: f32 = 16;
+    const top: f32 = 40;
+    const lc = leftColumnLayout(top, cell_h);
+
+    // Row 0 is the pinned "All dates" row -> null.
+    const all_y = lc.date_rows_top + lc.date_row_h * 0.5;
+    try std.testing.expectEqual(
+        Hit{ .date = null },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, all_y),
+    );
+
+    // Row 1 -> first bucket (20260602).
+    const d1_y = lc.date_rows_top + lc.date_row_h * 1.5;
+    try std.testing.expectEqual(
+        Hit{ .date = @as(?types.DateKey, 20260602) },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, d1_y),
+    );
+
+    // Row 2 -> second bucket (20260601).
+    const d2_y = lc.date_rows_top + lc.date_row_h * 2.5;
+    try std.testing.expectEqual(
+        Hit{ .date = @as(?types.DateKey, 20260601) },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, d2_y),
     );
 }

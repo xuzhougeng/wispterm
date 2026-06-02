@@ -168,6 +168,14 @@ pub const Session = struct {
     filter: [128]u8 = undefined,
     filter_len: usize = 0,
     category: types.CategoryFilter = .all,
+    /// Active day filter (`null` = all dates). Combines with `category`.
+    date_filter: ?types.DateKey = null,
+    /// Scroll offset into the DATE navigator's day list. The renderer clamps
+    /// this against the visible capacity each frame.
+    date_offset: usize = 0,
+    /// Local UTC offset (seconds east of UTC) used to bucket rows by local day.
+    /// Defaults to 0 (UTC); the app injects the real offset at creation.
+    tz_offset_seconds: i32 = 0,
     status: []const u8 = "",
     transcript_state: TranscriptState = .idle,
     transcript_status: []const u8 = "",
@@ -274,6 +282,7 @@ pub const Session = struct {
         self.rows.deinit(self.allocator);
         self.rows = next;
         self.list_offset = 0;
+        self.date_offset = 0;
         self.clearTranscript();
         self.transcript_generation +%= 1;
         self.state = .ready;
@@ -576,7 +585,10 @@ pub const Session = struct {
     }
 
     pub fn rowVisible(self: *const Session, row: types.SessionMeta, query: []const u8) bool {
-        return types.categoryMatches(self.category, row.provider) and types.metadataMatches(row, query);
+        const key = types.dateKeyFromMs(row.last_active_at_ms, self.tz_offset_seconds);
+        return types.categoryMatches(self.category, row.provider) and
+            types.dateMatches(self.date_filter, key) and
+            types.metadataMatches(row, query);
     }
 
     pub fn visibleCount(self: *const Session) usize {
@@ -644,12 +656,30 @@ pub const Session = struct {
         self.setCategory(@enumFromInt(next));
     }
 
+    pub fn setDateFilter(self: *Session, filter: ?types.DateKey) void {
+        if (self.date_filter == filter) return;
+        self.date_filter = filter;
+        self.selected = 0;
+        self.list_offset = 0;
+        self.clearTranscript();
+    }
+
+    pub fn scrollDateBy(self: *Session, delta: isize) void {
+        if (delta < 0) {
+            self.date_offset -|= @intCast(-delta);
+        } else {
+            self.date_offset +|= @intCast(delta);
+        }
+    }
+
     pub fn categoryCounts(self: *const Session, query: []const u8) struct { all: usize, codex: usize, claude: usize } {
         var all: usize = 0;
         var codex: usize = 0;
         var claude: usize = 0;
         for (self.rows.items) |row| {
             if (!types.metadataMatches(row, query)) continue;
+            const key = types.dateKeyFromMs(row.last_active_at_ms, self.tz_offset_seconds);
+            if (!types.dateMatches(self.date_filter, key)) continue;
             all += 1;
             switch (row.provider) {
                 .codex => codex += 1,
@@ -657,6 +687,46 @@ pub const Session = struct {
             }
         }
         return .{ .all = all, .codex = codex, .claude = claude };
+    }
+
+    /// Fill `buf` with the distinct local days present under the current
+    /// category + text query (the date filter itself is NOT applied, so every
+    /// day stays selectable), descending by date with per-day counts. Rows are
+    /// recency-sorted, so same-day rows are contiguous and a running dedup is
+    /// correct. Returns the filled prefix; stops at `buf.len`.
+    pub fn buildDateBuckets(self: *const Session, buf: []types.DateBucket) []types.DateBucket {
+        const query = self.filter[0..self.filter_len];
+        var n: usize = 0;
+        var have_last = false;
+        for (self.rows.items) |row| {
+            if (!types.categoryMatches(self.category, row.provider)) continue;
+            if (!types.metadataMatches(row, query)) continue;
+            const key = types.dateKeyFromMs(row.last_active_at_ms, self.tz_offset_seconds);
+            if (key == 0) continue; // no timestamp -> only under "All dates"
+            if (have_last and buf[n - 1].key == key) {
+                buf[n - 1].count += 1;
+                continue;
+            }
+            if (n >= buf.len) break;
+            buf[n] = .{ .key = key, .count = 1 };
+            n += 1;
+            have_last = true;
+        }
+        return buf[0..n];
+    }
+
+    /// Count of rows under the current category + query, ignoring the date
+    /// filter (the "All dates" navigator total). Includes rows with no
+    /// timestamp, which appear only under "All dates".
+    pub fn dateAllCount(self: *const Session) usize {
+        const query = self.filter[0..self.filter_len];
+        var count: usize = 0;
+        for (self.rows.items) |row| {
+            if (!types.categoryMatches(self.category, row.provider)) continue;
+            if (!types.metadataMatches(row, query)) continue;
+            count += 1;
+        }
+        return count;
     }
 };
 
@@ -2400,6 +2470,127 @@ test "ai_history_session: deinit joins an in-flight scan worker" {
 
     session.deinit(); // sets closing, joins the worker — must not leak or crash
     releaser.join();
+}
+
+test "ai_history_session: rowVisible honors the date filter with category and query" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    // 1780315200000 = 2026-06-01 12:00 UTC; +86400000 = 2026-06-02.
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 1780315200000 },
+        .{ .provider = .claude, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .claude_resume, .last_active_at_ms = 1780315200000 + 86400000 },
+    };
+    try session.replaceRows(&rows);
+    try std.testing.expectEqual(@as(usize, 2), session.visibleCount());
+
+    session.setDateFilter(20260601);
+    try std.testing.expectEqual(@as(usize, 1), session.visibleCount());
+    const sel = session.selectedVisible() orelse return error.ExpectedSelection;
+    try std.testing.expectEqualStrings("a", sel.session_id);
+
+    // Date AND category combine.
+    session.setCategory(.claude);
+    try std.testing.expectEqual(@as(usize, 0), session.visibleCount());
+    session.setDateFilter(null);
+    try std.testing.expectEqual(@as(usize, 1), session.visibleCount());
+}
+
+test "ai_history_session: setDateFilter resets selection and is a no-op when unchanged" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 1780315200000 },
+        .{ .provider = .codex, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 1780315200000 },
+    };
+    try session.replaceRows(&rows);
+    session.selected = 1;
+    session.list_offset = 1;
+    session.setDateFilter(20260601);
+    try std.testing.expectEqual(@as(usize, 0), session.selected);
+    try std.testing.expectEqual(@as(usize, 0), session.list_offset);
+
+    // No-op path: setting the same filter again must not move selection.
+    session.selected = 1;
+    session.setDateFilter(20260601);
+    try std.testing.expectEqual(@as(usize, 1), session.selected);
+}
+
+test "ai_history_session: scrollDateBy saturates at zero" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    try std.testing.expectEqual(@as(usize, 0), session.date_offset);
+    session.scrollDateBy(-3);
+    try std.testing.expectEqual(@as(usize, 0), session.date_offset);
+    session.scrollDateBy(4);
+    try std.testing.expectEqual(@as(usize, 4), session.date_offset);
+    session.scrollDateBy(-1);
+    try std.testing.expectEqual(@as(usize, 3), session.date_offset);
+}
+
+test "ai_history_session: buildDateBuckets groups distinct local days descending" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    const day1: i64 = 1780315200000; // 2026-06-01 12:00 UTC
+    const day2: i64 = day1 + 86400000; // 2026-06-02
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = day2 },
+        .{ .provider = .claude, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .claude_resume, .last_active_at_ms = day1 + 3600000 },
+        .{ .provider = .codex, .session_id = "c", .title = "C", .source_path = "c.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = day1 },
+        .{ .provider = .codex, .session_id = "d", .title = "D", .source_path = "d.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 0 }, // no timestamp
+    };
+    try session.replaceRows(&rows);
+
+    var buf: [8]types.DateBucket = undefined;
+    const all = session.buildDateBuckets(&buf);
+    try std.testing.expectEqual(@as(usize, 2), all.len);
+    try std.testing.expectEqual(@as(types.DateKey, 20260602), all[0].key);
+    try std.testing.expectEqual(@as(usize, 1), all[0].count);
+    try std.testing.expectEqual(@as(types.DateKey, 20260601), all[1].key);
+    try std.testing.expectEqual(@as(usize, 2), all[1].count); // b + c, no-timestamp d excluded
+    try std.testing.expectEqual(@as(usize, 4), session.dateAllCount()); // includes d
+
+    // Cross-filter: with category = Codex, day 20260601 has only c.
+    session.setCategory(.codex);
+    const codex = session.buildDateBuckets(&buf);
+    try std.testing.expectEqual(@as(usize, 2), codex.len);
+    try std.testing.expectEqual(@as(types.DateKey, 20260601), codex[1].key);
+    try std.testing.expectEqual(@as(usize, 1), codex[1].count);
+}
+
+test "ai_history_session: categoryCounts honors the active date filter" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    const day1: i64 = 1780315200000;
+    const day2: i64 = day1 + 86400000;
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = day1 },
+        .{ .provider = .claude, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .claude_resume, .last_active_at_ms = day1 },
+        .{ .provider = .codex, .session_id = "c", .title = "C", .source_path = "c.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = day2 },
+    };
+    try session.replaceRows(&rows);
+
+    const all = session.categoryCounts("");
+    try std.testing.expectEqual(@as(usize, 3), all.all);
+
+    session.setDateFilter(20260601);
+    const d1 = session.categoryCounts("");
+    try std.testing.expectEqual(@as(usize, 2), d1.all);
+    try std.testing.expectEqual(@as(usize, 1), d1.codex);
+    try std.testing.expectEqual(@as(usize, 1), d1.claude);
+}
+
+test "ai_history_session: buildDateBuckets respects the buffer cap" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    const base: i64 = 1780315200000;
+    var rows: [4]types.SessionMeta = undefined;
+    for (&rows, 0..) |*r, i| {
+        r.* = .{ .provider = .codex, .session_id = "x", .title = "X", .source_path = "x.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = base + @as(i64, @intCast(i)) * 86400000 };
+    }
+    try session.replaceRows(&rows);
+    var small: [2]types.DateBucket = undefined;
+    const capped = session.buildDateBuckets(&small);
+    try std.testing.expectEqual(@as(usize, 2), capped.len); // 4 distinct days clipped to 2
 }
 
 fn testMakeRow(allocator: std.mem.Allocator, id: []const u8) !types.SessionMeta {

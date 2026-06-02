@@ -14,6 +14,7 @@ const session_persist = @import("../session_persist.zig");
 const ai_chat = @import("../ai_chat.zig");
 const ai_history_session = @import("../ai_history_session.zig");
 const ai_history_source = @import("../ai_history_source.zig");
+const ai_history_time = @import("../ai_history_time.zig");
 const agent_history = @import("../agent_history.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const active_tab_state = @import("active_tab.zig");
@@ -444,6 +445,7 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
         allocator.destroy(session_ptr);
         return false;
     };
+    session_ptr.tz_offset_seconds = ai_history_time.localOffsetSeconds();
 
     const t = allocator.create(TabState) catch {
         session_ptr.deinit();
