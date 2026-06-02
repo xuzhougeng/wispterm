@@ -726,6 +726,17 @@ pub fn aiHistoryScrollTranscript(delta: isize) bool {
     return true;
 }
 
+/// Scroll the DATE navigator's day list by `delta` rows (negative scrolls up).
+/// The renderer clamps the offset against the visible capacity each frame.
+pub fn aiHistoryScrollDateList(delta: isize) bool {
+    const session = activeAiHistory() orelse return false;
+    session.mutex.lock();
+    session.scrollDateBy(delta);
+    session.mutex.unlock();
+    markUiDirty();
+    return true;
+}
+
 pub fn aiHistoryLoadSelectedTranscript() bool {
     return resumeAiHistorySelection();
 }
@@ -998,6 +1009,12 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
         },
         .category => |cat| {
             session.setCategory(cat);
+            session.ensureSelectionVisible(visible_rows);
+            markUiDirty();
+            return true;
+        },
+        .date => |k| {
+            session.setDateFilter(k);
             session.ensureSelectionVisible(visible_rows);
             markUiDirty();
             return true;
