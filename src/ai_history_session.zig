@@ -252,6 +252,7 @@ pub const Session = struct {
         self.selected = 0;
         self.list_offset = 0;
         self.clearTranscript();
+        self.transcript_generation +%= 1;
         self.state = .ready;
         self.status = "Ready";
     }
@@ -267,20 +268,6 @@ pub const Session = struct {
 
         try self.replaceRows(result.rows);
         self.status = if (result.warning_count == 0) "Ready" else "Ready with warnings";
-    }
-
-    pub fn scanNowReturningResult(self: *Session, host: ScannerHost) !ScanResult {
-        self.beginScan();
-        errdefer {
-            self.state = .failed;
-            self.status = "Scan failed";
-        }
-        const result = try host.scan(host.ctx, self.allocator, self.source);
-        errdefer freeScanResult(self.allocator, result);
-
-        try self.replaceRows(result.rows);
-        self.status = if (result.warning_count == 0) "Ready" else "Ready with warnings";
-        return result;
     }
 
     /// Publish scan rows if `generation` is still current and we are not closing,
@@ -2054,4 +2041,64 @@ test "ai_history_session: publishTranscript discards stale generation" {
     session.publishTranscript(1, .codex, messages);
 
     try std.testing.expectEqual(@as(usize, 0), session.transcript.len);
+}
+
+test "ai_history_session: publishScanResult discards when closing" {
+    const allocator = std.testing.allocator;
+    var session = Session.init(allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    session.scan_generation = 2;
+    session.closing.store(true, .release);
+
+    const rows = try allocator.alloc(types.SessionMeta, 1);
+    rows[0] = .{
+        .provider = .codex,
+        .session_id = try allocator.dupe(u8, "closing"),
+        .title = try allocator.dupe(u8, "Closing"),
+        .source_path = try allocator.dupe(u8, "closing.jsonl"),
+        .resume_kind = .codex_resume,
+    };
+    // closing is set -> result is discarded and freed (testing allocator checks no leak)
+    session.publishScanResult(2, .{ .rows = rows, .owns_row_strings = true });
+
+    try std.testing.expectEqual(@as(usize, 0), session.rows.items.len);
+}
+
+test "ai_history_session: deinit joins an in-flight scan worker" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = struct {
+        gate: std.Thread.ResetEvent = .{},
+        fn run(ptr: *anyopaque, alloc: std.mem.Allocator, _: source_mod.Source) anyerror!ScanResult {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.gate.wait(); // block until the test releases us
+            const rows = try alloc.alloc(types.SessionMeta, 1);
+            rows[0] = .{
+                .provider = .codex,
+                .session_id = try alloc.dupe(u8, "inflight"),
+                .title = try alloc.dupe(u8, "Inflight"),
+                .source_path = try alloc.dupe(u8, "inflight.jsonl"),
+                .resume_kind = .codex_resume,
+            };
+            return .{ .rows = rows, .owns_row_strings = true };
+        }
+        fn destroy(_: *anyopaque, _: std.mem.Allocator) void {}
+    };
+
+    var ctx = Ctx{};
+    var session = Session.init(allocator, .{ .id = "local", .name = "Local", .target = .local });
+
+    session.scanAsync(.{ .ctx = &ctx, .run = Ctx.run, .destroy = Ctx.destroy });
+
+    // Release the worker from a helper thread so deinit can join it while it is
+    // genuinely in flight (deinit sets closing, then blocks in join until the
+    // worker returns; the worker discards its result because closing is set).
+    const releaser = try std.Thread.spawn(.{}, struct {
+        fn f(c: *Ctx) void {
+            c.gate.set();
+        }
+    }.f, .{&ctx});
+
+    session.deinit(); // sets closing, joins the worker — must not leak or crash
+    releaser.join();
 }
