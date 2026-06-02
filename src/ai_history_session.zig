@@ -2455,3 +2455,38 @@ test "ai_history_session: scanningStatusLabel formats count" {
     try std.testing.expectEqualStrings("Scanning…", scanningStatusLabel(&buf, 0));
     try std.testing.expectEqualStrings("Scanning… 7", scanningStatusLabel(&buf, 7));
 }
+
+test "ai_history_session: scanAsync streams batches via sink then finalizes ready and sorted" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = struct {
+        fn run(_: *anyopaque, alloc: std.mem.Allocator, _: source_mod.Source, sink: ?ScanSink) anyerror!ScanResult {
+            const s = sink.?;
+            {
+                const b = try alloc.alloc(types.SessionMeta, 1);
+                b[0] = .{ .provider = .codex, .session_id = try alloc.dupe(u8, "s1"), .title = try alloc.dupe(u8, "One"), .source_path = try alloc.dupe(u8, "1.jsonl"), .resume_kind = .codex_resume, .last_active_at_ms = 100 };
+                _ = s.publish(s.ctx, b);
+            }
+            {
+                const b = try alloc.alloc(types.SessionMeta, 1);
+                b[0] = .{ .provider = .codex, .session_id = try alloc.dupe(u8, "s2"), .title = try alloc.dupe(u8, "Two"), .source_path = try alloc.dupe(u8, "2.jsonl"), .resume_kind = .codex_resume, .last_active_at_ms = 200 };
+                _ = s.publish(s.ctx, b);
+            }
+            const rows = try alloc.alloc(types.SessionMeta, 0);
+            return .{ .rows = rows, .authoritative = false, .owns_row_strings = true };
+        }
+        fn destroy(_: *anyopaque, _: std.mem.Allocator) void {}
+    };
+
+    var ctx_byte: u8 = 0;
+    var session = Session.init(allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    session.scanAsync(.{ .ctx = &ctx_byte, .run = Ctx.run, .destroy = Ctx.destroy });
+    session.joinForTest();
+
+    try std.testing.expectEqual(LoadState.ready, session.state);
+    try std.testing.expectEqual(@as(usize, 2), session.rows.items.len);
+    try std.testing.expectEqualStrings("s2", session.rows.items[0].session_id); // sorted desc by last_active
+    try std.testing.expectEqualStrings("s1", session.rows.items[1].session_id);
+}
