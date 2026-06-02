@@ -1323,11 +1323,41 @@ pub fn ensureWriteContext(ctx: *ToolContext, surface: ToolSurface) !?[]u8 {
 // Utility helpers
 // ---------------------------------------------------------------------------
 
+/// Find the END sentinel that marks real completion: the first occurrence of
+/// `end_marker` immediately followed by `:` and an ASCII digit (the exit
+/// status). The shell echoes the wrapped command line, which contains the bare
+/// marker followed by `:%s` (or, for R, `:"`); those never satisfy the digit
+/// test, so the echo is ignored. Returns the byte index of the marker, or null
+/// if the command has not completed yet.
+fn findCompletedEnd(text: []const u8, end_marker: []const u8) ?usize {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, text, from, end_marker)) |idx| {
+        const colon = idx + end_marker.len;
+        if (colon + 1 < text.len and text[colon] == ':' and std.ascii.isDigit(text[colon + 1])) {
+            return idx;
+        }
+        from = idx + 1;
+    }
+    return null;
+}
+
 fn extractUnixCommandResult(allocator: std.mem.Allocator, text: []const u8, start_marker: []const u8, end_marker: []const u8) ![]u8 {
-    const start = std.mem.indexOf(u8, text, start_marker) orelse return allocator.dupe(u8, text);
-    const body_start = start + start_marker.len;
-    const end = std.mem.indexOfPos(u8, text, body_start, end_marker) orelse return allocator.dupe(u8, text[body_start..]);
-    return allocator.dupe(u8, std.mem.trim(u8, text[body_start..end], " \t\r\n"));
+    const end = findCompletedEnd(text, end_marker) orelse return allocator.dupe(u8, text);
+
+    // Exit status: digits after the matched marker's ':'.
+    const status_start = end + end_marker.len + 1;
+    var status_end = status_start;
+    while (status_end < text.len and std.ascii.isDigit(text[status_end])) : (status_end += 1) {}
+    const status = text[status_start..status_end];
+
+    // The real START sits just above the output; the echo's START is further up.
+    // Take the last START before the completed END.
+    const start = std.mem.lastIndexOf(u8, text[0..end], start_marker) orelse {
+        const body = std.mem.trim(u8, text[0..end], " \t\r\n");
+        return std.fmt.allocPrint(allocator, "exit_status={s}\n{s}", .{ status, body });
+    };
+    const body = std.mem.trim(u8, text[start + start_marker.len .. end], " \t\r\n");
+    return std.fmt.allocPrint(allocator, "exit_status={s}\n{s}", .{ status, body });
 }
 
 fn deniedResult(allocator: std.mem.Allocator, command: []const u8, reason: []const u8) ![]u8 {
@@ -1691,6 +1721,46 @@ test "ai chat Python string literal escapes code for REPL eval" {
     defer allocator.free(literal);
 
     try std.testing.expectEqualStrings("\"print(\\\"hello\\\")\\npath = \\\"C:\\\\\\\\tmp\\\"\"", literal);
+}
+
+test "agent exec sentinel ignores the echoed command line" {
+    const allocator = std.testing.allocator;
+    // The shell echoes the whole wrapped command (with literal \n and %s) above
+    // the real printf output. Only the real END line ends in `:<digit>`.
+    const snapshot =
+        "(base) u@h:~$  printf '\\n__WISPTERM_AGENT_START_111__\\n'; { echo hi; } 2>&1;" ++
+        " __wispterm_agent_status=$?; printf '\\n__WISPTERM_AGENT_END_111__:%s\\n' \"$s\"\n" ++
+        "\n__WISPTERM_AGENT_START_111__\n" ++
+        "hi\n" ++
+        "\n__WISPTERM_AGENT_END_111__:0\n" ++
+        "(base) u@h:~$ ";
+
+    // findCompletedEnd points at the real END (the `:0` one), not the echo.
+    const end = findCompletedEnd(snapshot, "__WISPTERM_AGENT_END_111__").?;
+    try std.testing.expect(std.mem.startsWith(u8, snapshot[end..], "__WISPTERM_AGENT_END_111__:0"));
+
+    const result = try extractUnixCommandResult(allocator, snapshot, "__WISPTERM_AGENT_START_111__", "__WISPTERM_AGENT_END_111__");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("exit_status=0\nhi", result);
+}
+
+test "agent exec sentinel treats echo-only snapshot as not finished" {
+    const incomplete =
+        "(base) u@h:~$  printf '\\n__WISPTERM_AGENT_END_222__:%s\\n' \"$s\"\n" ++
+        "\n__WISPTERM_AGENT_START_222__\n" ++
+        "Cloning into 'x'...\n";
+    try std.testing.expect(findCompletedEnd(incomplete, "__WISPTERM_AGENT_END_222__") == null);
+}
+
+test "agent exec sentinel parses multi-digit exit status" {
+    const allocator = std.testing.allocator;
+    const snapshot =
+        "\n__WISPTERM_AGENT_START_333__\n" ++
+        "boom\n" ++
+        "\n__WISPTERM_AGENT_END_333__:128\n";
+    const result = try extractUnixCommandResult(allocator, snapshot, "__WISPTERM_AGENT_START_333__", "__WISPTERM_AGENT_END_333__");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("exit_status=128\nboom", result);
 }
 
 test "ai chat detects dangerous shell commands" {
