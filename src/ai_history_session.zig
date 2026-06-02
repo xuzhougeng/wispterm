@@ -2913,3 +2913,34 @@ test "ai_history_session: remote scan skips cat on cache hit" {
     try std.testing.expectEqualStrings("codex-cached", result.rows[0].session_id);
     try std.testing.expectEqual(@as(usize, 1), result.cache_update.records.len);
 }
+
+test "ai_history_session: scanAsync warm path shows provisional rows then authoritative finalize" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = struct {
+        fn run(_: *anyopaque, alloc: std.mem.Allocator, _: source_mod.Source, sink: ?ScanSink) anyerror!ScanResult {
+            const s = sink.?;
+            // Provisional batch 0 (instant-reopen): one cached row.
+            const prov = try alloc.alloc(types.SessionMeta, 1);
+            prov[0] = .{ .provider = .codex, .session_id = try alloc.dupe(u8, "prior"), .title = try alloc.dupe(u8, "Prior"), .source_path = try alloc.dupe(u8, "p.jsonl"), .resume_kind = .codex_resume, .last_active_at_ms = 5 };
+            _ = s.publish(s.ctx, prov);
+            // Authoritative set (warm): the real current row.
+            const rows = try alloc.alloc(types.SessionMeta, 1);
+            rows[0] = .{ .provider = .codex, .session_id = try alloc.dupe(u8, "current"), .title = try alloc.dupe(u8, "Current"), .source_path = try alloc.dupe(u8, "c.jsonl"), .resume_kind = .codex_resume, .last_active_at_ms = 20 };
+            return .{ .rows = rows, .authoritative = true, .owns_row_strings = true };
+        }
+        fn destroy(_: *anyopaque, _: std.mem.Allocator) void {}
+    };
+
+    var ctx_byte: u8 = 0;
+    var session = Session.init(allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    session.scanAsync(.{ .ctx = &ctx_byte, .run = Ctx.run, .destroy = Ctx.destroy });
+    session.joinForTest();
+
+    try std.testing.expectEqual(LoadState.ready, session.state);
+    // finishScan replaced the provisional "prior" with the authoritative "current".
+    try std.testing.expectEqual(@as(usize, 1), session.rows.items.len);
+    try std.testing.expectEqualStrings("current", session.rows.items[0].session_id);
+}
