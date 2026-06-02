@@ -52,6 +52,16 @@ pub const ScanWork = struct {
     destroy: *const fn (*anyopaque, std.mem.Allocator) void,
 };
 
+/// Owned unit of background transcript-load work. `run` performs the blocking
+/// load; `provider` is used to publish; `destroy` frees `ctx` (which owns the
+/// selected metadata copy). All run on the worker thread.
+pub const TranscriptWork = struct {
+    ctx: *anyopaque,
+    provider: types.ProviderId,
+    run: *const fn (*anyopaque, std.mem.Allocator) anyerror![]types.TranscriptMessage,
+    destroy: *const fn (*anyopaque, std.mem.Allocator) void,
+};
+
 pub const RemoteExecHost = struct {
     ctx: *anyopaque,
     exec: *const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8,
@@ -361,6 +371,59 @@ pub const Session = struct {
         self.transcript_status = "Transcript ready";
     }
 
+    /// Start a background transcript load for the currently-selected row's data,
+    /// captured by the caller into `work.ctx`. UI-thread only. Clears any current
+    /// transcript, flips to `.loading`, bumps the generation, spawns the worker.
+    pub fn loadTranscriptAsync(self: *Session, work: TranscriptWork) void {
+        if (self.transcript_thread) |t| {
+            t.join();
+            self.transcript_thread = null;
+        }
+        self.mutex.lock();
+        self.clearTranscript();
+        self.transcript_state = .loading;
+        self.transcript_status = "Loading transcript";
+        self.transcript_generation +%= 1;
+        const generation = self.transcript_generation;
+        self.mutex.unlock();
+
+        const thread = std.Thread.spawn(.{}, transcriptThreadMain, .{ self, work, generation }) catch {
+            self.mutex.lock();
+            if (generation == self.transcript_generation) {
+                self.transcript_state = .failed;
+                self.transcript_status = "Transcript failed";
+            }
+            self.mutex.unlock();
+            work.destroy(work.ctx, self.allocator);
+            return;
+        };
+        self.transcript_thread = thread;
+    }
+
+    /// Publish transcript messages if `generation`/`provider` still current and not
+    /// closing, otherwise free them. Worker-thread only.
+    pub fn publishTranscript(self: *Session, generation: u64, provider: types.ProviderId, messages: []types.TranscriptMessage) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.closing.load(.acquire) and generation == self.transcript_generation) {
+            self.transcript = messages;
+            self.transcript_provider = provider;
+            self.transcript_state = .ready;
+            self.transcript_status = "Transcript ready";
+        } else {
+            freeTranscript(self.allocator, provider, messages);
+        }
+    }
+
+    pub fn publishTranscriptFailure(self: *Session, generation: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.closing.load(.acquire) and generation == self.transcript_generation) {
+            self.transcript_state = .failed;
+            self.transcript_status = "Transcript failed";
+        }
+    }
+
     pub fn setFilter(self: *Session, text: []const u8) void {
         self.filter_len = @min(text.len, self.filter.len);
         @memcpy(self.filter[0..self.filter_len], text[0..self.filter_len]);
@@ -483,6 +546,15 @@ fn scanThreadMain(session: *Session, work: ScanWork, generation: u64) void {
         return;
     };
     session.publishScanResult(generation, result);
+}
+
+fn transcriptThreadMain(session: *Session, work: TranscriptWork, generation: u64) void {
+    defer work.destroy(work.ctx, session.allocator);
+    const messages = work.run(work.ctx, session.allocator) catch {
+        session.publishTranscriptFailure(generation);
+        return;
+    };
+    session.publishTranscript(generation, work.provider, messages);
 }
 
 fn previousUtf8Boundary(bytes: []const u8, from: usize) usize {
@@ -1915,4 +1987,48 @@ test "ai_history_session: scanAsync marks failed when run errors" {
     session.joinForTest();
     try std.testing.expectEqual(LoadState.failed, session.state);
     try std.testing.expect(ctx.destroyed);
+}
+
+test "ai_history_session: loadTranscriptAsync publishes messages then joins clean" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = struct {
+        fn run(_: *anyopaque, alloc: std.mem.Allocator) anyerror![]types.TranscriptMessage {
+            const messages = try alloc.alloc(types.TranscriptMessage, 1);
+            errdefer alloc.free(messages);
+            messages[0] = .{ .role = .user, .content = try alloc.dupe(u8, "async-hello") };
+            return messages;
+        }
+        fn destroy(_: *anyopaque, _: std.mem.Allocator) void {}
+    };
+
+    var ctx_byte: u8 = 0;
+    var session = Session.init(allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    session.loadTranscriptAsync(.{
+        .ctx = &ctx_byte,
+        .provider = .codex,
+        .run = Ctx.run,
+        .destroy = Ctx.destroy,
+    });
+    session.joinForTest();
+
+    try std.testing.expectEqual(TranscriptState.ready, session.transcript_state);
+    try std.testing.expectEqual(@as(usize, 1), session.transcript.len);
+    try std.testing.expectEqualStrings("async-hello", session.transcript[0].content);
+}
+
+test "ai_history_session: publishTranscript discards stale generation" {
+    const allocator = std.testing.allocator;
+    var session = Session.init(allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    session.transcript_generation = 3;
+
+    const messages = try allocator.alloc(types.TranscriptMessage, 1);
+    messages[0] = .{ .role = .user, .content = try allocator.dupe(u8, "stale") };
+    // generation 1 != current 3 -> freed, not published (testing allocator checks no leak)
+    session.publishTranscript(1, .codex, messages);
+
+    try std.testing.expectEqual(@as(usize, 0), session.transcript.len);
 }
