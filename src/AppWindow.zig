@@ -1499,6 +1499,7 @@ pub fn spawnAiHistoryTab(source: ai_history_source.Source) bool {
     const allocator = g_allocator orelse return false;
     if (!tab.spawnAiHistoryTab(allocator, source)) return false;
     clearUiStateOnTabChange();
+    if (activeAiHistory()) |session| startAiHistoryScan(allocator, session);
     return true;
 }
 
