@@ -930,7 +930,7 @@ const AiHistoryTarget = union(enum) {
 const AiHistoryScanJob = struct {
     target: AiHistoryTarget,
 
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator, source: ai_history_source.Source, _: ?ai_history_session.ScanSink) anyerror!ai_history_session.ScanResult {
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator, source: ai_history_source.Source, sink: ?ai_history_session.ScanSink) anyerror!ai_history_session.ScanResult {
         const job: *AiHistoryScanJob = @ptrCast(@alignCast(ctx));
         switch (job.target) {
             .local => {
@@ -943,17 +943,26 @@ const AiHistoryScanJob = struct {
                     .cache = if (parsed_cache) |cache| cache.value else null,
                 };
                 const host = host_state.scannerHost();
-                return host.scan(host.ctx, allocator, source, null);
+                return host.scan(host.ctx, allocator, source, sink);
             },
             .wsl => {
-                var host_state = ai_history_session.WslScannerHost{};
+                var parsed_cache = ai_history_cache.loadDefault(allocator) catch null;
+                defer if (parsed_cache) |*cache| cache.deinit();
+                var host_state = ai_history_session.WslScannerHost{
+                    .cache = if (parsed_cache) |cache| cache.value else null,
+                };
                 const host = host_state.scannerHost();
-                return host.scan(host.ctx, allocator, source, null);
+                return host.scan(host.ctx, allocator, source, sink);
             },
             .ssh => |conn| {
-                var host_state = ai_history_session.SshScannerHost{ .conn = conn };
+                var parsed_cache = ai_history_cache.loadDefault(allocator) catch null;
+                defer if (parsed_cache) |*cache| cache.deinit();
+                var host_state = ai_history_session.SshScannerHost{
+                    .conn = conn,
+                    .cache = if (parsed_cache) |cache| cache.value else null,
+                };
                 const host = host_state.scannerHost();
-                return host.scan(host.ctx, allocator, source, null);
+                return host.scan(host.ctx, allocator, source, sink);
             },
         }
     }

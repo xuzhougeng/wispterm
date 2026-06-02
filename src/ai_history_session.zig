@@ -104,6 +104,8 @@ pub const LocalScannerHost = struct {
 };
 
 pub const WslScannerHost = struct {
+    cache: ?ai_history_cache.CacheFile = null,
+
     pub fn scannerHost(self: *WslScannerHost) ScannerHost {
         return .{
             .ctx = self,
@@ -117,8 +119,9 @@ pub const WslScannerHost = struct {
     }
 
     fn scan(ctx: *anyopaque, allocator: std.mem.Allocator, source: source_mod.Source, sink: ?ScanSink) !ScanResult {
+        const self: *WslScannerHost = @ptrCast(@alignCast(ctx));
         const host = RemoteExecHost{ .ctx = ctx, .exec = exec };
-        return try scanRemoteFilesystemSink(allocator, source, host, sink);
+        return try scanRemoteFilesystemSink(allocator, source, host, self.cache, sink);
     }
 
     fn loadTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, meta: types.SessionMeta) ![]types.TranscriptMessage {
@@ -129,6 +132,7 @@ pub const WslScannerHost = struct {
 
 pub const SshScannerHost = struct {
     conn: ssh_connection.SshConnection,
+    cache: ?ai_history_cache.CacheFile = null,
 
     pub fn scannerHost(self: *SshScannerHost) ScannerHost {
         return .{
@@ -144,8 +148,9 @@ pub const SshScannerHost = struct {
     }
 
     fn scan(ctx: *anyopaque, allocator: std.mem.Allocator, source: source_mod.Source, sink: ?ScanSink) !ScanResult {
+        const self: *SshScannerHost = @ptrCast(@alignCast(ctx));
         const host = RemoteExecHost{ .ctx = ctx, .exec = exec };
-        return try scanRemoteFilesystemSink(allocator, source, host, sink);
+        return try scanRemoteFilesystemSink(allocator, source, host, self.cache, sink);
     }
 
     fn loadTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, meta: types.SessionMeta) ![]types.TranscriptMessage {
@@ -809,13 +814,16 @@ pub fn scanLocalFilesystemWithCacheSink(
     cache: ?ai_history_cache.CacheFile,
     sink: ?ScanSink,
 ) !ScanResult {
+    const prov = try emitProvisionalBatch(allocator, cache, source.id, sink);
+
     var scanner = LocalScan{
         .allocator = allocator,
         .source = source,
         .budget = budget,
         .cache = cache,
-        .emitter = .{ .allocator = allocator, .sink = sink },
+        .emitter = .{ .allocator = allocator, .sink = prov.emitter_sink },
     };
+    if (prov.aborted) scanner.emitter.aborted = true;
     errdefer scanner.deinit();
 
     if (source.providers.codex) {
@@ -849,7 +857,8 @@ pub fn scanLocalFilesystemWithCacheSink(
     try scanner.processCandidates();
     try scanner.emitter.flush();
 
-    const rows = if (sink == null)
+    const authoritative = (sink == null) or prov.warm;
+    const rows = if (authoritative)
         try scanner.emitter.rows.toOwnedSlice(allocator)
     else
         try allocator.alloc(types.SessionMeta, 0);
@@ -861,7 +870,7 @@ pub fn scanLocalFilesystemWithCacheSink(
     scanner.freeCandidates();
     return .{
         .rows = rows,
-        .authoritative = (sink == null),
+        .authoritative = authoritative,
         .warning_count = scanner.warning_count,
         .owns_row_strings = true,
         .cache_update = .{
@@ -889,7 +898,44 @@ pub fn providerFindCommand(provider: types.ProviderId, root: []const u8, out: []
     _ = provider;
     var quoted_buf: [1024]u8 = undefined;
     const quoted = remote_file.shellQuote(&quoted_buf, root) orelse return error.CommandTooLong;
+    // GNU find: emit "mtime<TAB>size<TAB>path", newest first, capped. The \t and \n
+    // are literal escapes for find -printf (single-quoted so the shell preserves them).
+    return std.fmt.bufPrint(out, "find {s} -type f -name '*.jsonl' -size -2048k -printf '%T@\\t%s\\t%p\\n' 2>/dev/null | sort -rn | head -500", .{quoted}) catch error.CommandTooLong;
+}
+
+/// Fallback for environments without GNU `find -printf` (e.g. BSD): path-only,
+/// no stamps. Used when the primary command returns nothing.
+pub fn providerFindCommandPlain(provider: types.ProviderId, root: []const u8, out: []u8) ![]const u8 {
+    _ = provider;
+    var quoted_buf: [1024]u8 = undefined;
+    const quoted = remote_file.shellQuote(&quoted_buf, root) orelse return error.CommandTooLong;
     return std.fmt.bufPrint(out, "find {s} -type f -name '*.jsonl' -size -2048k | head -500", .{quoted}) catch error.CommandTooLong;
+}
+
+const RemoteCandidate = struct {
+    path: []const u8,
+    stamp: ai_history_cache.FileStamp,
+};
+
+/// Parse one `find` output line. Primary form is "<mtime>\t<size>\t<path>"
+/// (mtime is `%T@` seconds, possibly fractional). Fallback form (plain find) is
+/// just "<path>" → stamp zeroed. `path` borrows from `line`.
+fn parseRemoteStamp(line: []const u8) RemoteCandidate {
+    var it = std.mem.splitScalar(u8, line, '\t');
+    const first = it.next() orelse return .{ .path = line, .stamp = .{ .size = 0, .mtime_ns = 0 } };
+    const second = it.next();
+    const third = it.next();
+    if (second == null or third == null) {
+        // Plain path (no tabs) → fallback stamp.
+        return .{ .path = std.mem.trim(u8, line, " \t\r\n"), .stamp = .{ .size = 0, .mtime_ns = 0 } };
+    }
+    const secs_str = std.mem.sliceTo(first, '.'); // integer seconds, drop fraction
+    const secs = std.fmt.parseInt(i128, secs_str, 10) catch 0;
+    const size = std.fmt.parseInt(u64, std.mem.trim(u8, second.?, " "), 10) catch 0;
+    return .{
+        .path = std.mem.trim(u8, third.?, " \t\r\n"),
+        .stamp = .{ .size = size, .mtime_ns = secs * std.time.ns_per_s },
+    };
 }
 
 pub fn remoteCatCommand(path: []const u8, out: []u8) ![]const u8 {
@@ -899,20 +945,25 @@ pub fn remoteCatCommand(path: []const u8, out: []u8) ![]const u8 {
 }
 
 pub fn scanRemoteFilesystem(allocator: std.mem.Allocator, source: source_mod.Source, host: RemoteExecHost) !ScanResult {
-    return scanRemoteFilesystemSink(allocator, source, host, null);
+    return scanRemoteFilesystemSink(allocator, source, host, null, null);
 }
 
-pub fn scanRemoteFilesystemSink(allocator: std.mem.Allocator, source: source_mod.Source, host: RemoteExecHost, sink: ?ScanSink) !ScanResult {
+pub fn scanRemoteFilesystemSink(allocator: std.mem.Allocator, source: source_mod.Source, host: RemoteExecHost, cache: ?ai_history_cache.CacheFile, sink: ?ScanSink) !ScanResult {
     const home_raw = try host.exec(host.ctx, allocator, remote_file.wslHomeCommand());
     defer allocator.free(home_raw);
     const home = std.mem.trim(u8, home_raw, " \t\r\n");
     if (home.len == 0) return error.NoHomeDirectory;
 
+    const prov = try emitProvisionalBatch(allocator, cache, source.id, sink);
+
     var scanner = RemoteScan{
         .allocator = allocator,
         .host = host,
-        .emitter = .{ .allocator = allocator, .sink = sink },
+        .source = source,
+        .cache = cache,
+        .emitter = .{ .allocator = allocator, .sink = prov.emitter_sink },
     };
+    if (prov.aborted) scanner.emitter.aborted = true;
     errdefer scanner.deinit();
 
     if (source.providers.codex) {
@@ -945,15 +996,25 @@ pub fn scanRemoteFilesystemSink(allocator: std.mem.Allocator, source: source_mod
     }
     try scanner.emitter.flush();
 
-    const rows = if (sink == null)
+    const authoritative = (sink == null) or prov.warm;
+    const rows = if (authoritative)
         try scanner.emitter.rows.toOwnedSlice(allocator)
     else
         try allocator.alloc(types.SessionMeta, 0);
+    errdefer {
+        freeRows(allocator, rows);
+        allocator.free(rows);
+    }
+    const cache_update = try scanner.cache_records.toOwnedSlice(allocator);
     return .{
         .rows = rows,
-        .authoritative = (sink == null),
+        .authoritative = authoritative,
         .warning_count = scanner.warning_count,
         .owns_row_strings = true,
+        .cache_update = .{
+            .records = cache_update,
+            .owns_record_strings = true,
+        },
     };
 }
 
@@ -980,6 +1041,52 @@ pub fn freeTranscript(allocator: std.mem.Allocator, provider: types.ProviderId, 
         .codex => codex_provider.freeTranscript(allocator, messages),
         .claude => claude_provider.freeTranscript(allocator, messages),
     }
+}
+
+/// Clone every cached SessionMeta belonging to `source_id`. Caller owns the
+/// returned slice (free with `freeRows` + `allocator.free`). Used to show the
+/// previous scan instantly on reopen before the filesystem walk runs.
+pub fn rowsForSource(allocator: std.mem.Allocator, cache: ai_history_cache.CacheFile, source_id: []const u8) ![]types.SessionMeta {
+    var list: std.ArrayListUnmanaged(types.SessionMeta) = .empty;
+    errdefer {
+        freeRows(allocator, list.items);
+        list.deinit(allocator);
+    }
+    for (cache.records) |record| {
+        if (!std.mem.eql(u8, record.source_id, source_id)) continue;
+        try list.append(allocator, try cloneMetadata(allocator, record.meta));
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+/// Outcome of the provisional (instant-reopen) phase, consumed by the local and
+/// remote scanners.
+const ProvisionalScan = struct {
+    /// true when cached rows existed and were published as batch 0; the scan
+    /// should then accumulate the authoritative set and `replaceRows` at finalize.
+    warm: bool,
+    /// The sink the row emitter should use: the real sink in cold streaming mode,
+    /// or null in warm/sync mode (accumulate the authoritative set instead).
+    emitter_sink: ?ScanSink,
+    /// true when the provisional publish reported a stale/closing scan.
+    aborted: bool,
+};
+
+/// Instant-reopen: if a sink and cache are present and the cache has rows for
+/// `source_id`, publish them (sorted, most-recent-first) as a provisional batch 0
+/// for instant display, and signal warm mode. Otherwise signal cold/sync mode.
+/// Takes ownership of the cached rows by handing them to `sink.publish`.
+fn emitProvisionalBatch(allocator: std.mem.Allocator, cache: ?ai_history_cache.CacheFile, source_id: []const u8, sink: ?ScanSink) !ProvisionalScan {
+    const real_sink = sink orelse return .{ .warm = false, .emitter_sink = null, .aborted = false };
+    const c = cache orelse return .{ .warm = false, .emitter_sink = real_sink, .aborted = false };
+    const cached = try rowsForSource(allocator, c, source_id);
+    if (cached.len == 0) {
+        allocator.free(cached);
+        return .{ .warm = false, .emitter_sink = real_sink, .aborted = false };
+    }
+    std.mem.sort(types.SessionMeta, cached, {}, types.lessRecent);
+    const keep = real_sink.publish(real_sink.ctx, cached); // sink takes ownership
+    return .{ .warm = true, .emitter_sink = null, .aborted = !keep };
 }
 
 /// Collects scanned rows. With a sink it flushes batches for live display
@@ -1226,10 +1333,15 @@ fn providerRootForPath(source: source_mod.Source, provider: types.ProviderId, so
 const RemoteScan = struct {
     allocator: std.mem.Allocator,
     host: RemoteExecHost,
+    source: source_mod.Source,
+    cache: ?ai_history_cache.CacheFile = null,
     emitter: RowEmitter,
+    cache_records: std.ArrayListUnmanaged(ai_history_cache.CacheRecord) = .empty,
     warning_count: u32 = 0,
 
     fn deinit(self: *RemoteScan) void {
+        ai_history_cache.freeRecords(self.allocator, self.cache_records.items);
+        self.cache_records.deinit(self.allocator);
         self.emitter.deinit();
     }
 
@@ -1239,25 +1351,55 @@ const RemoteScan = struct {
             self.warning_count += 1;
             return;
         };
-        const listing = self.host.exec(self.host.ctx, self.allocator, find_cmd) catch |err| switch (err) {
+        var listing = self.host.exec(self.host.ctx, self.allocator, find_cmd) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 self.warning_count += 1;
                 return;
             },
         };
+        if (std.mem.trim(u8, listing, " \t\r\n").len == 0) {
+            // Primary (GNU -printf) produced nothing; retry path-only.
+            self.allocator.free(listing);
+            var plain_buf: [2048]u8 = undefined;
+            const plain_cmd = providerFindCommandPlain(provider, root, plain_buf[0..]) catch {
+                self.warning_count += 1;
+                return;
+            };
+            listing = self.host.exec(self.host.ctx, self.allocator, plain_cmd) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    self.warning_count += 1;
+                    return;
+                },
+            };
+        }
         defer self.allocator.free(listing);
 
         var lines = std.mem.splitScalar(u8, listing, '\n');
         while (lines.next()) |line_raw| {
-            const path = std.mem.trim(u8, line_raw, " \t\r\n");
-            if (path.len == 0) continue;
-            try self.scanPath(provider, path);
+            const trimmed = std.mem.trim(u8, line_raw, " \t\r\n");
+            if (trimmed.len == 0) continue;
+            const candidate = parseRemoteStamp(line_raw);
+            if (candidate.path.len == 0) continue;
+            try self.scanPath(provider, candidate.path, candidate.stamp);
             if (self.emitter.aborted) break;
         }
     }
 
-    fn scanPath(self: *RemoteScan, provider: types.ProviderId, path: []const u8) !void {
+    fn scanPath(self: *RemoteScan, provider: types.ProviderId, path: []const u8, stamp: ai_history_cache.FileStamp) !void {
+        if (self.cache) |cache| {
+            if (ai_history_cache.findRecord(cache, self.source.id, provider, path, stamp)) |record| {
+                const cached_meta = try cloneMetadata(self.allocator, record.meta);
+                {
+                    errdefer freeMetadata(self.allocator, cached_meta);
+                    try self.appendCacheRecord(provider, path, stamp, record.meta);
+                }
+                try self.emitter.emit(cached_meta);
+                return; // skipped the cat
+            }
+        }
+
         var cat_buf: [2048]u8 = undefined;
         const cat_cmd = remoteCatCommand(path, cat_buf[0..]) catch {
             self.warning_count += 1;
@@ -1287,8 +1429,29 @@ const RemoteScan = struct {
             self.warning_count += 1;
             return;
         }
-
+        {
+            errdefer freeMetadata(self.allocator, meta);
+            try self.appendCacheRecord(provider, path, stamp, meta);
+        }
         try self.emitter.emit(meta);
+    }
+
+    fn appendCacheRecord(self: *RemoteScan, provider: types.ProviderId, path: []const u8, stamp: ai_history_cache.FileStamp, meta: types.SessionMeta) !void {
+        const root_path = providerRootForPath(self.source, provider, path);
+        const record: ai_history_cache.CacheRecord = .{
+            .source_id = self.source.id,
+            .provider = provider,
+            .root_path = root_path,
+            .source_path = path,
+            .stamp = stamp,
+            .meta = meta,
+        };
+        const cloned = try ai_history_cache.cloneRecord(self.allocator, record);
+        errdefer {
+            var mutable = cloned;
+            ai_history_cache.freeRecord(self.allocator, &mutable);
+        }
+        try self.cache_records.append(self.allocator, cloned);
     }
 };
 
@@ -1464,11 +1627,15 @@ const FakeRemoteHost = struct {
         if (std.mem.eql(u8, command, remote_file.wslHomeCommand())) {
             return try allocator.dupe(u8, "/home/me\n");
         }
-        if (std.mem.eql(u8, command, "find '/home/me/.codex' -type f -name '*.jsonl' -size -2048k | head -500")) {
-            return try allocator.dupe(u8, codex_path ++ "\n");
-        }
-        if (std.mem.eql(u8, command, "find '/home/me/.claude' -type f -name '*.jsonl' -size -2048k | head -500")) {
-            return try allocator.dupe(u8, claude_path ++ "\n");
+        if (std.mem.startsWith(u8, command, "find")) {
+            // Emit "<mtime>\t<size>\t<path>" (the new -printf form) for the matching root.
+            if (std.mem.indexOf(u8, command, "/home/me/.codex") != null) {
+                return try allocator.dupe(u8, "1700000000\t100\t" ++ codex_path ++ "\n");
+            }
+            if (std.mem.indexOf(u8, command, "/home/me/.claude") != null) {
+                return try allocator.dupe(u8, "1700000001\t100\t" ++ claude_path ++ "\n");
+            }
+            return try allocator.dupe(u8, "");
         }
         if (std.mem.eql(u8, command, "cat '" ++ codex_path ++ "'")) {
             return try allocator.dupe(u8, codex_jsonl);
@@ -1663,8 +1830,12 @@ test "ai_history_session: loading selected transcript stores and clears owned me
 test "ai_history_session: remote provider find command quotes root" {
     var out: [512]u8 = undefined;
     try std.testing.expectEqualStrings(
-        "find '/home/me/it'\\''s/.codex' -type f -name '*.jsonl' -size -2048k | head -500",
+        "find '/home/me/it'\\''s/.codex' -type f -name '*.jsonl' -size -2048k -printf '%T@\\t%s\\t%p\\n' 2>/dev/null | sort -rn | head -500",
         try providerFindCommand(.codex, "/home/me/it's/.codex", &out),
+    );
+    try std.testing.expectEqualStrings(
+        "find '/home/me/it'\\''s/.codex' -type f -name '*.jsonl' -size -2048k | head -500",
+        try providerFindCommandPlain(.codex, "/home/me/it's/.codex", &out),
     );
 }
 
@@ -2762,7 +2933,7 @@ test "ai_history_session: remote scan with sink streams rows and returns empty n
         .name = "WSL",
         .target = .{ .wsl = .{} },
         .providers = .{ .codex = true, .claude = false },
-    }, host, collect.sink());
+    }, host, null, collect.sink());
     defer freeScanResult(allocator, result);
 
     try std.testing.expect(!result.authoritative);
@@ -2810,4 +2981,157 @@ test "ai_history_session: scanAsync streams batches via sink then finalizes read
     try std.testing.expectEqual(@as(usize, 2), session.rows.items.len);
     try std.testing.expectEqualStrings("s2", session.rows.items[0].session_id); // sorted desc by last_active
     try std.testing.expectEqualStrings("s1", session.rows.items[1].session_id);
+}
+
+test "ai_history_session: rowsForSource clones only matching source rows" {
+    const allocator = std.testing.allocator;
+    const meta_a: types.SessionMeta = .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 10 };
+    const meta_b: types.SessionMeta = .{ .provider = .claude, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .claude_resume, .last_active_at_ms = 20 };
+    var records = [_]ai_history_cache.CacheRecord{
+        .{ .source_id = "local", .provider = .codex, .root_path = "/r", .source_path = "a.jsonl", .stamp = .{ .size = 1, .mtime_ns = 1 }, .meta = meta_a },
+        .{ .source_id = "wsl", .provider = .claude, .root_path = "/r", .source_path = "b.jsonl", .stamp = .{ .size = 1, .mtime_ns = 1 }, .meta = meta_b },
+    };
+    const cache: ai_history_cache.CacheFile = .{ .records = &records };
+
+    const rows = try rowsForSource(allocator, cache, "local");
+    defer {
+        freeRows(allocator, rows);
+        allocator.free(rows);
+    }
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    try std.testing.expectEqualStrings("a", rows[0].session_id);
+}
+
+test "ai_history_session: local scan warm cache publishes provisional batch then authoritative result" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // One real on-disk codex session (the authoritative walk will find this).
+    try tmp.dir.makePath(".codex/sessions");
+    try tmp.dir.writeFile(.{
+        .sub_path = ".codex/sessions/real.jsonl",
+        .data =
+        \\{"type":"session_meta","timestamp":"2026-05-31T10:00:00Z","payload":{"id":"codex-real","cwd":"/tmp/project"}}
+        \\{"type":"response_item","timestamp":"2026-05-31T10:01:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}
+        \\
+        ,
+    });
+
+    // A cache that knows about a (now stale) prior row for this source.
+    const cached_meta: types.SessionMeta = .{ .provider = .codex, .session_id = "codex-prior", .title = "Prior", .source_path = "/old/prior.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 5 };
+    var records = [_]ai_history_cache.CacheRecord{
+        .{ .source_id = "local", .provider = .codex, .root_path = "/old", .source_path = "/old/prior.jsonl", .stamp = .{ .size = 1, .mtime_ns = 1 }, .meta = cached_meta },
+    };
+    const cache: ai_history_cache.CacheFile = .{ .records = &records };
+
+    var collect = TestCollectSink{ .allocator = allocator };
+    defer collect.deinit();
+
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = try tmp.dir.realpath(".", &home_buf);
+    const result = try scanLocalFilesystemWithCacheSink(allocator, .{
+        .id = "local",
+        .name = "Local",
+        .target = .local,
+        .providers = .{ .codex = true, .claude = false },
+    }, home, .{}, cache, collect.sink());
+    defer freeScanResult(allocator, result);
+
+    // Warm: provisional batch 0 streamed the cached "prior" row...
+    try std.testing.expectEqual(@as(usize, 1), collect.rows.items.len);
+    try std.testing.expectEqualStrings("codex-prior", collect.rows.items[0].session_id);
+    // ...and the authoritative result is the real on-disk row, to be swapped in by finishScan.
+    try std.testing.expect(result.authoritative);
+    try std.testing.expectEqual(@as(usize, 1), result.rows.len);
+    try std.testing.expectEqualStrings("codex-real", result.rows[0].session_id);
+}
+
+test "ai_history_session: providerFindCommand emits sorted mtime/size/path" {
+    var buf: [2048]u8 = undefined;
+    const cmd = try providerFindCommand(.codex, "/home/me/.codex", &buf);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "-printf '%T@\\t%s\\t%p\\n'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "sort -rn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "'/home/me/.codex'") != null);
+}
+
+test "ai_history_session: parseRemoteStamp parses tab fields and tolerates plain paths" {
+    const a = parseRemoteStamp("1717300000.5\t2048\t/p/a.jsonl");
+    try std.testing.expectEqualStrings("/p/a.jsonl", a.path);
+    try std.testing.expectEqual(@as(u64, 2048), a.stamp.size);
+    try std.testing.expectEqual(@as(i128, 1717300000 * std.time.ns_per_s), a.stamp.mtime_ns);
+
+    const b = parseRemoteStamp("/p/b.jsonl"); // fallback (plain find, no tabs)
+    try std.testing.expectEqualStrings("/p/b.jsonl", b.path);
+    try std.testing.expectEqual(@as(u64, 0), b.stamp.size);
+    try std.testing.expectEqual(@as(i128, 0), b.stamp.mtime_ns);
+}
+
+test "ai_history_session: remote scan skips cat on cache hit" {
+    const allocator = std.testing.allocator;
+
+    // Host that errors if asked to cat — proving the cache hit skipped it.
+    const Host = struct {
+        fn exec(_: *anyopaque, alloc: std.mem.Allocator, command: []const u8) anyerror![]u8 {
+            if (std.mem.eql(u8, command, remote_file.wslHomeCommand())) return try alloc.dupe(u8, "/home/me\n");
+            if (std.mem.startsWith(u8, command, "find")) {
+                if (std.mem.indexOf(u8, command, "/home/me/.codex") != null)
+                    return try alloc.dupe(u8, "/home/me/.codex/sessions/c.jsonl\n");
+                return try alloc.dupe(u8, "");
+            }
+            return error.UnexpectedCat; // cat must NOT be called
+        }
+    };
+    var host_byte: u8 = 0;
+    const host = RemoteExecHost{ .ctx = &host_byte, .exec = Host.exec };
+
+    const cached_meta: types.SessionMeta = .{ .provider = .codex, .session_id = "codex-cached", .title = "Cached", .source_path = "/home/me/.codex/sessions/c.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = 9 };
+    var records = [_]ai_history_cache.CacheRecord{
+        .{ .source_id = "wsl", .provider = .codex, .root_path = "/home/me/.codex", .source_path = "/home/me/.codex/sessions/c.jsonl", .stamp = .{ .size = 0, .mtime_ns = 0 }, .meta = cached_meta },
+    };
+    const cache: ai_history_cache.CacheFile = .{ .records = &records };
+
+    // sink == null so the scan accumulates the authoritative set into result.rows.
+    const result = try scanRemoteFilesystemSink(allocator, .{
+        .id = "wsl",
+        .name = "WSL",
+        .target = .{ .wsl = .{} },
+        .providers = .{ .codex = true, .claude = false },
+    }, host, cache, null);
+    defer freeScanResult(allocator, result);
+
+    try std.testing.expectEqual(@as(usize, 1), result.rows.len);
+    try std.testing.expectEqualStrings("codex-cached", result.rows[0].session_id);
+    try std.testing.expectEqual(@as(usize, 1), result.cache_update.records.len);
+}
+
+test "ai_history_session: scanAsync warm path shows provisional rows then authoritative finalize" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = struct {
+        fn run(_: *anyopaque, alloc: std.mem.Allocator, _: source_mod.Source, sink: ?ScanSink) anyerror!ScanResult {
+            const s = sink.?;
+            // Provisional batch 0 (instant-reopen): one cached row.
+            const prov = try alloc.alloc(types.SessionMeta, 1);
+            prov[0] = .{ .provider = .codex, .session_id = try alloc.dupe(u8, "prior"), .title = try alloc.dupe(u8, "Prior"), .source_path = try alloc.dupe(u8, "p.jsonl"), .resume_kind = .codex_resume, .last_active_at_ms = 5 };
+            _ = s.publish(s.ctx, prov);
+            // Authoritative set (warm): the real current row.
+            const rows = try alloc.alloc(types.SessionMeta, 1);
+            rows[0] = .{ .provider = .codex, .session_id = try alloc.dupe(u8, "current"), .title = try alloc.dupe(u8, "Current"), .source_path = try alloc.dupe(u8, "c.jsonl"), .resume_kind = .codex_resume, .last_active_at_ms = 20 };
+            return .{ .rows = rows, .authoritative = true, .owns_row_strings = true };
+        }
+        fn destroy(_: *anyopaque, _: std.mem.Allocator) void {}
+    };
+
+    var ctx_byte: u8 = 0;
+    var session = Session.init(allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    session.scanAsync(.{ .ctx = &ctx_byte, .run = Ctx.run, .destroy = Ctx.destroy });
+    session.joinForTest();
+
+    try std.testing.expectEqual(LoadState.ready, session.state);
+    // finishScan replaced the provisional "prior" with the authoritative "current".
+    try std.testing.expectEqual(@as(usize, 1), session.rows.items.len);
+    try std.testing.expectEqualStrings("current", session.rows.items[0].session_id);
 }
