@@ -34,6 +34,45 @@ pub fn categoryLabel(category: CategoryFilter) []const u8 {
     };
 }
 
+/// A calendar day packed as the decimal integer `YYYYMMDD` (e.g. 20260601).
+/// `0` is the sentinel for "no / unknown timestamp" and never forms a bucket.
+pub const DateKey = u32;
+
+/// One distinct day present in the session list, with how many sessions fall on
+/// it under the currently-active provider category and text query.
+pub const DateBucket = struct {
+    key: DateKey,
+    count: usize,
+};
+
+/// Convert a UTC epoch-millisecond timestamp to a local-day `DateKey`.
+/// `tz_offset_seconds` is the local offset east of UTC (e.g. 28800 for UTC+8);
+/// pass 0 to bucket in UTC. Returns 0 when the timestamp is absent (<= 0).
+pub fn dateKeyFromMs(ms: i64, tz_offset_seconds: i32) DateKey {
+    if (ms <= 0) return 0;
+    const total_secs = @divFloor(ms, 1000) + tz_offset_seconds;
+    if (total_secs < 0) return 0;
+    const epoch_secs = std.time.epoch.EpochSeconds{ .secs = @intCast(total_secs) };
+    const year_day = epoch_secs.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const year: u32 = year_day.year;
+    const month: u32 = month_day.month.numeric();
+    const day: u32 = @as(u32, month_day.day_index) + 1;
+    return year * 10000 + month * 100 + day;
+}
+
+/// `null` filter matches every day (the "All dates" selection). Otherwise the
+/// row's day must equal the filter; the sentinel key 0 never matches a filter.
+pub fn dateMatches(filter: ?DateKey, key: DateKey) bool {
+    const want = filter orelse return true;
+    return key == want;
+}
+
+/// Render `key` as an 8-digit `YYYYMMDD` string into `buf` (needs >= 8 bytes).
+pub fn formatDateKey(key: DateKey, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{d:0>8}", .{key}) catch buf[0..0];
+}
+
 pub const MessageRole = enum { user, assistant, system, tool };
 pub const MessageKind = enum { normal, tool_call, tool_result, meta };
 pub const ScanStatus = enum { ok, partial, not_found, invalid };
@@ -163,4 +202,32 @@ test "ai_history_types: categoryLabel is stable" {
     try std.testing.expectEqualStrings("All", categoryLabel(.all));
     try std.testing.expectEqualStrings("Codex", categoryLabel(.codex));
     try std.testing.expectEqualStrings("Claude Code", categoryLabel(.claude));
+}
+
+test "ai_history_types: dateKeyFromMs packs local civil date and handles sentinels" {
+    // 2026-06-01 12:00:00 UTC.
+    const noon_20260601_ms: i64 = 1780315200 * 1000;
+    try std.testing.expectEqual(@as(DateKey, 20260601), dateKeyFromMs(noon_20260601_ms, 0));
+    // +14h offset pushes 12:00 to 02:00 the next local day.
+    try std.testing.expectEqual(@as(DateKey, 20260602), dateKeyFromMs(noon_20260601_ms, 14 * 3600));
+    // 2026-06-01 02:00 UTC with -8h offset falls back to 2026-05-31 18:00 local.
+    const early_ms: i64 = (1780315200 - 10 * 3600) * 1000;
+    try std.testing.expectEqual(@as(DateKey, 20260531), dateKeyFromMs(early_ms, -8 * 3600));
+    // No timestamp -> sentinel 0 (never a bucket).
+    try std.testing.expectEqual(@as(DateKey, 0), dateKeyFromMs(0, 0));
+    try std.testing.expectEqual(@as(DateKey, 0), dateKeyFromMs(-5, 3600));
+}
+
+test "ai_history_types: dateMatches treats null filter as all dates" {
+    try std.testing.expect(dateMatches(null, 20260601));
+    try std.testing.expect(dateMatches(null, 0));
+    try std.testing.expect(dateMatches(20260601, 20260601));
+    try std.testing.expect(!dateMatches(20260601, 20260531));
+    try std.testing.expect(!dateMatches(20260601, 0));
+}
+
+test "ai_history_types: formatDateKey renders a zero-padded YYYYMMDD" {
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("20260601", formatDateKey(20260601, &buf));
+    try std.testing.expectEqualStrings("20260102", formatDateKey(20260102, &buf));
 }

@@ -1063,6 +1063,12 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         }
         return;
     }
+    if (overlays.restoreDefaultsConfirmVisible()) {
+        overlays.restoreDefaultsConfirmHandleKey(key_event);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
     if (overlays.settingsPageVisible()) {
         overlays.settingsPageHandleKey(key_event);
         return;
@@ -2482,6 +2488,18 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         }
         return;
     }
+    if (overlays.restoreDefaultsConfirmVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = window_backend.framebufferSize(win);
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            _ = overlays.restoreDefaultsConfirmExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        }
+        return;
+    }
     if (overlays.settingsPageVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
@@ -3860,6 +3878,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             const units: i32 = @intCast(mouseWheelUnits(ev.delta));
             const step = units * 3;
             _ = AppWindow.aiHistoryScrollTranscript(if (ev.delta > 0) -step else step);
+            return;
+        }
+        if (x >= layout.left_x and x < layout.left_x + layout.left_w) {
+            const units: i32 = @intCast(mouseWheelUnits(ev.delta));
+            _ = AppWindow.aiHistoryScrollDateList(if (ev.delta > 0) -units else units);
             return;
         }
         return;
