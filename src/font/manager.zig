@@ -335,6 +335,15 @@ fn measureFaceMetrics(face: freetype.Face) MeasuredFaceMetrics {
     };
 }
 
+// Issue #114: on x86_64 macOS, the Zig 0.15.2 toolchain emits a malformed
+// `af_cjk_metrics_init` — the first function in __text — whose symbol/entry sits
+// 8 bytes ahead of its real prologue. FreeType's CJK auto-hinter dispatches into
+// those 8 garbage bytes and crashes deterministically. Until the toolchain is
+// fixed, skip the auto-hinter for CJK glyphs on that target so the broken
+// function is never invoked (FreeType falls back to native/no hinting). Other
+// targets keep auto-hinting, so their CJK rendering quality is unchanged.
+const skip_cjk_autohint = builtin.os.tag == .macos and builtin.cpu.arch == .x86_64;
+
 fn isCjkCodepoint(codepoint: u32) bool {
     return (codepoint >= 0x2E80 and codepoint <= 0x2FDF) or
         (codepoint >= 0x3000 and codepoint <= 0x30FF) or
@@ -750,6 +759,7 @@ pub fn loadGlyph(codepoint: u32) ?Character {
     face_to_use.loadGlyph(@intCast(glyph_index), .{
         .target = target,
         .color = is_color_face,
+        .no_autohint = skip_cjk_autohint and isCjkCodepoint(codepoint),
     }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(codepoint)) .normal else .light) catch return null;
 
@@ -943,6 +953,7 @@ pub fn loadGraphemeGlyph(base_cp: u21, extra_cps: []const u21) ?Character {
     face_to_use.loadGlyph(@intCast(shaped_glyph_index), .{
         .target = target,
         .color = is_color_face,
+        .no_autohint = skip_cjk_autohint and isCjkCodepoint(@intCast(base_cp)),
     }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(@intCast(base_cp))) .normal else .light) catch return null;
 
@@ -1086,7 +1097,7 @@ pub fn loadTitlebarGlyph(codepoint: u32) ?Character {
     }
 
     const target = glyphTargetForCodepoint(codepoint);
-    face_to_use.loadGlyph(@intCast(glyph_index), .{ .target = target }) catch return null;
+    face_to_use.loadGlyph(@intCast(glyph_index), .{ .target = target, .no_autohint = skip_cjk_autohint and isCjkCodepoint(codepoint) }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(codepoint)) .normal else .light) catch return null;
 
     const glyph = face_to_use.handle.*.glyph;
