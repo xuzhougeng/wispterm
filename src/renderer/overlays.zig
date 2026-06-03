@@ -1999,6 +1999,9 @@ fn runSessionLauncherRow(row: usize) void {
         openLocalShellSession();
     } else if (row == 1) {
         openSshList();
+    } else if (row == command_center_state.SESSION_LAUNCHER_ROW_TMUX) {
+        openTmuxSshPicker();
+        return;
     } else if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
         if (row == wsl_row) {
             openWslSession();
@@ -2453,6 +2456,7 @@ fn tmuxSessionName(buf: []u8, profile_name: []const u8) []const u8 {
 /// Open the SSH profile picker in tmux-connect mode (mirrors the AI-history SSH
 /// picker). Picking a profile starts a tmux control-mode session.
 fn openTmuxSshPicker() void {
+    loadSshProfiles();
     openSshProfilePicker(.tmux_connect);
 }
 
