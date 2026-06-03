@@ -20,7 +20,7 @@ English | [简体中文](README.zh-CN.md)
 - **File Explorer and previews** - browse local, WSL, and SSH files; preview Markdown/text/tables/images without leaving the terminal
 - **Embedded browser panel** - open web URLs in a side WebView2 panel or the default browser, with persistent SSH loopback port forwarding for profile sessions
 - **AI Agent sessions** - launch OpenAI-compatible Agent tabs, configure profiles, restore history, and export full or clean Markdown transcripts
-- **AI history browser** - browse local, WSL, and SSH Codex / Claude Code history and resume sessions from their original project directories
+- **AI history browser** - browse local, WSL, and SSH Codex / Claude Code / Reasonix history and resume sessions from their original project directories
 - **Kitty Graphics protocol** - display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
 - **Opt-in remote access** - share a session key over a Cloudflare-hosted relay (disabled by default)
 

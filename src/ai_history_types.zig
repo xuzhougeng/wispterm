@@ -3,11 +3,13 @@ const std = @import("std");
 pub const ProviderId = enum {
     codex,
     claude,
+    reasonix,
 
     pub fn label(self: ProviderId) []const u8 {
         return switch (self) {
             .codex => "Codex",
             .claude => "Claude Code",
+            .reasonix => "Reasonix",
         };
     }
 };
@@ -16,6 +18,7 @@ pub const CategoryFilter = enum {
     all,
     codex,
     claude,
+    reasonix,
 };
 
 pub fn categoryMatches(category: CategoryFilter, provider: ProviderId) bool {
@@ -23,6 +26,7 @@ pub fn categoryMatches(category: CategoryFilter, provider: ProviderId) bool {
         .all => true,
         .codex => provider == .codex,
         .claude => provider == .claude,
+        .reasonix => provider == .reasonix,
     };
 }
 
@@ -31,6 +35,7 @@ pub fn categoryLabel(category: CategoryFilter) []const u8 {
         .all => "All",
         .codex => "Codex",
         .claude => "Claude Code",
+        .reasonix => "Reasonix",
     };
 }
 
@@ -76,7 +81,7 @@ pub fn formatDateKey(key: DateKey, buf: []u8) []const u8 {
 pub const MessageRole = enum { user, assistant, system, tool };
 pub const MessageKind = enum { normal, tool_call, tool_result, meta };
 pub const ScanStatus = enum { ok, partial, not_found, invalid };
-pub const ResumeKind = enum { codex_resume, claude_resume, unavailable };
+pub const ResumeKind = enum { codex_resume, claude_resume, reasonix_resume, unavailable };
 
 pub const SessionMeta = struct {
     provider: ProviderId,
@@ -137,6 +142,7 @@ fn containsIgnoreCase(haystack: []const u8, query: []const u8) bool {
 test "ai_history_types: provider labels are stable" {
     try std.testing.expectEqualStrings("Codex", ProviderId.codex.label());
     try std.testing.expectEqualStrings("Claude Code", ProviderId.claude.label());
+    try std.testing.expectEqualStrings("Reasonix", ProviderId.reasonix.label());
 }
 
 test "ai_history_types: metadata search covers title summary project session and path" {
@@ -196,12 +202,15 @@ test "ai_history_types: categoryMatches respects provider" {
     try std.testing.expect(!categoryMatches(.codex, .claude));
     try std.testing.expect(categoryMatches(.claude, .claude));
     try std.testing.expect(!categoryMatches(.claude, .codex));
+    try std.testing.expect(categoryMatches(.reasonix, .reasonix));
+    try std.testing.expect(!categoryMatches(.reasonix, .codex));
 }
 
 test "ai_history_types: categoryLabel is stable" {
     try std.testing.expectEqualStrings("All", categoryLabel(.all));
     try std.testing.expectEqualStrings("Codex", categoryLabel(.codex));
     try std.testing.expectEqualStrings("Claude Code", categoryLabel(.claude));
+    try std.testing.expectEqualStrings("Reasonix", categoryLabel(.reasonix));
 }
 
 test "ai_history_types: dateKeyFromMs packs local civil date and handles sentinels" {

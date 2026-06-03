@@ -3379,7 +3379,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("WSL", platform_pty_command.wslLauncherDetail()));
     }
     desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_agent, defaultAiModeLabel()));
-    desired = @max(desired, sessionTwoColumnWidth("AI History", "Browse Codex / Claude Code"));
+    desired = @max(desired, sessionTwoColumnWidth("AI History", "Browse AI agent history"));
     return desired;
 }
 
@@ -3688,7 +3688,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             row += 1;
         }
         renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT, i18n.s().sl_ai_agent, defaultAiModeLabel(), g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT);
-        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY, "AI History", "Browse Codex / Claude Code", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY);
+        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY, "AI History", "Browse AI agent history", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY);
         return;
     }
 

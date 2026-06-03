@@ -49,6 +49,7 @@ test {
     _ = @import("ai_history_types.zig");
     _ = @import("ai_history_provider_codex.zig");
     _ = @import("ai_history_provider_claude.zig");
+    _ = @import("ai_history_provider_reasonix.zig");
     _ = @import("ai_history_source.zig");
     _ = @import("ai_history_cache.zig");
     _ = @import("ai_history_resume.zig");

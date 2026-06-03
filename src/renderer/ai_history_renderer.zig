@@ -71,7 +71,7 @@ pub fn leftColumnLayout(top: f32, cell_h: f32) LeftColumnLayout {
     y += cell_h + 8;
     const category_rows_top = y;
     const category_row_h = cell_h + 10;
-    y += category_row_h * 3;
+    y += category_row_h * 4;
     y += 12;
     const retry_text_top = y;
     // DATE navigator: below the Refresh button, filling the rest of the column.
@@ -202,7 +202,7 @@ pub fn interactionHitTest(
     const my: f32 = @floatCast(mouse_y);
 
     const lc = leftColumnLayout(top, cell_h);
-    const categories = [_]types.CategoryFilter{ .all, .codex, .claude };
+    const categories = [_]types.CategoryFilter{ .all, .codex, .claude, .reasonix };
     for (categories, 0..) |cat, i| {
         const cat_top = lc.category_rows_top + @as(f32, @floatFromInt(i)) * lc.category_row_h;
         if (rectContains(mx, my, layout.left_x, cat_top, layout.left_w, lc.category_row_h)) {
@@ -355,7 +355,7 @@ fn renderLeftColumn(
     const query = session.filter[0..session.filter_len];
     const counts = session.categoryCounts(query);
     const selected_bg = mixColor(draw.bg, accent, 0.18);
-    const categories = [_]types.CategoryFilter{ .all, .codex, .claude };
+    const categories = [_]types.CategoryFilter{ .all, .codex, .claude, .reasonix };
     for (categories, 0..) |cat, i| {
         const row_top = lc.category_rows_top + @as(f32, @floatFromInt(i)) * lc.category_row_h;
         const active = session.category == cat;
@@ -370,6 +370,7 @@ fn renderLeftColumn(
             .all => counts.all,
             .codex => counts.codex,
             .claude => counts.claude,
+            .reasonix => counts.reasonix,
         };
         var num_buf: [16]u8 = undefined;
         const num_text = std.fmt.bufPrint(&num_buf, "{d}", .{count}) catch "";
@@ -473,11 +474,12 @@ fn renderList(
         const empty = if (session.state == .scanning)
             "Scanning AI history..."
         else if (session.rows.items.len == 0)
-            "No Codex or Claude Code history found"
+            "No AI history found"
         else switch (session.category) {
             .all => "No sessions match filter",
             .codex => "No Codex sessions",
             .claude => "No Claude Code sessions",
+            .reasonix => "No Reasonix sessions",
         };
         _ = draw.renderTextLimited(empty, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top + 24), muted, layout.list_w - PAD_X * 2);
     }
@@ -996,6 +998,12 @@ test "ai_history_renderer: interaction hit test maps category rows" {
     try std.testing.expectEqual(
         Hit{ .category = .claude },
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, claude_y),
+    );
+
+    const reasonix_y = lc.category_rows_top + lc.category_row_h * 3.5;
+    try std.testing.expectEqual(
+        Hit{ .category = .reasonix },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, reasonix_y),
     );
 }
 
