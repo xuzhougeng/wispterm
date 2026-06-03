@@ -30,6 +30,10 @@ pub const Session = struct {
     cmds: std.ArrayListUnmanaged(u8) = .empty,
     scratch: std.ArrayListUnmanaged(u8) = .empty,
     windows: std.ArrayListUnmanaged(Window) = .empty,
+    /// FIFO of pane ids awaiting a `capture-pane` reply (Phase 3d scrollback
+    /// seeding). Replies arrive in command order, so the front matches the next
+    /// non-window-list `block_end`.
+    capture_queue: std.ArrayListUnmanaged(usize) = .empty,
     active_pane: ?usize = null,
     exited: bool = false,
     events: EventSink = .{},
@@ -79,6 +83,7 @@ pub const Session = struct {
         self.parser.deinit();
         self.cmds.deinit(self.alloc);
         self.scratch.deinit(self.alloc);
+        self.capture_queue.deinit(self.alloc);
         for (self.windows.items) |*w| w.deinit(self.alloc);
         self.windows.deinit(self.alloc);
     }
@@ -112,8 +117,22 @@ pub const Session = struct {
             // A command-reply block. On attach tmux does NOT emit %layout-change,
             // so the initial windows/layouts are learned from the `list-windows`
             // reply that arrives here as `@<id> <layout>` lines (Phase 3d
-            // bootstrap). Non-window-list bodies parse to nothing and are ignored.
-            .block_end => |body| try self.applyWindowList(body),
+            // bootstrap). If it is not a window list, it may be a `capture-pane`
+            // reply seeding a pane's scrollback — route it to that pane's sink
+            // (FIFO, since replies arrive in command order). Anything else is a
+            // benign empty/other reply and is ignored.
+            .block_end => |body| {
+                if (!try self.applyWindowList(body)) {
+                    if (self.capture_queue.items.len > 0) {
+                        const pane_id = self.capture_queue.orderedRemove(0);
+                        self.sink.write(pane_id, body);
+                    }
+                }
+            },
+            .block_err => {
+                // Keep the capture FIFO aligned if a capture errored.
+                if (self.capture_queue.items.len > 0) _ = self.capture_queue.orderedRemove(0);
+            },
             .window_add => |w| _ = try self.ensureWindow(w.window_id),
             .window_renamed => |w| {
                 try self.renameWindow(w.window_id, w.name);
@@ -176,9 +195,11 @@ pub const Session = struct {
     /// Parse a `list-windows -F "#{window_id} #{window_layout}"` reply body and
     /// apply each `@<id> <layout>` line as a layout. Used to bootstrap the
     /// model on attach, since tmux does not push %layout-change for existing
-    /// windows. Lines that are not a window-id + parseable layout are skipped,
-    /// so other command replies passing through here are harmless no-ops.
-    fn applyWindowList(self: *Session, body: []const u8) Allocator.Error!void {
+    /// windows. Returns true if at least one line applied — the `block_end`
+    /// handler uses that to tell a window-list reply apart from a capture-pane
+    /// reply. Non-matching lines are skipped.
+    fn applyWindowList(self: *Session, body: []const u8) Allocator.Error!bool {
+        var applied = false;
         var lines = std.mem.splitScalar(u8, body, '\n');
         while (lines.next()) |raw| {
             const line = std.mem.trim(u8, raw, " \r\t");
@@ -188,7 +209,19 @@ pub const Session = struct {
             const layout_str = std.mem.trim(u8, line[sp + 1 ..], " \r\t");
             if (layout_str.len == 0) continue;
             try self.applyLayout(id, layout_str);
+            applied = true;
         }
+        return applied;
+    }
+
+    /// Enqueue a `capture-pane` for a pane and remember it (FIFO) so the reply
+    /// can be routed back to the pane's sink to seed its scrollback on attach.
+    /// Plain text (`-J` joins wrapped lines) keeps the reply line-safe.
+    pub fn capturePane(self: *Session, pane_id: usize) Allocator.Error!void {
+        var buf: [48]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "capture-pane -p -J -t %{d}\n", .{pane_id}) catch unreachable;
+        try self.cmds.appendSlice(self.alloc, s);
+        try self.capture_queue.append(self.alloc, pane_id);
     }
 
     /// Enqueue the attach bootstrap: tell tmux our client size and ask for the
@@ -551,6 +584,22 @@ test "block_end list-windows reply drives onLayoutChange per window (bootstrap)"
     // A non-window-list reply body must not create windows.
     try s.feed("%begin 2 2 0\nsome other output\n%end 2 2 0\n");
     try std.testing.expectEqual(@as(usize, 1), s.windowCount());
+}
+
+test "capture-pane reply is routed to the pane sink (scrollback seed)" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+
+    try s.capturePane(5);
+    try std.testing.expect(std.mem.indexOf(u8, s.pendingCommands(), "capture-pane -p -J -t %5\n") != null);
+
+    // The capture-pane reply: a %begin/%end block of plain pane content. It is
+    // not a window list, so it routes to the queued pane (%5).
+    try s.feed("%begin 1 1 0\nline-a\nline-b\n%end 1 1 0\n");
+    try std.testing.expectEqual(@as(usize, 5), col.last_pane);
+    try std.testing.expectEqualSlices(u8, "line-a\nline-b", col.buf.items);
 }
 
 test "EventSink default is a silent no-op" {

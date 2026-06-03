@@ -173,6 +173,11 @@ pub const TmuxBridge = struct {
                 return null;
             };
             self.panes.setSurface(pane_id, surface);
+            // NOTE: capture-pane scrollback seeding (Session.capturePane) is
+            // intentionally NOT called here yet — feeding the captured text to a
+            // surface whose grid size doesn't match the tmux pane garbles the
+            // render. Activate once client/pane size-sync (resize) lands so the
+            // surface grid matches tmux's pane width.
             return surface; // ref 1, transferred to the tree
         }
     };
