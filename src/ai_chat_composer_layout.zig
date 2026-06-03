@@ -40,6 +40,21 @@ pub fn visibleRows(field_h: f32, line_h: f32) usize {
     return @max(@as(usize, 1), @as(usize, @intFromFloat(rows_f)));
 }
 
+/// Label for the pending-image chip shown in the composer, or null when there
+/// are no attachments. Writes into `buf` and returns the slice.
+pub fn pendingImageBadgeLabel(count: usize, buf: []u8) ?[]const u8 {
+    if (count == 0) return null;
+    const suffix = if (count == 1) "image" else "images";
+    return std.fmt.bufPrint(buf, "{d} {s}", .{ count, suffix }) catch null;
+}
+
+test "pendingImageBadgeLabel formats singular/plural and hides zero" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expect(pendingImageBadgeLabel(0, &buf) == null);
+    try std.testing.expectEqualStrings("1 image", pendingImageBadgeLabel(1, &buf).?);
+    try std.testing.expectEqualStrings("3 images", pendingImageBadgeLabel(3, &buf).?);
+}
+
 test "ai chat composer layout keeps original full-width field style" {
     const panel_w: f32 = 1580;
     try std.testing.expectApproxEqAbs(@as(f32, 1544), fieldWidth(panel_w), 0.01);

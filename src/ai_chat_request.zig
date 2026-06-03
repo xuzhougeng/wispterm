@@ -13,6 +13,7 @@ const ai_chat_types = @import("ai_chat_types.zig");
 // Type aliases from ai_chat_protocol
 const RequestMessage = ai_chat_protocol.RequestMessage;
 const ToolCall = ai_chat_protocol.ToolCall;
+const ImageBlock = ai_chat_protocol.ImageBlock;
 const ApiResult = ai_chat_protocol.ApiResult;
 const ApiUsage = ai_chat_protocol.ApiUsage;
 const Role = ai_chat_protocol.Role;
@@ -156,7 +157,7 @@ fn runAgentRequest(request: *ChatRequest) !ApiResult {
                 ai_chat.appendReplayableToolMessage(request.session, call.id, call.name, tool_result) catch {};
             }
 
-            var tool_msg = try requestMessageWithClonedFields(request.allocator, .tool, tool_result, null, call.id, null);
+            var tool_msg = try requestMessageWithClonedFields(request.allocator, .tool, tool_result, null, call.id, null, null);
             var tool_msg_owned = true;
             errdefer if (tool_msg_owned) tool_msg.deinit(request.allocator);
             try transcript.append(request.allocator, tool_msg);
@@ -322,7 +323,7 @@ pub fn buildRequestJsonForMessages(allocator: std.mem.Allocator, request: *const
 // ---------------------------------------------------------------------------
 
 fn cloneRequestMessage(allocator: std.mem.Allocator, msg: RequestMessage) !RequestMessage {
-    return requestMessageWithClonedFields(allocator, msg.role, msg.content, msg.reasoning, msg.tool_call_id, msg.tool_calls);
+    return requestMessageWithClonedFields(allocator, msg.role, msg.content, msg.reasoning, msg.tool_call_id, msg.tool_calls, msg.images);
 }
 
 fn cloneToolCalls(allocator: std.mem.Allocator, calls: []const ToolCall) ![]ToolCall {
@@ -352,7 +353,7 @@ fn cloneToolCalls(allocator: std.mem.Allocator, calls: []const ToolCall) ![]Tool
 }
 
 fn assistantToolCallMessage(allocator: std.mem.Allocator, content: []const u8, reasoning: ?[]const u8, calls: []const ToolCall) !RequestMessage {
-    return requestMessageWithClonedFields(allocator, .assistant, content, reasoning, null, calls);
+    return requestMessageWithClonedFields(allocator, .assistant, content, reasoning, null, calls, null);
 }
 
 pub fn requestMessageWithClonedFields(
@@ -362,6 +363,7 @@ pub fn requestMessageWithClonedFields(
     reasoning: ?[]const u8,
     tool_call_id: ?[]const u8,
     tool_calls: ?[]const ToolCall,
+    images: ?[]const ImageBlock,
 ) !RequestMessage {
     const content_copy = try allocator.dupe(u8, content);
     errdefer allocator.free(content_copy);
@@ -381,12 +383,19 @@ pub fn requestMessageWithClonedFields(
     };
     if (tool_calls) |calls| tool_calls_copy = try cloneToolCalls(allocator, calls);
 
+    const images_copy = try ai_chat_protocol.cloneImageBlocks(allocator, images);
+    errdefer if (images_copy) |imgs| {
+        for (imgs) |img| img.deinit(allocator);
+        allocator.free(imgs);
+    };
+
     return .{
         .role = role,
         .content = content_copy,
         .reasoning = reasoning_copy,
         .tool_call_id = tool_call_id_copy,
         .tool_calls = tool_calls_copy,
+        .images = images_copy,
     };
 }
 

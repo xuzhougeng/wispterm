@@ -46,6 +46,18 @@ pub const DEFAULT_STREAM = ai_chat_protocol.DEFAULT_STREAM;
 pub const DEFAULT_AGENT = ai_chat_protocol.DEFAULT_AGENT;
 pub const DEFAULT_PROTOCOL = ai_chat_protocol.DEFAULT_PROTOCOL;
 pub const DEFAULT_MAX_TOKENS = ai_chat_protocol.DEFAULT_MAX_TOKENS;
+pub const DEFAULT_VISION = ai_chat_protocol.DEFAULT_VISION;
+
+/// Cap on a single pasted image (decoded PNG bytes) before base64. Larger images
+/// are dropped with a log rather than ballooning the request body.
+pub const MAX_PASTED_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Parse a profile "vision" field into the boolean session flag.
+pub fn parseVisionEnabled(value: []const u8) bool {
+    return std.mem.eql(u8, value, "on") or
+        std.mem.eql(u8, value, "true") or
+        std.mem.eql(u8, value, "enabled");
+}
 
 const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
 const INPUT_PROMPT_MAX_BYTES: usize = 64 * 1024;
@@ -65,6 +77,8 @@ pub const Message = struct {
     usage_footer: ?[]u8 = null,
     tool_call_id: ?[]u8 = null,
     tool_name: ?[]u8 = null,
+    // base64 images attached to a user message (vision). Owned by the message.
+    images: ?[]ai_chat_protocol.ImageBlock = null,
     replay_to_model: bool = false,
     persist_to_history: bool = true,
     content_collapsed: bool = false,
@@ -78,6 +92,10 @@ pub const Message = struct {
         if (self.usage_footer) |footer| allocator.free(footer);
         if (self.tool_call_id) |id| allocator.free(id);
         if (self.tool_name) |name| allocator.free(name);
+        if (self.images) |images| {
+            for (images) |img| img.deinit(allocator);
+            allocator.free(images);
+        }
     }
 };
 
@@ -111,6 +129,7 @@ pub const TranscriptSelection = struct {
 };
 
 const RequestMessage = ai_chat_protocol.RequestMessage;
+const ImageBlock = ai_chat_protocol.ImageBlock;
 const ai_chat_title = @import("ai_chat_title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ai_chat_request = @import("ai_chat_request.zig");
@@ -360,6 +379,9 @@ pub const Session = struct {
     stream: bool = false,
     max_tokens: u32 = 8192,
     agent_enabled: bool = false,
+    vision_enabled: bool = false,
+    // base64 images pasted into the composer, awaiting the next user message.
+    pending_images: std.ArrayListUnmanaged(ai_chat_protocol.ImageBlock) = .empty,
     created_at_ms: i64 = 0,
     updated_at_ms: i64 = 0,
     history_on_change: ?HistoryChangeHook = null,
@@ -423,6 +445,33 @@ pub const Session = struct {
         return self.bound_surface_id_buf[0..self.bound_surface_id_len];
     }
 
+    pub fn pendingImageCount(self: *const Session) usize {
+        return self.pending_images.items.len;
+    }
+
+    /// Copy a base64 image + media type into the pending-attachment list. Both
+    /// inputs are duplicated; the session owns the stored copies.
+    pub fn addPendingImage(self: *Session, data_b64: []const u8, media_type: []const u8) !void {
+        const data = try self.allocator.dupe(u8, data_b64);
+        errdefer self.allocator.free(data);
+        const media = try self.allocator.dupe(u8, media_type);
+        errdefer self.allocator.free(media);
+        try self.pending_images.append(self.allocator, .{ .data_b64 = data, .media_type = media });
+    }
+
+    /// Free every pending image and release the backing storage.
+    pub fn clearPendingImages(self: *Session) void {
+        for (self.pending_images.items) |img| img.deinit(self.allocator);
+        self.pending_images.clearAndFree(self.allocator);
+    }
+
+    /// Hand the pending images to the caller as an owned slice, leaving the list
+    /// empty. Returns null when there are none.
+    pub fn takePendingImages(self: *Session) ?[]ai_chat_protocol.ImageBlock {
+        if (self.pending_images.items.len == 0) return null;
+        return self.pending_images.toOwnedSlice(self.allocator) catch null;
+    }
+
     pub fn init(
         allocator: std.mem.Allocator,
         name: []const u8,
@@ -463,6 +512,36 @@ pub const Session = struct {
         stream_val: []const u8,
         agent_val: []const u8,
     ) !*Session {
+        return initWithVision(
+            allocator,
+            name,
+            base_url,
+            api_key,
+            model_name,
+            protocol,
+            system_prompt,
+            thinking,
+            reasoning_effort,
+            stream_val,
+            agent_val,
+            DEFAULT_VISION,
+        );
+    }
+
+    pub fn initWithVision(
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        base_url: []const u8,
+        api_key: []const u8,
+        model_name: []const u8,
+        protocol: []const u8,
+        system_prompt: []const u8,
+        thinking: []const u8,
+        reasoning_effort: []const u8,
+        stream_val: []const u8,
+        agent_val: []const u8,
+        vision_val: []const u8,
+    ) !*Session {
         const session = try allocator.create(Session);
         session.* = .{
             .allocator = allocator,
@@ -482,6 +561,7 @@ pub const Session = struct {
         session.copyReasoningEffort(if (reasoning_effort.len > 0) reasoning_effort else DEFAULT_REASONING_EFFORT);
         session.stream = std.mem.eql(u8, stream_val, "true");
         session.agent_enabled = std.mem.eql(u8, agent_val, "true") or std.mem.eql(u8, agent_val, "enabled");
+        session.vision_enabled = parseVisionEnabled(vision_val);
         session.copyApiKey(api_key);
         if (session.api_key_len == 0 and isDeepSeekBaseUrl(session.baseUrl())) {
             if (std.process.getEnvVarOwned(allocator, "DEEPSEEK_API_KEY")) |env_key| {
@@ -516,6 +596,7 @@ pub const Session = struct {
         defer session.mutex.unlock();
         if (record.session_id.len > 0) session.copySessionId(record.session_id);
         session.max_tokens = record.max_tokens;
+        session.vision_enabled = record.vision_enabled;
         session.created_at_ms = record.created_at;
         session.updated_at_ms = record.updated_at;
         for (record.messages) |msg| {
@@ -565,6 +646,7 @@ pub const Session = struct {
             msg.deinit(self.allocator);
         }
         self.messages.deinit(self.allocator);
+        self.clearPendingImages();
         self.freeSkillSuggestions();
         self.freeCustomCommandSuggestions();
         command_registry.freeCommandList(self.allocator, self.custom_commands);
@@ -614,6 +696,10 @@ pub const Session = struct {
 
     pub fn agentConfigValue(self: *const Session) []const u8 {
         return if (self.agent_enabled) "true" else "false";
+    }
+
+    pub fn visionConfigValue(self: *const Session) []const u8 {
+        return if (self.vision_enabled) "on" else "off";
     }
 
     pub fn input(self: *const Session) []const u8 {
@@ -1371,9 +1457,16 @@ pub const Session = struct {
             self.mutex.unlock();
             return;
         };
-        self.messages.append(self.allocator, .{ .role = .user, .content = prompt }) catch {
+        // Hand any pasted images to this user turn. They are re-sent on every
+        // subsequent request for the life of the session (multi-turn vision).
+        const user_images = self.takePendingImages();
+        self.messages.append(self.allocator, .{ .role = .user, .content = prompt, .images = user_images }) catch {
             if (skill_preload_content) |content| self.allocator.free(content);
             self.allocator.free(prompt);
+            if (user_images) |imgs| {
+                for (imgs) |img| img.deinit(self.allocator);
+                self.allocator.free(imgs);
+            }
             self.setStatusLocked("Out of memory");
             self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
@@ -2043,6 +2136,59 @@ pub const Session = struct {
         return allocator.dupe(u8, display[start..end]);
     }
 
+    /// Convert the session's visible message history into owned RequestMessages.
+    /// Tool replays expand into a durable assistant tool_use + tool result pair;
+    /// user image attachments are deep-cloned so the request owns its own copies.
+    /// `copilot_target_idx`/`copilot_ctx` append a terminal snapshot to the last
+    /// user message (copilot mode); pass null/null for a plain chat.
+    fn buildRequestMessagesLocked(self: *Session, copilot_target_idx: ?usize, copilot_ctx: ?[]const u8) ![]RequestMessage {
+        var visible_count: usize = 0;
+        for (self.messages.items) |msg| {
+            if (msg.role != .tool) {
+                visible_count += 1;
+            } else if (msg.replay_to_model) {
+                const id = msg.tool_call_id orelse continue;
+                const name = msg.tool_name orelse continue;
+                if (id.len == 0 or name.len == 0) continue;
+                visible_count += 2;
+            }
+        }
+
+        const messages = try self.allocator.alloc(RequestMessage, visible_count);
+        errdefer self.allocator.free(messages);
+
+        var written: usize = 0;
+        errdefer {
+            for (messages[0..written]) |msg| msg.deinit(self.allocator);
+        }
+
+        for (self.messages.items, 0..) |msg, idx| {
+            if (msg.role == .tool) {
+                if (!msg.replay_to_model) continue;
+                const id = msg.tool_call_id orelse continue;
+                const name = msg.tool_name orelse continue;
+                if (id.len == 0 or name.len == 0) continue;
+
+                messages[written] = try ai_chat_request.durableToolAssistantRequestMessage(self.allocator, id, name);
+                written += 1;
+                messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, .tool, msg.content, null, id, null, null);
+                written += 1;
+                continue;
+            }
+
+            if (copilot_target_idx != null and idx == copilot_target_idx.? and copilot_ctx != null) {
+                const combined = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ msg.content, copilot_ctx.? });
+                defer self.allocator.free(combined);
+                messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, msg.role, combined, msg.reasoning, null, null, msg.images);
+            } else {
+                messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, msg.role, msg.content, msg.reasoning, null, null, msg.images);
+            }
+            written += 1;
+        }
+
+        return messages;
+    }
+
     fn buildRequestLocked(self: *Session) !*ChatRequest {
         const req = try self.allocator.create(ChatRequest);
         errdefer self.allocator.destroy(req);
@@ -2092,48 +2238,10 @@ pub const Session = struct {
             }
         }
 
-        var visible_count: usize = 0;
-        for (self.messages.items) |msg| {
-            if (msg.role != .tool) {
-                visible_count += 1;
-            } else if (msg.replay_to_model) {
-                const id = msg.tool_call_id orelse continue;
-                const name = msg.tool_name orelse continue;
-                if (id.len == 0 or name.len == 0) continue;
-                visible_count += 2;
-            }
-        }
-
-        const messages = try self.allocator.alloc(RequestMessage, visible_count);
-        errdefer self.allocator.free(messages);
-
-        var written: usize = 0;
+        const messages = try self.buildRequestMessagesLocked(copilot_target_idx, copilot_ctx);
         errdefer {
-            for (messages[0..written]) |msg| msg.deinit(self.allocator);
-        }
-
-        for (self.messages.items, 0..) |msg, idx| {
-            if (msg.role == .tool) {
-                if (!msg.replay_to_model) continue;
-                const id = msg.tool_call_id orelse continue;
-                const name = msg.tool_name orelse continue;
-                if (id.len == 0 or name.len == 0) continue;
-
-                messages[written] = try ai_chat_request.durableToolAssistantRequestMessage(self.allocator, id, name);
-                written += 1;
-                messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, .tool, msg.content, null, id, null);
-                written += 1;
-                continue;
-            }
-
-            if (copilot_target_idx != null and idx == copilot_target_idx.? and copilot_ctx != null) {
-                const combined = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ msg.content, copilot_ctx.? });
-                defer self.allocator.free(combined);
-                messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, msg.role, combined, msg.reasoning, null, null);
-            } else {
-                messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, msg.role, msg.content, msg.reasoning, null, null);
-            }
-            written += 1;
+            for (messages) |msg| msg.deinit(self.allocator);
+            self.allocator.free(messages);
         }
 
         const base_url = try self.allocator.dupe(u8, self.baseUrl());
@@ -2259,6 +2367,7 @@ pub const Session = struct {
             .stream = self.stream,
             .max_tokens = self.max_tokens,
             .agent_enabled = self.agent_enabled,
+            .vision_enabled = self.vision_enabled,
             .created_at = self.created_at_ms,
             .updated_at = self.updated_at_ms,
             .messages = messages,
@@ -4185,6 +4294,73 @@ test "ai chat ctrl a selects input and replacement clears selection" {
     session.handleChar('x');
     try std.testing.expect(!session.input_select_all);
     try std.testing.expectEqualStrings("x", session.input());
+}
+
+test "ai chat pending image add, count, and clear" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(allocator, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+    try std.testing.expectEqual(@as(usize, 0), session.pendingImageCount());
+    try session.addPendingImage("QUJD", "image/png");
+    try session.addPendingImage("RUZH", "image/png");
+    try std.testing.expectEqual(@as(usize, 2), session.pendingImageCount());
+    session.clearPendingImages();
+    try std.testing.expectEqual(@as(usize, 0), session.pendingImageCount());
+}
+
+test "ai chat takePendingImages transfers ownership and clears the pending list" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(allocator, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+    try session.addPendingImage("QUJD", "image/png");
+    const taken = session.takePendingImages().?;
+    defer {
+        for (taken) |img| img.deinit(allocator);
+        allocator.free(taken);
+    }
+    try std.testing.expectEqual(@as(usize, 0), session.pendingImageCount());
+    try std.testing.expectEqual(@as(usize, 1), taken.len);
+    try std.testing.expectEqualStrings("QUJD", taken[0].data_b64);
+    try std.testing.expect(session.takePendingImages() == null);
+}
+
+test "ai chat vision flag parses from the profile vision string" {
+    const allocator = std.testing.allocator;
+    const off = try Session.init(allocator, "t", "", "", "", "", "", "", "", "");
+    defer off.deinit();
+    try std.testing.expect(!off.vision_enabled);
+    const on = try Session.initWithVision(allocator, "t", "", "", "", "", "", "", "", "", "", "on");
+    defer on.deinit();
+    try std.testing.expect(on.vision_enabled);
+}
+
+test "ai chat buildRequestMessages clones user image blocks into the request" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(allocator, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+
+    const images = try allocator.alloc(ImageBlock, 1);
+    images[0] = .{
+        .data_b64 = try allocator.dupe(u8, "QUJD"),
+        .media_type = try allocator.dupe(u8, "image/png"),
+    };
+    try session.messages.append(allocator, .{
+        .role = .user,
+        .content = try allocator.dupe(u8, "look"),
+        .images = images,
+    });
+
+    const reqs = try session.buildRequestMessagesLocked(null, null);
+    defer {
+        for (reqs) |m| m.deinit(allocator);
+        allocator.free(reqs);
+    }
+    try std.testing.expectEqual(@as(usize, 1), reqs.len);
+    try std.testing.expect(reqs[0].images != null);
+    try std.testing.expectEqual(@as(usize, 1), reqs[0].images.?.len);
+    try std.testing.expectEqualStrings("QUJD", reqs[0].images.?[0].data_b64);
+    // Deep clone: the request owns separate buffers from the session message.
+    try std.testing.expect(reqs[0].images.?[0].data_b64.ptr != images[0].data_b64.ptr);
 }
 
 test "ai chat input cursor supports insertion and deletion in the middle" {

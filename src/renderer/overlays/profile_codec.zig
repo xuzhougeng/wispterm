@@ -9,7 +9,7 @@ const ai_chat_protocol = @import("../../ai_chat_protocol.zig");
 
 pub const SSH_FIELD_COUNT = 6;
 pub const SSH_FIELD_MAX = 128;
-pub const AI_FIELD_COUNT = 11;
+pub const AI_FIELD_COUNT = 12;
 pub const AI_FIELD_MAX = 8192;
 
 pub const SshField = enum(usize) {
@@ -33,6 +33,7 @@ pub const AiField = enum(usize) {
     agent = 8,
     protocol = 9,
     max_tokens = 10,
+    vision = 11,
 };
 
 pub const SshProfile = struct {
@@ -133,6 +134,7 @@ pub fn decodeAiProfileLine(line: []const u8) ?AiProfile {
     if (profile.lens[@intFromEnum(AiField.agent)] == 0) setProfileDefault(&profile, .agent, ai_chat_protocol.DEFAULT_AGENT);
     if (profile.lens[@intFromEnum(AiField.protocol)] == 0) setProfileDefault(&profile, .protocol, ai_chat_protocol.DEFAULT_PROTOCOL);
     if (profile.lens[@intFromEnum(AiField.max_tokens)] == 0) setProfileDefault(&profile, .max_tokens, ai_chat_protocol.DEFAULT_MAX_TOKENS);
+    if (profile.lens[@intFromEnum(AiField.vision)] == 0) setProfileDefault(&profile, .vision, ai_chat_protocol.DEFAULT_VISION);
     return profile;
 }
 
@@ -216,4 +218,30 @@ test "overlays: AI profile line decode defaults max_tokens when the field is emp
     });
     const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
     try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
+}
+
+test "overlays: AI profile line decode round-trips the vision field" {
+    var buf: [1024]u8 = undefined;
+    const line = testEncodeProfileLine(&buf, &.{
+        "Vision", "https://api.openai.com", "sk-key", "gpt-4o",
+        "sys", "enabled", "high", "false", "true", "chat_completions", "8192", "on",
+    });
+    const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("Vision", aiProfileField(&profile, .name));
+    try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
+    try std.testing.expectEqualStrings("on", aiProfileField(&profile, .vision));
+}
+
+test "overlays: AI profile line decode defaults vision off for legacy 11-field profiles" {
+    // Profiles written before the vision field existed have only the first eleven
+    // fields (indices 0-10). They must still load, with vision defaulted off and the
+    // existing positional fields staying aligned.
+    var buf: [1024]u8 = undefined;
+    const legacy = testEncodeProfileLine(&buf, &.{
+        "Legacy", "https://api.anthropic.com", "sk-key", "claude-x",
+        "sys", "enabled", "high", "false", "true", "anthropic", "4096",
+    });
+    const profile = decodeAiProfileLine(legacy) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));
+    try std.testing.expectEqualStrings("off", aiProfileField(&profile, .vision));
 }

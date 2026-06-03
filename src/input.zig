@@ -62,6 +62,7 @@ pub const pasteFromClipboard = clipboard.pasteFromClipboard;
 const pasteClipboardIntoBrowserUrlBar = clipboard.pasteClipboardIntoBrowserUrlBar;
 const pasteClipboardIntoSessionLauncher = clipboard.pasteClipboardIntoSessionLauncher;
 const pasteFromClipboardIntoAiChat = clipboard.pasteFromClipboardIntoAiChat;
+const pasteImageIntoAiChat = clipboard.pasteImageIntoAiChat;
 pub const pasteImageFromClipboard = clipboard.pasteImageFromClipboard;
 pub const writeTextToActivePty = clipboard.writeTextToActivePty;
 pub const writeTextToSurfacePty = clipboard.writeTextToSurfacePty;
@@ -1033,7 +1034,19 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
                 pasteFromClipboard();
             }
         },
-        .paste_image => pasteImageFromClipboard(),
+        .paste_image => {
+            if (AppWindow.activeAiChat()) |chat| {
+                pasteImageIntoAiChat(chat);
+            } else if (aiCopilotFocused()) {
+                if (AppWindow.activeCopilotSessionForInput()) |chat| {
+                    pasteImageIntoAiChat(chat);
+                } else {
+                    pasteImageFromClipboard();
+                }
+            } else {
+                pasteImageFromClipboard();
+            }
+        },
         // Panel-focus shortcuts are "performable": if there is no pane in
         // the requested direction, don't consume the key so it falls
         // through to the terminal (e.g. Alt+Up reaches a TUI like Claude

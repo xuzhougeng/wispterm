@@ -12,6 +12,7 @@ pub const DEFAULT_REASONING_EFFORT = "high";
 pub const DEFAULT_STREAM = "false";
 pub const DEFAULT_AGENT = "true";
 pub const DEFAULT_MAX_TOKENS = "8192";
+pub const DEFAULT_VISION = "off";
 pub const TOOL_CALL_REASONING_FALLBACK = "Tool call is required before answering.";
 
 // ---------------------------------------------------------------------------
@@ -101,12 +102,48 @@ pub const Role = enum {
     }
 };
 
+/// A base64-encoded image attached to a user message. Both fields are owned by
+/// whoever holds the block (the session message, or a cloned request message).
+pub const ImageBlock = struct {
+    data_b64: []u8,
+    media_type: []u8,
+
+    pub fn deinit(self: ImageBlock, allocator: std.mem.Allocator) void {
+        allocator.free(self.data_b64);
+        allocator.free(self.media_type);
+    }
+
+    pub fn clone(self: ImageBlock, allocator: std.mem.Allocator) !ImageBlock {
+        const data = try allocator.dupe(u8, self.data_b64);
+        errdefer allocator.free(data);
+        const media = try allocator.dupe(u8, self.media_type);
+        return .{ .data_b64 = data, .media_type = media };
+    }
+};
+
+/// Deep-clone a slice of image blocks (or null). Frees partial work on error.
+pub fn cloneImageBlocks(allocator: std.mem.Allocator, images: ?[]const ImageBlock) !?[]ImageBlock {
+    const src = images orelse return null;
+    if (src.len == 0) return null;
+    const out = try allocator.alloc(ImageBlock, src.len);
+    var written: usize = 0;
+    errdefer {
+        for (out[0..written]) |img| img.deinit(allocator);
+        allocator.free(out);
+    }
+    while (written < src.len) : (written += 1) {
+        out[written] = try src[written].clone(allocator);
+    }
+    return out;
+}
+
 pub const RequestMessage = struct {
     role: Role,
     content: []u8,
     reasoning: ?[]u8 = null,
     tool_call_id: ?[]u8 = null,
     tool_calls: ?[]ToolCall = null,
+    images: ?[]ImageBlock = null,
 
     pub fn deinit(self: RequestMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
@@ -116,6 +153,17 @@ pub const RequestMessage = struct {
             for (calls) |call| call.deinit(allocator);
             allocator.free(calls);
         }
+        if (self.images) |images| {
+            for (images) |img| img.deinit(allocator);
+            allocator.free(images);
+        }
+    }
+
+    /// True when this is a user message carrying at least one image.
+    pub fn hasImages(self: RequestMessage) bool {
+        if (self.role != .user) return false;
+        const images = self.images orelse return false;
+        return images.len > 0;
     }
 };
 
@@ -292,7 +340,11 @@ fn buildChatCompletionsRequestJsonForMessages(
         try out.appendSlice(allocator, "{\"role\":");
         try appendJsonString(allocator, &out, msg.role.apiName());
         try out.appendSlice(allocator, ",\"content\":");
-        try appendJsonString(allocator, &out, msg.content);
+        if (msg.hasImages()) {
+            try appendChatCompletionsImageContent(allocator, &out, msg);
+        } else {
+            try appendJsonString(allocator, &out, msg.content);
+        }
         if (msg.role == .tool) {
             if (msg.tool_call_id) |id| {
                 try out.appendSlice(allocator, ",\"tool_call_id\":");
@@ -373,9 +425,13 @@ fn buildResponsesRequestJsonForMessages(
             continue;
         }
 
-        if (msg.content.len > 0) {
+        if (msg.content.len > 0 or msg.hasImages()) {
             if (wrote_item) try out.append(allocator, ',');
-            try appendResponseMessage(allocator, &out, msg.role, msg.content);
+            if (msg.hasImages()) {
+                try appendResponseUserImageMessage(allocator, &out, msg);
+            } else {
+                try appendResponseMessage(allocator, &out, msg.role, msg.content);
+            }
             wrote_item = true;
         }
 
@@ -485,6 +541,8 @@ fn appendAnthropicMessages(allocator: std.mem.Allocator, out: *std.ArrayListUnma
                 try out.append(allocator, '}');
             }
             try out.appendSlice(allocator, "]}");
+        } else if (msg.hasImages()) {
+            try appendAnthropicImageContent(allocator, out, msg);
         } else {
             try out.appendSlice(allocator, ",\"content\":");
             try appendJsonString(allocator, out, msg.content);
@@ -530,6 +588,57 @@ fn appendResponseFunctionCallOutput(
     try out.appendSlice(allocator, ",\"output\":");
     try appendJsonString(allocator, out, output);
     try out.append(allocator, '}');
+}
+
+// --- Multimodal (image) content for user messages ---------------------------
+//
+// Only user messages carry images (RequestMessage.hasImages gates on role). Each
+// protocol wraps the prompt text and the base64 image data into its own content
+// array shape. base64 data and the controlled media type are JSON-safe, so the
+// data URI / data field is appended raw between quotes.
+
+fn appendChatCompletionsImageContent(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), msg: RequestMessage) !void {
+    try out.appendSlice(allocator, "[{\"type\":\"text\",\"text\":");
+    try appendJsonString(allocator, out, msg.content);
+    try out.append(allocator, '}');
+    for (msg.images.?) |img| {
+        try out.appendSlice(allocator, ",{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
+        try out.appendSlice(allocator, img.media_type);
+        try out.appendSlice(allocator, ";base64,");
+        try out.appendSlice(allocator, img.data_b64);
+        try out.appendSlice(allocator, "\"}}");
+    }
+    try out.append(allocator, ']');
+}
+
+fn appendAnthropicImageContent(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), msg: RequestMessage) !void {
+    try out.appendSlice(allocator, ",\"content\":[{\"type\":\"text\",\"text\":");
+    try appendJsonString(allocator, out, msg.content);
+    try out.append(allocator, '}');
+    for (msg.images.?) |img| {
+        try out.appendSlice(allocator, ",{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"");
+        try out.appendSlice(allocator, img.media_type);
+        try out.appendSlice(allocator, "\",\"data\":\"");
+        try out.appendSlice(allocator, img.data_b64);
+        try out.appendSlice(allocator, "\"}}");
+    }
+    try out.appendSlice(allocator, "]}");
+}
+
+fn appendResponseUserImageMessage(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), msg: RequestMessage) !void {
+    try out.appendSlice(allocator, "{\"role\":");
+    try appendJsonString(allocator, out, msg.role.apiName());
+    try out.appendSlice(allocator, ",\"content\":[{\"type\":\"input_text\",\"text\":");
+    try appendJsonString(allocator, out, msg.content);
+    try out.append(allocator, '}');
+    for (msg.images.?) |img| {
+        try out.appendSlice(allocator, ",{\"type\":\"input_image\",\"image_url\":\"data:");
+        try out.appendSlice(allocator, img.media_type);
+        try out.appendSlice(allocator, ";base64,");
+        try out.appendSlice(allocator, img.data_b64);
+        try out.appendSlice(allocator, "\"}");
+    }
+    try out.appendSlice(allocator, "]}");
 }
 
 // Single source of truth for the agent tool set. Each tool's name, description,
@@ -1040,6 +1149,49 @@ test "buildRequestJson chat_completions emits model, roles, flags" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"role\":\"system\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"role\":\"user\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"stream\":false") != null);
+}
+
+test "buildRequestJson chat_completions emits a multimodal image_url block for a user image" {
+    const a = std.testing.allocator;
+    var images = [_]ImageBlock{.{ .data_b64 = @constCast("QUJD"), .media_type = @constCast("image/png") }};
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("look"), .images = &images }};
+    const params = RequestParams{ .model = "m1", .system_prompt = "", .protocol = .chat_completions, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const json = try buildRequestJson(a, params, &msgs, false);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":[{\"type\":\"text\",\"text\":\"look\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,QUJD\"}") != null);
+}
+
+test "buildRequestJson chat_completions keeps a plain string content when a user message has no image" {
+    const a = std.testing.allocator;
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("hi") }};
+    const params = RequestParams{ .model = "m1", .system_prompt = "", .protocol = .chat_completions, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const json = try buildRequestJson(a, params, &msgs, false);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"hi\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":[") == null);
+}
+
+test "buildRequestJson anthropic emits an image source block for a user image" {
+    const a = std.testing.allocator;
+    var images = [_]ImageBlock{.{ .data_b64 = @constCast("QUJD"), .media_type = @constCast("image/png") }};
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("look"), .images = &images }};
+    const params = RequestParams{ .model = "m1", .system_prompt = "", .protocol = .anthropic, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const json = try buildRequestJson(a, params, &msgs, false);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "{\"type\":\"text\",\"text\":\"look\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"QUJD\"}") != null);
+}
+
+test "buildRequestJson responses emits an input_image block for a user image" {
+    const a = std.testing.allocator;
+    var images = [_]ImageBlock{.{ .data_b64 = @constCast("QUJD"), .media_type = @constCast("image/png") }};
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("look"), .images = &images }};
+    const params = RequestParams{ .model = "m1", .system_prompt = "", .protocol = .responses, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const json = try buildRequestJson(a, params, &msgs, false);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"input_text\",\"text\":\"look\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,QUJD\"") != null);
 }
 
 test "buildRequestJson chat_completions omits reasoning_effort when thinking disabled" {

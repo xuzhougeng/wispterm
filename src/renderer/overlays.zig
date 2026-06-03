@@ -1854,9 +1854,11 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
             .arrow_up => g_ai_focus = if (g_ai_focus == 0) AI_FIELD_COUNT + 2 else g_ai_focus - 1,
             .arrow_right => {
                 if (g_ai_focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(true);
+                if (g_ai_focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
             },
             .arrow_left => {
                 if (g_ai_focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(false);
+                if (g_ai_focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
             },
             .backspace => {
                 if (g_ai_focus < AI_FIELD_COUNT) backspaceAiFormField(g_ai_focus);
@@ -2694,6 +2696,7 @@ pub fn openAiConfigForSession(session: *AppWindow.ai_chat.Session) void {
     setAiDefault(.stream, session.streamConfigValue());
     setAiDefault(.agent, session.agentConfigValue());
     setAiDefault(.protocol, session.apiProtocolName());
+    setAiDefault(.vision, session.visionConfigValue());
     var max_tokens_buf: [16]u8 = undefined;
     if (std.fmt.bufPrint(max_tokens_buf[0..], "{d}", .{session.maxTokens()})) |s| {
         setAiDefault(.max_tokens, s);
@@ -2756,12 +2759,14 @@ fn clearAiForm() void {
     setAiDefault(.agent, AppWindow.ai_chat.DEFAULT_AGENT);
     setAiDefault(.protocol, AppWindow.ai_chat.DEFAULT_PROTOCOL);
     setAiDefault(.max_tokens, AppWindow.ai_chat.DEFAULT_MAX_TOKENS);
+    setAiDefault(.vision, AppWindow.ai_chat.DEFAULT_VISION);
 }
 
 fn appendAiFormCodepoint(field: usize, codepoint: u21) void {
     if (field >= AI_FIELD_COUNT) return;
-    // Protocol is a ←/→ toggle over the valid protocols, not a free-text field.
+    // Protocol and Vision are ←/→ toggles, not free-text fields.
     if (field == @intFromEnum(AiField.protocol)) return;
+    if (field == @intFromEnum(AiField.vision)) return;
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
     if (g_ai_lens[field] + len > AI_FIELD_MAX) return;
@@ -2801,8 +2806,9 @@ fn appendSshFormText(field: usize, text: []const u8) void {
 
 fn backspaceAiFormField(field: usize) void {
     if (field >= AI_FIELD_COUNT or g_ai_lens[field] == 0) return;
-    // Protocol is a toggle field; it is not text-editable.
+    // Protocol and Vision are toggle fields; they are not text-editable.
     if (field == @intFromEnum(AiField.protocol)) return;
+    if (field == @intFromEnum(AiField.vision)) return;
     g_ai_lens[field] -= 1;
     while (g_ai_lens[field] > 0 and (g_ai_bufs[field][g_ai_lens[field]] & 0xC0) == 0x80) {
         g_ai_lens[field] -= 1;
@@ -2826,6 +2832,22 @@ fn aiProtocolDisplay() []const u8 {
     };
     const p = AppWindow.ai_chat.ApiProtocol.parse(aiField(.protocol));
     return std.fmt.bufPrint(&S.buf, "{s}   <-/->", .{p.name()}) catch p.name();
+}
+
+/// Vision is an on/off ←/→ toggle (default off). Models with vision enabled can
+/// receive images pasted into the chat composer with Ctrl+Shift+V.
+fn toggleAiFormVision() void {
+    const on = AppWindow.ai_chat.parseVisionEnabled(aiField(.vision));
+    setAiDefault(.vision, if (on) "off" else "on");
+}
+
+/// Vision row display: on/off plus the ←/→ toggle affordance.
+fn aiVisionDisplay() []const u8 {
+    const S = struct {
+        threadlocal var buf: [32]u8 = undefined;
+    };
+    const on = AppWindow.ai_chat.parseVisionEnabled(aiField(.vision));
+    return std.fmt.bufPrint(&S.buf, "{s}   <-/->", .{if (on) "on" else "off"}) catch (if (on) "on" else "off");
 }
 
 fn handleAiListKey(ev: input_key.KeyEvent) void {
@@ -3002,11 +3024,12 @@ fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool
     const agent_val = agent_override orelse aiProfileField(profile, .agent);
     const protocol = aiProfileField(profile, .protocol);
     const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
+    const vision_val = aiProfileField(profile, .vision);
     if (base_url.len == 0 or model.len == 0) return false;
     if (!isHttpUrlish(base_url)) return false;
 
     sessionLauncherClose();
-    return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens);
+    return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val);
 }
 
 /// Build a standalone copilot Session from the default AI profile (Issue #98).
@@ -3026,10 +3049,11 @@ pub fn makeCopilotSessionForDefaultProfile() ?*ai_chat.Session {
     const stream_val = aiProfileField(profile, .stream);
     const protocol = aiProfileField(profile, .protocol);
     const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
+    const vision_val = aiProfileField(profile, .vision);
     if (base_url.len == 0 or model.len == 0) return null;
     if (!isHttpUrlish(base_url)) return null;
     const allocator = AppWindow.g_allocator orelse return null;
-    const session = ai_chat.Session.initWithProtocol(
+    const session = ai_chat.Session.initWithVision(
         allocator,
         "Copilot",
         base_url,
@@ -3041,6 +3065,7 @@ pub fn makeCopilotSessionForDefaultProfile() ?*ai_chat.Session {
         reasoning_effort,
         stream_val,
         "true", // agent_enabled
+        vision_val,
     ) catch return null;
     session.max_tokens = max_tokens;
     session.copilot = true;
@@ -3139,7 +3164,7 @@ fn saveAiProfiles(allocator: std.mem.Allocator) void {
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
-    out.appendSlice(allocator, "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens.\n") catch return;
+    out.appendSlice(allocator, "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens, vision.\n") catch return;
     for (g_ai_profiles[0..g_ai_profile_count]) |profile| {
         for (0..AI_FIELD_COUNT) |i| {
             if (i > 0) out.append(allocator, '\t') catch return;
@@ -3285,6 +3310,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_stream, aiField(.stream)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_protocol, aiProtocolDisplay()));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_max_tokens, aiField(.max_tokens)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_vision, aiVisionDisplay()));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save_open, i18n.s().sl_v_agent));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save, i18n.s().sl_v_profile));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_cancel, "Esc"));
@@ -3704,6 +3730,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.agent), i18n.s().sl_ai_agent_field, aiField(.agent), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), i18n.s().sl_ai_protocol, aiProtocolDisplay(), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.max_tokens), i18n.s().sl_ai_max_tokens, aiField(.max_tokens), false);
+        renderAiSessionField(layout, window_height, @intFromEnum(AiField.vision), i18n.s().sl_ai_vision, aiVisionDisplay(), false);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT, i18n.s().sl_save_open, i18n.s().sl_v_agent, g_ai_focus == AI_FIELD_COUNT);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, g_ai_focus == AI_FIELD_COUNT + 1);
         renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, i18n.s().sl_cancel, "Esc", g_ai_focus == AI_FIELD_COUNT + 2);

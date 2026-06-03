@@ -516,6 +516,84 @@ pub fn pasteFromClipboardIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
     AppWindow.g_cells_valid = false;
 }
 
+/// Outcome of routing a pasted clipboard image to an AI chat composer.
+pub const PastedImageOutcome = enum { attached, ignored_no_vision, too_large };
+
+/// Decide what to do with a pasted image given the model's vision flag and the
+/// decoded byte size. The size cap takes precedence so an oversized payload is
+/// always rejected, vision or not.
+pub fn classifyPastedImage(vision_enabled: bool, byte_len: usize, max_bytes: usize) PastedImageOutcome {
+    if (byte_len > max_bytes) return .too_large;
+    if (!vision_enabled) return .ignored_no_vision;
+    return .attached;
+}
+
+test "classifyPastedImage routes by vision flag and size cap" {
+    try std.testing.expectEqual(PastedImageOutcome.attached, classifyPastedImage(true, 100, 1000));
+    try std.testing.expectEqual(PastedImageOutcome.ignored_no_vision, classifyPastedImage(false, 100, 1000));
+    try std.testing.expectEqual(PastedImageOutcome.too_large, classifyPastedImage(true, 2000, 1000));
+    // The size cap is checked before the vision flag.
+    try std.testing.expectEqual(PastedImageOutcome.too_large, classifyPastedImage(false, 2000, 1000));
+}
+
+fn encodeImageBase64(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    const encoder = std.base64.standard.Encoder;
+    const out = try allocator.alloc(u8, encoder.calcSize(bytes.len));
+    _ = encoder.encode(out, bytes);
+    return out;
+}
+
+test "encodeImageBase64 produces standard base64" {
+    const out = try encodeImageBase64(std.testing.allocator, "ABC");
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("QUJD", out);
+}
+
+/// Ctrl+Shift+V target when an AI chat composer is focused: read a clipboard
+/// image, and either attach it to the composer (vision models) or drop it with a
+/// log + toast (non-vision models / oversized images).
+pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
+    const allocator = AppWindow.g_allocator orelse return;
+    const owner = clipboardOwner() orelse return;
+
+    const image_path = platform_clipboard.readImageAsPngTemp(allocator, owner) orelse return;
+    defer allocator.free(image_path);
+    // The temp PNG belongs to us once read; remove it either way.
+    defer std.fs.deleteFileAbsolute(image_path) catch {};
+
+    const max_bytes = AppWindow.ai_chat.MAX_PASTED_IMAGE_BYTES;
+    const bytes = std.fs.cwd().readFileAlloc(allocator, image_path, max_bytes + 1) catch |err| {
+        std.debug.print("Chat image paste: could not read {s}: {s}\n", .{ image_path, @errorName(err) });
+        return;
+    };
+    defer allocator.free(bytes);
+
+    switch (classifyPastedImage(chat.vision_enabled, bytes.len, max_bytes)) {
+        .too_large => {
+            std.debug.print("Chat image paste: image is {d} bytes, exceeds {d} cap — ignored\n", .{ bytes.len, max_bytes });
+            overlays.showStatusToast("Image too large \xe2\x80\x94 ignored");
+        },
+        .ignored_no_vision => {
+            std.debug.print("Chat image paste: vision disabled for this model \xe2\x80\x94 image ignored ({d} bytes)\n", .{bytes.len});
+            overlays.showStatusToast("Vision off for this model \xe2\x80\x94 image ignored");
+        },
+        .attached => {
+            const b64 = encodeImageBase64(allocator, bytes) catch return;
+            defer allocator.free(b64);
+            chat.addPendingImage(b64, "image/png") catch {
+                std.debug.print("Chat image paste: out of memory attaching image\n", .{});
+                return;
+            };
+            std.debug.print("Chat image paste: attached image ({d} bytes, {d} pending)\n", .{ bytes.len, chat.pendingImageCount() });
+            var buf: [48]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Image attached ({d})", .{chat.pendingImageCount()}) catch "Image attached";
+            overlays.showStatusToast(msg);
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        },
+    }
+}
+
 pub fn pasteImageFromClipboard() void {
     const surface = AppWindow.activeSurface() orelse return;
     const allocator = AppWindow.g_allocator orelse return;

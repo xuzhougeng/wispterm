@@ -368,10 +368,11 @@ pub fn spawnAiChatTab(
     stream_val: []const u8,
     agent_val: []const u8,
     max_tokens: u32,
+    vision_val: []const u8,
 ) bool {
     if (g_tab_count >= MAX_TABS) return false;
 
-    const session = ai_chat.Session.initWithProtocol(
+    const session = ai_chat.Session.initWithVision(
         allocator,
         name,
         base_url,
@@ -383,6 +384,7 @@ pub fn spawnAiChatTab(
         reasoning_effort,
         stream_val,
         agent_val,
+        vision_val,
     ) catch {
         std.debug.print("Failed to create AI Chat session\n", .{});
         return false;
