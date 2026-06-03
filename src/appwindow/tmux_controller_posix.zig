@@ -236,3 +236,28 @@ pub fn requestSplit(surface: *anyopaque, horizontal: bool) bool {
     }
     return false;
 }
+
+/// If `surface` is a tmux pane, `kill-pane` it (tmux's %layout-change /
+/// %window-close drives removal of the split/tab) and return true.
+pub fn requestClosePane(surface: *anyopaque) bool {
+    for (g_controllers.items) |c| {
+        if (c.bridge.panes.findIdBySurface(surface)) |pane_id| {
+            c.bridge.session.killPane(pane_id) catch return false;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// If `surface` belongs to a tmux session, open a `new-window` in it (a new
+/// tmux tab; the echoed %window-add/%layout-change reconciles it) and return
+/// true.
+pub fn requestNewWindow(surface: *anyopaque) bool {
+    for (g_controllers.items) |c| {
+        if (c.bridge.panes.findIdBySurface(surface)) |_| {
+            c.bridge.session.newWindow() catch return false;
+            return true;
+        }
+    }
+    return false;
+}

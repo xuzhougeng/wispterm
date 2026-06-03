@@ -277,6 +277,12 @@ pub const Session = struct {
         const s = std.fmt.bufPrint(&buf, "kill-window -t @{d}\n", .{id}) catch unreachable;
         try self.cmds.appendSlice(self.alloc, s);
     }
+
+    pub fn killPane(self: *Session, pane_id: usize) Allocator.Error!void {
+        var buf: [48]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "kill-pane -t %{d}\n", .{pane_id}) catch unreachable;
+        try self.cmds.appendSlice(self.alloc, s);
+    }
 };
 
 fn collectPanes(

@@ -23,6 +23,12 @@ const impl = switch (builtin.os.tag) {
         pub fn requestSplit(_: *anyopaque, _: bool) bool {
             return false;
         }
+        pub fn requestClosePane(_: *anyopaque) bool {
+            return false;
+        }
+        pub fn requestNewWindow(_: *anyopaque) bool {
+            return false;
+        }
     },
 };
 
@@ -31,3 +37,5 @@ pub const tickAll = impl.tickAll;
 pub const shutdownAll = impl.shutdownAll;
 pub const anyActive = impl.anyActive;
 pub const requestSplit = impl.requestSplit;
+pub const requestClosePane = impl.requestClosePane;
+pub const requestNewWindow = impl.requestNewWindow;
