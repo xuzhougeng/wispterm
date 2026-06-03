@@ -1097,7 +1097,7 @@ pub fn fromTmuxLayout(
     const tmux_layout = @import("tmux/layout.zig");
     // Explicit error set: build/buildChain are mutually recursive, so Zig
     // cannot infer their error sets.
-    const BuildError = error{ SurfaceCreationFailed, UnsupportedLayout };
+    const BuildError = error{SurfaceCreationFailed};
     const total = countLayoutNodes(root);
     if (total > std.math.maxInt(Node.Handle.Backing)) return error.OutOfMemory;
 
@@ -1129,18 +1129,21 @@ pub fn fromTmuxLayout(
         fn buildChain(self: *@This(), children: []const tmux_layout.Node, dir: tmux_layout.Dir) BuildError!Node.Handle {
             // A tmux split always has >= 2 children; a lone child is just that child.
             if (children.len == 1) return self.build(&children[0]);
-            // Phase 3c-1 Task 1 handles only the binary case; Task 2 generalizes.
-            if (children.len != 2) return error.UnsupportedLayout;
 
             // Reserve this split's index before its children (pre-order).
             const handle: Node.Handle = @enumFromInt(@as(Node.Handle.Backing, @intCast(self.idx)));
             self.idx += 1;
 
+            // Fold right: this split separates children[0] from the rest.
             const left = try self.build(&children[0]);
-            const right = try self.build(&children[1]);
+            const right = if (children.len == 2)
+                try self.build(&children[1])
+            else
+                try self.buildChain(children[1..], dir);
 
             const first = tmuxSizeAlong(children[0], dir);
-            const total_size = first + tmuxSizeAlong(children[1], dir);
+            var total_size: u32 = 0;
+            for (children) |child| total_size += tmuxSizeAlong(child, dir);
             const ratio: f16 = if (total_size == 0)
                 0.5
             else
@@ -1397,4 +1400,93 @@ test "fromTmuxLayout: two-pane vertical column maps to vertical layout" {
     try std.testing.expectEqual(SplitTree.Split.Layout.vertical, tree.nodes[0].split.layout);
     // Top pane is 18 of 24 rows: ratio 0.75.
     try std.testing.expectApproxEqAbs(@as(f16, 0.75), tree.nodes[0].split.ratio, 0.01);
+}
+
+test "fromTmuxLayout: three-pane row folds into nested binary splits with geometry ratios" {
+    const layout = @import("tmux/layout.zig");
+    // Widths 20, 40, 20 across an 80-wide window.
+    var parsed = try layout.parse(std.testing.allocator, "80x24,0,0{20x24,0,0,1,40x24,20,0,2,20x24,60,0,3}");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        var sentinels: [8]usize = undefined;
+        fn make(_: *anyopaque, pane_id: usize) ?*Surface {
+            return @ptrCast(@alignCast(&sentinels[pane_id]));
+        }
+    };
+
+    var tree = try fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make);
+    defer {
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    // {a,b,c} -> split(a, split(b,c)). Pre-order:
+    // [outer_split, leaf%1, inner_split, leaf%2, leaf%3]  => 5 nodes.
+    try std.testing.expectEqual(@as(usize, 5), tree.nodes.len);
+
+    const outer = tree.nodes[0].split;
+    try std.testing.expectEqual(SplitTree.Split.Layout.horizontal, outer.layout);
+    // Pane %1 is 20 of 80: ratio 0.25.
+    try std.testing.expectApproxEqAbs(@as(f16, 0.25), outer.ratio, 0.01);
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 1), @intFromEnum(outer.left));
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 2), @intFromEnum(outer.right));
+
+    const inner = tree.nodes[2].split;
+    try std.testing.expectEqual(SplitTree.Split.Layout.horizontal, inner.layout);
+    // Inner separates 40 from 20: ratio 40/60 = 0.667.
+    try std.testing.expectApproxEqAbs(@as(f16, 0.667), inner.ratio, 0.01);
+
+    const s1: *Surface = @ptrCast(@alignCast(&Stub.sentinels[1]));
+    const s2: *Surface = @ptrCast(@alignCast(&Stub.sentinels[2]));
+    const s3: *Surface = @ptrCast(@alignCast(&Stub.sentinels[3]));
+    try std.testing.expectEqual(s1, tree.nodes[1].leaf);
+    try std.testing.expectEqual(s2, tree.nodes[3].leaf);
+    try std.testing.expectEqual(s3, tree.nodes[4].leaf);
+}
+
+test "fromTmuxLayout: a column nested inside a row preserves nesting and per-axis ratios" {
+    const layout = @import("tmux/layout.zig");
+    // Left pane %1 (40 wide); right is a vertical stack of %2 (18 high) over %3 (6 high).
+    var parsed = try layout.parse(std.testing.allocator, "80x24,0,0{40x24,0,0,1,40x24,40,0[40x18,40,0,2,40x6,40,18,3]}");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        var sentinels: [8]usize = undefined;
+        fn make(_: *anyopaque, pane_id: usize) ?*Surface {
+            return @ptrCast(@alignCast(&sentinels[pane_id]));
+        }
+    };
+
+    var tree = try fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make);
+    defer {
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    // Pre-order: [outer(horizontal), leaf%1, inner(vertical), leaf%2, leaf%3].
+    try std.testing.expectEqual(@as(usize, 5), tree.nodes.len);
+    try std.testing.expectEqual(SplitTree.Split.Layout.horizontal, tree.nodes[0].split.layout);
+    try std.testing.expectApproxEqAbs(@as(f16, 0.5), tree.nodes[0].split.ratio, 0.01);
+    const inner = tree.nodes[tree.nodes[0].split.right.idx()].split;
+    try std.testing.expectEqual(SplitTree.Split.Layout.vertical, inner.layout);
+    // Vertical inner: top %2 is 18 of 24 -> 0.75.
+    try std.testing.expectApproxEqAbs(@as(f16, 0.75), inner.ratio, 0.01);
+}
+
+test "fromTmuxLayout: a null from the factory aborts with SurfaceCreationFailed" {
+    const layout = @import("tmux/layout.zig");
+    var parsed = try layout.parse(std.testing.allocator, "80x24,0,0{40x24,0,0,1,40x24,40,0,2}");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        fn make(_: *anyopaque, _: usize) ?*Surface {
+            return null;
+        }
+    };
+
+    try std.testing.expectError(
+        error.SurfaceCreationFailed,
+        fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make),
+    );
 }
