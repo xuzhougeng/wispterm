@@ -40,6 +40,7 @@ test {
     _ = @import("tmux/control.zig");
     _ = @import("tmux/layout.zig");
     _ = @import("tmux/protocol_test.zig");
+    _ = @import("tmux/session.zig");
     _ = @import("appwindow/active_tab.zig");
     _ = @import("scp.zig");
     _ = @import("file_backend.zig");
