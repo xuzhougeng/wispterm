@@ -20,6 +20,8 @@ const ai_chat_composer = @import("ai_chat_composer.zig");
 const ai_chat_skills = @import("ai_chat_skills.zig");
 const ai_chat_types = @import("ai_chat_types.zig");
 const ai_chat_tools = @import("ai_chat_tools.zig");
+const ai_agent_access = @import("ai_agent_access.zig");
+const platform_dirs = @import("platform/dirs.zig");
 const ai_chat_markdown = @import("ai_chat_markdown.zig");
 const weixin_types = @import("weixin/types.zig");
 
@@ -234,6 +236,8 @@ fn fireDeferredAction(action: DeferredAction) void {
 
 var g_agent_mutex: std.Thread.Mutex = .{};
 var g_agent_settings: AgentSettings = .{};
+var g_access_rules_storage: ?ai_agent_access.AccessRules = null;
+var g_access_rules: ?*const ai_agent_access.AccessRules = null;
 var g_session_id_counter = std.atomic.Value(u64).init(1);
 var g_skill_update_trigger: ?*const fn () void = null;
 var g_session_resume_trigger: ?*const fn () void = null;
@@ -265,6 +269,37 @@ pub fn configureAgent(settings: AgentSettings) void {
     g_agent_settings = settings;
 }
 
+/// Load the private agent-access rules once at startup. Safe to call repeatedly
+/// (loads only the first time). Never fails the app: on any error the guard
+/// simply stays inactive.
+pub fn loadAccessRules(allocator: std.mem.Allocator) void {
+    g_agent_mutex.lock();
+    const already = g_access_rules_storage != null;
+    g_agent_mutex.unlock();
+    if (already) return;
+
+    const home = resolveHomeDir(allocator) orelse "";
+    defer if (home.len != 0) allocator.free(home);
+    const path = platform_dirs.pathInConfigDir(allocator, "agent-access.local") catch return;
+    defer allocator.free(path);
+    const rules = ai_agent_access.loadRules(allocator, path, home) catch return;
+
+    g_agent_mutex.lock();
+    defer g_agent_mutex.unlock();
+    g_access_rules_storage = rules;
+    g_access_rules = &g_access_rules_storage.?;
+}
+
+fn resolveHomeDir(allocator: std.mem.Allocator) ?[]u8 {
+    if (std.process.getEnvVarOwned(allocator, "HOME")) |v| {
+        return v;
+    } else |_| {}
+    if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |v| {
+        return v;
+    } else |_| {}
+    return null;
+}
+
 pub fn setToolHost(host: ?ToolHost) void {
     g_tool_host = host;
 }
@@ -272,7 +307,9 @@ pub fn setToolHost(host: ?ToolHost) void {
 pub fn currentAgentSettings() AgentSettings {
     g_agent_mutex.lock();
     defer g_agent_mutex.unlock();
-    return g_agent_settings;
+    var s = g_agent_settings;
+    s.access_rules = g_access_rules;
+    return s;
 }
 
 fn applyPermissionArg(arg: []const u8) void {

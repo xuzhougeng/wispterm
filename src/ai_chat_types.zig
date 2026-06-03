@@ -4,6 +4,7 @@
 const std = @import("std");
 const weixin_types = @import("weixin/types.zig");
 const agent_detector = @import("agent_detector.zig");
+const ai_agent_access = @import("ai_agent_access.zig");
 
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;
 const DEFAULT_AGENT_OUTPUT_LIMIT: u32 = 16 * 1024;
@@ -13,6 +14,8 @@ pub const AgentSettings = struct {
     permission: AgentPermission = .confirm,
     command_timeout_ms: u32 = DEFAULT_AGENT_TIMEOUT_MS,
     output_limit: u32 = DEFAULT_AGENT_OUTPUT_LIMIT,
+    /// Private file-access rules (owned by the app layer; null = guard inactive).
+    access_rules: ?*const ai_agent_access.AccessRules = null,
 };
 
 // AgentPermission lives in ai_agent_config.zig (extracted on main so config.zig
