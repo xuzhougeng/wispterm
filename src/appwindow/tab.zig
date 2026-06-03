@@ -358,6 +358,11 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     t.ai_chat_session = null;
     t.ai_history_session = null;
     t.copilot_session = null;
+    // allocator.create returns undefined memory and struct-default values are
+    // NOT applied to field-by-field init, so these must be set explicitly or
+    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
+    t.tmux_window_id = null;
+    t.tmux_name_len = 0;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -412,6 +417,11 @@ pub fn spawnAiChatTab(
     t.ai_chat_session = session;
     t.ai_history_session = null;
     t.copilot_session = null;
+    // allocator.create returns undefined memory and struct-default values are
+    // NOT applied to field-by-field init, so these must be set explicitly or
+    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
+    t.tmux_window_id = null;
+    t.tmux_name_len = 0;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -441,6 +451,11 @@ pub fn spawnAiChatTabFromHistoryRecord(allocator: std.mem.Allocator, record: age
     t.ai_chat_session = session;
     t.ai_history_session = null;
     t.copilot_session = null;
+    // allocator.create returns undefined memory and struct-default values are
+    // NOT applied to field-by-field init, so these must be set explicitly or
+    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
+    t.tmux_window_id = null;
+    t.tmux_name_len = 0;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -469,6 +484,11 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
     t.focused = .root;
     t.ai_chat_session = null;
     t.copilot_session = null;
+    // allocator.create returns undefined memory and struct-default values are
+    // NOT applied to field-by-field init, so these must be set explicitly or
+    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
+    t.tmux_window_id = null;
+    t.tmux_name_len = 0;
     t.ai_history_session = session_ptr;
 
     g_tabs[g_tab_count] = t;
@@ -1324,6 +1344,11 @@ pub fn restoreTab(
     t.ai_chat_session = null;
     t.ai_history_session = null;
     t.copilot_session = null;
+    // allocator.create returns undefined memory and struct-default values are
+    // NOT applied to field-by-field init, so these must be set explicitly or
+    // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
+    t.tmux_window_id = null;
+    t.tmux_name_len = 0;
     applyRestoredTabMetadata(t, snap);
 
     g_tabs[g_tab_count] = t;
