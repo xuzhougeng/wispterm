@@ -91,12 +91,18 @@ pub fn parseRules(allocator: std.mem.Allocator, contents: []const u8, home: []co
         }
     }
 
+    // Finalize the slices before the struct literal copies the arena, so that
+    // every allocation (including any toOwnedSlice node) lands in the arena
+    // state captured by `.arena = arena` — see the buffer_list note above.
+    const allow_slice = try allow.toOwnedSlice(a);
+    const deny_slice = try deny.toOwnedSlice(a);
+    const names_slice = try names.toOwnedSlice(a);
     return .{
         .arena = arena,
         .home = home_copy,
-        .allow_roots = try allow.toOwnedSlice(a),
-        .deny_roots = try deny.toOwnedSlice(a),
-        .deny_names = try names.toOwnedSlice(a),
+        .allow_roots = allow_slice,
+        .deny_roots = deny_slice,
+        .deny_names = names_slice,
     };
 }
 
