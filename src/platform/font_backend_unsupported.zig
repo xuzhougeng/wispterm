@@ -228,3 +228,9 @@ pub fn fontFilePathAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?Fon
     _ = font;
     return null;
 }
+
+pub fn fontDataAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?[]u8 {
+    _ = allocator;
+    _ = font;
+    return null;
+}

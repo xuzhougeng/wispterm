@@ -29,6 +29,7 @@ extern fn wispterm_coretext_font_release(handle: *anyopaque) void;
 extern fn wispterm_coretext_font_has_character(handle: *anyopaque, codepoint: u32) bool;
 extern fn wispterm_coretext_font_glyph_index(handle: *anyopaque, codepoint: u32) u16;
 extern fn wispterm_coretext_font_copy_path(handle: *anyopaque) ?[*:0]u8;
+extern fn wispterm_coretext_font_copy_table_data(handle: *anyopaque, out_len: *usize) ?[*]u8;
 extern fn wispterm_coretext_family_count() usize;
 extern fn wispterm_coretext_copy_family_name(index: usize) ?[*:0]u8;
 extern fn wispterm_coretext_free(ptr: ?*anyopaque) void;
@@ -174,4 +175,18 @@ pub fn fontFilePathAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?Fon
         .face_index = 0,
         .allocator = allocator,
     };
+}
+
+/// Copy the font's sfnt bytes (reconstructed from CoreText tables) into an
+/// allocator-owned buffer. Used to load fonts whose file path FreeType cannot
+/// open (e.g. macOS 26's reserved PingFang.ttc). Caller owns the returned slice.
+pub fn fontDataAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?[]u8 {
+    var len: usize = 0;
+    const raw = wispterm_coretext_font_copy_table_data(font.handle, &len) orelse return null;
+    defer wispterm_coretext_free(raw);
+    if (len == 0) return null;
+
+    const data = allocator.alloc(u8, len) catch return null;
+    @memcpy(data, raw[0..len]);
+    return data;
 }

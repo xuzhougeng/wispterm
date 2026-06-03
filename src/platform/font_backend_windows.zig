@@ -73,3 +73,11 @@ pub fn fontFilePathAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?Fon
         .allocator = allocator,
     };
 }
+
+pub fn fontDataAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?[]u8 {
+    // DirectWrite fonts resolve to openable file paths, so the path-based
+    // loader in the font manager is sufficient on Windows.
+    _ = allocator;
+    _ = font;
+    return null;
+}

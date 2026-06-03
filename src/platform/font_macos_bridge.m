@@ -183,6 +183,143 @@ char *wispterm_coretext_font_copy_path(void *handle) {
     return result;
 }
 
+static void wispterm_write_u32_be(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)(v);
+}
+
+static void wispterm_write_u16_be(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)(v);
+}
+
+static uint32_t wispterm_sfnt_checksum(const uint8_t *data, uint32_t len) {
+    uint32_t sum = 0;
+    uint32_t words = (len + 3u) / 4u;
+    for (uint32_t i = 0; i < words; i++) {
+        uint32_t word = 0;
+        for (uint32_t j = 0; j < 4; j++) {
+            uint32_t idx = i * 4u + j;
+            word = (word << 8) | (idx < len ? data[idx] : 0u);
+        }
+        sum += word;
+    }
+    return sum;
+}
+
+// Reconstruct a standalone sfnt (TrueType/OpenType) blob from a CTFont's
+// tables. This lets FreeType load fonts that have no FreeType-openable file
+// path — most importantly macOS 26's reserved PingFang.ttc, which CoreText can
+// read but FT_New_Face(path) cannot open, the root cause of CJK tofu. Pulling
+// one font's tables also sidesteps .ttc face-index ambiguity. Returns a malloc'd
+// buffer (free via wispterm_coretext_free) and writes its length to *out_len,
+// or NULL on failure.
+uint8_t *wispterm_coretext_font_copy_table_data(void *handle, size_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    CTFontRef font = (CTFontRef)handle;
+    if (font == NULL) return NULL;
+
+    CFArrayRef tags = CTFontCopyAvailableTables(font, kCTFontTableOptionNoOptions);
+    if (tags == NULL) return NULL;
+    CFIndex num_tables = CFArrayGetCount(tags);
+    if (num_tables <= 0) {
+        CFRelease(tags);
+        return NULL;
+    }
+
+    typedef struct {
+        uint32_t tag;
+        CFDataRef data;
+        uint32_t length;
+        uint32_t padded;
+    } TableEntry;
+
+    TableEntry *entries = calloc((size_t)num_tables, sizeof(TableEntry));
+    if (entries == NULL) {
+        CFRelease(tags);
+        return NULL;
+    }
+
+    bool has_cff = false;
+    size_t total_data = 0;
+    CFIndex count = 0;
+    for (CFIndex i = 0; i < num_tables; i++) {
+        CTFontTableTag tag = (CTFontTableTag)(uintptr_t)CFArrayGetValueAtIndex(tags, i);
+        CFDataRef data = CTFontCopyTable(font, tag, kCTFontTableOptionNoOptions);
+        if (data == NULL) continue;
+        uint32_t len = (uint32_t)CFDataGetLength(data);
+        entries[count].tag = (uint32_t)tag;
+        entries[count].data = data;
+        entries[count].length = len;
+        entries[count].padded = (len + 3u) & ~3u;
+        if (tag == 0x43464620u /* 'CFF ' */ || tag == 0x43464632u /* 'CFF2' */) has_cff = true;
+        total_data += entries[count].padded;
+        count++;
+    }
+    CFRelease(tags);
+
+    if (count == 0) {
+        free(entries);
+        return NULL;
+    }
+
+    // sfnt requires the table directory to be sorted by tag ascending.
+    for (CFIndex a = 0; a + 1 < count; a++) {
+        for (CFIndex b = a + 1; b < count; b++) {
+            if (entries[b].tag < entries[a].tag) {
+                TableEntry tmp = entries[a];
+                entries[a] = entries[b];
+                entries[b] = tmp;
+            }
+        }
+    }
+
+    size_t header_size = 12 + (size_t)count * 16;
+    size_t total_size = header_size + total_data;
+    uint8_t *out = malloc(total_size);
+    if (out == NULL) {
+        for (CFIndex i = 0; i < count; i++) CFRelease(entries[i].data);
+        free(entries);
+        return NULL;
+    }
+    memset(out, 0, total_size);
+
+    uint16_t num = (uint16_t)count;
+    uint16_t max_pow2 = 1;
+    uint16_t entry_selector = 0;
+    while ((uint16_t)(max_pow2 << 1) <= num) {
+        max_pow2 = (uint16_t)(max_pow2 << 1);
+        entry_selector++;
+    }
+    uint16_t search_range = (uint16_t)(max_pow2 * 16);
+    uint16_t range_shift = (uint16_t)(num * 16 - search_range);
+
+    wispterm_write_u32_be(out + 0, has_cff ? 0x4F54544Fu /* 'OTTO' */ : 0x00010000u);
+    wispterm_write_u16_be(out + 4, num);
+    wispterm_write_u16_be(out + 6, search_range);
+    wispterm_write_u16_be(out + 8, entry_selector);
+    wispterm_write_u16_be(out + 10, range_shift);
+
+    size_t data_offset = header_size;
+    for (CFIndex i = 0; i < count; i++) {
+        const uint8_t *src = CFDataGetBytePtr(entries[i].data);
+        uint8_t *dir = out + 12 + (size_t)i * 16;
+        wispterm_write_u32_be(dir + 0, entries[i].tag);
+        wispterm_write_u32_be(dir + 4, wispterm_sfnt_checksum(src, entries[i].length));
+        wispterm_write_u32_be(dir + 8, (uint32_t)data_offset);
+        wispterm_write_u32_be(dir + 12, entries[i].length);
+        memcpy(out + data_offset, src, entries[i].length);
+        data_offset += entries[i].padded;
+        CFRelease(entries[i].data);
+    }
+    free(entries);
+
+    if (out_len != NULL) *out_len = total_size;
+    return out;
+}
+
 size_t wispterm_coretext_family_count(void) {
     CFArrayRef families = CTFontManagerCopyAvailableFontFamilyNames();
     if (families == NULL) return 0;

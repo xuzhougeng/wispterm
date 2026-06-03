@@ -37,3 +37,7 @@ pub fn fontWeightFromValue(value: u16) FontWeight {
 pub fn fontFilePathAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?FontFilePath {
     return font_discovery.fontFilePathAlloc(allocator, font);
 }
+
+pub fn fontDataAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?[]u8 {
+    return font_discovery.fontDataAlloc(allocator, font);
+}

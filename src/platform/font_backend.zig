@@ -70,12 +70,21 @@ pub fn fontFilePathAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?Fon
     return impl.fontFilePathAlloc(allocator, font);
 }
 
+/// Copy a fallback font's raw sfnt bytes into an allocator-owned buffer, for
+/// loading via FreeType's memory-face API. Returns null when the backend cannot
+/// extract data (only macOS implements this; other backends rely on path-based
+/// loading). Caller owns the returned slice.
+pub fn fontDataAlloc(allocator: std.mem.Allocator, font: *FallbackFont) ?[]u8 {
+    return impl.fontDataAlloc(allocator, font);
+}
+
 test "platform font backend exposes discovery and weight APIs" {
     _ = FontDiscovery;
     _ = LoadedFont;
     _ = FallbackFont;
     _ = FontFilePath;
     try std.testing.expect(@hasDecl(@This(), "fontFilePathAlloc"));
+    try std.testing.expect(@hasDecl(@This(), "fontDataAlloc"));
     try std.testing.expectEqual(FontWeight.BOLD, fontWeightFromValue(700));
     try std.testing.expectEqual(FontWeight.NORMAL, fontWeightFromValue(123));
 }
