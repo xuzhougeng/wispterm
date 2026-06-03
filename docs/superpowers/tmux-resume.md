@@ -36,11 +36,12 @@ Suites: fast `zig build test` ≈ 604 passed; full `zig build test-full` ≈ 25/
 
 ## NEXT: Phase 3d polish
 
-- **[DONE] Per-profile tmux toggle** — 7th SSH profile field `tmux` replaces the env gate (`2cc0d56`).
-- **[DONE] Size-sync** — the controller forwards the tmux pane Surface's real grid (post-`computeSplitLayout`, sidebar/padding subtracted) to `resizeClient`, so tmux's pane width matches the render. Live output is clean (verified: remote `$COLUMNS` == surface width). Single-pane only (`618f5e7`).
-- **[DONE] Native split → tmux** — in a tmux tab, `splitFocused` drives `split-window` via `tmux_controller.requestSplit`; the echoed `%layout-change` reconciles a real tmux pane as a native split. Per-pane keystroke routing + focus verified (`f93f48f`).
-- **#2 — `capture-pane` scrollback seed (still dormant).** Plumbing in `Session` (`capturePane` + `block_end` routing, `ff36ecb`). Re-tested WITH size-sync: still garbles — the capture reply collides with the resize-triggered live `%output` redraw, and `-J` logical lines don't map to visible rows. Needs grid-level cell placement (iTerm2-style) or suppressing live output during the seed, not raw text feeding. Activate `self.session.capturePane(pane_id)` in the bridge factory once solved.
-- **#3b — close-pane / new-tab → tmux.** Like the split: `closeFocusedSplit` should `kill-pane` and new-tab should `new-window` for tmux tabs (currently only split is wired). `Session` already has `killWindow`/`newWindow`; add `killPane` + route.
+**Done & GUI-verified:** size-sync (`618f5e7`, single-pane), native split → `split-window` (`f93f48f`), close-pane → `kill-pane` + new-window primitives (`c17d4f3`).
+
+**Done — tmux management via a launcher entry** (spec `specs/2026-06-03-tmux-management-launcher-entry-design.md`, plan `plans/2026-06-03-tmux-management-launcher-entry.md`): replaced the per-profile `tmux` field with a top-level launcher row "Connect with tmux" that reuses the SSH profile list (`SshListMode.tmux_connect`, mirrors AI History); session name `wispterm-<profile>` (`tmuxSessionName`, unit-tested); sidebar "+" in a tmux tab opens a new tmux window; `WISPTERM_AUTOCONNECT_TMUX=<profile>` dev hook (`1d782b8`, `f3f734e`). Log-verified end-to-end (`tmux -CC new -A -s wispterm-NGS00` → reconciled tab); launcher-row *visual* check pending (screenshot perm glitch — eyeball: row sits between SSH and AI Agent).
+
+**Remaining:**
+- **#2 — `capture-pane` scrollback seed (still dormant).** Plumbing in `Session` (`capturePane` + `block_end` routing, `ff36ecb`). Even with size-sync it garbles — the capture reply collides with the resize-triggered live `%output` redraw, and `-J` logical lines don't map to visible rows. Needs grid-level cell placement (iTerm2-style) or suppressing live output during the seed. Activate `self.session.capturePane(pane_id)` in the bridge factory once solved.
 - **#3c — multi-pane size-sync.** `syncSize` is single-pane only; for ≥2 panes the client size is the content-area bounding box, not one pane's grid.
 - **#4 — lifecycle.** Detach/reconnect overlay + backoff; close-confirm before `kill-window`; `session_persist` re-attach.
 - **#5 — minor.** A non-tmux restored tab showed a `????` title in testing — unrelated decode glitch.
