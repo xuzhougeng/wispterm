@@ -46,10 +46,11 @@ Suites: fast `zig build test` ≈ 604 passed; full `zig build test-full` ≈ 25/
 
 **Done — #4a auto-reconnect** (`a9afded`): transport drop (EOF/HUP) → keep tabs/surfaces, re-spawn `ssh … tmux -CC -A` with backoff (0.5→5s), reconcile reuses surfaces by pane id → layout/state preserved. `Session.resetForReconnect` resets parser/cmd/capture state. GUI-verified by killing the ssh child mid-session.
 
+**Done — #4b close-confirm (already covered).** Closing a tmux pane runs through `closePanelOrTab` → close-confirm (`activeSurfaceHasRunningProgram` = `surfaceOnAltScreen`, which is output-based so it works for tmux panes running a remote TUI) → `closeFocusedSplit` → `requestClosePane` (`kill-pane`). No new code — the existing gate already protects the tmux kill path.
+
 **Remaining:**
-- **#4b — close-confirm before kill.** Closing a tmux pane already drives `kill-pane`; gate it behind the close-confirm modal when a TUI is running (reuse `close_confirm`).
-- **#4c — `session_persist` re-attach.** Persist that a tab is a tmux session (host/user/port/session-name); on app restart re-attach via the controller instead of a plain-ssh leaf. Touches `session_persist.zig` + the restore path.
-- **#5 — minor.** A non-tmux restored tab showed a `????` title in testing — unrelated decode glitch.
+- **#4c — `session_persist` re-attach (the substantive one).** Survive app *close* (not just network drop): persist a tmux session marker (host/user/port/session-name) and on restart re-attach via the controller. Design wrinkle: persistence is per-tab/surface-tree, but tmux is per-controller (one connection → N window-tabs) — needs a per-connection record + restore that starts ONE controller (which rebuilds its tabs), not a per-tab plain-ssh leaf. Touches `session_persist.zig` + the restore path; deserves care (it's a shared subsystem).
+- **#5 — minor / unrelated.** A non-tmux restored tab showed a `????` title — a pre-existing title-decode glitch, not part of the tmux work.
 
 Study targets for #3: `AppWindow.zig` render loop (`computeSplitLayout`, `content_w/content_h`, the platform-resize grid math ~2221–2253), `Surface.setScreenSize` (`Surface.zig:679`), `src/appwindow/tmux_controller_posix.zig` (the pump — where to read pane surface grid + call `resizeClient`), `Session.resizeClient`.
 
