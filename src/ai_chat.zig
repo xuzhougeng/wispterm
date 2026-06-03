@@ -1166,17 +1166,21 @@ pub const Session = struct {
                 const summary = try allocRemoteToolSummary(allocator, msg);
                 var summary_owned = true;
                 errdefer if (summary_owned) allocator.free(summary);
-                try sections.append(allocator, .{ .label = msg.role.label(), .text = summary });
+                try sections.append(allocator, .{ .label = msg.role.label(), .text = summary, .priority = true });
                 try tool_summaries.append(allocator, summary);
                 summary_owned = false;
             } else {
-                try sections.append(allocator, .{ .label = msg.role.label(), .text = msg.content });
+                try sections.append(allocator, .{ .label = msg.role.label(), .text = msg.content, .priority = true });
             }
+            // Reasoning and the usage footer are auxiliary: useful for the web
+            // mirror, but the remote reply detector only needs the message bodies.
+            // Mark them low-priority so a huge reasoning block can never evict the
+            // latest assistant answer from the byte budget (issue #118).
             if (msg.reasoning) |reasoning| {
-                if (reasoning.len > 0) try sections.append(allocator, .{ .label = "Reasoning", .text = reasoning });
+                if (reasoning.len > 0) try sections.append(allocator, .{ .label = "Reasoning", .text = reasoning, .priority = false });
             }
             if (msg.usage_footer) |footer| {
-                if (footer.len > 0) try sections.append(allocator, .{ .label = "Usage", .text = footer });
+                if (footer.len > 0) try sections.append(allocator, .{ .label = "Usage", .text = footer, .priority = false });
             }
         }
         try appendRecentLimitedSections(allocator, &out, sections.items, REMOTE_SNAPSHOT_MAX_BYTES);
@@ -2421,8 +2425,18 @@ fn appendLimitedSection(
 const RemoteSnapshotSection = struct {
     label: []const u8,
     text: []const u8,
+    /// High-priority sections (message bodies) are budgeted before low-priority
+    /// auxiliary sections (reasoning, usage), so bulky reasoning can never push
+    /// the latest answer out of the snapshot.
+    priority: bool = true,
 };
 
+/// Appends the most recent sections that fit in `max_bytes`, in two priority
+/// passes. Pass one reserves budget for message bodies newest-first, always
+/// keeping the newest body (truncated if it alone overflows). Pass two fills any
+/// remaining budget with auxiliary sections (reasoning/usage), also newest-first.
+/// Sections are emitted in their original order. This guarantees the latest
+/// assistant answer survives even when an earlier-walked reasoning block is huge.
 fn appendRecentLimitedSections(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
@@ -2431,30 +2445,52 @@ fn appendRecentLimitedSections(
 ) !void {
     if (sections.len == 0 or out.items.len >= max_bytes) return;
 
-    var start = sections.len;
-    var used = out.items.len;
-    while (start > 0) {
-        const section = sections[start - 1];
-        const header_len = remoteSnapshotSectionHeaderLen(used, section.label);
-        if (used + header_len >= max_bytes) break;
-        const full_len = header_len + section.text.len;
-        if (full_len <= max_bytes - used) {
-            used += full_len;
-            start -= 1;
-            continue;
-        }
+    const included = try allocator.alloc(bool, sections.len);
+    defer allocator.free(included);
+    @memset(included, false);
 
-        if (start == sections.len) start -= 1;
-        break;
+    // Model + Status are always emitted first, so every section here pays the
+    // 4-byte separator; the per-section cost is therefore position-independent.
+    var used = out.items.len;
+
+    // Pass 1: message bodies, newest-first. Always include the newest body so
+    // the reply detector and the user can always see the latest answer; if it
+    // alone overflows, appendLimitedSection truncates it.
+    var newest_body_seen = false;
+    var i = sections.len;
+    while (i > 0) : (i -= 1) {
+        const section = sections[i - 1];
+        if (!section.priority) continue;
+        const cost = remoteSnapshotSectionCost(section.label, section.text);
+        if (!newest_body_seen) {
+            included[i - 1] = true;
+            used = @min(used + cost, max_bytes);
+            newest_body_seen = true;
+        } else if (used + cost <= max_bytes) {
+            included[i - 1] = true;
+            used += cost;
+        }
     }
 
-    for (sections[start..]) |section| {
-        try appendLimitedSection(allocator, out, section.label, section.text, max_bytes);
+    // Pass 2: auxiliary sections (reasoning/usage), newest-first, best effort.
+    i = sections.len;
+    while (i > 0) : (i -= 1) {
+        const section = sections[i - 1];
+        if (section.priority) continue;
+        const cost = remoteSnapshotSectionCost(section.label, section.text);
+        if (used + cost <= max_bytes) {
+            included[i - 1] = true;
+            used += cost;
+        }
+    }
+
+    for (sections, 0..) |section, idx| {
+        if (included[idx]) try appendLimitedSection(allocator, out, section.label, section.text, max_bytes);
     }
 }
 
-fn remoteSnapshotSectionHeaderLen(current_len: usize, label: []const u8) usize {
-    return (if (current_len > 0) "\r\n\r\n".len else 0) + label.len + ":\r\n".len;
+fn remoteSnapshotSectionCost(label: []const u8, text: []const u8) usize {
+    return "\r\n\r\n".len + label.len + ":\r\n".len + text.len;
 }
 
 fn allocRemoteToolSummary(allocator: std.mem.Allocator, msg: Message) ![]u8 {
@@ -4373,6 +4409,63 @@ test "ai chat remote snapshot keeps latest messages after large tool output" {
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "latest assistant reply") != null);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "terminal_repl_exec") != null);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") == null);
+}
+
+test "ai chat remote snapshot keeps final answer when reasoning is huge (issue 118)" {
+    // A reasoning-heavy turn (e.g. GLM thinking) on a large context once evicted
+    // the final assistant answer from the byte budget, so the weixin reply
+    // detector never saw the answer and never reported the turn done.
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+    session.setStatusLocked("Done in 280.9s");
+
+    const big_reasoning = try allocator.alloc(u8, REMOTE_SNAPSHOT_MAX_BYTES + 4096);
+    @memset(big_reasoning, 'r');
+    try session.messages.append(allocator, .{
+        .role = .user,
+        .content = try allocator.dupe(u8, "explain the captain model"),
+    });
+    try session.messages.append(allocator, .{
+        .role = .assistant,
+        .content = try allocator.dupe(u8, "FINAL_ANSWER_MARKER the captain model is ..."),
+        .reasoning = big_reasoning,
+    });
+
+    const snapshot = try session.allocRemoteSnapshot(allocator);
+    defer allocator.free(snapshot);
+
+    // The answer body survives; the oversized reasoning is dropped, not the answer.
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "FINAL_ANSWER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "Done in 280.9s") != null);
+}
+
+test "ai chat remote snapshot still includes reasoning when it fits" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    try session.messages.append(allocator, .{
+        .role = .user,
+        .content = try allocator.dupe(u8, "status?"),
+    });
+    try session.messages.append(allocator, .{
+        .role = .assistant,
+        .content = try allocator.dupe(u8, "all good"),
+        .reasoning = try allocator.dupe(u8, "checked the state first"),
+    });
+
+    const snapshot = try session.allocRemoteSnapshot(allocator);
+    defer allocator.free(snapshot);
+
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "all good") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "checked the state first") != null);
 }
 
 test "ai chat clipboard text exports transcript when input is empty" {

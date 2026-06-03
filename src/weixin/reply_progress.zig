@@ -185,3 +185,25 @@ test "empty when nothing new" {
     const p = progress("You:\nhi\n", "You:\nhi\n");
     try t.expect(!p.done);
 }
+
+test "done with realistic remote snapshot shape after a tool turn (issue 118)" {
+    // Mirrors allocRemoteSnapshot: Model + Status header, then message bodies.
+    // The turn finished ("Done in ...s"), a tool ran, and a new AI answer exists.
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nq\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nDone in 280.9s\n\n" ++
+        "You:\nq\n\nTool:\nterminal completed.\n\nAI:\nthe captain model is ...\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expectEqualStrings("the captain model is ...", p.text);
+}
+
+test "not done while a tool turn is still streaming" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nq\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nRunning tools...\n\n" ++
+        "You:\nq\n\nTool:\nterminal completed.\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.done);
+    try t.expect(p.text.len != 0);
+}
