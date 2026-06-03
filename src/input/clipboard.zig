@@ -11,6 +11,7 @@ const platform_remote_file = @import("../platform/remote_file.zig");
 const Surface = @import("../Surface.zig");
 const selection_unit = @import("../selection_unit.zig");
 const file_drop_path = @import("file_drop_path.zig");
+const ai_chat_composer_layout = @import("../ai_chat_composer_layout.zig");
 
 fn isPasteStripByte(byte: u8) bool {
     return switch (byte) {
@@ -594,6 +595,10 @@ pub fn pasteImageIntoAiChat(chat: *AppWindow.ai_chat.Session) void {
                 return;
             };
             std.debug.print("Chat image paste: attached image ({d} bytes, {d} pending)\n", .{ bytes.len, chat.pendingImageCount() });
+            var placeholder_buf: [32]u8 = undefined;
+            if (ai_chat_composer_layout.pendingImagePlaceholder(chat.pendingImageCount(), &placeholder_buf)) |placeholder| {
+                chat.appendInputText(placeholder);
+            }
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
         },

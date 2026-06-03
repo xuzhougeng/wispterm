@@ -55,6 +55,11 @@ pub fn pendingImageBadgeLabel(count: usize, buf: []u8) ?[]const u8 {
     return std.fmt.bufPrint(buf, "[Image #1] +{d}", .{count - 1}) catch null;
 }
 
+pub fn pendingImagePlaceholder(count: usize, buf: []u8) ?[]const u8 {
+    if (count == 0) return null;
+    return std.fmt.bufPrint(buf, "[image{d}]", .{count}) catch null;
+}
+
 pub fn pendingImageBadgeRect(field_x: f32, field_y: f32, field_h: f32, badge_w: f32, badge_h: f32) Rect {
     const margin_x: f32 = 8;
     const gap_y: f32 = 3;
@@ -71,6 +76,13 @@ test "pendingImageBadgeLabel formats singular/plural and hides zero" {
     try std.testing.expect(pendingImageBadgeLabel(0, &buf) == null);
     try std.testing.expectEqualStrings("[Image #1]", pendingImageBadgeLabel(1, &buf).?);
     try std.testing.expectEqualStrings("[Image #1] +2", pendingImageBadgeLabel(3, &buf).?);
+}
+
+test "pendingImagePlaceholder formats editable prompt token" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expect(pendingImagePlaceholder(0, &buf) == null);
+    try std.testing.expectEqualStrings("[image1]", pendingImagePlaceholder(1, &buf).?);
+    try std.testing.expectEqualStrings("[image2]", pendingImagePlaceholder(2, &buf).?);
 }
 
 test "pending image badge sits above the input field on the left" {
