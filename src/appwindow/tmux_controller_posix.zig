@@ -15,7 +15,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Config = @import("../config.zig");
-const Surface = @import("../Surface.zig");
 const Pty = @import("../platform/pty.zig").Pty;
 const pty_command = @import("../platform/pty_command.zig");
 const layout = @import("../tmux/layout.zig");
@@ -48,7 +47,7 @@ pub const TmuxController = struct {
     last_rows: u16 = 0,
     dead: bool = false,
 
-    fn tick(self: *TmuxController) void {
+    fn tick(self: *TmuxController, client_cols: u16, client_rows: u16) void {
         if (self.dead) return;
         var buf: [16384]u8 = undefined;
         var reads: usize = 0;
@@ -87,7 +86,7 @@ pub const TmuxController = struct {
         // not listening during ssh login.
         if (!self.handshake_seen) return;
 
-        self.syncSize();
+        self.syncSize(client_cols, client_rows);
         self.bridge.panes.pumpKeystrokes(&self.bridge.session) catch {};
         const cmds = self.bridge.session.pendingCommands();
         if (cmds.len > 0) {
@@ -109,16 +108,11 @@ pub const TmuxController = struct {
         }
     }
 
-    /// Forward the tmux client size to match WispTerm's actual pane grid, which
-    /// computeSplitLayout derives after subtracting the sidebar/padding (so it
-    /// differs from the window-estimate term_cols that start() first sent).
-    /// Single-pane only for now; multi-pane client-size sync is a follow-up.
-    fn syncSize(self: *TmuxController) void {
-        if (self.bridge.panes.panes.items.len != 1) return;
-        const op = self.bridge.panes.panes.items[0].surface orelse return;
-        const s: *Surface = @ptrCast(@alignCast(op));
-        const cols = s.size.grid.cols;
-        const rows = s.size.grid.rows;
+    /// Forward the tmux client size (WispTerm's content-area cell grid, which
+    /// already excludes the sidebar/padding — AppWindow.term_cols/term_rows) so
+    /// tmux lays out its panes to fit what WispTerm renders. Works for any pane
+    /// count; re-sent only when it changes.
+    fn syncSize(self: *TmuxController, cols: u16, rows: u16) void {
         if (cols == 0 or rows == 0) return;
         if (cols == self.last_cols and rows == self.last_rows) return;
         self.last_cols = cols;
@@ -195,13 +189,14 @@ pub fn start(
     return true;
 }
 
-/// Pump every live controller once. Dead controllers are torn down and removed.
-pub fn tickAll(alloc: Allocator) void {
+/// Pump every live controller once with the current client cell size (content
+/// area, sidebar/padding excluded). Dead controllers are torn down and removed.
+pub fn tickAll(alloc: Allocator, client_cols: u16, client_rows: u16) void {
     _ = alloc;
     var i: usize = 0;
     while (i < g_controllers.items.len) {
         const c = g_controllers.items[i];
-        c.tick();
+        c.tick(client_cols, client_rows);
         if (c.dead) {
             _ = g_controllers.orderedRemove(i);
             std.debug.print("tmux: controller ended ({d} left)\n", .{g_controllers.items.len});

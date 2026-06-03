@@ -15,7 +15,7 @@ const impl = switch (builtin.os.tag) {
         pub fn start(_: Allocator, _: []const u8, _: []const u8, _: u16, _: u16, _: u32, _: Config.CursorStyle, _: bool) bool {
             return false;
         }
-        pub fn tickAll(_: Allocator) void {}
+        pub fn tickAll(_: Allocator, _: u16, _: u16) void {}
         pub fn shutdownAll(_: Allocator) void {}
         pub fn anyActive() bool {
             return false;

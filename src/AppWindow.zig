@@ -4897,7 +4897,7 @@ fn runMainLoop(self: *AppWindow) !void {
     while (running) {
         // Check for config file changes
         if (config_watcher) |*w| checkConfigReload(allocator, w);
-        tmux_controller.tickAll(allocator);
+        tmux_controller.tickAll(allocator, term_cols, term_rows);
         overlays.tickSessionLauncher();
         file_explorer.tickAsync();
         syncTransferToastFromFileExplorer();
