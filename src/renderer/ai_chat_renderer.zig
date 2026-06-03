@@ -44,7 +44,6 @@ const BUBBLE_PAD_X: f32 = 14;
 const BUBBLE_PAD_Y: f32 = 10;
 const BUBBLE_GAP: f32 = 12;
 const USAGE_FOOTER_PAD_TOP: f32 = 4;
-const APPROVAL_H: f32 = 128;
 const APPROVAL_GAP: f32 = 12;
 const COPY_BUTTON_SIZE: f32 = 24;
 const COPY_BUTTON_PAD: f32 = 8;
@@ -255,7 +254,7 @@ pub fn render(
     ui_pipeline.endClip();
 
     const approval = session.approvalView();
-    const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
+    const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
 
     const transcript_top = top + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + 18;
@@ -328,7 +327,7 @@ pub fn render(
     renderTranscriptScrollbar(session, x, w, transcript_top, transcript_h, content_h, window_height);
 
     if (approval) |view| {
-        renderApprovalCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, APPROVAL_H);
+        renderApprovalCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, approvalCardHeight(view));
     }
     if (session.rewind_open) {
         renderRewindPicker(session, layout);
@@ -356,7 +355,7 @@ pub fn interactionHitTest(
     defer session.mutex.unlock();
 
     const approval = session.approvalView();
-    const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
+    const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + 18;
@@ -436,7 +435,7 @@ pub fn transcriptTextHitTest(
     defer session.mutex.unlock();
 
     const approval = session.approvalView();
-    const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
+    const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + 18;
@@ -678,7 +677,7 @@ fn transcriptLayoutLocked(
     if (w <= 1) return null;
 
     const approval = session.approvalView();
-    const approval_h: f32 = if (approval != null) APPROVAL_H + APPROVAL_GAP else 0;
+    const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
     const transcript_bottom = input_h + approval_h + 18;
@@ -1289,6 +1288,13 @@ fn suggestionLabel(buf: []u8, suggestion: ai_chat.ComposerSuggestion) []const u8
     };
 }
 
+/// Height the approval card needs at the current UI font size. Must be used
+/// everywhere `approval_h` reserves space so the card and the transcript above
+/// it stay aligned.
+fn approvalCardHeight(view: ai_chat.ApprovalView) f32 {
+    return ai_chat_layout.approvalLayout(font.g_titlebar_cell_height, view.reason.len > 0).height;
+}
+
 fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
@@ -1299,16 +1305,18 @@ fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32
     ui_pipeline.fillQuadAlpha(x, y, w, 1, mixColor(bg, fg, 0.18), 0.8);
     ui_pipeline.fillQuadAlpha(x, y, 4, h, accent, 0.85);
 
+    const lay = ai_chat_layout.approvalLayout(font.g_titlebar_cell_height, view.reason.len > 0);
+
     var title_buf: [256]u8 = undefined;
     const title = std.fmt.bufPrint(&title_buf, "Approve {s}?", .{view.tool}) catch "Approve tool?";
-    _ = titlebar.renderTextLimited(title, x + 16, y + h - 26, mixColor(fg, accent, 0.20), w - 32);
-    _ = titlebar.renderTextLimited("Enter/Y to run, Esc/N to deny", x + 16, y + h - 50, mixColor(bg, fg, 0.62), w - 32);
-    if (view.reason.len > 0) {
-        _ = titlebar.renderTextLimited(view.reason, x + 16, y + h - 74, mixColor(bg, fg, 0.70), w - 32);
+    _ = titlebar.renderTextLimited(title, x + 16, y + lay.title_y, mixColor(fg, accent, 0.20), w - 32);
+    _ = titlebar.renderTextLimited("Enter/Y to run, Esc/N to deny", x + 16, y + lay.hint_y, mixColor(bg, fg, 0.62), w - 32);
+    if (lay.has_reason) {
+        _ = titlebar.renderTextLimited(view.reason, x + 16, y + lay.reason_y, mixColor(bg, fg, 0.70), w - 32);
     }
     const command_bg = mixColor(bg, fg, 0.065);
-    ui_pipeline.fillQuadAlpha(x + 12, y + 10, w - 24, 34, command_bg, 0.95);
-    _ = titlebar.renderTextLimited(view.command, x + 20, y + 18, fg, w - 40);
+    ui_pipeline.fillQuadAlpha(x + 12, y + lay.box_y, w - 24, lay.box_h, command_bg, 0.95);
+    _ = titlebar.renderTextLimited(view.command, x + 20, y + lay.box_text_y, fg, w - 40);
 }
 
 fn renderCopyButton(rect: CopyButtonRect, window_height: f32, selected: bool) void {

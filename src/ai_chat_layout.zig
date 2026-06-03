@@ -94,6 +94,51 @@ pub fn stopButtonRect(
     };
 }
 
+/// Vertical placement of the approval card's contents, in the renderer's y-up
+/// local space (origin at the card's *bottom* edge; text drawn at a `*_y`
+/// occupies `*_y .. *_y + cell_h`). Every offset and the card `height` scale
+/// with `cell_h`, so the three stacked text rows never collide as the UI font
+/// grows. The previous renderer hard-coded a 24px pitch and a 128px card, which
+/// overlapped once `cell_h` exceeded ~24 (i.e. a larger `font-size`).
+pub const ApprovalLayout = struct {
+    height: f32,
+    title_y: f32,
+    hint_y: f32,
+    reason_y: f32, // only meaningful when `has_reason`
+    has_reason: bool,
+    box_y: f32,
+    box_h: f32,
+    box_text_y: f32,
+};
+
+pub fn approvalLayout(cell_h: f32, has_reason: bool) ApprovalLayout {
+    const pad_top: f32 = 12;
+    const line_gap: f32 = 8; // vertical gap between consecutive text rows
+    const box_gap: f32 = 10; // gap between the command box and the lowest text row
+    const box_y: f32 = 10;
+    const box_h: f32 = @max(34.0, cell_h + 16.0);
+    const box_text_y: f32 = box_y + @round((box_h - cell_h) / 2.0);
+
+    const line_pitch: f32 = cell_h + line_gap;
+    // Lowest text row sits `box_gap` above the command box; rows stack upward.
+    const bottom_text_y: f32 = box_y + box_h + box_gap;
+    const reason_y: f32 = if (has_reason) bottom_text_y else 0;
+    const hint_y: f32 = if (has_reason) bottom_text_y + line_pitch else bottom_text_y;
+    const title_y: f32 = hint_y + line_pitch;
+    const height: f32 = title_y + cell_h + pad_top;
+
+    return .{
+        .height = height,
+        .title_y = title_y,
+        .hint_y = hint_y,
+        .reason_y = reason_y,
+        .has_reason = has_reason,
+        .box_y = box_y,
+        .box_h = box_h,
+        .box_text_y = box_text_y,
+    };
+}
+
 test "pointInRect inside, edges, outside" {
     const r = Rect{ .x = 0, .top_px = 0, .w = 20, .h = 20 };
     try std.testing.expect(pointInRect(10, 10, r));
@@ -147,4 +192,29 @@ test "stopButtonRect centers in header_h" {
     try std.testing.expectApproxEqAbs(@as(f32, 18), r.top_px, 0.001); // 5+round((54-28)/2)
     try std.testing.expectApproxEqAbs(@as(f32, 104), r.w, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 28), r.h, 0.001);
+}
+
+test "approvalLayout rows never overlap as the UI font grows" {
+    // A line drawn at y occupies y..y+cell_h, so non-overlap means each upper
+    // row starts at least `cell_h` above the row beneath it. The old fixed 24px
+    // pitch violated this for cell_h > 24; this asserts the invariant holds for
+    // the full clamped font range (uiFontSize clamps to [9,24]pt → larger cells).
+    const sizes = [_]f32{ 12, 14, 18, 24, 30, 36 };
+    inline for (.{ true, false }) |has_reason| {
+        for (sizes) |cell_h| {
+            const l = approvalLayout(cell_h, has_reason);
+            try std.testing.expect(l.title_y >= l.hint_y + cell_h);
+            if (has_reason) {
+                try std.testing.expect(l.hint_y >= l.reason_y + cell_h);
+                try std.testing.expect(l.reason_y >= l.box_y + l.box_h);
+            } else {
+                try std.testing.expect(l.hint_y >= l.box_y + l.box_h);
+            }
+            // The command-box label stays inside the box.
+            try std.testing.expect(l.box_text_y >= l.box_y);
+            try std.testing.expect(l.box_text_y + cell_h <= l.box_y + l.box_h);
+            // The card is tall enough to hold the top row plus its padding.
+            try std.testing.expect(l.height >= l.title_y + cell_h);
+        }
+    }
 }
