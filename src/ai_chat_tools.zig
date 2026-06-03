@@ -303,8 +303,15 @@ fn terminalSnapshotTool(ctx: *const ToolContext, surface_id: ?[]const u8) ![]u8 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(ctx.allocator);
 
+    // Resolve a focused-surface alias (focused/active/current/empty) to a
+    // concrete id so the filter below matches the focused terminal.
+    var target_id = surface_id;
+    if (surface_id) |sid| {
+        if (resolveSurfaceId(snapshot, sid, selectedWriteContext(ctx))) |s| target_id = s.id;
+    }
+
     for (snapshot.surfaces) |surface| {
-        if (surface_id) |id| {
+        if (target_id) |id| {
             if (!std.mem.eql(u8, surface.id, id)) continue;
         }
         try out.print(ctx.allocator, "surface={s} title=\"{s}\" kind={s} focused={}", .{
@@ -327,7 +334,7 @@ fn terminalSnapshotTool(ctx: *const ToolContext, surface_id: ?[]const u8) ![]u8 
         // rather than the request-start pre-capture, which goes stale mid-turn.
         var live: ?[]u8 = null;
         defer if (live) |t| ctx.allocator.free(t);
-        if (surface_id != null) {
+        if (target_id != null) {
             if (ctx.tool_host) |host| {
                 live = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch null;
             }
@@ -335,14 +342,17 @@ fn terminalSnapshotTool(ctx: *const ToolContext, surface_id: ?[]const u8) ![]u8 
         try out.appendSlice(ctx.allocator, live orelse surface.snapshot);
         try out.appendSlice(ctx.allocator, "\n---\n");
     }
-    if (out.items.len == 0) try out.appendSlice(ctx.allocator, "No matching terminal surface.");
+    if (out.items.len == 0) {
+        if (surface_id) |sid| return allocNoSurfaceError(ctx.allocator, snapshot, sid);
+        try out.appendSlice(ctx.allocator, "No matching terminal surface.");
+    }
     return truncateOwned(ctx.allocator, ctx.settings, try out.toOwnedSlice(ctx.allocator));
 }
 
 fn terminalSelectTool(ctx: *ToolContext, surface_id: []const u8) ![]u8 {
     const snapshot = collectToolSnapshot(ctx) catch return ctx.allocator.dupe(u8, "No terminal snapshot host is available.");
     defer snapshot.deinit(ctx.allocator);
-    const surface = findSurface(snapshot, surface_id) orelse return std.fmt.allocPrint(ctx.allocator, "No matching terminal surface for surface_id={s}.", .{surface_id});
+    const surface = resolveSurfaceId(snapshot, surface_id, selectedWriteContext(ctx)) orelse return allocNoSurfaceError(ctx.allocator, snapshot, surface_id);
     setWriteContext(ctx, surface.id);
     return std.fmt.allocPrint(
         ctx.allocator,
@@ -736,6 +746,47 @@ pub fn shellExecInteractiveAgentCommandRefusal(allocator: std.mem.Allocator, kin
     return message;
 }
 
+/// Detect a *bare* interactive REPL launcher (the word alone, e.g. `python`,
+/// `R`, `node`). The shell-exec sentinel wrapper waits for the command to exit,
+/// which never happens for an interactive REPL, so the gate refuses it. Returns
+/// the launcher word, or null if the command runs-and-exits (`python app.py`,
+/// `python --version`, `pip ...`) or is not a REPL.
+fn commandLaunchesBareRepl(command: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, command, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    // First token, stopping at whitespace or a shell separator.
+    var end: usize = 0;
+    while (end < trimmed.len and !std.ascii.isWhitespace(trimmed[end]) and
+        trimmed[end] != ';' and trimmed[end] != '&' and trimmed[end] != '|') : (end += 1)
+    {}
+    var word = std.mem.trim(u8, trimmed[0..end], "\"'");
+    if (std.mem.lastIndexOfAny(u8, word, "/\\")) |slash| word = word[slash + 1 ..];
+    // Anything after the launcher word means it runs and exits (a script, -c,
+    // -m, --version, …), which is fine through shell exec — do not refuse.
+    if (std.mem.trim(u8, trimmed[end..], " \t\r\n").len != 0) return null;
+    const repls = [_][]const u8{ "python", "python3", "ipython", "R", "node", "irb" };
+    for (repls) |r| {
+        if (std.mem.eql(u8, word, r)) return r;
+    }
+    return null;
+}
+
+/// REPL name to pass to terminal_repl_exec for a detected launcher word.
+fn evalReplForLauncher(launcher: []const u8) []const u8 {
+    if (std.mem.eql(u8, launcher, "R")) return "r";
+    if (std.mem.eql(u8, launcher, "python") or std.mem.eql(u8, launcher, "python3") or std.mem.eql(u8, launcher, "ipython")) return "python";
+    return "plain";
+}
+
+fn shellExecBareReplRefusal(allocator: std.mem.Allocator, kind: UnixSessionKind, command: []const u8) !?[]u8 {
+    const launcher = commandLaunchesBareRepl(command) orelse return null;
+    return try std.fmt.allocPrint(
+        allocator,
+        "Refusing to start interactive {s} via {s}: the shell-exec wrapper waits for the command to exit, which never happens for a REPL (it hangs and floods the screen). Use terminal_repl_exec with repl=plain code=\"{s}\" to launch it, then terminal_repl_exec with repl={s} to run code.",
+        .{ launcher, kind.toolName(), launcher, evalReplForLauncher(launcher) },
+    );
+}
+
 fn sshSessionExecTool(ctx: *ToolContext, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     return unixSessionExecTool(ctx, .ssh, surface_id, command, timeout_ms);
 }
@@ -845,7 +896,7 @@ fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []
     const snapshot = collectToolSnapshot(ctx) catch return ctx.allocator.dupe(u8, "No terminal snapshot host is available.");
     defer snapshot.deinit(ctx.allocator);
     const host = ctx.tool_host orelse return ctx.allocator.dupe(u8, "No terminal tool host is available.");
-    const surface = findSurface(snapshot, surface_id) orelse return ctx.allocator.dupe(u8, "No matching terminal surface.");
+    const surface = resolveSurfaceId(snapshot, surface_id, selectedWriteContext(ctx)) orelse return allocNoSurfaceError(ctx.allocator, snapshot, surface_id);
     if (try ensureWriteContext(ctx, surface)) |message| return message;
 
     if (control) |byte| {
@@ -1141,13 +1192,14 @@ fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []c
     const snapshot = collectToolSnapshot(ctx) catch return ctx.allocator.dupe(u8, "No terminal snapshot host is available.");
     defer snapshot.deinit(ctx.allocator);
     const host = ctx.tool_host orelse return ctx.allocator.dupe(u8, "No terminal tool host is available.");
-    const surface = findSurface(snapshot, surface_id) orelse return ctx.allocator.dupe(u8, "No matching terminal surface.");
+    const surface = resolveSurfaceId(snapshot, surface_id, selectedWriteContext(ctx)) orelse return allocNoSurfaceError(ctx.allocator, snapshot, surface_id);
     if (try ensureWriteContext(ctx, surface)) |message| return message;
     if (!kind.matches(surface)) {
         return std.fmt.allocPrint(ctx.allocator, "Target surface is not an opened {s} session.", .{kind.label()});
     }
     if (try shellExecAgentAppRefusal(ctx.allocator, kind, surface)) |message| return message;
     if (try shellExecInteractiveAgentCommandRefusal(ctx.allocator, kind, command)) |message| return message;
+    if (try shellExecBareReplRefusal(ctx.allocator, kind, command)) |message| return message;
 
     // Refuse to inject a new command while the previous one is still running:
     // interleaved sentinels confuse parsing and the model tends to re-issue,
@@ -1410,6 +1462,54 @@ pub fn findSurface(snapshot: ToolSnapshot, surface_id: []const u8) ?ToolSurface 
         if (std.mem.eql(u8, surface.id, surface_id)) return surface;
     }
     return null;
+}
+
+/// Sentinel surface ids that mean "the terminal the user is looking at".
+fn isFocusedSurfaceAlias(surface_id: []const u8) bool {
+    const t = std.mem.trim(u8, surface_id, " \t\r\n");
+    return t.len == 0 or
+        std.ascii.eqlIgnoreCase(t, "focused") or
+        std.ascii.eqlIgnoreCase(t, "active") or
+        std.ascii.eqlIgnoreCase(t, "current");
+}
+
+fn focusedSurface(snapshot: ToolSnapshot) ?ToolSurface {
+    for (snapshot.surfaces) |surface| {
+        if (surface.focused) return surface;
+    }
+    return null;
+}
+
+/// Resolve a tool surface_id, honoring focused-surface aliases
+/// (focused/active/current/empty → the focused terminal, falling back to the
+/// selected write-context). Returns null if nothing matches.
+pub fn resolveSurfaceId(snapshot: ToolSnapshot, surface_id: []const u8, write_context: ?[]const u8) ?ToolSurface {
+    if (isFocusedSurfaceAlias(surface_id)) {
+        if (focusedSurface(snapshot)) |surface| return surface;
+        if (write_context) |wc| return findSurface(snapshot, wc);
+        return null;
+    }
+    return findSurface(snapshot, surface_id);
+}
+
+/// Error result for an unmatched surface_id that lists the open surfaces, so the
+/// model can retry in one step instead of calling terminal_list.
+fn allocNoSurfaceError(allocator: std.mem.Allocator, snapshot: ToolSnapshot, surface_id: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.print(allocator, "No terminal surface matches surface_id={s}. Open surfaces:\n", .{surface_id});
+    if (snapshot.surfaces.len == 0) try out.appendSlice(allocator, "(none)\n");
+    for (snapshot.surfaces) |surface| {
+        try out.print(allocator, "- id={s} tab={d} focused={} kind={s} title=\"{s}\"\n", .{
+            surface.id,
+            surface.tab_index + 1,
+            surface.focused,
+            toolSurfaceKind(surface),
+            surface.title,
+        });
+    }
+    try out.appendSlice(allocator, "Use one of these ids, or surface_id=focused for the focused terminal.");
+    return out.toOwnedSlice(allocator);
 }
 
 /// Build the per-message copilot context block from a full surface snapshot:
@@ -1866,6 +1966,102 @@ test "shell exec refuses interactive Codex launcher commands" {
 
     try std.testing.expect(try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "which codex") == null);
     try std.testing.expect(try shellExecInteractiveAgentCommandRefusal(allocator, .wsl, "codex --version") == null);
+}
+
+fn twoSurfaceSnapshotForTest(allocator: std.mem.Allocator) !ToolSnapshot {
+    var surfaces = try allocator.alloc(ToolSurface, 2);
+    surfaces[0] = .{
+        .id = try allocator.dupe(u8, "aaa"),
+        .title = try allocator.dupe(u8, "shell"),
+        .cwd = try allocator.dupe(u8, "/"),
+        .snapshot = try allocator.dupe(u8, "$ "),
+        .tab_index = 0,
+        .focused = false,
+        .is_ssh = false,
+        .is_wsl = false,
+        .agent_app = .none,
+        .agent_state = .none,
+        .agent_confidence = 0,
+        .ptr = @ptrFromInt(1),
+    };
+    surfaces[1] = .{
+        .id = try allocator.dupe(u8, "bbb"),
+        .title = try allocator.dupe(u8, "codex"),
+        .cwd = try allocator.dupe(u8, "/"),
+        .snapshot = try allocator.dupe(u8, "› "),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = false,
+        .agent_app = .codex,
+        .agent_state = .none,
+        .agent_confidence = 50,
+        .ptr = @ptrFromInt(2),
+    };
+    return .{ .surfaces = surfaces, .active_tab = 0 };
+}
+
+test "terminal_select resolves the focused-surface alias to the focused surface" {
+    const allocator = std.testing.allocator;
+    const cached = try twoSurfaceSnapshotForTest(allocator);
+    defer cached.deinit(allocator);
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = allocator,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = cached,
+        .settings = .{},
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    for ([_][]const u8{ "focused", "active", "current", "" }) |alias| {
+        const result = try terminalSelectTool(&ctx, alias);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.indexOf(u8, result, "surface_id=bbb") != null);
+    }
+    // An exact id still resolves directly.
+    const exact = try terminalSelectTool(&ctx, "aaa");
+    defer allocator.free(exact);
+    try std.testing.expect(std.mem.indexOf(u8, exact, "surface_id=aaa") != null);
+}
+
+test "terminal_select lists available surfaces when the id does not match" {
+    const allocator = std.testing.allocator;
+    const cached = try twoSurfaceSnapshotForTest(allocator);
+    defer cached.deinit(allocator);
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = allocator,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = cached,
+        .settings = .{},
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const result = try terminalSelectTool(&ctx, "zzz");
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "zzz") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "aaa") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "bbb") != null);
+}
+
+test "shell exec refuses bare REPL launchers but allows run-and-exit invocations" {
+    const allocator = std.testing.allocator;
+    const bare = [_][]const u8{ "python", "python3", "ipython", "R", "node", "irb", "/usr/bin/python", "python " };
+    for (bare) |cmd| {
+        const m = (try shellExecBareReplRefusal(allocator, .wsl, cmd)) orelse {
+            std.debug.print("expected a refusal for bare launcher: {s}\n", .{cmd});
+            return error.TestExpectedRefusal;
+        };
+        defer allocator.free(m);
+        try std.testing.expect(std.mem.indexOf(u8, m, "repl=plain") != null);
+    }
+    const allowed = [_][]const u8{ "python app.py", "python -c 'x=1'", "python --version", "R --version", "node app.js", "which python", "pip install foo", "ls" };
+    for (allowed) |cmd| {
+        try std.testing.expect((try shellExecBareReplRefusal(allocator, .wsl, cmd)) == null);
+    }
 }
 
 test "ai chat R string literal escapes code for REPL eval" {

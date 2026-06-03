@@ -47,7 +47,8 @@ const wsl_tool_guidance =
 
 const common_tools_after_wsl =
     \\- Use `terminal_repl_exec` for Codex, Claude Code, Python, R, or other REPL/app terminals.
-    \\- Start Codex or Claude Code via `terminal_repl_exec repl=plain`, not shell exec.
+    \\- Start Codex, Claude Code, or any REPL (Python/R/Node) via `terminal_repl_exec repl=plain`; never shell-exec them (it hangs waiting for exit).
+    \\- surface_id accepts `focused` for the focused terminal (no terminal_list needed).
     \\- Do not paste shell commands into Codex or Claude Code; send user-facing text.
     \\- A slow session/exec command is usually still running, not broken; do not re-issue it. Wait, then re-check with `terminal_snapshot`.
     \\- To recover a stuck terminal (`>` prompt, unclosed quote, hung command, or pager), send `terminal_repl_exec repl=plain code=<ctrl-c>` (or `<ctrl-u>`/`<esc>`/`<ctrl-d>`). Do not keep typing.
