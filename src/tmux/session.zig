@@ -32,6 +32,7 @@ pub const Session = struct {
     windows: std.ArrayListUnmanaged(Window) = .empty,
     active_pane: ?usize = null,
     exited: bool = false,
+    events: EventSink = .{},
 
     pub const Window = struct {
         id: usize,
@@ -42,6 +43,26 @@ pub const Session = struct {
             self.name.deinit(alloc);
             self.panes.deinit(alloc);
         }
+    };
+
+    /// High-level model events for the UI bridge (Phase 3c-2). The mirror of
+    /// `PaneSink`: the controller is Surface-agnostic, so it pushes typed events
+    /// to a sink the bridge backs with tab/Surface side effects. All callbacks
+    /// are best-effort (`void`) — the bridge handles its own allocation
+    /// failures, like `PaneSink.write`. `root`/`name` are only valid for the
+    /// duration of the call. The default sink ignores everything (headless/unit
+    /// use).
+    pub const EventSink = struct {
+        ctx: *anyopaque = undefined,
+        onLayoutChange: *const fn (ctx: *anyopaque, window_id: usize, root: *const layout.Node) void = noLayout,
+        onWindowRenamed: *const fn (ctx: *anyopaque, window_id: usize, name: []const u8) void = noRename,
+        onWindowClose: *const fn (ctx: *anyopaque, window_id: usize) void = noClose,
+        onActivePaneChanged: *const fn (ctx: *anyopaque, pane_id: usize) void = noActive,
+
+        fn noLayout(_: *anyopaque, _: usize, _: *const layout.Node) void {}
+        fn noRename(_: *anyopaque, _: usize, _: []const u8) void {}
+        fn noClose(_: *anyopaque, _: usize) void {}
+        fn noActive(_: *anyopaque, _: usize) void {}
     };
 
     pub fn init(alloc: Allocator, sink: PaneSink, cols: u16, rows: u16) Session {
@@ -89,9 +110,18 @@ pub const Session = struct {
             },
             .layout_change => |lc| try self.applyLayout(lc.window_id, lc.layout),
             .window_add => |w| _ = try self.ensureWindow(w.window_id),
-            .window_renamed => |w| try self.renameWindow(w.window_id, w.name),
-            .window_close => |w| self.removeWindow(w.window_id),
-            .window_pane_changed => |w| self.active_pane = w.pane_id,
+            .window_renamed => |w| {
+                try self.renameWindow(w.window_id, w.name);
+                self.events.onWindowRenamed(self.events.ctx, w.window_id, w.name);
+            },
+            .window_close => |w| {
+                self.events.onWindowClose(self.events.ctx, w.window_id);
+                self.removeWindow(w.window_id);
+            },
+            .window_pane_changed => |w| {
+                self.active_pane = w.pane_id;
+                self.events.onActivePaneChanged(self.events.ctx, w.pane_id);
+            },
             .exit => self.exited = true,
             else => {},
         }
@@ -133,6 +163,9 @@ pub const Session = struct {
         const w = try self.ensureWindow(window_id);
         w.panes.clearRetainingCapacity();
         try collectPanes(self.alloc, &w.panes, tree.root);
+        // `tree` is still alive (its `deinit` runs at scope exit); the bridge
+        // consumes `root` synchronously inside this call.
+        self.events.onLayoutChange(self.events.ctx, window_id, &tree.root);
     }
 
     /// Enqueue the attach bootstrap: tell tmux our client size and ask for the
@@ -368,4 +401,121 @@ test "a realistic notification stream builds the full model" {
     try std.testing.expectEqual(@as(usize, 2), col.last_pane);
     try std.testing.expectEqualSlices(u8, "done", col.buf.items);
     try std.testing.expect(s.exited);
+}
+
+const EventLog = struct {
+    alloc: Allocator,
+    layout_window: ?usize = null,
+    layout_panes: usize = 0,
+    renamed_window: ?usize = null,
+    renamed_name: std.ArrayListUnmanaged(u8) = .empty,
+    closed_window: ?usize = null,
+    active_pane: ?usize = null,
+
+    fn eventSink(self: *EventLog) Session.EventSink {
+        return .{
+            .ctx = self,
+            .onLayoutChange = onLayout,
+            .onWindowRenamed = onRenamed,
+            .onWindowClose = onClose,
+            .onActivePaneChanged = onActive,
+        };
+    }
+
+    fn onLayout(ctx: *anyopaque, window_id: usize, root: *const layout.Node) void {
+        const self: *EventLog = @ptrCast(@alignCast(ctx));
+        self.layout_window = window_id;
+        var n: usize = 0;
+        countLeaves(root, &n);
+        self.layout_panes = n;
+    }
+    fn onRenamed(ctx: *anyopaque, window_id: usize, name: []const u8) void {
+        const self: *EventLog = @ptrCast(@alignCast(ctx));
+        self.renamed_window = window_id;
+        self.renamed_name.clearRetainingCapacity();
+        self.renamed_name.appendSlice(self.alloc, name) catch {};
+    }
+    fn onClose(ctx: *anyopaque, window_id: usize) void {
+        const self: *EventLog = @ptrCast(@alignCast(ctx));
+        self.closed_window = window_id;
+    }
+    fn onActive(ctx: *anyopaque, pane_id: usize) void {
+        const self: *EventLog = @ptrCast(@alignCast(ctx));
+        self.active_pane = pane_id;
+    }
+    fn countLeaves(node: *const layout.Node, out: *usize) void {
+        switch (node.*) {
+            .leaf => out.* += 1,
+            .split => |s| for (s.children) |*c| countLeaves(c, out),
+        }
+    }
+    fn deinit(self: *EventLog) void {
+        self.renamed_name.deinit(self.alloc);
+    }
+};
+
+test "EventSink fires onLayoutChange with the parsed root" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var log = EventLog{ .alloc = std.testing.allocator };
+    defer log.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+    s.events = log.eventSink();
+
+    try s.feed("%layout-change @4 bd1b,80x24,0,0{40x24,0,0,1,39x24,41,0,2} bd1b,80x24,0,0{40x24,0,0,1,39x24,41,0,2} *\n");
+    try std.testing.expectEqual(@as(?usize, 4), log.layout_window);
+    try std.testing.expectEqual(@as(usize, 2), log.layout_panes);
+}
+
+test "EventSink fires onWindowRenamed with the name" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var log = EventLog{ .alloc = std.testing.allocator };
+    defer log.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+    s.events = log.eventSink();
+
+    try s.feed("%window-renamed @7 build\n");
+    try std.testing.expectEqual(@as(?usize, 7), log.renamed_window);
+    try std.testing.expectEqualStrings("build", log.renamed_name.items);
+}
+
+test "EventSink fires onWindowClose before the window is dropped" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var log = EventLog{ .alloc = std.testing.allocator };
+    defer log.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+    s.events = log.eventSink();
+
+    try s.feed("%window-add @3\n");
+    try s.feed("%window-close @3\n");
+    try std.testing.expectEqual(@as(?usize, 3), log.closed_window);
+    try std.testing.expect(s.findWindow(3) == null);
+}
+
+test "EventSink fires onActivePaneChanged" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var log = EventLog{ .alloc = std.testing.allocator };
+    defer log.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+    s.events = log.eventSink();
+
+    try s.feed("%window-pane-changed @1 %9\n");
+    try std.testing.expectEqual(@as(?usize, 9), log.active_pane);
+}
+
+test "EventSink default is a silent no-op" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+    // No events sink set; these must not crash.
+    try s.feed("%window-renamed @1 x\n");
+    try s.feed("%window-pane-changed @1 %2\n");
 }
