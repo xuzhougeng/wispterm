@@ -173,11 +173,11 @@ pub const TmuxBridge = struct {
                 return null;
             };
             self.panes.setSurface(pane_id, surface);
-            // NOTE: capture-pane seeding (Session.capturePane) is still dormant.
-            // Even with size-sync matching the surface grid to the tmux pane, the
-            // capture reply collides with the resize-triggered live %output redraw
-            // and the -J logical lines don't map to visible rows — it garbles.
-            // Proper seeding needs grid-level cell placement / live suppression.
+            // Seed the pane's visible screen: tmux doesn't replay it via %output
+            // on attach. `capture-pane -p` (no -J) gives one line per visible row
+            // ≤ pane width, so with size-sync matching the surface to the pane it
+            // paints 1:1 (clear+home prefix in the Session block_end handler).
+            self.session.capturePane(pane_id) catch {};
             return surface; // ref 1, transferred to the tree
         }
     };

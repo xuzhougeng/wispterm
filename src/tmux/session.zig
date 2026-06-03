@@ -125,7 +125,20 @@ pub const Session = struct {
                 if (!try self.applyWindowList(body)) {
                     if (self.capture_queue.items.len > 0) {
                         const pane_id = self.capture_queue.orderedRemove(0);
-                        self.sink.write(pane_id, body);
+                        // Repaint from the top-left, translating LF→CRLF: the
+                        // capture's rows are joined by '\n' only, and the
+                        // terminal's line feed moves down without returning to
+                        // column 0 — without the '\r' each row staircases right.
+                        self.scratch.clearRetainingCapacity();
+                        try self.scratch.appendSlice(self.alloc, "\x1b[2J\x1b[H");
+                        for (body) |c| {
+                            if (c == '\n') {
+                                try self.scratch.appendSlice(self.alloc, "\r\n");
+                            } else {
+                                try self.scratch.append(self.alloc, c);
+                            }
+                        }
+                        self.sink.write(pane_id, self.scratch.items);
                     }
                 }
             },
@@ -215,11 +228,13 @@ pub const Session = struct {
     }
 
     /// Enqueue a `capture-pane` for a pane and remember it (FIFO) so the reply
-    /// can be routed back to the pane's sink to seed its scrollback on attach.
-    /// Plain text (`-J` joins wrapped lines) keeps the reply line-safe.
+    /// can be routed back to the pane's sink to seed its visible screen on
+    /// attach. Plain `-p` (NOT `-J`): each visible row is one line ≤ pane width,
+    /// so writing it to a matched-width surface reproduces the screen 1:1
+    /// without re-wrapping.
     pub fn capturePane(self: *Session, pane_id: usize) Allocator.Error!void {
         var buf: [48]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "capture-pane -p -J -t %{d}\n", .{pane_id}) catch unreachable;
+        const s = std.fmt.bufPrint(&buf, "capture-pane -p -t %{d}\n", .{pane_id}) catch unreachable;
         try self.cmds.appendSlice(self.alloc, s);
         try self.capture_queue.append(self.alloc, pane_id);
     }
@@ -599,13 +614,14 @@ test "capture-pane reply is routed to the pane sink (scrollback seed)" {
     defer s.deinit();
 
     try s.capturePane(5);
-    try std.testing.expect(std.mem.indexOf(u8, s.pendingCommands(), "capture-pane -p -J -t %5\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s.pendingCommands(), "capture-pane -p -t %5\n") != null);
 
     // The capture-pane reply: a %begin/%end block of plain pane content. It is
-    // not a window list, so it routes to the queued pane (%5).
+    // not a window list, so it routes to the queued pane (%5), prefixed with a
+    // clear+home so it paints from the top-left.
     try s.feed("%begin 1 1 0\nline-a\nline-b\n%end 1 1 0\n");
     try std.testing.expectEqual(@as(usize, 5), col.last_pane);
-    try std.testing.expectEqualSlices(u8, "line-a\nline-b", col.buf.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[2J\x1b[Hline-a\r\nline-b", col.buf.items);
 }
 
 test "EventSink default is a silent no-op" {
