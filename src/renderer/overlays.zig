@@ -2449,9 +2449,11 @@ fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []co
     // Phase 3d: tmux control-mode gate. When enabled, route the connection
     // through the tmux controller (`ssh … tmux -CC …`) instead of a normal
     // terminal surface; the controller builds tabs/splits from the remote tmux
-    // windows/panes. MVP trigger is an env var; a per-profile toggle is the
-    // follow-up. Returns null (no surface) — the controller owns the tabs.
-    if (std.process.hasEnvVarConstant("WISPTERM_TMUX")) {
+    // windows/panes. Enabled per-profile via the `tmux` field ("1"). Returns
+    // null (no surface) — the controller owns the tabs.
+    const tmux_field = profileField(profile, .tmux);
+    const tmux_enabled = tmux_field.len > 0 and tmux_field[0] == '1';
+    if (tmux_enabled) {
         var tmux_buf: [8192]u8 = undefined;
         const tmux_cmd = platform_pty_command.sshInteractiveCommand(tmux_buf[0..], .{
             .user = user,
@@ -3751,6 +3753,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderSessionField(layout, window_height, @intFromEnum(SshField.password), i18n.s().sl_ssh_password, sshField(.password), true);
     renderSessionField(layout, window_height, @intFromEnum(SshField.port), i18n.s().sl_ssh_port, sshField(.port), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), i18n.s().sl_ssh_jump_host, sshField(.proxy_jump), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.tmux), "Keep alive · tmux (1=on)", sshField(.tmux), false);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT, i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail(), g_ssh_focus == SSH_FIELD_COUNT);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, g_ssh_focus == SSH_FIELD_COUNT + 1);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, i18n.s().sl_cancel, "Esc", g_ssh_focus == SSH_FIELD_COUNT + 2);

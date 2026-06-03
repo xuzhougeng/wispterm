@@ -4798,15 +4798,15 @@ fn runMainLoop(self: *AppWindow) !void {
             },
         }
 
-        // Phase 3d test hook: when WISPTERM_TMUX names a profile, auto-connect it
-        // through the tmux controller so the control-mode pipeline runs end-to-end
-        // without a manual launcher click. The same env var gates the overlay
-        // connect path, so this routes to startTmuxSession.
-        if (std.process.getEnvVarOwned(allocator, "WISPTERM_TMUX")) |tmux_profile| {
-            defer allocator.free(tmux_profile);
-            if (tmux_profile.len > 0) {
-                std.debug.print("tmux: auto-connecting profile '{s}'\n", .{tmux_profile});
-                _ = overlays.connectProfileByName(tmux_profile);
+        // Dev/automation hook: WISPTERM_AUTOCONNECT names an SSH profile to
+        // connect on launch (no manual launcher click). Whether it becomes a
+        // tmux control-mode session is decided per-profile by the profile's
+        // `tmux` field, not by this hook.
+        if (std.process.getEnvVarOwned(allocator, "WISPTERM_AUTOCONNECT")) |autoconnect_profile| {
+            defer allocator.free(autoconnect_profile);
+            if (autoconnect_profile.len > 0) {
+                std.debug.print("ssh: auto-connecting profile '{s}'\n", .{autoconnect_profile});
+                _ = overlays.connectProfileByName(autoconnect_profile);
             }
         } else |_| {}
     }
