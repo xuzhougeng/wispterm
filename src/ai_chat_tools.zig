@@ -860,9 +860,16 @@ fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []
     };
 }
 
+/// Pause between writing a Codex message body and its submit keystroke so the
+/// Enter lands as its own key event instead of being folded into Codex's
+/// paste-burst (which would leave a literal newline and never submit).
+const CODEX_SUBMIT_DELAY_MS: u64 = 120;
+
 fn plainReplSubmitKey(repl: ReplKind, surface: ToolSurface) []const u8 {
+    // Codex queues a follow-up while it is working with Tab ("tab to queue
+    // message"); otherwise Enter (\r) submits. A literal \n is inserted as a
+    // newline by the Codex composer rather than submitting, so never use it.
     if (repl == .codex and surface.agent_state == .running) return "\t";
-    if (repl == .codex) return "\n";
     return "\r";
 }
 
@@ -871,11 +878,25 @@ pub fn allocPlainReplInput(allocator: std.mem.Allocator, repl: ReplKind, surface
 }
 
 pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, repl: ReplKind, text: []const u8, timeout_ms: u32) ![]u8 {
-    const input = try allocPlainReplInput(ctx.allocator, repl, surface, text);
-    defer ctx.allocator.free(input);
-
-    if (!host.writeSurface(host.ctx, surface.ptr, input)) {
-        return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
+    if (repl == .codex) {
+        // Codex's TUI treats a fast input burst as a paste and folds a trailing
+        // Enter into the pasted text, leaving a literal newline that never
+        // submits (the "多余的换行" / unsent-at-prompt symptom). Send the body,
+        // pause so the burst ends, then send the submit key as its own
+        // keystroke — emulating type-then-Enter.
+        if (!host.writeSurface(host.ctx, surface.ptr, text)) {
+            return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
+        }
+        std.Thread.sleep(CODEX_SUBMIT_DELAY_MS * std.time.ns_per_ms);
+        if (!host.writeSurface(host.ctx, surface.ptr, plainReplSubmitKey(repl, surface))) {
+            return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
+        }
+    } else {
+        const input = try allocPlainReplInput(ctx.allocator, repl, surface, text);
+        defer ctx.allocator.free(input);
+        if (!host.writeSurface(host.ctx, surface.ptr, input)) {
+            return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
+        }
     }
 
     if (repl == .codex or repl == .claude_code) {
@@ -1888,7 +1909,45 @@ test "ai chat Codex running REPL input queues with tab instead of enter" {
     idle_surface.agent_state = .done;
     const idle_input = try allocPlainReplInput(allocator, .codex, idle_surface, "/status");
     defer allocator.free(idle_input);
-    try std.testing.expectEqualStrings("/status\n", idle_input);
+    // Idle Codex submits with a real Enter (\r). A literal \n is treated by the
+    // Codex composer as an inserted newline, not a submit.
+    try std.testing.expectEqualStrings("/status\r", idle_input);
+}
+
+test "codex repl input submits the Enter keystroke separately from the message body" {
+    const allocator = std.testing.allocator;
+    var host_ctx = ReplWaitTestHost.Ctx{ .busy_until = 0, .settled_text = "codex idle\n› " };
+    var dummy: u8 = 0;
+    const ctx = ToolContext{
+        .allocator = allocator,
+        .ctx = &dummy,
+        .tool_host = ReplWaitTestHost.host(&host_ctx),
+        .tool_snapshot = null,
+        .settings = .{},
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const surface = ToolSurface{
+        .id = @constCast("surface-codex"),
+        .title = @constCast("codex"),
+        .cwd = @constCast("/home/xzg"),
+        .snapshot = @constCast("› "),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = true,
+        .agent_app = .codex,
+        .agent_state = .done,
+        .agent_confidence = 70,
+        .ptr = @ptrCast(&host_ctx),
+    };
+
+    const result = try plainReplInputTool(&ctx, ReplWaitTestHost.host(&host_ctx), surface, .codex, "hello codex", 1000);
+    defer allocator.free(result);
+    // Codex's paste-burst detection folds a same-write Enter into the pasted
+    // text, so the body and the Enter keystroke must be two separate writes.
+    try std.testing.expectEqual(@as(usize, 2), host_ctx.write_calls);
+    try std.testing.expectEqualStrings("hello codex\r", host_ctx.all_writes[0..host_ctx.all_len]);
 }
 
 test "ai chat Python string literal escapes code for REPL eval" {
@@ -2189,6 +2248,10 @@ const ReplWaitTestHost = struct {
         settled_text: []const u8 = "Claude Code\nDone. result = 563894910\n> ",
         last_write: [256]u8 = undefined,
         last_write_len: usize = 0,
+        // Concatenation of every write, to distinguish a single combined write
+        // (body+key) from a separated body + submit-key keystroke.
+        all_writes: [256]u8 = undefined,
+        all_len: usize = 0,
     };
 
     // Simulates the real worker thread: the tab model is thread-local to the UI
@@ -2215,6 +2278,10 @@ const ReplWaitTestHost = struct {
         @memcpy(ctx.last_write[0..len], data[0..len]);
         ctx.last_write_len = len;
         ctx.write_calls += 1;
+        const room = ctx.all_writes.len - ctx.all_len;
+        const take = @min(room, data.len);
+        @memcpy(ctx.all_writes[ctx.all_len..][0..take], data[0..take]);
+        ctx.all_len += take;
         return true;
     }
 
