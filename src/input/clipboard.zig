@@ -10,6 +10,7 @@ const platform_clipboard = @import("../platform/clipboard.zig");
 const platform_remote_file = @import("../platform/remote_file.zig");
 const Surface = @import("../Surface.zig");
 const selection_unit = @import("../selection_unit.zig");
+const file_drop_path = @import("file_drop_path.zig");
 
 fn isPasteStripByte(byte: u8) bool {
     return switch (byte) {
@@ -237,9 +238,17 @@ fn createDeferredSshDropPaste(surface: *Surface, text: []const u8) ?*DeferredSsh
     return pending;
 }
 
-pub fn handleFileDrop(local_path: []const u8, x: i32, _: i32) bool {
+pub fn handleFileDrop(local_path: []const u8, x: i32, y: i32) bool {
     if (handleFileExplorerDrop(local_path, x)) return true;
+    if (handleAiChatFileDrop(local_path, x, y)) return true;
     return handleSshTerminalFileDrop(local_path);
+}
+
+fn handleAiChatFileDrop(local_path: []const u8, x: i32, y: i32) bool {
+    const allocator = std.heap.page_allocator;
+    const text = file_drop_path.formatDroppedPath(allocator, local_path) catch return false;
+    defer allocator.free(text);
+    return AppWindow.appendDroppedPathToChatAtPoint(text, x, y);
 }
 
 fn handleFileExplorerDrop(local_path: []const u8, x: i32) bool {
