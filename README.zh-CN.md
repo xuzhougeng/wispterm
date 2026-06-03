@@ -142,6 +142,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | 粘贴文本 | **Ctrl+V** | **Cmd+V** |
 | 粘贴剪贴板图片 | **Ctrl+Shift+V** | **Cmd+Shift+V** |
 | 把焦点移到相邻面板 | **Alt** + 方向键 | **Opt** + 方向键 |
+| 按编号聚焦面板 1–9 | **Ctrl+1**–**9** | **Cmd+1**–**9** |
 | 聚焦上一个面板（循环） | **Ctrl+Shift+[** | **Cmd+Shift+[** |
 | 聚焦下一个面板（循环） | **Ctrl+Shift+]** | **Cmd+Shift+]** |
 | 均分分屏尺寸 | **Ctrl+Shift+Z** | **Cmd+Shift+Z** |

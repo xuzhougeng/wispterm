@@ -139,6 +139,7 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Paste text | **Ctrl+V** | **Cmd+V** |
 | Paste clipboard image | **Ctrl+Shift+V** | **Cmd+Shift+V** |
 | Move focus to adjacent panel | **Alt** + arrow keys | **Opt** + arrow keys |
+| Focus panel 1–9 by number | **Ctrl+1**–**9** | **Cmd+1**–**9** |
 | Focus previous panel (cycle) | **Ctrl+Shift+[** | **Cmd+Shift+[** |
 | Focus next panel (cycle) | **Ctrl+Shift+]** | **Cmd+Shift+]** |
 | Equalize split sizes | **Ctrl+Shift+Z** | **Cmd+Shift+Z** |
