@@ -89,6 +89,15 @@ pub const Action = enum {
     switch_tab_7,
     switch_tab_8,
     switch_tab_9,
+    focus_panel_1,
+    focus_panel_2,
+    focus_panel_3,
+    focus_panel_4,
+    focus_panel_5,
+    focus_panel_6,
+    focus_panel_7,
+    focus_panel_8,
+    focus_panel_9,
     open_config,
 
     pub fn parse(value: []const u8) ?Action {
@@ -433,6 +442,15 @@ pub const default_bindings = [_]Binding{
     .{ .trigger = .{ .mods = .{ .alt = true }, .key_code = '7' }, .action = .switch_tab_7 },
     .{ .trigger = .{ .mods = .{ .alt = true }, .key_code = '8' }, .action = .switch_tab_8 },
     .{ .trigger = .{ .mods = .{ .alt = true }, .key_code = '9' }, .action = .switch_tab_9 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '1' }, .action = .focus_panel_1 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '2' }, .action = .focus_panel_2 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '3' }, .action = .focus_panel_3 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '4' }, .action = .focus_panel_4 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '5' }, .action = .focus_panel_5 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '6' }, .action = .focus_panel_6 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '7' }, .action = .focus_panel_7 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '8' }, .action = .focus_panel_8 },
+    .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = '9' }, .action = .focus_panel_9 },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = Key.comma }, .action = .open_config },
 };
 
@@ -542,4 +560,22 @@ test "keybind parses displayed plus shortcut spelling" {
         .mods = .{ .ctrl = true },
         .key_code = Key.plus,
     }));
+}
+
+test "focus_panel actions parse and have default Ctrl+number bindings" {
+    try std.testing.expectEqual(Action.focus_panel_1, Action.parse("focus_panel_1").?);
+    try std.testing.expectEqual(Action.focus_panel_9, Action.parse("focus_panel_9").?);
+    // Each focus_panel_N has a default Ctrl+digit binding (→ Cmd+digit on macOS
+    // via the Ctrl→Cmd remap in the Set builder).
+    var found: usize = 0;
+    for (default_bindings) |b| {
+        switch (b.action) {
+            .focus_panel_1, .focus_panel_2, .focus_panel_3, .focus_panel_4, .focus_panel_5, .focus_panel_6, .focus_panel_7, .focus_panel_8, .focus_panel_9 => {
+                try std.testing.expect(b.trigger.mods.ctrl);
+                found += 1;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 9), found);
 }
