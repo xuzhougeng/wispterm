@@ -1214,19 +1214,19 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 return;
             },
             platform_input.key_up => {
-                _ = AppWindow.aiHistoryMoveSelection(-1);
+                _ = AppWindow.aiHistoryNav(-1);
                 return;
             },
             platform_input.key_down => {
-                _ = AppWindow.aiHistoryMoveSelection(1);
+                _ = AppWindow.aiHistoryNav(1);
                 return;
             },
             platform_input.key_left => {
-                _ = AppWindow.aiHistoryCycleCategory(-1);
+                _ = AppWindow.aiHistoryFocusMove(-1);
                 return;
             },
             platform_input.key_right => {
-                _ = AppWindow.aiHistoryCycleCategory(1);
+                _ = AppWindow.aiHistoryFocusMove(1);
                 return;
             },
             platform_input.key_enter => {
