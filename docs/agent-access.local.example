@@ -1,0 +1,16 @@
+# WispTerm agent file-access rules (private, machine-local).
+# Copy to ~/.config/wispterm/agent-access.local and edit.
+#
+#   allow <path>   folders the agent may read freely (read-only commands skip the prompt)
+#   deny  <path>   paths/files the agent must never read without your per-command approval
+#
+# '~' and $HOME expand. An entry without '/' is a basename glob (e.g. *.pem, .env).
+# Built-in deny defaults are ALWAYS on (~/.ssh, ~/.aws, ~/.gnupg, ~/.config/gh,
+# ~/.config/wispterm, ~/.kube, ~/.netrc, ~/.docker/config.json, *.pem, *.key, .env);
+# the lines below extend them. deny always wins over allow.
+
+# allow ~/project
+# allow ~/work
+
+# deny ~/Documents/finance
+# deny *.kdbx
