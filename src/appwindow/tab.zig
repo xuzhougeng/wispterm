@@ -52,6 +52,13 @@ pub const TabState = struct {
     /// the first time the copilot sidebar is opened on this tab.
     copilot_session: ?*ai_chat.Session = null,
 
+    /// tmux control-mode window id this tab mirrors (Phase 3c-2), or null for a
+    /// normal local tab. Set by `tmux_bridge`. `tmux_name_buf`/`tmux_name_len`
+    /// hold the tmux window name (`%window-renamed`), used by `getTitle`.
+    tmux_window_id: ?usize = null,
+    tmux_name_buf: [256]u8 = undefined,
+    tmux_name_len: usize = 0,
+
     pub const Kind = enum {
         terminal,
         ai_chat,
@@ -73,6 +80,11 @@ pub const TabState = struct {
     pub fn getTitle(self: *const TabState) []const u8 {
         if (g_forced_title) |forced| {
             return forced;
+        }
+        // A tmux-backed terminal tab shows the tmux window name (if any) before
+        // falling back to the focused surface's title.
+        if (self.kind == .terminal and self.tmux_name_len > 0) {
+            return self.tmux_name_buf[0..self.tmux_name_len];
         }
         if (self.kind == .ai_chat) {
             const chat = self.ai_chat_session orelse return "AI Chat";
@@ -2012,4 +2024,19 @@ test "tab: reorder rejects invalid and no-op moves" {
     try std.testing.expect(!reorderTab(1, 0));
     try std.testing.expect(g_tabs[0].? == &a);
     try std.testing.expectEqual(@as(usize, 0), active_tab_state.g_active_tab);
+}
+
+test "TabState.getTitle returns the tmux window name when set" {
+    var t = makeTestTabState();
+    t.tmux_window_id = 2;
+    const name = "build";
+    @memcpy(t.tmux_name_buf[0..name.len], name);
+    t.tmux_name_len = name.len;
+
+    // Empty tree => no focused surface; the tmux-name branch must win first.
+    try std.testing.expectEqualStrings("build", t.getTitle());
+
+    // With no tmux name, an empty terminal tab falls back to the default.
+    t.tmux_name_len = 0;
+    try std.testing.expectEqualStrings("wispterm", t.getTitle());
 }
