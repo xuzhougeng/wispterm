@@ -34,11 +34,14 @@ Suites: fast `zig build test` ≈ 604 passed; full `zig build test-full` ≈ 25/
 
 **Verified findings (real server):** on attach tmux does NOT push `%layout-change` for existing windows — the initial layout comes only from the `list-windows` reply (`@<id> <layout>` lines parsed by `Session.applyWindowList`). Bootstrap commands MUST wait for the DCS handshake or they're lost in ssh login.
 
-## NEXT: Phase 3d polish — a dependency chain, not independent items
+## NEXT: Phase 3d polish
 
-- **[DONE] Per-profile tmux toggle** — 7th SSH profile field `tmux`; replaces the env gate (`2cc0d56`).
-- **#3 (do first) — client/pane size-sync.** This is the keystone, and a real rendering-integration task (not a quick toggle). `start()` sends `refresh-client -C term_cols x term_rows`, but `term_cols`/`term_rows` is the window estimate, while the actual tmux-pane `Surface` grid is what `computeSplitLayout → setScreenSize` derives (it subtracts the sidebar `left_panels_w`, padding, titlebar — see `AppWindow.zig:2280`). The mismatch garbles output. Fix: forward the surface's *actual* `size.grid.cols/rows` (or the content-area cell size) to `Session.resizeClient`, from the controller tick when it changes, and on window resize. Then `%layout-change` reconciles. Pane surfaces should take their grid size from tmux's layout, not be independently resized to the window.
-- **#2 (after #3) — `capture-pane` scrollback seed.** Plumbing already in `Session` (`capturePane` + `block_end` routing, `ff36ecb`), but the bridge does NOT call it yet: feeding captured text to a wrong-width surface garbles (verified). Activate from the bridge factory once #3 makes the surface grid match the pane. May also need grid-level cell placement (iTerm2-style) rather than feeding raw text to the parser.
+- **[DONE] Per-profile tmux toggle** — 7th SSH profile field `tmux` replaces the env gate (`2cc0d56`).
+- **[DONE] Size-sync** — the controller forwards the tmux pane Surface's real grid (post-`computeSplitLayout`, sidebar/padding subtracted) to `resizeClient`, so tmux's pane width matches the render. Live output is clean (verified: remote `$COLUMNS` == surface width). Single-pane only (`618f5e7`).
+- **[DONE] Native split → tmux** — in a tmux tab, `splitFocused` drives `split-window` via `tmux_controller.requestSplit`; the echoed `%layout-change` reconciles a real tmux pane as a native split. Per-pane keystroke routing + focus verified (`f93f48f`).
+- **#2 — `capture-pane` scrollback seed (still dormant).** Plumbing in `Session` (`capturePane` + `block_end` routing, `ff36ecb`). Re-tested WITH size-sync: still garbles — the capture reply collides with the resize-triggered live `%output` redraw, and `-J` logical lines don't map to visible rows. Needs grid-level cell placement (iTerm2-style) or suppressing live output during the seed, not raw text feeding. Activate `self.session.capturePane(pane_id)` in the bridge factory once solved.
+- **#3b — close-pane / new-tab → tmux.** Like the split: `closeFocusedSplit` should `kill-pane` and new-tab should `new-window` for tmux tabs (currently only split is wired). `Session` already has `killWindow`/`newWindow`; add `killPane` + route.
+- **#3c — multi-pane size-sync.** `syncSize` is single-pane only; for ≥2 panes the client size is the content-area bounding box, not one pane's grid.
 - **#4 — lifecycle.** Detach/reconnect overlay + backoff; close-confirm before `kill-window`; `session_persist` re-attach.
 - **#5 — minor.** A non-tmux restored tab showed a `????` title in testing — unrelated decode glitch.
 
