@@ -78,3 +78,62 @@ test "PaneMap.removePane unregisters the pane and closes its fd" {
     // Output to a removed pane is dropped (no crash).
     map.sink().write(5, "gone");
 }
+
+test "pumpKeystrokes forwards a pane's keystrokes as a hex send-keys" {
+    const alloc = std.testing.allocator;
+    var pair = try pty.Pty.openVirtual(.{ .ws_col = 80, .ws_row = 24 });
+    defer pair.pty.deinit();
+
+    var map = pane.PaneMap.init(alloc);
+    defer map.deinit();
+    try map.addPane(4, pair.controller_fd);
+
+    var s = session.Session.init(alloc, nullSink(), 80, 24);
+    defer s.deinit();
+
+    // The Surface writes keystrokes into its pty; the bytes surface on the
+    // controller_fd, which the pump turns into a hex send-keys for pane %4.
+    try pair.pty.writeInput("ls\n"); // l=6c s=73 \n=0a
+    try map.pumpKeystrokes(&s);
+    try std.testing.expectEqualStrings("send-keys -t %4 -H 6c 73 0a\n", s.pendingCommands());
+}
+
+test "pumpKeystrokes routes each pane to its own pane id" {
+    const alloc = std.testing.allocator;
+    var a = try pty.Pty.openVirtual(.{ .ws_col = 80, .ws_row = 24 });
+    defer a.pty.deinit();
+    var b = try pty.Pty.openVirtual(.{ .ws_col = 80, .ws_row = 24 });
+    defer b.pty.deinit();
+
+    var map = pane.PaneMap.init(alloc);
+    defer map.deinit();
+    try map.addPane(1, a.controller_fd);
+    try map.addPane(2, b.controller_fd);
+
+    var s = session.Session.init(alloc, nullSink(), 80, 24);
+    defer s.deinit();
+
+    try a.pty.writeInput("x"); // x=78
+    try b.pty.writeInput("y"); // y=79
+    try map.pumpKeystrokes(&s);
+
+    const cmds = s.pendingCommands();
+    try std.testing.expect(std.mem.indexOf(u8, cmds, "send-keys -t %1 -H 78\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cmds, "send-keys -t %2 -H 79\n") != null);
+}
+
+test "pumpKeystrokes is a no-op when no keystrokes are pending" {
+    const alloc = std.testing.allocator;
+    var pair = try pty.Pty.openVirtual(.{ .ws_col = 80, .ws_row = 24 });
+    defer pair.pty.deinit();
+
+    var map = pane.PaneMap.init(alloc);
+    defer map.deinit();
+    try map.addPane(9, pair.controller_fd);
+
+    var s = session.Session.init(alloc, nullSink(), 80, 24);
+    defer s.deinit();
+
+    try map.pumpKeystrokes(&s); // nothing written → nothing queued
+    try std.testing.expectEqual(@as(usize, 0), s.pendingCommands().len);
+}

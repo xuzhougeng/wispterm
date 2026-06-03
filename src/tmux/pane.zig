@@ -70,6 +70,22 @@ pub const PaneMap = struct {
         return .{ .ctx = self, .writeFn = writeImpl };
     }
 
+    /// Non-blocking drain: forward any keystrokes the panes' Surfaces have
+    /// written into their virtual PTYs as hex `send-keys` on the Session's
+    /// command queue. Intended to be called from the controller loop after a
+    /// poll; safe to call when nothing is pending. A `read` of 0 (the Surface
+    /// closed its end) stops draining that pane — its removal is driven by the
+    /// layout reconcile, not here.
+    pub fn pumpKeystrokes(self: *PaneMap, s: *session.Session) Allocator.Error!void {
+        for (self.panes.items) |p| {
+            while (readable(p.controller_fd)) {
+                const n = std.posix.read(p.controller_fd, &self.read_buf) catch break;
+                if (n == 0) break;
+                try s.sendKeys(p.id, self.read_buf[0..n]);
+            }
+        }
+    }
+
     fn writeImpl(ctx: *anyopaque, pane_id: usize, bytes: []const u8) void {
         const self: *PaneMap = @ptrCast(@alignCast(ctx));
         const pane = self.find(pane_id) orelse return;
@@ -86,4 +102,14 @@ fn writeAll(fd: std.posix.fd_t, bytes: []const u8) void {
         if (n == 0) return;
         off += n;
     }
+}
+
+/// True if `fd` has bytes ready to read right now (poll, zero timeout).
+/// POLLHUP-without-data (the Surface closed its end) reads as not-readable, so
+/// pumpKeystrokes never spins on a dead pane.
+fn readable(fd: std.posix.fd_t) bool {
+    var fds = [1]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    const ready = std.posix.poll(&fds, 0) catch return false;
+    if (ready == 0) return false;
+    return fds[0].revents & std.posix.POLL.IN != 0;
 }
