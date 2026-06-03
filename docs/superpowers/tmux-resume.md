@@ -6,7 +6,7 @@ Snapshot: **2026-06-03**. Branch: `worktree-feat-remote-perssitance` (pushed to 
 
 iTerm2-style **tmux `-CC` control-mode** integration so remote ssh sessions survive app close / network drop. tmux *windows* ↔ WispTerm *tabs*, tmux *panes* ↔ native *splits*, no visible tmux chrome. Only the server needs tmux; WispTerm *is* the tmux client (hand-rolled, in `src/tmux/`).
 
-## Status — done, committed, both suites green, but **NO user-facing behavior yet** (all dead code until 3d wires it in)
+## Status — Phase 3d MVP works end-to-end, **GUI-verified against a real server**. Both build targets green.
 
 | Phase | What | Key commits |
 |---|---|---|
@@ -17,6 +17,7 @@ iTerm2-style **tmux `-CC` control-mode** integration so remote ssh sessions surv
 | infra | `src/test_posix.zig` so `zig build test-full` actually runs the posix-only tests | `10d4893` |
 | P3c-1 | `SplitTree.fromTmuxLayout` — tmux layout → binary split tree (N-ary fold + ratios) | `ff41e9b` `3a29677` |
 | P3c-2 | `Session.EventSink`; `PaneMap` borrowed-surface + reverse lookup; `TabState` tmux fields; `src/appwindow/tmux_bridge.zig` (reconcile + window/pane→tab mapping) | `c36486c` `8a66e69` `91ddd56` `5751efd` |
+| P3d (MVP) | Session bootstrap from `list-windows` reply; `src/appwindow/tmux_controller{,_posix}.zig` (live `ssh … tmux -CC` transport, per-frame main-thread pump); AppWindow/overlay wiring + `WISPTERM_TMUX` trigger. **GUI-verified**: connect→handshake→tab+pane, output rendered, keystrokes round-tripped, no tmux chrome. | `92dc9b9` `843923f` `5308142` |
 
 Suites: fast `zig build test` ≈ 604 passed; full `zig build test-full` ≈ 25/25 steps, 0 failed (incl. native `wispterm-posix-test`).
 
@@ -25,20 +26,23 @@ Suites: fast `zig build test` ≈ 604 passed; full `zig build test-full` ≈ 25/
 - Spec: `docs/superpowers/specs/2026-06-03-tmux-control-mode-integration-design.md`
 - Plans: `docs/superpowers/plans/2026-06-03-tmux-control-mode-phase{1,2,3a-virtual-pty,3b-pane-surface,3c1-layout-to-splittree}.md`
 
-## NEXT: Phase 3d (connection + controller read-loop) — do it on the GUI host
+## Phase 3d MVP — DONE (how it runs)
 
-Phase 3c-2 landed the bridge (`src/appwindow/tmux_bridge.zig`): a `TmuxBridge` owning a `Session` + `PaneMap`, implementing `Session.EventSink` to reconcile each `%layout-change` into the tab's `SplitTree` (reuse surfaces by pane id / create virtual-PTY panes / drop vanished panes), and mapping `%window-renamed`/`%window-close`/`%window-pane-changed` onto tab title/close + split focus. It has **no runtime caller yet**. Plan: `docs/superpowers/plans/2026-06-03-tmux-control-mode-phase3c2-appwindow-wiring.md`.
+`src/appwindow/tmux_controller_posix.zig` `TmuxController` owns the `ssh … tmux -CC` transport PTY + a `TmuxBridge`, registered in a thread-local list and pumped once per frame by `tmux_controller.tickAll()` from the AppWindow main loop. **Single-threaded** (no reader thread): the macOS loop polls events non-blocking and renders continuously, so a per-frame non-blocking drain keeps tmux output flowing — and the bridge's tab/Surface mutation stays on the main thread (required: `tab.zig` globals are `threadlocal`, Surfaces need the GPU context). Per tick: non-blocking read → inject the SSH password at the prompt → **hold outbound commands until the control-mode handshake (DCS 1000p)** → `Session.feed` → `pumpKeystrokes` → write queued commands. The platform seam is `tmux_controller.zig` (dispatcher → posix impl or a no-op stub), so `AppWindow.zig` stays free of `os.tag`.
 
-Phase 3d wires it to a live connection:
+**Trigger (interim):** the `WISPTERM_TMUX` env var (a) gates the SSH-profile connect path (`overlays.connectSshProfile…`) onto the controller and (b) names a profile to auto-connect on launch (`AppWindow` startup hook → `overlays.connectProfileByName`). Run it: `WISPTERM_TMUX=NGS00 zig-out/bin/WispTerm.app/Contents/MacOS/WispTerm`.
 
-1. Launch `ssh -tt host -- tmux -CC new -A -s <name>` in a PTY; instantiate `TmuxBridge.create(alloc, cols, rows, scrollback_limit, cursor_style, cursor_blink)`.
-2. Run the controller read-loop: poll the ssh fd + every pane's `controller_fd`; route ssh→`bridge.session.feed(bytes)`, drain `bridge.session.pendingCommands()`→ssh pipe (then `clearCommands`), and call `bridge.panes.pumpKeystrokes(&bridge.session)`.
-3. Bootstrap: `bridge.session.start()` (already enqueues `refresh-client -C` + `list-windows`); seed history per pane via `capture-pane -p -e -J`; resize via `refresh-client -C`.
-4. Native split/new-tab/resize actions → `bridge.session.splitPane/newWindow/killWindow/resizeClient` (the **inbound** direction; the echoed `%layout-change` drives the redraw via the bridge).
-5. **AppWindow seam.** The bridge is POSIX-only (`Pty.openVirtual`), and `AppWindow.zig` forbids `os.tag` branching (see its line-297 self-check). Reach the bridge through a platform-dispatched indirection — a `platform/`-style module that is the bridge on posix and a no-op stub on windows — not a direct `@import` from `AppWindow.zig`.
-6. Detach/reconnect overlay + backoff; close-confirm-before-`kill-window`; `session_persist` re-attach.
+**Verified findings (real server):** on attach tmux does NOT push `%layout-change` for existing windows — the initial layout comes only from the `list-windows` reply (`@<id> <layout>` lines parsed by `Session.applyWindowList`). Bootstrap commands MUST wait for the DCS handshake or they're lost in ssh login.
 
-Study targets: `src/appwindow/tmux_bridge.zig` (the `TmuxBridge` API), `src/appwindow/tab.zig` (the tree-swap in `splitFocusedSurfaceWithCommand` ~lines 712–730; `spawnTabWithCommandAndCwd`; `closeTab`), and `AppWindow` threading.
+## NEXT: Phase 3d polish (none blocking; MVP is usable)
+
+1. **Per-profile toggle** replacing the `WISPTERM_TMUX` env gate (add a 7th `tmux` field to the SSH profile — the codec already tolerates schema growth; the SSH-form UI iterates `SSH_FIELD_COUNT`, so add a labelled field).
+2. **`capture-pane -p -e -J`** per pane on attach to seed recent scrollback (right now a reattached window starts blank until new output).
+3. **Resize**: forward WispTerm window/grid size to `resizeClient` on change (initial `refresh-client -C` works; live resize not yet wired).
+4. **Detach/reconnect** overlay + backoff; **close-confirm before `kill-window`**; `session_persist` re-attach.
+5. Minor: a non-tmux restored tab showed a `????` title in testing — unrelated decode glitch, worth a look.
+
+Study targets: `src/appwindow/tmux_controller_posix.zig` (the pump), `src/renderer/overlays.zig` (`connectSshProfileReturningSurfaceWithCommand` gate + `connectProfileByName`), `src/appwindow/tab.zig` (`splitFocusedSurfaceWithCommand` tree-swap; `closeTab`).
 
 ## Critical non-obvious findings (don't relearn the hard way)
 
