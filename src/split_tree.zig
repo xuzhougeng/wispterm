@@ -921,6 +921,36 @@ pub fn sortReadingOrder(items: []PanelPos) void {
     std.sort.insertion(PanelPos, items, {}, readingOrderLessThan);
 }
 
+/// Leaf-panel handles in screen reading order (top-left → bottom-right).
+/// Caller owns the returned slice. Empty tree → zero-length slice.
+pub fn readingOrder(self: *const SplitTree, alloc: Allocator) Allocator.Error![]Node.Handle {
+    if (self.nodes.len == 0) return alloc.alloc(Node.Handle, 0);
+
+    var sp = try self.spatial(alloc);
+    defer sp.deinit(alloc);
+
+    var positions: std.ArrayListUnmanaged(PanelPos) = .empty;
+    defer positions.deinit(alloc);
+    var it = self.iterator();
+    while (it.next()) |entry| {
+        const slot = sp.slots[entry.handle.idx()];
+        try positions.append(alloc, .{ .handle = entry.handle, .x = slot.x, .y = slot.y });
+    }
+    sortReadingOrder(positions.items);
+
+    const handles = try alloc.alloc(Node.Handle, positions.items.len);
+    for (positions.items, 0..) |p, i| handles[i] = p.handle;
+    return handles;
+}
+
+/// Handle of the n-th panel (1-based) in reading order, or null if out of range.
+pub fn panelHandleAt(self: *const SplitTree, alloc: Allocator, n_one_based: usize) Allocator.Error!?Node.Handle {
+    const order = try self.readingOrder(alloc);
+    defer alloc.free(order);
+    if (n_one_based >= 1 and n_one_based <= order.len) return order[n_one_based - 1];
+    return null;
+}
+
 /// Spatial representation of the split tree. This can be used to
 /// better understand the layout of the tree in a 2D space.
 ///
@@ -1350,4 +1380,49 @@ test "sortReadingOrder: a tall left panel precedes a stacked right column" {
     try std.testing.expectEqual(@as(Node.Handle.Backing, 2), @intFromEnum(items[0].handle)); // left (row 0, x 0)
     try std.testing.expectEqual(@as(Node.Handle.Backing, 3), @intFromEnum(items[1].handle)); // right-top (row 0, x 0.5)
     try std.testing.expectEqual(@as(Node.Handle.Backing, 4), @intFromEnum(items[2].handle)); // right-bottom (row 1)
+}
+
+test "SplitTree: readingOrder is row-major top-left to bottom-right" {
+    const session_persist = @import("session_persist.zig");
+    // 2x2 grid: root stacks two rows (vertical); each row is left|right (horizontal).
+    var tl = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var tr = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var bl = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var br = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var top = session_persist.NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &tl, .right = &tr } };
+    var bot = session_persist.NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &bl, .right = &br } };
+    var root = session_persist.NodeSnap{ .split = .{ .layout = .vertical, .ratio = 0.5, .left = &top, .right = &bot } };
+
+    const Stub = struct {
+        var counter: usize = 0;
+        var sentinels: [16]usize = undefined;
+        fn make(_: *const session_persist.SurfaceSnap, _: Allocator) ?*Surface {
+            const ptr = &sentinels[counter];
+            counter += 1;
+            return @ptrCast(@alignCast(ptr));
+        }
+    };
+    Stub.counter = 0;
+
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    defer {
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    const order = try tree.readingOrder(std.testing.allocator);
+    defer std.testing.allocator.free(order);
+
+    // Pre-order node handles: root=0, top=1, tl=2, tr=3, bot=4, bl=5, br=6.
+    try std.testing.expectEqual(@as(usize, 4), order.len);
+    try std.testing.expectEqual(@as(Node.Handle.Backing, 2), @intFromEnum(order[0])); // top-left
+    try std.testing.expectEqual(@as(Node.Handle.Backing, 3), @intFromEnum(order[1])); // top-right
+    try std.testing.expectEqual(@as(Node.Handle.Backing, 5), @intFromEnum(order[2])); // bottom-left
+    try std.testing.expectEqual(@as(Node.Handle.Backing, 6), @intFromEnum(order[3])); // bottom-right
+
+    // panelHandleAt is 1-based and range-checked.
+    try std.testing.expectEqual(@as(?Node.Handle, @enumFromInt(2)), try tree.panelHandleAt(std.testing.allocator, 1));
+    try std.testing.expectEqual(@as(?Node.Handle, @enumFromInt(6)), try tree.panelHandleAt(std.testing.allocator, 4));
+    try std.testing.expectEqual(@as(?Node.Handle, null), try tree.panelHandleAt(std.testing.allocator, 5));
+    try std.testing.expectEqual(@as(?Node.Handle, null), try tree.panelHandleAt(std.testing.allocator, 0));
 }
