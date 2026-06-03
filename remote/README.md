@@ -285,9 +285,3 @@ The browser also accepts the older mock format:
   internet directly. Always front it with a TLS terminator (your platform's
   proxy, or your own nginx) so browsers see HTTPS and the `Secure` cookie flag
   is honored.
-
-## Star History
-
-<a href="https://star-history.com/#xuzhougeng/wispterm&Date">
-  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xuzhougeng/wispterm&type=Date" />
-</a>
