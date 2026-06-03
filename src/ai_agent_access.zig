@@ -129,10 +129,26 @@ pub fn loadRules(allocator: std.mem.Allocator, file_path: []const u8, home: []co
 }
 
 pub fn evaluate(allocator: std.mem.Allocator, rules: *const AccessRules, command: []const u8, cwd: ?[]const u8) EvalResult {
-    _ = allocator;
-    _ = rules;
-    _ = command;
-    _ = cwd;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Deny pass: generous, first hit wins.
+    var tokens = std.mem.tokenizeAny(u8, command, " \t\r\n|&;<>()");
+    while (tokens.next()) |tok| {
+        const t = stripQuotes(tok);
+        if (t.len == 0) continue;
+        const base = std.fs.path.basename(t);
+        for (rules.deny_names) |pat| {
+            if (globMatch(pat, base)) return .{ .decision = .blacklisted, .matched = tok };
+        }
+        if (looksLikePath(tok)) {
+            const resolved = (resolveToken(a, tok, rules.home, cwd) catch null) orelse continue;
+            for (rules.deny_roots) |root| {
+                if (matchesRoot(resolved, root)) return .{ .decision = .blacklisted, .matched = tok };
+            }
+        }
+    }
     return .{};
 }
 
@@ -424,4 +440,32 @@ test "isReadOnlyCommand rejects find with side-effecting predicates" {
     try std.testing.expect(!isReadOnlyCommand("find . -exec cp {} /dst \\;"));
     try std.testing.expect(!isReadOnlyCommand("find . -delete"));
     try std.testing.expect(isReadOnlyCommand("find . -name '*.zig'"));
+}
+
+test "evaluate flags reads of denied paths (generous)" {
+    const a = std.testing.allocator;
+    var rules = try parseRules(a, "", "/home/u");
+    defer rules.deinit();
+    try std.testing.expectEqual(Decision.blacklisted, evaluate(a, &rules, "cat ~/.ssh/id_rsa", null).decision);
+    try std.testing.expectEqual(Decision.blacklisted, evaluate(a, &rules, "cat \"$HOME/.ssh/config\"", null).decision);
+    try std.testing.expectEqual(Decision.blacklisted, evaluate(a, &rules, "cat /home/u/.ssh/id_rsa", null).decision);
+    try std.testing.expectEqual(Decision.blacklisted, evaluate(a, &rules, "cat ../.ssh/id_rsa", "/home/u/project").decision);
+    try std.testing.expectEqual(Decision.blacklisted, evaluate(a, &rules, "cat server.pem", "/work").decision);
+    try std.testing.expectEqual(Decision.blacklisted, evaluate(a, &rules, "cat < .env", "/work").decision);
+}
+
+test "evaluate leaves unrelated reads neutral" {
+    const a = std.testing.allocator;
+    var rules = try parseRules(a, "", "/home/u");
+    defer rules.deinit();
+    try std.testing.expectEqual(Decision.neutral, evaluate(a, &rules, "cat /work/readme.txt", null).decision);
+    try std.testing.expectEqual(Decision.neutral, evaluate(a, &rules, "ls -la", null).decision);
+}
+
+test "evaluate matched names the triggering token" {
+    const a = std.testing.allocator;
+    var rules = try parseRules(a, "", "/home/u");
+    defer rules.deinit();
+    const r = evaluate(a, &rules, "cat ~/.ssh/id_rsa", null);
+    try std.testing.expectEqualStrings("~/.ssh/id_rsa", r.matched);
 }
