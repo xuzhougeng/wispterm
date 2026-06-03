@@ -30,19 +30,19 @@ Suites: fast `zig build test` ≈ 604 passed; full `zig build test-full` ≈ 25/
 
 `src/appwindow/tmux_controller_posix.zig` `TmuxController` owns the `ssh … tmux -CC` transport PTY + a `TmuxBridge`, registered in a thread-local list and pumped once per frame by `tmux_controller.tickAll()` from the AppWindow main loop. **Single-threaded** (no reader thread): the macOS loop polls events non-blocking and renders continuously, so a per-frame non-blocking drain keeps tmux output flowing — and the bridge's tab/Surface mutation stays on the main thread (required: `tab.zig` globals are `threadlocal`, Surfaces need the GPU context). Per tick: non-blocking read → inject the SSH password at the prompt → **hold outbound commands until the control-mode handshake (DCS 1000p)** → `Session.feed` → `pumpKeystrokes` → write queued commands. The platform seam is `tmux_controller.zig` (dispatcher → posix impl or a no-op stub), so `AppWindow.zig` stays free of `os.tag`.
 
-**Trigger (interim):** the `WISPTERM_TMUX` env var (a) gates the SSH-profile connect path (`overlays.connectSshProfile…`) onto the controller and (b) names a profile to auto-connect on launch (`AppWindow` startup hook → `overlays.connectProfileByName`). Run it: `WISPTERM_TMUX=NGS00 zig-out/bin/WispTerm.app/Contents/MacOS/WispTerm`.
+**Trigger:** per-profile — the SSH profile's `tmux` field ("1") routes the connect onto the controller (SSH-form field "Keep alive · tmux"). `WISPTERM_AUTOCONNECT=<profile>` is a dev hook that connects a profile on launch (the tmux decision stays per-profile). Run: `WISPTERM_AUTOCONNECT=NGS00 zig-out/bin/WispTerm.app/Contents/MacOS/WispTerm`.
 
 **Verified findings (real server):** on attach tmux does NOT push `%layout-change` for existing windows — the initial layout comes only from the `list-windows` reply (`@<id> <layout>` lines parsed by `Session.applyWindowList`). Bootstrap commands MUST wait for the DCS handshake or they're lost in ssh login.
 
-## NEXT: Phase 3d polish (none blocking; MVP is usable)
+## NEXT: Phase 3d polish — a dependency chain, not independent items
 
-1. **Per-profile toggle** replacing the `WISPTERM_TMUX` env gate (add a 7th `tmux` field to the SSH profile — the codec already tolerates schema growth; the SSH-form UI iterates `SSH_FIELD_COUNT`, so add a labelled field).
-2. **`capture-pane -p -e -J`** per pane on attach to seed recent scrollback (right now a reattached window starts blank until new output).
-3. **Resize**: forward WispTerm window/grid size to `resizeClient` on change (initial `refresh-client -C` works; live resize not yet wired).
-4. **Detach/reconnect** overlay + backoff; **close-confirm before `kill-window`**; `session_persist` re-attach.
-5. Minor: a non-tmux restored tab showed a `????` title in testing — unrelated decode glitch, worth a look.
+- **[DONE] Per-profile tmux toggle** — 7th SSH profile field `tmux`; replaces the env gate (`2cc0d56`).
+- **#3 (do first) — client/pane size-sync.** This is the keystone, and a real rendering-integration task (not a quick toggle). `start()` sends `refresh-client -C term_cols x term_rows`, but `term_cols`/`term_rows` is the window estimate, while the actual tmux-pane `Surface` grid is what `computeSplitLayout → setScreenSize` derives (it subtracts the sidebar `left_panels_w`, padding, titlebar — see `AppWindow.zig:2280`). The mismatch garbles output. Fix: forward the surface's *actual* `size.grid.cols/rows` (or the content-area cell size) to `Session.resizeClient`, from the controller tick when it changes, and on window resize. Then `%layout-change` reconciles. Pane surfaces should take their grid size from tmux's layout, not be independently resized to the window.
+- **#2 (after #3) — `capture-pane` scrollback seed.** Plumbing already in `Session` (`capturePane` + `block_end` routing, `ff36ecb`), but the bridge does NOT call it yet: feeding captured text to a wrong-width surface garbles (verified). Activate from the bridge factory once #3 makes the surface grid match the pane. May also need grid-level cell placement (iTerm2-style) rather than feeding raw text to the parser.
+- **#4 — lifecycle.** Detach/reconnect overlay + backoff; close-confirm before `kill-window`; `session_persist` re-attach.
+- **#5 — minor.** A non-tmux restored tab showed a `????` title in testing — unrelated decode glitch.
 
-Study targets: `src/appwindow/tmux_controller_posix.zig` (the pump), `src/renderer/overlays.zig` (`connectSshProfileReturningSurfaceWithCommand` gate + `connectProfileByName`), `src/appwindow/tab.zig` (`splitFocusedSurfaceWithCommand` tree-swap; `closeTab`).
+Study targets for #3: `AppWindow.zig` render loop (`computeSplitLayout`, `content_w/content_h`, the platform-resize grid math ~2221–2253), `Surface.setScreenSize` (`Surface.zig:679`), `src/appwindow/tmux_controller_posix.zig` (the pump — where to read pane surface grid + call `resizeClient`), `Session.resizeClient`.
 
 ## Critical non-obvious findings (don't relearn the hard way)
 
