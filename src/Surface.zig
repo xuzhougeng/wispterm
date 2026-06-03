@@ -370,11 +370,26 @@ pub fn init(
     try surface.command.start(&surface.pty, shell_cmd, cwd);
     errdefer surface.command.deinit();
 
+    return finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd);
+}
+
+/// Shared constructor tail for `init` (real PTY + child) and `initVirtual`
+/// (virtual PTY, no child). The terminal, `pty`, and `command` are already set
+/// up by the caller (with their `errdefer`s); this initializes every remaining
+/// field and spawns the IO threads. `launch_kind`/`cwd` differ per caller.
+fn finishInit(
+    surface: *Surface,
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    launch_kind: LaunchKind,
+    cwd: platform_pty_command.Cwd,
+) !*Surface {
     // Init remaining fields
     surface.allocator = allocator;
     surface.selection = .{};
     surface.render_state = renderer.State.init(&surface.terminal);
-    surface.launch_kind = platform_pty_command.launchKindForCommand(shell_cmd);
+    surface.launch_kind = launch_kind;
     surface.ssh_connection = null;
     surface.remote_client = null;
     remote.nextSurfaceId(&surface.remote_id);
@@ -479,6 +494,56 @@ pub fn init(
     // main render loop.
 
     return surface;
+}
+
+/// Build a Surface around a pre-opened *virtual* PTY (`Pty.openVirtual`).
+/// Used for tmux control-mode panes: there is no child process — the Phase 2
+/// controller feeds pane output into the PTY and reads keystrokes back across
+/// the pair's `controller_fd`. The caller retains `controller_fd` (typically
+/// in a `tmux/pane.zig` PaneMap); this Surface owns only the `pty` end.
+///
+/// `command` is left as `.{}` (pid -1): its `wait()` reports "still running"
+/// and its `deinit()` is a no-op, so the no-child pane never looks "exited"
+/// until its `controller_fd` is closed (which gives the reader an EOF).
+pub fn initVirtual(
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    pty: Pty,
+    scrollback_limit: u32,
+    cursor_style: Config.CursorStyle,
+    cursor_blink: bool,
+) !*Surface {
+    const surface = try allocator.create(Surface);
+    errdefer allocator.destroy(surface);
+
+    surface.terminal = ghostty_vt.Terminal.init(allocator, .{
+        .cols = cols,
+        .rows = rows,
+        .max_scrollback = scrollback_limit,
+        .default_modes = .{ .grapheme_cluster = true },
+        .kitty_image_storage_limit = 50 * 1024 * 1024,
+        .kitty_image_loading_limits = .all,
+    }) catch |err| {
+        return err;
+    };
+    errdefer surface.terminal.deinit(allocator);
+
+    surface.terminal.screens.active.cursor.cursor_style = switch (cursor_style) {
+        .bar => .bar,
+        .block => .block,
+        .underline => .underline,
+        .block_hollow => .block_hollow,
+    };
+    surface.terminal.modes.set(.cursor_blinking, cursor_blink);
+
+    // Adopt the caller's virtual PTY; no child process is launched.
+    surface.pty = pty;
+    errdefer surface.pty.deinit();
+    surface.command = .{};
+    errdefer surface.command.deinit();
+
+    return finishInit(surface, allocator, cols, rows, .ssh, null);
 }
 
 /// Deinitialize and free a Surface.
@@ -1149,4 +1214,17 @@ fn updateTitle(self: *Surface, title: []const u8, osc_num: u8) void {
     }
 
     self.refreshAgentDetection();
+}
+
+test "Surface exposes init and initVirtual (forces analysis of the shared finishInit refactor)" {
+    // Address-of forces full semantic analysis + codegen of both constructors,
+    // and therefore of the shared finishInit they call. Without this, an unused
+    // initVirtual could carry a refactor bug that the headless suite never sees.
+    _ = &init;
+    _ = &initVirtual;
+
+    const info = @typeInfo(@TypeOf(initVirtual)).@"fn";
+    // allocator, cols, rows, pty, scrollback_limit, cursor_style, cursor_blink
+    try std.testing.expectEqual(@as(usize, 7), info.params.len);
+    try std.testing.expect(info.params[3].type.? == Pty);
 }
