@@ -173,11 +173,11 @@ pub const TmuxBridge = struct {
                 return null;
             };
             self.panes.setSurface(pane_id, surface);
-            // NOTE: capture-pane scrollback seeding (Session.capturePane) is
-            // intentionally NOT called here yet — feeding the captured text to a
-            // surface whose grid size doesn't match the tmux pane garbles the
-            // render. Activate once client/pane size-sync (resize) lands so the
-            // surface grid matches tmux's pane width.
+            // NOTE: capture-pane seeding (Session.capturePane) is still dormant.
+            // Even with size-sync matching the surface grid to the tmux pane, the
+            // capture reply collides with the resize-triggered live %output redraw
+            // and the -J logical lines don't map to visible rows — it garbles.
+            // Proper seeding needs grid-level cell placement / live suppression.
             return surface; // ref 1, transferred to the tree
         }
     };

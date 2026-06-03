@@ -15,6 +15,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Config = @import("../config.zig");
+const Surface = @import("../Surface.zig");
 const Pty = @import("../platform/pty.zig").Pty;
 const pty_command = @import("../platform/pty_command.zig");
 const bridge_mod = @import("tmux_bridge.zig");
@@ -41,6 +42,9 @@ pub const TmuxController = struct {
     /// login / password prompt and tmux is not yet listening, so an early
     /// bootstrap write would be lost.
     handshake_seen: bool = false,
+    /// Last client size forwarded to tmux, to avoid redundant refresh-client.
+    last_cols: u16 = 0,
+    last_rows: u16 = 0,
     dead: bool = false,
 
     fn tick(self: *TmuxController) void {
@@ -82,6 +86,7 @@ pub const TmuxController = struct {
         // not listening during ssh login.
         if (!self.handshake_seen) return;
 
+        self.syncSize();
         self.bridge.panes.pumpKeystrokes(&self.bridge.session) catch {};
         const cmds = self.bridge.session.pendingCommands();
         if (cmds.len > 0) {
@@ -101,6 +106,23 @@ pub const TmuxController = struct {
             self.pty.writeInput("\n") catch {};
             self.password_sent = true;
         }
+    }
+
+    /// Forward the tmux client size to match WispTerm's actual pane grid, which
+    /// computeSplitLayout derives after subtracting the sidebar/padding (so it
+    /// differs from the window-estimate term_cols that start() first sent).
+    /// Single-pane only for now; multi-pane client-size sync is a follow-up.
+    fn syncSize(self: *TmuxController) void {
+        if (self.bridge.panes.panes.items.len != 1) return;
+        const op = self.bridge.panes.panes.items[0].surface orelse return;
+        const s: *Surface = @ptrCast(@alignCast(op));
+        const cols = s.size.grid.cols;
+        const rows = s.size.grid.rows;
+        if (cols == 0 or rows == 0) return;
+        if (cols == self.last_cols and rows == self.last_rows) return;
+        self.last_cols = cols;
+        self.last_rows = rows;
+        self.bridge.session.resizeClient(cols, rows) catch {};
     }
 
     fn destroy(self: *TmuxController) void {
