@@ -7,7 +7,7 @@
 const std = @import("std");
 const ai_chat_protocol = @import("../../ai_chat_protocol.zig");
 
-pub const SSH_FIELD_COUNT = 7;
+pub const SSH_FIELD_COUNT = 6;
 pub const SSH_FIELD_MAX = 128;
 pub const AI_FIELD_COUNT = 11;
 pub const AI_FIELD_MAX = 8192;
@@ -19,10 +19,6 @@ pub const SshField = enum(usize) {
     password = 3,
     port = 4,
     proxy_jump = 5,
-    // tmux control-mode toggle (Phase 3d): "1" enables `ssh … tmux -CC …`.
-    // The decoder tolerates its absence, so profiles saved by older builds load
-    // with this empty (off).
-    tmux = 6,
 };
 
 pub const AiField = enum(usize) {

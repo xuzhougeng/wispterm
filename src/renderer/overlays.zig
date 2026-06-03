@@ -752,6 +752,14 @@ fn commandEntrySecondaryMatches(entry: CommandEntry, filter: []const u8) bool {
     return containsIgnoreCase(commandEntryShortcut(entry, &shortcut_buf), filter);
 }
 
+test "tmuxSessionName sanitizes a profile name to a tmux-safe session name" {
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings("wispterm-NGS00", tmuxSessionName(&buf, "NGS00"));
+    try std.testing.expectEqualStrings("wispterm-prod_db_1", tmuxSessionName(&buf, "prod.db:1"));
+    try std.testing.expectEqualStrings("wispterm-a_b_c", tmuxSessionName(&buf, "a b\tc"));
+    try std.testing.expectEqualStrings("wispterm", tmuxSessionName(&buf, ""));
+}
+
 test "command palette filter accepts UTF-8 CJK and backspaces whole codepoints" {
     commandPaletteClearFilter();
     defer commandPaletteClearFilter();
@@ -1543,6 +1551,7 @@ const AiField = profile_codec.AiField;
 const SessionAction = enum {
     local_shell,
     ssh,
+    tmux,
     wsl,
     ai_chat,
     ai_history,
@@ -1569,6 +1578,7 @@ const SshListMode = enum {
     edit_select,
     delete_select,
     ai_history_select,
+    tmux_connect,
 };
 
 const AiListMode = enum {
@@ -1891,6 +1901,7 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
     switch (action) {
         .local_shell => openLocalShellSession(),
         .ssh => openSshList(),
+        .tmux => openTmuxSshPicker(),
         .wsl => openWslSession(),
         .ai_chat => openDefaultAiSession(),
         .ai_history => openAiHistorySourcePicker(),
@@ -2021,7 +2032,7 @@ fn openSshDeletePicker() void {
 }
 
 fn openSshProfilePicker(mode: SshListMode) void {
-    if (g_ssh_profile_count == 0 and mode != .ai_history_select) return;
+    if (g_ssh_profile_count == 0 and mode != .ai_history_select and mode != .tmux_connect) return;
     g_session_launcher_visible = false;
     g_ai_history_source_visible = false;
     g_ssh_list_visible = true;
@@ -2082,7 +2093,7 @@ fn handleSshListKey(ev: input_key.KeyEvent) void {
 fn sshListRowCount() usize {
     return switch (g_ssh_list_mode) {
         .manage => sshVisibleProfileCount() + 4,
-        .edit_select, .delete_select, .ai_history_select => sshVisibleProfileCount() + 1,
+        .edit_select, .delete_select, .ai_history_select, .tmux_connect => sshVisibleProfileCount() + 1,
     };
 }
 
@@ -2338,6 +2349,14 @@ fn runSshListRow(row: usize) void {
                 openAiHistorySourcePicker();
             }
         },
+        .tmux_connect => {
+            if (row < visible_profile_count) {
+                const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
+                connectSshProfileTmux(profile_idx);
+            } else {
+                sessionLauncherClose();
+            }
+        },
     }
 }
 
@@ -2414,6 +2433,78 @@ fn connectSshProfile(idx: usize) void {
     _ = connectSshProfileReturningSurface(idx);
 }
 
+/// Derive a tmux-safe session name from a profile name: `wispterm-<name>` with
+/// every char outside [A-Za-z0-9_-] replaced by '_'. Empty name → "wispterm".
+/// `buf` must be at least 9 + name.len bytes.
+fn tmuxSessionName(buf: []u8, profile_name: []const u8) []const u8 {
+    const prefix = "wispterm";
+    @memcpy(buf[0..prefix.len], prefix);
+    if (profile_name.len == 0) return buf[0..prefix.len];
+    buf[prefix.len] = '-';
+    var n: usize = prefix.len + 1;
+    for (profile_name) |c| {
+        if (n >= buf.len) break;
+        buf[n] = if (std.ascii.isAlphanumeric(c) or c == '_' or c == '-') c else '_';
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+/// Open the SSH profile picker in tmux-connect mode (mirrors the AI-history SSH
+/// picker). Picking a profile starts a tmux control-mode session.
+fn openTmuxSshPicker() void {
+    openSshProfilePicker(.tmux_connect);
+}
+
+/// Connect the profile at `idx` in tmux control mode: `ssh … tmux -CC new -A -s
+/// wispterm-<profile>`. No surface is spawned — the controller owns the tabs.
+fn connectSshProfileTmux(idx: usize) void {
+    if (idx >= g_ssh_profile_count) return;
+    const profile = &g_ssh_profiles[idx];
+    const ip = profileField(profile, .ip);
+    const user = profileField(profile, .user);
+    const port = profileField(profile, .port);
+    const password = profileField(profile, .password);
+    const proxy_jump = profileField(profile, .proxy_jump);
+    const name = profileField(profile, .name);
+    if (ip.len == 0 or user.len == 0) return;
+    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return;
+    if (port.len > 0 and !isPortTokenSafe(port)) return;
+    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return;
+
+    var name_buf: [96]u8 = undefined;
+    const session_name = tmuxSessionName(&name_buf, name);
+    var remote_buf: [128]u8 = undefined;
+    const remote = std.fmt.bufPrint(&remote_buf, "tmux -CC new -A -s {s}", .{session_name}) catch return;
+
+    var cmd_buf: [8192]u8 = undefined;
+    const cmd = platform_pty_command.sshInteractiveCommand(cmd_buf[0..], .{
+        .user = user,
+        .host = ip,
+        .port = port,
+        .password_auth = password.len > 0,
+        .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
+        .proxy_jump = proxy_jump,
+        .remote_command = remote,
+    }) orelse return;
+
+    sessionLauncherClose();
+    _ = AppWindow.startTmuxSession(cmd, password);
+}
+
+/// Connect a profile by name in tmux mode (dev/automation hook).
+pub fn connectProfileByNameTmux(name: []const u8) bool {
+    loadSshProfiles();
+    var idx: usize = 0;
+    while (idx < g_ssh_profile_count) : (idx += 1) {
+        if (std.mem.eql(u8, profileField(&g_ssh_profiles[idx], .name), name)) {
+            connectSshProfileTmux(idx);
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Connect the SSH profile with the given name (Phase 3d programmatic/test
 /// entry). Loads profiles if needed; returns false if no profile matches.
 pub fn connectProfileByName(name: []const u8) bool {
@@ -2445,29 +2536,6 @@ fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []co
     if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
     if (port.len > 0 and !isPortTokenSafe(port)) return null;
     if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return null;
-
-    // Phase 3d: tmux control-mode gate. When enabled, route the connection
-    // through the tmux controller (`ssh … tmux -CC …`) instead of a normal
-    // terminal surface; the controller builds tabs/splits from the remote tmux
-    // windows/panes. Enabled per-profile via the `tmux` field ("1"). Returns
-    // null (no surface) — the controller owns the tabs.
-    const tmux_field = profileField(profile, .tmux);
-    const tmux_enabled = tmux_field.len > 0 and tmux_field[0] == '1';
-    if (tmux_enabled) {
-        var tmux_buf: [8192]u8 = undefined;
-        const tmux_cmd = platform_pty_command.sshInteractiveCommand(tmux_buf[0..], .{
-            .user = user,
-            .host = ip,
-            .port = port,
-            .password_auth = password.len > 0,
-            .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
-            .proxy_jump = proxy_jump,
-            .remote_command = "tmux -CC new -A -s wispterm",
-        }) orelse return null;
-        sessionLauncherClose();
-        _ = AppWindow.startTmuxSession(tmux_cmd, password);
-        return null;
-    }
 
     var command_buf: [8192]u8 = undefined;
     const command = platform_pty_command.sshInteractiveCommand(command_buf[0..], .{
@@ -3276,6 +3344,7 @@ fn sessionLauncherTitle() []const u8 {
             .edit_select => i18n.s().sl_edit_ssh_server,
             .delete_select => i18n.s().sl_delete_ssh_server,
             .ai_history_select => "AI History SSH Profile",
+            .tmux_connect => "tmux SSH Profile",
         };
     }
     return i18n.s().sl_new_session;
@@ -3301,6 +3370,7 @@ fn sessionLauncherHint() []const u8 {
             .edit_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_edit else i18n.s().sl_hint_choose_server_edit,
             .delete_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_delete else i18n.s().sl_hint_choose_server_delete,
             .ai_history_select => if (has_filter) "Filter profiles" else "Choose a profile or go back",
+            .tmux_connect => if (has_filter) "Filter profiles" else "Choose a profile or go back",
         };
     }
     return i18n.s().sl_hint_main;
@@ -3395,6 +3465,9 @@ fn sessionDesiredBoxWidth() f32 {
             },
             .ai_history_select => {
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, "AI History"));
+            },
+            .tmux_connect => {
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, "tmux"));
             },
         }
         return desired;
@@ -3503,6 +3576,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         g_session_launcher_selected = row;
         if (row == 0) return .local_shell;
         if (row == 1) return .ssh;
+        if (row == command_center_state.SESSION_LAUNCHER_ROW_TMUX) return .tmux;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             if (row == wsl_row) return .wsl;
         }
@@ -3711,6 +3785,9 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
                 .ai_history_select => {
                     renderSessionRow(layout, window_height, row, i18n.s().sl_back, "AI History", g_ssh_list_selected == row);
                 },
+                .tmux_connect => {
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, "tmux", g_ssh_list_selected == row);
+                },
             }
             return;
         }
@@ -3718,6 +3795,8 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderSessionRow(layout, window_height, row, platform_pty_command.localShellLauncherTitle(), AppWindow.configuredLocalShellSessionDetail(), g_session_launcher_selected == row);
         row += 1;
         renderSessionRow(layout, window_height, row, "SSH", i18n.s().sl_v_connect_server, g_session_launcher_selected == row);
+        row += 1;
+        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_TMUX, "Connect with tmux", "Keep session alive (tmux -CC)", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_TMUX);
         row += 1;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             row = wsl_row;
@@ -3753,7 +3832,6 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderSessionField(layout, window_height, @intFromEnum(SshField.password), i18n.s().sl_ssh_password, sshField(.password), true);
     renderSessionField(layout, window_height, @intFromEnum(SshField.port), i18n.s().sl_ssh_port, sshField(.port), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), i18n.s().sl_ssh_jump_host, sshField(.proxy_jump), false);
-    renderSessionField(layout, window_height, @intFromEnum(SshField.tmux), "Keep alive · tmux (1=on)", sshField(.tmux), false);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT, i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail(), g_ssh_focus == SSH_FIELD_COUNT);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, g_ssh_focus == SSH_FIELD_COUNT + 1);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, i18n.s().sl_cancel, "Esc", g_ssh_focus == SSH_FIELD_COUNT + 2);

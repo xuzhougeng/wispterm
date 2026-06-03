@@ -96,6 +96,7 @@ pub const NewAgentLaunchAction = enum {
 };
 
 pub const SESSION_LAUNCHER_ROW_COUNT: usize = platform_pty_command.session_launcher_row_count;
+pub const SESSION_LAUNCHER_ROW_TMUX: usize = platform_pty_command.session_launcher_tmux_row;
 pub const SESSION_LAUNCHER_ROW_AI_AGENT: usize = platform_pty_command.session_launcher_ai_agent_row;
 pub const SESSION_LAUNCHER_ROW_AI_HISTORY: usize = platform_pty_command.session_launcher_ai_history_row;
 

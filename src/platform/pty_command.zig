@@ -102,8 +102,8 @@ pub const session_launcher_detail = sessionLauncherDetailForOs(builtin.os.tag);
 
 pub fn sessionLauncherDetailForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
-        .windows => "Choose PowerShell, SSH, WSL, AI Agent, or AI History",
-        .unsupported => "Choose Shell, SSH, AI Agent, or AI History",
+        .windows => "Choose PowerShell, SSH, tmux, WSL, AI Agent, or AI History",
+        .unsupported => "Choose Shell, SSH, tmux, AI Agent, or AI History",
     };
 }
 
@@ -115,8 +115,22 @@ pub const session_launcher_row_count = sessionLauncherRowCountForOs(builtin.os.t
 
 pub fn sessionLauncherRowCountForOs(os_tag: std.Target.Os.Tag) usize {
     return switch (backendForOs(os_tag)) {
-        .windows => 5,
-        .unsupported => 4,
+        .windows => 6,
+        .unsupported => 5,
+    };
+}
+
+/// Row of the "Connect with tmux" entry (right after SSH).
+pub fn sessionLauncherTmuxRow() usize {
+    return session_launcher_tmux_row;
+}
+
+pub const session_launcher_tmux_row = sessionLauncherTmuxRowForOs(builtin.os.tag);
+
+pub fn sessionLauncherTmuxRowForOs(os_tag: std.Target.Os.Tag) usize {
+    return switch (backendForOs(os_tag)) {
+        .windows => 3, // powershell0 ssh1 wsl2 tmux3
+        .unsupported => 2, // shell0 ssh1 tmux2
     };
 }
 
@@ -128,8 +142,8 @@ pub const session_launcher_ai_agent_row = sessionLauncherAiAgentRowForOs(builtin
 
 pub fn sessionLauncherAiAgentRowForOs(os_tag: std.Target.Os.Tag) usize {
     return switch (backendForOs(os_tag)) {
-        .windows => 3,
-        .unsupported => 2,
+        .windows => 4,
+        .unsupported => 3,
     };
 }
 
@@ -141,8 +155,8 @@ pub const session_launcher_ai_history_row = sessionLauncherAiHistoryRowForOs(bui
 
 pub fn sessionLauncherAiHistoryRowForOs(os_tag: std.Target.Os.Tag) usize {
     return switch (backendForOs(os_tag)) {
-        .windows => 4,
-        .unsupported => 3,
+        .windows => 5,
+        .unsupported => 4,
     };
 }
 
@@ -618,14 +632,17 @@ test "platform pty command maps native shell titles to friendly display labels" 
 }
 
 test "platform pty command exposes session launcher layout by target OS" {
-    try std.testing.expectEqual(@as(usize, 5), sessionLauncherRowCountForOs(.windows));
-    try std.testing.expectEqual(@as(usize, 4), sessionLauncherRowCountForOs(.linux));
-    try std.testing.expectEqual(@as(usize, 4), sessionLauncherRowCountForOs(.macos));
+    try std.testing.expectEqual(@as(usize, 6), sessionLauncherRowCountForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 5), sessionLauncherRowCountForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 5), sessionLauncherRowCountForOs(.macos));
 
-    try std.testing.expectEqual(@as(usize, 3), sessionLauncherAiAgentRowForOs(.windows));
-    try std.testing.expectEqual(@as(usize, 2), sessionLauncherAiAgentRowForOs(.linux));
-    try std.testing.expectEqual(@as(usize, 4), sessionLauncherAiHistoryRowForOs(.windows));
-    try std.testing.expectEqual(@as(usize, 3), sessionLauncherAiHistoryRowForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 3), sessionLauncherTmuxRowForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 2), sessionLauncherTmuxRowForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 2), sessionLauncherTmuxRowForOs(.macos));
+    try std.testing.expectEqual(@as(usize, 4), sessionLauncherAiAgentRowForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 3), sessionLauncherAiAgentRowForOs(.linux));
+    try std.testing.expectEqual(@as(usize, 5), sessionLauncherAiHistoryRowForOs(.windows));
+    try std.testing.expectEqual(@as(usize, 4), sessionLauncherAiHistoryRowForOs(.linux));
     try std.testing.expectEqual(@as(?usize, 2), sessionLauncherWslRowForOs(.windows));
     try std.testing.expectEqual(@as(?usize, null), sessionLauncherWslRowForOs(.linux));
 
