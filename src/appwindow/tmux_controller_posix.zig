@@ -18,6 +18,7 @@ const Config = @import("../config.zig");
 const Surface = @import("../Surface.zig");
 const Pty = @import("../platform/pty.zig").Pty;
 const pty_command = @import("../platform/pty_command.zig");
+const layout = @import("../tmux/layout.zig");
 const bridge_mod = @import("tmux_bridge.zig");
 const TmuxBridge = bridge_mod.TmuxBridge;
 
@@ -219,4 +220,19 @@ pub fn shutdownAll(alloc: Allocator) void {
 
 pub fn anyActive() bool {
     return g_controllers.items.len > 0;
+}
+
+/// If `surface` is a tmux pane, drive a tmux `split-window` for it (the echoed
+/// %layout-change reconciles the new pane) and return true. Returns false if
+/// the surface is not a tmux pane, so the caller falls back to a local split.
+/// `horizontal` splits side-by-side (`-h`); otherwise stacked (`-v`).
+pub fn requestSplit(surface: *anyopaque, horizontal: bool) bool {
+    const dir: layout.Dir = if (horizontal) .horizontal else .vertical;
+    for (g_controllers.items) |c| {
+        if (c.bridge.panes.findIdBySurface(surface)) |pane_id| {
+            c.bridge.session.splitPane(pane_id, dir) catch return false;
+            return true;
+        }
+    }
+    return false;
 }

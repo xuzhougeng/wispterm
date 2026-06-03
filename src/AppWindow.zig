@@ -2005,6 +2005,20 @@ pub fn splitFocused(direction: SplitTree.Split.Direction) void {
 
 pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surface {
     const allocator = g_allocator orelse return null;
+
+    // In a tmux-backed tab, a split must be a real tmux pane: drive
+    // `split-window` and let the echoed %layout-change reconcile the new pane.
+    // Returning null here is correct — the new surface arrives asynchronously
+    // via the controller, not from this call.
+    if (tab.activeTab()) |t| {
+        if (t.tmux_window_id != null) {
+            if (t.focusedSurface()) |focused| {
+                const horizontal = direction == .left or direction == .right;
+                if (tmux_controller.requestSplit(focused, horizontal)) return null;
+            }
+        }
+    }
+
     var cwd_buf: platform_pty_command.CwdBuffer = undefined;
     const cwd = getActiveCwd(&cwd_buf);
     const surface = tab.splitFocusedReturningSurface(allocator, direction, font.cell_width, font.cell_height, g_cursor_style, g_cursor_blink, cwd) orelse return null;

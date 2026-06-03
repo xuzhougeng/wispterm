@@ -20,6 +20,9 @@ const impl = switch (builtin.os.tag) {
         pub fn anyActive() bool {
             return false;
         }
+        pub fn requestSplit(_: *anyopaque, _: bool) bool {
+            return false;
+        }
     },
 };
 
@@ -27,3 +30,4 @@ pub const start = impl.start;
 pub const tickAll = impl.tickAll;
 pub const shutdownAll = impl.shutdownAll;
 pub const anyActive = impl.anyActive;
+pub const requestSplit = impl.requestSplit;
