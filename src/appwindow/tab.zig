@@ -818,6 +818,18 @@ pub fn gotoSplit(allocator: std.mem.Allocator, direction: SplitTree.Goto) bool {
     return false;
 }
 
+/// Focus the n-th panel (1-based) of the active tab in screen reading order
+/// (top-left → bottom-right). Returns false if there is no such panel (n out of
+/// range, empty/non-terminal tab), leaving focus unchanged so the caller can let
+/// the key fall through to the terminal.
+pub fn focusPanelByIndex(allocator: std.mem.Allocator, n: usize) bool {
+    const t = activeTab() orelse return false;
+    if (t.kind != .terminal) return false;
+    const handle = (t.tree.panelHandleAt(allocator, n) catch return false) orelse return false;
+    t.focused = handle;
+    return true;
+}
+
 /// Equalize all split ratios. Returns true if equalization was performed.
 pub fn equalizeSplits(allocator: std.mem.Allocator) bool {
     const t = activeTab() orelse return false;
@@ -2036,4 +2048,50 @@ test "tab: reorder rejects invalid and no-op moves" {
     try std.testing.expect(!reorderTab(1, 0));
     try std.testing.expect(g_tabs[0].? == &a);
     try std.testing.expectEqual(@as(usize, 0), active_tab_state.g_active_tab);
+}
+
+test "focusPanelByIndex focuses panels in screen reading order" {
+    // Two side-by-side panels: root horizontal, left | right.
+    var l = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var r = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var root = session_persist.NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &l, .right = &r } };
+    const Stub = struct {
+        var counter: usize = 0;
+        var sentinels: [8]usize = undefined;
+        fn make(_: *const session_persist.SurfaceSnap, _: std.mem.Allocator) ?*Surface {
+            const ptr = &sentinels[counter];
+            counter += 1;
+            return @ptrCast(@alignCast(ptr));
+        }
+    };
+    Stub.counter = 0;
+
+    var ts = TabState{
+        .kind = .terminal,
+        .tree = try SplitTree.fromSnapshot(std.testing.allocator, &root, Stub.make),
+        .focused = .root,
+    };
+    // Sentinel surfaces can't be unref'd, so free the arena directly (no TabState.deinit).
+    defer ts.tree.arena.deinit();
+
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_count = g_tab_count;
+    const saved_tab0 = g_tabs[0];
+    defer {
+        active_tab_state.g_active_tab = saved_active;
+        g_tab_count = saved_count;
+        g_tabs[0] = saved_tab0;
+    }
+    g_tabs[0] = &ts;
+    active_tab_state.g_active_tab = 0;
+    g_tab_count = 1;
+
+    // Handles: root=0, left=1, right=2. Reading order: [left(1), right(2)].
+    try std.testing.expect(focusPanelByIndex(std.testing.allocator, 1));
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 1), @intFromEnum(ts.focused));
+    try std.testing.expect(focusPanelByIndex(std.testing.allocator, 2));
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 2), @intFromEnum(ts.focused));
+    // Out of range → false, focus unchanged.
+    try std.testing.expect(!focusPanelByIndex(std.testing.allocator, 3));
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 2), @intFromEnum(ts.focused));
 }

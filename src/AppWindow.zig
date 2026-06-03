@@ -2114,6 +2114,18 @@ pub fn gotoSplit(direction: SplitTree.Goto) bool {
     return false;
 }
 
+/// Focus the n-th panel (1-based) of the active tab by screen reading order.
+/// Returns whether focus moved (false = no such panel, so the caller can let the
+/// key fall through to the terminal).
+pub fn focusPanel(n: usize) bool {
+    const allocator = g_allocator orelse return false;
+    if (tab.focusPanelByIndex(allocator, n)) {
+        handleActiveSurfaceChangeWithinTab();
+        return true;
+    }
+    return false;
+}
+
 pub fn equalizeSplits() void {
     const allocator = g_allocator orelse return;
     if (tab.equalizeSplits(allocator)) {
