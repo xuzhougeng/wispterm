@@ -37,6 +37,7 @@ pub const Command = union(enum) {
     previous_tab,
     open_config,
     switch_tab: usize,
+    focus_panel: usize,
 };
 
 /// Map a configured action + phase to the command it triggers, or null if the
@@ -72,7 +73,12 @@ pub fn resolve(action: keybind.Action, phase: Phase) ?Command {
             .next_tab => .next_tab,
             .previous_tab => .previous_tab,
             .open_config => .open_config,
-            else => if (switchTabIndex(action)) |idx| .{ .switch_tab = idx } else null,
+            else => if (focusPanelNumber(action)) |n|
+                .{ .focus_panel = n }
+            else if (switchTabIndex(action)) |idx|
+                .{ .switch_tab = idx }
+            else
+                null,
         },
     };
 }
@@ -89,6 +95,22 @@ fn switchTabIndex(action: keybind.Action) ?usize {
         .switch_tab_7 => 6,
         .switch_tab_8 => 7,
         .switch_tab_9 => 8,
+        else => null,
+    };
+}
+
+/// focus_panel_1..9 → 1-based panel number, else null.
+fn focusPanelNumber(action: keybind.Action) ?usize {
+    return switch (action) {
+        .focus_panel_1 => 1,
+        .focus_panel_2 => 2,
+        .focus_panel_3 => 3,
+        .focus_panel_4 => 4,
+        .focus_panel_5 => 5,
+        .focus_panel_6 => 6,
+        .focus_panel_7 => 7,
+        .focus_panel_8 => 8,
+        .focus_panel_9 => 9,
         else => null,
     };
 }
@@ -126,4 +148,12 @@ test "switch_tab_N maps to a zero-based index" {
 test "toggle_ai_copilot resolves in the early phase" {
     try std.testing.expectEqual(Command.toggle_ai_copilot, resolve(.toggle_ai_copilot, .early).?);
     try std.testing.expectEqual(@as(?Command, null), resolve(.toggle_ai_copilot, .late));
+}
+
+test "focus_panel actions resolve to a 1-based focus_panel command (late phase only)" {
+    try std.testing.expectEqual(Command{ .focus_panel = 1 }, resolve(.focus_panel_1, .late).?);
+    try std.testing.expectEqual(Command{ .focus_panel = 9 }, resolve(.focus_panel_9, .late).?);
+    try std.testing.expectEqual(@as(?Command, null), resolve(.focus_panel_1, .early));
+    // Regression: the shared `else` arm still resolves switch_tab.
+    try std.testing.expectEqual(Command{ .switch_tab = 0 }, resolve(.switch_tab_1, .late).?);
 }

@@ -1156,6 +1156,10 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
             .previous => AppWindow.gotoSplit(.previous_wrapped),
             .next => AppWindow.gotoSplit(.next_wrapped),
         },
+        // Numeric panel focus: like focus_split, "performable" — if there is no
+        // panel at that index (single-panel tab, or index past the panel count),
+        // don't consume the key so it falls through to the terminal.
+        .focus_panel => |n| return AppWindow.focusPanel(n),
         .equalize_splits => AppWindow.equalizeSplits(),
         .next_tab => AppWindow.switchTab((active_tab_state.g_active_tab + 1) % tab.g_tab_count),
         .previous_tab => {
