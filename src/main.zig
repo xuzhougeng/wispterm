@@ -14,6 +14,7 @@ const platform_console = @import("platform/console.zig");
 const font_backend = @import("platform/font_backend.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const i18n = @import("i18n.zig");
+const ai_chat = @import("ai_chat.zig");
 
 // ============================================================================
 // Font Discovery Test Functions (use --list-fonts or --test-font-discovery)
@@ -170,6 +171,7 @@ pub fn main() !void {
     // Create the App and run (first window on main thread, spawned windows on separate threads)
     var app = try App.init(allocator, cfg);
     defer app.deinit();
+    ai_chat.loadAccessRules(allocator);
 
     // App now lives at a stable address; start the WeChat direct bridge (no-op
     // unless weixin-direct-enabled is set).

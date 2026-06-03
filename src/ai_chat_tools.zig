@@ -23,6 +23,7 @@ const ai_chat_skills = @import("ai_chat_skills.zig");
 const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
+const ai_agent_access = @import("ai_agent_access.zig");
 
 /// Number of output lines included in a copilot context block.
 pub const COPILOT_CONTEXT_LINES: usize = 40;
@@ -229,6 +230,19 @@ fn weixinSendAttachmentTool(
     const wx_ctx = ctx.weixin_reply_context orelse {
         return ctx.allocator.dupe(u8, "No active Weixin reply context; cannot send attachment.");
     };
+    // Sending an attachment reads the file off disk and uploads it to a remote
+    // user, so a protected path here is an exfiltration risk. Force approval for
+    // a denied path even in full-permission mode (deny list always wins).
+    if (ctx.settings.access_rules) |rules| {
+        if (ai_agent_access.isPathDenied(ctx.allocator, rules, path, null)) {
+            const bl_reason = allocBlacklistReason(ctx.allocator, path);
+            defer if (bl_reason) |r| ctx.allocator.free(r);
+            const reason = bl_reason orelse "Sends a protected file — confirm to allow";
+            if (!ctx.requestApproval("weixin_send_attachment", path, reason)) {
+                return deniedResult(ctx.allocator, path, "operator rejected sending a protected file");
+            }
+        }
+    }
     wx_ctx.sender.sendAttachment(kind, path, display_name, wx_ctx.to_user_id, wx_ctx.context_token) catch |err| {
         return std.fmt.allocPrint(ctx.allocator, "Failed to send {s} to Weixin: {}", .{ kind.name(), err });
     };
@@ -403,11 +417,46 @@ pub fn rememberClosedTab(ctx: *ToolContext, closed: ToolClosedTab) !void {
 // Local command exec tool
 // ---------------------------------------------------------------------------
 
+const AccessGate = struct {
+    dangerous: bool,
+    blacklisted: bool,
+    force: bool,
+    skip: bool,
+    matched: []const u8,
+};
+
+/// Combine the destructive-command check with the private file-access guard.
+/// `force` => must prompt even in full mode; `skip` => may run without a prompt
+/// even in confirm mode.
+fn accessGate(ctx: *const ToolContext, command: []const u8, cwd: ?[]const u8) AccessGate {
+    const dangerous = isDangerousCommand(command);
+    const result = if (ctx.settings.access_rules) |rules|
+        ai_agent_access.evaluate(ctx.allocator, rules, command, cwd)
+    else
+        ai_agent_access.EvalResult{};
+    const blacklisted = result.decision == .blacklisted;
+    return .{
+        .dangerous = dangerous,
+        .blacklisted = blacklisted,
+        .force = dangerous or blacklisted,
+        .skip = result.decision == .whitelisted_safe and !dangerous,
+        .matched = result.matched,
+    };
+}
+
+/// Allocate a human-readable approval reason naming the protected path. Returns
+/// null on OOM (callers fall back to a static reason).
+fn allocBlacklistReason(allocator: std.mem.Allocator, matched: []const u8) ?[]u8 {
+    return std.fmt.allocPrint(allocator, "Reads protected path \"{s}\" — confirm to allow", .{matched}) catch null;
+}
+
 fn localCommandExecTool(ctx: *const ToolContext, command: []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
-    const dangerous = isDangerousCommand(command);
-    if (ctx.settings.permission != .full or dangerous) {
-        const reason = if (dangerous) DANGEROUS_COMMAND_APPROVAL_REASON else platform_process.localCommandApprovalLabel();
+    const gate = accessGate(ctx, command, cwd);
+    if (gate.force or (ctx.settings.permission != .full and !gate.skip)) {
+        const bl_reason = if (gate.blacklisted) allocBlacklistReason(ctx.allocator, gate.matched) else null;
+        defer if (bl_reason) |r| ctx.allocator.free(r);
+        const reason = bl_reason orelse if (gate.dangerous) DANGEROUS_COMMAND_APPROVAL_REASON else platform_process.localCommandApprovalLabel();
         if (!ctx.requestApproval(platform_process.localCommandToolName(), command, reason)) {
             return deniedResult(ctx.allocator, command, platform_process.localCommandDeniedReason());
         }
@@ -766,10 +815,12 @@ fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []
     const repl = ReplKind.parse(repl_name) orelse return std.fmt.allocPrint(ctx.allocator, "Unsupported repl \"{s}\". Use r, python, codex, claude_code, or plain.", .{repl_name});
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
     const control = controlKeyByte(code);
-    const dangerous = isDangerousCommand(code);
-    if (ctx.settings.permission != .full or dangerous) {
+    const gate = accessGate(ctx, code, null);
+    if (gate.force or (ctx.settings.permission != .full and !gate.skip)) {
         var reason_buf: [96]u8 = undefined;
-        const reason = if (dangerous)
+        const bl_reason = if (gate.blacklisted) allocBlacklistReason(ctx.allocator, gate.matched) else null;
+        defer if (bl_reason) |r| ctx.allocator.free(r);
+        const reason = bl_reason orelse if (gate.dangerous)
             DANGEROUS_COMMAND_APPROVAL_REASON
         else if (control != null)
             std.fmt.bufPrint(&reason_buf, "Send control key {s} to terminal", .{std.mem.trim(u8, code, " \t\r\n")}) catch "Send control key to terminal"
@@ -1060,10 +1111,12 @@ fn hasPendingAgentCommand(snapshot: []const u8) bool {
 
 fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
-    const dangerous = isDangerousCommand(command);
-    if (ctx.settings.permission != .full or dangerous) {
+    const gate = accessGate(ctx, command, null);
+    if (gate.force or (ctx.settings.permission != .full and !gate.skip)) {
         var reason_buf: [64]u8 = undefined;
-        const reason = if (dangerous)
+        const bl_reason = if (gate.blacklisted) allocBlacklistReason(ctx.allocator, gate.matched) else null;
+        defer if (bl_reason) |r| ctx.allocator.free(r);
+        const reason = bl_reason orelse if (gate.dangerous)
             DANGEROUS_COMMAND_APPROVAL_REASON
         else
             std.fmt.bufPrint(&reason_buf, "Type command into opened {s} terminal", .{kind.label()}) catch "Type command into terminal";
@@ -2164,6 +2217,55 @@ const ReplWaitTestHost = struct {
         };
     }
 };
+
+test "accessGate forces approval for denied paths and skips safe allowed reads" {
+    const a = std.testing.allocator;
+    var rules = try ai_agent_access.parseRules(a, "allow /work/ok\n", "/home/u");
+    defer rules.deinit();
+
+    var session_dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &session_dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = &rules },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+
+    // Denied path → force approval even in full mode.
+    const denied = accessGate(&ctx, "cat ~/.ssh/id_rsa", null);
+    try std.testing.expect(denied.force);
+    try std.testing.expect(denied.blacklisted);
+
+    // Safe read confined to an allow root → skip even in confirm mode.
+    ctx.settings.permission = .confirm;
+    const safe = accessGate(&ctx, "cat /work/ok/readme.md", null);
+    try std.testing.expect(safe.skip);
+    try std.testing.expect(!safe.force);
+
+    // Unrelated read → neutral (no force, no skip).
+    const neutral = accessGate(&ctx, "cat /work/other.txt", null);
+    try std.testing.expect(!neutral.force);
+    try std.testing.expect(!neutral.skip);
+}
+
+test "accessGate with no rules degrades to dangerous-only behavior" {
+    const a = std.testing.allocator;
+    var session_dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &session_dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    try std.testing.expect(!accessGate(&ctx, "cat foo.txt", null).force);
+    try std.testing.expect(accessGate(&ctx, "rm foo.txt", null).force); // dangerous still forces
+}
 
 test "Claude Code REPL input waits for app state before returning" {
     const allocator = std.testing.allocator;
