@@ -124,8 +124,18 @@ fn normalizeEntry(a: std.mem.Allocator, raw: []const u8, home: []const u8) ![]co
 }
 
 pub fn loadRules(allocator: std.mem.Allocator, file_path: []const u8, home: []const u8) !AccessRules {
-    _ = file_path;
-    return parseRules(allocator, "", home);
+    // Any failure to read the private file (missing, is-a-dir, permission, I/O)
+    // falls back to the built-in deny defaults so deny protection is never
+    // silently disabled. A missing file is the normal case (no warning); other
+    // errors warn but still degrade to built-ins.
+    const contents = std.fs.cwd().readFileAlloc(allocator, file_path, MAX_RULES_BYTES) catch |err| {
+        if (err != error.FileNotFound) {
+            std.log.warn("agent-access: cannot read {s} ({s}); using built-in deny defaults only", .{ file_path, @errorName(err) });
+        }
+        return parseRules(allocator, "", home);
+    };
+    defer allocator.free(contents);
+    return parseRules(allocator, contents, home);
 }
 
 pub fn evaluate(allocator: std.mem.Allocator, rules: *const AccessRules, command: []const u8, cwd: ?[]const u8) EvalResult {
@@ -557,4 +567,59 @@ test "evaluate handles paths embedded in option flags" {
     try std.testing.expectEqual(Decision.neutral, evaluate(a, &rules, "grep -f/etc/passwd ~/project/a", null).decision);
     // A flag path inside the allow root stays safe.
     try std.testing.expectEqual(Decision.whitelisted_safe, evaluate(a, &rules, "grep --file=~/project/patterns ~/project/a", null).decision);
+}
+
+test "loadRules reads a private file and merges built-ins" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "agent-access.local", .data = "allow ~/project\ndeny ~/private\n" });
+    const path = try tmp.dir.realpathAlloc(a, "agent-access.local");
+    defer a.free(path);
+
+    var rules = try loadRules(a, path, "/home/u");
+    defer rules.deinit();
+
+    var found_allow = false;
+    for (rules.allow_roots) |r| if (std.mem.eql(u8, r, "/home/u/project")) {
+        found_allow = true;
+    };
+    try std.testing.expect(found_allow);
+    var found_private = false;
+    var found_builtin = false;
+    for (rules.deny_roots) |r| {
+        if (std.mem.eql(u8, r, "/home/u/private")) found_private = true;
+        if (std.mem.eql(u8, r, "/home/u/.ssh")) found_builtin = true;
+    }
+    try std.testing.expect(found_private);
+    try std.testing.expect(found_builtin);
+}
+
+test "loadRules with a missing file falls back to built-ins" {
+    const a = std.testing.allocator;
+    var rules = try loadRules(a, "/nonexistent/path/agent-access.local", "/home/u");
+    defer rules.deinit();
+    var found_builtin = false;
+    for (rules.deny_roots) |r| if (std.mem.eql(u8, r, "/home/u/.ssh")) {
+        found_builtin = true;
+    };
+    try std.testing.expect(found_builtin);
+}
+
+test "loadRules with an unreadable path still keeps built-in deny defaults" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A directory where a file is expected → readFileAlloc errors; must not
+    // disable the built-in deny protection.
+    try tmp.dir.makeDir("agent-access.local");
+    const path = try tmp.dir.realpathAlloc(a, "agent-access.local");
+    defer a.free(path);
+    var rules = try loadRules(a, path, "/home/u");
+    defer rules.deinit();
+    var found_builtin = false;
+    for (rules.deny_roots) |r| if (std.mem.eql(u8, r, "/home/u/.ssh")) {
+        found_builtin = true;
+    };
+    try std.testing.expect(found_builtin);
 }
