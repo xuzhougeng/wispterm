@@ -212,6 +212,18 @@ pub threadlocal var g_divider_hover: bool = false; // Mouse is over a divider
 pub threadlocal var g_divider_dragging: bool = false; // Currently dragging a divider
 pub threadlocal var g_divider_drag_handle: ?SplitTree.Node.Handle = null; // Handle of the split node being resized
 pub threadlocal var g_divider_drag_layout: ?SplitTree.Split.Layout = null; // horizontal or vertical
+
+// Alt + left-drag panel swap. `source` is the grabbed panel (recorded on press),
+// `target` is the panel under the cursor while dragging (drives the highlight),
+// `active` flips true once the drag passes PANEL_SWAP_DRAG_THRESHOLD_PX. The
+// renderer reads `g_panel_swap_active`/`source`/`target` to dim the source and
+// highlight the drop target.
+const PANEL_SWAP_DRAG_THRESHOLD_PX: f64 = 6.0;
+pub threadlocal var g_panel_swap_active: bool = false;
+pub threadlocal var g_panel_swap_source: ?SplitTree.Node.Handle = null;
+pub threadlocal var g_panel_swap_target: ?SplitTree.Node.Handle = null;
+threadlocal var g_panel_swap_start_x: f64 = 0;
+threadlocal var g_panel_swap_start_y: f64 = 0;
 threadlocal var g_scrollbar_drag_surface: ?*Surface = null;
 threadlocal var g_scrollbar_drag_view_y: f32 = 0;
 threadlocal var g_scrollbar_drag_view_h: f32 = 0;
@@ -375,6 +387,7 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_selecting = false;
     plus_btn_pressed = false;
     tab.g_tab_close_pressed = null;
+    resetPanelSwapState();
     resetSidebarTabDragState();
     overlays.scrollbar.g_scrollbar_dragging = false;
     g_scrollbar_drag_surface = null;
@@ -723,6 +736,90 @@ pub fn updateFocusFromMouse(mouse_x: i32, mouse_y: i32) void {
             return;
         }
     }
+}
+
+/// Return the split-tree handle of the panel containing the given window point,
+/// or null if the point is not inside any (live) panel rect — e.g. it is over a
+/// divider gap or outside the content area.
+fn panelHandleAtPoint(x: i32, y: i32) ?SplitTree.Node.Handle {
+    for (0..split_layout.g_split_rect_count) |i| {
+        const rect = split_layout.g_split_rects[i];
+        if (!split_layout.cachedRectIsLive(rect)) continue;
+        if (x >= rect.x and x < rect.x + rect.width and
+            y >= rect.y and y < rect.y + rect.height)
+        {
+            return rect.handle;
+        }
+    }
+    return null;
+}
+
+fn resetPanelSwapState() void {
+    g_panel_swap_active = false;
+    g_panel_swap_source = null;
+    g_panel_swap_target = null;
+    g_panel_swap_start_x = 0;
+    g_panel_swap_start_y = 0;
+}
+
+/// Begin a potential Alt-drag panel swap if the active terminal tab is split and
+/// the press landed inside a panel. Returns true if the gesture was engaged (the
+/// caller should consume the event). Single-panel tabs are left alone so default
+/// click/selection behavior is unchanged.
+fn beginPanelSwapIfSplit(x: i32, y: i32) bool {
+    const t = tab.activeTab() orelse return false;
+    if (t.kind != .terminal or !t.tree.isSplit()) return false;
+    const source = panelHandleAtPoint(x, y) orelse return false;
+    g_panel_swap_source = source;
+    g_panel_swap_target = null;
+    g_panel_swap_active = false;
+    g_panel_swap_start_x = @floatFromInt(x);
+    g_panel_swap_start_y = @floatFromInt(y);
+    platform_cursor.set(.size_all);
+    return true;
+}
+
+/// Drive an in-progress panel swap from a mouse-move. Returns true while the
+/// gesture owns the move (caller should return early). Engages `active` once the
+/// drag passes the threshold, then tracks the hovered drop target for highlight.
+fn updatePanelSwapDrag(x: i32, y: i32) bool {
+    const source = g_panel_swap_source orelse return false;
+
+    if (!g_panel_swap_active) {
+        const dx = @as(f64, @floatFromInt(x)) - g_panel_swap_start_x;
+        const dy = @as(f64, @floatFromInt(y)) - g_panel_swap_start_y;
+        if (@sqrt(dx * dx + dy * dy) < PANEL_SWAP_DRAG_THRESHOLD_PX) return true;
+        g_panel_swap_active = true;
+        g_selecting = false;
+    }
+
+    // The drop target is the hovered panel, but never the source itself.
+    const hovered = panelHandleAtPoint(x, y);
+    const target: ?SplitTree.Node.Handle = if (hovered) |h| (if (h == source) null else h) else null;
+    if (target != g_panel_swap_target) {
+        g_panel_swap_target = target;
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+    }
+    platform_cursor.set(.size_all);
+    return true;
+}
+
+/// Finish a panel swap on mouse-up. Returns true if a swap gesture was in
+/// progress (caller should consume the event). Performs the swap only when the
+/// drag was active and dropped on a valid, different panel.
+fn finishPanelSwapDrag() bool {
+    const source = g_panel_swap_source orelse return false;
+    const did_swap = g_panel_swap_active;
+    const target = g_panel_swap_target;
+    resetPanelSwapState();
+    if (did_swap) {
+        if (target) |t| _ = AppWindow.swapPanels(source, t);
+    }
+    // The press set the size_all cursor; restore it whether or not a swap
+    // happened (a bare Alt-click never crossed the drag threshold).
+    platform_cursor.set(.arrow);
+    return true;
 }
 
 /// Process all queued platform input events. Called once per frame from the main loop.
@@ -2705,6 +2802,18 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         }
     }
 
+    // Alt + left-press begins a panel swap when the active terminal tab is
+    // split. Intercept here — before terminal mouse-reporting — so the gesture
+    // works even when the panel runs a full-screen mouse-tracking program. Only
+    // engages when the press lands inside a panel of a split tab; otherwise it
+    // falls through to the normal handling below.
+    if (ev.button == .left and ev.action == .press and ev.alt) {
+        if (beginPanelSwapIfSplit(ev.x, ev.y)) {
+            updateFocusFromMouse(ev.x, ev.y);
+            return;
+        }
+    }
+
     // Terminal mouse reporting (xterm 1000/1002/1003). When the focused
     // program has enabled mouse tracking, deliver button events to the PTY
     // instead of driving local selection / paste / context-menu. A release
@@ -3299,6 +3408,9 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 return;
             }
 
+            // Handle Alt-drag panel swap release (performs the swap if valid).
+            if (finishPanelSwapDrag()) return;
+
             // Handle divider drag release
             if (g_divider_dragging) {
                 g_divider_dragging = false;
@@ -3558,6 +3670,11 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         platform_cursor.set(.size_all);
         return;
     }
+
+    // Alt-drag panel swap: track the drop target / dim the source. Owns the move
+    // while a swap source is recorded, so it must precede PTY mouse-report and
+    // selection handling below.
+    if (updatePanelSwapDrag(ev.x, ev.y)) return;
 
     // Reported mouse drag: stream motion to the PTY (button/any tracking
     // modes) and suppress local hover/selection while the button is held.

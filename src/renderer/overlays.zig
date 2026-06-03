@@ -4241,6 +4241,39 @@ pub fn renderUnfocusedOverlaySimple(width: f32, height: f32) void {
     });
 }
 
+/// Highlight a panel that is the current Alt-drag swap drop target. Drawn inside
+/// the panel's own viewport (coords 0..width / 0..height), like the unfocused
+/// overlay: a faint accent wash plus an accent border. Uses real alpha blending
+/// (fillOverlay) so the underlying terminal content stays visible.
+pub fn renderSwapTargetHighlight(width: f32, height: f32) void {
+    const accent = AppWindow.g_theme.cursor_color;
+    const border: f32 = 2.0;
+
+    const fillRectOverlay = struct {
+        fn call(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
+            if (w <= 0 or h <= 0) return;
+            const verts = [6][4]f32{
+                .{ x, y + h, 0.0, 0.0 },
+                .{ x, y, 0.0, 1.0 },
+                .{ x + w, y, 1.0, 1.0 },
+                .{ x, y + h, 0.0, 0.0 },
+                .{ x + w, y, 1.0, 1.0 },
+                .{ x + w, y + h, 1.0, 0.0 },
+            };
+            ui_pipeline.fillOverlay(verts, .{ color[0], color[1], color[2], alpha });
+        }
+    }.call;
+
+    // Faint accent wash over the whole panel.
+    fillRectOverlay(0, 0, width, height, accent, 0.14);
+
+    // Accent border on all four edges.
+    fillRectOverlay(0, 0, width, border, accent, 0.85); // bottom
+    fillRectOverlay(0, height - border, width, border, accent, 0.85); // top
+    fillRectOverlay(0, 0, border, height, accent, 0.85); // left
+    fillRectOverlay(width - border, 0, border, height, accent, 0.85); // right
+}
+
 /// Render split dividers between panes in the active tab.
 /// If split-divider-color is configured, uses that color (solid).
 /// Otherwise uses scrollbar-style rendering: black with alpha transparency.

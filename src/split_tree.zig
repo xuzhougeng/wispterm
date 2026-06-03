@@ -416,6 +416,31 @@ pub fn resizeInPlace(
     s.ratio = ratio;
 }
 
+/// Swap the surfaces held by two leaf nodes in place. Both handles MUST refer
+/// to leaf nodes (asserted). Topology, layout, ratios, zoom state, and
+/// reference counts are all unchanged — only the two *Surface pointers swap.
+/// Swapping a node with itself is a harmless no-op.
+///
+/// Like `resizeInPlace`, this mutates the otherwise-immutable nodes via the
+/// constCast escape hatch: we own the memory and a swap touches no handles.
+pub fn swapLeaves(self: *SplitTree, a: Node.Handle, b: Node.Handle) void {
+    assert(a.idx() < self.nodes.len);
+    assert(b.idx() < self.nodes.len);
+    if (a == b) return;
+
+    const nodes: []Node = @constCast(self.nodes);
+    const surf_a = switch (nodes[a.idx()]) {
+        .leaf => |s| s,
+        .split => unreachable,
+    };
+    const surf_b = switch (nodes[b.idx()]) {
+        .leaf => |s| s,
+        .split => unreachable,
+    };
+    nodes[a.idx()] = .{ .leaf = surf_b };
+    nodes[b.idx()] = .{ .leaf = surf_a };
+}
+
 /// Insert another tree into this tree at the given node in the
 /// specified direction. The other tree will be inserted in the
 /// new direction. For example, if the direction is "right" then
@@ -1199,4 +1224,60 @@ test "SplitTree: fromSnapshot clamps ratios" {
     }
 
     try std.testing.expect(tree.nodes[0].split.ratio <= 0.95);
+}
+
+test "SplitTree: swapLeaves exchanges leaf surfaces and preserves topology" {
+    const session_persist = @import("session_persist.zig");
+
+    var leaf_a = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var leaf_b = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var root = session_persist.NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.6, .left = &leaf_a, .right = &leaf_b } };
+
+    const Stub = struct {
+        var counter: usize = 0;
+        var sentinels: [16]usize = undefined;
+        fn make(_: *const session_persist.SurfaceSnap, _: Allocator) ?*Surface {
+            const ptr = &sentinels[counter];
+            counter += 1;
+            return @ptrCast(@alignCast(ptr));
+        }
+    };
+    Stub.counter = 0;
+
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    defer {
+        // Sentinel leaves can't be unref'd; free the arena directly.
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    // Pre-order layout: [root_split@0, leaf_a@1, leaf_b@2]
+    const a: Node.Handle = @enumFromInt(1);
+    const b: Node.Handle = @enumFromInt(2);
+    const surf_a = tree.nodes[1].leaf;
+    const surf_b = tree.nodes[2].leaf;
+    try std.testing.expect(surf_a != surf_b);
+
+    // Capture topology before the swap.
+    const layout_before = tree.nodes[0].split.layout;
+    const ratio_before = tree.nodes[0].split.ratio;
+    const left_before = tree.nodes[0].split.left;
+    const right_before = tree.nodes[0].split.right;
+
+    tree.swapLeaves(a, b);
+
+    // Surfaces exchanged.
+    try std.testing.expectEqual(surf_b, tree.nodes[1].leaf);
+    try std.testing.expectEqual(surf_a, tree.nodes[2].leaf);
+
+    // Topology untouched: layout, ratio, and child handles unchanged.
+    try std.testing.expectEqual(layout_before, tree.nodes[0].split.layout);
+    try std.testing.expectEqual(ratio_before, tree.nodes[0].split.ratio);
+    try std.testing.expectEqual(left_before, tree.nodes[0].split.left);
+    try std.testing.expectEqual(right_before, tree.nodes[0].split.right);
+
+    // Swapping the same pair again restores the original arrangement.
+    tree.swapLeaves(a, b);
+    try std.testing.expectEqual(surf_a, tree.nodes[1].leaf);
+    try std.testing.expectEqual(surf_b, tree.nodes[2].leaf);
 }

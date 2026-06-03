@@ -2086,6 +2086,19 @@ pub fn equalizeSplits() void {
     }
 }
 
+/// Swap the contents of two panels (drag source `a`, drop target `b`) within
+/// the active tab. Returns whether a swap happened so the input layer can avoid
+/// redundant work on a no-op. Topology is unchanged, so cached rects only need
+/// to be re-pointed at their (swapped) surfaces — invalidate and rebuild.
+pub fn swapPanels(a: SplitTree.Node.Handle, b: SplitTree.Node.Handle) bool {
+    if (!tab.swapPanels(a, b)) return false;
+    split_layout.invalidateCachedRects();
+    handleActiveSurfaceChangeWithinTab();
+    g_force_rebuild = true;
+    g_cells_valid = false;
+    return true;
+}
+
 // Embed the font
 // Embedded fallback font (JetBrains Mono, like Ghostty)
 const embedded = @import("font/embedded.zig");
@@ -5105,8 +5118,17 @@ fn runMainLoop(self: *AppWindow) !void {
                         // Render scrollbar for this surface within its viewport
                         overlays.renderScrollbarForSurface(rect.surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
 
-                        // Draw unfocused overlay if not focused
-                        if (!is_focused) {
+                        // Alt-drag panel swap feedback: highlight the drop target,
+                        // dim the grabbed source. Otherwise dim any unfocused panel.
+                        const is_swap_target = input.g_panel_swap_active and
+                            input.g_panel_swap_target != null and
+                            rect.handle == input.g_panel_swap_target.?;
+                        const is_swap_source = input.g_panel_swap_active and
+                            input.g_panel_swap_source != null and
+                            rect.handle == input.g_panel_swap_source.?;
+                        if (is_swap_target) {
+                            overlays.renderSwapTargetHighlight(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        } else if (is_swap_source or !is_focused) {
                             overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
                         }
 
