@@ -81,7 +81,7 @@ pub const TabState = struct {
         }
         if (self.kind == .ai_history) {
             const session = self.ai_history_session orelse return "AI History";
-            return if (session.source.name.len > 0) session.source.name else "AI History";
+            return session.tabTitle();
         }
         const surface = self.focusedSurface() orelse return "wispterm";
         return surface.getTitle();
@@ -1789,7 +1789,8 @@ test "tab: spawnAiHistoryTab owns mutable ssh source buffers" {
     try std.testing.expectEqualStrings("ssh-history", session.source.id);
     try std.testing.expectEqualStrings("Build Box", session.source.name);
     try std.testing.expectEqualStrings("buildbox", session.source.target.ssh.profile_name);
-    try std.testing.expectEqualStrings("Build Box", active.getTitle());
+    // The tab conveys the history workbench, not the bare source name.
+    try std.testing.expectEqualStrings("History · Build Box", active.getTitle());
 }
 
 test "tab: spawnAiHistoryTab rolls back when tab allocation fails" {

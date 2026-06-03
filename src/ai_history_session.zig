@@ -159,6 +159,22 @@ pub const SshScannerHost = struct {
     }
 };
 
+/// Which of the three workbench panels keyboard ↑/↓ acts on. ←/→ moves focus
+/// between them (Filters ⟷ Sessions ⟷ Transcript).
+pub const Focus = enum(u8) {
+    filters = 0,
+    sessions = 1,
+    transcript = 2,
+};
+
+/// Max day buckets considered when walking the combined filter list by keyboard.
+const FILTER_BUCKET_CAP: usize = 256;
+/// Combined-filter cursor layout: rows 0..2 are the categories (All/Codex/
+/// Claude), row 3 is "All dates", rows 4.. are individual days.
+const FILTER_CATEGORY_ROWS: usize = 3;
+const FILTER_ALL_DATES_ROW: usize = 3;
+const FILTER_DAY_BASE: usize = 4;
+
 pub const Session = struct {
     /// Allocator used for row storage. Do not change while rows are live.
     allocator: std.mem.Allocator,
@@ -189,6 +205,16 @@ pub const Session = struct {
     /// Scroll offset into the transcript preview, in wrapped visual lines. The
     /// renderer clamps this against the actual content height each frame.
     transcript_scroll: usize = 0,
+    /// Which panel keyboard ↑/↓ acts on; ←/→ switches it. Sessions by default so
+    /// the list is immediately navigable when the workbench opens.
+    focus: Focus = .sessions,
+    /// Keyboard cursor into the combined CATEGORY+DATE list while the Filters
+    /// panel is focused. Indices follow FILTER_* constants above.
+    filter_cursor: usize = 0,
+    /// Lazily-composed tab/window title ("History · <source>"); the source is
+    /// fixed for a session's lifetime, so it is computed once.
+    tab_title_buf: [96]u8 = undefined,
+    tab_title_len: usize = 0,
 
     // Async scan/transcript support. `mutex` guards state/status/rows/selected/
     // list_offset/filter/filter_len/transcript*/generation fields. Workers run host
@@ -732,6 +758,84 @@ pub const Session = struct {
             count += 1;
         }
         return count;
+    }
+
+    /// Tab/window title for the workbench: "History · <source>", or "AI History"
+    /// when the source is unnamed. Conveys that this is the history workbench
+    /// rather than echoing the originating terminal's name. Cached after first use.
+    pub fn tabTitle(self: *Session) []const u8 {
+        if (self.tab_title_len == 0) {
+            const composed = if (self.source.name.len == 0)
+                std.fmt.bufPrint(&self.tab_title_buf, "AI History", .{}) catch "AI History"
+            else
+                std.fmt.bufPrint(&self.tab_title_buf, "History · {s}", .{self.source.name}) catch self.source.name;
+            self.tab_title_len = composed.len;
+        }
+        return self.tab_title_buf[0..self.tab_title_len];
+    }
+
+    // --- panel focus + combined-filter keyboard navigation ----------------
+
+    /// Move keyboard focus between the three panels (←/→). Clamped at the ends.
+    pub fn focusMove(self: *Session, delta: isize) void {
+        const cur: isize = @intFromEnum(self.focus);
+        const next = std.math.clamp(cur + delta, 0, 2);
+        self.focus = @enumFromInt(@as(u8, @intCast(next)));
+    }
+
+    /// Number of rows in the combined CATEGORY+DATE list the Filters cursor walks
+    /// (3 categories + "All dates" + one row per distinct day). Callers must hold
+    /// `mutex` (reads `rows`).
+    pub fn filterRowCount(self: *const Session) usize {
+        var buf: [FILTER_BUCKET_CAP]types.DateBucket = undefined;
+        const buckets = self.buildDateBuckets(&buf);
+        return FILTER_DAY_BASE + buckets.len;
+    }
+
+    /// Move the Filters-panel cursor by `delta` rows and apply the filter the
+    /// cursor lands on (category for rows 0..2, date for rows 3..). Live-applying
+    /// mirrors clicking the row. Callers must hold `mutex`.
+    pub fn moveFilterCursor(self: *Session, delta: isize) void {
+        var buf: [FILTER_BUCKET_CAP]types.DateBucket = undefined;
+        const buckets = self.buildDateBuckets(&buf);
+        const count = FILTER_DAY_BASE + buckets.len;
+        if (count == 0) return;
+        const old = @min(self.filter_cursor, count - 1);
+        const next = if (delta < 0)
+            old - @min(old, @as(usize, @intCast(-delta)))
+        else
+            @min(count - 1, old + @as(usize, @intCast(delta)));
+        self.filter_cursor = next;
+        self.applyFilterCursorLocked(buckets);
+    }
+
+    fn applyFilterCursorLocked(self: *Session, buckets: []const types.DateBucket) void {
+        const c = self.filter_cursor;
+        if (c < FILTER_CATEGORY_ROWS) {
+            self.setCategory(@enumFromInt(c));
+        } else if (c == FILTER_ALL_DATES_ROW) {
+            self.setDateFilter(null);
+        } else {
+            const day = c - FILTER_DAY_BASE;
+            if (day < buckets.len) self.setDateFilter(buckets[day].key);
+        }
+    }
+
+    /// Keep the Filters cursor's day row inside the visible DATE window of
+    /// `day_slots` rows by adjusting `date_offset`. Category and "All dates" rows
+    /// pin the list to the top. Callers must hold `mutex`.
+    pub fn ensureFilterCursorVisible(self: *Session, day_slots: usize) void {
+        if (self.filter_cursor < FILTER_DAY_BASE) {
+            self.date_offset = 0;
+            return;
+        }
+        if (day_slots == 0) return;
+        const day = self.filter_cursor - FILTER_DAY_BASE;
+        if (day < self.date_offset) {
+            self.date_offset = day;
+        } else if (day >= self.date_offset + day_slots) {
+            self.date_offset = day + 1 - day_slots;
+        }
     }
 };
 
@@ -2684,6 +2788,76 @@ test "ai_history_session: setDateFilter resets selection and is a no-op when unc
     session.selected = 1;
     session.setDateFilter(20260601);
     try std.testing.expectEqual(@as(usize, 1), session.selected);
+}
+
+test "ai_history_session: focusMove clamps across the three panels" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    try std.testing.expectEqual(Focus.sessions, session.focus); // default
+    session.focusMove(-1);
+    try std.testing.expectEqual(Focus.filters, session.focus);
+    session.focusMove(-1); // clamp at left edge
+    try std.testing.expectEqual(Focus.filters, session.focus);
+    session.focusMove(1);
+    try std.testing.expectEqual(Focus.sessions, session.focus);
+    session.focusMove(1);
+    try std.testing.expectEqual(Focus.transcript, session.focus);
+    session.focusMove(1); // clamp at right edge
+    try std.testing.expectEqual(Focus.transcript, session.focus);
+}
+
+test "ai_history_session: moveFilterCursor walks categories then dates, applying live" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    const day1: i64 = 1780315200000; // 2026-06-01
+    const day2: i64 = day1 + 86400000; // 2026-06-02
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .codex, .session_id = "a", .title = "A", .source_path = "a.jsonl", .resume_kind = .codex_resume, .last_active_at_ms = day2 },
+        .{ .provider = .claude, .session_id = "b", .title = "B", .source_path = "b.jsonl", .resume_kind = .claude_resume, .last_active_at_ms = day1 },
+    };
+    try session.replaceRows(&rows);
+
+    // Combined list: All, Codex, Claude, All dates, 20260602, 20260601 => 6 rows.
+    try std.testing.expectEqual(@as(usize, 6), session.filterRowCount());
+    try std.testing.expectEqual(types.CategoryFilter.all, session.category);
+
+    session.moveFilterCursor(1); // -> Codex
+    try std.testing.expectEqual(types.CategoryFilter.codex, session.category);
+    session.moveFilterCursor(1); // -> Claude
+    try std.testing.expectEqual(types.CategoryFilter.claude, session.category);
+    session.moveFilterCursor(1); // -> All dates (date filter cleared, category kept)
+    try std.testing.expectEqual(types.CategoryFilter.claude, session.category);
+    try std.testing.expectEqual(@as(?types.DateKey, null), session.date_filter);
+
+    // Reset category so both days are present, then step onto a specific day.
+    session.setCategory(.all);
+    session.filter_cursor = FILTER_ALL_DATES_ROW;
+    session.moveFilterCursor(1); // -> 20260602 (first/most-recent day)
+    try std.testing.expectEqual(@as(?types.DateKey, 20260602), session.date_filter);
+    session.moveFilterCursor(1); // -> 20260601
+    try std.testing.expectEqual(@as(?types.DateKey, 20260601), session.date_filter);
+    session.moveFilterCursor(1); // clamp at end, stays on last day
+    try std.testing.expectEqual(@as(?types.DateKey, 20260601), session.date_filter);
+}
+
+test "ai_history_session: ensureFilterCursorVisible scrolls the day window" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+    // Category/All-dates rows pin to the top.
+    session.date_offset = 5;
+    session.filter_cursor = 1; // Codex
+    session.ensureFilterCursorVisible(3);
+    try std.testing.expectEqual(@as(usize, 0), session.date_offset);
+
+    // Day index 6 (cursor 10) with a 3-row window scrolls so it is visible.
+    session.filter_cursor = FILTER_DAY_BASE + 6;
+    session.ensureFilterCursorVisible(3);
+    try std.testing.expectEqual(@as(usize, 4), session.date_offset); // 6 + 1 - 3
+
+    // Scrolling back up to an earlier day pulls the window up.
+    session.filter_cursor = FILTER_DAY_BASE + 1;
+    session.ensureFilterCursorVisible(3);
+    try std.testing.expectEqual(@as(usize, 1), session.date_offset);
 }
 
 test "ai_history_session: scrollDateBy saturates at zero" {

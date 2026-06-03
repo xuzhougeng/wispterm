@@ -10,6 +10,8 @@ const SMALL_GAP: f32 = 6;
 const BUTTON_PAD_Y: f32 = 4;
 const BUTTON_EXTRA_H: f32 = 10;
 const RESUME_BUTTON_W: f32 = 104;
+/// Width of the "r Retry" affordance sharing the Status value line (right-aligned).
+const RETRY_LABEL_W: f32 = 70;
 const MAX_DATE_BUCKETS: usize = 256;
 
 pub const DrawContext = struct {
@@ -45,13 +47,13 @@ pub const Hit = union(enum) {
 
 pub const LeftColumnLayout = struct {
     source_name_top: f32,
-    target_top: f32,
     status_label_top: f32,
     status_value_top: f32,
+    /// Retry/rescan affordance — shares the status value line, right-aligned.
+    retry_text_top: f32,
     category_heading_top: f32,
     category_rows_top: f32,
     category_row_h: f32,
-    retry_text_top: f32,
     date_heading_top: f32,
     date_rows_top: f32,
     date_row_h: f32,
@@ -60,37 +62,32 @@ pub const LeftColumnLayout = struct {
 pub fn leftColumnLayout(top: f32, cell_h: f32) LeftColumnLayout {
     var y = top + headerHeight(cell_h) + 18;
     const source_name_top = y;
-    y += cell_h + 8;
-    const target_top = y;
-    y += cell_h + 18;
+    y += cell_h + 16; // single source line (the target type no longer duplicates it)
     const status_label_top = y;
     y += cell_h + 5;
     const status_value_top = y;
+    // Retry shares the status value line (it is scan-related), so CATEGORY and
+    // DATE become one contiguous filter group below.
+    const retry_text_top = status_value_top;
     y += cell_h + 18;
     const category_heading_top = y;
     y += cell_h + 8;
     const category_rows_top = y;
     const category_row_h = cell_h + 10;
     y += category_row_h * 3;
-    y += 12;
-    const retry_text_top = y;
-    // DATE navigator: below the Refresh button, filling the rest of the column.
-    // `cell_h + 16` clears the retry text plus the refresh button body
-    // (buttonHeight = cell_h + BUTTON_EXTRA_H, lifted by BUTTON_PAD_Y).
-    y += cell_h + 16;
+    y += 14;
     const date_heading_top = y;
     y += cell_h + 8;
     const date_rows_top = y;
     const date_row_h = category_row_h;
     return .{
         .source_name_top = source_name_top,
-        .target_top = target_top,
         .status_label_top = status_label_top,
         .status_value_top = status_value_top,
+        .retry_text_top = retry_text_top,
         .category_heading_top = category_heading_top,
         .category_rows_top = category_rows_top,
         .category_row_h = category_row_h,
-        .retry_text_top = retry_text_top,
         .date_heading_top = date_heading_top,
         .date_rows_top = date_rows_top,
         .date_row_h = date_row_h,
@@ -210,8 +207,10 @@ pub fn interactionHitTest(
         }
     }
 
+    // Retry shares the Status value line, right-aligned; only that label is clickable.
     const refresh_top = refreshButtonTop(top, cell_h);
-    if (rectContains(mx, my, layout.left_x + PAD_X, refresh_top, @max(0, layout.left_w - PAD_X * 2), buttonHeight(cell_h))) {
+    const retry_x = layout.left_x + layout.left_w - PAD_X - RETRY_LABEL_W;
+    if (rectContains(mx, my, retry_x, refresh_top, RETRY_LABEL_W, buttonHeight(cell_h))) {
         return .refresh;
     }
 
@@ -301,18 +300,20 @@ fn drawDateRow(
     label: []const u8,
     count: usize,
     active: bool,
+    cursor: bool,
     fg: [3]f32,
     muted: [3]f32,
     accent: [3]f32,
     selected_bg: [3]f32,
 ) void {
-    if (active) {
+    const highlight = active or cursor;
+    if (highlight) {
         const row_y = yFromTop(window_height, row_top, row_h);
-        draw.fillQuadAlpha(layout.left_x, row_y, layout.left_w, row_h, selected_bg, 0.92);
-        draw.fillQuad(layout.left_x, row_y, 3, row_h, accent);
+        draw.fillQuadAlpha(layout.left_x, row_y, layout.left_w, row_h, selected_bg, if (cursor) 0.98 else 0.92);
+        draw.fillQuad(layout.left_x, row_y, if (cursor) 4 else 3, row_h, accent);
     }
     const text_top = row_top + (row_h - draw.cell_h) / 2;
-    const label_color = if (active) fg else muted;
+    const label_color = if (highlight) fg else muted;
     var num_buf: [16]u8 = undefined;
     const num_text = std.fmt.bufPrint(&num_buf, "{d}", .{count}) catch "";
     const count_w: f32 = 44;
@@ -335,21 +336,28 @@ fn renderLeftColumn(
     panel_strong: [3]f32,
     line: [3]f32,
 ) void {
+    const filters_focused = session.focus == .filters;
     const header_h = headerHeight(draw.cell_h);
     draw.fillQuadAlpha(layout.left_x, yFromTop(window_height, top, header_h), layout.left_w, header_h, panel_strong, 0.9);
     draw.fillQuad(layout.left_x, yFromTop(window_height, top + header_h, 1), layout.left_w, 1, line);
     _ = draw.renderTextLimited("AI History", layout.left_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.left_w - PAD_X * 2);
+    drawFocusUnderline(draw, layout.left_x, layout.left_w, window_height, top, header_h, accent, filters_focused);
 
     const lc = leftColumnLayout(top, draw.cell_h);
-    _ = draw.renderTextLimited(session.source.name, layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.source_name_top), fg, layout.left_w - PAD_X * 2);
-    _ = draw.renderTextLimited(targetLabel(session.source.target), layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.target_top), muted, layout.left_w - PAD_X * 2);
+    var source_buf: [160]u8 = undefined;
+    _ = draw.renderTextLimited(sourceDisplayText(session.source, &source_buf), layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.source_name_top), fg, layout.left_w - PAD_X * 2);
+
+    // Status label, plus the rescan affordance sharing the value line on the right.
     _ = draw.renderTextLimited("Status", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_label_top), muted, layout.left_w - PAD_X * 2);
+    const retry_x = layout.left_x + layout.left_w - PAD_X - RETRY_LABEL_W;
+    _ = draw.renderTextLimited("r Retry", retry_x, yTextFromTop(draw, window_height, lc.retry_text_top), muted, RETRY_LABEL_W);
     var status_buf: [48]u8 = undefined;
     const status_label = if (session.state == .scanning)
         ai_history_session.scanningStatusLabel(&status_buf, session.rows.items.len)
     else
         statusText(session);
-    _ = draw.renderTextLimited(status_label, layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_value_top), accent, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited(status_label, layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.status_value_top), accent, @max(0, retry_x - (layout.left_x + PAD_X) - 8));
+
     _ = draw.renderTextLimited("CATEGORY", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.category_heading_top), muted, layout.left_w - PAD_X * 2);
 
     const query = session.filter[0..session.filter_len];
@@ -359,13 +367,15 @@ fn renderLeftColumn(
     for (categories, 0..) |cat, i| {
         const row_top = lc.category_rows_top + @as(f32, @floatFromInt(i)) * lc.category_row_h;
         const active = session.category == cat;
-        if (active) {
+        const cursor = filters_focused and session.filter_cursor == i;
+        const highlight = active or cursor;
+        if (highlight) {
             const row_y = yFromTop(window_height, row_top, lc.category_row_h);
-            draw.fillQuadAlpha(layout.left_x, row_y, layout.left_w, lc.category_row_h, selected_bg, 0.92);
-            draw.fillQuad(layout.left_x, row_y, 3, lc.category_row_h, accent);
+            draw.fillQuadAlpha(layout.left_x, row_y, layout.left_w, lc.category_row_h, selected_bg, if (cursor) 0.98 else 0.92);
+            draw.fillQuad(layout.left_x, row_y, if (cursor) 4 else 3, lc.category_row_h, accent);
         }
         const text_top = row_top + (lc.category_row_h - draw.cell_h) / 2;
-        const label_color = if (active) fg else muted;
+        const label_color = if (highlight) fg else muted;
         const count = switch (cat) {
             .all => counts.all,
             .codex => counts.codex,
@@ -380,14 +390,13 @@ fn renderLeftColumn(
         _ = draw.renderTextLimited(num_text, count_x, yTextFromTop(draw, window_height, text_top), muted, count_w);
     }
 
-    _ = draw.renderTextLimited("r  Retry scan", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.retry_text_top), muted, layout.left_w - PAD_X * 2);
-
     _ = draw.renderTextLimited("DATE", layout.left_x + PAD_X, yTextFromTop(draw, window_height, lc.date_heading_top), muted, layout.left_w - PAD_X * 2);
     var bucket_buf: [MAX_DATE_BUCKETS]types.DateBucket = undefined;
     const buckets = session.buildDateBuckets(&bucket_buf);
     const date_cap = dateVisibleCapacity(window_height, lc.date_rows_top, draw.cell_h);
     if (date_cap > 0) {
-        drawDateRow(draw, layout, window_height, lc.date_rows_top, lc.date_row_h, "All dates", session.dateAllCount(), session.date_filter == null, fg, muted, accent, selected_bg);
+        const all_dates_cursor = filters_focused and session.filter_cursor == 3;
+        drawDateRow(draw, layout, window_height, lc.date_rows_top, lc.date_row_h, "All dates", session.dateAllCount(), session.date_filter == null, all_dates_cursor, fg, muted, accent, selected_bg);
         const day_slots = date_cap - 1;
         const offset = clampDateOffset(session.date_offset, buckets.len, day_slots);
         var j: usize = 0;
@@ -397,7 +406,8 @@ fn renderLeftColumn(
             var label_buf: [16]u8 = undefined;
             const label = types.formatDateKey(bucket.key, &label_buf);
             const active = session.date_filter != null and session.date_filter.? == bucket.key;
-            drawDateRow(draw, layout, window_height, row_top, lc.date_row_h, label, bucket.count, active, fg, muted, accent, selected_bg);
+            const cursor = filters_focused and session.filter_cursor == 4 + offset + j;
+            drawDateRow(draw, layout, window_height, row_top, lc.date_row_h, label, bucket.count, active, cursor, fg, muted, accent, selected_bg);
         }
     }
 
@@ -423,6 +433,7 @@ fn renderList(
     const filter_y = yFromTop(window_height, top, filter_h);
     draw.fillQuadAlpha(layout.list_x, filter_y, layout.list_w, filter_h, mixColor(draw.bg, fg, 0.055), 0.98);
     draw.fillQuad(layout.list_x, yFromTop(window_height, top + filter_h, 1), layout.list_w, 1, line);
+    drawFocusUnderline(draw, layout.list_x, layout.list_w, window_height, top, filter_h, accent, session.focus == .sessions);
 
     const query = session.filter[0..session.filter_len];
     const filter_label = if (query.len == 0) "Search sessions" else query;
@@ -500,6 +511,7 @@ fn renderDetail(
     draw.fillQuadAlpha(layout.detail_x, yFromTop(window_height, top, header_h), layout.detail_w, header_h, panel_strong, 0.82);
     draw.fillQuad(layout.detail_x, yFromTop(window_height, top + header_h, 1), layout.detail_w, 1, line);
     _ = draw.renderTextLimited("Transcript Preview", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.detail_w - PAD_X * 2);
+    drawFocusUnderline(draw, layout.detail_x, layout.detail_w, window_height, top, header_h, accent, session.focus == .transcript);
 
     const selected = session.selectedVisible() orelse {
         _ = draw.renderTextLimited("Select a session", layout.detail_x + PAD_X, yTextFromTop(draw, window_height, top + header_h + 24), muted, layout.detail_w - PAD_X * 2);
@@ -696,6 +708,24 @@ fn statusText(session: anytype) []const u8 {
     };
 }
 
+/// Accent rule under a panel's header marking it as the keyboard-focused panel.
+fn drawFocusUnderline(draw: DrawContext, x: f32, w: f32, window_height: f32, top: f32, header_h: f32, accent: [3]f32, focused: bool) void {
+    if (!focused) return;
+    draw.fillQuad(x, yFromTop(window_height, top + header_h - 2, 2), w, 2, accent);
+}
+
+/// Single source line for the left column: the source name, with the target
+/// type appended only when it adds information (e.g. "panda · SSH"). When the
+/// name already equals the target type (the common "WSL"/"WSL" case) it is shown
+/// once instead of duplicated.
+fn sourceDisplayText(source: anytype, buf: []u8) []const u8 {
+    const name = source.name;
+    const tlabel = targetLabel(source.target);
+    if (name.len == 0) return tlabel;
+    if (std.ascii.eqlIgnoreCase(name, tlabel)) return name;
+    return std.fmt.bufPrint(buf, "{s} · {s}", .{ name, tlabel }) catch name;
+}
+
 fn targetLabel(target: anytype) []const u8 {
     return switch (target) {
         .local => "Local",
@@ -867,9 +897,10 @@ test "ai_history_renderer: interaction hit test maps buttons and row offset" {
     const cell_h: f32 = 16;
     const top: f32 = 40;
 
+    // Retry is right-aligned on the Status value line; click inside that label.
     try std.testing.expectEqual(
         Hit.refresh,
-        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + PAD_X + 4, refreshButtonTop(top, cell_h) + 2),
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + layout.left_w - PAD_X - RETRY_LABEL_W + 4, refreshButtonTop(top, cell_h) + 2),
     );
     try std.testing.expectEqual(
         Hit.@"resume",
@@ -953,10 +984,12 @@ test "ai_history_renderer: clampScroll keeps scroll within the scrollable range"
 
 test "ai_history_renderer: left column layout is ordered top to bottom" {
     const lc = leftColumnLayout(40, 16);
-    try std.testing.expect(lc.source_name_top < lc.target_top);
-    try std.testing.expect(lc.target_top < lc.status_label_top);
+    try std.testing.expect(lc.source_name_top < lc.status_label_top);
     try std.testing.expect(lc.status_label_top < lc.status_value_top);
-    try std.testing.expect(lc.status_value_top < lc.retry_text_top);
+    // Retry shares the status value line, then CATEGORY/DATE follow.
+    try std.testing.expectEqual(lc.status_value_top, lc.retry_text_top);
+    try std.testing.expect(lc.status_value_top < lc.category_heading_top);
+    try std.testing.expect(lc.category_heading_top < lc.date_heading_top);
     try std.testing.expectEqual(lc.retry_text_top - BUTTON_PAD_Y, refreshButtonTop(40, 16));
 }
 

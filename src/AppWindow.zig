@@ -892,13 +892,39 @@ pub fn aiHistoryMoveSelection(delta: isize) bool {
     return true;
 }
 
-pub fn aiHistoryCycleCategory(delta: isize) bool {
+/// ←/→ move keyboard focus between the Filters, Sessions, and Transcript panels.
+pub fn aiHistoryFocusMove(delta: isize) bool {
     const session = activeAiHistory() orelse return false;
-    session.cycleCategory(delta);
-    session.ensureSelectionVisible(aiHistoryListVisibleRowsForWindow());
+    session.mutex.lock();
+    session.focusMove(delta);
+    session.mutex.unlock();
     markUiDirty();
     return true;
 }
+
+/// ↑/↓ act within the focused panel: walk the combined CATEGORY+DATE filter
+/// list, change the selected session, or scroll the transcript preview.
+pub fn aiHistoryNav(delta: isize) bool {
+    const session = activeAiHistory() orelse return false;
+    session.mutex.lock();
+    switch (session.focus) {
+        .filters => {
+            session.moveFilterCursor(delta);
+            session.ensureFilterCursorVisible(aiHistoryDateDaySlotsForWindow());
+            session.ensureSelectionVisible(aiHistoryListVisibleRowsForWindow());
+        },
+        .sessions => {
+            session.moveSelection(delta);
+            session.ensureSelectionVisible(aiHistoryListVisibleRowsForWindow());
+        },
+        .transcript => session.scrollTranscriptBy(delta * AI_HISTORY_TRANSCRIPT_KEY_STEP),
+    }
+    session.mutex.unlock();
+    markUiDirty();
+    return true;
+}
+
+const AI_HISTORY_TRANSCRIPT_KEY_STEP: isize = 3;
 
 pub fn aiHistoryPreviewSelectedTranscript() bool {
     const session = activeAiHistory() orelse return false;
@@ -1255,6 +1281,17 @@ fn aiHistoryListVisibleRowsForWindow() usize {
     const win = g_window orelse return 1;
     const fb = window_backend.framebufferSize(win);
     return ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
+}
+
+/// Number of day rows (excluding the pinned "All dates") visible in the DATE
+/// navigator, used to keep the Filters cursor's day in view.
+fn aiHistoryDateDaySlotsForWindow() usize {
+    const win = g_window orelse return 0;
+    const fb = window_backend.framebufferSize(win);
+    const cell_h = font.g_titlebar_cell_height;
+    const lc = ai_history_renderer.leftColumnLayout(currentTitlebarHeight(), cell_h);
+    const cap = ai_history_renderer.dateVisibleCapacity(@floatFromInt(fb.height), lc.date_rows_top, cell_h);
+    return if (cap > 1) cap - 1 else 0;
 }
 
 fn localHomeForAiHistory(allocator: std.mem.Allocator) ![]u8 {
