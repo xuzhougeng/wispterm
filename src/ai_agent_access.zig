@@ -91,9 +91,43 @@ pub fn isReadOnlyCommand(command: []const u8) bool {
     return false;
 }
 
+fn globMatch(pat: []const u8, str: []const u8) bool {
+    var pi: usize = 0;
+    var si: usize = 0;
+    var star_pi: ?usize = null;
+    var star_si: usize = 0;
+    while (si < str.len) {
+        if (pi < pat.len and (pat[pi] == '?' or pat[pi] == str[si])) {
+            pi += 1;
+            si += 1;
+        } else if (pi < pat.len and pat[pi] == '*') {
+            star_pi = pi;
+            star_si = si;
+            pi += 1;
+        } else if (star_pi) |sp| {
+            pi = sp + 1;
+            star_si += 1;
+            si = star_si;
+        } else return false;
+    }
+    while (pi < pat.len and pat[pi] == '*') pi += 1;
+    return pi == pat.len;
+}
+
 test "module scaffold compiles and parseRules yields a valid struct" {
     var rules = try parseRules(std.testing.allocator, "", "/home/u");
     defer rules.deinit();
     try std.testing.expectEqualStrings("/home/u", rules.home);
     try std.testing.expectEqual(@as(usize, 0), rules.deny_roots.len);
+}
+
+test "globMatch handles wildcards and exact names" {
+    try std.testing.expect(globMatch("*.pem", "server.pem"));
+    try std.testing.expect(globMatch(".env", ".env"));
+    try std.testing.expect(globMatch("id_*", "id_rsa"));
+    try std.testing.expect(globMatch("*", "anything"));
+    try std.testing.expect(!globMatch("*.pem", "notes.txt"));
+    try std.testing.expect(!globMatch(".env", "env"));
+    try std.testing.expect(!globMatch("a?c", "ac"));
+    try std.testing.expect(globMatch("a?c", "abc"));
 }
