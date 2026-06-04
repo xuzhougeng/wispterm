@@ -16,6 +16,7 @@ pub const RESIZE_HIT_WIDTH: f32 = 12;
 pub const URL_BAR_HEIGHT: f32 = 42;
 pub const URL_BAR_MARGIN: f32 = 8;
 pub const DEFAULT_URL = "http://localhost:3000";
+pub const DisplayMode = enum { side, full };
 
 pub const Bounds = struct {
     left: i32,
@@ -27,7 +28,16 @@ pub const Bounds = struct {
 pub threadlocal var g_visible: bool = false;
 pub threadlocal var g_owner_tab: ?usize = null;
 pub threadlocal var g_width: f32 = DEFAULT_WIDTH;
+pub threadlocal var g_display_mode: DisplayMode = .side;
 pub threadlocal var g_last_error: i32 = 0;
+
+pub fn setDisplayMode(mode: DisplayMode) void {
+    g_display_mode = mode;
+}
+
+pub fn displayMode() DisplayMode {
+    return g_display_mode;
+}
 
 pub fn urlBarBounds(bounds: Bounds) ?Bounds {
     const grip: i32 = @intFromFloat(@round(RESIZE_HIT_WIDTH));
@@ -133,6 +143,15 @@ pub fn toggle(parent: ?window_backend.NativeHandle) void {
 }
 
 pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, surface: ?*const Surface) bool {
+    _ = allocator;
+    _ = parent;
+    _ = surface;
+    g_visible = false;
+    g_owner_tab = null;
+    return false;
+}
+
+pub fn openJupyterForSurface(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, surface: ?*const Surface) bool {
     _ = allocator;
     _ = parent;
     _ = surface;
@@ -264,4 +283,24 @@ test "browser_panel_stub: public parent handle API uses window backend handle" {
 
     const submit_info = @typeInfo(@TypeOf(submitUrlBar)).@"fn";
     try std.testing.expect(submit_info.params[1].type.? == ?window_backend.NativeHandle);
+
+    const open_jupyter_info = @typeInfo(@TypeOf(openJupyterForSurface)).@"fn";
+    try std.testing.expect(open_jupyter_info.params[1].type.? == ?window_backend.NativeHandle);
+    try std.testing.expect(open_jupyter_info.return_type.? == bool);
+
+    const set_mode_info = @typeInfo(@TypeOf(setDisplayMode)).@"fn";
+    try std.testing.expect(set_mode_info.params[0].type.? == DisplayMode);
+
+    const display_mode_info = @typeInfo(@TypeOf(displayMode)).@"fn";
+    try std.testing.expect(display_mode_info.return_type.? == DisplayMode);
+}
+
+test "browser_panel_stub: display mode API stores the requested mode" {
+    const saved_mode = g_display_mode;
+    defer g_display_mode = saved_mode;
+
+    setDisplayMode(.full);
+    try std.testing.expectEqual(DisplayMode.full, displayMode());
+    setDisplayMode(.side);
+    try std.testing.expectEqual(DisplayMode.side, displayMode());
 }
