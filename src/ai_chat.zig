@@ -1837,8 +1837,9 @@ pub const Session = struct {
         const w = buf.writer(self.allocator);
         for (views) |v| {
             if (kind == .loop) {
-                w.print("#{d}  every {d}m  remaining {d}  \u{2192} {s}\n", .{
-                    v.id, @divTrunc(v.interval_ms, std.time.ms_per_min), v.remaining, previewPrompt(v.prompt),
+                const iv = ai_loop_schedule.formatInterval(v.interval_ms);
+                w.print("#{d}  every {d}{c}  remaining {d}  \u{2192} {s}\n", .{
+                    v.id, iv.value, iv.unit, v.remaining, previewPrompt(v.prompt),
                 }) catch return;
             } else if (v.daily) {
                 w.print("#{d}  daily {d:0>2}:{d:0>2}  \u{2192} {s}\n", .{
@@ -1854,9 +1855,12 @@ pub const Session = struct {
     fn emitRegisterConfirmationLocked(self: *Session, info: ai_loop_store.RegisterInfo) void {
         var buf: [160]u8 = undefined;
         const msg = switch (info.kind) {
-            .loop => std.fmt.bufPrint(&buf, "Created loop task #{d}: every {d}m, {d} times.", .{
-                info.id, @divTrunc(info.interval_ms, std.time.ms_per_min), info.remaining,
-            }) catch "Created loop task.",
+            .loop => blk: {
+                const iv = ai_loop_schedule.formatInterval(info.interval_ms);
+                break :blk std.fmt.bufPrint(&buf, "Created loop task #{d}: every {d}{c}, {d} times.", .{
+                    info.id, iv.value, iv.unit, info.remaining,
+                }) catch "Created loop task.";
+            },
             .watch => if (info.daily)
                 std.fmt.bufPrint(&buf, "Created watch task #{d} (daily).", .{info.id}) catch "Created watch task."
             else

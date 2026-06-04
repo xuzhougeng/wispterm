@@ -115,6 +115,19 @@ pub fn nextDailyOccurrence(tod_minutes: i32, now_ms: i64, offset_s: i32) i64 {
     return candidate - off_ms;
 }
 
+pub const IntervalDisplay = struct { value: i64, unit: u8 };
+
+/// Render an interval back to its largest evenly-dividing unit for display
+/// (e.g. 3_600_000 -> {1,'h'}, 1_000 -> {1,'s'}). Since intervals are entered as
+/// a single `<int><unit>`, this recovers a natural, human-readable form and
+/// avoids showing sub-minute intervals as "0m".
+pub fn formatInterval(ms: i64) IntervalDisplay {
+    if (ms != 0 and @rem(ms, std.time.ms_per_day) == 0) return .{ .value = @divTrunc(ms, std.time.ms_per_day), .unit = 'd' };
+    if (ms != 0 and @rem(ms, std.time.ms_per_hour) == 0) return .{ .value = @divTrunc(ms, std.time.ms_per_hour), .unit = 'h' };
+    if (ms != 0 and @rem(ms, std.time.ms_per_min) == 0) return .{ .value = @divTrunc(ms, std.time.ms_per_min), .unit = 'm' };
+    return .{ .value = @divTrunc(ms, std.time.ms_per_s), .unit = 's' };
+}
+
 pub const TaskKind = enum { loop, watch };
 
 pub const Task = struct {
@@ -337,4 +350,15 @@ test "encode/decode round-trip" {
     try std.testing.expectEqual(TaskKind.watch, parsed.value.tasks[1].kind);
     try std.testing.expectEqual(@as(i32, 540), parsed.value.tasks[1].tod_minutes);
     try std.testing.expectEqualStrings("check ci", parsed.value.tasks[0].prompt);
+}
+
+test "formatInterval picks the largest evenly-dividing unit" {
+    try std.testing.expectEqual(IntervalDisplay{ .value = 1, .unit = 's' }, formatInterval(std.time.ms_per_s));
+    try std.testing.expectEqual(IntervalDisplay{ .value = 30, .unit = 's' }, formatInterval(30 * std.time.ms_per_s));
+    try std.testing.expectEqual(IntervalDisplay{ .value = 1, .unit = 'm' }, formatInterval(std.time.ms_per_min));
+    try std.testing.expectEqual(IntervalDisplay{ .value = 5, .unit = 'h' }, formatInterval(5 * std.time.ms_per_hour));
+    try std.testing.expectEqual(IntervalDisplay{ .value = 1, .unit = 'd' }, formatInterval(std.time.ms_per_day));
+    // 120s collapses to the larger exact unit (2m); 90s stays seconds.
+    try std.testing.expectEqual(IntervalDisplay{ .value = 2, .unit = 'm' }, formatInterval(120 * std.time.ms_per_s));
+    try std.testing.expectEqual(IntervalDisplay{ .value = 90, .unit = 's' }, formatInterval(90 * std.time.ms_per_s));
 }
