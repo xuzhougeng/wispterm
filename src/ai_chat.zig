@@ -359,6 +359,9 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         .distill => allocator.dupe(u8, "Use /distill [topic] to preview a reusable skill candidate."),
         .unknown => allocator.dupe(u8, "Unknown command. Use /commands to list commands."),
         .skills => ai_chat_skills.listSkillsForDisplay(allocator),
+        // .loop and .watch suppress output and emit their own messages via
+        // runLoopCommandLocked; this path is never reached.
+        .loop, .watch => allocator.dupe(u8, ""),
     };
 }
 
