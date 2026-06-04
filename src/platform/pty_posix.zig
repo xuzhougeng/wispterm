@@ -15,6 +15,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = std.c;
 const pty_command = @import("pty_command.zig");
+const login_shell = @import("login_shell.zig");
 
 const fd_t = c.fd_t;
 
@@ -340,14 +341,21 @@ fn childExec(
     // so explicit-command tabs, SSH, and WSL launches are unaffected.
     const exec_target = argv[0].?;
     var login_argv0: [32]u8 = undefined;
+    var reexec_buf: [ARG_BUF]u8 = undefined;
+    const dash_c: [:0]const u8 = "-c";
     if (builtin.os.tag == .macos) {
         const arg0 = std.mem.sliceTo(exec_target, 0);
-        if (shellBasenameForLogin(arg0)) |base| {
-            if (1 + base.len + 1 <= login_argv0.len) {
-                login_argv0[0] = '-';
-                @memcpy(login_argv0[1 .. 1 + base.len], base);
-                login_argv0[1 + base.len] = 0;
-                argv[0] = @ptrCast(&login_argv0[0]);
+        if (login_shell.loginArgv0(&login_argv0, arg0)) |login_arg0| {
+            argv[0] = login_arg0.ptr;
+            // A *login* bash sources ~/.bash_profile but not ~/.bashrc (where
+            // conda/pyenv/nvm init usually lives). Re-exec an interactive
+            // non-login bash once the login profile has set up PATH so
+            // ~/.bashrc loads too. Only for the bare `shell = bash` launch;
+            // explicit command lines (resume, `bash -c …`) are left intact.
+            if (login_shell.bashReexecCommand(&reexec_buf, arg0, argc)) |cmd| {
+                argv[1] = dash_c.ptr;
+                argv[2] = cmd.ptr;
+                argv[3] = null;
             }
         }
     }
@@ -355,18 +363,6 @@ fn childExec(
     _ = execvp(exec_target, @ptrCast(&argv));
     // execvp only returns on failure.
     _exit(127);
-}
-
-/// Returns the basename of `arg0` when it names a known interactive shell,
-/// otherwise null. Used to decide whether to start the child as a login shell.
-fn shellBasenameForLogin(arg0: []const u8) ?[]const u8 {
-    const slash = std.mem.lastIndexOfScalar(u8, arg0, '/');
-    const base = if (slash) |idx| arg0[idx + 1 ..] else arg0;
-    const known = [_][]const u8{ "zsh", "bash", "sh", "fish", "dash", "tcsh", "ksh" };
-    for (known) |name| {
-        if (std.mem.eql(u8, base, name)) return base;
-    }
-    return null;
 }
 
 /// Splits `command_line` into NUL-terminated argv entries written into
@@ -440,16 +436,6 @@ fn appendArgByte(storage: *[ARG_BUF]u8, write_pos: *usize, ch: u8) bool {
 }
 
 const backend_facade = @import("pty.zig");
-
-test "shellBasenameForLogin recognises known interactive shells" {
-    try std.testing.expectEqualStrings("zsh", shellBasenameForLogin("zsh").?);
-    try std.testing.expectEqualStrings("zsh", shellBasenameForLogin("/bin/zsh").?);
-    try std.testing.expectEqualStrings("bash", shellBasenameForLogin("/usr/local/bin/bash").?);
-    try std.testing.expectEqualStrings("fish", shellBasenameForLogin("/opt/homebrew/bin/fish").?);
-    try std.testing.expect(shellBasenameForLogin("ssh") == null);
-    try std.testing.expect(shellBasenameForLogin("/usr/bin/ssh") == null);
-    try std.testing.expect(shellBasenameForLogin("/bin/echo") == null);
-}
 
 test "parseArgv keeps shell -lc scripts intact for AI History resume" {
     var storage: [ARG_BUF]u8 = undefined;
