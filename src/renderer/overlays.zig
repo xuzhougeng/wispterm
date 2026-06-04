@@ -121,6 +121,10 @@ const UPDATE_STATUS_DURATION_MS: i64 = 2500;
 const SSH_CWD_HELP_URL = "https://github.com/xuzhougeng/wispterm#ssh-current-directory-for-downloads-and-uploads";
 const update_prompt_model = @import("overlays/update_prompt_model.zig");
 const UpdatePromptAction = update_prompt_model.UpdatePromptAction;
+const md = @import("../markdown_text.zig");
+const whats_new_model = @import("overlays/whats_new_model.zig");
+threadlocal var g_whats_new_visible: bool = false;
+threadlocal var g_whats_new_scroll: i64 = 0;
 threadlocal var g_update_prompt_until_ms: i64 = 0;
 threadlocal var g_update_prompt_buf: [128]u8 = undefined;
 threadlocal var g_update_prompt_len: usize = 0;
@@ -4991,6 +4995,154 @@ pub fn renderTransferToast(window_width: f32, window_height: f32) void {
     const text_x = layout.x + pad_h;
     const y = layout.y + pad_v;
     renderTitlebarTextStrongLimited(text, text_x, y, accent, layout.w - pad_h * 2);
+}
+
+fn whatsNewNotes() []const u8 {
+    return app_metadata.release_notes;
+}
+
+pub fn showWhatsNew() void {
+    g_whats_new_scroll = 0;
+    g_whats_new_visible = true;
+}
+
+pub fn hideWhatsNew() void {
+    g_whats_new_visible = false;
+}
+
+pub fn whatsNewVisible() bool {
+    return g_whats_new_visible;
+}
+
+pub fn whatsNewHandleKey(ev: input_key.KeyEvent) void {
+    if (!g_whats_new_visible) return;
+    switch (ev.key) {
+        .escape, .enter => hideWhatsNew(),
+        .page_up => g_whats_new_scroll -= 10,
+        .page_down => g_whats_new_scroll += 10,
+        .arrow_up => g_whats_new_scroll -= 1,
+        .arrow_down => g_whats_new_scroll += 1,
+        .home => g_whats_new_scroll = 0,
+        .end => g_whats_new_scroll = std.math.maxInt(i32),
+        else => {},
+    }
+}
+
+pub fn whatsNewHandleScroll(delta_y: f64) void {
+    if (!g_whats_new_visible) return;
+    g_whats_new_scroll += if (delta_y > 0) @as(i64, -3) else 3;
+}
+
+fn openWhatsNewRelease() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    var url_buf: [256]u8 = undefined;
+    const url = whats_new_model.releaseTagUrl(&url_buf, app_metadata.version);
+    _ = platform_open_url.open(allocator, .{ .url = url });
+}
+
+/// Returns true if the click was consumed by the modal (always true while open,
+/// so clicks never fall through to the terminal underneath).
+pub fn whatsNewExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
+    if (!g_whats_new_visible) return false;
+    const row_h = font.g_titlebar_cell_height;
+    const layout = whats_new_model.computeLayout(window_width, window_height, row_h);
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+    switch (whats_new_model.buttonActionAt(layout, px, py)) {
+        .view_on_github => {
+            openWhatsNewRelease();
+            hideWhatsNew();
+        },
+        .close => hideWhatsNew(),
+        .none => {
+            // A click outside the panel dismisses; inside is ignored (so users can
+            // click/select within the modal without closing it).
+            if (!layout.panel.contains(px, py)) hideWhatsNew();
+        },
+    }
+    return true;
+}
+
+fn whatsNewTrimV(v: []const u8) []const u8 {
+    return std.mem.trimLeft(u8, v, "vV");
+}
+
+fn drawWhatsNewButton(rect: whats_new_model.Rect, label: []const u8, window_height: f32, border: [3]f32, text: [3]f32) void {
+    const y_bu = window_height - rect.y - rect.h;
+    renderRoundedQuadAlpha(rect.x, y_bu, rect.w, rect.h, 8, border, 0.30);
+    const tw = measureTitlebarText(label);
+    renderTitlebarText(label, rect.x + (rect.w - tw) / 2, rowTextY(y_bu, rect.h), text);
+}
+
+pub fn renderWhatsNew(window_width: f32, window_height: f32) void {
+    if (!g_whats_new_visible) return;
+
+    const row_h = font.g_titlebar_cell_height;
+    const layout = whats_new_model.computeLayout(window_width, window_height, row_h);
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const panel = mixColor(bg, fg, 0.05);
+    const panel_border = mixColor(bg, fg, 0.24);
+    const muted = mixColor(bg, fg, 0.56);
+    const body = mixColor(bg, fg, 0.85);
+
+    // Background scrim + panel (panel drawn in bottom-up space).
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.46);
+    const panel_y_bu = window_height - layout.panel.y - layout.panel.h;
+    renderRoundedQuadAlpha(layout.panel.x - 1, panel_y_bu - 1, layout.panel.w + 2, layout.panel.h + 2, 13, panel_border, 0.42);
+    renderRoundedQuadAlpha(layout.panel.x, panel_y_bu, layout.panel.w, layout.panel.h, 12, panel, 0.99);
+
+    // Title.
+    var title_buf: [96]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "What's New in WispTerm v{s}", .{whatsNewTrimV(app_metadata.version)}) catch "What's New";
+    const title_top = layout.panel.y + 16;
+    renderTitlebarTextStrong(title, layout.content.x, window_height - title_top - row_h, fg);
+
+    const notes = whatsNewNotes();
+    if (notes.len == 0) {
+        renderTitlebarText("Release notes unavailable for this version.", layout.content.x, window_height - layout.content.y - row_h, muted);
+    } else {
+        const adv = @max(@as(f32, 1), titlebar.titlebarGlyphAdvance('M'));
+        var wrap_cols: usize = @intFromFloat(layout.content.w / adv);
+        if (wrap_cols < whats_new_model.MIN_WRAP_COLS) wrap_cols = whats_new_model.MIN_WRAP_COLS;
+
+        const total = whats_new_model.totalRows(notes, wrap_cols);
+        const scroll = whats_new_model.clampScroll(g_whats_new_scroll, total, layout.visible_rows);
+        g_whats_new_scroll = @intCast(scroll);
+
+        var row_index: usize = 0; // absolute wrapped-row index
+        var drawn: usize = 0;
+        var in_code = false;
+        var it = std.mem.splitScalar(u8, notes, '\n');
+        outer: while (it.next()) |raw| {
+            var cbuf: [1024]u8 = undefined;
+            const cleaned = md.cleanedLine(&cbuf, raw, in_code);
+            if (cleaned.style == .fence) in_code = !in_code;
+            const rows = whats_new_model.lineRows(cleaned.text.len, wrap_cols);
+            var r: usize = 0;
+            while (r < rows) : (r += 1) {
+                defer row_index += 1;
+                if (row_index < scroll) continue;
+                if (drawn >= layout.visible_rows) break :outer;
+                const start = r * wrap_cols;
+                const end = @min(cleaned.text.len, start + wrap_cols);
+                const slice = if (start < cleaned.text.len) cleaned.text[start..end] else "";
+                const top = layout.content.y + @as(f32, @floatFromInt(drawn)) * row_h;
+                const y_bu = window_height - top - row_h;
+                if (cleaned.style == .heading) {
+                    renderTitlebarTextStrong(slice, layout.content.x, y_bu, fg);
+                } else {
+                    renderTitlebarText(slice, layout.content.x, y_bu, body);
+                }
+                drawn += 1;
+            }
+        }
+    }
+
+    // Footer buttons.
+    drawWhatsNewButton(layout.view_btn, "View on GitHub", window_height, panel_border, body);
+    drawWhatsNewButton(layout.close_btn, "Close", window_height, panel_border, fg);
 }
 
 pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
