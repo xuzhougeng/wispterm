@@ -37,6 +37,7 @@ pub const CommandAction = enum {
     check_for_updates,
     download_update,
     open_latest_release,
+    show_whats_new,
     update_skills,
 };
 
@@ -82,6 +83,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Check for Updates", .detail = "Check GitHub Releases for a newer WispTerm version", .shortcut = "", .action = .check_for_updates },
     .{ .title = "Download Update", .detail = "Download the latest update to your Downloads folder", .shortcut = "", .action = .download_update },
     .{ .title = "Open Latest Release", .detail = "Open the latest WispTerm GitHub Release", .shortcut = "", .action = .open_latest_release },
+    .{ .title = "What's New", .detail = "Show what changed in this version of WispTerm", .shortcut = app_metadata.version, .action = .show_whats_new },
     .{ .title = "Update Skills", .detail = "Download the latest skills from GitHub", .shortcut = "", .action = .update_skills },
 };
 
@@ -268,6 +270,10 @@ test "command center includes update check actions" {
     try std.testing.expectEqual(CommandAction.check_for_updates, findCommandAction("Check for Updates"));
     try std.testing.expectEqual(CommandAction.download_update, findCommandAction("Download Update"));
     try std.testing.expectEqual(CommandAction.open_latest_release, findCommandAction("Open Latest Release"));
+}
+
+test "findCommandAction resolves What's New" {
+    try std.testing.expectEqual(CommandAction.show_whats_new, findCommandAction("What's New"));
 }
 
 test "command center includes Copilot Markdown export actions" {

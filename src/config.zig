@@ -387,6 +387,10 @@ language: i18n.LanguageSetting = .auto,
 /// Check GitHub Releases for a newer WispTerm version after startup.
 @"auto-update-check": bool = true,
 
+/// Show the "What's New" changelog once after upgrading to a newer build.
+/// Disables only the automatic popup; the command-center entry always works.
+@"whats-new-on-update": bool = true,
+
 /// Load an additional config file. Can be repeated. Relative paths are
 /// resolved relative to the file containing the directive. Prefix with
 /// `?` to make optional (missing file is silently ignored).
@@ -914,6 +918,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"auto-update-check" = false;
         } else {
             log.warn("invalid auto-update-check: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "whats-new-on-update")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"whats-new-on-update" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"whats-new-on-update" = false;
+        } else {
+            log.warn("invalid whats-new-on-update: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "config-file")) {
         self.loadConfigFileDirective(allocator, value, base_dir);

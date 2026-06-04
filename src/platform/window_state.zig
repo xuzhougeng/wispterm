@@ -126,3 +126,21 @@ pub fn setAiSetupPrompted(allocator: std.mem.Allocator) void {
     current.ai_setup_prompted = true;
     savePersisted(allocator, current);
 }
+
+/// The last app version whose "What's New" the user has seen (empty when none).
+/// The returned slice is copied into `buf`; pass a buffer at least
+/// `codec.version_max_len` bytes.
+pub fn lastSeenVersion(allocator: std.mem.Allocator, buf: []u8) []const u8 {
+    const v = loadPersisted(allocator).lastSeenVersion();
+    const n = @min(v.len, buf.len);
+    @memcpy(buf[0..n], v[0..n]);
+    return buf[0..n];
+}
+
+/// Record `version` as the last-seen "What's New" version (read-modify-write to
+/// preserve geometry + the onboarding flag). No-op if already equal.
+pub fn recordSeenVersion(allocator: std.mem.Allocator, version: []const u8) void {
+    const current = loadPersisted(allocator);
+    if (std.mem.eql(u8, current.lastSeenVersion(), version)) return;
+    savePersisted(allocator, codec.withLastSeenVersion(current, version));
+}

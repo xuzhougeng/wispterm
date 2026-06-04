@@ -1179,6 +1179,12 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
 fn handleKey(ev: platform_input.KeyEvent) void {
     overlays.startupShortcutsDismiss();
     const key_event = logicalKeyEvent(ev);
+    if (overlays.whatsNewVisible()) {
+        overlays.whatsNewHandleKey(key_event);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
     if (overlays.windowCloseConfirmVisible()) {
         overlays.windowCloseConfirmHandleKey(key_event);
         AppWindow.g_force_rebuild = true;
@@ -2696,6 +2702,18 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
 
 fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     if (ev.action == .press) g_close_shortcut_confirm_until_ms = 0;
+    if (overlays.whatsNewVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = window_backend.framebufferSize(win);
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            _ = overlays.whatsNewExecuteAt(xpos, ypos, @floatFromInt(fb.width), @floatFromInt(fb.height));
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        }
+        return;
+    }
     if (overlays.windowCloseConfirmVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
@@ -4131,6 +4149,11 @@ fn reportMouseMotion(surface: *Surface, button: mouse_report.Button, ev: platfor
 
 fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
+    if (overlays.whatsNewVisible()) {
+        overlays.whatsNewHandleScroll(@floatFromInt(ev.delta));
+        AppWindow.g_force_rebuild = true;
+        return;
+    }
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
     if (hitTestMarkdownPreviewPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) {

@@ -573,6 +573,7 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
         .check_for_updates => "检查更新",
         .download_update => "下载更新",
         .open_latest_release => "打开最新发布",
+        .show_whats_new => "更新内容",
         .update_skills => "更新技能",
     };
 }
@@ -617,6 +618,7 @@ pub fn commandDetail(action: CommandAction) ?[]const u8 {
         .check_for_updates => "在 GitHub Releases 检查是否有新版本",
         .download_update => "把最新更新下载到「下载」文件夹",
         .open_latest_release => "打开最新的 WispTerm GitHub Release",
+        .show_whats_new => "查看本版本的更新内容",
         .update_skills => "从 GitHub 下载最新技能",
     };
 }

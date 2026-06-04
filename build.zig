@@ -574,6 +574,7 @@ pub fn build(b: *std.Build) void {
     });
     const fast_test_options = b.addOptions();
     fast_test_options.addOption([]const u8, "app_version", app_version);
+    fast_test_options.addOption([]const u8, "release_notes", "");
     fast_test_mod.addOptions("build_options", fast_test_options);
     // Mirror the app's doc embeds: a fast-test module (ai_chat_protocol) pulls in
     // wispterm_docs, whose @embedFile names must resolve here too.
@@ -595,6 +596,7 @@ pub fn build(b: *std.Build) void {
     });
     const shared_test_options = b.addOptions();
     shared_test_options.addOption([]const u8, "app_version", app_version);
+    shared_test_options.addOption([]const u8, "release_notes", "");
     shared_test_mod.addOptions("build_options", shared_test_options);
 
     const shared_tests = b.addTest(.{
@@ -795,6 +797,7 @@ fn createAppModuleWithRoot(
     const app_options = b.addOptions();
     app_options.addOption(bool, "webview", webview);
     app_options.addOption([]const u8, "app_version", app_version);
+    app_options.addOption([]const u8, "release_notes", readReleaseNotes(b, app_version));
     app_mod.addOptions("build_options", app_options);
 
     // Embed user-facing docs so the wispterm_docs agent tool can read them at
@@ -965,6 +968,21 @@ fn addMacosAppBundle(
     });
     install_bundle.step.dependOn(&clean_existing_bundle.step);
     return install_bundle;
+}
+
+/// Read the release notes for `app_version` (`release-notes/vX.Y.Z.md`) at
+/// configure time so they can be embedded as a build option. Returns "" when the
+/// file is missing or unreadable — a missing notes file must never fail the build.
+fn readReleaseNotes(b: *std.Build, app_version: []const u8) []const u8 {
+    const path = std.fmt.allocPrint(b.allocator, "release-notes/v{s}.md", .{app_version}) catch return "";
+    return b.build_root.handle.readFileAllocOptions(
+        b.allocator,
+        path,
+        256 * 1024,
+        null,
+        .of(u8),
+        null,
+    ) catch "";
 }
 
 fn packageVersion(b: *std.Build) []const u8 {

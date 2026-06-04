@@ -29,4 +29,7 @@ comptime {
 test "shared compile target has app metadata" {
     try std.testing.expect(build_options.app_version.len > 0);
     try std.testing.expectEqualStrings("WispTerm", app_metadata.name);
+    // release_notes is always a valid slice (possibly empty); referencing it here
+    // forces the build option to exist for every target that compiles app_metadata.
+    try std.testing.expect(app_metadata.release_notes.len >= 0);
 }
