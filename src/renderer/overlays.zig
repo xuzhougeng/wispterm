@@ -1278,6 +1278,49 @@ fn renderTitlebarTextStrongLimited(text: []const u8, x_start: f32, y: f32, color
     renderTitlebarTextLimited(text, x + 1, y_aligned, color, max_w - 1);
 }
 
+const jupyter_picker = @import("../jupyter_picker.zig");
+
+/// Render the multi-server Jupyter picker overlay.
+pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
+    if (!jupyter_picker.isVisible()) return;
+    const n = jupyter_picker.count();
+    if (n == 0) return;
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const panel = mixColor(bg, fg, 0.05);
+    const border = mixColor(bg, fg, 0.18);
+    const sel_bg = mixColor(bg, accent, 0.5);
+    const text_color = mixColor(bg, fg, 0.88);
+
+    const row_h: f32 = @max(28.0, font.g_titlebar_cell_height + 12);
+    const box_w: f32 = @min(window_width - 80, 720);
+    const title_h: f32 = row_h;
+    const box_h: f32 = title_h + row_h * @as(f32, @floatFromInt(n)) + 16;
+    const box_x = @round((window_width - box_w) / 2);
+    const box_top = @round((window_height - box_h) / 2);
+    const box_y = @round(window_height - box_top - box_h);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.30);
+    renderRoundedQuadAlpha(box_x - 1, box_y - 1, box_w + 2, box_h + 2, 9, border, 0.5);
+    renderRoundedQuadAlpha(box_x, box_y, box_w, box_h, 8, panel, 0.99);
+
+    const title_y = @round(box_y + box_h - title_h + (title_h - font.g_titlebar_cell_height) / 2);
+    _ = titlebar.renderTextLimited("Select a Jupyter server (Up/Down, Enter, Esc)", box_x + 16, title_y, mixColor(bg, fg, 0.6), box_w - 32);
+
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const row_top_px = box_top + title_h + row_h * @as(f32, @floatFromInt(i));
+        const row_y = @round(window_height - row_top_px - row_h);
+        if (i == jupyter_picker.selectedIndex()) {
+            renderRoundedQuadAlpha(box_x + 8, row_y + 3, box_w - 16, row_h - 6, 5, sel_bg, 0.6);
+        }
+        const ty = @round(row_y + (row_h - font.g_titlebar_cell_height) / 2);
+        _ = titlebar.renderTextLimited(jupyter_picker.urlAt(i), box_x + 18, ty, text_color, box_w - 36);
+    }
+}
+
 pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f32) void {
     if (!browser_panel.isVisibleForActiveTab()) return;
 

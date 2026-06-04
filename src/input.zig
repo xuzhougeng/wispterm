@@ -49,6 +49,7 @@ const preview_source = @import("input/preview_source.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
 const mouse_report = @import("input/mouse_report.zig");
 const close_confirm = @import("close_confirm.zig");
+const jupyter_picker = @import("jupyter_picker.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
@@ -1253,6 +1254,28 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 else => {},
             }
         }
+        return;
+    }
+    if (jupyter_picker.isVisible()) {
+        switch (ev.key_code) {
+            platform_input.key_escape => jupyter_picker.hide(),
+            platform_input.key_up => jupyter_picker.move(-1),
+            platform_input.key_down => jupyter_picker.move(1),
+            platform_input.key_enter => {
+                const url = jupyter_picker.selectedUrl();
+                if (AppWindow.g_allocator) |allocator| {
+                    const parent = AppWindow.currentNativeHandle();
+                    const surface = AppWindow.activeSurface();
+                    browser_panel.setDisplayMode(.full);
+                    _ = browser_panel.openForSurface(allocator, parent, url, surface);
+                    if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
+                }
+                jupyter_picker.hide();
+            },
+            else => {},
+        }
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
         return;
     }
     if (overlays.restoreDefaultsConfirmVisible()) {
