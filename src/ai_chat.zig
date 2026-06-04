@@ -65,6 +65,7 @@ pub fn parseVisionEnabled(value: []const u8) bool {
 const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
 const INPUT_PROMPT_MAX_BYTES: usize = 64 * 1024;
 const SYSTEM_PROMPT_MAX_BYTES: usize = 16 * 1024;
+const WORKING_DIR_MAX_BYTES: usize = 1024;
 /// 两次 ESC 间隔不超过此毫秒数时判定为"双击"，用于打开回溯选择器。
 const DOUBLE_ESC_WINDOW_MS: i64 = 400;
 
@@ -239,6 +240,8 @@ var g_agent_mutex: std.Thread.Mutex = .{};
 var g_agent_settings: AgentSettings = .{};
 var g_access_rules_storage: ?ai_agent_access.AccessRules = null;
 var g_access_rules: ?*const ai_agent_access.AccessRules = null;
+var g_default_working_dir_buf: [WORKING_DIR_MAX_BYTES]u8 = undefined;
+var g_default_working_dir_len: usize = 0;
 var g_session_id_counter = std.atomic.Value(u64).init(1);
 var g_skill_update_trigger: ?*const fn () void = null;
 var g_session_resume_trigger: ?*const fn () void = null;
@@ -291,6 +294,23 @@ pub fn loadAccessRules(allocator: std.mem.Allocator) void {
     g_access_rules = &g_access_rules_storage.?;
 }
 
+/// Set the persistent default working directory (from config). Empty clears it.
+/// Copies into a static buffer; oversized paths are truncated.
+pub fn setDefaultWorkingDir(path: []const u8) void {
+    g_agent_mutex.lock();
+    defer g_agent_mutex.unlock();
+    const n = @min(path.len, g_default_working_dir_buf.len);
+    @memcpy(g_default_working_dir_buf[0..n], path[0..n]);
+    g_default_working_dir_len = n;
+}
+
+fn defaultWorkingDir() ?[]const u8 {
+    g_agent_mutex.lock();
+    defer g_agent_mutex.unlock();
+    if (g_default_working_dir_len == 0) return null;
+    return g_default_working_dir_buf[0..g_default_working_dir_len];
+}
+
 fn resolveHomeDir(allocator: std.mem.Allocator) ?[]u8 {
     if (std.process.getEnvVarOwned(allocator, "HOME")) |v| {
         return v;
@@ -310,6 +330,7 @@ pub fn currentAgentSettings() AgentSettings {
     defer g_agent_mutex.unlock();
     var s = g_agent_settings;
     s.access_rules = g_access_rules;
+    if (g_default_working_dir_len > 0) s.working_dir = g_default_working_dir_buf[0..g_default_working_dir_len];
     return s;
 }
 
@@ -6011,4 +6032,12 @@ test "copilot session pre-targets the bound surface in its request" {
     defer req.deinit();
 
     try std.testing.expectEqualStrings("abc123", req.write_context_surface_id[0..req.write_context_surface_id_len]);
+}
+
+test "setDefaultWorkingDir is reflected in currentAgentSettings" {
+    setDefaultWorkingDir("/tmp/proj");
+    defer setDefaultWorkingDir(""); // reset global state for other tests
+    try std.testing.expectEqualStrings("/tmp/proj", currentAgentSettings().working_dir.?);
+    setDefaultWorkingDir("");
+    try std.testing.expect(currentAgentSettings().working_dir == null);
 }
