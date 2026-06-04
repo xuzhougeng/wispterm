@@ -194,6 +194,7 @@ const COMMAND_ENTRIES = command_center_state.command_entries;
 const PaletteItem = union(enum) {
     command: usize,
     ssh_profile: usize,
+    tmux_profile: usize,
     ai_profile: usize,
     theme: usize,
 };
@@ -792,6 +793,86 @@ test "command palette matches English source even when title is localized" {
     try std.testing.expect(!commandEntryTitleMatches(entry, "设置")); // no localized title under en
 }
 
+fn setCommandPaletteFilterForTest(filter: []const u8) void {
+    const len = @min(filter.len, g_command_palette_filter.len);
+    @memcpy(g_command_palette_filter[0..len], filter[0..len]);
+    g_command_palette_filter_len = len;
+    g_command_palette_selected = 0;
+}
+
+fn paletteContainsSshProfileForTest(profile_idx: usize) bool {
+    for (g_palette_scratch[0..g_palette_scratch_len]) |item| {
+        switch (item) {
+            .ssh_profile => |idx| {
+                if (idx == profile_idx) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn paletteContainsTmuxProfileForTest(profile_idx: usize) bool {
+    for (g_palette_scratch[0..g_palette_scratch_len]) |item| {
+        switch (item) {
+            .tmux_profile => |idx| {
+                if (idx == profile_idx) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+test "command palette includes tmux profile actions for SSH profile search" {
+    const previous_mode = g_command_palette_mode;
+    const previous_filter_len = g_command_palette_filter_len;
+    var previous_filter: [COMMAND_PALETTE_FILTER_MAX]u8 = undefined;
+    if (previous_filter_len > 0) @memcpy(previous_filter[0..previous_filter_len], g_command_palette_filter[0..previous_filter_len]);
+    const previous_selected = g_command_palette_selected;
+    const previous_scratch_len = g_palette_scratch_len;
+    const previous_ssh_loaded = g_ssh_profiles_loaded;
+    const previous_ssh_count = g_ssh_profile_count;
+    var previous_ssh_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
+    if (previous_ssh_count > 0) @memcpy(previous_ssh_profiles[0..previous_ssh_count], g_ssh_profiles[0..previous_ssh_count]);
+    const previous_ai_loaded = g_ai_profiles_loaded;
+    const previous_ai_count = g_ai_profile_count;
+    var previous_ai_profiles: [AI_PROFILE_MAX]AiProfile = undefined;
+    if (previous_ai_count > 0) @memcpy(previous_ai_profiles[0..previous_ai_count], g_ai_profiles[0..previous_ai_count]);
+    defer {
+        g_command_palette_mode = previous_mode;
+        g_command_palette_filter_len = previous_filter_len;
+        if (previous_filter_len > 0) @memcpy(g_command_palette_filter[0..previous_filter_len], previous_filter[0..previous_filter_len]);
+        g_command_palette_selected = previous_selected;
+        g_palette_scratch_len = previous_scratch_len;
+        g_ssh_profiles_loaded = previous_ssh_loaded;
+        g_ssh_profile_count = previous_ssh_count;
+        if (previous_ssh_count > 0) @memcpy(g_ssh_profiles[0..previous_ssh_count], previous_ssh_profiles[0..previous_ssh_count]);
+        g_ai_profiles_loaded = previous_ai_loaded;
+        g_ai_profile_count = previous_ai_count;
+        if (previous_ai_count > 0) @memcpy(g_ai_profiles[0..previous_ai_count], previous_ai_profiles[0..previous_ai_count]);
+    }
+
+    g_command_palette_mode = .commands;
+    g_ssh_profiles_loaded = true;
+    g_ssh_profile_count = 2;
+    g_ssh_profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
+    g_ssh_profiles[1] = makeSshProfile("GPU", "10.0.0.2", "user", "22");
+    g_ai_profiles_loaded = true;
+    g_ai_profile_count = 0;
+
+    setCommandPaletteFilterForTest("CPU");
+    rebuildPaletteScratch();
+    try std.testing.expect(paletteContainsSshProfileForTest(0));
+    try std.testing.expect(paletteContainsTmuxProfileForTest(0));
+    try std.testing.expect(!paletteContainsTmuxProfileForTest(1));
+
+    setCommandPaletteFilterForTest("tmux");
+    rebuildPaletteScratch();
+    try std.testing.expect(paletteContainsTmuxProfileForTest(0));
+    try std.testing.expect(paletteContainsTmuxProfileForTest(1));
+}
+
 fn commandEntryKeybindAction(action: CommandAction) ?keybind.Action {
     return switch (action) {
         .new_tab => .new_session,
@@ -854,9 +935,16 @@ fn rebuildPaletteScratch() void {
     for (0..g_ssh_profile_count) |profile_idx| {
         if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
         const profile = &g_ssh_profiles[profile_idx];
-        if (!command_palette_model.sshProfileNameMatchesFilter(profileField(profile, .name), filter)) continue;
-        g_palette_scratch[g_palette_scratch_len] = .{ .ssh_profile = profile_idx };
-        g_palette_scratch_len += 1;
+        const name = profileField(profile, .name);
+        if (command_palette_model.sshProfileNameMatchesFilter(name, filter)) {
+            g_palette_scratch[g_palette_scratch_len] = .{ .ssh_profile = profile_idx };
+            g_palette_scratch_len += 1;
+            if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
+        }
+        if (command_palette_model.tmuxProfileMatchesFilter(name, filter)) {
+            g_palette_scratch[g_palette_scratch_len] = .{ .tmux_profile = profile_idx };
+            g_palette_scratch_len += 1;
+        }
     }
     loadAiProfiles();
     for (0..g_ai_profile_count) |ai_idx| {
@@ -878,6 +966,7 @@ fn executePaletteItem(item: PaletteItem) void {
     switch (item) {
         .command => |cmd_idx| executeCommand(COMMAND_ENTRIES[cmd_idx].action),
         .ssh_profile => |profile_idx| connectSshProfile(profile_idx),
+        .tmux_profile => |profile_idx| connectSshProfileTmux(profile_idx),
         .ai_profile => |profile_idx| _ = spawnAiProfileWithAgentOverride(profile_idx, null),
         .theme => |ti| applyEmbeddedThemeFromPalette(ti),
     }
@@ -1448,7 +1537,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
     } else {
         rebuildPaletteScratch();
         if (g_palette_scratch_len == 0) {
-            const empty_text = "No matching commands or themes";
+            const empty_text = "No matching results";
             const empty_y = @round(window_height - layout.row_top_px - layout.row_h + (layout.row_h - overlayTextHeight()) / 2);
             renderTitlebarText(empty_text, layout.box_x + (layout.box_w - measureTitlebarText(empty_text)) / 2, empty_y, muted);
         } else {
@@ -1498,6 +1587,19 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                         const target_left = @round(layout.box_x + layout.box_w - pad_x - target_max_w);
                         renderTitlebarTextLimited(target, target_left, text_y, shortcut_color, target_max_w);
                         renderTitlebarTextLimited(ssh_title, title_x, text_y, row_title_color, @max(1.0, target_left - title_x - 18));
+                    },
+                    .tmux_profile => |profile_idx| {
+                        if (profile_idx >= g_ssh_profile_count) continue;
+                        const profile = &g_ssh_profiles[profile_idx];
+                        var title_buf: [SSH_FIELD_MAX + 6]u8 = undefined;
+                        const tmux_title = std.fmt.bufPrint(title_buf[0..], "tmux: {s}", .{profileField(profile, .name)}) catch "tmux";
+                        var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
+                        const target = sshProfileTarget(profile, target_buf[0..]);
+                        const target_w = measureTitlebarText(target);
+                        const target_max_w = @min(target_w, @max(80.0, layout.box_w * 0.40));
+                        const target_left = @round(layout.box_x + layout.box_w - pad_x - target_max_w);
+                        renderTitlebarTextLimited(target, target_left, text_y, shortcut_color, target_max_w);
+                        renderTitlebarTextLimited(tmux_title, title_x, text_y, row_title_color, @max(1.0, target_left - title_x - 18));
                     },
                     .ai_profile => |profile_idx| {
                         if (profile_idx >= g_ai_profile_count) continue;
@@ -2482,7 +2584,7 @@ fn connectSshProfileTmux(idx: usize) void {
     const remote = std.fmt.bufPrint(&remote_buf, "tmux -CC new -A -s {s}", .{session_name}) catch return;
 
     var cmd_buf: [8192]u8 = undefined;
-    const cmd = platform_pty_command.sshInteractiveCommand(cmd_buf[0..], .{
+    const cmd = platform_pty_command.sshControlCommand(cmd_buf[0..], .{
         .user = user,
         .host = ip,
         .port = port,
@@ -3800,7 +3902,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         row += 1;
         renderSessionRow(layout, window_height, row, "SSH", i18n.s().sl_v_connect_server, g_session_launcher_selected == row);
         row += 1;
-        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_TMUX, "Connect with tmux", "Keep session alive (tmux -CC)", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_TMUX);
+        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_TMUX, "tmux", "Alive session", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_TMUX);
         row += 1;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             row = wsl_row;

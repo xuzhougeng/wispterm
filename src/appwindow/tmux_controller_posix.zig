@@ -19,6 +19,7 @@ const Pty = @import("../platform/pty.zig").Pty;
 const pty_command = @import("../platform/pty_command.zig");
 const layout = @import("../tmux/layout.zig");
 const bridge_mod = @import("tmux_bridge.zig");
+const tab = @import("tab.zig");
 const TmuxBridge = bridge_mod.TmuxBridge;
 
 /// Active controllers for this (main) thread. `start`/`tickAll`/`shutdownAll`
@@ -201,6 +202,13 @@ pub const TmuxController = struct {
         self.alloc.free(self.profile_name);
         self.alloc.destroy(self);
     }
+
+    fn reviveOrFocus(self: *TmuxController) bool {
+        self.bridge.pruneDetachedPanes();
+        if (self.bridge.focusFirstTab()) return true;
+        self.bridge.session.start() catch return false;
+        return true;
+    }
 };
 
 /// Launch `ssh_cmd_utf8` (an `ssh … tmux -CC …` command) in a transport PTY and
@@ -217,6 +225,19 @@ pub fn start(
     cursor_style: Config.CursorStyle,
     cursor_blink: bool,
 ) bool {
+    if (profile_name.len > 0) {
+        for (g_controllers.items) |controller| {
+            if (std.mem.eql(u8, controller.profile_name, profile_name)) {
+                if (controller.reviveOrFocus()) {
+                    std.debug.print("tmux: profile '{s}' already active; reused controller\n", .{profile_name});
+                    return true;
+                }
+                std.debug.print("tmux: profile '{s}' already active but revive failed\n", .{profile_name});
+                return false;
+            }
+        }
+    }
+
     const owned = pty_command.allocCommandLineFromUtf8(alloc, ssh_cmd_utf8) catch return false;
     defer pty_command.freeCommandLine(alloc, owned);
 
@@ -292,6 +313,13 @@ pub fn shutdownAll(alloc: Allocator) void {
     for (g_controllers.items) |c| c.destroy();
     g_controllers.deinit(alloc);
     g_controllers = .empty;
+}
+
+pub fn forgetClosedTab(tab_state: *anyopaque) void {
+    const t: *tab.TabState = @ptrCast(@alignCast(tab_state));
+    for (g_controllers.items) |c| {
+        if (c.bridge.forgetTab(t)) return;
+    }
 }
 
 pub fn anyActive() bool {

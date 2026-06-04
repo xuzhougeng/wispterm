@@ -120,15 +120,45 @@ pub const Pty = struct {
         return self;
     }
 
+    pub const VirtualController = struct {
+        /// The controller's end of the socketpair. The owner must call
+        /// `deinit`; `Pty.deinit` only closes the pty's own `master`.
+        fd: fd_t,
+
+        pub fn invalidForTest() VirtualController {
+            return .{ .fd = -1 };
+        }
+
+        pub fn deinit(self: *VirtualController) void {
+            if (self.fd >= 0) {
+                std.posix.close(self.fd);
+                self.fd = -1;
+            }
+        }
+
+        pub fn writeOutput(self: *VirtualController, bytes: []const u8) void {
+            if (self.fd < 0) return;
+            writeAllVirtual(self.fd, bytes);
+        }
+
+        pub fn inputAvailable(self: *const VirtualController) bool {
+            if (self.fd < 0) return false;
+            return readableVirtual(self.fd);
+        }
+
+        pub fn readInput(self: *VirtualController, buffer: []u8) ?usize {
+            if (self.fd < 0) return null;
+            return std.posix.read(self.fd, buffer) catch null;
+        }
+    };
+
     pub const VirtualPair = struct {
         pty: Pty,
-        /// The controller's end of the socketpair. The caller owns it and must
-        /// `std.posix.close` it; `Pty.deinit` only closes the pty's own `master`.
-        controller_fd: fd_t,
+        controller: VirtualController,
     };
 
     /// Create a virtual PTY backed by a socketpair. The returned `pty` reads
-    /// what is written to `controller_fd` and vice-versa, so the tmux controller
+    /// what is written to the controller and vice-versa, so the tmux controller
     /// can feed pane output in and read keystrokes back out. No child process.
     pub fn openVirtual(size: winsize) !VirtualPair {
         var sv: [2]c_int = undefined;
@@ -149,7 +179,7 @@ pub const Pty = struct {
         self.slave_path = std.mem.zeroes([SLAVE_PATH_MAX]u8);
         self.size = size;
         self.cancel_pipe = try std.posix.pipe();
-        return .{ .pty = self, .controller_fd = sv[1] };
+        return .{ .pty = self, .controller = .{ .fd = sv[1] } };
     }
 
     pub fn deinit(self: *Pty) void {
@@ -297,6 +327,22 @@ fn readableFallback(fd: fd_t) ?usize {
     if (ready == 0) return 0;
     if (fds[0].revents & std.posix.POLL.IN != 0) return 1;
     return 0;
+}
+
+fn readableVirtual(fd: fd_t) bool {
+    var fds = [1]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    const ready = std.posix.poll(&fds, 0) catch return false;
+    if (ready == 0) return false;
+    return fds[0].revents & std.posix.POLL.IN != 0;
+}
+
+fn writeAllVirtual(fd: fd_t, bytes: []const u8) void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const n = std.posix.write(fd, bytes[off..]) catch return;
+        if (n == 0) return;
+        off += n;
+    }
 }
 
 /// Runs entirely in the forked child. Sets up the controlling terminal on the

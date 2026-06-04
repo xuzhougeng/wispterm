@@ -1992,6 +1992,9 @@ fn syncFileExplorerToActiveTerminalSurface() void {
 pub fn closeTab(idx: usize) void {
     const allocator = g_allocator orelse return;
     if (tab.g_tab_count <= 1 or idx >= tab.g_tab_count) return;
+    if (tab.g_tabs[idx]) |closing| {
+        if (closing.tmux_window_id != null) tmux_controller.forgetClosedTab(closing);
+    }
     tab.closeTab(idx, allocator);
     file_explorer.onTabClosed(idx);
     markdown_preview_panel.onTabClosed(idx);

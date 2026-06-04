@@ -499,12 +499,12 @@ fn finishInit(
 /// Build a Surface around a pre-opened *virtual* PTY (`Pty.openVirtual`).
 /// Used for tmux control-mode panes: there is no child process — the Phase 2
 /// controller feeds pane output into the PTY and reads keystrokes back across
-/// the pair's `controller_fd`. The caller retains `controller_fd` (typically
+/// the pair's controller side. The caller retains that controller (typically
 /// in a `tmux/pane.zig` PaneMap); this Surface owns only the `pty` end.
 ///
 /// `command` is left as `.{}` (pid -1): its `wait()` reports "still running"
 /// and its `deinit()` is a no-op, so the no-child pane never looks "exited"
-/// until its `controller_fd` is closed (which gives the reader an EOF).
+/// until its controller is closed (which gives the reader an EOF).
 pub fn initVirtual(
     allocator: std.mem.Allocator,
     cols: u16,

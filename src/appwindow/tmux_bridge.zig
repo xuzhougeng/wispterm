@@ -3,12 +3,10 @@
 //! `PaneMap`, implements `Session.EventSink` to drive tabs/splits, and supplies
 //! the per-pane `Surface` factory for `SplitTree.fromTmuxLayout`.
 //!
-//! POSIX-only: it materializes panes via `Pty.openVirtual` (socketpair). It is
-//! referenced only from posix-target builds (registered in `test_main.zig`
-//! under the `!= .windows` guard; wired into `AppWindow` by Phase 3d). A real
-//! `Surface` cannot be built in a headless test (its `Renderer` needs the GPU
-//! backend), so the reconcile path is compile-checked here and GUI-verified in
-//! 3d; only the Surface-free helpers are unit-tested.
+//! It materializes panes via `Pty.openVirtual`. A real `Surface` cannot be
+//! built in a headless test (its `Renderer` needs the GPU backend), so the
+//! reconcile path is compile-checked here and GUI-verified in the app; only the
+//! Surface-free helpers are unit-tested.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -59,7 +57,7 @@ pub const TmuxBridge = struct {
         return self;
     }
 
-    /// Tear down the controller side. Closes every pane's `controller_fd`
+    /// Tear down the controller side. Closes every pane's virtual controller
     /// (giving each Surface an EOF) and frees the Session. Does NOT destroy the
     /// tab Surfaces — those are owned by their tabs/`SplitTree`s and are torn
     /// down by the AppWindow's tab lifecycle.
@@ -114,7 +112,7 @@ pub const TmuxBridge = struct {
         t.tree = new_tree;
         old_tree.deinit();
 
-        // 4. Drop panes gone from the new layout (closes their controller_fd).
+        // 4. Drop panes gone from the new layout (closes their controllers).
         for (old_ids.items) |id| {
             if (findLeaf(root, id) == null) self.panes.removePane(id);
         }
@@ -150,9 +148,9 @@ pub const TmuxBridge = struct {
             const cols: u16 = @intCast(@max(@as(u32, 1), leaf.w));
             const rows: u16 = @intCast(@max(@as(u32, 1), leaf.h));
 
-            const pair = Pty.openVirtual(.{ .ws_col = cols, .ws_row = rows }) catch return null;
-            // On `initVirtual` failure, its errdefer deinits the adopted pty
-            // (master + cancel pipe); we still own and must close controller_fd.
+            var pair = Pty.openVirtual(.{ .ws_col = cols, .ws_row = rows }) catch return null;
+            // On `initVirtual` failure, its errdefer deinits the adopted pty;
+            // we still own and must close the controller side.
             const surface = Surface.initVirtual(
                 self.alloc,
                 cols,
@@ -162,14 +160,14 @@ pub const TmuxBridge = struct {
                 self.cursor_style,
                 self.cursor_blink,
             ) catch {
-                std.posix.close(pair.controller_fd);
+                pair.controller.deinit();
                 return null;
             };
             surface.attachRemoteClient(tab.g_remote_client);
 
-            self.panes.addPane(pane_id, pair.controller_fd) catch {
+            self.panes.addPane(pane_id, pair.controller) catch {
                 surface.unref(self.alloc); // ref 1 -> 0: destroys it (deinits pty)
-                std.posix.close(pair.controller_fd);
+                pair.controller.deinit();
                 return null;
             };
             self.panes.setSurface(pane_id, surface);
@@ -196,10 +194,74 @@ pub const TmuxBridge = struct {
         }
     }
 
+    /// Forget pane mappings owned by a UI tab that is being closed directly.
+    /// The remote tmux window/session remains alive; this only closes WispTerm's
+    /// local virtual-PTY controller ends so a later bootstrap can materialize
+    /// fresh Surfaces for the same remote panes.
+    pub fn forgetTab(self: *TmuxBridge, t: *TabState) bool {
+        if (t.tmux_owner != ownerPtr(self)) return false;
+        if (t.tmux_window_id == null) return false;
+
+        var ids: std.ArrayListUnmanaged(usize) = .empty;
+        defer ids.deinit(self.alloc);
+        var it = t.tree.iterator();
+        while (it.next()) |entry| {
+            if (self.panes.findIdBySurface(entry.surface)) |id| {
+                ids.append(self.alloc, id) catch continue;
+            }
+        }
+        for (ids.items) |id| self.panes.removePane(id);
+        return true;
+    }
+
+    /// Drop pane mappings whose borrowed Surface pointer is no longer present
+    /// in any live tab owned by this bridge. This repairs sessions after older
+    /// builds or direct UI closes left stale PaneMap entries behind.
+    pub fn pruneDetachedPanes(self: *TmuxBridge) void {
+        var i: usize = 0;
+        while (i < self.panes.panes.items.len) {
+            const surface = self.panes.panes.items[i].surface orelse {
+                i += 1;
+                continue;
+            };
+            if (self.surfaceInLiveTab(surface)) {
+                i += 1;
+                continue;
+            }
+            self.panes.panes.items[i].controller.deinit();
+            _ = self.panes.panes.orderedRemove(i);
+        }
+    }
+
+    fn surfaceInLiveTab(self: *TmuxBridge, surface: *anyopaque) bool {
+        var ti: usize = 0;
+        while (ti < tab.g_tab_count) : (ti += 1) {
+            const t = tab.g_tabs[ti] orelse continue;
+            if (t.tmux_owner != ownerPtr(self)) continue;
+            var it = t.tree.iterator();
+            while (it.next()) |entry| {
+                if (@as(*anyopaque, @ptrCast(entry.surface)) == surface) return true;
+            }
+        }
+        return false;
+    }
+
+    /// Focus any live tab owned by this controller.
+    pub fn focusFirstTab(self: *TmuxBridge) bool {
+        var ti: usize = 0;
+        while (ti < tab.g_tab_count) : (ti += 1) {
+            const t = tab.g_tabs[ti] orelse continue;
+            if (t.tmux_owner != ownerPtr(self)) continue;
+            active_tab_state.g_active_tab = ti;
+            return true;
+        }
+        return false;
+    }
+
     // ----- EventSink: window events -----
 
-    fn onWindowRenamed(_: *anyopaque, window_id: usize, name: []const u8) void {
-        const idx = findTabIndexByWindowId(window_id) orelse return;
+    fn onWindowRenamed(ctx: *anyopaque, window_id: usize, name: []const u8) void {
+        const idx = findTabIndexByWindowId(ctx, window_id) orelse return;
         const t = tab.g_tabs[idx] orelse return;
         const n = @min(name.len, t.tmux_name_buf.len);
         @memcpy(t.tmux_name_buf[0..n], name[0..n]);
@@ -208,9 +270,10 @@ pub const TmuxBridge = struct {
 
     fn onWindowClose(ctx: *anyopaque, window_id: usize) void {
         const self: *TmuxBridge = @ptrCast(@alignCast(ctx));
-        const idx = findTabIndexByWindowId(window_id) orelse return;
+        const idx = findTabIndexByWindowId(ctx, window_id) orelse return;
         const t = tab.g_tabs[idx] orelse return;
-        // Drop this window's panes from the PaneMap (closes their fds) before
+        // Drop this window's panes from the PaneMap (closes their controllers)
+        // before
         // closeTab destroys the surfaces. removePane never touches the surface.
         var it = t.tree.iterator();
         while (it.next()) |entry| {
@@ -245,7 +308,7 @@ pub const TmuxBridge = struct {
     // ----- tab lookup / creation -----
 
     fn findOrCreateTab(self: *TmuxBridge, window_id: usize) ?*TabState {
-        if (findTabIndexByWindowId(window_id)) |idx| return tab.g_tabs[idx];
+        if (findTabIndexByWindowId(self, window_id)) |idx| return tab.g_tabs[idx];
         if (tab.g_tab_count >= tab.MAX_TABS) return null;
         const t = self.alloc.create(TabState) catch return null;
         t.kind = .terminal;
@@ -255,6 +318,7 @@ pub const TmuxBridge = struct {
         t.ai_history_session = null;
         t.copilot_session = null;
         t.tmux_window_id = window_id;
+        t.tmux_owner = self;
         t.tmux_name_len = 0;
         tab.g_tabs[tab.g_tab_count] = t;
         active_tab_state.g_active_tab = tab.g_tab_count;
@@ -263,13 +327,19 @@ pub const TmuxBridge = struct {
     }
 };
 
-/// Index of the tab mirroring this tmux window id, or null. Pure helper over the
-/// thread-local tab model — unit-tested without any Surface.
-fn findTabIndexByWindowId(window_id: usize) ?usize {
+fn ownerPtr(self: *TmuxBridge) *anyopaque {
+    return @ptrCast(self);
+}
+
+/// Index of the tab mirroring this tmux window id for `owner`, or null. tmux
+/// window ids are scoped to a controller connection, not globally unique.
+/// Pure helper over the thread-local tab model — unit-tested without any
+/// Surface.
+fn findTabIndexByWindowId(owner: *anyopaque, window_id: usize) ?usize {
     var i: usize = 0;
     while (i < tab.g_tab_count) : (i += 1) {
         if (tab.g_tabs[i]) |t| {
-            if (t.tmux_window_id == window_id) return i;
+            if (t.tmux_window_id == window_id and t.tmux_owner == owner) return i;
         }
     }
     return null;
@@ -300,7 +370,7 @@ test "findLeaf locates a pane and reads its cell size" {
     try std.testing.expect(findLeaf(&parsed.root, 99) == null);
 }
 
-test "findTabIndexByWindowId matches on tmux_window_id" {
+test "findTabIndexByWindowId scopes tmux windows to the owning controller" {
     // Save/restore the thread-local tab model so the test is self-contained.
     const saved_tabs = tab.g_tabs;
     const saved_count = tab.g_tab_count;
@@ -309,19 +379,73 @@ test "findTabIndexByWindowId matches on tmux_window_id" {
         tab.g_tab_count = saved_count;
     }
 
+    var owner_a: u8 = 0;
+    var owner_b: u8 = 0;
+    const owner_a_ptr: *anyopaque = @ptrCast(&owner_a);
+    const owner_b_ptr: *anyopaque = @ptrCast(&owner_b);
+
     var t0: TabState = .{ .tree = .empty };
     t0.kind = .terminal;
     t0.tmux_window_id = 5;
+    t0.tmux_owner = owner_a_ptr;
     var t1: TabState = .{ .tree = .empty };
     t1.kind = .terminal;
-    t1.tmux_window_id = 9;
+    t1.tmux_window_id = 5;
+    t1.tmux_owner = owner_b_ptr;
 
     tab.g_tabs = .{null} ** tab.MAX_TABS;
     tab.g_tabs[0] = &t0;
     tab.g_tabs[1] = &t1;
     tab.g_tab_count = 2;
 
-    try std.testing.expectEqual(@as(?usize, 1), findTabIndexByWindowId(9));
-    try std.testing.expectEqual(@as(?usize, 0), findTabIndexByWindowId(5));
-    try std.testing.expectEqual(@as(?usize, null), findTabIndexByWindowId(7));
+    try std.testing.expectEqual(@as(?usize, 0), findTabIndexByWindowId(owner_a_ptr, 5));
+    try std.testing.expectEqual(@as(?usize, 1), findTabIndexByWindowId(owner_b_ptr, 5));
+    try std.testing.expectEqual(@as(?usize, null), findTabIndexByWindowId(owner_a_ptr, 7));
+}
+
+test "pruneDetachedPanes drops mappings not referenced by live owned tabs" {
+    const saved_tabs = tab.g_tabs;
+    const saved_count = tab.g_tab_count;
+    const saved_active = active_tab_state.g_active_tab;
+    defer {
+        tab.g_tabs = saved_tabs;
+        tab.g_tab_count = saved_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    const bridge = try TmuxBridge.create(std.testing.allocator, 80, 24, 100, .bar, false);
+    defer bridge.destroy();
+
+    var live_surface: Surface = undefined;
+    var detached_surface: Surface = undefined;
+    try bridge.panes.panes.append(std.testing.allocator, .{
+        .id = 1,
+        .controller = Pty.VirtualController.invalidForTest(),
+        .surface = &live_surface,
+    });
+    try bridge.panes.panes.append(std.testing.allocator, .{
+        .id = 2,
+        .controller = Pty.VirtualController.invalidForTest(),
+        .surface = &detached_surface,
+    });
+
+    var nodes = [_]SplitTree.Node{.{ .leaf = &live_surface }};
+    var t: TabState = .{ .tree = .{
+        .arena = undefined,
+        .nodes = nodes[0..],
+        .zoomed = null,
+    } };
+    t.kind = .terminal;
+    t.tmux_window_id = 7;
+    t.tmux_owner = ownerPtr(bridge);
+
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &t;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+
+    bridge.pruneDetachedPanes();
+
+    try std.testing.expect(bridge.panes.find(1) != null);
+    try std.testing.expect(bridge.panes.find(2) == null);
 }

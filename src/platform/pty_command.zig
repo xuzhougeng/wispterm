@@ -406,6 +406,10 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
     return impl.sshInteractiveCommand(buf, options);
 }
 
+pub fn sshControlCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
+    return impl.sshControlCommand(buf, options);
+}
+
 pub fn launchKindForCommand(command: CommandLine) LaunchKind {
     return impl.launchKindForCommand(command);
 }

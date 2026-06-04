@@ -1,19 +1,20 @@
 //! tmux pane I/O bridge.
 //!
-//! Owns the controller-side fd of each pane's virtual PTY (the other end of a
-//! `Pty.openVirtual` socketpair, whose `pty` end feeds a `Surface.initVirtual`
+//! Owns the controller side of each pane's virtual PTY (the other end of a
+//! `Pty.openVirtual` pair, whose `pty` end feeds a `Surface.initVirtual`
 //! surface). Backs the Phase 2 `session.PaneSink` — pane `%output` is written
-//! to the matching `controller_fd`, where the pane's Surface reads it via its
-//! normal `ReadThread` (render path unchanged) — and drains pane keystrokes
-//! (`controller_fd` → `Session.sendKeys`).
+//! to the matching controller, where the pane's Surface reads it via its normal
+//! `ReadThread` (render path unchanged) — and drains pane keystrokes
+//! (controller → `Session.sendKeys`).
 //!
-//! Surface-agnostic: it touches only fds and the `Session`, so it is
-//! unit-testable with bare `Pty.openVirtual` socketpairs (see
-//! `pane_io_test.zig`). Phase 3c/3d pair each `controller_fd`'s other end with
-//! a real Surface and poll all fds alongside the ssh stream.
+//! Surface-agnostic: it touches only virtual controllers and the `Session`, so it is
+//! unit-testable with bare `Pty.openVirtual` pairs (see `pane_io_test.zig`).
+//! Phase 3c/3d pair each controller's other end with a real Surface and poll
+//! all controllers alongside the ssh stream.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Pty = @import("../platform/pty.zig").Pty;
 const session = @import("session.zig");
 
 pub const PaneMap = struct {
@@ -25,10 +26,10 @@ pub const PaneMap = struct {
 
     pub const Pane = struct {
         id: usize,
-        controller_fd: std.posix.fd_t,
+        controller: Pty.VirtualController,
         /// Borrowed pointer to this pane's `*Surface` (owned by the SplitTree
         /// that holds it; the bridge sets it via `setSurface`). Stored as an
-        /// opaque pointer so `pane.zig` stays Surface-free and posix-testable.
+        /// opaque pointer so `pane.zig` stays Surface-free and unit-testable.
         /// `removePane`/`deinit` never touch it — the tree owns the ref.
         surface: ?*anyopaque = null,
     };
@@ -38,14 +39,14 @@ pub const PaneMap = struct {
     }
 
     pub fn deinit(self: *PaneMap) void {
-        for (self.panes.items) |p| std.posix.close(p.controller_fd);
+        for (self.panes.items) |*p| p.controller.deinit();
         self.panes.deinit(self.alloc);
     }
 
-    /// Register a pane and take ownership of its controller-side fd.
+    /// Register a pane and take ownership of its controller side.
     /// `removePane`/`deinit` close it, which gives the pane's Surface an EOF.
-    pub fn addPane(self: *PaneMap, id: usize, controller_fd: std.posix.fd_t) Allocator.Error!void {
-        try self.panes.append(self.alloc, .{ .id = id, .controller_fd = controller_fd });
+    pub fn addPane(self: *PaneMap, id: usize, controller: Pty.VirtualController) Allocator.Error!void {
+        try self.panes.append(self.alloc, .{ .id = id, .controller = controller });
     }
 
     pub fn find(self: *PaneMap, id: usize) ?*Pane {
@@ -70,14 +71,14 @@ pub const PaneMap = struct {
         return null;
     }
 
-    /// Drop a pane and close its `controller_fd`. Closing the controller end
+    /// Drop a pane and close its controller. Closing the controller end
     /// gives the pane's Surface an EOF on its next read, so its ReadThread
     /// marks the surface exited. No-op if the pane is unknown.
     pub fn removePane(self: *PaneMap, id: usize) void {
         var i: usize = 0;
         while (i < self.panes.items.len) : (i += 1) {
             if (self.panes.items[i].id == id) {
-                std.posix.close(self.panes.items[i].controller_fd);
+                self.panes.items[i].controller.deinit();
                 _ = self.panes.orderedRemove(i);
                 return;
             }
@@ -85,7 +86,7 @@ pub const PaneMap = struct {
     }
 
     /// A `session.PaneSink` that delivers `%output` bytes to each pane's
-    /// `controller_fd`. Output for an unknown pane is dropped.
+    /// controller. Output for an unknown pane is dropped.
     pub fn sink(self: *PaneMap) session.PaneSink {
         return .{ .ctx = self, .writeFn = writeImpl };
     }
@@ -97,9 +98,9 @@ pub const PaneMap = struct {
     /// closed its end) stops draining that pane — its removal is driven by the
     /// layout reconcile, not here.
     pub fn pumpKeystrokes(self: *PaneMap, s: *session.Session) Allocator.Error!void {
-        for (self.panes.items) |p| {
-            while (readable(p.controller_fd)) {
-                const n = std.posix.read(p.controller_fd, &self.read_buf) catch break;
+        for (self.panes.items) |*p| {
+            while (p.controller.inputAvailable()) {
+                const n = p.controller.readInput(&self.read_buf) orelse break;
                 if (n == 0) break;
                 try s.sendKeys(p.id, self.read_buf[0..n]);
             }
@@ -109,30 +110,9 @@ pub const PaneMap = struct {
     fn writeImpl(ctx: *anyopaque, pane_id: usize, bytes: []const u8) void {
         const self: *PaneMap = @ptrCast(@alignCast(ctx));
         const pane = self.find(pane_id) orelse return;
-        writeAll(pane.controller_fd, bytes);
+        pane.controller.writeOutput(bytes);
     }
 };
-
-/// Best-effort write of all bytes; partial writes are retried, errors dropped
-/// (matches Surface's PTY write path, which also swallows write errors).
-fn writeAll(fd: std.posix.fd_t, bytes: []const u8) void {
-    var off: usize = 0;
-    while (off < bytes.len) {
-        const n = std.posix.write(fd, bytes[off..]) catch return;
-        if (n == 0) return;
-        off += n;
-    }
-}
-
-/// True if `fd` has bytes ready to read right now (poll, zero timeout).
-/// POLLHUP-without-data (the Surface closed its end) reads as not-readable, so
-/// pumpKeystrokes never spins on a dead pane.
-fn readable(fd: std.posix.fd_t) bool {
-    var fds = [1]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
-    const ready = std.posix.poll(&fds, 0) catch return false;
-    if (ready == 0) return false;
-    return fds[0].revents & std.posix.POLL.IN != 0;
-}
 
 // ----- tests -----
 
@@ -142,12 +122,12 @@ test "setSurface stores a borrowed pointer and findIdBySurface reverses it" {
     const b: *anyopaque = @ptrCast(&sentinels[1]);
 
     var map = PaneMap.init(std.testing.allocator);
-    // Free only the backing array, NOT via map.deinit(): these are fake fds and
-    // std.posix.close treats EBADF as unreachable, so closing -1 would panic.
+    // Free only the backing array, NOT via map.deinit(): these are fake
+    // controllers that are intentionally never closed.
     defer map.panes.deinit(map.alloc);
 
-    try map.panes.append(map.alloc, .{ .id = 1, .controller_fd = -1 });
-    try map.panes.append(map.alloc, .{ .id = 2, .controller_fd = -1 });
+    try map.panes.append(map.alloc, .{ .id = 1, .controller = Pty.VirtualController.invalidForTest() });
+    try map.panes.append(map.alloc, .{ .id = 2, .controller = Pty.VirtualController.invalidForTest() });
 
     map.setSurface(1, a);
     map.setSurface(2, b);

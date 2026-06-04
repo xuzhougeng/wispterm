@@ -1,10 +1,8 @@
-//! Posix-only tests for the tmux pane I/O bridge (`pane.zig`).
+//! Tests for the tmux pane I/O bridge (`pane.zig`).
 //!
-//! Uses real `Pty.openVirtual` socketpairs: the `pty` end stands in for a
+//! Uses real `Pty.openVirtual` pairs: the `pty` end stands in for a
 //! pane's Surface (it reads rendered `%output` and writes keystrokes), while
-//! the `controller_fd` is owned by the PaneMap under test. Kept out of
-//! `pane.zig` so that module stays portable (std + session only); the
-//! libc/socketpair dependency lives here, like `platform/pty_virtual_test.zig`.
+//! the controller side is owned by the PaneMap under test.
 
 const std = @import("std");
 const pane = @import("pane.zig");
@@ -21,14 +19,14 @@ fn nullSink() session.PaneSink {
     };
 }
 
-test "PaneMap.sink delivers %output to the matching pane's controller fd" {
+test "PaneMap.sink delivers %output to the matching pane's controller" {
     const alloc = std.testing.allocator;
     var pair = try pty.Pty.openVirtual(.{ .ws_col = 80, .ws_row = 24 });
     defer pair.pty.deinit(); // the Surface end
 
     var map = pane.PaneMap.init(alloc);
-    defer map.deinit(); // closes controller_fd
-    try map.addPane(7, pair.controller_fd);
+    defer map.deinit(); // closes the controller side
+    try map.addPane(7, pair.controller);
 
     map.sink().write(7, "hello");
 
@@ -52,7 +50,7 @@ test "Session %output flows through PaneMap.sink, unescaped, to the pane" {
 
     var map = pane.PaneMap.init(alloc);
     defer map.deinit();
-    try map.addPane(2, pair.controller_fd);
+    try map.addPane(2, pair.controller);
 
     var s = session.Session.init(alloc, map.sink(), 80, 24);
     defer s.deinit();
@@ -64,14 +62,14 @@ test "Session %output flows through PaneMap.sink, unescaped, to the pane" {
     try std.testing.expectEqualSlices(u8, &.{ 'a', 'b', 0x1b, 'c' }, buf[0..n]);
 }
 
-test "PaneMap.removePane unregisters the pane and closes its fd" {
+test "PaneMap.removePane unregisters the pane and closes its controller" {
     const alloc = std.testing.allocator;
     var pair = try pty.Pty.openVirtual(.{ .ws_col = 80, .ws_row = 24 });
     defer pair.pty.deinit();
 
     var map = pane.PaneMap.init(alloc);
     defer map.deinit(); // pane already gone; must not double-close
-    try map.addPane(5, pair.controller_fd);
+    try map.addPane(5, pair.controller);
 
     map.removePane(5);
     try std.testing.expect(map.find(5) == null);
@@ -86,13 +84,13 @@ test "pumpKeystrokes forwards a pane's keystrokes as a hex send-keys" {
 
     var map = pane.PaneMap.init(alloc);
     defer map.deinit();
-    try map.addPane(4, pair.controller_fd);
+    try map.addPane(4, pair.controller);
 
     var s = session.Session.init(alloc, nullSink(), 80, 24);
     defer s.deinit();
 
     // The Surface writes keystrokes into its pty; the bytes surface on the
-    // controller_fd, which the pump turns into a hex send-keys for pane %4.
+    // controller side, which the pump turns into a hex send-keys for pane %4.
     try pair.pty.writeInput("ls\n"); // l=6c s=73 \n=0a
     try map.pumpKeystrokes(&s);
     try std.testing.expectEqualStrings("send-keys -t %4 -H 6c 73 0a\n", s.pendingCommands());
@@ -107,8 +105,8 @@ test "pumpKeystrokes routes each pane to its own pane id" {
 
     var map = pane.PaneMap.init(alloc);
     defer map.deinit();
-    try map.addPane(1, a.controller_fd);
-    try map.addPane(2, b.controller_fd);
+    try map.addPane(1, a.controller);
+    try map.addPane(2, b.controller);
 
     var s = session.Session.init(alloc, nullSink(), 80, 24);
     defer s.deinit();
@@ -129,7 +127,7 @@ test "pumpKeystrokes is a no-op when no keystrokes are pending" {
 
     var map = pane.PaneMap.init(alloc);
     defer map.deinit();
-    try map.addPane(9, pair.controller_fd);
+    try map.addPane(9, pair.controller);
 
     var s = session.Session.init(alloc, nullSink(), 80, 24);
     defer s.deinit();

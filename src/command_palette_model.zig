@@ -4,6 +4,7 @@ pub const ResultGroup = enum {
     command_title,
     command_secondary,
     ssh_profile,
+    tmux_profile,
     ai_profile,
     theme,
 };
@@ -13,8 +14,9 @@ pub fn resultGroupRank(group: ResultGroup) u8 {
         .command_title => 0,
         .command_secondary => 1,
         .ssh_profile => 2,
-        .ai_profile => 3,
-        .theme => 4,
+        .tmux_profile => 3,
+        .ai_profile => 4,
+        .theme => 5,
     };
 }
 
@@ -46,6 +48,11 @@ pub fn shouldSearchSshProfiles(filter: []const u8) bool {
 
 pub fn sshProfileNameMatchesFilter(name: []const u8, filter: []const u8) bool {
     return shouldSearchSshProfiles(filter) and containsIgnoreCase(name, filter);
+}
+
+pub fn tmuxProfileMatchesFilter(name: []const u8, filter: []const u8) bool {
+    return shouldSearchSshProfiles(filter) and
+        (containsIgnoreCase(name, filter) or std.ascii.eqlIgnoreCase(filter, "tmux"));
 }
 
 /// Whitelist validator for an OpenSSH `ProxyJump` specification before it is
@@ -97,6 +104,13 @@ test "command palette model does not match non-name SSH profile fields" {
     try std.testing.expect(!sshProfileNameMatchesFilter("ProdBox", "needle-user"));
 }
 
+test "command palette model matches tmux profiles by name or tmux token" {
+    try std.testing.expect(tmuxProfileMatchesFilter("CPU2", "cpu"));
+    try std.testing.expect(tmuxProfileMatchesFilter("CPU2", "TMUX"));
+    try std.testing.expect(!tmuxProfileMatchesFilter("CPU2", "ssh"));
+    try std.testing.expect(!tmuxProfileMatchesFilter("CPU2", ""));
+}
+
 test "proxy jump validator accepts empty and well-formed hop specs" {
     try std.testing.expect(isProxyJumpSafe("")); // optional field
     try std.testing.expect(isProxyJumpSafe("jump.example.test"));
@@ -117,7 +131,8 @@ test "proxy jump validator rejects shell metacharacters and whitespace" {
 test "command palette model orders SSH results after commands and before themes" {
     try std.testing.expect(resultGroupRank(.command_title) < resultGroupRank(.command_secondary));
     try std.testing.expect(resultGroupRank(.command_secondary) < resultGroupRank(.ssh_profile));
-    try std.testing.expect(resultGroupRank(.ssh_profile) < resultGroupRank(.theme));
+    try std.testing.expect(resultGroupRank(.ssh_profile) < resultGroupRank(.tmux_profile));
+    try std.testing.expect(resultGroupRank(.tmux_profile) < resultGroupRank(.theme));
 }
 
 test "ai profile label matches the ai token and the name" {
@@ -139,6 +154,6 @@ test "resolve default index matches by name with fallback to first" {
 }
 
 test "command palette model orders AI profiles between SSH and themes" {
-    try std.testing.expect(resultGroupRank(.ssh_profile) < resultGroupRank(.ai_profile));
+    try std.testing.expect(resultGroupRank(.tmux_profile) < resultGroupRank(.ai_profile));
     try std.testing.expect(resultGroupRank(.ai_profile) < resultGroupRank(.theme));
 }

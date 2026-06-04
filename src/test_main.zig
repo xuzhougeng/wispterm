@@ -675,10 +675,13 @@ comptime {
     _ = @import("platform/open_url.zig");
     _ = @import("platform/process.zig");
     _ = @import("platform/pty.zig");
-    if (@import("builtin").os.tag != .windows) {
-        _ = @import("platform/pty_virtual_test.zig");
-        _ = @import("tmux/pane_io_test.zig");
-        _ = @import("appwindow/tmux_bridge.zig");
+    switch (@import("builtin").os.tag) {
+        .windows, .linux, .macos => {
+            _ = @import("platform/pty_virtual_test.zig");
+            _ = @import("tmux/pane_io_test.zig");
+            _ = @import("appwindow/tmux_bridge.zig");
+        },
+        else => {},
     }
     _ = @import("platform/pty_command.zig");
     _ = @import("platform/remote_file.zig");

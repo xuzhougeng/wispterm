@@ -231,6 +231,10 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
     return buf[0..pos];
 }
 
+pub fn sshControlCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
+    return sshInteractiveCommand(buf, options);
+}
+
 pub fn launchKindForCommand(command: CommandLine) LaunchKind {
     if (std.mem.startsWith(u8, command, "ssh ")) return .ssh;
     return .local;

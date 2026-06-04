@@ -53,9 +53,12 @@ pub const TabState = struct {
     copilot_session: ?*ai_chat.Session = null,
 
     /// tmux control-mode window id this tab mirrors (Phase 3c-2), or null for a
-    /// normal local tab. Set by `tmux_bridge`. `tmux_name_buf`/`tmux_name_len`
-    /// hold the tmux window name (`%window-renamed`), used by `getTitle`.
+    /// normal local tab. `tmux_owner` is the controller/bridge that owns this
+    /// tab; tmux window ids are only unique within a connection. Set by
+    /// `tmux_bridge`. `tmux_name_buf`/`tmux_name_len` hold the tmux window name
+    /// (`%window-renamed`), used by `getTitle`.
     tmux_window_id: ?usize = null,
+    tmux_owner: ?*anyopaque = null,
     tmux_name_buf: [256]u8 = undefined,
     tmux_name_len: usize = 0,
 
@@ -369,6 +372,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     // NOT applied to field-by-field init, so these must be set explicitly or
     // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
     t.tmux_window_id = null;
+    t.tmux_owner = null;
     t.tmux_name_len = 0;
 
     g_tabs[g_tab_count] = t;
@@ -428,6 +432,7 @@ pub fn spawnAiChatTab(
     // NOT applied to field-by-field init, so these must be set explicitly or
     // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
     t.tmux_window_id = null;
+    t.tmux_owner = null;
     t.tmux_name_len = 0;
 
     g_tabs[g_tab_count] = t;
@@ -462,6 +467,7 @@ pub fn spawnAiChatTabFromHistoryRecord(allocator: std.mem.Allocator, record: age
     // NOT applied to field-by-field init, so these must be set explicitly or
     // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
     t.tmux_window_id = null;
+    t.tmux_owner = null;
     t.tmux_name_len = 0;
 
     g_tabs[g_tab_count] = t;
@@ -495,6 +501,7 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
     // NOT applied to field-by-field init, so these must be set explicitly or
     // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
     t.tmux_window_id = null;
+    t.tmux_owner = null;
     t.tmux_name_len = 0;
     t.ai_history_session = session_ptr;
 
@@ -1355,6 +1362,7 @@ pub fn restoreTab(
     // NOT applied to field-by-field init, so these must be set explicitly or
     // getTitle reads a garbage tmux_name_len (Phase 3c-2 fields).
     t.tmux_window_id = null;
+    t.tmux_owner = null;
     t.tmux_name_len = 0;
     applyRestoredTabMetadata(t, snap);
 
