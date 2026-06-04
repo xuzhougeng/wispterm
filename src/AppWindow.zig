@@ -45,6 +45,7 @@ const hit_test = @import("input/hit_test.zig");
 pub const ai_chat = @import("ai_chat.zig");
 const ai_history_cache = @import("ai_history_cache.zig");
 const ai_history_resume = @import("ai_history_resume.zig");
+const ai_loop_store = @import("ai_loop_store.zig");
 const ai_history_types = @import("ai_history_types.zig");
 pub const ai_history_session = @import("ai_history_session.zig");
 pub const ai_history_source = @import("ai_history_source.zig");
@@ -124,6 +125,17 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     try ensureGlobalAgentHistoryStore(allocator);
     tab.g_ai_history_change_hook = saveAiHistoryChangeEvent;
     installSessionRestoreHooks();
+    // Init the scheduler store once per process (guard prevents re-init on
+    // subsequent window creations). The store must not move after setActive, so
+    // we keep it in the stable g_loop_store global.
+    if (g_loop_store == null) {
+        if (platform_dirs.pathInConfigDir(allocator, "loop_tasks.json")) |loop_path| {
+            defer allocator.free(loop_path);
+            g_loop_store = ai_loop_store.Store.init(allocator, loop_path);
+            ai_loop_store.setActive(&g_loop_store.?);
+            ai_loop_store.setInjector(loopInjector);
+        } else |_| {}
+    }
 
     // Apply config from App to globals
     g_theme = app.theme;
@@ -255,6 +267,13 @@ pub fn deinit(self: *AppWindow) void {
     tab.g_tab_count = 0;
     tab.g_remote_client = null;
     if (is_last_window) deinitGlobalAgentHistoryStore(self.allocator);
+    if (is_last_window) {
+        if (g_loop_store != null) {
+            ai_loop_store.clearActive();
+            g_loop_store.?.deinit();
+            g_loop_store = null;
+        }
+    }
     markdown_preview_renderer.deinit();
     markdown_preview_panel.deinit();
     browser_panel.deinit();
@@ -417,6 +436,28 @@ var g_agent_history_mutex: std.Thread.Mutex = .{};
 pub var g_agent_history: ?*agent_history.Store = null;
 var g_flush_scheduler: flush_scheduler.FlushScheduler = .{};
 var g_agent_history_revision: u64 = 0;
+
+// Process-wide scheduler store for /loop and /watch tasks.
+// Must be a stable global so setActive(&g_loop_store.?) never dangles.
+var g_loop_store: ?ai_loop_store.Store = null;
+
+/// Resolves a session by id across all open tabs (UI thread only: tab.g_tabs
+/// is threadlocal and only populated on the window's UI thread).
+fn loopInjector(session_id: []const u8, prompt: []const u8) ai_loop_store.InjectOutcome {
+    var i: usize = 0;
+    while (i < tab.MAX_TABS) : (i += 1) {
+        const t = tab.g_tabs[i] orelse continue;
+        if (t.ai_chat_session) |s| {
+            if (std.mem.eql(u8, s.sessionId(), session_id))
+                return if (s.submitScheduledPrompt(prompt)) .sent else .busy;
+        }
+        if (t.copilot_session) |s| {
+            if (std.mem.eql(u8, s.sessionId(), session_id))
+                return if (s.submitScheduledPrompt(prompt)) .sent else .busy;
+        }
+    }
+    return .closed;
+}
 
 // Initial CWD for this window (used when spawning the first tab)
 threadlocal var g_initial_cwd_buf: platform_pty_command.CwdBuffer = undefined;
@@ -5001,6 +5042,8 @@ fn runMainLoop(self: *AppWindow) !void {
         // Track the last windowed position so a maximized/fullscreen close still
         // persists where the window was, not (0,0).
         rememberWindowedPosition(win);
+        // Fire any due /loop or /watch tasks (UI thread: tab.g_tabs is populated).
+        ai_loop_store.tick(std.time.milliTimestamp());
 
         // Update focus state
         const focused = window_backend.isFocused(win);

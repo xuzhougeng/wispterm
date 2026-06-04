@@ -15,6 +15,8 @@ pub const SlashCommand = enum {
     permission,
     export_markdown,
     distill,
+    loop,
+    watch,
     unknown,
 };
 
@@ -83,6 +85,14 @@ pub const slash_command_entries = [_]SlashCommandEntry{
     .{
         .suggestion = .{ .command = "/reload-commands", .description = "rescan the commands directory" },
         .action = .reload_commands,
+    },
+    .{
+        .suggestion = .{ .command = "/loop", .description = "repeat a prompt every interval N times" },
+        .action = .loop,
+    },
+    .{
+        .suggestion = .{ .command = "/watch", .description = "send a prompt at a daily or one-shot time" },
+        .action = .watch,
     },
 };
 
@@ -315,6 +325,13 @@ const test_skills = [_]skill_registry.SkillMeta{
     .{ .name = &test_skill_review_name, .description = &test_skill_review_desc, .dir_name = &test_skill_review_dir, .rel_dir = &test_skill_review_rel },
 };
 
+test "parseSlashCommand recognizes loop and watch" {
+    try std.testing.expectEqual(SlashCommand.loop, parseSlashCommand("/loop").?);
+    try std.testing.expectEqual(SlashCommand.watch, parseSlashCommand("/watch").?);
+    try std.testing.expectEqual(SlashCommand.loop, exactBuiltinCommand("/loop").?);
+    try std.testing.expectEqual(SlashCommand.watch, exactBuiltinCommand("/watch").?);
+}
+
 test "parseSlashCommand recognizes new lifecycle commands" {
     try std.testing.expectEqual(SlashCommand.clear, parseSlashCommand("/clear").?);
     try std.testing.expectEqual(SlashCommand.resume_session, parseSlashCommand("/resume").?);
@@ -344,7 +361,7 @@ test "slash command suggestions filter by prefix" {
     try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/sk", 3, &.{}));
     const s = slashCommandSuggestionAtForInput("/sk", 3, 0, &.{}).?;
     try std.testing.expectEqualStrings("/skills", s.command);
-    try std.testing.expectEqual(@as(usize, 11), slashCommandSuggestionCountForInput("/", 1, &.{}));
+    try std.testing.expectEqual(@as(usize, 13), slashCommandSuggestionCountForInput("/", 1, &.{}));
     try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/di", 3, &.{}));
     try std.testing.expectEqualStrings("/distill", slashCommandSuggestionAtForInput("/di", 3, 0, &.{}).?.command);
 }
