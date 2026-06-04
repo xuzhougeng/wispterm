@@ -31,9 +31,6 @@ const impl = switch (builtin.os.tag) {
         pub fn requestClosePane(_: *anyopaque) bool {
             return false;
         }
-        pub fn requestNewWindow(_: *anyopaque) bool {
-            return false;
-        }
     },
 };
 
@@ -45,4 +42,3 @@ pub const anyActive = impl.anyActive;
 pub const activeProfileNames = impl.activeProfileNames;
 pub const requestSplit = impl.requestSplit;
 pub const requestClosePane = impl.requestClosePane;
-pub const requestNewWindow = impl.requestNewWindow;

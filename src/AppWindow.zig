@@ -1683,21 +1683,6 @@ pub fn spawnTab(allocator: std.mem.Allocator) bool {
     return spawnTabWithCwd(allocator, cwd);
 }
 
-/// If the active tab is tmux-backed, add a new tmux window (a new tab in the
-/// same persistent session) and return true; the echoed %window-add/%layout-change
-/// reconciles it. Returns false otherwise so the caller falls back to the normal
-/// new-tab gesture (the session launcher).
-pub fn requestTmuxNewWindowForActiveTab() bool {
-    if (tab.activeTab()) |t| {
-        if (t.tmux_window_id != null) {
-            if (t.focusedSurface()) |focused| {
-                return tmux_controller.requestNewWindow(focused);
-            }
-        }
-    }
-    return false;
-}
-
 pub fn spawnTabWithCommandUtf8(command: []const u8) bool {
     return spawnTabWithCommandUtf8ReturningSurface(command) != null;
 }

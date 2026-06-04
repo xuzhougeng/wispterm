@@ -372,16 +372,3 @@ pub fn requestClosePane(surface: *anyopaque) bool {
     }
     return false;
 }
-
-/// If `surface` belongs to a tmux session, open a `new-window` in it (a new
-/// tmux tab; the echoed %window-add/%layout-change reconciles it) and return
-/// true.
-pub fn requestNewWindow(surface: *anyopaque) bool {
-    for (g_controllers.items) |c| {
-        if (c.bridge.panes.findIdBySurface(surface)) |_| {
-            c.bridge.session.newWindow() catch return false;
-            return true;
-        }
-    }
-    return false;
-}

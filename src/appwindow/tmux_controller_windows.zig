@@ -657,13 +657,3 @@ pub fn requestClosePane(surface: *anyopaque) bool {
     }
     return false;
 }
-
-pub fn requestNewWindow(surface: *anyopaque) bool {
-    for (g_controllers.items) |c| {
-        if (c.bridge.panes.findIdBySurface(surface)) |_| {
-            c.bridge.session.newWindow() catch return false;
-            return true;
-        }
-    }
-    return false;
-}
