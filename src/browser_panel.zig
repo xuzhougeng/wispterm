@@ -245,6 +245,12 @@ pub fn focus() void {
     }
 }
 
+pub fn refresh() void {
+    const browser = g_browser orelse return;
+    platform_webview.reload(browser);
+    g_last_error = platform_webview.lastError(browser);
+}
+
 pub fn isReady() bool {
     const browser = g_browser orelse return false;
     return platform_webview.isReady(browser);
@@ -572,4 +578,7 @@ test "browser_panel: public parent handle API uses window backend handle" {
 
     const submit_info = @typeInfo(@TypeOf(submitUrlBar)).@"fn";
     try std.testing.expect(submit_info.params[1].type.? == ?window_backend.NativeHandle);
+
+    const refresh_info = @typeInfo(@TypeOf(refresh)).@"fn";
+    try std.testing.expectEqual(@as(usize, 0), refresh_info.params.len);
 }

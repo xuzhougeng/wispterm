@@ -41,6 +41,10 @@ pub fn navigate(browser: *Browser, url: Url) void {
     _ = url;
 }
 
+pub fn reload(browser: *Browser) void {
+    _ = browser;
+}
+
 pub fn isReady(browser: *Browser) bool {
     _ = browser;
     return false;

@@ -147,6 +147,8 @@ pub fn close() void {
 
 pub fn focus() void {}
 
+pub fn refresh() void {}
+
 pub fn isReady() bool {
     return false;
 }

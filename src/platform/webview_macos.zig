@@ -19,6 +19,7 @@ extern fn wispterm_webview_macos_set_bounds(browser: *Browser, left: c_int, top:
 extern fn wispterm_webview_macos_set_visible(browser: *Browser, visible: c_int) callconv(.c) void;
 extern fn wispterm_webview_macos_focus(browser: *Browser) callconv(.c) void;
 extern fn wispterm_webview_macos_navigate(browser: *Browser, url: [*:0]const u8) callconv(.c) void;
+extern fn wispterm_webview_macos_reload(browser: *Browser) callconv(.c) void;
 extern fn wispterm_webview_macos_is_ready(browser: *Browser) callconv(.c) c_int;
 extern fn wispterm_webview_macos_last_error(browser: *Browser) callconv(.c) i32;
 extern fn wispterm_webview_macos_destroy(browser: *Browser) callconv(.c) void;
@@ -52,6 +53,10 @@ pub fn focus(browser: *Browser) void {
 
 pub fn navigate(browser: *Browser, url: Url) void {
     wispterm_webview_macos_navigate(browser, url.ptr);
+}
+
+pub fn reload(browser: *Browser) void {
+    wispterm_webview_macos_reload(browser);
 }
 
 pub fn isReady(browser: *Browser) bool {

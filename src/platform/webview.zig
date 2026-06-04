@@ -63,6 +63,10 @@ pub fn navigate(browser: *Browser, url: Url) void {
     impl.navigate(browser, url);
 }
 
+pub fn reload(browser: *Browser) void {
+    impl.reload(browser);
+}
+
 pub fn isReady(browser: *Browser) bool {
     return impl.isReady(browser);
 }
@@ -102,6 +106,10 @@ test "platform webview exposes backend-neutral browser API" {
     const navigate_info = @typeInfo(@TypeOf(navigate)).@"fn";
     try std.testing.expectEqual(@as(usize, 2), navigate_info.params.len);
     try std.testing.expect(navigate_info.params[1].type.? == @This().Url);
+
+    const reload_info = @typeInfo(@TypeOf(reload)).@"fn";
+    try std.testing.expectEqual(@as(usize, 1), reload_info.params.len);
+    try std.testing.expect(reload_info.params[0].type.? == *@This().Browser);
 
     var url_buf: UrlBuffer = undefined;
     const url = urlFromUtf8("https://example.test", &url_buf).?;

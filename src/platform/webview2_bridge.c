@@ -81,6 +81,7 @@ typedef struct ICoreWebView2Vtbl {
     HRESULT (STDMETHODCALLTYPE *get_Source)(ICoreWebView2 *This, LPWSTR *uri);
     HRESULT (STDMETHODCALLTYPE *Navigate)(ICoreWebView2 *This, LPCWSTR uri);
     HRESULT (STDMETHODCALLTYPE *NavigateToString)(ICoreWebView2 *This, LPCWSTR htmlContent);
+    HRESULT (STDMETHODCALLTYPE *Reload)(ICoreWebView2 *This);
 } ICoreWebView2Vtbl;
 
 struct ICoreWebView2 {
@@ -675,6 +676,11 @@ void wispterm_webview2_navigate(WispTermWebView2Browser *browser, const WCHAR *u
     if (browser->webview && browser->pending_url[0] != 0) {
         browser->last_error = browser->webview->lpVtbl->Navigate(browser->webview, browser->pending_url);
     }
+}
+
+void wispterm_webview2_reload(WispTermWebView2Browser *browser) {
+    if (!browser || browser->closing || !browser->webview) return;
+    browser->last_error = browser->webview->lpVtbl->Reload(browser->webview);
 }
 
 int wispterm_webview2_is_ready(WispTermWebView2Browser *browser) {

@@ -127,6 +127,16 @@ void wispterm_webview_macos_navigate(void *browser, const char *url) {
     });
 }
 
+void wispterm_webview_macos_reload(void *browser) {
+    WispTermMacWebView *st = (WispTermMacWebView *)browser;
+    if (st == NULL || st->webview == nil) return;
+    wispterm_webview_run_on_main(^{
+        @autoreleasepool {
+            [st->webview reload];
+        }
+    });
+}
+
 int wispterm_webview_macos_is_ready(void *browser) {
     WispTermMacWebView *st = (WispTermMacWebView *)browser;
     return (st != NULL && st->webview != nil) ? 1 : 0;
