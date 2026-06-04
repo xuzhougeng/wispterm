@@ -99,6 +99,13 @@ pub fn isVisibleForActiveTab() bool {
     return g_visible and owner == active_tab_state.g_active_tab;
 }
 
+/// Whether the native webview should be shown this frame. Visible on its owning
+/// active tab, UNLESS a blocking GPU overlay is up (`suppressed`) — the webview
+/// composites above the GPU surface and would occlude the command center et al.
+pub fn shouldShowWebview(suppressed: bool) bool {
+    return isVisibleForActiveTab() and !suppressed;
+}
+
 pub fn onTabClosed(closed_idx: usize) void {
     const owner = g_owner_tab orelse return;
     if (owner == closed_idx) {
@@ -250,13 +257,13 @@ pub fn lastError() platform_webview.ErrorCode {
     return g_last_error;
 }
 
-pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) void {
+pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32, suppressed: bool) void {
     const perf = ui_perf.begin("browser_panel.sync");
     defer perf.end();
 
     if (window_width <= 0 or window_height <= 0) return;
 
-    if (!isVisibleForActiveTab()) {
+    if (!shouldShowWebview(suppressed)) {
         if (g_browser) |browser| platform_webview.setVisible(browser, false);
         return;
     }
@@ -520,6 +527,34 @@ test "full mode: terminal-layout width stays side; only the draw rect goes full"
     try std.testing.expectEqual(@as(f32, 720), panelWidthForWindow(1600, 0, 0));
     // Webview draw rect: full content width in full mode.
     try std.testing.expectEqual(@as(f32, 1600), panelDrawWidthForWindow(1600, 0, 0));
+}
+
+test "browser_panel: a blocking overlay suppresses the webview even on the active tab" {
+    // The native webview composites ABOVE the GPU surface, so a full-mode panel
+    // would otherwise occlude GPU overlays like the command center. sync() must
+    // hide the webview whenever the caller reports a blocking overlay is up.
+    const saved_visible = g_visible;
+    const saved_owner = g_owner_tab;
+    const saved_active_tab = active_tab_state.g_active_tab;
+    defer {
+        g_visible = saved_visible;
+        g_owner_tab = saved_owner;
+        active_tab_state.g_active_tab = saved_active_tab;
+    }
+
+    active_tab_state.g_active_tab = 0;
+    g_visible = true;
+    g_owner_tab = 0;
+
+    // No overlay: shown on the owning active tab.
+    try std.testing.expect(shouldShowWebview(false));
+    // Overlay up: hidden, so the command center shows through.
+    try std.testing.expect(!shouldShowWebview(true));
+
+    // Inactive tab stays hidden regardless of the overlay flag.
+    active_tab_state.g_active_tab = 1;
+    try std.testing.expect(!shouldShowWebview(false));
+    try std.testing.expect(!shouldShowWebview(true));
 }
 
 test "browser_panel: public parent handle API uses window backend handle" {

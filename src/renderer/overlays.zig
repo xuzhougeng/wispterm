@@ -4720,6 +4720,73 @@ test "overlays: SSH list filter backspace restores matching rows" {
     try std.testing.expectEqual(@as(usize, 2), sshListRowCount());
 }
 
+test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
+    const saved_palette = g_command_palette_visible;
+    const saved_settings = g_settings_visible;
+    const saved_whats_new = g_whats_new_visible;
+    const saved_close = g_window_close_confirm_visible;
+    const saved_restore = g_restore_defaults_confirm_visible;
+    const saved_transfer = g_transfer_cancel_confirm_visible;
+    const saved_session = g_session_launcher_visible;
+    const saved_ssh_list = g_ssh_list_visible;
+    const saved_ssh_form = g_ssh_form_visible;
+    const saved_ai_list = g_ai_list_visible;
+    const saved_ai_form = g_ai_form_visible;
+    const saved_ai_history = g_ai_history_source_visible;
+    defer {
+        g_command_palette_visible = saved_palette;
+        g_settings_visible = saved_settings;
+        g_whats_new_visible = saved_whats_new;
+        g_window_close_confirm_visible = saved_close;
+        g_restore_defaults_confirm_visible = saved_restore;
+        g_transfer_cancel_confirm_visible = saved_transfer;
+        g_session_launcher_visible = saved_session;
+        g_ssh_list_visible = saved_ssh_list;
+        g_ssh_form_visible = saved_ssh_form;
+        g_ai_list_visible = saved_ai_list;
+        g_ai_form_visible = saved_ai_form;
+        g_ai_history_source_visible = saved_ai_history;
+    }
+
+    // Clear every blocking flag → nothing should report blocking.
+    g_command_palette_visible = false;
+    g_settings_visible = false;
+    g_whats_new_visible = false;
+    g_window_close_confirm_visible = false;
+    g_restore_defaults_confirm_visible = false;
+    g_transfer_cancel_confirm_visible = false;
+    g_session_launcher_visible = false;
+    g_ssh_list_visible = false;
+    g_ssh_form_visible = false;
+    g_ai_list_visible = false;
+    g_ai_form_visible = false;
+    g_ai_history_source_visible = false;
+    try std.testing.expect(!anyBlockingOverlayVisible());
+
+    // Each modal independently makes the webview need hiding.
+    g_command_palette_visible = true;
+    try std.testing.expect(anyBlockingOverlayVisible());
+    g_command_palette_visible = false;
+
+    g_settings_visible = true;
+    try std.testing.expect(anyBlockingOverlayVisible());
+    g_settings_visible = false;
+
+    g_whats_new_visible = true;
+    try std.testing.expect(anyBlockingOverlayVisible());
+    g_whats_new_visible = false;
+
+    g_window_close_confirm_visible = true;
+    try std.testing.expect(anyBlockingOverlayVisible());
+    g_window_close_confirm_visible = false;
+
+    g_session_launcher_visible = true;
+    try std.testing.expect(anyBlockingOverlayVisible());
+    g_session_launcher_visible = false;
+
+    try std.testing.expect(!anyBlockingOverlayVisible());
+}
+
 fn showVersionToast() void {
     const msg = app_metadata.versionLine(&g_copy_toast_buf) catch return;
     g_copy_toast_len = msg.len;
@@ -5081,6 +5148,22 @@ pub fn hideWhatsNew() void {
 
 pub fn whatsNewVisible() bool {
     return g_whats_new_visible;
+}
+
+/// True when a full-window GPU overlay is up that the native browser/Jupyter
+/// webview would otherwise occlude. The webview is an OS-level control
+/// composited ABOVE the GPU surface, so in full mode it covers the entire
+/// content area — including these modals. Callers (browser_panel.sync) hide the
+/// webview while this holds so the command center, settings, confirm dialogs,
+/// etc. stay visible.
+pub fn anyBlockingOverlayVisible() bool {
+    return commandPaletteVisible() or
+        settingsPageVisible() or
+        sessionLauncherVisible() or
+        whatsNewVisible() or
+        windowCloseConfirmVisible() or
+        restoreDefaultsConfirmVisible() or
+        transferCancelConfirmVisible();
 }
 
 pub fn whatsNewHandleKey(ev: input_key.KeyEvent) void {

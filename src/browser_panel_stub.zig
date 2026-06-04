@@ -155,13 +155,14 @@ pub fn lastError() i32 {
     return g_last_error;
 }
 
-pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) void {
+pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32, suppressed: bool) void {
     _ = parent;
     _ = window_width;
     _ = window_height;
     _ = titlebar_height;
     _ = left_offset;
     _ = right_offset;
+    _ = suppressed;
 }
 
 pub fn deinit() void {

@@ -2396,7 +2396,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     if (g_window) |w| {
         const perf = ui_perf.begin("appwindow.browser_panel_sync_resize");
         defer perf.end();
-        browser_panel.sync(window_backend.nativeHandle(w), width, height, titlebar_offset, left_panels_w, browserPanelRightOffset());
+        browser_panel.sync(window_backend.nativeHandle(w), width, height, titlebar_offset, left_panels_w, browserPanelRightOffset(), overlays.anyBlockingOverlayVisible());
     }
 
     // Snapshot + rebuild + draw (split-aware, mirrors main loop)
@@ -5110,7 +5110,7 @@ fn runMainLoop(self: *AppWindow) !void {
         {
             const perf = ui_perf.begin("appwindow.browser_panel_sync");
             defer perf.end();
-            browser_panel.sync(window_backend.nativeHandle(win), fb_width, fb_height, titlebar_offset, left_panels_w, browserPanelRightOffset());
+            browser_panel.sync(window_backend.nativeHandle(win), fb_width, fb_height, titlebar_offset, left_panels_w, browserPanelRightOffset(), overlays.anyBlockingOverlayVisible());
         }
 
         if (activeTab()) |active_tab| {
