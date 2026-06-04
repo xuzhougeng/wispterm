@@ -1057,6 +1057,12 @@ void wispterm_macos_window_destroy(void *handle) {
     });
 }
 
+void *wispterm_macos_window_ns_window(void *handle) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL) return NULL;
+    return (void *)state->window;
+}
+
 void wispterm_macos_window_poll(void *handle) {
     @autoreleasepool {
         WispTermMacWindowState *state = wispterm_macos_state(handle);
