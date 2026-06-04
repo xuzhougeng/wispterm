@@ -589,6 +589,28 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(fast_tests).step);
 
+    // Posix-native libc-linked tests: file I/O, libc (localtime), fork.
+    // Runs on any non-Windows host. Added to test-full so the store tests
+    // (ai_loop_store) execute on the Linux CI host where test_main.zig is skipped
+    // (Linux has no desktop backend, so supports_desktop_exe = false there).
+    if (b.graph.host.result.os.tag != .windows) {
+        const posix_test_mod = b.createModule(.{
+            .root_source_file = b.path("src/test_posix.zig"),
+            .target = b.resolveTargetQuery(.{}),
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        const posix_test_options = b.addOptions();
+        posix_test_options.addOption([]const u8, "app_version", app_version);
+        posix_test_options.addOption([]const u8, "release_notes", "");
+        posix_test_mod.addOptions("build_options", posix_test_options);
+        const posix_tests = b.addTest(.{
+            .name = "wispterm-posix-test",
+            .root_module = posix_test_mod,
+        });
+        test_full_step.dependOn(&b.addRunArtifact(posix_tests).step);
+    }
+
     const shared_test_mod = b.createModule(.{
         .root_source_file = b.path("src/shared_compile_test.zig"),
         .target = target,
