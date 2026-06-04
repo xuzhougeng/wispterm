@@ -1,6 +1,6 @@
 .{
     .name = .wispterm,
-    .version = "1.9.0",
+    .version = "1.10.0",
     .fingerprint = 0x2db6e9e774428a6f,
     .minimum_zig_version = "0.15.2",
 

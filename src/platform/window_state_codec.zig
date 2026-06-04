@@ -10,7 +10,7 @@ pub const MIN_HEIGHT: i32 = 150;
 /// reaches it, so anything bigger is a corrupted value.
 pub const MAX_DIMENSION: i32 = 32_767;
 
-/// Max stored length of the last-seen version string (e.g. "1.9.0"); longer
+/// Max stored length of the last-seen version string (e.g. "1.10.0"); longer
 /// values are truncated on read (never overflow).
 pub const version_max_len: usize = 24;
 
@@ -244,8 +244,8 @@ test "mergeQuakeFrame sets the quake frame without touching windowed geometry" {
 }
 
 test "parse reads last-seen-version" {
-    const s = parse("last-seen-version = 1.9.0\n");
-    try std.testing.expectEqualStrings("1.9.0", s.lastSeenVersion());
+    const s = parse("last-seen-version = 1.10.0\n");
+    try std.testing.expectEqualStrings("1.10.0", s.lastSeenVersion());
 }
 
 test "old state file without last-seen-version leaves it empty" {
@@ -259,10 +259,10 @@ test "last-seen-version round-trips and is omitted when empty" {
     const empty_text = try format(&buf, .{});
     try std.testing.expect(std.mem.indexOf(u8, empty_text, "last-seen-version") == null);
     // set → present and reparses
-    const set = withLastSeenVersion(.{}, "1.9.0");
+    const set = withLastSeenVersion(.{}, "1.10.0");
     const text = try format(&buf, set);
     const reparsed = parse(text);
-    try std.testing.expectEqualStrings("1.9.0", reparsed.lastSeenVersion());
+    try std.testing.expectEqualStrings("1.10.0", reparsed.lastSeenVersion());
 }
 
 test "over-length last-seen-version is truncated, never overflows" {

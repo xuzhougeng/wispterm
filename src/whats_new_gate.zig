@@ -22,25 +22,25 @@ pub fn whatsNewDecision(last_seen: []const u8, current: []const u8, notes_presen
 }
 
 test "fresh install suppresses (no last-seen version)" {
-    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("", "1.9.0", true));
+    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("", "1.10.0", true));
 }
 
 test "upgrade with notes shows" {
-    try std.testing.expectEqual(Decision.show, whatsNewDecision("1.8.0", "1.9.0", true));
+    try std.testing.expectEqual(Decision.show, whatsNewDecision("1.9.0", "1.10.0", true));
 }
 
 test "upgrade without notes suppresses" {
-    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("1.8.0", "1.9.0", false));
+    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("1.9.0", "1.10.0", false));
 }
 
 test "same version suppresses" {
-    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("1.9.0", "1.9.0", true));
+    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("1.10.0", "1.10.0", true));
 }
 
 test "downgrade suppresses" {
-    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("1.9.0", "1.8.0", true));
+    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("1.10.0", "1.9.0", true));
 }
 
 test "unparseable last-seen suppresses" {
-    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("nightly", "1.9.0", true));
+    try std.testing.expectEqual(Decision.suppress, whatsNewDecision("nightly", "1.10.0", true));
 }

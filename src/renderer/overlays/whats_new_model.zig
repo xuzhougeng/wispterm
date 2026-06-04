@@ -69,7 +69,7 @@ pub fn buttonActionAt(layout: Layout, px: f32, py: f32) Action {
 
 pub const fallback_url = "https://github.com/xuzhougeng/wispterm/releases/latest";
 
-/// Build the release page URL for `version` (e.g. ".../releases/tag/v1.9.0").
+/// Build the release page URL for `version` (e.g. ".../releases/tag/v1.10.0").
 /// Falls back to the latest-releases page if formatting fails.
 pub fn releaseTagUrl(buf: []u8, version: []const u8) []const u8 {
     const v = std.mem.trimLeft(u8, version, "vV");
@@ -138,12 +138,12 @@ test "clampScroll clamps both ends" {
 test "releaseTagUrl strips leading v and builds tag URL" {
     var buf: [128]u8 = undefined;
     try std.testing.expectEqualStrings(
-        "https://github.com/xuzhougeng/wispterm/releases/tag/v1.9.0",
-        releaseTagUrl(&buf, "1.9.0"),
+        "https://github.com/xuzhougeng/wispterm/releases/tag/v1.10.0",
+        releaseTagUrl(&buf, "1.10.0"),
     );
     try std.testing.expectEqualStrings(
-        "https://github.com/xuzhougeng/wispterm/releases/tag/v1.9.0",
-        releaseTagUrl(&buf, "v1.9.0"),
+        "https://github.com/xuzhougeng/wispterm/releases/tag/v1.10.0",
+        releaseTagUrl(&buf, "v1.10.0"),
     );
 }
 
