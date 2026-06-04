@@ -14,6 +14,7 @@ pub const SlashCommand = enum {
     resume_session,
     permission,
     export_markdown,
+    distill,
     unknown,
 };
 
@@ -76,6 +77,10 @@ pub const slash_command_entries = [_]SlashCommandEntry{
         .action = .export_markdown,
     },
     .{
+        .suggestion = .{ .command = "/distill", .description = "distill this conversation into a reusable skill" },
+        .action = .distill,
+    },
+    .{
         .suggestion = .{ .command = "/reload-commands", .description = "rescan the commands directory" },
         .action = .reload_commands,
     },
@@ -100,6 +105,7 @@ pub const ComposerCompletionTrigger = enum {
 pub fn parseSlashCommand(input: []const u8) ?SlashCommand {
     const trimmed = std.mem.trim(u8, input, " \t\r\n");
     if (!std.mem.startsWith(u8, trimmed, "/")) return null;
+    if (isDistillAlias(trimmed)) return .distill;
     for (slash_command_entries) |entry| {
         if (std.mem.eql(u8, trimmed, entry.suggestion.command)) return entry.action;
     }
@@ -109,10 +115,15 @@ pub fn parseSlashCommand(input: []const u8) ?SlashCommand {
 }
 
 pub fn exactBuiltinCommand(token: []const u8) ?SlashCommand {
+    if (isDistillAlias(token)) return .distill;
     for (slash_command_entries) |entry| {
         if (std.mem.eql(u8, token, entry.suggestion.command)) return entry.action;
     }
     return null;
+}
+
+pub fn isDistillAlias(token: []const u8) bool {
+    return std.mem.eql(u8, token, "/distill") or std.mem.eql(u8, token, "/沉淀");
 }
 
 pub fn matchCustomCommandIndex(input: []const u8, custom: []const SlashCommandSuggestion) ?usize {
@@ -310,6 +321,10 @@ test "parseSlashCommand recognizes new lifecycle commands" {
     try std.testing.expectEqual(SlashCommand.permission, parseSlashCommand("/permission").?);
     try std.testing.expectEqual(SlashCommand.export_markdown, parseSlashCommand("/export").?);
     try std.testing.expectEqual(SlashCommand.reload_commands, parseSlashCommand("/reload-commands").?);
+    try std.testing.expectEqual(SlashCommand.distill, parseSlashCommand("/distill").?);
+    try std.testing.expectEqual(SlashCommand.distill, parseSlashCommand("/沉淀").?);
+    try std.testing.expectEqual(SlashCommand.distill, exactBuiltinCommand("/沉淀").?);
+    try std.testing.expectEqual(@as(?SlashCommand, null), parseSlashCommand("/沉淀 主题"));
 }
 
 test "parseSlashCommand recognizes exact, unknown, and rejects non-slash" {
@@ -329,6 +344,9 @@ test "slash command suggestions filter by prefix" {
     try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/sk", 3, &.{}));
     const s = slashCommandSuggestionAtForInput("/sk", 3, 0, &.{}).?;
     try std.testing.expectEqualStrings("/skills", s.command);
+    try std.testing.expectEqual(@as(usize, 11), slashCommandSuggestionCountForInput("/", 1, &.{}));
+    try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/di", 3, &.{}));
+    try std.testing.expectEqualStrings("/distill", slashCommandSuggestionAtForInput("/di", 3, 0, &.{}).?.command);
 }
 
 test "slash suggestions include custom commands" {

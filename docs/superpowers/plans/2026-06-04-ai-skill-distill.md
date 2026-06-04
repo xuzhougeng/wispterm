@@ -35,7 +35,7 @@ Ghostty has no AI Agent, skill registry, memory accumulation, or web remote equi
 - Create: `src/ai_skill_distill.zig`
 - Modify: `src/test_fast.zig`
 
-- [ ] **Step 1: Create owned candidate and command argument types**
+- [x] **Step 1: Create owned candidate and command argument types**
 
 Create `src/ai_skill_distill.zig` with only `std` and `skill_registry.zig` imports. Keep it independent of `ai_chat.zig` so it can remain in `test_fast`.
 
@@ -83,7 +83,7 @@ pub const Candidate = struct {
 };
 ```
 
-- [ ] **Step 2: Implement `/distill` argument parsing**
+- [x] **Step 2: Implement `/distill` argument parsing**
 
 Add `parseCommandArgs(arg: []const u8) CommandArgs`. It accepts English and Chinese confirmation words independent of the slash alias.
 
@@ -101,7 +101,7 @@ Tests:
 - `parseCommandArgs("confirm")` and `parseCommandArgs("确认")` return `.confirm`.
 - `parseCommandArgs("cancel")`, `parseCommandArgs("取消")`, and `parseCommandArgs("放弃")` return `.cancel`.
 
-- [ ] **Step 3: Implement slug normalization**
+- [x] **Step 3: Implement slug normalization**
 
 Add `normalizeSlug(allocator, suggested_name, fallback_topic) ![]u8` and `isValidSlug(slug) bool`.
 
@@ -123,7 +123,7 @@ Tests:
 - Empty suggested name and empty fallback becomes `skill`.
 - Output is never longer than 63 bytes and never starts or ends with `-`.
 
-- [ ] **Step 4: Implement sensitive material redaction and blocking**
+- [x] **Step 4: Implement sensitive material redaction and blocking**
 
 Add:
 
@@ -149,7 +149,7 @@ Tests:
 - A sentence containing `keyboard shortcut` does not trigger redaction.
 - Redacted output does not contain the original secret bytes.
 
-- [ ] **Step 5: Implement candidate JSON parsing and Markdown rendering**
+- [x] **Step 5: Implement candidate JSON parsing and Markdown rendering**
 
 Add:
 
@@ -193,7 +193,7 @@ Tests:
 - Existing frontmatter in `body` is not duplicated.
 - Sensitive candidate body returns `error.SensitiveCandidate`.
 
-- [ ] **Step 6: Implement context shaping and distiller prompt**
+- [x] **Step 6: Implement context shaping and distiller prompt**
 
 Add:
 
@@ -228,7 +228,7 @@ Tests:
 - Non-replayable local slash output is excluded.
 - Prompt output redacts secrets before returning.
 
-- [ ] **Step 7: Implement automatic suggestion heuristic**
+- [x] **Step 7: Implement automatic suggestion heuristic**
 
 Add:
 
@@ -260,7 +260,7 @@ Tests:
 - Already suggested turn count suppresses.
 - Local slash output alone does not suggest.
 
-- [ ] **Step 8: Register the module in fast tests**
+- [x] **Step 8: Register the module in fast tests**
 
 Modify `src/test_fast.zig`:
 
@@ -283,7 +283,7 @@ Expected result: all fast tests pass, including the new `ai_skill_distill.zig` t
 **Files:**
 - Modify: `src/ai_chat_composer.zig`
 
-- [ ] **Step 1: Add the enum value and visible command entry**
+- [x] **Step 1: Add the enum value and visible command entry**
 
 Add `distill` to `SlashCommand` before `unknown`.
 
@@ -298,7 +298,7 @@ Add a visible slash command entry:
 
 Only `/distill` appears in suggestions and `/commands`. `/沉淀` is an accepted alias but does not need to appear in the default suggestion list.
 
-- [ ] **Step 2: Add alias-aware exact matching**
+- [x] **Step 2: Add alias-aware exact matching**
 
 Add:
 
@@ -312,7 +312,7 @@ Update `parseSlashCommand` and `exactBuiltinCommand` so both `/distill` and `/�
 
 Keep unknown slash behavior unchanged: `/help` without args still maps to `.unknown`; `/usr/bin path` still falls through as prompt text.
 
-- [ ] **Step 3: Update composer tests**
+- [x] **Step 3: Update composer tests**
 
 Adjust tests in `ai_chat_composer.zig`:
 
@@ -337,7 +337,7 @@ Expected result: composer tests pass through the fast test aggregate.
 **Files:**
 - Modify: `src/ai_chat_skills.zig`
 
-- [ ] **Step 1: Expose only the user-config skills root**
+- [x] **Step 1: Expose only the user-config skills root**
 
 Add:
 
@@ -349,7 +349,7 @@ pub fn defaultWritableSkillRootPath(allocator: std.mem.Allocator) ![]const u8 {
 
 This helper must not return `platform_dirs.pluginSkillsDir`, repository `skills`, repository `plugins/skills`, executable-adjacent paths, or bundle resource paths.
 
-- [ ] **Step 2: Add confirmed candidate write helper**
+- [x] **Step 2: Add confirmed candidate write helper**
 
 Import `ai_skill_distill.zig` and add:
 
@@ -384,7 +384,7 @@ Behavior:
 
 The caller owns and deinitializes the candidate separately; this helper does not take candidate ownership.
 
-- [ ] **Step 3: Add path and overwrite tests**
+- [x] **Step 3: Add path and overwrite tests**
 
 Use `platform_dirs.setTestConfigDirForCurrentThread()` in tests so no real config directory is touched.
 
@@ -411,7 +411,7 @@ Expected result: fast tests pass if the module remains in the fast-safe dependen
 **Files:**
 - Modify: `src/ai_chat.zig`
 
-- [ ] **Step 1: Import distillation helpers and add session fields**
+- [x] **Step 1: Import distillation helpers and add session fields**
 
 Add:
 
@@ -436,7 +436,7 @@ Update `Session.deinit()`:
 if (self.distill_candidate) |*candidate| candidate.deinit(self.allocator);
 ```
 
-- [ ] **Step 2: Add local message helpers**
+- [x] **Step 2: Add local message helpers**
 
 Add locked helpers:
 
@@ -463,7 +463,7 @@ fn clearDistillCandidateLocked(self: *Session) void {
 
 Then update `runBuiltinCommandLocked()` to use `appendLocalToolMessageLocked()` for existing local slash outputs. Keep existing behavior identical for all non-distill commands.
 
-- [ ] **Step 3: Special-case `/distill` before generic built-in handling**
+- [x] **Step 3: Special-case `/distill` before generic built-in handling**
 
 In `submit()`, after `first_tok` and `arg` are computed and before the generic built-in command branch, add a distill branch:
 
@@ -479,7 +479,7 @@ if (ai_chat_composer.exactBuiltinCommand(first_tok)) |command| {
 
 `submitDistillCommand()` owns its own locking so it can unlock during disk writes or thread spawning without reusing a stale lock state.
 
-- [ ] **Step 4: Implement `submitDistillCommand()`**
+- [x] **Step 4: Implement `submitDistillCommand()`**
 
 Add:
 
@@ -501,7 +501,7 @@ Implementation rules:
 - Manual `/distill` clears `distill_suggestion_pending`.
 - Local outputs are non-persisted tool messages and are not replayed to the model.
 
-- [ ] **Step 5: Implement confirm and cancel**
+- [x] **Step 5: Implement confirm and cancel**
 
 `cancelDistillCandidate()`:
 
@@ -537,7 +537,7 @@ A skill named $<name> already exists. Use /distill with a more specific topic or
 - On success, call `self.freeSkillSuggestions()` so `$<name>` is available on next skill suggestion load.
 - Candidate ownership is always released exactly once.
 
-- [ ] **Step 6: Implement distill request construction**
+- [x] **Step 6: Implement distill request construction**
 
 Add `buildDistillRequestLocked(topic: []const u8) !*ChatRequest`.
 
@@ -563,7 +563,7 @@ Behavior:
 - Do not include tools in the distiller request.
 - Do not mutate normal conversation history.
 
-- [ ] **Step 7: Implement request start**
+- [x] **Step 7: Implement request start**
 
 `startDistillRequest(topic)`:
 
@@ -595,7 +595,7 @@ Expected result: existing AI Chat tests and compile checks pass.
 - Modify: `src/ai_chat_request.zig`
 - Modify: `src/ai_chat.zig`
 
-- [ ] **Step 1: Add a worker entry point**
+- [x] **Step 1: Add a worker entry point**
 
 In `ai_chat_request.zig`, import `ai_skill_distill.zig` and add:
 
@@ -629,7 +629,7 @@ pub fn distillThreadMain(request: *ChatRequest) void {
 
 The candidate is transferred to the session in `applyDistillCandidate`; the worker must not deinit it after a successful transfer.
 
-- [ ] **Step 2: Add session completion helpers**
+- [x] **Step 2: Add session completion helpers**
 
 In `ai_chat.zig`, add public helpers:
 
@@ -665,7 +665,7 @@ Cancel with /distill cancel or /沉淀 取消.
 - Append `Could not distill this conversation: <error>.` as a local tool message.
 - Set status to `Ready`.
 
-- [ ] **Step 3: Keep normal assistant completion separated**
+- [x] **Step 3: Keep normal assistant completion separated**
 
 In `appendAssistantResult()` and `finishAssistantStream()`, assert by behavior that `distill_inflight` is false before normal assistant messages are appended. Do not route distiller output through assistant history.
 
@@ -684,7 +684,7 @@ Expected result: distiller worker compiles without changing normal request behav
 **Files:**
 - Modify: `src/ai_chat.zig`
 
-- [ ] **Step 1: Convert current session messages to distill turns**
+- [x] **Step 1: Convert current session messages to distill turns**
 
 Add locked helper:
 
@@ -694,7 +694,7 @@ fn allocDistillTurnsLocked(self: *Session) ![]ai_skill_distill.DistillTurn;
 
 The returned slice borrows message content and is freed as a slice only. It maps roles to `ai_skill_distill.DistillRole` and copies `replay_to_model`.
 
-- [ ] **Step 2: Append pending suggestion after assistant completion**
+- [x] **Step 2: Append pending suggestion after assistant completion**
 
 Add locked helper:
 
@@ -724,7 +724,7 @@ Call this helper in:
 
 The suggestion message is non-persisted, so it does not change history snapshots.
 
-- [ ] **Step 3: Accept or dismiss the pending suggestion from keyboard**
+- [x] **Step 3: Accept or dismiss the pending suggestion from keyboard**
 
 Add:
 
@@ -745,7 +745,7 @@ Update `handleKeyWithWrapCols()`:
 - Before the double-ESC rewind block, call `dismissDistillSuggestion()` for `.escape`.
 - In the `.enter` branch, before composer completion and submit, call `acceptDistillSuggestion()` when `ev.shift` is false.
 
-- [ ] **Step 4: Add session-level tests where available**
+- [x] **Step 4: Add session-level tests where available**
 
 Add tests near existing `ai_chat.zig` tests if the existing test graph supports them:
 
@@ -770,7 +770,7 @@ Expected result: no regression in rewind, slash commands, streaming completion, 
 - Modify: `docs/ai-agent.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Document usage in `docs/ai-agent.md`**
+- [x] **Step 1: Document usage in `docs/ai-agent.md`**
 
 Add a section named `Skill Distillation` with:
 
@@ -780,7 +780,7 @@ Add a section named `Skill Distillation` with:
 - Safety behavior: no silent writes, redaction before model call, redaction before write, no plugin directory writes, no overwrite.
 - Save location: user config `skills/<slug>/SKILL.md`.
 
-- [ ] **Step 2: Mention capability in `README.md`**
+- [x] **Step 2: Mention capability in `README.md`**
 
 Add one short AI Agent capability sentence. Do not edit the keyboard shortcuts section because this feature does not change application keyboard shortcuts.
 
@@ -799,7 +799,7 @@ Expected result: documentation changes do not affect tests.
 **Files:**
 - All changed files
 
-- [ ] **Step 1: Run fast tests**
+- [x] **Step 1: Run fast tests**
 
 ```powershell
 zig build test
@@ -807,7 +807,7 @@ zig build test
 
 Expected result: all fast tests pass.
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 ```powershell
 zig build test-full
@@ -815,7 +815,7 @@ zig build test-full
 
 Expected result: all full tests and compile checks pass.
 
-- [ ] **Step 3: Run Windows checkout safety checks**
+- [x] **Step 3: Run Windows checkout safety checks**
 
 Because this feature adds `src/ai_skill_distill.zig` and documentation, run the path-safety checks from `docs/development.md#windows-checkout-safety`.
 
@@ -844,7 +844,7 @@ Manual checks:
 - A repeated confirmation for an existing slug refuses to overwrite.
 - Generated `SKILL.md` contains no source summary and no unredacted secret patterns.
 
-- [ ] **Step 5: Confirm untouched areas**
+- [x] **Step 5: Confirm untouched areas**
 
 Verify:
 

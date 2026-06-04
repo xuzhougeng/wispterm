@@ -121,6 +121,43 @@ Local slash commands (handled in the panel, without calling the model):
   `/permission full` changes it at runtime.
 - `/export` writes the conversation to Markdown (clean by default; `/export full`
   includes reasoning, tool details, and usage).
+- `/distill [topic]` or `/沉淀 [主题]` previews a reusable local skill distilled
+  from the current conversation.
+
+## Skill Distillation
+
+Use `/distill`, `/distill <topic>`, `/沉淀`, or `/沉淀 <主题>` after a useful AI
+Chat, Agent, or Copilot workflow to generate a candidate local `SKILL.md`.
+WispTerm sends a redacted transcript to the configured AI provider, then shows a
+local preview with the skill name, description, save path, body, and source
+summary. The command itself is handled by the panel and is not submitted as a
+normal chat prompt.
+
+Automatic suggestions may appear after tool-heavy or clearly reusable tasks:
+
+```text
+This task looks reusable. Distill it into a skill?
+```
+
+When that suggestion is pending, press Enter on an empty AI Chat input to open
+the same preview flow, or press Esc to ignore it. WispTerm never writes a skill
+silently from an automatic suggestion.
+
+Confirm or discard the preview explicitly:
+
+- `/distill confirm` or `/沉淀 确认` writes the skill.
+- `/distill cancel` or `/沉淀 取消` discards the candidate.
+
+Distilled skills are saved only under the user config skills directory:
+`<config>/skills/<slug>/SKILL.md` (`%APPDATA%\wispterm\skills` on Windows).
+They are not written to `plugins/skills`, bundled resources, or repository
+plugin directories. Existing skill directories are not overwritten; use a more
+specific topic or remove the old skill first.
+
+Before the distiller request and again before writing, WispTerm scans for API
+keys, passwords, bearer tokens, Weixin context tokens, and common
+`*_TOKEN`/`*_KEY` style secrets. Unredacted sensitive content blocks the write
+instead of being saved.
 
 ## Custom Slash Commands
 
