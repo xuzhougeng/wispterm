@@ -213,7 +213,7 @@ pub fn render(
 
     if (input_text.len == 0) {
         session.input_scroll_row = 0;
-        const placeholder = if (session.agent_enabled) "Ask Agent" else "Ask AI Chat";
+        const placeholder = if (session.agent_enabled) "Ask Agent" else "Ask Copilot";
         _ = titlebar.renderTextLimited(
             placeholder,
             layout.text_x,

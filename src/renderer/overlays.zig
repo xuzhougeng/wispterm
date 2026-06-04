@@ -3246,7 +3246,7 @@ fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
 }
 
 fn sessionLauncherTitle() []const u8 {
-    if (g_ai_history_source_visible) return "AI History";
+    if (g_ai_history_source_visible) return i18n.s().sl_sessions;
     if (g_ai_form_visible) {
         return i18n.s().sl_ai_agent;
     }
@@ -3263,7 +3263,7 @@ fn sessionLauncherTitle() []const u8 {
             .manage => i18n.s().sl_ssh_servers,
             .edit_select => i18n.s().sl_edit_ssh_server,
             .delete_select => i18n.s().sl_delete_ssh_server,
-            .ai_history_select => "AI History SSH Profile",
+            .ai_history_select => "Sessions SSH Profile",
         };
     }
     return i18n.s().sl_new_session;
@@ -3383,7 +3383,7 @@ fn sessionDesiredBoxWidth() f32 {
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_v_manage));
             },
             .ai_history_select => {
-                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, "AI History"));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_sessions));
             },
         }
         return desired;
@@ -3405,7 +3405,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth("WSL", platform_pty_command.wslLauncherDetail()));
     }
     desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_agent, defaultAiModeLabel()));
-    desired = @max(desired, sessionTwoColumnWidth("AI History", "Browse AI agent history"));
+    desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_sessions, i18n.s().sl_sessions_detail));
     return desired;
 }
 
@@ -3698,7 +3698,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
                     renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, g_ssh_list_selected == row);
                 },
                 .ai_history_select => {
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, "AI History", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_sessions, g_ssh_list_selected == row);
                 },
             }
             return;
@@ -3714,7 +3714,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             row += 1;
         }
         renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT, i18n.s().sl_ai_agent, defaultAiModeLabel(), g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT);
-        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY, "AI History", "Browse AI agent history", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY);
+        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY, i18n.s().sl_sessions, i18n.s().sl_sessions_detail, g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY);
         return;
     }
 
