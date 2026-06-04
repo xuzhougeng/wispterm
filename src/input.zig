@@ -465,6 +465,8 @@ pub fn toggleBrowserPanel() void {
 }
 
 pub fn openJupyterPanel() void {
+    const perf = ui_perf.begin("input.open_jupyter_panel");
+    defer perf.end();
     const allocator = AppWindow.g_allocator orelse return;
     const parent = AppWindow.currentNativeHandle();
     const surface = AppWindow.activeSurface();
