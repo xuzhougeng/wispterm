@@ -50,6 +50,7 @@ const terminal_link_action = @import("input/terminal_link_action.zig");
 const mouse_report = @import("input/mouse_report.zig");
 const close_confirm = @import("close_confirm.zig");
 const jupyter_picker = @import("jupyter_picker.zig");
+const jupyter_detect = @import("jupyter_detect.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
@@ -468,11 +469,39 @@ pub fn toggleBrowserPanel() void {
 pub fn openJupyterPanel() void {
     const perf = ui_perf.begin("input.open_jupyter_panel");
     defer perf.end();
+
     const allocator = AppWindow.g_allocator orelse return;
     const parent = AppWindow.currentNativeHandle();
     const surface = AppWindow.activeSurface();
     if (!browser_panel.isVisibleForActiveTab()) AppWindow.hideAiCopilot();
+
+    // Open Jupyter takes over the full content area.
+    browser_panel.setDisplayMode(.full);
+
+    // Auto-detect a running Jupyter URL from the focused terminal.
+    if (AppWindow.activeSurfaceSnapshot(allocator)) |snap| {
+        defer allocator.free(snap);
+        if (jupyter_detect.findJupyterUrls(allocator, snap) catch null) |result| {
+            defer result.deinit(allocator);
+            if (result.urls.len == 1) {
+                if (!browser_panel.openForSurface(allocator, parent, result.urls[0], surface)) return;
+                finishOpenJupyter();
+                return;
+            } else if (result.urls.len >= 2) {
+                jupyter_picker.show(@ptrCast(result.urls));
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
+        }
+    }
+
+    // 0 matches → open full + focus empty URL bar for manual paste.
     if (!browser_panel.openJupyterForSurface(allocator, parent, surface)) return;
+    finishOpenJupyter();
+}
+
+fn finishOpenJupyter() void {
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
@@ -1310,6 +1339,14 @@ fn handleKey(ev: platform_input.KeyEvent) void {
     if (browser_panel.urlBarFocused()) {
         handleBrowserUrlBarKey(ev);
         return;
+    }
+    if (browser_panel.isVisibleForActiveTab() and !browser_panel.urlBarFocused() and !jupyter_picker.isVisible()) {
+        if (ev.key_code == platform_input.key_escape) {
+            closeBrowserPanel();
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+            return;
+        }
     }
     if (AppWindow.activeAiChat()) |chat| {
         // Accept Cmd (super, macOS) or Ctrl (Windows) for chat editing keys.
