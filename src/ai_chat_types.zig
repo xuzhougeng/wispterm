@@ -16,6 +16,10 @@ pub const AgentSettings = struct {
     output_limit: u32 = DEFAULT_AGENT_OUTPUT_LIMIT,
     /// Private file-access rules (owned by the app layer; null = guard inactive).
     access_rules: ?*const ai_agent_access.AccessRules = null,
+    /// Effective working directory for the conversation (borrowed; null = unset).
+    /// When set, the local command tool defaults its cwd here and commands
+    /// confined to it skip the approval prompt (the sandbox).
+    working_dir: ?[]const u8 = null,
 };
 
 // AgentPermission lives in ai_agent_config.zig (extracted on main so config.zig

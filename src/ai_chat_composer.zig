@@ -13,6 +13,7 @@ pub const SlashCommand = enum {
     rewind_picker,
     resume_session,
     permission,
+    cwd,
     export_markdown,
     distill,
     loop,
@@ -75,6 +76,10 @@ pub const slash_command_entries = [_]SlashCommandEntry{
         .action = .permission,
     },
     .{
+        .suggestion = .{ .command = "/cwd", .description = "set the conversation working directory" },
+        .action = .cwd,
+    },
+    .{
         .suggestion = .{ .command = "/export", .description = "export conversation as Markdown" },
         .action = .export_markdown,
     },
@@ -134,6 +139,21 @@ pub fn exactBuiltinCommand(token: []const u8) ?SlashCommand {
 
 pub fn isDistillAlias(token: []const u8) bool {
     return std.mem.eql(u8, token, "/distill") or std.mem.eql(u8, token, "/沉淀");
+}
+
+pub const CwdArg = union(enum) {
+    show,
+    reset,
+    set: []const u8,
+};
+
+/// Classify a `/cwd` argument: empty => show current, `reset`/`default`/`clear`
+/// => clear the override, anything else => set that path.
+pub fn parseCwdArg(arg: []const u8) CwdArg {
+    const t = std.mem.trim(u8, arg, " \t\r\n");
+    if (t.len == 0) return .show;
+    if (std.mem.eql(u8, t, "reset") or std.mem.eql(u8, t, "default") or std.mem.eql(u8, t, "clear")) return .reset;
+    return .{ .set = t };
 }
 
 pub fn matchCustomCommandIndex(input: []const u8, custom: []const SlashCommandSuggestion) ?usize {
@@ -361,7 +381,7 @@ test "slash command suggestions filter by prefix" {
     try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/sk", 3, &.{}));
     const s = slashCommandSuggestionAtForInput("/sk", 3, 0, &.{}).?;
     try std.testing.expectEqualStrings("/skills", s.command);
-    try std.testing.expectEqual(@as(usize, 13), slashCommandSuggestionCountForInput("/", 1, &.{}));
+    try std.testing.expectEqual(@as(usize, 14), slashCommandSuggestionCountForInput("/", 1, &.{}));
     try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/di", 3, &.{}));
     try std.testing.expectEqualStrings("/distill", slashCommandSuggestionAtForInput("/di", 3, 0, &.{}).?.command);
 }
@@ -393,4 +413,17 @@ test "suggestionReplacementText adds a space after a skill when needed" {
     try std.testing.expectEqualStrings("$build", suggestionReplacementText(&buf, sk, " x").?);
     const cmd = ComposerSuggestion{ .kind = .slash_command, .text = "/skills", .description = "" };
     try std.testing.expectEqualStrings("/skills", suggestionReplacementText(&buf, cmd, "").?);
+}
+
+test "parseCwdArg classifies show, reset, and set" {
+    try std.testing.expect(parseCwdArg("") == .show);
+    try std.testing.expect(parseCwdArg("   ") == .show);
+    try std.testing.expect(parseCwdArg("reset") == .reset);
+    try std.testing.expect(parseCwdArg("default") == .reset);
+    switch (parseCwdArg("  /home/u/proj  ")) {
+        .set => |p| try std.testing.expectEqualStrings("/home/u/proj", p),
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(exactBuiltinCommand("/cwd") != null);
+    try std.testing.expect(exactBuiltinCommand("/cwd").? == .cwd);
 }

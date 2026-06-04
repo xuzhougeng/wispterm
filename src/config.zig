@@ -302,6 +302,9 @@ theme: ?[]const u8 = null,
 /// Maximum bytes returned from a single tool result.
 @"ai-agent-output-limit": u32 = 16 * 1024,
 
+/// Default working directory for the AI agent's local commands (empty = unset).
+@"ai-agent-working-dir": []const u8 = "",
+
 /// The shell to run in the terminal. Platform aliases are resolved by
 /// platform/pty_command.zig; any other value is treated as a raw command path.
 shell: []const u8 = platform_pty_command.default_shell_name,
@@ -814,6 +817,8 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             log.warn("invalid ai-agent-output-limit: {s}", .{value});
             return;
         };
+    } else if (std.mem.eql(u8, key, "ai-agent-working-dir")) {
+        self.@"ai-agent-working-dir" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "shell")) {
         self.shell = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "ai-default-profile")) {
@@ -1272,6 +1277,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --ai-agent-permission <mode> Agent tool permission: ask | auto | full
         \\  --ai-agent-command-timeout-ms <ms> Agent command timeout budget
         \\  --ai-agent-output-limit <bytes> Max bytes returned by each tool
+        \\  --ai-agent-working-dir <path> Default working directory for agent local commands
         \\  --auto-update-check <bool>  Check GitHub Releases after startup
         \\  --config-file <path>         Include another config file (prefix ? for optional)
         \\  --keybind <binding>          Configure a shortcut, e.g. global:ctrl+backquote=toggle_quake
@@ -1635,6 +1641,7 @@ const default_config_template =
     \\# ai-agent-permission = ask       # ask | auto | full
     \\# ai-agent-command-timeout-ms = 60000
     \\# ai-agent-output-limit = 16384
+    \\# ai-agent-working-dir =          # default dir for downloads/clones (empty = unset)
     \\
     \\# Updates
     \\# auto-update-check = true
@@ -2047,4 +2054,12 @@ test "config: confirm-close-running-program defaults true and parses false" {
     try std.testing.expect(cfg.@"confirm-close-running-program");
     cfg.applyKeyValue(allocator, "confirm-close-running-program", "false", ".");
     try std.testing.expect(!cfg.@"confirm-close-running-program");
+}
+
+test "config: ai-agent-working-dir parses from a config line" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator); // dupeString tracks the value in _owned_strings
+    cfg.applyKeyValue(allocator, "ai-agent-working-dir", "/home/u/proj", ".");
+    try std.testing.expectEqualStrings("/home/u/proj", cfg.@"ai-agent-working-dir");
 }

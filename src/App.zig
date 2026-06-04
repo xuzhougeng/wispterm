@@ -102,6 +102,7 @@ ai_agent_enabled: bool,
 ai_agent_permission: ai_chat.AgentPermission,
 ai_agent_command_timeout_ms: u32,
 ai_agent_output_limit: u32,
+ai_agent_working_dir: []const u8,
 
 // Session persistence
 restore_tabs_on_startup: bool,
@@ -190,6 +191,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     errdefer if (remote_client_ptr) |client| client.destroy();
     const background_image = try dupeOptStr(allocator, cfg.@"background-image");
     errdefer freeOptStr(allocator, background_image);
+    const ai_agent_working_dir = try dupeStr(allocator, cfg.@"ai-agent-working-dir");
+    errdefer allocator.free(ai_agent_working_dir);
 
     var app = App{
         .allocator = allocator,
@@ -239,6 +242,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .ai_agent_permission = cfg.@"ai-agent-permission",
         .ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
         .ai_agent_output_limit = cfg.@"ai-agent-output-limit",
+        .ai_agent_working_dir = ai_agent_working_dir,
         .restore_tabs_on_startup = cfg.@"restore-tabs-on-startup",
         .auto_update_check = cfg.@"auto-update-check",
         .whats_new_on_update = cfg.@"whats-new-on-update",
@@ -407,6 +411,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.ai_agent_permission = cfg.@"ai-agent-permission";
     self.ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms";
     self.ai_agent_output_limit = cfg.@"ai-agent-output-limit";
+    self.replaceStr(&self.ai_agent_working_dir, cfg.@"ai-agent-working-dir");
     self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
     self.auto_update_check = cfg.@"auto-update-check";
     self.whats_new_on_update = cfg.@"whats-new-on-update";
@@ -1044,6 +1049,7 @@ pub fn deinit(self: *App) void {
     self.allocator.free(self.font_family);
     freeOptStr(self.allocator, self.font_family_cjk);
     freeOptStr(self.allocator, self.font_family_fallback);
+    self.allocator.free(self.ai_agent_working_dir);
     freeOptStr(self.allocator, self.shader_path);
     freeOptStr(self.allocator, self.title);
     freeOptStr(self.allocator, self.remote_server_url);

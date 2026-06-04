@@ -461,11 +461,17 @@ fn accessGate(ctx: *const ToolContext, command: []const u8, cwd: ?[]const u8) Ac
     else
         ai_agent_access.EvalResult{};
     const blacklisted = result.decision == .blacklisted;
+    const home = if (ctx.settings.access_rules) |rules| rules.home else "";
+    const confined = blk: {
+        const wd = ctx.settings.working_dir orelse break :blk false;
+        const ec = cwd orelse break :blk false;
+        break :blk ai_agent_access.workdirConfined(ctx.allocator, command, wd, ec, home);
+    };
     return .{
         .dangerous = dangerous,
         .blacklisted = blacklisted,
         .force = dangerous or blacklisted,
-        .skip = result.decision == .whitelisted_safe and !dangerous,
+        .skip = (result.decision == .whitelisted_safe or confined) and !dangerous and !blacklisted,
         .matched = result.matched,
     };
 }
@@ -486,7 +492,8 @@ fn allocBlacklistReason(allocator: std.mem.Allocator, matched: []const u8) ?[]u8
 
 fn localCommandExecTool(ctx: *const ToolContext, command: []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
-    const gate = accessGate(ctx, command, cwd);
+    const effective_cwd = cwd orelse ctx.settings.working_dir;
+    const gate = accessGate(ctx, command, effective_cwd);
     if (approvalRequiredForGate(ctx.settings.permission, gate)) {
         const bl_reason = if (gate.blacklisted) allocBlacklistReason(ctx.allocator, gate.matched) else null;
         defer if (bl_reason) |r| ctx.allocator.free(r);
@@ -495,7 +502,7 @@ fn localCommandExecTool(ctx: *const ToolContext, command: []const u8, cwd: ?[]co
             return deniedResult(ctx.allocator, command, platform_process.localCommandDeniedReason());
         }
     }
-    const result = runShellCommand(ctx.allocator, command, cwd, ctx.settings.output_limit, timeout_ms, ctx) catch |err| {
+    const result = runShellCommand(ctx.allocator, command, effective_cwd, ctx.settings.output_limit, timeout_ms, ctx) catch |err| {
         return std.fmt.allocPrint(ctx.allocator, "{s} failed: {}", .{ platform_process.localCommandFailureLabel(), err });
     };
     defer ctx.allocator.free(result.stdout);
@@ -2645,4 +2652,59 @@ test "Claude Code REPL input settles off the live surface snapshot, not the work
     // It returned the settled live screen, not the stale pre-input snapshot.
     try std.testing.expect(std.mem.indexOf(u8, result, "563894910") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "thinking") == null);
+}
+
+test "accessGate: working-dir sandbox skips confined non-dangerous, still forces dangerous/deny" {
+    const a = std.testing.allocator;
+    var rules = try ai_agent_access.parseRules(a, "", "/home/u");
+    defer rules.deinit();
+    var dummy: u8 = 0;
+    const ctx = types.ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .working_dir = "/home/u/proj", .access_rules = &rules },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    // confined write -> auto-approve
+    const g1 = accessGate(&ctx, "curl http://x -o out.bin", "/home/u/proj");
+    try std.testing.expect(g1.skip);
+    try std.testing.expect(!g1.force);
+    try std.testing.expect(!approvalRequiredForGate(.confirm, g1)); // confirm now auto-runs inside the dir
+    try std.testing.expect(!approvalRequiredForGate(.auto, g1));
+    // confined dangerous -> still forced
+    const g2 = accessGate(&ctx, "rm -rf build", "/home/u/proj");
+    try std.testing.expect(!g2.skip);
+    try std.testing.expect(g2.force);
+    try std.testing.expect(approvalRequiredForGate(.confirm, g2));
+    try std.testing.expect(approvalRequiredForGate(.auto, g2));
+    // escaping write -> not confined, normal gating (no skip, no force)
+    const g3 = accessGate(&ctx, "cp /etc/hosts .", "/home/u/proj");
+    try std.testing.expect(!g3.skip);
+    try std.testing.expect(!g3.force);
+    // deny-listed read inside cwd -> forced regardless of sandbox
+    const g4 = accessGate(&ctx, "cat /home/u/.ssh/id_rsa", "/home/u/proj");
+    try std.testing.expect(g4.force);
+    try std.testing.expect(!g4.skip);
+}
+
+test "accessGate: no working dir leaves behavior unchanged" {
+    const a = std.testing.allocator;
+    var rules = try ai_agent_access.parseRules(a, "", "/home/u");
+    defer rules.deinit();
+    var dummy: u8 = 0;
+    const ctx = types.ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .access_rules = &rules }, // working_dir = null
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const g = accessGate(&ctx, "curl http://x -o out.bin", null);
+    try std.testing.expect(!g.skip);
+    try std.testing.expect(!g.force);
 }

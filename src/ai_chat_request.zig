@@ -502,12 +502,15 @@ fn toolCancelled(ctx: *anyopaque) bool {
 }
 
 fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
+    var settings = ai_chat.currentAgentSettings();
+    // Per-conversation override beats the global default.
+    if (request.session.workingDirOverride()) |override| settings.working_dir = override;
     return .{
         .allocator = request.allocator,
         .ctx = request.session,
         .tool_host = request.tool_host,
         .tool_snapshot = request.tool_snapshot,
-        .settings = ai_chat.currentAgentSettings(),
+        .settings = settings,
         .copilot = request.copilot,
         .weixin_reply_context = request.weixin_reply_context,
         .write_context_surface_id = request.write_context_surface_id,

@@ -4,6 +4,7 @@
 //! not an OS sandbox.
 //! Spec: docs/superpowers/specs/2026-06-03-agent-file-access-guard-design.md
 const std = @import("std");
+const builtin = @import("builtin");
 
 const MAX_RULES_BYTES = 64 * 1024;
 const List = std.ArrayListUnmanaged([]const u8);
@@ -225,6 +226,82 @@ pub fn isPathDenied(allocator: std.mem.Allocator, rules: *const AccessRules, pat
         if (matchesRoot(resolved, root)) return true;
     }
     return false;
+}
+
+/// True when a command run with `effective_cwd` as its working directory is
+/// fully confined to `working_dir`: the cwd is inside the working dir AND no
+/// path-bearing argument escapes it. A command with no escaping path token only
+/// writes into its cwd, so it counts as confined (this is the download/clone
+/// case). The leading verb is skipped so an absolute binary path
+/// (`/usr/bin/curl`) is not mistaken for an escape. Platform-aware: handles
+/// Windows `\` separators, drive letters, and (on Windows) case-insensitivity.
+/// Pure; `allocator` backs only a scratch arena.
+pub fn workdirConfined(
+    allocator: std.mem.Allocator,
+    command: []const u8,
+    working_dir: []const u8,
+    effective_cwd: []const u8,
+    home: []const u8,
+) bool {
+    if (working_dir.len == 0) return false;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const root = normForCompare(a, working_dir) catch return false;
+    const cwd_norm = (resolveForConfine(a, effective_cwd, home, root) catch null) orelse return false;
+    if (!matchesRoot(cwd_norm, root)) return false;
+
+    var verb_skipped = false;
+    var tokens = std.mem.tokenizeAny(u8, command, " \t\r\n|&;<>()");
+    while (tokens.next()) |tok| {
+        const cand = pathCandidate(tok);
+        if (cand.len == 0) continue;
+        if (!verb_skipped) {
+            if (isAssignment(cand) or std.mem.eql(u8, cand, "sudo") or std.mem.eql(u8, cand, "command")) continue;
+            verb_skipped = true;
+            continue;
+        }
+        const resolved = (resolveForConfine(a, cand, home, cwd_norm) catch null) orelse continue;
+        if (!matchesRoot(resolved, root)) return false;
+    }
+    return true;
+}
+
+fn isAbsoluteConfinePath(p: []const u8) bool {
+    if (p.len == 0) return false;
+    if (p[0] == '/' or p[0] == '\\') return true;
+    // Windows drive root: X:\ or X:/ (or bare X: which we treat as a root too).
+    if (p.len >= 2 and std.ascii.isAlphabetic(p[0]) and p[1] == ':') return true;
+    return false;
+}
+
+/// Normalize a path for confinement comparison: convert `\` to `/`, collapse
+/// `.`/`..` lexically, and lower-case on Windows (case-insensitive filesystem).
+fn normForCompare(a: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const slashed = try a.dupe(u8, raw);
+    for (slashed) |*c| {
+        if (c.* == '\\') c.* = '/';
+    }
+    const normalized = try lexicalNormalize(a, slashed);
+    if (builtin.os.tag == .windows) {
+        const mut = try a.dupe(u8, normalized);
+        for (mut) |*c| c.* = std.ascii.toLower(c.*);
+        return mut;
+    }
+    return normalized;
+}
+
+/// Resolve a token to a normalized comparison path. Absolute (incl. drive-root)
+/// tokens normalize as-is; relative tokens join onto `base` (already normalized).
+/// Returns null for empty/option-flag tokens.
+fn resolveForConfine(a: std.mem.Allocator, token: []const u8, home: []const u8, base: []const u8) !?[]const u8 {
+    const t = stripQuotes(token);
+    if (t.len == 0 or t[0] == '-') return null;
+    const expanded = try expandHome(a, t, home);
+    if (isAbsoluteConfinePath(expanded)) return try normForCompare(a, expanded);
+    const joined = try std.fmt.allocPrint(a, "{s}/{s}", .{ base, expanded });
+    return try normForCompare(a, joined);
 }
 
 pub fn isReadOnlyCommand(command: []const u8) bool {
@@ -660,4 +737,45 @@ test "loadRules with an unreadable path still keeps built-in deny defaults" {
         found_builtin = true;
     };
     try std.testing.expect(found_builtin);
+}
+
+test "workdirConfined: confined writes and no-path commands are confined" {
+    const a = std.testing.allocator;
+    const wd = "/home/u/proj";
+    // download into cwd
+    try std.testing.expect(workdirConfined(a, "curl http://x -o out.bin", wd, "/home/u/proj", "/home/u"));
+    // clone with no local path arg (only writes into cwd)
+    try std.testing.expect(workdirConfined(a, "git clone https://example.com/r.git", wd, "/home/u/proj", "/home/u"));
+    // subdir create
+    try std.testing.expect(workdirConfined(a, "mkdir sub", wd, "/home/u/proj", "/home/u"));
+    // absolute binary path as the verb is skipped, not treated as an escape
+    try std.testing.expect(workdirConfined(a, "/usr/bin/curl -O http://x", wd, "/home/u/proj", "/home/u"));
+}
+
+test "workdirConfined: escaping paths and out-of-root cwd are not confined" {
+    const a = std.testing.allocator;
+    const wd = "/home/u/proj";
+    // absolute path outside the root
+    try std.testing.expect(!workdirConfined(a, "cp /etc/passwd .", wd, "/home/u/proj", "/home/u"));
+    // .. escape
+    try std.testing.expect(!workdirConfined(a, "cat ../secret.txt", wd, "/home/u/proj", "/home/u"));
+    // cwd itself outside the root
+    try std.testing.expect(!workdirConfined(a, "ls", wd, "/tmp", "/home/u"));
+    // empty working dir is never confined
+    try std.testing.expect(!workdirConfined(a, "ls", "", "/home/u/proj", "/home/u"));
+}
+
+test "workdirConfined: Windows separators and drive letters" {
+    const a = std.testing.allocator;
+    const wd = "D:\\proj";
+    // backslash + same-drive path stays confined (case matches on every target)
+    try std.testing.expect(workdirConfined(a, "curl http://x -o sub\\out.bin", wd, "D:\\proj", "/home/u"));
+    // a different drive escapes
+    try std.testing.expect(!workdirConfined(a, "type C:\\Windows\\system.ini", wd, "D:\\proj", "/home/u"));
+}
+
+test "workdirConfined: case-insensitive match on Windows" {
+    if (builtin.os.tag != .windows) return;
+    const a = std.testing.allocator;
+    try std.testing.expect(workdirConfined(a, "type sub\\f.txt", "D:\\Proj", "d:\\proj", "/home/u"));
 }

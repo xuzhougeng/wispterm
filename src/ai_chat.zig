@@ -67,6 +67,7 @@ pub fn parseVisionEnabled(value: []const u8) bool {
 const REMOTE_SNAPSHOT_MAX_BYTES: usize = 24 * 1024;
 const INPUT_PROMPT_MAX_BYTES: usize = 64 * 1024;
 const SYSTEM_PROMPT_MAX_BYTES: usize = 16 * 1024;
+const WORKING_DIR_MAX_BYTES: usize = 1024;
 /// 两次 ESC 间隔不超过此毫秒数时判定为"双击"，用于打开回溯选择器。
 const DOUBLE_ESC_WINDOW_MS: i64 = 400;
 
@@ -241,6 +242,8 @@ var g_agent_mutex: std.Thread.Mutex = .{};
 var g_agent_settings: AgentSettings = .{};
 var g_access_rules_storage: ?ai_agent_access.AccessRules = null;
 var g_access_rules: ?*const ai_agent_access.AccessRules = null;
+var g_default_working_dir_buf: [WORKING_DIR_MAX_BYTES]u8 = undefined;
+var g_default_working_dir_len: usize = 0;
 var g_session_id_counter = std.atomic.Value(u64).init(1);
 var g_skill_update_trigger: ?*const fn () void = null;
 var g_session_resume_trigger: ?*const fn () void = null;
@@ -293,6 +296,23 @@ pub fn loadAccessRules(allocator: std.mem.Allocator) void {
     g_access_rules = &g_access_rules_storage.?;
 }
 
+/// Set the persistent default working directory (from config). Empty clears it.
+/// Copies into a static buffer; oversized paths are truncated.
+pub fn setDefaultWorkingDir(path: []const u8) void {
+    g_agent_mutex.lock();
+    defer g_agent_mutex.unlock();
+    const n = @min(path.len, g_default_working_dir_buf.len);
+    @memcpy(g_default_working_dir_buf[0..n], path[0..n]);
+    g_default_working_dir_len = n;
+}
+
+fn defaultWorkingDir() ?[]const u8 {
+    g_agent_mutex.lock();
+    defer g_agent_mutex.unlock();
+    if (g_default_working_dir_len == 0) return null;
+    return g_default_working_dir_buf[0..g_default_working_dir_len];
+}
+
 fn resolveHomeDir(allocator: std.mem.Allocator) ?[]u8 {
     if (std.process.getEnvVarOwned(allocator, "HOME")) |v| {
         return v;
@@ -301,6 +321,16 @@ fn resolveHomeDir(allocator: std.mem.Allocator) ?[]u8 {
         return v;
     } else |_| {}
     return null;
+}
+
+fn expandTilde(allocator: std.mem.Allocator, path: []const u8, home: ?[]const u8) ![]u8 {
+    if (path.len >= 1 and path[0] == '~') {
+        if (home) |h| {
+            if (path.len == 1) return allocator.dupe(u8, h);
+            if (path[1] == '/' or path[1] == '\\') return std.fmt.allocPrint(allocator, "{s}{s}", .{ h, path[1..] });
+        }
+    }
+    return allocator.dupe(u8, path);
 }
 
 pub fn setToolHost(host: ?ToolHost) void {
@@ -312,6 +342,7 @@ pub fn currentAgentSettings() AgentSettings {
     defer g_agent_mutex.unlock();
     var s = g_agent_settings;
     s.access_rules = g_access_rules;
+    if (g_default_working_dir_len > 0) s.working_dir = g_default_working_dir_buf[0..g_default_working_dir_len];
     return s;
 }
 
@@ -357,6 +388,7 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         .rewind_picker => allocator.dupe(u8, "No previous user messages to rewind."),
         .resume_session => allocator.dupe(u8, "Opening saved conversation history..."),
         .permission => permissionStatusOutput(allocator),
+        .cwd => allocator.dupe(u8, "Working directory updated."),
         .export_markdown => allocator.dupe(u8, "Exporting the conversation as Markdown..."),
         .distill => allocator.dupe(u8, "Use /distill [topic] to preview a reusable skill candidate."),
         .unknown => allocator.dupe(u8, "Unknown command. Use /commands to list commands."),
@@ -477,6 +509,8 @@ pub const Session = struct {
     copilot: bool = false,
     bound_surface_id_buf: [16]u8 = undefined,
     bound_surface_id_len: usize = 0,
+    working_dir_buf: [WORKING_DIR_MAX_BYTES]u8 = undefined,
+    working_dir_len: usize = 0,
 
     pub const RequestState = struct {
         inflight: bool,
@@ -485,6 +519,17 @@ pub const Session = struct {
 
     pub fn reasoningEffort(self: *const Session) []const u8 {
         return self.reasoning_effort_buf[0..self.reasoning_effort_len];
+    }
+
+    /// Per-conversation working-dir override, or null when unset.
+    pub fn workingDirOverride(self: *const Session) ?[]const u8 {
+        if (self.working_dir_len == 0) return null;
+        return self.working_dir_buf[0..self.working_dir_len];
+    }
+
+    fn effectiveWorkingDirLocked(self: *Session) ?[]const u8 {
+        if (self.working_dir_len > 0) return self.working_dir_buf[0..self.working_dir_len];
+        return defaultWorkingDir();
     }
 
     pub fn apiProtocolName(self: *const Session) []const u8 {
@@ -1723,6 +1768,57 @@ pub const Session = struct {
         if (skill_preload_appended) self.notifyHistoryChange(history_change);
     }
 
+    /// Handle `/cwd`. Assumes self.mutex is held. Appends its own tool message
+    /// (the caller suppresses the generic slash output).
+    fn applyCwdArgLocked(self: *Session, arg: []const u8) void {
+        switch (ai_chat_composer.parseCwdArg(arg)) {
+            .show => {
+                if (self.effectiveWorkingDirLocked()) |w| {
+                    const msg = std.fmt.allocPrint(self.allocator, "Working directory: {s}", .{w}) catch return;
+                    defer self.allocator.free(msg);
+                    self.appendLocalToolMessageLocked(msg) catch {};
+                } else {
+                    self.appendLocalToolMessageLocked("Working directory: (unset). Use /cwd <path> to set one.") catch {};
+                }
+            },
+            .reset => {
+                self.working_dir_len = 0;
+                self.appendLocalToolMessageLocked("Working directory override cleared; using the default.") catch {};
+            },
+            .set => |path| {
+                const home = resolveHomeDir(self.allocator);
+                defer if (home) |h| self.allocator.free(h);
+                const expanded = expandTilde(self.allocator, path, home) catch return;
+                defer self.allocator.free(expanded);
+                const abs = std.fs.cwd().realpathAlloc(self.allocator, expanded) catch {
+                    const m = std.fmt.allocPrint(self.allocator, "No such directory: {s}", .{path}) catch return;
+                    defer self.allocator.free(m);
+                    self.appendLocalToolMessageLocked(m) catch {};
+                    return;
+                };
+                defer self.allocator.free(abs);
+                var dir = std.fs.openDirAbsolute(abs, .{}) catch {
+                    const m = std.fmt.allocPrint(self.allocator, "Not a directory: {s}", .{path}) catch return;
+                    defer self.allocator.free(m);
+                    self.appendLocalToolMessageLocked(m) catch {};
+                    return;
+                };
+                dir.close();
+                if (abs.len > self.working_dir_buf.len) {
+                    self.appendLocalToolMessageLocked("Path too long for the working directory.") catch {};
+                    return;
+                }
+                @memcpy(self.working_dir_buf[0..abs.len], abs);
+                self.working_dir_len = abs.len;
+                const m = std.fmt.allocPrint(self.allocator, "Working directory set to {s} for this conversation.", .{abs}) catch return;
+                defer self.allocator.free(m);
+                self.appendLocalToolMessageLocked(m) catch {};
+            },
+        }
+        self.clearSubmittedInputLocked();
+        self.setStatusLocked("Ready");
+    }
+
     /// Runs a built-in slash command's side-effects and appends its output as a
     /// tool message. Assumes self.mutex is held. Returns the captured history
     /// change (non-null only for /clear) plus any action the caller must fire
@@ -1747,6 +1843,10 @@ pub const Session = struct {
                 }
             },
             .permission => applyPermissionArg(arg),
+            .cwd => {
+                self.applyCwdArgLocked(arg);
+                result.suppress_output = true;
+            },
             .resume_session => result.deferred = .resume_picker,
             .export_markdown => result.deferred = .{
                 .export_markdown = if (std.mem.eql(u8, std.mem.trim(u8, arg, " \t\r\n"), "full")) .full else .clean,
@@ -6165,6 +6265,14 @@ test "copilot session pre-targets the bound surface in its request" {
     defer req.deinit();
 
     try std.testing.expectEqualStrings("abc123", req.write_context_surface_id[0..req.write_context_surface_id_len]);
+}
+
+test "setDefaultWorkingDir is reflected in currentAgentSettings" {
+    setDefaultWorkingDir("/tmp/proj");
+    defer setDefaultWorkingDir(""); // reset global state for other tests
+    try std.testing.expectEqualStrings("/tmp/proj", currentAgentSettings().working_dir.?);
+    setDefaultWorkingDir("");
+    try std.testing.expect(currentAgentSettings().working_dir == null);
 }
 
 test "submitScheduledPrompt sets composer and reports busy state" {

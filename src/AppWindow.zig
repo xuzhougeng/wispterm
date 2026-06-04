@@ -169,6 +169,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
         .command_timeout_ms = app.ai_agent_command_timeout_ms,
         .output_limit = app.ai_agent_output_limit,
     });
+    ai_chat.setDefaultWorkingDir(app.ai_agent_working_dir);
     // Copy shell command from App
     @memcpy(tab.g_shell_cmd_buf[0..app.shell_cmd_len], app.shell_cmd_buf[0..app.shell_cmd_len]);
     tab.g_shell_cmd_buf[app.shell_cmd_len] = 0;
@@ -2600,6 +2601,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
         .command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
         .output_limit = cfg.@"ai-agent-output-limit",
     });
+    ai_chat.setDefaultWorkingDir(cfg.@"ai-agent-working-dir");
 
     if (g_window == null) return;
     g_quake_mode = cfg.@"quake-mode";
