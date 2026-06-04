@@ -1833,6 +1833,12 @@ fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {
         platform_window_state.setAiSetupPrompted(allocator);
     }
 
+    // After an upgrade, surface the changelog once (records last-seen version
+    // unconditionally so it shows at most once per upgrade).
+    if (g_app) |app| {
+        if (app.shouldShowWhatsNewOnStartup(allocator)) overlays.showWhatsNew();
+    }
+
     return true;
 }
 
