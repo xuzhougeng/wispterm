@@ -48,9 +48,12 @@ Suites: fast `zig build test` ≈ 604 passed; full `zig build test-full` ≈ 25/
 
 **Done — #4b close-confirm (already covered).** Closing a tmux pane runs through `closePanelOrTab` → close-confirm (`activeSurfaceHasRunningProgram` = `surfaceOnAltScreen`, which is output-based so it works for tmux panes running a remote TUI) → `closeFocusedSplit` → `requestClosePane` (`kill-pane`). No new code — the existing gate already protects the tmux kill path.
 
-**Remaining:**
-- **#4c — `session_persist` re-attach (the substantive one).** Survive app *close* (not just network drop): persist a tmux session marker (host/user/port/session-name) and on restart re-attach via the controller. Design wrinkle: persistence is per-tab/surface-tree, but tmux is per-controller (one connection → N window-tabs) — needs a per-connection record + restore that starts ONE controller (which rebuilds its tabs), not a per-tab plain-ssh leaf. Touches `session_persist.zig` + the restore path; deserves care (it's a shared subsystem).
-- **#5 — minor / unrelated.** A non-tmux restored tab showed a `????` title — a pre-existing title-decode glitch, not part of the tmux work.
+**Done — #4c persist + re-attach across app restart** (`55e55dd`): `Session.tmux_profiles` persists the active tmux controllers' SSH profile names (deduped, per-connection — tmux tabs' surface trees are skipped on save); restore re-attaches each via the launcher tmux path (profile re-supplies the password). Also fixed a latent dangling-string bug — `loadSessionFromString` now parses with `.alloc_always` (the default sliced escape-free strings straight from the soon-freed file buffer). GUI-verified: connect tmux → quit → relaunch (no autoconnect) → `wispterm-<profile>` re-attaches.
+
+**The tmux integration is now functionally complete** (management, split/close/new-window, size-sync, scrollback seed, auto-reconnect on drop, persist+re-attach across restart), all GUI-verified against a real server.
+
+**Remaining (cosmetic, unrelated):**
+- **#5** — a non-tmux restored tab once showed a `????` title — a pre-existing title-decode glitch, not part of the tmux work.
 
 Study targets for #3: `AppWindow.zig` render loop (`computeSplitLayout`, `content_w/content_h`, the platform-resize grid math ~2221–2253), `Surface.setScreenSize` (`Surface.zig:679`), `src/appwindow/tmux_controller_posix.zig` (the pump — where to read pane surface grid + call `resizeClient`), `Session.resizeClient`.
 
