@@ -33,3 +33,32 @@ not currently create a separate mobile-sized terminal grid. Reflowing the
 terminal to the phone width would require either resizing the local terminal
 itself, which would disturb the desktop session, or adding a separate remote PTY
 or viewport model.
+
+## How Do I Find a Command or Feature?
+
+Press `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS) to open the command center. Type
+to filter, then run an action — almost every app feature is reachable from here,
+so it is the fastest way to discover what WispTerm can do. The command center
+also includes a Copilot history picker for resuming past AI sessions.
+
+## How Do I Update WispTerm?
+
+By default WispTerm checks GitHub Releases shortly after startup and shows a
+clickable prompt when a newer version is available (set `auto-update-check =
+false` to disable that startup check). You can also update on demand from the
+command center:
+
+- **Check for Updates** — query GitHub Releases for a newer version.
+- **Download Update** — download the latest release to your Downloads folder.
+- **Open Latest Release** — open the latest WispTerm GitHub Release page in a
+  browser.
+
+After upgrading, run **What's New** from the command center (it also pops up
+automatically the first time you launch a new version) to see what changed.
+
+## How Do I Update the Built-in AI Skills?
+
+Run **Update Skills** from the command center to download the latest bundled
+skills from GitHub into your platform config directory. Existing conversations
+keep the skill version they originally loaded, so updating does not change past
+chats.

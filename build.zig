@@ -602,6 +602,7 @@ pub fn build(b: *std.Build) void {
     fast_test_mod.addAnonymousImport("wispterm_doc_ai_agent", .{ .root_source_file = b.path("docs/ai-agent.md") });
     fast_test_mod.addAnonymousImport("wispterm_doc_file_explorer", .{ .root_source_file = b.path("docs/file-explorer.md") });
     fast_test_mod.addAnonymousImport("wispterm_doc_media", .{ .root_source_file = b.path("docs/media.md") });
+    fast_test_mod.addAnonymousImport("wispterm_doc_tabs_panels", .{ .root_source_file = b.path("docs/tabs-panels.md") });
     const fast_tests = b.addTest(.{
         .name = "wispterm-fast-test",
         .root_module = fast_test_mod,
@@ -849,6 +850,7 @@ fn createAppModuleWithRoot(
     app_mod.addAnonymousImport("wispterm_doc_ai_agent", .{ .root_source_file = b.path("docs/ai-agent.md") });
     app_mod.addAnonymousImport("wispterm_doc_file_explorer", .{ .root_source_file = b.path("docs/file-explorer.md") });
     app_mod.addAnonymousImport("wispterm_doc_media", .{ .root_source_file = b.path("docs/media.md") });
+    app_mod.addAnonymousImport("wispterm_doc_tabs_panels", .{ .root_source_file = b.path("docs/tabs-panels.md") });
 
     // Add ghostty-vt dependency with SIMD disabled for cross-compilation.
     if (b.lazyDependency("ghostty", .{

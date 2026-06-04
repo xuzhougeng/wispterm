@@ -86,6 +86,20 @@ remote-enabled = false
 | `right-click-action` | *(none)* | `paste`, or `copy-or-paste` (copy when a selection exists, else paste) |
 | `confirm-close-running-program` | `true` | Confirm before closing a panel/tab running a full-screen TUI |
 
+## Settings page
+
+You do not have to edit the config file by hand. Open the [[command
+center|Getting-Started]] (`Ctrl+Shift+P`) and run **Settings** to edit the most
+common options in a form: font size, theme, cursor style and blink,
+`focus-follows-mouse`, `restore-tabs-on-startup`, the default shell, the default
+AI profile, WeChat direct control, and the interface language. There is also an
+**Open raw config** button for the advanced keys above. Changes are written back
+to the same config file; a few options (such as language) apply after a restart.
+
+The **Restore default settings** row resets the options the page manages, after
+a confirmation dialog. It clears only the keys exposed on the settings page — it
+leaves Quake mode, your saved AI profiles, and custom `keybind` lines untouched.
+
 ## Hot reload
 
 Many changes apply without restarting: save the config (or hot-reload via

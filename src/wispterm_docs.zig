@@ -26,6 +26,11 @@ pub const topics = [_]Topic{
         .content = @embedFile("wispterm_doc_configuration"),
     },
     .{
+        .name = "tabs-panels",
+        .summary = "Tabs and splits: create, switch, rename, reorder, focus, swap, maximize, and Quake mode.",
+        .content = @embedFile("wispterm_doc_tabs_panels"),
+    },
+    .{
         .name = "ai-agent",
         .summary = "AI chat and agent usage: profiles, providers, skills, and exports.",
         .content = @embedFile("wispterm_doc_ai_agent"),
@@ -74,6 +79,7 @@ test "wispterm_docs: every topic has non-empty name, summary, and content" {
 test "wispterm_docs: readTopic returns content for known topics and null otherwise" {
     try std.testing.expect(readTopic("faq") != null);
     try std.testing.expect(readTopic("configuration") != null);
+    try std.testing.expect(readTopic("tabs-panels") != null);
     try std.testing.expect(readTopic("ai-agent") != null);
     try std.testing.expect(readTopic("file-explorer") != null);
     try std.testing.expect(readTopic("media") != null);

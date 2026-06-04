@@ -50,5 +50,15 @@ are captured there and streamed to the browser. The mobile UI can refocus a
 single surface instead of squeezing every split onto a small screen, but it does
 not create a separate phone-sized terminal grid (see [[FAQ]]).
 
+## WeChat direct control
+
+WispTerm can also be driven from WeChat, independently of the relay above. Run
+**Connect WeChat** from the command center and scan the QR code to bind your
+account; WispTerm then polls WeChat for incoming messages and feeds them to a
+bound [[Copilot conversation|AI-Copilot]], replying back over WeChat. Manage the
+binding with the other command-center entries: **WeChat: Start** and **WeChat:
+Stop** pause or resume polling without losing the binding, **WeChat: Status**
+shows the connection state, and **WeChat: Unbind** clears the saved binding.
+
 ---
-*See also: [[Configuration]] · [[FAQ]]*
+*See also: [[Configuration]] · [[AI-Copilot]] · [[FAQ]]*

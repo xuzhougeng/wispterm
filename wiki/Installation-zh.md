@@ -60,6 +60,20 @@ wispterm --version            # 打印 WispTerm 版本
 wispterm --show-config-path   # 打印解析出的配置文件路径
 ```
 
+## 保持更新
+
+默认情况下，WispTerm 会在启动后不久检查
+[GitHub Releases](https://github.com/xuzhougeng/wispterm/releases)，发现新版本时弹出
+可点击的提示。设 `auto-update-check = false` 可关闭。你也可以从
+[[命令中心|Getting-Started-zh]]按需更新：
+
+- **Check for Updates** —— 立即检查是否有新版本。
+- **Download Update** —— 把最新版本下载到 Downloads 文件夹。
+- **Open Latest Release** —— 在浏览器中打开发布页。
+
+升级后，**What's New**（命令中心里，也会在首次启动新版本时自动弹出）会汇总改动。
+**Update Skills** 会从 GitHub 下载最新的内置 AI 技能。
+
 下一步：**[[快速上手|Getting-Started-zh]]**。
 
 ---

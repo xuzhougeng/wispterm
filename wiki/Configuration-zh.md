@@ -86,6 +86,17 @@ remote-enabled = false
 | `right-click-action` | *(无)* | `paste`，或 `copy-or-paste`（有选区时复制，否则粘贴） |
 | `confirm-close-running-program` | `true` | 关闭正在运行全屏 TUI 的面板/标签前先确认 |
 
+## 设置页
+
+不必手动编辑配置文件。打开[[命令中心|Getting-Started-zh]]（`Ctrl+Shift+P`）运行
+**设置**，即可在表单里编辑最常用的选项：字号、主题、光标样式与闪烁、
+`focus-follows-mouse`、`restore-tabs-on-startup`、默认 shell、默认 AI 配置、微信直连
+以及界面语言。页面还有**打开原始配置**按钮用于上面那些高级键。改动会写回同一个配置
+文件；少数选项（如语言）需重启后生效。
+
+**恢复默认设置**一行会在确认对话框后把该页管理的选项重置为默认。它只清除设置页暴露的
+键 —— 不会动 Quake 模式、已保存的 AI 配置以及自定义 `keybind` 行。
+
 ## 热重载
 
 许多改动无需重启即可生效：保存配置（或用 `Ctrl+,` 热重载），WispTerm 会重新读取。

@@ -13,6 +13,19 @@ A **tab** is a separate session in the tab strip. A **split** divides one tab
 into multiple terminal panels that share the same tab. Use tabs to keep
 unrelated work apart, and splits to see related terminals side by side.
 
+## Working with tabs
+
+- **Open a new tab:** click the **`+`** button at the end of the tab strip, or
+  press `Ctrl+Shift+T` (`new_session`) to open the session launcher and pick a
+  shell, Copilot, or a saved SSH profile.
+- **Switch tabs:** `Ctrl+Tab` / `Ctrl+Shift+Tab` move to the next / previous tab;
+  `Alt+1` … `Alt+9` (`switch_tab_1` … `switch_tab_9`) jump straight to tab N.
+- **Rename a tab:** **double-click the tab's title**, type a new name, then press
+  `Enter` to commit or `Escape` to cancel. The old title is selected when editing
+  begins, so typing replaces it. This works for terminal and Copilot tabs alike.
+- **Reorder tabs:** open the sidebar with `Ctrl+Shift+B` (`toggle_sidebar`) and
+  drag a tab up or down to a new position.
+
 ## Creating & focusing splits
 
 - **Split the current panel:** `Ctrl+Shift+O` (`split_right`).

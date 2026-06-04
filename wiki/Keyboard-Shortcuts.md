@@ -55,6 +55,19 @@ keybind = global:ctrl+backquote=toggle_quake
 | `Ctrl+1` … `Ctrl+9` | `focus_panel_1` … `focus_panel_9` | Focus split panel N |
 | `Ctrl+,` | `open_config` | Open the config file in your editor |
 
+## Mouse & gestures
+
+Some actions are mouse-only and are not bound through `keybind`:
+
+- **Rename a tab:** double-click the tab title, type a new name, then `Enter` to
+  commit or `Escape` to cancel.
+- **Swap two panels:** hold `Alt` and left-drag one panel onto another to trade
+  their contents.
+- **Resize panels:** drag the divider between two panels.
+- **Reorder tabs:** drag a tab up or down in the sidebar (`Ctrl+Shift+B`).
+- **New / close a tab:** click the `+` button to add one; click a tab's `×` or
+  middle-click the tab to close it.
+
 ## Full action list
 
 Every app-level action you can bind:

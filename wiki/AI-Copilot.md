@@ -65,6 +65,21 @@ right-side AI copilot bound to the focused terminal (terminal tabs only).
 - `Esc` stops an in-flight request; pressing `Esc` again while idle hides the
   panel and returns focus to the terminal. Drag the left edge to resize it.
 
+## Pasting images (Vision)
+
+Each AI profile has a **Vision** toggle (off by default). Enable it on a profile
+that uses a vision-capable model, then press `Ctrl+Shift+V` (`Cmd+Shift+V` on
+macOS) to paste a clipboard image into the chat composer. The image is sent as a
+multimodal block and re-sent on each follow-up turn so the model keeps seeing it.
+Pasting an image into a non-vision profile is ignored with a log and a toast.
+
+## Dropping files into the chat
+
+Drag a local file onto a visible chat surface — a Copilot tab or the Copilot
+sidebar — to insert that file's absolute path into the composer. The path is
+quoted automatically when it contains spaces, with a trailing space added so you
+can keep typing your request.
+
 ## Working directory
 
 Local agent commands run in a default working directory set globally by

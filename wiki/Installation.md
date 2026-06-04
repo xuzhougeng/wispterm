@@ -63,6 +63,21 @@ wispterm --version            # print the WispTerm version
 wispterm --show-config-path   # print the resolved config path
 ```
 
+## Staying up to date
+
+By default WispTerm checks [GitHub Releases](https://github.com/xuzhougeng/wispterm/releases)
+shortly after startup and shows a clickable prompt when a newer version is
+available. Set `auto-update-check = false` to turn that off. You can also update
+on demand from the [[command center|Getting-Started]]:
+
+- **Check for Updates** — look for a newer release now.
+- **Download Update** — download the latest release into your Downloads folder.
+- **Open Latest Release** — open the release page in a browser.
+
+After upgrading, **What's New** (in the command center, and shown automatically
+the first time you launch a new version) summarizes what changed. **Update
+Skills** downloads the latest bundled AI skills from GitHub.
+
 Next: **[[Getting-Started]]**.
 
 ---

@@ -45,5 +45,13 @@ WispTerm Remote **镜像本地窗口**，因为桌面应用是状态的唯一真
 而不是把所有分屏都挤进小屏，但它不会创建一个独立的、手机尺寸的终端网格（见
 [[常见问题|FAQ-zh]]）。
 
+## 微信直连
+
+除了上面的中继，WispTerm 还能从微信驱动。从命令中心运行 **Connect WeChat** 并扫码绑定
+账号；之后 WispTerm 会轮询微信收到的消息，转交给绑定的
+[[Copilot 会话|AI-Copilot-zh]]，并把回复发回微信。其余命令中心条目用于管理绑定：
+**WeChat: Start** 与 **WeChat: Stop** 在不丢失绑定的前提下暂停/恢复轮询，
+**WeChat: Status** 显示连接状态，**WeChat: Unbind** 清除已保存的绑定。
+
 ---
-*另见：[[配置|Configuration-zh]] · [[常见问题|FAQ-zh]]*
+*另见：[[配置|Configuration-zh]] · [[AI 副驾与智能体|AI-Copilot-zh]] · [[常见问题|FAQ-zh]]*

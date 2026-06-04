@@ -82,6 +82,23 @@ terminal-only — it does not open on a Copilot tab or other non-terminal tabs.
 - Drag the panel's left edge to resize it; the width is shared across terminal
   tabs.
 
+## Pasting Images (Vision)
+
+Each AI profile has a **Vision** toggle (off by default). Enable it for a
+profile that uses a vision-capable model, then press `Ctrl+Shift+V`
+(`Cmd+Shift+V` on macOS) to paste an image from the clipboard into the chat
+composer. The image is sent to the model as a multimodal block and is re-sent
+with each follow-up turn so the model keeps seeing it. Pasting an image into a
+profile whose model is not vision-capable is ignored with a log message and a
+toast.
+
+## Dropping Files into the Chat
+
+Drag a local file onto a visible chat surface — a Copilot tab or the Copilot
+sidebar — to insert that file's absolute path into the composer. The path is
+quoted automatically when it contains spaces and is followed by a trailing
+space, so you can keep typing your request after it.
+
 ## Markdown Export
 
 Use the command center to run `Export Copilot Markdown` for the full transcript,
@@ -199,13 +216,28 @@ right-click-action = paste
 `right-click-action = copy-or-paste` copies when a terminal selection is active
 and pastes when there is no selection.
 
+## WeChat Direct Control
+
+You can drive a Copilot conversation from WeChat. Run **Connect WeChat** from the
+command center and scan the QR code to bind your account; WispTerm then polls
+WeChat for incoming messages and feeds them to the bound conversation, replying
+back over WeChat. The remaining command-center entries manage that binding:
+
+- **WeChat: Start** — resume polling with the saved binding.
+- **WeChat: Stop** — stop polling but keep the saved binding.
+- **WeChat: Status** — show the current connection state.
+- **WeChat: Unbind** — clear the stored binding.
+
+Because replies are delivered to a phone, the `Export Copilot Markdown Clean`
+output (prompts plus the final answer only) is a good fit for forwarding results.
+
 ## Asking About WispTerm Itself
 
 The agent can read WispTerm's own user documentation on demand through the
 `wispterm_docs` tool. Ask a natural question such as "how do I change the font?"
 or "what clipboard options exist?" and the agent first lists the available
-topics (`faq`, `configuration`, `ai-agent`, `file-explorer`, `media`), then
-reads the relevant one and answers from it.
+topics (`faq`, `configuration`, `tabs-panels`, `ai-agent`, `file-explorer`,
+`media`), then reads the relevant one and answers from it.
 
 The docs are embedded in the WispTerm binary, so this works offline and without
 the source tree. The system prompt only carries a one-line pointer to the tool;
