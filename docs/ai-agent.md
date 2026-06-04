@@ -1,6 +1,6 @@
-# AI Chat Sessions
+# Copilot
 
-Open the session launcher with `Ctrl+Shift+T` and choose `AI Agent`. WispTerm
+Open the session launcher with `Ctrl+Shift+T` and choose `Copilot`. WispTerm
 opens the default AI profile directly in Agent mode. If no AI profile exists
 yet, it opens the AI settings form first so you can configure the provider,
 model, API key, and agent mode before the first launch.
@@ -10,7 +10,7 @@ platform config directory (`ai_profiles/`) — `%APPDATA%\wispterm\ai_profiles` 
 Windows, `~/Library/Application Support/wispterm/ai_profiles` on macOS — with
 fields hex encoded on disk.
 
-AI Chat can speak OpenAI-compatible Chat Completions, the OpenAI Responses API,
+Copilot can speak OpenAI-compatible Chat Completions, the OpenAI Responses API,
 or the Anthropic Messages API. Set the profile Protocol field to
 `chat_completions` (default), `responses`, or `anthropic`:
 
@@ -43,12 +43,12 @@ DeepSeek, WispTerm also checks `DEEPSEEK_API_KEY` in the process environment.
 Responses with `reasoning_content` are shown as a muted reasoning block above
 the assistant reply. This follows DeepSeek's
 [thinking mode guide](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode).
-Completed requests show elapsed time in the AI Chat status area, and token usage
+Completed requests show elapsed time in the Copilot status area, and token usage
 when the provider returns OpenAI-compatible `usage` fields.
 
-## AI History Sessions
+## Sessions
 
-Open the session launcher with `Ctrl+Shift+T` and choose `AI History` to browse
+Open the session launcher with `Ctrl+Shift+T` and choose `Sessions` to browse
 Codex, Claude Code, and Reasonix transcripts stored on a Local, WSL, or SSH
 target. WispTerm connects to the selected target, scans `$HOME/.codex`,
 `$HOME/.claude`, and `$HOME/.reasonix` for metadata, and loads a transcript
@@ -62,7 +62,7 @@ directory is missing, resume stops instead of falling back to `$HOME`.
 
 Press `Ctrl+Shift+A` (`Cmd+Shift+A` on macOS) on a terminal tab to toggle a
 right-side AI copilot bound to the currently focused terminal. The copilot is
-terminal-only — it does not open on AI Agent or other non-terminal tabs.
+terminal-only — it does not open on a Copilot tab or other non-terminal tabs.
 
 - Each terminal tab keeps its own copilot conversation. The conversation is
   per-tab, and closing the tab discards it.
@@ -73,7 +73,7 @@ terminal-only — it does not open on AI Agent or other non-terminal tabs.
   terminal's working directory plus its recent output — so the copilot has
   context without you pasting it.
 - The copilot shares the default AI profile (same provider, model, and key) as
-  the AI Agent.
+  Copilot.
 - It occupies the right panel slot exclusively: opening the copilot hides the
   browser panel and the Markdown preview, and opening either of those hides the
   copilot.
@@ -84,10 +84,10 @@ terminal-only — it does not open on AI Agent or other non-terminal tabs.
 
 ## Markdown Export
 
-Use the command center to run `Export AI Chat Markdown` for the full transcript,
+Use the command center to run `Export Copilot Markdown` for the full transcript,
 including reasoning, tool details, and usage metadata.
 
-Use `Export AI Chat Markdown Clean` when you want a publishing-friendly record:
+Use `Export Copilot Markdown Clean` when you want a publishing-friendly record:
 it writes only user prompts and the final AI answer, without thinking blocks,
 tool output, or usage metadata. This is useful for notes, blog drafts, and
 WeChat public account posts.
@@ -117,10 +117,51 @@ Local slash commands (handled in the panel, without calling the model):
 - `/reload-commands` rescans the custom `commands/` directory.
 - `/clear` clears the current conversation context (keeps the tab and profile).
 - `/resume` opens the saved-conversation history picker.
-- `/permission` shows the agent tool permission; `/permission confirm` or
-  `/permission full` changes it at runtime.
+- `/permission` shows the agent tool permission; `/permission ask`,
+  `/permission auto`, or `/permission full` changes it at runtime.
+  `ask` prompts for normal tool use, `auto` runs ordinary tools automatically
+  while still confirming protected-path and dangerous commands, and `full`
+  skips approval guard prompts. `confirm` remains accepted as an alias for
+  `ask`.
 - `/export` writes the conversation to Markdown (clean by default; `/export full`
   includes reasoning, tool details, and usage).
+- `/distill [topic]` or `/沉淀 [主题]` previews a reusable local skill distilled
+  from the current conversation.
+
+## Skill Distillation
+
+Use `/distill`, `/distill <topic>`, `/沉淀`, or `/沉淀 <主题>` after a useful AI
+Chat, Agent, or Copilot workflow to generate a candidate local `SKILL.md`.
+WispTerm sends a redacted transcript to the configured AI provider, then shows a
+local preview with the skill name, description, save path, body, and source
+summary. The command itself is handled by the panel and is not submitted as a
+normal chat prompt.
+
+Automatic suggestions may appear after tool-heavy or clearly reusable tasks:
+
+```text
+This task looks reusable. Distill it into a skill?
+```
+
+When that suggestion is pending, press Enter on an empty AI Chat input to open
+the same preview flow, or press Esc to ignore it. WispTerm never writes a skill
+silently from an automatic suggestion.
+
+Confirm or discard the preview explicitly:
+
+- `/distill confirm` or `/沉淀 确认` writes the skill.
+- `/distill cancel` or `/沉淀 取消` discards the candidate.
+
+Distilled skills are saved only under the user config skills directory:
+`<config>/skills/<slug>/SKILL.md` (`%APPDATA%\wispterm\skills` on Windows).
+They are not written to `plugins/skills`, bundled resources, or repository
+plugin directories. Existing skill directories are not overwritten; use a more
+specific topic or remove the old skill first.
+
+Before the distiller request and again before writing, WispTerm scans for API
+keys, passwords, bearer tokens, Weixin context tokens, and common
+`*_TOKEN`/`*_KEY` style secrets. Unredacted sensitive content blocks the write
+instead of being saved.
 
 ## Custom Slash Commands
 

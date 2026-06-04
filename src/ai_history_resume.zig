@@ -90,7 +90,7 @@ pub fn checkedPowerShellResume(meta: types.SessionMeta, out: []u8) ResumeError![
     try appendPowerShellSingleQuote(out, &pos, meta.session_id);
     if (meta.resume_kind == .reasonix_resume) try append(out, &pos, " --resume");
     try append(out, &pos, " } else { Write-Error ");
-    try appendPowerShellSingleQuote(out, &pos, "AI History resume failed: project path unavailable");
+    try appendPowerShellSingleQuote(out, &pos, "Sessions resume failed: project path unavailable");
     try append(out, &pos, " }");
     return out[0..pos];
 }
@@ -363,7 +363,7 @@ test "ai_history_resume: checked PowerShell resume checks directory before resum
         .resume_kind = .codex_resume,
     };
     try std.testing.expectEqualStrings(
-        "if (Test-Path -LiteralPath 'C:\\Users\\me\\it''s project' -PathType Container) { Set-Location -LiteralPath 'C:\\Users\\me\\it''s project'; codex resume 'abc def' } else { Write-Error 'AI History resume failed: project path unavailable' }",
+        "if (Test-Path -LiteralPath 'C:\\Users\\me\\it''s project' -PathType Container) { Set-Location -LiteralPath 'C:\\Users\\me\\it''s project'; codex resume 'abc def' } else { Write-Error 'Sessions resume failed: project path unavailable' }",
         try checkedPowerShellResume(meta, &out),
     );
 
@@ -376,7 +376,7 @@ test "ai_history_resume: checked PowerShell resume checks directory before resum
         .resume_kind = .reasonix_resume,
     };
     try std.testing.expectEqualStrings(
-        "if (Test-Path -LiteralPath 'C:\\Project' -PathType Container) { Set-Location -LiteralPath 'C:\\Project'; reasonix chat --session 'code-project' --resume } else { Write-Error 'AI History resume failed: project path unavailable' }",
+        "if (Test-Path -LiteralPath 'C:\\Project' -PathType Container) { Set-Location -LiteralPath 'C:\\Project'; reasonix chat --session 'code-project' --resume } else { Write-Error 'Sessions resume failed: project path unavailable' }",
         try checkedPowerShellResume(reasonix, &out),
     );
 }

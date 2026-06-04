@@ -18,6 +18,7 @@ const markdown_text = @import("markdown_text.zig");
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_chat_composer = @import("ai_chat_composer.zig");
 const ai_chat_skills = @import("ai_chat_skills.zig");
+const ai_skill_distill = @import("ai_skill_distill.zig");
 const ai_chat_types = @import("ai_chat_types.zig");
 const ai_chat_tools = @import("ai_chat_tools.zig");
 const ai_agent_access = @import("ai_agent_access.zig");
@@ -355,6 +356,7 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         .resume_session => allocator.dupe(u8, "Opening saved conversation history..."),
         .permission => permissionStatusOutput(allocator),
         .export_markdown => allocator.dupe(u8, "Exporting the conversation as Markdown..."),
+        .distill => allocator.dupe(u8, "Use /distill [topic] to preview a reusable skill candidate."),
         .unknown => allocator.dupe(u8, "Unknown command. Use /commands to list commands."),
         .skills => ai_chat_skills.listSkillsForDisplay(allocator),
     };
@@ -362,7 +364,7 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
 
 fn permissionStatusOutput(allocator: std.mem.Allocator) ![]u8 {
     const current = currentAgentSettings().permission;
-    return std.fmt.allocPrint(allocator, "Agent permission is '{s}'. Use /permission confirm or /permission full to change it.", .{current.name()});
+    return std.fmt.allocPrint(allocator, "Agent permission is '{s}'. Use /permission ask, /permission auto, or /permission full to change it.", .{current.name()});
 }
 
 pub fn agentPermission() AgentPermission {
@@ -427,6 +429,10 @@ pub const Session = struct {
     request_thread: ?std.Thread = null,
     title_thread: ?std.Thread = null,
     pending_weixin_reply_context: ?WeixinReplyContext = null,
+    distill_candidate: ?ai_skill_distill.Candidate = null,
+    distill_suggestion_pending: bool = false,
+    distill_last_suggested_turn_count: usize = 0,
+    distill_inflight: bool = false,
     auto_title_attempted: bool = false,
     closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -688,6 +694,7 @@ pub const Session = struct {
         self.freeCustomCommandSuggestions();
         command_registry.freeCommandList(self.allocator, self.custom_commands);
         if (self.pending_weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
+        if (self.distill_candidate) |*candidate| candidate.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -1121,6 +1128,7 @@ pub const Session = struct {
             .end => self.moveInputCursorEnd(),
             .tab => _ = self.completeComposerSuggestion(.tab),
             .escape => {
+                if (self.dismissDistillSuggestion()) return;
                 const now = self.now_ms_override orelse std.time.milliTimestamp();
                 if (self.request_inflight) {
                     // 生成中：仅停止，不参与双击；停止后变空闲再双击才进选择器。
@@ -1146,6 +1154,7 @@ pub const Session = struct {
                 if (ev.shift) {
                     self.appendInputText("\n");
                 } else {
+                    if (self.acceptDistillSuggestion()) return;
                     if (!self.completeComposerSuggestion(.enter)) self.submit();
                 }
             },
@@ -1391,6 +1400,37 @@ pub const Session = struct {
         return allowed;
     }
 
+    fn canUseDistillSuggestionLocked(self: *Session) bool {
+        return self.distill_suggestion_pending and
+            self.input_len == 0 and
+            !self.input_select_all and
+            !self.transcript_select_all and
+            self.transcript_selection == null;
+    }
+
+    fn acceptDistillSuggestion(self: *Session) bool {
+        self.mutex.lock();
+        const ok = self.canUseDistillSuggestionLocked();
+        self.mutex.unlock();
+        if (!ok) return false;
+        self.startDistillRequest("");
+        return true;
+    }
+
+    fn dismissDistillSuggestion(self: *Session) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.canUseDistillSuggestionLocked()) return false;
+        self.distill_suggestion_pending = false;
+        self.last_esc_ms = 0;
+        self.appendLocalToolMessageLocked("Distill suggestion ignored.") catch {
+            self.setStatusLocked("Out of memory");
+            return true;
+        };
+        self.setStatusLocked("Ready");
+        return true;
+    }
+
     fn copyApprovalLocked(self: *Session, tool: []const u8, command: []const u8, reason: []const u8) void {
         self.approval_tool_len = @min(tool.len, self.approval_tool_buf.len);
         @memcpy(self.approval_tool_buf[0..self.approval_tool_len], tool[0..self.approval_tool_len]);
@@ -1398,6 +1438,34 @@ pub const Session = struct {
         @memcpy(self.approval_command_buf[0..self.approval_command_len], command[0..self.approval_command_len]);
         self.approval_reason_len = @min(reason.len, self.approval_reason_buf.len);
         @memcpy(self.approval_reason_buf[0..self.approval_reason_len], reason[0..self.approval_reason_len]);
+    }
+
+    fn appendLocalToolMessageLocked(self: *Session, text: []const u8) !void {
+        const content = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(content);
+        try self.messages.append(self.allocator, .{
+            .role = .tool,
+            .content = content,
+            .replay_to_model = false,
+            .persist_to_history = false,
+            .content_collapsed = false,
+            .content_auto_expand = false,
+        });
+        self.scroll_px = 1_000_000;
+    }
+
+    fn clearDistillCandidateLocked(self: *Session) void {
+        if (self.distill_candidate) |*candidate| candidate.deinit(self.allocator);
+        self.distill_candidate = null;
+    }
+
+    fn submitDistillCommand(self: *Session, arg: []const u8) void {
+        const parsed = ai_skill_distill.parseCommandArgs(arg);
+        switch (parsed.action) {
+            .start => self.startDistillRequest(parsed.topic),
+            .confirm => self.confirmDistillCandidate(),
+            .cancel => self.cancelDistillCandidate(),
+        }
     }
 
     pub fn submit(self: *Session) void {
@@ -1428,6 +1496,12 @@ pub const Session = struct {
 
         // 1) Built-in command (with optional argument), exact first-token match.
         if (ai_chat_composer.exactBuiltinCommand(first_tok)) |command| {
+            if (command == .distill) {
+                self.clearPendingWeixinReplyContextLocked();
+                self.mutex.unlock();
+                self.submitDistillCommand(arg);
+                return;
+            }
             const r = self.runBuiltinCommandLocked(command, arg);
             self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
@@ -1465,7 +1539,7 @@ pub const Session = struct {
         // otherwise (e.g. "/help me", "/usr/bin path", or a rebound template body): fall through.
 
         if (self.api_key_len == 0) {
-            self.setStatusLocked("Missing API key. Edit the AI Chat profile or set DEEPSEEK_API_KEY.");
+            self.setStatusLocked("Missing API key. Edit the Copilot profile or set DEEPSEEK_API_KEY.");
             self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
             return;
@@ -1640,21 +1714,165 @@ pub const Session = struct {
             self.setStatusLocked("Could not run command");
             return result;
         };
-        self.messages.append(self.allocator, .{
-            .role = .tool,
-            .content = output,
-            .replay_to_model = false,
-            .persist_to_history = false,
-            .content_collapsed = false,
-            .content_auto_expand = false,
-        }) catch {
-            self.allocator.free(output);
+        defer self.allocator.free(output);
+        self.appendLocalToolMessageLocked(output) catch {
             self.setStatusLocked("Out of memory");
             return result;
         };
         self.clearSubmittedInputLocked();
         self.setStatusLocked("Ready");
         return result;
+    }
+
+    fn cancelDistillCandidate(self: *Session) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.clearDistillCandidateLocked();
+        self.distill_suggestion_pending = false;
+        self.clearSubmittedInputLocked();
+        self.appendLocalToolMessageLocked("Distill candidate discarded.") catch {
+            self.setStatusLocked("Out of memory");
+            return;
+        };
+        self.setStatusLocked("Ready");
+    }
+
+    fn confirmDistillCandidate(self: *Session) void {
+        var candidate: ?ai_skill_distill.Candidate = null;
+        self.mutex.lock();
+        if (self.distill_candidate) |existing| {
+            candidate = existing;
+            self.distill_candidate = null;
+            self.distill_suggestion_pending = false;
+            self.clearSubmittedInputLocked();
+        } else {
+            self.distill_suggestion_pending = false;
+            self.clearSubmittedInputLocked();
+            self.appendLocalToolMessageLocked("No distill candidate is waiting for confirmation.") catch {
+                self.setStatusLocked("Out of memory");
+                self.mutex.unlock();
+                return;
+            };
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        }
+        self.mutex.unlock();
+
+        var moved = candidate.?;
+        defer moved.deinit(self.allocator);
+        var saved = ai_chat_skills.saveDistilledCandidate(self.allocator, moved) catch |err| {
+            const text = switch (err) {
+                error.SkillAlreadyExists => std.fmt.allocPrint(
+                    self.allocator,
+                    "A skill named ${s} already exists. Use /distill with a more specific topic or remove the old skill first.",
+                    .{moved.name},
+                ),
+                else => std.fmt.allocPrint(self.allocator, "Could not save distilled skill: {}.", .{err}),
+            } catch null;
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            if (text) |msg| {
+                defer self.allocator.free(msg);
+                self.appendLocalToolMessageLocked(msg) catch self.setStatusLocked("Out of memory");
+            } else {
+                self.setStatusLocked("Out of memory");
+            }
+            self.setStatusLocked("Ready");
+            return;
+        };
+        defer saved.deinit(self.allocator);
+
+        const text = std.fmt.allocPrint(
+            self.allocator,
+            "Distilled skill: ${s}\nSaved to: {s}",
+            .{ saved.skill_name, saved.skill_path },
+        ) catch null;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (text) |msg| {
+            defer self.allocator.free(msg);
+            self.appendLocalToolMessageLocked(msg) catch self.setStatusLocked("Out of memory");
+        } else {
+            self.setStatusLocked("Out of memory");
+            return;
+        }
+        self.freeSkillSuggestions();
+        self.setStatusLocked("Ready");
+    }
+
+    fn startDistillRequest(self: *Session, topic: []const u8) void {
+        self.mutex.lock();
+        if (self.request_thread) |thread| {
+            if (self.request_inflight) {
+                self.distill_suggestion_pending = false;
+                self.clearSubmittedInputLocked();
+                self.appendLocalToolMessageLocked("Wait for the current AI request to finish before distilling.") catch {
+                    self.setStatusLocked("Out of memory");
+                    self.mutex.unlock();
+                    return;
+                };
+                self.setStatusLocked("Ready");
+                self.mutex.unlock();
+                return;
+            }
+            self.request_thread = null;
+            self.mutex.unlock();
+            thread.join();
+            self.mutex.lock();
+        }
+        if (self.api_key_len == 0) {
+            self.distill_suggestion_pending = false;
+            self.clearSubmittedInputLocked();
+            self.setStatusLocked("Missing API key. Edit the AI Chat profile or set DEEPSEEK_API_KEY.");
+            self.mutex.unlock();
+            return;
+        }
+
+        self.clearDistillCandidateLocked();
+        self.distill_suggestion_pending = false;
+        const request = self.buildDistillRequestLocked(topic) catch |err| {
+            self.clearSubmittedInputLocked();
+            const text = switch (err) {
+                error.NotEnoughContext => "Not enough reusable context to distill yet.",
+                else => "Could not prepare distill request.",
+            };
+            self.appendLocalToolMessageLocked(text) catch self.setStatusLocked("Out of memory");
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        };
+
+        self.clearSubmittedInputLocked();
+        self.stop_requested.store(false, .release);
+        self.request_stopping = false;
+        self.request_inflight = true;
+        self.distill_inflight = true;
+        self.appendLocalToolMessageLocked("Distilling a reusable skill candidate.") catch {
+            request.deinit();
+            self.request_inflight = false;
+            self.distill_inflight = false;
+            self.setStatusLocked("Out of memory");
+            self.mutex.unlock();
+            return;
+        };
+        self.setStatusLocked("Distilling skill.");
+        self.mutex.unlock();
+
+        const thread = std.Thread.spawn(.{}, ai_chat_request.distillThreadMain, .{request}) catch {
+            request.deinit();
+            self.mutex.lock();
+            self.request_inflight = false;
+            self.distill_inflight = false;
+            self.appendLocalToolMessageLocked("Failed to start distill request thread.") catch self.setStatusLocked("Out of memory");
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        };
+
+        self.mutex.lock();
+        self.request_thread = thread;
+        self.mutex.unlock();
     }
 
     /// Assumes self.mutex is held. Returns the captured history change for the
@@ -2102,7 +2320,7 @@ pub const Session = struct {
             .clean => try self.appendCleanMarkdownExportLocked(allocator, &out),
         }
 
-        if (out.items.len == 0) try out.appendSlice(allocator, "# WispTerm AI Chat\n\nNo messages yet.\n");
+        if (out.items.len == 0) try out.appendSlice(allocator, "# WispTerm Copilot\n\nNo messages yet.\n");
         return out.toOwnedSlice(allocator);
     }
 
@@ -2224,6 +2442,92 @@ pub const Session = struct {
         }
 
         return messages;
+    }
+
+    fn allocDistillTurnsLocked(self: *Session) ![]ai_skill_distill.DistillTurn {
+        const turns = try self.allocator.alloc(ai_skill_distill.DistillTurn, self.messages.items.len);
+        for (self.messages.items, 0..) |msg, idx| {
+            turns[idx] = .{
+                .role = switch (msg.role) {
+                    .user => .user,
+                    .assistant => .assistant,
+                    .tool => .tool,
+                },
+                .content = msg.content,
+                .replay_to_model = msg.replay_to_model,
+            };
+        }
+        return turns;
+    }
+
+    fn buildDistillRequestLocked(self: *Session, topic: []const u8) !*ChatRequest {
+        const turns = try self.allocDistillTurnsLocked();
+        defer self.allocator.free(turns);
+
+        const prompt = try ai_skill_distill.buildDistillUserPrompt(self.allocator, topic, turns);
+        defer self.allocator.free(prompt);
+
+        const messages = try self.allocator.alloc(RequestMessage, 1);
+        var message_initialized = false;
+        errdefer {
+            if (message_initialized) messages[0].deinit(self.allocator);
+            self.allocator.free(messages);
+        }
+        messages[0] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, .user, prompt, null, null, null, null);
+        message_initialized = true;
+
+        const base_url = try self.allocator.dupe(u8, self.baseUrl());
+        errdefer self.allocator.free(base_url);
+        const api_key = try self.allocator.dupe(u8, self.apiKey());
+        errdefer self.allocator.free(api_key);
+        const model_name = try self.allocator.dupe(u8, self.model());
+        errdefer self.allocator.free(model_name);
+        const system_prompt = try self.allocator.dupe(u8, ai_skill_distill.distiller_system_prompt);
+        errdefer self.allocator.free(system_prompt);
+        const reasoning_effort = try self.allocator.dupe(u8, self.reasoningEffort());
+        errdefer self.allocator.free(reasoning_effort);
+
+        const req = try self.allocator.create(ChatRequest);
+        errdefer self.allocator.destroy(req);
+        req.* = .{
+            .allocator = self.allocator,
+            .session = self,
+            .base_url = base_url,
+            .api_key = api_key,
+            .model = model_name,
+            .protocol = self.protocol,
+            .system_prompt = system_prompt,
+            .messages = messages,
+            .thinking_enabled = self.thinking_enabled,
+            .reasoning_effort = reasoning_effort,
+            .stream = false,
+            .max_tokens = self.max_tokens,
+            .agent_enabled = false,
+            .copilot = false,
+            .tool_host = null,
+            .tool_snapshot = null,
+            .weixin_reply_context = null,
+            .started_ms = std.time.milliTimestamp(),
+        };
+        message_initialized = false;
+        return req;
+    }
+
+    fn maybeAppendDistillSuggestionLocked(self: *Session) void {
+        const turns = self.allocDistillTurnsLocked() catch return;
+        defer self.allocator.free(turns);
+        const should = ai_skill_distill.shouldSuggest(.{
+            .turns = turns,
+            .pending_candidate = self.distill_candidate != null,
+            .suggestion_pending = self.distill_suggestion_pending,
+            .last_suggested_turn_count = self.distill_last_suggested_turn_count,
+        });
+        if (!should) return;
+        self.appendLocalToolMessageLocked(
+            "This task looks reusable. Distill it into a skill?\nPress Enter to preview /distill, or Esc to ignore.",
+        ) catch return;
+        self.distill_suggestion_pending = true;
+        self.distill_last_suggested_turn_count = turns.len;
     }
 
     fn buildRequestLocked(self: *Session) !*ChatRequest {
@@ -2669,6 +2973,7 @@ pub fn finishStoppedRequest(session: *Session) void {
     defer session.mutex.unlock();
     if (session.closing.load(.acquire)) return;
     session.request_inflight = false;
+    session.distill_inflight = false;
     session.request_stopping = false;
     session.stop_requested.store(false, .release);
     session.collapseAutoExpandedDetailsLocked();
@@ -2836,10 +3141,81 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
     };
     usage_footer = null;
     session.request_inflight = false;
+    session.distill_inflight = false;
     session.collapseAutoExpandedDetailsLocked();
     session.scroll_px = 1_000_000;
     session.setCompletionStatusLocked(started_ms, result.usage);
+    session.maybeAppendDistillSuggestionLocked();
     history_change = session.captureHistoryChangeLocked();
+}
+
+pub fn applyDistillCandidate(session: *Session, candidate: *ai_skill_distill.Candidate) void {
+    const allocator = session.allocator;
+    const root = ai_chat_skills.defaultWritableSkillRootPath(allocator) catch |err| {
+        candidate.deinit(allocator);
+        failDistillRequest(session, err);
+        return;
+    };
+    defer allocator.free(root);
+    const save_path = std.fs.path.join(allocator, &.{ root, candidate.name, "SKILL.md" }) catch |err| {
+        candidate.deinit(allocator);
+        failDistillRequest(session, err);
+        return;
+    };
+    defer allocator.free(save_path);
+    const preview = ai_skill_distill.renderPreviewMarkdown(allocator, candidate.*, save_path) catch |err| {
+        candidate.deinit(allocator);
+        failDistillRequest(session, err);
+        return;
+    };
+    defer allocator.free(preview);
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.closing.load(.acquire) or session.stop_requested.load(.acquire)) {
+        candidate.deinit(allocator);
+        session.request_inflight = false;
+        session.request_stopping = false;
+        session.distill_inflight = false;
+        session.stop_requested.store(false, .release);
+        session.setStatusLocked("Stopped");
+        return;
+    }
+
+    session.clearDistillCandidateLocked();
+    session.distill_candidate = candidate.*;
+    candidate.* = undefined;
+    session.distill_suggestion_pending = false;
+    session.request_inflight = false;
+    session.request_stopping = false;
+    session.distill_inflight = false;
+    session.appendLocalToolMessageLocked(preview) catch {
+        session.clearDistillCandidateLocked();
+        session.setStatusLocked("Out of memory");
+        return;
+    };
+    session.setStatusLocked("Distill preview ready");
+}
+
+pub fn failDistillRequest(session: *Session, err: anyerror) void {
+    const allocator = session.allocator;
+    const text = std.fmt.allocPrint(allocator, "Could not distill this conversation: {}.", .{err}) catch null;
+    defer if (text) |msg| allocator.free(msg);
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    session.request_inflight = false;
+    session.request_stopping = false;
+    session.distill_inflight = false;
+    session.stop_requested.store(false, .release);
+    session.clearDistillCandidateLocked();
+    if (text) |msg| {
+        session.appendLocalToolMessageLocked(msg) catch {
+            session.setStatusLocked("Out of memory");
+            return;
+        };
+    }
+    session.setStatusLocked("Ready");
 }
 
 pub fn appendProgressMessage(session: *Session, text: []const u8) !void {
@@ -2986,6 +3362,7 @@ pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: 
     if (session.closing.load(.acquire)) return;
     if (session.stop_requested.load(.acquire)) {
         session.request_inflight = false;
+        session.distill_inflight = false;
         session.request_stopping = false;
         session.stop_requested.store(false, .release);
         session.setStatusLocked("Stopped");
@@ -3004,9 +3381,11 @@ pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: 
         history_change = session.captureHistoryChangeLocked();
     }
     session.request_inflight = false;
+    session.distill_inflight = false;
     session.collapseAutoExpandedDetailsLocked();
     session.scroll_px = 1_000_000;
     session.setCompletionStatusLocked(started_ms, usage);
+    session.maybeAppendDistillSuggestionLocked();
 }
 
 pub fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const u8) void {
@@ -3219,7 +3598,7 @@ test "ai chat slash command suggestions show and filter from input" {
     var session = Session{ .allocator = allocator };
     session.appendInputText("/");
 
-    try std.testing.expectEqual(@as(usize, 10), session.slashCommandSuggestionCount());
+    try std.testing.expectEqual(@as(usize, 11), session.slashCommandSuggestionCount());
     try std.testing.expectEqualStrings("/skills", session.slashCommandSuggestionAt(0).?.command);
 
     session.appendInputText("c");
@@ -3418,9 +3797,6 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
     try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
 }
 
-
-
-
 const WeixinAttachmentCapture = struct {
     called: bool = false,
     kind: weixin_types.AttachmentKind = .file,
@@ -3565,7 +3941,6 @@ test "weixin_send_attachment calls the active Weixin sender" {
     try std.testing.expectEqualStrings("ctx-1", capture.context_token);
     try std.testing.expectEqualStrings("Sent file to Weixin: report.pdf", result);
 }
-
 
 test "ai_chat: session serializes to history record" {
     const allocator = std.testing.allocator;
@@ -4311,12 +4686,6 @@ test "wsl_session_exec refuses to paste shell wrapper into Claude Code" {
     try std.testing.expect(std.mem.indexOf(u8, result, "repl=claude_code") != null);
 }
 
-
-
-
-
-
-
 test "ai chat ctrl a selects input and replacement clears selection" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
@@ -4938,6 +5307,111 @@ test "ai chat escape stops in-flight request" {
     try std.testing.expectEqualStrings("Stopping...", session.status());
 }
 
+fn testDistillCandidate(allocator: std.mem.Allocator) !ai_skill_distill.Candidate {
+    return .{
+        .name = try allocator.dupe(u8, "ssh-transfer"),
+        .description = try allocator.dupe(u8, "Diagnose SSH transfer failures."),
+        .body = try allocator.dupe(u8, "# Steps\n\nRun checks."),
+        .source_summary = try allocator.dupe(u8, "Derived from test conversation."),
+    };
+}
+
+test "ai chat distill cancel clears pending candidate" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        if (session.distill_candidate) |*candidate| candidate.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    session.distill_candidate = try testDistillCandidate(a);
+    session.appendInputText("/distill cancel");
+
+    session.submit();
+
+    try std.testing.expect(session.distill_candidate == null);
+    try std.testing.expectEqualStrings("", session.input());
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[0].content, 1, "discarded"));
+}
+
+test "ai chat distill confirm without candidate is local only" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        if (session.distill_candidate) |*candidate| candidate.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    session.appendInputText("/沉淀 确认");
+
+    session.submit();
+
+    try std.testing.expect(!session.request_inflight);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[0].content, 1, "No distill candidate"));
+}
+
+test "ai chat appends automatic distill suggestion after tool-heavy result" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        if (session.distill_candidate) |*candidate| candidate.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec one"), .persist_to_history = false });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec two"), .persist_to_history = false });
+    session.request_inflight = true;
+
+    appendAssistantResult(&session, .{ .content = @constCast("done") }, 0);
+
+    try std.testing.expect(session.distill_suggestion_pending);
+    try std.testing.expectEqual(@as(usize, 5), session.messages.items.len);
+    try std.testing.expectEqual(Role.tool, session.messages.items[4].role);
+    try std.testing.expect(!session.messages.items[4].persist_to_history);
+    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[4].content, 1, "Distill it into a skill"));
+}
+
+test "ai chat escape dismisses pending distill suggestion before rewind" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        if (session.distill_candidate) |*candidate| candidate.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
+    session.distill_suggestion_pending = true;
+    session.now_ms_override = 1000;
+
+    session.handleKey(.{ .key = input_key.Key.escape });
+
+    try std.testing.expect(!session.distill_suggestion_pending);
+    try std.testing.expect(!session.rewind_open);
+    try std.testing.expectEqual(@as(i64, 0), session.last_esc_ms);
+}
+
+test "ai chat enter on pending distill suggestion requires api key and does not send chat" {
+    const a = std.testing.allocator;
+    var session = Session{ .allocator = a };
+    defer {
+        if (session.distill_candidate) |*candidate| candidate.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
+    try session.messages.append(a, .{ .role = .assistant, .content = try a.dupe(u8, "done") });
+    session.distill_suggestion_pending = true;
+
+    session.handleKey(.{ .key = input_key.Key.enter });
+
+    try std.testing.expect(!session.request_inflight);
+    try std.testing.expect(!session.distill_suggestion_pending);
+    try std.testing.expectEqualStrings("Missing API key. Edit the AI Chat profile or set DEEPSEEK_API_KEY.", session.status());
+}
+
 test "ai chat rewind point count and index map user messages" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
@@ -5041,7 +5515,6 @@ test "ai chat request state exposes in-flight stop status for remote layout" {
     try std.testing.expect(state.stopping);
 }
 
-
 test "ai chat collapse helper only closes auto-expanded details" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
@@ -5115,13 +5588,15 @@ test "clearMessages empties transcript but keeps settings" {
     try std.testing.expectEqualStrings("m1", session.model());
 }
 
-test "/permission full flips the global agent permission" {
+test "/permission accepts ask auto and full modes" {
     const saved = currentAgentSettings();
     defer configureAgent(saved); // restore global state for other tests
     configureAgent(.{ .permission = .confirm });
+    applyPermissionArg("auto");
+    try std.testing.expectEqual(AgentPermission.auto, currentAgentSettings().permission);
     applyPermissionArg("full");
     try std.testing.expectEqual(AgentPermission.full, currentAgentSettings().permission);
-    applyPermissionArg("confirm");
+    applyPermissionArg("ask");
     try std.testing.expectEqual(AgentPermission.confirm, currentAgentSettings().permission);
     applyPermissionArg("bogus"); // invalid → no change
     try std.testing.expectEqual(AgentPermission.confirm, currentAgentSettings().permission);
@@ -5518,7 +5993,15 @@ test "ai chat request setup cleans scalar fields on allocation failure" {
 test "copilot session pre-targets the bound surface in its request" {
     const session = try Session.init(
         std.testing.allocator,
-        "copilot", "", "", "", "", "", "", "", "",
+        "copilot",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
     );
     defer session.deinit();
     session.copilot = true;

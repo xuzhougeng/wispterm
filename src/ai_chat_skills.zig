@@ -6,6 +6,7 @@ const skill_registry = @import("skill_registry.zig");
 const command_registry = @import("command_registry.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const ai_chat_composer = @import("ai_chat_composer.zig");
+const ai_skill_distill = @import("ai_skill_distill.zig");
 
 const SlashCommand = ai_chat_composer.SlashCommand;
 const slash_command_entries = ai_chat_composer.slash_command_entries;
@@ -197,6 +198,64 @@ pub fn defaultCommandRootPaths(allocator: std.mem.Allocator) ![][]const u8 {
     return roots.toOwnedSlice(allocator);
 }
 
+pub const DistilledSkillSaveResult = struct {
+    skill_name: []u8,
+    skill_path: []u8,
+
+    pub fn deinit(self: *DistilledSkillSaveResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.skill_name);
+        allocator.free(self.skill_path);
+        self.* = undefined;
+    }
+};
+
+pub fn defaultWritableSkillRootPath(allocator: std.mem.Allocator) ![]const u8 {
+    return platform_dirs.skillsDir(allocator);
+}
+
+pub fn saveDistilledCandidate(
+    allocator: std.mem.Allocator,
+    candidate: ai_skill_distill.Candidate,
+) !DistilledSkillSaveResult {
+    if (!ai_skill_distill.isValidSlug(candidate.name)) return error.InvalidSkillName;
+
+    const root = try defaultWritableSkillRootPath(allocator);
+    defer allocator.free(root);
+    try std.fs.cwd().makePath(root);
+
+    const skill_dir = try std.fs.path.join(allocator, &.{ root, candidate.name });
+    defer allocator.free(skill_dir);
+    std.fs.cwd().makeDir(skill_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => return error.SkillAlreadyExists,
+        else => |e| return e,
+    };
+    var created_skill_dir = true;
+    errdefer if (created_skill_dir) std.fs.cwd().deleteTree(skill_dir) catch {};
+
+    const markdown = try ai_skill_distill.renderSkillMarkdown(allocator, candidate);
+    defer allocator.free(markdown);
+    if (markdown.len > skill_registry.MAX_SKILL_MD_BYTES) return error.SkillTooLarge;
+    if (ai_skill_distill.containsSensitiveMaterial(markdown)) return error.SensitiveCandidate;
+
+    var dir = try openDirectoryPath(skill_dir);
+    defer dir.close();
+    var write_buffer: [0]u8 = .{};
+    var atomic = try dir.atomicFile("SKILL.md", .{ .write_buffer = &write_buffer });
+    defer atomic.deinit();
+    try atomic.file_writer.file.writeAll(markdown);
+    try atomic.finish();
+    created_skill_dir = false;
+
+    const skill_name = try allocator.dupe(u8, candidate.name);
+    errdefer allocator.free(skill_name);
+    const skill_path = try std.fs.path.join(allocator, &.{ root, candidate.name, "SKILL.md" });
+    errdefer allocator.free(skill_path);
+    return .{
+        .skill_name = skill_name,
+        .skill_path = skill_path,
+    };
+}
+
 fn appendSkillRootPath(
     allocator: std.mem.Allocator,
     roots: *std.ArrayListUnmanaged([]const u8),
@@ -336,4 +395,43 @@ test "ai chat default skill roots include plugin skills directory" {
     }
 
     try std.testing.expect(found_plugins_skills);
+}
+
+test "distilled skills save only to user config skills root and refuse overwrite" {
+    const allocator = std.testing.allocator;
+    const root = ".zig-cache/tmp/distilled-skill-save-test";
+    std.fs.cwd().deleteTree(root) catch {};
+    defer std.fs.cwd().deleteTree(root) catch {};
+    try std.fs.cwd().makePath(root);
+
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    defer platform_dirs.clearTestConfigDirForCurrentThread();
+
+    const writable_root = try defaultWritableSkillRootPath(allocator);
+    defer allocator.free(writable_root);
+    const expected_root = try std.fs.path.join(allocator, &.{ root, "skills" });
+    defer allocator.free(expected_root);
+    try std.testing.expectEqualStrings(expected_root, writable_root);
+
+    const candidate = ai_skill_distill.Candidate{
+        .name = @constCast("ssh-transfer"),
+        .description = @constCast("Diagnose SSH transfer failures."),
+        .body = @constCast("# Steps\n\nRun checks."),
+        .source_summary = @constCast("Do not write this summary."),
+    };
+    var saved = try saveDistilledCandidate(allocator, candidate);
+    defer saved.deinit(allocator);
+
+    try std.testing.expectEqualStrings("ssh-transfer", saved.skill_name);
+    const expected_skill_path = try std.fs.path.join(allocator, &.{ root, "skills", "ssh-transfer", "SKILL.md" });
+    defer allocator.free(expected_skill_path);
+    try std.testing.expectEqualStrings(expected_skill_path, saved.skill_path);
+
+    const markdown = try std.fs.cwd().readFileAlloc(allocator, root ++ "/skills/ssh-transfer/SKILL.md", skill_registry.MAX_SKILL_MD_BYTES);
+    defer allocator.free(markdown);
+    try std.testing.expect(std.mem.containsAtLeast(u8, markdown, 1, "name: ssh-transfer"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, markdown, 1, "description: Diagnose SSH transfer failures."));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, markdown, 1, "Do not write this summary."));
+
+    try std.testing.expectError(error.SkillAlreadyExists, saveDistilledCandidate(allocator, candidate));
 }

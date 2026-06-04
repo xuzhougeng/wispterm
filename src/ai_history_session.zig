@@ -8,6 +8,7 @@ const reasonix_provider = @import("ai_history_provider_reasonix.zig");
 const remote_file = @import("platform/remote_file.zig");
 const ssh_connection = @import("ssh_connection.zig");
 const ai_history_cache = @import("ai_history_cache.zig");
+const i18n = @import("i18n.zig");
 
 pub const LoadState = enum { idle, scanning, ready, failed };
 pub const TranscriptState = enum { idle, loading, ready, failed };
@@ -763,15 +764,16 @@ pub const Session = struct {
         return count;
     }
 
-    /// Tab/window title for the workbench: "History · <source>", or "AI History"
-    /// when the source is unnamed. Conveys that this is the history workbench
+    /// Tab/window title for the workbench: "Sessions · <source>", or "Sessions"
+    /// when the source is unnamed. Conveys that this is the sessions workbench
     /// rather than echoing the originating terminal's name. Cached after first use.
     pub fn tabTitle(self: *Session) []const u8 {
         if (self.tab_title_len == 0) {
+            const label = i18n.s().sl_sessions;
             const composed = if (self.source.name.len == 0)
-                std.fmt.bufPrint(&self.tab_title_buf, "AI History", .{}) catch "AI History"
+                std.fmt.bufPrint(&self.tab_title_buf, "{s}", .{label}) catch label
             else
-                std.fmt.bufPrint(&self.tab_title_buf, "History · {s}", .{self.source.name}) catch self.source.name;
+                std.fmt.bufPrint(&self.tab_title_buf, "{s} · {s}", .{ label, self.source.name }) catch self.source.name;
             self.tab_title_len = composed.len;
         }
         return self.tab_title_buf[0..self.tab_title_len];

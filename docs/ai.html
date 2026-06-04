@@ -94,7 +94,7 @@
           </div>
           <div class="feature">
             <h3>Approval-based execution</h3>
-            <p>Tool requests appear in WispTerm before execution when permission is set to <code>confirm</code>. Switch to <code>full</code> only for trusted workflows.</p>
+            <p>Tool requests appear in WispTerm before execution when permission is set to <code>ask</code>. Use <code>auto</code> for trusted unattended work that should still stop on protected paths and dangerous commands; use <code>full</code> only when you want the agent to run without those guard prompts.</p>
           </div>
           <div class="feature">
             <h3>Saved conversations</h3>
@@ -165,12 +165,12 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
           </div>
           <div class="feature">
             <h3>Permission mode</h3>
-            <p>Keep <code>ai-agent-permission = confirm</code> for normal use. Use <code>full</code> only when you trust both the task and the opened workspace.</p>
+            <p>Keep <code>ai-agent-permission = ask</code> for normal use. Use <code>auto</code> when ordinary tools may run unattended but private-file and destructive-command guards should remain active. Use <code>full</code> only when you trust both the task and the opened workspace completely.</p>
           </div>
         </div>
 <pre class="code-block"><code># AI Chat agent tools
 ai-agent-enabled            = true
-ai-agent-permission         = confirm   # confirm | full
+ai-agent-permission         = ask       # ask | auto | full
 ai-agent-command-timeout-ms = 60000
 ai-agent-output-limit       = 16384</code></pre>
       </div>
@@ -215,7 +215,7 @@ ai-agent-output-limit       = 16384</code></pre>
           </div>
           <div class="feature">
             <h3>No tool execution</h3>
-            <p>Set the profile's <code>Agent</code> field to <code>true</code>, and approve tool cards when permission mode is <code>confirm</code>.</p>
+            <p>Set the profile's <code>Agent</code> field to <code>true</code>, and approve tool cards when permission mode is <code>ask</code>.</p>
           </div>
           <div class="feature">
             <h3>Model aliases</h3>

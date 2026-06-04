@@ -89,20 +89,20 @@ pub fn route(
 fn sendAi(ctrl: control.Control, text: []const u8, reply_context: ?types.ReplyContext, out: *Reply) !void {
     const ai = ctrl.findAiSurface() orelse blk: {
         switch (ctrl.openAiAgent(AI_OPEN_TIMEOUT_MS)) {
-            .no_profile => return out.set("WispTerm 尚未配置 AI Chat profile。"),
-            .failed => return out.set("WispTerm 无法打开 AI Agent。"),
-            .offline => return out.set("WispTerm 当前离线，无法打开 AI Agent。"),
-            .timeout => return out.set("已请求打开 AI Agent，但未等到 AI Chat tab。"),
+            .no_profile => return out.set("WispTerm 尚未配置副驾。"),
+            .failed => return out.set("WispTerm 无法打开副驾。"),
+            .offline => return out.set("WispTerm 当前离线，无法打开副驾。"),
+            .timeout => return out.set("已请求打开副驾，但未等到副驾标签页。"),
             .opened => {},
         }
-        break :blk ctrl.findAiSurface() orelse return out.set("已请求打开 AI Agent，但未等到 AI Chat tab。");
+        break :blk ctrl.findAiSurface() orelse return out.set("已请求打开副驾，但未等到副驾标签页。");
     };
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(out.allocator);
     try buf.appendSlice(out.allocator, text);
     try buf.append(out.allocator, '\r');
-    if (!ctrl.sendInput(ai.id, buf.items, reply_context)) return out.set("WispTerm 当前离线，无法发送给 AI Agent。");
+    if (!ctrl.sendInput(ai.id, buf.items, reply_context)) return out.set("WispTerm 当前离线，无法发送给副驾。");
     try out.set(AI_ACK);
     out.expect_ai_progress = true;
 }
@@ -112,8 +112,8 @@ fn stopAi(ctrl: control.Control, out: *Reply) !void {
     // in-flight weixin reply streaming so no further progress/final reply is
     // sent after the stop (otherwise a trailing reply looks like /stop failed).
     out.stop_followup = true;
-    const ai = ctrl.findAiSurface() orelse return out.set("当前没有 AI Agent 可停止。");
-    if (!ctrl.sendInput(ai.id, ESC, null)) return out.set("WispTerm 当前离线，无法停止 AI Agent。");
+    const ai = ctrl.findAiSurface() orelse return out.set("当前没有副驾可停止。");
+    if (!ctrl.sendInput(ai.id, ESC, null)) return out.set("WispTerm 当前离线，无法停止副驾。");
     return out.set("已发送停止指令。");
 }
 
@@ -129,9 +129,9 @@ fn sendTerminal(ctrl: control.Control, text: []const u8, enter: bool, out: *Repl
 
 const helpTextConst =
     "WispTerm 微信直连命令：\n" ++
-    "/ping 验证连接\n/status 查看状态\n/ai <内容> 发送给 AI Agent\n" ++
+    "/ping 验证连接\n/status 查看状态\n/ai <内容> 发送给副驾\n" ++
     "/stop 停止当前 AI 处理\n/term <命令> 发送到终端并回车\n/keys <文本> 发送原始文本\n" ++
-    "普通文本默认发送给 AI Agent。";
+    "普通文本默认发送给副驾。";
 
 fn statusText(ctrl: control.Control) []const u8 {
     return if (ctrl.isConnected()) "微信直连：在线" else "微信直连：离线";
@@ -164,7 +164,7 @@ const FakeControl = struct {
         return cast(ctx).connected;
     }
     fn find_ai_surface(ctx: *anyopaque) ?control.Surface {
-        return if (cast(ctx).has_ai) .{ .id = aiId(), .title = "AI Chat" } else null;
+        return if (cast(ctx).has_ai) .{ .id = aiId(), .title = "Copilot" } else null;
     }
     fn find_terminal_surface(_: *anyopaque) ?control.Surface {
         return .{ .id = termId(), .title = "zsh" };

@@ -102,8 +102,8 @@ pub const session_launcher_detail = sessionLauncherDetailForOs(builtin.os.tag);
 
 pub fn sessionLauncherDetailForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
-        .windows => "Choose PowerShell, SSH, WSL, AI Agent, or AI History",
-        .unsupported => "Choose Shell, SSH, AI Agent, or AI History",
+        .windows => "Choose PowerShell, SSH, WSL, Copilot, or Sessions",
+        .unsupported => "Choose Shell, SSH, Copilot, or Sessions",
     };
 }
 
@@ -630,7 +630,7 @@ test "platform pty command exposes session launcher layout by target OS" {
     try std.testing.expectEqual(@as(?usize, null), sessionLauncherWslRowForOs(.linux));
 
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.windows), "WSL") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.windows), "AI History") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.windows), "Sessions") != null);
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.linux), "WSL") == null);
     try std.testing.expect(std.mem.indexOf(u8, sessionLauncherDetailForOs(.macos), "Shell") != null);
 

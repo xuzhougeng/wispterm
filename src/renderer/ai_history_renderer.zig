@@ -1,6 +1,7 @@
 const std = @import("std");
 const ai_history_session = @import("../ai_history_session.zig");
 const types = @import("../ai_history_types.zig");
+const i18n = @import("../i18n.zig");
 
 const HEADER_H: f32 = 54;
 const FILTER_H: f32 = 42;
@@ -340,7 +341,7 @@ fn renderLeftColumn(
     const header_h = headerHeight(draw.cell_h);
     draw.fillQuadAlpha(layout.left_x, yFromTop(window_height, top, header_h), layout.left_w, header_h, panel_strong, 0.9);
     draw.fillQuad(layout.left_x, yFromTop(window_height, top + header_h, 1), layout.left_w, 1, line);
-    _ = draw.renderTextLimited("AI History", layout.left_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.left_w - PAD_X * 2);
+    _ = draw.renderTextLimited(i18n.s().sl_sessions, layout.left_x + PAD_X, yTextFromTop(draw, window_height, top + 11), fg, layout.left_w - PAD_X * 2);
     drawFocusUnderline(draw, layout.left_x, layout.left_w, window_height, top, header_h, accent, filters_focused);
 
     const lc = leftColumnLayout(top, draw.cell_h);

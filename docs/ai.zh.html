@@ -94,7 +94,7 @@
           </div>
           <div class="feature">
             <h3>带确认的执行</h3>
-            <p>当权限为 <code>confirm</code> 时，工具请求会先显示在 WispTerm 中再执行。只有在可信任务和可信工作区中，才建议切到 <code>full</code>。</p>
+            <p>当权限为 <code>ask</code> 时，工具请求会先显示在 WispTerm 中再执行。可信的无人值守任务可使用 <code>auto</code>，普通工具会自动执行，但访问受保护路径和危险命令仍会确认；只有想完全交给 Agent 时，才使用 <code>full</code>。</p>
           </div>
           <div class="feature">
             <h3>可恢复的对话</h3>
@@ -165,12 +165,12 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
           </div>
           <div class="feature">
             <h3>权限模式</h3>
-            <p>日常使用建议保持 <code>ai-agent-permission = confirm</code>。只有在你信任任务和当前工作区时，再使用 <code>full</code>。</p>
+            <p>日常使用建议保持 <code>ai-agent-permission = ask</code>。需要无人值守但仍保留私有文件和危险命令保护时使用 <code>auto</code>。只有完全信任任务和当前工作区时，再使用 <code>full</code>。</p>
           </div>
         </div>
 <pre class="code-block"><code># AI Chat Agent 工具
 ai-agent-enabled            = true
-ai-agent-permission         = confirm   # confirm | full
+ai-agent-permission         = ask       # ask | auto | full
 ai-agent-command-timeout-ms = 60000
 ai-agent-output-limit       = 16384</code></pre>
       </div>
@@ -215,7 +215,7 @@ ai-agent-output-limit       = 16384</code></pre>
           </div>
           <div class="feature">
             <h3>工具没有执行</h3>
-            <p>确认 Profile 的 <code>Agent</code> 字段是 <code>true</code>，并在权限为 <code>confirm</code> 时确认工具卡片。</p>
+            <p>确认 Profile 的 <code>Agent</code> 字段是 <code>true</code>，并在权限为 <code>ask</code> 时确认工具卡片。</p>
           </div>
           <div class="feature">
             <h3>模型别名</h3>

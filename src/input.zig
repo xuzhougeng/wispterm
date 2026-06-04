@@ -4342,8 +4342,9 @@ fn toggleAiAgentPermission() void {
     defer cfg.deinit(allocator);
 
     const next = switch (cfg.@"ai-agent-permission") {
-        .confirm => "full",
-        .full => "confirm",
+        .confirm => "auto",
+        .auto => "full",
+        .full => "ask",
     };
     Config.setConfigValue(allocator, "ai-agent-permission", next) catch return;
     AppWindow.reloadConfigImmediate(allocator);

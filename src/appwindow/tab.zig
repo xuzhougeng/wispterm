@@ -18,6 +18,7 @@ const ai_history_time = @import("../ai_history_time.zig");
 const agent_history = @import("../agent_history.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const active_tab_state = @import("active_tab.zig");
+const i18n = @import("../i18n.zig");
 
 const CursorStyle = Config.CursorStyle;
 const Selection = Surface.Selection;
@@ -75,12 +76,12 @@ pub const TabState = struct {
             return forced;
         }
         if (self.kind == .ai_chat) {
-            const chat = self.ai_chat_session orelse return "AI Chat";
+            const chat = self.ai_chat_session orelse return i18n.s().sl_ai_agent;
             const chat_title = chat.title();
-            return if (chat_title.len > 0) chat_title else "AI Chat";
+            return if (chat_title.len > 0) chat_title else i18n.s().sl_ai_agent;
         }
         if (self.kind == .ai_history) {
-            const session = self.ai_history_session orelse return "AI History";
+            const session = self.ai_history_session orelse return i18n.s().sl_sessions;
             return session.tabTitle();
         }
         const surface = self.focusedSurface() orelse return "wispterm";
@@ -1824,8 +1825,8 @@ test "tab: spawnAiHistoryTab owns mutable ssh source buffers" {
     try std.testing.expectEqualStrings("ssh-history", session.source.id);
     try std.testing.expectEqualStrings("Build Box", session.source.name);
     try std.testing.expectEqualStrings("buildbox", session.source.target.ssh.profile_name);
-    // The tab conveys the history workbench, not the bare source name.
-    try std.testing.expectEqualStrings("History · Build Box", active.getTitle());
+    // The tab conveys the sessions workbench, not the bare source name.
+    try std.testing.expectEqualStrings("Sessions · Build Box", active.getTitle());
 }
 
 test "tab: spawnAiHistoryTab rolls back when tab allocation fails" {

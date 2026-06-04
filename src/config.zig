@@ -293,7 +293,7 @@ theme: ?[]const u8 = null,
 /// that is running a full-screen (non-shell) program.
 @"confirm-close-running-program": bool = true,
 
-/// Agent command permission mode: confirm (deny until approved UI exists) or full.
+/// Agent command permission mode: ask, auto, or full.
 @"ai-agent-permission": ai_agent_config.AgentPermission = .confirm,
 
 /// Timeout budget for agent shell/SSH commands.
@@ -1269,7 +1269,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --language <lang>            UI language: auto | en | zh-CN (default: auto)
         \\  --ssh-legacy-algorithms <bool> Enable legacy ssh-rsa/ssh-dss OpenSSH options
         \\  --ai-agent-enabled <bool>    Enable AI Chat agent tools by default
-        \\  --ai-agent-permission <mode> Agent tool permission: confirm | full
+        \\  --ai-agent-permission <mode> Agent tool permission: ask | auto | full
         \\  --ai-agent-command-timeout-ms <ms> Agent command timeout budget
         \\  --ai-agent-output-limit <bytes> Max bytes returned by each tool
         \\  --auto-update-check <bool>  Check GitHub Releases after startup
@@ -1632,7 +1632,7 @@ const default_config_template =
     \\
     \\# AI Chat agent tools (disabled by default)
     \\# ai-agent-enabled = false
-    \\# ai-agent-permission = confirm   # confirm | full
+    \\# ai-agent-permission = ask       # ask | auto | full
     \\# ai-agent-command-timeout-ms = 60000
     \\# ai-agent-output-limit = 16384
     \\
@@ -1948,6 +1948,10 @@ test "config: ai agent options parse" {
     try std.testing.expectEqual(ai_agent_config.AgentPermission.confirm, cfg.@"ai-agent-permission");
 
     cfg.applyKeyValue(allocator, "ai-agent-enabled", "true", ".");
+    cfg.applyKeyValue(allocator, "ai-agent-permission", "ask", ".");
+    try std.testing.expectEqual(ai_agent_config.AgentPermission.confirm, cfg.@"ai-agent-permission");
+    cfg.applyKeyValue(allocator, "ai-agent-permission", "auto", ".");
+    try std.testing.expectEqual(ai_agent_config.AgentPermission.auto, cfg.@"ai-agent-permission");
     cfg.applyKeyValue(allocator, "ai-agent-permission", "full", ".");
     cfg.applyKeyValue(allocator, "ai-agent-command-timeout-ms", "120000", ".");
     cfg.applyKeyValue(allocator, "ai-agent-output-limit", "4096", ".");

@@ -7,6 +7,7 @@ const ai_chat = @import("ai_chat.zig");
 const Session = ai_chat.Session;
 const ChatRequest = ai_chat.ChatRequest;
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
+const ai_skill_distill = @import("ai_skill_distill.zig");
 const ai_chat_tools = @import("ai_chat_tools.zig");
 const ai_chat_types = @import("ai_chat_types.zig");
 
@@ -93,6 +94,35 @@ pub fn titleThreadMain(req: *ChatRequest) void {
     if (session.closing.load(.acquire)) return;
 
     ai_chat.applyGeneratedTitle(session, result.content);
+}
+
+/// Background worker for one skill-distillation request. Owns `request` and
+/// frees it on exit. Distillation is tool-free and never appends a normal
+/// assistant message; it stores a preview candidate in Session state.
+pub fn distillThreadMain(request: *ChatRequest) void {
+    const allocator = request.allocator;
+    defer request.deinit();
+
+    const result = runChatRequestForMessages(request, request.messages, false) catch |err| {
+        if (ai_chat.requestCancelled(request)) {
+            ai_chat.finishStoppedRequest(request.session);
+            return;
+        }
+        ai_chat.failDistillRequest(request.session, err);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    if (ai_chat.requestCancelled(request)) {
+        ai_chat.finishStoppedRequest(request.session);
+        return;
+    }
+
+    var candidate = ai_skill_distill.parseCandidateJson(allocator, result.content, "") catch |err| {
+        ai_chat.failDistillRequest(request.session, err);
+        return;
+    };
+    ai_chat.applyDistillCandidate(request.session, &candidate);
 }
 
 // ---------------------------------------------------------------------------
@@ -735,4 +765,3 @@ test "ai chat streaming request asks provider to include usage" {
     defer allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"stream_options\":{\"include_usage\":true}") != null);
 }
-

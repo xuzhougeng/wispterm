@@ -181,9 +181,18 @@ pub fn render(
     _ = titlebar.renderTextLimited(mode_text, mode_x, header_y + 10, mixColor(fg, accent, 0.18), MODE_SLOT_W);
 
     const perm_text = permissionDisplayName(permission);
-    const perm_color = if (permission == .full) mixColor(fg, accent, 0.25) else mixColor(bg, fg, 0.66);
+    const perm_color = switch (permission) {
+        .confirm => mixColor(bg, fg, 0.66),
+        .auto => mixColor(fg, accent, 0.12),
+        .full => mixColor(fg, accent, 0.25),
+    };
     _ = titlebar.renderTextLimited(perm_text, chip_x, header_y + 10, perm_color, PERMISSION_CHIP_W);
-    ui_pipeline.fillQuadAlpha(chip_x, header_y + 8, PERMISSION_CHIP_W - 8, 1, accent, if (permission == .full) 0.38 else 0.16);
+    const perm_alpha: f32 = switch (permission) {
+        .confirm => 0.16,
+        .auto => 0.26,
+        .full => 0.38,
+    };
+    ui_pipeline.fillQuadAlpha(chip_x, header_y + 8, PERMISSION_CHIP_W - 8, 1, accent, perm_alpha);
 
     if (session.request_inflight) {
         renderStopButton(stopButtonRect(x, w, top), window_height, session.request_stopping);
@@ -213,7 +222,7 @@ pub fn render(
 
     if (input_text.len == 0) {
         session.input_scroll_row = 0;
-        const placeholder = if (session.agent_enabled) "Ask Agent" else "Ask AI Chat";
+        const placeholder = if (session.agent_enabled) "Ask Agent" else "Ask Copilot";
         _ = titlebar.renderTextLimited(
             placeholder,
             layout.text_x,
@@ -1157,6 +1166,7 @@ fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) 
 fn permissionDisplayName(permission: ai_chat.AgentPermission) []const u8 {
     return switch (permission) {
         .confirm => "Ask",
+        .auto => "Auto",
         .full => "Full",
     };
 }
