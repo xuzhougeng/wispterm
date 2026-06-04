@@ -3114,13 +3114,24 @@ fn defaultAiProfileIndex() usize {
     return command_palette_model.resolveDefaultIndex(names[0..g_ai_profile_count], aiDefaultProfileName());
 }
 
-/// Name of the profile after the current default, wrapping around. Empty when
-/// no profiles exist.
-fn nextDefaultAiProfileName() []const u8 {
+/// Name of the profile `delta` positions from the current default, wrapping in
+/// both directions (+1 for next, -1 for previous). Empty when no profiles exist.
+fn cycledDefaultAiProfileName(delta: i64) []const u8 {
     loadAiProfiles();
     if (g_ai_profile_count == 0) return "";
-    const next = (defaultAiProfileIndex() + 1) % g_ai_profile_count;
-    return aiProfileField(&g_ai_profiles[next], .name);
+    const idx = command_palette_model.cycleIndex(defaultAiProfileIndex(), g_ai_profile_count, delta);
+    return aiProfileField(&g_ai_profiles[idx], .name);
+}
+
+/// Persist the default AI profile `delta` positions from the current one
+/// (+1 next, -1 previous). No-op when no profiles exist.
+fn cycleDefaultAiProfile(delta: i64) void {
+    const allocator = AppWindow.g_allocator orelse return;
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) return;
+    const next_name = cycledDefaultAiProfileName(delta);
+    Config.setConfigValue(allocator, "ai-default-profile", next_name) catch {};
+    invalidateAiDefaultName();
 }
 
 fn isHttpUrlish(value: []const u8) bool {
@@ -3784,6 +3795,7 @@ const SettingsAction = enum {
     toggle_focus_follows_mouse,
     cycle_shell,
     cycle_default_ai_profile,
+    cycle_default_ai_profile_prev,
     toggle_weixin_direct,
     cycle_language,
     toggle_restore_tabs,
@@ -3955,14 +3967,8 @@ fn executeSettingsAction(action: SettingsAction) void {
         .toggle_cursor_blink => Config.setConfigValue(allocator, "cursor-style-blink", if (cfg.@"cursor-style-blink") "false" else "true") catch {},
         .toggle_focus_follows_mouse => Config.setConfigValue(allocator, "focus-follows-mouse", if (cfg.@"focus-follows-mouse") "false" else "true") catch {},
         .cycle_shell => Config.setConfigValue(allocator, "shell", platform_pty_command.nextConfigShell(cfg.shell)) catch {},
-        .cycle_default_ai_profile => {
-            loadAiProfiles();
-            if (g_ai_profile_count > 0) {
-                const next_name = nextDefaultAiProfileName();
-                Config.setConfigValue(allocator, "ai-default-profile", next_name) catch {};
-                invalidateAiDefaultName();
-            }
-        },
+        .cycle_default_ai_profile => cycleDefaultAiProfile(1),
+        .cycle_default_ai_profile_prev => cycleDefaultAiProfile(-1),
         .toggle_weixin_direct => Config.setConfigValue(allocator, "weixin-direct-enabled", if (cfg.@"weixin-direct-enabled") "false" else "true") catch {},
         .cycle_language => Config.setConfigValue(allocator, "language", nextLanguageSetting(cfg.language)) catch {},
         .toggle_restore_tabs => Config.setConfigValue(allocator, "restore-tabs-on-startup", if (cfg.@"restore-tabs-on-startup") "false" else "true") catch {},
@@ -4003,6 +4009,7 @@ fn runSettingsFocusLeft() void {
     switch (g_settings_focus) {
         0 => executeSettingsAction(.font_size_minus),
         SETTINGS_THEME_ROW => cycleThemePreset(-1),
+        SETTINGS_CONTROL_ROW_START + 4 => executeSettingsAction(.cycle_default_ai_profile_prev),
         else => {},
     }
 }
@@ -4069,12 +4076,6 @@ fn currentThemePresetLabel(cfg: *const Config) []const u8 {
     if (activeThemePresetIndex(cfg)) |idx| return SETTINGS_THEME_PRESETS[idx].label;
     if (cfg.theme) |theme_name| return theme_name;
     return SETTINGS_THEME_PRESETS[0].label;
-}
-
-fn currentThemePresetDetail(cfg: *const Config) []const u8 {
-    if (activeThemePresetIndex(cfg)) |idx| return SETTINGS_THEME_PRESETS[idx].detail;
-    if (cfg.theme != null) return "Custom theme";
-    return SETTINGS_THEME_PRESETS[0].detail;
 }
 
 fn cursorStyleText(style: Config.CursorStyle) []const u8 {
@@ -4192,16 +4193,16 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
 
     var font_buf: [24]u8 = undefined;
     const font_value = std.fmt.bufPrint(&font_buf, "-  {d}  +", .{cfg.@"font-size"}) catch "";
-    renderSettingsRow(layout, window_height, 0, i18n.s().settings_font_size, font_value, i18n.s().settings_hint_left_right, true, g_settings_focus == 0);
+    renderSettingsRow(layout, window_height, 0, i18n.s().settings_font_size, font_value, "", true, g_settings_focus == 0);
 
     var theme_buf: [96]u8 = undefined;
     const theme_value = std.fmt.bufPrint(&theme_buf, "< {s} >", .{currentThemePresetLabel(cfg)}) catch currentThemePresetLabel(cfg);
-    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, i18n.s().settings_theme, theme_value, currentThemePresetDetail(cfg), true, g_settings_focus == SETTINGS_THEME_ROW);
+    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, i18n.s().settings_theme, theme_value, "", true, g_settings_focus == SETTINGS_THEME_ROW);
 
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, i18n.s().settings_cursor_style, cursorStyleText(cfg.@"cursor-style"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, i18n.s().settings_cursor_blink, boolText(cfg.@"cursor-style-blink"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, i18n.s().settings_focus_follows_mouse, boolText(cfg.@"focus-follows-mouse"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, i18n.s().settings_shell, cfg.shell, platform_pty_command.shellSettingChoicesHint(), true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, i18n.s().settings_cursor_style, cursorStyleText(cfg.@"cursor-style"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, i18n.s().settings_cursor_blink, boolText(cfg.@"cursor-style-blink"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, i18n.s().settings_focus_follows_mouse, boolText(cfg.@"focus-follows-mouse"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, i18n.s().settings_shell, cfg.shell, "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
     loadAiProfiles();
     const ai_default_value = if (g_ai_profile_count > 0)
         aiProfileField(&g_ai_profiles[defaultAiProfileIndex()], .name)
@@ -4212,9 +4213,9 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     else
         i18n.s().settings_hint_add_profiles;
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, i18n.s().settings_default_ai, ai_default_value, ai_default_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, i18n.s().settings_weixin_direct, boolText(cfg.@"weixin-direct-enabled"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, i18n.s().settings_weixin_direct, boolText(cfg.@"weixin-direct-enabled"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_restore_tabs, boolText(cfg.@"restore-tabs-on-startup"), i18n.s().settings_hint_enter_cycle, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_restore_tabs, boolText(cfg.@"restore-tabs-on-startup"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 8);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_restore_defaults, "Enter", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 9);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 10);

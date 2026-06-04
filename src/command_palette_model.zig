@@ -73,6 +73,16 @@ pub fn aiProfileLabelMatchesFilter(name: []const u8, filter: []const u8) bool {
     return containsIgnoreCase(name, filter) or containsIgnoreCase("ai", filter);
 }
 
+/// Index reached by stepping `delta` positions from `current` among `count`
+/// items, wrapping in both directions. `delta` is typically +1 (next) or -1
+/// (previous). Returns 0 when `count` is 0 (caller guards the empty-list case).
+pub fn cycleIndex(current: usize, count: usize, delta: i64) usize {
+    if (count == 0) return 0;
+    const n: i64 = @intCast(count);
+    const cur: i64 = @intCast(current % count);
+    return @intCast(@mod(cur + delta, n));
+}
+
 /// Index of the profile whose name equals `default_name`. Returns 0 when
 /// `default_name` is empty or unmatched (caller guards the empty-list case).
 pub fn resolveDefaultIndex(names: []const []const u8, default_name: []const u8) usize {
@@ -136,6 +146,20 @@ test "resolve default index matches by name with fallback to first" {
     try std.testing.expectEqual(@as(usize, 1), resolveDefaultIndex(&names, "GPT-4o"));
     try std.testing.expectEqual(@as(usize, 0), resolveDefaultIndex(&names, ""));
     try std.testing.expectEqual(@as(usize, 0), resolveDefaultIndex(&names, "missing"));
+}
+
+test "cycle index steps forward and backward with wrap-around" {
+    // Forward (next) advances and wraps past the end.
+    try std.testing.expectEqual(@as(usize, 1), cycleIndex(0, 3, 1));
+    try std.testing.expectEqual(@as(usize, 0), cycleIndex(2, 3, 1));
+    // Backward (previous) retreats and wraps below the start.
+    try std.testing.expectEqual(@as(usize, 2), cycleIndex(0, 3, -1));
+    try std.testing.expectEqual(@as(usize, 1), cycleIndex(2, 3, -1));
+    // Single element stays put in either direction.
+    try std.testing.expectEqual(@as(usize, 0), cycleIndex(0, 1, 1));
+    try std.testing.expectEqual(@as(usize, 0), cycleIndex(0, 1, -1));
+    // Empty list is guarded.
+    try std.testing.expectEqual(@as(usize, 0), cycleIndex(0, 0, 1));
 }
 
 test "command palette model orders AI profiles between SSH and themes" {
