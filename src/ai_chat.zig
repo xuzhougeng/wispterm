@@ -1067,6 +1067,27 @@ pub const Session = struct {
         if (text_start < data.len) self.appendInputText(data[text_start..]);
     }
 
+    /// Inject a scheduled prompt as if the user typed + submitted it. Returns
+    /// false (skipped, nothing sent) if a request is already inflight. Clears any
+    /// half-typed composer text first so the scheduled prompt is sent verbatim.
+    /// Caller must run this on the UI thread (mirrors applyRemoteInput).
+    pub fn submitScheduledPrompt(self: *Session, text: []const u8) bool {
+        self.mutex.lock();
+        if (self.request_inflight) {
+            self.mutex.unlock();
+            return false;
+        }
+        self.input_len = 0;
+        self.input_cursor = 0;
+        self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
+        self.input_select_all = false;
+        self.mutex.unlock();
+        self.appendInputText(text);
+        self.submit();
+        return true;
+    }
+
     pub fn applyWeixinInput(self: *Session, data: []const u8, ctx: weixin_types.ReplyContext) void {
         self.mutex.lock();
         if (self.pending_weixin_reply_context) |*old| old.deinit(self.allocator);
@@ -6011,4 +6032,20 @@ test "copilot session pre-targets the bound surface in its request" {
     defer req.deinit();
 
     try std.testing.expectEqualStrings("abc123", req.write_context_surface_id[0..req.write_context_surface_id_len]);
+}
+
+test "submitScheduledPrompt sets composer and reports busy state" {
+    const a = std.testing.allocator;
+    const session = try Session.init(a, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+
+    // Not inflight: returns true and submit is invoked (no agent configured, no-ops).
+    const ok = session.submitScheduledPrompt("hello world");
+    try std.testing.expect(ok);
+
+    // Inflight: returns false (skip).
+    session.request_inflight = true;
+    const skipped = session.submitScheduledPrompt("again");
+    try std.testing.expect(!skipped);
+    session.request_inflight = false;
 }
