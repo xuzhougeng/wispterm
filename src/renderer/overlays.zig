@@ -531,6 +531,7 @@ fn executeCommand(action: CommandAction) void {
         .toggle_sidebar => AppWindow.input.toggleSidebar(),
         .toggle_file_explorer => AppWindow.input.toggleFileExplorer(),
         .toggle_browser_panel => AppWindow.input.toggleBrowserPanel(),
+        .open_jupyter_panel => AppWindow.input.openJupyterPanel(),
         .toggle_quake => AppWindow.toggleQuakeVisibility(),
         .open_settings => settingsPageOpen(),
         .show_shortcuts => startupShortcutsShow(),

@@ -18,6 +18,7 @@ pub const CommandAction = enum {
     toggle_sidebar,
     toggle_file_explorer,
     toggle_browser_panel,
+    open_jupyter_panel,
     toggle_quake,
     open_settings,
     show_shortcuts,
@@ -64,6 +65,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "", .action = .toggle_sidebar },
     .{ .title = "Toggle File Explorer", .detail = "Show or hide the left-side file explorer", .shortcut = "", .action = .toggle_file_explorer },
     .{ .title = "Toggle Browser", .detail = "Open the configured browser for local or SSH URLs", .shortcut = "", .action = .toggle_browser_panel },
+    .{ .title = "Open Jupyter", .detail = "Open the panel and paste a running Jupyter URL (local or SSH)", .shortcut = "", .action = .open_jupyter_panel },
     .{ .title = "Toggle Quake Window", .detail = "Show or hide the drop-down terminal window", .shortcut = "", .action = .toggle_quake },
     .{ .title = "Settings", .detail = "Open the settings page", .shortcut = "", .action = .open_settings },
     .{ .title = "Keyboard Shortcuts", .detail = "Show the shortcut reference overlay", .shortcut = "", .action = .show_shortcuts },
@@ -274,6 +276,10 @@ test "command center includes update check actions" {
 
 test "findCommandAction resolves What's New" {
     try std.testing.expectEqual(CommandAction.show_whats_new, findCommandAction("What's New"));
+}
+
+test "findCommandAction resolves Open Jupyter" {
+    try std.testing.expectEqual(CommandAction.open_jupyter_panel, findCommandAction("Open Jupyter"));
 }
 
 test "command center includes Copilot Markdown export actions" {

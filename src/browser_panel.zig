@@ -179,6 +179,17 @@ pub fn toggleForSurface(allocator: std.mem.Allocator, parent: ?window_backend.Na
     return openForSurface(allocator, parent, DEFAULT_URL, surface);
 }
 
+pub fn openJupyterForSurface(allocator: std.mem.Allocator, parent: ?window_backend.NativeHandle, surface: ?*const Surface) bool {
+    if (isVisibleForActiveTab()) {
+        focusUrlBar();
+        return true;
+    }
+    // Open blank, then focus the URL bar so the user pastes their Jupyter URL.
+    if (!openForSurface(allocator, parent, "", surface)) return false;
+    focusUrlBar();
+    return true;
+}
+
 pub fn close() void {
     g_visible = false;
     g_owner_tab = null;

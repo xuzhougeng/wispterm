@@ -464,6 +464,19 @@ pub fn toggleBrowserPanel() void {
     AppWindow.g_cells_valid = false;
 }
 
+pub fn openJupyterPanel() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    const parent = AppWindow.currentNativeHandle();
+    const surface = AppWindow.activeSurface();
+    if (!browser_panel.isVisibleForActiveTab()) AppWindow.hideAiCopilot();
+    if (!browser_panel.openJupyterForSurface(allocator, parent, surface)) return;
+    if (AppWindow.g_window) |win| {
+        syncPanelGridFromWindow(win);
+    }
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
 fn closeBrowserPanel() void {
     g_close_shortcut_confirm_until_ms = 0;
     browser_panel.close();
