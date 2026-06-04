@@ -34,6 +34,7 @@ test {
     _ = @import("command_palette_model.zig");
     _ = @import("command_center_state.zig");
     _ = @import("platform/window_state_codec.zig");
+    _ = @import("whats_new_gate.zig");
     _ = @import("startup_tabs.zig");
     _ = @import("config.zig");
     _ = @import("ai_agent_config.zig");
