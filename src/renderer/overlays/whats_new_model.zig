@@ -227,7 +227,7 @@ pub fn computeLayout(window_w: f32, window_h: f32, row_h: f32) Layout {
     const view_w: f32 = 156;
     const btn_y = footer_y + @round((footer_h - btn_h) / 2);
     const close_btn = Rect{ .x = panel_x + panel_w - pad - ok_w, .y = btn_y, .w = ok_w, .h = btn_h };
-    const view_btn = Rect{ .x = close_btn.x - 12 - view_w, .y = btn_y, .w = view_w, .h = btn_h };
+    const view_btn = Rect{ .x = panel_x + pad, .y = btn_y, .w = view_w, .h = btn_h };
     const title_close_size: f32 = @round(@max(@as(f32, 28), row_h + 6));
     const title_close_btn = Rect{
         .x = panel_x + panel_w - pad - title_close_size + 4,
@@ -329,6 +329,17 @@ test "computeLayout exposes header content footer bands and top close button" {
         layout.title_close_btn.x + layout.title_close_btn.w / 2,
         layout.title_close_btn.y + layout.title_close_btn.h / 2,
     ));
+}
+
+test "computeLayout places GitHub action on the left side of the footer" {
+    const layout = computeLayout(1200, 800, 20);
+    const left_pad = layout.view_btn.x - layout.panel.x;
+    const right_pad = layout.panel.x + layout.panel.w - layout.close_btn.x - layout.close_btn.w;
+    try std.testing.expect(left_pad >= 24);
+    try std.testing.expect(left_pad <= 44);
+    try std.testing.expect(right_pad >= 24);
+    try std.testing.expect(right_pad <= 44);
+    try std.testing.expect(layout.view_btn.x + layout.view_btn.w < layout.close_btn.x);
 }
 
 test "englishNotes and bodyNotes remove localized trailer and intro chrome" {
