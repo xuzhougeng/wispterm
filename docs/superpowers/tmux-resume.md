@@ -6,7 +6,7 @@ Snapshot: **2026-06-03**. Branch: `worktree-feat-remote-perssitance` (pushed to 
 
 iTerm2-style **tmux `-CC` control-mode** integration so remote ssh sessions survive app close / network drop. tmux *windows* ↔ WispTerm *tabs*, tmux *panes* ↔ native *splits*, no visible tmux chrome. Only the server needs tmux; WispTerm *is* the tmux client (hand-rolled, in `src/tmux/`).
 
-## Status — Phase 3d MVP works end-to-end, **GUI-verified against a real server**. Both build targets green.
+## Status — tmux integration **functionally complete & GUI-verified** against a real server. Both build targets green.
 
 | Phase | What | Key commits |
 |---|---|---|
@@ -50,10 +50,9 @@ Suites: fast `zig build test` ≈ 604 passed; full `zig build test-full` ≈ 25/
 
 **Done — #4c persist + re-attach across app restart** (`55e55dd`): `Session.tmux_profiles` persists the active tmux controllers' SSH profile names (deduped, per-connection — tmux tabs' surface trees are skipped on save); restore re-attaches each via the launcher tmux path (profile re-supplies the password). Also fixed a latent dangling-string bug — `loadSessionFromString` now parses with `.alloc_always` (the default sliced escape-free strings straight from the soon-freed file buffer). GUI-verified: connect tmux → quit → relaunch (no autoconnect) → `wispterm-<profile>` re-attaches.
 
-**The tmux integration is now functionally complete** (management, split/close/new-window, size-sync, scrollback seed, auto-reconnect on drop, persist+re-attach across restart), all GUI-verified against a real server.
+**Done — #5 `????` title glitch** (resolved by the #4c `.alloc_always` fix; no extra code). Root cause: a restored tab's title was a dangling/garbage string (the `alloc_if_needed` bug), i.e. invalid UTF-8 → the titlebar's byte-fallback renders each byte as `?` (`titlebar_layout.fallbackCodepoint`). With `.alloc_always` the restored title is a valid copy → UTF-8-decoded → rendered correctly. Reproduced + verified: a persisted CJK `title_override` ("中文测试CJK") now renders as 中文 in both the window title and the tab label, not `????` (the tab-bar font also has CJK fallback).
 
-**Remaining (cosmetic, unrelated):**
-- **#5** — a non-tmux restored tab once showed a `????` title — a pre-existing title-decode glitch, not part of the tmux work.
+**The tmux integration is functionally complete** — management, split/close/new-window, size-sync, scrollback seed, auto-reconnect on drop, persist+re-attach across restart — all GUI-verified against a real server. No remaining items.
 
 Study targets for #3: `AppWindow.zig` render loop (`computeSplitLayout`, `content_w/content_h`, the platform-resize grid math ~2221–2253), `Surface.setScreenSize` (`Surface.zig:679`), `src/appwindow/tmux_controller_posix.zig` (the pump — where to read pane surface grid + call `resizeClient`), `Session.resizeClient`.
 
