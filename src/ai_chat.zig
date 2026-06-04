@@ -25,6 +25,8 @@ const ai_agent_access = @import("ai_agent_access.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const ai_chat_markdown = @import("ai_chat_markdown.zig");
 const weixin_types = @import("weixin/types.zig");
+const ai_loop_store = @import("ai_loop_store.zig");
+const ai_loop_schedule = @import("ai_loop_schedule.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
 pub const AgentPermission = ai_chat_types.AgentPermission;
@@ -391,6 +393,27 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         .distill => allocator.dupe(u8, "Use /distill [topic] to preview a reusable skill candidate."),
         .unknown => allocator.dupe(u8, "Unknown command. Use /commands to list commands."),
         .skills => ai_chat_skills.listSkillsForDisplay(allocator),
+        // .loop and .watch suppress output and emit their own messages via
+        // runLoopCommandLocked; this path is never reached.
+        .loop, .watch => allocator.dupe(u8, ""),
+    };
+}
+
+fn previewPrompt(p: []const u8) []const u8 {
+    return if (p.len > 48) p[0..48] else p;
+}
+
+fn loopErrorText(err: ai_loop_schedule.ParseError, kind: ai_loop_schedule.TaskKind) []const u8 {
+    return switch (err) {
+        error.MissingArgs => if (kind == .loop)
+            "Usage: /loop <interval> <count> <prompt>  e.g. /loop 30m 8 check ci"
+        else
+            "Usage: /watch <HH:MM | YYYY-MM-DD HH:MM> <prompt>",
+        error.BadInterval => "Bad interval. Use a number + s/m/h/d, e.g. 30m, 5h.",
+        error.BadCount => "Count must be a positive integer.",
+        error.BadTime => "Bad time. Use HH:MM or YYYY-MM-DD HH:MM (24h).",
+        error.PastTime => "That time is already in the past.",
+        error.EmptyPrompt => "Add the prompt text after the schedule.",
     };
 }
 
@@ -1112,6 +1135,27 @@ pub const Session = struct {
         if (text_start < data.len) self.appendInputText(data[text_start..]);
     }
 
+    /// Inject a scheduled prompt as if the user typed + submitted it. Returns
+    /// false (skipped, nothing sent) if a request is already inflight. Clears any
+    /// half-typed composer text first so the scheduled prompt is sent verbatim.
+    /// Caller must run this on the UI thread (mirrors applyRemoteInput).
+    pub fn submitScheduledPrompt(self: *Session, text: []const u8) bool {
+        self.mutex.lock();
+        if (self.request_inflight) {
+            self.mutex.unlock();
+            return false;
+        }
+        self.input_len = 0;
+        self.input_cursor = 0;
+        self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
+        self.input_select_all = false;
+        self.mutex.unlock();
+        self.appendInputText(text);
+        self.submit();
+        return true;
+    }
+
     pub fn applyWeixinInput(self: *Session, data: []const u8, ctx: weixin_types.ReplyContext) void {
         self.mutex.lock();
         if (self.pending_weixin_reply_context) |*old| old.deinit(self.allocator);
@@ -1807,6 +1851,8 @@ pub const Session = struct {
             .export_markdown => result.deferred = .{
                 .export_markdown = if (std.mem.eql(u8, std.mem.trim(u8, arg, " \t\r\n"), "full")) .full else .clean,
             },
+            .loop => self.runLoopCommandLocked(.loop, arg, &result),
+            .watch => self.runLoopCommandLocked(.watch, arg, &result),
             else => {},
         }
         if (result.suppress_output) return result;
@@ -1822,6 +1868,114 @@ pub const Session = struct {
         self.clearSubmittedInputLocked();
         self.setStatusLocked("Ready");
         return result;
+    }
+
+    fn runLoopCommandLocked(self: *Session, kind: ai_loop_schedule.TaskKind, arg: []const u8, result: *BuiltinResult) void {
+        result.suppress_output = true;
+        const store = ai_loop_store.active() orelse {
+            self.emitLoopMessageLocked("Scheduler is not available.");
+            return;
+        };
+        const trimmed = std.mem.trim(u8, arg, " \t\r\n");
+        const now_ms = std.time.milliTimestamp();
+        const offset_s = @import("ai_history_time.zig").localOffsetSeconds();
+        const ctx = ai_loop_store.SessionCtx{
+            .session_id = self.sessionId(),
+            .model = self.model(),
+            .title = self.title(),
+        };
+
+        if (trimmed.len == 0) {
+            self.listLoopTasksLocked(store, kind);
+            return;
+        }
+        if (std.mem.startsWith(u8, trimmed, "stop")) {
+            const rest = std.mem.trim(u8, trimmed["stop".len..], " \t\r\n");
+            if (std.mem.eql(u8, rest, "all")) {
+                const n = store.stopAll(ctx.session_id, kind);
+                var buf: [64]u8 = undefined;
+                self.emitLoopMessageLocked(std.fmt.bufPrint(&buf, "Cancelled {d} task(s).", .{n}) catch "Cancelled tasks.");
+            } else {
+                const id = std.fmt.parseInt(u32, rest, 10) catch {
+                    self.emitLoopMessageLocked("Usage: stop <id> | stop all");
+                    return;
+                };
+                const ok = store.stop(ctx.session_id, id);
+                self.emitLoopMessageLocked(if (ok) "Task cancelled." else "No such task in this session.");
+            }
+            return;
+        }
+
+        const info = switch (kind) {
+            .loop => store.registerLoop(trimmed, ctx, now_ms, offset_s),
+            .watch => store.registerWatch(trimmed, ctx, now_ms, offset_s),
+        } catch |err| switch (err) {
+            error.OutOfMemory => {
+                self.emitLoopMessageLocked("Out of memory.");
+                return;
+            },
+            else => |parse_err| {
+                self.emitLoopMessageLocked(loopErrorText(parse_err, kind));
+                return;
+            },
+        };
+        self.emitRegisterConfirmationLocked(info);
+    }
+
+    fn listLoopTasksLocked(self: *Session, store: *ai_loop_store.Store, kind: ai_loop_schedule.TaskKind) void {
+        const views = store.snapshotForSession(self.allocator, self.sessionId(), kind) catch {
+            self.emitLoopMessageLocked("Out of memory.");
+            return;
+        };
+        defer ai_loop_store.freeSnapshot(self.allocator, views);
+        if (views.len == 0) {
+            self.emitLoopMessageLocked(if (kind == .loop) "No active loop tasks." else "No active watch tasks.");
+            return;
+        }
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        const w = buf.writer(self.allocator);
+        for (views) |v| {
+            if (kind == .loop) {
+                const iv = ai_loop_schedule.formatInterval(v.interval_ms);
+                w.print("#{d}  every {d}{c}  remaining {d}  \u{2192} {s}\n", .{
+                    v.id, iv.value, iv.unit, v.remaining, previewPrompt(v.prompt),
+                }) catch return;
+            } else if (v.daily) {
+                w.print("#{d}  daily {d:0>2}:{d:0>2}  \u{2192} {s}\n", .{
+                    v.id, @divTrunc(v.tod_minutes, 60), @mod(v.tod_minutes, 60), previewPrompt(v.prompt),
+                }) catch return;
+            } else {
+                w.print("#{d}  once  \u{2192} {s}\n", .{ v.id, previewPrompt(v.prompt) }) catch return;
+            }
+        }
+        self.emitLoopMessageLocked(buf.items);
+    }
+
+    fn emitRegisterConfirmationLocked(self: *Session, info: ai_loop_store.RegisterInfo) void {
+        var buf: [160]u8 = undefined;
+        const msg = switch (info.kind) {
+            .loop => blk: {
+                const iv = ai_loop_schedule.formatInterval(info.interval_ms);
+                break :blk std.fmt.bufPrint(&buf, "Created loop task #{d}: every {d}{c}, {d} times.", .{
+                    info.id, iv.value, iv.unit, info.remaining,
+                }) catch "Created loop task.";
+            },
+            .watch => if (info.daily)
+                std.fmt.bufPrint(&buf, "Created watch task #{d} (daily).", .{info.id}) catch "Created watch task."
+            else
+                std.fmt.bufPrint(&buf, "Created watch task #{d} (one-shot).", .{info.id}) catch "Created watch task.",
+        };
+        self.emitLoopMessageLocked(msg);
+    }
+
+    fn emitLoopMessageLocked(self: *Session, text: []const u8) void {
+        self.appendLocalToolMessageLocked(text) catch {
+            self.setStatusLocked("Out of memory");
+            return;
+        };
+        self.clearSubmittedInputLocked();
+        self.setStatusLocked("Ready");
     }
 
     fn cancelDistillCandidate(self: *Session) void {
@@ -6119,4 +6273,56 @@ test "setDefaultWorkingDir is reflected in currentAgentSettings" {
     try std.testing.expectEqualStrings("/tmp/proj", currentAgentSettings().working_dir.?);
     setDefaultWorkingDir("");
     try std.testing.expect(currentAgentSettings().working_dir == null);
+}
+
+test "submitScheduledPrompt sets composer and reports busy state" {
+    const a = std.testing.allocator;
+    const session = try Session.init(a, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+
+    // Not inflight: returns true and submit is invoked (no agent configured, no-ops).
+    const ok = session.submitScheduledPrompt("hello world");
+    try std.testing.expect(ok);
+
+    // Inflight: returns false (skip).
+    session.request_inflight = true;
+    const skipped = session.submitScheduledPrompt("again");
+    try std.testing.expect(!skipped);
+    session.request_inflight = false;
+}
+
+test "runLoopCommandLocked creates, lists, and stops a loop task" {
+    const a = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    const path = try std.fs.path.join(a, &.{ dir_path, "loop_tasks.json" });
+    defer a.free(path);
+
+    var store = ai_loop_store.Store.init(a, path);
+    defer store.deinit();
+    ai_loop_store.setActive(&store);
+    defer ai_loop_store.clearActive();
+
+    const session = try Session.init(a, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+    session.copySessionId("session-test");
+
+    session.mutex.lock();
+    _ = session.runBuiltinCommandLocked(.loop, "30m 3 hello");
+    session.mutex.unlock();
+
+    const snap = try store.snapshotForSession(a, "session-test", .loop);
+    defer ai_loop_store.freeSnapshot(a, snap);
+    try std.testing.expectEqual(@as(usize, 1), snap.len);
+    try std.testing.expectEqualStrings("hello", snap[0].prompt);
+
+    session.mutex.lock();
+    _ = session.runBuiltinCommandLocked(.loop, "stop 1");
+    session.mutex.unlock();
+    const snap2 = try store.snapshotForSession(a, "session-test", .loop);
+    defer ai_loop_store.freeSnapshot(a, snap2);
+    try std.testing.expectEqual(@as(usize, 0), snap2.len);
 }
