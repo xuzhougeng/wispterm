@@ -24,7 +24,7 @@ pub fn appendMarkdownDocumentHeader(
     include_metadata: bool,
 ) !void {
     try out.appendSlice(allocator, "# ");
-    try appendMarkdownInline(allocator, out, if (title.len > 0) title else "WispTerm AI Chat");
+    try appendMarkdownInline(allocator, out, if (title.len > 0) title else "WispTerm Copilot");
     try out.appendSlice(allocator, "\n\n");
     if (!include_metadata) return;
     if (model.len > 0) {

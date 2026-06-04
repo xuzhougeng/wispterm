@@ -1004,7 +1004,7 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
             };
             const command = platform_pty_command.localShellInitialCommand(command_buf[0..], tab.getShellCmd(), local_checked_cmd) orelse return failAiHistoryResumePathUnavailable();
             if (spawnTabWithCommandUtf8(command)) return true;
-            overlays.showStatusToast("AI History resume failed");
+            overlays.showStatusToast("Sessions resume failed");
             return false;
         },
         .wsl => {
@@ -1015,7 +1015,7 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
             };
             const command = platform_pty_command.wslShellCommand(command_buf[0..], user_shell_cmd) orelse return failAiHistoryResumePathUnavailable();
             if (spawnTabWithCommandUtf8(command)) return true;
-            overlays.showStatusToast("AI History resume failed");
+            overlays.showStatusToast("Sessions resume failed");
             return false;
         },
         .ssh => |ssh| {
@@ -1027,11 +1027,11 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
             return switch (overlays.aiHistoryConnectSshProfile(ssh.profile_name, user_shell_cmd)) {
                 .connected => true,
                 .not_found => {
-                    overlays.showStatusToast("AI History resume failed: SSH profile unavailable");
+                    overlays.showStatusToast("Sessions resume failed: SSH profile unavailable");
                     return false;
                 },
                 .failed => {
-                    overlays.showStatusToast("AI History resume failed");
+                    overlays.showStatusToast("Sessions resume failed");
                     return false;
                 },
             };
@@ -1040,7 +1040,7 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
 }
 
 fn failAiHistoryResumePathUnavailable() bool {
-    overlays.showStatusToast("AI History resume failed: project path unavailable");
+    overlays.showStatusToast("Sessions resume failed: project path unavailable");
     markUiDirty();
     return false;
 }
@@ -1309,7 +1309,7 @@ fn localHomeForAiHistory(allocator: std.mem.Allocator) ![]u8 {
 pub fn exportActiveAiChatMarkdown(mode: ai_chat.MarkdownExportMode) void {
     const allocator = g_allocator orelse return;
     const session = activeAiChat() orelse {
-        overlays.showStatusToast("Open an AI Chat tab first");
+        overlays.showStatusToast("Open a Copilot tab first");
         return;
     };
 
@@ -1503,7 +1503,7 @@ fn saveMarkdownDialogPath(
         .{};
     const path = platform_file_dialog.saveFile(allocator, .{
         .owner = owner,
-        .title = "Save AI Chat Markdown",
+        .title = "Save Copilot Markdown",
         .initial_dir = initial_dir,
         .default_filename = default_filename,
         .default_extension = "md",
@@ -3123,7 +3123,7 @@ fn appendRemoteAiHistoryTabJson(
     try appendAgentDetectionJson(allocator, out, null);
     // AI History is read-only in remote layouts. Keep it terminal-style so the
     // remote client does not show AI Chat composer/input affordances.
-    try out.appendSlice(allocator, ",\"kind\":\"terminal\",\"readOnly\":true,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"AI History\\n");
+    try out.appendSlice(allocator, ",\"kind\":\"terminal\",\"readOnly\":true,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"Sessions\\n");
     try remote.appendJsonString(out, allocator, title_text);
     try out.appendSlice(allocator, "\",\"x\":0,\"y\":0,\"w\":1,\"h\":1}]}");
 }

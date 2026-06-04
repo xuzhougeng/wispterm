@@ -1539,7 +1539,7 @@ pub const Session = struct {
         // otherwise (e.g. "/help me", "/usr/bin path", or a rebound template body): fall through.
 
         if (self.api_key_len == 0) {
-            self.setStatusLocked("Missing API key. Edit the AI Chat profile or set DEEPSEEK_API_KEY.");
+            self.setStatusLocked("Missing API key. Edit the Copilot profile or set DEEPSEEK_API_KEY.");
             self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
             return;
@@ -2320,7 +2320,7 @@ pub const Session = struct {
             .clean => try self.appendCleanMarkdownExportLocked(allocator, &out),
         }
 
-        if (out.items.len == 0) try out.appendSlice(allocator, "# WispTerm AI Chat\n\nNo messages yet.\n");
+        if (out.items.len == 0) try out.appendSlice(allocator, "# WispTerm Copilot\n\nNo messages yet.\n");
         return out.toOwnedSlice(allocator);
     }
 

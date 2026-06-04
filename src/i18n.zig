@@ -52,6 +52,8 @@ pub const Strings = struct {
     // —— 会话启动器 & AI 智能体对话框 ——
     sl_new_session: []const u8,
     sl_ai_agent: []const u8,
+    sl_sessions: []const u8,
+    sl_sessions_detail: []const u8,
     sl_llm_providers: []const u8,
     sl_new_llm_provider: []const u8,
     sl_edit_llm_provider: []const u8,
@@ -192,7 +194,9 @@ const en = Strings{
     .settings_lang_auto = "Auto",
 
     .sl_new_session = "New Session",
-    .sl_ai_agent = "AI Agent",
+    .sl_ai_agent = "Copilot",
+    .sl_sessions = "Sessions",
+    .sl_sessions_detail = "Browse Codex / Claude Code sessions",
     .sl_llm_providers = "LLM Providers",
     .sl_new_llm_provider = "New LLM Provider",
     .sl_edit_llm_provider = "Edit LLM Provider",
@@ -249,13 +253,13 @@ const en = Strings{
     .sl_default_suffix = " (default)",
 
     .cmd_palette_title = "Command Center",
-    .cmd_palette_history_title = "Agent History",
+    .cmd_palette_history_title = "Copilot History",
     .cmd_palette_esc_closes = "Esc closes",
     .cmd_palette_esc_returns = "Esc returns",
     .cmd_palette_filter_placeholder = "Filter commands or themes",
-    .cmd_palette_no_sessions_yet = "No saved agent sessions yet",
-    .cmd_palette_recent_sessions = "Recent agent sessions",
-    .cmd_palette_no_sessions = "No saved agent sessions",
+    .cmd_palette_no_sessions_yet = "No saved Copilot sessions yet",
+    .cmd_palette_recent_sessions = "Recent Copilot sessions",
+    .cmd_palette_no_sessions = "No saved Copilot sessions",
     .cmd_palette_footer = "Up/Down + Enter applies",
     .cmd_palette_footer_history = "Up/Down selects, Enter reopens, Delete removes, Esc returns",
 
@@ -329,7 +333,9 @@ const zh_CN = Strings{
     .settings_lang_auto = "自动",
 
     .sl_new_session = "新建会话",
-    .sl_ai_agent = "AI 智能体",
+    .sl_ai_agent = "副驾",
+    .sl_sessions = "会话",
+    .sl_sessions_detail = "浏览 Codex / Claude Code 会话",
     .sl_llm_providers = "LLM 提供方",
     .sl_new_llm_provider = "新建 LLM 提供方",
     .sl_edit_llm_provider = "编辑 LLM 提供方",
@@ -386,13 +392,13 @@ const zh_CN = Strings{
     .sl_default_suffix = "（默认）",
 
     .cmd_palette_title = "命令中心",
-    .cmd_palette_history_title = "智能体历史",
+    .cmd_palette_history_title = "副驾历史",
     .cmd_palette_esc_closes = "Esc 关闭",
     .cmd_palette_esc_returns = "Esc 返回",
     .cmd_palette_filter_placeholder = "筛选命令或主题",
-    .cmd_palette_no_sessions_yet = "暂无已保存的智能体会话",
-    .cmd_palette_recent_sessions = "最近的智能体会话",
-    .cmd_palette_no_sessions = "没有已保存的智能体会话",
+    .cmd_palette_no_sessions_yet = "暂无已保存的副驾会话",
+    .cmd_palette_recent_sessions = "最近的副驾会话",
+    .cmd_palette_no_sessions = "没有已保存的副驾会话",
     .cmd_palette_footer = "上下选择，回车执行",
     .cmd_palette_footer_history = "上下选择，回车重开，Delete 删除，Esc 返回",
 
@@ -534,9 +540,9 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
     if (active_lang != .zh_CN) return null;
     return switch (action) {
         .new_tab => "新建会话",
-        .new_agent => "新建智能体",
+        .new_agent => "新建副驾",
         .manage_ai_profiles => "管理 AI 配置",
-        .select_agent_history => "选择智能体历史",
+        .select_agent_history => "选择副驾历史",
         .split_right => "向右分屏",
         .split_down => "向下分屏",
         .split_left => "向左分屏",
@@ -561,8 +567,8 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
         .stop_wechat => "微信：停止",
         .wechat_status => "微信：状态",
         .unbind_wechat => "微信：解绑",
-        .export_ai_chat_markdown => "导出 AI 对话 Markdown",
-        .export_ai_chat_markdown_clean => "导出 AI 对话 Markdown 精简版",
+        .export_ai_chat_markdown => "导出副驾 Markdown",
+        .export_ai_chat_markdown_clean => "导出副驾 Markdown 精简版",
         .show_version => "版本",
         .check_for_updates => "检查更新",
         .download_update => "下载更新",
@@ -577,10 +583,10 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
 pub fn commandDetail(action: CommandAction) ?[]const u8 {
     if (active_lang != .zh_CN) return null;
     return switch (action) {
-        .new_tab => "选择 Shell、SSH、WSL 或 AI 智能体",
-        .new_agent => "用默认 AI 配置打开一个新的智能体标签页",
+        .new_tab => "选择 Shell、SSH、WSL、副驾 或 会话",
+        .new_agent => "用默认 AI 配置打开一个新的副驾标签页",
         .manage_ai_profiles => "创建、编辑或删除已保存的 AI 配置",
-        .select_agent_history => "打开命令中心的智能体历史选择器",
+        .select_agent_history => "打开命令中心的副驾历史选择器",
         .split_right => "在右侧创建一个面板",
         .split_down => "在下方创建一个面板",
         .split_left => "在左侧创建一个面板",

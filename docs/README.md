@@ -5,12 +5,12 @@ This folder is the source for the WispTerm GitHub Pages site.
 ## Files
 
 - `index.html` — landing page (hero, features, install, config, shortcuts).
-- `ai.html` / `ai.zh.html` — DeepSeek-first AI Agent workflow pages.
-- `use-cases.html` / `use-cases.zh.html` — practical AI Agent use cases such as SSH profile setup.
+- `ai.html` / `ai.zh.html` — DeepSeek-first Copilot workflow pages.
+- `use-cases.html` / `use-cases.zh.html` — practical Copilot use cases such as SSH profile setup.
 - `themes.html` — built-in theme gallery.
 - `configuration.md` — desktop app config reference.
 - `file-explorer.md` — File Explorer, preview panel, browser panel, and SSH cwd notes.
-- `ai-agent.md` — desktop AI Chat, Agent skills, and Markdown export workflow notes.
+- `ai-agent.md` — desktop Copilot, Agent skills, and Markdown export workflow notes.
 - `media.md` — background images, shaders, and Kitty Graphics helper scripts.
 - `development.md` — build, architecture, packaging, and GitHub release notes.
 - `faq.md` — desktop and remote FAQ entries that are too detailed for the root README.
