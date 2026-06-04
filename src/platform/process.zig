@@ -85,9 +85,9 @@ pub fn localCommandToolDescription() []const u8 {
 
 pub fn localCommandToolDescriptionForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return if (os_tag == .windows)
-        "Run a local PowerShell command on Windows and return stdout, stderr, and exit status."
+        "Run a local PowerShell command on Windows and return stdout, stderr, and exit status. When 'cwd' is omitted, the command runs in the conversation's working directory, so place downloads and clones there by default."
     else
-        "Run a local POSIX shell command and return stdout, stderr, and exit status.";
+        "Run a local POSIX shell command and return stdout, stderr, and exit status. When 'cwd' is omitted, the command runs in the conversation's working directory, so place downloads and clones there by default.";
 }
 
 pub fn localCommandApprovalLabel() []const u8 {
@@ -335,4 +335,11 @@ test "platform process selects backend by target OS" {
     try std.testing.expectEqual(Backend.windows, backendForOs(.windows));
     try std.testing.expectEqual(Backend.posix, backendForOs(.linux));
     try std.testing.expectEqual(Backend.posix, backendForOs(.macos));
+}
+
+test "local command tool description mentions the working-directory default" {
+    const posix = localCommandToolDescriptionForOs(.linux);
+    try std.testing.expect(std.mem.indexOf(u8, posix, "working directory") != null);
+    const win = localCommandToolDescriptionForOs(.windows);
+    try std.testing.expect(std.mem.indexOf(u8, win, "working directory") != null);
 }
