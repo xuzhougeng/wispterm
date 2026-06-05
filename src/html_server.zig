@@ -121,7 +121,7 @@ pub fn deinit() void {
 
 pub fn openForSurface(allocator: std.mem.Allocator, surface: *Surface, path: []const u8) OpenResult {
     if (!model.isHtmlPath(path)) return .{ .err = error.NotHtml };
-    const resolved = preview_source.resolveTerminalPreviewPath(allocator, surface, path) catch |err| {
+    const resolved = preview_source.resolveTerminalPreviewPath(allocator, surface, path, null) catch |err| {
         return .{ .err = if (err == error.CwdUnavailable) error.CwdUnavailable else error.PathTooLong };
     };
     defer allocator.free(resolved);
