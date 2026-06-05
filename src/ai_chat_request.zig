@@ -501,6 +501,11 @@ fn toolCancelled(ctx: *anyopaque) bool {
     return ai_chat.sessionCancelled(session);
 }
 
+fn toolNote(ctx: *anyopaque, text: []const u8) void {
+    const session: *Session = @ptrCast(@alignCast(ctx));
+    session.appendLocalToolMessage(text);
+}
+
 fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
     var settings = ai_chat.currentAgentSettings();
     // Per-conversation override beats the global default.
@@ -517,6 +522,7 @@ fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
         .write_context_surface_id_len = request.write_context_surface_id_len,
         .approve = toolApprove,
         .cancelled = toolCancelled,
+        .note = toolNote,
     };
 }
 
