@@ -151,6 +151,29 @@ pub fn sshHostsPathFromEnvForOs(
     return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "ssh_hosts");
 }
 
+pub fn openSshConfigPath(allocator: std.mem.Allocator) ![]const u8 {
+    const userprofile = envVarOwned(allocator, "USERPROFILE");
+    defer if (userprofile) |value| allocator.free(value);
+    const home = envVarOwned(allocator, "HOME");
+    defer if (home) |value| allocator.free(value);
+    return openSshConfigPathFromEnvForOs(allocator, builtin.os.tag, .{
+        .userprofile = userprofile,
+        .home = home,
+    });
+}
+
+pub fn openSshConfigPathFromEnvForOs(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    env: Env,
+) ![]const u8 {
+    const base = switch (os_tag) {
+        .windows => nonEmpty(env.userprofile) orelse nonEmpty(env.home) orelse return error.NoOpenSshConfigPath,
+        else => nonEmpty(env.home) orelse return error.NoOpenSshConfigPath,
+    };
+    return std.fs.path.join(allocator, &.{ base, ".ssh", "config" });
+}
+
 pub fn agentHistoryPath(allocator: std.mem.Allocator) ![]const u8 {
     return pathInConfigDir(allocator, "agent-history.json");
 }
@@ -531,4 +554,27 @@ test "platform dirs resolve downloads directory per OS" {
     const expected = try std.fs.path.join(allocator, &.{ "C:/Users/alice", "Downloads" });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, downloads);
+}
+
+test "platform dirs resolve openssh config path per OS" {
+    const allocator = std.testing.allocator;
+
+    const windows = try openSshConfigPathFromEnvForOs(allocator, .windows, .{
+        .userprofile = "C:/Users/alice",
+        .home = "/ignored",
+    });
+    defer allocator.free(windows);
+    const expected_windows = try std.fs.path.join(allocator, &.{ "C:/Users/alice", ".ssh", "config" });
+    defer allocator.free(expected_windows);
+    try std.testing.expectEqualStrings(expected_windows, windows);
+
+    const linux = try openSshConfigPathFromEnvForOs(allocator, .linux, .{
+        .home = "/home/alice",
+    });
+    defer allocator.free(linux);
+    const expected_linux = try std.fs.path.join(allocator, &.{ "/home/alice", ".ssh", "config" });
+    defer allocator.free(expected_linux);
+    try std.testing.expectEqualStrings(expected_linux, linux);
+
+    try std.testing.expectError(error.NoOpenSshConfigPath, openSshConfigPathFromEnvForOs(allocator, .linux, .{}));
 }
