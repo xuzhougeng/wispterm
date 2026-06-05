@@ -91,6 +91,42 @@ pub fn parseReaderResponse(arena: std.mem.Allocator, json_bytes: []const u8) !Pa
     };
 }
 
+pub const MultipartBody = struct { body: []u8, content_type: []u8 };
+
+/// Build a `multipart/form-data` body with one `file` field (raw bytes, binary-safe).
+/// Caller frees `.body` and `.content_type`.
+pub fn buildMultipartBody(allocator: std.mem.Allocator, filename: []const u8, bytes: []const u8) !MultipartBody {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    const w = out.writer(allocator);
+    try w.print("--{s}\r\n", .{upload_boundary});
+    try w.print("Content-Disposition: form-data; name=\"file\"; filename=\"{s}\"\r\n", .{filename});
+    try w.writeAll("Content-Type: application/octet-stream\r\n\r\n");
+    try w.writeAll(bytes);
+    try w.print("\r\n--{s}--\r\n", .{upload_boundary});
+    const body = try out.toOwnedSlice(allocator);
+    errdefer allocator.free(body);
+    const content_type = try std.fmt.allocPrint(allocator, "multipart/form-data; boundary={s}", .{upload_boundary});
+    return .{ .body = body, .content_type = content_type };
+}
+
+pub const LocalFile = struct { basename: []const u8, bytes: []u8 };
+
+/// Read a local file for upload. `basename` aliases `path` (caller keeps it alive).
+/// Caller frees `.bytes`. Maps open/stat failure to error.FileNotFound and an
+/// oversize file to error.FileTooLarge.
+pub fn readLocalFileForUpload(gpa: std.mem.Allocator, path: []const u8, max_bytes: usize) !LocalFile {
+    const file = std.fs.cwd().openFile(path, .{}) catch return error.FileNotFound;
+    defer file.close();
+    const stat = file.stat() catch return error.FileNotFound;
+    if (stat.size > max_bytes) return error.FileTooLarge;
+    const bytes = file.readToEndAlloc(gpa, max_bytes) catch |err| switch (err) {
+        error.FileTooBig => return error.FileTooLarge,
+        else => return error.FileNotFound,
+    };
+    return .{ .basename = std.fs.path.basename(path), .bytes = bytes };
+}
+
 test "isHttpUrl recognizes only http(s) schemes" {
     try std.testing.expect(isHttpUrl("http://x"));
     try std.testing.expect(isHttpUrl("HTTPS://x"));
@@ -126,4 +162,33 @@ test "parseReaderResponse tolerates missing title/url, rejects empty content" {
     try std.testing.expectEqualStrings("hi", ok.content);
     try std.testing.expectError(error.ParseFailed, parseReaderResponse(arena.allocator(), "{\"data\":{\"content\":\"\"}}"));
     try std.testing.expectError(error.ParseFailed, parseReaderResponse(arena.allocator(), "{\"data\":[]}"));
+}
+
+test "buildMultipartBody frames the file field with the boundary" {
+    const a = std.testing.allocator;
+    const mp = try buildMultipartBody(a, "report.pdf", "PDFBYTES");
+    defer a.free(mp.body);
+    defer a.free(mp.content_type);
+    try std.testing.expect(std.mem.indexOf(u8, mp.body, "--" ++ upload_boundary) != null);
+    try std.testing.expect(std.mem.indexOf(u8, mp.body, "name=\"file\"; filename=\"report.pdf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mp.body, "PDFBYTES") != null);
+    try std.testing.expect(std.mem.endsWith(u8, mp.body, "--" ++ upload_boundary ++ "--\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, mp.content_type, upload_boundary) != null);
+}
+
+test "readLocalFileForUpload reads bytes, reports missing and oversize" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "doc.txt", .data = "hello world" });
+    const path = try tmp.dir.realpathAlloc(a, "doc.txt");
+    defer a.free(path);
+
+    const lf = try readLocalFileForUpload(a, path, 1024);
+    defer a.free(lf.bytes);
+    try std.testing.expectEqualStrings("doc.txt", lf.basename);
+    try std.testing.expectEqualStrings("hello world", lf.bytes);
+
+    try std.testing.expectError(error.FileTooLarge, readLocalFileForUpload(a, path, 4));
+    try std.testing.expectError(error.FileNotFound, readLocalFileForUpload(a, "/no/such/file.pdf", 1024));
 }
