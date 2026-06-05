@@ -32,6 +32,14 @@ pub fn terminalPathClickAction(launch_kind: platform_pty_command.LaunchKind, has
     return .pass_through;
 }
 
+/// Ctrl+right-click (Cmd on macOS) opens the file under the cursor in the OS
+/// default app, but only for local terminals — a local app cannot open an SSH
+/// or WSL path. `mod` is the primaryOpenMod result. Plain right-click and
+/// remote terminals fall through to the configured right-click action.
+pub fn rightClickOpensInEditor(launch_kind: platform_pty_command.LaunchKind, mod: bool, shift: bool, alt: bool) bool {
+    return launch_kind == .local and mod and !shift and !alt;
+}
+
 pub fn interactiveUnderlineTokenKind(action: TerminalPathClickAction, text: []const u8) InteractiveUnderlineTokenKind {
     return switch (action) {
         .pass_through => .none,
@@ -125,4 +133,17 @@ test "interactive underline includes plain filenames for ssh download hover" {
         InteractiveUnderlineTokenKind.preview_path,
         interactiveUnderlineTokenKind(.download_ssh_file, "xx.h5ad"),
     );
+}
+
+test "right-click opens local files in editor only with primary modifier" {
+    // Local terminal + primary modifier (Ctrl/Cmd), no shift/alt → open.
+    try std.testing.expect(rightClickOpensInEditor(.local, true, false, false));
+    // Remote terminals never open a local editor.
+    try std.testing.expect(!rightClickOpensInEditor(.ssh, true, false, false));
+    try std.testing.expect(!rightClickOpensInEditor(.wsl, true, false, false));
+    // Plain right-click (no modifier) falls through to the configured action.
+    try std.testing.expect(!rightClickOpensInEditor(.local, false, false, false));
+    // Shift/Alt are reserved for other gestures.
+    try std.testing.expect(!rightClickOpensInEditor(.local, true, true, false));
+    try std.testing.expect(!rightClickOpensInEditor(.local, true, false, true));
 }
