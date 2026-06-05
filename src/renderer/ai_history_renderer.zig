@@ -75,7 +75,7 @@ pub fn leftColumnLayout(top: f32, cell_h: f32) LeftColumnLayout {
     y += cell_h + 8;
     const category_rows_top = y;
     const category_row_h = cell_h + 10;
-    y += category_row_h * 4;
+    y += category_row_h * @as(f32, @floatFromInt(types.CATEGORY_ORDER.len));
     y += 14;
     const date_heading_top = y;
     y += cell_h + 8;
@@ -200,8 +200,7 @@ pub fn interactionHitTest(
     const my: f32 = @floatCast(mouse_y);
 
     const lc = leftColumnLayout(top, cell_h);
-    const categories = [_]types.CategoryFilter{ .all, .codex, .claude, .reasonix };
-    for (categories, 0..) |cat, i| {
+    for (types.CATEGORY_ORDER, 0..) |cat, i| {
         const cat_top = lc.category_rows_top + @as(f32, @floatFromInt(i)) * lc.category_row_h;
         if (rectContains(mx, my, layout.left_x, cat_top, layout.left_w, lc.category_row_h)) {
             return .{ .category = cat };
@@ -364,8 +363,7 @@ fn renderLeftColumn(
     const query = session.filter[0..session.filter_len];
     const counts = session.categoryCounts(query);
     const selected_bg = mixColor(draw.bg, accent, 0.18);
-    const categories = [_]types.CategoryFilter{ .all, .codex, .claude, .reasonix };
-    for (categories, 0..) |cat, i| {
+    for (types.CATEGORY_ORDER, 0..) |cat, i| {
         const row_top = lc.category_rows_top + @as(f32, @floatFromInt(i)) * lc.category_row_h;
         const active = session.category == cat;
         const cursor = filters_focused and session.filter_cursor == i;
@@ -377,12 +375,7 @@ fn renderLeftColumn(
         }
         const text_top = row_top + (lc.category_row_h - draw.cell_h) / 2;
         const label_color = if (highlight) fg else muted;
-        const count = switch (cat) {
-            .all => counts.all,
-            .codex => counts.codex,
-            .claude => counts.claude,
-            .reasonix => counts.reasonix,
-        };
+        const count = types.categoryCount(counts, cat);
         var num_buf: [16]u8 = undefined;
         const num_text = std.fmt.bufPrint(&num_buf, "{d}", .{count}) catch "";
         const count_w: f32 = 44;
@@ -492,6 +485,7 @@ fn renderList(
             .codex => "No Codex sessions",
             .claude => "No Claude Code sessions",
             .reasonix => "No Reasonix sessions",
+            .subagent => "No Subagent sessions",
         };
         _ = draw.renderTextLimited(empty, layout.list_x + PAD_X, yTextFromTop(draw, window_height, row_top + 24), muted, layout.list_w - PAD_X * 2);
     }
@@ -1038,6 +1032,12 @@ test "ai_history_renderer: interaction hit test maps category rows" {
     try std.testing.expectEqual(
         Hit{ .category = .reasonix },
         interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, reasonix_y),
+    );
+
+    const subagent_y = lc.category_rows_top + lc.category_row_h * 4.5;
+    try std.testing.expectEqual(
+        Hit{ .category = .subagent },
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.left_x + 10, subagent_y),
     );
 }
 

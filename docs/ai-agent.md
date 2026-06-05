@@ -54,6 +54,9 @@ target. WispTerm connects to the selected target, scans `$HOME/.codex`,
 `$HOME/.claude`, and `$HOME/.reasonix` for metadata, and loads a transcript
 only when you open that row.
 
+The `Subagent` category separates sessions whose title starts with `You are`;
+those sessions still appear under `All`.
+
 Use `Resume` to open a real terminal tab on the same target. WispTerm first
 checks the original project directory recorded in the history file; if that
 directory is missing, resume stops instead of falling back to `$HOME`.

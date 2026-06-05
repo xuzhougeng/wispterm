@@ -173,9 +173,16 @@ pub const Focus = enum(u8) {
 const FILTER_BUCKET_CAP: usize = 256;
 /// Combined-filter cursor layout: category rows first, then "All dates", then
 /// individual days.
-pub const FILTER_CATEGORY_ROWS: usize = @typeInfo(types.CategoryFilter).@"enum".fields.len;
+pub const FILTER_CATEGORY_ROWS: usize = types.CATEGORY_ORDER.len;
 pub const FILTER_ALL_DATES_ROW: usize = FILTER_CATEGORY_ROWS;
 pub const FILTER_DAY_BASE: usize = FILTER_ALL_DATES_ROW + 1;
+
+fn categoryOrderIndex(category: types.CategoryFilter) usize {
+    for (types.CATEGORY_ORDER, 0..) |candidate, i| {
+        if (candidate == category) return i;
+    }
+    return 0;
+}
 
 pub const Session = struct {
     /// Allocator used for row storage. Do not change while rows are live.
@@ -619,7 +626,7 @@ pub const Session = struct {
 
     pub fn rowVisible(self: *const Session, row: types.SessionMeta, query: []const u8) bool {
         const key = types.dateKeyFromMs(row.last_active_at_ms, self.tz_offset_seconds);
-        return types.categoryMatches(self.category, row.provider) and
+        return types.categoryMatchesMeta(self.category, row) and
             types.dateMatches(self.date_filter, key) and
             types.metadataMatches(row, query);
     }
@@ -684,9 +691,9 @@ pub const Session = struct {
 
     pub fn cycleCategory(self: *Session, delta: isize) void {
         const count: isize = @intCast(FILTER_CATEGORY_ROWS);
-        const cur: isize = @intFromEnum(self.category);
+        const cur: isize = @intCast(categoryOrderIndex(self.category));
         const next: usize = @intCast(@mod(cur + delta, count));
-        self.setCategory(@enumFromInt(next));
+        self.setCategory(types.CATEGORY_ORDER[next]);
     }
 
     pub fn setDateFilter(self: *Session, filter: ?types.DateKey) void {
@@ -705,23 +712,22 @@ pub const Session = struct {
         }
     }
 
-    pub fn categoryCounts(self: *const Session, query: []const u8) struct { all: usize, codex: usize, claude: usize, reasonix: usize } {
-        var all: usize = 0;
-        var codex: usize = 0;
-        var claude: usize = 0;
-        var reasonix: usize = 0;
+    pub fn categoryCounts(self: *const Session, query: []const u8) types.CategoryCounts {
+        var counts: types.CategoryCounts = .{};
         for (self.rows.items) |row| {
             if (!types.metadataMatches(row, query)) continue;
             const key = types.dateKeyFromMs(row.last_active_at_ms, self.tz_offset_seconds);
             if (!types.dateMatches(self.date_filter, key)) continue;
-            all += 1;
-            switch (row.provider) {
-                .codex => codex += 1,
-                .claude => claude += 1,
-                .reasonix => reasonix += 1,
+            counts.all += 1;
+            if (types.isSubagentSession(row)) {
+                counts.subagent += 1;
+            } else switch (row.provider) {
+                .codex => counts.codex += 1,
+                .claude => counts.claude += 1,
+                .reasonix => counts.reasonix += 1,
             }
         }
-        return .{ .all = all, .codex = codex, .claude = claude, .reasonix = reasonix };
+        return counts;
     }
 
     /// Fill `buf` with the distinct local days present under the current
@@ -734,7 +740,7 @@ pub const Session = struct {
         var n: usize = 0;
         var have_last = false;
         for (self.rows.items) |row| {
-            if (!types.categoryMatches(self.category, row.provider)) continue;
+            if (!types.categoryMatchesMeta(self.category, row)) continue;
             if (!types.metadataMatches(row, query)) continue;
             const key = types.dateKeyFromMs(row.last_active_at_ms, self.tz_offset_seconds);
             if (key == 0) continue; // no timestamp -> only under "All dates"
@@ -757,7 +763,7 @@ pub const Session = struct {
         const query = self.filter[0..self.filter_len];
         var count: usize = 0;
         for (self.rows.items) |row| {
-            if (!types.categoryMatches(self.category, row.provider)) continue;
+            if (!types.categoryMatchesMeta(self.category, row)) continue;
             if (!types.metadataMatches(row, query)) continue;
             count += 1;
         }
@@ -817,7 +823,7 @@ pub const Session = struct {
     fn applyFilterCursorLocked(self: *Session, buckets: []const types.DateBucket) void {
         const c = self.filter_cursor;
         if (c < FILTER_CATEGORY_ROWS) {
-            self.setCategory(@enumFromInt(c));
+            self.setCategory(types.CATEGORY_ORDER[c]);
         } else if (c == FILTER_ALL_DATES_ROW) {
             self.setDateFilter(null);
         } else {
@@ -2704,18 +2710,21 @@ test "ai_history_session: categoryCounts splits by provider and respects query" 
         .{ .provider = .codex, .session_id = "a", .title = "Renderer fix", .source_path = "a.jsonl", .resume_kind = .codex_resume },
         .{ .provider = .codex, .session_id = "b", .title = "Docs", .source_path = "b.jsonl", .resume_kind = .codex_resume },
         .{ .provider = .claude, .session_id = "c", .title = "Renderer test", .source_path = "c.jsonl", .resume_kind = .claude_resume },
+        .{ .provider = .claude, .session_id = "d", .title = "You are implementing Task 3", .source_path = "d.jsonl", .resume_kind = .claude_resume },
     };
     try session.replaceRows(&rows);
 
     const counts = session.categoryCounts("");
-    try std.testing.expectEqual(@as(usize, 3), counts.all);
+    try std.testing.expectEqual(@as(usize, 4), counts.all);
     try std.testing.expectEqual(@as(usize, 2), counts.codex);
     try std.testing.expectEqual(@as(usize, 1), counts.claude);
+    try std.testing.expectEqual(@as(usize, 1), counts.subagent);
 
     const filtered = session.categoryCounts("renderer");
     try std.testing.expectEqual(@as(usize, 2), filtered.all);
     try std.testing.expectEqual(@as(usize, 1), filtered.codex);
     try std.testing.expectEqual(@as(usize, 1), filtered.claude);
+    try std.testing.expectEqual(@as(usize, 0), filtered.subagent);
 }
 
 test "ai_history_session: setCategory resets selection" {
@@ -2748,9 +2757,30 @@ test "ai_history_session: cycleCategory wraps forward and backward" {
     session.cycleCategory(1);
     try std.testing.expectEqual(types.CategoryFilter.reasonix, session.category);
     session.cycleCategory(1);
+    try std.testing.expectEqual(types.CategoryFilter.subagent, session.category);
+    session.cycleCategory(1);
     try std.testing.expectEqual(types.CategoryFilter.all, session.category);
     session.cycleCategory(-1);
-    try std.testing.expectEqual(types.CategoryFilter.reasonix, session.category);
+    try std.testing.expectEqual(types.CategoryFilter.subagent, session.category);
+}
+
+test "ai_history_session: subagent category separates You are sessions from provider category" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    const rows = [_]types.SessionMeta{
+        .{ .provider = .claude, .session_id = "regular", .title = "Review panel behavior", .source_path = "a.jsonl", .resume_kind = .claude_resume },
+        .{ .provider = .claude, .session_id = "subagent", .title = "You are implementing Task 3", .source_path = "b.jsonl", .resume_kind = .claude_resume },
+    };
+    try session.replaceRows(&rows);
+
+    session.setCategory(.claude);
+    try std.testing.expectEqual(@as(usize, 1), session.visibleCount());
+    try std.testing.expectEqualStrings("regular", (session.selectedVisible() orelse return error.ExpectedSelection).session_id);
+
+    session.setCategory(.subagent);
+    try std.testing.expectEqual(@as(usize, 1), session.visibleCount());
+    try std.testing.expectEqualStrings("subagent", (session.selectedVisible() orelse return error.ExpectedSelection).session_id);
 }
 
 test "ai_history_session: finishScan applies rows when generation current" {
@@ -3049,8 +3079,8 @@ test "ai_history_session: moveFilterCursor walks categories then dates, applying
     };
     try session.replaceRows(&rows);
 
-    // Combined list: All, Codex, Claude, Reasonix, All dates, 20260602, 20260601 => 7 rows.
-    try std.testing.expectEqual(@as(usize, 7), session.filterRowCount());
+    // Combined list: All, Codex, Claude, Reasonix, Subagent, All dates, 20260602, 20260601 => 8 rows.
+    try std.testing.expectEqual(@as(usize, 8), session.filterRowCount());
     try std.testing.expectEqual(types.CategoryFilter.all, session.category);
 
     session.moveFilterCursor(1); // -> Codex
@@ -3059,8 +3089,10 @@ test "ai_history_session: moveFilterCursor walks categories then dates, applying
     try std.testing.expectEqual(types.CategoryFilter.claude, session.category);
     session.moveFilterCursor(1); // -> Reasonix
     try std.testing.expectEqual(types.CategoryFilter.reasonix, session.category);
+    session.moveFilterCursor(1); // -> Subagent
+    try std.testing.expectEqual(types.CategoryFilter.subagent, session.category);
     session.moveFilterCursor(1); // -> All dates (date filter cleared, category kept)
-    try std.testing.expectEqual(types.CategoryFilter.reasonix, session.category);
+    try std.testing.expectEqual(types.CategoryFilter.subagent, session.category);
     try std.testing.expectEqual(@as(?types.DateKey, null), session.date_filter);
 
     // Reset category so both days are present, then step onto a specific day.
