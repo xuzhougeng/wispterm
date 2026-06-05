@@ -29,6 +29,7 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
 const ai_agent_access = @import("ai_agent_access.zig");
 const web_search = @import("web_search.zig");
+const web_read = @import("web_read.zig");
 
 /// Number of output lines included in a copilot context block.
 pub const COPILOT_CONTEXT_LINES: usize = 40;
@@ -196,6 +197,12 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const max_results = jsonIntArg(args.value, "max_results");
         return webSearchTool(ctx.allocator, query, max_results);
     }
+    if (std.mem.eql(u8, call.name, "webread")) {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const url = jsonStringArg(args.value, "url") orelse return ctx.allocator.dupe(u8, "Missing url");
+        return webReadTool(ctx.allocator, url);
+    }
     return std.fmt.allocPrint(ctx.allocator, "Unknown tool: {s}", .{call.name});
 }
 
@@ -293,6 +300,18 @@ fn webSearchTool(allocator: std.mem.Allocator, query: []const u8, max_results: ?
     }) catch |err| return web_search.formatErrorText(allocator, err);
     defer results.deinit();
     return web_search.formatForAgent(allocator, query, results.items);
+}
+
+/// Agent `webread` tool: read a URL or local file into markdown for the model.
+/// Key is optional (anonymous read works), so a null key becomes "".
+fn webReadTool(allocator: std.mem.Allocator, target: []const u8) ![]u8 {
+    const key_opt = web_search.jinaApiKeyAlloc(allocator) catch null;
+    defer if (key_opt) |k| allocator.free(k);
+    const key = key_opt orelse "";
+    var result = web_read.executeRead(allocator, target, .{ .api_key = key }) catch |err|
+        return web_read.formatErrorText(allocator, err);
+    defer result.deinit();
+    return web_read.formatForAgent(allocator, target, &result);
 }
 
 // ---------------------------------------------------------------------------
