@@ -668,6 +668,7 @@ fn forEachToolSpec(
     try emit(ctx, "tab_close", "Close a terminal tab by tab_number (the one-based `tab` shown by terminal_list, matching the tab number the user sees), surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number — the `tab` value shown by terminal_list and what the user sees.\"},\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index (tab_number minus one). Prefer tab_number.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}");
     try emit(ctx, "skill_info", "Load a WispTerm skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}");
     try emit(ctx, "wispterm_docs", "Read WispTerm's own documentation (features, configuration, shortcuts, AI agent, file explorer, media). Call with no topic to list available topics, then call again with a topic to read its full text.", "{\"topic\":{\"type\":\"string\",\"description\":\"Topic name from the list. Omit to list available topics.\"}}");
+    try emit(ctx, "websearch", "Search the web for current information via Jina. Returns the top results with titles, URLs, and page content. Use when you need facts newer than your training or to look something up online.", "{\"query\":{\"type\":\"string\",\"description\":\"The search query.\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Optional max number of results (default 10, max 20).\"}}");
     try emit(ctx, "weixin_send_attachment", "Send a local file back to the active Weixin conversation that triggered this agent request. Use only when the current request came from Weixin; normal local chat requests have no Weixin reply context. Audio and voice files are sent as ordinary file attachments.", "{\"kind\":{\"type\":\"string\",\"description\":\"Attachment kind: file, image, or voice. Voice is accepted as an alias for file.\"},\"path\":{\"type\":\"string\",\"description\":\"Readable local file path to send.\"},\"display_name\":{\"type\":\"string\",\"description\":\"Optional filename shown in Weixin for file attachments; defaults to the path basename.\"}}");
 }
 
@@ -1475,6 +1476,15 @@ test "anthropic maps tool_calls to tool_use and tool results to grouped tool_res
     try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"tool_result\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tool_use_id\":\"call_1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"input_schema\"") != null);
+}
+
+test "agent tool set includes websearch" {
+    const a = std.testing.allocator;
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("hi") }};
+    const params = RequestParams{ .model = "m", .system_prompt = "", .protocol = .anthropic, .thinking_enabled = false, .reasoning_effort = "", .stream = false, .max_tokens = 8192 };
+    const json = try buildRequestJson(a, params, &msgs, true);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"websearch\"") != null);
 }
 
 // ---------------------------------------------------------------------------
