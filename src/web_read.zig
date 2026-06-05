@@ -127,6 +127,37 @@ pub fn readLocalFileForUpload(gpa: std.mem.Allocator, path: []const u8, max_byte
     return .{ .basename = std.fs.path.basename(path), .bytes = bytes };
 }
 
+/// Render for the transcript (user `$webread`): title + source + content,
+/// truncated to `user_truncate_cap` bytes with a note when longer.
+pub fn formatForUser(allocator: std.mem.Allocator, target: []const u8, result: ReadResult) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    const w = out.writer(allocator);
+    try w.print("Read \"{s}\":\n", .{target});
+    if (result.title.len > 0) try w.print("\n# {s}\n", .{result.title});
+    if (result.url.len > 0) try w.print("{s}\n", .{result.url});
+    try w.writeAll("\n");
+    if (result.content.len > user_truncate_cap) {
+        try w.writeAll(result.content[0..user_truncate_cap]);
+        try w.print("\n\n…(truncated, {d} chars total)\n", .{result.content.len});
+    } else {
+        try w.writeAll(result.content);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Render for the model (agent `webread` tool): title + source + full content.
+pub fn formatForAgent(allocator: std.mem.Allocator, target: []const u8, result: ReadResult) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    const w = out.writer(allocator);
+    try w.print("Content of \"{s}\":\n", .{target});
+    if (result.title.len > 0) try w.print("Title: {s}\n", .{result.title});
+    if (result.url.len > 0) try w.print("URL: {s}\n", .{result.url});
+    try w.print("\n{s}\n", .{result.content});
+    return out.toOwnedSlice(allocator);
+}
+
 test "isHttpUrl recognizes only http(s) schemes" {
     try std.testing.expect(isHttpUrl("http://x"));
     try std.testing.expect(isHttpUrl("HTTPS://x"));
@@ -191,4 +222,44 @@ test "readLocalFileForUpload reads bytes, reports missing and oversize" {
 
     try std.testing.expectError(error.FileTooLarge, readLocalFileForUpload(a, path, 4));
     try std.testing.expectError(error.FileNotFound, readLocalFileForUpload(a, "/no/such/file.pdf", 1024));
+}
+
+fn testReadResult(big: bool) ReadResult {
+    var r = ReadResult{
+        .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+        .title = "T",
+        .url = "https://x/",
+        .content = undefined,
+    };
+    const a = r.arena.allocator();
+    r.content = if (big) (a.alloc(u8, user_truncate_cap + 50) catch unreachable) else (a.dupe(u8, "short body") catch unreachable);
+    if (big) @memset(@constCast(r.content), 'a');
+    return r;
+}
+
+test "formatForUser truncates past the cap and notes total length" {
+    const a = std.testing.allocator;
+    var big = testReadResult(true);
+    defer big.deinit();
+    const text = try formatForUser(a, "https://x/", big);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "truncated, " ) != null);
+    try std.testing.expect(text.len < user_truncate_cap + 300);
+
+    var small = testReadResult(false);
+    defer small.deinit();
+    const text2 = try formatForUser(a, "https://x/", small);
+    defer a.free(text2);
+    try std.testing.expect(std.mem.indexOf(u8, text2, "short body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text2, "truncated") == null);
+}
+
+test "formatForAgent keeps full content" {
+    const a = std.testing.allocator;
+    var small = testReadResult(false);
+    defer small.deinit();
+    const text = try formatForAgent(a, "https://x/", small);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "URL: https://x/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "short body") != null);
 }
