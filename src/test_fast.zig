@@ -25,6 +25,7 @@ test {
     _ = @import("input/hit_test.zig");
     _ = @import("input/mouse_report.zig");
     _ = @import("input/preview_path.zig");
+    _ = @import("input/ls_path_context.zig");
     _ = @import("input/terminal_link_action.zig");
     _ = @import("input/file_drop_path.zig");
     _ = @import("renderer/overlays/profile_codec.zig");
