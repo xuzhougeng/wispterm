@@ -7,6 +7,7 @@
 //! passed in via `Options.api_key` (empty = anonymous).
 const std = @import("std");
 const platform_http = @import("platform/http_client.zig");
+const web_read_cache = @import("web_read_cache.zig");
 
 const reader_url = "https://r.jina.ai/";
 const upload_boundary = "----WispTermReaderBoundary7MA4YWxkTrZu0gW";
@@ -157,7 +158,7 @@ pub fn formatForUser(allocator: std.mem.Allocator, target: []const u8, result: *
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
     const w = out.writer(allocator);
-    try w.print("Read \"{s}\":\n", .{target});
+    try w.print("Read \"{s}\"{s}:\n", .{ target, if (result.cached) " (cached)" else "" });
     if (result.title.len > 0) try w.print("\n# {s}\n", .{result.title});
     if (result.url.len > 0) try w.print("{s}\n", .{result.url});
     try w.writeAll("\n");
@@ -337,9 +338,26 @@ pub fn executeRead(gpa: std.mem.Allocator, target: []const u8, opts: Options) !R
     const lf = try readLocalFileForUpload(gpa, resolved, opts.max_file_bytes);
     defer gpa.free(lf.bytes);
 
+    var hash_buf: [64]u8 = undefined;
+    const hash = web_read_cache.sha256Hex(lf.bytes, &hash_buf);
+    const cpath: ?[]u8 = web_read_cache.cachePath(gpa, opts.cache_dir, resolved, hash) catch null;
+    defer if (cpath) |p| gpa.free(p);
+
+    if (cpath) |p| {
+        if (web_read_cache.read(gpa, p)) |cached| {
+            defer gpa.free(cached);
+            const arena = result.arena.allocator();
+            result.url = try arena.dupe(u8, resolved);
+            result.content = try arena.dupe(u8, cached);
+            result.cached = true;
+            return result;
+        }
+    }
+
     var response = try uploadFile(gpa, lf, opts);
     defer response.deinit(gpa);
     try parseResponseInto(&result, response);
+    if (cpath) |p| web_read_cache.store(gpa, p, result.content);
     return result;
 }
 
@@ -500,4 +518,37 @@ test "formatErrorText surfaces unexpected error names" {
     const text = try formatErrorText(std.testing.allocator, error.SomethingWeird);
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "SomethingWeird") != null);
+}
+
+test "executeRead returns cached content with no network on a cache hit" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir);
+    try tmp.dir.writeFile(.{ .sub_path = "doc.pdf", .data = "PDFDATA" });
+    const pdf = try std.fs.path.join(a, &.{ dir, "doc.pdf" });
+    defer a.free(pdf);
+
+    // Pre-seed the cache at the exact path executeRead will compute.
+    var hb: [64]u8 = undefined;
+    const hash = web_read_cache.sha256Hex("PDFDATA", &hb);
+    const cpath = try web_read_cache.cachePath(a, dir, pdf, hash);
+    defer a.free(cpath);
+    web_read_cache.store(a, cpath, "CACHED MARKDOWN");
+
+    var result = try executeRead(a, pdf, .{ .cache_dir = dir });
+    defer result.deinit();
+    try std.testing.expect(result.cached);
+    try std.testing.expectEqualStrings("CACHED MARKDOWN", result.content);
+    try std.testing.expectEqualStrings(pdf, result.url);
+}
+
+test "formatForUser marks cached results" {
+    const a = std.testing.allocator;
+    var r = ReadResult{ .arena = std.heap.ArenaAllocator.init(a), .title = "", .url = "x", .content = "body", .cached = true };
+    defer r.deinit();
+    const text = try formatForUser(a, "x", &r);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "(cached)") != null);
 }
