@@ -434,6 +434,7 @@ pub const Poller = struct {
 
         var schedule = ProgressSchedule{};
         var elapsed_ms: u64 = 0;
+        var announcer = ApprovalAnnouncer{};
 
         // Wait for the AI's answer up to the context_token's validity window, not
         // the old reply_timeout_ms (<= 3 min) cap that abandoned slow tasks.
@@ -446,6 +447,20 @@ pub const Poller = struct {
 
             const progress = self.allocProgressText(job.baseline_transcript) catch continue;
             defer if (progress.text.len != 0) self.allocator.free(progress.text);
+
+            const announce_now = announcer.due(progress.needs_approval);
+            if (progress.needs_approval) {
+                if (announce_now and progress.text.len != 0) {
+                    std.debug.print(
+                        "weixin send({d}): kind=ai_approval generation={d} to_len={d} to_hash={x} bytes={d} context={}\n",
+                        .{ debugNowMs(), generation, job.to_user_id.len, debugHash(job.to_user_id), progress.text.len, job.context_token.len != 0 },
+                    );
+                    self.sendTextLocked(job.to_user_id, progress.text, job.context_token) catch |err| {
+                        std.debug.print("weixin send({d}): kind=ai_approval generation={d} status=failed err={}\n", .{ debugNowMs(), generation, err });
+                    };
+                }
+                continue;
+            }
 
             if (progress.done and progress.text.len != 0) {
                 std.debug.print(
@@ -486,15 +501,29 @@ pub const Poller = struct {
         };
     }
 
-    fn allocProgressText(self: *Poller, baseline_transcript: []const u8) !struct { done: bool, text: []u8 } {
+    fn allocProgressText(self: *Poller, baseline_transcript: []const u8) !struct { done: bool, needs_approval: bool, text: []u8 } {
         self.transcript_mutex.lock();
         defer self.transcript_mutex.unlock();
 
         const current = self.control.latestTranscript();
         const progress_value = reply_progress.progress(baseline_transcript, current);
-        if (progress_value.text.len == 0) return .{ .done = progress_value.done, .text = &.{} };
+        if (progress_value.needs_approval) {
+            const subject = if (progress_value.approval_command.len != 0)
+                progress_value.approval_command
+            else
+                progress_value.approval_tool;
+            const clipped = clipUtf8(subject, 400);
+            const text = try std.fmt.allocPrint(
+                self.allocator,
+                "⚠️ 副驾需要你确认是否执行：\n{s}\n\n回复 Y 同意 / N 拒绝。",
+                .{clipped},
+            );
+            return .{ .done = false, .needs_approval = true, .text = text };
+        }
+        if (progress_value.text.len == 0) return .{ .done = progress_value.done, .needs_approval = false, .text = &.{} };
         return .{
             .done = progress_value.done,
+            .needs_approval = false,
             .text = try self.allocator.dupe(u8, progress_value.text),
         };
     }
@@ -527,6 +556,34 @@ const ProgressSchedule = struct {
         return false;
     }
 };
+
+/// Tracks "announce a pending approval exactly once per episode". The followup
+/// loop calls due() every tick with the current needs_approval flag: it returns
+/// true on the first tick a new approval appears, false while it persists, and
+/// resets when the approval clears so a later approval re-announces.
+const ApprovalAnnouncer = struct {
+    announced: bool = false,
+
+    fn due(self: *ApprovalAnnouncer, needs_approval: bool) bool {
+        if (!needs_approval) {
+            self.announced = false;
+            return false;
+        }
+        if (self.announced) return false;
+        self.announced = true;
+        return true;
+    }
+};
+
+/// Clips `s` to at most `max` bytes WITHOUT splitting a UTF-8 codepoint, so a
+/// truncated command (which may contain CJK paths) stays valid UTF-8 in the
+/// WeChat message. Backs up off any trailing continuation bytes (0b10xxxxxx).
+fn clipUtf8(s: []const u8, max: usize) []const u8 {
+    if (s.len <= max) return s;
+    var end = max;
+    while (end > 0 and (s[end] & 0xC0) == 0x80) : (end -= 1) {}
+    return s[0..end];
+}
 
 const FollowupJob = struct {
     baseline_transcript: []u8 = &.{},
@@ -897,4 +954,85 @@ test "progress schedule pings at increasingly spaced checkpoints up to the windo
     // every checkpoint still lands well before the send deadline.
     const last = pings.items[pings.items.len - 1];
     try t.expect(last < AI_REPLY_DEADLINE_MS);
+}
+
+test "approval announcer fires once per pending episode and resets" {
+    var a = ApprovalAnnouncer{};
+    try t.expect(!a.due(false));
+    try t.expect(a.due(true)); // first pending tick → send
+    try t.expect(!a.due(true)); // still pending → silent
+    try t.expect(!a.due(false)); // cleared → reset
+    try t.expect(a.due(true)); // new pending episode → send again
+}
+
+test "clipUtf8 never splits a codepoint" {
+    try t.expectEqualStrings("rm -rf /tmp/x", clipUtf8("rm -rf /tmp/x", 400)); // shorter than max
+    try t.expectEqualStrings("abc", clipUtf8("abcdef", 3)); // ASCII boundary
+    // "测试" is 6 bytes (3 each). Cutting at 4 would split the 2nd char → drop it.
+    try t.expectEqualStrings("测", clipUtf8("测试", 4));
+    // Cutting at 3 lands exactly on the boundary after the 1st char.
+    try t.expectEqualStrings("测", clipUtf8("测试", 3));
+    // Cutting mid first char drops it entirely rather than emitting partial bytes.
+    try t.expectEqualStrings("", clipUtf8("测", 2));
+}
+
+const ApprovalTranscriptControl = struct {
+    fn isConnected(_: *anyopaque) bool {
+        return true;
+    }
+    fn findAiSurface(_: *anyopaque) ?control_mod.Surface {
+        return null;
+    }
+    fn findTerminalSurface(_: *anyopaque) ?control_mod.Surface {
+        return null;
+    }
+    fn openAiAgent(_: *anyopaque, _: u32) control_mod.OpenResult {
+        return .offline;
+    }
+    fn sendInput(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
+        return false;
+    }
+    fn latestTranscript(_: *anyopaque) []const u8 {
+        return "Model:\nGLM\n\nStatus:\nApproval needed\n\n" ++
+            "Approval:\nterminal_repl_exec\nrm -rf /tmp/x\n\nYou:\nclean up\n";
+    }
+    fn aiApprovalPending(_: *anyopaque) bool {
+        return true;
+    }
+    fn resolveAiApproval(_: *anyopaque, _: bool) bool {
+        return false;
+    }
+    var dummy: u8 = 0;
+    fn iface() control_mod.Control {
+        return .{ .ctx = &dummy, .vtable = &.{
+            .is_connected = isConnected,
+            .find_ai_surface = findAiSurface,
+            .find_terminal_surface = findTerminalSurface,
+            .open_ai_agent = openAiAgent,
+            .send_input = sendInput,
+            .latest_transcript = latestTranscript,
+            .ai_approval_pending = aiApprovalPending,
+            .resolve_ai_approval = resolveAiApproval,
+        } };
+    }
+};
+
+test "allocProgressText surfaces a needs-approval prompt naming the command" {
+    const empty_sync = try t.allocator.alloc(u8, 0);
+    defer t.allocator.free(empty_sync);
+    var p = Poller{
+        .allocator = t.allocator,
+        .client = undefined, // unused by allocProgressText
+        .control = ApprovalTranscriptControl.iface(),
+        .settings = .{},
+        .owner = "u1",
+        .account_id = "",
+        .sync_buf = empty_sync,
+    };
+    const r = try p.allocProgressText("Model:\nGLM\n\nStatus:\nReady\n\nYou:\nclean up\n");
+    defer if (r.text.len != 0) t.allocator.free(r.text);
+    try t.expect(r.needs_approval);
+    try t.expect(!r.done);
+    try t.expect(std.mem.indexOf(u8, r.text, "rm -rf /tmp/x") != null);
+    try t.expect(std.mem.indexOf(u8, r.text, "回复 Y 同意 / N 拒绝") != null);
 }
