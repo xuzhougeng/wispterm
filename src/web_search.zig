@@ -182,3 +182,119 @@ test "formatForAgent includes content; empty results message" {
     defer a.free(none);
     try std.testing.expect(std.mem.indexOf(u8, none, "No results") != null);
 }
+
+// --- Process-global Jina API key (set from config, read by both entry points) ---
+var g_jina_mutex: std.Thread.Mutex = .{};
+var g_jina_key_buf: [512]u8 = undefined;
+var g_jina_key_len: usize = 0;
+
+/// Set the Jina API key from config. Empty clears it. Oversized keys truncate.
+pub fn setJinaApiKey(key: []const u8) void {
+    g_jina_mutex.lock();
+    defer g_jina_mutex.unlock();
+    const n = @min(key.len, g_jina_key_buf.len);
+    @memcpy(g_jina_key_buf[0..n], key[0..n]);
+    g_jina_key_len = n;
+}
+
+pub fn jinaApiKeySet() bool {
+    g_jina_mutex.lock();
+    defer g_jina_mutex.unlock();
+    return g_jina_key_len > 0;
+}
+
+/// Return an owned copy of the Jina key, or null when unset. Caller frees.
+/// Copying under the lock avoids racing a concurrent `setJinaApiKey`.
+pub fn jinaApiKeyAlloc(allocator: std.mem.Allocator) !?[]u8 {
+    g_jina_mutex.lock();
+    defer g_jina_mutex.unlock();
+    if (g_jina_key_len == 0) return null;
+    return try allocator.dupe(u8, g_jina_key_buf[0..g_jina_key_len]);
+}
+
+/// Friendly, user/model-facing message for a search error.
+pub fn errorText(err: anyerror) []const u8 {
+    return switch (err) {
+        error.MissingApiKey => "Jina API key not set — add `jina-api-key = <key>` to your WispTerm config.",
+        error.Network => "Web search failed: could not reach the Jina search service.",
+        error.HttpStatus => "Web search failed: the Jina search service returned an error.",
+        error.ParseFailed => "Web search failed: could not parse the Jina response.",
+        else => "Web search failed.",
+    };
+}
+
+/// Run a web search. `gpa` is used for transient HTTP buffers; the returned
+/// `Results` owns its strings via its own arena (free with `results.deinit()`).
+pub fn executeSearch(gpa: std.mem.Allocator, query: []const u8, opts: Options) !Results {
+    if (opts.api_key.len == 0) return error.MissingApiKey;
+    var results = Results{ .arena = std.heap.ArenaAllocator.init(gpa), .items = &.{} };
+    errdefer results.arena.deinit();
+    results.items = switch (opts.engine) {
+        .jina => try searchJina(results.arena.allocator(), gpa, query, opts),
+    };
+    return results;
+}
+
+fn searchJina(arena: std.mem.Allocator, gpa: std.mem.Allocator, query: []const u8, opts: Options) ![]SearchResult {
+    const body = try buildJinaRequestBody(gpa, query);
+    defer gpa.free(body);
+    const bearer = try std.fmt.allocPrint(gpa, "Bearer {s}", .{opts.api_key});
+    defer gpa.free(bearer);
+
+    var client: std.http.Client = .{ .allocator = gpa };
+    defer client.deinit();
+
+    var resp_buf: std.Io.Writer.Allocating = .init(gpa);
+    defer resp_buf.deinit();
+
+    var extra: [2]std.http.Header = undefined;
+    var extra_len: usize = 0;
+    extra[extra_len] = .{ .name = "Accept", .value = "application/json" };
+    extra_len += 1;
+    if (!opts.with_content) {
+        extra[extra_len] = .{ .name = "X-Respond-With", .value = "no-content" };
+        extra_len += 1;
+    }
+
+    const result = client.fetch(.{
+        .location = .{ .url = "https://s.jina.ai/" },
+        .method = .POST,
+        .payload = body,
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .authorization = .{ .override = bearer },
+        },
+        .extra_headers = extra[0..extra_len],
+        .response_writer = &resp_buf.writer,
+    }) catch return error.Network;
+
+    var resp_list = resp_buf.toArrayList();
+    defer resp_list.deinit(gpa);
+
+    if (result.status != .ok) {
+        std.log.warn("jina search HTTP {d}: {s}", .{ @intFromEnum(result.status), std.mem.trim(u8, resp_list.items, " \t\r\n") });
+        return error.HttpStatus;
+    }
+    return parseJinaResponse(arena, resp_list.items, opts.max_results);
+}
+
+test "executeSearch rejects an empty api key without touching the network" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.MissingApiKey, executeSearch(arena.allocator(), "q", .{ .api_key = "", .with_content = false }));
+}
+
+test "errorText maps known errors to friendly text" {
+    try std.testing.expect(std.mem.indexOf(u8, errorText(error.MissingApiKey), "jina-api-key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, errorText(error.Network), "reach") != null);
+}
+
+test "jina api key globals round-trip and clear" {
+    setJinaApiKey("abc123");
+    try std.testing.expect(jinaApiKeySet());
+    const k = (try jinaApiKeyAlloc(std.testing.allocator)).?;
+    defer std.testing.allocator.free(k);
+    try std.testing.expectEqualStrings("abc123", k);
+    setJinaApiKey("");
+    try std.testing.expect(!jinaApiKeySet());
+}
