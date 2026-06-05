@@ -111,6 +111,13 @@ to their defaults after a confirmation dialog. It only clears the keys exposed o
 the settings page; it leaves Quake mode, your saved AI profiles, and custom
 `keybind` lines untouched.
 
+## OpenSSH config import
+
+Open the command center and run **Load OpenSSH Config** to import compatible
+entries from `~/.ssh/config` into WispTerm's SSH profiles. WispTerm imports
+`Host`, `HostName`, `User`, `Port`, and `ProxyJump`, skips wildcard host
+patterns, and does not import passwords.
+
 ## Keyboard Shortcuts
 
 WispTerm follows Ghostty's `keybind = trigger=action` style for app-level

@@ -517,6 +517,7 @@ fn transferCancelConfirmExecuteAtForTest(xpos: f32, ypos: f32, window_width: f32
 fn executeCommand(action: CommandAction) void {
     switch (action) {
         .new_tab => sessionLauncherOpen(),
+        .load_openssh_config => loadOpenSshConfigDefault(),
         .new_agent => openDefaultAgentSessionFromCommandCenter(),
         .manage_ai_profiles => openAiList(),
         .select_agent_history => commandPaletteOpenAgentHistory(),

@@ -534,6 +534,7 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
     if (active_lang != .zh_CN) return null;
     return switch (action) {
         .new_tab => "新建会话",
+        .load_openssh_config => "导入 OpenSSH 配置",
         .new_agent => "新建副驾",
         .manage_ai_profiles => "管理 AI 配置",
         .select_agent_history => "选择副驾历史",
@@ -580,6 +581,7 @@ pub fn commandDetail(action: CommandAction) ?[]const u8 {
     if (active_lang != .zh_CN) return null;
     return switch (action) {
         .new_tab => "选择 Shell、SSH、WSL、副驾 或 会话",
+        .load_openssh_config => "把 ~/.ssh/config 导入为 SSH profile",
         .new_agent => "用默认 AI 配置打开一个新的副驾标签页",
         .manage_ai_profiles => "创建、编辑或删除已保存的 AI 配置",
         .select_agent_history => "打开命令中心的副驾历史选择器",

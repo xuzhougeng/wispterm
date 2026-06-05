@@ -4,6 +4,7 @@ const std = @import("std");
 
 pub const CommandAction = enum {
     new_tab,
+    load_openssh_config,
     new_agent,
     manage_ai_profiles,
     select_agent_history,
@@ -51,6 +52,7 @@ pub const CommandEntry = struct {
 
 pub const command_entries = [_]CommandEntry{
     .{ .title = "New Session", .detail = platform_pty_command.session_launcher_detail, .shortcut = "", .action = .new_tab },
+    .{ .title = "Load OpenSSH Config", .detail = "Import ~/.ssh/config into SSH profiles", .shortcut = "", .action = .load_openssh_config },
     .{ .title = "New Copilot", .detail = "Open a new Copilot tab with the default AI config", .shortcut = "", .action = .new_agent },
     .{ .title = "Manage AI Profiles", .detail = "Create, edit, or delete saved AI profiles", .shortcut = "", .action = .manage_ai_profiles },
     .{ .title = "Select Copilot History", .detail = "Open the command-center Copilot history picker", .shortcut = "", .action = .select_agent_history },
@@ -280,6 +282,10 @@ test "findCommandAction resolves What's New" {
 
 test "findCommandAction resolves Open Jupyter" {
     try std.testing.expectEqual(CommandAction.open_jupyter_panel, findCommandAction("Open Jupyter"));
+}
+
+test "findCommandAction resolves Load OpenSSH Config" {
+    try std.testing.expectEqual(CommandAction.load_openssh_config, findCommandAction("Load OpenSSH Config"));
 }
 
 test "command center includes Copilot Markdown export actions" {
