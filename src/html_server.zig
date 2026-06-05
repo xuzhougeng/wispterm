@@ -119,9 +119,9 @@ pub fn deinit() void {
     for (&g_servers) |*slot| stopServer(slot);
 }
 
-pub fn openForSurface(allocator: std.mem.Allocator, surface: *Surface, path: []const u8) OpenResult {
+pub fn openForSurface(allocator: std.mem.Allocator, surface: *Surface, path: []const u8, ls_prefix: ?[]const u8) OpenResult {
     if (!model.isHtmlPath(path)) return .{ .err = error.NotHtml };
-    const resolved = preview_source.resolveTerminalPreviewPath(allocator, surface, path) catch |err| {
+    const resolved = preview_source.resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch |err| {
         return .{ .err = if (err == error.CwdUnavailable) error.CwdUnavailable else error.PathTooLong };
     };
     defer allocator.free(resolved);
@@ -709,7 +709,7 @@ fn termOk(term: std.process.Child.Term) bool {
 
 test "html_server: public open API shape stays stable" {
     const info = @typeInfo(@TypeOf(openForSurface)).@"fn";
-    try std.testing.expectEqual(@as(usize, 3), info.params.len);
+    try std.testing.expectEqual(@as(usize, 4), info.params.len);
     try std.testing.expect(info.return_type.? == OpenResult);
 }
 

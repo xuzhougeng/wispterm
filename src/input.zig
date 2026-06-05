@@ -48,6 +48,7 @@ const clipboard = @import("input/clipboard.zig");
 const click_tracker = @import("input/click_tracker.zig");
 const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
+const ls_path_context = @import("input/ls_path_context.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
 const mouse_report = @import("input/mouse_report.zig");
 const close_confirm = @import("close_confirm.zig");
@@ -2678,7 +2679,10 @@ fn openHtmlPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
     defer allocator.free(path);
     if (!html_server_model.isHtmlPath(path)) return false;
 
-    switch (html_server.openForSurface(allocator, surface, path)) {
+    var ls_prefix_buf: [256]u8 = undefined;
+    const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
+
+    switch (html_server.openForSurface(allocator, surface, path, ls_prefix)) {
         .url => |url| {
             defer allocator.free(url);
             const parent = AppWindow.currentNativeHandle();
@@ -2783,13 +2787,32 @@ fn openFileExplorerPreview(row_idx: usize) bool {
     return openPreviewAsync(kind, title, path, source_kind);
 }
 
+/// Infer the `ls <dir>/` directory prefix for the clicked cell, copied into
+/// `out_buf`. The returned slice points into `out_buf`, so the caller's buffer
+/// must outlive every use of the result. Returns null when no nearby `ls`
+/// command applies. Holds `render_state.mutex` only for the grid scan.
+fn lsPrefixForCell(surface: *Surface, cell_pos: CellPos, out_buf: []u8) ?[]const u8 {
+    const cols = @as(usize, @intCast(surface.size.grid.cols));
+    const rows = @as(usize, @intCast(surface.size.grid.rows));
+    if (cols == 0 or rows == 0 or cell_pos.row >= rows) return null;
+
+    surface.render_state.mutex.lock();
+    defer surface.render_state.mutex.unlock();
+
+    const grid = TerminalTokenGrid{ .surface = surface, .rows = rows, .cols = cols };
+    return ls_path_context.inferPrefixForClick(grid, cell_pos.row, out_buf);
+}
+
 fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
     const allocator = AppWindow.g_allocator orelse return false;
     const path = extractPreviewPathAtCell(allocator, surface, cell_pos) orelse return false;
     defer allocator.free(path);
 
+    var ls_prefix_buf: [256]u8 = undefined;
+    const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
+
     if (markdown_preview.detectKind(path)) |kind| {
-        const resolved_path = resolveTerminalPreviewPath(allocator, surface, path) catch {
+        const resolved_path = resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch {
             file_explorer.setTransferStatus(.failed, "Preview failed");
             return true;
         };
@@ -2819,7 +2842,10 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
     const path = extractDownloadPathAtCell(allocator, surface, cell_pos) orelse return false;
     defer allocator.free(path);
 
-    const resolved_path = resolveTerminalPreviewPath(allocator, surface, path) catch |err| {
+    var ls_prefix_buf: [256]u8 = undefined;
+    const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
+
+    const resolved_path = resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch |err| {
         if (err == error.CwdUnavailable) {
             file_explorer.setTransferStatusForKind(.download, .failed, "SSH cwd unknown");
             overlays.showSshCwdFallbackPrompt();

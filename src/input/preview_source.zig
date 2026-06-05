@@ -8,6 +8,7 @@ const platform_remote_file = @import("../platform/remote_file.zig");
 const scp = @import("../scp.zig");
 const ui_perf = @import("../ui_perf.zig");
 const preview_path = @import("preview_path.zig");
+const ls_path_context = @import("ls_path_context.zig");
 
 fn endsWithIgnoreCase(text: []const u8, suffix: []const u8) bool {
     if (text.len < suffix.len) return false;
@@ -161,22 +162,26 @@ test "preview_source: ssh relative paths require a reported cwd" {
     try std.testing.expectEqualStrings("/srv/project/data/sample.fa", relative);
 }
 
-pub fn resolveTerminalPreviewPath(allocator: std.mem.Allocator, surface: *Surface, path: []const u8) ![]u8 {
+pub fn resolveTerminalPreviewPath(allocator: std.mem.Allocator, surface: *Surface, path: []const u8, ls_prefix: ?[]const u8) ![]u8 {
+    const joined = try ls_path_context.applyLsPrefix(allocator, path, ls_prefix);
+    defer if (joined) |j| allocator.free(j);
+    const eff = joined orelse path;
+
     return switch (surface.launch_kind) {
-        .wsl => try resolveUnixTerminalPath(allocator, surface.getCwd() orelse "~", path, false),
-        .ssh => try resolveUnixTerminalPath(allocator, surface.getCwd(), path, true),
+        .wsl => try resolveUnixTerminalPath(allocator, surface.getCwd() orelse "~", eff, false),
+        .ssh => try resolveUnixTerminalPath(allocator, surface.getCwd(), eff, true),
         .local => blk: {
-            if (std.fs.path.isAbsolute(path) or (path.len >= 2 and path[1] == ':')) {
-                break :blk try allocator.dupe(u8, path);
+            if (std.fs.path.isAbsolute(eff) or (eff.len >= 2 and eff[1] == ':')) {
+                break :blk try allocator.dupe(u8, eff);
             }
             // Resolve relative to the shell's CURRENT cwd, not its launch cwd:
             // the user may have `cd`'d, and shells like zsh don't emit OSC 7,
             // so we fall back to a live process-cwd query (see dupeCurrentCwd).
             const cwd = surface.dupeCurrentCwd(allocator) orelse {
-                break :blk try allocator.dupe(u8, path);
+                break :blk try allocator.dupe(u8, eff);
             };
             defer allocator.free(cwd);
-            break :blk try std.fs.path.join(allocator, &.{ cwd, path });
+            break :blk try std.fs.path.join(allocator, &.{ cwd, eff });
         },
     };
 }
