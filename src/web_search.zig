@@ -19,6 +19,14 @@ pub const Options = struct {
     max_results: usize = 10,
 };
 
+pub const Results = struct {
+    arena: std.heap.ArenaAllocator,
+    items: []SearchResult,
+    pub fn deinit(self: *Results) void {
+        self.arena.deinit();
+    }
+};
+
 fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), s: []const u8) !void {
     try out.append(allocator, '"');
     for (s) |c| switch (c) {
@@ -45,9 +53,72 @@ pub fn buildJinaRequestBody(allocator: std.mem.Allocator, query: []const u8) ![]
     return out.toOwnedSlice(allocator);
 }
 
+fn jsonStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const v = obj.get(key) orelse return null;
+    return switch (v) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+/// Parse a Jina search JSON response (`{"data":[{title,url,description,content?},...]}`)
+/// into result structs whose strings are duped into `arena`. Caps at `max_results`.
+/// Duping into `arena` means the parsed value may safely alias `json_bytes`, which
+/// the caller frees after this returns.
+pub fn parseJinaResponse(arena: std.mem.Allocator, json_bytes: []const u8, max_results: usize) ![]SearchResult {
+    var parsed = std.json.parseFromSlice(std.json.Value, arena, json_bytes, .{}) catch return error.ParseFailed;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.ParseFailed;
+    const data_val = parsed.value.object.get("data") orelse return error.ParseFailed;
+    if (data_val != .array) return &.{};
+    const arr = data_val.array.items;
+    const n = @min(arr.len, max_results);
+    const list = try arena.alloc(SearchResult, n);
+    var count: usize = 0;
+    for (arr[0..n]) |item| {
+        if (item != .object) continue;
+        const obj = item.object;
+        list[count] = .{
+            .title = try arena.dupe(u8, jsonStr(obj, "title") orelse ""),
+            .url = try arena.dupe(u8, jsonStr(obj, "url") orelse ""),
+            .description = try arena.dupe(u8, jsonStr(obj, "description") orelse ""),
+            .content = if (jsonStr(obj, "content")) |c| try arena.dupe(u8, c) else null,
+        };
+        count += 1;
+    }
+    return list[0..count];
+}
+
 test "buildJinaRequestBody json-escapes the query" {
     const a = std.testing.allocator;
     const body = try buildJinaRequestBody(a, "say \"hi\"\nbye");
     defer a.free(body);
     try std.testing.expectEqualStrings("{\"q\":\"say \\\"hi\\\"\\nbye\"}", body);
+}
+
+test "parseJinaResponse extracts fields, honors max, tolerates missing content" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const json =
+        \\{"code":200,"data":[
+        \\{"title":"First","url":"https://a.example","description":"desc a","content":"body a"},
+        \\{"title":"Second","url":"https://b.example","description":"desc b"}
+        \\]}
+    ;
+    const items = try parseJinaResponse(arena.allocator(), json, 10);
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("First", items[0].title);
+    try std.testing.expectEqualStrings("https://b.example", items[1].url);
+    try std.testing.expectEqualStrings("body a", items[0].content.?);
+    try std.testing.expect(items[1].content == null);
+}
+
+test "parseJinaResponse caps at max_results and handles empty data" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const json = "{\"data\":[{\"title\":\"a\",\"url\":\"u\",\"description\":\"d\"},{\"title\":\"b\",\"url\":\"u\",\"description\":\"d\"}]}";
+    const capped = try parseJinaResponse(arena.allocator(), json, 1);
+    try std.testing.expectEqual(@as(usize, 1), capped.len);
+    const empty = try parseJinaResponse(arena.allocator(), "{\"data\":[]}", 10);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
 }
