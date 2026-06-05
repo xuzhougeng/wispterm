@@ -1393,14 +1393,13 @@ pub fn leftPanelsWidth() f32 {
 }
 
 pub fn aiCopilotVisible() bool {
-    return ai_sidebar.g_visible and isActiveTabTerminal();
+    return tab.activeCopilotVisible();
 }
 
-/// Hide the copilot panel if visible (used by the right-slot arbiter when
-/// another right panel opens). No-op if already hidden.
+/// Hide the active tab's copilot panel if visible (used by the right-slot
+/// arbiter when another right panel opens). No-op if already hidden.
 pub fn hideAiCopilot() void {
-    if (!ai_sidebar.g_visible) return;
-    ai_sidebar.hide();
+    if (!tab.setActiveCopilotVisible(false)) return;
     input.blurAiCopilot();
     g_force_rebuild = true;
     g_cells_valid = false;
@@ -1470,8 +1469,8 @@ pub fn appendDroppedPathToChatAtPoint(text: []const u8, x: i32, y: i32) bool {
 
 pub fn toggleAiCopilot() void {
     if (!isActiveTabTerminal()) return; // copilot is terminal-only
-    if (ai_sidebar.g_visible) {
-        ai_sidebar.hide();
+    if (tab.activeCopilotVisible()) {
+        _ = tab.setActiveCopilotVisible(false);
         input.blurAiCopilot();
         g_force_rebuild = true;
         g_cells_valid = false;
@@ -1480,7 +1479,7 @@ pub fn toggleAiCopilot() void {
     // Exclusive right slot: close the other right panels first.
     browser_panel.close();
     markdown_preview_panel.close();
-    ai_sidebar.show();
+    _ = tab.setActiveCopilotVisible(true);
     _ = ensureActiveCopilotSession();
     input.focusAiCopilot();
     g_force_rebuild = true;
@@ -1621,6 +1620,7 @@ fn clearUiStateOnTabChange() void {
     input.g_markdown_preview_resize_dragging = false;
     input.g_browser_resize_hover = false;
     input.g_browser_resize_dragging = false;
+    input.blurAiCopilot();
     browser_panel.blurUrlBar();
     input.g_divider_dragging = false;
     input.g_divider_drag_handle = null;

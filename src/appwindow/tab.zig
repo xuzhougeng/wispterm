@@ -52,6 +52,10 @@ pub const TabState = struct {
     /// `ai_chat_session`, which backs a dedicated AI-chat tab. Lazily created
     /// the first time the copilot sidebar is opened on this tab.
     copilot_session: ?*ai_chat.Session = null,
+    /// Whether this terminal tab's right-side Copilot sidebar is currently
+    /// open. The session is also per-tab; this flag prevents a Copilot opened
+    /// on one tab from appearing on another tab.
+    copilot_visible: bool = false,
 
     pub const Kind = enum {
         terminal,
@@ -217,6 +221,26 @@ pub fn activeCopilotSession(
     return t.copilot_session;
 }
 
+pub fn activeCopilotVisible() bool {
+    const t = activeTab() orelse return false;
+    return t.kind == .terminal and t.copilot_visible;
+}
+
+pub fn setActiveCopilotVisible(visible: bool) bool {
+    const t = activeTab() orelse return false;
+    if (t.kind != .terminal) return false;
+    if (t.copilot_visible == visible) return false;
+    t.copilot_visible = visible;
+    return true;
+}
+
+pub fn toggleActiveCopilotVisible() bool {
+    const t = activeTab() orelse return false;
+    if (t.kind != .terminal) return false;
+    t.copilot_visible = !t.copilot_visible;
+    return t.copilot_visible;
+}
+
 pub fn findAiTabBySessionId(session_id: []const u8) ?usize {
     for (0..g_tab_count) |idx| {
         const t = g_tabs[idx] orelse continue;
@@ -347,6 +371,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     t.ai_chat_session = null;
     t.ai_history_session = null;
     t.copilot_session = null;
+    t.copilot_visible = false;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -403,6 +428,7 @@ pub fn spawnAiChatTab(
     t.ai_chat_session = session;
     t.ai_history_session = null;
     t.copilot_session = null;
+    t.copilot_visible = false;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -432,6 +458,7 @@ pub fn spawnAiChatTabFromHistoryRecord(allocator: std.mem.Allocator, record: age
     t.ai_chat_session = session;
     t.ai_history_session = null;
     t.copilot_session = null;
+    t.copilot_visible = false;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -460,6 +487,7 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
     t.focused = .root;
     t.ai_chat_session = null;
     t.copilot_session = null;
+    t.copilot_visible = false;
     t.ai_history_session = session_ptr;
 
     g_tabs[g_tab_count] = t;
@@ -1348,6 +1376,7 @@ pub fn restoreTab(
     t.ai_chat_session = null;
     t.ai_history_session = null;
     t.copilot_session = null;
+    t.copilot_visible = false;
     applyRestoredTabMetadata(t, snap);
 
     g_tabs[g_tab_count] = t;
@@ -1595,6 +1624,47 @@ test "tab: restoreTab skips an ai_history tab when no restore hook is installed"
     };
     try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
     try std.testing.expectEqual(@as(usize, 0), g_tab_count);
+}
+
+test "tab: copilot visibility is scoped to the active terminal tab" {
+    resetTestTabGlobals();
+
+    var first = TabState{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .copilot_session = null,
+    };
+    var second = TabState{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .copilot_session = null,
+    };
+
+    g_tabs[0] = &first;
+    g_tabs[1] = &second;
+    g_tab_count = 2;
+
+    active_tab_state.g_active_tab = 0;
+    try std.testing.expect(!activeCopilotVisible());
+    try std.testing.expect(toggleActiveCopilotVisible());
+    try std.testing.expect(activeCopilotVisible());
+
+    active_tab_state.g_active_tab = 1;
+    try std.testing.expect(!activeCopilotVisible());
+    try std.testing.expect(!second.copilot_visible);
+    try std.testing.expect(!setActiveCopilotVisible(false));
+    try std.testing.expect(setActiveCopilotVisible(true));
+    try std.testing.expect(activeCopilotVisible());
+
+    active_tab_state.g_active_tab = 0;
+    try std.testing.expect(activeCopilotVisible());
+    try std.testing.expect(first.copilot_visible);
 }
 
 test "tab: snapshotTab persists focused surface title override" {

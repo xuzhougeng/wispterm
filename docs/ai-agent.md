@@ -64,8 +64,8 @@ Press `Ctrl+Shift+A` (`Cmd+Shift+A` on macOS) on a terminal tab to toggle a
 right-side AI copilot bound to the currently focused terminal. The copilot is
 terminal-only — it does not open on a Copilot tab or other non-terminal tabs.
 
-- Each terminal tab keeps its own copilot conversation. The conversation is
-  per-tab, and closing the tab discards it.
+- Each terminal tab keeps its own copilot conversation and open/closed sidebar
+  state. Closing the tab discards that conversation.
 - Terminal actions default to the current terminal, so there is no tab to pick
   before asking. The copilot can still operate other terminals when you
   explicitly ask it to.

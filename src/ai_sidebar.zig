@@ -1,9 +1,11 @@
 //! State and layout math for the right-side AI copilot sidebar.
 //!
-//! Mirrors browser_panel's right-dock width model, but the conversation lives
-//! per-tab in TabState.copilot_session — this module owns only visibility and
-//! width. Kept free of tab/AppWindow imports so the math runs in the fast test
-//! suite; the "only on terminal tabs" gate is applied by the caller (AppWindow).
+//! Mirrors browser_panel's right-dock width model, but per-tab UI state lives
+//! in TabState: `copilot_session` stores the conversation and `copilot_visible`
+//! stores whether that tab's panel is open. This module owns only shared width
+//! and layout math. Kept free of tab/AppWindow imports so the math runs in the
+//! fast test suite; visibility and the "only on terminal tabs" gate are applied
+//! by the caller (AppWindow).
 
 const std = @import("std");
 
@@ -20,8 +22,6 @@ pub const Bounds = struct {
     bottom: i32,
 };
 
-/// Global visibility flag (the active terminal tab's session is what renders).
-pub threadlocal var g_visible: bool = false;
 /// Shared width across tabs; not persisted across restarts (design decision).
 pub threadlocal var g_width: f32 = DEFAULT_WIDTH;
 
@@ -41,10 +41,9 @@ pub fn setWidth(w: f32, window_width: f32) bool {
 /// Width the panel should occupy for a given window, leaving MIN_CONTENT_WIDTH
 /// for the terminal. PURE MATH — does NOT check visibility. Callers MUST gate
 /// on visibility themselves; the only supported caller is AppWindow, which
-/// checks `aiCopilotVisible()` (g_visible AND active tab is a terminal) before
-/// using this result. The terminal-tab half of that gate cannot live here
-/// because this module deliberately avoids importing `tab`/`AppWindow` so it
-/// stays in the fast test suite.
+/// checks `aiCopilotVisible()` before using this result. The visibility gate
+/// cannot live here because this module deliberately avoids importing
+/// `tab`/`AppWindow` so it stays in the fast test suite.
 pub fn panelWidthForWindow(window_width: i32, left_offset: f32, right_offset: f32) f32 {
     const win_w: f32 = @floatFromInt(window_width);
     const max_width = @max(MIN_WIDTH, @min(MAX_WIDTH, win_w - left_offset - right_offset - MIN_CONTENT_WIDTH));
@@ -67,18 +66,6 @@ pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f
         .right = @intFromFloat(@round(right)),
         .bottom = @intFromFloat(@round(bottom)),
     };
-}
-
-pub fn show() void {
-    g_visible = true;
-}
-
-pub fn hide() void {
-    g_visible = false;
-}
-
-pub fn toggle() void {
-    g_visible = !g_visible;
 }
 
 test "panelWidthForWindow clamps to g_width when it fits" {
@@ -130,12 +117,4 @@ test "boundsForWindow respects left_offset and right_offset" {
     const b = boundsForWindow(1600, 900, 30, 200, 100);
     try std.testing.expectEqual(@as(i32, 1500), b.right); // 1600 - 100
     try std.testing.expectEqual(@as(i32, 1020), b.left); // 1500 - 480
-}
-
-test "toggle flips visibility" {
-    g_visible = false;
-    toggle();
-    try std.testing.expect(g_visible);
-    toggle();
-    try std.testing.expect(!g_visible);
 }
