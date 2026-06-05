@@ -100,6 +100,13 @@ The **Restore default settings** row resets the options the page manages, after
 a confirmation dialog. It clears only the keys exposed on the settings page — it
 leaves Quake mode, your saved AI profiles, and custom `keybind` lines untouched.
 
+## OpenSSH config import
+
+Open the command center and run **Load OpenSSH Config** to import compatible
+entries from `~/.ssh/config` into WispTerm's SSH profiles. WispTerm imports
+`Host`, `HostName`, `User`, `Port`, and `ProxyJump`, follows `Include` files,
+skips wildcard host patterns, and never imports passwords.
+
 ## Hot reload
 
 Many changes apply without restarting: save the config (or hot-reload via

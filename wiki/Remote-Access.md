@@ -60,5 +60,9 @@ binding with the other command-center entries: **WeChat: Start** and **WeChat:
 Stop** pause or resume polling without losing the binding, **WeChat: Status**
 shows the connection state, and **WeChat: Unbind** clears the saved binding.
 
+When Copilot is waiting for a tool approval, WispTerm can push that approval
+prompt to WeChat too. Reply `Y`/`yes` to approve or `N`/`no` to deny, and the
+reply is applied to the active desktop approval flow.
+
 ---
 *See also: [[Configuration]] · [[AI-Copilot]] · [[FAQ]]*

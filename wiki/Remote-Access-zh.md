@@ -53,5 +53,8 @@ WispTerm Remote **镜像本地窗口**，因为桌面应用是状态的唯一真
 **WeChat: Start** 与 **WeChat: Stop** 在不丢失绑定的前提下暂停/恢复轮询，
 **WeChat: Status** 显示连接状态，**WeChat: Unbind** 清除已保存的绑定。
 
+当 Copilot 正在等待工具审批时，WispTerm 也可以把该审批提示推送到微信。回复 `Y`/`yes`
+表示批准，回复 `N`/`no` 表示拒绝，结果会应用到当前桌面审批流程。
+
 ---
 *另见：[[配置|Configuration-zh]] · [[AI 副驾与智能体|AI-Copilot-zh]] · [[常见问题|FAQ-zh]]*

@@ -31,6 +31,14 @@ What each type renders:
 - **CSV / TSV** — shown as a grid table.
 - **Images** — PNG, JPEG, GIF, BMP, and WebP are decoded directly into the panel.
 
+## Terminal path detection
+
+Path clicks are resolved from terminal output, not only from files in the
+explorer. WispTerm keeps soft-wrapped paths together, follows path continuations
+across terminal line breaks, and can infer the directory prefix from nearby
+commands such as `ls src/input`. That means a bare filename listed by `ls <dir>`
+can preview as `<dir>/<file>` when the prefix is unambiguous.
+
 ## Opening a file in your default app
 
 Hold `Ctrl` (`Cmd` on macOS) and **right-click** a file path in a **local**

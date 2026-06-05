@@ -110,6 +110,14 @@ an alias for `ask`):
   and dangerous commands.
 - `full` — skip approval guard prompts entirely.
 
+## Remote approval replies
+
+If WeChat direct control is connected, a pending Copilot approval can also be
+sent to WeChat. Reply `Y`/`yes` to approve or `N`/`no` to deny; WispTerm routes
+that reply back into the same approval dialog that would otherwise wait in the
+desktop UI. The desktop app remains the source of truth, and protected file
+paths still use the normal access gate before an approval prompt is emitted.
+
 ## Sessions browser & resume
 
 Open the session launcher (`Ctrl+Shift+T`) and choose **Sessions** to browse

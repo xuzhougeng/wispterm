@@ -97,6 +97,12 @@ remote-enabled = false
 **恢复默认设置**一行会在确认对话框后把该页管理的选项重置为默认。它只清除设置页暴露的
 键 —— 不会动 Quake 模式、已保存的 AI 配置以及自定义 `keybind` 行。
 
+## OpenSSH config 导入
+
+打开命令中心并运行 **Load OpenSSH Config**，即可把 `~/.ssh/config` 中兼容的条目导入为
+WispTerm SSH profile。WispTerm 会导入 `Host`、`HostName`、`User`、`Port`、
+`ProxyJump`，跟随 `Include` 文件，跳过通配符 host pattern，并且永不导入密码。
+
 ## 热重载
 
 许多改动无需重启即可生效：保存配置（或用 `Ctrl+,` 热重载），WispTerm 会重新读取。
