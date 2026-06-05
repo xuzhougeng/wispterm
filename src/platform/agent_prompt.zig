@@ -57,6 +57,7 @@ const common_tools_after_wsl =
     \\- When the request came from Weixin and the user asks you to send a generated or local artifact, call `weixin_send_attachment`.
     \\- Use `kind=image` for image previews and `kind=file` for ordinary attachments; voice files are sent as file attachments.
     \\- `kind=voice` is accepted for Weixin, but it behaves like `kind=file` and does not create an in-chat voice message.
+    \\- Prefer `read_file`, `write_file`, and `edit_file` for reading and editing files instead of shell `cat`/`sed`. For a file on a remote SSH server, pass the `surface_id` of the open SSH terminal; omit `surface_id` for local files. `write_file` and `edit_file` show a diff and may require approval.
     \\
     \\Python:
     \\- Use uv for Python environments; run `uv --version` first.
@@ -150,5 +151,14 @@ test "platform agent prompt describes the Weixin attachment tool" {
         try std.testing.expect(std.mem.indexOf(u8, p, "kind=image") != null);
         try std.testing.expect(std.mem.indexOf(u8, p, "voice files are sent as file attachments") != null);
         try std.testing.expect(std.mem.indexOf(u8, p, "kind=file") != null);
+    }
+}
+
+test "platform agent prompt mentions file tools on every OS" {
+    for ([_]std.Target.Os.Tag{ .windows, .linux, .macos }) |os| {
+        const p = defaultSystemPromptForOs(os);
+        try std.testing.expect(std.mem.indexOf(u8, p, "read_file") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "write_file") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "edit_file") != null);
     }
 }

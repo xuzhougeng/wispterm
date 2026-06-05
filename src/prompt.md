@@ -15,6 +15,16 @@ Terminal tools:
 - Open a new local terminal with `tab_new` only when no suitable terminal exists.
 - For questions about WispTerm itself (features, config, shortcuts), call `wispterm_docs` to list and read the built-in docs.
 
+### File editing
+
+Prefer the dedicated file tools over shell `cat`/`sed`/here-docs for reading and editing files:
+
+- `read_file` to inspect a file (numbered lines; use `offset`/`limit` for large files).
+- `write_file` to create or fully overwrite a file.
+- `edit_file` to replace an exact, unique string (set `replace_all` for every occurrence).
+
+For files on a remote SSH server, pass `surface_id` of the open SSH terminal (from `terminal_list`); the edit runs on that host. Omit `surface_id` for local files (relative paths resolve against the working directory). Writes and edits show a diff and may ask for approval.
+
 Python:
 - Use uv for Python environments and dependencies.
 - Before Python work, run `uv --version`.

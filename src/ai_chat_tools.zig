@@ -5,6 +5,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("ai_chat_types.zig");
+const agent_file_edit = @import("agent_file_edit.zig");
+const scp = @import("scp.zig");
+const ToolSshConnection = types.SshConnection;
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ToolContext = types.ToolContext;
@@ -123,6 +126,44 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const title = jsonStringArg(args.value, "title");
         return tabCloseTool(ctx, tab_index, surface_id, title);
     }
+    if (std.mem.eql(u8, call.name, "read_file")) {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const path = jsonStringArg(args.value, "path") orelse return ctx.allocator.dupe(u8, "Missing path");
+        const surface_id = jsonStringArg(args.value, "surface_id");
+        const offset = jsonIndexArg(args.value, "offset") orelse 0;
+        const limit = jsonIndexArg(args.value, "limit") orelse 0;
+        return readFileTool(ctx, path, surface_id, offset, limit);
+    }
+    if (std.mem.eql(u8, call.name, "write_file")) {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const path = jsonStringArg(args.value, "path") orelse return ctx.allocator.dupe(u8, "Missing path");
+        // content may be empty (truncate to an empty file), so do NOT use
+        // jsonStringArg (it rejects ""). Read the raw .string.
+        const content = blk: {
+            if (args.value != .object) break :blk null;
+            const v = args.value.object.get("content") orelse break :blk null;
+            break :blk if (v == .string) v.string else null;
+        } orelse return ctx.allocator.dupe(u8, "Missing content");
+        const surface_id = jsonStringArg(args.value, "surface_id");
+        return writeFileTool(ctx, path, content, surface_id);
+    }
+    if (std.mem.eql(u8, call.name, "edit_file")) {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const path = jsonStringArg(args.value, "path") orelse return ctx.allocator.dupe(u8, "Missing path");
+        const old_string = jsonStringArg(args.value, "old_string") orelse return ctx.allocator.dupe(u8, "Missing old_string");
+        // new_string may be empty (deletion), so do NOT use jsonStringArg (it rejects ""). Read the raw .string.
+        const new_string = blk: {
+            if (args.value != .object) break :blk null;
+            const v = args.value.object.get("new_string") orelse break :blk null;
+            break :blk if (v == .string) v.string else null;
+        } orelse return ctx.allocator.dupe(u8, "Missing new_string");
+        const replace_all = jsonBoolArg(args.value, "replace_all") orelse false;
+        const surface_id = jsonStringArg(args.value, "surface_id");
+        return editFileTool(ctx, path, old_string, new_string, replace_all, surface_id);
+    }
     if (std.mem.eql(u8, call.name, "skill_info")) {
         const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
@@ -176,6 +217,15 @@ fn jsonIndexArg(root: std.json.Value, name: []const u8) ?usize {
     return switch (value) {
         .integer => |v| if (v >= 0 and v <= std.math.maxInt(usize)) @intCast(v) else null,
         .float => |v| if (v >= 0 and v <= @as(f64, @floatFromInt(std.math.maxInt(usize)))) @intFromFloat(v) else null,
+        else => null,
+    };
+}
+
+fn jsonBoolArg(root: std.json.Value, name: []const u8) ?bool {
+    if (root != .object) return null;
+    const value = root.object.get(name) orelse return null;
+    return switch (value) {
+        .bool => |b| b,
         else => null,
     };
 }
@@ -481,6 +531,40 @@ fn approvalRequiredForGate(permission: AgentPermission, gate: AccessGate) bool {
         .confirm => !gate.skip,
         .auto => gate.force,
         .full => false,
+    };
+}
+
+/// Gate a local file path. Reads only check the deny-list; writes additionally
+/// flag paths outside the working dir as risky (force). `working_dir` is the
+/// effective cwd for resolving relatives. Reuses the command guard's semantics
+/// via the shared AccessGate shape so approvalRequiredForGate maps the same way.
+fn fileAccessGate(ctx: *const ToolContext, path: []const u8, is_write: bool) AccessGate {
+    const rules = ctx.settings.access_rules;
+    const denied = if (rules) |r| ai_agent_access.isPathDenied(ctx.allocator, r, path, ctx.settings.working_dir) else false;
+    const home = if (rules) |r| r.home else "";
+    const confined = blk: {
+        const wd = ctx.settings.working_dir orelse break :blk false;
+        break :blk ai_agent_access.pathConfined(ctx.allocator, path, wd, wd, home);
+    };
+    const risky = is_write and !confined;
+    return .{
+        .dangerous = risky,
+        .blacklisted = denied,
+        .force = denied or risky,
+        .skip = if (is_write) (confined and !denied) else !denied,
+        .matched = if (denied) path else "",
+    };
+}
+
+/// Gate a remote file op: reads never prompt; writes are risky-by-default
+/// (cannot confine-check a remote path) so they prompt unless permission=full.
+fn remoteFileGate(is_write: bool) AccessGate {
+    return .{
+        .dangerous = is_write,
+        .blacklisted = false,
+        .force = is_write,
+        .skip = !is_write,
+        .matched = "",
     };
 }
 
@@ -1637,6 +1721,241 @@ fn extractUnixCommandResult(allocator: std.mem.Allocator, text: []const u8, star
     return std.fmt.allocPrint(allocator, "exit_status={s}\n{s}", .{ status, body });
 }
 
+// ---------------------------------------------------------------------------
+// File tool helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve `path` against `working_dir` if relative, then return an owned copy.
+fn resolveLocalPath(allocator: std.mem.Allocator, path: []const u8, working_dir: ?[]const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
+    if (working_dir) |wd| if (wd.len != 0) return std.fs.path.join(allocator, &.{ wd, path });
+    return allocator.dupe(u8, path);
+}
+
+fn writeLocalFileAtomic(allocator: std.mem.Allocator, resolved: []const u8, content: []const u8) !void {
+    // Ensure parent directory exists.
+    if (std.fs.path.dirname(resolved)) |dir_path| {
+        try std.fs.cwd().makePath(dir_path);
+    }
+    // Use AtomicFile for a safe replace.
+    var write_buffer: [0]u8 = .{};
+    var atomic = try std.fs.cwd().atomicFile(resolved, .{ .write_buffer = &write_buffer });
+    defer atomic.deinit();
+    try atomic.file_writer.file.writeAll(content);
+    try atomic.finish();
+    _ = allocator; // no heap needed beyond the call
+}
+
+fn renderReadResult(ctx: *ToolContext, path: []const u8, bytes: []const u8, offset: usize, limit: usize) ![]u8 {
+    if (bytes.len >= agent_file_edit.MAX_FILE_BYTES) {
+        return std.fmt.allocPrint(ctx.allocator, "File {s} is too large (>= {d} bytes). Use offset/limit to read a range.", .{ path, agent_file_edit.MAX_FILE_BYTES });
+    }
+    if (agent_file_edit.looksBinary(bytes)) {
+        return std.fmt.allocPrint(ctx.allocator, "File {s} appears to be binary; refusing to read as text.", .{path});
+    }
+    const numbered = try agent_file_edit.sliceLinesAlloc(ctx.allocator, bytes, offset, limit);
+    return truncateOwned(ctx.allocator, ctx.settings, numbered);
+}
+
+// ---------------------------------------------------------------------------
+// File tool target resolution
+// ---------------------------------------------------------------------------
+
+const FileTarget = union(enum) {
+    local,
+    remote: ToolSshConnection,
+    /// Owned error message to return verbatim to the model.
+    err: []u8,
+};
+
+/// Resolve a file tool's optional `surface_id` to a local or remote target.
+/// A missing surface_id means local. A provided surface_id (including the
+/// focused/active/current aliases) is resolved against the snapshot: an SSH
+/// surface -> remote (its connection), a local/WSL surface -> local, no match
+/// -> err (lists open surfaces).
+fn resolveFileTarget(ctx: *ToolContext, surface_id: ?[]const u8) !FileTarget {
+    const sid = surface_id orelse return .local;
+    const snapshot = ctx.tool_snapshot orelse return .local;
+    const surface = resolveSurfaceId(snapshot, sid, selectedWriteContext(ctx)) orelse {
+        return .{ .err = try allocNoSurfaceError(ctx.allocator, snapshot, sid) };
+    };
+    if (!surface.is_ssh) return .local;
+    if (ctx.sshConnectionForSurface(surface.id)) |conn| return .{ .remote = conn };
+    return .{ .err = try std.fmt.allocPrint(ctx.allocator, "Surface {s} is an SSH terminal but its connection is unavailable.", .{surface.id}) };
+}
+
+// ---------------------------------------------------------------------------
+// read_file tool
+// ---------------------------------------------------------------------------
+
+fn readFileTool(ctx: *ToolContext, path: []const u8, surface_id: ?[]const u8, offset: usize, limit: usize) ![]u8 {
+    if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+    const target = try resolveFileTarget(ctx, surface_id);
+    const remote_conn: ?ToolSshConnection = switch (target) {
+        .err => |msg| return msg,
+        .remote => |conn| conn,
+        .local => null,
+    };
+    if (remote_conn) |conn| {
+        const gate = remoteFileGate(false);
+        if (approvalRequiredForGate(ctx.settings.permission, gate)) {
+            if (!ctx.requestApproval("read_file", path, "Read remote file")) {
+                return deniedResult(ctx.allocator, path, "operator rejected remote read");
+            }
+        }
+        const bytes = scp.sshReadFile(ctx.allocator, &conn, path) orelse
+            return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s}", .{path});
+        defer ctx.allocator.free(bytes);
+        return renderReadResult(ctx, path, bytes, offset, limit);
+    }
+    const gate = fileAccessGate(ctx, path, false);
+    if (approvalRequiredForGate(ctx.settings.permission, gate)) {
+        const reason = if (gate.blacklisted) "Reads a protected path - confirm to allow" else "Read file";
+        if (!ctx.requestApproval("read_file", path, reason)) {
+            return deniedResult(ctx.allocator, path, "operator rejected file read");
+        }
+    }
+    const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
+    defer ctx.allocator.free(resolved);
+    const bytes = std.fs.cwd().readFileAlloc(ctx.allocator, resolved, agent_file_edit.MAX_FILE_BYTES) catch |err| {
+        if (err == error.FileTooBig) {
+            return std.fmt.allocPrint(ctx.allocator, "File {s} is too large (>= {d} bytes). Use offset/limit to read a range.", .{ path, agent_file_edit.MAX_FILE_BYTES });
+        }
+        return std.fmt.allocPrint(ctx.allocator, "Failed to read {s}: {s}", .{ path, @errorName(err) });
+    };
+    defer ctx.allocator.free(bytes);
+    return renderReadResult(ctx, path, bytes, offset, limit);
+}
+
+// ---------------------------------------------------------------------------
+// write_file tool
+// ---------------------------------------------------------------------------
+
+fn writeFileTool(ctx: *ToolContext, path: []const u8, content: []const u8, surface_id: ?[]const u8) ![]u8 {
+    if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+    const target = try resolveFileTarget(ctx, surface_id);
+    const remote_conn: ?ToolSshConnection = switch (target) {
+        .err => |msg| return msg,
+        .remote => |conn| conn,
+        .local => null,
+    };
+    const gate = if (remote_conn != null) remoteFileGate(true) else fileAccessGate(ctx, path, true);
+
+    // Do not disclose a protected file's existing content in the diff.
+    var old_content: []u8 = &[_]u8{};
+    var owns_old = false;
+    defer if (owns_old) ctx.allocator.free(old_content);
+    if (!gate.blacklisted) {
+        if (remote_conn) |conn| {
+            if (scp.sshReadFile(ctx.allocator, &conn, path)) |bytes| {
+                old_content = bytes;
+                owns_old = true;
+            }
+        } else {
+            const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
+            defer ctx.allocator.free(resolved);
+            if (std.fs.cwd().readFileAlloc(ctx.allocator, resolved, agent_file_edit.MAX_FILE_BYTES)) |bytes| {
+                old_content = bytes;
+                owns_old = true;
+            } else |_| {}
+        }
+    }
+
+    const diff = try agent_file_edit.unifiedDiffAlloc(ctx.allocator, path, old_content, content);
+    defer ctx.allocator.free(diff);
+    ctx.emitNote(diff);
+
+    if (approvalRequiredForGate(ctx.settings.permission, gate)) {
+        const reason = try std.fmt.allocPrint(ctx.allocator, "Write {s}", .{path});
+        defer ctx.allocator.free(reason);
+        if (!ctx.requestApproval("write_file", path, reason)) {
+            return deniedResult(ctx.allocator, path, "operator rejected file write");
+        }
+    }
+
+    if (remote_conn) |conn| {
+        if (!scp.sshWriteFile(ctx.allocator, &conn, path, content)) {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to write remote file {s}", .{path});
+        }
+    } else {
+        const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
+        defer ctx.allocator.free(resolved);
+        writeLocalFileAtomic(ctx.allocator, resolved, content) catch |err| {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to write {s}: {s}", .{ path, @errorName(err) });
+        };
+    }
+    return std.fmt.allocPrint(ctx.allocator, "Wrote {d} bytes to {s}", .{ content.len, path });
+}
+
+// ---------------------------------------------------------------------------
+// edit_file tool
+// ---------------------------------------------------------------------------
+
+fn editFileTool(ctx: *ToolContext, path: []const u8, old_string: []const u8, new_string: []const u8, replace_all: bool, surface_id: ?[]const u8) ![]u8 {
+    if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+    const target = try resolveFileTarget(ctx, surface_id);
+    const remote_conn: ?ToolSshConnection = switch (target) {
+        .err => |msg| return msg,
+        .remote => |conn| conn,
+        .local => null,
+    };
+
+    var old_content: []u8 = undefined;
+    if (remote_conn) |conn| {
+        old_content = scp.sshReadFile(ctx.allocator, &conn, path) orelse
+            return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s} for editing", .{path});
+    } else {
+        const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
+        defer ctx.allocator.free(resolved);
+        old_content = std.fs.cwd().readFileAlloc(ctx.allocator, resolved, agent_file_edit.MAX_FILE_BYTES) catch |err|
+            return std.fmt.allocPrint(ctx.allocator, "Failed to read {s}: {s}", .{ path, @errorName(err) });
+    }
+    defer ctx.allocator.free(old_content);
+
+    const outcome = agent_file_edit.applyEdit(ctx.allocator, old_content, old_string, new_string, replace_all) catch |err| {
+        return switch (err) {
+            error.EmptyOld => ctx.allocator.dupe(u8, "old_string must not be empty."),
+            error.NotFound => std.fmt.allocPrint(ctx.allocator, "old_string not found in {s}.", .{path}),
+            error.NotUnique => std.fmt.allocPrint(ctx.allocator, "old_string is not unique in {s}; pass replace_all=true or add more context.", .{path}),
+            error.OutOfMemory => error.OutOfMemory,
+        };
+    };
+    defer ctx.allocator.free(outcome.new_content);
+
+    const gate = if (remote_conn != null) remoteFileGate(true) else fileAccessGate(ctx, path, true);
+
+    // Do not disclose a protected file's content in the diff; show a redacted note.
+    if (gate.blacklisted) {
+        const note = try std.fmt.allocPrint(ctx.allocator, "edit_file {s}: protected path - diff hidden ({d} change(s))", .{ path, outcome.occurrences });
+        defer ctx.allocator.free(note);
+        ctx.emitNote(note);
+    } else {
+        const diff = try agent_file_edit.unifiedDiffAlloc(ctx.allocator, path, old_content, outcome.new_content);
+        defer ctx.allocator.free(diff);
+        ctx.emitNote(diff);
+    }
+
+    if (approvalRequiredForGate(ctx.settings.permission, gate)) {
+        const reason = try std.fmt.allocPrint(ctx.allocator, "Edit {s} ({d} change(s))", .{ path, outcome.occurrences });
+        defer ctx.allocator.free(reason);
+        if (!ctx.requestApproval("edit_file", path, reason)) {
+            return deniedResult(ctx.allocator, path, "operator rejected file edit");
+        }
+    }
+
+    if (remote_conn) |conn| {
+        if (!scp.sshWriteFile(ctx.allocator, &conn, path, outcome.new_content)) {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to write remote file {s}", .{path});
+        }
+    } else {
+        const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
+        defer ctx.allocator.free(resolved);
+        writeLocalFileAtomic(ctx.allocator, resolved, outcome.new_content) catch |err|
+            return std.fmt.allocPrint(ctx.allocator, "Failed to write {s}: {s}", .{ path, @errorName(err) });
+    }
+    return std.fmt.allocPrint(ctx.allocator, "Edited {s} ({d} change(s)).", .{ path, outcome.occurrences });
+}
+
 fn deniedResult(allocator: std.mem.Allocator, command: []const u8, reason: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "DENIED by operator (reason: {s})\ncommand: {s}", .{ reason, command });
 }
@@ -2707,4 +3026,159 @@ test "accessGate: no working dir leaves behavior unchanged" {
     const g = accessGate(&ctx, "curl http://x -o out.bin", null);
     try std.testing.expect(!g.skip);
     try std.testing.expect(!g.force);
+}
+
+test "remoteFileGate: writes force approval, reads do not" {
+    try std.testing.expect(remoteFileGate(true).force);
+    try std.testing.expect(!remoteFileGate(false).force);
+    try std.testing.expect(remoteFileGate(false).skip);
+}
+
+test "fileAccessGate: read of a normal path does not force approval" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    const ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .confirm, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const gate = fileAccessGate(&ctx, "/work/readme.txt", false);
+    try std.testing.expect(!gate.force);
+    try std.testing.expect(gate.skip);
+}
+
+test "fileAccessGate: write outside the working dir forces approval" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    const ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .confirm, .access_rules = null, .working_dir = "/home/u/proj" },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const gate = fileAccessGate(&ctx, "/etc/hosts", true);
+    try std.testing.expect(gate.force); // risky: absolute path outside working dir
+    try std.testing.expect(!gate.skip);
+}
+
+test "read_file returns numbered lines for a local file" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "r.txt", .data = "one\ntwo\n" });
+    const abs = try tmp.dir.realpathAlloc(a, "r.txt");
+    defer a.free(abs);
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try readFileTool(&ctx, abs, null, 0, 0);
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "     1\tone\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "     2\ttwo\n") != null);
+}
+
+test "write_file creates a local file in full permission mode" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_abs = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_abs);
+    const file_abs = try std.fs.path.join(a, &.{ dir_abs, "w.txt" });
+    defer a.free(file_abs);
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try writeFileTool(&ctx, file_abs, "hello\n", null);
+    defer a.free(out);
+    const written = try tmp.dir.readFileAlloc(a, "w.txt", 1024);
+    defer a.free(written);
+    try std.testing.expectEqualStrings("hello\n", written);
+}
+
+test "write_file can truncate to an empty file" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "t.txt", .data = "old content" });
+    const abs = try tmp.dir.realpathAlloc(a, "t.txt");
+    defer a.free(abs);
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try writeFileTool(&ctx, abs, "", null);
+    defer a.free(out);
+    const after = try tmp.dir.readFileAlloc(a, "t.txt", 1024);
+    defer a.free(after);
+    try std.testing.expectEqualStrings("", after);
+}
+
+test "edit_file applies a unique replacement to a local file" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "e.txt", .data = "alpha\nbeta\ngamma\n" });
+    const abs = try tmp.dir.realpathAlloc(a, "e.txt");
+    defer a.free(abs);
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try editFileTool(&ctx, abs, "beta", "BETA", false, null);
+    defer a.free(out);
+    const after = try tmp.dir.readFileAlloc(a, "e.txt", 1024);
+    defer a.free(after);
+    try std.testing.expectEqualStrings("alpha\nBETA\ngamma\n", after);
+}
+
+test "read_file with an unknown surface_id returns a no-surface error" {
+    const a = std.testing.allocator;
+    const snapshot = try twoSurfaceSnapshotForTest(a);
+    defer snapshot.deinit(a);
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = snapshot,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try readFileTool(&ctx, "/tmp/whatever.txt", "no-such-surface", 0, 0);
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "No terminal surface matches") != null);
 }

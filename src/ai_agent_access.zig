@@ -268,6 +268,29 @@ pub fn workdirConfined(
     return true;
 }
 
+/// True when a single `path` (the only argument to a file op) stays inside
+/// `working_dir`. Relative paths resolve against `effective_cwd` (which must
+/// itself be inside the working dir); `~` expands to `home`. Pure; the
+/// allocator backs only a scratch arena. Mirrors `workdirConfined` for one path.
+pub fn pathConfined(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    working_dir: []const u8,
+    effective_cwd: []const u8,
+    home: []const u8,
+) bool {
+    if (working_dir.len == 0 or path.len == 0) return false;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const root = normForCompare(a, working_dir) catch return false;
+    const base = (resolveForConfine(a, effective_cwd, home, root) catch null) orelse root;
+    if (!matchesRoot(base, root)) return false;
+    const resolved = (resolveForConfine(a, path, home, base) catch null) orelse return false;
+    return matchesRoot(resolved, root);
+}
+
 fn isAbsoluteConfinePath(p: []const u8) bool {
     if (p.len == 0) return false;
     if (p[0] == '/' or p[0] == '\\') return true;
@@ -778,4 +801,19 @@ test "workdirConfined: case-insensitive match on Windows" {
     if (builtin.os.tag != .windows) return;
     const a = std.testing.allocator;
     try std.testing.expect(workdirConfined(a, "type sub\\f.txt", "D:\\Proj", "d:\\proj", "/home/u"));
+}
+
+test "pathConfined: inside the working dir is confined" {
+    const a = std.testing.allocator;
+    const wd = "/home/u/proj";
+    try std.testing.expect(pathConfined(a, "src/main.zig", wd, "/home/u/proj", "/home/u"));
+    try std.testing.expect(pathConfined(a, "/home/u/proj/notes.txt", wd, "/home/u/proj", "/home/u"));
+}
+
+test "pathConfined: escaping or outside paths are not confined" {
+    const a = std.testing.allocator;
+    const wd = "/home/u/proj";
+    try std.testing.expect(!pathConfined(a, "../secret.txt", wd, "/home/u/proj", "/home/u"));
+    try std.testing.expect(!pathConfined(a, "/etc/passwd", wd, "/home/u/proj", "/home/u"));
+    try std.testing.expect(!pathConfined(a, "a.txt", "", "/home/u/proj", "/home/u"));
 }

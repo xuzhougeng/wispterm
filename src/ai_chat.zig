@@ -1583,6 +1583,14 @@ pub const Session = struct {
         self.scroll_px = 1_000_000;
     }
 
+    /// Thread-safe wrapper used by the tool layer (worker thread) to post a
+    /// transcript note such as a diff. Swallows OOM (best-effort UI message).
+    pub fn appendLocalToolMessage(self: *Session, text: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.appendLocalToolMessageLocked(text) catch {};
+    }
+
     fn clearDistillCandidateLocked(self: *Session) void {
         if (self.distill_candidate) |*candidate| candidate.deinit(self.allocator);
         self.distill_candidate = null;
