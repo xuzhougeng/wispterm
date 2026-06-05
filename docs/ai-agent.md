@@ -99,6 +99,16 @@ sidebar — to insert that file's absolute path into the composer. The path is
 quoted automatically when it contains spaces and is followed by a trailing
 space, so you can keep typing your request after it.
 
+## File editing
+
+The AI agent can read and edit files directly:
+
+- **read_file** — read a local or remote text file (returns numbered lines; supports an `offset`/`limit` line range for large files).
+- **write_file** — create or overwrite a file with exact content.
+- **edit_file** — replace an exact, unique string (or every occurrence with `replace_all`).
+
+To edit a file on a remote SSH server, the agent passes the `surface_id` of an open SSH terminal tab; the operation runs on that host over the existing connection. Local files (no `surface_id`) resolve relative paths against the conversation's working directory. Writes and edits display a diff and, depending on the permission level (confirm / auto / full), may ask you to approve before applying.
+
 ## Markdown Export
 
 Use the command center to run `Export Copilot Markdown` for the full transcript,
