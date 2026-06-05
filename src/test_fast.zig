@@ -40,6 +40,7 @@ test {
     _ = @import("config.zig");
     _ = @import("ai_agent_config.zig");
     _ = @import("ai_agent_access.zig");
+    _ = @import("agent_file_edit.zig");
     _ = @import("ssh_connection.zig");
     _ = @import("appwindow/active_tab.zig");
     _ = @import("scp.zig");
