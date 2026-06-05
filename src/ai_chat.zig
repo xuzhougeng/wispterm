@@ -139,6 +139,7 @@ const ImageBlock = ai_chat_protocol.ImageBlock;
 const ai_chat_title = @import("ai_chat_title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ai_chat_request = @import("ai_chat_request.zig");
+const web_search = @import("web_search.zig");
 
 pub const ChatRequest = struct {
     allocator: std.mem.Allocator,
@@ -185,6 +186,27 @@ pub const ChatRequest = struct {
             .stream = self.stream,
             .max_tokens = self.max_tokens,
         };
+    }
+};
+
+/// Lightweight background job for a `$websearch` user command. Owns its query.
+/// The spawning code stores the thread in `session.request_thread`, so
+/// `Session.deinit` joins it before freeing the session (no use-after-free).
+pub const WebSearchRequest = struct {
+    allocator: std.mem.Allocator,
+    session: *Session,
+    query: []u8,
+
+    pub fn create(allocator: std.mem.Allocator, session: *Session, query: []const u8) !*WebSearchRequest {
+        const self = try allocator.create(WebSearchRequest);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .session = session, .query = try allocator.dupe(u8, query) };
+        return self;
+    }
+
+    pub fn deinit(self: *WebSearchRequest) void {
+        self.allocator.free(self.query);
+        self.allocator.destroy(self);
     }
 };
 
@@ -1627,6 +1649,13 @@ pub const Session = struct {
         }
         // otherwise (e.g. "/help me", "/usr/bin path", or a rebound template body): fall through.
 
+        if (ai_chat_composer.parseWebCommand(first_tok)) |_| {
+            self.clearPendingWeixinReplyContextLocked();
+            self.mutex.unlock();
+            self.startWebSearchRequest(arg);
+            return;
+        }
+
         if (self.api_key_len == 0) {
             self.setStatusLocked("Missing API key. Edit the Copilot profile or set DEEPSEEK_API_KEY.");
             self.clearPendingWeixinReplyContextLocked();
@@ -2124,6 +2153,70 @@ pub const Session = struct {
             return;
         };
 
+        self.mutex.lock();
+        self.request_thread = thread;
+        self.mutex.unlock();
+    }
+
+    /// Run a `$websearch <query>` command on a background thread. Mirrors
+    /// `startDistillRequest`: reuses `request_thread`/`request_inflight` so the
+    /// existing submit-guard and `deinit` join cover lifetime. Called AFTER the
+    /// caller has unlocked `self.mutex`.
+    fn startWebSearchRequest(self: *Session, query_in: []const u8) void {
+        self.mutex.lock();
+        if (self.request_thread) |thread| {
+            if (self.request_inflight) {
+                self.clearSubmittedInputLocked();
+                self.appendLocalToolMessageLocked("Wait for the current request to finish.") catch {};
+                self.setStatusLocked("Ready");
+                self.mutex.unlock();
+                return;
+            }
+            self.request_thread = null;
+            self.mutex.unlock();
+            thread.join();
+            self.mutex.lock();
+        }
+
+        const query = std.mem.trim(u8, query_in, " \t\r\n");
+        if (query.len == 0) {
+            self.clearSubmittedInputLocked();
+            self.appendLocalToolMessageLocked("Usage: $websearch <query>") catch self.setStatusLocked("Out of memory");
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        }
+        if (!web_search.jinaApiKeySet()) {
+            self.clearSubmittedInputLocked();
+            self.appendLocalToolMessageLocked("Jina API key not set — add `jina-api-key = <key>` to your WispTerm config.") catch self.setStatusLocked("Out of memory");
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        }
+
+        const req = WebSearchRequest.create(self.allocator, self, query) catch {
+            self.clearSubmittedInputLocked();
+            self.appendLocalToolMessageLocked("Out of memory.") catch {};
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        };
+        self.clearSubmittedInputLocked();
+        self.stop_requested.store(false, .release);
+        self.request_stopping = false;
+        self.request_inflight = true;
+        self.setStatusLocked("Searching the web…");
+        self.mutex.unlock();
+
+        const thread = std.Thread.spawn(.{}, ai_chat_request.webSearchThreadMain, .{req}) catch {
+            req.deinit();
+            self.mutex.lock();
+            self.request_inflight = false;
+            self.appendLocalToolMessageLocked("Failed to start web search thread.") catch {};
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        };
         self.mutex.lock();
         self.request_thread = thread;
         self.mutex.unlock();
@@ -3401,6 +3494,23 @@ pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i
     session.setCompletionStatusLocked(started_ms, result.usage);
     session.maybeAppendDistillSuggestionLocked();
     history_change = session.captureHistoryChangeLocked();
+}
+
+/// Append a `$websearch` result (or error text) as a local tool message and
+/// finish the in-flight request. Called from the web-search worker thread with
+/// no lock held. Mirrors the closing-guarded shape of `appendAssistantResult`.
+pub fn appendWebSearchResult(session: *Session, text: []const u8) void {
+    if (session.closing.load(.acquire)) return;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.closing.load(.acquire)) return;
+    session.appendLocalToolMessageLocked(text) catch {
+        session.request_inflight = false;
+        session.setStatusLocked("Out of memory");
+        return;
+    };
+    session.request_inflight = false;
+    session.setStatusLocked("Ready");
 }
 
 pub fn applyDistillCandidate(session: *Session, candidate: *ai_skill_distill.Candidate) void {
