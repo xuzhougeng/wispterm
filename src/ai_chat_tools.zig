@@ -201,7 +201,7 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         const url = jsonStringArg(args.value, "url") orelse return ctx.allocator.dupe(u8, "Missing url");
-        return webReadTool(ctx.allocator, url);
+        return webReadTool(ctx.allocator, url, ctx.settings.working_dir);
     }
     return std.fmt.allocPrint(ctx.allocator, "Unknown tool: {s}", .{call.name});
 }
@@ -303,13 +303,14 @@ fn webSearchTool(allocator: std.mem.Allocator, query: []const u8, max_results: ?
 }
 
 /// Agent `webread` tool: read a URL or local file into markdown for the model.
-/// Key is optional (anonymous read works), so a null key becomes "".
-fn webReadTool(allocator: std.mem.Allocator, target_in: []const u8) ![]u8 {
+/// Key is optional (anonymous read works), so a null key becomes "". `working_dir`
+/// (the conversation's cwd) is the cache root and resolves relative file targets.
+fn webReadTool(allocator: std.mem.Allocator, target_in: []const u8, working_dir: ?[]const u8) ![]u8 {
     const target = std.mem.trim(u8, target_in, " \t\r\n");
     const key_opt = web_search.jinaApiKeyAlloc(allocator) catch null;
     defer if (key_opt) |k| allocator.free(k);
     const key = key_opt orelse "";
-    var result = web_read.executeRead(allocator, target, .{ .api_key = key }) catch |err|
+    var result = web_read.executeRead(allocator, target, .{ .api_key = key, .cache_dir = working_dir }) catch |err|
         return web_read.formatErrorText(allocator, err);
     defer result.deinit();
     return web_read.formatForAgent(allocator, target, &result);

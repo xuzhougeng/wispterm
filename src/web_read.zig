@@ -7,6 +7,7 @@
 //! passed in via `Options.api_key` (empty = anonymous).
 const std = @import("std");
 const platform_http = @import("platform/http_client.zig");
+const web_read_cache = @import("web_read_cache.zig");
 
 const reader_url = "https://r.jina.ai/";
 const upload_boundary = "----WispTermReaderBoundary7MA4YWxkTrZu0gW";
@@ -15,6 +16,9 @@ const user_truncate_cap: usize = 8000;
 pub const Options = struct {
     api_key: []const u8 = "", // "" = anonymous (no Authorization header)
     max_file_bytes: usize = 25 * 1024 * 1024, // reject larger local files (OOM guard)
+    // Working dir; null = cache next to the file. Used both as the `.webread_cache`
+    // root and to resolve a relative file target.
+    cache_dir: ?[]const u8 = null,
 };
 
 pub const ReadResult = struct {
@@ -22,6 +26,7 @@ pub const ReadResult = struct {
     title: []const u8,
     url: []const u8,
     content: []const u8,
+    cached: bool = false,
     pub fn deinit(self: *ReadResult) void {
         self.arena.deinit();
     }
@@ -113,6 +118,15 @@ pub fn buildMultipartBody(allocator: std.mem.Allocator, filename: []const u8, by
     return .{ .body = body, .content_type = content_type };
 }
 
+/// Resolve a relative file `target` against `cache_dir` (the working dir); an absolute
+/// target is returned as-is. Caller frees. Mirrors ai_chat_tools.resolveLocalPath so
+/// `webread` resolves the same way the file-edit tools do.
+fn resolveFilePath(allocator: std.mem.Allocator, target: []const u8, cache_dir: ?[]const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(target)) return allocator.dupe(u8, target);
+    if (cache_dir) |cd| if (cd.len > 0) return std.fs.path.join(allocator, &.{ cd, target });
+    return allocator.dupe(u8, target);
+}
+
 pub const LocalFile = struct { basename: []const u8, bytes: []u8 };
 
 /// Read a local file for upload. `basename` aliases `path` (caller keeps it alive).
@@ -145,7 +159,7 @@ pub fn formatForUser(allocator: std.mem.Allocator, target: []const u8, result: *
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
     const w = out.writer(allocator);
-    try w.print("Read \"{s}\":\n", .{target});
+    try w.print("Read \"{s}\"{s}:\n", .{ target, if (result.cached) " (cached)" else "" });
     if (result.title.len > 0) try w.print("\n# {s}\n", .{result.title});
     if (result.url.len > 0) try w.print("{s}\n", .{result.url});
     try w.writeAll("\n");
@@ -256,9 +270,7 @@ fn fetchUrl(gpa: std.mem.Allocator, url: []const u8, opts: Options) !platform_ht
     };
 }
 
-fn fetchFile(gpa: std.mem.Allocator, path: []const u8, opts: Options) !platform_http.Response {
-    const lf = try readLocalFileForUpload(gpa, path, opts.max_file_bytes);
-    defer gpa.free(lf.bytes);
+fn uploadFile(gpa: std.mem.Allocator, lf: LocalFile, opts: Options) !platform_http.Response {
     const mp = try buildMultipartBody(gpa, lf.basename, lf.bytes);
     defer gpa.free(mp.body);
     defer gpa.free(mp.content_type);
@@ -285,19 +297,9 @@ fn fetchFile(gpa: std.mem.Allocator, path: []const u8, opts: Options) !platform_
     };
 }
 
-/// Read `target` (http(s) URL or local file path) into clean markdown. The returned
-/// `ReadResult` owns its strings via its arena (free with `result.deinit()`).
-pub fn executeRead(gpa: std.mem.Allocator, target: []const u8, opts: Options) !ReadResult {
-    clearErrorDetail();
-    var result = ReadResult{ .arena = std.heap.ArenaAllocator.init(gpa), .title = "", .url = "", .content = "" };
-    errdefer result.arena.deinit();
-
-    var response = if (isHttpUrl(target))
-        try fetchUrl(gpa, target, opts)
-    else
-        try fetchFile(gpa, target, opts);
-    defer response.deinit(gpa);
-
+/// Check the HTTP status and parse the Jina JSON body into `result` (title/url/content
+/// duped into result.arena). Sets the threadlocal error detail on failure.
+fn parseResponseInto(result: *ReadResult, response: platform_http.Response) !void {
     if (response.status != 200) {
         const trimmed = std.mem.trim(u8, response.body, " \t\r\n");
         const excerpt = trimmed[0..@min(trimmed.len, 300)];
@@ -308,7 +310,6 @@ pub fn executeRead(gpa: std.mem.Allocator, target: []const u8, opts: Options) !R
         std.log.warn("jina reader HTTP {d}: {s}", .{ response.status, trimmed });
         return error.HttpStatus;
     }
-
     const fields = parseReaderResponse(result.arena.allocator(), response.body) catch |err| {
         if (err == error.ParseFailed)
             setErrorDetail(.parse_failed, "Web read failed: could not parse the Jina response ({s}).", .{@errorName(err)});
@@ -317,6 +318,51 @@ pub fn executeRead(gpa: std.mem.Allocator, target: []const u8, opts: Options) !R
     result.title = fields.title;
     result.url = fields.url;
     result.content = fields.content;
+}
+
+/// Read `target` (http(s) URL or local file path) into clean markdown. The returned
+/// `ReadResult` owns its strings via its arena (free with `result.deinit()`).
+pub fn executeRead(gpa: std.mem.Allocator, target: []const u8, opts: Options) !ReadResult {
+    clearErrorDetail();
+    var result = ReadResult{ .arena = std.heap.ArenaAllocator.init(gpa), .title = "", .url = "", .content = "" };
+    errdefer result.arena.deinit();
+
+    if (isHttpUrl(target)) {
+        var response = try fetchUrl(gpa, target, opts);
+        defer response.deinit(gpa);
+        try parseResponseInto(&result, response);
+        return result;
+    }
+
+    const resolved = try resolveFilePath(gpa, target, opts.cache_dir);
+    defer gpa.free(resolved);
+    const lf = try readLocalFileForUpload(gpa, resolved, opts.max_file_bytes);
+    defer gpa.free(lf.bytes);
+
+    var hash_buf: [64]u8 = undefined;
+    const hash = web_read_cache.sha256Hex(lf.bytes, &hash_buf);
+    const cpath: ?[]u8 = web_read_cache.cachePath(gpa, opts.cache_dir, resolved, hash) catch null;
+    defer if (cpath) |p| gpa.free(p);
+
+    if (cpath) |p| {
+        if (web_read_cache.read(gpa, p)) |cached| {
+            defer gpa.free(cached);
+            const arena = result.arena.allocator();
+            // The cache stores only the markdown body (a readable .md), so title is
+            // intentionally blank on a hit; content is what callers care about.
+            result.url = try arena.dupe(u8, resolved);
+            result.content = try arena.dupe(u8, cached);
+            result.cached = true;
+            return result;
+        }
+    }
+
+    var response = try uploadFile(gpa, lf, opts);
+    defer response.deinit(gpa);
+    try parseResponseInto(&result, response);
+    // Best-effort store of the fresh markdown; the miss→store path is network-dependent
+    // so it is not exercised by the offline tests.
+    if (cpath) |p| web_read_cache.store(p, result.content);
     return result;
 }
 
@@ -477,4 +523,37 @@ test "formatErrorText surfaces unexpected error names" {
     const text = try formatErrorText(std.testing.allocator, error.SomethingWeird);
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "SomethingWeird") != null);
+}
+
+test "executeRead returns cached content with no network on a cache hit" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir);
+    try tmp.dir.writeFile(.{ .sub_path = "doc.pdf", .data = "PDFDATA" });
+    const pdf = try std.fs.path.join(a, &.{ dir, "doc.pdf" });
+    defer a.free(pdf);
+
+    // Pre-seed the cache at the exact path executeRead will compute.
+    var hb: [64]u8 = undefined;
+    const hash = web_read_cache.sha256Hex("PDFDATA", &hb);
+    const cpath = try web_read_cache.cachePath(a, dir, pdf, hash);
+    defer a.free(cpath);
+    web_read_cache.store(cpath, "CACHED MARKDOWN");
+
+    var result = try executeRead(a, pdf, .{ .cache_dir = dir });
+    defer result.deinit();
+    try std.testing.expect(result.cached);
+    try std.testing.expectEqualStrings("CACHED MARKDOWN", result.content);
+    try std.testing.expectEqualStrings(pdf, result.url);
+}
+
+test "formatForUser marks cached results" {
+    const a = std.testing.allocator;
+    var r = ReadResult{ .arena = std.heap.ArenaAllocator.init(a), .title = "", .url = "x", .content = "body", .cached = true };
+    defer r.deinit();
+    const text = try formatForUser(a, "x", &r);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "(cached)") != null);
 }

@@ -179,7 +179,8 @@ pub fn webReadThreadMain(req: *ai_chat.WebReadRequest) void {
     defer if (key_opt) |k| allocator.free(k);
     const key = key_opt orelse "";
 
-    var result = web_read.executeRead(allocator, req.target, .{ .api_key = key }) catch |err| {
+    const cache_dir: ?[]const u8 = if (req.working_dir.len > 0) req.working_dir else null;
+    var result = web_read.executeRead(allocator, req.target, .{ .api_key = key, .cache_dir = cache_dir }) catch |err| {
         const text = web_read.formatErrorText(allocator, err) catch {
             ai_chat.appendWebSearchResult(session, web_read.errorText(err));
             return;

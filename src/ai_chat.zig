@@ -216,16 +216,20 @@ pub const WebReadRequest = struct {
     allocator: std.mem.Allocator,
     session: *Session,
     target: []u8,
+    working_dir: []u8, // "" = none; used as the cache root
 
-    pub fn create(allocator: std.mem.Allocator, session: *Session, target: []const u8) !*WebReadRequest {
+    pub fn create(allocator: std.mem.Allocator, session: *Session, target: []const u8, working_dir: []const u8) !*WebReadRequest {
         const self = try allocator.create(WebReadRequest);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .session = session, .target = try allocator.dupe(u8, target) };
+        const target_dup = try allocator.dupe(u8, target);
+        errdefer allocator.free(target_dup);
+        self.* = .{ .allocator = allocator, .session = session, .target = target_dup, .working_dir = try allocator.dupe(u8, working_dir) };
         return self;
     }
 
     pub fn deinit(self: *WebReadRequest) void {
         self.allocator.free(self.target);
+        self.allocator.free(self.working_dir);
         self.allocator.destroy(self);
     }
 };
@@ -2356,7 +2360,8 @@ pub const Session = struct {
             return;
         }
 
-        const req = WebReadRequest.create(self.allocator, self, target) catch {
+        const wd = self.effectiveWorkingDirLocked() orelse "";
+        const req = WebReadRequest.create(self.allocator, self, target, wd) catch {
             self.clearSubmittedInputLocked();
             self.appendLocalToolMessageLocked("Out of memory.") catch {};
             self.setStatusLocked("Ready");
