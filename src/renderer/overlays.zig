@@ -1623,6 +1623,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
 // ============================================================================
 
 const profile_codec = @import("overlays/profile_codec.zig");
+const openssh_config_import = @import("../openssh_config_import.zig");
 const SSH_FIELD_COUNT = profile_codec.SSH_FIELD_COUNT;
 const SSH_FIELD_MAX = profile_codec.SSH_FIELD_MAX;
 const SSH_PROFILE_MAX = 16;
@@ -1644,6 +1645,7 @@ const SessionAction = enum {
     ai_history_wsl,
     ai_history_ssh,
     connect_selected,
+    load_openssh_config,
     new_ssh,
     edit_selected,
     delete_selected,
@@ -1994,6 +1996,7 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
         .ai_history_wsl => openWslAiHistorySession(),
         .ai_history_ssh => openAiHistorySshPicker(),
         .connect_selected => runSshListRow(g_ssh_list_selected),
+        .load_openssh_config => loadOpenSshConfigDefault(),
         .new_ssh => openSshFormNew(),
         .edit_selected => openSshEditPicker(),
         .delete_selected => openSshDeletePicker(),
@@ -2177,8 +2180,28 @@ fn handleSshListKey(ev: input_key.KeyEvent) void {
 
 fn sshListRowCount() usize {
     return switch (g_ssh_list_mode) {
-        .manage => sshVisibleProfileCount() + 4,
+        .manage => sshVisibleProfileCount() + 5,
         .edit_select, .delete_select, .ai_history_select => sshVisibleProfileCount() + 1,
+    };
+}
+
+const SshManageAction = enum {
+    profile,
+    load_openssh_config,
+    new_ssh,
+    edit_ssh,
+    delete_ssh,
+    cancel,
+};
+
+fn sshManageActionForRow(row: usize, visible_profile_count: usize) SshManageAction {
+    if (row < visible_profile_count) return .profile;
+    return switch (row - visible_profile_count) {
+        0 => .load_openssh_config,
+        1 => .new_ssh,
+        2 => .edit_ssh,
+        3 => .delete_ssh,
+        else => .cancel,
     };
 }
 
@@ -2262,6 +2285,10 @@ const profileField = profile_codec.profileField;
 
 fn findSshProfileIndex(identifier_raw: []const u8) ?usize {
     loadSshProfiles();
+    return findLoadedSshProfileIndex(identifier_raw);
+}
+
+fn findLoadedSshProfileIndex(identifier_raw: []const u8) ?usize {
     const identifier = std.mem.trim(u8, identifier_raw, " \t\r\n");
     if (identifier.len == 0) return null;
 
@@ -2324,6 +2351,90 @@ pub fn aiHistorySshConnection(identifier: []const u8) ?ssh_connection.SshConnect
 const copySshProfileField = profile_codec.copySshProfileField;
 
 const makeSshProfile = profile_codec.makeSshProfile;
+
+const OpenSshImportStats = struct {
+    created: usize = 0,
+    updated: usize = 0,
+    skipped: usize = 0,
+    capped: bool = false,
+};
+
+fn mergeOpenSshCandidate(candidate: openssh_config_import.Candidate, stats: *OpenSshImportStats) void {
+    const name = candidate.name();
+    const host = candidate.host();
+    const user = candidate.user();
+    const port = candidate.port();
+    const proxy_jump = candidate.proxyJump();
+    if (name.len == 0 or host.len == 0 or user.len == 0) {
+        stats.skipped += 1;
+        return;
+    }
+    if (!isSshTokenSafe(name) or !isSshTokenSafe(host) or !isSshTokenSafe(user)) {
+        stats.skipped += 1;
+        return;
+    }
+    if (!isPortTokenSafe(port) or !command_palette_model.isProxyJumpSafe(proxy_jump)) {
+        stats.skipped += 1;
+        return;
+    }
+
+    const found_idx = findLoadedSshProfileIndex(name) orelse findLoadedSshProfileIndex(host);
+    var created_new = false;
+    const idx = found_idx orelse blk: {
+        if (g_ssh_profile_count >= SSH_PROFILE_MAX) {
+            stats.capped = true;
+            return;
+        }
+        const next = g_ssh_profile_count;
+        g_ssh_profile_count += 1;
+        g_ssh_profiles[next] = .{};
+        created_new = true;
+        break :blk next;
+    };
+
+    if (idx >= g_ssh_profile_count) {
+        stats.skipped += 1;
+        return;
+    }
+
+    if (created_new) {
+        stats.created += 1;
+    } else {
+        stats.updated += 1;
+    }
+    const profile = &g_ssh_profiles[idx];
+    copySshProfileField(profile, .name, name);
+    copySshProfileField(profile, .ip, host);
+    copySshProfileField(profile, .user, user);
+    copySshProfileField(profile, .port, if (port.len > 0) port else "22");
+    copySshProfileField(profile, .proxy_jump, proxy_jump);
+}
+
+fn opensshCandidateSetForTest(candidate: *openssh_config_import.Candidate, comptime field: enum { name, host, user, port, proxy_jump }, value: []const u8) void {
+    const len = @min(value.len, openssh_config_import.FIELD_MAX);
+    switch (field) {
+        .name => {
+            @memcpy(candidate.name_buf[0..len], value[0..len]);
+            candidate.name_len = len;
+        },
+        .host => {
+            @memcpy(candidate.host_buf[0..len], value[0..len]);
+            candidate.host_len = len;
+        },
+        .user => {
+            @memcpy(candidate.user_buf[0..len], value[0..len]);
+            candidate.user_len = len;
+        },
+        .port => {
+            @memcpy(candidate.port_buf[0..len], value[0..len]);
+            candidate.port_len = len;
+        },
+        .proxy_jump => {
+            @memcpy(candidate.proxy_jump_buf[0..len], value[0..len]);
+            candidate.proxy_jump_len = len;
+        },
+    }
+}
 
 pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat.SshProfileSaveArgs) !AppWindow.ai_chat.SavedSshProfile {
     loadSshProfiles();
@@ -2396,17 +2507,16 @@ fn runSshListRow(row: usize) void {
     const visible_profile_count = sshVisibleProfileCount();
     switch (g_ssh_list_mode) {
         .manage => {
-            if (row < visible_profile_count) {
-                const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
-                connectSshProfile(profile_idx);
-                return;
-            }
-            const action_row = row - visible_profile_count;
-            switch (action_row) {
-                0 => openSshFormNew(),
-                1 => openSshEditPicker(),
-                2 => openSshDeletePicker(),
-                else => sessionLauncherClose(),
+            switch (sshManageActionForRow(row, visible_profile_count)) {
+                .profile => {
+                    const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
+                    connectSshProfile(profile_idx);
+                },
+                .load_openssh_config => loadOpenSshConfigDefault(),
+                .new_ssh => openSshFormNew(),
+                .edit_ssh => openSshEditPicker(),
+                .delete_ssh => openSshDeletePicker(),
+                .cancel => sessionLauncherClose(),
             }
         },
         .edit_select => {
@@ -3311,26 +3421,70 @@ fn loadSshProfiles() void {
 const decodeSshProfileLine = profile_codec.decodeSshProfileLine;
 
 fn saveSshProfiles(allocator: std.mem.Allocator) void {
-    const path = sshProfilesPath(allocator) catch return;
+    _ = saveSshProfilesChecked(allocator);
+}
+
+fn saveSshProfilesChecked(allocator: std.mem.Allocator) bool {
+    const path = sshProfilesPath(allocator) catch return false;
     defer allocator.free(path);
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch return;
+        std.fs.cwd().makePath(dir) catch return false;
     }
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
-    out.appendSlice(allocator, "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump.\n") catch return;
+    out.appendSlice(allocator, "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump.\n") catch return false;
     for (g_ssh_profiles[0..g_ssh_profile_count]) |profile| {
         for (0..SSH_FIELD_COUNT) |i| {
-            if (i > 0) out.append(allocator, '\t') catch return;
-            appendHexField(allocator, &out, profile.fields[i][0..profile.lens[i]]) catch return;
+            if (i > 0) out.append(allocator, '\t') catch return false;
+            appendHexField(allocator, &out, profile.fields[i][0..profile.lens[i]]) catch return false;
         }
-        out.append(allocator, '\n') catch return;
+        out.append(allocator, '\n') catch return false;
     }
 
-    const file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch return;
+    const file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch return false;
     defer file.close();
-    file.writeAll(out.items) catch {};
+    file.writeAll(out.items) catch return false;
+    return true;
+}
+
+fn loadOpenSshConfigDefault() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    loadSshProfiles();
+
+    const path = platform_dirs.openSshConfigPath(allocator) catch {
+        openSshList();
+        showStatusToast("OpenSSH config not found");
+        return;
+    };
+    defer allocator.free(path);
+
+    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch {
+        openSshList();
+        showStatusToast("OpenSSH config not found");
+        return;
+    };
+    defer allocator.free(content);
+
+    var candidates_buf: [64]openssh_config_import.Candidate = undefined;
+    const candidates = openssh_config_import.parseCandidates(content, &candidates_buf);
+    var stats = OpenSshImportStats{};
+    for (candidates) |candidate| mergeOpenSshCandidate(candidate, &stats);
+
+    var saved = true;
+    if (stats.created + stats.updated > 0) {
+        saved = saveSshProfilesChecked(allocator);
+    }
+    openSshList();
+
+    var msg_buf: [96]u8 = undefined;
+    const msg = if (stats.created + stats.updated == 0)
+        "No OpenSSH hosts imported"
+    else if (!saved)
+        std.fmt.bufPrint(&msg_buf, "Imported {d}, updated {d} SSH profiles (not saved)", .{ stats.created, stats.updated }) catch "Imported OpenSSH profiles (not saved)"
+    else
+        std.fmt.bufPrint(&msg_buf, "Imported {d}, updated {d} SSH profiles", .{ stats.created, stats.updated }) catch "Imported OpenSSH profiles";
+    showStatusToast(msg);
 }
 
 fn appendHexField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
@@ -3479,6 +3633,7 @@ fn sessionDesiredBoxWidth() f32 {
         }
         switch (g_ssh_list_mode) {
             .manage => {
+                desired = @max(desired, sessionTwoColumnWidth("Load OpenSSH config", "~/.ssh/config"));
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_new_ssh_server, i18n.s().sl_v_add));
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server));
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server));
@@ -3571,10 +3726,12 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         g_ssh_list_selected = row;
         if (row < sshVisibleProfileCount()) return .connect_selected;
         if (g_ssh_list_mode != .manage) return .connect_selected;
-        return switch (row - sshVisibleProfileCount()) {
-            0 => .new_ssh,
-            1 => .edit_selected,
-            2 => .delete_selected,
+        return switch (sshManageActionForRow(row, sshVisibleProfileCount())) {
+            .profile => .connect_selected,
+            .load_openssh_config => .load_openssh_config,
+            .new_ssh => .new_ssh,
+            .edit_ssh => .edit_selected,
+            .delete_ssh => .delete_selected,
             else => .cancel,
         };
     }
@@ -3791,6 +3948,8 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             }
             switch (g_ssh_list_mode) {
                 .manage => {
+                    renderSessionRow(layout, window_height, row, "Load OpenSSH config", "~/.ssh/config", g_ssh_list_selected == row);
+                    row += 1;
                     renderSessionRow(layout, window_height, row, i18n.s().sl_new_ssh_server, i18n.s().sl_v_add, g_ssh_list_selected == row);
                     row += 1;
                     renderSessionRow(layout, window_height, row, i18n.s().sl_edit_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server, g_ssh_list_selected == row);
@@ -4717,11 +4876,66 @@ test "overlays: SSH list filter matches server name prefixes case-insensitively"
     try std.testing.expectEqual(@as(usize, 2), sshVisibleProfileCount());
     try std.testing.expectEqual(@as(?usize, 1), sshVisibleProfileIndexAt(0));
     try std.testing.expectEqual(@as(?usize, 2), sshVisibleProfileIndexAt(1));
-    try std.testing.expectEqual(@as(usize, 6), sshListRowCount());
+    try std.testing.expectEqual(@as(usize, 7), sshListRowCount());
 
     appendSshListFilterText("x1");
     try std.testing.expectEqual(@as(usize, 1), sshVisibleProfileCount());
     try std.testing.expectEqual(@as(?usize, 1), sshVisibleProfileIndexAt(0));
+}
+
+test "overlays: SSH manage list includes Load OpenSSH config action" {
+    const saved_count = g_ssh_profile_count;
+    const saved_mode = g_ssh_list_mode;
+    const saved_filter_len = g_ssh_list_filter_len;
+    const saved_selected = g_ssh_list_selected;
+    defer {
+        g_ssh_profile_count = saved_count;
+        g_ssh_list_mode = saved_mode;
+        g_ssh_list_filter_len = saved_filter_len;
+        g_ssh_list_selected = saved_selected;
+    }
+
+    g_ssh_profile_count = 0;
+    g_ssh_list_mode = .manage;
+    g_ssh_list_filter_len = 0;
+    g_ssh_list_selected = 0;
+    try std.testing.expectEqual(@as(usize, 5), sshListRowCount());
+    try std.testing.expectEqual(SshManageAction.load_openssh_config, sshManageActionForRow(0, sshVisibleProfileCount()));
+    try std.testing.expectEqual(SshManageAction.new_ssh, sshManageActionForRow(1, sshVisibleProfileCount()));
+
+    g_ssh_profile_count = 1;
+    g_ssh_profiles[0] = makeSshProfile("GPU", "10.0.0.1", "user", "22");
+    try std.testing.expectEqual(@as(usize, 6), sshListRowCount());
+    try std.testing.expectEqual(SshManageAction.profile, sshManageActionForRow(0, sshVisibleProfileCount()));
+    try std.testing.expectEqual(SshManageAction.load_openssh_config, sshManageActionForRow(1, sshVisibleProfileCount()));
+}
+
+test "overlays: OpenSSH import merge preserves existing password" {
+    const saved_count = g_ssh_profile_count;
+    defer {
+        g_ssh_profile_count = saved_count;
+    }
+
+    g_ssh_profile_count = 1;
+    g_ssh_profiles[0] = makeSshProfile("lab", "old.example", "olduser", "22");
+    copySshProfileField(&g_ssh_profiles[0], .password, "secret");
+
+    var candidate = openssh_config_import.Candidate{};
+    opensshCandidateSetForTest(&candidate, .name, "lab");
+    opensshCandidateSetForTest(&candidate, .host, "new.example");
+    opensshCandidateSetForTest(&candidate, .user, "alice");
+    opensshCandidateSetForTest(&candidate, .port, "2222");
+    opensshCandidateSetForTest(&candidate, .proxy_jump, "jump.example");
+
+    var stats = OpenSshImportStats{};
+    mergeOpenSshCandidate(candidate, &stats);
+
+    try std.testing.expectEqual(@as(usize, 1), stats.updated);
+    try std.testing.expectEqualStrings("new.example", profileField(&g_ssh_profiles[0], .ip));
+    try std.testing.expectEqualStrings("alice", profileField(&g_ssh_profiles[0], .user));
+    try std.testing.expectEqualStrings("2222", profileField(&g_ssh_profiles[0], .port));
+    try std.testing.expectEqualStrings("jump.example", profileField(&g_ssh_profiles[0], .proxy_jump));
+    try std.testing.expectEqualStrings("secret", profileField(&g_ssh_profiles[0], .password));
 }
 
 test "overlays: SSH list filter backspace restores matching rows" {
