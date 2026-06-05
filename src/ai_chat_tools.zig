@@ -304,7 +304,8 @@ fn webSearchTool(allocator: std.mem.Allocator, query: []const u8, max_results: ?
 
 /// Agent `webread` tool: read a URL or local file into markdown for the model.
 /// Key is optional (anonymous read works), so a null key becomes "".
-fn webReadTool(allocator: std.mem.Allocator, target: []const u8) ![]u8 {
+fn webReadTool(allocator: std.mem.Allocator, target_in: []const u8) ![]u8 {
+    const target = std.mem.trim(u8, target_in, " \t\r\n");
     const key_opt = web_search.jinaApiKeyAlloc(allocator) catch null;
     defer if (key_opt) |k| allocator.free(k);
     const key = key_opt orelse "";

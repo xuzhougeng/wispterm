@@ -1650,7 +1650,8 @@ const default_config_template =
     \\# ai-agent-output-limit = 16384
     \\# ai-agent-working-dir =          # default dir for downloads/clones (empty = unset)
     \\
-    \\# Web search (Jina) — used by $websearch and the websearch agent tool
+    \\# Jina API key — used by $websearch / websearch and $webread / webread
+    \\# (optional for $webread: r.jina.ai reads anonymously)
     \\# jina-api-key =
     \\
     \\# Updates

@@ -75,8 +75,9 @@ pub const Options = struct {
 - `parseReaderResponse(arena, json_bytes) !ReadResult-fields` → reads
   `{"code":200,"data":{"title","url","content"}}`. Tolerates missing `title`/`url`
   (default `""`); a missing/empty `content` with no usable data → `error.ParseFailed`.
-  Uses `parseFromSlice` with `.allocate = .alloc_always` (source buffer freed before use —
-  see the parseFromSlice alias UAF note).
+  Uses `parseFromSlice` with default options (`.{}`) and dupes every field into `arena`
+  *before* the caller frees the source buffer — so the result never aliases freed bytes
+  (same pattern as `web_search.parseJinaResponse`; avoids the parseFromSlice alias UAF).
 - `formatForUser(allocator, target, result) ![]u8` → transcript block:
   header echoing the target, then `# <title>`, the source URL line, and the content —
   **truncated to ~8000 chars** with a `…(truncated, N chars total)` note so a huge page
