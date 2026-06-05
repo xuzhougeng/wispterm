@@ -636,6 +636,7 @@ comptime {
     _ = @import("build_guards.zig");
     _ = @import("command_center_state.zig");
     _ = @import("command_palette_model.zig");
+    _ = @import("openssh_config_import.zig");
     _ = @import("config.zig");
     _ = @import("i18n.zig");
     _ = @import("config_watcher.zig");
