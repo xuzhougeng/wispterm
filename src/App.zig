@@ -103,6 +103,7 @@ ai_agent_permission: ai_chat.AgentPermission,
 ai_agent_command_timeout_ms: u32,
 ai_agent_output_limit: u32,
 ai_agent_working_dir: []const u8,
+jina_api_key: []const u8,
 
 // Session persistence
 restore_tabs_on_startup: bool,
@@ -193,6 +194,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     errdefer freeOptStr(allocator, background_image);
     const ai_agent_working_dir = try dupeStr(allocator, cfg.@"ai-agent-working-dir");
     errdefer allocator.free(ai_agent_working_dir);
+    const jina_api_key = try dupeStr(allocator, cfg.@"jina-api-key");
+    errdefer allocator.free(jina_api_key);
 
     var app = App{
         .allocator = allocator,
@@ -243,6 +246,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
         .ai_agent_output_limit = cfg.@"ai-agent-output-limit",
         .ai_agent_working_dir = ai_agent_working_dir,
+        .jina_api_key = jina_api_key,
         .restore_tabs_on_startup = cfg.@"restore-tabs-on-startup",
         .auto_update_check = cfg.@"auto-update-check",
         .whats_new_on_update = cfg.@"whats-new-on-update",
@@ -412,6 +416,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms";
     self.ai_agent_output_limit = cfg.@"ai-agent-output-limit";
     self.replaceStr(&self.ai_agent_working_dir, cfg.@"ai-agent-working-dir");
+    self.replaceStr(&self.jina_api_key, cfg.@"jina-api-key");
     self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
     self.auto_update_check = cfg.@"auto-update-check";
     self.whats_new_on_update = cfg.@"whats-new-on-update";
@@ -1050,6 +1055,7 @@ pub fn deinit(self: *App) void {
     freeOptStr(self.allocator, self.font_family_cjk);
     freeOptStr(self.allocator, self.font_family_fallback);
     self.allocator.free(self.ai_agent_working_dir);
+    self.allocator.free(self.jina_api_key);
     freeOptStr(self.allocator, self.shader_path);
     freeOptStr(self.allocator, self.title);
     freeOptStr(self.allocator, self.remote_server_url);
