@@ -84,6 +84,7 @@ test {
     _ = @import("weixin/ilink_client.zig");
     _ = @import("weixin/media.zig");
     _ = @import("weixin/binding.zig");
+    _ = @import("weixin/approval_reply.zig");
     _ = @import("ai_chat_title.zig");
     _ = @import("command_registry.zig");
     _ = @import("jupyter_detect.zig");
