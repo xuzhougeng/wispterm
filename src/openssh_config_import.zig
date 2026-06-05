@@ -223,15 +223,20 @@ test "openssh config import: parses proxy jump" {
 
 test "openssh config import: splits aliases and skips wildcard aliases" {
     const config =
-        \\Host gpu gpu-* ?bad [group] *
+        \\Host gpu gpu-lab gpu-* ?bad [group] *
         \\  HostName gpu.example
         \\  User xzg
         \\
     ;
     var out: [8]Candidate = undefined;
     const rows = parseCandidates(config, &out);
-    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    try std.testing.expectEqual(@as(usize, 2), rows.len);
     try std.testing.expectEqualStrings("gpu", rows[0].name());
+    try std.testing.expectEqualStrings("gpu.example", rows[0].host());
+    try std.testing.expectEqualStrings("xzg", rows[0].user());
+    try std.testing.expectEqualStrings("gpu-lab", rows[1].name());
+    try std.testing.expectEqualStrings("gpu.example", rows[1].host());
+    try std.testing.expectEqualStrings("xzg", rows[1].user());
 }
 
 test "openssh config import: ignores comments blank lines and unsupported blocks" {
