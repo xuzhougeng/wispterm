@@ -30,6 +30,8 @@ test "looksLikePreviewPath: markdown and image and pdf paths" {
     try std.testing.expect(looksLikePreviewPath("notes.pdf"));
     try std.testing.expect(looksLikePreviewPath("~/file"));
     try std.testing.expect(looksLikePreviewPath("dir/file"));
+    try std.testing.expect(looksLikePreviewPath("model.R"));
+    try std.testing.expect(looksLikePreviewPath("plot.r"));
 }
 
 test "looksLikePreviewPath: rejects urls and empty" {

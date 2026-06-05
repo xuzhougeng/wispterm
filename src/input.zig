@@ -2876,6 +2876,32 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
     return true;
 }
 
+/// Ctrl+right-click (Cmd on macOS) over a local terminal opens the file path
+/// under the cursor in the OS default app. Returns true only when it launched
+/// an open; false otherwise so the caller falls through to the configured
+/// right-click action (copy/paste) for plain right-clicks, remote terminals,
+/// empty space, and non-path text.
+fn openInEditorAtRightClick(ev: platform_input.MouseButtonEvent) bool {
+    const surface = split_layout.surfaceAtPoint(ev.x, ev.y) orelse return false;
+    if (!terminal_link_action.rightClickOpensInEditor(
+        surface.launch_kind,
+        primaryOpenMod(ev.ctrl, ev.super),
+        ev.shift,
+        ev.alt,
+    )) return false;
+
+    const allocator = AppWindow.g_allocator orelse return false;
+    const cell_pos = mouseToSurfaceCell(surface, @floatFromInt(ev.x), @floatFromInt(ev.y));
+
+    const path = extractPreviewPathAtCell(allocator, surface, cell_pos) orelse return false;
+    defer allocator.free(path);
+
+    const resolved = resolveTerminalPreviewPath(allocator, surface, path) catch return false;
+    defer allocator.free(resolved);
+
+    return platform_open_url.open(allocator, .{ .url = resolved });
+}
+
 fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     if (ev.action == .press) g_close_shortcut_confirm_until_ms = 0;
     if (overlays.whatsNewVisible()) {
@@ -3091,8 +3117,10 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         return;
     }
 
-    // Right-click follows Ghostty-compatible right-click-action config.
+    // Ctrl+right-click (Cmd on macOS) over a local terminal opens the file under
+    // the cursor in the OS default app; otherwise follow the configured action.
     if (ev.button == .right and ev.action == .release) {
+        if (openInEditorAtRightClick(ev)) return;
         handleConfiguredRightClick();
         return;
     }
