@@ -3229,11 +3229,12 @@ var g_weixin_transcript_mutex: std.Thread.Mutex = .{};
 var g_weixin_transcript_owned: []u8 = &.{};
 
 const WeixinRequest = struct {
-    op: enum { find_ai, find_term, open_ai, send_input, latest_transcript },
-    // send_input input (valid for the duration of the synchronous call):
-    surface_id: [16]u8 = [_]u8{0} ** 16,
-    bytes: []const u8 = "",
-    reply_context: ?weixin_types.ReplyContext = null,
+    op: enum { find_ai, find_term, open_ai, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval },
+    // operation inputs (valid for the duration of the synchronous call):
+    surface_id: [16]u8 = [_]u8{0} ** 16, // send_input
+    bytes: []const u8 = "", // send_input
+    reply_context: ?weixin_types.ReplyContext = null, // send_input
+    approve: bool = false, // resolve_ai_approval
     // outputs filled by the UI-thread handler:
     found: bool = false,
     out_surface_id: [16]u8 = [_]u8{0} ** 16,
@@ -3343,6 +3344,21 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
             req.transcript = session.allocRemoteSnapshot(std.heap.page_allocator) catch return;
             req.found = true;
         },
+        .ai_approval_pending => {
+            const idx = weixinActiveAiTabIndex() orelse return;
+            const tab_state = tab.g_tabs[idx] orelse return;
+            if (tab_state.kind != .ai_chat) return;
+            const session = tab_state.ai_chat_session orelse return;
+            req.found = session.approvalView() != null;
+        },
+        .resolve_ai_approval => {
+            const idx = weixinActiveAiTabIndex() orelse return;
+            const tab_state = tab.g_tabs[idx] orelse return;
+            if (tab_state.kind != .ai_chat) return;
+            const session = tab_state.ai_chat_session orelse return;
+            req.sent = session.resolveApprovalExternal(req.approve);
+            if (req.sent) g_force_rebuild = true;
+        },
     }
 }
 
@@ -3395,6 +3411,18 @@ fn wxTranscript(_: *anyopaque) []const u8 {
     return g_weixin_transcript_owned;
 }
 
+fn wxAiApprovalPending(_: *anyopaque) bool {
+    var req = WeixinRequest{ .op = .ai_approval_pending };
+    if (!weixinDispatch(&req)) return false;
+    return req.found;
+}
+
+fn wxResolveAiApproval(_: *anyopaque, approve: bool) bool {
+    var req = WeixinRequest{ .op = .resolve_ai_approval, .approve = approve };
+    if (!weixinDispatch(&req)) return false;
+    return req.sent;
+}
+
 const weixin_vtable = weixin_control.Control.VTable{
     .is_connected = wxIsConnected,
     .find_ai_surface = wxFindAiSurface,
@@ -3402,6 +3430,8 @@ const weixin_vtable = weixin_control.Control.VTable{
     .open_ai_agent = wxOpenAiAgent,
     .send_input = wxSendInput,
     .latest_transcript = wxTranscript,
+    .ai_approval_pending = wxAiApprovalPending,
+    .resolve_ai_approval = wxResolveAiApproval,
 };
 
 /// The Control the weixin controller drives. Backed by process-global state, so

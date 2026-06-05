@@ -18,6 +18,8 @@ pub const Control = struct {
         open_ai_agent: *const fn (ctx: *anyopaque, timeout_ms: u32) OpenResult,
         send_input: *const fn (ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) bool,
         latest_transcript: *const fn (ctx: *anyopaque) []const u8,
+        ai_approval_pending: *const fn (ctx: *anyopaque) bool,
+        resolve_ai_approval: *const fn (ctx: *anyopaque, approve: bool) bool,
     };
 
     pub fn isConnected(self: Control) bool {
@@ -37,5 +39,11 @@ pub const Control = struct {
     }
     pub fn latestTranscript(self: Control) []const u8 {
         return self.vtable.latest_transcript(self.ctx);
+    }
+    pub fn aiApprovalPending(self: Control) bool {
+        return self.vtable.ai_approval_pending(self.ctx);
+    }
+    pub fn resolveAiApproval(self: Control, approve: bool) bool {
+        return self.vtable.resolve_ai_approval(self.ctx, approve);
     }
 };

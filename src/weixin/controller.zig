@@ -501,6 +501,12 @@ const NoopControl = struct {
     fn latest_transcript(_: *anyopaque) []const u8 {
         return "";
     }
+    fn ai_approval_pending(_: *anyopaque) bool {
+        return false;
+    }
+    fn resolve_ai_approval(_: *anyopaque, _: bool) bool {
+        return false;
+    }
     var dummy: u8 = 0;
     fn iface() control_mod.Control {
         return .{ .ctx = &dummy, .vtable = &.{
@@ -510,6 +516,8 @@ const NoopControl = struct {
             .open_ai_agent = open_ai_agent,
             .send_input = send_input,
             .latest_transcript = latest_transcript,
+            .ai_approval_pending = ai_approval_pending,
+            .resolve_ai_approval = resolve_ai_approval,
         } };
     }
 };
