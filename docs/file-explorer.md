@@ -7,13 +7,23 @@ active environment:
 - WSL sessions browse the default WSL distro through `wsl.exe`.
 - WispTerm SSH profile sessions browse the remote host through OpenSSH helpers.
 
-Hold `Ctrl` (`Cmd` on macOS) and click a `.md`, `.txt`, `.csv`, `.tsv`, or
-supported image file in terminal output, or double-click a supported file in
-the File Explorer, to open the right-side preview panel.
+Hold `Ctrl` (`Cmd` on macOS) and click a `.md`, `.txt`, `.csv`, `.tsv`, a
+source-code or script file (including R scripts `.r` / `.R`), or a supported
+image file in terminal output, or double-click a supported file in the File
+Explorer, to open the right-side preview panel.
 Markdown previews render headings, lists, blockquotes, code blocks, inline code,
-links, and horizontal rules. Text files are shown as plain text. CSV and TSV
+links, and horizontal rules. Text, source-code, and script files (such as `.r`,
+`.R`, `.py`, `.zig`, `.sh`, `.json`) are shown as plain text. CSV and TSV
 files are shown as a grid table. Image previews decode PNG, JPEG, GIF, BMP, and
 WebP bytes directly into the panel.
+
+Hold `Ctrl` (`Cmd` on macOS) and **right-click** a file path in a local terminal
+to open it in your operating system's default application for that file type
+(`xdg-open` on Linux, `open` on macOS, the registered handler on Windows). This
+works for local terminals only — SSH and WSL paths cannot be opened by a local
+app, so there `Ctrl`-right-click falls through to the configured
+`right-click-action` (copy/paste). A plain right-click without `Ctrl` always
+performs the configured `right-click-action`.
 
 In SSH profile sessions, hold `Ctrl+Shift` (`Cmd+Shift` on macOS) over a file
 path in terminal output to underline it, then click to download that remote file to
