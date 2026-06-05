@@ -2,9 +2,15 @@
 //! against a baseline. Port of poller.ts aiReplyProgress + parseAiSections.
 const std = @import("std");
 
-pub const Progress = struct { done: bool = false, text: []const u8 = "" };
+pub const Progress = struct {
+    done: bool = false,
+    text: []const u8 = "",
+    needs_approval: bool = false,
+    approval_tool: []const u8 = "", // borrows from `current`
+    approval_command: []const u8 = "", // borrows from `current`
+};
 
-const Role = enum { metadata, user, assistant, tool, reasoning };
+const Role = enum { metadata, user, assistant, tool, reasoning, approval };
 const Section = struct { role: Role, label: []const u8, content: []const u8 };
 
 const MAX_SECTIONS = 256;
@@ -23,6 +29,29 @@ pub fn progress(baseline: []const u8, current: []const u8) Progress {
     const cur_msgs = filterMessages(cur_sections, &cur_msg_buf);
     const new_msgs = afterBaseline(base_msgs, cur_msgs);
     const status = latestStatus(cur_sections);
+
+    // Approval is a live-state signal, intentionally NOT baseline-diffed: the
+    // snapshot writer only emits an `Approval:` section while the copilot is
+    // actually blocked (approval_pending and not resolved), so its presence in
+    // `current` means the approval is pending right now. Sending the WeChat
+    // prompt only once per episode is the caller's job (the poller's
+    // ApprovalAnnouncer), not this pure detector's.
+    for (cur_sections) |s| {
+        if (s.role == .approval) {
+            var tool = trim(s.content);
+            var command: []const u8 = "";
+            if (std.mem.indexOfScalar(u8, tool, '\n')) |nl| {
+                command = trim(tool[nl + 1 ..]);
+                tool = trim(tool[0..nl]);
+            }
+            return .{
+                .needs_approval = true,
+                .done = false,
+                .approval_tool = tool,
+                .approval_command = command,
+            };
+        }
+    }
 
     var last_assistant: ?[]const u8 = null;
     for (new_msgs) |m| {
@@ -93,6 +122,7 @@ fn asLabel(line: []const u8) ?Role {
     if (eq(name, "Tool")) return .tool;
     if (eq(name, "Reasoning")) return .reasoning;
     if (eq(name, "Model") or eq(name, "Status")) return .metadata;
+    if (eq(name, "Approval")) return .approval;
     return null;
 }
 
@@ -206,4 +236,36 @@ test "not done while a tool turn is still streaming" {
     const p = progress(baseline, current);
     try t.expect(!p.done);
     try t.expect(p.text.len != 0);
+}
+
+test "approval section is detected and takes priority over done/tool branches" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nclean up\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nApproval needed\n\n" ++
+        "Approval:\nterminal_repl_exec\nrm -rf /tmp/x\n\n" ++
+        "You:\nclean up\n\nTool:\nrunning\n\nAI:\npre-tool note\n";
+    const p = progress(baseline, current);
+    try t.expect(p.needs_approval);
+    try t.expect(!p.done);
+    try t.expectEqualStrings("terminal_repl_exec", p.approval_tool);
+    try t.expectEqualStrings("rm -rf /tmp/x", p.approval_command);
+}
+
+test "no approval section leaves needs_approval false" {
+    const p = progress("You:\nhi\n", "You:\nhi\nAI:\nthere\nStatus:\nidle\n");
+    try t.expect(!p.needs_approval);
+    try t.expect(p.done);
+}
+
+test "a resolved approval (gone from current) does not re-fire even if baseline had one" {
+    // Detection reads `current`, not the baseline: once the copilot resolves the
+    // approval the snapshot stops emitting the section, so the turn completes
+    // normally rather than reporting needs_approval again.
+    const baseline =
+        "Model:\nGLM\n\nApproval:\nterminal_repl_exec\nrm -rf /tmp/x\n\nYou:\nclean up\n";
+    const current =
+        "Model:\nGLM\n\nYou:\nclean up\n\nAI:\ndone\nStatus:\nidle\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.needs_approval);
+    try t.expect(p.done);
 }
