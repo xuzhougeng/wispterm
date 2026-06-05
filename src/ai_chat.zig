@@ -1366,6 +1366,28 @@ pub const Session = struct {
     }
 
     pub fn allocRemoteSnapshot(self: *Session, allocator: std.mem.Allocator) ![]u8 {
+        // Capture any pending approval under approval_mutex BEFORE taking
+        // self.mutex (sequential locks, never nested — no reverse ordering
+        // exists, so this cannot deadlock). A resolution racing the gap between
+        // the two locks costs at most one extra Approval snapshot, which the
+        // remote consumer's once-per-episode announcer already de-dupes.
+        var cap_tool_buf: [64]u8 = undefined;
+        var cap_cmd_buf: [1024]u8 = undefined;
+        var cap_tool: []const u8 = "";
+        var cap_command: []const u8 = "";
+        {
+            self.approval_mutex.lock();
+            defer self.approval_mutex.unlock();
+            if (self.approval_pending and !self.approval_resolved) {
+                const tl = self.approval_tool_len;
+                @memcpy(cap_tool_buf[0..tl], self.approval_tool_buf[0..tl]);
+                cap_tool = cap_tool_buf[0..tl];
+                const cl = self.approval_command_len;
+                @memcpy(cap_cmd_buf[0..cl], self.approval_command_buf[0..cl]);
+                cap_command = cap_cmd_buf[0..cl];
+            }
+        }
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -1374,6 +1396,17 @@ pub const Session = struct {
 
         try appendLimitedSection(allocator, &out, "Model", self.model(), REMOTE_SNAPSHOT_MAX_BYTES);
         try appendLimitedSection(allocator, &out, "Status", self.status(), REMOTE_SNAPSHOT_MAX_BYTES);
+
+        if (cap_tool.len != 0) {
+            var approval_text: std.ArrayListUnmanaged(u8) = .empty;
+            defer approval_text.deinit(allocator);
+            try approval_text.appendSlice(allocator, cap_tool);
+            if (cap_command.len != 0) {
+                try approval_text.append(allocator, '\n');
+                try approval_text.appendSlice(allocator, cap_command);
+            }
+            try appendLimitedSection(allocator, &out, "Approval", approval_text.items, REMOTE_SNAPSHOT_MAX_BYTES);
+        }
 
         var sections: std.ArrayListUnmanaged(RemoteSnapshotSection) = .empty;
         defer sections.deinit(allocator);
@@ -1464,6 +1497,13 @@ pub const Session = struct {
         self.approval_pending = false;
         self.approval_cond.signal();
         return true;
+    }
+
+    /// Resolve a pending approval from a remote driver (e.g. the WeChat bridge),
+    /// mirroring the local handleApprovalKey path. Returns true if there was a
+    /// pending approval to resolve.
+    pub fn resolveApprovalExternal(self: *Session, approve: bool) bool {
+        return self.resolveApproval(approve);
     }
 
     pub fn requestApproval(self: *Session, tool: []const u8, command: []const u8, reason: []const u8) bool {
@@ -5305,6 +5345,62 @@ test "ai chat remote snapshot still includes reasoning when it fits" {
 
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "all good") != null);
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "checked the state first") != null);
+}
+
+test "ai chat remote snapshot includes a pending approval section" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+    try session.messages.append(allocator, .{
+        .role = .user,
+        .content = try allocator.dupe(u8, "clean up"),
+    });
+
+    const tool = "terminal_repl_exec";
+    const command = "rm -rf /tmp/x";
+    @memcpy(session.approval_tool_buf[0..tool.len], tool);
+    session.approval_tool_len = tool.len;
+    @memcpy(session.approval_command_buf[0..command.len], command);
+    session.approval_command_len = command.len;
+    session.approval_pending = true;
+    session.approval_resolved = false;
+
+    const with = try session.allocRemoteSnapshot(allocator);
+    defer allocator.free(with);
+    try std.testing.expect(std.mem.indexOf(u8, with, "Approval:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with, "terminal_repl_exec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with, "rm -rf /tmp/x") != null);
+
+    // Once resolved, the section disappears.
+    try std.testing.expect(session.resolveApprovalExternal(true));
+    const without = try session.allocRemoteSnapshot(allocator);
+    defer allocator.free(without);
+    try std.testing.expect(std.mem.indexOf(u8, without, "Approval:") == null);
+}
+
+test "ai chat remote snapshot approval section omits the command line when empty" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    const tool = "weather_lookup";
+    @memcpy(session.approval_tool_buf[0..tool.len], tool);
+    session.approval_tool_len = tool.len;
+    session.approval_command_len = 0; // no command argument
+    session.approval_pending = true;
+    session.approval_resolved = false;
+
+    const snapshot = try session.allocRemoteSnapshot(allocator);
+    defer allocator.free(snapshot);
+    // The tool-only approval still emits a section naming the tool, with no
+    // trailing command line (the `\n<command>` branch is skipped).
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "Approval:\r\nweather_lookup") != null);
 }
 
 test "ai chat clipboard text exports transcript when input is empty" {
