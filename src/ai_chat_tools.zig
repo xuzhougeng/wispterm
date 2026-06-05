@@ -180,6 +180,15 @@ fn jsonIndexArg(root: std.json.Value, name: []const u8) ?usize {
     };
 }
 
+fn jsonBoolArg(root: std.json.Value, name: []const u8) ?bool {
+    if (root != .object) return null;
+    const value = root.object.get(name) orelse return null;
+    return switch (value) {
+        .bool => |b| b,
+        else => null,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Skill / docs tools (allocator-only, no context)
 // ---------------------------------------------------------------------------
@@ -481,6 +490,40 @@ fn approvalRequiredForGate(permission: AgentPermission, gate: AccessGate) bool {
         .confirm => !gate.skip,
         .auto => gate.force,
         .full => false,
+    };
+}
+
+/// Gate a local file path. Reads only check the deny-list; writes additionally
+/// flag paths outside the working dir as risky (force). `working_dir` is the
+/// effective cwd for resolving relatives. Reuses the command guard's semantics
+/// via the shared AccessGate shape so approvalRequiredForGate maps the same way.
+fn fileAccessGate(ctx: *const ToolContext, path: []const u8, is_write: bool) AccessGate {
+    const rules = ctx.settings.access_rules;
+    const denied = if (rules) |r| ai_agent_access.isPathDenied(ctx.allocator, r, path, ctx.settings.working_dir) else false;
+    const home = if (rules) |r| r.home else "";
+    const confined = blk: {
+        const wd = ctx.settings.working_dir orelse break :blk false;
+        break :blk ai_agent_access.pathConfined(ctx.allocator, path, wd, wd, home);
+    };
+    const risky = is_write and !confined;
+    return .{
+        .dangerous = risky,
+        .blacklisted = denied,
+        .force = denied or risky,
+        .skip = if (is_write) (confined and !denied) else !denied,
+        .matched = if (denied) path else "",
+    };
+}
+
+/// Gate a remote file op: reads never prompt; writes are risky-by-default
+/// (cannot confine-check a remote path) so they prompt unless permission=full.
+fn remoteFileGate(is_write: bool) AccessGate {
+    return .{
+        .dangerous = is_write,
+        .blacklisted = false,
+        .force = is_write,
+        .skip = !is_write,
+        .matched = "",
     };
 }
 
@@ -2707,4 +2750,44 @@ test "accessGate: no working dir leaves behavior unchanged" {
     const g = accessGate(&ctx, "curl http://x -o out.bin", null);
     try std.testing.expect(!g.skip);
     try std.testing.expect(!g.force);
+}
+
+test "remoteFileGate: writes force approval, reads do not" {
+    try std.testing.expect(remoteFileGate(true).force);
+    try std.testing.expect(!remoteFileGate(false).force);
+    try std.testing.expect(remoteFileGate(false).skip);
+}
+
+test "fileAccessGate: read of a normal path does not force approval" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    const ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .confirm, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const gate = fileAccessGate(&ctx, "/work/readme.txt", false);
+    try std.testing.expect(!gate.force);
+    try std.testing.expect(gate.skip);
+}
+
+test "fileAccessGate: write outside the working dir forces approval" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    const ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .confirm, .access_rules = null, .working_dir = "/home/u/proj" },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const gate = fileAccessGate(&ctx, "/etc/hosts", true);
+    try std.testing.expect(gate.force); // risky: absolute path outside working dir
+    try std.testing.expect(!gate.skip);
 }
