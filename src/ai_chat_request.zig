@@ -9,6 +9,7 @@ const ChatRequest = ai_chat.ChatRequest;
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_skill_distill = @import("ai_skill_distill.zig");
 const ai_chat_tools = @import("ai_chat_tools.zig");
+const web_search = @import("web_search.zig");
 const ai_chat_types = @import("ai_chat_types.zig");
 
 // Type aliases from ai_chat_protocol
@@ -123,6 +124,45 @@ pub fn distillThreadMain(request: *ChatRequest) void {
         return;
     };
     ai_chat.applyDistillCandidate(request.session, &candidate);
+}
+
+/// Background worker for one `$websearch` command. Owns `req`; frees it on exit.
+/// Re-fetches the Jina key on this thread, runs the search (snippets only), and
+/// appends the formatted results to the transcript.
+pub fn webSearchThreadMain(req: *ai_chat.WebSearchRequest) void {
+    defer req.deinit();
+    const allocator = req.allocator;
+    const session = req.session;
+    if (session.closing.load(.acquire)) return;
+
+    const key = (web_search.jinaApiKeyAlloc(allocator) catch null) orelse {
+        ai_chat.appendWebSearchResult(session, web_search.errorText(error.MissingApiKey));
+        return;
+    };
+    defer allocator.free(key);
+
+    var results = web_search.executeSearch(allocator, req.query, .{
+        .engine = .jina,
+        .api_key = key,
+        .with_content = false,
+        .max_results = 10,
+    }) catch |err| {
+        const text = web_search.formatErrorText(allocator, err) catch {
+            ai_chat.appendWebSearchResult(session, web_search.errorText(err));
+            return;
+        };
+        defer allocator.free(text);
+        ai_chat.appendWebSearchResult(session, text);
+        return;
+    };
+    defer results.deinit();
+
+    const text = web_search.formatForUser(allocator, req.query, results.items) catch {
+        ai_chat.appendWebSearchResult(session, "Out of memory formatting results.");
+        return;
+    };
+    defer allocator.free(text);
+    ai_chat.appendWebSearchResult(session, text);
 }
 
 // ---------------------------------------------------------------------------

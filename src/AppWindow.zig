@@ -170,6 +170,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
         .output_limit = app.ai_agent_output_limit,
     });
     ai_chat.setDefaultWorkingDir(app.ai_agent_working_dir);
+    @import("web_search.zig").setJinaApiKey(app.jina_api_key);
     // Copy shell command from App
     @memcpy(tab.g_shell_cmd_buf[0..app.shell_cmd_len], app.shell_cmd_buf[0..app.shell_cmd_len]);
     tab.g_shell_cmd_buf[app.shell_cmd_len] = 0;
@@ -2603,6 +2604,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
         .output_limit = cfg.@"ai-agent-output-limit",
     });
     ai_chat.setDefaultWorkingDir(cfg.@"ai-agent-working-dir");
+    @import("web_search.zig").setJinaApiKey(cfg.@"jina-api-key");
 
     if (g_window == null) return;
     g_quake_mode = cfg.@"quake-mode";

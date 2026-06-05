@@ -47,6 +47,7 @@ const macos_objective_c_sources = [_][]const u8{
     "src/platform/font_macos_bridge.m",
     "src/platform/services_macos_bridge.m",
     "src/platform/menu_macos_bridge.m",
+    "src/platform/http_client_macos_bridge.m",
 };
 
 const MacosBundleMetadata = struct {
@@ -607,6 +608,19 @@ pub fn build(b: *std.Build) void {
         .name = "wispterm-fast-test",
         .root_module = fast_test_mod,
     });
+    switch (b.graph.host.result.os.tag) {
+        .windows => fast_test_mod.linkSystemLibrary("winhttp", .{}),
+        .macos => {
+            fast_test_mod.addCSourceFile(.{
+                .file = b.path("src/platform/http_client_macos_bridge.m"),
+                .flags = &.{},
+                .language = .objective_c,
+            });
+            fast_test_mod.linkFramework("Foundation", .{});
+            fast_test_mod.linkSystemLibrary("objc", .{});
+        },
+        else => {},
+    }
     test_step.dependOn(&b.addRunArtifact(fast_tests).step);
 
     // Posix-native libc-linked tests: file I/O, libc (localtime), fork.

@@ -305,6 +305,9 @@ theme: ?[]const u8 = null,
 /// Default working directory for the AI agent's local commands (empty = unset).
 @"ai-agent-working-dir": []const u8 = "",
 
+/// API key for the Jina web search engine (https://s.jina.ai). Empty = unset.
+@"jina-api-key": []const u8 = "",
+
 /// The shell to run in the terminal. Platform aliases are resolved by
 /// platform/pty_command.zig; any other value is treated as a raw command path.
 shell: []const u8 = platform_pty_command.default_shell_name,
@@ -819,6 +822,8 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         };
     } else if (std.mem.eql(u8, key, "ai-agent-working-dir")) {
         self.@"ai-agent-working-dir" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "jina-api-key")) {
+        self.@"jina-api-key" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "shell")) {
         self.shell = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "ai-default-profile")) {
@@ -1278,6 +1283,7 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --ai-agent-command-timeout-ms <ms> Agent command timeout budget
         \\  --ai-agent-output-limit <bytes> Max bytes returned by each tool
         \\  --ai-agent-working-dir <path> Default working directory for agent local commands
+        \\  --jina-api-key <key>         API key for the Jina web search ($websearch)
         \\  --auto-update-check <bool>  Check GitHub Releases after startup
         \\  --config-file <path>         Include another config file (prefix ? for optional)
         \\  --keybind <binding>          Configure a shortcut, e.g. global:ctrl+backquote=toggle_quake
@@ -1642,6 +1648,9 @@ const default_config_template =
     \\# ai-agent-command-timeout-ms = 60000
     \\# ai-agent-output-limit = 16384
     \\# ai-agent-working-dir =          # default dir for downloads/clones (empty = unset)
+    \\
+    \\# Web search (Jina) — used by $websearch and the websearch agent tool
+    \\# jina-api-key =
     \\
     \\# Updates
     \\# auto-update-check = true
@@ -2062,4 +2071,12 @@ test "config: ai-agent-working-dir parses from a config line" {
     defer cfg.deinit(allocator); // dupeString tracks the value in _owned_strings
     cfg.applyKeyValue(allocator, "ai-agent-working-dir", "/home/u/proj", ".");
     try std.testing.expectEqualStrings("/home/u/proj", cfg.@"ai-agent-working-dir");
+}
+
+test "config: jina-api-key parses from a config line" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    cfg.applyKeyValue(allocator, "jina-api-key", "jina_abc", ".");
+    try std.testing.expectEqualStrings("jina_abc", cfg.@"jina-api-key");
 }

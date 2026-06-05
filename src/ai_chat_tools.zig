@@ -28,6 +28,7 @@ const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
 const ai_agent_access = @import("ai_agent_access.zig");
+const web_search = @import("web_search.zig");
 
 /// Number of output lines included in a copilot context block.
 pub const COPILOT_CONTEXT_LINES: usize = 40;
@@ -188,6 +189,13 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const display_name = jsonStringArg(args.value, "display_name") orelse "";
         return weixinSendAttachmentTool(ctx, kind, path, display_name);
     }
+    if (std.mem.eql(u8, call.name, "websearch")) {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const query = jsonStringArg(args.value, "query") orelse return ctx.allocator.dupe(u8, "Missing query");
+        const max_results = jsonIntArg(args.value, "max_results");
+        return webSearchTool(ctx.allocator, query, max_results);
+    }
     return std.fmt.allocPrint(ctx.allocator, "Unknown tool: {s}", .{call.name});
 }
 
@@ -269,6 +277,22 @@ pub fn wisptermDocsTool(allocator: std.mem.Allocator, topic: ?[]const u8) ![]u8 
         return out.toOwnedSlice(allocator);
     }
     return wispterm_docs.listTopics(allocator);
+}
+
+/// Agent `websearch` tool: full-content Jina search, formatted for the model.
+fn webSearchTool(allocator: std.mem.Allocator, query: []const u8, max_results: ?u32) ![]u8 {
+    const key = (web_search.jinaApiKeyAlloc(allocator) catch null) orelse
+        return web_search.formatErrorText(allocator, error.MissingApiKey);
+    defer allocator.free(key);
+    const max: usize = if (max_results) |m| @min(@max(m, 1), 20) else 10;
+    var results = web_search.executeSearch(allocator, query, .{
+        .engine = .jina,
+        .api_key = key,
+        .with_content = true,
+        .max_results = max,
+    }) catch |err| return web_search.formatErrorText(allocator, err);
+    defer results.deinit();
+    return web_search.formatForAgent(allocator, query, results.items);
 }
 
 // ---------------------------------------------------------------------------

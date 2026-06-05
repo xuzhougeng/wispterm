@@ -21,6 +21,21 @@ pub const SlashCommand = enum {
     unknown,
 };
 
+pub const WebCommand = enum { websearch };
+
+/// Reserved `$`-prefixed commands shown in the same dropdown as skills.
+pub const ReservedWebCommand = struct { name: []const u8, description: []const u8 };
+pub const reserved_web_commands = [_]ReservedWebCommand{
+    .{ .name = "websearch", .description = "search the web (Jina)" },
+};
+
+/// Match the first whitespace-delimited token against a reserved `$` command.
+/// `token` is e.g. "$websearch" (the value of `first_tok` in Session.submit).
+pub fn parseWebCommand(token: []const u8) ?WebCommand {
+    if (std.mem.eql(u8, token, "$websearch")) return .websearch;
+    return null;
+}
+
 pub const ComposerSuggestionKind = enum {
     slash_command,
     skill,
@@ -258,6 +273,9 @@ pub fn skillSuggestionCountForPrefix(prefix: []const u8, skills: []const skill_r
     if (prefix.len == 0 or prefix[0] != '$') return 0;
     const skill_prefix = prefix[1..];
     var count: usize = 0;
+    for (reserved_web_commands) |rc| {
+        if (std.mem.startsWith(u8, rc.name, skill_prefix)) count += 1;
+    }
     for (skills) |meta| {
         if (std.mem.startsWith(u8, meta.name, skill_prefix)) count += 1;
     }
@@ -272,6 +290,15 @@ pub fn skillSuggestionAtForPrefix(
     if (prefix.len == 0 or prefix[0] != '$') return null;
     const skill_prefix = prefix[1..];
     var match_index: usize = 0;
+    for (reserved_web_commands) |rc| {
+        if (!std.mem.startsWith(u8, rc.name, skill_prefix)) continue;
+        if (match_index == suggestion_index) return .{
+            .kind = .skill,
+            .text = rc.name,
+            .description = rc.description,
+        };
+        match_index += 1;
+    }
     for (skills) |meta| {
         if (!std.mem.startsWith(u8, meta.name, skill_prefix)) continue;
         if (match_index == suggestion_index) return .{
@@ -413,6 +440,21 @@ test "suggestionReplacementText adds a space after a skill when needed" {
     try std.testing.expectEqualStrings("$build", suggestionReplacementText(&buf, sk, " x").?);
     const cmd = ComposerSuggestion{ .kind = .slash_command, .text = "/skills", .description = "" };
     try std.testing.expectEqualStrings("/skills", suggestionReplacementText(&buf, cmd, "").?);
+}
+
+test "parseWebCommand matches only the $websearch token" {
+    try std.testing.expectEqual(WebCommand.websearch, parseWebCommand("$websearch").?);
+    try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("$websearchx"));
+    try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("$web"));
+    try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("/websearch"));
+    try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("websearch"));
+}
+
+test "reserved $websearch appears in the $ suggestion dropdown" {
+    try std.testing.expectEqual(@as(usize, 1), skillSuggestionCountForPrefix("$web", &.{}));
+    const s = skillSuggestionAtForPrefix("$web", &.{}, 0).?;
+    try std.testing.expectEqual(ComposerSuggestionKind.skill, s.kind);
+    try std.testing.expectEqualStrings("websearch", s.text);
 }
 
 test "parseCwdArg classifies show, reset, and set" {
