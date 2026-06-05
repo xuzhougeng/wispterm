@@ -7,6 +7,21 @@ pub const Span = struct {
     end: usize,
 };
 
+pub const GridCell = struct {
+    row: usize,
+    col: usize,
+};
+
+pub const GridToken = struct {
+    text: []u8,
+    start: GridCell,
+    end: GridCell,
+
+    pub fn deinit(self: GridToken, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+    }
+};
+
 pub fn isDelimiter(cp: u21) bool {
     if (cp == 0 or cp <= 0x20) return true;
     return switch (cp) {
@@ -41,6 +56,113 @@ pub fn trimSpan(token: []const u8) Span {
     return .{ .start = start, .end = end };
 }
 
+/// Extract a delimiter-bounded token from a terminal-like grid. The `grid`
+/// argument is any type that provides:
+///
+/// - rowCount() usize
+/// - colCount(row) usize
+/// - codepoint(row, col) u21
+/// - wrapsNext(row) bool
+/// - continuesFromPrev(row) bool
+///
+/// Soft-wrapped rows are joined only when both adjacent row flags agree:
+/// previous row `wrapsNext` and next row `continuesFromPrev`.
+pub fn extractGridTokenAtCell(
+    allocator: std.mem.Allocator,
+    grid: anytype,
+    cell: GridCell,
+) ?GridToken {
+    const rows = grid.rowCount();
+    if (rows == 0 or cell.row >= rows) return null;
+
+    const clicked_cols = grid.colCount(cell.row);
+    if (clicked_cols == 0) return null;
+    const click_col = @min(cell.col, clicked_cols - 1);
+    if (isDelimiter(grid.codepoint(cell.row, click_col))) return null;
+
+    var start = GridCell{ .row = cell.row, .col = click_col };
+    while (true) {
+        if (start.col > 0) {
+            const prev_col = start.col - 1;
+            if (isDelimiter(grid.codepoint(start.row, prev_col))) break;
+            start.col = prev_col;
+            continue;
+        }
+
+        if (start.row == 0) break;
+        const prev_row = start.row - 1;
+        if (!grid.continuesFromPrev(start.row) or !grid.wrapsNext(prev_row)) break;
+
+        const prev_cols = grid.colCount(prev_row);
+        if (prev_cols == 0) break;
+        const prev_col = prev_cols - 1;
+        if (isDelimiter(grid.codepoint(prev_row, prev_col))) break;
+
+        start = .{ .row = prev_row, .col = prev_col };
+    }
+
+    var end = GridCell{ .row = cell.row, .col = click_col };
+    while (true) {
+        const cols = grid.colCount(end.row);
+        if (end.col + 1 < cols) {
+            const next_col = end.col + 1;
+            if (isDelimiter(grid.codepoint(end.row, next_col))) break;
+            end.col = next_col;
+            continue;
+        }
+
+        const next_row = end.row + 1;
+        if (next_row >= rows) break;
+        if (!grid.wrapsNext(end.row) or !grid.continuesFromPrev(next_row)) break;
+
+        const next_cols = grid.colCount(next_row);
+        if (next_cols == 0) break;
+        if (isDelimiter(grid.codepoint(next_row, 0))) break;
+
+        end = .{ .row = next_row, .col = 0 };
+    }
+
+    var token: std.ArrayListUnmanaged(u8) = .empty;
+    defer token.deinit(allocator);
+    var positions: std.ArrayListUnmanaged(GridCell) = .empty;
+    defer positions.deinit(allocator);
+
+    var pos = start;
+    while (true) {
+        const cp = grid.codepoint(pos.row, pos.col);
+        if (isDelimiter(cp)) break;
+
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &buf) catch break;
+        token.appendSlice(allocator, buf[0..len]) catch return null;
+        positions.append(allocator, pos) catch return null;
+
+        if (pos.row == end.row and pos.col == end.col) break;
+
+        const cols = grid.colCount(pos.row);
+        if (pos.col + 1 < cols) {
+            pos.col += 1;
+        } else {
+            pos.row += 1;
+            pos.col = 0;
+        }
+    }
+
+    const span = trimSpan(token.items);
+    if (span.start >= span.end) return null;
+
+    const leading_cells = utf8CodepointCount(token.items[0..span.start]);
+    const kept_cells = utf8CodepointCount(token.items[span.start..span.end]);
+    if (kept_cells == 0 or leading_cells + kept_cells > positions.items.len) return null;
+
+    const text = allocator.dupe(u8, token.items[span.start..span.end]) catch return null;
+    return .{
+        .text = text,
+        .start = positions.items[leading_cells],
+        .end = positions.items[leading_cells + kept_cells - 1],
+    };
+}
+
 const Decoded = struct {
     cp: u21,
     len: usize,
@@ -61,6 +183,14 @@ fn previousCodepointStart(text: []const u8, start: usize, end: usize) ?usize {
         cursor += codepointAt(text, cursor).len;
     }
     return if (cursor == end) previous else null;
+}
+
+fn utf8CodepointCount(text: []const u8) usize {
+    const view = std.unicode.Utf8View.init(text) catch return text.len;
+    var it = view.iterator();
+    var count: usize = 0;
+    while (it.nextCodepoint() != null) count += 1;
+    return count;
 }
 
 fn isLeadingTrimCodepoint(cp: u21) bool {
@@ -151,4 +281,60 @@ test "trim drops paired fullwidth parentheses after markdown path" {
 test "trim preserves internal Unicode punctuation" {
     const token = "docs/\xE8\xAE\xBE\xE8\xAE\xA1\xE3\x80\x82notes.md\xEF\xBC\x8C";
     try std.testing.expectEqualStrings("docs/\xE8\xAE\xBE\xE8\xAE\xA1\xE3\x80\x82notes.md", trim(token));
+}
+
+test "extractGridTokenAtCell joins soft-wrapped path rows" {
+    const TestGrid = struct {
+        const Row = struct {
+            text: []const u8,
+            wraps_next: bool = false,
+            continues_from_prev: bool = false,
+        };
+
+        rows: []const Row,
+
+        fn rowCount(self: @This()) usize {
+            return self.rows.len;
+        }
+
+        fn colCount(self: @This(), row: usize) usize {
+            return self.rows[row].text.len;
+        }
+
+        fn codepoint(self: @This(), row: usize, col: usize) u21 {
+            return self.rows[row].text[col];
+        }
+
+        fn wrapsNext(self: @This(), row: usize) bool {
+            return self.rows[row].wraps_next;
+        }
+
+        fn continuesFromPrev(self: @This(), row: usize) bool {
+            return self.rows[row].continues_from_prev;
+        }
+    };
+
+    const rows = [_]TestGrid.Row{
+        .{
+            .text = "Spec at docs/superpowers/specs/2026-06-05-openssh-config-import-",
+            .wraps_next = true,
+        },
+        .{
+            .text = "design.md.",
+            .continues_from_prev = true,
+        },
+    };
+
+    const token = extractGridTokenAtCell(std.testing.allocator, TestGrid{ .rows = &rows }, .{
+        .row = 1,
+        .col = 0,
+    }) orelse return error.ExpectedToken;
+    defer token.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings(
+        "docs/superpowers/specs/2026-06-05-openssh-config-import-design.md",
+        token.text,
+    );
+    try std.testing.expectEqual(GridCell{ .row = 0, .col = 8 }, token.start);
+    try std.testing.expectEqual(GridCell{ .row = 1, .col = 8 }, token.end);
 }

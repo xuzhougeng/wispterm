@@ -194,7 +194,8 @@ const MAX_SELECTION_COLS: usize = 4096;
 
 const UrlUnderline = struct {
     surface: ?*Surface = null,
-    row_abs: usize = 0,
+    start_row_abs: usize = 0,
+    end_row_abs: usize = 0,
     start_col: usize = 0,
     end_col: usize = 0,
 
@@ -207,7 +208,8 @@ threadlocal var g_url_underline: UrlUnderline = .{};
 
 const TokenAtCell = struct {
     text: []u8,
-    row: usize,
+    start_row: usize,
+    end_row: usize,
     start_col: usize,
     end_col: usize,
 
@@ -2324,6 +2326,45 @@ fn viewportCellCodepoint(surface: *Surface, col: usize, row: usize) u21 {
     return @intCast(cell_data.cell.codepoint());
 }
 
+fn viewportRowFlags(surface: *Surface, row: usize) struct { wraps_next: bool, continues_from_prev: bool } {
+    const row_pin = surface.terminal.screens.active.pages.pin(.{ .viewport = .{
+        .x = 0,
+        .y = @intCast(row),
+    } }) orelse return .{ .wraps_next = false, .continues_from_prev = false };
+    const rac = row_pin.rowAndCell();
+    return .{
+        .wraps_next = rac.row.wrap,
+        .continues_from_prev = rac.row.wrap_continuation,
+    };
+}
+
+const TerminalTokenGrid = struct {
+    surface: *Surface,
+    rows: usize,
+    cols: usize,
+
+    pub fn rowCount(self: TerminalTokenGrid) usize {
+        return self.rows;
+    }
+
+    pub fn colCount(self: TerminalTokenGrid, row: usize) usize {
+        _ = row;
+        return self.cols;
+    }
+
+    pub fn codepoint(self: TerminalTokenGrid, row: usize, col: usize) u21 {
+        return viewportCellCodepoint(self.surface, col, row);
+    }
+
+    pub fn wrapsNext(self: TerminalTokenGrid, row: usize) bool {
+        return viewportRowFlags(self.surface, row).wraps_next;
+    }
+
+    pub fn continuesFromPrev(self: TerminalTokenGrid, row: usize) bool {
+        return viewportRowFlags(self.surface, row).continues_from_prev;
+    }
+};
+
 fn markSelectionChanged() void {
     g_selection_changed_for_copy = true;
     AppWindow.g_force_rebuild = true;
@@ -2455,14 +2496,6 @@ fn selectParagraphAtCell(surface: *Surface, cell_pos: CellPos) bool {
     return true;
 }
 
-fn utf8CodepointCount(text: []const u8) usize {
-    const view = std.unicode.Utf8View.init(text) catch return text.len;
-    var it = view.iterator();
-    var count: usize = 0;
-    while (it.nextCodepoint() != null) count += 1;
-    return count;
-}
-
 fn extractTokenRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?TokenAtCell {
     const cols = @as(usize, @intCast(surface.size.grid.cols));
     const rows = @as(usize, @intCast(surface.size.grid.rows));
@@ -2472,47 +2505,22 @@ fn extractTokenRangeAtCell(allocator: std.mem.Allocator, surface: *Surface, cell
     surface.render_state.mutex.lock();
     defer surface.render_state.mutex.unlock();
 
-    if (preview_token.isDelimiter(viewportCellCodepoint(surface, click_col, cell_pos.row))) return null;
-
-    var start = click_col;
-    while (start > 0) {
-        const cp = viewportCellCodepoint(surface, start - 1, cell_pos.row);
-        if (preview_token.isDelimiter(cp)) break;
-        start -= 1;
-    }
-
-    var end = click_col + 1;
-    while (end < cols) : (end += 1) {
-        const cp = viewportCellCodepoint(surface, end, cell_pos.row);
-        if (preview_token.isDelimiter(cp)) break;
-    }
-
-    var token: std.ArrayListUnmanaged(u8) = .empty;
-    defer token.deinit(allocator);
-    var col = start;
-    while (col < end) : (col += 1) {
-        const cp = viewportCellCodepoint(surface, col, cell_pos.row);
-        if (preview_token.isDelimiter(cp)) break;
-        var buf: [4]u8 = undefined;
-        const len = std.unicode.utf8Encode(cp, &buf) catch continue;
-        token.appendSlice(allocator, buf[0..len]) catch return null;
-    }
-
-    const span = preview_token.trimSpan(token.items);
-    if (span.start >= span.end) return null;
-
-    const leading_cols = utf8CodepointCount(token.items[0..span.start]);
-    const trailing_cols = utf8CodepointCount(token.items[span.end..]);
-    const start_col = @min(start + leading_cols, cols - 1);
-    const end_exclusive = if (end > trailing_cols) end - trailing_cols else start_col + 1;
-    const end_col = @max(start_col, @min(end_exclusive - 1, cols - 1));
-    const text = allocator.dupe(u8, token.items[span.start..span.end]) catch return null;
+    const grid = TerminalTokenGrid{
+        .surface = surface,
+        .rows = rows,
+        .cols = cols,
+    };
+    const token = preview_token.extractGridTokenAtCell(allocator, grid, .{
+        .row = cell_pos.row,
+        .col = click_col,
+    }) orelse return null;
 
     return .{
-        .text = text,
-        .row = cell_pos.row,
-        .start_col = start_col,
-        .end_col = end_col,
+        .text = token.text,
+        .start_row = token.start.row,
+        .end_row = token.end.row,
+        .start_col = token.start.col,
+        .end_col = token.end.col,
     };
 }
 
@@ -2543,10 +2551,11 @@ fn markUrlUnderlineDirty(surface: ?*Surface) void {
     AppWindow.g_force_rebuild = true;
 }
 
-fn setUrlUnderline(surface: *Surface, row_abs: usize, start_col: usize, end_col: usize) void {
+fn setUrlUnderline(surface: *Surface, start_row_abs: usize, end_row_abs: usize, start_col: usize, end_col: usize) void {
     const old_surface = g_url_underline.surface;
     if (g_url_underline.surface == surface and
-        g_url_underline.row_abs == row_abs and
+        g_url_underline.start_row_abs == start_row_abs and
+        g_url_underline.end_row_abs == end_row_abs and
         g_url_underline.start_col == start_col and
         g_url_underline.end_col == end_col)
     {
@@ -2555,7 +2564,8 @@ fn setUrlUnderline(surface: *Surface, row_abs: usize, start_col: usize, end_col:
 
     g_url_underline = .{
         .surface = surface,
-        .row_abs = row_abs,
+        .start_row_abs = start_row_abs,
+        .end_row_abs = end_row_abs,
         .start_col = start_col,
         .end_col = end_col,
     };
@@ -2573,9 +2583,13 @@ fn clearUrlUnderline() void {
 pub fn isUrlUnderlineCell(surface: *Surface, col: usize, row: usize) bool {
     if (g_url_underline.surface != surface) return false;
     const abs_row = viewportOffsetForSurface(surface) + row;
-    return abs_row == g_url_underline.row_abs and
-        col >= g_url_underline.start_col and
-        col <= g_url_underline.end_col;
+    if (abs_row < g_url_underline.start_row_abs or abs_row > g_url_underline.end_row_abs) return false;
+    if (g_url_underline.start_row_abs == g_url_underline.end_row_abs) {
+        return col >= g_url_underline.start_col and col <= g_url_underline.end_col;
+    }
+    if (abs_row == g_url_underline.start_row_abs) return col >= g_url_underline.start_col;
+    if (abs_row == g_url_underline.end_row_abs) return col <= g_url_underline.end_col;
+    return true;
 }
 
 fn extractPreviewPathAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {
@@ -2651,7 +2665,8 @@ fn openUrlAtCell(surface: *Surface, cell_pos: CellPos) bool {
     const allocator = AppWindow.g_allocator orelse return false;
     const token = extractUrlRangeAtCell(allocator, surface, cell_pos) orelse return false;
     defer token.deinit(allocator);
-    setUrlUnderline(surface, viewportOffsetForSurface(surface) + token.row, token.start_col, token.end_col);
+    const vp_off = viewportOffsetForSurface(surface);
+    setUrlUnderline(surface, vp_off + token.start_row, vp_off + token.end_row, token.start_col, token.end_col);
     const opened = openUrl(surface, token.text);
     if (opened) clearUrlUnderline();
     return opened;
@@ -2714,7 +2729,8 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     };
     defer token.deinit(allocator);
 
-    setUrlUnderline(surface, viewportOffsetForSurface(surface) + token.row, token.start_col, token.end_col);
+    const vp_off = viewportOffsetForSurface(surface);
+    setUrlUnderline(surface, vp_off + token.start_row, vp_off + token.end_row, token.start_col, token.end_col);
 }
 
 fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind) bool {
