@@ -122,3 +122,63 @@ test "parseJinaResponse caps at max_results and handles empty data" {
     const empty = try parseJinaResponse(arena.allocator(), "{\"data\":[]}", 10);
     try std.testing.expectEqual(@as(usize, 0), empty.len);
 }
+
+/// Render results for the transcript (user `$websearch`): snippets only.
+pub fn formatForUser(allocator: std.mem.Allocator, query: []const u8, results: []const SearchResult) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    const w = out.writer(allocator);
+    if (results.len == 0) {
+        try w.print("No web results for: {s}", .{query});
+        return out.toOwnedSlice(allocator);
+    }
+    try w.print("Web results for \"{s}\":\n", .{query});
+    for (results, 0..) |r, i| {
+        try w.print("\n{d}. {s}\n{s}\n", .{ i + 1, r.title, r.url });
+        if (r.description.len > 0) try w.print("{s}\n", .{r.description});
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Render results for the model (agent `websearch` tool): includes page content.
+pub fn formatForAgent(allocator: std.mem.Allocator, query: []const u8, results: []const SearchResult) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    const w = out.writer(allocator);
+    if (results.len == 0) {
+        try w.print("No results found for query: {s}", .{query});
+        return out.toOwnedSlice(allocator);
+    }
+    try w.print("Search results for \"{s}\" ({d} results):\n", .{ query, results.len });
+    for (results, 0..) |r, i| {
+        try w.print("\n[{d}] {s}\nURL: {s}\n", .{ i + 1, r.title, r.url });
+        if (r.description.len > 0) try w.print("{s}\n", .{r.description});
+        if (r.content) |c| try w.print("\n{s}\n", .{c});
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+test "formatForUser lists snippets and omits content" {
+    const a = std.testing.allocator;
+    const results = [_]SearchResult{
+        .{ .title = "T", .url = "https://x", .description = "d", .content = "SECRET-CONTENT" },
+    };
+    const text = try formatForUser(a, "q", &results);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "1. T") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "https://x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "SECRET-CONTENT") == null);
+}
+
+test "formatForAgent includes content; empty results message" {
+    const a = std.testing.allocator;
+    const results = [_]SearchResult{
+        .{ .title = "T", .url = "https://x", .description = "d", .content = "BODY-TEXT" },
+    };
+    const text = try formatForAgent(a, "q", &results);
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "BODY-TEXT") != null);
+    const none = try formatForAgent(a, "q", &.{});
+    defer a.free(none);
+    try std.testing.expect(std.mem.indexOf(u8, none, "No results") != null);
+}
