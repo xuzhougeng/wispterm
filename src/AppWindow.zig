@@ -3521,6 +3521,22 @@ fn agentWriteSurface(ctx: *anyopaque, surface_ptr: *anyopaque, data: []const u8)
     return true;
 }
 
+fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surface.SshConnection {
+    _ = ctx;
+    if (surface_id.len == 0) return null;
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (tab_state.kind != .terminal) continue;
+        var it = tab_state.tree.iterator();
+        while (it.next()) |entry| {
+            const sfc = entry.surface;
+            if (!std.mem.eql(u8, sfc.remote_id[0..], surface_id)) continue;
+            return sfc.ssh_connection; // value copy (or null if not SSH)
+        }
+    }
+    return null;
+}
+
 fn postAgentTabNew(native_handle: window_backend.NativeHandle, request: *AgentTabNewRequest) void {
     _ = thread_message.sendPointer(native_handle, .agent_tab_new, @intFromPtr(request));
 }
@@ -3937,6 +3953,7 @@ fn installAgentToolHost(self: *AppWindow) void {
         .closeTab = agentCloseTab,
         .saveSshProfile = agentSaveSshProfile,
         .connectSshProfile = agentConnectSshProfile,
+        .sshConnectionForSurface = agentSshConnectionForSurface,
     });
 }
 
