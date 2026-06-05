@@ -387,6 +387,114 @@ fn buildDownloadCommand(buf: *[2048]u8, remote_path: []const u8) ?[]const u8 {
     return buf[0..pos];
 }
 
+/// Build `cat -- '<path>'` to stream a remote file's bytes to stdout.
+pub fn buildRemoteReadCommand(buf: *[2048]u8, path: []const u8) ?[]const u8 {
+    var pos: usize = 0;
+    if (!appendSlice(buf, &pos, "cat -- ")) return null;
+    if (!appendShellQuote(buf, &pos, path)) return null;
+    return buf[0..pos];
+}
+
+/// Build `cat > '<tmp>' && mv -- '<tmp>' '<path>'` for an atomic remote write
+/// (content arrives on stdin).
+pub fn buildRemoteWriteCommand(buf: *[2048]u8, path: []const u8, tmp: []const u8) ?[]const u8 {
+    var pos: usize = 0;
+    if (!appendSlice(buf, &pos, "cat > ")) return null;
+    if (!appendShellQuote(buf, &pos, tmp)) return null;
+    if (!appendSlice(buf, &pos, " && mv -- ")) return null;
+    if (!appendShellQuote(buf, &pos, tmp)) return null;
+    if (!appendSlice(buf, &pos, " ")) return null;
+    if (!appendShellQuote(buf, &pos, path)) return null;
+    return buf[0..pos];
+}
+
+/// Read a remote file via `ssh ... cat`. Returns owned bytes, null on failure.
+pub fn sshReadFile(allocator: std.mem.Allocator, conn: *const SshConnection, path: []const u8) ?[]u8 {
+    var buf: [2048]u8 = undefined;
+    const cmd = buildRemoteReadCommand(&buf, path) orelse return null;
+    return sshExec(allocator, conn, cmd);
+}
+
+/// Write `content` to a remote file atomically (temp + mv) via `ssh ... cat >`.
+pub fn sshWriteFile(allocator: std.mem.Allocator, conn: *const SshConnection, path: []const u8, content: []const u8) bool {
+    var tmp_buf: [600]u8 = undefined;
+    const tmp = std.fmt.bufPrint(&tmp_buf, "{s}.wispterm.tmp", .{path}) catch return false;
+    var cmd_buf: [2048]u8 = undefined;
+    const cmd = buildRemoteWriteCommand(&cmd_buf, path, tmp) orelse return false;
+    return sshExecStdin(allocator, conn, cmd, content);
+}
+
+/// Run `ssh user@host "<command>"` piping `stdin_bytes` to the remote stdin.
+/// Returns true on exit code 0. Mirrors `sshExec`'s askpass env setup.
+fn sshExecStdin(allocator: std.mem.Allocator, conn: *const SshConnection, command: []const u8, stdin_bytes: []const u8) bool {
+    var askpass_path: ?[]const u8 = null;
+    defer if (askpass_path) |p| allocator.free(p);
+    var env_map: ?std.process.EnvMap = null;
+    defer if (env_map) |*map| map.deinit();
+
+    if (conn.password_auth) {
+        askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return false;
+        env_map = std.process.getEnvMap(allocator) catch return false;
+        if (env_map) |*map| {
+            map.put("SSH_ASKPASS", askpass_path.?) catch return false;
+            map.put("SSH_ASKPASS_REQUIRE", "force") catch return false;
+            map.put("DISPLAY", "wispterm") catch return false;
+            map.put("WISPTERM_SSH_PASSWORD", conn.password()) catch return false;
+        }
+    }
+
+    const control_path: ?[]const u8 = null;
+
+    var argv_buf: [32][]const u8 = undefined;
+    var argc: usize = 0;
+    argv_buf[argc] = platform_pty_command.sshExecutableName();
+    argc += 1;
+
+    argc = appendSshOptions(&argv_buf, argc, conn, .ssh, control_path);
+
+    // user@host
+    var dest_buf: [280]u8 = undefined;
+    const dest_len = conn.user().len + 1 + conn.host().len;
+    @memcpy(dest_buf[0..conn.user().len], conn.user());
+    dest_buf[conn.user().len] = '@';
+    @memcpy(dest_buf[conn.user().len + 1 ..][0..conn.host().len], conn.host());
+    argv_buf[argc] = dest_buf[0..dest_len];
+    argc += 1;
+
+    argv_buf[argc] = command;
+    argc += 1;
+
+    var child = std.process.Child.init(argv_buf[0..argc], allocator);
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Pipe;
+    if (env_map) |*map| child.env_map = map;
+    child.create_no_window = true;
+    child.spawn() catch |err| {
+        std.debug.print("sshExecStdin: spawn failed: {}\n", .{err});
+        return false;
+    };
+
+    if (child.stdin) |stdin| {
+        var in = stdin;
+        platform_process.writeAllToPipe(in, stdin_bytes) catch {};
+        in.close();
+        child.stdin = null;
+    }
+
+    var stderr_output: ?[]u8 = null;
+    defer if (stderr_output) |stderr| allocator.free(stderr);
+    if (child.stderr) |stderr| {
+        stderr_output = stderr.readToEndAlloc(allocator, 16 * 1024) catch null;
+    }
+
+    const term = child.wait() catch return false;
+    return switch (term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
 fn openLocalRead(path: []const u8) ?std.fs.File {
     if (std.fs.path.isAbsolute(path)) return std.fs.openFileAbsolute(path, .{}) catch null;
     return std.fs.cwd().openFile(path, .{}) catch null;
@@ -772,4 +880,16 @@ test "appendSshOptions includes legacy algorithms when enabled" {
     try std.testing.expectEqualStrings("PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss", argv_buf[9]);
     try std.testing.expectEqualStrings("KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1", argv_buf[11]);
     try std.testing.expectEqualStrings("Ciphers=+aes128-cbc,3des-cbc", argv_buf[13]);
+}
+
+test "buildRemoteReadCommand quotes the path" {
+    var buf: [2048]u8 = undefined;
+    const cmd = buildRemoteReadCommand(&buf, "/tmp/a b.txt").?;
+    try std.testing.expectEqualStrings("cat -- '/tmp/a b.txt'", cmd);
+}
+
+test "buildRemoteWriteCommand builds an atomic temp+mv" {
+    var buf: [2048]u8 = undefined;
+    const cmd = buildRemoteWriteCommand(&buf, "/tmp/a.txt", "/tmp/a.txt.tmp").?;
+    try std.testing.expectEqualStrings("cat > '/tmp/a.txt.tmp' && mv -- '/tmp/a.txt.tmp' '/tmp/a.txt'", cmd);
 }
