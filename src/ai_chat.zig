@@ -210,6 +210,26 @@ pub const WebSearchRequest = struct {
     }
 };
 
+/// Lightweight background job for a `$webread` user command. Owns its target.
+/// Mirrors `WebSearchRequest`; joined by `Session.deinit` via `request_thread`.
+pub const WebReadRequest = struct {
+    allocator: std.mem.Allocator,
+    session: *Session,
+    target: []u8,
+
+    pub fn create(allocator: std.mem.Allocator, session: *Session, target: []const u8) !*WebReadRequest {
+        const self = try allocator.create(WebReadRequest);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .session = session, .target = try allocator.dupe(u8, target) };
+        return self;
+    }
+
+    pub fn deinit(self: *WebReadRequest) void {
+        self.allocator.free(self.target);
+        self.allocator.destroy(self);
+    }
+};
+
 const ApiResult = ai_chat_protocol.ApiResult;
 pub const ApiUsage = ai_chat_protocol.ApiUsage;
 
@@ -1703,10 +1723,13 @@ pub const Session = struct {
         }
         // otherwise (e.g. "/help me", "/usr/bin path", or a rebound template body): fall through.
 
-        if (ai_chat_composer.parseWebCommand(first_tok)) |_| {
+        if (ai_chat_composer.parseWebCommand(first_tok)) |web_cmd| {
             self.clearPendingWeixinReplyContextLocked();
             self.mutex.unlock();
-            self.startWebSearchRequest(arg);
+            switch (web_cmd) {
+                .websearch => self.startWebSearchRequest(arg),
+                .webread => self.startWebReadRequest(arg),
+            }
             return;
         }
 
@@ -2296,6 +2319,62 @@ pub const Session = struct {
             self.mutex.lock();
             self.request_inflight = false;
             self.appendLocalToolMessageLocked("Failed to start web search thread.") catch {};
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        };
+        self.mutex.lock();
+        self.request_thread = thread;
+        self.mutex.unlock();
+    }
+
+    /// Run a `$webread <target>` command on a background thread. Mirrors
+    /// `startWebSearchRequest` but does not require a Jina key (anonymous read is
+    /// allowed). Called AFTER the caller has unlocked `self.mutex`.
+    fn startWebReadRequest(self: *Session, target_in: []const u8) void {
+        self.mutex.lock();
+        if (self.request_thread) |thread| {
+            if (self.request_inflight) {
+                self.clearSubmittedInputLocked();
+                self.appendLocalToolMessageLocked("Wait for the current request to finish.") catch {};
+                self.setStatusLocked("Ready");
+                self.mutex.unlock();
+                return;
+            }
+            self.request_thread = null;
+            self.mutex.unlock();
+            thread.join();
+            self.mutex.lock();
+        }
+
+        const target = std.mem.trim(u8, target_in, " \t\r\n");
+        if (target.len == 0) {
+            self.clearSubmittedInputLocked();
+            self.appendLocalToolMessageLocked("Usage: $webread <url | file path>") catch self.setStatusLocked("Out of memory");
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        }
+
+        const req = WebReadRequest.create(self.allocator, self, target) catch {
+            self.clearSubmittedInputLocked();
+            self.appendLocalToolMessageLocked("Out of memory.") catch {};
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        };
+        self.clearSubmittedInputLocked();
+        self.stop_requested.store(false, .release);
+        self.request_stopping = false;
+        self.request_inflight = true;
+        self.setStatusLocked("Reading…");
+        self.mutex.unlock();
+
+        const thread = std.Thread.spawn(.{}, ai_chat_request.webReadThreadMain, .{req}) catch {
+            req.deinit();
+            self.mutex.lock();
+            self.request_inflight = false;
+            self.appendLocalToolMessageLocked("Failed to start web read thread.") catch {};
             self.setStatusLocked("Ready");
             self.mutex.unlock();
             return;
