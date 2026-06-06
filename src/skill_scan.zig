@@ -190,3 +190,71 @@ test "skill_scan: buildScanCommand probes hash tool and covers all targets" {
     try std.testing.expect(std.mem.indexOf(u8, cmd, "printf 'claude\\t") != null);
     try std.testing.expect(std.mem.indexOf(u8, cmd, "printf 'codex\\t") != null);
 }
+
+/// Structurally identical to `ai_history_session.RemoteExecHost`; defined here
+/// so this pure leaf does not import the large session module. The integration
+/// layer adapts the real local/WSL/SSH exec functions into this shape.
+pub const ExecFn = *const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror![]u8;
+pub const ExecHost = struct {
+    ctx: *anyopaque,
+    exec: ExecFn,
+};
+
+pub const ScanOutcome = struct {
+    reachable: bool,
+    rows: []SkillRow,
+
+    pub fn deinit(self: *ScanOutcome, allocator: std.mem.Allocator) void {
+        freeRows(allocator, self.rows);
+        self.* = undefined;
+    }
+};
+
+/// Run the scan command on one host and parse the result. An exec error
+/// (offline / auth failure) yields `{ reachable = false, rows = &.{} }` rather
+/// than propagating — one bad server must not abort the whole inventory.
+pub fn scanSource(allocator: std.mem.Allocator, targets: []const ScanTarget, host: ExecHost) !ScanOutcome {
+    const cmd = try buildScanCommand(allocator, targets);
+    defer allocator.free(cmd);
+
+    const out = host.exec(host.ctx, allocator, cmd) catch {
+        return .{ .reachable = false, .rows = &.{} };
+    };
+    defer allocator.free(out);
+
+    const rows = try parseScanOutput(allocator, out);
+    return .{ .reachable = true, .rows = rows };
+}
+
+const FakeHost = struct {
+    output: ?[]const u8, // null => simulate exec failure (offline)
+    fn exec(ctx: *anyopaque, allocator: std.mem.Allocator, _: []const u8) anyerror![]u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const out = self.output orelse return error.RemoteExecFailed;
+        return allocator.dupe(u8, out);
+    }
+    fn host(self: *FakeHost) ExecHost {
+        return .{ .ctx = self, .exec = exec };
+    }
+};
+
+test "skill_scan: scanSource parses reachable output" {
+    const allocator = std.testing.allocator;
+    var fake = FakeHost{ .output = "claude\tpdf\t.claude/skills/pdf/SKILL.md\thh\n" };
+    var outcome = try scanSource(allocator, defaultTargets(), fake.host());
+    defer outcome.deinit(allocator);
+
+    try std.testing.expect(outcome.reachable);
+    try std.testing.expectEqual(@as(usize, 1), outcome.rows.len);
+    try std.testing.expectEqualStrings("pdf", outcome.rows[0].name);
+}
+
+test "skill_scan: scanSource marks offline host unreachable" {
+    const allocator = std.testing.allocator;
+    var fake = FakeHost{ .output = null };
+    var outcome = try scanSource(allocator, defaultTargets(), fake.host());
+    defer outcome.deinit(allocator);
+
+    try std.testing.expect(!outcome.reachable);
+    try std.testing.expectEqual(@as(usize, 0), outcome.rows.len);
+}
