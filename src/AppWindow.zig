@@ -49,6 +49,12 @@ const ai_loop_store = @import("ai_loop_store.zig");
 const ai_history_types = @import("ai_history_types.zig");
 pub const ai_history_session = @import("ai_history_session.zig");
 pub const ai_history_source = @import("ai_history_source.zig");
+pub const skill_center = @import("skill_center.zig");
+const skill_scan = @import("skill_scan.zig");
+const skill_inventory = @import("skill_inventory.zig");
+const skill_inventory_cache = @import("skill_inventory_cache.zig");
+const remote_file = @import("platform/remote_file.zig");
+const builtin = @import("builtin");
 const ssh_connection = @import("ssh_connection.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
@@ -78,6 +84,7 @@ else
     @import("browser_panel_stub.zig");
 pub const ai_chat_renderer = @import("renderer/ai_chat_renderer.zig");
 pub const ai_history_renderer = @import("renderer/ai_history_renderer.zig");
+pub const skill_center_renderer = @import("renderer/skill_center_renderer.zig");
 const ai_sidebar = @import("ai_sidebar.zig");
 pub const ui_perf = @import("ui_perf.zig");
 const log = std.log.scoped(.app_window);
@@ -1211,6 +1218,176 @@ fn startAiHistoryScan(allocator: std.mem.Allocator, session: *ai_history_session
     };
     job.* = .{ .target = target };
     session.scanAsync(.{ .ctx = job, .run = AiHistoryScanJob.run, .destroy = AiHistoryScanJob.destroy });
+}
+
+// ===========================================================================
+// Skill Center — scan worker, host factory, source enumeration
+// ===========================================================================
+
+/// Everything a Skill Center scan host needs for one source, snapshotted on the
+/// UI thread. `ssh` carries a copied `SshConnection` value (inline buffers, no
+/// threadlocal pointers); `local`/`wsl` resolve inside the worker. `unreachable_`
+/// marks a source we want to show as an unreachable column (e.g. an SSH profile
+/// that could not be resolved, or local on a non-POSIX host).
+const SkillCenterTarget = union(enum) {
+    local,
+    wsl,
+    ssh: ssh_connection.SshConnection,
+    unreachable_,
+};
+
+/// One scan column's stable per-source state. `id`/`name` are owned (duped on
+/// the UI thread); the ExecHost.ctx points at this struct for the scan duration.
+const SkillCenterSourceEntry = struct {
+    id: []u8,
+    name: []u8,
+    target: SkillCenterTarget,
+
+    /// ExecHost callback: run the scan command against this source's target.
+    fn exec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) anyerror![]u8 {
+        const self: *SkillCenterSourceEntry = @ptrCast(@alignCast(ctx));
+        return switch (self.target) {
+            .local => localExecPosix(allocator, command),
+            .wsl => remote_file.wslExec(allocator, command) orelse error.RemoteExecFailed,
+            .ssh => |conn| remote_file.sshExecCapture(allocator, conn, command),
+            .unreachable_ => error.Unreachable,
+        };
+    }
+};
+
+/// Run a POSIX shell command locally and capture stdout (capped). On non-POSIX
+/// hosts (Windows native) there is no POSIX shell, so the local source is
+/// unreachable for v1 (WSL/SSH columns still work). TODO: Windows local support.
+fn localExecPosix(allocator: std.mem.Allocator, command: []const u8) anyerror![]u8 {
+    if (builtin.os.tag == .windows) return error.Unreachable;
+    const argv = [_][]const u8{ "sh", "-c", command };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+
+    var output: std.ArrayListUnmanaged(u8) = .empty;
+    defer output.deinit(allocator);
+    const stdout = child.stdout orelse {
+        _ = child.wait() catch {};
+        return error.RemoteExecFailed;
+    };
+    const cap: usize = 4 * 1024 * 1024;
+    var buf: [4096]u8 = undefined;
+    while (output.items.len < cap) {
+        const n = stdout.read(&buf) catch break;
+        if (n == 0) break;
+        try output.appendSlice(allocator, buf[0..n]);
+    }
+    _ = child.wait() catch {};
+    return output.toOwnedSlice(allocator);
+}
+
+/// Background scan job: owns the snapshot source list and drives a full
+/// inventory scan across every source. Worker thread.
+const SkillCenterScanJob = struct {
+    entries: []SkillCenterSourceEntry,
+
+    /// HostFactory.make: resolve the source's stable entry by id and hand back
+    /// an ExecHost whose ctx points at it (stable for the scan duration).
+    fn makeHost(ctx: *anyopaque, _: std.mem.Allocator, src: skill_center.ScanSource) anyerror!skill_scan.ExecHost {
+        const job: *SkillCenterScanJob = @ptrCast(@alignCast(ctx));
+        for (job.entries) |*entry| {
+            if (std.mem.eql(u8, entry.id, src.id)) {
+                if (entry.target == .unreachable_) return error.Unreachable;
+                return .{ .ctx = entry, .exec = SkillCenterSourceEntry.exec };
+            }
+        }
+        return error.Unreachable;
+    }
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror![]skill_inventory.ServerScan {
+        const job: *SkillCenterScanJob = @ptrCast(@alignCast(ctx));
+        const sources = try allocator.alloc(skill_center.ScanSource, job.entries.len);
+        defer allocator.free(sources);
+        for (job.entries, 0..) |entry, i| {
+            sources[i] = .{ .id = entry.id, .name = entry.name };
+        }
+        const factory = skill_center.HostFactory{ .ctx = job, .make = makeHost };
+        const servers = try skill_center.runScan(allocator, sources, factory);
+        // Best-effort: persist for instant reopen next time.
+        skill_inventory_cache.save(allocator, servers) catch {};
+        return servers;
+    }
+
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *SkillCenterScanJob = @ptrCast(@alignCast(ctx));
+        for (job.entries) |entry| {
+            allocator.free(entry.id);
+            allocator.free(entry.name);
+        }
+        allocator.free(job.entries);
+        allocator.destroy(job);
+    }
+};
+
+/// Build the worker-safe list of scan sources on the UI thread: local plus one
+/// column per saved SSH profile. Each entry's id is a stable key ("local",
+/// "ssh:<name>"). SSH profiles that cannot be resolved are still included as an
+/// unreachable column so the user sees the server is offline.
+/// TODO: WSL distro enumeration (no readily-available enumeration API yet).
+fn buildSkillCenterSources(allocator: std.mem.Allocator) ![]SkillCenterSourceEntry {
+    var entries: std.ArrayListUnmanaged(SkillCenterSourceEntry) = .empty;
+    errdefer {
+        for (entries.items) |entry| {
+            allocator.free(entry.id);
+            allocator.free(entry.name);
+        }
+        entries.deinit(allocator);
+    }
+
+    // Local column.
+    try entries.append(allocator, .{
+        .id = try allocator.dupe(u8, "local"),
+        .name = try allocator.dupe(u8, "local"),
+        .target = if (builtin.os.tag == .windows) .unreachable_ else .local,
+    });
+
+    // One column per saved SSH profile.
+    const names = overlays.sshProfileNames(allocator) catch &[_][]u8{};
+    defer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
+    for (names) |name| {
+        const id = try std.fmt.allocPrint(allocator, "ssh:{s}", .{name});
+        errdefer allocator.free(id);
+        const name_copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(name_copy);
+        const target: SkillCenterTarget = if (overlays.aiHistorySshConnection(name)) |conn|
+            .{ .ssh = conn }
+        else
+            .unreachable_;
+        try entries.append(allocator, .{ .id = id, .name = name_copy, .target = target });
+    }
+
+    return entries.toOwnedSlice(allocator);
+}
+
+/// Kick off an async Skill Center scan for `session`. UI thread. On setup
+/// failure marks the session failed instead of spawning a doomed worker.
+fn startSkillCenterScan(allocator: std.mem.Allocator, session: *skill_center.Session) void {
+    const entries = buildSkillCenterSources(allocator) catch {
+        session.publishScanFailure(session.scan_generation);
+        return;
+    };
+    const job = allocator.create(SkillCenterScanJob) catch {
+        for (entries) |entry| {
+            allocator.free(entry.id);
+            allocator.free(entry.name);
+        }
+        allocator.free(entries);
+        session.publishScanFailure(session.scan_generation);
+        return;
+    };
+    job.* = .{ .entries = entries };
+    session.scanAsync(.{ .ctx = job, .run = SkillCenterScanJob.run, .destroy = SkillCenterScanJob.destroy });
 }
 
 /// Kick off an async transcript load for the selected row. UI thread.
