@@ -1,7 +1,42 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const pty_command = @import("pty_command.zig");
 const platform_wsl = @import("wsl.zig");
 const platform_process = @import("process.zig");
+
+/// Run a POSIX-shell command on the LOCAL host (`sh -c <command>`) and capture
+/// stdout, capped at `max_bytes`. On non-POSIX hosts (Windows native) there is
+/// no POSIX shell, so this returns `error.Unreachable`. Centralizing the OS
+/// switch here keeps AppWindow platform-neutral.
+/// TODO: Windows-native local POSIX support (e.g. via WSL fallback).
+pub fn localPosixExec(allocator: std.mem.Allocator, command: []const u8, max_bytes: usize) ![]u8 {
+    if (builtin.os.tag == .windows) return error.Unreachable;
+    const argv = [_][]const u8{ "sh", "-c", command };
+    var child = initHiddenCaptureChild(&argv, allocator);
+    try child.spawn();
+
+    var output: std.ArrayListUnmanaged(u8) = .empty;
+    defer output.deinit(allocator);
+    const stdout = child.stdout orelse {
+        _ = child.wait() catch {};
+        return error.RemoteExecFailed;
+    };
+    var buf: [4096]u8 = undefined;
+    while (output.items.len < max_bytes) {
+        const n = stdout.read(&buf) catch break;
+        if (n == 0) break;
+        try output.appendSlice(allocator, buf[0..n]);
+    }
+    _ = child.wait() catch {};
+    return output.toOwnedSlice(allocator);
+}
+
+/// True if the local host can run POSIX shell commands (false on Windows
+/// native). Lets platform-neutral callers decide whether the "local" source is
+/// reachable without touching `builtin.os.tag` themselves.
+pub fn localPosixExecSupported() bool {
+    return builtin.os.tag != .windows;
+}
 
 pub fn wslHomeCommand() []const u8 {
     return "printf %s \"$HOME\"";

@@ -54,7 +54,6 @@ const skill_scan = @import("skill_scan.zig");
 const skill_inventory = @import("skill_inventory.zig");
 const skill_inventory_cache = @import("skill_inventory_cache.zig");
 const remote_file = @import("platform/remote_file.zig");
-const builtin = @import("builtin");
 const ssh_connection = @import("ssh_connection.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
@@ -1333,45 +1332,18 @@ const SkillCenterSourceEntry = struct {
     target: SkillCenterTarget,
 
     /// ExecHost callback: run the scan command against this source's target.
+    /// Local POSIX exec lives in platform/remote_file.zig so the OS switch stays
+    /// out of this platform-neutral module (capped at 4 MiB).
     fn exec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) anyerror![]u8 {
         const self: *SkillCenterSourceEntry = @ptrCast(@alignCast(ctx));
         return switch (self.target) {
-            .local => localExecPosix(allocator, command),
+            .local => remote_file.localPosixExec(allocator, command, 4 * 1024 * 1024),
             .wsl => remote_file.wslExec(allocator, command) orelse error.RemoteExecFailed,
             .ssh => |conn| remote_file.sshExecCapture(allocator, conn, command),
             .unreachable_ => error.Unreachable,
         };
     }
 };
-
-/// Run a POSIX shell command locally and capture stdout (capped). On non-POSIX
-/// hosts (Windows native) there is no POSIX shell, so the local source is
-/// unreachable for v1 (WSL/SSH columns still work). TODO: Windows local support.
-fn localExecPosix(allocator: std.mem.Allocator, command: []const u8) anyerror![]u8 {
-    if (builtin.os.tag == .windows) return error.Unreachable;
-    const argv = [_][]const u8{ "sh", "-c", command };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-
-    var output: std.ArrayListUnmanaged(u8) = .empty;
-    defer output.deinit(allocator);
-    const stdout = child.stdout orelse {
-        _ = child.wait() catch {};
-        return error.RemoteExecFailed;
-    };
-    const cap: usize = 4 * 1024 * 1024;
-    var buf: [4096]u8 = undefined;
-    while (output.items.len < cap) {
-        const n = stdout.read(&buf) catch break;
-        if (n == 0) break;
-        try output.appendSlice(allocator, buf[0..n]);
-    }
-    _ = child.wait() catch {};
-    return output.toOwnedSlice(allocator);
-}
 
 /// Background scan job: owns the snapshot source list and drives a full
 /// inventory scan across every source. Worker thread.
@@ -1431,11 +1403,12 @@ fn buildSkillCenterSources(allocator: std.mem.Allocator) ![]SkillCenterSourceEnt
         entries.deinit(allocator);
     }
 
-    // Local column.
+    // Local column. On hosts without a POSIX shell (Windows native) the local
+    // source is unreachable for v1; WSL/SSH columns still work.
     try entries.append(allocator, .{
         .id = try allocator.dupe(u8, "local"),
         .name = try allocator.dupe(u8, "local"),
-        .target = if (builtin.os.tag == .windows) .unreachable_ else .local,
+        .target = if (remote_file.localPosixExecSupported()) .local else .unreachable_,
     });
 
     // One column per saved SSH profile.
