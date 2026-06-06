@@ -56,6 +56,7 @@ const skill_inventory_cache = @import("skill_inventory_cache.zig");
 const remote_file = @import("platform/remote_file.zig");
 const ssh_connection = @import("ssh_connection.zig");
 const skill_transfer = @import("skill_transfer.zig");
+const skill_diff = @import("skill_diff.zig");
 const scp = @import("scp.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
@@ -1011,13 +1012,87 @@ pub fn skillCenterRescan() bool {
     return true;
 }
 
-/// Preview the focused cell's SKILL.md. Deferred for v1: shows a toast so the
-/// panel stays openable/scannable while the preview pipeline is wired later.
-/// TODO: cell preview — run skill_center.previewCommand against servers[sel_col]
-/// and display the output in the markdown preview path.
+/// Enter on a row: fetch the selected skill's SKILL.md from local and/or the
+/// selected server and show it in the markdown preview — a unified diff when the
+/// skill exists on both sides, otherwise the one side that has it. Synchronous
+/// (brief block) on the UI thread.
 pub fn skillCenterPreviewSelected() bool {
-    if (activeSkillCenter() == null) return false;
-    overlays.showStatusToast("Skill preview coming soon");
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+
+    // Snapshot the selected row's rel paths + the server conn under the lock.
+    var local_rel: ?[]u8 = null;
+    var remote_rel: ?[]u8 = null;
+    var conn: ?ssh_connection.SshConnection = null;
+    var name_buf: [128]u8 = undefined;
+    var name_len: usize = 0;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        const rows = session.model.pairing orelse return true;
+        if (session.model.sel_row >= rows.len) return true;
+        const pr = rows[session.model.sel_row];
+        name_len = @min(pr.name.len, name_buf.len);
+        @memcpy(name_buf[0..name_len], pr.name[0..name_len]);
+        if (pr.local_rel_path) |p| local_rel = allocator.dupe(u8, p) catch null;
+        if (pr.remote_rel_path) |p| remote_rel = allocator.dupe(u8, p) catch null;
+        conn = skillCenterSelectedConn(&session.model);
+    }
+    const name = name_buf[0..name_len];
+    defer if (local_rel) |p| allocator.free(p);
+    defer if (remote_rel) |p| allocator.free(p);
+
+    // Fetch local SKILL.md.
+    var local_text: ?[]u8 = null;
+    defer if (local_text) |t| allocator.free(t);
+    if (local_rel) |rp| {
+        if (skill_center.previewCommand(allocator, rp) catch null) |c| {
+            defer allocator.free(c);
+            local_text = remote_file.localPosixExec(allocator, c, 1024 * 1024) catch null;
+        }
+    }
+    // Fetch remote SKILL.md.
+    var remote_text: ?[]u8 = null;
+    defer if (remote_text) |t| allocator.free(t);
+    if (remote_rel) |rp| {
+        if (conn) |cn| {
+            if (skill_center.previewCommand(allocator, rp) catch null) |c| {
+                defer allocator.free(c);
+                remote_text = remote_file.sshExecCapture(allocator, cn, c) catch null;
+            }
+        }
+    }
+
+    // Build the markdown to show.
+    var md: std.ArrayListUnmanaged(u8) = .empty;
+    defer md.deinit(allocator);
+    if (local_text != null and remote_text != null) {
+        md.appendSlice(allocator, "```diff\n") catch {};
+        if (skill_diff.diff(allocator, local_text.?, remote_text.?) catch null) |lines| {
+            defer allocator.free(lines);
+            for (lines) |l| {
+                const prefix = switch (l.op) {
+                    .context => " ",
+                    .add => "+",
+                    .del => "-",
+                };
+                md.appendSlice(allocator, prefix) catch {};
+                md.appendSlice(allocator, l.text) catch {};
+                md.append(allocator, '\n') catch {};
+            }
+        }
+        md.appendSlice(allocator, "```\n") catch {};
+    } else if (local_text) |t| {
+        md.appendSlice(allocator, t) catch {};
+    } else if (remote_text) |t| {
+        md.appendSlice(allocator, t) catch {};
+    } else {
+        overlays.showStatusToast("无法读取 SKILL.md");
+        return true;
+    }
+
+    markdown_preview_panel.open(.markdown, name, "SKILL.md", md.items);
+    markUiDirty();
     return true;
 }
 
