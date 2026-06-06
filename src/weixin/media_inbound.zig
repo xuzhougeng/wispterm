@@ -157,7 +157,7 @@ pub fn buildCopilotPrompt(allocator: std.mem.Allocator, saved_names: []const []c
 pub fn buildCopilotModelContext(allocator: std.mem.Allocator, saved_paths: []const []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
-    try out.appendSlice(allocator, "微信收到的文件已保存到以下本地路径。仅在需要读取文件时把这些路径作为工具输入；除非用户明确询问保存位置，否则不要在回复中展示完整路径：");
+    try out.appendSlice(allocator, "微信收到的文件已保存到以下本地路径。没有附加明确指令时，只回复“收到”，不要读取、分析、总结文件，也不要调用工具；等待用户后续明确指令后，再把这些路径作为工具输入。除非用户明确询问保存位置，否则不要在回复中展示完整路径：");
     for (saved_paths) |p| {
         try out.appendSlice(allocator, "\n- ");
         try out.appendSlice(allocator, p);
@@ -250,4 +250,6 @@ test "buildCopilotPrompt keeps display names path-free and model context carries
     const model_context = try buildCopilotModelContext(t.allocator, &paths);
     defer t.allocator.free(model_context);
     try t.expect(std.mem.indexOf(u8, model_context, "/work/weixin_inbound/a.pdf") != null);
+    try t.expect(std.mem.indexOf(u8, model_context, "只回复“收到”") != null);
+    try t.expect(std.mem.indexOf(u8, model_context, "等待用户后续明确指令") != null);
 }

@@ -1088,7 +1088,7 @@ test "processUpdates sends the receipt as ack and routes the synthetic prompt fo
         fn media(_: *anyopaque, _: types.Message, allocator: std.mem.Allocator, receipt: *std.ArrayListUnmanaged(u8), prompt: *std.ArrayListUnmanaged(u8), model_context: *std.ArrayListUnmanaged(u8)) anyerror!MediaOutcome {
             try receipt.appendSlice(allocator, "已收到文件：a.pdf");
             try prompt.appendSlice(allocator, "用户通过微信发送了文件：a.pdf");
-            try model_context.appendSlice(allocator, "本地文件路径：/work/weixin_inbound/a.pdf");
+            try model_context.appendSlice(allocator, "没有附加明确指令时，只回复“收到”。本地文件路径：/work/weixin_inbound/a.pdf");
             return .{ .handled = true, .any_saved = true };
         }
     };
@@ -1130,6 +1130,7 @@ test "processUpdates sends the receipt as ack and routes the synthetic prompt fo
     try t.expect(std.mem.indexOf(u8, cap.routed.items[0], "/work/") == null);
     try t.expectEqual(@as(usize, 1), cap.routed_model_context.items.len);
     try t.expect(std.mem.indexOf(u8, cap.routed_model_context.items[0], "/work/weixin_inbound/a.pdf") != null);
+    try t.expect(std.mem.indexOf(u8, cap.routed_model_context.items[0], "只回复“收到”") != null);
     // RouteCtx.route returns .{} (no progress), so streaming is not started here.
 }
 
@@ -1477,4 +1478,5 @@ test "pollerMediaAdapter downloads, saves under weixin_inbound, and builds recei
     try t.expect(std.mem.indexOf(u8, prompt.items, saved_path) == null);
     try t.expect(std.mem.indexOf(u8, prompt.items, "请看这个") != null);
     try t.expect(std.mem.indexOf(u8, model_context.items, saved_path) != null);
+    try t.expect(std.mem.indexOf(u8, model_context.items, "只回复“收到”") != null);
 }
