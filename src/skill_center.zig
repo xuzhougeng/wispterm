@@ -4,6 +4,28 @@ const inv = @import("skill_inventory.zig");
 const pairing = @import("skill_pairing.zig");
 const inv_cache = @import("skill_inventory_cache.zig");
 const dirs = @import("platform/dirs.zig");
+const transfer = @import("skill_transfer.zig");
+
+pub const TransferDecision = enum { direct, confirm, noop, invalid };
+
+/// Decide what a transfer of the selected row implies, given the relation.
+/// `invalid` = the source side is absent (nothing to send).
+pub fn transferDecision(dir: transfer.Direction, rel: pairing.Relation) TransferDecision {
+    return switch (dir) {
+        .upload => switch (rel) {
+            .local_only => .direct, // remote absent
+            .same => .noop,
+            .differ, .unknown => .confirm,
+            .remote_only => .invalid, // nothing local to upload
+        },
+        .download => switch (rel) {
+            .remote_only => .direct, // local absent
+            .same => .noop,
+            .differ, .unknown => .confirm,
+            .local_only => .invalid, // nothing remote to download
+        },
+    };
+}
 
 /// Source descriptor for a scan column. `id` is the stable column identity;
 /// `name` is the display label.
@@ -460,6 +482,20 @@ test "skill_center: Session.finishScan discards a stale-generation result (no le
 
     try std.testing.expect(session.model.servers == null);
     try std.testing.expect(session.model.pairing == null);
+}
+
+test "skill_center: transferDecision" {
+    // upload: local must exist; same -> noop; differ/unknown -> confirm; remote absent -> direct
+    try std.testing.expectEqual(TransferDecision.noop, transferDecision(.upload, .same));
+    try std.testing.expectEqual(TransferDecision.confirm, transferDecision(.upload, .differ));
+    try std.testing.expectEqual(TransferDecision.confirm, transferDecision(.upload, .unknown));
+    try std.testing.expectEqual(TransferDecision.direct, transferDecision(.upload, .local_only));
+    try std.testing.expectEqual(TransferDecision.invalid, transferDecision(.upload, .remote_only));
+    // download: remote must exist; same -> noop; differ/unknown -> confirm; local absent -> direct
+    try std.testing.expectEqual(TransferDecision.noop, transferDecision(.download, .same));
+    try std.testing.expectEqual(TransferDecision.confirm, transferDecision(.download, .differ));
+    try std.testing.expectEqual(TransferDecision.direct, transferDecision(.download, .remote_only));
+    try std.testing.expectEqual(TransferDecision.invalid, transferDecision(.download, .local_only));
 }
 
 test "skill_center: model builds pairing for the selected server" {
