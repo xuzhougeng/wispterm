@@ -79,62 +79,18 @@ pub fn previewCommand(allocator: std.mem.Allocator, rel_path: []const u8) ![]u8 
 
 // --- Tests ---
 
-const ScriptHost = struct {
-    fn make(_: *anyopaque, _: std.mem.Allocator, src: ScanSource) anyerror!scan.ExecHost {
-        if (std.mem.eql(u8, src.id, "off")) return error.Unreachable;
-        return .{ .ctx = @constCast(@ptrCast(src.id.ptr)), .exec = exec };
-    }
-    fn exec(ctx: *anyopaque, allocator: std.mem.Allocator, _: []const u8) anyerror![]u8 {
-        const id_ptr: [*]const u8 = @ptrCast(ctx);
-        const id = id_ptr[0..5]; // "local" / "webxx"
-        if (std.mem.startsWith(u8, id, "local")) {
-            return allocator.dupe(u8, "claude\tpdf\t.claude/skills/pdf/SKILL.md\th1\n");
-        }
-        return allocator.dupe(u8, "claude\tpdf\t.claude/skills/pdf/SKILL.md\tDIFF\n");
-    }
-};
-
-test "skill_center: runScan over sources builds a matrix" {
-    const allocator = std.testing.allocator;
-    const sources = [_]ScanSource{
-        .{ .id = "local", .name = "Local" },
-        .{ .id = "webxx", .name = "web" },
-        .{ .id = "off", .name = "offline" },
-    };
-    var dummy: u8 = 0;
-    const factory = HostFactory{ .ctx = &dummy, .make = ScriptHost.make };
-
-    const servers = try runScan(allocator, &sources, factory);
-    defer {
-        inv_cache.freeServerScans(allocator, servers);
-        allocator.free(servers);
-    }
-
-    try std.testing.expectEqual(@as(usize, 3), servers.len);
-    try std.testing.expect(!servers[2].reachable); // off
-
-    var m = try inv.buildMatrix(allocator, servers);
-    defer m.deinit();
-    try std.testing.expectEqual(@as(usize, 1), m.skills.len); // pdf
-    try std.testing.expectEqual(inv.CellState.differ, m.cellAt(0, 0).state); // local h1 != ref(DIFF)
-    try std.testing.expectEqual(inv.CellState.match, m.cellAt(0, 1).state); // web DIFF == ref
-    try std.testing.expectEqual(inv.CellState.unknown, m.cellAt(0, 2).state); // off
-}
-
-/// Panel state for the Skill Center UI: owns the current scan results + matrix,
+/// Panel state for the Skill Center UI: owns the current scan results,
 /// the focused cell, scroll offset, and a stale flag. The background scan
 /// worker (integration layer) calls `setServers` to swap in new results;
 /// `seedFromCache` loads the last persisted scan for instant display.
 pub const PanelModel = struct {
     allocator: std.mem.Allocator,
     servers: ?[]inv.ServerScan = null,
-    matrix: ?inv.Matrix = null,
     /// Aligned local-vs-selected-server view (rows borrow from `servers`).
     pairing: ?[]pairing.PairRow = null,
     /// Index into the remote servers (everything except source_id == "local").
     sel_server: usize = 0,
     sel_row: usize = 0,
-    sel_col: usize = 0,
     scroll: usize = 0,
     stale: bool = false,
 
@@ -153,12 +109,10 @@ pub const PanelModel = struct {
         self.stale = true;
     }
 
-    /// Take ownership of a fresh `[]inv.ServerScan`, rebuild the matrix, clear stale.
+    /// Take ownership of a fresh `[]inv.ServerScan`, rebuild the pairing, clear stale.
     pub fn setServers(self: *PanelModel, servers: []inv.ServerScan) void {
         self.freeServers();
         self.servers = servers;
-        if (self.matrix) |*m| m.deinit();
-        self.matrix = inv.buildMatrix(self.allocator, servers) catch null;
         self.stale = false;
         self.rebuildPairing();
     }
@@ -248,7 +202,6 @@ pub const PanelModel = struct {
     }
 
     pub fn deinit(self: *PanelModel) void {
-        if (self.matrix) |*m| m.deinit();
         self.freeServers();
         self.* = undefined;
     }
@@ -417,11 +370,11 @@ test "skill_center: seedFromCache loads persisted scan and marks stale" {
 
     try std.testing.expect(model.stale);
     try std.testing.expect(model.servers != null);
-    try std.testing.expect(model.matrix != null);
-    try std.testing.expectEqual(@as(usize, 1), model.matrix.?.skills.len);
+    try std.testing.expect(model.pairing != null);
+    try std.testing.expectEqual(@as(usize, 1), model.pairing.?.len);
 }
 
-test "skill_center: PanelModel setServers rebuilds matrix and clamps selection" {
+test "skill_center: PanelModel setServers rebuilds pairing and clamps selection" {
     const allocator = std.testing.allocator;
     var model = PanelModel.init(allocator);
     defer model.deinit();
@@ -436,8 +389,8 @@ test "skill_center: PanelModel setServers rebuilds matrix and clamps selection" 
     model.setServers(s1);
     model.sel_row = 1; // select the 2nd skill
 
-    try std.testing.expect(model.matrix != null);
-    try std.testing.expectEqual(@as(usize, 2), model.matrix.?.skills.len);
+    try std.testing.expect(model.pairing != null);
+    try std.testing.expectEqual(@as(usize, 2), model.pairing.?.len);
 
     // Replace with a scan that has only 1 skill -> selection must clamp to 0.
     const rows2 = [_]scan.SkillRow{
@@ -447,7 +400,7 @@ test "skill_center: PanelModel setServers rebuilds matrix and clamps selection" 
     s2[0] = .{ .source_id = try allocator.dupe(u8, "local"), .reachable = true, .rows = try dupRows(allocator, &rows2) };
     model.setServers(s2);
 
-    try std.testing.expectEqual(@as(usize, 1), model.matrix.?.skills.len);
+    try std.testing.expectEqual(@as(usize, 1), model.pairing.?.len);
     try std.testing.expectEqual(@as(usize, 0), model.sel_row); // clamped
 }
 
@@ -492,8 +445,8 @@ test "skill_center: Session.finishScan publishes a current-generation result" {
     session.finishScan(gen, try ownedServers(allocator));
 
     try std.testing.expect(session.model.servers != null);
-    try std.testing.expect(session.model.matrix != null);
-    try std.testing.expectEqual(@as(usize, 1), session.model.matrix.?.skills.len);
+    try std.testing.expect(session.model.pairing != null);
+    try std.testing.expectEqual(@as(usize, 1), session.model.pairing.?.len);
 }
 
 test "skill_center: Session.finishScan discards a stale-generation result (no leak)" {
@@ -506,7 +459,7 @@ test "skill_center: Session.finishScan discards a stale-generation result (no le
     session.finishScan(3, try ownedServers(allocator));
 
     try std.testing.expect(session.model.servers == null);
-    try std.testing.expect(session.model.matrix == null);
+    try std.testing.expect(session.model.pairing == null);
 }
 
 test "skill_center: model builds pairing for the selected server" {
