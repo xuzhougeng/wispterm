@@ -32,6 +32,8 @@ pub fn save(allocator: std.mem.Allocator, servers: []const inv.ServerScan) !void
     defer for (jservers[0..built]) |js| allocator.free(js.rows);
     for (servers, 0..) |s, i| {
         const jrows = try allocator.alloc(JsonRow, s.rows.len);
+        jservers[i] = .{ .source_id = s.source_id, .reachable = s.reachable, .rows = jrows };
+        built += 1;
         for (s.rows, 0..) |r, j| {
             jrows[j] = .{
                 .provider = r.provider.toString(),
@@ -40,8 +42,6 @@ pub fn save(allocator: std.mem.Allocator, servers: []const inv.ServerScan) !void
                 .agg_hash = r.agg_hash,
             };
         }
-        jservers[i] = .{ .source_id = s.source_id, .reachable = s.reachable, .rows = jrows };
-        built += 1;
     }
 
     const json = try std.json.Stringify.valueAlloc(allocator, JsonRoot{ .servers = jservers }, .{});
@@ -51,15 +51,11 @@ pub fn save(allocator: std.mem.Allocator, servers: []const inv.ServerScan) !void
     defer allocator.free(path);
 
     if (std.fs.path.dirname(path)) |dir| try std.fs.cwd().makePath(dir);
-    if (std.fs.path.isAbsolute(path)) {
-        var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(json);
-    } else {
-        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(json);
-    }
+    var write_buffer: [0]u8 = .{};
+    var atomic = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buffer });
+    defer atomic.deinit();
+    try atomic.file_writer.file.writeAll(json);
+    try atomic.finish();
 }
 
 /// Load the cached scans as owned `[]inv.ServerScan` (deep-copied; caller frees
@@ -79,7 +75,10 @@ pub fn load(allocator: std.mem.Allocator) ![]inv.ServerScan {
     var parsed = std.json.parseFromSlice(JsonRoot, allocator, bytes, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
-    }) catch return allocator.alloc(inv.ServerScan, 0);
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return allocator.alloc(inv.ServerScan, 0),
+    };
     defer parsed.deinit();
 
     var out = try allocator.alloc(inv.ServerScan, parsed.value.servers.len);
@@ -115,13 +114,10 @@ pub fn load(allocator: std.mem.Allocator) ![]inv.ServerScan {
     return out;
 }
 
+/// Frees ServerScans produced by load(); do not call on borrowed/non-owned scans.
 pub fn freeServerScans(allocator: std.mem.Allocator, servers: []inv.ServerScan) void {
     for (servers) |s| {
-        for (s.rows) |*r| {
-            var row = r.*;
-            row.deinit(allocator);
-        }
-        allocator.free(@constCast(s.rows));
+        scan.freeRows(allocator, @constCast(s.rows));
         allocator.free(@constCast(s.source_id));
     }
 }
@@ -174,4 +170,49 @@ test "skill_inventory_cache: load returns empty when no cache file" {
     const loaded = try load(allocator);
     defer allocator.free(loaded);
     try std.testing.expectEqual(@as(usize, 0), loaded.len);
+}
+
+test "skill_inventory_cache: corrupted json loads as empty" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+    dirs.setTestConfigDirForCurrentThread(tmp_path);
+    defer dirs.clearTestConfigDirForCurrentThread();
+
+    const path = try dirs.pathInConfigDir(allocator, "skill-inventory-cache.json");
+    defer allocator.free(path);
+    try std.fs.cwd().writeFile(.{ .sub_path = path, .data = "{not valid json" });
+
+    const loaded = try load(allocator);
+    defer allocator.free(loaded);
+    try std.testing.expectEqual(@as(usize, 0), loaded.len);
+}
+
+test "skill_inventory_cache: unknown provider falls back to claude" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+    dirs.setTestConfigDirForCurrentThread(tmp_path);
+    defer dirs.clearTestConfigDirForCurrentThread();
+
+    const path = try dirs.pathInConfigDir(allocator, "skill-inventory-cache.json");
+    defer allocator.free(path);
+    const json =
+        \\{"servers":[{"source_id":"s","reachable":true,"rows":[
+        \\{"provider":"mystery","name":"x","rel_path":".p/x","agg_hash":null}]}]}
+    ;
+    try std.fs.cwd().writeFile(.{ .sub_path = path, .data = json });
+
+    const loaded = try load(allocator);
+    defer {
+        freeServerScans(allocator, loaded);
+        allocator.free(loaded);
+    }
+    try std.testing.expectEqual(@as(usize, 1), loaded.len);
+    try std.testing.expectEqual(@as(usize, 1), loaded[0].rows.len);
+    try std.testing.expectEqual(scan.Provider.claude, loaded[0].rows[0].provider);
 }
