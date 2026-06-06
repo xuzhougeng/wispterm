@@ -1478,7 +1478,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         return;
     }
 
-    // Skill Center: arrows move the focused cell, Enter previews it, `r` rescans.
+    // Skill Center: ↑/↓ move the row, ←/→ or s switch server, Enter previews, r rescans.
     if (AppWindow.activeSkillCenter() != null) {
         const plain = !ev.ctrl and !ev.alt and !ev.super;
         switch (ev.key_code) {
@@ -1491,11 +1491,11 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 return;
             },
             platform_input.key_left => {
-                _ = AppWindow.skillCenterMoveSelection(0, -1);
+                _ = AppWindow.skillCenterSwitchServer(-1);
                 return;
             },
             platform_input.key_right => {
-                _ = AppWindow.skillCenterMoveSelection(0, 1);
+                _ = AppWindow.skillCenterSwitchServer(1);
                 return;
             },
             platform_input.key_enter => {
@@ -1504,6 +1504,10 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             },
             0x52 => if (plain and !ev.shift) {
                 _ = AppWindow.skillCenterRescan();
+                return;
+            },
+            0x53 => if (plain and !ev.shift) {
+                _ = AppWindow.skillCenterSwitchServer(1);
                 return;
             },
             else => {},

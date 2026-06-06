@@ -965,26 +965,36 @@ pub fn activeSkillCenter() ?*skill_center.Session {
     return tab.activeSkillCenter();
 }
 
-/// Move the focused Skill Center cell by (drow, dcol), clamping to the matrix.
-/// Returns false if there is no active Skill Center tab.
+/// Move the selected pairing row by `drow`, clamping. Returns false if no tab.
 pub fn skillCenterMoveSelection(drow: isize, dcol: isize) bool {
+    _ = dcol; // columns are fixed (local | server); kept for the input.zig arity
     const session = activeSkillCenter() orelse return false;
     session.mutex.lock();
     defer session.mutex.unlock();
-    const m = session.model.matrix orelse {
-        markUiDirty();
-        return true;
-    };
-    if (m.skills.len > 0) {
+    const rows = if (session.model.pairing) |p| p.len else 0;
+    if (rows > 0) {
         const cur: isize = @intCast(session.model.sel_row);
-        const next = std.math.clamp(cur + drow, 0, @as(isize, @intCast(m.skills.len - 1)));
+        const next = std.math.clamp(cur + drow, 0, @as(isize, @intCast(rows - 1)));
         session.model.sel_row = @intCast(next);
     }
-    if (m.servers.len > 0) {
-        const cur: isize = @intCast(session.model.sel_col);
-        const next = std.math.clamp(cur + dcol, 0, @as(isize, @intCast(m.servers.len - 1)));
-        session.model.sel_col = @intCast(next);
-    }
+    markUiDirty();
+    return true;
+}
+
+/// Cycle the selected server by `delta` (wraps) and rebuild the pairing.
+pub fn skillCenterSwitchServer(delta: isize) bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const rc = session.model.remoteCount();
+    if (rc == 0) return true;
+    const cur: isize = @intCast(session.model.sel_server);
+    var next = @rem(cur + delta, @as(isize, @intCast(rc)));
+    if (next < 0) next += @intCast(rc);
+    session.model.sel_server = @intCast(next);
+    session.model.sel_row = 0;
+    session.model.scroll = 0;
+    session.model.rebuildPairing();
     markUiDirty();
     return true;
 }
