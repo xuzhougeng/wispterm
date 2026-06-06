@@ -86,6 +86,11 @@ function Copy-PortablePayload {
 
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
     Copy-Item -Path $BinaryPath -Destination (Join-Path $TargetDir 'wispterm.exe') -Force
+    $sourceAskPassHelper = Join-Path (Split-Path -Parent $BinaryPath) 'wispterm-ssh-askpass.exe'
+    if (-not (Test-Path $sourceAskPassHelper)) {
+        throw "Expected SSH askpass helper was not found: $sourceAskPassHelper"
+    }
+    Copy-Item -Path $sourceAskPassHelper -Destination (Join-Path $TargetDir 'wispterm-ssh-askpass.exe') -Force
     Set-Content -Path (Join-Path $TargetDir 'version.txt') -Value $ReleaseVersion -Encoding ASCII
 
     $targetPluginsDir = Join-Path $TargetDir 'plugins'
@@ -173,6 +178,11 @@ if ($SkipInstaller) {
 New-Item -ItemType Directory -Path $installerDir, $stagingDir -Force | Out-Null
 
 Copy-Item -Path $binaryPath -Destination (Join-Path $stagingDir 'wispterm.exe') -Force
+$sourceAskPassHelper = Join-Path (Split-Path -Parent $binaryPath) 'wispterm-ssh-askpass.exe'
+if (-not (Test-Path $sourceAskPassHelper)) {
+    throw "Expected SSH askpass helper was not found: $sourceAskPassHelper"
+}
+Copy-Item -Path $sourceAskPassHelper -Destination (Join-Path $stagingDir 'wispterm-ssh-askpass.exe') -Force
 Copy-Item -Path (Join-Path $PSScriptRoot 'Install-WispTerm.ps1') -Destination (Join-Path $stagingDir 'Install-WispTerm.ps1') -Force
 Copy-Item -Path (Join-Path $PSScriptRoot 'install.cmd') -Destination (Join-Path $stagingDir 'install.cmd') -Force
 if ($webView2LoaderPath) {
@@ -184,17 +194,19 @@ $sedFiles = @(
     'FILE0=wispterm.exe',
     'FILE1=Install-WispTerm.ps1',
     'FILE2=install.cmd',
-    'FILE3=version.txt'
+    'FILE3=version.txt',
+    'FILE4=wispterm-ssh-askpass.exe'
 )
 $sedSourceFiles = @(
     '%FILE0%=',
     '%FILE1%=',
     '%FILE2%=',
-    '%FILE3%='
+    '%FILE3%=',
+    '%FILE4%='
 )
 if ($webView2LoaderPath) {
-    $sedFiles += 'FILE4=WebView2Loader.dll'
-    $sedSourceFiles += '%FILE4%='
+    $sedFiles += 'FILE5=WebView2Loader.dll'
+    $sedSourceFiles += '%FILE5%='
 }
 
 $sedBody = @"

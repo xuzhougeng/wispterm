@@ -40,19 +40,26 @@ $appName = 'WispTerm'
 $publisher = 'WispTerm'
 $exeName = 'wispterm.exe'
 $sourceExe = Join-Path $PSScriptRoot $exeName
+$askPassHelperName = 'wispterm-ssh-askpass.exe'
+$sourceAskPassHelper = Join-Path $PSScriptRoot $askPassHelperName
 $sourceWebView2Loader = Join-Path $PSScriptRoot 'WebView2Loader.dll'
 
 if (-not (Test-Path $sourceExe)) {
     throw "Missing payload: $sourceExe"
 }
+if (-not (Test-Path $sourceAskPassHelper)) {
+    throw "Missing payload: $sourceAskPassHelper"
+}
 
 $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $installedExe = Join-Path $resolvedInstallDir $exeName
+$installedAskPassHelper = Join-Path $resolvedInstallDir $askPassHelperName
 $installedWebView2Loader = Join-Path $resolvedInstallDir 'WebView2Loader.dll'
 $version = Get-WispTermVersion
 
 New-Item -ItemType Directory -Path $resolvedInstallDir -Force | Out-Null
 Copy-Item -Path $sourceExe -Destination $installedExe -Force
+Copy-Item -Path $sourceAskPassHelper -Destination $installedAskPassHelper -Force
 if (Test-Path $sourceWebView2Loader) {
     Copy-Item -Path $sourceWebView2Loader -Destination $installedWebView2Loader -Force
 }

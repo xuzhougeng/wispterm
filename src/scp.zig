@@ -71,10 +71,7 @@ pub fn transferWithControl(allocator: std.mem.Allocator, conn: *const SshConnect
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return .spawn_error;
         env_map = std.process.getEnvMap(allocator) catch return .spawn_error;
         if (env_map) |*map| {
-            map.put("SSH_ASKPASS", askpass_path.?) catch return .spawn_error;
-            map.put("SSH_ASKPASS_REQUIRE", "force") catch return .spawn_error;
-            map.put("DISPLAY", "wispterm") catch return .spawn_error;
-            map.put("WISPTERM_SSH_PASSWORD", conn.password()) catch return .spawn_error;
+            platform_process.putSshAskPassEnv(map, askpass_path.?, conn.password()) catch return .spawn_error;
         }
     }
 
@@ -219,10 +216,7 @@ pub fn sshExec(allocator: std.mem.Allocator, conn: *const SshConnection, command
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return null;
         env_map = std.process.getEnvMap(allocator) catch return null;
         if (env_map) |*map| {
-            map.put("SSH_ASKPASS", askpass_path.?) catch return null;
-            map.put("SSH_ASKPASS_REQUIRE", "force") catch return null;
-            map.put("DISPLAY", "wispterm") catch return null;
-            map.put("WISPTERM_SSH_PASSWORD", conn.password()) catch return null;
+            platform_process.putSshAskPassEnv(map, askpass_path.?, conn.password()) catch return null;
         }
     }
 
@@ -436,10 +430,7 @@ fn sshExecStdin(allocator: std.mem.Allocator, conn: *const SshConnection, comman
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return false;
         env_map = std.process.getEnvMap(allocator) catch return false;
         if (env_map) |*map| {
-            map.put("SSH_ASKPASS", askpass_path.?) catch return false;
-            map.put("SSH_ASKPASS_REQUIRE", "force") catch return false;
-            map.put("DISPLAY", "wispterm") catch return false;
-            map.put("WISPTERM_SSH_PASSWORD", conn.password()) catch return false;
+            platform_process.putSshAskPassEnv(map, askpass_path.?, conn.password()) catch return false;
         }
     }
 

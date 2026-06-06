@@ -56,10 +56,7 @@ pub fn sshExecCapture(allocator: std.mem.Allocator, conn: anytype, command: []co
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return error.SpawnFailed;
         env_map = try std.process.getEnvMap(allocator);
         if (env_map) |*map| {
-            try map.put("SSH_ASKPASS", askpass_path.?);
-            try map.put("SSH_ASKPASS_REQUIRE", "force");
-            try map.put("DISPLAY", "wispterm");
-            try map.put("WISPTERM_SSH_PASSWORD", conn.password());
+            try platform_process.putSshAskPassEnv(map, askpass_path.?, conn.password());
         }
     }
 

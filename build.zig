@@ -549,6 +549,20 @@ pub fn build(b: *std.Build) void {
         }
 
         b.installArtifact(exe);
+
+        if (target.result.os.tag == .windows) {
+            const askpass_mod = b.createModule(.{
+                .root_source_file = b.path("src/ssh_askpass.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            const askpass_exe = b.addExecutable(.{
+                .name = "wispterm-ssh-askpass",
+                .root_module = askpass_mod,
+            });
+            askpass_exe.subsystem = .Windows;
+            b.installArtifact(askpass_exe);
+        }
     }
 
     b.installDirectory(.{

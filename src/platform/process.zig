@@ -21,6 +21,14 @@ const impl = switch (backendForOs(builtin.os.tag)) {
 };
 
 pub const DetachedSpawnOptions = shared.DetachedSpawnOptions;
+pub const SSH_ASKPASS_PASSWORD_ENV = "WISPTERM_SSH_PASSWORD";
+pub const SSH_ASKPASS_MARKER_ENV = "WISPTERM_SSH_ASKPASS";
+pub const SSH_ASKPASS_MARKER_VALUE = "1";
+
+pub const SshAskPassHelperKind = enum {
+    helper_exe,
+    script,
+};
 
 const LocalShell = enum {
     posix_shell,
@@ -158,10 +166,55 @@ pub fn writeAllToPipe(file: std.fs.File, data: []const u8) PipeWriteError!void {
 pub fn sshAskPassScriptBodyForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (os_tag) {
         .windows => "@echo off\r\n" ++
-            "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Out.Write($env:WISPTERM_SSH_PASSWORD)\"\r\n",
+            "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Out.Write($env:" ++ SSH_ASKPASS_PASSWORD_ENV ++ ")\"\r\n",
         else => "#!/bin/sh\n" ++
-            "printf %s \"$WISPTERM_SSH_PASSWORD\"\n",
+            "printf %s \"$" ++ SSH_ASKPASS_PASSWORD_ENV ++ "\"\n",
     };
+}
+
+pub fn sshAskPassHelperKindForOs(os_tag: std.Target.Os.Tag) SshAskPassHelperKind {
+    return if (os_tag == .windows) .helper_exe else .script;
+}
+
+pub fn sshAskPassHelperExeNameForOs(os_tag: std.Target.Os.Tag) ?[]const u8 {
+    return switch (os_tag) {
+        .windows => "wispterm-ssh-askpass.exe",
+        else => null,
+    };
+}
+
+pub fn sshAskPassHelperPathFromSelfPath(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    self_path: []const u8,
+) ![]u8 {
+    const helper_name = sshAskPassHelperExeNameForOs(os_tag) orelse return error.NoHelperExecutable;
+    const self_dir = dirnameForOs(os_tag, self_path) orelse ".";
+    return joinChildForOs(allocator, os_tag, self_dir, helper_name);
+}
+
+fn dirnameForOs(os_tag: std.Target.Os.Tag, path: []const u8) ?[]const u8 {
+    return if (os_tag == .windows) std.fs.path.dirnameWindows(path) else std.fs.path.dirnamePosix(path);
+}
+
+fn joinChildForOs(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    parent: []const u8,
+    child: []const u8,
+) ![]u8 {
+    const windows = os_tag == .windows;
+    const sep: u8 = if (windows) blk: {
+        if (std.mem.indexOfScalar(u8, parent, '\\') != null) break :blk '\\';
+        if (std.mem.indexOfScalar(u8, parent, '/') != null) break :blk '/';
+        break :blk '\\';
+    } else '/';
+    const parent_ends_sep = parent.len > 0 and if (windows)
+        (parent[parent.len - 1] == '\\' or parent[parent.len - 1] == '/')
+    else
+        parent[parent.len - 1] == '/';
+    if (parent_ends_sep) return std.fmt.allocPrint(allocator, "{s}{s}", .{ parent, child });
+    return std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ parent, sep, child });
 }
 
 pub fn sshAskPassScriptPath(allocator: std.mem.Allocator) ?[]const u8 {
@@ -183,6 +236,12 @@ pub fn sshAskPassScriptPathFromTempDirForOs(
 }
 
 pub fn ensureSshAskPassScript(allocator: std.mem.Allocator) ?[]const u8 {
+    if (sshAskPassHelperKindForOs(builtin.os.tag) == .helper_exe) {
+        const self_path = std.fs.selfExePathAlloc(allocator) catch return null;
+        defer allocator.free(self_path);
+        return sshAskPassHelperPathFromSelfPath(allocator, builtin.os.tag, self_path) catch null;
+    }
+
     const path = sshAskPassScriptPath(allocator) orelse return null;
     errdefer allocator.free(path);
 
@@ -202,6 +261,25 @@ pub fn ensureSshAskPassScript(allocator: std.mem.Allocator) ?[]const u8 {
         file.chmod(0o700) catch {};
     }
     return path;
+}
+
+pub fn putSshAskPassEnv(map: *std.process.EnvMap, askpass_path: []const u8, password: []const u8) !void {
+    return putSshAskPassEnvForOs(builtin.os.tag, map, askpass_path, password);
+}
+
+pub fn putSshAskPassEnvForOs(
+    os_tag: std.Target.Os.Tag,
+    map: *std.process.EnvMap,
+    askpass_path: []const u8,
+    password: []const u8,
+) !void {
+    try map.put("SSH_ASKPASS", askpass_path);
+    try map.put("SSH_ASKPASS_REQUIRE", "force");
+    try map.put("DISPLAY", "wispterm");
+    try map.put(SSH_ASKPASS_PASSWORD_ENV, password);
+    if (sshAskPassHelperKindForOs(os_tag) == .helper_exe) {
+        try map.put(SSH_ASKPASS_MARKER_ENV, SSH_ASKPASS_MARKER_VALUE);
+    }
 }
 
 test "platform process exposes wait-by-pid diagnostics API" {
@@ -242,15 +320,42 @@ test "platform process wait exposes a child exit poll API" {
 }
 
 test "platform process exposes SSH askpass script helpers" {
-    const script = sshAskPassScriptBodyForOs(.windows);
+    const script = sshAskPassScriptBodyForOs(.linux);
     try std.testing.expect(std.mem.indexOf(u8, script, "WISPTERM_SSH_PASSWORD") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "powershell.exe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "printf") != null);
 
-    const path = try sshAskPassScriptPathFromTempDirForOs(std.testing.allocator, .windows, "C:/Temp");
+    const path = try sshAskPassScriptPathFromTempDirForOs(std.testing.allocator, .linux, "/tmp");
     defer std.testing.allocator.free(path);
-    const expected = try std.fs.path.join(std.testing.allocator, &.{ "C:/Temp", "wispterm-ssh-askpass.cmd" });
+    const expected = try std.fs.path.join(std.testing.allocator, &.{ "/tmp", "wispterm-ssh-askpass.sh" });
     defer std.testing.allocator.free(expected);
     try std.testing.expectEqualStrings(expected, path);
+}
+
+test "platform process selects helper exe askpass helper on Windows" {
+    try std.testing.expectEqual(SshAskPassHelperKind.helper_exe, sshAskPassHelperKindForOs(.windows));
+    try std.testing.expectEqual(SshAskPassHelperKind.script, sshAskPassHelperKindForOs(.linux));
+    try std.testing.expectEqual(SshAskPassHelperKind.script, sshAskPassHelperKindForOs(.macos));
+
+    const path = try sshAskPassHelperPathFromSelfPath(std.testing.allocator, .windows, "C:/WispTerm/wispterm.exe");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("C:/WispTerm/wispterm-ssh-askpass.exe", path);
+
+    const native_path = try sshAskPassHelperPathFromSelfPath(std.testing.allocator, .windows, "C:\\WispTerm\\wispterm.exe");
+    defer std.testing.allocator.free(native_path);
+    try std.testing.expectEqualStrings("C:\\WispTerm\\wispterm-ssh-askpass.exe", native_path);
+}
+
+test "platform process marks Windows askpass env for self exe mode" {
+    var env = std.process.EnvMap.init(std.testing.allocator);
+    defer env.deinit();
+
+    try putSshAskPassEnvForOs(.windows, &env, "C:/WispTerm/WispTerm.exe", "secret");
+
+    try std.testing.expectEqualStrings("C:/WispTerm/WispTerm.exe", env.get("SSH_ASKPASS").?);
+    try std.testing.expectEqualStrings("force", env.get("SSH_ASKPASS_REQUIRE").?);
+    try std.testing.expectEqualStrings("wispterm", env.get("DISPLAY").?);
+    try std.testing.expectEqualStrings("secret", env.get(SSH_ASKPASS_PASSWORD_ENV).?);
+    try std.testing.expectEqualStrings("1", env.get(SSH_ASKPASS_MARKER_ENV).?);
 }
 
 test "platform process owns child termination and pipe writes" {
