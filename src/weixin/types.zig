@@ -3,12 +3,21 @@
 
 const std = @import("std");
 
+pub const InboundMedia = struct {
+    encrypt_query_param: []const u8 = "",
+    aes_key: []const u8 = "",
+};
+
 pub const MessageItem = struct {
     type: i64 = 0,
     /// text from a text_item (type 1)
     text: []const u8 = "",
     /// transcribed text from a voice_item (type 3)
     voice_text: []const u8 = "",
+    /// CDN media for an inbound image (type 2) or file (type 4)
+    media: ?InboundMedia = null,
+    /// original file name from a file_item (type 4)
+    file_name: []const u8 = "",
 };
 
 pub const Message = struct {

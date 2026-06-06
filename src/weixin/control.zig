@@ -20,6 +20,9 @@ pub const Control = struct {
         latest_transcript: *const fn (ctx: *anyopaque) []const u8,
         ai_approval_pending: *const fn (ctx: *anyopaque) bool,
         resolve_ai_approval: *const fn (ctx: *anyopaque, approve: bool) bool,
+        /// Writes the effective agent working directory into `buf` and returns
+        /// the slice; empty when no working dir is configured. UI-thread backed.
+        inbound_file_dir: *const fn (ctx: *anyopaque, buf: []u8) []const u8,
     };
 
     pub fn isConnected(self: Control) bool {
@@ -46,4 +49,60 @@ pub const Control = struct {
     pub fn resolveAiApproval(self: Control, approve: bool) bool {
         return self.vtable.resolve_ai_approval(self.ctx, approve);
     }
+    pub fn inboundFileDir(self: Control, buf: []u8) []const u8 {
+        return self.vtable.inbound_file_dir(self.ctx, buf);
+    }
 };
+
+const t = std.testing;
+
+test "inboundFileDir forwards to the vtable and copies into the caller buffer" {
+    const Fake = struct {
+        fn is_connected(_: *anyopaque) bool {
+            return true;
+        }
+        fn find_ai_surface(_: *anyopaque) ?Surface {
+            return null;
+        }
+        fn find_terminal_surface(_: *anyopaque) ?Surface {
+            return null;
+        }
+        fn open_ai_agent(_: *anyopaque, _: u32) OpenResult {
+            return .offline;
+        }
+        fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
+            return false;
+        }
+        fn latest_transcript(_: *anyopaque) []const u8 {
+            return "";
+        }
+        fn ai_approval_pending(_: *anyopaque) bool {
+            return false;
+        }
+        fn resolve_ai_approval(_: *anyopaque, _: bool) bool {
+            return false;
+        }
+        fn inbound_file_dir(_: *anyopaque, buf: []u8) []const u8 {
+            const dir = "/tmp/proj";
+            @memcpy(buf[0..dir.len], dir);
+            return buf[0..dir.len];
+        }
+        var dummy: u8 = 0;
+        fn iface() Control {
+            return .{ .ctx = &dummy, .vtable = &.{
+                .is_connected = is_connected,
+                .find_ai_surface = find_ai_surface,
+                .find_terminal_surface = find_terminal_surface,
+                .open_ai_agent = open_ai_agent,
+                .send_input = send_input,
+                .latest_transcript = latest_transcript,
+                .ai_approval_pending = ai_approval_pending,
+                .resolve_ai_approval = resolve_ai_approval,
+                .inbound_file_dir = inbound_file_dir,
+            } };
+        }
+    };
+
+    var buf: [512]u8 = undefined;
+    try t.expectEqualStrings("/tmp/proj", Fake.iface().inboundFileDir(&buf));
+}

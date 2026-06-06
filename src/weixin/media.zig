@@ -25,7 +25,7 @@ pub fn aes128EcbPkcs7Encrypt(allocator: std.mem.Allocator, key: AesKey, plain: [
     return out;
 }
 
-pub fn aes128EcbPkcs7DecryptForTest(allocator: std.mem.Allocator, key: AesKey, encrypted: []const u8) ![]u8 {
+pub fn aes128EcbPkcs7Decrypt(allocator: std.mem.Allocator, key: AesKey, encrypted: []const u8) ![]u8 {
     if (encrypted.len == 0 or encrypted.len % 16 != 0) return error.InvalidCiphertext;
     const padded = try allocator.dupe(u8, encrypted);
     errdefer allocator.free(padded);
@@ -52,6 +52,60 @@ pub fn encodeIlinkAesKey(allocator: std.mem.Allocator, key: AesKey) ![]u8 {
     const out = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(hex.len));
     _ = std.base64.standard.Encoder.encode(out, hex);
     return out;
+}
+
+/// Decodes a Weixin `media.aes_key` into a 16-byte AES-128 key. The value is
+/// base64; the decoded bytes are either the raw 16-byte key or 32 ASCII hex
+/// chars (WispTerm's own outbound form) that hex-decode to 16 bytes.
+pub fn parseAesKey(allocator: std.mem.Allocator, aes_key_base64: []const u8) !AesKey {
+    const trimmed = std.mem.trim(u8, aes_key_base64, " \t\r\n");
+    const decoder = std.base64.standard.Decoder;
+    const decoded_len = decoder.calcSizeForSlice(trimmed) catch return error.WeixinInvalidAesKey;
+    const decoded = try allocator.alloc(u8, decoded_len);
+    defer allocator.free(decoded);
+    decoder.decode(decoded, trimmed) catch return error.WeixinInvalidAesKey;
+
+    var key: AesKey = undefined;
+    if (decoded.len == 16) {
+        @memcpy(&key, decoded);
+        return key;
+    }
+    if (decoded.len == 32 and isAsciiHex(decoded)) {
+        for (0..16) |i| {
+            const hi = hexNibble(decoded[i * 2]) orelse return error.WeixinInvalidAesKey;
+            const lo = hexNibble(decoded[i * 2 + 1]) orelse return error.WeixinInvalidAesKey;
+            key[i] = (hi << 4) | lo;
+        }
+        return key;
+    }
+    return error.WeixinInvalidAesKey;
+}
+
+fn isAsciiHex(data: []const u8) bool {
+    for (data) |c| {
+        if (hexNibble(c) == null) return false;
+    }
+    return true;
+}
+
+fn hexNibble(c: u8) ?u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => null,
+    };
+}
+
+/// `<cdn-base>/download?encrypted_query_param=<escaped>` — the inbound GET URL.
+/// No filekey (unlike upload).
+pub fn cdnDownloadUrl(allocator: std.mem.Allocator, encrypt_query_param: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, DEFAULT_CDN_UPLOAD_BASE_URL);
+    try out.appendSlice(allocator, "/download?encrypted_query_param=");
+    try appendQueryEscaped(&out, allocator, encrypt_query_param);
+    return out.toOwnedSlice(allocator);
 }
 
 pub fn md5Hex(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
@@ -119,7 +173,7 @@ test "AES ECB PKCS7 encrypts and decrypts a short buffer" {
     defer t.allocator.free(encrypted);
     try t.expectEqual(@as(usize, 16), encrypted.len);
 
-    const decrypted = try aes128EcbPkcs7DecryptForTest(t.allocator, key, encrypted);
+    const decrypted = try aes128EcbPkcs7Decrypt(t.allocator, key, encrypted);
     defer t.allocator.free(decrypted);
     try t.expectEqualStrings("hello", decrypted);
 }
@@ -132,7 +186,7 @@ test "AES ECB PKCS7 encrypts and decrypts multiple blocks" {
     try t.expectEqual(@as(usize, 48), encrypted.len);
     try t.expect(!std.mem.eql(u8, encrypted[0..plain.len], plain));
 
-    const decrypted = try aes128EcbPkcs7DecryptForTest(t.allocator, key, encrypted);
+    const decrypted = try aes128EcbPkcs7Decrypt(t.allocator, key, encrypted);
     defer t.allocator.free(decrypted);
     try t.expectEqualStrings(plain, decrypted);
 }
@@ -148,6 +202,50 @@ test "md5Hex returns lowercase hex digest" {
     const digest = try md5Hex(t.allocator, "abc");
     defer t.allocator.free(digest);
     try t.expectEqualStrings("900150983cd24fb0d6963f7d28e17f72", digest);
+}
+
+test "parseAesKey decodes a base64 raw 16-byte key" {
+    const encoded = try encodeRaw16ForTest(t.allocator);
+    defer t.allocator.free(encoded);
+    const key = try parseAesKey(t.allocator, encoded);
+    try t.expectEqualSlices(u8, &[_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }, &key);
+}
+
+test "parseAesKey decodes base64 of 32 hex chars into 16 bytes" {
+    // This is what WispTerm's own encodeIlinkAesKey produces.
+    const key_in: AesKey = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    const encoded = try encodeIlinkAesKey(t.allocator, key_in);
+    defer t.allocator.free(encoded);
+    const key = try parseAesKey(t.allocator, encoded);
+    try t.expectEqualSlices(u8, &key_in, &key);
+}
+
+test "parseAesKey rejects malformed keys" {
+    try t.expectError(error.WeixinInvalidAesKey, parseAesKey(t.allocator, "not base64!!"));
+    // base64 of 5 bytes → neither 16 nor 32
+    try t.expectError(error.WeixinInvalidAesKey, parseAesKey(t.allocator, "aGVsbG8="));
+}
+
+test "decrypt round-trips ciphertext from aes128EcbPkcs7Encrypt" {
+    const key: AesKey = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    const encrypted = try aes128EcbPkcs7Encrypt(t.allocator, key, "weixin inbound payload");
+    defer t.allocator.free(encrypted);
+    const decrypted = try aes128EcbPkcs7Decrypt(t.allocator, key, encrypted);
+    defer t.allocator.free(decrypted);
+    try t.expectEqualStrings("weixin inbound payload", decrypted);
+}
+
+test "cdnDownloadUrl builds the c2c download endpoint with escaped param" {
+    const url = try cdnDownloadUrl(t.allocator, "a+b&c=1");
+    defer t.allocator.free(url);
+    try t.expectEqualStrings(DEFAULT_CDN_UPLOAD_BASE_URL ++ "/download?encrypted_query_param=a%2Bb%26c%3D1", url);
+}
+
+fn encodeRaw16ForTest(allocator: std.mem.Allocator) ![]u8 {
+    const raw: AesKey = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    const out = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(raw.len));
+    _ = std.base64.standard.Encoder.encode(out, &raw);
+    return out;
 }
 
 test "cdnUploadUrl appends encrypted upload query fields" {

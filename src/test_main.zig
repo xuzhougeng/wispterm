@@ -705,6 +705,7 @@ comptime {
     _ = @import("weixin/agent.zig");
     _ = @import("weixin/reply_progress.zig");
     _ = @import("weixin/ilink_codec.zig");
+    _ = @import("weixin/media_inbound.zig");
     _ = @import("weixin/ilink_client.zig");
     _ = @import("weixin/poller.zig");
     _ = @import("weixin/controller.zig");

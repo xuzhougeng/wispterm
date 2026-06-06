@@ -7,6 +7,7 @@ const agent = @import("agent.zig");
 const ilink = @import("ilink_client.zig");
 const control_mod = @import("control.zig");
 const reply_progress = @import("reply_progress.zig");
+const media_inbound_mod = @import("media_inbound.zig");
 
 pub const SESSION_EXPIRED_ERRCODE: i64 = -14;
 /// Elapsed times at which an in-progress AI follow-up pings the user so a slow
@@ -37,6 +38,13 @@ pub const RouteResult = struct {
     stop_followup: bool = false,
     /// Heap-owned by ProcessInput. Freed after start_progress_fn returns.
     baseline_transcript: []u8 = &.{},
+};
+
+pub const MediaOutcome = struct {
+    /// true ⇒ this message carried inbound media (text path is skipped).
+    handled: bool = false,
+    /// true ⇒ at least one file saved (route the synthetic prompt).
+    any_saved: bool = false,
 };
 
 pub const ThreadControl = struct {
@@ -72,6 +80,16 @@ pub const ProcessInput = struct {
     /// Cancels any active AI-reply progress streaming. Invoked (with progress_ctx)
     /// when a routed message reports stop_followup (e.g. /stop).
     stop_progress_fn: ?*const fn (ctx: *anyopaque) void = null,
+    media_ctx: ?*anyopaque = null,
+    /// Downloads + saves inbound media in `msg`. Fills `receipt` (sent verbatim
+    /// as the ack) and `prompt` (routed to the copilot; its reply is suppressed).
+    media_fn: ?*const fn (
+        ctx: *anyopaque,
+        msg: types.Message,
+        allocator: std.mem.Allocator,
+        receipt: *std.ArrayListUnmanaged(u8),
+        prompt: *std.ArrayListUnmanaged(u8),
+    ) anyerror!MediaOutcome = null,
 };
 
 /// Mirror of processWeixinUpdates: filter, extract, route, reply.
@@ -96,6 +114,45 @@ pub fn processUpdates(input: ProcessInput) !void {
             std.debug.print("weixin process({d}): index={d} skipped reason={s}\n", .{ debugNowMs(), i, decision.reason });
             continue;
         }
+
+        if (input.media_fn) |media_fn| {
+            var receipt: std.ArrayListUnmanaged(u8) = .empty;
+            defer receipt.deinit(input.allocator);
+            var prompt: std.ArrayListUnmanaged(u8) = .empty;
+            defer prompt.deinit(input.allocator);
+            const outcome = media_fn(input.media_ctx.?, msg, input.allocator, &receipt, &prompt) catch |err| blk: {
+                std.debug.print("weixin process({d}): index={d} media=failed err={}\n", .{ debugNowMs(), i, err });
+                break :blk MediaOutcome{};
+            };
+            if (outcome.handled) {
+                const receipt_trimmed = std.mem.trim(u8, receipt.items, " \t\r\n");
+                if (receipt_trimmed.len != 0) {
+                    input.send_fn(input.send_ctx, msg.from_user_id, receipt_trimmed, msg.context_token) catch |err| {
+                        std.debug.print("weixin send({d}): index={d} kind=receipt status=failed err={}\n", .{ debugNowMs(), i, err });
+                    };
+                }
+                if (outcome.any_saved and prompt.items.len != 0) {
+                    var throwaway: std.ArrayListUnmanaged(u8) = .empty;
+                    defer throwaway.deinit(input.allocator);
+                    const rr = input.route_fn(input.route_ctx, prompt.items, msg.from_user_id, msg.context_token, input.allocator, &throwaway) catch |err| route_blk: {
+                        std.debug.print("weixin process({d}): index={d} media_route=failed err={}\n", .{ debugNowMs(), i, err });
+                        break :route_blk RouteResult{};
+                    };
+                    defer if (rr.baseline_transcript.len != 0) input.allocator.free(rr.baseline_transcript);
+                    if (rr.expect_ai_progress) {
+                        if (input.progress_ctx) |ctx| {
+                            if (input.start_progress_fn) |start| {
+                                start(ctx, rr.baseline_transcript, msg.from_user_id, msg.context_token) catch |err| {
+                                    std.debug.print("weixin process({d}): index={d} media_followup=failed err={}\n", .{ debugNowMs(), i, err });
+                                };
+                            }
+                        }
+                    }
+                }
+                continue; // media handled → skip the text path
+            }
+        }
+
         const text = binding.extractText(msg);
         if (text.len == 0) {
             std.debug.print("weixin process({d}): index={d} skipped reason=no_text_item\n", .{ debugNowMs(), i });
@@ -266,6 +323,8 @@ pub const Poller = struct {
             .progress_ctx = self,
             .start_progress_fn = startProgressAdapter,
             .stop_progress_fn = stopProgressAdapter,
+            .media_ctx = self,
+            .media_fn = pollerMediaAdapterThunk,
         });
     }
 
@@ -312,6 +371,120 @@ pub const Poller = struct {
         const self: *Poller = @ptrCast(@alignCast(ctx));
         if (self.stop_requested.load(.acquire)) return error.PollerStopped;
         try self.client.sendAttachment(kind, path, display_name, to_user_id, context_token);
+    }
+
+    fn pollerMediaAdapterThunk(
+        ctx: *anyopaque,
+        msg: types.Message,
+        allocator: std.mem.Allocator,
+        receipt: *std.ArrayListUnmanaged(u8),
+        prompt: *std.ArrayListUnmanaged(u8),
+    ) anyerror!MediaOutcome {
+        const self: *Poller = @ptrCast(@alignCast(ctx));
+        return self.pollerMediaAdapter(msg, allocator, receipt, prompt);
+    }
+
+    fn pollerMediaAdapter(
+        self: *Poller,
+        msg: types.Message,
+        allocator: std.mem.Allocator,
+        receipt: *std.ArrayListUnmanaged(u8),
+        prompt: *std.ArrayListUnmanaged(u8),
+    ) anyerror!MediaOutcome {
+        if (self.stop_requested.load(.acquire)) return .{};
+        const plans = try media_inbound_mod.planDownloads(allocator, msg.item_list);
+        defer allocator.free(plans);
+        if (plans.len == 0) return .{};
+
+        // Resolve <working-dir>/weixin_inbound, falling back to cwd.
+        var dir_buf: [4096]u8 = undefined;
+        const base_dir = self.control.inboundFileDir(&dir_buf);
+        const save_dir = blk: {
+            if (base_dir.len != 0) {
+                break :blk try std.fs.path.join(allocator, &.{ base_dir, "weixin_inbound" });
+            }
+            break :blk try allocator.dupe(u8, "weixin_inbound");
+        };
+        defer allocator.free(save_dir);
+        std.fs.cwd().makePath(save_dir) catch |err| {
+            std.debug.print("weixin media: makePath failed dir_len={d} err={}\n", .{ save_dir.len, err });
+            try receipt.appendSlice(allocator, "收到文件，但无法创建保存目录，已忽略。");
+            return .{ .handled = true, .any_saved = false };
+        };
+
+        var saved_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer {
+            for (saved_names.items) |n| allocator.free(n);
+            saved_names.deinit(allocator);
+        }
+        var saved_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer {
+            for (saved_paths.items) |pth| allocator.free(pth);
+            saved_paths.deinit(allocator);
+        }
+        var failed_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer failed_names.deinit(allocator);
+
+        // Reserve capacity up front so every in-loop append is infallible: the
+        // loop body then has no `try` that could return mid-iteration, so the
+        // `name`/`full` allocations are either appended (owned by the lists,
+        // freed by the defers above) or freed on their own failure path — no
+        // errdefer needed, no double-free on OOM.
+        try saved_names.ensureTotalCapacity(allocator, plans.len);
+        try saved_paths.ensureTotalCapacity(allocator, plans.len);
+        try failed_names.ensureTotalCapacity(allocator, plans.len);
+
+        for (plans, 0..) |plan, idx| {
+            if (self.stop_requested.load(.acquire)) break;
+            const bytes = self.client.downloadAttachment(allocator, plan.encrypt_query_param, plan.aes_key, plan.allow_plain) catch |err| {
+                std.debug.print("weixin media: download failed kind={s} err={}\n", .{ plan.kind.name(), err });
+                failed_names.appendAssumeCapacity(failureLabel(plan));
+                continue;
+            };
+            defer allocator.free(bytes);
+
+            const chosen = media_inbound_mod.chooseFileName(allocator, plan, bytes, idx) catch {
+                failed_names.appendAssumeCapacity(failureLabel(plan));
+                continue;
+            };
+            defer allocator.free(chosen);
+
+            const name = media_inbound_mod.dedupeFileName(allocator, chosen, saved_names.items) catch {
+                failed_names.appendAssumeCapacity(failureLabel(plan));
+                continue;
+            };
+            const full = std.fs.path.join(allocator, &.{ save_dir, name }) catch {
+                allocator.free(name);
+                failed_names.appendAssumeCapacity(failureLabel(plan));
+                continue;
+            };
+            writeFileAbsolute(full, bytes) catch |err| {
+                std.debug.print("weixin media: write failed err={}\n", .{err});
+                allocator.free(name);
+                allocator.free(full);
+                failed_names.appendAssumeCapacity(failureLabel(plan));
+                continue;
+            };
+            saved_names.appendAssumeCapacity(name);
+            saved_paths.appendAssumeCapacity(full);
+        }
+
+        if (saved_names.items.len == 0) {
+            try appendFailureLine(allocator, receipt, failed_names.items);
+            return .{ .handled = true, .any_saved = false };
+        }
+
+        const receipt_text = try media_inbound_mod.buildReceiptText(allocator, saved_names.items);
+        defer allocator.free(receipt_text);
+        try receipt.appendSlice(allocator, receipt_text);
+        try appendFailureLine(allocator, receipt, failed_names.items);
+
+        const caption = binding.extractText(msg);
+        const prompt_text = try media_inbound_mod.buildCopilotPrompt(allocator, saved_paths.items, caption);
+        defer allocator.free(prompt_text);
+        try prompt.appendSlice(allocator, prompt_text);
+
+        return .{ .handled = true, .any_saved = true };
     }
 
     fn sendAdapter(ctx: *anyopaque, to_user_id: []const u8, text: []const u8, context_token: []const u8) anyerror!void {
@@ -529,6 +702,30 @@ pub const Poller = struct {
     }
 };
 
+fn failureLabel(plan: media_inbound_mod.DownloadPlan) []const u8 {
+    if (plan.kind == .file and plan.file_name.len != 0) return plan.file_name;
+    return plan.kind.name();
+}
+
+fn appendFailureLine(allocator: std.mem.Allocator, receipt: *std.ArrayListUnmanaged(u8), failed: []const []const u8) !void {
+    if (failed.len == 0) return;
+    if (receipt.items.len != 0) try receipt.appendSlice(allocator, "\n");
+    try receipt.appendSlice(allocator, "文件接收失败：");
+    for (failed, 0..) |name, i| {
+        if (i != 0) try receipt.appendSlice(allocator, "、");
+        try receipt.appendSlice(allocator, name);
+    }
+}
+
+fn writeFileAbsolute(path: []const u8, bytes: []const u8) !void {
+    var file = if (std.fs.path.isAbsolute(path))
+        try std.fs.createFileAbsolute(path, .{})
+    else
+        try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+    try file.writeAll(bytes);
+}
+
 fn debugHash(bytes: []const u8) u64 {
     if (bytes.len == 0) return 0;
     return std.hash.Wyhash.hash(0, bytes);
@@ -675,7 +872,16 @@ const FakeClient = struct {
             .get_updates = getUpdates,
             .send_text = sendText,
             .send_attachment = sendAttachment,
+            .download_attachment = downloadAttachment,
         } };
+    }
+
+    fn downloadAttachment(ctx: *anyopaque, allocator: std.mem.Allocator, enc: []const u8, key: []const u8, allow_plain: bool) anyerror![]u8 {
+        _ = ctx;
+        _ = enc;
+        _ = key;
+        _ = allow_plain;
+        return allocator.dupe(u8, "");
     }
 
     fn getUpdates(ctx: *anyopaque, _: []const u8) anyerror!codec.ParsedUpdates {
@@ -744,6 +950,9 @@ const NoopControl = struct {
     fn resolveAiApproval(_: *anyopaque, _: bool) bool {
         return false;
     }
+    fn inboundFileDir(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
     var dummy: u8 = 0;
     fn iface() control_mod.Control {
         return .{ .ctx = &dummy, .vtable = &.{
@@ -755,6 +964,7 @@ const NoopControl = struct {
             .latest_transcript = latestTranscript,
             .ai_approval_pending = aiApprovalPending,
             .resolve_ai_approval = resolveAiApproval,
+            .inbound_file_dir = inboundFileDir,
         } };
     }
 };
@@ -855,6 +1065,90 @@ test "processUpdates routes inbound voice transcript as message text" {
     try t.expectEqualStrings("transcribed command", cap.routed.items[0]);
     try t.expectEqualStrings("u1", cap.routed_to.items[0]);
     try t.expectEqualStrings("voice-ctx", cap.routed_context.items[0]);
+}
+
+test "processUpdates sends the receipt as ack and routes the synthetic prompt for media" {
+    const MediaCtx = struct {
+        fn media(_: *anyopaque, _: types.Message, allocator: std.mem.Allocator, receipt: *std.ArrayListUnmanaged(u8), prompt: *std.ArrayListUnmanaged(u8)) anyerror!MediaOutcome {
+            try receipt.appendSlice(allocator, "已收到文件：a.pdf");
+            try prompt.appendSlice(allocator, "用户通过微信发送了文件：\n- /work/weixin_inbound/a.pdf");
+            return .{ .handled = true, .any_saved = true };
+        }
+    };
+    var cap = Captured{};
+    defer cap.deinit();
+    var rctx = RouteCtx{ .cap = &cap };
+    var sctx = SendCtx{ .cap = &cap };
+    var pctx = ProgressCtx{};
+    defer pctx.deinit();
+    var media_ctx: u8 = 0;
+
+    const msgs = [_]types.Message{
+        .{ .from_user_id = "u1", .context_token = "ctx", .item_list = &.{
+            .{ .type = 4, .file_name = "a.pdf", .media = .{ .encrypt_query_param = "E1", .aes_key = "K1" } },
+        } },
+    };
+
+    try processUpdates(.{
+        .allocator = t.allocator,
+        .owner = "u1",
+        .account_id = "",
+        .messages = &msgs,
+        .route_ctx = &rctx,
+        .route_fn = RouteCtx.route,
+        .send_ctx = &sctx,
+        .send_fn = SendCtx.send,
+        .progress_ctx = &pctx,
+        .start_progress_fn = ProgressCtx.start,
+        .media_ctx = &media_ctx,
+        .media_fn = MediaCtx.media,
+    });
+
+    // Receipt is the only ack sent (route reply suppressed).
+    try t.expectEqual(@as(usize, 1), cap.sent.items.len);
+    try t.expectEqualStrings("已收到文件：a.pdf", cap.sent.items[0]);
+    // The synthetic prompt was routed to the copilot.
+    try t.expectEqual(@as(usize, 1), cap.routed.items.len);
+    try t.expect(std.mem.indexOf(u8, cap.routed.items[0], "/work/weixin_inbound/a.pdf") != null);
+    // RouteCtx.route returns .{} (no progress), so streaming is not started here.
+}
+
+test "processUpdates skips routing when media is handled but nothing saved" {
+    const MediaCtx = struct {
+        fn media(_: *anyopaque, _: types.Message, allocator: std.mem.Allocator, receipt: *std.ArrayListUnmanaged(u8), prompt: *std.ArrayListUnmanaged(u8)) anyerror!MediaOutcome {
+            _ = prompt;
+            try receipt.appendSlice(allocator, "文件接收失败：a.pdf");
+            return .{ .handled = true, .any_saved = false };
+        }
+    };
+    var cap = Captured{};
+    defer cap.deinit();
+    var rctx = RouteCtx{ .cap = &cap };
+    var sctx = SendCtx{ .cap = &cap };
+    var media_ctx: u8 = 0;
+
+    const msgs = [_]types.Message{
+        .{ .from_user_id = "u1", .context_token = "ctx", .item_list = &.{
+            .{ .type = 4, .file_name = "a.pdf", .media = .{ .encrypt_query_param = "E1", .aes_key = "K1" } },
+        } },
+    };
+
+    try processUpdates(.{
+        .allocator = t.allocator,
+        .owner = "u1",
+        .account_id = "",
+        .messages = &msgs,
+        .route_ctx = &rctx,
+        .route_fn = RouteCtx.route,
+        .send_ctx = &sctx,
+        .send_fn = SendCtx.send,
+        .media_ctx = &media_ctx,
+        .media_fn = MediaCtx.media,
+    });
+
+    try t.expectEqual(@as(usize, 1), cap.sent.items.len);
+    try t.expectEqualStrings("文件接收失败：a.pdf", cap.sent.items[0]);
+    try t.expectEqual(@as(usize, 0), cap.routed.items.len);
 }
 
 test "processUpdates cancels AI followup when a routed message reports stop_followup" {
@@ -1002,6 +1296,9 @@ const ApprovalTranscriptControl = struct {
     fn resolveAiApproval(_: *anyopaque, _: bool) bool {
         return false;
     }
+    fn inboundFileDir(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
     var dummy: u8 = 0;
     fn iface() control_mod.Control {
         return .{ .ctx = &dummy, .vtable = &.{
@@ -1013,6 +1310,7 @@ const ApprovalTranscriptControl = struct {
             .latest_transcript = latestTranscript,
             .ai_approval_pending = aiApprovalPending,
             .resolve_ai_approval = resolveAiApproval,
+            .inbound_file_dir = inboundFileDir,
         } };
     }
 };
@@ -1035,4 +1333,123 @@ test "allocProgressText surfaces a needs-approval prompt naming the command" {
     try t.expect(!r.done);
     try t.expect(std.mem.indexOf(u8, r.text, "rm -rf /tmp/x") != null);
     try t.expect(std.mem.indexOf(u8, r.text, "回复 Y 同意 / N 拒绝") != null);
+}
+
+const DownloadFakeClient = struct {
+    plaintext: []const u8,
+
+    fn api(self: *DownloadFakeClient) ilink.ClientApi {
+        return .{ .ctx = self, .vtable = &.{
+            .get_updates = getUpdates,
+            .send_text = sendText,
+            .send_attachment = sendAttachment,
+            .download_attachment = downloadAttachment,
+        } };
+    }
+    fn getUpdates(_: *anyopaque, _: []const u8) anyerror!codec.ParsedUpdates {
+        return error.NotUsed;
+    }
+    fn sendText(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8) anyerror!void {}
+    fn sendAttachment(_: *anyopaque, _: types.AttachmentKind, _: []const u8, _: []const u8, _: []const u8, _: []const u8) anyerror!void {}
+    fn downloadAttachment(ctx: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8, _: bool) anyerror![]u8 {
+        const self: *DownloadFakeClient = @ptrCast(@alignCast(ctx));
+        return allocator.dupe(u8, self.plaintext);
+    }
+};
+
+const TmpDirControl = struct {
+    dir: []const u8,
+    fn is_connected(_: *anyopaque) bool {
+        return true;
+    }
+    fn find_ai_surface(_: *anyopaque) ?control_mod.Surface {
+        return null;
+    }
+    fn find_terminal_surface(_: *anyopaque) ?control_mod.Surface {
+        return null;
+    }
+    fn open_ai_agent(_: *anyopaque, _: u32) control_mod.OpenResult {
+        return .offline;
+    }
+    fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
+        return false;
+    }
+    fn latest_transcript(_: *anyopaque) []const u8 {
+        return "";
+    }
+    fn ai_approval_pending(_: *anyopaque) bool {
+        return false;
+    }
+    fn resolve_ai_approval(_: *anyopaque, _: bool) bool {
+        return false;
+    }
+    fn inbound_file_dir(ctx: *anyopaque, buf: []u8) []const u8 {
+        const self: *TmpDirControl = @ptrCast(@alignCast(ctx));
+        const n = @min(self.dir.len, buf.len);
+        @memcpy(buf[0..n], self.dir[0..n]);
+        return buf[0..n];
+    }
+    fn iface(self: *TmpDirControl) control_mod.Control {
+        return .{ .ctx = self, .vtable = &.{
+            .is_connected = is_connected,
+            .find_ai_surface = find_ai_surface,
+            .find_terminal_surface = find_terminal_surface,
+            .open_ai_agent = open_ai_agent,
+            .send_input = send_input,
+            .latest_transcript = latest_transcript,
+            .ai_approval_pending = ai_approval_pending,
+            .resolve_ai_approval = resolve_ai_approval,
+            .inbound_file_dir = inbound_file_dir,
+        } };
+    }
+};
+
+test "pollerMediaAdapter downloads, saves under weixin_inbound, and builds receipt + prompt" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(t.allocator, ".");
+    defer t.allocator.free(root);
+
+    var client = DownloadFakeClient{ .plaintext = "PDF-CONTENT" };
+    var ctrl = TmpDirControl{ .dir = root };
+    const empty_sync = try t.allocator.alloc(u8, 0);
+    defer t.allocator.free(empty_sync);
+
+    var p = Poller{
+        .allocator = t.allocator,
+        .client = client.api(),
+        .control = ctrl.iface(),
+        .settings = .{},
+        .owner = "u1",
+        .account_id = "",
+        .sync_buf = empty_sync,
+    };
+
+    const msg = types.Message{
+        .from_user_id = "u1",
+        .context_token = "ctx",
+        .item_list = &.{
+            .{ .type = 1, .text = "请看这个" },
+            .{ .type = 4, .file_name = "report.pdf", .media = .{ .encrypt_query_param = "E1", .aes_key = "KEY" } },
+        },
+    };
+
+    var receipt: std.ArrayListUnmanaged(u8) = .empty;
+    defer receipt.deinit(t.allocator);
+    var prompt: std.ArrayListUnmanaged(u8) = .empty;
+    defer prompt.deinit(t.allocator);
+    const outcome = try p.pollerMediaAdapter(msg, t.allocator, &receipt, &prompt);
+
+    try t.expect(outcome.handled);
+    try t.expect(outcome.any_saved);
+    // File written under <root>/weixin_inbound/report.pdf with decrypted content.
+    const saved_path = try std.fs.path.join(t.allocator, &.{ root, "weixin_inbound", "report.pdf" });
+    defer t.allocator.free(saved_path);
+    const data = try std.fs.cwd().readFileAlloc(t.allocator, saved_path, 1 << 20);
+    defer t.allocator.free(data);
+    try t.expectEqualStrings("PDF-CONTENT", data);
+    // Receipt names the file; prompt has the absolute path and the caption.
+    try t.expect(std.mem.indexOf(u8, receipt.items, "report.pdf") != null);
+    try t.expect(std.mem.indexOf(u8, prompt.items, saved_path) != null);
+    try t.expect(std.mem.indexOf(u8, prompt.items, "请看这个") != null);
 }

@@ -507,6 +507,9 @@ const NoopControl = struct {
     fn resolve_ai_approval(_: *anyopaque, _: bool) bool {
         return false;
     }
+    fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
     var dummy: u8 = 0;
     fn iface() control_mod.Control {
         return .{ .ctx = &dummy, .vtable = &.{
@@ -518,6 +521,7 @@ const NoopControl = struct {
             .latest_transcript = latest_transcript,
             .ai_approval_pending = ai_approval_pending,
             .resolve_ai_approval = resolve_ai_approval,
+            .inbound_file_dir = inbound_file_dir,
         } };
     }
 };

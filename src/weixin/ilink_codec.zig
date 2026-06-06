@@ -187,11 +187,40 @@ pub fn statusKindFromString(s: []const u8) types.QrStatusKind {
 
 // --- response parsing ---
 
+const WireMedia = struct {
+    encrypt_query_param: []const u8 = "",
+    aes_key: []const u8 = "",
+    encrypt_type: i64 = 0,
+};
 const WireItem = struct {
     type: i64 = 0,
     text_item: ?struct { text: []const u8 = "" } = null,
     voice_item: ?struct { text: []const u8 = "" } = null,
+    image_item: ?struct {
+        media: ?WireMedia = null,
+        aeskey: []const u8 = "",
+        url: []const u8 = "",
+    } = null,
+    file_item: ?struct {
+        media: ?WireMedia = null,
+        file_name: []const u8 = "",
+        md5: []const u8 = "",
+        len: []const u8 = "",
+    } = null,
 };
+
+fn inboundMediaFromWire(wi: WireItem) ?types.InboundMedia {
+    if (wi.file_item) |f| {
+        if (f.media) |m| return .{ .encrypt_query_param = m.encrypt_query_param, .aes_key = m.aes_key };
+    }
+    if (wi.image_item) |img| {
+        if (img.media) |m| {
+            const key = if (m.aes_key.len != 0) m.aes_key else img.aeskey;
+            return .{ .encrypt_query_param = m.encrypt_query_param, .aes_key = key };
+        }
+    }
+    return null;
+}
 const WireMsg = struct {
     from_user_id: []const u8 = "",
     to_user_id: []const u8 = "",
@@ -272,6 +301,8 @@ pub fn parseGetUpdates(allocator: std.mem.Allocator, json: []const u8) !ParsedUp
                 .type = wi.type,
                 .text = if (wi.text_item) |x| x.text else "",
                 .voice_text = if (wi.voice_item) |x| x.text else "",
+                .media = inboundMediaFromWire(wi),
+                .file_name = if (wi.file_item) |f| f.file_name else "",
             };
         }
         msgs[mi] = .{
@@ -408,6 +439,51 @@ test "builds uploaded image sendmessage body" {
     try t.expect(std.mem.indexOf(u8, body, "\"image_item\"") != null);
     try t.expect(std.mem.indexOf(u8, body, "\"mid_size\":64") != null);
     try t.expect(std.mem.indexOf(u8, body, "\"channel_version\":\"1.0.2\"") != null);
+}
+
+test "parseGetUpdates maps an inbound file_item with media and file name" {
+    const json =
+        \\{"ret":0,"msgs":[{"from_user_id":"u1","context_token":"ctx",
+        \\"item_list":[{"type":4,"file_item":{"file_name":"report.pdf",
+        \\"media":{"encrypt_query_param":"ENC","aes_key":"KEY","encrypt_type":1}}}]}]}
+    ;
+    var parsed = try parseGetUpdates(t.allocator, json);
+    defer parsed.deinit();
+    const item = parsed.value.msgs[0].item_list[0];
+    try t.expectEqual(@as(i64, 4), item.type);
+    try t.expectEqualStrings("report.pdf", item.file_name);
+    try t.expect(item.media != null);
+    try t.expectEqualStrings("ENC", item.media.?.encrypt_query_param);
+    try t.expectEqualStrings("KEY", item.media.?.aes_key);
+}
+
+test "parseGetUpdates maps an inbound image_item media" {
+    const json =
+        \\{"ret":0,"msgs":[{"from_user_id":"u1","context_token":"ctx",
+        \\"item_list":[{"type":2,"image_item":{
+        \\"media":{"encrypt_query_param":"IMGENC","aes_key":"IMGKEY"}}}]}]}
+    ;
+    var parsed = try parseGetUpdates(t.allocator, json);
+    defer parsed.deinit();
+    const item = parsed.value.msgs[0].item_list[0];
+    try t.expectEqual(@as(i64, 2), item.type);
+    try t.expect(item.media != null);
+    try t.expectEqualStrings("IMGENC", item.media.?.encrypt_query_param);
+    try t.expectEqualStrings("IMGKEY", item.media.?.aes_key);
+}
+
+test "parseGetUpdates falls back to legacy image aeskey when media.aes_key absent" {
+    const json =
+        \\{"ret":0,"msgs":[{"from_user_id":"u1","context_token":"ctx",
+        \\"item_list":[{"type":2,"image_item":{"aeskey":"LEGACYHEX",
+        \\"media":{"encrypt_query_param":"IMGENC"}}}]}]}
+    ;
+    var parsed = try parseGetUpdates(t.allocator, json);
+    defer parsed.deinit();
+    const item = parsed.value.msgs[0].item_list[0];
+    try t.expect(item.media != null);
+    try t.expectEqualStrings("IMGENC", item.media.?.encrypt_query_param);
+    try t.expectEqualStrings("LEGACYHEX", item.media.?.aes_key);
 }
 
 test "parses inbound voice transcription into message item" {

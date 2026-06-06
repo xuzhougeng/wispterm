@@ -222,6 +222,9 @@ const FakeControl = struct {
         self.last_resolve_approve = approve;
         return true;
     }
+    fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
     fn cast(ctx: *anyopaque) *FakeControl {
         return @ptrCast(@alignCast(ctx));
     }
@@ -241,6 +244,7 @@ const FakeControl = struct {
             .latest_transcript = latest_transcript,
             .ai_approval_pending = ai_approval_pending,
             .resolve_ai_approval = resolve_ai_approval,
+            .inbound_file_dir = inbound_file_dir,
         } };
     }
 };

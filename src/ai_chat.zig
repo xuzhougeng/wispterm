@@ -352,7 +352,7 @@ pub fn setDefaultWorkingDir(path: []const u8) void {
     g_default_working_dir_len = n;
 }
 
-fn defaultWorkingDir() ?[]const u8 {
+pub fn defaultWorkingDir() ?[]const u8 {
     g_agent_mutex.lock();
     defer g_agent_mutex.unlock();
     if (g_default_working_dir_len == 0) return null;

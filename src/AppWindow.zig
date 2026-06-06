@@ -3231,7 +3231,7 @@ var g_weixin_transcript_mutex: std.Thread.Mutex = .{};
 var g_weixin_transcript_owned: []u8 = &.{};
 
 const WeixinRequest = struct {
-    op: enum { find_ai, find_term, open_ai, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval },
+    op: enum { find_ai, find_term, open_ai, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, inbound_file_dir },
     // operation inputs (valid for the duration of the synchronous call):
     surface_id: [16]u8 = [_]u8{0} ** 16, // send_input
     bytes: []const u8 = "", // send_input
@@ -3243,6 +3243,7 @@ const WeixinRequest = struct {
     open_result: weixin_control.OpenResult = .failed,
     sent: bool = false,
     transcript: []u8 = &.{},
+    dir: []u8 = &.{}, // inbound_file_dir (heap, page_allocator)
 };
 
 /// Index of the AI-chat tab to target: the active tab if it is AI chat, else the
@@ -3361,6 +3362,26 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
             req.sent = session.resolveApprovalExternal(req.approve);
             if (req.sent) g_force_rebuild = true;
         },
+        .inbound_file_dir => {
+            // Per-conversation working dir if set, else the global default.
+            if (weixinActiveAiTabIndex()) |idx| {
+                if (tab.g_tabs[idx]) |tab_state| {
+                    if (tab_state.kind == .ai_chat) {
+                        if (tab_state.ai_chat_session) |session| {
+                            if (session.workingDirOverride()) |w| {
+                                req.dir = std.heap.page_allocator.dupe(u8, w) catch return;
+                                req.found = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            if (ai_chat.defaultWorkingDir()) |w| {
+                req.dir = std.heap.page_allocator.dupe(u8, w) catch return;
+                req.found = true;
+            }
+        },
     }
 }
 
@@ -3413,6 +3434,15 @@ fn wxTranscript(_: *anyopaque) []const u8 {
     return g_weixin_transcript_owned;
 }
 
+fn wxInboundFileDir(_: *anyopaque, buf: []u8) []const u8 {
+    var req = WeixinRequest{ .op = .inbound_file_dir };
+    if (!weixinDispatch(&req) or !req.found or req.dir.len == 0) return "";
+    defer std.heap.page_allocator.free(req.dir);
+    const n = @min(req.dir.len, buf.len);
+    @memcpy(buf[0..n], req.dir[0..n]);
+    return buf[0..n];
+}
+
 fn wxAiApprovalPending(_: *anyopaque) bool {
     var req = WeixinRequest{ .op = .ai_approval_pending };
     if (!weixinDispatch(&req)) return false;
@@ -3434,6 +3464,7 @@ const weixin_vtable = weixin_control.Control.VTable{
     .latest_transcript = wxTranscript,
     .ai_approval_pending = wxAiApprovalPending,
     .resolve_ai_approval = wxResolveAiApproval,
+    .inbound_file_dir = wxInboundFileDir,
 };
 
 /// The Control the weixin controller drives. Backed by process-global state, so
