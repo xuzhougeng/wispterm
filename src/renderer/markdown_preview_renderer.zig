@@ -4,6 +4,7 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const panel = @import("../markdown_preview_panel.zig");
 const markdown_preview = @import("../markdown_preview.zig");
+const text_wrap = @import("../text_wrap.zig");
 const hit_test = @import("../input/hit_test.zig");
 const ui_perf = @import("../ui_perf.zig");
 const titlebar = AppWindow.titlebar;
@@ -906,21 +907,8 @@ fn renderTopQuad(
     ui_pipeline.fillQuad(x, gl_y, w, bottom - top, color);
 }
 
-fn wrapEnd(text: []const u8, start: usize, max_chars: usize) usize {
-    const end = @min(text.len, start + max_chars);
-    if (end >= text.len) return text.len;
-    var i = end;
-    while (i > start) : (i -= 1) {
-        if (text[i - 1] == ' ' or text[i - 1] == '\t') return i - 1;
-    }
-    return end;
-}
-
-fn skipSpaces(text: []const u8, start: usize) usize {
-    var i = start;
-    while (i < text.len and (text[i] == ' ' or text[i] == '\t')) : (i += 1) {}
-    return i;
-}
+const wrapEnd = text_wrap.wrapEnd;
+const skipSpaces = text_wrap.skipSpaces;
 
 const Heading = struct { level: usize, body: []const u8 };
 const List = struct { body: []const u8 };
