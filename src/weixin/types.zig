@@ -113,6 +113,11 @@ pub const ReplyContext = struct {
     sender: AttachmentSender,
     to_user_id: []const u8,
     context_token: []const u8,
+    /// Optional model-only context associated with the inbound message. The UI
+    /// shows the visible prompt text, while AI request construction may append
+    /// this context so tools can still access local resources such as saved
+    /// inbound files.
+    model_context: []const u8 = "",
 };
 
 pub const GetUpdatesResult = struct {

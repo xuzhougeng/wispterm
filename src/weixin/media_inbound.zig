@@ -133,20 +133,34 @@ pub fn buildReceiptText(allocator: std.mem.Allocator, saved_names: []const []con
     return out.toOwnedSlice(allocator);
 }
 
-/// The synthetic prompt routed to the copilot. Lists absolute saved paths and
-/// appends the user's caption if present. No trailing carriage return.
-pub fn buildCopilotPrompt(allocator: std.mem.Allocator, saved_paths: []const []const u8, caption: []const u8) ![]u8 {
+/// The visible synthetic prompt routed to the copilot. It names files without
+/// exposing their local save paths; those paths live in model-only context.
+/// No trailing carriage return.
+pub fn buildCopilotPrompt(allocator: std.mem.Allocator, saved_names: []const []const u8, caption: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, "用户通过微信发送了文件：");
-    for (saved_paths) |p| {
-        try out.appendSlice(allocator, "\n- ");
-        try out.appendSlice(allocator, p);
+    for (saved_names, 0..) |name, i| {
+        if (i != 0) try out.appendSlice(allocator, "、");
+        try out.appendSlice(allocator, name);
     }
     const cap = std.mem.trim(u8, caption, " \t\r\n");
     if (cap.len != 0) {
         try out.appendSlice(allocator, "\n");
         try out.appendSlice(allocator, cap);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Model-only context appended to the API request for the same user message.
+/// The wording tells the model to use paths as tool input, not to echo them.
+pub fn buildCopilotModelContext(allocator: std.mem.Allocator, saved_paths: []const []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "微信收到的文件已保存到以下本地路径。仅在需要读取文件时把这些路径作为工具输入；除非用户明确询问保存位置，否则不要在回复中展示完整路径：");
+    for (saved_paths) |p| {
+        try out.appendSlice(allocator, "\n- ");
+        try out.appendSlice(allocator, p);
     }
     return out.toOwnedSlice(allocator);
 }
@@ -219,14 +233,21 @@ test "buildReceiptText joins names with the start-of-processing line" {
     try t.expect(std.mem.indexOf(u8, text, "/stop") != null);
 }
 
-test "buildCopilotPrompt lists absolute paths and optional caption" {
+test "buildCopilotPrompt keeps display names path-free and model context carries paths" {
+    const names = [_][]const u8{"a.pdf"};
     const paths = [_][]const u8{"/work/weixin_inbound/a.pdf"};
-    const with_cap = try buildCopilotPrompt(t.allocator, &paths, "请总结这个 PDF");
+    const with_cap = try buildCopilotPrompt(t.allocator, &names, "请总结这个 PDF");
     defer t.allocator.free(with_cap);
-    try t.expect(std.mem.indexOf(u8, with_cap, "- /work/weixin_inbound/a.pdf") != null);
+    try t.expect(std.mem.indexOf(u8, with_cap, "a.pdf") != null);
+    try t.expect(std.mem.indexOf(u8, with_cap, "/work/") == null);
+    try t.expect(std.mem.indexOf(u8, with_cap, "weixin_inbound") == null);
     try t.expect(std.mem.indexOf(u8, with_cap, "请总结这个 PDF") != null);
 
-    const no_cap = try buildCopilotPrompt(t.allocator, &paths, "   ");
+    const no_cap = try buildCopilotPrompt(t.allocator, &names, "   ");
     defer t.allocator.free(no_cap);
     try t.expect(std.mem.endsWith(u8, no_cap, "a.pdf"));
+
+    const model_context = try buildCopilotModelContext(t.allocator, &paths);
+    defer t.allocator.free(model_context);
+    try t.expect(std.mem.indexOf(u8, model_context, "/work/weixin_inbound/a.pdf") != null);
 }

@@ -156,26 +156,38 @@ pub const WeixinReplyContext = struct {
     sender: weixin_types.AttachmentSender,
     to_user_id: []u8,
     context_token: []u8,
+    model_context: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, ctx: weixin_types.ReplyContext) !WeixinReplyContext {
-        return .{
+        var out = WeixinReplyContext{
             .sender = ctx.sender,
             .to_user_id = try allocator.dupe(u8, ctx.to_user_id),
-            .context_token = try allocator.dupe(u8, ctx.context_token),
+            .context_token = &.{},
         };
+        errdefer allocator.free(out.to_user_id);
+        out.context_token = try allocator.dupe(u8, ctx.context_token);
+        errdefer allocator.free(out.context_token);
+        out.model_context = if (ctx.model_context.len != 0) try allocator.dupe(u8, ctx.model_context) else &.{};
+        return out;
     }
 
     pub fn clone(self: WeixinReplyContext, allocator: std.mem.Allocator) !WeixinReplyContext {
-        return .{
+        var out = WeixinReplyContext{
             .sender = self.sender,
             .to_user_id = try allocator.dupe(u8, self.to_user_id),
-            .context_token = try allocator.dupe(u8, self.context_token),
+            .context_token = &.{},
         };
+        errdefer allocator.free(out.to_user_id);
+        out.context_token = try allocator.dupe(u8, self.context_token);
+        errdefer allocator.free(out.context_token);
+        out.model_context = if (self.model_context.len != 0) try allocator.dupe(u8, self.model_context) else &.{};
+        return out;
     }
 
     pub fn deinit(self: *WeixinReplyContext, allocator: std.mem.Allocator) void {
         allocator.free(self.to_user_id);
         allocator.free(self.context_token);
+        if (self.model_context.len != 0) allocator.free(self.model_context);
         self.* = undefined;
     }
 };

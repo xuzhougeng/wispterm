@@ -68,6 +68,7 @@ pub const ProcessInput = struct {
     route_fn: *const fn (
         ctx: *anyopaque,
         text: []const u8,
+        model_context: []const u8,
         to_user_id: []const u8,
         context_token: []const u8,
         allocator: std.mem.Allocator,
@@ -82,13 +83,15 @@ pub const ProcessInput = struct {
     stop_progress_fn: ?*const fn (ctx: *anyopaque) void = null,
     media_ctx: ?*anyopaque = null,
     /// Downloads + saves inbound media in `msg`. Fills `receipt` (sent verbatim
-    /// as the ack) and `prompt` (routed to the copilot; its reply is suppressed).
+    /// as the ack), `prompt` (visible copilot text), and `model_context`
+    /// (request-only context; its reply is suppressed).
     media_fn: ?*const fn (
         ctx: *anyopaque,
         msg: types.Message,
         allocator: std.mem.Allocator,
         receipt: *std.ArrayListUnmanaged(u8),
         prompt: *std.ArrayListUnmanaged(u8),
+        model_context: *std.ArrayListUnmanaged(u8),
     ) anyerror!MediaOutcome = null,
 };
 
@@ -120,7 +123,9 @@ pub fn processUpdates(input: ProcessInput) !void {
             defer receipt.deinit(input.allocator);
             var prompt: std.ArrayListUnmanaged(u8) = .empty;
             defer prompt.deinit(input.allocator);
-            const outcome = media_fn(input.media_ctx.?, msg, input.allocator, &receipt, &prompt) catch |err| blk: {
+            var model_context: std.ArrayListUnmanaged(u8) = .empty;
+            defer model_context.deinit(input.allocator);
+            const outcome = media_fn(input.media_ctx.?, msg, input.allocator, &receipt, &prompt, &model_context) catch |err| blk: {
                 std.debug.print("weixin process({d}): index={d} media=failed err={}\n", .{ debugNowMs(), i, err });
                 break :blk MediaOutcome{};
             };
@@ -134,7 +139,7 @@ pub fn processUpdates(input: ProcessInput) !void {
                 if (outcome.any_saved and prompt.items.len != 0) {
                     var throwaway: std.ArrayListUnmanaged(u8) = .empty;
                     defer throwaway.deinit(input.allocator);
-                    const rr = input.route_fn(input.route_ctx, prompt.items, msg.from_user_id, msg.context_token, input.allocator, &throwaway) catch |err| route_blk: {
+                    const rr = input.route_fn(input.route_ctx, prompt.items, model_context.items, msg.from_user_id, msg.context_token, input.allocator, &throwaway) catch |err| route_blk: {
                         std.debug.print("weixin process({d}): index={d} media_route=failed err={}\n", .{ debugNowMs(), i, err });
                         break :route_blk RouteResult{};
                     };
@@ -162,7 +167,7 @@ pub fn processUpdates(input: ProcessInput) !void {
 
         var reply: std.ArrayListUnmanaged(u8) = .empty;
         defer reply.deinit(input.allocator);
-        const route_result = input.route_fn(input.route_ctx, text, msg.from_user_id, msg.context_token, input.allocator, &reply) catch |err| {
+        const route_result = input.route_fn(input.route_ctx, text, "", msg.from_user_id, msg.context_token, input.allocator, &reply) catch |err| {
             std.debug.print("weixin process({d}): index={d} route=failed err={}\n", .{ debugNowMs(), i, err });
             continue;
         };
@@ -331,6 +336,7 @@ pub const Poller = struct {
     fn routeAdapter(
         ctx: *anyopaque,
         text: []const u8,
+        model_context: []const u8,
         to_user_id: []const u8,
         context_token: []const u8,
         allocator: std.mem.Allocator,
@@ -347,6 +353,7 @@ pub const Poller = struct {
             .sender = .{ .ctx = self, .send_attachment = pollerSendAttachment },
             .to_user_id = to_user_id,
             .context_token = context_token,
+            .model_context = model_context,
         };
         try agent.route(allocator, self.control, self.settings, text, reply_context, &r);
         try reply.appendSlice(allocator, r.text.items);
@@ -379,9 +386,10 @@ pub const Poller = struct {
         allocator: std.mem.Allocator,
         receipt: *std.ArrayListUnmanaged(u8),
         prompt: *std.ArrayListUnmanaged(u8),
+        model_context: *std.ArrayListUnmanaged(u8),
     ) anyerror!MediaOutcome {
         const self: *Poller = @ptrCast(@alignCast(ctx));
-        return self.pollerMediaAdapter(msg, allocator, receipt, prompt);
+        return self.pollerMediaAdapter(msg, allocator, receipt, prompt, model_context);
     }
 
     fn pollerMediaAdapter(
@@ -390,6 +398,7 @@ pub const Poller = struct {
         allocator: std.mem.Allocator,
         receipt: *std.ArrayListUnmanaged(u8),
         prompt: *std.ArrayListUnmanaged(u8),
+        model_context: *std.ArrayListUnmanaged(u8),
     ) anyerror!MediaOutcome {
         if (self.stop_requested.load(.acquire)) return .{};
         const plans = try media_inbound_mod.planDownloads(allocator, msg.item_list);
@@ -480,9 +489,12 @@ pub const Poller = struct {
         try appendFailureLine(allocator, receipt, failed_names.items);
 
         const caption = binding.extractText(msg);
-        const prompt_text = try media_inbound_mod.buildCopilotPrompt(allocator, saved_paths.items, caption);
+        const prompt_text = try media_inbound_mod.buildCopilotPrompt(allocator, saved_names.items, caption);
         defer allocator.free(prompt_text);
         try prompt.appendSlice(allocator, prompt_text);
+        const model_context_text = try media_inbound_mod.buildCopilotModelContext(allocator, saved_paths.items);
+        defer allocator.free(model_context_text);
+        try model_context.appendSlice(allocator, model_context_text);
 
         return .{ .handled = true, .any_saved = true };
     }
@@ -801,15 +813,18 @@ const codec = @import("ilink_codec.zig");
 const Captured = struct {
     sent: std.ArrayListUnmanaged([]u8) = .empty,
     routed: std.ArrayListUnmanaged([]u8) = .empty,
+    routed_model_context: std.ArrayListUnmanaged([]u8) = .empty,
     routed_to: std.ArrayListUnmanaged([]u8) = .empty,
     routed_context: std.ArrayListUnmanaged([]u8) = .empty,
     fn deinit(self: *Captured) void {
         for (self.sent.items) |s| t.allocator.free(s);
         for (self.routed.items) |s| t.allocator.free(s);
+        for (self.routed_model_context.items) |s| t.allocator.free(s);
         for (self.routed_to.items) |s| t.allocator.free(s);
         for (self.routed_context.items) |s| t.allocator.free(s);
         self.sent.deinit(t.allocator);
         self.routed.deinit(t.allocator);
+        self.routed_model_context.deinit(t.allocator);
         self.routed_to.deinit(t.allocator);
         self.routed_context.deinit(t.allocator);
     }
@@ -817,9 +832,10 @@ const Captured = struct {
 
 const RouteCtx = struct {
     cap: *Captured,
-    fn route(ctx: *anyopaque, text: []const u8, to_user_id: []const u8, context_token: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
+    fn route(ctx: *anyopaque, text: []const u8, model_context: []const u8, to_user_id: []const u8, context_token: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
         const self: *RouteCtx = @ptrCast(@alignCast(ctx));
         try self.cap.routed.append(t.allocator, try t.allocator.dupe(u8, text));
+        try self.cap.routed_model_context.append(t.allocator, try t.allocator.dupe(u8, model_context));
         try self.cap.routed_to.append(t.allocator, try t.allocator.dupe(u8, to_user_id));
         try self.cap.routed_context.append(t.allocator, try t.allocator.dupe(u8, context_token));
         try reply.appendSlice(allocator, "ok");
@@ -1001,7 +1017,7 @@ test "processUpdates routes accepted text and sends replies" {
 
 test "processUpdates starts AI followup after ack reply is sent" {
     const Route = struct {
-        fn route(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
+        fn route(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8, _: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
             try reply.appendSlice(allocator, "ack");
             return .{
                 .expect_ai_progress = true,
@@ -1069,9 +1085,10 @@ test "processUpdates routes inbound voice transcript as message text" {
 
 test "processUpdates sends the receipt as ack and routes the synthetic prompt for media" {
     const MediaCtx = struct {
-        fn media(_: *anyopaque, _: types.Message, allocator: std.mem.Allocator, receipt: *std.ArrayListUnmanaged(u8), prompt: *std.ArrayListUnmanaged(u8)) anyerror!MediaOutcome {
+        fn media(_: *anyopaque, _: types.Message, allocator: std.mem.Allocator, receipt: *std.ArrayListUnmanaged(u8), prompt: *std.ArrayListUnmanaged(u8), model_context: *std.ArrayListUnmanaged(u8)) anyerror!MediaOutcome {
             try receipt.appendSlice(allocator, "已收到文件：a.pdf");
-            try prompt.appendSlice(allocator, "用户通过微信发送了文件：\n- /work/weixin_inbound/a.pdf");
+            try prompt.appendSlice(allocator, "用户通过微信发送了文件：a.pdf");
+            try model_context.appendSlice(allocator, "本地文件路径：/work/weixin_inbound/a.pdf");
             return .{ .handled = true, .any_saved = true };
         }
     };
@@ -1109,14 +1126,18 @@ test "processUpdates sends the receipt as ack and routes the synthetic prompt fo
     try t.expectEqualStrings("已收到文件：a.pdf", cap.sent.items[0]);
     // The synthetic prompt was routed to the copilot.
     try t.expectEqual(@as(usize, 1), cap.routed.items.len);
-    try t.expect(std.mem.indexOf(u8, cap.routed.items[0], "/work/weixin_inbound/a.pdf") != null);
+    try t.expectEqualStrings("用户通过微信发送了文件：a.pdf", cap.routed.items[0]);
+    try t.expect(std.mem.indexOf(u8, cap.routed.items[0], "/work/") == null);
+    try t.expectEqual(@as(usize, 1), cap.routed_model_context.items.len);
+    try t.expect(std.mem.indexOf(u8, cap.routed_model_context.items[0], "/work/weixin_inbound/a.pdf") != null);
     // RouteCtx.route returns .{} (no progress), so streaming is not started here.
 }
 
 test "processUpdates skips routing when media is handled but nothing saved" {
     const MediaCtx = struct {
-        fn media(_: *anyopaque, _: types.Message, allocator: std.mem.Allocator, receipt: *std.ArrayListUnmanaged(u8), prompt: *std.ArrayListUnmanaged(u8)) anyerror!MediaOutcome {
+        fn media(_: *anyopaque, _: types.Message, allocator: std.mem.Allocator, receipt: *std.ArrayListUnmanaged(u8), prompt: *std.ArrayListUnmanaged(u8), model_context: *std.ArrayListUnmanaged(u8)) anyerror!MediaOutcome {
             _ = prompt;
+            _ = model_context;
             try receipt.appendSlice(allocator, "文件接收失败：a.pdf");
             return .{ .handled = true, .any_saved = false };
         }
@@ -1153,7 +1174,7 @@ test "processUpdates skips routing when media is handled but nothing saved" {
 
 test "processUpdates cancels AI followup when a routed message reports stop_followup" {
     const Route = struct {
-        fn route(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
+        fn route(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8, _: []const u8, allocator: std.mem.Allocator, reply: *std.ArrayListUnmanaged(u8)) anyerror!RouteResult {
             try reply.appendSlice(allocator, "已发送停止指令。");
             return .{ .stop_followup = true };
         }
@@ -1438,7 +1459,9 @@ test "pollerMediaAdapter downloads, saves under weixin_inbound, and builds recei
     defer receipt.deinit(t.allocator);
     var prompt: std.ArrayListUnmanaged(u8) = .empty;
     defer prompt.deinit(t.allocator);
-    const outcome = try p.pollerMediaAdapter(msg, t.allocator, &receipt, &prompt);
+    var model_context: std.ArrayListUnmanaged(u8) = .empty;
+    defer model_context.deinit(t.allocator);
+    const outcome = try p.pollerMediaAdapter(msg, t.allocator, &receipt, &prompt, &model_context);
 
     try t.expect(outcome.handled);
     try t.expect(outcome.any_saved);
@@ -1448,8 +1471,10 @@ test "pollerMediaAdapter downloads, saves under weixin_inbound, and builds recei
     const data = try std.fs.cwd().readFileAlloc(t.allocator, saved_path, 1 << 20);
     defer t.allocator.free(data);
     try t.expectEqualStrings("PDF-CONTENT", data);
-    // Receipt names the file; prompt has the absolute path and the caption.
+    // Receipt and visible prompt name the file; model-only context has the path.
     try t.expect(std.mem.indexOf(u8, receipt.items, "report.pdf") != null);
-    try t.expect(std.mem.indexOf(u8, prompt.items, saved_path) != null);
+    try t.expect(std.mem.indexOf(u8, prompt.items, "report.pdf") != null);
+    try t.expect(std.mem.indexOf(u8, prompt.items, saved_path) == null);
     try t.expect(std.mem.indexOf(u8, prompt.items, "请看这个") != null);
+    try t.expect(std.mem.indexOf(u8, model_context.items, saved_path) != null);
 }

@@ -79,6 +79,9 @@ pub const Role = ai_chat_protocol.Role;
 pub const Message = struct {
     role: Role,
     content: []u8,
+    /// Model-only context appended when building API requests. This is not
+    /// rendered, exported, or persisted in history.
+    model_context: ?[]u8 = null,
     reasoning: ?[]u8 = null,
     usage_footer: ?[]u8 = null,
     tool_call_id: ?[]u8 = null,
@@ -94,6 +97,7 @@ pub const Message = struct {
 
     fn deinit(self: Message, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
+        if (self.model_context) |ctx| allocator.free(ctx);
         if (self.reasoning) |reasoning| allocator.free(reasoning);
         if (self.usage_footer) |footer| allocator.free(footer);
         if (self.tool_call_id) |id| allocator.free(id);
@@ -1767,12 +1771,26 @@ pub const Session = struct {
             self.mutex.unlock();
             return;
         };
+        var prompt_model_context: ?[]u8 = null;
+        if (self.pending_weixin_reply_context) |ctx| {
+            if (ctx.model_context.len != 0) {
+                prompt_model_context = self.allocator.dupe(u8, ctx.model_context) catch {
+                    if (skill_preload_content) |content| self.allocator.free(content);
+                    self.allocator.free(prompt);
+                    self.setStatusLocked("Out of memory");
+                    self.clearPendingWeixinReplyContextLocked();
+                    self.mutex.unlock();
+                    return;
+                };
+            }
+        }
         // Hand any pasted images to this user turn. They are re-sent on every
         // subsequent request for the life of the session (multi-turn vision).
         const user_images = self.takePendingImages();
-        self.messages.append(self.allocator, .{ .role = .user, .content = prompt, .images = user_images }) catch {
+        self.messages.append(self.allocator, .{ .role = .user, .content = prompt, .model_context = prompt_model_context, .images = user_images }) catch {
             if (skill_preload_content) |content| self.allocator.free(content);
             self.allocator.free(prompt);
+            if (prompt_model_context) |ctx| self.allocator.free(ctx);
             if (user_images) |imgs| {
                 for (imgs) |img| img.deinit(self.allocator);
                 self.allocator.free(imgs);
@@ -1782,6 +1800,7 @@ pub const Session = struct {
             self.mutex.unlock();
             return;
         };
+        prompt_model_context = null;
 
         var skill_preload_appended = false;
         if (invocation) |parsed| if (skill_preload_content) |skill_content| {
@@ -2945,13 +2964,24 @@ pub const Session = struct {
                 continue;
             }
 
-            if (copilot_target_idx != null and idx == copilot_target_idx.? and copilot_ctx != null) {
-                const combined = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ msg.content, copilot_ctx.? });
-                defer self.allocator.free(combined);
-                messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, msg.role, combined, msg.reasoning, null, null, msg.images);
-            } else {
-                messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, msg.role, msg.content, msg.reasoning, null, null, msg.images);
+            const append_copilot_ctx = copilot_target_idx != null and idx == copilot_target_idx.? and copilot_ctx != null;
+            const model_ctx = msg.model_context;
+            var request_content: []const u8 = msg.content;
+            var combined_owned: ?[]u8 = null;
+            defer if (combined_owned) |combined| self.allocator.free(combined);
+
+            if (model_ctx != null and append_copilot_ctx) {
+                combined_owned = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}\n\n{s}", .{ msg.content, model_ctx.?, copilot_ctx.? });
+                request_content = combined_owned.?;
+            } else if (model_ctx != null) {
+                combined_owned = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ msg.content, model_ctx.? });
+                request_content = combined_owned.?;
+            } else if (append_copilot_ctx) {
+                combined_owned = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ msg.content, copilot_ctx.? });
+                request_content = combined_owned.?;
             }
+
+            messages[written] = try ai_chat_request.requestMessageWithClonedFields(self.allocator, msg.role, request_content, msg.reasoning, null, null, msg.images);
             written += 1;
         }
 
@@ -5303,6 +5333,33 @@ test "ai chat buildRequestMessages clones user image blocks into the request" {
     try std.testing.expectEqualStrings("QUJD", reqs[0].images.?[0].data_b64);
     // Deep clone: the request owns separate buffers from the session message.
     try std.testing.expect(reqs[0].images.?[0].data_b64.ptr != images[0].data_b64.ptr);
+}
+
+test "ai chat model context is request-only and hidden from visible history" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(allocator, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+
+    try session.messages.append(allocator, .{
+        .role = .user,
+        .content = try allocator.dupe(u8, "用户通过微信发送了文件：a.pdf"),
+        .model_context = try allocator.dupe(u8, "本地文件路径：/work/weixin_inbound/a.pdf"),
+    });
+
+    const reqs = try session.buildRequestMessagesLocked(null, null);
+    defer {
+        for (reqs) |m| m.deinit(allocator);
+        allocator.free(reqs);
+    }
+    try std.testing.expectEqual(@as(usize, 1), reqs.len);
+    try std.testing.expect(std.mem.indexOf(u8, session.messages.items[0].content, "/work/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, reqs[0].content, "用户通过微信发送了文件：a.pdf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, reqs[0].content, "/work/weixin_inbound/a.pdf") != null);
+
+    var record = try session.toHistoryRecord(allocator);
+    defer agent_history.freeOwnedRecord(allocator, &record);
+    try std.testing.expectEqual(@as(usize, 1), record.messages.len);
+    try std.testing.expectEqualStrings("用户通过微信发送了文件：a.pdf", record.messages[0].content);
 }
 
 test "ai chat input cursor supports insertion and deletion in the middle" {
