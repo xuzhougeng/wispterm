@@ -187,6 +187,131 @@ pub const PanelModel = struct {
     }
 };
 
+/// Owned unit of background scan work. `run` performs the blocking scan on the
+/// worker thread and returns owned `[]inv.ServerScan` (free with
+/// `inv_cache.freeServerScans` then free the slice). `destroy` frees `ctx`. Both
+/// run on the worker thread; `ctx` must own everything `run` needs and hold no
+/// pointers into threadlocal UI state. Mirrors `ai_history_session.ScanWork`.
+pub const ScanWork = struct {
+    ctx: *anyopaque,
+    run: *const fn (*anyopaque, std.mem.Allocator) anyerror![]inv.ServerScan,
+    destroy: *const fn (*anyopaque, std.mem.Allocator) void,
+};
+
+/// Concurrency-safe holder for the Skill Center panel. Mirrors
+/// `ai_history_session.Session`'s discipline: `mutex` guards the `model` and
+/// `status`; the background scan worker runs host I/O without the lock and takes
+/// it only to publish via `finishScan`; `closing` + join-on-deinit give UAF
+/// safety. The renderer reads the model on the UI thread under `mutex`.
+pub const Session = struct {
+    allocator: std.mem.Allocator,
+    model: PanelModel,
+    mutex: std.Thread.Mutex = .{},
+    closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    scan_generation: u64 = 0,
+    scan_thread: ?std.Thread = null,
+    /// Owned status string ("Scanning…"/"Done"/"Failed"/""). Reset via setStatus.
+    status: []u8 = &.{},
+
+    pub fn create(allocator: std.mem.Allocator) !*Session {
+        const self = try allocator.create(Session);
+        self.* = .{ .allocator = allocator, .model = PanelModel.init(allocator) };
+        return self;
+    }
+
+    pub fn destroy(self: *Session) void {
+        const allocator = self.allocator;
+        self.closing.store(true, .release);
+        if (self.scan_thread) |t| {
+            t.join();
+            self.scan_thread = null;
+        }
+        self.model.deinit();
+        if (self.status.len > 0) allocator.free(self.status);
+        self.* = undefined;
+        allocator.destroy(self);
+    }
+
+    /// Seed from the persisted cache for instant display. UI thread, before any
+    /// worker is spawned (no lock needed — single-threaded at this point).
+    pub fn seedFromCache(self: *Session) void {
+        self.model.seedFromCache();
+    }
+
+    /// Replace the owned status string. Callers must hold `mutex`.
+    fn setStatusLocked(self: *Session, text: []const u8) void {
+        const next = self.allocator.dupe(u8, text) catch return;
+        if (self.status.len > 0) self.allocator.free(self.status);
+        self.status = next;
+    }
+
+    /// Start a background scan. UI thread only. Joins any prior worker first (at
+    /// most one in flight), bumps the generation, sets status "Scanning…", and
+    /// spawns the worker. Returns immediately. On spawn failure marks "Failed"
+    /// and destroys `work`.
+    pub fn scanAsync(self: *Session, work: ScanWork) void {
+        if (self.scan_thread) |t| {
+            t.join();
+            self.scan_thread = null;
+        }
+        self.mutex.lock();
+        self.scan_generation +%= 1;
+        const generation = self.scan_generation;
+        self.setStatusLocked("Scanning…");
+        self.mutex.unlock();
+
+        const thread = std.Thread.spawn(.{}, scanThreadMain, .{ self, work, generation }) catch {
+            self.mutex.lock();
+            if (generation == self.scan_generation) self.setStatusLocked("Failed");
+            self.mutex.unlock();
+            work.destroy(work.ctx, self.allocator);
+            return;
+        };
+        self.scan_thread = thread;
+    }
+
+    /// Publish the scan result under the lock if `generation` is current and we
+    /// are not closing; otherwise discard `servers` (free + free slice). Always
+    /// consumes ownership of `servers`. Worker-thread only.
+    pub fn finishScan(self: *Session, generation: u64, servers: []inv.ServerScan) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.closing.load(.acquire) and generation == self.scan_generation) {
+            self.model.setServers(servers);
+            self.setStatusLocked("");
+        } else {
+            inv_cache.freeServerScans(self.allocator, servers);
+            self.allocator.free(servers);
+        }
+    }
+
+    /// Mark the scan failed if `generation` is still current and not closing.
+    pub fn publishScanFailure(self: *Session, generation: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!self.closing.load(.acquire) and generation == self.scan_generation) {
+            self.setStatusLocked("Failed");
+        }
+    }
+
+    /// Test-only: wait for an in-flight worker so results can be asserted.
+    pub fn joinForTest(self: *Session) void {
+        if (self.scan_thread) |t| {
+            t.join();
+            self.scan_thread = null;
+        }
+    }
+};
+
+fn scanThreadMain(session: *Session, work: ScanWork, generation: u64) void {
+    defer work.destroy(work.ctx, session.allocator);
+    const servers = work.run(work.ctx, session.allocator) catch {
+        session.publishScanFailure(generation);
+        return;
+    };
+    session.finishScan(generation, servers);
+}
+
 test "skill_center: previewCommand single-quotes the rel path under HOME" {
     const allocator = std.testing.allocator;
     const cmd = try previewCommand(allocator, ".claude/skills/pdf/SKILL.md");
@@ -277,4 +402,42 @@ fn dupRows(allocator: std.mem.Allocator, src: []const scan.SkillRow) ![]scan.Ski
         built += 1;
     }
     return out;
+}
+
+// Build an owned one-server scan the Session can take ownership of and free.
+fn ownedServers(allocator: std.mem.Allocator) ![]inv.ServerScan {
+    const rows = [_]scan.SkillRow{
+        .{ .provider = .claude, .name = @constCast("a"), .rel_path = @constCast(".claude/skills/a/SKILL.md"), .agg_hash = @constCast("h") },
+    };
+    const s = try allocator.alloc(inv.ServerScan, 1);
+    s[0] = .{ .source_id = try allocator.dupe(u8, "local"), .reachable = true, .rows = try dupRows(allocator, &rows) };
+    return s;
+}
+
+test "skill_center: Session.finishScan publishes a current-generation result" {
+    const allocator = std.testing.allocator;
+    const session = try Session.create(allocator);
+    defer session.destroy();
+
+    // No scan started yet -> generation is 0; bump it once to mirror scanAsync.
+    session.scan_generation +%= 1;
+    const gen = session.scan_generation;
+    session.finishScan(gen, try ownedServers(allocator));
+
+    try std.testing.expect(session.model.servers != null);
+    try std.testing.expect(session.model.matrix != null);
+    try std.testing.expectEqual(@as(usize, 1), session.model.matrix.?.skills.len);
+}
+
+test "skill_center: Session.finishScan discards a stale-generation result (no leak)" {
+    const allocator = std.testing.allocator;
+    const session = try Session.create(allocator);
+    defer session.destroy();
+
+    session.scan_generation = 5; // current generation
+    // A worker from an older generation finishes late: must be discarded + freed.
+    session.finishScan(3, try ownedServers(allocator));
+
+    try std.testing.expect(session.model.servers == null);
+    try std.testing.expect(session.model.matrix == null);
 }
