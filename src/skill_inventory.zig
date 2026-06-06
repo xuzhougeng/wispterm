@@ -232,3 +232,28 @@ test "skill_inventory: uniform row is all match" {
     try std.testing.expectEqual(CellState.match, m.cellAt(0, 0).state);
     try std.testing.expectEqual(CellState.match, m.cellAt(0, 1).state);
 }
+
+test "skill_inventory: empty servers produces empty matrix" {
+    const allocator = std.testing.allocator;
+    const servers = [_]ServerScan{};
+    var m = try buildMatrix(allocator, &servers);
+    defer m.deinit();
+    try std.testing.expectEqual(@as(usize, 0), m.skills.len);
+    try std.testing.expectEqual(@as(usize, 0), m.servers.len);
+    try std.testing.expectEqual(@as(usize, 0), m.cells.len);
+}
+
+test "skill_inventory: no-hash-anywhere row is all unknown for reachable" {
+    const allocator = std.testing.allocator;
+    const a = [_]SkillRow{makeRow(.claude, "nohash", null)};
+    const b = [_]SkillRow{makeRow(.claude, "nohash", null)};
+    const servers = [_]ServerScan{
+        .{ .source_id = "a", .reachable = true, .rows = &a },
+        .{ .source_id = "b", .reachable = true, .rows = &b },
+    };
+    var m = try buildMatrix(allocator, &servers);
+    defer m.deinit();
+    try std.testing.expectEqual(@as(usize, 1), m.skills.len);
+    try std.testing.expectEqual(CellState.unknown, m.cellAt(0, 0).state);
+    try std.testing.expectEqual(CellState.unknown, m.cellAt(0, 1).state);
+}
