@@ -2,6 +2,7 @@ const std = @import("std");
 const scan = @import("skill_scan.zig");
 const inv = @import("skill_inventory.zig");
 const inv_cache = @import("skill_inventory_cache.zig");
+const dirs = @import("platform/dirs.zig");
 
 /// Source descriptor for a scan column. `id` is the stable column identity;
 /// `name` is the display label.
@@ -58,8 +59,21 @@ pub fn runScan(
 
 /// Build a command that prints one skill's SKILL.md / prompt file from a
 /// server, given its `rel_path` (relative to $HOME, as produced by the scan).
+/// The path is single-quote-escaped so a hostile name from a remote listing
+/// cannot inject shell; $HOME still expands via the surrounding double quotes.
 pub fn previewCommand(allocator: std.mem.Allocator, rel_path: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "cat \"$HOME/{s}\"", .{rel_path});
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "cat \"$HOME\"/'");
+    for (rel_path) |c| {
+        if (c == '\'') {
+            try buf.appendSlice(allocator, "'\\''");
+        } else {
+            try buf.append(allocator, c);
+        }
+    }
+    try buf.append(allocator, '\'');
+    return buf.toOwnedSlice(allocator);
 }
 
 // --- Tests ---
@@ -107,12 +121,12 @@ test "skill_center: runScan over sources builds a matrix" {
 }
 
 /// Panel state for the Skill Center UI: owns the current scan results + matrix,
-/// the focused cell, scroll offset, a status string, and a stale flag. The
-/// background scan worker (integration layer) calls `setServers` to swap in new
-/// results; `seedFromCache` loads the last persisted scan for instant display.
+/// the focused cell, scroll offset, and a stale flag. The background scan
+/// worker (integration layer) calls `setServers` to swap in new results;
+/// `seedFromCache` loads the last persisted scan for instant display.
 pub const PanelModel = struct {
     allocator: std.mem.Allocator,
-    servers: []inv.ServerScan = &.{},
+    servers: ?[]inv.ServerScan = null,
     matrix: ?inv.Matrix = null,
     sel_row: usize = 0,
     sel_col: usize = 0,
@@ -159,10 +173,10 @@ pub const PanelModel = struct {
     }
 
     fn freeServers(self: *PanelModel) void {
-        if (self.servers.len != 0) {
-            inv_cache.freeServerScans(self.allocator, self.servers);
-            self.allocator.free(self.servers);
-            self.servers = &.{};
+        if (self.servers) |s| {
+            inv_cache.freeServerScans(self.allocator, s);
+            self.allocator.free(s);
+            self.servers = null;
         }
     }
 
@@ -173,11 +187,46 @@ pub const PanelModel = struct {
     }
 };
 
-test "skill_center: previewCommand cats the rel path under HOME" {
+test "skill_center: previewCommand single-quotes the rel path under HOME" {
     const allocator = std.testing.allocator;
     const cmd = try previewCommand(allocator, ".claude/skills/pdf/SKILL.md");
     defer allocator.free(cmd);
-    try std.testing.expectEqualStrings("cat \"$HOME/.claude/skills/pdf/SKILL.md\"", cmd);
+    try std.testing.expectEqualStrings("cat \"$HOME\"/'.claude/skills/pdf/SKILL.md'", cmd);
+}
+
+test "skill_center: previewCommand escapes single quotes" {
+    const allocator = std.testing.allocator;
+    const cmd = try previewCommand(allocator, "a'b/SKILL.md");
+    defer allocator.free(cmd);
+    try std.testing.expectEqualStrings("cat \"$HOME\"/'a'\\''b/SKILL.md'", cmd);
+}
+
+test "skill_center: seedFromCache loads persisted scan and marks stale" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+    dirs.setTestConfigDirForCurrentThread(tmp_path);
+    defer dirs.clearTestConfigDirForCurrentThread();
+
+    // Persist a one-server scan.
+    const rows = [_]scan.SkillRow{
+        .{ .provider = .claude, .name = @constCast("a"), .rel_path = @constCast(".claude/skills/a/SKILL.md"), .agg_hash = @constCast("h") },
+    };
+    const servers = [_]inv.ServerScan{
+        .{ .source_id = "local", .reachable = true, .rows = &rows },
+    };
+    try inv_cache.save(allocator, &servers);
+
+    var model = PanelModel.init(allocator);
+    defer model.deinit();
+    model.seedFromCache();
+
+    try std.testing.expect(model.stale);
+    try std.testing.expect(model.servers != null);
+    try std.testing.expect(model.matrix != null);
+    try std.testing.expectEqual(@as(usize, 1), model.matrix.?.skills.len);
 }
 
 test "skill_center: PanelModel setServers rebuilds matrix and clamps selection" {
@@ -213,6 +262,11 @@ test "skill_center: PanelModel setServers rebuilds matrix and clamps selection" 
 // Helper: deep-dupe borrowed rows into owned rows the model/cache can free.
 fn dupRows(allocator: std.mem.Allocator, src: []const scan.SkillRow) ![]scan.SkillRow {
     const out = try allocator.alloc(scan.SkillRow, src.len);
+    var built: usize = 0;
+    errdefer {
+        for (out[0..built]) |*r| r.deinit(allocator);
+        allocator.free(out);
+    }
     for (src, 0..) |r, i| {
         out[i] = .{
             .provider = r.provider,
@@ -220,6 +274,7 @@ fn dupRows(allocator: std.mem.Allocator, src: []const scan.SkillRow) ![]scan.Ski
             .rel_path = try allocator.dupe(u8, r.rel_path),
             .agg_hash = if (r.agg_hash) |h| try allocator.dupe(u8, h) else null,
         };
+        built += 1;
     }
     return out;
 }
