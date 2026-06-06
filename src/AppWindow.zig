@@ -809,6 +809,48 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
     }
 }
 
+fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
+    file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    if (active_tab.skill_center_session) |session| {
+        const draw: skill_center_renderer.DrawContext = .{
+            .bg = g_theme.background,
+            .fg = g_theme.foreground,
+            .accent = g_theme.cursor_color,
+            .cell_h = font.g_titlebar_cell_height,
+            .fillQuad = ui_pipeline.fillQuad,
+            .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+            .renderTextLimited = titlebar.renderTextLimited,
+            .glyphAdvance = titlebar.titlebarGlyphAdvance,
+        };
+        // Hold the lock for the duration of render: the View borrows the matrix.
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        const view: skill_center_renderer.View = .{
+            .matrix = if (session.model.matrix) |*m| m else null,
+            .sel_row = session.model.sel_row,
+            .sel_col = session.model.sel_col,
+            .scroll = session.model.scroll,
+            .stale = session.model.stale,
+            .status = session.status,
+        };
+        skill_center_renderer.render(
+            draw,
+            view,
+            @floatFromInt(fb_width),
+            @floatFromInt(fb_height),
+            titlebar_offset,
+            left_panels_w,
+            aiHistoryContentWidth(fb_width, left_panels_w, right_panels_w),
+        );
+    }
+}
+
 fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32) void {
     if (!aiCopilotVisible()) return;
     const session = ensureActiveCopilotSession() orelse return;
@@ -908,6 +950,53 @@ pub fn activeAiHistory() ?*ai_history_session.Session {
     const active = activeTab() orelse return null;
     if (active.kind != .ai_history) return null;
     return active.ai_history_session;
+}
+
+pub fn activeSkillCenter() ?*skill_center.Session {
+    return tab.activeSkillCenter();
+}
+
+/// Move the focused Skill Center cell by (drow, dcol), clamping to the matrix.
+/// Returns false if there is no active Skill Center tab.
+pub fn skillCenterMoveSelection(drow: isize, dcol: isize) bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const m = session.model.matrix orelse {
+        markUiDirty();
+        return true;
+    };
+    if (m.skills.len > 0) {
+        const cur: isize = @intCast(session.model.sel_row);
+        const next = std.math.clamp(cur + drow, 0, @as(isize, @intCast(m.skills.len - 1)));
+        session.model.sel_row = @intCast(next);
+    }
+    if (m.servers.len > 0) {
+        const cur: isize = @intCast(session.model.sel_col);
+        const next = std.math.clamp(cur + dcol, 0, @as(isize, @intCast(m.servers.len - 1)));
+        session.model.sel_col = @intCast(next);
+    }
+    markUiDirty();
+    return true;
+}
+
+/// Rescan all sources for the active Skill Center tab. UI thread.
+pub fn skillCenterRescan() bool {
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    startSkillCenterScan(allocator, session);
+    markUiDirty();
+    return true;
+}
+
+/// Preview the focused cell's SKILL.md. Deferred for v1: shows a toast so the
+/// panel stays openable/scannable while the preview pipeline is wired later.
+/// TODO: cell preview — run skill_center.previewCommand against servers[sel_col]
+/// and display the output in the markdown preview path.
+pub fn skillCenterPreviewSelected() bool {
+    if (activeSkillCenter() == null) return false;
+    overlays.showStatusToast("Skill preview coming soon");
+    return true;
 }
 
 pub fn aiHistoryInsertCodepoint(codepoint: u21) bool {
@@ -2090,6 +2179,19 @@ pub fn spawnAiHistoryTab(source: ai_history_source.Source) bool {
     return true;
 }
 
+/// Open a new Skill Center tab: seed from the cached scan for instant display,
+/// then kick off a live rescan across all sources. Mirrors spawnAiHistoryTab.
+pub fn spawnSkillCenterTab() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.spawnSkillCenterTab(allocator)) return false;
+    clearUiStateOnTabChange();
+    if (activeSkillCenter()) |session| {
+        session.seedFromCache();
+        startSkillCenterScan(allocator, session);
+    }
+    return true;
+}
+
 pub fn reopenAiChatTabFromHistorySessionId(session_id: []const u8) bool {
     if (tab.switchToAiTabBySessionId(session_id)) {
         clearUiStateOnTabChange();
@@ -2597,6 +2699,8 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .ai_history) {
                 renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .skill_center) {
+                renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (activeSurface()) |surface| {
                 // Single surface: simple render path
                 const rend = &surface.surface_renderer;
@@ -5379,7 +5483,7 @@ fn runMainLoop(self: *AppWindow) !void {
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
             syncRemoteLayout(allocator);
             syncImeCaretPosition(win, split_count);
-            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and synchronizedOutputPendingForVisibleSplits(split_count)) {
+            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .skill_center and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 std.Thread.sleep(std.time.ns_per_ms);
                 continue;
             }
@@ -5390,6 +5494,8 @@ fn runMainLoop(self: *AppWindow) !void {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .ai_history) {
                 renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .skill_center) {
+                renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (post_process.g_post_enabled) {
                 // Post-processing path: only render focused surface for now
                 if (activeSurface()) |surface| {

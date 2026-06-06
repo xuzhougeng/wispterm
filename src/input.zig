@@ -1014,6 +1014,11 @@ fn handleChar(ev: platform_input.CharEvent) void {
         }
         return;
     }
+    // Skill Center has no text input; swallow character input so the rescan
+    // hotkey ('r') and other keys never leak to the terminal/copilot.
+    if (AppWindow.activeSkillCenter() != null) {
+        return;
+    }
     // AI copilot sidebar (terminal tabs): when the copilot owns focus, route
     // text input to its composer. `activeCopilotSessionForInput` is non-null
     // only when the panel is visible on the active terminal tab.
@@ -1466,6 +1471,39 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             },
             0x52 => if (plain and !ev.shift) {
                 g_ai_history_suppress_refresh_char = AppWindow.aiHistoryScanLocalNow();
+                return;
+            },
+            else => {},
+        }
+        return;
+    }
+
+    // Skill Center: arrows move the focused cell, Enter previews it, `r` rescans.
+    if (AppWindow.activeSkillCenter() != null) {
+        const plain = !ev.ctrl and !ev.alt and !ev.super;
+        switch (ev.key_code) {
+            platform_input.key_up => {
+                _ = AppWindow.skillCenterMoveSelection(-1, 0);
+                return;
+            },
+            platform_input.key_down => {
+                _ = AppWindow.skillCenterMoveSelection(1, 0);
+                return;
+            },
+            platform_input.key_left => {
+                _ = AppWindow.skillCenterMoveSelection(0, -1);
+                return;
+            },
+            platform_input.key_right => {
+                _ = AppWindow.skillCenterMoveSelection(0, 1);
+                return;
+            },
+            platform_input.key_enter => {
+                _ = AppWindow.skillCenterPreviewSelected();
+                return;
+            },
+            0x52 => if (plain and !ev.shift) {
+                _ = AppWindow.skillCenterRescan();
                 return;
             },
             else => {},
