@@ -721,6 +721,7 @@ comptime {
     _ = @import("skill_scan.zig");
     _ = @import("skill_inventory.zig");
     _ = @import("skill_inventory_cache.zig");
+    _ = @import("skill_center.zig");
     _ = @import("command_registry.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("ai_chat_scrollbar_model.zig");
