@@ -675,7 +675,16 @@ const FakeClient = struct {
             .get_updates = getUpdates,
             .send_text = sendText,
             .send_attachment = sendAttachment,
+            .download_attachment = downloadAttachment,
         } };
+    }
+
+    fn downloadAttachment(ctx: *anyopaque, allocator: std.mem.Allocator, enc: []const u8, key: []const u8, allow_plain: bool) anyerror![]u8 {
+        _ = ctx;
+        _ = enc;
+        _ = key;
+        _ = allow_plain;
+        return allocator.dupe(u8, "");
     }
 
     fn getUpdates(ctx: *anyopaque, _: []const u8) anyerror!codec.ParsedUpdates {

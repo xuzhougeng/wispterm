@@ -24,6 +24,13 @@ pub const ClientApi = struct {
             to_user_id: []const u8,
             context_token: []const u8,
         ) anyerror!void,
+        download_attachment: *const fn (
+            ctx: *anyopaque,
+            allocator: std.mem.Allocator,
+            encrypt_query_param: []const u8,
+            aes_key: []const u8,
+            allow_plain: bool,
+        ) anyerror![]u8,
     };
 
     pub fn getUpdates(self: ClientApi, buf: []const u8) !codec.ParsedUpdates {
@@ -42,6 +49,15 @@ pub const ClientApi = struct {
     ) !void {
         return self.vtable.send_attachment(self.ctx, kind, path, display_name, to_user_id, context_token);
     }
+    pub fn downloadAttachment(
+        self: ClientApi,
+        allocator: std.mem.Allocator,
+        encrypt_query_param: []const u8,
+        aes_key: []const u8,
+        allow_plain: bool,
+    ) ![]u8 {
+        return self.vtable.download_attachment(self.ctx, allocator, encrypt_query_param, aes_key, allow_plain);
+    }
 };
 
 pub const Client = struct {
@@ -53,6 +69,7 @@ pub const Client = struct {
     transport_ctx: ?*anyopaque = null,
     fetch_impl: FetchImpl = httpFetch,
     cdn_upload_impl: CdnUploadImpl = httpUploadBufferToCdn,
+    cdn_download_impl: CdnDownloadImpl = httpDownloadFromCdn,
 
     const ERROR_BODY_EXCERPT_BYTES = 256;
     const FetchImpl = *const fn (
@@ -71,6 +88,14 @@ pub const Client = struct {
         upload_url: []const u8,
         encrypted: []u8,
     ) anyerror![]u8;
+    const CdnDownloadImpl = *const fn (
+        ctx: ?*anyopaque,
+        client: *Client,
+        arena: std.mem.Allocator,
+        url: []const u8,
+    ) anyerror![]u8;
+
+    pub const MAX_INBOUND_BYTES: usize = 100 << 20;
 
     const UploadedLocalFile = struct {
         media: types.CdnMedia,
@@ -174,6 +199,31 @@ pub const Client = struct {
             .file, .voice => self.sendFileAttachment(path, displayNameOrBasename(display_name, path), to_user_id, context_token),
             .image => self.sendImageFile(path, to_user_id, context_token),
         };
+    }
+
+    /// Downloads an inbound CDN attachment and (unless `allow_plain` with an
+    /// empty key) AES-decrypts it. Returns owned plaintext bytes.
+    pub fn downloadAttachment(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        encrypt_query_param: []const u8,
+        aes_key: []const u8,
+        allow_plain: bool,
+    ) ![]u8 {
+        var req_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer req_arena.deinit();
+        const a = req_arena.allocator();
+
+        const url = try media.cdnDownloadUrl(a, encrypt_query_param);
+        const raw = try self.cdn_download_impl(self.transport_ctx, self, a, url);
+        if (raw.len > MAX_INBOUND_BYTES) return error.WeixinInboundTooLarge;
+
+        if (aes_key.len == 0) {
+            if (!allow_plain) return error.WeixinInboundMissingKey;
+            return allocator.dupe(u8, raw);
+        }
+        const key = try media.parseAesKey(a, aes_key);
+        return media.aes128EcbPkcs7Decrypt(allocator, key, raw);
     }
 
     fn sendFileAttachment(self: *Client, path: []const u8, file_name: []const u8, to_user_id: []const u8, context_token: []const u8) !void {
@@ -349,6 +399,37 @@ pub const Client = struct {
         return error.WeixinCdnMissingEncryptedParam;
     }
 
+    fn httpDownloadFromCdn(
+        _: ?*anyopaque,
+        self: *Client,
+        arena: std.mem.Allocator,
+        url: []const u8,
+    ) ![]u8 {
+        var client: std.http.Client = .{ .allocator = self.allocator };
+        defer client.deinit();
+
+        var body: std.Io.Writer.Allocating = .init(arena);
+        const response = client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .keep_alive = false,
+            .response_writer = &body.writer,
+        }) catch |err| {
+            std.debug.print("weixin download-cdn({d}): status=request_failed err={}\n", .{ std.time.milliTimestamp(), err });
+            return error.WeixinCdnDownloadFailed;
+        };
+        const items = body.toArrayList().items;
+        if (response.status != .ok) {
+            std.debug.print("weixin download-cdn({d}): status=failed http_status={} body_excerpt={s}\n", .{
+                std.time.milliTimestamp(),
+                response.status,
+                logSafeResponseExcerpt(arena, items),
+            });
+            return error.WeixinCdnDownloadFailed;
+        }
+        return items;
+    }
+
     fn postSendMessage(self: *Client, arena: std.mem.Allocator, body: []const u8) !void {
         const resp = try self.fetch(arena, .POST, "/ilink/bot/sendmessage", body, null);
         const W = struct { ret: ?i64 = null, errcode: i64 = 0, message: []const u8 = "" };
@@ -457,6 +538,7 @@ pub const Client = struct {
             .get_updates = apiGetUpdates,
             .send_text = apiSendText,
             .send_attachment = apiSendAttachment,
+            .download_attachment = apiDownloadAttachment,
         } };
     }
     fn apiGetUpdates(ctx: *anyopaque, buf: []const u8) anyerror!codec.ParsedUpdates {
@@ -474,6 +556,15 @@ pub const Client = struct {
         context_token: []const u8,
     ) anyerror!void {
         return @as(*Client, @ptrCast(@alignCast(ctx))).sendAttachment(kind, path, display_name, to_user_id, context_token);
+    }
+    fn apiDownloadAttachment(
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        encrypt_query_param: []const u8,
+        aes_key: []const u8,
+        allow_plain: bool,
+    ) anyerror![]u8 {
+        return @as(*Client, @ptrCast(@alignCast(ctx))).downloadAttachment(allocator, encrypt_query_param, aes_key, allow_plain);
     }
 };
 
@@ -805,6 +896,14 @@ test "ClientApi forwards sendAttachment to the vtable" {
             _ = text;
             _ = context_token;
         }
+
+        fn downloadAttachment(ctx: *anyopaque, allocator: std.mem.Allocator, enc: []const u8, key: []const u8, allow_plain: bool) anyerror![]u8 {
+            _ = ctx;
+            _ = enc;
+            _ = key;
+            _ = allow_plain;
+            return allocator.dupe(u8, "");
+        }
     };
 
     var capture = Capture{};
@@ -812,6 +911,7 @@ test "ClientApi forwards sendAttachment to the vtable" {
         .get_updates = Capture.getUpdates,
         .send_text = Capture.sendText,
         .send_attachment = Capture.sendAttachment,
+        .download_attachment = Capture.downloadAttachment,
     } };
     try api.sendAttachment(.voice, "C:\\tmp\\a.mp3", "a.mp3", "wx-user", "ctx");
     try std.testing.expect(capture.called);
@@ -1001,4 +1101,62 @@ test "voice attachment uploads as a file item through injected transport" {
     try std.testing.expect(std.mem.indexOf(u8, capture.sendmessage_body.items, "\"voice_item\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, capture.sendmessage_body.items, "\"file_name\":\"voice.mp3\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, capture.sendmessage_body.items, "\"encrypt_query_param\":\"encrypted-param\"") != null);
+}
+
+test "downloadAttachment fetches and decrypts CDN bytes via injected transport" {
+    const Capture = struct {
+        download_url: std.ArrayListUnmanaged(u8) = .empty,
+        ciphertext: []u8 = &.{},
+
+        fn deinit(self: *@This(), a: std.mem.Allocator) void {
+            self.download_url.deinit(a);
+            if (self.ciphertext.len != 0) a.free(self.ciphertext);
+        }
+
+        fn download(
+            ctx: ?*anyopaque,
+            client: *Client,
+            arena: std.mem.Allocator,
+            url: []const u8,
+        ) anyerror![]u8 {
+            _ = client;
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            try self.download_url.appendSlice(std.testing.allocator, url);
+            return arena.dupe(u8, self.ciphertext);
+        }
+    };
+
+    const key: media.AesKey = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    const ciphertext = try media.aes128EcbPkcs7Encrypt(std.testing.allocator, key, "hello pdf bytes");
+    defer std.testing.allocator.free(ciphertext);
+    const aes_key_b64 = try media.encodeIlinkAesKey(std.testing.allocator, key);
+    defer std.testing.allocator.free(aes_key_b64);
+
+    var capture = Capture{ .ciphertext = try std.testing.allocator.dupe(u8, ciphertext) };
+    defer capture.deinit(std.testing.allocator);
+
+    var c = Client.init(std.testing.allocator, "https://x.test", "tok");
+    c.transport_ctx = &capture;
+    c.cdn_download_impl = Capture.download;
+
+    const out = try c.downloadAttachment(std.testing.allocator, "ENC%PARAM", aes_key_b64, false);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("hello pdf bytes", out);
+    try std.testing.expect(std.mem.indexOf(u8, capture.download_url.items, "/download?encrypted_query_param=") != null);
+}
+
+test "downloadAttachment returns plain bytes when allow_plain and no key" {
+    const Capture = struct {
+        fn download(ctx: ?*anyopaque, client: *Client, arena: std.mem.Allocator, url: []const u8) anyerror![]u8 {
+            _ = ctx;
+            _ = client;
+            _ = url;
+            return arena.dupe(u8, "\x89PNG\r\n\x1a\nrawimg");
+        }
+    };
+    var c = Client.init(std.testing.allocator, "https://x.test", "tok");
+    c.cdn_download_impl = Capture.download;
+    const out = try c.downloadAttachment(std.testing.allocator, "ENC", "", true);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("\x89PNG\r\n\x1a\nrawimg", out);
 }
