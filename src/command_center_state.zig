@@ -41,6 +41,7 @@ pub const CommandAction = enum {
     open_latest_release,
     show_whats_new,
     update_skills,
+    open_skill_center,
 };
 
 pub const CommandEntry = struct {
@@ -89,6 +90,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Open Latest Release", .detail = "Open the latest WispTerm GitHub Release", .shortcut = "", .action = .open_latest_release },
     .{ .title = "What's New", .detail = "Show what changed in this version of WispTerm", .shortcut = app_metadata.version, .action = .show_whats_new },
     .{ .title = "Update Skills", .detail = "Download the latest skills from GitHub", .shortcut = "", .action = .update_skills },
+    .{ .title = "Skill Center", .detail = "Inventory Claude Code / Codex skills across servers", .shortcut = "", .action = .open_skill_center },
 };
 
 pub const CommandPaletteMode = enum {
@@ -278,6 +280,10 @@ test "command center includes update check actions" {
 
 test "findCommandAction resolves What's New" {
     try std.testing.expectEqual(CommandAction.show_whats_new, findCommandAction("What's New"));
+}
+
+test "command center includes Skill Center action" {
+    try std.testing.expectEqual(CommandAction.open_skill_center, findCommandAction("Skill Center"));
 }
 
 test "findCommandAction resolves Open Jupyter" {

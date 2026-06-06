@@ -577,6 +577,9 @@ fn executeCommand(action: CommandAction) void {
                 showStatusToast(i18n.s().toast_update_skills_unavailable);
             }
         },
+        .open_skill_center => {
+            _ = AppWindow.spawnSkillCenterTab();
+        },
     }
 }
 
