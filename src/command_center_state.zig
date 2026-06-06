@@ -52,7 +52,6 @@ pub const CommandEntry = struct {
 
 pub const command_entries = [_]CommandEntry{
     .{ .title = "New Session", .detail = platform_pty_command.session_launcher_detail, .shortcut = "", .action = .new_tab },
-    .{ .title = "Load OpenSSH Config", .detail = "Import ~/.ssh/config into SSH profiles", .shortcut = "", .action = .load_openssh_config },
     .{ .title = "New Copilot", .detail = "Open a new Copilot tab with the default AI config", .shortcut = "", .action = .new_agent },
     .{ .title = "Manage AI Profiles", .detail = "Create, edit, or delete saved AI profiles", .shortcut = "", .action = .manage_ai_profiles },
     .{ .title = "Select Copilot History", .detail = "Open the command-center Copilot history picker", .shortcut = "", .action = .select_agent_history },
@@ -72,6 +71,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Settings", .detail = "Open the settings page", .shortcut = "", .action = .open_settings },
     .{ .title = "Keyboard Shortcuts", .detail = "Show the shortcut reference overlay", .shortcut = "", .action = .show_shortcuts },
     .{ .title = "Open Config", .detail = "Open the WispTerm config file", .shortcut = "", .action = .open_config },
+    .{ .title = "Load OpenSSH Config", .detail = "Import ~/.ssh/config into SSH profiles", .shortcut = "", .action = .load_openssh_config },
     .{ .title = "Decrease Font Size", .detail = "Make terminal text smaller", .shortcut = "", .action = .font_size_decrease },
     .{ .title = "Increase Font Size", .detail = "Make terminal text larger", .shortcut = "", .action = .font_size_increase },
     .{ .title = "Toggle Maximize", .detail = "Maximize or restore the window", .shortcut = "", .action = .toggle_maximize },
@@ -286,6 +286,17 @@ test "findCommandAction resolves Open Jupyter" {
 
 test "findCommandAction resolves Load OpenSSH Config" {
     try std.testing.expectEqual(CommandAction.load_openssh_config, findCommandAction("Load OpenSSH Config"));
+}
+
+test "Load OpenSSH Config is not on the default first command center page" {
+    const default_first_page_rows: usize = 14;
+    for (command_entries, 0..) |entry, idx| {
+        if (entry.action == .load_openssh_config) {
+            try std.testing.expect(idx >= default_first_page_rows);
+            return;
+        }
+    }
+    return error.MissingLoadOpenSshConfigCommand;
 }
 
 test "command center includes Copilot Markdown export actions" {
