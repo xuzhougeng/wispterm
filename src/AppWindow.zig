@@ -58,6 +58,7 @@ const ssh_connection = @import("ssh_connection.zig");
 const skill_transfer = @import("skill_transfer.zig");
 const skill_diff = @import("skill_diff.zig");
 const scp = @import("scp.zig");
+const i18n = @import("i18n.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
 pub const font = @import("font/manager.zig");
@@ -1087,7 +1088,7 @@ pub fn skillCenterPreviewSelected() bool {
     } else if (remote_text) |t| {
         md.appendSlice(allocator, t) catch {};
     } else {
-        overlays.showStatusToast("无法读取 SKILL.md");
+        overlays.showStatusToast(i18n.s().sc_toast_read_failed);
         return true;
     }
 
@@ -1146,7 +1147,7 @@ fn skillCenterStartTransfer(dir: skill_transfer.Direction, rel_path: []const u8)
         defer session.mutex.unlock();
         break :blk skillCenterSelectedConn(&session.model);
     } orelse {
-        overlays.showStatusToast("无法连接所选服务器");
+        overlays.showStatusToast(i18n.s().sc_toast_no_conn);
         return;
     };
     var ctx = SkillTransferCtx{ .conn = conn };
@@ -1155,10 +1156,10 @@ fn skillCenterStartTransfer(dir: skill_transfer.Direction, rel_path: []const u8)
         .download => skill_transfer.download(allocator, ctx.ops(), rel_path),
     };
     if (result == .ok) {
-        overlays.showStatusToast("Skill 同步完成");
+        overlays.showStatusToast(i18n.s().sc_toast_synced);
         startSkillCenterScan(allocator, session); // UI thread — safe
     } else {
-        overlays.showStatusToast("Skill 同步失败");
+        overlays.showStatusToast(i18n.s().sc_toast_sync_failed);
     }
     markUiDirty();
 }
@@ -1182,16 +1183,17 @@ fn skillCenterRequestTransfer(dir: skill_transfer.Direction) bool {
         }) orelse return true;
         if (decision == .confirm) {
             var msg_buf: [256]u8 = undefined;
-            const verb = if (dir == .upload) "上传覆盖" else "下载覆盖";
-            const msg = std.fmt.bufPrint(&msg_buf, "{s} {s}（内容不同）？ [⏎ 确认] [esc 取消]", .{ verb, pr.name }) catch "覆盖？ [⏎ 确认] [esc 取消]";
+            const t = i18n.s();
+            const verb = if (dir == .upload) t.sc_overwrite_upload else t.sc_overwrite_download;
+            const msg = std.fmt.bufPrint(&msg_buf, "{s} {s} {s}", .{ verb, pr.name, t.sc_confirm_suffix }) catch t.sc_confirm_suffix;
             session.model.setConfirm(msg, dir, rel_path);
         } else if (decision == .direct) {
             rel_owned = allocator.dupe(u8, rel_path) catch null;
         }
     }
     switch (decision) {
-        .noop => overlays.showStatusToast("已一致，无需同步"),
-        .invalid => overlays.showStatusToast(if (dir == .upload) "本地没有该 skill" else "服务器没有该 skill"),
+        .noop => overlays.showStatusToast(i18n.s().sc_toast_in_sync),
+        .invalid => overlays.showStatusToast(if (dir == .upload) i18n.s().sc_toast_no_local else i18n.s().sc_toast_no_remote),
         .confirm => markUiDirty(),
         .direct => {
             if (rel_owned) |rp| {
