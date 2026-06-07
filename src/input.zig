@@ -1514,6 +1514,10 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 _ = AppWindow.skillCenterImport();
                 return;
             },
+            0x20 => if (plain and !ev.shift) {
+                _ = AppWindow.skillCenterSpacePreview();
+                return;
+            },
             else => {},
         }
         return;

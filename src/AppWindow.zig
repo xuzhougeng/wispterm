@@ -863,7 +863,7 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
             .sel_row = m.sel_row,
             .scroll = m.scroll,
             .title = i18n.s().sl_skill_center,
-            .legend = i18n.s().sc_legend_v2,
+            .legend = if (std.meta.activeTag(m.overlay) == .import_list) i18n.s().sc_legend_import else i18n.s().sc_legend_v2,
             .status = session.status,
             .overlay = overlay,
         };
@@ -1313,6 +1313,62 @@ fn skillCenterRunTransfer(allocator: std.mem.Allocator, is_import: bool, target:
     }
 }
 
+/// Preview the selected server skill's SKILL.md — off the UI thread.
+/// Only meaningful inside an import_list overlay.
+fn skillCenterPreviewServerSkill(allocator: std.mem.Allocator) void {
+    const session = activeSkillCenter() orelse return;
+    var name_owned: ?[]u8 = null;
+    var target_owned: ?skill_center.Target = null;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .import_list => |*il| {
+                if (il.sel < il.names.len) {
+                    name_owned = allocator.dupe(u8, il.names[il.sel]) catch null;
+                    target_owned = il.target.clone(allocator) catch null;
+                }
+            },
+            else => {},
+        }
+    }
+    const name = name_owned orelse {
+        if (target_owned) |*t| t.deinit(allocator);
+        return;
+    };
+    var target = target_owned orelse {
+        allocator.free(name);
+        return;
+    };
+    defer target.deinit(allocator); // only need conn + software here
+
+    const conn = skillCenterTargetConn(target);
+    if (!target.is_local and conn == null) {
+        overlays.showStatusToast(i18n.s().sc_toast_no_conn);
+        allocator.free(name);
+        return;
+    }
+    const root_expr = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch {
+        allocator.free(name);
+        return;
+    };
+    defer allocator.free(root_expr);
+    const cmd = skill_transfer_cmd.catSkillMdCmd(allocator, root_expr, name) catch {
+        allocator.free(name);
+        return;
+    };
+    const job = allocator.create(SkillPreviewJob) catch {
+        allocator.free(name);
+        allocator.free(cmd);
+        return;
+    };
+    job.* = .{ .conn = conn, .name = name, .cmd = cmd };
+    if (!session.startOp(.{ .ctx = job, .run = SkillPreviewJob.run, .destroy = SkillPreviewJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_loading)) {
+        SkillPreviewJob.destroy(@ptrCast(job), allocator);
+        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
+    }
+}
+
 /// Arm an overwrite confirm overlay for a pending deploy/import.
 fn skillCenterArmConfirm(allocator: std.mem.Allocator, is_import: bool, target: skill_center.Target, name: []const u8) void {
     const session = activeSkillCenter() orelse return;
@@ -1508,6 +1564,32 @@ pub fn skillCenterPreviewSelected() bool {
         markUiDirty();
     } else {
         overlays.showStatusToast(i18n.s().sc_toast_read_failed);
+    }
+    return true;
+}
+
+/// Space key in the Skill Center: preview the selected item by overlay kind.
+/// import_list → server skill (async); main library / deploy picker → local
+/// library skill; import picker / confirm → no-op. UI thread.
+pub fn skillCenterSpacePreview() bool {
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    const Kind = enum { lib, server, none };
+    var kind: Kind = .lib;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .none, .busy => kind = .lib,
+            .import_list => kind = .server,
+            .picker => |*p| kind = if (p.purpose == .deploy) .lib else .none,
+            .confirm => kind = .none,
+        }
+    }
+    switch (kind) {
+        .lib => _ = skillCenterPreviewSelected(),
+        .server => skillCenterPreviewServerSkill(allocator),
+        .none => {},
     }
     return true;
 }
@@ -1957,6 +2039,31 @@ const SkillTransferJob = struct {
         allocator.free(job.lib_root);
         allocator.free(job.tgt_root);
         allocator.free(job.name);
+        allocator.destroy(job);
+    }
+};
+
+/// Background op: read one skill's SKILL.md (local or via ssh) for preview.
+const SkillPreviewJob = struct {
+    conn: ?ssh_connection.SshConnection,
+    name: []u8, // owned — becomes the preview title
+    cmd: []u8, // owned — `cat <root>/'<name>'/'SKILL.md'`
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
+        const job: *SkillPreviewJob = @ptrCast(@alignCast(ctx));
+        var le = SkillLocExec{ .conn = job.conn };
+        const host = le.host();
+        const content = host.exec(host.ctx, allocator, job.cmd) catch return .failed;
+        const title = allocator.dupe(u8, job.name) catch {
+            allocator.free(content);
+            return .failed;
+        };
+        return .{ .preview = .{ .title = title, .content = content } };
+    }
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *SkillPreviewJob = @ptrCast(@alignCast(ctx));
+        allocator.free(job.name);
+        allocator.free(job.cmd);
         allocator.destroy(job);
     }
 };
@@ -3404,6 +3511,9 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
             } else {
                 overlays.showStatusToast(i18n.s().sc_toast_sync_failed);
             }
+        },
+        .preview => |*v| {
+            markdown_preview_panel.open(.markdown, v.title, "SKILL.md", v.content);
         },
     }
     markUiDirty();
