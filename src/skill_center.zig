@@ -285,6 +285,24 @@ pub const OpResult = union(enum) {
     }
 };
 
+/// Turn a finished import scan into an `OpResult`. An unreachable source (offline,
+/// auth failure, or a non-POSIX local host) becomes `.failed` so the UI shows a
+/// connection error instead of an empty import list; a reachable source — even
+/// with zero rows — yields `.import_scan` (a legitimately empty list). Takes
+/// ownership of `outcome` (moves its rows into the result, or frees them on
+/// failure) and of the already-cloned `target` (frees it on failure).
+pub fn importScanResult(allocator: std.mem.Allocator, outcome: *scan.ScanOutcome, target: Target) OpResult {
+    if (!outcome.reachable) {
+        outcome.deinit(allocator);
+        var t = target;
+        t.deinit(allocator);
+        return .failed;
+    }
+    const rows = outcome.rows;
+    outcome.rows = &.{};
+    return .{ .import_scan = .{ .target = target, .rows = rows } };
+}
+
 /// Owned unit of background op work. `run` returns an `OpResult` (never errors —
 /// failures are encoded in the result). `destroy` frees `ctx`.
 pub const OpWork = struct {
@@ -622,4 +640,37 @@ test "startOp rejects a second op while one is in flight" {
     OpTestCtx.destroy(@ptrCast(ctx), a);
     // let the dummy thread be joinable at destroy
     session.op_done.store(true, .release);
+}
+
+test "importScanResult: unreachable source becomes failed (not an empty import list)" {
+    const a = std.testing.allocator;
+    var outcome = scan.ScanOutcome{ .reachable = false, .rows = &.{} };
+    const tgt = try Target.dupe(a, "ssh:box", "box", .claude, false);
+    var result = importScanResult(a, &outcome, tgt); // takes ownership of outcome + tgt
+    defer result.deinit(a);
+    try std.testing.expect(result == .failed);
+}
+
+test "importScanResult: reachable source carries its rows into import_scan" {
+    const a = std.testing.allocator;
+    const rows = try scan.parseLocationOutput(a, "pdf\tpdf/SKILL.md\tabc\n");
+    var outcome = scan.ScanOutcome{ .reachable = true, .rows = rows };
+    const tgt = try Target.dupe(a, "ssh:box", "box", .claude, false);
+    var result = importScanResult(a, &outcome, tgt);
+    defer result.deinit(a);
+    try std.testing.expect(result == .import_scan);
+    try std.testing.expectEqual(@as(usize, 1), result.import_scan.rows.len);
+    try std.testing.expectEqualStrings("pdf", result.import_scan.rows[0].name);
+}
+
+test "importScanResult: reachable-but-empty source still opens an import list" {
+    // Local targets are reachable=true even with zero skills — an empty scan must
+    // open an (empty) import list, not be misread as a connection failure.
+    const a = std.testing.allocator;
+    var outcome = scan.ScanOutcome{ .reachable = true, .rows = &.{} };
+    const tgt = try Target.dupe(a, "local", "Local", .claude, true);
+    var result = importScanResult(a, &outcome, tgt);
+    defer result.deinit(a);
+    try std.testing.expect(result == .import_scan);
+    try std.testing.expectEqual(@as(usize, 0), result.import_scan.rows.len);
 }

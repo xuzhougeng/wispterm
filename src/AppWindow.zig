@@ -1866,10 +1866,10 @@ const SkillImportScanJob = struct {
             outcome.deinit(allocator);
             return .failed;
         };
-        // Hand the rows to the result; null them so destroy won't double-free.
-        const rows = outcome.rows;
-        outcome.rows = &.{};
-        return .{ .import_scan = .{ .target = tgt, .rows = rows } };
+        // An unreachable source yields `{ reachable = false, rows = &.{} }` (not an
+        // exec error), so it survives the catch above; importScanResult turns it
+        // into `.failed` rather than an empty import list.
+        return skill_center.importScanResult(allocator, &outcome, tgt);
     }
     fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
         const job: *SkillImportScanJob = @ptrCast(@alignCast(ctx));
