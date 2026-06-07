@@ -298,15 +298,22 @@ pub fn syncPanelForTabKind(is_ai_tab: bool) void {
     setPanelMode(if (is_ai_tab) .agent_history else .files);
 }
 
-pub fn syncPanelForTerminalTarget(target: TerminalPanelTarget) void {
-    if (terminalTargetMatchesCurrentState(target)) return;
+pub fn syncPanelForTerminalTarget(target: TerminalPanelTarget, force: bool) void {
+    const matches = terminalTargetMatchesCurrentState(target);
+    if (matches and !force) return;
 
-    applyTerminalTargetState(target);
-    switch (target) {
-        .remote => rescanRemote(),
-        .wsl, .local => {
-            if (g_root_path_len > 0) rescan();
-        },
+    if (!matches) applyTerminalTargetState(target);
+
+    if (matches and force) {
+        // Re-opening the same target: force a rescan but keep the selection.
+        refresh();
+    } else {
+        switch (target) {
+            .remote => rescanRemote(),
+            .wsl, .local => {
+                if (g_root_path_len > 0) rescan();
+            },
+        }
     }
 }
 
@@ -2046,7 +2053,7 @@ test "file_explorer: unchanged terminal target preserves file state" {
     g_focused = true;
     g_async_context_id = 99;
 
-    syncPanelForTerminalTarget(.{ .local = "" });
+    syncPanelForTerminalTarget(.{ .local = "" }, false);
 
     try std.testing.expectEqual(@as(usize, 7), g_entry_count);
     try std.testing.expectEqual(@as(?usize, 3), g_selected);

@@ -2480,7 +2480,7 @@ fn syncActiveSurfaceCaches() void {
 }
 
 pub fn handleActiveSurfaceChangeWithinTab() void {
-    syncVisibleFileExplorerForActiveTab();
+    syncVisibleFileExplorerForActiveTab(false);
     syncActiveSurfaceCaches();
     g_force_rebuild = true;
     g_cells_valid = false;
@@ -2504,7 +2504,7 @@ fn clearUiStateOnTabChange() void {
     overlays.resize.g_resize_overlay_visible = false;
     overlays.resize.g_resize_overlay_opacity = 0;
     overlays.resize.g_resize_overlay_suppress_until = std.time.milliTimestamp() + 100;
-    syncVisibleFileExplorerForActiveTab();
+    syncVisibleFileExplorerForActiveTab(false);
     syncActiveSurfaceCaches();
     requestImmediateLayoutResize();
     g_force_rebuild = true;
@@ -2892,7 +2892,7 @@ pub fn agentHistoryRevision() u64 {
     return g_agent_history_revision;
 }
 
-pub fn syncVisibleFileExplorerForActiveTab() void {
+pub fn syncVisibleFileExplorerForActiveTab(force: bool) void {
     if (!file_explorer.isVisibleForActiveTab()) return;
 
     const is_ai_tab = activeAiChat() != null;
@@ -2902,7 +2902,7 @@ pub fn syncVisibleFileExplorerForActiveTab() void {
         return;
     }
 
-    syncFileExplorerToActiveTerminalSurface();
+    syncFileExplorerToActiveTerminalSurface(force);
 }
 
 pub fn syncFileExplorerAgentHistoryRows() void {
@@ -2926,7 +2926,7 @@ fn localExplorerLiveCwd(surface: *const Surface, allocator: std.mem.Allocator) ?
     return surface.dupeCurrentCwd(allocator);
 }
 
-fn syncFileExplorerToActiveTerminalSurface() void {
+fn syncFileExplorerToActiveTerminalSurface(force: bool) void {
     const surface = activeSurface() orelse {
         file_explorer.syncPanelForTabKind(false);
         return;
@@ -2940,13 +2940,13 @@ fn syncFileExplorerToActiveTerminalSurface() void {
                         .conn = &conn,
                         .cwd = surface.getCwd() orelse "",
                     },
-                });
+                }, force);
                 return;
             }
             file_explorer.syncPanelForTabKind(false);
         },
         .wsl => {
-            file_explorer.syncPanelForTerminalTarget(.{ .wsl = surface.getCwd() orelse "~" });
+            file_explorer.syncPanelForTerminalTarget(.{ .wsl = surface.getCwd() orelse "~" }, force);
         },
         .local => {
             if (comptime platform_pty_command.local_explorer_uses_live_cwd) {
@@ -2955,7 +2955,7 @@ fn syncFileExplorerToActiveTerminalSurface() void {
                 const alloc = g_allocator orelse std.heap.page_allocator;
                 if (localExplorerLiveCwd(surface, alloc)) |cwd| {
                     defer alloc.free(cwd);
-                    file_explorer.syncPanelForTerminalTarget(.{ .local = cwd });
+                    file_explorer.syncPanelForTerminalTarget(.{ .local = cwd }, force);
                 } else {
                     file_explorer.syncPanelForTabKind(false);
                 }
@@ -2965,12 +2965,12 @@ fn syncFileExplorerToActiveTerminalSurface() void {
                     var native_buf: platform_pty_command.CwdBuffer = undefined;
                     var utf8_buf: [260]u8 = undefined;
                     if (platform_wsl.guestPathToLocalPathUtf8(guest_path, &native_buf, &utf8_buf)) |local_path| {
-                        file_explorer.syncPanelForTerminalTarget(.{ .local = local_path });
+                        file_explorer.syncPanelForTerminalTarget(.{ .local = local_path }, force);
                         return;
                     }
                 }
                 if (surface.getInitialCwd()) |initial_cwd| {
-                    file_explorer.syncPanelForTerminalTarget(.{ .local = initial_cwd });
+                    file_explorer.syncPanelForTerminalTarget(.{ .local = initial_cwd }, force);
                     return;
                 }
                 file_explorer.syncPanelForTabKind(false);

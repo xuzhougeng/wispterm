@@ -435,7 +435,7 @@ pub fn toggleFileExplorer() void {
 
     file_explorer.toggle();
     if (file_explorer.isVisibleForActiveTab()) {
-        AppWindow.syncVisibleFileExplorerForActiveTab();
+        AppWindow.syncVisibleFileExplorerForActiveTab(true);
     }
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
