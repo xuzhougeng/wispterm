@@ -17,4 +17,5 @@ pub const build_options = @import("build_options");
 
 comptime {
     _ = @import("ai_loop_store.zig");
+    _ = @import("child_output.zig");
 }
