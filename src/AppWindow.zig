@@ -72,6 +72,7 @@ pub const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 const render_gate = @import("appwindow/render_gate.zig");
+const frame_latency = @import("appwindow/frame_latency.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 const resize_throttle = @import("appwindow/resize_throttle.zig");
 pub const fbo = @import("renderer/fbo.zig");
@@ -5023,6 +5024,60 @@ fn markAllRenderersDirty() void {
 /// Last render timestamp driven by the render gate's focused cursor blink.
 threadlocal var g_gate_last_blink_render: i64 = 0;
 
+/// Monotonic main-loop iteration counter. Lets the latency probe tell whether a
+/// frame was presented in the SAME iteration that processed the input (true
+/// input→present latency) or a LATER one (the input painted nothing in its own
+/// iteration — a modifier/unfocused key, or a missing-force_rebuild bug — and an
+/// unrelated wake such as the cursor blink presented instead).
+pub threadlocal var g_loop_iter: u64 = 0;
+
+/// Frame-latency instrumentation (opt-in via render diagnostics): the sliding
+/// window of input→present samples and the last time we flushed a summary line.
+/// Lets us quantify the overlay arrow-key "feel" (see frame_latency.zig).
+threadlocal var g_frame_latency: frame_latency.Stats = .{};
+threadlocal var g_frame_latency_last_flush_ms: i64 = 0;
+
+fn usToMs(us: i64) f64 {
+    return @as(f64, @floatFromInt(us)) / 1000.0;
+}
+
+/// Called once per presented frame. When the frame was triggered by a key/char
+/// event, record how long input→present took, and emit a p50/p95/max summary to
+/// the render-diagnostics log about once a second. No-op unless diagnostics are
+/// enabled (`WISPTERM_RENDER_DIAGNOSTICS=1` or `wispterm-debug-render = true`).
+fn recordFrameLatencyIfInputDriven() void {
+    if (!render_diagnostics.enabled()) return;
+    if (input.g_pending_input_us != 0) {
+        const lat_us = std.time.microTimestamp() - input.g_pending_input_us;
+        if (input.g_pending_input_iter == g_loop_iter) {
+            // Painted in the same iteration that processed the input: real feel.
+            g_frame_latency.record(lat_us);
+        } else {
+            // The loop idled between the input and this paint, so an unrelated
+            // wake (cursor blink, PTY output) presented — not real input latency.
+            // Surface it separately so it never inflates p50/p95, and so a real
+            // missing-force_rebuild regression still shows up while navigating.
+            render_diagnostics.log("frame-latency STALL input->present={d:.1}ms iters={d} (input painted nothing in its own iteration: modifier/unfocused key, or a missing force_rebuild)", .{
+                usToMs(lat_us),
+                g_loop_iter -% input.g_pending_input_iter,
+            });
+        }
+        input.g_pending_input_us = 0;
+    }
+    if (g_frame_latency.isEmpty()) return;
+    const now_ms = std.time.milliTimestamp();
+    if (now_ms - g_frame_latency_last_flush_ms < 1000) return;
+    g_frame_latency_last_flush_ms = now_ms;
+    const s = g_frame_latency.summary();
+    render_diagnostics.log("frame-latency input->present count={d} p50={d:.1}ms p95={d:.1}ms max={d:.1}ms", .{
+        s.count,
+        usToMs(s.p50_us),
+        usToMs(s.p95_us),
+        usToMs(s.max_us),
+    });
+    g_frame_latency.resetWindow();
+}
+
 fn anySurfaceDirtyLoad() bool {
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
@@ -6059,6 +6114,7 @@ fn runMainLoop(self: *AppWindow) !void {
     // Main loop — shared logic with backend-specific window management
     var running = true;
     while (running) {
+        g_loop_iter +%= 1; // tag each iteration so the latency probe can tell same-iteration paints from stalls
         // Check for config file changes
         if (config_watcher) |*w| checkConfigReload(allocator, w);
         overlays.tickSessionLauncher();
@@ -6440,6 +6496,7 @@ fn runMainLoop(self: *AppWindow) !void {
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
         window_backend.swapBuffers(win);
+        recordFrameLatencyIfInputDriven();
         clearAllSurfaceDirty();
         g_force_rebuild = false;
         g_cells_valid = true;

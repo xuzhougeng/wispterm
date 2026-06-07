@@ -144,6 +144,105 @@ test "input: browser toolbar has a refresh action entrypoint" {
     try std.testing.expectEqual(@as(usize, 0), info.params.len);
 }
 
+// Regression: the event-driven render loop (PR #168) only paints a frame when
+// something marks the UI dirty. Command-center family overlays consume their own
+// key/char events and never reach the terminal, so each navigation/typing keystroke
+// MUST request a rebuild — otherwise the new selection only appears on the next
+// incidental wake (cursor blink ~530ms / mouse move), which felt like lag ("不跟手").
+const arrow_down_event = platform_input.KeyEvent{
+    .key_code = platform_input.key_down,
+    .ctrl = false,
+    .shift = false,
+    .alt = false,
+    .super = false,
+};
+
+test "input: command palette arrow navigation requests a repaint" {
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.commandPaletteClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.commandPaletteOpen();
+    try std.testing.expect(overlays.commandPaletteVisible());
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(arrow_down_event);
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+test "input: command palette text filtering requests a repaint" {
+    defer overlays.commandPaletteClose();
+    overlays.commandPaletteOpen();
+    try std.testing.expect(overlays.commandPaletteVisible());
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleChar(.{ .codepoint = 'a' });
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+test "input: session launcher arrow navigation requests a repaint" {
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.sessionLauncherClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.sessionLauncherOpen();
+    try std.testing.expect(overlays.sessionLauncherVisible());
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(arrow_down_event);
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+test "input: settings page arrow navigation requests a repaint" {
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.settingsPageClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.settingsPageOpen();
+    try std.testing.expect(overlays.settingsPageVisible());
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(arrow_down_event);
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+// Ties the fix end-to-end: a consumed overlay key must make the next render-gate
+// evaluation decide to render (the exact signal the main loop builds), instead of
+// blocking until an incidental wake — that decision IS the anti-lag invariant.
+test "input: overlay navigation drives the render gate to repaint" {
+    const render_gate = @import("appwindow/render_gate.zig");
+    defer overlays.commandPaletteClose();
+    overlays.commandPaletteOpen();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(arrow_down_event);
+
+    const signals = render_gate.RenderSignals{
+        .force_rebuild = AppWindow.g_force_rebuild or !AppWindow.g_cells_valid,
+        .any_surface_dirty = false,
+        .cursor_blink_due = false,
+        .ai_streaming = false,
+        .overlay_active = false,
+    };
+    try std.testing.expect(render_gate.frameNeedsRender(signals));
+}
+
 test "macOS UI smoke: Cmd+Shift+B toggles the tab sidebar" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
@@ -884,6 +983,16 @@ fn finishPanelSwapDrag() bool {
     return true;
 }
 
+/// 时序 instrumentation：最近一次处理 key/char 输入的微秒时间戳，尚未与一帧 present 配对。
+/// 主循环 present 后读它算「输入 → 呈现」延迟（见 AppWindow.recordFrameLatencyIfInputDriven），
+/// 0 表示无待配对输入。仅在开启 render diagnostics 时被读取，平时只是个无害的时间戳写入。
+pub threadlocal var g_pending_input_us: i64 = 0;
+/// Main-loop iteration in which the above input was processed. Paired with
+/// AppWindow.g_loop_iter at present time: equal ⇒ the input painted in its own
+/// iteration (true latency); different ⇒ the loop idled in between and an
+/// unrelated wake (cursor blink, etc.) presented — a stall, not real latency.
+pub threadlocal var g_pending_input_iter: u64 = 0;
+
 /// Process all queued platform input events. Called once per frame from the main loop.
 pub fn processEvents(win: anytype) void {
     if (window_backend.isMinimized(win)) {
@@ -921,6 +1030,11 @@ fn processKeyAndCharEvents(win: anytype) void {
             g_ai_history_suppress_refresh_char = false;
         }
         if (!did_anything) break;
+        // Stamp the input→present latency clock on every handled key/char so the
+        // main loop can measure how long the resulting frame took to reach present,
+        // and tag the iteration so a later, unrelated paint isn't mis-attributed.
+        g_pending_input_us = std.time.microTimestamp();
+        g_pending_input_iter = AppWindow.g_loop_iter;
     }
 }
 
@@ -967,11 +1081,19 @@ fn processSizeChange(win: anytype) void {
 fn handleChar(ev: platform_input.CharEvent) void {
     overlays.startupShortcutsDismiss();
     if (overlays.sessionLauncherVisible()) {
-        if (!ev.ctrl and !ev.alt) overlays.sessionLauncherInsertChar(ev.codepoint);
+        if (!ev.ctrl and !ev.alt) {
+            overlays.sessionLauncherInsertChar(ev.codepoint);
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        }
         return;
     }
     if (overlays.commandPaletteVisible()) {
-        if (!ev.ctrl and !ev.alt) overlays.commandPaletteInsertChar(ev.codepoint);
+        if (!ev.ctrl and !ev.alt) {
+            overlays.commandPaletteInsertChar(ev.codepoint);
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        }
         return;
     }
     if (weixinQrPanelConsumesChar()) return;
@@ -1278,6 +1400,8 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             return;
         }
         overlays.sessionLauncherHandleKey(key_event);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
         return;
     }
     if (action) |app_action| {
@@ -1304,6 +1428,8 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 else => {},
             }
         }
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
         return;
     }
     if (jupyter_picker.isVisible()) {
@@ -1336,6 +1462,8 @@ fn handleKey(ev: platform_input.KeyEvent) void {
     }
     if (overlays.settingsPageVisible()) {
         overlays.settingsPageHandleKey(key_event);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
         return;
     }
     if (AppWindow.weixin_qr_panel.visible()) {

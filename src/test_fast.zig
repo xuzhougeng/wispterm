@@ -46,6 +46,7 @@ test {
     _ = @import("ssh_connection.zig");
     _ = @import("openssh_config_import.zig");
     _ = @import("appwindow/active_tab.zig");
+    _ = @import("appwindow/frame_latency.zig");
     _ = @import("scp.zig");
     _ = @import("file_backend.zig");
     _ = @import("file_explorer.zig");
