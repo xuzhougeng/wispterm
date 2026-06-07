@@ -7,7 +7,6 @@
 ///
 /// Phase 1: Basic structure - signals main thread to redraw
 /// Phase 2: Full cell snapshotting will be moved here from AppWindow.zig
-
 const std = @import("std");
 const Surface = @import("Surface.zig");
 const Renderer = @import("renderer/Renderer.zig");
@@ -111,11 +110,9 @@ fn threadMain(self: *RendererThread) void {
         if (now - last_render_time < RENDER_INTERVAL_MS) continue;
         last_render_time = now;
 
-        // Check if the surface is dirty (PTY output received)
-        // If so, signal that we need a redraw
-        if (self.surface.dirty.swap(false, .acq_rel)) {
-            self.renderer.markDirty();
-        }
+        // surface.dirty is consumed by the main render loop's event-driven
+        // render gate. This thread must not swap it or it can steal a PTY
+        // update before the UI thread sees it.
 
         // The actual cell snapshotting and rebuilding is still done in
         // AppWindow.zig on the main thread for now. This thread just:

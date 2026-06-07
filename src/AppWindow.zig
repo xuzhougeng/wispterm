@@ -70,6 +70,7 @@ pub const overlays = @import("renderer/overlays.zig");
 pub const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
+const render_gate = @import("appwindow/render_gate.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 const resize_throttle = @import("appwindow/resize_throttle.zig");
 pub const fbo = @import("renderer/fbo.zig");
@@ -4673,6 +4674,44 @@ fn markAllRenderersDirty() void {
     }
 }
 
+/// Last render timestamp driven by the render gate's focused cursor blink.
+threadlocal var g_gate_last_blink_render: i64 = 0;
+
+fn anySurfaceDirtyLoad() bool {
+    for (0..tab.g_tab_count) |ti| {
+        if (tab.g_tabs[ti]) |tb| {
+            var it = tb.tree.iterator();
+            while (it.next()) |entry| {
+                if (entry.surface.dirty.load(.acquire)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn clearAllSurfaceDirty() void {
+    for (0..tab.g_tab_count) |ti| {
+        if (tab.g_tabs[ti]) |tb| {
+            var it = tb.tree.iterator();
+            while (it.next()) |entry| {
+                _ = entry.surface.dirty.swap(false, .acq_rel);
+            }
+        }
+    }
+}
+
+fn aiStreamingActive() bool {
+    if (activeAiChat()) |session| {
+        if (session.request_inflight) return true;
+    }
+    if (activeTab()) |tb| {
+        if (tb.copilot_session) |session| {
+            if (session.request_inflight) return true;
+        }
+    }
+    return false;
+}
+
 fn clearIconFont(allocator: std.mem.Allocator) void {
     if (font.icon_face) |old_icon| old_icon.deinit();
     font.icon_face = null;
@@ -5677,14 +5716,26 @@ fn runMainLoop(self: *AppWindow) !void {
         // Check for config file changes
         if (config_watcher) |*w| checkConfigReload(allocator, w);
         overlays.tickSessionLauncher();
-        file_explorer.tickAsync();
+        if (file_explorer.tickAsync()) {
+            g_force_rebuild = true;
+            g_cells_valid = false;
+        }
         syncTransferToastFromFileExplorer();
         if (markdown_preview_panel.tickAsync()) {
             g_force_rebuild = true;
             g_cells_valid = false;
         }
+        if (weixin_qr_panel.visible()) {
+            const qr_allocator = g_allocator orelse allocator;
+            if (weixin_qr_panel.refresh(qr_allocator)) {
+                g_force_rebuild = true;
+                g_cells_valid = false;
+            }
+        }
         maybePrintMemoryDebug(std.time.milliTimestamp());
         flushAgentHistoryStoreIfDirty(false);
+        pollUpdateCheck(self.app);
+        pollSkillUpdate(self.app);
 
         // Process pending resize (coalesced, like Ghostty)
         // We wait for RESIZE_COALESCE_MS after last resize event before applying.
@@ -5763,14 +5814,54 @@ fn runMainLoop(self: *AppWindow) !void {
         const fb_width: c_int = fb.width;
         const fb_height: c_int = fb.height;
         if (window_backend.isMinimized(win) or fb_width <= 0 or fb_height <= 0) {
-            std.Thread.sleep(16 * std.time.ns_per_ms);
+            const timeout_ms = render_gate.computeBlockTimeoutMs(.{
+                .visibility = .hidden,
+                .cursor_blink_enabled = false,
+                .ms_until_next_blink = CURSOR_BLINK_INTERVAL_MS,
+            });
+            window_backend.pumpAppEvents(@as(f64, @floatFromInt(timeout_ms)) / 1000.0);
             continue;
         }
 
+        const gate_now = std.time.milliTimestamp();
+        const visible = window_backend.isVisible(win);
+        const vis: render_gate.Visibility = if (!visible)
+            .hidden
+        else if (window_focused)
+            .focused
+        else
+            .unfocused_visible;
+
+        const blink_enabled = g_cursor_blink and vis == .focused;
+        const blink_due = blink_enabled and
+            (gate_now - g_gate_last_blink_render >= CURSOR_BLINK_INTERVAL_MS);
+
+        const signals = render_gate.RenderSignals{
+            .force_rebuild = g_force_rebuild or !g_cells_valid or g_pending_resize or g_layout_resize_immediate,
+            .any_surface_dirty = anySurfaceDirtyLoad(),
+            .cursor_blink_due = blink_due,
+            .ai_streaming = aiStreamingActive(),
+            .overlay_active = overlays.anyOverlayActive(gate_now),
+        };
+
+        const needs_render = render_gate.frameNeedsRender(signals);
+        if (!needs_render) {
+            const ms_until_blink = if (blink_enabled)
+                CURSOR_BLINK_INTERVAL_MS - (gate_now - g_gate_last_blink_render)
+            else
+                CURSOR_BLINK_INTERVAL_MS;
+            const timeout_ms = render_gate.computeBlockTimeoutMs(.{
+                .visibility = vis,
+                .cursor_blink_enabled = blink_enabled,
+                .ms_until_next_blink = ms_until_blink,
+            });
+            window_backend.pumpAppEvents(@as(f64, @floatFromInt(timeout_ms)) / 1000.0);
+            continue;
+        }
+        if (blink_due) g_gate_last_blink_render = gate_now;
+
         gpu.gl_init.g_draw_call_count = 0;
         overlays.updateFps();
-        pollUpdateCheck(self.app);
-        pollSkillUpdate(self.app);
 
         // Sync atlas textures to GPU if modified
         if (font.g_atlas != null) font.syncAtlasTexture(&font.g_atlas, &font.g_atlas_texture, &font.g_atlas_modified);
@@ -6002,6 +6093,9 @@ fn runMainLoop(self: *AppWindow) !void {
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
         window_backend.swapBuffers(win);
+        clearAllSurfaceDirty();
+        g_force_rebuild = false;
+        g_cells_valid = true;
     }
 
     // Save window position + size for next session

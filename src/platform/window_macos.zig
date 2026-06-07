@@ -264,6 +264,14 @@ pub fn postWakeup() void {
     wispterm_macos_post_wakeup();
 }
 
+pub fn registerEventWindow(hwnd: NativeHandle) void {
+    _ = hwnd;
+}
+
+pub fn unregisterEventWindow(hwnd: NativeHandle) void {
+    _ = hwnd;
+}
+
 test "macOS window constants defer caption controls to AppKit" {
     try std.testing.expectEqual(@as(i32, 0), titlebar_height);
     try std.testing.expectEqual(@as(f32, 0), caption_button_width);

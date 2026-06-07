@@ -212,11 +212,66 @@ pub fn consumeQuitRequest() bool {
 pub fn requestQuit() void {}
 
 pub fn pumpAppEvents(timeout_seconds: f64) void {
-    _ = timeout_seconds;
+    const timeout_ms = timeoutMilliseconds(timeout_seconds);
+    _ = MsgWaitForMultipleObjectsEx(0, null, timeout_ms, qs_allinput, mwmo_inputavailable);
 }
 
-pub fn postWakeup() void {}
+pub fn postWakeup() void {
+    var handles: [max_event_windows]NativeHandle = undefined;
+    var count: usize = 0;
+    event_windows_mutex.lock();
+    for (event_windows) |slot| {
+        if (slot) |hwnd| {
+            handles[count] = hwnd;
+            count += 1;
+        }
+    }
+    event_windows_mutex.unlock();
 
+    for (handles[0..count]) |hwnd| {
+        _ = postMessage(hwnd, wm_null, 0, 0);
+    }
+}
+
+pub fn registerEventWindow(hwnd: NativeHandle) void {
+    event_windows_mutex.lock();
+    defer event_windows_mutex.unlock();
+
+    for (event_windows) |slot| {
+        if (slot) |existing| {
+            if (existing == hwnd) return;
+        }
+    }
+    for (&event_windows) |*slot| {
+        if (slot.* == null) {
+            slot.* = hwnd;
+            return;
+        }
+    }
+}
+
+pub fn unregisterEventWindow(hwnd: NativeHandle) void {
+    event_windows_mutex.lock();
+    defer event_windows_mutex.unlock();
+
+    for (&event_windows) |*slot| {
+        if (slot.*) |existing| {
+            if (existing == hwnd) {
+                slot.* = null;
+                return;
+            }
+        }
+    }
+}
+
+fn timeoutMilliseconds(timeout_seconds: f64) u32 {
+    if (timeout_seconds <= 0) return 0;
+    const max_ms: f64 = @floatFromInt(infinite - 1);
+    const clamped = @min(timeout_seconds * 1000.0, max_ms);
+    return @max(@as(u32, 1), @as(u32, @intFromFloat(@ceil(clamped))));
+}
+
+const wm_null: u32 = 0x0000;
 const wm_close: u32 = 0x0010;
 const wm_app: u32 = 0x8000;
 const sw_hide: i32 = 0;
@@ -229,6 +284,13 @@ const HMONITOR = *opaque {};
 const swp_show_window: u32 = 0x0040;
 const hwnd_topmost: std.os.windows.HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 const hwnd_notopmost: std.os.windows.HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
+const infinite: u32 = 0xFFFFFFFF;
+const qs_allinput: u32 = 0x04FF;
+const mwmo_inputavailable: u32 = 0x0004;
+const max_event_windows = 32;
+
+var event_windows_mutex: std.Thread.Mutex = .{};
+var event_windows: [max_event_windows]?NativeHandle = .{null} ** max_event_windows;
 
 const MONITORINFO = extern struct {
     cbSize: u32,
@@ -279,6 +341,13 @@ extern "user32" fn SetWindowPos(
 ) callconv(.winapi) std.os.windows.BOOL;
 extern "user32" fn MonitorFromWindow(hWnd: std.os.windows.HWND, dwFlags: u32) callconv(.winapi) ?HMONITOR;
 extern "user32" fn GetMonitorInfoW(hMonitor: HMONITOR, lpmi: *MONITORINFO) callconv(.winapi) std.os.windows.BOOL;
+extern "user32" fn MsgWaitForMultipleObjectsEx(
+    nCount: u32,
+    pHandles: ?[*]const std.os.windows.HANDLE,
+    dwMilliseconds: u32,
+    dwWakeMask: u32,
+    dwFlags: u32,
+) callconv(.winapi) u32;
 
 test "platform window exposes native handle helpers" {
     const rect_info = @typeInfo(@TypeOf(getWindowRect)).@"fn";

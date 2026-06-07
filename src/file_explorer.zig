@@ -554,20 +554,23 @@ pub fn setRoot(path: []const u8) void {
     }
 }
 
-pub fn tickAsync() void {
+pub fn tickAsync() bool {
+    const before_transfer_seq = g_transfer_notification_seq;
     tickTransferJob();
+    var changed = g_transfer_notification_seq != before_transfer_seq;
 
-    const job = g_async_job orelse return;
-    if (!job.done.load(.acquire)) return;
+    const job = g_async_job orelse return changed;
+    if (!job.done.load(.acquire)) return changed;
 
     if (job.thread) |thread| thread.join();
     g_async_job = null;
     g_loading = false;
+    changed = true;
     defer maybeStartPendingAsyncList();
     defer destroyAsyncJob(job);
 
     if (job.context_id != g_async_context_id or g_mode != .remote or !g_has_ssh_conn) {
-        return;
+        return changed;
     }
 
     if (job.status != .ok) {
@@ -577,7 +580,7 @@ pub fn tickAsync() void {
                 g_entries[idx].expanded = false;
             }
         }
-        return;
+        return true;
     }
 
     switch (job.kind) {
@@ -595,11 +598,12 @@ pub fn tickAsync() void {
         },
         .expand => {
             const path = job.path_buf[0..job.path_len];
-            const idx = findEntryByPath(path) orelse return;
-            if (!g_entries[idx].expanded) return;
+            const idx = findEntryByPath(path) orelse return true;
+            if (!g_entries[idx].expanded) return true;
             _ = insertBackendChildren(idx + 1, job.entries[0..job.count], job.depth, path, '/');
         },
     }
+    return true;
 }
 
 pub fn rescan() void {

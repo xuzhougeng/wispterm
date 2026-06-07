@@ -708,6 +708,7 @@ const SM_CXPADDEDBORDER: INT = 92;
 
 // IsZoomed (maximized check)
 extern "user32" fn IsZoomed(hWnd: HWND) callconv(.winapi) BOOL;
+extern "user32" fn IsWindowVisible(hWnd: HWND) callconv(.winapi) BOOL;
 
 // Screen-to-client coordinate conversion
 extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.winapi) BOOL;
@@ -1186,19 +1187,20 @@ pub const Window = struct {
         // drag-between-monitors / high-DPI render glitches.
         logDisplayTopology();
         logWindowMonitor(hwnd, "startup");
+        platform_window.registerEventWindow(hwnd);
 
         return window;
     }
 
     pub fn deinit(self: *Window) void {
+        platform_window.unregisterEventWindow(self.hwnd);
         _ = wglMakeCurrent(self.hdc, null);
         _ = wglDeleteContext(self.hglrc);
         _ = DestroyWindow(self.hwnd);
     }
 
     pub fn isVisible(self: *Window) bool {
-        _ = self;
-        return true;
+        return IsWindowVisible(self.hwnd) != 0 and !self.is_minimized;
     }
 
     pub fn swapBuffers(self: *Window) void {

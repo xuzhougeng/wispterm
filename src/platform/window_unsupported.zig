@@ -172,3 +172,11 @@ pub fn pumpAppEvents(timeout_seconds: f64) void {
 }
 
 pub fn postWakeup() void {}
+
+pub fn registerEventWindow(hwnd: NativeHandle) void {
+    _ = hwnd;
+}
+
+pub fn unregisterEventWindow(hwnd: NativeHandle) void {
+    _ = hwnd;
+}

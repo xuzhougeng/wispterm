@@ -76,13 +76,19 @@ test "cacheRoot uses cache_dir when set, else the file's directory" {
     const a = std.testing.allocator;
     const with = try cacheRoot(a, "/work/proj", "/dl/x.pdf");
     defer a.free(with);
-    try std.testing.expectEqualStrings("/work/proj/.webread_cache", with);
+    const expected_with = try std.fs.path.join(a, &.{ "/work/proj", cache_dir_name });
+    defer a.free(expected_with);
+    try std.testing.expectEqualStrings(expected_with, with);
+
     const without = try cacheRoot(a, null, "/dl/x.pdf");
     defer a.free(without);
-    try std.testing.expectEqualStrings("/dl/.webread_cache", without);
+    const expected_without = try std.fs.path.join(a, &.{ "/dl", cache_dir_name });
+    defer a.free(expected_without);
+    try std.testing.expectEqualStrings(expected_without, without);
+
     const empty = try cacheRoot(a, "", "/dl/x.pdf");
     defer a.free(empty);
-    try std.testing.expectEqualStrings("/dl/.webread_cache", empty);
+    try std.testing.expectEqualStrings(expected_without, empty);
 }
 
 test "cacheFileName is basename.sha16.md" {
