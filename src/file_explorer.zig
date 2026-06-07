@@ -595,6 +595,7 @@ pub fn tickAsync() bool {
             g_selected = null;
             const root = g_root_path[0..g_root_path_len];
             _ = insertBackendChildren(0, job.entries[0..job.count], 0, root, '/');
+            applyRefreshRestore();
         },
         .expand => {
             const path = job.path_buf[0..job.path_len];
@@ -605,6 +606,14 @@ pub fn tickAsync() bool {
     }
     return true;
 }
+
+// Manual-refresh restore state: capture selection (by path) + scroll before a
+// rescan rebuilds the flat list, then re-apply once the list is ready. Only
+// refresh() sets `pending`, so ordinary rescans (tab switch, etc.) never restore.
+threadlocal var g_refresh_restore_pending: bool = false;
+threadlocal var g_refresh_keep_path: [512]u8 = undefined;
+threadlocal var g_refresh_keep_path_len: u16 = 0;
+threadlocal var g_refresh_keep_scroll: f32 = 0;
 
 pub fn rescan() void {
     const perf = ui_perf.begin("file_explorer.rescan");
@@ -656,6 +665,48 @@ pub fn rescanRemote() void {
     if (startAsyncList(.rescan, path, 0, false) == .blocked) {
         setTransferStatus(.failed, "SSH list busy");
     }
+}
+
+/// Manually re-list the current directory, preserving selection (by path) and
+/// scroll where possible. Works for local, WSL, and remote (SSH) modes.
+/// For remote, the list is rebuilt asynchronously and the restore is applied
+/// when the rescan job completes in tickAsync().
+pub fn refresh() void {
+    g_refresh_restore_pending = true;
+    g_refresh_keep_scroll = g_scroll_offset;
+    g_refresh_keep_path_len = 0;
+    if (g_selected) |sel| {
+        if (sel < g_entry_count) {
+            const p = g_entries[sel].path_buf[0..g_entries[sel].path_len];
+            const n: u16 = @intCast(@min(p.len, g_refresh_keep_path.len));
+            @memcpy(g_refresh_keep_path[0..n], p[0..n]);
+            g_refresh_keep_path_len = n;
+        }
+    }
+
+    rescan();
+
+    if (g_mode == .remote and g_has_ssh_conn) {
+        // Async rebuild; restore happens in tickAsync's .rescan completion.
+        setTransferStatus(.in_progress, "Refreshing…");
+    } else {
+        applyRefreshRestore();
+    }
+}
+
+fn applyRefreshRestore() void {
+    if (!g_refresh_restore_pending) return;
+    g_refresh_restore_pending = false;
+
+    if (g_refresh_keep_path_len > 0) {
+        if (findEntryByPath(g_refresh_keep_path[0..g_refresh_keep_path_len])) |idx| {
+            g_selected = idx;
+        }
+    }
+    g_scroll_offset = g_refresh_keep_scroll;
+    clampFileScroll();
+    if (g_selected != null) ensureSelectedVisible();
+    setTransferStatus(.success, "Refreshed");
 }
 
 fn loadBackendEntries(
@@ -1998,6 +2049,70 @@ test "file_explorer: unchanged terminal target preserves file state" {
     try std.testing.expectEqual(@as(f32, 42), g_scroll_offset);
     try std.testing.expectEqual(true, g_focused);
     try std.testing.expectEqual(@as(u64, 99), g_async_context_id);
+}
+
+fn setFlatEntryPathForTest(idx: usize, path: []const u8) void {
+    @memcpy(g_entries[idx].path_buf[0..path.len], path);
+    g_entries[idx].path_len = @intCast(path.len);
+}
+
+test "file_explorer: refresh restore re-selects entry by path" {
+    const saved_entry_count = g_entry_count;
+    const saved_selected = g_selected;
+    const saved_scroll = g_scroll_offset;
+    const saved_pending = g_refresh_restore_pending;
+    const saved_keep_len = g_refresh_keep_path_len;
+    defer {
+        g_entry_count = saved_entry_count;
+        g_selected = saved_selected;
+        g_scroll_offset = saved_scroll;
+        g_refresh_restore_pending = saved_pending;
+        g_refresh_keep_path_len = saved_keep_len;
+    }
+
+    g_entry_count = 3;
+    setFlatEntryPathForTest(0, "a.txt");
+    setFlatEntryPathForTest(1, "b.txt");
+    setFlatEntryPathForTest(2, "c.txt");
+    g_selected = null;
+    g_scroll_offset = 0;
+
+    g_refresh_restore_pending = true;
+    g_refresh_keep_scroll = 0;
+    @memcpy(g_refresh_keep_path[0..5], "b.txt");
+    g_refresh_keep_path_len = 5;
+
+    applyRefreshRestore();
+
+    try std.testing.expectEqual(@as(?usize, 1), g_selected);
+    try std.testing.expectEqual(false, g_refresh_restore_pending);
+}
+
+test "file_explorer: refresh restore clears selection when path is gone" {
+    const saved_entry_count = g_entry_count;
+    const saved_selected = g_selected;
+    const saved_pending = g_refresh_restore_pending;
+    const saved_keep_len = g_refresh_keep_path_len;
+    defer {
+        g_entry_count = saved_entry_count;
+        g_selected = saved_selected;
+        g_refresh_restore_pending = saved_pending;
+        g_refresh_keep_path_len = saved_keep_len;
+    }
+
+    g_entry_count = 2;
+    setFlatEntryPathForTest(0, "x.txt");
+    setFlatEntryPathForTest(1, "y.txt");
+    g_selected = null;
+
+    g_refresh_restore_pending = true;
+    g_refresh_keep_scroll = 0;
+    @memcpy(g_refresh_keep_path[0..8], "gone.txt");
+    g_refresh_keep_path_len = 8;
+
+    applyRefreshRestore();
+
+    try std.testing.expectEqual(@as(?usize, null), g_selected);
 }
 
 test "file_explorer: terminal target equality checks ssh identity and cwd" {
