@@ -83,6 +83,8 @@ pub const Strings = struct {
 
     // —— Skill Center v2 (library + targets) ——
     sc_legend_v2: []const u8,
+    sc_legend_import: []const u8,
+    sc_busy_loading: []const u8,
     sc_pick_deploy: []const u8,
     sc_pick_import: []const u8,
     sc_import_title: []const u8,
@@ -263,7 +265,9 @@ const en = Strings{
     .sc_overwrite_download = "Overwrite download of",
     .sc_confirm_suffix = "— content differs. [⏎] confirm  [esc] cancel",
 
-    .sc_legend_v2 = "[⏎] preview   [d] deploy   [i] import   [r] rescan",
+    .sc_legend_v2 = "[space] preview   [↵] deploy   [i] import   [r] rescan",
+    .sc_legend_import = "[space] preview   [↵] import   [esc] back",
+    .sc_busy_loading = "Loading…",
     .sc_pick_deploy = "Deploy to…  (↑/↓ + ⏎, esc to cancel)",
     .sc_pick_import = "Import from…  (↑/↓ + ⏎, esc to cancel)",
     .sc_import_title = "Pick a skill to import  (↑/↓ + ⏎, esc to cancel)",
@@ -440,7 +444,9 @@ const zh_CN = Strings{
     .sc_overwrite_download = "下载覆盖",
     .sc_confirm_suffix = "（内容不同）。 [⏎] 确认  [esc] 取消",
 
-    .sc_legend_v2 = "[⏎] 预览   [d] 部署   [i] 导入   [r] 重新扫描",
+    .sc_legend_v2 = "[space] 预览   [↵] 部署   [i] 导入   [r] 重新扫描",
+    .sc_legend_import = "[space] 预览   [↵] 导入   [esc] 返回",
+    .sc_busy_loading = "加载中…",
     .sc_pick_deploy = "部署到…  (↑/↓ + ⏎，esc 取消)",
     .sc_pick_import = "从哪里导入…  (↑/↓ + ⏎，esc 取消)",
     .sc_import_title = "选择要导入的技能  (↑/↓ + ⏎，esc 取消)",
