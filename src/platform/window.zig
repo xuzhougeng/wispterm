@@ -75,6 +75,7 @@ pub const consumeReopenRequest = impl.consumeReopenRequest;
 pub const consumeQuitRequest = impl.consumeQuitRequest;
 pub const requestQuit = impl.requestQuit;
 pub const pumpAppEvents = impl.pumpAppEvents;
+pub const postWakeup = impl.postWakeup;
 
 test "platform window exposes native handle helpers" {
     const rect_info = @typeInfo(@TypeOf(getWindowRect)).@"fn";

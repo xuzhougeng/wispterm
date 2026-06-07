@@ -18,6 +18,7 @@ const std = @import("std");
 const xev = @import("xev");
 const Surface = @import("../Surface.zig");
 const renderer = @import("../renderer.zig");
+const window_backend = @import("../platform/window_backend.zig");
 
 const Thread = @This();
 
@@ -170,4 +171,5 @@ fn applyResize(surface: *Surface, grid: renderer.size.GridSize) void {
 
     surface.terminal.scrollViewport(.{ .bottom = {} });
     surface.dirty.store(true, .release);
+    window_backend.postWakeup();
 }

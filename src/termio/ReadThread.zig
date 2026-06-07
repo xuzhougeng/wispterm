@@ -10,6 +10,7 @@
 /// Shutdown is delegated to the platform PTY backend.
 const std = @import("std");
 const Surface = @import("../Surface.zig");
+const window_backend = @import("../platform/window_backend.zig");
 
 const READ_BUF_SIZE = 4096;
 
@@ -117,4 +118,5 @@ fn processOutput(surface: *Surface, data: []const u8) void {
     surface.scanForOscTitle(data);
     surface.noteAgentOutput(data);
     surface.dirty.store(true, .release);
+    window_backend.postWakeup();
 }
