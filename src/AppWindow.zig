@@ -1245,7 +1245,7 @@ pub fn skillCenterImport() bool {
     return skillCenterOpenPicker(.import_);
 }
 
-/// Scan a chosen target and open the import list. Synchronous (UI thread).
+/// Scan a chosen target and open the import list — off the UI thread.
 fn skillCenterOpenImportList(allocator: std.mem.Allocator, target: skill_center.Target) void {
     const session = activeSkillCenter() orelse return;
     const conn = skillCenterTargetConn(target);
@@ -1253,22 +1253,27 @@ fn skillCenterOpenImportList(allocator: std.mem.Allocator, target: skill_center.
         overlays.showStatusToast(i18n.s().sc_toast_no_conn);
         return;
     }
-    var le = SkillLocExec{ .conn = conn };
     const root_expr = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch return;
-    defer allocator.free(root_expr);
-    var outcome = skill_scan.scanLocation(allocator, root_expr, le.host()) catch {
-        overlays.showStatusToast(i18n.s().sc_toast_no_conn);
+    // ownership of root_expr moves into the job on success
+    const tgt = target.clone(allocator) catch {
+        allocator.free(root_expr);
         return;
     };
-    defer outcome.deinit(allocator);
-    session.mutex.lock();
-    defer session.mutex.unlock();
-    const st = skillCenterMakeImportState(allocator, &session.model, outcome.rows, target) catch return;
-    session.model.setOverlay(.{ .import_list = st });
-    markUiDirty();
+    const job = allocator.create(SkillImportScanJob) catch {
+        allocator.free(root_expr);
+        var t = tgt;
+        t.deinit(allocator);
+        return;
+    };
+    job.* = .{ .target = tgt, .conn = conn, .root_expr = root_expr };
+    if (!session.startOp(.{ .ctx = job, .run = SkillImportScanJob.run, .destroy = SkillImportScanJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
+        SkillImportScanJob.destroy(@ptrCast(job), allocator);
+        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
+    }
 }
 
-/// Run a transfer synchronously (library ⇆ target), then rescan the library.
+/// Run a transfer (library ⇆ target) off the UI thread; result handled in
+/// pollSkillCenterOp.
 fn skillCenterRunTransfer(allocator: std.mem.Allocator, is_import: bool, target: skill_center.Target, name: []const u8) void {
     const session = activeSkillCenter() orelse return;
     const conn = skillCenterTargetConn(target);
@@ -1279,22 +1284,33 @@ fn skillCenterRunTransfer(allocator: std.mem.Allocator, is_import: bool, target:
     const lib_dir = skillCenterLibraryDir(allocator) orelse return;
     defer allocator.free(lib_dir);
     const lib_root = skill_transfer_cmd.absRootExpr(allocator, lib_dir) catch return;
-    defer allocator.free(lib_root);
-    const tgt_root = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch return;
-    defer allocator.free(tgt_root);
-    var ctx = SkillTransferCtx{ .conn = conn };
-    const lib_ep = skill_transfer.Endpoint{ .root_expr = lib_root, .is_local = true };
-    const tgt_ep = skill_transfer.Endpoint{ .root_expr = tgt_root, .is_local = target.is_local };
-    const from = if (is_import) tgt_ep else lib_ep;
-    const to = if (is_import) lib_ep else tgt_ep;
-    const r = skill_transfer.transfer(allocator, ctx.ops(), from, to, name);
-    if (r == .ok) {
-        overlays.showStatusToast(if (is_import) i18n.s().sc_toast_imported else i18n.s().sc_toast_synced);
-        startSkillCenterScan(allocator, session);
-    } else {
-        overlays.showStatusToast(i18n.s().sc_toast_sync_failed);
+    const tgt_root = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch {
+        allocator.free(lib_root);
+        return;
+    };
+    const name_dup = allocator.dupe(u8, name) catch {
+        allocator.free(lib_root);
+        allocator.free(tgt_root);
+        return;
+    };
+    const job = allocator.create(SkillTransferJob) catch {
+        allocator.free(lib_root);
+        allocator.free(tgt_root);
+        allocator.free(name_dup);
+        return;
+    };
+    job.* = .{
+        .is_import = is_import,
+        .conn = conn,
+        .lib_root = lib_root,
+        .tgt_root = tgt_root,
+        .tgt_is_local = target.is_local,
+        .name = name_dup,
+    };
+    if (!session.startOp(.{ .ctx = job, .run = SkillTransferJob.run, .destroy = SkillTransferJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
+        SkillTransferJob.destroy(@ptrCast(job), allocator);
+        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
     }
-    markUiDirty();
 }
 
 /// Arm an overwrite confirm overlay for a pending deploy/import.
@@ -1321,33 +1337,48 @@ fn skillCenterArmConfirm(allocator: std.mem.Allocator, is_import: bool, target: 
     markUiDirty();
 }
 
-/// Deploy: scan the target for the skill, decide noop/direct/confirm, act.
+/// Deploy: scan the target off the UI thread; the decision happens in
+/// pollSkillCenterOp once rows arrive.
 fn skillCenterDeployDecide(allocator: std.mem.Allocator, target: skill_center.Target, name: []const u8, src_hash: ?[]const u8) void {
+    const session = activeSkillCenter() orelse return;
     const conn = skillCenterTargetConn(target);
     if (!target.is_local and conn == null) {
         overlays.showStatusToast(i18n.s().sc_toast_no_conn);
         return;
     }
-    var le = SkillLocExec{ .conn = conn };
     const root_expr = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch return;
-    defer allocator.free(root_expr);
-    var outcome = skill_scan.scanLocation(allocator, root_expr, le.host()) catch {
-        overlays.showStatusToast(i18n.s().sc_toast_no_conn);
+    const tgt = target.clone(allocator) catch {
+        allocator.free(root_expr);
         return;
     };
-    defer outcome.deinit(allocator);
-    var present = false;
-    var target_hash: ?[]const u8 = null;
-    for (outcome.rows) |r| {
-        if (std.mem.eql(u8, r.name, name)) {
-            present = true;
-            target_hash = r.agg_hash;
-        }
+    const name_dup = allocator.dupe(u8, name) catch {
+        allocator.free(root_expr);
+        var t = tgt;
+        t.deinit(allocator);
+        return;
+    };
+    var hash_dup: ?[]u8 = null;
+    if (src_hash) |h| {
+        hash_dup = allocator.dupe(u8, h) catch {
+            allocator.free(root_expr);
+            var t = tgt;
+            t.deinit(allocator);
+            allocator.free(name_dup);
+            return;
+        };
     }
-    switch (skill_center.overwriteDecision(present, target_hash, src_hash)) {
-        .noop => overlays.showStatusToast(i18n.s().sc_toast_in_sync),
-        .direct => skillCenterRunTransfer(allocator, false, target, name),
-        .confirm => skillCenterArmConfirm(allocator, false, target, name),
+    const job = allocator.create(SkillDeployScanJob) catch {
+        allocator.free(root_expr);
+        var t = tgt;
+        t.deinit(allocator);
+        allocator.free(name_dup);
+        if (hash_dup) |h| allocator.free(h);
+        return;
+    };
+    job.* = .{ .target = tgt, .conn = conn, .root_expr = root_expr, .name = name_dup, .src_hash = hash_dup };
+    if (!session.startOp(.{ .ctx = job, .run = SkillDeployScanJob.run, .destroy = SkillDeployScanJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
+        SkillDeployScanJob.destroy(@ptrCast(job), allocator);
+        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
     }
 }
 
@@ -1815,6 +1846,117 @@ const SkillLibraryScanJob = struct {
     fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
         const job: *SkillLibraryScanJob = @ptrCast(@alignCast(ctx));
         allocator.free(job.root_expr);
+        allocator.destroy(job);
+    }
+};
+
+/// Background op: scan a target, return rows for the UI to build an import list.
+const SkillImportScanJob = struct {
+    target: skill_center.Target, // owned
+    conn: ?ssh_connection.SshConnection,
+    root_expr: []u8, // owned
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
+        const job: *SkillImportScanJob = @ptrCast(@alignCast(ctx));
+        var le = SkillLocExec{ .conn = job.conn };
+        var outcome = skill_scan.scanLocation(allocator, job.root_expr, le.host()) catch {
+            return .failed;
+        };
+        const tgt = job.target.clone(allocator) catch {
+            outcome.deinit(allocator);
+            return .failed;
+        };
+        // Hand the rows to the result; null them so destroy won't double-free.
+        const rows = outcome.rows;
+        outcome.rows = &.{};
+        return .{ .import_scan = .{ .target = tgt, .rows = rows } };
+    }
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *SkillImportScanJob = @ptrCast(@alignCast(ctx));
+        job.target.deinit(allocator);
+        allocator.free(job.root_expr);
+        allocator.destroy(job);
+    }
+};
+
+/// Background op: scan a target for deploy, return rows + the skill identity so
+/// the UI can decide noop/direct/confirm.
+const SkillDeployScanJob = struct {
+    target: skill_center.Target, // owned
+    conn: ?ssh_connection.SshConnection,
+    root_expr: []u8, // owned
+    name: []u8, // owned
+    src_hash: ?[]u8, // owned
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
+        const job: *SkillDeployScanJob = @ptrCast(@alignCast(ctx));
+        var le = SkillLocExec{ .conn = job.conn };
+        var outcome = skill_scan.scanLocation(allocator, job.root_expr, le.host()) catch {
+            return .failed;
+        };
+        const tgt = job.target.clone(allocator) catch {
+            outcome.deinit(allocator);
+            return .failed;
+        };
+        const name = allocator.dupe(u8, job.name) catch {
+            outcome.deinit(allocator);
+            var t = tgt;
+            t.deinit(allocator);
+            return .failed;
+        };
+        var src_hash: ?[]u8 = null;
+        if (job.src_hash) |h| {
+            src_hash = allocator.dupe(u8, h) catch {
+                outcome.deinit(allocator);
+                var t = tgt;
+                t.deinit(allocator);
+                allocator.free(name);
+                return .failed;
+            };
+        }
+        const rows = outcome.rows;
+        outcome.rows = &.{};
+        return .{ .deploy_scan = .{ .target = tgt, .name = name, .src_hash = src_hash, .rows = rows } };
+    }
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *SkillDeployScanJob = @ptrCast(@alignCast(ctx));
+        job.target.deinit(allocator);
+        allocator.free(job.root_expr);
+        allocator.free(job.name);
+        if (job.src_hash) |h| allocator.free(h);
+        allocator.destroy(job);
+    }
+};
+
+/// Background op: run a transfer (library ⇆ target), capturing a stderr summary.
+const SkillTransferJob = struct {
+    is_import: bool,
+    conn: ?ssh_connection.SshConnection,
+    lib_root: []u8, // owned
+    tgt_root: []u8, // owned
+    tgt_is_local: bool,
+    name: []u8, // owned
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
+        const job: *SkillTransferJob = @ptrCast(@alignCast(ctx));
+        var tctx = SkillTransferCtx{ .conn = job.conn };
+        const lib_ep = skill_transfer.Endpoint{ .root_expr = job.lib_root, .is_local = true };
+        const tgt_ep = skill_transfer.Endpoint{ .root_expr = job.tgt_root, .is_local = job.tgt_is_local };
+        const from = if (job.is_import) tgt_ep else lib_ep;
+        const to = if (job.is_import) lib_ep else tgt_ep;
+        const r = skill_transfer.transfer(allocator, tctx.ops(), from, to, job.name);
+        const ok = (r == .ok);
+        var summary: ?[]u8 = null;
+        if (!ok) {
+            if (tctx.lastErr()) |s| summary = allocator.dupe(u8, s) catch null;
+        }
+        return .{ .transfer = .{ .is_import = job.is_import, .ok = ok, .err_summary = summary } };
+    }
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *SkillTransferJob = @ptrCast(@alignCast(ctx));
+        allocator.free(job.lib_root);
+        allocator.free(job.tgt_root);
+        allocator.free(job.name);
         allocator.destroy(job);
     }
 };
@@ -3211,6 +3353,69 @@ fn pollSkillUpdate(app: *App) void {
         },
         .failed => overlays.showStatusToast("Skill update failed"),
     }
+}
+
+/// UI thread: consume a finished skill-center op result and apply it (open the
+/// import list, run the deploy decision, or show a transfer toast).
+fn pollSkillCenterOp(session: *skill_center.Session) void {
+    const allocator = g_allocator orelse return;
+    var result = session.takePendingOp() orelse return;
+    defer result.deinit(allocator);
+
+    switch (result) {
+        .failed => {
+            session.mutex.lock();
+            if (session.model.overlay == .busy) session.model.clearOverlay();
+            session.mutex.unlock();
+            overlays.showStatusToast(i18n.s().sc_toast_no_conn);
+        },
+        .import_scan => |*v| {
+            session.mutex.lock();
+            const st = skillCenterMakeImportState(allocator, &session.model, v.rows, v.target) catch {
+                session.model.clearOverlay();
+                session.mutex.unlock();
+                markUiDirty();
+                return;
+            };
+            session.model.setOverlay(.{ .import_list = st });
+            session.mutex.unlock();
+        },
+        .deploy_scan => |*v| {
+            var present = false;
+            var target_hash: ?[]const u8 = null;
+            for (v.rows) |r| {
+                if (std.mem.eql(u8, r.name, v.name)) {
+                    present = true;
+                    target_hash = r.agg_hash;
+                }
+            }
+            // Clear the busy overlay before acting.
+            session.mutex.lock();
+            if (session.model.overlay == .busy) session.model.clearOverlay();
+            session.mutex.unlock();
+            switch (skill_center.overwriteDecision(present, target_hash, v.src_hash)) {
+                .noop => overlays.showStatusToast(i18n.s().sc_toast_in_sync),
+                .direct => skillCenterRunTransfer(allocator, false, v.target, v.name),
+                .confirm => skillCenterArmConfirm(allocator, false, v.target, v.name),
+            }
+        },
+        .transfer => |*v| {
+            session.mutex.lock();
+            if (session.model.overlay == .busy) session.model.clearOverlay();
+            session.mutex.unlock();
+            if (v.ok) {
+                overlays.showStatusToast(if (v.is_import) i18n.s().sc_toast_imported else i18n.s().sc_toast_synced);
+                startSkillCenterScan(allocator, session);
+            } else if (v.err_summary) |s| {
+                var buf: [200]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "{s}{s}", .{ i18n.s().sc_toast_sync_failed_prefix, s }) catch i18n.s().sc_toast_sync_failed;
+                overlays.showStatusToast(msg);
+            } else {
+                overlays.showStatusToast(i18n.s().sc_toast_sync_failed);
+            }
+        },
+    }
+    markUiDirty();
 }
 
 /// Reload config from disk and apply theme/font/cursor/etc. (used after UI writes config).
@@ -5756,6 +5961,7 @@ fn runMainLoop(self: *AppWindow) !void {
         flushAgentHistoryStoreIfDirty(false);
         pollUpdateCheck(self.app);
         pollSkillUpdate(self.app);
+        if (activeSkillCenter()) |sc_session| pollSkillCenterOp(sc_session);
 
         // Process pending resize (coalesced, like Ghostty)
         // We wait for RESIZE_COALESCE_MS after last resize event before applying.
