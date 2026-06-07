@@ -2919,6 +2919,13 @@ pub fn syncFileExplorerAgentHistoryRows() void {
     file_explorer.syncAgentHistoryRows(&empty_store);
 }
 
+/// 解析本地文件浏览器的根目录：shell 的实时工作目录
+/// （OSC 7 → 进程 cwd 查询 → 启动目录）。调用方拥有返回的切片。
+/// 仅用于 POSIX——本地路径是原生路径，绝不能走 WSL guest 路径转换。
+fn localExplorerLiveCwd(surface: *const Surface, allocator: std.mem.Allocator) ?[]u8 {
+    return surface.dupeCurrentCwd(allocator);
+}
+
 fn syncFileExplorerToActiveTerminalSurface() void {
     const surface = activeSurface() orelse {
         file_explorer.syncPanelForTabKind(false);
@@ -2942,19 +2949,32 @@ fn syncFileExplorerToActiveTerminalSurface() void {
             file_explorer.syncPanelForTerminalTarget(.{ .wsl = surface.getCwd() orelse "~" });
         },
         .local => {
-            if (surface.getCwd()) |guest_path| {
-                var native_buf: platform_pty_command.CwdBuffer = undefined;
-                var utf8_buf: [260]u8 = undefined;
-                if (platform_wsl.guestPathToLocalPathUtf8(guest_path, &native_buf, &utf8_buf)) |local_path| {
-                    file_explorer.syncPanelForTerminalTarget(.{ .local = local_path });
+            if (comptime platform_pty_command.local_explorer_uses_live_cwd) {
+                // POSIX（含 macOS）：本地路径是原生路径，跟随 shell 实时 cwd，
+                // 不走 WSL 转换（后者在 macOS 上对普通 Unix 路径恒返回 null）。
+                const alloc = g_allocator orelse std.heap.page_allocator;
+                if (localExplorerLiveCwd(surface, alloc)) |cwd| {
+                    defer alloc.free(cwd);
+                    file_explorer.syncPanelForTerminalTarget(.{ .local = cwd });
+                } else {
+                    file_explorer.syncPanelForTabKind(false);
+                }
+            } else {
+                // Windows：本地 shell 的 cwd 可能是 WSL guest 路径，沿用既有转换。
+                if (surface.getCwd()) |guest_path| {
+                    var native_buf: platform_pty_command.CwdBuffer = undefined;
+                    var utf8_buf: [260]u8 = undefined;
+                    if (platform_wsl.guestPathToLocalPathUtf8(guest_path, &native_buf, &utf8_buf)) |local_path| {
+                        file_explorer.syncPanelForTerminalTarget(.{ .local = local_path });
+                        return;
+                    }
+                }
+                if (surface.getInitialCwd()) |initial_cwd| {
+                    file_explorer.syncPanelForTerminalTarget(.{ .local = initial_cwd });
                     return;
                 }
+                file_explorer.syncPanelForTabKind(false);
             }
-            if (surface.getInitialCwd()) |initial_cwd| {
-                file_explorer.syncPanelForTerminalTarget(.{ .local = initial_cwd });
-                return;
-            }
-            file_explorer.syncPanelForTabKind(false);
         },
     }
 }
@@ -6526,4 +6546,15 @@ test "appwindow: remote layout serializes ai_history as non-terminal surface" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"kind\":\"ai_chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"readOnly\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"surfaces\":[]") == null);
+}
+
+test "appwindow: localExplorerLiveCwd resolves the surface live cwd" {
+    var surface: Surface = undefined;
+    const live = "/Users/test/live";
+    @memcpy(surface.cwd_path[0..live.len], live);
+    surface.cwd_path_len = live.len;
+
+    const got = localExplorerLiveCwd(&surface, std.testing.allocator) orelse return error.NullCwd;
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings(live, got);
 }

@@ -17,6 +17,12 @@ pub fn backend() Backend {
     return backendForOs(builtin.os.tag);
 }
 
+/// 本地文件浏览器是否直接跟随 shell 的实时原生 cwd。
+/// POSIX（含 macOS）本地路径即原生路径，为 true；Windows 上本地 cwd 可能是
+/// WSL guest 路径、需要专门转换，故为 false。把 OS 判定收在平台层，避免
+/// AppWindow.zig 出现 OS 分支（见 test_main.zig 的源码守卫）。
+pub const local_explorer_uses_live_cwd: bool = backendForOs(builtin.os.tag) != .windows;
+
 const impl = switch (backendForOs(builtin.os.tag)) {
     .windows => @import("pty_command_windows.zig"),
     .unsupported => @import("pty_command_unsupported.zig"),
