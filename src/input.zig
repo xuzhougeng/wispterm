@@ -1832,6 +1832,10 @@ fn hitTestFileExplorerCloseButton(xpos: f64, ypos: f64) bool {
     return hit_test.panelHeaderCloseButton(fileExplorerHeaderLayout() orelse return false, xpos, ypos);
 }
 
+fn hitTestFileExplorerRefreshButton(xpos: f64, ypos: f64) bool {
+    return hit_test.panelHeaderSecondButton(fileExplorerHeaderLayout() orelse return false, xpos, ypos);
+}
+
 fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
     if (!markdown_preview_panel.isVisibleForActiveTab()) return false;
     if (ypos < titlebarHeight()) return false;
@@ -3205,6 +3209,12 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
             if (hitTestFileExplorerCloseButton(xpos, ypos)) {
                 closeFileExplorerPanel();
+                return;
+            }
+            if (file_explorer.g_panel_mode == .files and hitTestFileExplorerRefreshButton(xpos, ypos)) {
+                file_explorer.refresh();
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
                 return;
             }
             if (hitTestBrowserRefreshButton(xpos, ypos)) {

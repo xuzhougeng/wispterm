@@ -261,3 +261,22 @@ test "panelHeaderButton: third button hit-test works" {
     try std.testing.expect(panelHeaderButton(sample_panel, 2, 320, 50));
     try std.testing.expect(!panelHeaderButton(sample_panel, 2, 346, 50));
 }
+
+test "panelHeaderSecondButton: sits left of the close button and is hit-distinct" {
+    const layout: PanelHeaderLayout = .{
+        .visible = true,
+        .left = 0,
+        .right = 400,
+        .top = 30,
+        .height = 40, // y spans [30, 70)
+    };
+    const close_rect = panelCloseButtonRect(layout).?;
+    const second_rect = panelSecondButtonRect(layout).?;
+    // Second button is strictly to the left of the close button.
+    try std.testing.expect(second_rect.left + second_rect.width <= close_rect.left);
+    // A point inside the second button hits second, not close.
+    const cx = second_rect.left + second_rect.width / 2;
+    const cy = 50;
+    try std.testing.expect(panelHeaderSecondButton(layout, cx, cy));
+    try std.testing.expect(!panelHeaderCloseButton(layout, cx, cy));
+}

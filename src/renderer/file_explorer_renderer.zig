@@ -50,6 +50,17 @@ fn headerCloseRect(panel_x: f32, panel_w: f32) HeaderCloseRect {
     return .{ .x = @floatCast(rect.left), .w = @floatCast(rect.width) };
 }
 
+fn headerRefreshRect(panel_x: f32, panel_w: f32) HeaderCloseRect {
+    const rect = hit_test.panelSecondButtonRect(.{
+        .visible = true,
+        .left = panel_x,
+        .right = panel_x + panel_w,
+        .top = 0,
+        .height = 1,
+    }) orelse return .{ .x = panel_x + panel_w, .w = 0 };
+    return .{ .x = @floatCast(rect.left), .w = @floatCast(rect.width) };
+}
+
 fn renderHeaderCloseButton(
     titlebar_h: f32,
     header_y: f32,
@@ -74,6 +85,40 @@ fn renderHeaderCloseButton(
         ui_pipeline.fillQuad(close.x + 6, header_y + @round((header_h - 20) / 2), 20, 20, blend(palette.bg, palette.fg, 0.14));
     }
     titlebar.renderCloseIcon(close.x, header_y, close.w, header_h, if (hovered) palette.fg else palette.text_muted);
+}
+
+fn renderHeaderRefreshButton(
+    titlebar_h: f32,
+    header_y: f32,
+    header_h: f32,
+    panel_x: f32,
+    panel_w: f32,
+    palette: Palette,
+) void {
+    const r = headerRefreshRect(panel_x, panel_w);
+    if (r.w <= 0) return;
+    const hovered = blk: {
+        const win = AppWindow.g_window orelse break :blk false;
+        if (win.mouse_x < 0 or win.mouse_y < 0) break :blk false;
+        break :blk hit_test.panelHeaderSecondButton(.{
+            .visible = true,
+            .left = panel_x,
+            .right = panel_x + panel_w,
+            .top = titlebar_h,
+            .height = header_h,
+        }, @floatFromInt(win.mouse_x), @floatFromInt(win.mouse_y));
+    };
+    if (hovered) {
+        ui_pipeline.fillQuad(r.x + 6, header_y + @round((header_h - 20) / 2), 20, 20, blend(palette.bg, palette.fg, 0.14));
+    }
+    const glyph = if (hovered) palette.fg else palette.text_muted;
+    const cx = r.x + r.w / 2;
+    const cy = header_y + header_h / 2;
+    // Simple "refresh" glyph: an open square-arc drawn from 4 thin quads.
+    ui_pipeline.fillQuad(cx - 5, cy - 6, 8, 1.5, glyph);
+    ui_pipeline.fillQuad(cx + 3, cy - 6, 1.5, 6, glyph);
+    ui_pipeline.fillQuad(cx - 5, cy + 4.5, 8, 1.5, glyph);
+    ui_pipeline.fillQuad(cx - 6.5, cy - 1, 1.5, 6, glyph);
 }
 
 pub fn render(window_width: f32, window_height: f32, titlebar_h: f32) void {
@@ -166,8 +211,11 @@ fn renderFiles(
     const mode_color = if (file_explorer.g_mode == .local) header_text else accent;
     const header_text_y = header_y + (header_h - font.g_titlebar_cell_height) / 2;
     const close = headerCloseRect(panel_x, explorer_w);
-    const label_end = titlebar.renderTextLimited(mode_label, panel_x + 12, header_text_y, mode_color, @max(1.0, close.x - panel_x - 20));
-    _ = titlebar.renderTextLimited(" Explorer", label_end, header_text_y, header_text, @max(1.0, close.x - label_end - 8));
+    const refresh_rect = headerRefreshRect(panel_x, explorer_w);
+    const text_limit_x = if (refresh_rect.w > 0) refresh_rect.x else close.x;
+    const label_end = titlebar.renderTextLimited(mode_label, panel_x + 12, header_text_y, mode_color, @max(1.0, text_limit_x - panel_x - 20));
+    _ = titlebar.renderTextLimited(" Explorer", label_end, header_text_y, header_text, @max(1.0, text_limit_x - label_end - 8));
+    renderHeaderRefreshButton(titlebar_h, header_y, header_h, panel_x, explorer_w, palette);
     renderHeaderCloseButton(titlebar_h, header_y, header_h, panel_x, explorer_w, palette);
     ui_pipeline.fillQuad(panel_x, header_y, explorer_w, 1, border_color);
 
