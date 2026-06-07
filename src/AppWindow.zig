@@ -57,6 +57,7 @@ const ssh_connection = @import("ssh_connection.zig");
 const skill_transfer = @import("skill_transfer.zig");
 const skill_diff = @import("skill_diff.zig");
 const scp = @import("scp.zig");
+const ssh_error = @import("ssh_error.zig");
 const i18n = @import("i18n.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
@@ -1076,8 +1077,22 @@ fn skillCenterTargetConn(target: skill_center.Target) ?ssh_connection.SshConnect
 }
 
 /// Adapts skill_transfer.Ops onto local/ssh/scp. conn null → a local-only target.
+/// `err_buf`/`err_len` capture the last ssh error summary for the UI toast.
 const SkillTransferCtx = struct {
     conn: ?ssh_connection.SshConnection,
+    // Sized off ssh_error.MAX (+ margin) so a summary never gets re-truncated here.
+    err_buf: [ssh_error.MAX + 40]u8 = undefined,
+    err_len: usize = 0,
+
+    fn noteErr(self: *SkillTransferCtx, msg: []const u8) void {
+        const n = @min(msg.len, self.err_buf.len);
+        @memcpy(self.err_buf[0..n], msg[0..n]);
+        self.err_len = n;
+    }
+    fn lastErr(self: *const SkillTransferCtx) ?[]const u8 {
+        return if (self.err_len > 0) self.err_buf[0..self.err_len] else null;
+    }
+
     fn localExec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) bool {
         _ = ctx;
         return remote_file.localPosixExecOk(allocator, command);
@@ -1085,8 +1100,13 @@ const SkillTransferCtx = struct {
     fn remoteExec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) bool {
         const self: *SkillTransferCtx = @ptrCast(@alignCast(ctx));
         const c = self.conn orelse return false;
-        const out = remote_file.sshExecCapture(allocator, c, command) catch return false;
-        allocator.free(out);
+        // stdout is discarded; remoteExec only cares about exit status + stderr.
+        var cap = remote_file.sshExecCaptureFull(allocator, c, command) catch return false;
+        defer cap.deinit(allocator);
+        if (!cap.exited_ok) {
+            if (ssh_error.summarize(cap.stderr)) |s| self.noteErr(s);
+            return false;
+        }
         return true;
     }
     fn copy(ctx: *anyopaque, allocator: std.mem.Allocator, dir: skill_transfer.CopyDir, local_tmp: []const u8, remote_tmp: []const u8) bool {
@@ -1098,7 +1118,7 @@ const SkillTransferCtx = struct {
             .to_remote => scp.transfer(allocator, &c, local_tmp, spec),
             .to_local => scp.transfer(allocator, &c, spec, local_tmp),
         };
-        return r == .ok;
+        return r == .ok; // scp summary is best-effort; leave err_buf empty → generic toast
     }
     fn ops(self: *SkillTransferCtx) skill_transfer.Ops {
         return .{ .ctx = self, .localExec = localExec, .remoteExec = remoteExec, .copy = copy };
