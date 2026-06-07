@@ -1196,6 +1196,11 @@ pub const Window = struct {
         _ = DestroyWindow(self.hwnd);
     }
 
+    pub fn isVisible(self: *Window) bool {
+        _ = self;
+        return true;
+    }
+
     pub fn swapBuffers(self: *Window) void {
         _ = SwapBuffers(self.hdc);
     }

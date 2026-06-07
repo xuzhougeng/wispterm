@@ -1063,6 +1063,23 @@ void *wispterm_macos_window_ns_window(void *handle) {
     return (void *)state->window;
 }
 
+// True iff the window is on-screen (not occluded) and not miniaturized.
+bool wispterm_macos_window_visible(void *handle) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL || state->window == NULL) return true;
+    NSWindowOcclusionState occ = [state->window occlusionState];
+    bool visible = (occ & NSWindowOcclusionStateVisible) != 0;
+    bool miniaturized = [state->window isMiniaturized];
+    return visible && !miniaturized;
+}
+
+// True iff the window is the key window (has keyboard focus).
+bool wispterm_macos_window_is_key(void *handle) {
+    WispTermMacWindowState *state = wispterm_macos_state(handle);
+    if (state == NULL || state->window == NULL) return true;
+    return [state->window isKeyWindow] ? true : false;
+}
+
 void wispterm_macos_window_poll(void *handle) {
     @autoreleasepool {
         WispTermMacWindowState *state = wispterm_macos_state(handle);

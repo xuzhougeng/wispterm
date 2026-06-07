@@ -118,6 +118,8 @@ extern fn wispterm_macos_window_create(
 extern fn wispterm_macos_window_destroy(handle: NativeHandle) void;
 extern fn wispterm_macos_window_poll(handle: NativeHandle) void;
 extern fn wispterm_macos_window_close_requested(handle: NativeHandle) bool;
+extern fn wispterm_macos_window_visible(handle: NativeHandle) bool;
+extern fn wispterm_macos_window_is_key(handle: NativeHandle) bool;
 extern fn wispterm_macos_window_get_framebuffer_size(handle: NativeHandle, width: *i32, height: *i32, dpi: *u32) void;
 extern fn wispterm_macos_window_set_content_size(handle: NativeHandle, width: i32, height: i32) void;
 extern fn wispterm_macos_window_metal_layer(handle: NativeHandle) ?*anyopaque;
@@ -218,8 +220,13 @@ pub const Window = struct {
         self.drainFileDropEvents();
         self.drainInputEvents();
         self.refreshGeometry();
+        self.focused = wispterm_macos_window_is_key(self.hwnd);
         self.close_requested = self.close_requested or wispterm_macos_window_close_requested(self.hwnd);
         return !self.close_requested;
+    }
+
+    pub fn isVisible(self: *Window) bool {
+        return wispterm_macos_window_visible(self.hwnd);
     }
 
     pub fn swapBuffers(self: *Window) void {

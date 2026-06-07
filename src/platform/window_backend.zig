@@ -327,6 +327,10 @@ pub fn isFocused(window: *const Window) bool {
     return window.focused;
 }
 
+pub fn isVisible(window: *Window) bool {
+    return window.isVisible();
+}
+
 pub fn isMinimized(window: *const Window) bool {
     return window.is_minimized;
 }

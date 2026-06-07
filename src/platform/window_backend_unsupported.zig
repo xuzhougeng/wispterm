@@ -72,6 +72,11 @@ pub const Window = struct {
         return !self.close_requested;
     }
 
+    pub fn isVisible(self: *Window) bool {
+        _ = self;
+        return true;
+    }
+
     pub fn swapBuffers(self: *Window) void {
         _ = self;
     }
