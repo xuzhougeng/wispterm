@@ -3362,17 +3362,15 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
     var result = session.takePendingOp() orelse return;
     defer result.deinit(allocator);
 
+    // The "Syncing…" indicator lives in session.status (set by startOp, cleared
+    // by the op worker on finish), so the UI thread here only applies results.
     switch (result) {
         .failed => {
-            session.mutex.lock();
-            if (session.model.overlay == .busy) session.model.clearOverlay();
-            session.mutex.unlock();
             overlays.showStatusToast(i18n.s().sc_toast_no_conn);
         },
         .import_scan => |*v| {
             session.mutex.lock();
             const st = skillCenterMakeImportState(allocator, &session.model, v.rows, v.target) catch {
-                session.model.clearOverlay();
                 session.mutex.unlock();
                 markUiDirty();
                 return;
@@ -3389,10 +3387,6 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
                     target_hash = r.agg_hash;
                 }
             }
-            // Clear the busy overlay before acting.
-            session.mutex.lock();
-            if (session.model.overlay == .busy) session.model.clearOverlay();
-            session.mutex.unlock();
             switch (skill_center.overwriteDecision(present, target_hash, v.src_hash)) {
                 .noop => overlays.showStatusToast(i18n.s().sc_toast_in_sync),
                 .direct => skillCenterRunTransfer(allocator, false, v.target, v.name),
@@ -3400,9 +3394,6 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
             }
         },
         .transfer => |*v| {
-            session.mutex.lock();
-            if (session.model.overlay == .busy) session.model.clearOverlay();
-            session.mutex.unlock();
             if (v.ok) {
                 overlays.showStatusToast(if (v.is_import) i18n.s().sc_toast_imported else i18n.s().sc_toast_synced);
                 startSkillCenterScan(allocator, session);

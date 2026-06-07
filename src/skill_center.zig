@@ -393,8 +393,10 @@ pub const Session = struct {
         }
     }
 
-    /// Start a background op. Returns false if an op is already in flight (the
-    /// caller still owns `work` and is responsible for calling its destroy).
+    /// Start a background op. On ANY false return (busy, or spawn failure) the
+    /// caller still owns `work` and is responsible for calling its destroy — we
+    /// never destroy it here, so the caller's destroy is the single owner.
+    /// Shows `busy_msg` as the visible panel status while the op runs.
     /// UI thread only.
     pub fn startOp(self: *Session, work: OpWork, wake: *const fn () void, busy_msg: []const u8) bool {
         if (self.op_thread != null and !self.op_done.load(.acquire)) {
@@ -408,14 +410,15 @@ pub const Session = struct {
         self.op_done.store(false, .release);
 
         self.mutex.lock();
-        const msg = self.allocator.dupe(u8, busy_msg) catch null;
-        if (msg) |m| self.model.setOverlay(.{ .busy = m });
+        self.setStatusLocked(busy_msg); // visible "Syncing…" in the panel header
         self.mutex.unlock();
 
         const thread = std.Thread.spawn(.{}, opThreadMain, .{ self, work }) catch {
             self.op_done.store(true, .release);
-            work.destroy(work.ctx, self.allocator);
-            return false;
+            self.mutex.lock();
+            self.setStatusLocked(""); // the op never started; clear the busy status
+            self.mutex.unlock();
+            return false; // caller owns `work` and will destroy it (no double-free)
         };
         self.op_thread = thread;
         return true;
@@ -460,6 +463,7 @@ fn opThreadMain(session: *Session, work: OpWork) void {
     } else {
         if (session.op_pending) |*p| p.deinit(session.allocator); // discard stale (shouldn't happen)
         session.op_pending = result;
+        session.setStatusLocked(""); // op finished — clear the "Syncing…" status
         session.mutex.unlock();
     }
     // op_done stays unconditional so destroy/startOp see the thread as finished.
