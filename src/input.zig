@@ -1478,7 +1478,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         return;
     }
 
-    // Skill Center: ↑/↓ move, ⏎ preview/select, esc cancel overlay, d deploy, i import, r rescan.
+    // Skill Center: ↑/↓ move, space preview, ⏎ confirm (deploy in library), esc cancel, d deploy, i import, r rescan.
     if (AppWindow.activeSkillCenter() != null) {
         const plain = !ev.ctrl and !ev.alt and !ev.super;
         switch (ev.key_code) {
@@ -1494,7 +1494,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 if (AppWindow.skillCenterOverlayActive()) {
                     _ = AppWindow.skillCenterOverlaySelect();
                 } else {
-                    _ = AppWindow.skillCenterPreviewSelected();
+                    _ = AppWindow.skillCenterDeploy();
                 }
                 return;
             },
@@ -1514,7 +1514,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 _ = AppWindow.skillCenterImport();
                 return;
             },
-            0x20 => if (plain and !ev.shift) {
+            platform_input.key_space => if (plain and !ev.shift) {
                 _ = AppWindow.skillCenterSpacePreview();
                 return;
             },

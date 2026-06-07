@@ -4,6 +4,7 @@ pub const KeyCode = usize;
 
 pub const key_backspace: KeyCode = 0x08;
 pub const key_tab: KeyCode = 0x09;
+pub const key_space: KeyCode = 0x20;
 pub const key_enter: KeyCode = 0x0D;
 pub const key_shift: KeyCode = 0x10;
 pub const key_control: KeyCode = 0x11;
