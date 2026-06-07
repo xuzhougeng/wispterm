@@ -18,6 +18,7 @@ pub const key_left: KeyCode = 0x25;
 pub const key_up: KeyCode = 0x26;
 pub const key_right: KeyCode = 0x27;
 pub const key_down: KeyCode = 0x28;
+pub const key_f5: KeyCode = 0x74;
 pub const key_insert: KeyCode = 0x2D;
 pub const key_delete: KeyCode = 0x2E;
 pub const key_left_shift: KeyCode = 0xA0;
