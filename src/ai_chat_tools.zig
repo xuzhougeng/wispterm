@@ -216,6 +216,9 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const url = jsonStringArg(args.value, "url") orelse return ctx.allocator.dupe(u8, "Missing url");
         return webReadTool(ctx.allocator, url, ctx.settings.working_dir);
     }
+    if (std.mem.startsWith(u8, call.name, "memory_") and !ctx.settings.memory_enabled) {
+        return ctx.allocator.dupe(u8, "Memory is disabled (ai-memory-enabled = false).");
+    }
     if (std.mem.eql(u8, call.name, "memory_save")) {
         const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
@@ -3712,7 +3715,7 @@ test "executeToolCall handles memory_save and memory_recall" {
         .ctx = &dummy,
         .tool_host = null,
         .tool_snapshot = null,
-        .settings = .{},
+        .settings = .{ .memory_enabled = true },
         .approve = fakeApprove,
         .cancelled = fakeCancelled,
     };
@@ -3731,4 +3734,25 @@ test "executeToolCall handles memory_save and memory_recall" {
     });
     defer a.free(recall);
     try std.testing.expect(std.mem.indexOf(u8, recall, "b1") != null);
+}
+
+test "executeToolCall reports memory disabled when ai-memory-enabled is off" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{}, // memory_enabled defaults to false
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("1"),
+        .name = @constCast("memory_save"),
+        .arguments = @constCast("{\"tier\":\"global\",\"name\":\"t1\",\"description\":\"d1\",\"body\":\"b1\"}"),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "disabled") != null);
 }

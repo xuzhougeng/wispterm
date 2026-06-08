@@ -145,6 +145,22 @@ test "slugify falls back to mem-date-hash for non-ASCII text" {
     try std.testing.expect(std.mem.startsWith(u8, s, "mem-2026-06-08-"));
 }
 
+/// Truncate `s` to at most `max_bytes`, backing up off any UTF-8 continuation
+/// byte so a multi-byte character is never split. Returns a sub-slice of `s`.
+pub fn truncateUtf8(s: []const u8, max_bytes: usize) []const u8 {
+    if (s.len <= max_bytes) return s;
+    var end = max_bytes;
+    while (end > 0 and (s[end] & 0xc0) == 0x80) end -= 1;
+    return s[0..end];
+}
+
+test "truncateUtf8 does not split a multibyte character" {
+    const s = "用户AB"; // 用(3) 户(3) A(1) B(1) = 8 bytes
+    try std.testing.expectEqualStrings("用", truncateUtf8(s, 4));
+    try std.testing.expectEqualStrings("用户", truncateUtf8(s, 6));
+    try std.testing.expectEqualStrings("用户AB", truncateUtf8(s, 100));
+}
+
 // --- Task 3: projectKey ---
 
 /// Filesystem-safe, human-readable key for a working directory path:
@@ -239,16 +255,29 @@ pub fn parseEntry(allocator: std.mem.Allocator, bytes: []const u8) (ParseError |
     const body_start = @min(consumed, bytes.len);
     const body = std.mem.trim(u8, bytes[body_start..], " \t\r\n");
 
-    var out = Entry{
-        .name = try allocator.dupe(u8, name),
-        .description = try allocator.dupe(u8, description),
+    // Allocate each field with its own errdefer, then build the struct. A
+    // multi-`try` struct literal followed by `errdefer out.deinit()` would leak
+    // earlier fields if a later dupe failed (the binding isn't established yet,
+    // so the errdefer never fires). On a successful `return` the errdefers do
+    // not fire, transferring ownership to the caller.
+    const name_d = try allocator.dupe(u8, name);
+    errdefer allocator.free(name_d);
+    const description_d = try allocator.dupe(u8, description);
+    errdefer allocator.free(description_d);
+    const created_d = try allocator.dupe(u8, created);
+    errdefer allocator.free(created_d);
+    const updated_d = try allocator.dupe(u8, updated);
+    errdefer allocator.free(updated_d);
+    const body_d = try allocator.dupe(u8, body);
+    errdefer allocator.free(body_d);
+    return Entry{
+        .name = name_d,
+        .description = description_d,
         .type_ = type_,
-        .created = try allocator.dupe(u8, created),
-        .updated = try allocator.dupe(u8, updated),
-        .body = try allocator.dupe(u8, body),
+        .created = created_d,
+        .updated = updated_d,
+        .body = body_d,
     };
-    errdefer out.deinit(allocator);
-    return out;
 }
 
 test "serializeEntry then parseEntry round-trips" {
@@ -341,7 +370,7 @@ fn appendLines(
     dropped: *usize,
 ) !void {
     for (lines) |l| {
-        const cost = l.name.len + l.description.len + 6; // "- " + ": " + "\n"
+        const cost = l.name.len + l.description.len + 6; // "- "(2)+": "(2)+"\n"(1)=5, +1 slack
         if (cost > budget_left.*) {
             dropped.* += 1;
             continue;
@@ -463,6 +492,31 @@ pub fn saveEntryToDir(allocator: std.mem.Allocator, dir_path: []const u8, entry:
     try rewriteIndex(allocator, dir_path);
 }
 
+/// Return a slug whose `<slug>.md` does not already exist in `dir_path`:
+/// `base`, else `base-2`, `base-3`, … Lets `/remember` quick-captures avoid
+/// silently overwriting a different memory that slugified to the same base.
+/// Caller frees the returned slug.
+pub fn uniqueSlugInDir(allocator: std.mem.Allocator, dir_path: []const u8, base: []const u8) ![]u8 {
+    var n: usize = 2;
+    var candidate = try allocator.dupe(u8, base);
+    errdefer allocator.free(candidate);
+    while (true) {
+        const file_name = try entryFileName(allocator, candidate);
+        defer allocator.free(file_name);
+        const path = try std.fs.path.join(allocator, &.{ dir_path, file_name });
+        defer allocator.free(path);
+        const exists = blk: {
+            std.fs.cwd().access(path, .{}) catch break :blk false;
+            break :blk true;
+        };
+        if (!exists) return candidate;
+        const next = try std.fmt.allocPrint(allocator, "{s}-{d}", .{ base, n });
+        allocator.free(candidate);
+        candidate = next;
+        n += 1;
+    }
+}
+
 /// Delete `<dir_path>/<name>.md` and refresh MEMORY.md. Returns whether it existed.
 pub fn deleteEntryFromDir(allocator: std.mem.Allocator, dir_path: []const u8, name: []const u8) !bool {
     const file_name = try entryFileName(allocator, name);
@@ -545,6 +599,33 @@ test "loadDirEntries skips malformed files and the index file" {
     try std.testing.expectEqual(@as(usize, 0), loaded.len);
 }
 
+test "uniqueSlugInDir avoids overwriting an existing entry" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+
+    const s1 = try uniqueSlugInDir(a, root, "note");
+    defer a.free(s1);
+    try std.testing.expectEqualStrings("note", s1);
+
+    var e = Entry{
+        .name = try a.dupe(u8, "note"),
+        .description = try a.dupe(u8, "d"),
+        .type_ = .user,
+        .created = try a.dupe(u8, "2026-06-08"),
+        .updated = try a.dupe(u8, "2026-06-08"),
+        .body = try a.dupe(u8, "b"),
+    };
+    defer e.deinit(a);
+    try saveEntryToDir(a, root, e);
+
+    const s2 = try uniqueSlugInDir(a, root, "note");
+    defer a.free(s2);
+    try std.testing.expectEqualStrings("note-2", s2);
+}
+
 // --- Task 7: Orchestration layer ---
 
 fn dirForTier(allocator: std.mem.Allocator, tier: Tier, working_dir: ?[]const u8) !?[]u8 {
@@ -596,18 +677,26 @@ pub fn saveMemory(
         }
     }
 
-    var entry = Entry{
-        .name = try allocator.dupe(u8, name),
-        .description = try allocator.dupe(u8, description),
-        .type_ = type_,
-        .created = if (created_owned) |c| try allocator.dupe(u8, c) else try allocator.dupe(u8, today),
-        .updated = try allocator.dupe(u8, today),
-        .body = try allocator.dupe(u8, body),
-    };
-    defer entry.deinit(allocator);
+    // Per-field errdefer (not a multi-`try` literal + post-literal errdefer,
+    // which would leak earlier fields on a mid-literal failure). The error
+    // path frees via the errdefers; the success path frees via entry.deinit
+    // after the entry has been consumed — never both, so no double free.
+    const name_d = try allocator.dupe(u8, name);
+    errdefer allocator.free(name_d);
+    const description_d = try allocator.dupe(u8, description);
+    errdefer allocator.free(description_d);
+    const created_d = if (created_owned) |c| try allocator.dupe(u8, c) else try allocator.dupe(u8, today);
+    errdefer allocator.free(created_d);
+    const updated_d = try allocator.dupe(u8, today);
+    errdefer allocator.free(updated_d);
+    const body_d = try allocator.dupe(u8, body);
+    errdefer allocator.free(body_d);
+    var entry = Entry{ .name = name_d, .description = description_d, .type_ = type_, .created = created_d, .updated = updated_d, .body = body_d };
 
     try saveEntryToDir(allocator, dir.?, entry);
-    return std.fmt.allocPrint(allocator, "Saved memory '{s}' to {s} tier.", .{ name, @tagName(effective) });
+    const msg = try std.fmt.allocPrint(allocator, "Saved memory '{s}' to {s} tier.", .{ name, @tagName(effective) });
+    entry.deinit(allocator);
+    return msg;
 }
 
 /// Full text of a memory: project tier first, then global. Caller frees.

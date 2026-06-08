@@ -1954,71 +1954,62 @@ pub const Session = struct {
         self.setStatusLocked("Ready");
     }
 
+    /// Append a memory-command result line and return the composer to Ready.
+    fn emitMemoryResultLocked(self: *Session, msg: []const u8) void {
+        self.appendLocalToolMessageLocked(msg) catch {};
+        self.clearSubmittedInputLocked();
+        self.setStatusLocked("Ready");
+    }
+
+    /// When the memory system is disabled, emit a notice and report true so the
+    /// command stops. Honors the `ai-memory-enabled` config switch.
+    fn memoryDisabledLocked(self: *Session) bool {
+        if (currentAgentSettings().memory_enabled) return false;
+        self.emitMemoryResultLocked("Memory is disabled. Set ai-memory-enabled = true in the config to use it.");
+        return true;
+    }
+
     fn applyRememberLocked(self: *Session, arg: []const u8) void {
+        if (self.memoryDisabledLocked()) return;
         const text = std.mem.trim(u8, arg, " \t\r\n");
-        if (text.len == 0) {
-            self.appendLocalToolMessageLocked("Usage: /remember <fact>") catch {};
-            self.clearSubmittedInputLocked();
-            self.setStatusLocked("Ready");
-            return;
-        }
+        if (text.len == 0) return self.emitMemoryResultLocked("Usage: /remember <fact>");
         const wd = self.effectiveWorkingDirLocked();
         const tier: agent_memory.Tier = if (wd != null and wd.?.len > 0) .project else .global;
         var date_buf: [10]u8 = undefined;
         const today = agent_memory.todayDate(&date_buf);
-        const slug = agent_memory.slugify(self.allocator, text, today) catch {
-            self.appendLocalToolMessageLocked("Could not save memory.") catch {};
-            self.clearSubmittedInputLocked();
-            self.setStatusLocked("Ready");
-            return;
-        };
+        const base_slug = agent_memory.slugify(self.allocator, text, today) catch return self.emitMemoryResultLocked("Could not save memory.");
+        defer self.allocator.free(base_slug);
+        // Resolve a non-colliding slug in the target tier so /remember never
+        // silently overwrites a different fact that slugified to the same base.
+        const dir = (switch (tier) {
+            .global => agent_memory.globalDir(self.allocator),
+            .project => agent_memory.projectDir(self.allocator, wd.?),
+        }) catch return self.emitMemoryResultLocked("Could not save memory.");
+        defer self.allocator.free(dir);
+        const slug = agent_memory.uniqueSlugInDir(self.allocator, dir, base_slug) catch return self.emitMemoryResultLocked("Could not save memory.");
         defer self.allocator.free(slug);
-        const desc = if (text.len > 80) text[0..80] else text;
-        const msg = agent_memory.saveMemory(self.allocator, tier, wd, slug, desc, .user, text) catch {
-            self.appendLocalToolMessageLocked("Could not save memory.") catch {};
-            self.clearSubmittedInputLocked();
-            self.setStatusLocked("Ready");
-            return;
-        };
+        const desc = agent_memory.truncateUtf8(text, 80);
+        const msg = agent_memory.saveMemory(self.allocator, tier, wd, slug, desc, .user, text) catch return self.emitMemoryResultLocked("Could not save memory.");
         defer self.allocator.free(msg);
-        self.appendLocalToolMessageLocked(msg) catch {};
-        self.clearSubmittedInputLocked();
-        self.setStatusLocked("Ready");
+        self.emitMemoryResultLocked(msg);
     }
 
     fn applyMemoryListLocked(self: *Session) void {
+        if (self.memoryDisabledLocked()) return;
         const wd = self.effectiveWorkingDirLocked() orelse "";
-        const msg = agent_memory.listForDisplay(self.allocator, wd) catch {
-            self.appendLocalToolMessageLocked("Could not list memories.") catch {};
-            self.clearSubmittedInputLocked();
-            self.setStatusLocked("Ready");
-            return;
-        };
+        const msg = agent_memory.listForDisplay(self.allocator, wd) catch return self.emitMemoryResultLocked("Could not list memories.");
         defer self.allocator.free(msg);
-        self.appendLocalToolMessageLocked(msg) catch {};
-        self.clearSubmittedInputLocked();
-        self.setStatusLocked("Ready");
+        self.emitMemoryResultLocked(msg);
     }
 
     fn applyForgetLocked(self: *Session, arg: []const u8) void {
+        if (self.memoryDisabledLocked()) return;
         const name = std.mem.trim(u8, arg, " \t\r\n");
-        if (name.len == 0) {
-            self.appendLocalToolMessageLocked("Usage: /forget <name>") catch {};
-            self.clearSubmittedInputLocked();
-            self.setStatusLocked("Ready");
-            return;
-        }
+        if (name.len == 0) return self.emitMemoryResultLocked("Usage: /forget <name>");
         const wd = self.effectiveWorkingDirLocked() orelse "";
-        const msg = agent_memory.deleteMemory(self.allocator, wd, name, null) catch {
-            self.appendLocalToolMessageLocked("Could not delete memory.") catch {};
-            self.clearSubmittedInputLocked();
-            self.setStatusLocked("Ready");
-            return;
-        };
+        const msg = agent_memory.deleteMemory(self.allocator, wd, name, null) catch return self.emitMemoryResultLocked("Could not delete memory.");
         defer self.allocator.free(msg);
-        self.appendLocalToolMessageLocked(msg) catch {};
-        self.clearSubmittedInputLocked();
-        self.setStatusLocked("Ready");
+        self.emitMemoryResultLocked(msg);
     }
 
     /// Runs a built-in slash command's side-effects and appends its output as a
