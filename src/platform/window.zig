@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 pub const Backend = enum {
     windows,
     macos,
+    linux,
     unsupported,
 };
 
@@ -11,6 +12,7 @@ pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
     return switch (os_tag) {
         .windows => .windows,
         .macos => .macos,
+        .linux => .linux,
         else => .unsupported,
     };
 }
@@ -18,6 +20,7 @@ pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
 const impl = switch (backendForOs(builtin.os.tag)) {
     .windows => @import("window_windows.zig"),
     .macos => @import("window_macos.zig"),
+    .linux => @import("window_linux.zig"),
     .unsupported => @import("window_unsupported.zig"),
 };
 
@@ -147,6 +150,6 @@ test "platform window exposes message and dpi helpers" {
 
 test "platform window selects backend by target OS" {
     try std.testing.expectEqual(Backend.windows, backendForOs(.windows));
-    try std.testing.expectEqual(Backend.unsupported, backendForOs(.linux));
+    try std.testing.expectEqual(Backend.linux, backendForOs(.linux));
     try std.testing.expectEqual(Backend.macos, backendForOs(.macos));
 }

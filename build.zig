@@ -998,6 +998,13 @@ fn createAppModuleWithRoot(
         if (b.lazyDependency("sdl", .{})) |dep| {
             app_mod.addImport("sdl", dep.module("sdl"));
         }
+        // Linux uses OpenGL via SDL3 (no separate opengl32 system library).
+        // We still need the glad include path and the glad C source.
+        app_mod.addIncludePath(b.path("vendor/glad/include"));
+        app_mod.addCSourceFile(.{
+            .file = b.path("vendor/glad/src/gl.c"),
+            .flags = &.{},
+        });
     }
 
     if (platform.supports_app_bundle) {
