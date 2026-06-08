@@ -115,6 +115,8 @@ test {
     // Pure login-shell argv logic (macOS bash/.bashrc fix). OS-agnostic, so it
     // runs here on the native host rather than in the POSIX-only exec path.
     _ = @import("platform/login_shell.zig");
+    // Pure OS/2 weight → fontconfig FC_WEIGHT_* mapping; std-only, no fontconfig dep.
+    _ = @import("platform/font_weight_fc.zig");
     // Generic POSIX SSH/WSL command builder: asserts native (non-Windows)
     // command-line shapes, so it runs here rather than in test-full's Windows
     // cross-compile path. (The Windows backend stays in test-full.)
