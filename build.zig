@@ -126,6 +126,19 @@ fn appFrameworksFor(features: PlatformFeatures) []const []const u8 {
     return features.app_frameworks;
 }
 
+/// Resolve a pkg-config variable (e.g. "libdir", "includedir") for a system
+/// library at configure time, so build paths are not hardcoded per distro.
+/// Returns null when pkg-config or the variable is unavailable.
+fn pkgConfigVariable(b: *std.Build, lib: []const u8, variable: []const u8) ?[]const u8 {
+    const result = std.process.Child.run(.{
+        .allocator = b.allocator,
+        .argv = &.{ "pkg-config", b.fmt("--variable={s}", .{variable}), lib },
+    }) catch return null;
+    if (result.term != .Exited or result.term.Exited != 0) return null;
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    return if (trimmed.len == 0) null else b.dupe(trimmed);
+}
+
 fn macosBundleMetadata() MacosBundleMetadata {
     return .{
         .bundle_dir = "WispTerm.app",
@@ -1010,11 +1023,13 @@ fn createAppModuleWithRoot(
         if (b.lazyDependency("fontconfig", .{ .target = target })) |dep| {
             app_mod.addImport("fontconfig", dep.module("fontconfig"));
         }
-        // Debian/Ubuntu multiarch paths: fontconfig/freetype headers live under
-        // /usr/include (not exported by pkg-config cflags on these systems) and
-        // libraries live under /usr/lib/x86_64-linux-gnu (not /usr/local/lib).
-        app_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-        app_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        // libfontconfig lives in the system libdir; pkg-config does not emit it
+        // as a -L (it is a default search path for the system compiler, but Zig
+        // does not assume host paths). Discover it via pkg-config so we avoid a
+        // hardcoded, distro-specific multiarch path.
+        if (pkgConfigVariable(b, "fontconfig", "libdir")) |libdir| {
+            app_mod.addLibraryPath(.{ .cwd_relative = libdir });
+        }
     }
 
     if (platform.supports_app_bundle) {
