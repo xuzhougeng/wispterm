@@ -109,6 +109,8 @@ test {
     _ = @import("jupyter_detect.zig");
     _ = @import("jupyter_picker.zig");
     _ = @import("html_server_model.zig");
+    // Platform-aware agent prompt: pure string constants, no heavy deps.
+    _ = @import("platform/agent_prompt.zig");
     // Pure login-shell argv logic (macOS bash/.bashrc fix). OS-agnostic, so it
     // runs here on the native host rather than in the POSIX-only exec path.
     _ = @import("platform/login_shell.zig");
