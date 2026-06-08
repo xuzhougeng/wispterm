@@ -985,26 +985,27 @@ fn createAppModuleWithRoot(
         }
     }
 
-    if (platform.opengl_system_library) |library| {
+    // OpenGL backend (Windows + Linux): the glad loader needs its include path
+    // and C source compiled in. macOS uses Metal and skips this.
+    if (target.result.os.tag == .windows or target.result.os.tag == .linux) {
         app_mod.addIncludePath(b.path("vendor/glad/include"));
         app_mod.addCSourceFile(.{
             .file = b.path("vendor/glad/src/gl.c"),
             .flags = &.{},
         });
+    }
+
+    // Windows links the system OpenGL (opengl32); Linux gets its GL context and
+    // function loader from SDL3 (linked via systemLibrariesFor above), so it
+    // needs no separate GL system library.
+    if (platform.opengl_system_library) |library| {
         app_mod.linkSystemLibrary(library, .{});
     }
 
     if (target.result.os.tag == .linux) {
-        if (b.lazyDependency("sdl", .{})) |dep| {
+        if (b.lazyDependency("sdl", .{ .target = target })) |dep| {
             app_mod.addImport("sdl", dep.module("sdl"));
         }
-        // Linux uses OpenGL via SDL3 (no separate opengl32 system library).
-        // We still need the glad include path and the glad C source.
-        app_mod.addIncludePath(b.path("vendor/glad/include"));
-        app_mod.addCSourceFile(.{
-            .file = b.path("vendor/glad/src/gl.c"),
-            .flags = &.{},
-        });
     }
 
     if (platform.supports_app_bundle) {
