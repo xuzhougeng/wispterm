@@ -75,6 +75,10 @@ pub fn resolveShellCommandLine(out_buf: *CommandLineBuffer, cmd: []const u8) usi
     return impl.resolveShellCommandLine(out_buf, cmd);
 }
 
+pub fn commandLineDisplay(command: CommandLine, out: []u8) []const u8 {
+    return impl.commandLineDisplay(command, out);
+}
+
 pub fn localShellLauncherTitle() []const u8 {
     return local_shell_launcher_title;
 }
@@ -83,7 +87,7 @@ pub const local_shell_launcher_title = localShellLauncherTitleForOs(builtin.os.t
 
 pub fn localShellLauncherTitleForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
-        .windows => "PowerShell",
+        .windows => "Shell",
         .unsupported => "Shell",
     };
 }
@@ -108,7 +112,7 @@ pub const session_launcher_detail = sessionLauncherDetailForOs(builtin.os.tag);
 
 pub fn sessionLauncherDetailForOs(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (backendForOs(os_tag)) {
-        .windows => "Choose PowerShell, SSH, WSL, Copilot, or Sessions",
+        .windows => "Choose Shell, SSH, WSL, Copilot, or Sessions",
         .unsupported => "Choose Shell, SSH, Copilot, or Sessions",
     };
 }
@@ -453,6 +457,7 @@ test "platform pty command resolves shell aliases to native command lines" {
         .unsupported => "cmd",
     };
     try std.testing.expectEqualStrings(expected_cmd, cmd_utf8);
+    try std.testing.expectEqualStrings(expected_cmd, commandLineDisplay(out[0..cmd_len :0], &utf8));
 
     const powershell_len = resolveShellCommandLine(&out, "powershell");
     const powershell_utf8 = try nativeCommandSliceToUtf8(&utf8, out[0..powershell_len]);
@@ -562,7 +567,7 @@ test "platform pty command exposes tab_new tool text by target OS" {
 }
 
 test "platform pty command exposes configured local shell launcher by target OS" {
-    try std.testing.expectEqualStrings("PowerShell", localShellLauncherTitleForOs(.windows));
+    try std.testing.expectEqualStrings("Shell", localShellLauncherTitleForOs(.windows));
     try std.testing.expectEqualStrings("Shell", localShellLauncherTitleForOs(.linux));
     try std.testing.expectEqualStrings("Shell", localShellLauncherTitleForOs(.macos));
 

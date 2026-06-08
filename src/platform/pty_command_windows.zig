@@ -98,6 +98,11 @@ pub fn commandLineFromOwned(command: OwnedCommandLine) CommandLine {
     return command;
 }
 
+pub fn commandLineDisplay(command: CommandLine, out: []u8) []const u8 {
+    const len = std.unicode.utf16LeToUtf8(out, command) catch return "";
+    return out[0..len];
+}
+
 pub fn allocCwdFromUtf8(allocator: std.mem.Allocator, cwd: []const u8) !OwnedCwd {
     return std.unicode.utf8ToUtf16LeAllocZ(allocator, cwd);
 }
