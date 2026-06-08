@@ -342,8 +342,24 @@ pub fn loadAccessRules(allocator: std.mem.Allocator) void {
 
     g_agent_mutex.lock();
     defer g_agent_mutex.unlock();
+    if (g_access_rules_storage != null) {
+        var unused = rules;
+        unused.deinit();
+        return;
+    }
     g_access_rules_storage = rules;
     g_access_rules = &g_access_rules_storage.?;
+}
+
+pub fn deinitAccessRules() void {
+    g_agent_mutex.lock();
+    defer g_agent_mutex.unlock();
+    g_access_rules = null;
+    g_agent_settings.access_rules = null;
+    if (g_access_rules_storage) |*rules| {
+        rules.deinit();
+        g_access_rules_storage = null;
+    }
 }
 
 /// Set the persistent default working directory (from config). Empty clears it.
