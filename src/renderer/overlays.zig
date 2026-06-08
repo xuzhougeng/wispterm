@@ -3682,7 +3682,7 @@ fn sessionDesiredBoxWidth() f32 {
         return desired;
     }
 
-    desired = @max(desired, sessionTwoColumnWidth(platform_pty_command.localShellLauncherTitle(), AppWindow.configuredLocalShellSessionDetail()));
+    desired = @max(desired, sessionTwoColumnWidth(AppWindow.configuredLocalShellSessionTitle(), AppWindow.configuredLocalShellSessionDetail()));
     desired = @max(desired, sessionTwoColumnWidth("SSH", i18n.s().sl_v_connect_server));
     if (platform_pty_command.sessionLauncherWslRow() != null) {
         desired = @max(desired, sessionTwoColumnWidth("WSL", platform_pty_command.wslLauncherDetail()));
@@ -3991,7 +3991,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             return;
         }
         var row: usize = 0;
-        renderSessionRow(layout, window_height, row, platform_pty_command.localShellLauncherTitle(), AppWindow.configuredLocalShellSessionDetail(), g_session_launcher_selected == row);
+        renderSessionRow(layout, window_height, row, AppWindow.configuredLocalShellSessionTitle(), AppWindow.configuredLocalShellSessionDetail(), g_session_launcher_selected == row);
         row += 1;
         renderSessionRow(layout, window_height, row, "SSH", i18n.s().sl_v_connect_server, g_session_launcher_selected == row);
         row += 1;

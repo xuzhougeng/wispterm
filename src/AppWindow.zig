@@ -2691,26 +2691,36 @@ pub fn syncDefaultShellCommandFromConfig(shell: []const u8) void {
     tab.g_shell_cmd_len = App.resolveShellCommandLine(&tab.g_shell_cmd_buf, shell);
 }
 
+threadlocal var g_configured_shell_title_buf: [1024]u8 = undefined;
+threadlocal var g_configured_shell_detail_buf: [1024]u8 = undefined;
+
+pub fn configuredLocalShellSessionTitle() []const u8 {
+    const display = platform_pty_command.commandLineDisplay(tab.getShellCmd(), &g_configured_shell_title_buf);
+    if (display.len == 0) return platform_pty_command.localShellLauncherTitle();
+
+    const title = platform_pty_command.friendlyShellTitle(display);
+    if (title.len == 0) return platform_pty_command.localShellLauncherTitle();
+    return title;
+}
+
 pub fn configuredLocalShellSessionDetail() []const u8 {
-    return platform_pty_command.configuredLocalShellCommandForShell(tab.getShellCmd());
+    const display = platform_pty_command.commandLineDisplay(tab.getShellCmd(), &g_configured_shell_detail_buf);
+    if (display.len == 0) return platform_pty_command.guaranteedLocalShellCommand();
+    return display;
 }
 
 pub fn spawnConfiguredLocalShellTab() bool {
     const shell_cmd = tab.getShellCmd();
 
-    // When the configured shell already is PowerShell/pwsh, launch it directly.
-    if (platform_pty_command.shellCommandLooksLikeConfiguredLocalShell(shell_cmd)) {
-        if (spawnLocalShellCommandLine(shell_cmd)) return true;
-        // Configured PowerShell/pwsh is unavailable (e.g. removed from PATH):
-        // fall back to cmd.exe so the local-shell tab still opens (issue #65).
-        return spawnTabWithCommandUtf8(platform_pty_command.guaranteedLocalShellCommand());
-    }
+    if (spawnLocalShellCommandLine(shell_cmd)) return true;
 
-    // Otherwise the startup "local shell" tab prefers PowerShell. If that is not
-    // installed/on PATH, fall back to the user's actual configured shell (e.g.
-    // cmd.exe) instead of failing to open any local-shell tab (issue #65).
-    if (spawnTabWithCommandUtf8(platform_pty_command.configuredLocalShellCommandForShell(shell_cmd))) return true;
-    return spawnLocalShellCommandLine(shell_cmd);
+    // Keep the issue #65 safety net: if the configured shell cannot launch, open
+    // a guaranteed local shell so the user is not left without a terminal.
+    const fallback = platform_pty_command.guaranteedLocalShellCommand();
+    var configured_buf: [1024]u8 = undefined;
+    const configured = platform_pty_command.commandLineDisplay(shell_cmd, &configured_buf);
+    if (std.mem.eql(u8, configured, fallback)) return false;
+    return spawnTabWithCommandUtf8(fallback);
 }
 
 fn spawnLocalShellCommandLine(shell_cmd: platform_pty_command.CommandLine) bool {
@@ -6560,6 +6570,26 @@ test "appwindow: syncDefaultShellCommandFromConfig refreshes tab default shell" 
     const expected_len = platform_pty_command.resolveShellCommandLine(&expected_buf, test_shell);
     const CommandUnit = @TypeOf(expected_buf[0]);
     try testing.expectEqualSlices(CommandUnit, expected_buf[0..expected_len], tab.getShellCmd());
+}
+
+test "appwindow: configured local shell session labels reflect shell config" {
+    defer {
+        @memset(&tab.g_shell_cmd_buf, 0);
+        tab.g_shell_cmd_len = 0;
+    }
+
+    syncDefaultShellCommandFromConfig("cmd");
+
+    switch (platform_pty_command.backend()) {
+        .windows => {
+            try std.testing.expectEqualStrings("Command Prompt", configuredLocalShellSessionTitle());
+            try std.testing.expectEqualStrings("cmd.exe", configuredLocalShellSessionDetail());
+        },
+        .unsupported => {
+            try std.testing.expectEqualStrings("cmd", configuredLocalShellSessionTitle());
+            try std.testing.expectEqualStrings("cmd", configuredLocalShellSessionDetail());
+        },
+    }
 }
 
 test "appwindow: ai history content width accounts for right panels" {

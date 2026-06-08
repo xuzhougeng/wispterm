@@ -170,6 +170,7 @@ pub fn main() !void {
 
     // Create the App and run (first window on main thread, spawned windows on separate threads)
     var app = try App.init(allocator, cfg);
+    defer ai_chat.deinitAccessRules();
     defer app.deinit();
     ai_chat.loadAccessRules(allocator);
 
