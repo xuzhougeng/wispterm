@@ -283,10 +283,10 @@ test "parseEntry rejects content without frontmatter or name" {
 
 // --- Task 5: buildIndexBlock ---
 
-/// Build the `<wispterm-memory>` index block injected into the system prompt.
-/// `project_path` (display path) + `project` lines are optional. Returns an
-/// empty (caller-freed) slice when both tiers are empty. Lines are emitted
-/// until `budget` bytes are reached, then a `(... N more ...)` note is added.
+/// Build the `<wispterm-memory>` index block for injection into the system prompt.
+/// `project_path` (display label) and `project` lines are optional. Returns an
+/// empty (zero-length, caller-freed) slice when both tiers are empty. Lines are
+/// emitted until `budget` bytes are consumed; a `(... N more)` note follows.
 pub fn buildIndexBlock(
     allocator: std.mem.Allocator,
     global: []const IndexLine,
