@@ -159,6 +159,7 @@ pub const ChatRequest = struct {
     stream: bool,
     max_tokens: u32 = 8192,
     agent_enabled: bool,
+    memory_enabled: bool = false,
     copilot: bool = false,
     tool_host: ?ToolHost,
     tool_snapshot: ?ToolSnapshot,
@@ -189,6 +190,7 @@ pub const ChatRequest = struct {
             .reasoning_effort = self.reasoning_effort,
             .stream = self.stream,
             .max_tokens = self.max_tokens,
+            .memory_enabled = self.memory_enabled,
         };
     }
 };

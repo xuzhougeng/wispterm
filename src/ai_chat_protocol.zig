@@ -223,6 +223,7 @@ pub const RequestParams = struct {
     reasoning_effort: []const u8,
     stream: bool,
     max_tokens: u32 = 8192,
+    memory_enabled: bool = false,
 };
 
 pub fn buildRequestJson(allocator: std.mem.Allocator, params: RequestParams, messages: []const RequestMessage, include_tools: bool) ![]u8 {
@@ -391,7 +392,7 @@ fn buildChatCompletionsRequestJsonForMessages(
         try out.appendSlice(allocator, ",\"stream_options\":{\"include_usage\":true}");
     }
     if (include_tools) {
-        try appendToolSchemas(allocator, &out);
+        try appendToolSchemas(allocator, &out, params.memory_enabled);
     }
     try out.append(allocator, '}');
 
@@ -454,7 +455,7 @@ fn buildResponsesRequestJsonForMessages(
     try out.appendSlice(allocator, ",\"stream\":");
     try out.appendSlice(allocator, if (params.stream) "true" else "false");
     if (include_tools) {
-        try appendResponseToolSchemas(allocator, &out);
+        try appendResponseToolSchemas(allocator, &out, params.memory_enabled);
     }
     try out.append(allocator, '}');
 
@@ -480,7 +481,7 @@ fn buildAnthropicRequestJsonForMessages(
     try out.appendSlice(allocator, ",\"messages\":[");
     try appendAnthropicMessages(allocator, &out, messages);
     try out.append(allocator, ']');
-    if (include_tools) try appendAnthropicTools(allocator, &out);
+    if (include_tools) try appendAnthropicTools(allocator, &out, params.memory_enabled);
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
 }
@@ -552,10 +553,10 @@ fn appendAnthropicMessages(allocator: std.mem.Allocator, out: *std.ArrayListUnma
     }
 }
 
-fn appendAnthropicTools(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
+fn appendAnthropicTools(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), include_memory: bool) !void {
     try out.appendSlice(allocator, ",\"tools\":[");
     var ctx = AnthropicToolEmitter{ .allocator = allocator, .out = out };
-    try forEachToolSpec(*AnthropicToolEmitter, &ctx, AnthropicToolEmitter.emit);
+    try forEachToolSpec(*AnthropicToolEmitter, &ctx, .{ .include_memory = include_memory }, AnthropicToolEmitter.emit);
     try out.append(allocator, ']');
 }
 
@@ -651,6 +652,7 @@ fn appendResponseUserImageMessage(allocator: std.mem.Allocator, out: *std.ArrayL
 fn forEachToolSpec(
     comptime Ctx: type,
     ctx: Ctx,
+    opts: struct { include_memory: bool },
     comptime emit: fn (Ctx, []const u8, []const u8, []const u8) anyerror!void,
 ) !void {
     try emit(ctx, "terminal_list", "List WispTerm terminal surfaces visible to the agent, including the current agent-selected write context. Before any terminal write, use terminal_select to choose the intended surface_id; use focused=true only as a default hint.", "{}");
@@ -676,6 +678,11 @@ fn forEachToolSpec(
     try emit(ctx, "websearch", "Search the web for current information via Jina. Returns the top results with titles, URLs, and page content. Use when you need facts newer than your training or to look something up online.", "{\"query\":{\"type\":\"string\",\"description\":\"The search query.\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Optional max number of results (default 10, max 20).\"}}");
     try emit(ctx, "webread", "Read a web page or local file into clean markdown via Jina Reader. Pass an http(s):// URL to fetch a page, or a local file path (PDF, Word, Excel, PowerPoint) to upload and convert it. Use when you need the full content of one source, not a search.", "{\"url\":{\"type\":\"string\",\"description\":\"An http(s):// URL, or a local file path to upload.\"}}");
     try emit(ctx, "weixin_send_attachment", "Send a local file back to the active Weixin conversation that triggered this agent request. Use only when the current request came from Weixin; normal local chat requests have no Weixin reply context. Audio and voice files are sent as ordinary file attachments.", "{\"kind\":{\"type\":\"string\",\"description\":\"Attachment kind: file, image, or voice. Voice is accepted as an alias for file.\"},\"path\":{\"type\":\"string\",\"description\":\"Readable local file path to send.\"},\"display_name\":{\"type\":\"string\",\"description\":\"Optional filename shown in Weixin for file attachments; defaults to the path basename.\"}}");
+    if (opts.include_memory) {
+        try emit(ctx, "memory_save", "Save a durable long-term memory so future sessions remember it. Use for stable user preferences, project conventions, and key decisions — not transient task details. tier=global for facts about the user/preferences; tier=project for facts about the current project/working directory.", "{\"tier\":{\"type\":\"string\",\"description\":\"global or project.\"},\"name\":{\"type\":\"string\",\"description\":\"Short stable slug handle (kebab-case). Reusing an existing name updates that memory.\"},\"description\":{\"type\":\"string\",\"description\":\"One-line summary shown in the resident index.\"},\"type\":{\"type\":\"string\",\"description\":\"Optional: user, feedback, project, or reference. Defaults to user.\"},\"body\":{\"type\":\"string\",\"description\":\"The full memory text.\"}}");
+        try emit(ctx, "memory_recall", "Read the full text of a memory by its name, when its index line looks relevant to the current task.", "{\"name\":{\"type\":\"string\",\"description\":\"The memory name (slug) from the resident index.\"}}");
+        try emit(ctx, "memory_delete", "Delete a memory that is wrong or obsolete.", "{\"name\":{\"type\":\"string\",\"description\":\"The memory name (slug) to delete.\"},\"tier\":{\"type\":\"string\",\"description\":\"Optional: global or project. Omit to search both.\"}}");
+    }
 }
 
 const ToolSchemaEmitter = struct {
@@ -733,18 +740,18 @@ const AnthropicToolEmitter = struct {
     }
 };
 
-fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
+fn appendToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), include_memory: bool) !void {
     try out.appendSlice(allocator, ",\"tools\":[");
     var ctx = ToolSchemaEmitter{ .allocator = allocator, .out = out };
-    try forEachToolSpec(*ToolSchemaEmitter, &ctx, ToolSchemaEmitter.emit);
+    try forEachToolSpec(*ToolSchemaEmitter, &ctx, .{ .include_memory = include_memory }, ToolSchemaEmitter.emit);
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
 
-fn appendResponseToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
+fn appendResponseToolSchemas(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), include_memory: bool) !void {
     try out.appendSlice(allocator, ",\"tools\":[");
     var ctx = ResponseToolSchemaEmitter{ .allocator = allocator, .out = out };
-    try forEachToolSpec(*ResponseToolSchemaEmitter, &ctx, ResponseToolSchemaEmitter.emit);
+    try forEachToolSpec(*ResponseToolSchemaEmitter, &ctx, .{ .include_memory = include_memory }, ResponseToolSchemaEmitter.emit);
     try out.append(allocator, ']');
     try out.appendSlice(allocator, ",\"tool_choice\":\"auto\"");
 }
@@ -1502,6 +1509,21 @@ test "agent tool set includes webread" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"webread\"") != null);
 }
 
+test "buildRequestJson advertises memory tools only when enabled" {
+    const a = std.testing.allocator;
+    const params_on = RequestParams{ .model = "m", .system_prompt = "s", .protocol = .chat_completions, .thinking_enabled = false, .reasoning_effort = "", .stream = false, .memory_enabled = true };
+    const on = try buildRequestJson(a, params_on, &.{}, true);
+    defer a.free(on);
+    try std.testing.expect(std.mem.indexOf(u8, on, "\"memory_save\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, on, "\"memory_recall\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, on, "\"memory_delete\"") != null);
+
+    const params_off = RequestParams{ .model = "m", .system_prompt = "s", .protocol = .chat_completions, .thinking_enabled = false, .reasoning_effort = "", .stream = false, .memory_enabled = false };
+    const off = try buildRequestJson(a, params_off, &.{}, true);
+    defer a.free(off);
+    try std.testing.expect(std.mem.indexOf(u8, off, "\"memory_save\"") == null);
+}
+
 // ---------------------------------------------------------------------------
 // Stream-response parser
 // ---------------------------------------------------------------------------
@@ -1644,7 +1666,7 @@ test "file-edit tools appear in the tool schema" {
     const a = std.testing.allocator;
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(a);
-    try appendToolSchemas(a, &out);
+    try appendToolSchemas(a, &out, false);
     const json = out.items;
     try std.testing.expect(std.mem.indexOf(u8, json, "\"read_file\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"write_file\"") != null);
@@ -1656,7 +1678,7 @@ test "copy_file appears in the tool schema" {
     const a = std.testing.allocator;
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(a);
-    try appendToolSchemas(a, &out);
+    try appendToolSchemas(a, &out, false);
     const json = out.items;
     try std.testing.expect(std.mem.indexOf(u8, json, "\"copy_file\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"source_path\"") != null);
