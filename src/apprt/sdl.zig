@@ -2,9 +2,9 @@
 //!
 //! Provides the same `Window` struct shape as `window_backend_unsupported.zig`
 //! but backed by a real SDL3 window and GL context.  The 5 input event queues
-//! are mutex-guarded so Task C3 can push from the event-pump thread while the
-//! main render thread pops.  For C2 the queues always return null (no events
-//! pushed yet).
+//! are mutex-guarded so the event pump can push while the render thread pops.
+//! Task C3: SDL input events are now routed into the neutral input queues so
+//! the terminal is interactive (keyboard, mouse, wheel, file-drop).
 const std = @import("std");
 const builtin = @import("builtin");
 const platform_input = @import("../platform/input_events.zig");
@@ -12,6 +12,7 @@ const platform_window = @import("../platform/window_linux.zig");
 const window_drag_region = @import("window_drag_region.zig");
 const window_registry = @import("window_registry.zig");
 const GlContext = @import("../renderer/gpu/opengl/Context.zig");
+const keymap = @import("../input/sdl_keymap.zig");
 
 pub const c = @import("sdl").c;
 
@@ -244,6 +245,9 @@ pub const Window = struct {
         const scale = c.SDL_GetWindowDisplayScale(sdl_win);
         win.dpi = @intFromFloat(@round(scale * 96.0));
 
+        // Enable text-input mode so SDL_EVENT_TEXT_INPUT fires for printable keys.
+        _ = c.SDL_StartTextInput(sdl_win);
+
         std.debug.print("SDL window created: {}x{} DPI={}\n", .{ win.width, win.height, win.dpi });
         return win;
     }
@@ -428,6 +432,158 @@ fn processEvent(event: c.SDL_Event) void {
                 w.size_changed = true;
             }
         },
+
+        // ---------------------------------------------------------------
+        // Keyboard: key-down → KeyEvent (key-up discarded; no press/release
+        //           in neutral layer), text-input → CharEvent.
+        // ---------------------------------------------------------------
+        c.SDL_EVENT_KEY_DOWN => {
+            const win_id = event.key.windowID;
+            if (g_registry.find(win_id)) |ptr| {
+                const w: *Window = @alignCast(@ptrCast(ptr));
+                const sc: u32 = @intCast(event.key.scancode);
+                if (keymap.keyCodeFromScancode(sc)) |code| {
+                    const m = keymap.modifiers(@intCast(event.key.mod));
+                    w.key_events.push(.{
+                        .key_code = code,
+                        .ctrl = m.ctrl,
+                        .shift = m.shift,
+                        .alt = m.alt,
+                        .super = m.super,
+                    });
+                }
+            }
+        },
+        // KEY_UP: intentionally ignored (neutral KeyEvent has no action field).
+
+        c.SDL_EVENT_TEXT_INPUT => {
+            const win_id = event.text.windowID;
+            if (g_registry.find(win_id)) |ptr| {
+                const w: *Window = @alignCast(@ptrCast(ptr));
+                // event.text.text is a null-terminated UTF-8 C string (*const u8).
+                const raw: [*:0]const u8 = event.text.text;
+                const slice = std.mem.span(raw);
+                const m = keymap.modifiers(@intCast(c.SDL_GetModState()));
+                var view = std.unicode.Utf8View.initUnchecked(slice);
+                var it = view.iterator();
+                while (it.nextCodepoint()) |cp| {
+                    w.char_events.push(.{
+                        .codepoint = @intCast(cp),
+                        .ctrl = m.ctrl,
+                        .shift = m.shift,
+                        .alt = m.alt,
+                        .super = m.super,
+                    });
+                }
+            }
+        },
+
+        // ---------------------------------------------------------------
+        // Mouse buttons
+        // ---------------------------------------------------------------
+        c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            const win_id = event.button.windowID;
+            if (g_registry.find(win_id)) |ptr| {
+                const w: *Window = @alignCast(@ptrCast(ptr));
+                const btn: platform_input.MouseButton = switch (event.button.button) {
+                    c.SDL_BUTTON_LEFT => .left,
+                    c.SDL_BUTTON_MIDDLE => .middle,
+                    c.SDL_BUTTON_RIGHT => .right,
+                    else => return, // unknown button — ignore
+                };
+                const action: platform_input.MouseButtonAction = if (event.type == c.SDL_EVENT_MOUSE_BUTTON_UP)
+                    .release
+                else if (event.button.clicks == 2)
+                    .double_click
+                else
+                    .press;
+                const mx: i32 = @intFromFloat(event.button.x);
+                const my: i32 = @intFromFloat(event.button.y);
+                const m = keymap.modifiers(@intCast(c.SDL_GetModState()));
+                w.mouse_x = mx;
+                w.mouse_y = my;
+                w.mouse_button_events.push(.{
+                    .button = btn,
+                    .action = action,
+                    .x = mx,
+                    .y = my,
+                    .ctrl = m.ctrl,
+                    .shift = m.shift,
+                    .alt = m.alt,
+                    .super = m.super,
+                });
+            }
+        },
+
+        // ---------------------------------------------------------------
+        // Mouse motion
+        // ---------------------------------------------------------------
+        c.SDL_EVENT_MOUSE_MOTION => {
+            const win_id = event.motion.windowID;
+            if (g_registry.find(win_id)) |ptr| {
+                const w: *Window = @alignCast(@ptrCast(ptr));
+                const mx: i32 = @intFromFloat(event.motion.x);
+                const my: i32 = @intFromFloat(event.motion.y);
+                const m = keymap.modifiers(@intCast(c.SDL_GetModState()));
+                w.mouse_x = mx;
+                w.mouse_y = my;
+                w.mouse_move_events.push(.{
+                    .x = mx,
+                    .y = my,
+                    .ctrl = m.ctrl,
+                    .shift = m.shift,
+                    .alt = m.alt,
+                    .super = m.super,
+                });
+            }
+        },
+
+        // ---------------------------------------------------------------
+        // Mouse wheel — convert SDL float ticks to Win32-style ±120 deltas.
+        // ---------------------------------------------------------------
+        c.SDL_EVENT_MOUSE_WHEEL => {
+            const win_id = event.wheel.windowID;
+            if (g_registry.find(win_id)) |ptr| {
+                const w: *Window = @alignCast(@ptrCast(ptr));
+                const dy: f32 = event.wheel.y;
+                // Clamp to i16 range before converting.
+                const raw_delta: f32 = dy * 120.0;
+                const clamped: i16 = if (raw_delta > @as(f32, std.math.maxInt(i16)))
+                    std.math.maxInt(i16)
+                else if (raw_delta < @as(f32, std.math.minInt(i16)))
+                    std.math.minInt(i16)
+                else
+                    @intFromFloat(raw_delta);
+                const m = keymap.modifiers(@intCast(c.SDL_GetModState()));
+                w.mouse_wheel_events.push(.{
+                    .delta = clamped,
+                    .xpos = w.mouse_x,
+                    .ypos = w.mouse_y,
+                    .ctrl = m.ctrl,
+                    .shift = m.shift,
+                    .alt = m.alt,
+                });
+            }
+        },
+
+        // ---------------------------------------------------------------
+        // File drop
+        // ---------------------------------------------------------------
+        c.SDL_EVENT_DROP_FILE => {
+            const win_id = event.drop.windowID;
+            if (g_registry.find(win_id)) |ptr| {
+                const w: *Window = @alignCast(@ptrCast(ptr));
+                if (w.on_file_drop) |cb| {
+                    if (event.drop.data) |data_ptr| {
+                        const path: [*:0]const u8 = data_ptr;
+                        const drop_x: i32 = @intFromFloat(event.drop.x);
+                        const drop_y: i32 = @intFromFloat(event.drop.y);
+                        _ = cb(std.mem.span(path), drop_x, drop_y);
+                    }
+                }
+            }
+        },
+
         else => {
             // Wakeup user event — no action needed beyond unblocking the pump.
             if (event.type == g_wakeup_event_type) {}
