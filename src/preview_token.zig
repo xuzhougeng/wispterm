@@ -37,80 +37,6 @@ pub fn isDelimiter(cp: u21) bool {
     };
 }
 
-fn rowTokenSegmentAt(grid: anytype, row: usize, col: usize) ?Segment {
-    const cols = grid.colCount(row);
-    if (cols == 0 or col >= cols or isDelimiter(grid.codepoint(row, col))) return null;
-
-    var start_col = col;
-    while (start_col > 0) {
-        const prev = start_col - 1;
-        if (isDelimiter(grid.codepoint(row, prev))) break;
-        start_col = prev;
-    }
-
-    var end_col = col;
-    while (end_col + 1 < cols) {
-        const next = end_col + 1;
-        if (isDelimiter(grid.codepoint(row, next))) break;
-        end_col = next;
-    }
-
-    return .{ .row = row, .start_col = start_col, .end_col = end_col };
-}
-
-fn firstTokenSegmentInRow(grid: anytype, row: usize) ?Segment {
-    const cols = grid.colCount(row);
-    var col: usize = 0;
-    while (col < cols) : (col += 1) {
-        if (!isDelimiter(grid.codepoint(row, col))) return rowTokenSegmentAt(grid, row, col);
-    }
-    return null;
-}
-
-fn lastTokenSegmentInRow(grid: anytype, row: usize) ?Segment {
-    var col = grid.colCount(row);
-    while (col > 0) {
-        col -= 1;
-        if (!isDelimiter(grid.codepoint(row, col))) return rowTokenSegmentAt(grid, row, col);
-    }
-    return null;
-}
-
-fn sameSegment(a: Segment, b: Segment) bool {
-    return a.row == b.row and a.start_col == b.start_col and a.end_col == b.end_col;
-}
-
-fn isFirstTokenSegment(grid: anytype, segment: Segment) bool {
-    const first = firstTokenSegmentInRow(grid, segment.row) orelse return false;
-    return sameSegment(first, segment);
-}
-
-fn isLastTokenSegment(grid: anytype, segment: Segment) bool {
-    const last = lastTokenSegmentInRow(grid, segment.row) orelse return false;
-    return sameSegment(last, segment);
-}
-
-fn segmentEndsWithPathSeparator(grid: anytype, segment: Segment) bool {
-    return switch (grid.codepoint(segment.row, segment.end_col)) {
-        '/', '\\' => true,
-        else => false,
-    };
-}
-
-fn segmentHasUrlScheme(grid: anytype, segment: Segment) bool {
-    if (segment.end_col < segment.start_col + 2) return false;
-    var col = segment.start_col;
-    while (col + 2 <= segment.end_col) : (col += 1) {
-        if (grid.codepoint(segment.row, col) == ':' and
-            grid.codepoint(segment.row, col + 1) == '/' and
-            grid.codepoint(segment.row, col + 2) == '/')
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 fn appendInitialSegments(
     allocator: std.mem.Allocator,
     segments: *std.ArrayListUnmanaged(Segment),
@@ -129,49 +55,6 @@ fn appendInitialSegments(
             });
         }
         if (row == end.row) break;
-    }
-}
-
-fn prependHardWrappedPathSegments(
-    allocator: std.mem.Allocator,
-    segments: *std.ArrayListUnmanaged(Segment),
-    grid: anytype,
-) !void {
-    while (segments.items.len > 0) {
-        const first = segments.items[0];
-        if (first.row == 0 or !isFirstTokenSegment(grid, first)) break;
-
-        const prev_row = first.row - 1;
-        if (grid.continuesFromPrev(first.row) and grid.wrapsNext(prev_row)) break;
-
-        const prev = lastTokenSegmentInRow(grid, prev_row) orelse break;
-        if (!isLastTokenSegment(grid, prev)) break;
-        if (!segmentEndsWithPathSeparator(grid, prev)) break;
-        if (segmentHasUrlScheme(grid, prev)) break;
-
-        try segments.insert(allocator, 0, prev);
-    }
-}
-
-fn appendHardWrappedPathSegments(
-    allocator: std.mem.Allocator,
-    segments: *std.ArrayListUnmanaged(Segment),
-    grid: anytype,
-) !void {
-    const rows = grid.rowCount();
-    while (segments.items.len > 0) {
-        const last = segments.items[segments.items.len - 1];
-        const next_row = last.row + 1;
-        if (next_row >= rows or !isLastTokenSegment(grid, last)) break;
-
-        if (grid.wrapsNext(last.row) and grid.continuesFromPrev(next_row)) break;
-        if (!segmentEndsWithPathSeparator(grid, last)) break;
-        if (segmentHasUrlScheme(grid, last)) break;
-
-        const next = firstTokenSegmentInRow(grid, next_row) orelse break;
-        if (!isFirstTokenSegment(grid, next)) break;
-
-        try segments.append(allocator, next);
     }
 }
 
@@ -268,9 +151,11 @@ pub fn extractGridTokenAtCell(
 
     var segments: std.ArrayListUnmanaged(Segment) = .empty;
     defer segments.deinit(allocator);
+    // Only the genuine soft-wrap range (start..end, joined above via the wrap
+    // flags) is part of the path. A hard newline is a real boundary, so we do
+    // NOT stitch a '/'-terminated line to the next line: that wrongly merged
+    // separate listing entries (e.g. git status `.claude/` + `docs/...`).
     appendInitialSegments(allocator, &segments, grid, start, end) catch return null;
-    prependHardWrappedPathSegments(allocator, &segments, grid) catch return null;
-    appendHardWrappedPathSegments(allocator, &segments, grid) catch return null;
 
     var token: std.ArrayListUnmanaged(u8) = .empty;
     defer token.deinit(allocator);
@@ -338,9 +223,12 @@ fn utf8CodepointCount(text: []const u8) usize {
 fn isLeadingTrimCodepoint(cp: u21) bool {
     return switch (cp) {
         '@',
+        ':', // separator left in front of a path, e.g. "文档在:docs/x.md"
         '\'',
         '"',
         '`',
+        0xFF1A, // fullwidth colon
+
         0x2018, // left single quotation mark
         0x201C, // left double quotation mark
         0x300C, // left corner bracket
@@ -401,6 +289,19 @@ test "trim drops leading mention marker before markdown path" {
         "docs/superpowers/plans/2026-06-04-copilot-tiling-panel.md",
         trim("@docs/superpowers/plans/2026-06-04-copilot-tiling-panel.md"),
     );
+}
+
+test "trim drops leading colon left by a sentence separator" {
+    // "文档在:docs/foo.md" — the wide CJK char before the colon ends the token
+    // at the colon, so the extracted token starts with ':'. A path never begins
+    // with a colon, so it must be trimmed.
+    try std.testing.expectEqualStrings("docs/readme.md", trim(":docs/readme.md"));
+    // Fullwidth colon (U+FF1A), common in Chinese text.
+    try std.testing.expectEqualStrings("docs/readme.md", trim("\xEF\xBC\x9Adocs/readme.md"));
+}
+
+test "trim keeps an interior colon (windows drive / host:path)" {
+    try std.testing.expectEqualStrings("C:/Users/me/notes.md", trim("C:/Users/me/notes.md"));
 }
 
 test "trim drops Chinese sentence punctuation after markdown path" {
@@ -481,65 +382,102 @@ test "extractGridTokenAtCell joins soft-wrapped path rows" {
     try std.testing.expectEqual(GridCell{ .row = 1, .col = 8 }, token.end);
 }
 
-test "extractGridTokenAtCell joins path continuation after hard line break" {
-    const TestGrid = struct {
-        rows: []const []const u8,
-        cols: usize,
+const HardBreakGrid = struct {
+    rows: []const []const u8,
+    cols: usize,
 
-        fn rowCount(self: @This()) usize {
-            return self.rows.len;
-        }
+    fn rowCount(self: @This()) usize {
+        return self.rows.len;
+    }
 
-        fn colCount(self: @This(), row: usize) usize {
-            _ = row;
-            return self.cols;
-        }
+    fn colCount(self: @This(), row: usize) usize {
+        _ = row;
+        return self.cols;
+    }
 
-        fn codepoint(self: @This(), row: usize, col: usize) u21 {
-            const text = self.rows[row];
-            return if (col < text.len) text[col] else 0;
-        }
+    fn codepoint(self: @This(), row: usize, col: usize) u21 {
+        const text = self.rows[row];
+        return if (col < text.len) text[col] else 0;
+    }
 
-        fn wrapsNext(self: @This(), row: usize) bool {
-            _ = self;
-            _ = row;
-            return false;
-        }
+    fn wrapsNext(self: @This(), row: usize) bool {
+        _ = self;
+        _ = row;
+        return false;
+    }
 
-        fn continuesFromPrev(self: @This(), row: usize) bool {
-            _ = self;
-            _ = row;
-            return false;
-        }
+    fn continuesFromPrev(self: @This(), row: usize) bool {
+        _ = self;
+        _ = row;
+        return false;
+    }
+};
+
+test "extractGridTokenAtCell does NOT join across a hard line break" {
+    // A directory entry ending in '/' followed by a separate file entry on the
+    // next HARD line (no soft-wrap flags) must NOT be concatenated. This is the
+    // git-status pattern: `.claude/` and `docs/...` are two distinct entries, not
+    // one wrapped path. Joining produced bogus paths like `.claude/docs/...`.
+    const rows = [_][]const u8{
+        ".claude/",
+        "docs/superpowers/specs/2026-06-08-copilot-memory-system-design.md",
     };
+    const grid = HardBreakGrid{ .rows = &rows, .cols = 80 };
 
+    const from_dir = extractGridTokenAtCell(std.testing.allocator, grid, .{
+        .row = 0,
+        .col = 0,
+    }) orelse return error.ExpectedToken;
+    defer from_dir.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(".claude/", from_dir.text);
+
+    const from_file = extractGridTokenAtCell(std.testing.allocator, grid, .{
+        .row = 1,
+        .col = 0,
+    }) orelse return error.ExpectedToken;
+    defer from_file.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(
+        "docs/superpowers/specs/2026-06-08-copilot-memory-system-design.md",
+        from_file.text,
+    );
+}
+
+test "extractGridTokenAtCell does NOT join a bare filename across a hard break" {
+    // Even when the continuation is a bare filename (no interior separator), a
+    // hard newline is a real boundary between two listing entries.
     const rows = [_][]const u8{
         "/home/xzg/bioinformatics-skills/seq-align/",
         "SKILL.md",
     };
-    const grid = TestGrid{ .rows = &rows, .cols = 80 };
+    const grid = HardBreakGrid{ .rows = &rows, .cols = 80 };
 
-    const from_first_row = extractGridTokenAtCell(std.testing.allocator, grid, .{
+    const from_dir = extractGridTokenAtCell(std.testing.allocator, grid, .{
         .row = 0,
-        .col = rows[0].len - 1,
+        .col = 0,
     }) orelse return error.ExpectedToken;
-    defer from_first_row.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings(
-        "/home/xzg/bioinformatics-skills/seq-align/SKILL.md",
-        from_first_row.text,
-    );
-    try std.testing.expectEqual(GridCell{ .row = 0, .col = 0 }, from_first_row.start);
-    try std.testing.expectEqual(GridCell{ .row = 1, .col = 7 }, from_first_row.end);
+    defer from_dir.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("/home/xzg/bioinformatics-skills/seq-align/", from_dir.text);
 
-    const from_second_row = extractGridTokenAtCell(std.testing.allocator, grid, .{
+    const from_file = extractGridTokenAtCell(std.testing.allocator, grid, .{
         .row = 1,
         .col = 0,
     }) orelse return error.ExpectedToken;
-    defer from_second_row.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings(
-        "/home/xzg/bioinformatics-skills/seq-align/SKILL.md",
-        from_second_row.text,
-    );
-    try std.testing.expectEqual(GridCell{ .row = 0, .col = 0 }, from_second_row.start);
-    try std.testing.expectEqual(GridCell{ .row = 1, .col = 7 }, from_second_row.end);
+    defer from_file.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("SKILL.md", from_file.text);
+}
+
+test "extractGridTokenAtCell drops a leading colon separator before a path" {
+    // "see :docs/x.md" — the space before ':' bounds the token at the colon, so
+    // the raw token is ":docs/x.md". The colon must be trimmed and the reported
+    // start must point at 'd', not ':'.
+    const rows = [_][]const u8{"see :docs/x.md"};
+    const grid = HardBreakGrid{ .rows = &rows, .cols = 14 };
+
+    const token = extractGridTokenAtCell(std.testing.allocator, grid, .{
+        .row = 0,
+        .col = 6, // on the 'o' of docs
+    }) orelse return error.ExpectedToken;
+    defer token.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("docs/x.md", token.text);
+    try std.testing.expectEqual(GridCell{ .row = 0, .col = 5 }, token.start); // 'd' of docs
 }
