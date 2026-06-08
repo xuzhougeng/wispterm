@@ -717,6 +717,7 @@ comptime {
     _ = @import("renderer/overlays.zig");
     _ = @import("selection_unit.zig");
     _ = @import("session_persist.zig");
+    _ = @import("agent_memory.zig");
     _ = @import("skill_registry.zig");
     _ = @import("skill_scan.zig");
     _ = @import("skill_inventory.zig");
