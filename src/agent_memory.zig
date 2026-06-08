@@ -147,10 +147,11 @@ test "slugify falls back to mem-date-hash for non-ASCII text" {
 
 // --- Task 3: projectKey ---
 
-/// Filesystem-safe, human-readable key for a working directory:
-/// any char outside [A-Za-z0-9._-] becomes '-'. Paths longer than
-/// MAX_PROJECT_KEY_LEN are truncated and suffixed with a sha256 prefix so the
-/// mapping stays deterministic and collision-resistant.
+/// Filesystem-safe, human-readable key for a working directory path:
+/// any char outside [A-Za-z0-9._-] becomes '-' (e.g. `/home/xzg/proj` ->
+/// `-home-xzg-proj`). Paths longer than MAX_PROJECT_KEY_LEN are truncated
+/// and suffixed with a sha256-derived hex so the mapping stays deterministic
+/// and collision-resistant.
 pub fn projectKey(allocator: std.mem.Allocator, working_dir: []const u8) ![]u8 {
     var list: std.ArrayListUnmanaged(u8) = .empty;
     defer list.deinit(allocator);
