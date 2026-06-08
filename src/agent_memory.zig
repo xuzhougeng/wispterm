@@ -553,8 +553,10 @@ fn dirForTier(allocator: std.mem.Allocator, tier: Tier, working_dir: ?[]const u8
     }
 }
 
-/// Save or update a memory in the chosen tier; tier=project without a working
-/// dir falls back to global. Returns a caller-freed human-readable message.
+/// Save or update a memory in the chosen tier. `tier=project` without a
+/// `working_dir` falls back to global tier, which is noted in the returned
+/// message. Preserves `created` when updating an existing entry.
+/// Returns a caller-freed human-readable confirmation string.
 pub fn saveMemory(
     allocator: std.mem.Allocator,
     tier: Tier,
