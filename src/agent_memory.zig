@@ -197,7 +197,8 @@ pub fn serializeEntry(allocator: std.mem.Allocator, e: Entry) ![]u8 {
 }
 
 /// Parse a memory file (frontmatter + body). Mirrors skill_registry's
-/// line-oriented `key: value` frontmatter. Caller owns the returned Entry.
+/// line-oriented `key: value` frontmatter parser. Returns `error.InvalidMemory`
+/// if the frontmatter is absent or `name` is missing. Caller owns the result.
 pub fn parseEntry(allocator: std.mem.Allocator, bytes: []const u8) (ParseError || std.mem.Allocator.Error)!Entry {
     var name: []const u8 = "";
     var description: []const u8 = "";
