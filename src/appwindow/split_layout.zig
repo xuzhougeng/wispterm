@@ -51,7 +51,7 @@ pub fn cachedRectIsLive(rect: SplitRect) bool {
     const active_tab = tab.activeTab() orelse return false;
     if (rect.handle.idx() >= active_tab.tree.nodes.len) return false;
     return switch (active_tab.tree.nodes[rect.handle.idx()]) {
-        .leaf => |surface| surface == rect.surface,
+        .leaf => |pane| pane.surface() == rect.surface,
         .split => false,
     };
 }
@@ -167,7 +167,7 @@ pub fn computeSplitLayout(
         .coalesced;
 
     var count: usize = 0;
-    var it = active_tab.tree.iterator();
+    var it = active_tab.tree.surfaces();
     while (it.next()) |entry| {
         if (count >= MAX_SPLITS_PER_TAB) break;
 

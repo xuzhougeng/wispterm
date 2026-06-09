@@ -970,7 +970,7 @@ pub fn activeSurfaceHasRunningProgram() bool {
 
 fn tabStateHasRunningProgram(t: *const TabState) bool {
     if (t.kind != .terminal) return false;
-    var it = t.tree.iterator();
+    var it = t.tree.surfaces();
     while (it.next()) |entry| {
         if (surfaceOnAltScreen(entry.surface)) return true;
     }
@@ -3631,7 +3631,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
             // Update all surfaces in this tab's split tree
-            var it = tb.tree.iterator();
+            var it = tb.tree.surfaces();
             while (it.next()) |entry| {
                 entry.surface.render_state.mutex.lock();
                 entry.surface.terminal.screens.active.cursor.cursor_style = switch (g_cursor_style) {
@@ -3761,7 +3761,7 @@ fn maybePrintMemoryDebug(now: i64) void {
             continue;
         }
 
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             const visible = tab_index == active_tab_state.g_active_tab;
             const stats = collectSurfaceMemoryDebug(entry.surface);
@@ -3955,7 +3955,7 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
         defer if (spatial) |*sp| sp.deinit(allocator);
 
         var wrote_surface = false;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (wrote_surface) try out.append(allocator, ',');
             wrote_surface = true;
@@ -4270,7 +4270,7 @@ fn weixinTerminalSurfaceFromId(id: [16]u8) ?*Surface {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.surface.remote_id[0..], id[0..])) return entry.surface;
         }
@@ -4485,7 +4485,7 @@ fn findAgentSurfaceLocation(surface: *const Surface) ?AgentSurfaceLocation {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (entry.surface == surface) {
                 return .{
@@ -4533,7 +4533,7 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             const is_context = context_surface_id.len > 0 and std.mem.eql(u8, entry.surface.remote_id[0..], context_surface_id);
             if (is_context) active_tab = tab_index;
@@ -4571,7 +4571,7 @@ fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surfac
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             const sfc = entry.surface;
             if (!std.mem.eql(u8, sfc.remote_id[0..], surface_id)) continue;
@@ -4740,7 +4740,7 @@ fn findTabIndexBySurfaceId(surface_id: []const u8) ?usize {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.surface.remote_id[0..], surface_id)) return tab_index;
         }
@@ -5025,7 +5025,7 @@ fn markAllRenderersDirty() void {
     g_cells_valid = false;
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.iterator();
+            var it = tb.tree.surfaces();
             while (it.next()) |entry| {
                 entry.surface.surface_renderer.markDirty();
             }
@@ -5093,7 +5093,7 @@ fn recordFrameLatencyIfInputDriven() void {
 fn anySurfaceDirtyLoad() bool {
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.iterator();
+            var it = tb.tree.surfaces();
             while (it.next()) |entry| {
                 if (entry.surface.dirty.load(.acquire)) return true;
             }
@@ -5105,7 +5105,7 @@ fn anySurfaceDirtyLoad() bool {
 fn clearAllSurfaceDirty() void {
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.iterator();
+            var it = tb.tree.surfaces();
             while (it.next()) |entry| {
                 _ = entry.surface.dirty.swap(false, .acq_rel);
             }
@@ -6288,7 +6288,7 @@ fn runMainLoop(self: *AppWindow) !void {
         for (0..tab.g_tab_count) |ti| {
             if (tab.g_tabs[ti]) |tb| {
                 // Check all surfaces in this tab's split tree for pending bells
-                var it = tb.tree.iterator();
+                var it = tb.tree.surfaces();
                 while (it.next()) |entry| {
                     if (entry.surface.bell_pending.swap(false, .acquire)) {
                         handleBell(entry.surface, win, ti == active_tab_state.g_active_tab);

@@ -318,7 +318,7 @@ fn handleSshTerminalFileDrop(local_path: []const u8) bool {
 fn selectionSurfaceForClipboard() ?*Surface {
     if (AppWindow.activeTab()) |tb| {
         var selected_surface: ?*Surface = null;
-        var it = tb.tree.iterator();
+        var it = tb.tree.surfaces();
         while (it.next()) |entry| {
             if (!entry.surface.selection.active) continue;
             if (entry.handle == tb.focused) return entry.surface;

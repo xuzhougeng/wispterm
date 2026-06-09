@@ -72,7 +72,7 @@ pub const TabState = struct {
         if (self.tree.isEmpty()) return null;
         if (self.focused.idx() >= self.tree.nodes.len) return null;
         return switch (self.tree.nodes[self.focused.idx()]) {
-            .leaf => |surface| surface,
+            .leaf => |pane| pane.surface(),
             .split => null,
         };
     }
@@ -647,7 +647,7 @@ pub fn switchTab(idx: usize) void {
     // Clear bell indicator and force rebuild for surfaces in this tab
     if (g_tabs[idx]) |t| {
         if (t.kind != .terminal) return;
-        var it = t.tree.iterator();
+        var it = t.tree.surfaces();
         while (it.next()) |entry| {
             entry.surface.bell_indicator = false;
             entry.surface.surface_renderer.force_rebuild = true;
@@ -865,7 +865,7 @@ pub fn closeFocusedSplit(allocator: std.mem.Allocator) CloseResult {
     }
 
     // Find valid focus in new tree
-    var it = t.tree.iterator();
+    var it = t.tree.surfaces();
     if (it.next()) |entry| {
         if (next_focus) |nf| {
             if (nf != t.focused and @intFromEnum(nf) < t.tree.nodes.len) {
@@ -913,7 +913,7 @@ pub fn equalizeSplits(allocator: std.mem.Allocator) bool {
     const t = activeTab() orelse return false;
     if (t.kind != .terminal) return false;
 
-    var it = t.tree.iterator();
+    var it = t.tree.surfaces();
     while (it.next()) |entry| {
         entry.surface.resize_overlay_active = true;
         entry.surface.resize_overlay_last_cols = entry.surface.size.grid.cols;
@@ -1194,7 +1194,12 @@ fn snapshotNode(
 ) !session_persist.NodeSnap {
     const node = tree.nodes[handle.idx()];
     return switch (node) {
-        .leaf => |surface| .{ .leaf = .{ .surface = try snapshotSurface(arena, surface) } },
+        .leaf => |pane| switch (pane) {
+            .terminal => |s| .{ .leaf = .{ .surface = try snapshotSurface(arena, s) } },
+            // Preview panes aren't persisted yet; serialize a placeholder local
+            // shell so the snapshot stays well-formed until preview persistence.
+            .preview => .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
+        },
         .split => |sp| blk: {
             const left = try arena.create(session_persist.NodeSnap);
             left.* = try snapshotNode(arena, tree, sp.left);

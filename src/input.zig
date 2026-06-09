@@ -3761,7 +3761,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 // Initialize per-surface resize tracking with current sizes
                 // so we only show overlays on surfaces that actually change
                 if (AppWindow.activeTab()) |tb| {
-                    var it = tb.tree.iterator();
+                    var it = tb.tree.surfaces();
                     while (it.next()) |entry| {
                         entry.surface.resize_overlay_active = false;
                         entry.surface.resize_overlay_last_cols = entry.surface.size.grid.cols;
@@ -3903,7 +3903,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 g_divider_drag_layout = null;
                 // Reset per-surface resize overlay state
                 if (AppWindow.activeTab()) |tb| {
-                    var it = tb.tree.iterator();
+                    var it = tb.tree.surfaces();
                     while (it.next()) |entry| {
                         entry.surface.resize_overlay_active = false;
                     }
