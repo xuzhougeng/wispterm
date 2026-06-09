@@ -58,6 +58,7 @@ test {
     _ = @import("web_search.zig");
     _ = @import("web_read.zig");
     _ = @import("web_read_cache.zig");
+    _ = @import("pubmed.zig");
     _ = @import("ai_loop_schedule.zig");
     _ = @import("ai_skill_distill.zig");
     _ = @import("ai_history_types.zig");
