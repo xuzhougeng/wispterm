@@ -1,0 +1,58 @@
+name: linux-release
+
+# Builds the Linux AppImage. SDL3 is built from source (not yet in distro repos);
+# fontconfig/freetype come from apt. See packaging/linux/build-appimage.sh.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev libfreetype-dev libgl1-mesa-dev \
+            libx11-dev libxext-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev \
+            cmake ninja-build curl libfuse2
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Build and install SDL3
+        run: |
+          SDL_VER=3.4.10
+          curl -fSL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VER}/SDL3-${SDL_VER}.tar.gz" | tar -xz
+          cmake -S "SDL3-${SDL_VER}" -B sdl-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DSDL_TEST_LIBRARY=OFF
+          cmake --build sdl-build --parallel
+          sudo cmake --install sdl-build
+          sudo ldconfig
+
+      - name: Build AppImage
+        run: ./packaging/linux/build-appimage.sh
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wispterm-linux-x86_64-appimage
+          path: zig-out/WispTerm-*-x86_64.AppImage
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zig-out/WispTerm-*-x86_64.AppImage

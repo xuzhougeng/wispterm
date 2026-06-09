@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 WispTerm contributors -->
+<component type="desktop-application">
+  <id>com.wispterm.terminal</id>
+  <name>WispTerm</name>
+  <summary>Terminal workspace for remote development and AI agent workflows</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      WispTerm is a cross-platform terminal workspace, written in Zig and
+      powered by libghostty-vt for terminal emulation. It is built for remote
+      development and AI agent workflows.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Tabs and splittable panes with GPU-accelerated rendering</li>
+      <li>Built-in file explorer and AI copilot</li>
+      <li>SSH integration and file transfer</li>
+      <li>Themes, configurable keybindings, and CJK/font support via fontconfig</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">wispterm.desktop</launchable>
+
+  <url type="homepage">https://github.com/xuzhougeng/wispterm</url>
+  <url type="bugtracker">https://github.com/xuzhougeng/wispterm/issues</url>
+
+  <provides>
+    <binary>wispterm</binary>
+  </provides>
+
+  <categories>
+    <category>System</category>
+    <category>TerminalEmulator</category>
+  </categories>
+
+  <!-- No interactive web content / chat beyond local tools; agent runs the user's own shell. -->
+  <content_rating type="oars-1.1" />
+
+  <!-- TODO(flathub): add at least one <screenshots> entry (a real PNG/URL) before
+       submitting to Flathub; omitted here so the file validates without a stale URL. -->
+
+  <releases>
+    <release version="1.15.0" date="2026-06-09">
+      <description>
+        <p>First Linux release: SDL3 host, fontconfig fonts with CJK, IME, and
+        clipboard/cursor/notifications/file-dialog services.</p>
+      </description>
+    </release>
+  </releases>
+</component>

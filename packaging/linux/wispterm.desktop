@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=WispTerm
+GenericName=Terminal Emulator
+Comment=A cross-platform terminal workspace for remote development and AI agent workflows
+Exec=wispterm
+Icon=wispterm
+Terminal=false
+Categories=System;TerminalEmulator;Utility;
+Keywords=terminal;shell;console;command;ssh;ai;
+StartupNotify=true
+StartupWMClass=wispterm
