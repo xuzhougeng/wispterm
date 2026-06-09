@@ -1405,6 +1405,20 @@ fn extractPromptLine(snapshot: []const u8) []const u8 {
     return "";
 }
 
+/// Heuristic: does a trailing line look like an interactive REPL prompt waiting
+/// for input? True for `>>>`, `>`, `In [3]:`, `julia>`, `dbname=#`, `$`, ... .
+/// Conservative on length so long output lines are not mistaken for a prompt.
+/// This is only the *fallback* signal; an exact match against the prompt captured
+/// before typing (see `promptReturned`) is the primary, precise signal.
+fn looksLikeReadyPrompt(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len == 0 or trimmed.len > 64) return false;
+    return switch (trimmed[trimmed.len - 1]) {
+        '>', ':', '$', '#' => true,
+        else => false,
+    };
+}
+
 const AGENT_START_PREFIX = "__WISPTERM_AGENT_START_";
 
 /// Whether the surface's most recent agent command is still running: find the
@@ -2913,6 +2927,19 @@ test "extractPromptLine returns the trailing non-empty prompt line" {
     try std.testing.expectEqualStrings("julia>", extractPromptLine("julia> "));
     try std.testing.expectEqualStrings("", extractPromptLine("\n  \n"));
     try std.testing.expectEqualStrings("", extractPromptLine(""));
+}
+
+test "looksLikeReadyPrompt accepts prompts and rejects output" {
+    try std.testing.expect(looksLikeReadyPrompt(">>>"));
+    try std.testing.expect(looksLikeReadyPrompt(">"));
+    try std.testing.expect(looksLikeReadyPrompt("In [3]:"));
+    try std.testing.expect(looksLikeReadyPrompt("julia>"));
+    try std.testing.expect(looksLikeReadyPrompt("dbname=#"));
+    try std.testing.expect(looksLikeReadyPrompt("$"));
+    try std.testing.expect(!looksLikeReadyPrompt(""));
+    try std.testing.expect(!looksLikeReadyPrompt("2"));
+    try std.testing.expect(!looksLikeReadyPrompt("TypeError: unsupported operand"));
+    try std.testing.expect(!looksLikeReadyPrompt("this is a very long line of output that should not be treated as a prompt at all"));
 }
 
 test "ai chat REPL kind parses Python Codex and Claude Code aliases" {
