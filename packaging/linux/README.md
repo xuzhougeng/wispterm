@@ -12,7 +12,7 @@ submission.
 | `com.wispterm.terminal.metainfo.xml` | AppStream metainfo (Flathub / GNOME Software). |
 | `build-appimage.sh` | Builds `WispTerm-<version>-x86_64.AppImage`. |
 | `com.wispterm.terminal.yaml` | Flatpak manifest (**template — not yet built/tested**). |
-| `../../.github/workflows/linux-release.yml` | CI: builds SDL3 + the AppImage on tag push. |
+| `../../.github/workflows/linux-release.yml` | CI: on a version tag, builds SDL3 + the AppImage and attaches it to the GitHub release (with a Linux notes section). Mirrors the macOS/Windows release workflows. |
 
 Icon source: `assets/wispterm.png` (256×256), installed to
 `hicolor/256x256/apps/wispterm.png`.
