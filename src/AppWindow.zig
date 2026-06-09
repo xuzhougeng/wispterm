@@ -4306,7 +4306,7 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
             try out.appendSlice(allocator, ",\"cursorY\":");
             try out.print(allocator, "{d}", .{cursor_y});
             try out.appendSlice(allocator, ",\"snapshot\":\"");
-            const snapshot = buildRemoteSurfaceSnapshot(allocator, entry.surface) catch null;
+            const snapshot = buildRemoteSurfaceSnapshot(allocator, entry.surface, remote_snapshot.default_max_history_rows) catch null;
             defer if (snapshot) |text| allocator.free(text);
             if (snapshot) |text| try remote.appendJsonString(out, allocator, text);
             try out.append(allocator, '"');
@@ -4783,19 +4783,21 @@ fn clearWeixinTranscriptCache() void {
     g_weixin_transcript_owned = &.{};
 }
 
-fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface) ![]u8 {
+fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface, max_history_rows: usize) ![]u8 {
     surface.render_state.mutex.lock();
     defer surface.render_state.mutex.unlock();
     return remote_snapshot.allocTerminalSnapshot(
         allocator,
         &surface.terminal,
-        remote_snapshot.default_max_history_rows,
+        max_history_rows,
     );
 }
 
 pub fn activeSurfaceSnapshot(allocator: std.mem.Allocator) ?[]u8 {
     const surface = activeSurface() orelse return null;
-    return buildRemoteSurfaceSnapshot(allocator, surface) catch null;
+    // Jupyter-URL detection / web-remote mirror want the full scrollback, not the
+    // smaller agent budget.
+    return buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.default_max_history_rows) catch null;
 }
 
 const AgentSurfaceLocation = struct {
@@ -4830,7 +4832,7 @@ fn makeAgentToolSurface(
         .id = try allocator.dupe(u8, surface.remote_id[0..]),
         .title = try allocator.dupe(u8, surface.getTitle()),
         .cwd = try allocator.dupe(u8, surface.getCwd() orelse surface.getInitialCwd() orelse ""),
-        .snapshot = buildRemoteSurfaceSnapshot(allocator, surface) catch try allocator.dupe(u8, ""),
+        .snapshot = buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows) catch try allocator.dupe(u8, ""),
         .tab_index = tab_index,
         .focused = focused,
         .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
@@ -4877,7 +4879,7 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
 fn agentSurfaceSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator, surface_ptr: *anyopaque) anyerror![]u8 {
     _ = ctx;
     const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
-    return buildRemoteSurfaceSnapshot(allocator, surface);
+    return buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows);
 }
 
 fn agentWriteSurface(ctx: *anyopaque, surface_ptr: *anyopaque, data: []const u8) bool {

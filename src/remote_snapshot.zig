@@ -4,6 +4,12 @@ const jupyter_detect = @import("jupyter_detect.zig");
 
 pub const default_max_history_rows: usize = 10_000;
 
+/// Smaller history budget for the live agent/Copilot snapshot path. The full
+/// active screen is always included; only this many recent scrollback rows are
+/// prepended, so the live interactive screen at the bottom is never crowded out
+/// or truncated away. WeChat's remote path keeps the larger default.
+pub const agent_max_history_rows: usize = 400;
+
 const RowSpace = enum {
     active,
     screen,
@@ -142,6 +148,31 @@ test "remote terminal snapshot includes scrollback before active screen" {
 fn snapshotRowCount(snapshot: []const u8) usize {
     if (snapshot.len == 0) return 0;
     return std.mem.count(u8, snapshot, "\r\n") + 1;
+}
+
+test "agent snapshot caps history to the most recent rows but keeps the active screen" {
+    var terminal = try ghostty_vt.Terminal.init(std.testing.allocator, .{
+        .cols = 16,
+        .rows = 3,
+        .max_scrollback = 4096,
+    });
+    defer terminal.deinit(std.testing.allocator);
+
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    var i: usize = 1;
+    while (i <= 13) : (i += 1) {
+        var buf: [32]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "row{d}\r\n", .{i}) catch unreachable;
+        stream.nextSlice(line);
+    }
+
+    // Cap history to 2 rows: oldest scrollback dropped, active screen kept.
+    const snapshot = try allocTerminalSnapshot(std.testing.allocator, &terminal, 2);
+    defer std.testing.allocator.free(snapshot);
+
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "row1\r\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "row13") != null);
 }
 
 test "soft-wrapped line is joined into one logical line (no \\r\\n mid-wrap)" {

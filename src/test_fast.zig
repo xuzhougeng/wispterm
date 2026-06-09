@@ -63,6 +63,7 @@ test {
     _ = @import("ai_chat_input_text.zig");
     _ = @import("ai_chat_composer.zig");
     _ = @import("web_search.zig");
+    _ = @import("agent_prompt_answer.zig");
     _ = @import("web_read.zig");
     _ = @import("web_read_cache.zig");
     _ = @import("pubmed.zig");
