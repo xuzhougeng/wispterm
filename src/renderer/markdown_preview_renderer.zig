@@ -135,7 +135,7 @@ fn renderFooter(
     ui_pipeline.fillQuad(panel_x, 0, panel_w, FOOTER_HEIGHT, card_bg);
     ui_pipeline.fillQuad(panel_x, FOOTER_HEIGHT - 1, panel_w, 1, border);
 
-    const badge = switch (panel.g_kind) {
+    const badge = switch (panel.kind()) {
         .markdown => "MD",
         .text => "TXT",
         .csv => "CSV",
@@ -173,17 +173,17 @@ fn renderDocument(
     const body_h = window_height - body_top - body_bottom;
     if (body_h <= 0) return;
 
-    if (panel.g_kind == .image) {
+    if (panel.kind() == .image) {
         renderImageDocument(panel_x, panel_w, window_height, body_top, body_h, normal, muted, border);
         return;
     }
-    if (markdown_preview.delimiterForKind(panel.g_kind)) |delimiter| {
+    if (markdown_preview.delimiterForKind(panel.kind())) |delimiter| {
         renderDelimitedDocument(panel_x, panel_w, window_height, body_top, body_h, delimiter, normal, muted, strong, accent, code_bg, border);
         return;
     }
 
     const row_h = @max(22, font.g_titlebar_cell_height + LINE_GAP);
-    var y_from_top: f32 = body_top - panel.g_scroll_offset;
+    var y_from_top: f32 = body_top - panel.scrollOffset();
     const max_w = panel_w - PAD_X * 2;
 
     var in_code = false;
@@ -248,7 +248,7 @@ fn renderDelimitedDocument(
     const content_w = panel_w - PAD_X * 2;
     if (content_w <= 0) return;
 
-    switch (panel.g_load_status) {
+    switch (panel.loadStatus()) {
         .loading => {
             renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Loading preview...", muted);
             return;
@@ -322,7 +322,7 @@ fn renderDelimitedDocument(
                 continue;
             }
 
-            const row_top = body_top + row_h + @as(f32, @floatFromInt(data_row_idx)) * row_h - panel.g_scroll_offset;
+            const row_top = body_top + row_h + @as(f32, @floatFromInt(data_row_idx)) * row_h - panel.scrollOffset();
             data_row_idx += 1;
             if (rendered_rows >= MAX_RENDER_LINES) break;
             if (row_top > body_top + body_h) break;
@@ -604,7 +604,7 @@ fn renderImageDocument(
     const content_w = panel_w - PAD_X * 2;
     if (content_w <= 0) return;
 
-    switch (panel.g_load_status) {
+    switch (panel.loadStatus()) {
         .loading => {
             renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Loading preview...", muted);
             return;
@@ -774,7 +774,7 @@ fn renderMarkdownLine(
     var left_rule: ?[3]f32 = null;
     var underline = false;
 
-    if (panel.g_kind == .text) {
+    if (panel.kind() == .text) {
         text = cleanPlain(&clean_buf, raw_line);
     } else if (in_code.*) {
         color = accent;

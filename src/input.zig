@@ -3468,7 +3468,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 file_explorer.g_focused = false;
                 if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
                 if (hitTestMarkdownPreviewHeader(xpos, ypos)) return;
-                if (markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready) {
+                if (markdown_preview_panel.kind() == .image and markdown_preview_panel.loadStatus() == .ready) {
                     g_markdown_preview_image_dragging = true;
                     g_markdown_preview_image_hover = true;
                     g_markdown_preview_image_drag_last_x = xpos;
@@ -3854,7 +3854,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
             if (g_markdown_preview_image_dragging) {
                 g_markdown_preview_image_dragging = false;
-                const cursor_shape: platform_cursor.Shape = if (hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready)
+                const cursor_shape: platform_cursor.Shape = if (hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.kind() == .image and markdown_preview_panel.loadStatus() == .ready)
                     .size_all
                 else
                     .arrow;
@@ -4276,7 +4276,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
             platform_cursor.set(.arrow);
             g_markdown_preview_resize_hover = false;
         }
-        const over_preview_image = hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready;
+        const over_preview_image = hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.kind() == .image and markdown_preview_panel.loadStatus() == .ready;
         if (over_preview_image) {
             platform_cursor.set(.size_all);
             g_markdown_preview_image_hover = true;
@@ -4607,7 +4607,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
     if (hitTestMarkdownPreviewPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) {
-        if (markdown_preview_panel.g_kind == .image) {
+        if (markdown_preview_panel.kind() == .image) {
             _ = markdown_preview_panel.zoomImageBySteps(mouseWheelUnits(ev.delta), ev.delta > 0);
         } else {
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
