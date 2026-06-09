@@ -174,8 +174,11 @@ pub fn main() !void {
     defer app.deinit();
     ai_chat.loadAccessRules(allocator);
 
-    // App now lives at a stable address; start the WeChat direct bridge (no-op
-    // unless weixin-direct-enabled is set).
+    // App now lives at a stable address; start app-owned background services
+    // before opening the first window.
+    app.startPortForwarding(&cfg);
+
+    // Start the WeChat direct bridge (no-op unless weixin-direct-enabled is set).
     app.startWeixin(&cfg);
 
     try app.run();

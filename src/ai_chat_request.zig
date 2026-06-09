@@ -11,6 +11,7 @@ const ai_skill_distill = @import("ai_skill_distill.zig");
 const ai_chat_tools = @import("ai_chat_tools.zig");
 const web_search = @import("web_search.zig");
 const web_read = @import("web_read.zig");
+const pubmed = @import("pubmed.zig");
 const ai_chat_types = @import("ai_chat_types.zig");
 
 // Type aliases from ai_chat_protocol
@@ -193,6 +194,34 @@ pub fn webReadThreadMain(req: *ai_chat.WebReadRequest) void {
 
     const text = web_read.formatForUser(allocator, req.target, &result) catch {
         ai_chat.appendWebSearchResult(session, "Out of memory formatting content.");
+        return;
+    };
+    defer allocator.free(text);
+    ai_chat.appendWebSearchResult(session, text);
+}
+
+/// Background worker for one `$pubmed` command. Owns `req`; frees it on exit.
+/// Runs the two-call NCBI search and appends the formatted articles to the
+/// transcript. Reuses `appendWebSearchResult` (generic local tool message).
+pub fn pubMedThreadMain(req: *ai_chat.WebPubMedRequest) void {
+    defer req.deinit();
+    const allocator = req.allocator;
+    const session = req.session;
+    if (session.closing.load(.acquire)) return;
+
+    var results = pubmed.executeSearch(allocator, req.query, .{ .max_results = 10 }) catch |err| {
+        const text = pubmed.formatErrorText(allocator, err) catch {
+            ai_chat.appendWebSearchResult(session, pubmed.errorText(err));
+            return;
+        };
+        defer allocator.free(text);
+        ai_chat.appendWebSearchResult(session, text);
+        return;
+    };
+    defer results.deinit();
+
+    const text = pubmed.formatForUser(allocator, req.query, results.items) catch {
+        ai_chat.appendWebSearchResult(session, "Out of memory formatting PubMed results.");
         return;
     };
     defer allocator.free(text);

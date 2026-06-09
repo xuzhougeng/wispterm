@@ -259,6 +259,90 @@ test "input: settings page arrow navigation requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: port forwarding arrow navigation requests a repaint" {
+    const allocator = std.testing.allocator;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    if (!tab.spawnPortForwardingTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > previous_count) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(arrow_down_event);
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+test "input: port forwarding form letter keys remain text input" {
+    const allocator = std.testing.allocator;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    if (!tab.spawnPortForwardingTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > previous_count) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    try std.testing.expect(AppWindow.portForwardingOpenNew());
+    handleChar(.{ .codepoint = 'P' });
+    handleKey(.{ .key_code = 0x4E, .ctrl = false, .shift = false, .alt = false });
+    handleChar(.{ .codepoint = 'n' });
+
+    const session = AppWindow.activePortForwarding() orelse return error.ExpectedPortForwardingTab;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const form = session.model.form() orelse return error.ExpectedPortForwardingForm;
+    try std.testing.expectEqualStrings("Local proxyPn", form.rule.name());
+}
+
+test "input: port forwarding new command suppresses its follow-up char event" {
+    const allocator = std.testing.allocator;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    if (!tab.spawnPortForwardingTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > previous_count) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    handleKey(.{ .key_code = 0x4E, .ctrl = false, .shift = false, .alt = false });
+    handleChar(.{ .codepoint = 'n' });
+
+    const session = AppWindow.activePortForwarding() orelse return error.ExpectedPortForwardingTab;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const form = session.model.form() orelse return error.ExpectedPortForwardingForm;
+    try std.testing.expectEqualStrings("Local proxy", form.rule.name());
+}
+
 // Ties the fix end-to-end: a consumed overlay key must make the next render-gate
 // evaluation decide to render (the exact signal the main loop builds), instead of
 // blocking until an incidental wake — that decision IS the anti-lag invariant.
@@ -388,6 +472,7 @@ threadlocal var g_ai_transcript_selecting: bool = false;
 threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_select_auto_copy: bool = false;
 threadlocal var g_ai_history_suppress_refresh_char: bool = false;
+threadlocal var g_port_forwarding_suppress_command_char: ?u21 = null;
 pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
 pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
@@ -1174,6 +1259,17 @@ fn handleChar(ev: platform_input.CharEvent) void {
         }
         return;
     }
+    if (AppWindow.activePortForwarding() != null) {
+        if (g_port_forwarding_suppress_command_char) |codepoint| {
+            const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
+            g_port_forwarding_suppress_command_char = null;
+            if (suppress) return;
+        }
+        if (!ev.ctrl and !ev.alt and !ev.super) {
+            _ = AppWindow.portForwardingInsertChar(ev.codepoint);
+        }
+        return;
+    }
     // Skill Center has no text input; swallow character input so the rescan
     // hotkey ('r') and other keys never leak to the terminal/copilot.
     if (AppWindow.activeSkillCenter() != null) {
@@ -1637,6 +1733,81 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             },
             0x52 => if (plain and !ev.shift) {
                 g_ai_history_suppress_refresh_char = AppWindow.aiHistoryScanLocalNow();
+                return;
+            },
+            else => {},
+        }
+        return;
+    }
+
+    if (AppWindow.activePortForwarding() != null) {
+        const plain = !ev.ctrl and !ev.alt and !ev.super;
+        const overlay_kind = AppWindow.portForwardingOverlayKind() orelse .none;
+        const form_active = overlay_kind == .form;
+        const overlay_active = overlay_kind != .none;
+        switch (ev.key_code) {
+            platform_input.key_up => {
+                if (form_active) {
+                    _ = AppWindow.portForwardingFormMove(-1);
+                } else if (!overlay_active) {
+                    _ = AppWindow.portForwardingMove(-1);
+                }
+                return;
+            },
+            platform_input.key_down => {
+                if (form_active) {
+                    _ = AppWindow.portForwardingFormMove(1);
+                } else if (!overlay_active) {
+                    _ = AppWindow.portForwardingMove(1);
+                }
+                return;
+            },
+            platform_input.key_tab => {
+                if (form_active) _ = AppWindow.portForwardingFormMove(1);
+                return;
+            },
+            platform_input.key_enter => {
+                if (overlay_active) _ = AppWindow.portForwardingConfirmOrApply();
+                return;
+            },
+            platform_input.key_escape => {
+                _ = AppWindow.portForwardingCancelOrClose();
+                return;
+            },
+            platform_input.key_backspace => {
+                if (form_active) _ = AppWindow.portForwardingBackspace();
+                return;
+            },
+            platform_input.key_space => if (plain and !ev.shift) {
+                if (form_active) {
+                    _ = AppWindow.portForwardingFormToggle();
+                } else if (!overlay_active) {
+                    _ = AppWindow.portForwardingToggleSelected();
+                }
+                return;
+            },
+            0x4E => if (plain and !ev.shift) {
+                if (!overlay_active and AppWindow.portForwardingOpenNew()) {
+                    g_port_forwarding_suppress_command_char = 'n';
+                }
+                return;
+            },
+            0x45 => if (plain and !ev.shift) {
+                if (!overlay_active and AppWindow.portForwardingOpenEdit()) {
+                    g_port_forwarding_suppress_command_char = 'e';
+                }
+                return;
+            },
+            0x44 => if (plain and !ev.shift) {
+                if (!overlay_active) _ = AppWindow.portForwardingOpenDeleteConfirm();
+                return;
+            },
+            0x52 => if (plain and !ev.shift) {
+                if (!overlay_active) _ = AppWindow.portForwardingRestartSelected();
+                return;
+            },
+            0x41 => if (plain and !ev.shift) {
+                if (!overlay_active) _ = AppWindow.portForwardingToggleAutoStart();
                 return;
             },
             else => {},

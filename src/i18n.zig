@@ -29,6 +29,7 @@ pub const Strings = struct {
     settings_shell: []const u8,
     settings_default_ai: []const u8,
     settings_weixin_direct: []const u8,
+    settings_distill_suggest: []const u8,
     settings_language: []const u8,
     settings_raw_config: []const u8,
     settings_restore_defaults: []const u8,
@@ -54,6 +55,9 @@ pub const Strings = struct {
     sl_sessions_detail: []const u8,
     sl_skill_center: []const u8,
     sl_skill_center_detail: []const u8,
+    pf_title: []const u8,
+    pf_detail: []const u8,
+    pf_legend: []const u8,
 
     // —— Skill Center 面板 ——
     sc_local: []const u8,
@@ -215,6 +219,7 @@ const en = Strings{
     .settings_shell = "Shell for new tabs",
     .settings_default_ai = "Default AI",
     .settings_weixin_direct = "WeChat direct",
+    .settings_distill_suggest = "Distill skill suggestions",
     .settings_language = "Language",
     .settings_raw_config = "Raw config file",
     .settings_restore_defaults = "Restore default settings",
@@ -239,6 +244,9 @@ const en = Strings{
     .sl_sessions_detail = "Browse Codex / Claude Code sessions",
     .sl_skill_center = "Skill Center",
     .sl_skill_center_detail = "Inventory Claude Code / Codex skills across servers",
+    .pf_title = "Port Forwarding",
+    .pf_detail = "Manage SSH port forwarding rules",
+    .pf_legend = "[n] new   [e] edit   [space] start/stop   [r] restart   [a] auto   [d] delete   [esc] close/cancel",
 
     .sc_local = "Local",
     .sc_scanning = "No skills found. Scanning…",
@@ -394,6 +402,7 @@ const zh_CN = Strings{
     .settings_shell = "新标签页 Shell",
     .settings_default_ai = "默认 AI",
     .settings_weixin_direct = "微信直连",
+    .settings_distill_suggest = "技能沉淀建议",
     .settings_language = "语言",
     .settings_raw_config = "原始配置文件",
     .settings_restore_defaults = "恢复默认设置",
@@ -418,6 +427,9 @@ const zh_CN = Strings{
     .sl_sessions_detail = "浏览 Codex / Claude Code 会话",
     .sl_skill_center = "技能中心",
     .sl_skill_center_detail = "盘点各服务器上的 Claude Code / Codex 技能",
+    .pf_title = "端口转发",
+    .pf_detail = "管理 SSH 端口转发规则",
+    .pf_legend = "[n] 新建   [e] 编辑   [space] 启停   [r] 重启   [a] 自动启动   [d] 删除   [esc] 关闭/取消",
 
     .sc_local = "本地",
     .sc_scanning = "未发现技能，扫描中…",
@@ -700,6 +712,7 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
         .show_whats_new => "更新内容",
         .update_skills => "更新技能",
         .open_skill_center => "技能中心",
+        .open_port_forwarding => "端口转发",
     };
 }
 
@@ -748,6 +761,7 @@ pub fn commandDetail(action: CommandAction) ?[]const u8 {
         .show_whats_new => "查看本版本的更新内容",
         .update_skills => "从 GitHub 下载最新技能",
         .open_skill_center => "盘点各服务器上的 Claude Code / Codex 技能",
+        .open_port_forwarding => "管理 SSH 端口转发规则",
     };
 }
 

@@ -50,6 +50,9 @@ const ai_history_types = @import("ai_history_types.zig");
 pub const ai_history_session = @import("ai_history_session.zig");
 pub const ai_history_source = @import("ai_history_source.zig");
 pub const skill_center = @import("skill_center.zig");
+pub const port_forwarding = @import("port_forwarding.zig");
+const port_forward_manager = @import("port_forward_manager.zig");
+const port_forward_rule = @import("port_forward_rule.zig");
 const skill_scan = @import("skill_scan.zig");
 const skill_transfer_cmd = @import("skill_transfer_cmd.zig");
 const remote_file = @import("platform/remote_file.zig");
@@ -91,6 +94,7 @@ else
 pub const ai_chat_renderer = @import("renderer/ai_chat_renderer.zig");
 pub const ai_history_renderer = @import("renderer/ai_history_renderer.zig");
 pub const skill_center_renderer = @import("renderer/skill_center_renderer.zig");
+pub const port_forwarding_renderer = @import("renderer/port_forwarding_renderer.zig");
 const ai_sidebar = @import("ai_sidebar.zig");
 pub const ui_perf = @import("ui_perf.zig");
 const log = std.log.scoped(.app_window);
@@ -182,6 +186,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
         .command_timeout_ms = app.ai_agent_command_timeout_ms,
         .output_limit = app.ai_agent_output_limit,
         .memory_enabled = app.ai_memory_enabled,
+        .distill_suggest_enabled = app.ai_distill_suggest,
     });
     ai_chat.setDefaultWorkingDir(app.ai_agent_working_dir);
     @import("web_search.zig").setJinaApiKey(app.jina_api_key);
@@ -881,6 +886,99 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
     }
 }
 
+fn pfStatusKind(status: port_forward_manager.StatusKind) port_forwarding_renderer.StatusKind {
+    return switch (status) {
+        .stopped => .stopped,
+        .starting => .starting,
+        .running => .running,
+        .error_ => .error_,
+        .missing_profile => .missing_profile,
+    };
+}
+
+fn pfRowAt(ctx: *anyopaque, i: usize) port_forwarding_renderer.RowView {
+    const manager: *port_forward_manager.Manager = @ptrCast(@alignCast(ctx));
+    if (manager.rowAt(i)) |row| {
+        var out: port_forwarding_renderer.RowView = .{
+            .rule = row.rule,
+            .status = pfStatusKind(row.status),
+            .auto_start = row.auto_start,
+        };
+        out.reason_len = copyPortForwardingReason(out.reason_buf[0..], row.reason());
+        return out;
+    }
+    return .{
+        .rule = port_forward_rule.defaultReverseProxy(""),
+        .status = .stopped,
+        .auto_start = false,
+    };
+}
+
+fn copyPortForwardingReason(dest: []u8, reason: []const u8) usize {
+    const n = @min(dest.len, reason.len);
+    @memcpy(dest[0..n], reason[0..n]);
+    return n;
+}
+
+fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int, titlebar_offset: f32, left_panels_w: f32, right_panels_w: f32) void {
+    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    clearWithBackground(fb_width, fb_height);
+    titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
+    file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    const session = active_tab.port_forwarding_session orelse return;
+    const app = g_app orelse return;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const row_count = app.port_forward_manager.count();
+    session.model.move(0, row_count);
+    const overlay_text = switch (session.model.overlay) {
+        .none, .form => "",
+        .confirm_delete => |*c| c.text,
+    };
+    const form_view: ?port_forwarding_renderer.FormView = switch (session.model.overlay) {
+        .form => |form| .{
+            .mode = if (form.mode == .new) "New forwarding rule" else "Edit forwarding rule",
+            .focus = form.focus,
+            .rule = form.rule,
+        },
+        else => null,
+    };
+    const draw: port_forwarding_renderer.DrawContext = .{
+        .bg = g_theme.background,
+        .fg = g_theme.foreground,
+        .accent = g_theme.cursor_color,
+        .cell_h = font.g_titlebar_cell_height,
+        .fillQuad = ui_pipeline.fillQuad,
+        .fillQuadAlpha = ui_pipeline.fillQuadAlpha,
+        .renderTextLimited = titlebar.renderTextLimited,
+        .glyphAdvance = titlebar.titlebarGlyphAdvance,
+    };
+    const view: port_forwarding_renderer.View = .{
+        .title = i18n.s().pf_title,
+        .legend = i18n.s().pf_legend,
+        .count = row_count,
+        .selected = session.model.sel_row,
+        .scroll = session.model.scroll,
+        .ctx = @ptrCast(&app.port_forward_manager),
+        .rowAt = pfRowAt,
+        .overlay_text = overlay_text,
+        .form = form_view,
+    };
+    port_forwarding_renderer.render(
+        draw,
+        view,
+        @floatFromInt(fb_width),
+        @floatFromInt(fb_height),
+        titlebar_offset,
+        left_panels_w,
+        aiHistoryContentWidth(fb_width, left_panels_w, right_panels_w),
+    );
+}
+
 /// Renderer accessor: library skill name at index i (read under the session lock).
 fn scNameAt(ctx: *anyopaque, i: usize) []const u8 {
     const m: *const skill_center.PanelModel = @ptrCast(@alignCast(ctx));
@@ -1005,6 +1103,219 @@ pub fn activeAiHistory() ?*ai_history_session.Session {
 
 pub fn activeSkillCenter() ?*skill_center.Session {
     return tab.activeSkillCenter();
+}
+
+pub fn activePortForwarding() ?*port_forwarding.Session {
+    return tab.activePortForwarding();
+}
+
+pub const PortForwardingOverlayKind = enum {
+    none,
+    form,
+    confirm_delete,
+};
+
+pub fn portForwardingOverlayKind() ?PortForwardingOverlayKind {
+    const session = activePortForwarding() orelse return null;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    return switch (session.model.overlay) {
+        .none => .none,
+        .form => .form,
+        .confirm_delete => .confirm_delete,
+    };
+}
+
+fn activePortForwardManager() ?*port_forward_manager.Manager {
+    const app = g_app orelse return null;
+    return &app.port_forward_manager;
+}
+
+pub fn portForwardingMove(delta: isize) bool {
+    const session = activePortForwarding() orelse return false;
+    const row_count = if (activePortForwardManager()) |manager| manager.count() else 0;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    session.model.move(delta, row_count);
+    markUiDirty();
+    return true;
+}
+
+pub fn portForwardingToggleSelected() bool {
+    const session = activePortForwarding() orelse return false;
+    const manager = activePortForwardManager() orelse return false;
+    const app = g_app orelse return false;
+    session.mutex.lock();
+    const idx = session.model.sel_row;
+    session.mutex.unlock();
+    const row = manager.rowAt(idx) orelse return false;
+    const ok = switch (row.status) {
+        .running, .starting => manager.stopIndex(idx),
+        else => manager.startIndex(idx, app.ssh_legacy_algorithms),
+    };
+    markUiDirty();
+    return ok;
+}
+
+pub fn portForwardingRestartSelected() bool {
+    const session = activePortForwarding() orelse return false;
+    const manager = activePortForwardManager() orelse return false;
+    const app = g_app orelse return false;
+    session.mutex.lock();
+    const idx = session.model.sel_row;
+    session.mutex.unlock();
+    const ok = manager.restartIndex(idx, app.ssh_legacy_algorithms);
+    markUiDirty();
+    return ok;
+}
+
+pub fn portForwardingToggleAutoStart() bool {
+    const session = activePortForwarding() orelse return false;
+    const manager = activePortForwardManager() orelse return false;
+    session.mutex.lock();
+    const idx = session.model.sel_row;
+    session.mutex.unlock();
+    const ok = manager.toggleAutoStart(idx);
+    if (ok) _ = manager.save();
+    markUiDirty();
+    return ok;
+}
+
+pub fn portForwardingOpenNew() bool {
+    const session = activePortForwarding() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    session.model.openNewForm("") catch return false;
+    markUiDirty();
+    return true;
+}
+
+pub fn portForwardingOpenEdit() bool {
+    const session = activePortForwarding() orelse return false;
+    const manager = activePortForwardManager() orelse return false;
+    session.mutex.lock();
+    const idx = session.model.sel_row;
+    session.mutex.unlock();
+    const row = manager.rowAt(idx) orelse return false;
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    session.model.openEditForm(idx, row.rule) catch return false;
+    markUiDirty();
+    return true;
+}
+
+pub fn portForwardingOpenDeleteConfirm() bool {
+    const session = activePortForwarding() orelse return false;
+    const manager = activePortForwardManager() orelse return false;
+    session.mutex.lock();
+    const idx = session.model.sel_row;
+    session.mutex.unlock();
+    const row = manager.rowAt(idx) orelse return false;
+    const label = if (row.rule.name().len > 0) row.rule.name() else row.rule.profileName();
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    session.model.openDeleteConfirm(idx, label) catch return false;
+    markUiDirty();
+    return true;
+}
+
+pub fn portForwardingConfirmOrApply() bool {
+    const session = activePortForwarding() orelse return false;
+    const manager = activePortForwardManager() orelse return false;
+
+    var form_copy: ?port_forwarding.FormState = null;
+    var delete_index: ?usize = null;
+    session.mutex.lock();
+    switch (session.model.overlay) {
+        .form => |form| form_copy = form,
+        .confirm_delete => |confirm| delete_index = confirm.index,
+        .none => {
+            session.mutex.unlock();
+            return false;
+        },
+    }
+    session.mutex.unlock();
+
+    var ok = false;
+    if (form_copy) |form| {
+        if (!form.rule.validate()) return false;
+        ok = switch (form.mode) {
+            .new => blk: {
+                manager.addRule(form.rule) catch break :blk false;
+                break :blk true;
+            },
+            .edit => if (form.edit_index) |idx| manager.updateRule(idx, form.rule) else false,
+        };
+    } else if (delete_index) |idx| {
+        ok = manager.deleteRule(idx);
+    }
+
+    if (!ok) return false;
+    _ = manager.save();
+    const row_count = manager.count();
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    session.model.clearOverlay();
+    session.model.move(0, row_count);
+    markUiDirty();
+    return true;
+}
+
+pub fn portForwardingCancelOrClose() bool {
+    const session = activePortForwarding() orelse return false;
+    session.mutex.lock();
+    const had_overlay = session.model.overlay != .none;
+    if (had_overlay) session.model.clearOverlay();
+    session.mutex.unlock();
+    if (had_overlay) {
+        markUiDirty();
+        return true;
+    }
+    input.closePanelOrTab();
+    return true;
+}
+
+pub fn portForwardingFormMove(delta: isize) bool {
+    const session = activePortForwarding() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const form = session.model.form() orelse return false;
+    form.moveFocus(delta);
+    markUiDirty();
+    return true;
+}
+
+pub fn portForwardingFormToggle() bool {
+    const session = activePortForwarding() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const form = session.model.form() orelse return false;
+    form.toggleFocused();
+    markUiDirty();
+    return true;
+}
+
+pub fn portForwardingInsertChar(codepoint: u21) bool {
+    if (codepoint > std.math.maxInt(u8)) return false;
+    const session = activePortForwarding() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const form = session.model.form() orelse return false;
+    form.insertChar(@intCast(codepoint));
+    markUiDirty();
+    return true;
+}
+
+pub fn portForwardingBackspace() bool {
+    const session = activePortForwarding() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const form = session.model.form() orelse return false;
+    form.backspace();
+    markUiDirty();
+    return true;
 }
 
 fn scMoveSel(sel: *usize, len: usize, delta: isize) void {
@@ -2811,6 +3122,14 @@ pub fn spawnSkillCenterTab() bool {
     return true;
 }
 
+pub fn spawnPortForwardingTab() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.spawnPortForwardingTab(allocator)) return false;
+    clearUiStateOnTabChange();
+    markUiDirty();
+    return true;
+}
+
 pub fn reopenAiChatTabFromHistorySessionId(session_id: []const u8) bool {
     if (tab.switchToAiTabBySessionId(session_id)) {
         clearUiStateOnTabChange();
@@ -3343,6 +3662,8 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .skill_center) {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .port_forwarding) {
+                renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (activeSurface()) |surface| {
                 // Single surface: simple render path
                 const rend = &surface.surface_renderer;
@@ -3583,6 +3904,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
         .command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
         .output_limit = cfg.@"ai-agent-output-limit",
         .memory_enabled = cfg.@"ai-memory-enabled",
+        .distill_suggest_enabled = cfg.@"ai-distill-suggest",
     });
     ai_chat.setDefaultWorkingDir(cfg.@"ai-agent-working-dir");
     @import("web_search.zig").setJinaApiKey(cfg.@"jina-api-key");
@@ -6153,6 +6475,10 @@ fn runMainLoop(self: *AppWindow) !void {
         pollUpdateCheck(self.app);
         pollSkillUpdate(self.app);
         if (activeSkillCenter()) |sc_session| pollSkillCenterOp(sc_session);
+        if (self.app.port_forward_manager.tick() and activePortForwarding() != null) {
+            g_force_rebuild = true;
+            g_cells_valid = false;
+        }
 
         // Process pending resize (coalesced, like Ghostty)
         // We wait for RESIZE_COALESCE_MS after last resize event before applying.
@@ -6331,7 +6657,7 @@ fn runMainLoop(self: *AppWindow) !void {
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
             syncRemoteLayout(allocator);
             syncImeCaretPosition(win, split_count);
-            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .skill_center and synchronizedOutputPendingForVisibleSplits(split_count)) {
+            if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 std.Thread.sleep(std.time.ns_per_ms);
                 continue;
             }
@@ -6344,6 +6670,8 @@ fn runMainLoop(self: *AppWindow) !void {
                 renderAiHistoryFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .skill_center) {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
+            } else if (active_tab.kind == .port_forwarding) {
+                renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (post_process.g_post_enabled) {
                 // Post-processing path: only render focused surface for now
                 if (activeSurface()) |surface| {

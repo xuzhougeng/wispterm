@@ -20,6 +20,7 @@ const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
 const weixin = @import("weixin/controller.zig");
 const weixin_types = @import("weixin/types.zig");
+const port_forward_manager_mod = @import("port_forward_manager.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_open_url = @import("platform/open_url.zig");
 const update_check = @import("update_check.zig");
@@ -97,6 +98,8 @@ remote_client: ?*remote.Client,
 // WeChat direct (embedded ilink). Independent from the remote relay client.
 weixin_controller: ?*weixin.Controller,
 
+port_forward_manager: port_forward_manager_mod.Manager,
+
 // AI agent config
 ai_agent_enabled: bool,
 ai_agent_permission: ai_chat.AgentPermission,
@@ -105,6 +108,7 @@ ai_agent_output_limit: u32,
 ai_agent_working_dir: []const u8,
 jina_api_key: []const u8,
 ai_memory_enabled: bool,
+ai_distill_suggest: bool,
 
 // Session persistence
 restore_tabs_on_startup: bool,
@@ -242,6 +246,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .remote_client = remote_client_ptr,
         // Created later by startWeixin(), once App lives at a stable address.
         .weixin_controller = null,
+        .port_forward_manager = port_forward_manager_mod.Manager.init(allocator),
         .ai_agent_enabled = cfg.@"ai-agent-enabled",
         .ai_agent_permission = cfg.@"ai-agent-permission",
         .ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
@@ -249,6 +254,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .ai_agent_working_dir = ai_agent_working_dir,
         .jina_api_key = jina_api_key,
         .ai_memory_enabled = cfg.@"ai-memory-enabled",
+        .ai_distill_suggest = cfg.@"ai-distill-suggest",
         .restore_tabs_on_startup = cfg.@"restore-tabs-on-startup",
         .auto_update_check = cfg.@"auto-update-check",
         .whats_new_on_update = cfg.@"whats-new-on-update",
@@ -309,6 +315,30 @@ fn startRemoteClient(
         std.debug.print("Remote client disabled: {}\n", .{err});
         return null;
     };
+}
+
+/// Load app-owned SSH forwarding rules and start enabled auto-start entries.
+/// Call after `App.init` returns and the App value is at its final address; the
+/// manager contains a mutex and child handles, so it should not be used before
+/// the App has settled.
+pub fn startPortForwarding(self: *App, cfg: *const Config) void {
+    if (platform_dirs.pathInConfigDir(self.allocator, "port_forwards")) |path| {
+        defer self.allocator.free(path);
+        self.port_forward_manager.setStoragePath(path) catch |err| {
+            std.debug.print("Port forwarding storage disabled: {}\n", .{err});
+            return;
+        };
+        if (self.port_forward_manager.load()) |loaded| {
+            if (loaded) {
+                std.debug.print("Port forwarding rules loaded from {s}\n", .{path});
+            }
+        } else |err| {
+            std.debug.print("Port forwarding rules load failed: {}\n", .{err});
+        }
+        self.port_forward_manager.startAuto(cfg.@"ssh-legacy-algorithms");
+    } else |err| {
+        std.debug.print("Port forwarding storage unavailable: {}\n", .{err});
+    }
 }
 
 // WeChat direct (embedded ilink). App owns the controller's lifecycle; the
@@ -420,6 +450,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.replaceStr(&self.ai_agent_working_dir, cfg.@"ai-agent-working-dir");
     self.replaceStr(&self.jina_api_key, cfg.@"jina-api-key");
     self.ai_memory_enabled = cfg.@"ai-memory-enabled";
+    self.ai_distill_suggest = cfg.@"ai-distill-suggest";
     self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
     self.auto_update_check = cfg.@"auto-update-check";
     self.whats_new_on_update = cfg.@"whats-new-on-update";
@@ -1052,6 +1083,8 @@ pub fn deinit(self: *App) void {
         }
         self.weixin_controller = null;
     }
+
+    self.port_forward_manager.deinit();
 
     // Free owned string copies
     self.allocator.free(self.font_family);

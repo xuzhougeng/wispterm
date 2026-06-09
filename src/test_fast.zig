@@ -45,6 +45,10 @@ test {
     _ = @import("agent_file_edit.zig");
     _ = @import("agent_file_copy.zig");
     _ = @import("ssh_connection.zig");
+    _ = @import("port_forward_rule.zig");
+    _ = @import("ssh_profile_store.zig");
+    _ = @import("port_forward_manager.zig");
+    _ = @import("port_forwarding.zig");
     _ = @import("openssh_config_import.zig");
     _ = @import("apprt/window_drag_region.zig");
     _ = @import("apprt/window_registry.zig");
@@ -62,6 +66,7 @@ test {
     _ = @import("agent_prompt_answer.zig");
     _ = @import("web_read.zig");
     _ = @import("web_read_cache.zig");
+    _ = @import("pubmed.zig");
     _ = @import("ai_loop_schedule.zig");
     _ = @import("ai_skill_distill.zig");
     _ = @import("ai_history_types.zig");
@@ -76,6 +81,7 @@ test {
     _ = @import("skill_inventory_cache.zig");
     _ = @import("skill_center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
+    _ = @import("renderer/port_forwarding_renderer.zig");
     _ = @import("skill_pairing.zig");
     _ = @import("skill_transfer_cmd.zig");
     _ = @import("skill_transfer.zig");

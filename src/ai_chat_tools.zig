@@ -33,6 +33,7 @@ const platform_agent_prompt = @import("platform/agent_prompt.zig");
 const ai_agent_access = @import("ai_agent_access.zig");
 const web_search = @import("web_search.zig");
 const web_read = @import("web_read.zig");
+const pubmed = @import("pubmed.zig");
 const agent_memory = @import("agent_memory.zig");
 
 /// Number of output lines included in a copilot context block.
@@ -224,6 +225,13 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const url = jsonStringArg(args.value, "url") orelse return ctx.allocator.dupe(u8, "Missing url");
         return webReadTool(ctx.allocator, url, ctx.settings.working_dir);
     }
+    if (std.mem.eql(u8, call.name, "pubmed")) {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const query = jsonStringArg(args.value, "query") orelse return ctx.allocator.dupe(u8, "Missing query");
+        const max_results = jsonIntArg(args.value, "max_results");
+        return pubMedTool(ctx.allocator, query, max_results);
+    }
     if (std.mem.startsWith(u8, call.name, "memory_") and !ctx.settings.memory_enabled) {
         return ctx.allocator.dupe(u8, "Memory is disabled (ai-memory-enabled = false).");
     }
@@ -369,6 +377,15 @@ fn webReadTool(allocator: std.mem.Allocator, target_in: []const u8, working_dir:
         return web_read.formatErrorText(allocator, err);
     defer result.deinit();
     return web_read.formatForAgent(allocator, target, &result);
+}
+
+/// Agent `pubmed` tool: NCBI PubMed search with abstracts, formatted for the model.
+fn pubMedTool(allocator: std.mem.Allocator, query: []const u8, max_results: ?u32) ![]u8 {
+    const max: usize = if (max_results) |m| @min(@max(m, 1), 20) else 10;
+    var results = pubmed.executeSearch(allocator, query, .{ .max_results = max }) catch |err|
+        return pubmed.formatErrorText(allocator, err);
+    defer results.deinit();
+    return pubmed.formatForAgent(allocator, query, results.items);
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,10 +1168,8 @@ fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []
     }
 
     return switch (repl) {
-        .r => rSessionEvalTool(ctx, host, surface, code, timeout_ms),
-        .python => pythonSessionEvalTool(ctx, host, surface, code, timeout_ms),
+        .r, .python, .plain => lineReplEvalTool(ctx, host, surface, repl, code, timeout_ms),
         .codex, .claude_code => plainReplInputTool(ctx, host, surface, repl, code, timeout_ms),
-        .plain => plainReplInputTool(ctx, host, surface, repl, code, timeout_ms),
     };
 }
 
@@ -1266,6 +1281,9 @@ pub fn allocPlainReplInput(allocator: std.mem.Allocator, repl: ReplKind, surface
 }
 
 pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, repl: ReplKind, text: []const u8, timeout_ms: u32) ![]u8 {
+    // Line REPLs (.r/.python/.plain) go through lineReplEvalTool instead; this
+    // tool is only for the agent TUIs, whose completion is judged by busy markers.
+    std.debug.assert(repl == .codex or repl == .claude_code);
     if (repl == .codex) {
         // Codex's TUI treats a fast input burst as a paste and folds a trailing
         // Enter into the pasted text, leaving a literal newline that never
@@ -1287,19 +1305,9 @@ pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: Tool
         }
     }
 
-    if (repl == .codex or repl == .claude_code) {
-        return waitForAgentAppReplResult(ctx, host, surface, repl, timeout_ms);
-    }
-
-    const wait_ms = @min(@max(timeout_ms, 500), 5000);
-    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(wait_ms));
-    while (std.time.milliTimestamp() < deadline) {
-        if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
-        std.Thread.sleep(100 * std.time.ns_per_ms);
-    }
-
-    const latest = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch return ctx.allocator.dupe(u8, "Input sent; failed to read terminal snapshot.");
-    return truncateTailOwned(ctx.allocator, ctx.settings, latest);
+    // Only Codex / Claude Code reach this tool now (line REPLs use
+    // lineReplEvalTool); both settle on the busy-marker-aware waiter.
+    return waitForAgentAppReplResult(ctx, host, surface, repl, timeout_ms);
 }
 
 fn replSnapshotLooksBusy(repl: ReplKind, snapshot: []const u8) bool {
@@ -1413,82 +1421,120 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
     );
 }
 
-fn rSessionEvalTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, code: []const u8, timeout_ms: u32) ![]u8 {
-    const nonce = std.time.milliTimestamp();
-    const code_literal = try rStringLiteral(ctx.allocator, code);
-    defer ctx.allocator.free(code_literal);
+/// Run code in a line-oriented REPL (Python, R, Node, IPython, Julia, psql, ...)
+/// the way a human does: capture the current prompt, type the raw code + Enter,
+/// then wait until the screen settles back at a ready prompt. No sentinel wrapper
+/// is injected, so the REPL echoes the user's code verbatim and the value of a
+/// bare expression (e.g. `1+1`) is displayed normally. Errors appear as the REPL's
+/// native traceback in the returned snapshot; there is no synthetic status code.
+fn lineReplEvalTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, repl: ReplKind, code: []const u8, timeout_ms: u32) ![]u8 {
+    // Learn the prompt currently shown so we can recognise its return. Read the
+    // live per-surface snapshot (collectSnapshot is empty on the worker thread).
+    const before = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+        try ctx.allocator.dupe(u8, surface.snapshot);
+    defer ctx.allocator.free(before);
+    const captured_prompt = try ctx.allocator.dupe(u8, extractPromptLine(before));
+    defer ctx.allocator.free(captured_prompt);
 
-    const wrapped = try std.fmt.allocPrint(
-        ctx.allocator,
-        "cat(\"\\n__WISPTERM_AGENT_START_{d}__\\n\", sep=\"\")\n.wispterm_agent_status <- 0L\n.wispterm_agent_code <- {s}\ntryCatch({{\n  eval(parse(text=.wispterm_agent_code), envir=.GlobalEnv)\n}}, error=function(e) {{\n  .wispterm_agent_status <<- 1L\n  message(\"Error: \", conditionMessage(e))\n}})\ncat(\"\\n__WISPTERM_AGENT_END_{d}__:\", .wispterm_agent_status, \"\\n\", sep=\"\")\nrm(.wispterm_agent_status, .wispterm_agent_code)\r",
-        .{ nonce, code_literal, nonce },
-    );
-    defer ctx.allocator.free(wrapped);
-
-    if (!host.writeSurface(host.ctx, surface.ptr, wrapped)) {
-        return ctx.allocator.dupe(u8, "Failed to write to R terminal surface.");
+    const input = try allocPlainReplInput(ctx.allocator, repl, surface, code);
+    defer ctx.allocator.free(input);
+    if (!host.writeSurface(host.ctx, surface.ptr, input)) {
+        return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
     }
 
-    const start_marker = try std.fmt.allocPrint(ctx.allocator, "__WISPTERM_AGENT_START_{d}__", .{nonce});
-    defer ctx.allocator.free(start_marker);
-    const end_marker = try std.fmt.allocPrint(ctx.allocator, "__WISPTERM_AGENT_END_{d}__", .{nonce});
-    defer ctx.allocator.free(end_marker);
-    return waitForSentinelResult(ctx, host, surface, "R", start_marker, end_marker, timeout_ms);
+    return waitForReplPromptReturn(ctx, host, surface, repl, captured_prompt, timeout_ms);
 }
 
-fn pythonSessionEvalTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, code: []const u8, timeout_ms: u32) ![]u8 {
-    const nonce = std.time.milliTimestamp();
-    const code_literal = try pythonStringLiteral(ctx.allocator, code);
-    defer ctx.allocator.free(code_literal);
+/// Poll the live per-surface snapshot until the screen has been unchanged for
+/// `quiet_ms` (after a `min_wait_ms` floor) AND a ready prompt has returned, then
+/// hand back the screen. On timeout, return the latest screen tagged as still in
+/// progress so the model does not treat a partial result as final.
+fn waitForReplPromptReturn(
+    ctx: *const ToolContext,
+    host: ToolHost,
+    surface: ToolSurface,
+    repl: ReplKind,
+    captured_prompt: []const u8,
+    timeout_ms: u32,
+) ![]u8 {
+    const wait_ms = @max(timeout_ms, 1000);
+    // Line REPLs respond faster than the agent TUIs (waitForAgentAppReplResult
+    // uses 1500/750), so settle a bit sooner. The min_wait_ms floor also defends
+    // against returning before the typed input has echoed and reset the screen.
+    const quiet_ms: i64 = 1000;
+    const min_wait_ms: i64 = 500;
+    const started = std.time.milliTimestamp();
+    const deadline = started + @as(i64, @intCast(wait_ms));
 
-    const wrapper = try std.fmt.allocPrint(
-        ctx.allocator,
-        "print(\"\\\\n__WISPTERM_AGENT_START_{d}__\")\n__wispterm_agent_status = 0\n__wispterm_agent_code = {s}\ntry:\n    exec(__wispterm_agent_code, globals())\nexcept Exception:\n    __wispterm_agent_status = 1\n    import traceback\n    traceback.print_exc()\nprint(\"\\\\n__WISPTERM_AGENT_END_{d}__:%s\" % __wispterm_agent_status)\ndel __wispterm_agent_status, __wispterm_agent_code",
-        .{ nonce, code_literal, nonce },
-    );
-    defer ctx.allocator.free(wrapper);
+    var last_text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+        try ctx.allocator.dupe(u8, surface.snapshot);
+    defer ctx.allocator.free(last_text);
+    var last_change_ms = started;
 
-    const wrapper_literal = try pythonStringLiteral(ctx.allocator, wrapper);
-    defer ctx.allocator.free(wrapper_literal);
-    const wrapped = try std.fmt.allocPrint(ctx.allocator, "exec({s})\r", .{wrapper_literal});
-    defer ctx.allocator.free(wrapped);
+    while (std.time.milliTimestamp() < deadline) {
+        if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+        std.Thread.sleep(150 * std.time.ns_per_ms);
+        const now = std.time.milliTimestamp();
 
-    if (!host.writeSurface(host.ctx, surface.ptr, wrapped)) {
-        return ctx.allocator.dupe(u8, "Failed to write to Python terminal surface.");
-    }
+        const text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch continue;
+        if (std.mem.eql(u8, last_text, text)) {
+            ctx.allocator.free(text);
+        } else {
+            ctx.allocator.free(last_text);
+            last_text = text;
+            last_change_ms = now;
+        }
 
-    const start_marker = try std.fmt.allocPrint(ctx.allocator, "__WISPTERM_AGENT_START_{d}__", .{nonce});
-    defer ctx.allocator.free(start_marker);
-    const end_marker = try std.fmt.allocPrint(ctx.allocator, "__WISPTERM_AGENT_END_{d}__", .{nonce});
-    defer ctx.allocator.free(end_marker);
-    return waitForSentinelResult(ctx, host, surface, "Python", start_marker, end_marker, timeout_ms);
-}
-
-pub fn rStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-    return doubleQuotedStringLiteral(allocator, text);
-}
-
-pub fn pythonStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-    return doubleQuotedStringLiteral(allocator, text);
-}
-
-fn doubleQuotedStringLiteral(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.append(allocator, '"');
-    for (text) |ch| {
-        switch (ch) {
-            '\\' => try out.appendSlice(allocator, "\\\\"),
-            '"' => try out.appendSlice(allocator, "\\\""),
-            '\n' => try out.appendSlice(allocator, "\\n"),
-            '\r' => try out.appendSlice(allocator, "\\r"),
-            '\t' => try out.appendSlice(allocator, "\\t"),
-            else => try out.append(allocator, ch),
+        const quiesced = now - started >= min_wait_ms and now - last_change_ms >= quiet_ms;
+        if (quiesced and promptReturned(last_text, captured_prompt)) {
+            return truncateOwned(ctx.allocator, ctx.settings, try ctx.allocator.dupe(u8, last_text));
         }
     }
-    try out.append(allocator, '"');
-    return out.toOwnedSlice(allocator);
+
+    const note = try std.fmt.allocPrint(
+        ctx.allocator,
+        "\n[{s} REPL still busy after {d} ms; treat this as in progress, not a final result]",
+        .{ repl.label(), wait_ms },
+    );
+    defer ctx.allocator.free(note);
+    const combined = try std.fmt.allocPrint(ctx.allocator, "{s}{s}", .{ last_text, note });
+    return truncateOwned(ctx.allocator, ctx.settings, combined);
+}
+
+/// The trailing prompt of a terminal snapshot: the last non-empty line, trimmed
+/// of surrounding whitespace. Returns "" when no non-empty line exists. Used to
+/// learn a REPL's prompt dynamically so completion detection is language-agnostic.
+fn extractPromptLine(snapshot: []const u8) []const u8 {
+    var it = std.mem.splitBackwardsScalar(u8, snapshot, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        if (trimmed.len != 0) return trimmed;
+    }
+    return "";
+}
+
+/// Heuristic: does a trailing line look like an interactive REPL prompt waiting
+/// for input? True for `>>>`, `>`, `In [3]:`, `julia>`, `dbname=#`, `$`, ... .
+/// Conservative on length so long output lines are not mistaken for a prompt.
+/// This is only the *fallback* signal; an exact match against the prompt captured
+/// before typing (see `promptReturned`) is the primary, precise signal.
+fn looksLikeReadyPrompt(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len == 0 or trimmed.len > 64) return false;
+    return switch (trimmed[trimmed.len - 1]) {
+        '>', ':', '$', '#' => true,
+        else => false,
+    };
+}
+
+/// True when the snapshot's trailing line shows the REPL is back at a ready
+/// prompt: it equals the prompt captured before we typed, or it matches the
+/// generic ready-prompt heuristic. The exact match handles prompts that stayed
+/// the same; the heuristic handles prompts that changed (e.g. `$ ` -> `>>> `).
+fn promptReturned(snapshot: []const u8, captured_prompt: []const u8) bool {
+    const line = extractPromptLine(snapshot);
+    if (captured_prompt.len != 0 and std.mem.eql(u8, line, captured_prompt)) return true;
+    return looksLikeReadyPrompt(line);
 }
 
 const AGENT_START_PREFIX = "__WISPTERM_AGENT_START_";
@@ -2998,12 +3044,31 @@ test "shell exec refuses bare REPL launchers but allows run-and-exit invocations
     }
 }
 
-test "ai chat R string literal escapes code for REPL eval" {
-    const allocator = std.testing.allocator;
-    const literal = try rStringLiteral(allocator, "print(\"hello\")\npath <- \"C:\\\\tmp\"");
-    defer allocator.free(literal);
+test "extractPromptLine returns the trailing non-empty prompt line" {
+    try std.testing.expectEqualStrings(">>>", extractPromptLine("hello\nworld\n>>> "));
+    try std.testing.expectEqualStrings("In [3]:", extractPromptLine("Out[2]: 5\n\nIn [3]: "));
+    try std.testing.expectEqualStrings("julia>", extractPromptLine("julia> "));
+    try std.testing.expectEqualStrings("", extractPromptLine("\n  \n"));
+    try std.testing.expectEqualStrings("", extractPromptLine(""));
+}
 
-    try std.testing.expectEqualStrings("\"print(\\\"hello\\\")\\npath <- \\\"C:\\\\\\\\tmp\\\"\"", literal);
+test "looksLikeReadyPrompt accepts prompts and rejects output" {
+    try std.testing.expect(looksLikeReadyPrompt(">>>"));
+    try std.testing.expect(looksLikeReadyPrompt(">"));
+    try std.testing.expect(looksLikeReadyPrompt("In [3]:"));
+    try std.testing.expect(looksLikeReadyPrompt("julia>"));
+    try std.testing.expect(looksLikeReadyPrompt("dbname=#"));
+    try std.testing.expect(looksLikeReadyPrompt("$"));
+    try std.testing.expect(!looksLikeReadyPrompt(""));
+    try std.testing.expect(!looksLikeReadyPrompt("2"));
+    try std.testing.expect(!looksLikeReadyPrompt("TypeError: unsupported operand"));
+    try std.testing.expect(!looksLikeReadyPrompt("this is a very long line of output that should not be treated as a prompt at all"));
+}
+
+test "promptReturned matches the captured prompt or a generic prompt" {
+    try std.testing.expect(promptReturned("foo\n>>> ", ">>>"));
+    try std.testing.expect(promptReturned("$ python\nPython 3.12\n>>> ", "$"));
+    try std.testing.expect(!promptReturned("computing...\n42", ">>>"));
 }
 
 test "ai chat REPL kind parses Python Codex and Claude Code aliases" {
@@ -3080,12 +3145,42 @@ test "codex repl input submits the Enter keystroke separately from the message b
     try std.testing.expectEqualStrings("hello codex\r", host_ctx.all_writes[0..host_ctx.all_len]);
 }
 
-test "ai chat Python string literal escapes code for REPL eval" {
+test "line REPL eval types raw code and settles on the returned prompt" {
     const allocator = std.testing.allocator;
-    const literal = try pythonStringLiteral(allocator, "print(\"hello\")\npath = \"C:\\\\tmp\"");
-    defer allocator.free(literal);
+    var host_ctx = ReplWaitTestHost.Ctx{ .busy_until = 2, .settled_text = ">>> 1+1\n2\n>>> " };
+    var dummy: u8 = 0;
+    const ctx = ToolContext{
+        .allocator = allocator,
+        .ctx = &dummy,
+        .tool_host = ReplWaitTestHost.host(&host_ctx),
+        .tool_snapshot = null,
+        .settings = .{},
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const surface = ToolSurface{
+        .id = @constCast("surface-py"),
+        .title = @constCast("python"),
+        .cwd = @constCast("/home/xzg"),
+        .snapshot = @constCast(">>> "),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = false,
+        .agent_app = .none,
+        .agent_state = .none,
+        .agent_confidence = 0,
+        .ptr = @ptrCast(&host_ctx),
+    };
 
-    try std.testing.expectEqualStrings("\"print(\\\"hello\\\")\\npath = \\\"C:\\\\\\\\tmp\\\"\"", literal);
+    const result = try lineReplEvalTool(&ctx, ReplWaitTestHost.host(&host_ctx), surface, .python, "1+1", 5000);
+    defer allocator.free(result);
+
+    // Raw code typed (code + Enter), NOT an exec()-wrapped sentinel blob.
+    try std.testing.expectEqualStrings("1+1\r", host_ctx.all_writes[0..host_ctx.all_len]);
+    try std.testing.expect(std.mem.indexOf(u8, result, "__WISPTERM_AGENT_START_") == null);
+    // The REPL's own output is handed back for the model to read.
+    try std.testing.expect(std.mem.indexOf(u8, result, "2") != null);
 }
 
 test "agent control-key tokens parse to raw bytes, plain text is unaffected" {
@@ -4019,4 +4114,25 @@ test "terminal_answer_prompt sends nothing when no prompt is awaiting" {
 
     try std.testing.expectEqual(@as(usize, 0), host_ctx.all_len);
     try std.testing.expect(std.mem.indexOf(u8, result, "awaiting an answer") != null);
+}
+
+test "executeToolCall pubmed reports missing query" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{},
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("1"),
+        .name = @constCast("pubmed"),
+        .arguments = @constCast("{}"),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Missing query") != null);
 }

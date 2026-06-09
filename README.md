@@ -19,6 +19,7 @@ English | [简体中文](README.zh-CN.md)
 - **Splits and tabs** - vertical/horizontal splits, tab strip, focus-follows-mouse, equalize sizes
 - **File Explorer and previews** - browse local, WSL, and SSH files; preview Markdown/text/tables/images without leaving the terminal
 - **Embedded browser panel** - open web URLs in a side WebView2 panel or the default browser, with persistent SSH loopback port forwarding for profile sessions
+- **SSH port forwarding manager** - silently manage local and reverse SSH forwarding rules from a dedicated tab
 - **AI Agent sessions** - launch OpenAI-compatible Agent tabs, configure profiles, restore history, export Markdown transcripts, and distill reusable local skills
 - **AI history browser** - browse local, WSL, and SSH Codex / Claude Code / Reasonix history and resume sessions from their original project directories
 - **Kitty Graphics protocol** - display inline images and PDFs from remote shells via `imgcat.py` / `pdfcat.py`
@@ -30,6 +31,7 @@ English | [简体中文](README.zh-CN.md)
 - [File Explorer and previews](docs/file-explorer.md)
 - [AI Agent sessions](docs/ai-agent.md)
 - [Media, background images, and inline remote images](docs/media.md)
+- [SSH port forwarding](docs/port-forwarding.md)
 - [Development, architecture, packaging, and releases](docs/development.md)
 - [FAQ](docs/faq.md)
 

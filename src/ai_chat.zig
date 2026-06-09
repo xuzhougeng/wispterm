@@ -144,6 +144,7 @@ const ai_chat_title = @import("ai_chat_title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ai_chat_request = @import("ai_chat_request.zig");
 const web_search = @import("web_search.zig");
+const pubmed = @import("pubmed.zig");
 const agent_memory = @import("agent_memory.zig");
 
 pub const ChatRequest = struct {
@@ -237,6 +238,26 @@ pub const WebReadRequest = struct {
     pub fn deinit(self: *WebReadRequest) void {
         self.allocator.free(self.target);
         self.allocator.free(self.working_dir);
+        self.allocator.destroy(self);
+    }
+};
+
+/// Lightweight background job for a `$pubmed` user command. Owns its query.
+/// Mirrors `WebSearchRequest`; joined by `Session.deinit` via `request_thread`.
+pub const WebPubMedRequest = struct {
+    allocator: std.mem.Allocator,
+    session: *Session,
+    query: []u8,
+
+    pub fn create(allocator: std.mem.Allocator, session: *Session, query: []const u8) !*WebPubMedRequest {
+        const self = try allocator.create(WebPubMedRequest);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .session = session, .query = try allocator.dupe(u8, query) };
+        return self;
+    }
+
+    pub fn deinit(self: *WebPubMedRequest) void {
+        self.allocator.free(self.query);
         self.allocator.destroy(self);
     }
 };
@@ -1759,6 +1780,7 @@ pub const Session = struct {
             switch (web_cmd) {
                 .websearch => self.startWebSearchRequest(arg),
                 .webread => self.startWebReadRequest(arg),
+                .pubmed => self.startPubMedRequest(arg),
             }
             return;
         }
@@ -2500,6 +2522,62 @@ pub const Session = struct {
         self.mutex.unlock();
     }
 
+    /// Run a `$pubmed <query>` command on a background thread. Mirrors
+    /// `startWebSearchRequest` but needs no API key (NCBI is anonymous). Called
+    /// AFTER the caller has unlocked `self.mutex`.
+    fn startPubMedRequest(self: *Session, query_in: []const u8) void {
+        self.mutex.lock();
+        if (self.request_thread) |thread| {
+            if (self.request_inflight) {
+                self.clearSubmittedInputLocked();
+                self.appendLocalToolMessageLocked("Wait for the current request to finish.") catch {};
+                self.setStatusLocked("Ready");
+                self.mutex.unlock();
+                return;
+            }
+            self.request_thread = null;
+            self.mutex.unlock();
+            thread.join();
+            self.mutex.lock();
+        }
+
+        const query = std.mem.trim(u8, query_in, " \t\r\n");
+        if (query.len == 0) {
+            self.clearSubmittedInputLocked();
+            self.appendLocalToolMessageLocked("Usage: $pubmed <query>") catch self.setStatusLocked("Out of memory");
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        }
+
+        const req = WebPubMedRequest.create(self.allocator, self, query) catch {
+            self.clearSubmittedInputLocked();
+            self.appendLocalToolMessageLocked("Out of memory.") catch {};
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        };
+        self.clearSubmittedInputLocked();
+        self.stop_requested.store(false, .release);
+        self.request_stopping = false;
+        self.request_inflight = true;
+        self.setStatusLocked("Searching PubMed…");
+        self.mutex.unlock();
+
+        const thread = std.Thread.spawn(.{}, ai_chat_request.pubMedThreadMain, .{req}) catch {
+            req.deinit();
+            self.mutex.lock();
+            self.request_inflight = false;
+            self.appendLocalToolMessageLocked("Failed to start PubMed search thread.") catch {};
+            self.setStatusLocked("Ready");
+            self.mutex.unlock();
+            return;
+        };
+        self.mutex.lock();
+        self.request_thread = thread;
+        self.mutex.unlock();
+    }
+
     /// Assumes self.mutex is held. Returns the captured history change for the
     /// caller to notify after unlocking.
     fn clearMessagesLocked(self: *Session) ?PendingHistoryChange {
@@ -3150,6 +3228,9 @@ pub const Session = struct {
     }
 
     fn maybeAppendDistillSuggestionLocked(self: *Session) void {
+        // Gated by config `ai-distill-suggest` (off by default): when disabled the
+        // Copilot never auto-appends the "distill this into a skill?" prompt.
+        if (!currentAgentSettings().distill_suggest_enabled) return;
         const turns = self.allocDistillTurnsLocked() catch return;
         defer self.allocator.free(turns);
         const should = ai_skill_distill.shouldSuggest(.{
@@ -4458,11 +4539,15 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
     try session.loadSkillSuggestionsFromRoots(&.{root ++ "/skills"});
     session.appendInputText("$p");
 
-    try std.testing.expectEqual(@as(usize, 1), session.composerSuggestionCount());
-    const suggestion = session.composerSuggestionAt(0).?;
+    // "$p" matches both the reserved "$pubmed" command and the installed "pdf" skill.
+    try std.testing.expectEqual(@as(usize, 2), session.composerSuggestionCount());
+    // Reserved commands come first; index 0 = pubmed, index 1 = pdf skill.
+    const suggestion = session.composerSuggestionAt(1).?;
     try std.testing.expectEqual(ComposerSuggestionKind.skill, suggestion.kind);
     try std.testing.expectEqualStrings("pdf", suggestion.text);
 
+    // Navigate down once to select the "pdf" skill (index 1) and then confirm.
+    session.handleKey(.{ .key = input_key.Key.arrow_down });
     session.handleKey(.{ .key = input_key.Key.enter });
 
     try std.testing.expectEqualStrings("$pdf ", session.input());
@@ -6112,6 +6197,8 @@ test "ai chat distill confirm without candidate is local only" {
 
 test "ai chat appends automatic distill suggestion after tool-heavy result" {
     const a = std.testing.allocator;
+    configureAgent(.{ .distill_suggest_enabled = true });
+    defer configureAgent(.{});
     var session = Session{ .allocator = a };
     defer {
         if (session.distill_candidate) |*candidate| candidate.deinit(a);
@@ -6130,6 +6217,31 @@ test "ai chat appends automatic distill suggestion after tool-heavy result" {
     try std.testing.expectEqual(Role.tool, session.messages.items[4].role);
     try std.testing.expect(!session.messages.items[4].persist_to_history);
     try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[4].content, 1, "Distill it into a skill"));
+}
+
+test "ai chat skips automatic distill suggestion when disabled" {
+    const a = std.testing.allocator;
+    // Default: ai-distill-suggest is off, so the prompt must not auto-appear
+    // even after a tool-heavy turn that the heuristic would otherwise flag.
+    configureAgent(.{});
+    defer configureAgent(.{});
+    var session = Session{ .allocator = a };
+    defer {
+        if (session.distill_candidate) |*candidate| candidate.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec one"), .persist_to_history = false });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec two"), .persist_to_history = false });
+    session.request_inflight = true;
+
+    appendAssistantResult(&session, .{ .content = @constCast("done") }, 0);
+
+    try std.testing.expect(!session.distill_suggestion_pending);
+    // Only the appended assistant message — no extra distill-suggestion tool row.
+    try std.testing.expectEqual(@as(usize, 4), session.messages.items.len);
+    try std.testing.expectEqual(Role.assistant, session.messages.items[3].role);
 }
 
 test "ai chat escape dismisses pending distill suggestion before rewind" {
