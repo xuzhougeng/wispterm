@@ -384,17 +384,19 @@ fn renderOverlayText(draw: DrawContext, text: []const u8, content_x: f32, conten
 }
 
 fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32, window_height: f32, top: f32, fg: [3]f32, accent: [3]f32) void {
-    const box_w = @max(1.0, @min(content_w - 32, 720));
-    const box_h = @max(draw.cell_h * 11.0, 220);
-    const box_x = content_x + @max(0.0, (content_w - box_w) / 2);
+    const box_w = @max(1.0, @min(@max(1.0, content_w - 32), 720));
     const available_h = @max(1.0, window_height - top - legendHeight(draw.cell_h));
+    const desired_h = @max(draw.cell_h * 11.0, 220);
+    const box_h = @min(desired_h, available_h);
+    const box_x = content_x + @max(0.0, (content_w - box_w) / 2);
     const box_top = top + @max(8.0, (available_h - box_h) / 2);
     const box_y = yFromTop(window_height, box_top, box_h);
-    const content_right = box_x + box_w - 18;
+    const content_right = @max(box_x, box_x + box_w - 18);
 
     draw.fillQuadAlpha(box_x, box_y, box_w, box_h, draw.bg, 0.96);
     draw.fillQuadAlpha(box_x, box_y, box_w, box_h, accent, 0.22);
-    _ = draw.renderTextLimited(form.mode, box_x + 18, yTextFromTop(draw, window_height, box_top + 16), fg, box_w - 36);
+    const title_x = box_x + @min(18.0, box_w);
+    _ = draw.renderTextLimited(form.mode, title_x, yTextFromTop(draw, window_height, box_top + 16), fg, clampedTextWidth(title_x, content_right, content_right - title_x));
 
     var field: usize = 0;
     while (field < 8) : (field += 1) {
@@ -402,11 +404,13 @@ fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32,
         const row_y = yFromTop(window_height, row_top, draw.cell_h);
         const text_y = yTextFromTop(draw, window_height, row_top);
         if (field == form.focus) {
-            draw.fillQuadAlpha(box_x + 12, row_y - 2, box_w - 24, draw.cell_h + 6, accent, 0.20);
+            const focus_x = box_x + @min(12.0, box_w);
+            draw.fillQuadAlpha(focus_x, row_y - 2, clampedTextWidth(focus_x, box_x + box_w, box_w), draw.cell_h + 6, accent, 0.20);
         }
         var value_buf: [32]u8 = undefined;
-        const label_x = box_x + 22;
-        const value_x = box_x + @min(190.0, @max(130.0, box_w * 0.34));
+        const label_x = box_x + @min(22.0, box_w);
+        const preferred_value_offset = @min(190.0, @max(72.0, box_w * 0.34));
+        const value_x = @min(content_right, box_x + preferred_value_offset);
         _ = draw.renderTextLimited(formFieldLabel(field), label_x, text_y, accent, clampedTextWidth(label_x, content_right, value_x - label_x - COL_GAP));
         _ = draw.renderTextLimited(formFieldValue(&form, field, &value_buf), value_x, text_y, fg, clampedTextWidth(value_x, content_right, content_right - value_x));
     }
@@ -630,6 +634,8 @@ test "port_forwarding_renderer: narrow row text widths stay within content" {
     };
 
     const Rows = struct {
+        marker: u8 = 0,
+
         fn rowAt(_: *anyopaque, index: usize) RowView {
             _ = index;
             return .{
@@ -654,6 +660,62 @@ test "port_forwarding_renderer: narrow row text widths stay within content" {
         .renderTextLimited = InstrumentedDraw.renderTextLimited,
         .glyphAdvance = InstrumentedDraw.glyphAdvance,
     };
+    var rows = Rows{};
+
+    render(draw, .{
+        .title = "Port Forwarding",
+        .legend = "Enter start/stop  n new",
+        .count = 1,
+        .selected = 0,
+        .scroll = 0,
+        .ctx = &rows,
+        .rowAt = Rows.rowAt,
+    }, width, 160, 0, 0, width);
+
+    try std.testing.expect(!InstrumentedDraw.bad_width);
+}
+
+test "port_forwarding_renderer: narrow form stays within non-negative draw bounds" {
+    const InstrumentedDraw = struct {
+        var bad_width: bool = false;
+
+        fn fillQuad(_: f32, _: f32, w: f32, h: f32, _: [3]f32) void {
+            if (std.math.isNan(w) or std.math.isNan(h) or w < 0.0 or h < 0.0) bad_width = true;
+        }
+        fn fillQuadAlpha(_: f32, _: f32, w: f32, h: f32, _: [3]f32, _: f32) void {
+            if (std.math.isNan(w) or std.math.isNan(h) or w < 0.0 or h < 0.0) bad_width = true;
+        }
+        fn renderTextLimited(text: []const u8, x: f32, _: f32, _: [3]f32, max_w: f32) f32 {
+            if (std.math.isNan(max_w) or max_w < 0.0) bad_width = true;
+            return x + @min(max_w, @as(f32, @floatFromInt(text.len)) * 8.0);
+        }
+        fn glyphAdvance(_: u32) f32 {
+            return 8;
+        }
+    };
+
+    const Rows = struct {
+        fn rowAt(_: *anyopaque, index: usize) RowView {
+            _ = index;
+            return .{
+                .rule = rule_mod.defaultReverseProxy("devbox"),
+                .status = .running,
+                .auto_start = true,
+            };
+        }
+    };
+
+    InstrumentedDraw.bad_width = false;
+    const draw = DrawContext{
+        .bg = .{ 0.02, 0.02, 0.02 },
+        .fg = .{ 0.95, 0.95, 0.95 },
+        .accent = .{ 0.2, 0.6, 1.0 },
+        .cell_h = 16,
+        .fillQuad = InstrumentedDraw.fillQuad,
+        .fillQuadAlpha = InstrumentedDraw.fillQuadAlpha,
+        .renderTextLimited = InstrumentedDraw.renderTextLimited,
+        .glyphAdvance = InstrumentedDraw.glyphAdvance,
+    };
 
     render(draw, .{
         .title = "Port Forwarding",
@@ -663,7 +725,12 @@ test "port_forwarding_renderer: narrow row text widths stay within content" {
         .scroll = 0,
         .ctx = undefined,
         .rowAt = Rows.rowAt,
-    }, width, 160, 0, 0, width);
+        .form = .{
+            .mode = "New forwarding rule",
+            .focus = 4,
+            .rule = rule_mod.defaultReverseProxy("devbox"),
+        },
+    }, 48, 80, 0, 0, 48);
 
     try std.testing.expect(!InstrumentedDraw.bad_width);
 }
