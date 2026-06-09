@@ -4,6 +4,10 @@ pub const NAME_MAX: usize = 96;
 pub const PROFILE_MAX: usize = 128;
 pub const HOST_MAX: usize = 64;
 
+const DIRECTION_TEXT_MAX: usize = 7;
+const PORT_TEXT_MAX: usize = 5;
+const BOOL_TEXT_MAX: usize = 5;
+
 pub const Direction = enum {
     local,
     reverse,
@@ -174,24 +178,39 @@ pub fn decodeRules(allocator: std.mem.Allocator, content: []const u8) ![]Rule {
 }
 
 pub fn decodeRuleLine(line: []const u8) ?Rule {
-    var fields: [9][128]u8 = undefined;
-    var lens: [9]usize = .{0} ** 9;
     var parts = std.mem.splitScalar(u8, line, '\t');
-    var idx: usize = 0;
-    while (idx < fields.len) : (idx += 1) {
-        const part = parts.next() orelse return null;
-        lens[idx] = decodeHexField(part, fields[idx][0..]) orelse return null;
-    }
+
+    var name_buf: [NAME_MAX]u8 = undefined;
+    const name_len = decodeHexField(parts.next() orelse return null, name_buf[0..]) orelse return null;
+    var profile_buf: [PROFILE_MAX]u8 = undefined;
+    const profile_len = decodeHexField(parts.next() orelse return null, profile_buf[0..]) orelse return null;
+    var direction_buf: [DIRECTION_TEXT_MAX]u8 = undefined;
+    const direction_len = decodeHexField(parts.next() orelse return null, direction_buf[0..]) orelse return null;
+    var local_host_buf: [HOST_MAX]u8 = undefined;
+    const local_host_len = decodeHexField(parts.next() orelse return null, local_host_buf[0..]) orelse return null;
+    var local_port_buf: [PORT_TEXT_MAX]u8 = undefined;
+    const local_port_len = decodeHexField(parts.next() orelse return null, local_port_buf[0..]) orelse return null;
+    var remote_host_buf: [HOST_MAX]u8 = undefined;
+    const remote_host_len = decodeHexField(parts.next() orelse return null, remote_host_buf[0..]) orelse return null;
+    var remote_port_buf: [PORT_TEXT_MAX]u8 = undefined;
+    const remote_port_len = decodeHexField(parts.next() orelse return null, remote_port_buf[0..]) orelse return null;
+    var enabled_buf: [BOOL_TEXT_MAX]u8 = undefined;
+    const enabled_len = decodeHexField(parts.next() orelse return null, enabled_buf[0..]) orelse return null;
+    var auto_start_buf: [BOOL_TEXT_MAX]u8 = undefined;
+    const auto_start_len = decodeHexField(parts.next() orelse return null, auto_start_buf[0..]) orelse return null;
+    if (parts.next() != null) return null;
+
     var rule: Rule = .{};
-    rule.setName(fields[0][0..lens[0]]);
-    rule.setProfileName(fields[1][0..lens[1]]);
-    rule.direction = Direction.parse(fields[2][0..lens[2]]) orelse return null;
-    rule.setLocalHost(fields[3][0..lens[3]]);
-    rule.local_port = parsePort(fields[4][0..lens[4]]) orelse return null;
-    rule.setRemoteHost(fields[5][0..lens[5]]);
-    rule.remote_port = parsePort(fields[6][0..lens[6]]) orelse return null;
-    rule.enabled = parseBool(fields[7][0..lens[7]]) orelse return null;
-    rule.auto_start = parseBool(fields[8][0..lens[8]]) orelse return null;
+    rule.setName(name_buf[0..name_len]);
+    rule.setProfileName(profile_buf[0..profile_len]);
+    rule.direction = Direction.parse(direction_buf[0..direction_len]) orelse return null;
+    rule.setLocalHost(local_host_buf[0..local_host_len]);
+    rule.local_port = parsePort(local_port_buf[0..local_port_len]) orelse return null;
+    rule.setRemoteHost(remote_host_buf[0..remote_host_len]);
+    rule.remote_port = parsePort(remote_port_buf[0..remote_port_len]) orelse return null;
+    rule.enabled = parseBool(enabled_buf[0..enabled_len]) orelse return null;
+    rule.auto_start = parseBool(auto_start_buf[0..auto_start_len]) orelse return null;
+    if (!rule.validate()) return null;
     return rule;
 }
 
@@ -211,7 +230,8 @@ fn appendHexField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)
 
 fn decodeHexField(value: []const u8, out: []u8) ?usize {
     if (value.len % 2 != 0) return null;
-    const len = @min(value.len / 2, out.len);
+    const len = value.len / 2;
+    if (len > out.len) return null;
     var i: usize = 0;
     while (i < len) : (i += 1) {
         const hi = hexValue(value[i * 2]) orelse return null;
@@ -260,18 +280,25 @@ test "port_forward_rule: validates loopback hosts and port range" {
 
 test "port_forward_rule: forward specs match ssh -L and -R semantics" {
     var rule = defaultReverseProxy("devbox");
+    rule.setRemoteHost("localhost");
+    rule.remote_port = 1111;
+    rule.setLocalHost("127.0.0.1");
+    rule.local_port = 2222;
+
     var buf: [128]u8 = undefined;
     try std.testing.expectEqualStrings(
-        "127.0.0.1:7890:127.0.0.1:7890",
+        "localhost:1111:127.0.0.1:2222",
         rule.forwardSpec(&buf).?,
     );
     try std.testing.expectEqualStrings("-R", rule.direction.flag());
 
     rule.direction = .local;
-    rule.local_port = 8888;
-    rule.remote_port = 8888;
+    rule.setLocalHost("localhost");
+    rule.local_port = 1111;
+    rule.setRemoteHost("127.0.0.1");
+    rule.remote_port = 2222;
     try std.testing.expectEqualStrings(
-        "127.0.0.1:8888:127.0.0.1:8888",
+        "localhost:1111:127.0.0.1:2222",
         rule.forwardSpec(&buf).?,
     );
     try std.testing.expectEqualStrings("-L", rule.direction.flag());
@@ -301,4 +328,104 @@ test "port_forward_rule: storage round trips two rules" {
     try std.testing.expectEqual(Direction.local, decoded[1].direction);
     try std.testing.expectEqualStrings("Jupyter", decoded[1].name());
     try std.testing.expect(!decoded[1].auto_start);
+}
+
+test "port_forward_rule: decoder rejects extra fields" {
+    var line: std.ArrayListUnmanaged(u8) = .empty;
+    defer line.deinit(std.testing.allocator);
+
+    try appendValidEncodedRuleForTest(std.testing.allocator, &line);
+    try line.append(std.testing.allocator, '\t');
+    try appendHexField(std.testing.allocator, &line, "extra");
+    try std.testing.expect(decodeRuleLine(line.items) == null);
+}
+
+test "port_forward_rule: decoder rejects malformed hex" {
+    try std.testing.expect(decodeRuleLine("GG") == null);
+}
+
+test "port_forward_rule: decoder rejects overlong fields" {
+    var line: std.ArrayListUnmanaged(u8) = .empty;
+    defer line.deinit(std.testing.allocator);
+
+    var too_long_name: [NAME_MAX + 1]u8 = undefined;
+    @memset(too_long_name[0..], 'n');
+    try appendEncodedFieldsForTest(std.testing.allocator, &line, &.{
+        too_long_name[0..],
+        "devbox",
+        "reverse",
+        "127.0.0.1",
+        "7890",
+        "127.0.0.1",
+        "7890",
+        "true",
+        "true",
+    });
+    try std.testing.expect(decodeRuleLine(line.items) == null);
+
+    line.clearRetainingCapacity();
+    var too_long_profile: [PROFILE_MAX + 1]u8 = undefined;
+    @memset(too_long_profile[0..], 'p');
+    try appendEncodedFieldsForTest(std.testing.allocator, &line, &.{
+        "Local proxy",
+        too_long_profile[0..],
+        "reverse",
+        "127.0.0.1",
+        "7890",
+        "127.0.0.1",
+        "7890",
+        "true",
+        "true",
+    });
+    try std.testing.expect(decodeRuleLine(line.items) == null);
+}
+
+test "port_forward_rule: decoder rejects invalid decoded rules" {
+    var line: std.ArrayListUnmanaged(u8) = .empty;
+    defer line.deinit(std.testing.allocator);
+
+    try appendEncodedFieldsForTest(std.testing.allocator, &line, &.{
+        "Local proxy",
+        "devbox",
+        "reverse",
+        "0.0.0.0",
+        "7890",
+        "127.0.0.1",
+        "7890",
+        "true",
+        "true",
+    });
+    try std.testing.expect(decodeRuleLine(line.items) == null);
+}
+
+test "port_forward_rule: forward specs reject invalid rules and small buffers" {
+    var rule = defaultReverseProxy("devbox");
+    rule.setLocalHost("0.0.0.0");
+    var buf: [128]u8 = undefined;
+    try std.testing.expect(rule.forwardSpec(&buf) == null);
+
+    rule = defaultReverseProxy("devbox");
+    var tiny_buf: [4]u8 = undefined;
+    try std.testing.expect(rule.forwardSpec(&tiny_buf) == null);
+}
+
+fn appendValidEncodedRuleForTest(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
+    try appendEncodedFieldsForTest(allocator, out, &.{
+        "Local proxy",
+        "devbox",
+        "reverse",
+        "127.0.0.1",
+        "7890",
+        "127.0.0.1",
+        "7890",
+        "true",
+        "true",
+    });
+}
+
+fn appendEncodedFieldsForTest(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), fields: []const []const u8) !void {
+    for (fields, 0..) |field, idx| {
+        if (idx > 0) try out.append(allocator, '\t');
+        try appendHexField(allocator, out, field);
+    }
 }
