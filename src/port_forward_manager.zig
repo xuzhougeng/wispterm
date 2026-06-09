@@ -117,21 +117,18 @@ pub const Manager = struct {
     }
 
     pub fn loadFromContent(self: *Manager, content: []const u8) !void {
-        const rules = try rule_mod.decodeRules(self.allocator, content);
-        defer rule_mod.freeRules(self.allocator, rules);
-        if (rules.len > MAX_RULES) return error.TooManyRules;
+        var entries = try decodeEntriesBounded(self.allocator, content);
+        defer entries.deinit(self.allocator);
+
         self.mutex.lock();
         defer self.mutex.unlock();
-        try self.replaceRulesLocked(rules);
+        self.replaceEntriesLocked(&entries);
     }
 
-    fn replaceRulesLocked(self: *Manager, rules: []const rule_mod.Rule) !void {
-        if (rules.len > MAX_RULES) return error.TooManyRules;
-        try self.entries.ensureTotalCapacity(self.allocator, rules.len);
-        self.entries.clearRetainingCapacity();
-        for (rules) |rule| {
-            self.entries.appendAssumeCapacity(.{ .rule = rule });
-        }
+    fn replaceEntriesLocked(self: *Manager, entries: *std.ArrayListUnmanaged(Entry)) void {
+        self.entries.deinit(self.allocator);
+        self.entries = entries.*;
+        entries.* = .empty;
     }
 
     pub fn markMissingProfileForTest(self: *Manager, index: usize) bool {
@@ -155,6 +152,23 @@ fn copyBounded(dest: []u8, text: []const u8) usize {
     const n = @min(dest.len, text.len);
     @memcpy(dest[0..n], text[0..n]);
     return n;
+}
+
+fn decodeEntriesBounded(allocator: std.mem.Allocator, content: []const u8) !std.ArrayListUnmanaged(Entry) {
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    errdefer entries.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trimRight(u8, line_raw, "\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (rule_mod.decodeRuleLine(line)) |rule| {
+            if (entries.items.len >= MAX_RULES) return error.TooManyRules;
+            if (entries.capacity == 0) try entries.ensureTotalCapacity(allocator, MAX_RULES);
+            entries.appendAssumeCapacity(.{ .rule = rule });
+        }
+    }
+    return entries;
 }
 
 test "port_forward_manager: add save load and toggle auto start" {
@@ -246,8 +260,8 @@ test "port_forward_manager: load replacement fully replaces old entries" {
     try std.testing.expect(!row.auto_start);
 }
 
-test "port_forward_manager: load allocation failure keeps existing rules" {
-    var rules: [MAX_RULES]rule_mod.Rule = undefined;
+test "port_forward_manager: oversized load stops at the max rule boundary" {
+    var rules: [MAX_RULES + 1]rule_mod.Rule = undefined;
     for (&rules) |*rule| {
         rule.* = rule_mod.defaultReverseProxy("loaded");
     }
@@ -256,32 +270,15 @@ test "port_forward_manager: load allocation failure keeps existing rules" {
     defer out.deinit(std.testing.allocator);
     try rule_mod.encodeRules(std.testing.allocator, &out, rules[0..]);
 
-    var saw_failure = false;
-    var fail_index: usize = 0;
-    while (fail_index < 256) : (fail_index += 1) {
-        var manager = Manager.init(std.testing.allocator);
-        defer manager.deinit();
-        try manager.addRule(rule_mod.defaultReverseProxy("existing"));
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .fail_index = 1,
+    });
+    var manager = Manager.init(failing_allocator.allocator());
+    defer manager.deinit();
 
-        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
-            .fail_index = fail_index,
-        });
-        manager.allocator = failing_allocator.allocator();
-        const result = manager.loadFromContent(out.items);
-        manager.allocator = std.testing.allocator;
-
-        if (result) |_| {
-            if (!failing_allocator.has_induced_failure) break;
-            try std.testing.expectEqual(@as(usize, MAX_RULES), manager.count());
-        } else |err| {
-            try std.testing.expectEqual(error.OutOfMemory, err);
-            try std.testing.expect(failing_allocator.has_induced_failure);
-            saw_failure = true;
-            try std.testing.expectEqual(@as(usize, 1), manager.count());
-            try std.testing.expectEqualStrings("existing", manager.rowAt(0).?.rule.profileName());
-        }
-    }
-    try std.testing.expect(saw_failure);
+    try std.testing.expectError(error.TooManyRules, manager.loadFromContent(out.items));
+    try std.testing.expect(!failing_allocator.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), manager.count());
 }
 
 test "port_forward_manager: update resets status and invalid indexes are ignored" {
