@@ -66,6 +66,15 @@ const StartLease = struct {
     child_to_stop: ?ChildState,
 };
 
+const UpdateRuleLease = struct {
+    child_to_stop: ?ChildState,
+};
+
+const AutoStartCandidate = struct {
+    entry_id: u64,
+    generation: u64,
+};
+
 const FakeChild = struct {
     pid: u32,
     exited: bool = false,
@@ -189,29 +198,8 @@ pub const Manager = struct {
     }
 
     pub fn updateRule(self: *Manager, index: usize, rule: rule_mod.Rule) bool {
-        var child_to_stop: ?ChildState = null;
-        var entry_id: u64 = 0;
-        var generation: u64 = 0;
-
-        self.mutex.lock();
-        if (index >= self.entries.items.len) {
-            self.mutex.unlock();
-            return false;
-        }
-        entry_id = self.entries.items[index].id;
-        child_to_stop = self.entries.items[index].child;
-        self.entries.items[index].child = null;
-        generation = self.nextGenerationLocked();
-        self.entries.items[index].generation = generation;
-        self.mutex.unlock();
-
-        if (child_to_stop) |*child| stopChildState(child);
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const current_index = self.findEntryIndexByIdAndGenerationLocked(entry_id, generation) orelse return false;
-        self.entries.items[current_index].rule = rule;
-        self.entries.items[current_index].setStatus(.stopped, "");
+        var lease = self.beginUpdateRule(index, rule) orelse return false;
+        stopUpdateRuleLease(&lease);
         return true;
     }
 
@@ -273,25 +261,7 @@ pub const Manager = struct {
 
     pub fn startIndex(self: *Manager, index: usize, legacy_algorithms: bool) bool {
         var lease = self.beginStart(index) orelse return false;
-        if (lease.child_to_stop) |*child| stopChildState(child);
-        const pending = lease.pending;
-
-        const conn = ssh_profile_store.connectionByName(self.allocator, pending.rule.profileName(), legacy_algorithms) orelse {
-            _ = self.completePendingStartFailure(pending, .missing_profile, "profile missing");
-            return false;
-        };
-
-        const child = spawnForward(self.allocator, &pending.rule, &conn) catch |err| {
-            var buf: [REASON_MAX]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "spawn failed: {}", .{err}) catch "spawn failed";
-            _ = self.completePendingStartFailure(pending, .error_, msg);
-            return false;
-        };
-
-        var spawned_state: ChildState = .{ .real = child };
-        const accepted = self.completePendingStartInstall(pending, spawned_state);
-        if (!accepted) stopChildState(&spawned_state);
-        return accepted;
+        return self.runStartLease(&lease, legacy_algorithms);
     }
 
     pub fn stopIndex(self: *Manager, index: usize) bool {
@@ -327,14 +297,18 @@ pub const Manager = struct {
     pub fn startAuto(self: *Manager, legacy_algorithms: bool) void {
         var i: usize = 0;
         while (true) : (i += 1) {
+            var candidate: ?AutoStartCandidate = null;
+
             self.mutex.lock();
             const done = i >= self.entries.items.len;
-            const should_start = !done and
-                self.entries.items[i].rule.enabled and
-                self.entries.items[i].rule.auto_start;
+            if (!done) candidate = self.autoStartCandidateAtIndexLocked(i);
             self.mutex.unlock();
+
             if (done) break;
-            if (should_start) _ = self.startIndex(i, legacy_algorithms);
+            if (candidate) |item| {
+                var lease = self.beginAutoStart(item) orelse continue;
+                _ = self.runStartLease(&lease, legacy_algorithms);
+            }
         }
     }
 
@@ -411,6 +385,27 @@ pub const Manager = struct {
         return self.completePendingStartInstall(pending, .{ .fake = .{ .pid = pid } });
     }
 
+    fn beginUpdateRuleForTest(self: *Manager, index: usize, rule: rule_mod.Rule) ?UpdateRuleLease {
+        return self.beginUpdateRule(index, rule);
+    }
+
+    fn finishUpdateRuleForTest(self: *Manager, lease: *UpdateRuleLease) void {
+        _ = self;
+        stopUpdateRuleLease(lease);
+    }
+
+    fn sampleAutoStartForTest(self: *Manager, index: usize) ?AutoStartCandidate {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.autoStartCandidateAtIndexLocked(index);
+    }
+
+    fn beginAutoStartForTest(self: *Manager, candidate: AutoStartCandidate) ?PendingStart {
+        var lease = self.beginAutoStart(candidate) orelse return null;
+        if (lease.child_to_stop) |*child| stopChildState(child);
+        return lease.pending;
+    }
+
     fn takeExitedChildForTest(self: *Manager, index: usize) ?ExitedChild {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -459,10 +454,35 @@ pub const Manager = struct {
         }
     }
 
+    fn beginUpdateRule(self: *Manager, index: usize, rule: rule_mod.Rule) ?UpdateRuleLease {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (index >= self.entries.items.len) return null;
+        const entry = &self.entries.items[index];
+        const child_to_stop = entry.child;
+        entry.child = null;
+        entry.rule = rule;
+        entry.generation = self.nextGenerationLocked();
+        entry.setStatus(.stopped, "");
+        return .{ .child_to_stop = child_to_stop };
+    }
+
     fn beginStart(self: *Manager, index: usize) ?StartLease {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (index >= self.entries.items.len) return null;
+        return self.beginStartAtIndexLocked(index);
+    }
+
+    fn beginAutoStart(self: *Manager, candidate: AutoStartCandidate) ?StartLease {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const index = self.findEntryIndexByIdAndGenerationLocked(candidate.entry_id, candidate.generation) orelse return null;
+        if (self.autoStartCandidateAtIndexLocked(index) == null) return null;
+        return self.beginStartAtIndexLocked(index);
+    }
+
+    fn beginStartAtIndexLocked(self: *Manager, index: usize) StartLease {
         const entry = &self.entries.items[index];
         const child_to_stop = entry.child;
         const generation = self.nextGenerationLocked();
@@ -477,6 +497,29 @@ pub const Manager = struct {
             },
             .child_to_stop = child_to_stop,
         };
+    }
+
+    fn runStartLease(self: *Manager, lease: *StartLease, legacy_algorithms: bool) bool {
+        if (lease.child_to_stop) |*child| stopChildState(child);
+        lease.child_to_stop = null;
+        const pending = lease.pending;
+
+        const conn = ssh_profile_store.connectionByName(self.allocator, pending.rule.profileName(), legacy_algorithms) orelse {
+            _ = self.completePendingStartFailure(pending, .missing_profile, "profile missing");
+            return false;
+        };
+
+        const child = spawnForward(self.allocator, &pending.rule, &conn) catch |err| {
+            var buf: [REASON_MAX]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "spawn failed: {}", .{err}) catch "spawn failed";
+            _ = self.completePendingStartFailure(pending, .error_, msg);
+            return false;
+        };
+
+        var spawned_state: ChildState = .{ .real = child };
+        const accepted = self.completePendingStartInstall(pending, spawned_state);
+        if (!accepted) stopChildState(&spawned_state);
+        return accepted;
     }
 
     fn completePendingStartFailure(self: *Manager, pending: PendingStart, status: StatusKind, reason: []const u8) bool {
@@ -510,6 +553,16 @@ pub const Manager = struct {
         const entry = &self.entries.items[index];
         if (entry.child != null or !rulesEqual(&entry.rule, &pending.rule)) return null;
         return index;
+    }
+
+    fn autoStartCandidateAtIndexLocked(self: *Manager, index: usize) ?AutoStartCandidate {
+        if (index >= self.entries.items.len) return null;
+        const entry = &self.entries.items[index];
+        if (!entry.rule.enabled or !entry.rule.auto_start) return null;
+        return .{
+            .entry_id = entry.id,
+            .generation = entry.generation,
+        };
     }
 
     fn findEntryIndexByIdAndGenerationLocked(self: *Manager, entry_id: u64, generation: u64) ?usize {
@@ -647,6 +700,13 @@ fn stopChildState(child: *ChildState) void {
     switch (child.*) {
         .real => |*real_child| stopRealChild(real_child),
         .fake => {},
+    }
+}
+
+fn stopUpdateRuleLease(lease: *UpdateRuleLease) void {
+    if (lease.child_to_stop) |*child| {
+        stopChildState(child);
+        lease.child_to_stop = null;
     }
 }
 
@@ -963,6 +1023,29 @@ test "port_forward_manager: update clears fake child before replacing rule" {
     try std.testing.expectEqualStrings("updated", row.rule.profileName());
 }
 
+test "port_forward_manager: update applies logical replacement before detached child cleanup" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("old"));
+    try std.testing.expect(manager.markRunningForTest(0, 123));
+
+    var update = manager.beginUpdateRuleForTest(0, rule_mod.defaultReverseProxy("updated")) orelse return error.ExpectedUpdate;
+    defer manager.finishUpdateRuleForTest(&update);
+
+    const updated = manager.rowAt(0).?;
+    try std.testing.expectEqual(StatusKind.stopped, updated.status);
+    try std.testing.expectEqualStrings("", updated.reason());
+    try std.testing.expectEqualStrings("updated", updated.rule.profileName());
+
+    const pending = manager.beginPendingStartForTest(0) orelse return error.ExpectedPendingStart;
+    try std.testing.expectEqualStrings("updated", pending.rule.profileName());
+    try std.testing.expect(manager.completePendingStartFakeForTest(pending, 456));
+
+    const running = manager.rowAt(0).?;
+    try std.testing.expectEqual(StatusKind.running, running.status);
+    try std.testing.expectEqualStrings("updated", running.rule.profileName());
+}
+
 test "port_forward_manager: delete clears fake child for removed rule" {
     var manager = Manager.init(std.testing.allocator);
     defer manager.deinit();
@@ -1182,6 +1265,48 @@ test "port_forward_manager: shifted restart lease does not start wrong row" {
     const wrong = manager.rowAt(1).?;
     try std.testing.expectEqualStrings("wrong", wrong.rule.profileName());
     try std.testing.expectEqual(StatusKind.stopped, wrong.status);
+}
+
+test "port_forward_manager: sampled auto-start follows shifted logical row" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("earlier"));
+    try manager.addRule(rule_mod.defaultReverseProxy("target"));
+    try manager.addRule(rule_mod.defaultReverseProxy("wrong"));
+
+    const candidate = manager.sampleAutoStartForTest(1) orelse return error.ExpectedAutoStart;
+    try std.testing.expect(manager.deleteRule(0));
+
+    const pending = manager.beginAutoStartForTest(candidate) orelse return error.ExpectedPendingStart;
+    try std.testing.expectEqualStrings("target", pending.rule.profileName());
+    try std.testing.expect(manager.completePendingStartFakeForTest(pending, 333));
+
+    const target = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("target", target.rule.profileName());
+    try std.testing.expectEqual(StatusKind.running, target.status);
+
+    const wrong = manager.rowAt(1).?;
+    try std.testing.expectEqualStrings("wrong", wrong.rule.profileName());
+    try std.testing.expectEqual(StatusKind.stopped, wrong.status);
+}
+
+test "port_forward_manager: sampled auto-start skips loaded replacement" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("target"));
+
+    const candidate = manager.sampleAutoStartForTest(0) orelse return error.ExpectedAutoStart;
+
+    var rules = [_]rule_mod.Rule{rule_mod.defaultReverseProxy("replacement")};
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try rule_mod.encodeRules(std.testing.allocator, &out, rules[0..]);
+    try manager.loadFromContent(out.items);
+
+    try std.testing.expect(manager.beginAutoStartForTest(candidate) == null);
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("replacement", row.rule.profileName());
+    try std.testing.expectEqual(StatusKind.stopped, row.status);
 }
 
 fn sshConnectionForTest(
