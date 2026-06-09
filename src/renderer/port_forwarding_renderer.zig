@@ -1,5 +1,4 @@
 const std = @import("std");
-const manager = @import("../port_forward_manager.zig");
 const rule_mod = @import("../port_forward_rule.zig");
 
 const HEADER_H: f32 = 54;
@@ -10,6 +9,27 @@ const COL_GAP: f32 = 10;
 const DIRECTION_W: f32 = 78;
 const AUTO_W: f32 = 70;
 const STATUS_W: f32 = 92;
+pub const REASON_MAX: usize = 192;
+
+pub const StatusKind = enum {
+    stopped,
+    starting,
+    running,
+    error_,
+    missing_profile,
+};
+
+pub const RowView = struct {
+    rule: rule_mod.Rule,
+    status: StatusKind,
+    reason_buf: [REASON_MAX]u8 = undefined,
+    reason_len: usize = 0,
+    auto_start: bool,
+
+    pub fn reason(self: *const RowView) []const u8 {
+        return self.reason_buf[0..self.reason_len];
+    }
+};
 
 pub const DrawContext = struct {
     bg: [3]f32,
@@ -22,7 +42,7 @@ pub const DrawContext = struct {
     glyphAdvance: *const fn (u32) f32,
 };
 
-pub const RowAt = *const fn (*anyopaque, usize) manager.RowView;
+pub const RowAt = *const fn (*anyopaque, usize) RowView;
 
 pub const View = struct {
     title: []const u8,
@@ -35,7 +55,7 @@ pub const View = struct {
     overlay_text: []const u8 = "",
 };
 
-pub fn statusLabel(status: manager.StatusKind) []const u8 {
+pub fn statusLabel(status: StatusKind) []const u8 {
     return switch (status) {
         .stopped => "Stopped",
         .starting => "Starting",
@@ -54,6 +74,12 @@ pub fn directionLabel(direction: rule_mod.Direction) []const u8 {
 
 pub fn autoLabel(auto_start: bool) []const u8 {
     return if (auto_start) "Auto" else "Manual";
+}
+
+pub fn clampedTextWidth(x: f32, content_right: f32, requested: f32) f32 {
+    const positive_requested = @max(0.0, requested);
+    const available = @max(0.0, content_right - x);
+    return @min(positive_requested, available);
 }
 
 pub fn listenLabel(rule: *const rule_mod.Rule, buf: []u8) []const u8 {
@@ -182,14 +208,16 @@ fn renderHeader(
     line: [3]f32,
 ) void {
     const header_h = headerHeight(draw.cell_h);
+    const content_right = content_x + content_w - PAD_X;
+    const title_x = content_x + PAD_X;
     draw.fillQuadAlpha(content_x, yFromTop(window_height, top, header_h), content_w, header_h, panel_strong, 0.9);
     draw.fillQuad(content_x, yFromTop(window_height, top + header_h, 1), content_w, 1, line);
 
     const title_y = yTextFromTop(draw, window_height, top + 11);
-    const title_end = draw.renderTextLimited(view.title, content_x + PAD_X, title_y, fg, content_w - PAD_X * 2);
+    const title_end = draw.renderTextLimited(view.title, title_x, title_y, fg, clampedTextWidth(title_x, content_right, content_w - PAD_X * 2));
     var count_buf: [48]u8 = undefined;
     const count_text = std.fmt.bufPrint(&count_buf, " - {d}", .{view.count}) catch "";
-    _ = draw.renderTextLimited(count_text, title_end, title_y, muted, @max(0.0, content_x + content_w - PAD_X - title_end));
+    _ = draw.renderTextLimited(count_text, title_end, title_y, muted, clampedTextWidth(title_end, content_right, content_right - title_end));
 }
 
 fn renderRows(
@@ -208,7 +236,9 @@ fn renderRows(
 ) void {
     if (view.count == 0) {
         const empty = if (view.overlay_text.len > 0) view.overlay_text else "No port forwarding rules";
-        _ = draw.renderTextLimited(empty, content_x + PAD_X, yTextFromTop(draw, window_height, body_top + 24), muted, content_w - PAD_X * 2);
+        const text_x = content_x + PAD_X;
+        const content_right = content_x + content_w - PAD_X;
+        _ = draw.renderTextLimited(empty, text_x, yTextFromTop(draw, window_height, body_top + 24), muted, clampedTextWidth(text_x, content_right, content_w - PAD_X * 2));
         return;
     }
 
@@ -228,7 +258,7 @@ fn renderRows(
 
 fn renderRow(
     draw: DrawContext,
-    row: manager.RowView,
+    row: RowView,
     selected: bool,
     content_x: f32,
     content_w: f32,
@@ -252,11 +282,12 @@ fn renderRow(
     const show_columns = content_w >= PAD_X * 2 + right_w + 120;
     const right_x = content_x + content_w - PAD_X - right_w;
     const text_x = content_x + PAD_X;
+    const content_right = content_x + content_w - PAD_X;
     const primary_y = yTextFromTop(draw, window_height, row_top_px + 8);
     const secondary_y = yTextFromTop(draw, window_height, row_top_px + row_h - draw.cell_h - 8);
 
     const title_limit = if (show_columns) @max(0.0, right_x - text_x - COL_GAP) else @max(0.0, content_w - PAD_X * 2);
-    _ = draw.renderTextLimited(rowTitle(&row), text_x, primary_y, fg, title_limit);
+    _ = draw.renderTextLimited(rowTitle(&row), text_x, primary_y, fg, clampedTextWidth(text_x, content_right, title_limit));
 
     if (show_columns) {
         var x = right_x;
@@ -279,20 +310,22 @@ fn renderRow(
 
     const profile = if (row.rule.profileName().len > 0) row.rule.profileName() else "No profile";
     const profile_w: f32 = 128;
-    const profile_end = draw.renderTextLimited(profile, text_x, secondary_y, accent, profile_w);
+    const profile_limit = clampedTextWidth(text_x, content_right, profile_w);
+    const profile_end = @min(content_right, draw.renderTextLimited(profile, text_x, secondary_y, accent, profile_limit));
     const reason = row.reason();
-    const detail_limit = @max(0.0, content_x + content_w - PAD_X - profile_end - COL_GAP);
+    const detail_x = @min(content_right, profile_end + COL_GAP);
+    const detail_limit = clampedTextWidth(detail_x, content_right, content_right - detail_x);
     const detail = if (reason.len > 0) reason else endpoint;
-    _ = draw.renderTextLimited(detail, profile_end + COL_GAP, secondary_y, if (reason.len > 0) statusColor(row.status, fg, muted, accent) else muted, detail_limit);
+    _ = draw.renderTextLimited(detail, detail_x, secondary_y, if (reason.len > 0) statusColor(row.status, fg, muted, accent) else muted, detail_limit);
 }
 
-fn rowTitle(row: *const manager.RowView) []const u8 {
+fn rowTitle(row: *const RowView) []const u8 {
     if (row.rule.name().len > 0) return row.rule.name();
     if (row.reason().len > 0) return row.reason();
     return "Port forward";
 }
 
-fn statusColor(status: manager.StatusKind, fg: [3]f32, muted: [3]f32, accent: [3]f32) [3]f32 {
+fn statusColor(status: StatusKind, fg: [3]f32, muted: [3]f32, accent: [3]f32) [3]f32 {
     return switch (status) {
         .running => accent,
         .starting => mixColor(fg, accent, 0.25),
@@ -305,24 +338,28 @@ fn statusColor(status: manager.StatusKind, fg: [3]f32, muted: [3]f32, accent: [3
 fn renderOverlayText(draw: DrawContext, text: []const u8, content_x: f32, content_w: f32, fg: [3]f32, accent: [3]f32) void {
     const bar_h = rowHeight(draw.cell_h);
     const bar_y = legendHeight(draw.cell_h);
+    const text_x = content_x + PAD_X;
+    const content_right = content_x + content_w - PAD_X;
     draw.fillQuadAlpha(content_x, bar_y, content_w, bar_h, mixColor(draw.bg, accent, 0.22), 0.97);
     const text_y = bar_y + (bar_h - draw.cell_h) / 2;
-    _ = draw.renderTextLimited(text, content_x + PAD_X, text_y, fg, content_w - PAD_X * 2);
+    _ = draw.renderTextLimited(text, text_x, text_y, fg, clampedTextWidth(text_x, content_right, content_w - PAD_X * 2));
 }
 
 fn renderLegend(draw: DrawContext, legend: []const u8, content_x: f32, content_w: f32, muted: [3]f32, line: [3]f32) void {
     const legend_h = legendHeight(draw.cell_h);
+    const text_x = content_x + PAD_X;
+    const content_right = content_x + content_w - PAD_X;
     draw.fillQuad(content_x, legend_h, content_w, 1, line);
     const text_y = (legend_h - draw.cell_h) / 2;
-    _ = draw.renderTextLimited(legend, content_x + PAD_X, text_y, muted, content_w - PAD_X * 2);
+    _ = draw.renderTextLimited(legend, text_x, text_y, muted, clampedTextWidth(text_x, content_right, content_w - PAD_X * 2));
 }
 
 test "port_forwarding_renderer: status labels" {
-    try std.testing.expectEqualStrings("Stopped", statusLabel(.stopped));
-    try std.testing.expectEqualStrings("Starting", statusLabel(.starting));
-    try std.testing.expectEqualStrings("Running", statusLabel(.running));
-    try std.testing.expectEqualStrings("Error", statusLabel(.error_));
-    try std.testing.expectEqualStrings("Missing", statusLabel(.missing_profile));
+    try std.testing.expectEqualStrings("Stopped", statusLabel(StatusKind.stopped));
+    try std.testing.expectEqualStrings("Starting", statusLabel(StatusKind.starting));
+    try std.testing.expectEqualStrings("Running", statusLabel(StatusKind.running));
+    try std.testing.expectEqualStrings("Error", statusLabel(StatusKind.error_));
+    try std.testing.expectEqualStrings("Missing", statusLabel(StatusKind.missing_profile));
 }
 
 test "port_forwarding_renderer: listen and target labels" {
@@ -384,9 +421,9 @@ test "port_forwarding_renderer: render accepts row accessor view" {
     };
 
     const Rows = struct {
-        row: manager.RowView,
+        row: RowView,
 
-        fn rowAt(ctx: *anyopaque, index: usize) manager.RowView {
+        fn rowAt(ctx: *anyopaque, index: usize) RowView {
             _ = index;
             const self: *@This() = @ptrCast(@alignCast(ctx));
             return self.row;
@@ -424,4 +461,114 @@ test "port_forwarding_renderer: render accepts row accessor view" {
         .rowAt = row_at,
         .overlay_text = "Profile missing",
     }, 900, 600, 40, 0, 900);
+}
+
+test "port_forwarding_renderer: render does not request rows with zero visible capacity" {
+    const NoopDraw = struct {
+        fn fillQuad(_: f32, _: f32, _: f32, _: f32, _: [3]f32) void {}
+        fn fillQuadAlpha(_: f32, _: f32, _: f32, _: f32, _: [3]f32, _: f32) void {}
+        fn renderTextLimited(text: []const u8, x: f32, _: f32, _: [3]f32, _: f32) f32 {
+            return x + @as(f32, @floatFromInt(text.len));
+        }
+        fn glyphAdvance(_: u32) f32 {
+            return 8;
+        }
+    };
+
+    const Rows = struct {
+        calls: usize = 0,
+
+        fn rowAt(ctx: *anyopaque, index: usize) RowView {
+            _ = index;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            return .{
+                .rule = rule_mod.defaultReverseProxy("devbox"),
+                .status = .running,
+                .auto_start = true,
+            };
+        }
+    };
+
+    var rows = Rows{};
+    const draw = DrawContext{
+        .bg = .{ 0.02, 0.02, 0.02 },
+        .fg = .{ 0.95, 0.95, 0.95 },
+        .accent = .{ 0.2, 0.6, 1.0 },
+        .cell_h = 16,
+        .fillQuad = NoopDraw.fillQuad,
+        .fillQuadAlpha = NoopDraw.fillQuadAlpha,
+        .renderTextLimited = NoopDraw.renderTextLimited,
+        .glyphAdvance = NoopDraw.glyphAdvance,
+    };
+
+    render(draw, .{
+        .title = "Port Forwarding",
+        .legend = "Enter start/stop  n new",
+        .count = 1,
+        .selected = 0,
+        .scroll = 0,
+        .ctx = &rows,
+        .rowAt = Rows.rowAt,
+    }, 200, 80, 0, 0, 200);
+
+    try std.testing.expectEqual(@as(usize, 0), rows.calls);
+}
+
+test "port_forwarding_renderer: narrow row text widths stay within content" {
+    const InstrumentedDraw = struct {
+        var content_right: f32 = 0;
+        var bad_width: bool = false;
+
+        fn fillQuad(_: f32, _: f32, _: f32, _: f32, _: [3]f32) void {}
+        fn fillQuadAlpha(_: f32, _: f32, _: f32, _: f32, _: [3]f32, _: f32) void {}
+        fn renderTextLimited(text: []const u8, x: f32, _: f32, _: [3]f32, max_w: f32) f32 {
+            const available = @max(0.0, content_right - x);
+            if (std.math.isNan(max_w) or max_w < 0.0 or max_w > available + 0.01) {
+                bad_width = true;
+            }
+            return x + @min(max_w, @as(f32, @floatFromInt(text.len)) * 8.0);
+        }
+        fn glyphAdvance(_: u32) f32 {
+            return 8;
+        }
+    };
+
+    const Rows = struct {
+        fn rowAt(_: *anyopaque, index: usize) RowView {
+            _ = index;
+            return .{
+                .rule = rule_mod.defaultReverseProxy("devbox"),
+                .status = .running,
+                .auto_start = true,
+            };
+        }
+    };
+
+    const width: f32 = 80;
+    InstrumentedDraw.content_right = width - PAD_X;
+    InstrumentedDraw.bad_width = false;
+
+    const draw = DrawContext{
+        .bg = .{ 0.02, 0.02, 0.02 },
+        .fg = .{ 0.95, 0.95, 0.95 },
+        .accent = .{ 0.2, 0.6, 1.0 },
+        .cell_h = 16,
+        .fillQuad = InstrumentedDraw.fillQuad,
+        .fillQuadAlpha = InstrumentedDraw.fillQuadAlpha,
+        .renderTextLimited = InstrumentedDraw.renderTextLimited,
+        .glyphAdvance = InstrumentedDraw.glyphAdvance,
+    };
+
+    render(draw, .{
+        .title = "Port Forwarding",
+        .legend = "Enter start/stop  n new",
+        .count = 1,
+        .selected = 0,
+        .scroll = 0,
+        .ctx = undefined,
+        .rowAt = Rows.rowAt,
+    }, width, 160, 0, 0, width);
+
+    try std.testing.expect(!InstrumentedDraw.bad_width);
 }
