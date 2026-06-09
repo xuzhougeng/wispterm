@@ -32,14 +32,24 @@ install -Dm644 "$ROOT/assets/wispterm.png"                           "$APPDIR/us
 echo "==> Fetching linuxdeploy + appimagetool (if absent)"
 mkdir -p "$TOOLS"
 fetch() { # <url> <dest>
-  if [ ! -x "$2" ]; then
+  if [ ! -s "$2" ]; then
     echo "    downloading $(basename "$2")"
-    curl -fSL "$1" -o "$2"
-    chmod +x "$2"
+    # --retry-all-errors so flaky TLS resets (seen on some networks) retry too.
+    if ! curl -fSL --retry 5 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 30 "$1" -o "$2"; then
+      rm -f "$2"
+      echo "ERROR: failed to download $1" >&2
+      exit 1
+    fi
   fi
 }
 fetch "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${ARCH}.AppImage"   "$TOOLS/linuxdeploy"
 fetch "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"    "$TOOLS/appimagetool"
+# appimagetool fetches this runtime itself by default, but that download is
+# flaky (it has failed with "status code 0" mid-build). Fetch it up front with
+# retries and hand it to appimagetool via --runtime-file.
+fetch "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${ARCH}" "$TOOLS/runtime-${ARCH}"
+chmod +x "$TOOLS/linuxdeploy" "$TOOLS/appimagetool"
 
 # AppImages mount via FUSE; on hosts without FUSE (e.g. many WSL / CI runners)
 # fall back to extracting and running.
@@ -56,6 +66,6 @@ echo "==> Bundling shared libraries into the AppDir (linuxdeploy)"
   --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/wispterm.png"
 
 echo "==> Packaging the AppImage (appimagetool)"
-"$TOOLS/appimagetool" "$APPDIR" "$ROOT/zig-out/$OUTPUT"
+"$TOOLS/appimagetool" --runtime-file "$TOOLS/runtime-${ARCH}" "$APPDIR" "$ROOT/zig-out/$OUTPUT"
 
 echo "==> Done: zig-out/${OUTPUT}"
