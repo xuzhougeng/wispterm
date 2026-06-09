@@ -32,6 +32,7 @@ pub const RowView = struct {
 };
 
 const Entry = struct {
+    id: u64 = 0,
     rule: rule_mod.Rule,
     generation: u64 = 0,
     status: StatusKind = .stopped,
@@ -55,7 +56,7 @@ const ChildState = union(enum) {
 };
 
 const PendingStart = struct {
-    index: usize,
+    entry_id: u64,
     generation: u64,
     rule: rule_mod.Rule,
 };
@@ -82,15 +83,15 @@ const FakeChild = struct {
 };
 
 const ExitedChild = struct {
-    index: usize,
+    entry_id: u64,
     generation: u64,
     child: ChildState,
     reason_buf: [REASON_MAX]u8 = undefined,
     reason_len: usize = 0,
 
-    fn init(index: usize, generation: u64, child: ChildState) ExitedChild {
+    fn init(entry_id: u64, generation: u64, child: ChildState) ExitedChild {
         var item: ExitedChild = .{
-            .index = index,
+            .entry_id = entry_id,
             .generation = generation,
             .child = child,
         };
@@ -119,7 +120,7 @@ const ExitedChildList = struct {
 };
 
 const StoppedEntry = struct {
-    index: usize,
+    entry_id: u64,
     generation: u64,
     child: ?ChildState,
 };
@@ -143,6 +144,7 @@ pub const Manager = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
     entries: std.ArrayListUnmanaged(Entry) = .empty,
+    next_entry_id: u64 = 1,
     next_generation: u64 = 1,
 
     pub fn init(allocator: std.mem.Allocator) Manager {
@@ -180,6 +182,7 @@ pub const Manager = struct {
         defer self.mutex.unlock();
         if (self.entries.items.len >= MAX_RULES) return error.TooManyRules;
         try self.entries.append(self.allocator, .{
+            .id = self.nextEntryIdLocked(),
             .rule = rule,
             .generation = self.nextGenerationLocked(),
         });
@@ -187,6 +190,7 @@ pub const Manager = struct {
 
     pub fn updateRule(self: *Manager, index: usize, rule: rule_mod.Rule) bool {
         var child_to_stop: ?ChildState = null;
+        var entry_id: u64 = 0;
         var generation: u64 = 0;
 
         self.mutex.lock();
@@ -194,6 +198,7 @@ pub const Manager = struct {
             self.mutex.unlock();
             return false;
         }
+        entry_id = self.entries.items[index].id;
         child_to_stop = self.entries.items[index].child;
         self.entries.items[index].child = null;
         generation = self.nextGenerationLocked();
@@ -204,9 +209,9 @@ pub const Manager = struct {
 
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (!self.entryGenerationMatchesLocked(index, generation)) return false;
-        self.entries.items[index].rule = rule;
-        self.entries.items[index].setStatus(.stopped, "");
+        const current_index = self.findEntryIndexByIdAndGenerationLocked(entry_id, generation) orelse return false;
+        self.entries.items[current_index].rule = rule;
+        self.entries.items[current_index].setStatus(.stopped, "");
         return true;
     }
 
@@ -266,6 +271,7 @@ pub const Manager = struct {
         std.debug.assert(self.entries.items.len == 0);
         self.entries.deinit(self.allocator);
         for (entries.items) |*entry| {
+            entry.id = self.nextEntryIdLocked();
             entry.generation = self.nextGenerationLocked();
         }
         self.entries = entries.*;
@@ -297,6 +303,7 @@ pub const Manager = struct {
 
     pub fn stopIndex(self: *Manager, index: usize) bool {
         var child_to_stop: ?ChildState = null;
+        var entry_id: u64 = 0;
         var generation: u64 = 0;
 
         self.mutex.lock();
@@ -304,6 +311,7 @@ pub const Manager = struct {
             self.mutex.unlock();
             return false;
         }
+        entry_id = self.entries.items[index].id;
         child_to_stop = self.entries.items[index].child;
         self.entries.items[index].child = null;
         generation = self.nextGenerationLocked();
@@ -314,13 +322,12 @@ pub const Manager = struct {
 
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (!self.entryGenerationMatchesLocked(index, generation)) return false;
-        self.entries.items[index].setStatus(.stopped, "");
+        const current_index = self.findEntryIndexByIdAndGenerationLocked(entry_id, generation) orelse return false;
+        self.entries.items[current_index].setStatus(.stopped, "");
         return true;
     }
 
     pub fn restartIndex(self: *Manager, index: usize, legacy_algorithms: bool) bool {
-        _ = self.stopIndex(index);
         return self.startIndex(index, legacy_algorithms);
     }
 
@@ -342,8 +349,8 @@ pub const Manager = struct {
         var exited: ExitedChildList = .{};
 
         self.mutex.lock();
-        for (self.entries.items, 0..) |*entry, index| {
-            if (takeExitedChildFromEntry(entry, index)) |child| {
+        for (self.entries.items) |*entry| {
+            if (takeExitedChildFromEntry(entry)) |child| {
                 exited.append(child);
             }
         }
@@ -415,23 +422,31 @@ pub const Manager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (index >= self.entries.items.len) return null;
-        return takeExitedChildFromEntry(&self.entries.items[index], index);
+        return takeExitedChildFromEntry(&self.entries.items[index]);
     }
 
     fn finishExitedChildForTest(self: *Manager, exited: *ExitedChild) bool {
         return self.finishExitedChild(exited);
     }
 
+    fn beginRestartForTest(self: *Manager, index: usize) ?PendingStart {
+        return self.beginPendingStartForTest(index);
+    }
+
+    fn completeRestartFakeForTest(self: *Manager, pending: *const PendingStart, pid: u32) bool {
+        return self.completePendingStartFakeForTest(pending.*, pid);
+    }
+
     pub fn stopAll(self: *Manager) void {
         var stopped: StopList = .{};
 
         self.mutex.lock();
-        for (self.entries.items, 0..) |*entry, index| {
+        for (self.entries.items) |*entry| {
             const child = entry.child;
             entry.child = null;
             entry.generation = self.nextGenerationLocked();
             stopped.append(.{
-                .index = index,
+                .entry_id = entry.id,
                 .generation = entry.generation,
                 .child = child,
             });
@@ -445,8 +460,8 @@ pub const Manager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         for (stopped.slice()) |item| {
-            if (self.entryGenerationMatchesLocked(item.index, item.generation)) {
-                self.entries.items[item.index].setStatus(.stopped, "");
+            if (self.findEntryIndexByIdAndGenerationLocked(item.entry_id, item.generation)) |index| {
+                self.entries.items[index].setStatus(.stopped, "");
             }
         }
     }
@@ -463,7 +478,7 @@ pub const Manager = struct {
         entry.setStatus(.starting, "");
         return .{
             .pending = .{
-                .index = index,
+                .entry_id = entry.id,
                 .generation = generation,
                 .rule = entry.rule,
             },
@@ -474,37 +489,52 @@ pub const Manager = struct {
     fn completePendingStartFailure(self: *Manager, pending: PendingStart, status: StatusKind, reason: []const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (!self.pendingStartMatchesLocked(pending)) return false;
-        self.entries.items[pending.index].setStatus(status, reason);
+        const index = self.pendingStartIndexLocked(pending) orelse return false;
+        self.entries.items[index].setStatus(status, reason);
         return true;
     }
 
     fn completePendingStartInstall(self: *Manager, pending: PendingStart, child: ChildState) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (!self.pendingStartMatchesLocked(pending)) return false;
-        self.entries.items[pending.index].child = child;
-        self.entries.items[pending.index].setStatus(.running, "");
+        const index = self.pendingStartIndexLocked(pending) orelse return false;
+        self.entries.items[index].child = child;
+        self.entries.items[index].setStatus(.running, "");
         return true;
     }
 
     fn finishExitedChild(self: *Manager, exited: *const ExitedChild) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (!self.entryGenerationMatchesLocked(exited.index, exited.generation)) return false;
-        if (self.entries.items[exited.index].child != null) return false;
-        self.entries.items[exited.index].setStatus(.error_, exited.reason());
+        const index = self.findEntryIndexByIdAndGenerationLocked(exited.entry_id, exited.generation) orelse return false;
+        if (self.entries.items[index].child != null) return false;
+        self.entries.items[index].setStatus(.error_, exited.reason());
         return true;
     }
 
-    fn pendingStartMatchesLocked(self: *Manager, pending: PendingStart) bool {
-        if (!self.entryGenerationMatchesLocked(pending.index, pending.generation)) return false;
-        const entry = &self.entries.items[pending.index];
-        return entry.child == null and rulesEqual(&entry.rule, &pending.rule);
+    fn pendingStartIndexLocked(self: *Manager, pending: PendingStart) ?usize {
+        const index = self.findEntryIndexByIdAndGenerationLocked(pending.entry_id, pending.generation) orelse return null;
+        const entry = &self.entries.items[index];
+        if (entry.child != null or !rulesEqual(&entry.rule, &pending.rule)) return null;
+        return index;
     }
 
-    fn entryGenerationMatchesLocked(self: *Manager, index: usize, generation: u64) bool {
-        return index < self.entries.items.len and self.entries.items[index].generation == generation;
+    fn findEntryIndexByIdAndGenerationLocked(self: *Manager, entry_id: u64, generation: u64) ?usize {
+        const index = self.findEntryIndexByIdLocked(entry_id) orelse return null;
+        return if (self.entries.items[index].generation == generation) index else null;
+    }
+
+    fn findEntryIndexByIdLocked(self: *Manager, entry_id: u64) ?usize {
+        for (self.entries.items, 0..) |entry, index| {
+            if (entry.id == entry_id) return index;
+        }
+        return null;
+    }
+
+    fn nextEntryIdLocked(self: *Manager) u64 {
+        const id = self.next_entry_id;
+        self.next_entry_id = if (self.next_entry_id == std.math.maxInt(u64)) 1 else self.next_entry_id + 1;
+        return id;
     }
 
     fn nextGenerationLocked(self: *Manager) u64 {
@@ -599,9 +629,13 @@ fn spawnForward(allocator: std.mem.Allocator, rule: *const rule_mod.Rule, conn: 
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Inherit;
+    child.create_no_window = true;
     if (env_map) |*map| child.env_map = map;
     try child.spawn();
-    try child.waitForSpawn();
+    child.waitForSpawn() catch |err| {
+        stopRealChild(&child);
+        return err;
+    };
     return child;
 }
 
@@ -625,11 +659,22 @@ fn stopChildState(child: *ChildState) void {
 
 fn stopRealChild(child: *std.process.Child) void {
     if (childHasExitedReal(child)) {
-        if (builtin.os.tag != .windows) child.term = .{ .Unknown = 0 };
-        _ = child.wait() catch {};
+        cleanupExitedChild(child);
     } else {
-        _ = child.kill() catch {};
+        _ = child.kill() catch |err| {
+            switch (err) {
+                error.AlreadyTerminated => cleanupExitedChild(child),
+                else => {
+                    if (childHasExitedReal(child)) cleanupExitedChild(child);
+                },
+            }
+        };
     }
+}
+
+fn cleanupExitedChild(child: *std.process.Child) void {
+    if (builtin.os.tag != .windows) child.term = .{ .Unknown = 0 };
+    _ = child.wait() catch {};
 }
 
 fn childHasExited(child: *const ChildState) bool {
@@ -639,11 +684,11 @@ fn childHasExited(child: *const ChildState) bool {
     };
 }
 
-fn takeExitedChildFromEntry(entry: *Entry, index: usize) ?ExitedChild {
+fn takeExitedChildFromEntry(entry: *Entry) ?ExitedChild {
     const child = entry.child orelse return null;
     if (!childHasExited(&child)) return null;
     entry.child = null;
-    return ExitedChild.init(index, entry.generation, child);
+    return ExitedChild.init(entry.id, entry.generation, child);
 }
 
 fn childHasExitedReal(child: *const std.process.Child) bool {
@@ -982,6 +1027,41 @@ test "port_forward_manager: stale pending start failure leaves replacement row a
     try std.testing.expectEqualStrings("replacement", row.rule.profileName());
 }
 
+test "port_forward_manager: shifted pending start failure follows logical row" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("earlier"));
+    try manager.addRule(rule_mod.defaultReverseProxy("target"));
+
+    const pending = manager.beginPendingStartForTest(1) orelse return error.ExpectedPendingStart;
+    try std.testing.expect(manager.deleteRule(0));
+
+    try std.testing.expect(manager.completePendingStartFailureForTest(pending, .missing_profile, "profile missing"));
+
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("target", row.rule.profileName());
+    try std.testing.expectEqual(StatusKind.missing_profile, row.status);
+    try std.testing.expectEqualStrings("profile missing", row.reason());
+}
+
+test "port_forward_manager: shifted pending start install follows logical row" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("earlier"));
+    try manager.addRule(rule_mod.defaultReverseProxy("target"));
+
+    const pending = manager.beginPendingStartForTest(1) orelse return error.ExpectedPendingStart;
+    try std.testing.expect(manager.deleteRule(0));
+
+    try std.testing.expect(manager.completePendingStartFakeForTest(pending, 444));
+
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("target", row.rule.profileName());
+    try std.testing.expectEqual(StatusKind.running, row.status);
+    try std.testing.expectEqualStrings("", row.reason());
+    try std.testing.expect(manager.markExitedForTest(0, "installed child exited"));
+}
+
 test "port_forward_manager: stale pending start install leaves replacement row alone" {
     var manager = Manager.init(std.testing.allocator);
     defer manager.deinit();
@@ -1033,6 +1113,46 @@ test "port_forward_manager: stale exited child does not mark replacement row err
     try std.testing.expectEqual(StatusKind.stopped, row.status);
     try std.testing.expectEqualStrings("", row.reason());
     try std.testing.expectEqualStrings("replacement", row.rule.profileName());
+}
+
+test "port_forward_manager: shifted exited child completion follows logical row" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("earlier"));
+    try manager.addRule(rule_mod.defaultReverseProxy("target"));
+    try std.testing.expect(manager.markRunningForTest(1, 111));
+    try std.testing.expect(manager.markExitedForTest(1, "target exited"));
+
+    var exited = manager.takeExitedChildForTest(1) orelse return error.ExpectedExitedChild;
+    try std.testing.expect(manager.deleteRule(0));
+
+    try std.testing.expect(manager.finishExitedChildForTest(&exited));
+
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("target", row.rule.profileName());
+    try std.testing.expectEqual(StatusKind.error_, row.status);
+    try std.testing.expectEqualStrings("target exited", row.reason());
+}
+
+test "port_forward_manager: shifted restart lease does not start wrong row" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("earlier"));
+    try manager.addRule(rule_mod.defaultReverseProxy("target"));
+    try manager.addRule(rule_mod.defaultReverseProxy("wrong"));
+
+    var restart = manager.beginRestartForTest(1) orelse return error.ExpectedRestart;
+    try std.testing.expect(manager.deleteRule(0));
+
+    try std.testing.expect(manager.completeRestartFakeForTest(&restart, 222));
+
+    const target = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("target", target.rule.profileName());
+    try std.testing.expectEqual(StatusKind.running, target.status);
+
+    const wrong = manager.rowAt(1).?;
+    try std.testing.expectEqualStrings("wrong", wrong.rule.profileName());
+    try std.testing.expectEqual(StatusKind.stopped, wrong.status);
 }
 
 fn sshConnectionForTest(
