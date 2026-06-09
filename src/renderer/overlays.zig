@@ -580,6 +580,13 @@ fn executeCommand(action: CommandAction) void {
         .open_skill_center => {
             _ = AppWindow.spawnSkillCenterTab();
         },
+        .split_preview => {
+            if (AppWindow.g_allocator) |gpa| {
+                _ = AppWindow.tab.splitIntoPreview(gpa);
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+            }
+        },
     }
 }
 

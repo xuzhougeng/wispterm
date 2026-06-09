@@ -700,6 +700,7 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
         .show_whats_new => "更新内容",
         .update_skills => "更新技能",
         .open_skill_center => "技能中心",
+        .split_preview => "分屏预览",
     };
 }
 
@@ -748,6 +749,7 @@ pub fn commandDetail(action: CommandAction) ?[]const u8 {
         .show_whats_new => "查看本版本的更新内容",
         .update_skills => "从 GitHub 下载最新技能",
         .open_skill_center => "盘点各服务器上的 Claude Code / Codex 技能",
+        .split_preview => "在右侧打开预览面板",
     };
 }
 

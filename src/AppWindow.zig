@@ -1581,7 +1581,7 @@ pub fn skillCenterPreviewSelected() bool {
     const text = remote_file.localPosixExec(allocator, command, 1024 * 1024) catch null;
     if (text) |t| {
         defer allocator.free(t);
-        markdown_preview_panel.open(.markdown, name_buf[0..name_len], "SKILL.md", t);
+        openSkillMdInPreviewLeaf(allocator, name_buf[0..name_len], t);
         markUiDirty();
     } else {
         overlays.showStatusToast(i18n.s().sc_toast_read_failed);
@@ -2214,6 +2214,23 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
 fn markUiDirty() void {
     g_force_rebuild = true;
     g_cells_valid = false;
+}
+
+/// Tick all preview panes across every tab. Returns true if any pane
+/// updated its content (caller should redraw).
+fn tickAllPreviewPanes() bool {
+    var changed = false;
+    for (0..tab.g_tab_count) |ti| {
+        const tb = tab.g_tabs[ti] orelse continue;
+        var it = tb.tree.panes();
+        while (it.next()) |e| switch (e.pane) {
+            .preview => |p| {
+                if (p.tickAsync()) changed = true;
+            },
+            else => {},
+        };
+    }
+    return changed;
 }
 
 fn aiHistoryListVisibleRowsForWindow() usize {
@@ -3550,6 +3567,22 @@ fn pollSkillUpdate(app: *App) void {
     }
 }
 
+/// Open a SKILL.md preview in a reused-or-new preview leaf. UI thread.
+fn openSkillMdInPreviewLeaf(allocator: std.mem.Allocator, title: []const u8, content: []const u8) void {
+    const at = tab.activeTab() orelse return;
+    const pane = if (tab.firstPreviewForReuse(allocator, at)) |h|
+        switch (at.tree.nodes[h.idx()]) {
+            .leaf => |pn| switch (pn) {
+                .preview => |p| p,
+                else => return,
+            },
+            .split => return,
+        }
+    else
+        (tab.splitIntoPreview(allocator) orelse return);
+    pane.open(.markdown, title, "SKILL.md", content);
+}
+
 /// UI thread: consume a finished skill-center op result and apply it (open the
 /// import list, run the deploy decision, or show a transfer toast).
 fn pollSkillCenterOp(session: *skill_center.Session) void {
@@ -3601,7 +3634,7 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
             }
         },
         .preview => |*v| {
-            markdown_preview_panel.open(.markdown, v.title, "SKILL.md", v.content);
+            openSkillMdInPreviewLeaf(allocator, v.title, v.content);
         },
     }
     markUiDirty();
@@ -6194,6 +6227,10 @@ fn runMainLoop(self: *AppWindow) !void {
         }
         syncTransferToastFromFileExplorer();
         if (markdown_preview_panel.tickAsync()) {
+            g_force_rebuild = true;
+            g_cells_valid = false;
+        }
+        if (tickAllPreviewPanes()) {
             g_force_rebuild = true;
             g_cells_valid = false;
         }

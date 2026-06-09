@@ -42,6 +42,7 @@ pub const CommandAction = enum {
     show_whats_new,
     update_skills,
     open_skill_center,
+    split_preview,
 };
 
 pub const CommandEntry = struct {
@@ -91,6 +92,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "What's New", .detail = "Show what changed in this version of WispTerm", .shortcut = app_metadata.version, .action = .show_whats_new },
     .{ .title = "Update Skills", .detail = "Download the latest skills from GitHub", .shortcut = "", .action = .update_skills },
     .{ .title = "Skill Center", .detail = "Inventory Claude Code / Codex skills across servers", .shortcut = "", .action = .open_skill_center },
+    .{ .title = "Split Preview", .detail = "Open a preview panel on the right", .shortcut = "", .action = .split_preview },
 };
 
 pub const CommandPaletteMode = enum {

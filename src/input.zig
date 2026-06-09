@@ -40,6 +40,7 @@ const command_dispatch = @import("input/command_dispatch.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
+const PreviewPane = @import("preview_pane.zig");
 const selection_unit = @import("selection_unit.zig");
 const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
@@ -3029,12 +3030,37 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
     const perf = ui_perf.begin("input.open_preview_async");
     defer perf.end();
 
-    AppWindow.hideAiCopilot();
-    if (!markdown_preview_panel.beginAsyncLoad(kind, title, path, source_kind)) {
+    const t = tab.activeTab() orelse return false;
+    const gpa = AppWindow.g_allocator orelse return false;
+    const pane: *PreviewPane = if (tab.firstPreviewForReuse(gpa, t)) |h|
+        switch (t.tree.nodes[h.idx()]) {
+            .leaf => |pn| switch (pn) {
+                .preview => |p| p,
+                else => return false,
+            },
+            .split => return false,
+        }
+    else
+        (tab.splitIntoPreview(gpa) orelse return false);
+    if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
     }
-    if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+    return true;
+}
+
+fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind) bool {
+    const perf = ui_perf.begin("input.open_preview_new");
+    defer perf.end();
+
+    const gpa = AppWindow.g_allocator orelse return false;
+    const pane = tab.splitIntoPreview(gpa) orelse return false;
+    if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
+        file_explorer.setTransferStatus(.failed, "Preview failed");
+        return true;
+    }
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
     return true;
@@ -3091,7 +3117,7 @@ fn lsPrefixForCell(surface: *Surface, cell_pos: CellPos, out_buf: []u8) ?[]const
     return ls_path_context.inferPrefixForClick(grid, cell_pos.row, out_buf);
 }
 
-fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
+fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bool {
     const allocator = AppWindow.g_allocator orelse return false;
     const path = extractPreviewPathAtCell(allocator, surface, cell_pos) orelse return false;
     defer allocator.free(path);
@@ -3111,7 +3137,11 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
             return true;
         };
 
-        return openPreviewAsync(kind, basenameForPreview(path), resolved_path, source_kind);
+        if (shift) {
+            return openPreviewNew(kind, basenameForPreview(path), resolved_path, source_kind);
+        } else {
+            return openPreviewAsync(kind, basenameForPreview(path), resolved_path, source_kind);
+        }
     }
 
     const command = buildPreviewCommand(allocator, path) orelse return false;
@@ -3879,7 +3909,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 .open_url_or_preview => {
                     if (openUrlAtCell(clicked_surface, cell_pos)) return;
                     if (openHtmlPanelForCell(clicked_surface, cell_pos)) return;
-                    if (openPreviewPanelForCell(clicked_surface, cell_pos)) return;
+                    if (openPreviewPanelForCell(clicked_surface, cell_pos, ev.shift)) return;
                 },
                 .pass_through => {},
             }
