@@ -1166,6 +1166,9 @@ pub fn allocPlainReplInput(allocator: std.mem.Allocator, repl: ReplKind, surface
 }
 
 pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, repl: ReplKind, text: []const u8, timeout_ms: u32) ![]u8 {
+    // Line REPLs (.r/.python/.plain) go through lineReplEvalTool instead; this
+    // tool is only for the agent TUIs, whose completion is judged by busy markers.
+    std.debug.assert(repl == .codex or repl == .claude_code);
     if (repl == .codex) {
         // Codex's TUI treats a fast input burst as a paste and folds a trailing
         // Enter into the pasted text, leaving a literal newline that never
@@ -1340,6 +1343,9 @@ fn waitForReplPromptReturn(
     timeout_ms: u32,
 ) ![]u8 {
     const wait_ms = @max(timeout_ms, 1000);
+    // Line REPLs respond faster than the agent TUIs (waitForAgentAppReplResult
+    // uses 1500/750), so settle a bit sooner. The min_wait_ms floor also defends
+    // against returning before the typed input has echoed and reset the screen.
     const quiet_ms: i64 = 1000;
     const min_wait_ms: i64 = 500;
     const started = std.time.milliTimestamp();
