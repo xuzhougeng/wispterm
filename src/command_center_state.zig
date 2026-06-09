@@ -42,6 +42,7 @@ pub const CommandAction = enum {
     show_whats_new,
     update_skills,
     open_skill_center,
+    open_port_forwarding,
 };
 
 pub const CommandEntry = struct {
@@ -90,6 +91,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Open Latest Release", .detail = "Open the latest WispTerm GitHub Release", .shortcut = "", .action = .open_latest_release },
     .{ .title = "What's New", .detail = "Show what changed in this version of WispTerm", .shortcut = app_metadata.version, .action = .show_whats_new },
     .{ .title = "Update Skills", .detail = "Download the latest skills from GitHub", .shortcut = "", .action = .update_skills },
+    .{ .title = "Port Forwarding", .detail = "Manage SSH port forwarding rules", .shortcut = "", .action = .open_port_forwarding },
     .{ .title = "Skill Center", .detail = "Inventory Claude Code / Codex skills across servers", .shortcut = "", .action = .open_skill_center },
 };
 
@@ -301,6 +303,10 @@ test "findCommandAction resolves What's New" {
 
 test "command center includes Skill Center action" {
     try std.testing.expectEqual(CommandAction.open_skill_center, findCommandAction("Skill Center"));
+}
+
+test "command center includes Port Forwarding action" {
+    try std.testing.expectEqual(CommandAction.open_port_forwarding, findCommandAction("Port Forwarding"));
 }
 
 test "findCommandAction resolves Open Jupyter" {

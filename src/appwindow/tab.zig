@@ -15,6 +15,7 @@ const ai_chat = @import("../ai_chat.zig");
 const ai_history_session = @import("../ai_history_session.zig");
 const ai_history_source = @import("../ai_history_source.zig");
 const skill_center = @import("../skill_center.zig");
+const port_forwarding = @import("../port_forwarding.zig");
 const ai_history_time = @import("../ai_history_time.zig");
 const agent_history = @import("../agent_history.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
@@ -50,6 +51,7 @@ pub const TabState = struct {
     ai_chat_session: ?*ai_chat.Session = null,
     ai_history_session: ?*ai_history_session.Session = null,
     skill_center_session: ?*skill_center.Session = null,
+    port_forwarding_session: ?*port_forwarding.Session = null,
     /// Copilot conversation for a terminal tab (Issue #98). Distinct from
     /// `ai_chat_session`, which backs a dedicated AI-chat tab. Lazily created
     /// the first time the copilot sidebar is opened on this tab.
@@ -64,6 +66,7 @@ pub const TabState = struct {
         ai_chat,
         ai_history,
         skill_center,
+        port_forwarding,
     };
 
     /// Get the focused surface in this tab, or null if tree is empty
@@ -93,6 +96,9 @@ pub const TabState = struct {
         }
         if (self.kind == .skill_center) {
             return i18n.s().sl_skill_center;
+        }
+        if (self.kind == .port_forwarding) {
+            return i18n.s().pf_title;
         }
         const surface = self.focusedSurface() orelse return "wispterm";
         return surface.getTitle();
@@ -124,6 +130,13 @@ pub const TabState = struct {
                 if (self.skill_center_session) |session| {
                     session.destroy();
                     self.skill_center_session = null;
+                }
+            },
+            .port_forwarding => {
+                if (self.port_forwarding_session) |session| {
+                    session.destroy();
+                    allocator.destroy(session);
+                    self.port_forwarding_session = null;
                 }
             },
         }
@@ -383,6 +396,7 @@ pub fn spawnTabWithCommandAndCwd(allocator: std.mem.Allocator, cols: u16, rows: 
     t.ai_chat_session = null;
     t.ai_history_session = null;
     t.skill_center_session = null;
+    t.port_forwarding_session = null;
     t.copilot_session = null;
     t.copilot_visible = false;
 
@@ -441,6 +455,7 @@ pub fn spawnAiChatTab(
     t.ai_chat_session = session;
     t.ai_history_session = null;
     t.skill_center_session = null;
+    t.port_forwarding_session = null;
     t.copilot_session = null;
     t.copilot_visible = false;
 
@@ -472,6 +487,7 @@ pub fn spawnAiChatTabFromHistoryRecord(allocator: std.mem.Allocator, record: age
     t.ai_chat_session = session;
     t.ai_history_session = null;
     t.skill_center_session = null;
+    t.port_forwarding_session = null;
     t.copilot_session = null;
     t.copilot_visible = false;
 
@@ -505,6 +521,7 @@ pub fn spawnAiHistoryTab(allocator: std.mem.Allocator, source: ai_history_source
     t.copilot_visible = false;
     t.ai_history_session = session_ptr;
     t.skill_center_session = null;
+    t.port_forwarding_session = null;
 
     g_tabs[g_tab_count] = t;
     active_tab_state.g_active_tab = g_tab_count;
@@ -529,6 +546,37 @@ pub fn spawnSkillCenterTab(allocator: std.mem.Allocator) bool {
     t.ai_chat_session = null;
     t.ai_history_session = null;
     t.skill_center_session = session_ptr;
+    t.port_forwarding_session = null;
+    t.copilot_session = null;
+    t.copilot_visible = false;
+
+    g_tabs[g_tab_count] = t;
+    active_tab_state.g_active_tab = g_tab_count;
+    g_tab_count += 1;
+    return true;
+}
+
+/// Create and activate a new Port Forwarding management tab.
+pub fn spawnPortForwardingTab(allocator: std.mem.Allocator) bool {
+    if (g_tab_count >= MAX_TABS) return false;
+    const session_ptr = allocator.create(port_forwarding.Session) catch return false;
+    session_ptr.* = port_forwarding.Session.create(allocator) catch {
+        allocator.destroy(session_ptr);
+        return false;
+    };
+
+    const t = allocator.create(TabState) catch {
+        session_ptr.destroy();
+        allocator.destroy(session_ptr);
+        return false;
+    };
+    t.kind = .port_forwarding;
+    t.tree = .empty;
+    t.focused = .root;
+    t.ai_chat_session = null;
+    t.ai_history_session = null;
+    t.skill_center_session = null;
+    t.port_forwarding_session = session_ptr;
     t.copilot_session = null;
     t.copilot_visible = false;
 
@@ -543,6 +591,13 @@ pub fn activeSkillCenter() ?*skill_center.Session {
     const t = activeTab() orelse return null;
     if (t.kind != .skill_center) return null;
     return t.skill_center_session;
+}
+
+/// Active tab's Port Forwarding session, or null if the active tab isn't one.
+pub fn activePortForwarding() ?*port_forwarding.Session {
+    const t = activeTab() orelse return null;
+    if (t.kind != .port_forwarding) return null;
+    return t.port_forwarding_session;
 }
 
 /// Close the tab at the given index.
@@ -983,6 +1038,7 @@ pub fn commitTabRename() void {
                     },
                     .ai_history => {},
                     .skill_center => {},
+                    .port_forwarding => {},
                 }
             }
         }
@@ -1426,6 +1482,7 @@ pub fn restoreTab(
     t.ai_chat_session = null;
     t.ai_history_session = null;
     t.skill_center_session = null;
+    t.port_forwarding_session = null;
     t.copilot_session = null;
     t.copilot_visible = false;
     applyRestoredTabMetadata(t, snap);
@@ -1447,6 +1504,7 @@ fn applyRestoredTabMetadata(t: *TabState, snap: *const session_persist.TabSnap) 
         },
         .ai_history => {},
         .skill_center => {},
+        .port_forwarding => {},
     }
 }
 

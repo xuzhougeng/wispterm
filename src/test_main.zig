@@ -117,6 +117,20 @@ comptime {
         @compileError("App/AppWindow launch APIs must use native command line names, not UTF-16-specific names");
     }
 
+    const profile_codec_source = @embedFile("renderer/overlays/profile_codec.zig");
+    if (std.mem.indexOf(u8, profile_codec_source, "pub const SSH_FIELD_COUNT = 6") == null or
+        std.mem.indexOf(u8, profile_codec_source, "port_forward") != null)
+    {
+        @compileError("Port forwarding must not extend the existing ssh_hosts profile schema");
+    }
+
+    const ssh_tunnel_source = @embedFile("ssh_tunnel.zig");
+    if (std.mem.indexOf(u8, ssh_tunnel_source, "\"-L\"") == null or
+        std.mem.indexOf(u8, ssh_tunnel_source, "\"-R\"") != null)
+    {
+        @compileError("Existing URL SSH tunnel code must remain local-forwarding only");
+    }
+
     const shared_pty_sources = .{
         @embedFile("Surface.zig"),
         @embedFile("termio/Thread.zig"),
@@ -724,6 +738,11 @@ comptime {
     _ = @import("skill_inventory_cache.zig");
     _ = @import("skill_center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
+    _ = @import("port_forward_rule.zig");
+    _ = @import("ssh_profile_store.zig");
+    _ = @import("port_forward_manager.zig");
+    _ = @import("port_forwarding.zig");
+    _ = @import("renderer/port_forwarding_renderer.zig");
     _ = @import("command_registry.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("ai_chat_scrollbar_model.zig");

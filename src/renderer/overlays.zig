@@ -580,6 +580,9 @@ fn executeCommand(action: CommandAction) void {
         .open_skill_center => {
             _ = AppWindow.spawnSkillCenterTab();
         },
+        .open_port_forwarding => {
+            _ = AppWindow.spawnPortForwardingTab();
+        },
     }
 }
 
