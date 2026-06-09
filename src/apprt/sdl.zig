@@ -128,6 +128,8 @@ pub const Window = struct {
     ime_caret_x: i32 = 12,
     ime_caret_y: i32 = platform_window.titlebar_height + 10,
     ime_caret_height: i32 = 20,
+    ime_preedit_buf: [512]u8 = undefined,
+    ime_preedit_len: usize = 0,
 
     // Input event queues (mutex-guarded; C3 will push into them)
     key_events: EventQueue(platform_input.KeyEvent) = .{},
@@ -292,12 +294,12 @@ pub const Window = struct {
         self.ime_caret_x = @max(0, x);
         self.ime_caret_y = @max(0, y);
         self.ime_caret_height = @max(1, height);
-        // SDL_SetTextInputArea wiring deferred to C3
+        const rect = c.SDL_Rect{ .x = self.ime_caret_x, .y = self.ime_caret_y, .w = 1, .h = self.ime_caret_height };
+        _ = c.SDL_SetTextInputArea(self.sdl_window, &rect, 0);
     }
 
     pub fn imePreeditText(self: *const Window) []const u8 {
-        _ = self;
-        return "";
+        return self.ime_preedit_buf[0..self.ime_preedit_len];
     }
 
     pub fn clearTransientInputQueues(self: *Window) void {
@@ -463,6 +465,22 @@ fn processEvent(event: c.SDL_Event) void {
         },
         // KEY_UP: intentionally ignored (neutral KeyEvent has no action field).
 
+        c.SDL_EVENT_TEXT_EDITING => {
+            const win_id = event.edit.windowID;
+            if (g_registry.find(win_id)) |ptr| {
+                const w: *Window = @alignCast(@ptrCast(ptr));
+                // event.edit.text is [*c]const u8 — a C pointer that may be null.
+                const txt: []const u8 = if (event.edit.text != null)
+                    std.mem.span(@as([*:0]const u8, @ptrCast(event.edit.text)))
+                else
+                    "";
+                const n = @min(txt.len, w.ime_preedit_buf.len);
+                if (n > 0) @memcpy(w.ime_preedit_buf[0..n], txt[0..n]);
+                w.ime_preedit_len = n;
+                w.ime_composing = n > 0;
+            }
+        },
+
         c.SDL_EVENT_TEXT_INPUT => {
             const win_id = event.text.windowID;
             if (g_registry.find(win_id)) |ptr| {
@@ -482,6 +500,9 @@ fn processEvent(event: c.SDL_Event) void {
                         .super = m.super,
                     });
                 }
+                // Composition is finished once text commits — clear preedit.
+                w.ime_preedit_len = 0;
+                w.ime_composing = false;
             }
         },
 
