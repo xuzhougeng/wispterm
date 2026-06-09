@@ -625,6 +625,7 @@ comptime {
     _ = @import("ai_history_session.zig");
     _ = @import("renderer/ai_history_renderer.zig");
     _ = @import("agent_detector.zig");
+    _ = @import("agent_prompt_answer.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
     _ = @import("appwindow/flush_scheduler.zig");
