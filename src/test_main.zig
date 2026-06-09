@@ -724,6 +724,11 @@ comptime {
     _ = @import("skill_inventory_cache.zig");
     _ = @import("skill_center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
+    _ = @import("port_forward_rule.zig");
+    _ = @import("ssh_profile_store.zig");
+    _ = @import("port_forward_manager.zig");
+    _ = @import("port_forwarding.zig");
+    _ = @import("renderer/port_forwarding_renderer.zig");
     _ = @import("command_registry.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("ai_chat_scrollbar_model.zig");

@@ -54,6 +54,8 @@ pub const Strings = struct {
     sl_sessions_detail: []const u8,
     sl_skill_center: []const u8,
     sl_skill_center_detail: []const u8,
+    pf_title: []const u8,
+    pf_legend: []const u8,
 
     // —— Skill Center 面板 ——
     sc_local: []const u8,
@@ -239,6 +241,8 @@ const en = Strings{
     .sl_sessions_detail = "Browse Codex / Claude Code sessions",
     .sl_skill_center = "Skill Center",
     .sl_skill_center_detail = "Inventory Claude Code / Codex skills across servers",
+    .pf_title = "Port Forwarding",
+    .pf_legend = "[n] new   [e] edit   [space] start/stop   [r] restart   [a] auto   [d] delete   [esc] close/cancel",
 
     .sc_local = "Local",
     .sc_scanning = "No skills found. Scanning…",
@@ -418,6 +422,8 @@ const zh_CN = Strings{
     .sl_sessions_detail = "浏览 Codex / Claude Code 会话",
     .sl_skill_center = "技能中心",
     .sl_skill_center_detail = "盘点各服务器上的 Claude Code / Codex 技能",
+    .pf_title = "端口转发",
+    .pf_legend = "[n] 新建   [e] 编辑   [space] 启停   [r] 重启   [a] 自动启动   [d] 删除   [esc] 关闭/取消",
 
     .sc_local = "本地",
     .sc_scanning = "未发现技能，扫描中…",
