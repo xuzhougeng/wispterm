@@ -15,8 +15,13 @@ pub const StatusKind = enum {
 pub const RowView = struct {
     rule: rule_mod.Rule,
     status: StatusKind,
-    reason: []const u8,
+    reason_buf: [REASON_MAX]u8 = undefined,
+    reason_len: usize = 0,
     auto_start: bool,
+
+    pub fn reason(self: *const RowView) []const u8 {
+        return self.reason_buf[0..self.reason_len];
+    }
 };
 
 const Entry = struct {
@@ -61,12 +66,13 @@ pub const Manager = struct {
         defer self.mutex.unlock();
         if (index >= self.entries.items.len) return null;
         const entry = &self.entries.items[index];
-        return .{
+        var row: RowView = .{
             .rule = entry.rule,
             .status = entry.status,
-            .reason = entry.reason(),
             .auto_start = entry.rule.auto_start,
         };
+        row.reason_len = copyBounded(row.reason_buf[0..], entry.reason());
+        return row;
     }
 
     pub fn addRule(self: *Manager, rule: rule_mod.Rule) !void {
@@ -113,11 +119,18 @@ pub const Manager = struct {
     pub fn loadFromContent(self: *Manager, content: []const u8) !void {
         const rules = try rule_mod.decodeRules(self.allocator, content);
         defer rule_mod.freeRules(self.allocator, rules);
+        if (rules.len > MAX_RULES) return error.TooManyRules;
         self.mutex.lock();
         defer self.mutex.unlock();
+        try self.replaceRulesLocked(rules);
+    }
+
+    fn replaceRulesLocked(self: *Manager, rules: []const rule_mod.Rule) !void {
+        if (rules.len > MAX_RULES) return error.TooManyRules;
+        try self.entries.ensureTotalCapacity(self.allocator, rules.len);
         self.entries.clearRetainingCapacity();
         for (rules) |rule| {
-            try self.entries.append(self.allocator, .{ .rule = rule });
+            self.entries.appendAssumeCapacity(.{ .rule = rule });
         }
     }
 
@@ -175,5 +188,116 @@ test "port_forward_manager: missing profile records status without spawning" {
     try std.testing.expect(!started);
     const row = manager.rowAt(0).?;
     try std.testing.expectEqual(StatusKind.missing_profile, row.status);
-    try std.testing.expectEqualStrings("profile missing", row.reason);
+    try std.testing.expectEqualStrings("profile missing", row.reason());
+}
+
+test "port_forward_manager: row view reason snapshot survives status changes" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("devbox"));
+    _ = manager.markMissingProfileForTest(0);
+
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqual(StatusKind.missing_profile, row.status);
+    try std.testing.expectEqualStrings("profile missing", row.reason());
+    try std.testing.expect(row.reason().ptr != manager.entries.items[0].reason_buf[0..].ptr);
+
+    manager.entries.items[0].setStatus(.error_, "rewritten");
+    try std.testing.expectEqual(StatusKind.missing_profile, row.status);
+    try std.testing.expectEqualStrings("profile missing", row.reason());
+}
+
+test "port_forward_manager: load rejects too many rules without replacing existing" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("existing"));
+
+    var rules: [MAX_RULES + 1]rule_mod.Rule = undefined;
+    for (&rules) |*rule| {
+        rule.* = rule_mod.defaultReverseProxy("loaded");
+    }
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try rule_mod.encodeRules(std.testing.allocator, &out, rules[0..]);
+
+    try std.testing.expectError(error.TooManyRules, manager.loadFromContent(out.items));
+    try std.testing.expectEqual(@as(usize, 1), manager.count());
+    try std.testing.expectEqualStrings("existing", manager.rowAt(0).?.rule.profileName());
+}
+
+test "port_forward_manager: load replacement fully replaces old entries" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("old-a"));
+    try manager.addRule(rule_mod.defaultReverseProxy("old-b"));
+
+    var rules = [_]rule_mod.Rule{rule_mod.defaultReverseProxy("new")};
+    rules[0].auto_start = false;
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try rule_mod.encodeRules(std.testing.allocator, &out, rules[0..]);
+
+    try manager.loadFromContent(out.items);
+    try std.testing.expectEqual(@as(usize, 1), manager.count());
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("new", row.rule.profileName());
+    try std.testing.expect(!row.auto_start);
+}
+
+test "port_forward_manager: load allocation failure keeps existing rules" {
+    var rules: [MAX_RULES]rule_mod.Rule = undefined;
+    for (&rules) |*rule| {
+        rule.* = rule_mod.defaultReverseProxy("loaded");
+    }
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try rule_mod.encodeRules(std.testing.allocator, &out, rules[0..]);
+
+    var saw_failure = false;
+    var fail_index: usize = 0;
+    while (fail_index < 256) : (fail_index += 1) {
+        var manager = Manager.init(std.testing.allocator);
+        defer manager.deinit();
+        try manager.addRule(rule_mod.defaultReverseProxy("existing"));
+
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        manager.allocator = failing_allocator.allocator();
+        const result = manager.loadFromContent(out.items);
+        manager.allocator = std.testing.allocator;
+
+        if (result) |_| {
+            if (!failing_allocator.has_induced_failure) break;
+            try std.testing.expectEqual(@as(usize, MAX_RULES), manager.count());
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(failing_allocator.has_induced_failure);
+            saw_failure = true;
+            try std.testing.expectEqual(@as(usize, 1), manager.count());
+            try std.testing.expectEqualStrings("existing", manager.rowAt(0).?.rule.profileName());
+        }
+    }
+    try std.testing.expect(saw_failure);
+}
+
+test "port_forward_manager: update resets status and invalid indexes are ignored" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("devbox"));
+    _ = manager.markMissingProfileForTest(0);
+
+    try std.testing.expect(!manager.updateRule(8, rule_mod.defaultReverseProxy("ignored")));
+    try std.testing.expect(!manager.toggleAutoStart(8));
+    try std.testing.expect(!manager.deleteRule(8));
+    try std.testing.expect(manager.rowAt(8) == null);
+
+    try std.testing.expect(manager.updateRule(0, rule_mod.defaultReverseProxy("updated")));
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqual(StatusKind.stopped, row.status);
+    try std.testing.expectEqualStrings("", row.reason());
+    try std.testing.expectEqualStrings("updated", row.rule.profileName());
 }
