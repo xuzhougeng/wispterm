@@ -116,6 +116,7 @@ pub const State = struct {
     startup_shortcuts_visible: bool = false,
     session_launcher_visible: bool = false,
     session_launcher_selected: usize = 0,
+    session_launcher_return_to_command_palette: bool = false,
     ssh_list_visible: bool = false,
     ssh_form_visible: bool = false,
     ai_list_visible: bool = false,
@@ -142,6 +143,7 @@ pub const State = struct {
         self.command_palette_filter_len = 0;
         self.commandPaletteSetMode(mode);
         self.command_palette_history_selected = 0;
+        self.session_launcher_return_to_command_palette = false;
         self.startup_shortcuts_visible = false;
     }
 
@@ -155,6 +157,7 @@ pub const State = struct {
         self.command_palette_selected = 0;
         self.commandPaletteSetMode(.commands);
         self.command_palette_history_selected = 0;
+        self.session_launcher_return_to_command_palette = false;
     }
 
     pub fn commandPaletteOpenAgentHistory(self: *State) void {
@@ -223,8 +226,14 @@ pub const State = struct {
         self.ai_form_visible = false;
         self.ai_history_source_visible = false;
         self.command_palette_visible = false;
+        self.session_launcher_return_to_command_palette = false;
         self.settings_visible = false;
         self.startup_shortcuts_visible = false;
+    }
+
+    pub fn sessionLauncherOpenFromCommandPalette(self: *State) void {
+        self.sessionLauncherOpen();
+        self.session_launcher_return_to_command_palette = true;
     }
 
     pub fn sessionLauncherClose(self: *State) void {
@@ -234,6 +243,14 @@ pub const State = struct {
         self.ai_list_visible = false;
         self.ai_form_visible = false;
         self.ai_history_source_visible = false;
+        self.session_launcher_return_to_command_palette = false;
+    }
+
+    pub fn sessionLauncherBackToCommandPalette(self: *State) bool {
+        if (!self.session_launcher_return_to_command_palette) return false;
+        self.sessionLauncherClose();
+        self.commandPaletteOpen();
+        return true;
     }
 
     pub fn settingsPageOpen(self: *State) void {
@@ -399,6 +416,32 @@ test "agent history picker escape returns to command list mode" {
 
     try std.testing.expect(state.command_palette_visible);
     try std.testing.expect(!state.commandPaletteIsHistoryMode());
+}
+
+test "session launcher opened from command center escapes back to command list" {
+    var state = State{};
+    state.commandPaletteOpen();
+
+    state.sessionLauncherOpenFromCommandPalette();
+    try std.testing.expect(!state.command_palette_visible);
+    try std.testing.expect(state.sessionLauncherVisible());
+    try std.testing.expect(state.session_launcher_return_to_command_palette);
+
+    try std.testing.expect(state.sessionLauncherBackToCommandPalette());
+    try std.testing.expect(state.command_palette_visible);
+    try std.testing.expect(!state.sessionLauncherVisible());
+    try std.testing.expect(!state.session_launcher_return_to_command_palette);
+}
+
+test "standalone session launcher escape still closes" {
+    var state = State{};
+    state.sessionLauncherOpen();
+
+    try std.testing.expect(!state.sessionLauncherBackToCommandPalette());
+    state.sessionLauncherClose();
+
+    try std.testing.expect(!state.command_palette_visible);
+    try std.testing.expect(!state.sessionLauncherVisible());
 }
 
 test "agent history picker has no selection when the history list is empty" {
