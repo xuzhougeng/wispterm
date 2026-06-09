@@ -93,6 +93,7 @@ test {
     _ = @import("ssh_prompt.zig");
     _ = @import("selection_unit.zig");
     _ = @import("scrollbar_model.zig");
+    _ = @import("resize_gate.zig");
     _ = @import("preview_token.zig");
     _ = @import("ime_caret.zig");
     _ = @import("sync_output.zig");
