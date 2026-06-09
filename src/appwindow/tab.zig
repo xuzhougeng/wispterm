@@ -8,6 +8,7 @@ const std = @import("std");
 const Config = @import("../config.zig");
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
+const PreviewPane = @import("../preview_pane.zig");
 const input_key = @import("../input/key.zig");
 const remote_client = @import("../remote_client.zig");
 const session_persist = @import("../session_persist.zig");
@@ -663,6 +664,97 @@ fn installAiChatHistoryHook(session: *ai_chat.Session) void {
 // ============================================================================
 // Split operations
 // ============================================================================
+
+/// Initial right-edge split ratio: give the terminal (left child) the bulk of
+/// the width, the preview (right child) ~DEFAULT_WIDTH px. Falls back to 0.62
+/// because tab.zig is UI-free (no AppWindow dependency).
+fn rightEdgeRatio() f16 {
+    return 0.62;
+}
+
+/// Create a preview pane at the RIGHT EDGE of the active tab's layout (a
+/// full-height right column). Does NOT move focus (opening a preview keeps the
+/// terminal focused). Returns the new PreviewPane (BORROWED — the tree owns it).
+///
+/// Mirrors the refcount dance of splitFocusedSurfaceWithCommand:
+///   create() → refcount 1
+///   initPane (pane.ref()) → refcount 2  (insert tree owns it)
+///   split (refNodes) → refcount 3  (new_tree owns another ref)
+///   old_tree.deinit() → refcount 2  (insert's copy still there; new_tree still owns 2... wait)
+///   defer insert.deinit() → refcount 2  (insert's ref released)
+///   p.unref(gpa) → refcount 1  (local create() ref released; new_tree holds the one owning ref)
+pub fn splitIntoPreview(gpa: std.mem.Allocator) ?*PreviewPane {
+    const t = activeTab() orelse return null;
+    if (t.kind != .terminal) return null;
+
+    const p = PreviewPane.create(gpa) catch return null;
+    // insert tree takes ownership of one ref (via pane.ref() inside initPane)
+    var insert = SplitTree.initPane(gpa, .{ .preview = p }) catch {
+        p.unref(gpa);
+        return null;
+    };
+    defer insert.deinit(); // releases insert's ref when scope exits
+
+    // Remember: split(.root, .right, ...) moves the node at .root to the LAST
+    // position in the new tree. We must remap t.focused accordingly so the
+    // terminal pane stays focused after the tree rebuild.
+    const old_len = t.tree.nodes.len;
+    const old_focused = t.focused;
+
+    const new_tree = t.tree.split(gpa, .root, .right, rightEdgeRatio(), &insert) catch {
+        p.unref(gpa); // insert.deinit (deferred) will also unref, so keep balanced
+        return null;
+    };
+
+    // Swap the tree exactly as splitFocusedSurfaceWithCommand does
+    var old_tree = t.tree;
+    t.tree = new_tree;
+    old_tree.deinit();
+
+    // Remap focused handle: split(.root) moves node[0] to node[nodes.len - 1].
+    // Any other handles keep their indices because insert nodes are placed at
+    // positions old_len .. old_len + insert.nodes.len, and the split node takes
+    // over position 0.
+    t.focused = if (old_focused.idx() == 0)
+        @enumFromInt(old_len + 1) // new_tree.nodes.len - 1 = old_len + insert.len(1)
+    else
+        old_focused;
+
+    // Release the local create() reference; the tree now holds the sole ref.
+    p.unref(gpa);
+    return p; // borrowed — tree holds the owning ref
+}
+
+/// Handle of the preview pane to reuse: the focused leaf if it is a preview,
+/// else the first preview in reading order, else null. Stateless/deterministic.
+/// `gpa` is used only for the transient readingOrder slice (freed before return).
+pub fn firstPreviewForReuse(gpa: std.mem.Allocator, t: *const TabState) ?SplitTree.Node.Handle {
+    // Fast path: focused node is already a preview leaf
+    if (t.focused.idx() < t.tree.nodes.len) {
+        switch (t.tree.nodes[t.focused.idx()]) {
+            .leaf => |pane| switch (pane) {
+                .preview => return t.focused,
+                else => {},
+            },
+            .split => {},
+        }
+    }
+
+    // Scan in reading order (top-left → bottom-right) for the first preview.
+    const order = t.tree.readingOrder(gpa) catch return null;
+    defer gpa.free(order);
+
+    for (order) |h| {
+        switch (t.tree.nodes[h.idx()]) {
+            .leaf => |pane| switch (pane) {
+                .preview => return h,
+                else => {},
+            },
+            .split => {},
+        }
+    }
+    return null;
+}
 
 /// Split the focused surface in the given direction.
 /// Returns true on success. The caller handles g_resize_active and rebuild flags.
@@ -2222,4 +2314,154 @@ test "focusPanelByIndex focuses panels in screen reading order" {
     // Out of range → false, focus unchanged.
     try std.testing.expect(!focusPanelByIndex(std.testing.allocator, 3));
     try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 2), @intFromEnum(ts.focused));
+}
+
+test "tab: splitIntoPreview adds a preview leaf and grows the tree by 2 nodes" {
+    resetTestTabGlobals();
+    const gpa = std.testing.allocator;
+
+    // Build a minimal terminal tab with a stack-allocated surface stub.
+    // ref_count starts at 1; SplitTree.init will call pane.ref() → 2.
+    // We never let refcount reach 0 (would call surface.deinit → crash on stub),
+    // because tree ops keep it ≥ 1 after all cleanup. The testing allocator never
+    // tracks the stack surface, so no leak is reported.
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    surface.ssh_connection = null;
+    surface.cwd_path_len = 0;
+    surface.initial_cwd_path_len = 0;
+    surface.title_override_len = 0;
+    surface.agent_recent_output_len = 0;
+
+    const t = try gpa.create(TabState);
+    t.* = .{
+        .kind = .terminal,
+        .tree = try SplitTree.init(gpa, &surface),
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .skill_center_session = null,
+        .copilot_session = null,
+        .copilot_visible = false,
+    };
+    defer {
+        t.deinit(gpa);
+        gpa.destroy(t);
+        resetTestTabGlobals();
+    }
+
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_count = g_tab_count;
+    const saved_tab0 = g_tabs[0];
+    defer {
+        active_tab_state.g_active_tab = saved_active;
+        g_tab_count = saved_count;
+        g_tabs[0] = saved_tab0;
+    }
+    g_tabs[0] = t;
+    active_tab_state.g_active_tab = 0;
+    g_tab_count = 1;
+
+    const before = t.tree.nodes.len; // 1
+    const focused_before = t.focused;
+
+    const p = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
+
+    // Tree should have grown by exactly 2 nodes (one split node + one preview leaf)
+    try std.testing.expectEqual(before + 2, t.tree.nodes.len);
+
+    // Exactly one preview leaf must exist in the tree
+    var preview_count: usize = 0;
+    var it = t.tree.panes();
+    while (it.next()) |entry| {
+        switch (entry.pane) {
+            .preview => preview_count += 1,
+            .terminal => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), preview_count);
+
+    // The returned pointer is the pane in the tree
+    _ = p; // borrowed, owned by the tree
+
+    // Focus must NOT have moved to the preview — terminal is still focused.
+    // After split(.root, .right, ...), terminal moved from handle 0 to handle 2.
+    // focused_before was 0 (.root), so it should now be 2.
+    const expected_focused: SplitTree.Node.Handle = @enumFromInt(focused_before.idx() + 2);
+    try std.testing.expectEqual(expected_focused, t.focused);
+
+    // Verify the focused node is indeed the terminal leaf, not a split or preview.
+    try std.testing.expect(t.focused.idx() < t.tree.nodes.len);
+    const focused_node = t.tree.nodes[t.focused.idx()];
+    switch (focused_node) {
+        .leaf => |pane| switch (pane) {
+            .terminal => {}, // correct
+            .preview => return error.FocusedIsPreviewNotTerminal,
+        },
+        .split => return error.FocusedIsSplitNotLeaf,
+    }
+
+    // t.deinit (deferred) will call tree.deinit(), which unrefs the preview pane
+    // (freeing it) and decrements the surface refcount. The testing allocator
+    // must report no leak after the defer runs.
+}
+
+test "tab: firstPreviewForReuse returns the preview leaf, null when only terminals" {
+    resetTestTabGlobals();
+    const gpa = std.testing.allocator;
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    surface.ssh_connection = null;
+    surface.cwd_path_len = 0;
+    surface.initial_cwd_path_len = 0;
+    surface.title_override_len = 0;
+    surface.agent_recent_output_len = 0;
+
+    const t = try gpa.create(TabState);
+    t.* = .{
+        .kind = .terminal,
+        .tree = try SplitTree.init(gpa, &surface),
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .skill_center_session = null,
+        .copilot_session = null,
+        .copilot_visible = false,
+    };
+    defer {
+        t.deinit(gpa);
+        gpa.destroy(t);
+        resetTestTabGlobals();
+    }
+
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_count = g_tab_count;
+    const saved_tab0 = g_tabs[0];
+    defer {
+        active_tab_state.g_active_tab = saved_active;
+        g_tab_count = saved_count;
+        g_tabs[0] = saved_tab0;
+    }
+    g_tabs[0] = t;
+    active_tab_state.g_active_tab = 0;
+    g_tab_count = 1;
+
+    // Before splitIntoPreview: no preview leaf → null
+    try std.testing.expect(firstPreviewForReuse(gpa, t) == null);
+
+    // After splitIntoPreview: one preview leaf → its handle
+    _ = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
+
+    const handle = firstPreviewForReuse(gpa, t) orelse return error.NoPreviewAfterSplit;
+
+    // The handle must point to a preview leaf
+    try std.testing.expect(handle.idx() < t.tree.nodes.len);
+    switch (t.tree.nodes[handle.idx()]) {
+        .leaf => |pane| switch (pane) {
+            .preview => {}, // correct
+            .terminal => return error.HandlePointsToTerminal,
+        },
+        .split => return error.HandlePointsToSplit,
+    }
 }
