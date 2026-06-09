@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 pub const Backend = enum {
     windows,
     macos,
+    linux,
     unsupported,
 };
 
@@ -11,6 +12,7 @@ pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
     return switch (os_tag) {
         .windows => .windows,
         .macos => .macos,
+        .linux => .linux,
         else => .unsupported,
     };
 }
@@ -18,6 +20,7 @@ pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
 const impl = switch (backendForOs(builtin.os.tag)) {
     .windows => @import("clipboard_windows.zig"),
     .macos => @import("clipboard_macos.zig"),
+    .linux => @import("clipboard_linux.zig"),
     .unsupported => @import("clipboard_unsupported.zig"),
 };
 
@@ -60,6 +63,6 @@ test "platform clipboard exposes image paste as a temporary png path" {
 
 test "platform clipboard selects backend by target OS" {
     try std.testing.expectEqual(Backend.windows, backendForOs(.windows));
-    try std.testing.expectEqual(Backend.unsupported, backendForOs(.linux));
+    try std.testing.expectEqual(Backend.linux, backendForOs(.linux));
     try std.testing.expectEqual(Backend.macos, backendForOs(.macos));
 }

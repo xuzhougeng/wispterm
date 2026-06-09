@@ -12,6 +12,8 @@ comptime {
     }
 }
 
+const linux_system_libraries = [_][]const u8{ "SDL3", "fontconfig" };
+
 const windows_system_libraries = [_][]const u8{
     "user32",
     "gdi32",
@@ -84,14 +86,15 @@ const PlatformFeatures = struct {
     fn forOs(os_tag: std.Target.Os.Tag) PlatformFeatures {
         const uses_windows_backend = os_tag == .windows;
         const uses_macos_backend = os_tag == .macos;
-        const has_desktop_backend = uses_windows_backend or uses_macos_backend;
+        const uses_linux_backend = os_tag == .linux;
+        const has_desktop_backend = uses_windows_backend or uses_macos_backend or uses_linux_backend;
         const has_app_bundle = os_tag == .macos;
         const embedded_browser_backend: EmbeddedBrowserBackend = if (uses_windows_backend)
             .webview2
         else if (uses_macos_backend)
             .webkit
         else
-            .none;
+            .none; // linux: webview disabled (SP5)
         return .{
             .supports_desktop_exe = has_desktop_backend,
             .supports_embedded_browser = embedded_browser_backend.isSupported(),
@@ -100,7 +103,7 @@ const PlatformFeatures = struct {
             .supports_gui_subsystem = uses_windows_backend,
             .supports_remote_transport = uses_windows_backend,
             .supports_app_bundle = has_app_bundle,
-            .system_libraries = if (uses_windows_backend) &windows_system_libraries else &.{},
+            .system_libraries = if (uses_windows_backend) &windows_system_libraries else if (uses_linux_backend) &linux_system_libraries else &.{},
             .app_frameworks = if (has_app_bundle) &macos_app_frameworks else &.{},
             .opengl_system_library = if (uses_windows_backend) "opengl32" else null,
         };
@@ -121,6 +124,19 @@ fn systemLibrariesFor(features: PlatformFeatures) []const []const u8 {
 
 fn appFrameworksFor(features: PlatformFeatures) []const []const u8 {
     return features.app_frameworks;
+}
+
+/// Resolve a pkg-config variable (e.g. "libdir", "includedir") for a system
+/// library at configure time, so build paths are not hardcoded per distro.
+/// Returns null when pkg-config or the variable is unavailable.
+fn pkgConfigVariable(b: *std.Build, lib: []const u8, variable: []const u8) ?[]const u8 {
+    const result = std.process.Child.run(.{
+        .allocator = b.allocator,
+        .argv = &.{ "pkg-config", b.fmt("--variable={s}", .{variable}), lib },
+    }) catch return null;
+    if (result.term != .Exited or result.term.Exited != 0) return null;
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    return if (trimmed.len == 0) null else b.dupe(trimmed);
 }
 
 fn macosBundleMetadata() MacosBundleMetadata {
@@ -278,7 +294,7 @@ test "platform feature gates enable implemented desktop artifacts" {
     try std.testing.expectEqualStrings("opengl32", windows.opengl_system_library.?);
 
     const linux = PlatformFeatures.forOs(.linux);
-    try std.testing.expect(!linux.supports_desktop_exe);
+    try std.testing.expect(linux.supports_desktop_exe);
     try std.testing.expect(!linux.supports_embedded_browser);
     try std.testing.expectEqual(EmbeddedBrowserBackend.none, linux.embedded_browser_backend);
     try std.testing.expect(!linux.supports_resource_manifest);
@@ -306,7 +322,9 @@ test "windows system libraries are gated by platform" {
     try std.testing.expectEqualStrings("shcore", systemLibrariesFor(windows)[12]);
 
     const linux = PlatformFeatures.forOs(.linux);
-    try std.testing.expectEqual(@as(usize, 0), systemLibrariesFor(linux).len);
+    try std.testing.expectEqual(@as(usize, 2), systemLibrariesFor(linux).len);
+    try std.testing.expectEqualStrings("SDL3", systemLibrariesFor(linux)[0]);
+    try std.testing.expectEqualStrings("fontconfig", systemLibrariesFor(linux)[1]);
 
     const macos = PlatformFeatures.forOs(.macos);
     try std.testing.expectEqual(@as(usize, 0), systemLibrariesFor(macos).len);
@@ -367,13 +385,13 @@ test "foreign target tests are compile-only by default" {
 
 test "desktop executable emission defaults to implemented platform backends" {
     try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.windows)));
-    try std.testing.expect(!defaultEmitDesktopExe(PlatformFeatures.forOs(.linux)));
+    try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.linux)));
     try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.macos)));
 }
 
 test "shared compile checks default to platforms without desktop backends" {
     try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.windows)));
-    try std.testing.expect(defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.linux)));
+    try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.linux)));
     try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.macos)));
 }
 
@@ -539,6 +557,16 @@ pub fn build(b: *std.Build) void {
             .name = "wispterm",
             .root_module = exe_mod,
         });
+        if (target.result.os.tag == .linux) {
+            // libSDL3.so / libfontconfig reference glibc symbols (pthread_*,
+            // dlsym, stat) at versions above Zig's default glibc stubs for
+            // x86_64-linux-gnu; they are resolved at runtime by the system
+            // glibc. Let the linker leave those system-shared-library undefined
+            // symbols unresolved — ReleaseFast enforces
+            // --no-allow-shlib-undefined (Debug does not), so a release build
+            // would otherwise fail to link.
+            exe.linker_allow_shlib_undefined = true;
+        }
         if (platform.supports_app_bundle) {
             apple_sdk.addPaths(b, exe) catch @panic("failed to locate native Apple SDK for macOS app executable");
         }
@@ -981,13 +1009,37 @@ fn createAppModuleWithRoot(
         }
     }
 
-    if (platform.opengl_system_library) |library| {
+    // OpenGL backend (Windows + Linux): the glad loader needs its include path
+    // and C source compiled in. macOS uses Metal and skips this.
+    if (target.result.os.tag == .windows or target.result.os.tag == .linux) {
         app_mod.addIncludePath(b.path("vendor/glad/include"));
         app_mod.addCSourceFile(.{
             .file = b.path("vendor/glad/src/gl.c"),
             .flags = &.{},
         });
+    }
+
+    // Windows links the system OpenGL (opengl32); Linux gets its GL context and
+    // function loader from SDL3 (linked via systemLibrariesFor above), so it
+    // needs no separate GL system library.
+    if (platform.opengl_system_library) |library| {
         app_mod.linkSystemLibrary(library, .{});
+    }
+
+    if (target.result.os.tag == .linux) {
+        if (b.lazyDependency("sdl", .{ .target = target })) |dep| {
+            app_mod.addImport("sdl", dep.module("sdl"));
+        }
+        if (b.lazyDependency("fontconfig", .{ .target = target })) |dep| {
+            app_mod.addImport("fontconfig", dep.module("fontconfig"));
+        }
+        // libfontconfig lives in the system libdir; pkg-config does not emit it
+        // as a -L (it is a default search path for the system compiler, but Zig
+        // does not assume host paths). Discover it via pkg-config so we avoid a
+        // hardcoded, distro-specific multiarch path.
+        if (pkgConfigVariable(b, "fontconfig", "libdir")) |libdir| {
+            app_mod.addLibraryPath(.{ .cwd_relative = libdir });
+        }
     }
 
     if (platform.supports_app_bundle) {

@@ -157,6 +157,22 @@ const arrow_down_event = platform_input.KeyEvent{
     .super = false,
 };
 
+const enter_event = platform_input.KeyEvent{
+    .key_code = platform_input.key_enter,
+    .ctrl = false,
+    .shift = false,
+    .alt = false,
+    .super = false,
+};
+
+const escape_event = platform_input.KeyEvent{
+    .key_code = platform_input.key_escape,
+    .ctrl = false,
+    .shift = false,
+    .alt = false,
+    .super = false,
+};
+
 test "input: command palette arrow navigation requests a repaint" {
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
@@ -202,6 +218,28 @@ test "input: session launcher arrow navigation requests a repaint" {
 
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+test "input: command center child escape returns to command center" {
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.commandPaletteClose();
+    defer overlays.sessionLauncherClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.commandPaletteClose();
+    overlays.sessionLauncherClose();
+
+    overlays.commandPaletteOpen();
+    try std.testing.expect(overlays.commandPaletteVisible());
+
+    handleKey(enter_event);
+    try std.testing.expect(!overlays.commandPaletteVisible());
+    try std.testing.expect(overlays.sessionLauncherVisible());
+
+    handleKey(escape_event);
+    try std.testing.expect(overlays.commandPaletteVisible());
+    try std.testing.expect(!overlays.sessionLauncherVisible());
 }
 
 test "input: settings page arrow navigation requests a repaint" {

@@ -1,0 +1,59 @@
+# Flatpak manifest for WispTerm.
+#
+# STATUS: best-effort template — NOT yet built/tested on Flathub. The app-id,
+# command and finish-args are correct; the build modules (Zig toolchain + SDL3)
+# need validation with `flatpak-builder` against a chosen runtime. AppImage
+# (build-appimage.sh) is the verified primary artifact; this is for a future
+# Flathub submission.
+#
+# Build (once validated):
+#   flatpak-builder --user --install --force-clean build-dir \
+#     packaging/linux/com.wispterm.terminal.yaml
+app-id: com.wispterm.terminal
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: wispterm
+
+finish-args:
+  # Display: Wayland preferred, X11 fallback, GPU for the OpenGL renderer.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --share=ipc
+  # Network for SSH / remote console / AI agent.
+  - --share=network
+  # Desktop notifications (notifications_linux.zig).
+  - --talk-name=org.freedesktop.Notifications
+  # The terminal runs the user's shell + file explorer + ssh; needs host files.
+  - --filesystem=home
+  - --filesystem=host:ro
+
+modules:
+  # The freedesktop runtime ships fontconfig/freetype/harfbuzz; SDL3 is built
+  # here (24.08 ships SDL2). Pin a release tarball + sha256 before submitting.
+  - name: sdl3
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DSDL_TEST_LIBRARY=OFF
+    sources:
+      - type: archive
+        url: https://github.com/libsdl-org/SDL/releases/download/release-3.4.10/SDL3-3.4.10.tar.gz
+        sha256: REPLACE_WITH_SDL3_3.4.10_TARBALL_SHA256
+
+  - name: wispterm
+    buildsystem: simple
+    build-options:
+      # flatpak-builder has no network during build; vendor Zig + the zig deps,
+      # or add a Zig SDK extension. Documented as the open item to validate.
+      env:
+        ZIG_GLOBAL_CACHE_DIR: /run/build/wispterm/.zig-cache
+    build-commands:
+      - zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-gnu
+      - install -Dm755 zig-out/bin/wispterm /app/bin/wispterm
+      - install -Dm644 packaging/linux/wispterm.desktop /app/share/applications/com.wispterm.terminal.desktop
+      - install -Dm644 packaging/linux/com.wispterm.terminal.metainfo.xml /app/share/metainfo/com.wispterm.terminal.metainfo.xml
+      - install -Dm644 assets/wispterm.png /app/share/icons/hicolor/256x256/apps/com.wispterm.terminal.png
+    sources:
+      - type: dir
+        path: ../..

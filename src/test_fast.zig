@@ -28,6 +28,7 @@ test {
     _ = @import("input/ls_path_context.zig");
     _ = @import("input/terminal_link_action.zig");
     _ = @import("input/file_drop_path.zig");
+    _ = @import("input/sdl_keymap.zig");
     _ = @import("renderer/overlays/profile_codec.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
@@ -45,6 +46,8 @@ test {
     _ = @import("agent_file_copy.zig");
     _ = @import("ssh_connection.zig");
     _ = @import("openssh_config_import.zig");
+    _ = @import("apprt/window_drag_region.zig");
+    _ = @import("apprt/window_registry.zig");
     _ = @import("appwindow/active_tab.zig");
     _ = @import("appwindow/frame_latency.zig");
     _ = @import("scp.zig");
@@ -115,6 +118,8 @@ test {
     // Pure login-shell argv logic (macOS bash/.bashrc fix). OS-agnostic, so it
     // runs here on the native host rather than in the POSIX-only exec path.
     _ = @import("platform/login_shell.zig");
+    // Pure OS/2 weight → fontconfig FC_WEIGHT_* mapping; std-only, no fontconfig dep.
+    _ = @import("platform/font_weight_fc.zig");
     // Generic POSIX SSH/WSL command builder: asserts native (non-Windows)
     // command-line shapes, so it runs here rather than in test-full's Windows
     // cross-compile path. (The Windows backend stays in test-full.)

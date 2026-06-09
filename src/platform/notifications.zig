@@ -14,6 +14,7 @@ const platform_window = @import("window.zig");
 pub const Backend = enum {
     windows,
     macos,
+    linux,
     unsupported,
 };
 
@@ -25,6 +26,7 @@ pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
     return switch (os_tag) {
         .windows => .windows,
         .macos => .macos,
+        .linux => .linux,
         else => .unsupported,
     };
 }
@@ -32,11 +34,15 @@ pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
 const impl = switch (backendForOs(builtin.os.tag)) {
     .windows => @import("notifications_windows.zig"),
     .macos => @import("notifications_macos.zig"),
+    .linux => @import("notifications_linux.zig"),
     .unsupported => @import("notifications_unsupported.zig"),
 };
 
-/// True on platforms with a native desktop-notification backend (macOS only today).
-pub const supports_desktop_notifications = backendForOs(builtin.os.tag) == .macos;
+/// True on platforms with a native desktop-notification backend (macOS and Linux).
+pub const supports_desktop_notifications = switch (backendForOs(builtin.os.tag)) {
+    .macos, .linux => true,
+    else => false,
+};
 
 /// Native handle of the window a notification is associated with.
 pub const NativeHandle = platform_window.NativeHandle;
@@ -72,7 +78,7 @@ pub fn requestNotificationAuth() void {
 
 test "notifications selects backend by target OS" {
     try std.testing.expectEqual(Backend.windows, backendForOs(.windows));
-    try std.testing.expectEqual(Backend.unsupported, backendForOs(.linux));
+    try std.testing.expectEqual(Backend.linux, backendForOs(.linux));
     try std.testing.expectEqual(Backend.macos, backendForOs(.macos));
 }
 

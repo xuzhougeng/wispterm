@@ -48,6 +48,7 @@ const wsl_tool_guidance =
 const common_tools_after_wsl =
     \\- Use `terminal_repl_exec` for Codex, Claude Code, Python, R, or other REPL/app terminals.
     \\- Start Codex/Claude Code/REPLs (Python/R/Node) via `terminal_repl_exec repl=plain`; never shell-exec them.
+    \\- In a line REPL (Python/R/Node), type code as a human would: the last expression auto-displays, so send `1+1`, not `print("result", 1+1)`. Give one direct answer (no print wrappers, no alternative versions); no blank lines inside an indented block.
     \\- surface_id accepts `focused`.
     \\- Do not paste shell commands into Codex or Claude Code; send user text.
     \\- A slow session/exec command is usually still running; wait, then re-check with `terminal_snapshot`.

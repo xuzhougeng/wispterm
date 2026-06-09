@@ -25,6 +25,8 @@
         },
         .freetype = .{ .path = "pkg/freetype" },
         .opengl = .{ .path = "pkg/opengl" },
+        .sdl = .{ .path = "pkg/sdl" },
+        .fontconfig = .{ .path = "pkg/fontconfig" },
         .zlib = .{ .path = "pkg/zlib" },
         .libpng = .{ .path = "pkg/libpng" },
         .@"apple-sdk" = .{ .path = "pkg/apple-sdk" },

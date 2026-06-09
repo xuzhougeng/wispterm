@@ -6,6 +6,7 @@ const platform_window = @import("window.zig");
 pub const Backend = enum {
     windows,
     macos,
+    linux,
     unsupported,
 };
 
@@ -13,6 +14,7 @@ pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
     return switch (os_tag) {
         .windows => .windows,
         .macos => .macos,
+        .linux => .linux,
         else => .unsupported,
     };
 }
@@ -20,6 +22,7 @@ pub fn backendForOs(comptime os_tag: std.Target.Os.Tag) Backend {
 const impl = switch (backendForOs(builtin.os.tag)) {
     .windows => @import("window_backend_windows.zig"),
     .macos => @import("window_backend_macos.zig"),
+    .linux => @import("window_backend_linux.zig"),
     .unsupported => @import("window_backend_unsupported.zig"),
 };
 
@@ -812,7 +815,7 @@ test "platform window backend exposes native handle accessors" {
 
 test "platform window backend selects backend by target OS" {
     try std.testing.expectEqual(Backend.windows, backendForOs(.windows));
-    try std.testing.expectEqual(Backend.unsupported, backendForOs(.linux));
+    try std.testing.expectEqual(Backend.linux, backendForOs(.linux));
     try std.testing.expectEqual(Backend.macos, backendForOs(.macos));
 }
 
