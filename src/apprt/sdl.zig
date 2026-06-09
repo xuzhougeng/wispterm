@@ -315,6 +315,23 @@ pub const Window = struct {
 // Hit-test callback (borderless drag / resize zones)
 // ---------------------------------------------------------------------------
 
+/// Which caption button (minimize/maximize/close) the window-coordinate point
+/// (x,y) is over, or `.none`. The cluster is 3 buttons of `caption_button_width`
+/// at the top-right of the titlebar — matching what `renderer/titlebar.zig`
+/// draws (`top_caption_start = width - 3*w`). Window coords are top-left;
+/// assumes content-scale 1 (HiDPI is a separate refinement, as in SP1 input).
+fn captionButtonAt(self: *const Window, x: i32, y: i32) platform_window.CaptionButton {
+    if (y < 0 or y >= self.titlebar_height) return .none;
+    const w: i32 = @intFromFloat(platform_window.caption_button_width);
+    const start = self.width - w * 3;
+    if (x < start or x >= self.width) return .none;
+    return switch (@divFloor(x - start, w)) {
+        0 => .minimize,
+        1 => .maximize,
+        else => .close,
+    };
+}
+
 fn hitTest(
     win: ?*c.SDL_Window,
     area: [*c]const c.SDL_Point,
@@ -322,12 +339,22 @@ fn hitTest(
 ) callconv(.c) c.SDL_HitTestResult {
     _ = win;
     const self: *Window = @alignCast(@ptrCast(data orelse return c.SDL_HITTEST_NORMAL));
+    // Exclude the caption-button cluster from the draggable titlebar so clicks
+    // reach the host (which performs minimize/maximize/close) instead of being
+    // swallowed as a window-move.
+    const cap_w: i32 = @intFromFloat(platform_window.caption_button_width);
+    const caption_excl = [_]window_drag_region.Rect{.{
+        .x = self.width - cap_w * 3,
+        .y = 0,
+        .w = cap_w * 3,
+        .h = self.titlebar_height,
+    }};
     const hit = window_drag_region.classify(
         self.width,
         self.height,
         area.*.x,
         area.*.y,
-        .{ .titlebar_height = self.titlebar_height, .border = 4, .exclusions = &.{} },
+        .{ .titlebar_height = self.titlebar_height, .border = 4, .exclusions = &caption_excl },
     );
     return switch (hit) {
         .normal => c.SDL_HITTEST_NORMAL,
@@ -530,6 +557,27 @@ fn processEvent(event: c.SDL_Event) void {
                 const m = keymap.modifiers(@intCast(c.SDL_GetModState()));
                 w.mouse_x = mx;
                 w.mouse_y = my;
+                // Linux caption buttons (min/max/close) are client-drawn and have
+                // no OS non-client area, so handle the click here. A left press
+                // over the cluster performs the action; press + release over it
+                // are not forwarded as normal mouse events.
+                const cap = captionButtonAt(w, mx, my);
+                if (btn == .left and cap != .none) {
+                    if (event.type == c.SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                        switch (cap) {
+                            .minimize => _ = c.SDL_MinimizeWindow(w.sdl_window),
+                            .maximize => {
+                                if (c.SDL_GetWindowFlags(w.sdl_window) & c.SDL_WINDOW_MAXIMIZED != 0)
+                                    _ = c.SDL_RestoreWindow(w.sdl_window)
+                                else
+                                    _ = c.SDL_MaximizeWindow(w.sdl_window);
+                            },
+                            .close => w.close_requested = true,
+                            .none => {},
+                        }
+                    }
+                    return;
+                }
                 w.mouse_button_events.push(.{
                     .button = btn,
                     .action = action,
@@ -555,6 +603,9 @@ fn processEvent(event: c.SDL_Event) void {
                 const m = keymap.modifiers(@intCast(c.SDL_GetModState()));
                 w.mouse_x = mx;
                 w.mouse_y = my;
+                // Hover state for the caption-button highlight (the renderer
+                // reads window_backend.hoveredCaptionButton).
+                w.hovered_button = captionButtonAt(w, mx, my);
                 w.mouse_move_events.push(.{
                     .x = mx,
                     .y = my,
