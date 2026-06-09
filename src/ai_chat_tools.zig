@@ -2322,6 +2322,19 @@ fn truncateOwned(allocator: std.mem.Allocator, settings: AgentSettings, text: []
     return truncated;
 }
 
+/// Like truncateOwned, but keeps the LAST `limit` bytes (the most recent
+/// output) and marks the dropped head. Use for terminal-snapshot-bearing
+/// results, where the live interactive screen is at the tail — keeping the head
+/// would hide the current prompt.
+fn truncateTailOwned(allocator: std.mem.Allocator, settings: AgentSettings, text: []u8) ![]u8 {
+    const limit: usize = settings.output_limit;
+    if (text.len <= limit) return text;
+    const tail = text[text.len - limit ..];
+    const truncated = try std.fmt.allocPrint(allocator, "...[older output truncated to {d} bytes]\n{s}", .{ limit, tail });
+    allocator.free(text);
+    return truncated;
+}
+
 pub const DANGEROUS_COMMAND_APPROVAL_REASON = "Destructive command (delete/rename/format) - confirm to run";
 
 /// Whether a command is destructive enough to require operator approval in
@@ -3755,4 +3768,24 @@ test "executeToolCall reports memory disabled when ai-memory-enabled is off" {
     });
     defer a.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "disabled") != null);
+}
+
+test "truncateTailOwned keeps the tail and marks the dropped head" {
+    const a = std.testing.allocator;
+    const settings = AgentSettings{ .output_limit = 8 };
+    const text = try a.dupe(u8, "ABCDEFGHIJKLMNOP"); // 16 bytes, limit 8
+    const out = try truncateTailOwned(a, settings, text);
+    defer a.free(out);
+    try std.testing.expect(std.mem.endsWith(u8, out, "IJKLMNOP"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "older output truncated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ABCD") == null);
+}
+
+test "truncateTailOwned returns short text unchanged" {
+    const a = std.testing.allocator;
+    const settings = AgentSettings{ .output_limit = 1024 };
+    const text = try a.dupe(u8, "small");
+    const out = try truncateTailOwned(a, settings, text);
+    defer a.free(out);
+    try std.testing.expectEqualStrings("small", out);
 }
