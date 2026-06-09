@@ -732,6 +732,7 @@ comptime {
     _ = @import("startup_tabs.zig");
     _ = @import("system_browser.zig");
     _ = @import("split_tree.zig");
+    _ = @import("preview_pane.zig");
     _ = @import("ui_perf.zig");
     _ = @import("update_check.zig");
     _ = @import("update_install.zig");

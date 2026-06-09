@@ -1,0 +1,286 @@
+//! A file/markdown/image preview as a split-tree leaf. Refcounted because
+//! SplitTree is immutable: every edit clones the tree and refs each leaf so
+//! versions share payloads. State here was previously the threadlocal globals
+//! in markdown_preview_panel.zig.
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const markdown_preview = @import("markdown_preview.zig");
+const preview_source = @import("input/preview_source.zig");
+const gpu = @import("renderer/gpu/gpu.zig");
+
+const PreviewPane = @This();
+
+pub const DEFAULT_WIDTH: f32 = 440; // used to derive the initial right-edge split ratio
+pub const LoadStatus = enum { idle, loading, ready, failed, too_large };
+pub const PreviewSourceKind = preview_source.SourceKind;
+pub const PreviewReadResult = union(enum) { ok: []u8, failed, too_large };
+const PreviewReadFn = *const fn (Allocator, PreviewSourceKind, markdown_preview.Kind, []const u8) PreviewReadResult;
+
+const LOADING_SOURCE = "Loading preview...";
+const FAILED_SOURCE = "Preview failed";
+const TOO_LARGE_SOURCE = "Preview too large";
+const IMAGE_ZOOM_MIN: f32 = 0.25;
+const IMAGE_ZOOM_MAX: f32 = 16.0;
+const IMAGE_ZOOM_STEP: f32 = 1.2;
+
+const PreviewJob = struct {
+    request_id: u64 = 0,
+    kind: markdown_preview.Kind = .markdown,
+    source_kind: PreviewSourceKind = .local,
+    path_buf: [512]u8 = undefined,
+    path_len: usize = 0,
+    title_buf: [256]u8 = undefined,
+    title_len: usize = 0,
+    status: LoadStatus = .failed,
+    source: ?[]u8 = null,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    thread: ?std.Thread = null,
+    read_fn: PreviewReadFn = defaultPreviewRead,
+    owner: *PreviewPane = undefined,
+};
+
+refcount: usize = 1,
+kind: markdown_preview.Kind = .markdown,
+load_status: LoadStatus = .idle,
+title_buf: [256]u8 = undefined,
+title_len: usize = 0,
+path_buf: [512]u8 = undefined,
+path_len: usize = 0,
+source: ?[]u8 = null,
+scroll_offset: f32 = 0,
+image_zoom: f32 = 1.0,
+image_pan_x: f32 = 0,
+image_pan_y: f32 = 0,
+content_generation: u64 = 0,
+request_id: u64 = 0,
+jobs: std.ArrayListUnmanaged(*PreviewJob) = .empty,
+// GL image-texture cache (migrated from markdown_preview_renderer.zig). Touched
+// only on the render thread.
+image_texture: gpu.c.GLuint = 0,
+image_width: c_int = 0,
+image_height: c_int = 0,
+image_generation: u64 = std.math.maxInt(u64),
+image_failed: bool = false,
+
+pub fn create(gpa: Allocator) Allocator.Error!*PreviewPane {
+    const self = try gpa.create(PreviewPane);
+    self.* = .{};
+    return self;
+}
+
+pub fn ref(self: *PreviewPane) *PreviewPane {
+    self.refcount += 1;
+    return self;
+}
+
+pub fn unref(self: *PreviewPane, gpa: Allocator) void {
+    std.debug.assert(self.refcount > 0);
+    self.refcount -= 1;
+    if (self.refcount == 0) {
+        self.resetJobs();
+        self.freeSource();
+        self.unloadImageTexture(); // render-thread; see GL threading assumption
+        gpa.destroy(self);
+    }
+}
+
+pub fn title(self: *const PreviewPane) []const u8 { return self.title_buf[0..self.title_len]; }
+pub fn path(self: *const PreviewPane) []const u8 { return self.path_buf[0..self.path_len]; }
+pub fn sourceText(self: *const PreviewPane) []const u8 { return self.source orelse ""; }
+pub fn contentGeneration(self: *const PreviewPane) u64 { return self.content_generation; }
+pub fn imageZoom(self: *const PreviewPane) f32 { return self.image_zoom; }
+pub fn imagePanX(self: *const PreviewPane) f32 { return self.image_pan_x; }
+pub fn imagePanY(self: *const PreviewPane) f32 { return self.image_pan_y; }
+
+fn setTitlePath(self: *PreviewPane, t: []const u8, p: []const u8) void {
+    self.title_len = @min(t.len, self.title_buf.len);
+    @memcpy(self.title_buf[0..self.title_len], t[0..self.title_len]);
+    self.path_len = @min(p.len, self.path_buf.len);
+    @memcpy(self.path_buf[0..self.path_len], p[0..self.path_len]);
+}
+
+pub fn open(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p: []const u8, source_text: []const u8) void {
+    self.request_id +%= 1;
+    self.applyOwned(kind, t, p, std.heap.page_allocator.dupe(u8, source_text) catch null, .ready);
+}
+
+fn applyOwned(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p: []const u8, owned: ?[]u8, status: LoadStatus) void {
+    self.kind = kind;
+    self.load_status = if (owned == null and status == .ready) .failed else status;
+    self.scroll_offset = 0;
+    self.image_zoom = 1.0;
+    self.image_pan_x = 0;
+    self.image_pan_y = 0;
+    self.content_generation +%= 1;
+    self.setTitlePath(t, p);
+    self.freeSource();
+    self.source = owned;
+}
+
+pub fn scrollBy(self: *PreviewPane, delta: f32) void {
+    const max_scroll = self.estimatedMaxScroll();
+    self.scroll_offset = @max(0, @min(max_scroll, self.scroll_offset + delta));
+}
+
+fn estimatedMaxScroll(self: *const PreviewPane) f32 {
+    if (self.kind == .image) return 0;
+    const line_count = @max(@as(usize, 1), std.mem.count(u8, self.sourceText(), "\n") + 1);
+    return @max(0, @as(f32, @floatFromInt(line_count)) * 28 - 360);
+}
+
+pub fn zoomImageBySteps(self: *PreviewPane, steps: usize, zoom_in: bool) bool {
+    if (self.kind != .image) return false;
+    var next = self.image_zoom;
+    var remaining = @max(@as(usize, 1), steps);
+    while (remaining > 0) : (remaining -= 1) next = if (zoom_in) next * IMAGE_ZOOM_STEP else next / IMAGE_ZOOM_STEP;
+    next = @max(IMAGE_ZOOM_MIN, @min(IMAGE_ZOOM_MAX, next));
+    if (@abs(next - self.image_zoom) < 0.001) return false;
+    self.image_zoom = next;
+    return true;
+}
+
+pub fn panImageBy(self: *PreviewPane, dx: f32, dy: f32) bool {
+    if (self.kind != .image or self.load_status != .ready) return false;
+    if (dx == 0 and dy == 0) return false;
+    self.image_pan_x += dx;
+    self.image_pan_y += dy;
+    return true;
+}
+
+pub fn clampImagePan(self: *PreviewPane, view_w: f32, view_h: f32, draw_w: f32, draw_h: f32) void {
+    const max_x = if (draw_w > view_w) (draw_w - view_w) / 2 else 0;
+    const max_y = if (draw_h > view_h) (draw_h - view_h) / 2 else 0;
+    self.image_pan_x = @max(-max_x, @min(max_x, self.image_pan_x));
+    self.image_pan_y = @max(-max_y, @min(max_y, self.image_pan_y));
+}
+
+pub fn beginAsyncLoad(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p: []const u8, source_kind: PreviewSourceKind) bool {
+    return self.beginAsyncLoadWith(kind, t, p, source_kind, defaultPreviewRead);
+}
+
+fn beginAsyncLoadWith(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p: []const u8, source_kind: PreviewSourceKind, read_fn: PreviewReadFn) bool {
+    self.request_id +%= 1;
+    if (p.len > 512) { self.applyOwned(kind, t, p, std.heap.page_allocator.dupe(u8, FAILED_SOURCE) catch null, .failed); return false; }
+    self.applyOwned(kind, t, p, std.heap.page_allocator.dupe(u8, LOADING_SOURCE) catch null, .loading);
+    const alloc = std.heap.page_allocator;
+    const job = alloc.create(PreviewJob) catch return false;
+    job.* = .{ .request_id = self.request_id, .kind = kind, .source_kind = source_kind, .path_len = p.len, .title_len = @min(t.len, 256), .read_fn = read_fn, .owner = self };
+    @memcpy(job.path_buf[0..p.len], p);
+    @memcpy(job.title_buf[0..job.title_len], t[0..job.title_len]);
+    self.jobs.append(alloc, job) catch { alloc.destroy(job); return false; };
+    job.thread = std.Thread.spawn(.{}, jobThread, .{job}) catch { _ = self.jobs.pop(); alloc.destroy(job); return false; };
+    return true;
+}
+
+/// Returns true if a completed job changed this pane's content.
+pub fn tickAsync(self: *PreviewPane) bool {
+    var changed = false;
+    var i: usize = 0;
+    while (i < self.jobs.items.len) {
+        const job = self.jobs.items[i];
+        if (!job.done.load(.acquire)) { i += 1; continue; }
+        if (job.thread) |th| th.join();
+        _ = self.jobs.orderedRemove(i);
+        defer destroyJob(job);
+        if (job.request_id != self.request_id) continue;
+        if (job.status == .ready and job.source != null) {
+            const s = job.source.?; job.source = null;
+            self.applyOwned(job.kind, job.title_buf[0..job.title_len], job.path_buf[0..job.path_len], s, .ready);
+        } else {
+            const msg = if (job.status == .too_large) TOO_LARGE_SOURCE else FAILED_SOURCE;
+            self.applyOwned(job.kind, job.title_buf[0..job.title_len], job.path_buf[0..job.path_len], std.heap.page_allocator.dupe(u8, msg) catch null, job.status);
+        }
+        changed = true;
+    }
+    return changed;
+}
+
+fn jobThread(job: *PreviewJob) void {
+    switch (job.read_fn(std.heap.page_allocator, job.source_kind, job.kind, job.path_buf[0..job.path_len])) {
+        .ok => |s| { job.source = s; job.status = .ready; },
+        .too_large => job.status = .too_large,
+        .failed => job.status = .failed,
+    }
+    job.done.store(true, .release);
+}
+
+fn defaultPreviewRead(alloc: Allocator, source_kind: PreviewSourceKind, kind: markdown_preview.Kind, p: []const u8) PreviewReadResult {
+    const s = preview_source.readPreviewSourceForKind(alloc, source_kind, p, kind) catch |err|
+        return if (err == error.PreviewTooLarge) .too_large else .failed;
+    return .{ .ok = s };
+}
+
+fn freeSource(self: *PreviewPane) void {
+    if (self.source) |s| std.heap.page_allocator.free(s);
+    self.source = null;
+}
+
+fn resetJobs(self: *PreviewPane) void {
+    for (self.jobs.items) |job| { if (job.thread) |th| th.join(); destroyJob(job); }
+    self.jobs.clearAndFree(std.heap.page_allocator);
+}
+
+fn destroyJob(job: *PreviewJob) void {
+    if (job.source) |s| std.heap.page_allocator.free(s);
+    std.heap.page_allocator.destroy(job);
+}
+
+fn unloadImageTexture(self: *PreviewPane) void {
+    if (self.image_texture != 0) { var t = gpu.Texture.fromHandle(self.image_texture); t.destroy(); self.image_texture = 0; }
+    self.image_width = 0;
+    self.image_height = 0;
+    self.image_generation = std.math.maxInt(u64);
+    self.image_failed = false;
+}
+
+fn previewReadOkForTest(alloc: Allocator, _: PreviewSourceKind, _: markdown_preview.Kind, _: []const u8) PreviewReadResult {
+    return .{ .ok = alloc.dupe(u8, "# Loaded\n") catch return .failed };
+}
+
+test "PreviewPane: ref/unref balances" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    try std.testing.expectEqual(@as(usize, 1), p.refcount);
+    _ = p.ref();
+    try std.testing.expectEqual(@as(usize, 2), p.refcount);
+    p.unref(gpa); // 1
+    p.unref(gpa); // 0 -> freed (no leak reported by testing allocator)
+}
+
+test "PreviewPane: open sets content and bumps generation" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    const g0 = p.contentGeneration();
+    p.open(.markdown, "README.md", "README.md", "# Title\n");
+    try std.testing.expectEqual(LoadStatus.ready, p.load_status);
+    try std.testing.expectEqualStrings("# Title\n", p.sourceText());
+    try std.testing.expect(p.contentGeneration() != g0);
+}
+
+test "PreviewPane: image zoom/pan are image-only and clamped" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    p.kind = .text;
+    try std.testing.expect(!p.zoomImageBySteps(1, true));
+    p.kind = .image;
+    p.load_status = .ready;
+    try std.testing.expect(p.zoomImageBySteps(100, true));
+    try std.testing.expectEqual(@as(f32, 16.0), p.imageZoom());
+    try std.testing.expect(p.panImageBy(200, -80));
+    p.clampImagePan(100, 100, 300, 160);
+    try std.testing.expectEqual(@as(f32, 100), p.imagePanX());
+}
+
+test "PreviewPane: async load applies content then clears job" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    try std.testing.expect(p.beginAsyncLoadWith(.markdown, "a.md", "a.md", .local, previewReadOkForTest));
+    try std.testing.expectEqual(LoadStatus.loading, p.load_status);
+    var attempts: usize = 0;
+    while (p.jobs.items.len > 0 and attempts < 200) : (attempts += 1) { _ = p.tickAsync(); if (p.jobs.items.len > 0) std.Thread.sleep(std.time.ns_per_ms); }
+    try std.testing.expectEqual(LoadStatus.ready, p.load_status);
+    try std.testing.expectEqualStrings("# Loaded\n", p.sourceText());
+}
