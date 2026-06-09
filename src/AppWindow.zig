@@ -1108,6 +1108,23 @@ pub fn activePortForwarding() ?*port_forwarding.Session {
     return tab.activePortForwarding();
 }
 
+pub const PortForwardingOverlayKind = enum {
+    none,
+    form,
+    confirm_delete,
+};
+
+pub fn portForwardingOverlayKind() ?PortForwardingOverlayKind {
+    const session = activePortForwarding() orelse return null;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    return switch (session.model.overlay) {
+        .none => .none,
+        .form => .form,
+        .confirm_delete => .confirm_delete,
+    };
+}
+
 fn activePortForwardManager() ?*port_forward_manager.Manager {
     const app = g_app orelse return null;
     return &app.port_forward_manager;
