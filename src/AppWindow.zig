@@ -524,9 +524,27 @@ pub const surfaceAtPoint = split_layout.surfaceAtPoint;
 pub const hitTestDivider = split_layout.hitTestDivider;
 const computeSplitLayout = split_layout.computeSplitLayout;
 
+/// Draw a thin accent-colored focus border around a split-leaf rect, in
+/// window-absolute coordinates (GL origin bottom-left). Used to indicate the
+/// focused non-terminal pane (e.g. a preview), which has no terminal cursor.
+/// The caller must have the full-window viewport/projection set.
+fn drawPaneFocusRing(rect: SplitRect, window_height: f32) void {
+    const accent = g_theme.cursor_color;
+    const border: f32 = 2.0;
+    const px: f32 = @floatFromInt(rect.x);
+    const py: f32 = window_height - @as(f32, @floatFromInt(rect.y + rect.height));
+    const pw: f32 = @floatFromInt(rect.width);
+    const ph: f32 = @floatFromInt(rect.height);
+    if (pw <= 0 or ph <= 0) return;
+    ui_pipeline.fillQuad(px, py, pw, border, accent); // bottom
+    ui_pipeline.fillQuad(px, py + ph - border, pw, border, accent); // top
+    ui_pipeline.fillQuad(px, py, border, ph, accent); // left
+    ui_pipeline.fillQuad(px + pw - border, py, border, ph, accent); // right
+}
+
 fn synchronizedOutputPendingForVisibleSplits(split_count: usize) bool {
     for (0..split_count) |i| {
-        const surface = split_layout.g_split_rects[i].surface;
+        const surface = split_layout.g_split_rects[i].surface() orelse continue;
         surface.render_state.mutex.lock();
         const pending = surface.synchronizedOutputPendingLocked();
         surface.render_state.mutex.unlock();
@@ -3384,32 +3402,54 @@ fn renderResizeFrame(width: i32, height: i32) void {
             for (0..split_count) |i| {
                 const rect = split_layout.g_split_rects[i];
                 const is_focused = (rect.handle == active_tab.focused);
-                const rend = &rect.surface.surface_renderer;
 
-                const viewport_y = fb_height - rect.y - rect.height;
-                gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
-                gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                switch (rect.pane) {
+                    .terminal => |surface| {
+                        const rend = &surface.surface_renderer;
 
-                {
-                    rect.surface.render_state.mutex.lock();
-                    defer rect.surface.render_state.mutex.unlock();
-                    rend.force_rebuild = true;
-                    cell_renderer.g_current_render_surface = rect.surface;
-                    _ = cell_renderer.updateTerminalCellsForSurface(rend, &rect.surface.terminal, is_focused);
-                }
-                cell_renderer.rebuildCells(rend);
+                        const viewport_y = fb_height - rect.y - rect.height;
+                        gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
+                        gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
-                const pad = rect.surface.getPadding();
-                cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
-                overlays.renderScrollbarForSurface(rect.surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
+                        {
+                            surface.render_state.mutex.lock();
+                            defer surface.render_state.mutex.unlock();
+                            rend.force_rebuild = true;
+                            cell_renderer.g_current_render_surface = surface;
+                            _ = cell_renderer.updateTerminalCellsForSurface(rend, &surface.terminal, is_focused);
+                        }
+                        cell_renderer.rebuildCells(rend);
 
-                if (!is_focused) {
-                    overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
-                }
+                        const pad = surface.getPadding();
+                        cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
+                        overlays.renderScrollbarForSurface(surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
 
-                // Show resize overlay on all splits during window resize
-                if (is_focused) {
-                    overlays.renderResizeOverlay(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        if (!is_focused) {
+                            overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        }
+
+                        // Show resize overlay on all splits during window resize
+                        if (is_focused) {
+                            overlays.renderResizeOverlay(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        }
+                    },
+                    .preview => |p| {
+                        // The preview renderer paints in window-absolute coords, so
+                        // restore the full-window viewport/projection first (the
+                        // terminal arm leaves a per-rect viewport set).
+                        gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+                        gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                        markdown_preview_renderer.renderInto(
+                            p,
+                            @floatFromInt(rect.x),
+                            @floatFromInt(rect.y),
+                            @floatFromInt(rect.width),
+                            @floatFromInt(rect.height),
+                            @floatFromInt(fb_height),
+                            false,
+                        );
+                        if (is_focused) drawPaneFocusRing(rect, @floatFromInt(fb_height));
+                    },
                 }
             }
 
@@ -5438,10 +5478,12 @@ fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
     if (split_count > 1) {
         for (0..split_layout.g_split_rect_count) |i| {
             const rect = split_layout.g_split_rects[i];
-            if (rect.surface == surface) {
-                origin_x = @floatFromInt(rect.x);
-                origin_y = @floatFromInt(rect.y);
-                break;
+            if (rect.surface()) |s| {
+                if (s == surface) {
+                    origin_x = @floatFromInt(rect.x);
+                    origin_y = @floatFromInt(rect.y);
+                    break;
+                }
             }
         }
     }
@@ -6407,56 +6449,77 @@ fn runMainLoop(self: *AppWindow) !void {
                     for (0..split_count) |i| {
                         const rect = split_layout.g_split_rects[i];
                         const is_focused = (rect.handle == active_tab.focused);
-                        const rend = &rect.surface.surface_renderer;
 
-                        // Set viewport to this split's region
-                        // OpenGL viewport: (x, y, width, height) where y is from bottom
-                        const viewport_y = fb_height - rect.y - rect.height;
-                        gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
+                        switch (rect.pane) {
+                            .terminal => |surface| {
+                                const rend = &surface.surface_renderer;
 
-                        // Set projection for this viewport size
-                        gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                // Set viewport to this split's region
+                                // OpenGL viewport: (x, y, width, height) where y is from bottom
+                                const viewport_y = fb_height - rect.y - rect.height;
+                                gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
 
-                        // Update cells for this surface
-                        {
-                            rect.surface.render_state.mutex.lock();
-                            defer rect.surface.render_state.mutex.unlock();
-                            if (is_focused) updateCursorBlinkForRenderer(rend);
-                            rend.force_rebuild = true;
-                            cell_renderer.g_current_render_surface = rect.surface;
-                            _ = cell_renderer.updateTerminalCellsForSurface(rend, &rect.surface.terminal, is_focused);
-                        }
-                        cell_renderer.rebuildCells(rend);
+                                // Set projection for this viewport size
+                                gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
-                        // Draw cells using the surface's computed padding
-                        const pad = rect.surface.getPadding();
-                        cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
+                                // Update cells for this surface
+                                {
+                                    surface.render_state.mutex.lock();
+                                    defer surface.render_state.mutex.unlock();
+                                    if (is_focused) updateCursorBlinkForRenderer(rend);
+                                    rend.force_rebuild = true;
+                                    cell_renderer.g_current_render_surface = surface;
+                                    _ = cell_renderer.updateTerminalCellsForSurface(rend, &surface.terminal, is_focused);
+                                }
+                                cell_renderer.rebuildCells(rend);
 
-                        // Render scrollbar for this surface within its viewport
-                        overlays.renderScrollbarForSurface(rect.surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
+                                // Draw cells using the surface's computed padding
+                                const pad = surface.getPadding();
+                                cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
 
-                        // Alt-drag panel swap feedback: highlight the drop target,
-                        // dim the grabbed source. Otherwise dim any unfocused panel.
-                        const is_swap_target = input.g_panel_swap_active and
-                            input.g_panel_swap_target != null and
-                            rect.handle == input.g_panel_swap_target.?;
-                        const is_swap_source = input.g_panel_swap_active and
-                            input.g_panel_swap_source != null and
-                            rect.handle == input.g_panel_swap_source.?;
-                        if (is_swap_target) {
-                            overlays.renderSwapTargetHighlight(@floatFromInt(rect.width), @floatFromInt(rect.height));
-                        } else if (is_swap_source or !is_focused) {
-                            overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
-                        }
+                                // Render scrollbar for this surface within its viewport
+                                overlays.renderScrollbarForSurface(surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
 
-                        // Render resize overlay:
-                        // - During divider dragging or timed overlay (equalize): show on ALL splits
-                        // - Otherwise: show only on focused split (for window resize)
-                        const show_timed_overlay = std.time.milliTimestamp() < overlays.resize.g_split_resize_overlay_until;
-                        if (input.g_divider_dragging or show_timed_overlay) {
-                            overlays.renderResizeOverlayForSurface(rect.surface, @floatFromInt(rect.width), @floatFromInt(rect.height));
-                        } else if (is_focused) {
-                            overlays.renderResizeOverlay(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                // Alt-drag panel swap feedback: highlight the drop target,
+                                // dim the grabbed source. Otherwise dim any unfocused panel.
+                                const is_swap_target = input.g_panel_swap_active and
+                                    input.g_panel_swap_target != null and
+                                    rect.handle == input.g_panel_swap_target.?;
+                                const is_swap_source = input.g_panel_swap_active and
+                                    input.g_panel_swap_source != null and
+                                    rect.handle == input.g_panel_swap_source.?;
+                                if (is_swap_target) {
+                                    overlays.renderSwapTargetHighlight(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                } else if (is_swap_source or !is_focused) {
+                                    overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                }
+
+                                // Render resize overlay:
+                                // - During divider dragging or timed overlay (equalize): show on ALL splits
+                                // - Otherwise: show only on focused split (for window resize)
+                                const show_timed_overlay = std.time.milliTimestamp() < overlays.resize.g_split_resize_overlay_until;
+                                if (input.g_divider_dragging or show_timed_overlay) {
+                                    overlays.renderResizeOverlayForSurface(surface, @floatFromInt(rect.width), @floatFromInt(rect.height));
+                                } else if (is_focused) {
+                                    overlays.renderResizeOverlay(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                }
+                            },
+                            .preview => |p| {
+                                // The preview renderer paints in window-absolute coords,
+                                // so restore the full-window viewport/projection first.
+                                gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+                                gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                                markdown_preview_renderer.renderInto(
+                                    p,
+                                    @floatFromInt(rect.x),
+                                    @floatFromInt(rect.y),
+                                    @floatFromInt(rect.width),
+                                    @floatFromInt(rect.height),
+                                    @floatFromInt(fb_height),
+                                    false,
+                                );
+                                if (is_focused) drawPaneFocusRing(rect, @floatFromInt(fb_height));
+                            },
                         }
                     }
 

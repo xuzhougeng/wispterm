@@ -806,7 +806,8 @@ fn splitRectForSurface(surface: *Surface) ?split_layout.SplitRect {
     for (0..split_layout.g_split_rect_count) |i| {
         const rect = split_layout.g_split_rects[i];
         if (!split_layout.cachedRectIsLive(rect)) continue;
-        if (rect.surface == surface) return rect;
+        const s = rect.surface() orelse continue;
+        if (s == surface) return rect;
     }
     return null;
 }
@@ -825,15 +826,16 @@ fn scrollbarTargetAt(xpos: f64, ypos: f64, window_w: f32, window_h: f32, top_pad
         for (0..split_layout.g_split_rect_count) |i| {
             const rect = split_layout.g_split_rects[i];
             if (!split_layout.cachedRectIsLive(rect)) continue;
-            const pad = rect.surface.getPadding();
+            const s = rect.surface() orelse continue;
+            const pad = s.getPadding();
             const view_x: f32 = @floatFromInt(rect.x);
             const view_y: f32 = @floatFromInt(rect.y);
             const view_w: f32 = @floatFromInt(rect.width);
             const view_h: f32 = @floatFromInt(rect.height);
             const local_top_pad: f32 = @floatFromInt(pad.top);
-            if (overlays.scrollbarHitTestForSurface(rect.surface, xpos, ypos, view_x, view_y, view_w, view_h, local_top_pad)) {
+            if (overlays.scrollbarHitTestForSurface(s, xpos, ypos, view_x, view_y, view_w, view_h, local_top_pad)) {
                 return .{
-                    .surface = rect.surface,
+                    .surface = s,
                     .view_x = view_x,
                     .view_y = view_y,
                     .view_w = view_w,
@@ -3780,9 +3782,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 for (0..split_layout.g_split_rect_count) |i| {
                     const rect = split_layout.g_split_rects[i];
                     if (!split_layout.cachedRectIsLive(rect)) continue;
-                    if (rect.surface == clicked_surface) {
-                        tb.focused = rect.handle;
-                        break;
+                    if (rect.surface()) |s| {
+                        if (s == clicked_surface) {
+                            tb.focused = rect.handle;
+                            break;
+                        }
                     }
                 }
                 if (tb.focused != previous_focus) {
