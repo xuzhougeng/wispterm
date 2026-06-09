@@ -21,6 +21,7 @@ const SavedSshProfile = types.SavedSshProfile;
 const AgentSettings = types.AgentSettings;
 const AgentPermission = types.AgentPermission;
 const agent_detector = @import("agent_detector.zig");
+const agent_prompt_answer = @import("agent_prompt_answer.zig");
 const skill_registry = @import("skill_registry.zig");
 const wispterm_docs = @import("wispterm_docs.zig");
 const weixin_types = @import("weixin/types.zig");
@@ -93,6 +94,13 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const code = jsonStringArg(args.value, "code") orelse return ctx.allocator.dupe(u8, "Missing code");
         const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse ctx.settings.command_timeout_ms;
         return terminalReplExecTool(ctx, surface_id, repl, code, timeout_ms);
+    }
+    if (std.mem.eql(u8, call.name, "terminal_answer_prompt")) {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const surface_id = jsonStringArg(args.value, "surface_id");
+        const answer = jsonStringArg(args.value, "answer") orelse return ctx.allocator.dupe(u8, "Missing answer");
+        return terminalAnswerPromptTool(ctx, surface_id, answer);
     }
     if (std.mem.eql(u8, call.name, "ssh_profile_save")) {
         const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
@@ -1148,6 +1156,93 @@ fn terminalReplExecTool(ctx: *ToolContext, surface_id: []const u8, repl_name: []
         .codex, .claude_code => plainReplInputTool(ctx, host, surface, repl, code, timeout_ms),
         .plain => plainReplInputTool(ctx, host, surface, repl, code, timeout_ms),
     };
+}
+
+fn allocPromptOptionsHint(allocator: std.mem.Allocator, options: []const agent_prompt_answer.Option, screen: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "Could not map that answer to an on-screen option. Options:\n");
+    for (options) |o| {
+        try out.print(allocator, "  {d}. {s}{s}\n", .{ o.number, o.label, if (o.highlighted) " [highlighted]" else "" });
+    }
+    try out.appendSlice(allocator, "Pass answer as an explicit digit (e.g. \"1\"), or approve/approve_all/reject.\nLatest snapshot:\n");
+    try out.appendSlice(allocator, screen);
+    return out.toOwnedSlice(allocator);
+}
+
+/// Answer a Claude Code / Codex approval menu: read the live screen, confirm a
+/// prompt is awaiting input, map the semantic `answer` to a keystroke, send it,
+/// and return the resulting live screen. Never sends a key it cannot justify
+/// from the on-screen options.
+fn terminalAnswerPromptTool(ctx: *ToolContext, surface_id: ?[]const u8, answer: []const u8) ![]u8 {
+    if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+
+    const intent = agent_prompt_answer.parseIntent(answer) orelse
+        return std.fmt.allocPrint(ctx.allocator, "Unknown answer \"{s}\". Use approve, approve_all, reject, enter, esc, or a digit 1-9.", .{answer});
+    const option_number: u8 = if (intent == .option) (agent_prompt_answer.parseOptionNumber(answer) orelse 0) else 0;
+
+    const snapshot = collectToolSnapshot(ctx) catch return ctx.allocator.dupe(u8, "No terminal snapshot host is available.");
+    defer snapshot.deinit(ctx.allocator);
+    const host = ctx.tool_host orelse return ctx.allocator.dupe(u8, "No terminal tool host is available.");
+    const sid = surface_id orelse "focused";
+    const surface = resolveSurfaceId(snapshot, sid, selectedWriteContext(ctx)) orelse return allocNoSurfaceError(ctx.allocator, snapshot, sid);
+
+    // Read the LIVE screen (per-surface, mutex-protected, worker-safe).
+    const screen = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+        return ctx.allocator.dupe(u8, "Failed to read terminal snapshot.");
+    defer ctx.allocator.free(screen);
+
+    const detection = agent_detector.detect(surface.title, screen);
+    if (detection.app == .none or (detection.state != .waiting_approval and detection.state != .needs_input)) {
+        const out = try std.fmt.allocPrint(
+            ctx.allocator,
+            "No Claude Code/Codex prompt is awaiting an answer (agent={s}:{s}). Nothing sent.\nLatest snapshot:\n{s}",
+            .{ detection.app.label(), detection.state.label(), screen },
+        );
+        return truncateTailOwned(ctx.allocator, ctx.settings, out);
+    }
+
+    var options_buf: [12]agent_prompt_answer.Option = undefined;
+    const n = agent_prompt_answer.parsePromptOptions(screen, &options_buf);
+    const keystroke = agent_prompt_answer.resolveAnswer(options_buf[0..n], screen, intent, option_number) orelse {
+        const out = try allocPromptOptionsHint(ctx.allocator, options_buf[0..n], screen);
+        return truncateTailOwned(ctx.allocator, ctx.settings, out);
+    };
+
+    // Approval gate mirrors terminal_repl_exec: the payload is a single selector
+    // key, not a destructive command, so auto runs it and confirm prompts.
+    const gate = accessGate(ctx, keystroke.bytes, null);
+    if (approvalRequiredForGate(ctx.settings.permission, gate)) {
+        if (!ctx.requestApproval("terminal_answer_prompt", answer, "Answer a Claude Code/Codex approval prompt")) {
+            return deniedResult(ctx.allocator, answer, "operator rejected prompt answer");
+        }
+    }
+
+    // Bind the agent write context to the resolved surface we are answering on
+    // (mirrors terminal_select). This is the explicitly-targeted prompt surface,
+    // so it is safe — and it avoids ensureWriteContext refusing when nothing is
+    // pre-selected (e.g. a non-copilot caller).
+    setWriteContext(ctx, surface.id);
+
+    if (!host.writeSurface(host.ctx, surface.ptr, keystroke.bytes)) {
+        return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
+    }
+    if (keystroke.confirm_enter) {
+        std.Thread.sleep(CODEX_SUBMIT_DELAY_MS * std.time.ns_per_ms);
+        _ = host.writeSurface(host.ctx, surface.ptr, "\r");
+    }
+
+    const deadline = std.time.milliTimestamp() + 400;
+    while (std.time.milliTimestamp() < deadline) {
+        if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+    }
+
+    const latest = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+        return std.fmt.allocPrint(ctx.allocator, "Answer sent ({s}); failed to read terminal snapshot.", .{answer});
+    defer ctx.allocator.free(latest);
+    const out = try std.fmt.allocPrint(ctx.allocator, "Answered prompt ({s}).\nLatest snapshot:\n{s}", .{ answer, latest });
+    return truncateTailOwned(ctx.allocator, ctx.settings, out);
 }
 
 /// Pause between writing a Codex message body and its submit keystroke so the
@@ -3836,4 +3931,89 @@ test "terminal_snapshot keeps the live screen tail when output exceeds the limit
 
     try std.testing.expect(std.mem.indexOf(u8, result, "PROMPT_AT_BOTTOM") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "older output truncated") != null);
+}
+
+test "terminal_answer_prompt sends the Yes digit for an approve answer" {
+    const a = std.testing.allocator;
+    const screen =
+        \\Do you want to make this edit to index.html?
+        \\  1. Yes
+        \\  2. Yes, allow all edits during this session (shift+tab)
+        \\  3. No
+    ;
+    var host_ctx = ReplWaitTestHost.Ctx{ .busy_until = 0, .settled_text = screen };
+    var dummy: u8 = 0;
+
+    const surfaces = try a.alloc(ToolSurface, 1);
+    surfaces[0] = .{
+        .id = @constCast("surface-claude"),
+        .title = @constCast("Claude Code"),
+        .cwd = @constCast("/home/xzg"),
+        .snapshot = @constCast(""),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = false,
+        .agent_app = .claude_code,
+        .agent_state = .waiting_approval,
+        .agent_confidence = 90,
+        .ptr = @ptrCast(&host_ctx),
+    };
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = ReplWaitTestHost.host(&host_ctx),
+        .tool_snapshot = .{ .surfaces = surfaces, .active_tab = 0 },
+        .settings = .{ .permission = .full },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    // Free only the slice we allocated; the surface string fields are literals,
+    // so do NOT call snap.deinit (it would free static memory). The tool operates
+    // on a clone internally, so the literal-backed originals are never freed.
+    defer if (ctx.tool_snapshot) |snap| a.free(snap.surfaces);
+
+    const result = try terminalAnswerPromptTool(&ctx, @as(?[]const u8, "surface-claude"), "approve");
+    defer a.free(result);
+
+    try std.testing.expectEqualStrings("1", host_ctx.all_writes[0..host_ctx.all_len]);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Answered prompt") != null);
+}
+
+test "terminal_answer_prompt sends nothing when no prompt is awaiting" {
+    const a = std.testing.allocator;
+    var host_ctx = ReplWaitTestHost.Ctx{ .busy_until = 0, .settled_text = "Claude Code\nthinking… (esc to interrupt)" };
+    var dummy: u8 = 0;
+
+    const surfaces = try a.alloc(ToolSurface, 1);
+    surfaces[0] = .{
+        .id = @constCast("surface-claude"),
+        .title = @constCast("Claude Code"),
+        .cwd = @constCast("/home/xzg"),
+        .snapshot = @constCast(""),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = false,
+        .agent_app = .claude_code,
+        .agent_state = .running,
+        .agent_confidence = 82,
+        .ptr = @ptrCast(&host_ctx),
+    };
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = ReplWaitTestHost.host(&host_ctx),
+        .tool_snapshot = .{ .surfaces = surfaces, .active_tab = 0 },
+        .settings = .{ .permission = .full },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    defer if (ctx.tool_snapshot) |snap| a.free(snap.surfaces);
+
+    const result = try terminalAnswerPromptTool(&ctx, @as(?[]const u8, "surface-claude"), "approve");
+    defer a.free(result);
+
+    try std.testing.expectEqual(@as(usize, 0), host_ctx.all_len);
+    try std.testing.expect(std.mem.indexOf(u8, result, "awaiting an answer") != null);
 }
