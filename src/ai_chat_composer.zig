@@ -24,13 +24,14 @@ pub const SlashCommand = enum {
     unknown,
 };
 
-pub const WebCommand = enum { websearch, webread };
+pub const WebCommand = enum { websearch, webread, pubmed };
 
 /// Reserved `$`-prefixed commands shown in the same dropdown as skills.
 pub const ReservedWebCommand = struct { name: []const u8, description: []const u8 };
 pub const reserved_web_commands = [_]ReservedWebCommand{
     .{ .name = "websearch", .description = "search the web (Jina)" },
     .{ .name = "webread", .description = "read a web page or local file (Jina)" },
+    .{ .name = "pubmed", .description = "search PubMed (NCBI)" },
 };
 
 /// Match the first whitespace-delimited token against a reserved `$` command.
@@ -38,6 +39,7 @@ pub const reserved_web_commands = [_]ReservedWebCommand{
 pub fn parseWebCommand(token: []const u8) ?WebCommand {
     if (std.mem.eql(u8, token, "$websearch")) return .websearch;
     if (std.mem.eql(u8, token, "$webread")) return .webread;
+    if (std.mem.eql(u8, token, "$pubmed")) return .pubmed;
     return null;
 }
 
@@ -489,6 +491,20 @@ test "parseWebCommand matches $webread and still matches $websearch" {
     try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("$webreadx"));
     try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("/webread"));
     try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("webread"));
+}
+
+test "parseWebCommand matches $pubmed" {
+    try std.testing.expectEqual(WebCommand.pubmed, parseWebCommand("$pubmed").?);
+    try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("$pubmedx"));
+    try std.testing.expectEqual(@as(?WebCommand, null), parseWebCommand("pubmed"));
+}
+
+test "reserved $pubmed appears in reserved web commands" {
+    var found = false;
+    for (reserved_web_commands) |rc| {
+        if (std.mem.eql(u8, rc.name, "pubmed")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "parseSlashCommand recognizes memory commands and aliases" {
