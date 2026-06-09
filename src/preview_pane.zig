@@ -225,7 +225,7 @@ fn destroyJob(job: *PreviewJob) void {
     std.heap.page_allocator.destroy(job);
 }
 
-fn unloadImageTexture(self: *PreviewPane) void {
+pub fn unloadImageTexture(self: *PreviewPane) void {
     if (self.image_texture != 0) { var t = gpu.Texture.fromHandle(self.image_texture); t.destroy(); self.image_texture = 0; }
     self.image_width = 0;
     self.image_height = 0;
