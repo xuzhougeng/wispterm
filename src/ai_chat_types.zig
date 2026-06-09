@@ -25,6 +25,9 @@ pub const AgentSettings = struct {
     /// Master switch for the Copilot long-term memory system (config
     /// `ai-memory-enabled`). Gates index injection and memory tool advertisement.
     memory_enabled: bool = false,
+    /// When true, the Copilot may append a "distill this into a skill?" prompt
+    /// after tool-heavy turns (config `ai-distill-suggest`). Off by default.
+    distill_suggest_enabled: bool = false,
 };
 
 // AgentPermission lives in ai_agent_config.zig (extracted on main so config.zig

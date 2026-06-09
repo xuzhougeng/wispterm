@@ -298,6 +298,11 @@ theme: ?[]const u8 = null,
 /// memory_save/memory_recall/memory_delete tools are advertised to the model.
 @"ai-memory-enabled": bool = true,
 
+/// When true, the Copilot appends a "This task looks reusable. Distill it into
+/// a skill?" prompt after tool-heavy turns. Off by default so the suggestion
+/// never appears unless the user opts in (see settings page / issue #184).
+@"ai-distill-suggest": bool = false,
+
 /// Agent command permission mode: ask, auto, or full.
 @"ai-agent-permission": ai_agent_config.AgentPermission = .confirm,
 
@@ -783,6 +788,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"ai-memory-enabled" = false;
         } else {
             log.warn("invalid ai-memory-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "ai-distill-suggest")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"ai-distill-suggest" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"ai-distill-suggest" = false;
+        } else {
+            log.warn("invalid ai-distill-suggest: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "right-click-action")) {
         if (RightClickAction.parse(value)) |action| {
@@ -1551,6 +1564,7 @@ pub const settings_reset_keys = [_][]const u8{
     "weixin-direct-enabled",
     "language",
     "restore-tabs-on-startup",
+    "ai-distill-suggest",
 };
 
 /// Revert every settings-page option to its built-in default by removing its
@@ -1662,6 +1676,7 @@ const default_config_template =
     \\# ai-agent-command-timeout-ms = 60000
     \\# ai-agent-output-limit = 16384
     \\# ai-agent-working-dir =          # default dir for downloads/clones (empty = unset)
+    \\# ai-distill-suggest = false      # auto-suggest distilling reusable tasks into a skill
     \\
     \\# Jina API key — used by $websearch / websearch and $webread / webread
     \\# (optional for $webread: r.jina.ai reads anonymously)
@@ -2106,4 +2121,19 @@ test "ai-memory-enabled parses true/false" {
     try std.testing.expect(!cfg.@"ai-memory-enabled");
     cfg.applyKeyValue(allocator, "ai-memory-enabled", "true", ".");
     try std.testing.expect(cfg.@"ai-memory-enabled");
+}
+
+test "ai-distill-suggest parses true/false and defaults off" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    // default is off: the Copilot does not auto-suggest distilling skills
+    try std.testing.expect(!cfg.@"ai-distill-suggest");
+    cfg.applyKeyValue(allocator, "ai-distill-suggest", "true", ".");
+    try std.testing.expect(cfg.@"ai-distill-suggest");
+    cfg.applyKeyValue(allocator, "ai-distill-suggest", "false", ".");
+    try std.testing.expect(!cfg.@"ai-distill-suggest");
+    // unknown value leaves it unchanged (still false)
+    cfg.applyKeyValue(allocator, "ai-distill-suggest", "maybe", ".");
+    try std.testing.expect(!cfg.@"ai-distill-suggest");
 }

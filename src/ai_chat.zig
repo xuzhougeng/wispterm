@@ -3228,6 +3228,9 @@ pub const Session = struct {
     }
 
     fn maybeAppendDistillSuggestionLocked(self: *Session) void {
+        // Gated by config `ai-distill-suggest` (off by default): when disabled the
+        // Copilot never auto-appends the "distill this into a skill?" prompt.
+        if (!currentAgentSettings().distill_suggest_enabled) return;
         const turns = self.allocDistillTurnsLocked() catch return;
         defer self.allocator.free(turns);
         const should = ai_skill_distill.shouldSuggest(.{
@@ -6194,6 +6197,8 @@ test "ai chat distill confirm without candidate is local only" {
 
 test "ai chat appends automatic distill suggestion after tool-heavy result" {
     const a = std.testing.allocator;
+    configureAgent(.{ .distill_suggest_enabled = true });
+    defer configureAgent(.{});
     var session = Session{ .allocator = a };
     defer {
         if (session.distill_candidate) |*candidate| candidate.deinit(a);
@@ -6212,6 +6217,31 @@ test "ai chat appends automatic distill suggestion after tool-heavy result" {
     try std.testing.expectEqual(Role.tool, session.messages.items[4].role);
     try std.testing.expect(!session.messages.items[4].persist_to_history);
     try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[4].content, 1, "Distill it into a skill"));
+}
+
+test "ai chat skips automatic distill suggestion when disabled" {
+    const a = std.testing.allocator;
+    // Default: ai-distill-suggest is off, so the prompt must not auto-appear
+    // even after a tool-heavy turn that the heuristic would otherwise flag.
+    configureAgent(.{});
+    defer configureAgent(.{});
+    var session = Session{ .allocator = a };
+    defer {
+        if (session.distill_candidate) |*candidate| candidate.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
+        session.messages.deinit(a);
+    }
+    try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec one"), .persist_to_history = false });
+    try session.messages.append(a, .{ .role = .tool, .content = try a.dupe(u8, "running exec two"), .persist_to_history = false });
+    session.request_inflight = true;
+
+    appendAssistantResult(&session, .{ .content = @constCast("done") }, 0);
+
+    try std.testing.expect(!session.distill_suggestion_pending);
+    // Only the appended assistant message — no extra distill-suggestion tool row.
+    try std.testing.expectEqual(@as(usize, 4), session.messages.items.len);
+    try std.testing.expectEqual(Role.assistant, session.messages.items[3].role);
 }
 
 test "ai chat escape dismisses pending distill suggestion before rewind" {

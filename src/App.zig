@@ -105,6 +105,7 @@ ai_agent_output_limit: u32,
 ai_agent_working_dir: []const u8,
 jina_api_key: []const u8,
 ai_memory_enabled: bool,
+ai_distill_suggest: bool,
 
 // Session persistence
 restore_tabs_on_startup: bool,
@@ -249,6 +250,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .ai_agent_working_dir = ai_agent_working_dir,
         .jina_api_key = jina_api_key,
         .ai_memory_enabled = cfg.@"ai-memory-enabled",
+        .ai_distill_suggest = cfg.@"ai-distill-suggest",
         .restore_tabs_on_startup = cfg.@"restore-tabs-on-startup",
         .auto_update_check = cfg.@"auto-update-check",
         .whats_new_on_update = cfg.@"whats-new-on-update",
@@ -420,6 +422,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.replaceStr(&self.ai_agent_working_dir, cfg.@"ai-agent-working-dir");
     self.replaceStr(&self.jina_api_key, cfg.@"jina-api-key");
     self.ai_memory_enabled = cfg.@"ai-memory-enabled";
+    self.ai_distill_suggest = cfg.@"ai-distill-suggest";
     self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
     self.auto_update_check = cfg.@"auto-update-check";
     self.whats_new_on_update = cfg.@"whats-new-on-update";
