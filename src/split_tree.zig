@@ -1142,14 +1142,16 @@ fn dimensions(self: *const SplitTree, current: Node.Handle) struct {
     };
 }
 
-/// Create a SplitTree from a session_persist NodeSnap. The factory callback
-/// is responsible for materializing one *Surface per leaf snapshot. Returning
-/// null from the factory aborts the rebuild with error.SurfaceCreationFailed.
+/// Create a SplitTree from a session_persist NodeSnap. For a `.terminal` leaf
+/// the factory callback materializes one *Surface; returning null aborts the
+/// rebuild with error.SurfaceCreationFailed. For a `.preview` leaf a fresh
+/// PreviewPane is created and (best-effort) starts an async reload of the
+/// persisted kind+path; a failed PreviewPane allocation likewise aborts with
+/// error.SurfaceCreationFailed.
 ///
-/// On error.SurfaceCreationFailed, any *Surface values returned by previous
-/// successful factory calls are NOT freed by this function — they are leaked.
-/// The factory must either track created surfaces externally for cleanup,
-/// or the caller must accept this leak as a fatal error path.
+/// On error.SurfaceCreationFailed, any panes (surfaces or preview panes) built
+/// by earlier successful nodes are NOT freed by this function — they are
+/// leaked. The caller must accept this as a fatal, best-effort restore path.
 ///
 /// Splits are always binary; ratios are clamped to [0.05, 0.95] for safety.
 /// Pre-order traversal: root first, then left subtree, then right subtree.
@@ -1185,9 +1187,21 @@ pub fn fromSnapshot(
             const my_handle: Node.Handle = @enumFromInt(@as(Node.Handle.Backing, @intCast(self.idx)));
             self.idx += 1;
             switch (n.*) {
-                .leaf => |leaf| {
-                    const surface = self.factory(&leaf.surface, self.gpa) orelse return error.SurfaceCreationFailed;
-                    self.nodes[my_handle.idx()] = .{ .leaf = .{ .terminal = surface } };
+                .leaf => |leaf| switch (leaf.kind) {
+                    .terminal => {
+                        const surface = self.factory(&leaf.surface, self.gpa) orelse return error.SurfaceCreationFailed;
+                        self.nodes[my_handle.idx()] = .{ .leaf = .{ .terminal = surface } };
+                    },
+                    .preview => {
+                        // Mirror the surface path: a failed allocation aborts the
+                        // rebuild (same fail-fast semantics as a null factory).
+                        const pane = PreviewPane.create(self.gpa) catch return error.SurfaceCreationFailed;
+                        if (leaf.preview) |ps| {
+                            // Best-effort async reload; basename is the title.
+                            _ = pane.beginAsyncLoad(ps.kind, std.fs.path.basename(ps.path), ps.path, .local);
+                        }
+                        self.nodes[my_handle.idx()] = .{ .leaf = .{ .preview = pane } };
+                    },
                 },
                 .split => |sp| {
                     // Reserve current index, then write children in pre-order.

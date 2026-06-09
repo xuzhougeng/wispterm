@@ -1288,9 +1288,12 @@ fn snapshotNode(
     return switch (node) {
         .leaf => |pane| switch (pane) {
             .terminal => |s| .{ .leaf = .{ .surface = try snapshotSurface(arena, s) } },
-            // Preview panes aren't persisted yet; serialize a placeholder local
-            // shell so the snapshot stays well-formed until preview persistence.
-            .preview => .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
+            // Persist the preview's kind + file path so it can be re-loaded
+            // (best-effort) on the next launch.
+            .preview => |p| .{ .leaf = .{
+                .kind = .preview,
+                .preview = .{ .kind = p.kind, .path = try arena.dupe(u8, p.path()) },
+            } },
         },
         .split => |sp| blk: {
             const left = try arena.create(session_persist.NodeSnap);
