@@ -4467,7 +4467,7 @@ fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface) !
     return remote_snapshot.allocTerminalSnapshot(
         allocator,
         &surface.terminal,
-        remote_snapshot.default_max_history_rows,
+        remote_snapshot.agent_max_history_rows,
     );
 }
 
