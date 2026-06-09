@@ -7,6 +7,7 @@
 //! (excess is discarded) so the child can always make progress and exit.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const Captured = struct {
     stdout: []u8, // owned, truncated to stdout_max
@@ -72,12 +73,33 @@ pub fn capture(
     return .{ .stdout = stdout_slice, .stderr = stderr_slice };
 }
 
+fn largeStderrCommand() []const []const u8 {
+    return switch (builtin.os.tag) {
+        .windows => &.{
+            "cmd.exe",
+            "/C",
+            "echo hello & for /L %i in (1,1,40000) do @echo E 1>&2",
+        },
+        else => &.{ "sh", "-c", "printf hello; printf 'E%.0s' $(seq 1 100000) 1>&2" },
+    };
+}
+
+fn cappedStdoutCommand() []const []const u8 {
+    return switch (builtin.os.tag) {
+        .windows => &.{
+            "cmd.exe",
+            "/C",
+            "for /L %i in (1,1,5000) do @echo O",
+        },
+        else => &.{ "sh", "-c", "printf 'O%.0s' $(seq 1 5000)" },
+    };
+}
+
 test "capture drains both streams without deadlock when stderr is large" {
     const a = std.testing.allocator;
     // Child writes a small stdout and a >64KB stderr. The old "read stdout to
     // EOF then stderr" order would deadlock here; concurrent drain must not.
-    const script = "printf hello; printf 'E%.0s' $(seq 1 100000) 1>&2";
-    var child = std.process.Child.init(&.{ "sh", "-c", script }, a);
+    var child = std.process.Child.init(largeStderrCommand(), a);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
@@ -85,14 +107,13 @@ test "capture drains both streams without deadlock when stderr is large" {
     var cap = try capture(a, child.stdout.?, child.stderr.?, 1024 * 1024, 1024 * 1024);
     defer cap.deinit(a);
     _ = try child.wait();
-    try std.testing.expectEqualStrings("hello", cap.stdout);
-    try std.testing.expectEqual(@as(usize, 100000), cap.stderr.len);
+    try std.testing.expect(std.mem.indexOf(u8, cap.stdout, "hello") != null);
+    try std.testing.expect(cap.stderr.len > 64 * 1024);
 }
 
 test "capture truncates stored bytes to the cap but still reaches EOF" {
     const a = std.testing.allocator;
-    const script = "printf 'O%.0s' $(seq 1 5000)"; // 5000 bytes stdout, no stderr
-    var child = std.process.Child.init(&.{ "sh", "-c", script }, a);
+    var child = std.process.Child.init(cappedStdoutCommand(), a);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
