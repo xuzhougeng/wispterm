@@ -236,7 +236,6 @@ pub const Manager = struct {
         defer self.mutex.unlock();
         if (index >= self.entries.items.len) return false;
         self.entries.items[index].rule.auto_start = !self.entries.items[index].rule.auto_start;
-        self.entries.items[index].generation = self.nextGenerationLocked();
         return true;
     }
 
@@ -255,27 +254,21 @@ pub const Manager = struct {
 
         var old_entries: std.ArrayListUnmanaged(Entry) = .empty;
         self.mutex.lock();
+        self.prepareEntriesLocked(entries.items);
         old_entries = self.entries;
-        self.entries = .empty;
+        self.entries = entries;
+        entries = .empty;
         self.mutex.unlock();
 
         stopEntries(old_entries.items);
         old_entries.deinit(self.allocator);
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.replaceEntriesLocked(&entries);
     }
 
-    fn replaceEntriesLocked(self: *Manager, entries: *std.ArrayListUnmanaged(Entry)) void {
-        std.debug.assert(self.entries.items.len == 0);
-        self.entries.deinit(self.allocator);
-        for (entries.items) |*entry| {
+    fn prepareEntriesLocked(self: *Manager, entries: []Entry) void {
+        for (entries) |*entry| {
             entry.id = self.nextEntryIdLocked();
             entry.generation = self.nextGenerationLocked();
         }
-        self.entries = entries.*;
-        entries.* = .empty;
     }
 
     pub fn startIndex(self: *Manager, index: usize, legacy_algorithms: bool) bool {
@@ -713,8 +706,7 @@ fn rulesEqual(a: *const rule_mod.Rule, b: *const rule_mod.Rule) bool {
         a.local_port == b.local_port and
         std.mem.eql(u8, a.remoteHost(), b.remoteHost()) and
         a.remote_port == b.remote_port and
-        a.enabled == b.enabled and
-        a.auto_start == b.auto_start;
+        a.enabled == b.enabled;
 }
 
 fn copyBounded(dest: []u8, text: []const u8) usize {
@@ -934,6 +926,7 @@ test "port_forward_manager: password auth argv uses askpass compatible options a
     try std.testing.expect(argvContainsForTest(password_argv, "PreferredAuthentications=publickey,password,keyboard-interactive"));
     try std.testing.expect(argvContainsForTest(password_argv, "NumberOfPasswordPrompts=1"));
     try std.testing.expect(!argvContainsForTest(password_argv, "BatchMode=yes"));
+    try expectArgvLacksForTest(password_argv, "secret");
 
     var key_conn = sshConnectionForTest("alice", "key.test", "", "", "", false, false);
     const key_argv = try buildSshArgvForTest(arena.allocator(), &rule, &key_conn);
@@ -1062,6 +1055,23 @@ test "port_forward_manager: shifted pending start install follows logical row" {
     try std.testing.expect(manager.markExitedForTest(0, "installed child exited"));
 }
 
+test "port_forward_manager: pending start survives auto-start toggle" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("target"));
+
+    const pending = manager.beginPendingStartForTest(0) orelse return error.ExpectedPendingStart;
+    try std.testing.expect(manager.toggleAutoStart(0));
+
+    try std.testing.expect(manager.completePendingStartFakeForTest(pending, 555));
+
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("target", row.rule.profileName());
+    try std.testing.expectEqual(StatusKind.running, row.status);
+    try std.testing.expect(!row.auto_start);
+    try std.testing.expect(manager.markExitedForTest(0, "installed child exited"));
+}
+
 test "port_forward_manager: stale pending start install leaves replacement row alone" {
     var manager = Manager.init(std.testing.allocator);
     defer manager.deinit();
@@ -1134,6 +1144,25 @@ test "port_forward_manager: shifted exited child completion follows logical row"
     try std.testing.expectEqualStrings("target exited", row.reason());
 }
 
+test "port_forward_manager: exited child completion survives auto-start toggle" {
+    var manager = Manager.init(std.testing.allocator);
+    defer manager.deinit();
+    try manager.addRule(rule_mod.defaultReverseProxy("target"));
+    try std.testing.expect(manager.markRunningForTest(0, 111));
+    try std.testing.expect(manager.markExitedForTest(0, "target exited"));
+
+    var exited = manager.takeExitedChildForTest(0) orelse return error.ExpectedExitedChild;
+    try std.testing.expect(manager.toggleAutoStart(0));
+
+    try std.testing.expect(manager.finishExitedChildForTest(&exited));
+
+    const row = manager.rowAt(0).?;
+    try std.testing.expectEqualStrings("target", row.rule.profileName());
+    try std.testing.expectEqual(StatusKind.error_, row.status);
+    try std.testing.expectEqualStrings("target exited", row.reason());
+    try std.testing.expect(!row.auto_start);
+}
+
 test "port_forward_manager: shifted restart lease does not start wrong row" {
     var manager = Manager.init(std.testing.allocator);
     defer manager.deinit();
@@ -1187,5 +1216,11 @@ fn expectNoControlSharingOptionsForTest(argv: []const []const u8) !void {
         try std.testing.expect(std.mem.indexOf(u8, arg, "ControlMaster") == null);
         try std.testing.expect(std.mem.indexOf(u8, arg, "ControlPersist") == null);
         try std.testing.expect(std.mem.indexOf(u8, arg, "ControlPath") == null);
+    }
+}
+
+fn expectArgvLacksForTest(argv: []const []const u8, needle: []const u8) !void {
+    for (argv) |arg| {
+        try std.testing.expect(std.mem.indexOf(u8, arg, needle) == null);
     }
 }
