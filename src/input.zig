@@ -2489,12 +2489,14 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             }
             return false;
         },
-        0x55 => { // 'U' key = upload local file to remote
-            if (!ev.ctrl and !ev.alt and !ev.shift and !ev.super) {
-                if (file_explorer.g_mode == .remote) {
+        0x55 => { // 'U' = upload file; Shift+U = upload folder
+            if (file_explorer.g_mode == .remote and !ev.ctrl and !ev.alt and !ev.super) {
+                if (ev.shift) {
+                    openFolderDialogAndUpload();
+                } else {
                     openFileDialogAndUpload();
-                    return true;
                 }
+                return true;
             }
             return false;
         },
@@ -2562,6 +2564,23 @@ fn openFileDialogAndUpload() void {
     defer allocator.free(path);
 
     file_explorer.uploadFile(path);
+}
+
+fn openFolderDialogAndUpload() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    const filters = [_]platform_file_dialog.Filter{.{ .name = "All Files", .pattern = "*.*" }};
+    const owner: platform_file_dialog.Owner = if (AppWindow.currentNativeHandleBits()) |handle_bits|
+        platform_file_dialog.windowOwner(handle_bits)
+    else
+        .{};
+    const path = platform_file_dialog.pickFolder(allocator, .{
+        .owner = owner,
+        .title = "Upload folder to remote",
+        .filters = &filters,
+    }) orelse return;
+    defer allocator.free(path);
+
+    file_explorer.uploadFolder(path);
 }
 
 fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool, super: bool) void {
