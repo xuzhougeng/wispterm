@@ -46,6 +46,49 @@ pub fn connectionFromProfile(profile: *const profile_codec.SshProfile, legacy_al
     return conn;
 }
 
+/// Cycle to the name of the SSH profile `delta` steps from `current` (matched
+/// case-insensitively by name) in the order they appear in `content`, wrapping
+/// around. The result is copied into `out` and the written slice is returned.
+///
+/// Returns "" when `content` holds no decodable profiles. When `current` is not
+/// found, a positive/zero delta starts at the first profile and a negative delta
+/// at the last, so the very first keypress always lands on a real profile.
+pub fn cycleProfileName(content: []const u8, current: []const u8, delta: isize, out: []u8) []const u8 {
+    var total: usize = 0;
+    var found: ?usize = null;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trimRight(u8, line_raw, "\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const profile = profile_codec.decodeSshProfileLine(line) orelse continue;
+        if (found == null and std.ascii.eqlIgnoreCase(current, profile_codec.profileField(&profile, .name))) {
+            found = total;
+        }
+        total += 1;
+    }
+    if (total == 0) return out[0..0];
+
+    const target: usize = if (found) |base| blk: {
+        const span: isize = @intCast(total);
+        break :blk @intCast(@mod(@as(isize, @intCast(base)) + delta, span));
+    } else if (delta < 0) total - 1 else 0;
+
+    var index: usize = 0;
+    var walk = std.mem.splitScalar(u8, content, '\n');
+    while (walk.next()) |line_raw| {
+        const line = std.mem.trimRight(u8, line_raw, "\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const profile = profile_codec.decodeSshProfileLine(line) orelse continue;
+        if (index == target) {
+            const name = profile_codec.profileField(&profile, .name);
+            const n = copyBounded(out, name);
+            return out[0..n];
+        }
+        index += 1;
+    }
+    return out[0..0];
+}
+
 fn isSshTokenSafe(value: []const u8) bool {
     if (value.len == 0) return false;
     for (value) |ch| {
@@ -113,4 +156,38 @@ test "ssh_profile_store: rejects unsafe profile fields" {
     });
 
     try std.testing.expect(findConnectionInContent(content.items, "bad", false) == null);
+}
+
+test "ssh_profile_store: cycleProfileName steps through profiles and wraps" {
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    defer content.deinit(std.testing.allocator);
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "devbox", "10.0.0.1", "a", "", "22", "" });
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "lab", "10.0.0.2", "a", "", "22", "" });
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "prod", "10.0.0.3", "a", "", "22", "" });
+
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("lab", cycleProfileName(content.items, "devbox", 1, &buf));
+    try std.testing.expectEqualStrings("prod", cycleProfileName(content.items, "devbox", -1, &buf));
+    try std.testing.expectEqualStrings("devbox", cycleProfileName(content.items, "prod", 1, &buf));
+    // Case-insensitive match on the current name.
+    try std.testing.expectEqualStrings("prod", cycleProfileName(content.items, "LAB", 1, &buf));
+}
+
+test "ssh_profile_store: cycleProfileName falls back when current is unknown" {
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    defer content.deinit(std.testing.allocator);
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "devbox", "10.0.0.1", "a", "", "22", "" });
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "prod", "10.0.0.3", "a", "", "22", "" });
+
+    var buf: [128]u8 = undefined;
+    // Empty/unknown current: forward picks the first, backward picks the last.
+    try std.testing.expectEqualStrings("devbox", cycleProfileName(content.items, "", 1, &buf));
+    try std.testing.expectEqualStrings("devbox", cycleProfileName(content.items, "", 0, &buf));
+    try std.testing.expectEqualStrings("prod", cycleProfileName(content.items, "missing", -1, &buf));
+}
+
+test "ssh_profile_store: cycleProfileName returns empty without profiles" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("", cycleProfileName("# only comments\n", "devbox", 1, &buf));
+    try std.testing.expectEqualStrings("", cycleProfileName("", "", -1, &buf));
 }

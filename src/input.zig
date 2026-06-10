@@ -1762,6 +1762,14 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 }
                 return;
             },
+            platform_input.key_left => {
+                if (form_active) _ = AppWindow.portForwardingFormAdjust(-1);
+                return;
+            },
+            platform_input.key_right => {
+                if (form_active) _ = AppWindow.portForwardingFormAdjust(1);
+                return;
+            },
             platform_input.key_tab => {
                 if (form_active) _ = AppWindow.portForwardingFormMove(1);
                 return;
@@ -1780,7 +1788,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             },
             platform_input.key_space => if (plain and !ev.shift) {
                 if (form_active) {
-                    _ = AppWindow.portForwardingFormToggle();
+                    _ = AppWindow.portForwardingFormAdjust(1);
                 } else if (!overlay_active) {
                     _ = AppWindow.portForwardingToggleSelected();
                 }

@@ -53,6 +53,7 @@ pub const skill_center = @import("skill_center.zig");
 pub const port_forwarding = @import("port_forwarding.zig");
 const port_forward_manager = @import("port_forward_manager.zig");
 const port_forward_rule = @import("port_forward_rule.zig");
+const ssh_profile_store = @import("ssh_profile_store.zig");
 const skill_scan = @import("skill_scan.zig");
 const skill_transfer_cmd = @import("skill_transfer_cmd.zig");
 const remote_file = @import("platform/remote_file.zig");
@@ -957,9 +958,10 @@ fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: 
         .renderTextLimited = titlebar.renderTextLimited,
         .glyphAdvance = titlebar.titlebarGlyphAdvance,
     };
+    const legend = if (form_view != null) i18n.s().pf_form_legend else i18n.s().pf_legend;
     const view: port_forwarding_renderer.View = .{
         .title = i18n.s().pf_title,
-        .legend = i18n.s().pf_legend,
+        .legend = legend,
         .count = row_count,
         .selected = session.model.sel_row,
         .scroll = session.model.scroll,
@@ -1183,11 +1185,32 @@ pub fn portForwardingToggleAutoStart() bool {
 
 pub fn portForwardingOpenNew() bool {
     const session = activePortForwarding() orelse return false;
+    var name_buf: [port_forward_rule.PROFILE_MAX]u8 = undefined;
+    const default_profile = firstSshProfileName(&name_buf);
     session.mutex.lock();
     defer session.mutex.unlock();
-    session.model.openNewForm("") catch return false;
+    session.model.openNewForm(default_profile) catch return false;
     markUiDirty();
     return true;
+}
+
+/// Name of the first SSH profile in the store, written into `buf` (the returned
+/// slice points into `buf`, not the freed file content). Returns "" when no
+/// profiles exist or the store can't be read. Used to preselect the Profile
+/// selector when opening a new forwarding rule.
+fn firstSshProfileName(buf: []u8) []const u8 {
+    const manager = activePortForwardManager() orelse return "";
+    const allocator = manager.allocator;
+    const content = readSshHostsContent(allocator) orelse return "";
+    defer allocator.free(content);
+    return ssh_profile_store.cycleProfileName(content, "", 0, buf);
+}
+
+/// Read the encoded ssh_hosts file. Caller frees. Returns null when unavailable.
+fn readSshHostsContent(allocator: std.mem.Allocator) ?[]u8 {
+    const path = platform_dirs.sshHostsPath(allocator) catch return null;
+    defer allocator.free(path);
+    return std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch null;
 }
 
 pub fn portForwardingOpenEdit() bool {
@@ -1287,11 +1310,50 @@ pub fn portForwardingFormMove(delta: isize) bool {
     return true;
 }
 
-pub fn portForwardingFormToggle() bool {
+/// Adjust the focused selector field by `delta` steps. Profile (field 1) cycles
+/// through the SSH profiles in the store; Direction and Auto start flip. Other
+/// (text/port) fields are unaffected. Used by Space (+1) and the ←/→ arrows.
+pub fn portForwardingFormAdjust(delta: isize) bool {
     const session = activePortForwarding() orelse return false;
+
+    // Determine the focused field and the current profile name without holding
+    // the lock across the ssh_hosts file read below.
+    session.mutex.lock();
+    const focus = if (session.model.form()) |form| form.focus else {
+        session.mutex.unlock();
+        return false;
+    };
+    var current_buf: [port_forward_rule.PROFILE_MAX]u8 = undefined;
+    var current_len: usize = 0;
+    if (focus == 1) {
+        const form = session.model.form().?;
+        const current = form.rule.profileName();
+        current_len = @min(current_buf.len, current.len);
+        @memcpy(current_buf[0..current_len], current[0..current_len]);
+    }
+    session.mutex.unlock();
+
+    if (focus == 1) {
+        const manager = activePortForwardManager() orelse return false;
+        const allocator = manager.allocator;
+        const content = readSshHostsContent(allocator) orelse return false;
+        defer allocator.free(content);
+        var next_buf: [port_forward_rule.PROFILE_MAX]u8 = undefined;
+        const next = ssh_profile_store.cycleProfileName(content, current_buf[0..current_len], delta, &next_buf);
+        if (next.len == 0) return false;
+
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        const form = session.model.form() orelse return false;
+        form.rule.setProfileName(next);
+        markUiDirty();
+        return true;
+    }
+
     session.mutex.lock();
     defer session.mutex.unlock();
     const form = session.model.form() orelse return false;
+    if (form.focus != 2 and form.focus != 7) return false;
     form.toggleFocused();
     markUiDirty();
     return true;
