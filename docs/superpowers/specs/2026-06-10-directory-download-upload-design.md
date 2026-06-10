@@ -112,11 +112,12 @@ included for a given `recursive` flag) so the fast suite can assert it.
     (worker may still be running); cleanup waits for the real completion.
   - Uploads remain non-cancelable (out of scope; dst is remote-side).
 
-- **Folder download progress**: extend `observedTransferBytes` so that when the
-  download dst is a directory, it returns the recursive byte size of that tree
-  (best-effort walk; on error return null → toast shows "calculating…"). This
-  keeps the speed readout meaningful for folder downloads. File downloads keep
-  using `localFileSize` unchanged.
+- **Folder download progress**: no code change needed. `observedTransferBytes`
+  → `localFileSize` opens the dst as a file; for a directory that open fails and
+  returns null, so the toast already falls back to "\<name\> - calculating…".
+  This is intentional — recursively walking the growing tree on every 500 ms
+  tick would be O(n) per tick for large folders, so we accept the indeterminate
+  readout for folders. File downloads keep their byte-rate readout unchanged.
 
 ### 3. Folder picker — `src/platform/file_dialog*.zig`
 
@@ -167,6 +168,12 @@ generically; the folder's name flows through as the toast display string.
   - **cancel deletes the partial dst**: extend the existing
     `transferWaitForCancelForTest` flow — set a real temp file as dst, cancel,
     and assert the file is removed after the job completes.
+
+  Note: `uploadFolder` is a thin convenience wrapper over the already-tested
+  `startTransferJob` plumbing plus the `-r` behavior tested in scp, so it needs
+  no dedicated test (it would otherwise spawn a real `scp`). Input-layer wiring
+  (`Shift+U`) follows the codebase convention of not unit-testing key handlers;
+  it is verified by compile + manual GUI.
 - **file_dialog** (`src/platform/file_dialog.zig`): `pickFolder` signature test
   and backend-selection test, matching the existing dialog tests.
 
