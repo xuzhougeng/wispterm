@@ -590,6 +590,16 @@ fn appendQueryEscaped(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Alloc
     }
 }
 
+/// Whole-attachment ceiling for WeChat sends. The upload path holds the
+/// plain bytes AND an AES-encrypted copy in memory at once, so peak usage is
+/// roughly twice this value; the cap keeps a stray huge file (video, archive)
+/// from ballooning the process while still covering realistic WeChat sends.
+pub const MAX_ATTACHMENT_BYTES: u64 = 256 * 1024 * 1024;
+
+fn checkAttachmentSize(size: u64) error{WeixinAttachmentTooLarge}!void {
+    if (size > MAX_ATTACHMENT_BYTES) return error.WeixinAttachmentTooLarge;
+}
+
 fn readLocalFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const path_kind = try localPathKind(path);
     switch (path_kind) {
@@ -608,7 +618,12 @@ fn readLocalFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     // not read if it no longer resolves to a regular file.
     const stat = try file.stat();
     switch (stat.kind) {
-        .file => return file.readToEndAlloc(allocator, std.math.maxInt(usize)),
+        .file => {
+            try checkAttachmentSize(stat.size);
+            // The readToEndAlloc cap re-bounds the read in case the file
+            // grows between the stat above and the read.
+            return file.readToEndAlloc(allocator, MAX_ATTACHMENT_BYTES);
+        },
         .directory => return error.IsDir,
         else => return error.WeixinAttachmentNotRegularFile,
     }
@@ -946,6 +961,12 @@ test "readLocalFileAlloc rejects non-regular files" {
     } else |err| {
         try std.testing.expectEqual(error.WeixinAttachmentNotRegularFile, err);
     }
+}
+
+test "checkAttachmentSize allows sizes up to the cap and rejects beyond" {
+    try checkAttachmentSize(0);
+    try checkAttachmentSize(MAX_ATTACHMENT_BYTES);
+    try std.testing.expectError(error.WeixinAttachmentTooLarge, checkAttachmentSize(MAX_ATTACHMENT_BYTES + 1));
 }
 
 test "readLocalFileAlloc rejects directories" {
