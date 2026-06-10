@@ -221,7 +221,7 @@ fn pickWindowsFolder(allocator: std.mem.Allocator, request: OpenRequest) ?[]u8 {
     // different mode (RPC_E_CHANGED_MODE) by only uninitializing when we
     // actually acquired a reference.
     const hr = CoInitializeEx(null, COINIT_APARTMENTTHREADED);
-    const we_initialized = (hr == 0) or (hr == 1); // S_OK or S_FALSE
+    const we_initialized = (hr == windows.S_OK) or (hr == windows.S_FALSE);
     defer if (we_initialized) CoUninitialize();
 
     var display_buf: [windows.MAX_PATH]windows.WCHAR = undefined;
@@ -235,7 +235,7 @@ fn pickWindowsFolder(allocator: std.mem.Allocator, request: OpenRequest) ?[]u8 {
     const pidl = SHBrowseForFolderW(&bi) orelse return null;
     defer CoTaskMemFree(pidl);
 
-    var path_buf: [windows.MAX_PATH]windows.WCHAR = undefined;
+    var path_buf: [windows.MAX_PATH]windows.WCHAR = std.mem.zeroes([windows.MAX_PATH]windows.WCHAR);
     if (SHGetPathFromIDListW(pidl, &path_buf) == 0) return null;
     return pathFromWindowsBuffer(allocator, path_buf[0..]);
 }
