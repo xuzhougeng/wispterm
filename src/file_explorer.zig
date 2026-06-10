@@ -1101,7 +1101,12 @@ fn tickTransferJob() void {
                 rescanRemote();
             }
         },
-        .cancelled => setTransferStatusForKind(job.request.kind, .cancelled, display),
+        .cancelled => {
+            if (job.request.kind == .download) {
+                removePartialDownload(job.request.dst_buf[0..job.request.dst_len]);
+            }
+            setTransferStatusForKind(job.request.kind, .cancelled, display);
+        },
         else => setTransferStatusForKind(job.request.kind, .failed, display),
     }
 }
@@ -1181,6 +1186,18 @@ fn formatTransferRate(buf: []u8, bytes_per_sec: u64) ![]u8 {
     if (speed < mb) return std.fmt.bufPrint(buf, "{d:.1} KB/s", .{speed / kb});
     if (speed < gb) return std.fmt.bufPrint(buf, "{d:.1} MB/s", .{speed / mb});
     return std.fmt.bufPrint(buf, "{d:.1} GB/s", .{speed / gb});
+}
+
+/// Remove a partially-transferred download destination — a half-written file or
+/// an incomplete folder tree. Best-effort: any error (e.g. already gone) is
+/// ignored.
+fn removePartialDownload(path: []const u8) void {
+    if (path.len == 0) return;
+    if (std.fs.path.isAbsolute(path)) {
+        std.fs.deleteTreeAbsolute(path) catch {};
+    } else {
+        std.fs.cwd().deleteTree(path) catch {};
+    }
 }
 
 pub fn cancelActiveTransfer() bool {
@@ -1850,6 +1867,27 @@ test "file_explorer: active download transfer can be cancelled" {
     try std.testing.expectEqual(@as(?*TransferJob, null), g_transfer_job);
     try std.testing.expectEqual(TransferStatus.cancelled, g_transfer_status);
     try std.testing.expectEqualStrings("file.txt", g_transfer_msg[0..g_transfer_msg_len]);
+}
+
+test "file_explorer: cancelling a download deletes the partial destination" {
+    resetTransferStateForTest();
+    defer resetTransferStateForTest();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "partial.bin", .data = "incomplete" });
+    const dst = try tmp.dir.realpathAlloc(std.testing.allocator, "partial.bin");
+    defer std.testing.allocator.free(dst);
+
+    var conn: ssh_connection.SshConnection = .{};
+    try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", dst, "partial.bin", transferWaitForCancelForTest));
+    try std.testing.expect(cancelActiveDownloadForTest());
+
+    tickTransfersUntilIdleForTest();
+
+    try std.testing.expectEqual(TransferStatus.cancelled, g_transfer_status);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("partial.bin", .{}));
 }
 
 test "buildChildPathInto avoids duplicate separators" {
