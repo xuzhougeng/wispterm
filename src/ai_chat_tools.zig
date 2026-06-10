@@ -1539,11 +1539,12 @@ fn promptReturned(snapshot: []const u8, captured_prompt: []const u8) bool {
 
 const AGENT_START_PREFIX = "__WISPTERM_AGENT_START_";
 
-/// Whether the surface's most recent agent command is still running: find the
-/// last START marker, read its nonce, and report true if no completed END
-/// (`__WISPTERM_AGENT_END_<nonce>__:<digit>`) appears after it. If the start has
-/// scrolled out of the snapshot we report false (idle) — an acceptable
-/// false-negative; a stale false-positive self-heals via <ctrl-c> + retry.
+/// Whether the snapshot's most recent agent command never reported completion:
+/// find the last START marker, read its nonce, and report true if no completed
+/// END (`__WISPTERM_AGENT_END_<nonce>__:<digit>`) appears after it. If the
+/// start has scrolled out of the snapshot we report false (idle) — an
+/// acceptable false-negative. Marker scan only; see agentCommandStillRunning
+/// for the actual busy-guard predicate.
 fn hasPendingAgentCommand(snapshot: []const u8) bool {
     const last_start = std.mem.lastIndexOf(u8, snapshot, AGENT_START_PREFIX) orelse return false;
     const nonce_start = last_start + AGENT_START_PREFIX.len;
@@ -1555,6 +1556,19 @@ fn hasPendingAgentCommand(snapshot: []const u8) bool {
     var buf: [64]u8 = undefined;
     const end_marker = std.fmt.bufPrint(&buf, "__WISPTERM_AGENT_END_{s}__", .{nonce}) catch return false;
     return findCompletedEnd(snapshot[last_start..], end_marker) == null;
+}
+
+/// Busy-guard predicate for injecting a new wrapped command. A pending START
+/// without a completed END only means "still running" while the terminal has
+/// not returned to a ready prompt. An interrupted command (<ctrl-c>) never
+/// prints its END marker, so the marker scan alone would latch the guard on
+/// until the stale START scrolls out of the snapshot window — refusing every
+/// new command on this surface even though the shell sits idle. A trailing
+/// ready prompt overrides the markers: a foreground command cannot still be
+/// running while the shell is showing its prompt.
+fn agentCommandStillRunning(snapshot: []const u8) bool {
+    if (!hasPendingAgentCommand(snapshot)) return false;
+    return !looksLikeReadyPrompt(extractPromptLine(snapshot));
 }
 
 fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
@@ -1590,7 +1604,7 @@ fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []c
     // authoritative; the cached surface snapshot may be stale.
     if (host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch null) |guard_snapshot| {
         defer ctx.allocator.free(guard_snapshot);
-        if (hasPendingAgentCommand(guard_snapshot)) {
+        if (agentCommandStillRunning(guard_snapshot)) {
             return std.fmt.allocPrint(ctx.allocator, "A previous command is still running in this {s} terminal. Do not start another command. Wait and re-check with terminal_snapshot, or interrupt it first with terminal_repl_exec repl=plain code=<ctrl-c>.", .{kind.label()});
         }
     }
@@ -3212,6 +3226,32 @@ test "agent exec detects a still-pending previous command" {
 
     // No agent markers at all -> not pending.
     try std.testing.expect(!hasPendingAgentCommand("(base) u@h:~$ "));
+}
+
+test "agent exec busy guard clears at a ready prompt after an interrupt" {
+    // A wrapped command was interrupted with <ctrl-c>: its END marker never
+    // printed, so the stale START stays in scrollback. The shell is back at a
+    // ready prompt, so nothing is running in the foreground — the guard must
+    // let the next command through instead of latching on forever.
+    const interrupted =
+        "__WISPTERM_AGENT_START_444__\n" ++
+        "Cloning into 'x'...\n" ++
+        "^C\n" ++
+        "(base) root@guozi-server02:~# ";
+    try std.testing.expect(hasPendingAgentCommand(interrupted));
+    try std.testing.expect(!agentCommandStillRunning(interrupted));
+
+    // Still streaming output, no trailing prompt -> still running, keep refusing.
+    const running = "__WISPTERM_AGENT_START_444__\nCloning into 'x'...\n";
+    try std.testing.expect(agentCommandStillRunning(running));
+
+    // Running silently: the last line is the START marker itself, not a prompt.
+    const silent = "(base) u@h:~$  printf ...\n__WISPTERM_AGENT_START_444__\n";
+    try std.testing.expect(agentCommandStillRunning(silent));
+
+    // Completed normally -> not running regardless of the prompt heuristic.
+    const done = "__WISPTERM_AGENT_START_444__\nhi\n__WISPTERM_AGENT_END_444__:0\n$ ";
+    try std.testing.expect(!agentCommandStillRunning(done));
 }
 
 test "agent exec timeout message says still running, do not re-issue" {
