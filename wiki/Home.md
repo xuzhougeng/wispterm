@@ -23,6 +23,7 @@ macOS-only — those are called out where relevant.
 - **Tabs, splits & panels** — vertical/horizontal splits, focus navigation, panel swap, Quake drop-down → [[Tabs-Splits-Panels]]
 - **File Explorer & previews** — browse local, WSL, and SSH files; preview Markdown/text/tables/images → [[File-Explorer]]
 - **SSH & remote development** — profile sessions, remote file download, automatic loopback port forwarding → [[SSH-Remote-Development]]
+- **Port forwarding & proxy** — manual reverse/local SSH tunnels; share your local proxy with a remote server → [[Port-Forwarding]]
 - **AI Copilot & Agent** — OpenAI-/Anthropic-compatible profiles, per-tab copilot sidebar, skills, history & resume → [[AI-Copilot]]
 - **Browser & Jupyter panel** — open URLs in a side WebView panel (Windows) → [[Browser-Jupyter-Panel]]
 - **Inline images** — Kitty Graphics protocol; show images and PDFs from remote shells → [[Inline-Images]]

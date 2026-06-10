@@ -68,7 +68,8 @@ ssh-legacy-algorithms = true
 `url-open-mode = system-browser` 就能让远程应用在你常用的浏览器中打开。每个远程端口各自
 保留一条转发；WispTerm 优先使用相同的本地端口，仅在该端口已被占用时才递增。非 loopback
 网址（如 `https://10.10.x.x` 或公网站点）直接打开。面板本身见
-[[浏览器与 Jupyter 面板|Browser-Jupyter-Panel-zh]]。
+[[浏览器与 Jupyter 面板|Browser-Jupyter-Panel-zh]]。对于你自己配置的隧道 —— 比如把本地
+代理共享给服务器 —— 见 [[端口转发与代理|Port-Forwarding-zh]]。
 
 ---
-*另见：[[文件浏览器与预览|File-Explorer-zh]] · [[浏览器与 Jupyter 面板|Browser-Jupyter-Panel-zh]] · [[配置|Configuration-zh]]*
+*另见：[[端口转发与代理|Port-Forwarding-zh]] · [[文件浏览器与预览|File-Explorer-zh]] · [[浏览器与 Jupyter 面板|Browser-Jupyter-Panel-zh]] · [[配置|Configuration-zh]]*

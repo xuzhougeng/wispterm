@@ -76,7 +76,9 @@ the embedded browser panel and the system browser, so setting
 browser. Each remote port keeps its own forward; WispTerm prefers the same
 local port and only increments when that port is already occupied. Non-loopback
 URLs (e.g. `https://10.10.x.x` or public sites) open directly. See
-[[Browser-Jupyter-Panel]] for the panel itself.
+[[Browser-Jupyter-Panel]] for the panel itself. For tunnels you configure
+yourself — such as sharing your local proxy with the server — see
+[[Port-Forwarding]].
 
 ---
-*See also: [[File-Explorer]] · [[Browser-Jupyter-Panel]] · [[Configuration]]*
+*See also: [[Port-Forwarding]] · [[File-Explorer]] · [[Browser-Jupyter-Panel]] · [[Configuration]]*

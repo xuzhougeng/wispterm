@@ -21,6 +21,7 @@ WispTerm 提供 **Windows** 与 **macOS**（Apple Silicon 与 Intel）版本，*
 - **标签、分屏与面板** —— 横/竖分屏、焦点切换、面板交换、Quake 下拉模式 → [[标签、分屏与面板|Tabs-Splits-Panels-zh]]
 - **文件浏览器与预览** —— 浏览本地、WSL 与 SSH 文件；预览 Markdown/文本/表格/图片 → [[文件浏览器与预览|File-Explorer-zh]]
 - **SSH 与远程开发** —— profile 会话、远程文件下载、自动 loopback 端口转发 → [[SSH 与远程开发|SSH-Remote-Development-zh]]
+- **端口转发与代理** —— 手动配置反向/本地 SSH 隧道；把本地代理共享给远程服务器 → [[端口转发与代理|Port-Forwarding-zh]]
 - **AI 副驾与智能体** —— 兼容 OpenAI/Anthropic 的 profile、按标签的副驾侧栏、技能、历史与恢复 → [[AI 副驾与智能体|AI-Copilot-zh]]
 - **浏览器与 Jupyter 面板** —— 在右侧 WebView 面板打开网址（Windows）→ [[浏览器与 Jupyter 面板|Browser-Jupyter-Panel-zh]]
 - **内联图片** —— Kitty Graphics 协议；在远程 shell 里显示图片和 PDF → [[内联图片|Inline-Images-zh]]
