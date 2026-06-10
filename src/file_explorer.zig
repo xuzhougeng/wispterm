@@ -1558,14 +1558,19 @@ pub fn latestTransferNotification() ?TransferNotification {
     };
 }
 
-/// Download the selected remote file to a local directory.
+/// Choose the transfer function for a download based on whether the selected
+/// entry is a directory (recursive `scp -r`) or a regular file.
+fn pickDownloadTransferFn(is_dir: bool) TransferFn {
+    return if (is_dir) scp.transferDirWithControl else scp.transferWithControl;
+}
+
+/// Download the selected remote file or directory to a local directory.
 pub fn downloadSelected(local_dir: []const u8) void {
     if (g_mode != .remote or !g_has_ssh_conn) return;
     const sel = g_selected orelse return;
     if (sel >= g_entry_count) return;
 
     const entry = &g_entries[sel];
-    if (entry.is_dir) return; // Only download files
 
     const remote_path = entry.path_buf[0..entry.path_len];
 
@@ -1580,7 +1585,7 @@ pub fn downloadSelected(local_dir: []const u8) void {
         return;
     };
 
-    _ = startTransferJob(.download, &g_ssh_conn, src, dst, name, scp.transferWithControl);
+    _ = startTransferJob(.download, &g_ssh_conn, src, dst, name, pickDownloadTransferFn(entry.is_dir));
 }
 
 /// Upload a local file to the current remote directory.
@@ -1596,6 +1601,21 @@ pub fn uploadFile(local_path: []const u8) void {
     const filename = platform_local_path.basename(local_path);
 
     _ = startTransferJob(.upload, &g_ssh_conn, local_path, dst, filename, scp.transferWithControl);
+}
+
+/// Upload a local folder (recursively) to the current remote directory.
+pub fn uploadFolder(local_path: []const u8) void {
+    if (g_mode != .remote or !g_has_ssh_conn) return;
+
+    // Destination: current remote dir
+    const remote_dir = g_root_path[0..g_root_path_len];
+
+    var spec_buf: [512]u8 = undefined;
+    const dst = scp.remoteSpec(&spec_buf, &g_ssh_conn, remote_dir);
+
+    const name = platform_local_path.basename(local_path);
+
+    _ = startTransferJob(.upload, &g_ssh_conn, local_path, dst, name, scp.transferDirWithControl);
 }
 
 pub fn uploadLocalFileToRemoteSpec(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection) bool {
@@ -1763,6 +1783,17 @@ test "file_explorer: download helper starts transfer with explicit remote path" 
     try std.testing.expectEqual(TransferStatus.in_progress, g_transfer_status);
     try std.testing.expectEqualStrings("file.txt - calculating...", g_transfer_msg[0..g_transfer_msg_len]);
     try std.testing.expect(g_transfer_job != null);
+}
+
+test "file_explorer: download picks recursive transfer for directories" {
+    try std.testing.expectEqual(
+        @as(TransferFn, scp.transferDirWithControl),
+        pickDownloadTransferFn(true),
+    );
+    try std.testing.expectEqual(
+        @as(TransferFn, scp.transferWithControl),
+        pickDownloadTransferFn(false),
+    );
 }
 
 test "file_explorer: download transfer emits notification" {
