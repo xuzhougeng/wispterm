@@ -1165,7 +1165,11 @@ fn localFileSize(path: []const u8) ?u64 {
     else
         std.fs.cwd().openFile(path, .{}) catch return null;
     defer file.close();
-    return file.getEndPos() catch null;
+    const info = file.stat() catch return null;
+    // A directory destination (folder download) has no meaningful byte count;
+    // returning null lets the progress toast show "calculating…".
+    if (info.kind == .directory) return null;
+    return info.size;
 }
 
 fn formatTransferProgressMessage(buf: []u8, display: []const u8, bytes_per_sec: ?u64) ![]u8 {
@@ -2370,4 +2374,18 @@ test "file_explorer: history row text keeps valid utf8 when truncated" {
     try std.testing.expectEqual(@as(usize, 1), g_history_row_count);
     try std.testing.expect(std.unicode.utf8ValidateSlice(g_history_rows[0].title_buf[0..g_history_rows[0].title_len]));
     try std.testing.expect(std.unicode.utf8ValidateSlice(g_history_rows[0].model_buf[0..g_history_rows[0].model_len]));
+}
+
+test "file_explorer: localFileSize returns null for a directory but size for a file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+    try std.testing.expectEqual(@as(?u64, null), localFileSize(dir_path));
+
+    try tmp.dir.writeFile(.{ .sub_path = "f.txt", .data = "hello" });
+    const file_path = try tmp.dir.realpathAlloc(std.testing.allocator, "f.txt");
+    defer std.testing.allocator.free(file_path);
+    try std.testing.expectEqual(@as(?u64, 5), localFileSize(file_path));
 }
