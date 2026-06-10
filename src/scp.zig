@@ -204,9 +204,55 @@ fn appendSshExecPrefix(
     return argc;
 }
 
+const DrainResult = enum { complete, exceeded };
+
+/// Read `reader` (anything with `read([]u8) !usize`) appending to `list`,
+/// storing at most `max` bytes. The first byte beyond `max` yields
+/// `.exceeded`: with `stop_on_exceed` the read loop aborts immediately (the
+/// caller is expected to kill the producing child), otherwise the reader is
+/// still drained to EOF so a child blocked on a full pipe can finish —
+/// only storage stops.
+fn drainCapped(
+    reader: anytype,
+    allocator: std.mem.Allocator,
+    list: *std.ArrayListUnmanaged(u8),
+    max: usize,
+    stop_on_exceed: bool,
+) !DrainResult {
+    var exceeded = false;
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = try reader.read(&buf);
+        if (n == 0) break;
+        const take = @min(n, max - list.items.len);
+        if (take > 0) try list.appendSlice(allocator, buf[0..take]);
+        if (n > take) {
+            exceeded = true;
+            if (stop_on_exceed) return .exceeded;
+        }
+    }
+    return if (exceeded) .exceeded else .complete;
+}
+
+/// Generous ceiling for captured remote stdout: enough for any directory
+/// listing / pwd / preview read, while bounding memory if a remote command
+/// unexpectedly streams gigabytes.
+const SSH_EXEC_MAX_STDOUT_BYTES: usize = 16 * 1024 * 1024;
+/// stderr is diagnostics only; keep the first chunk for the error log.
+const SSH_EXEC_MAX_STDERR_BYTES: usize = 16 * 1024;
+
 /// Run `ssh user@host "<command>"` and capture stdout.
-/// Returns allocated output slice on success, null on failure.
+/// Returns allocated output slice on success, null on failure
+/// (including stdout exceeding the default capture cap).
 pub fn sshExec(allocator: std.mem.Allocator, conn: *const SshConnection, command: []const u8) ?[]u8 {
+    return sshExecCapped(allocator, conn, command, SSH_EXEC_MAX_STDOUT_BYTES);
+}
+
+/// sshExec with an explicit stdout cap. If the remote command produces more
+/// than `max_stdout_bytes`, the ssh child is killed and null is returned —
+/// callers get a clean failure instead of an unbounded allocation (or, worse,
+/// silently truncated file content that could be written back).
+pub fn sshExecCapped(allocator: std.mem.Allocator, conn: *const SshConnection, command: []const u8, max_stdout_bytes: usize) ?[]u8 {
     var askpass_path: ?[]const u8 = null;
     defer if (askpass_path) |p| allocator.free(p);
     var env_map: ?std.process.EnvMap = null;
@@ -254,7 +300,8 @@ pub fn sshExec(allocator: std.mem.Allocator, conn: *const SshConnection, command
         return null;
     };
 
-    // Read stdout
+    // Read stdout, bounded: a runaway/oversized remote command must not grow
+    // memory without limit. On exceed, kill ssh rather than read on.
     var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
 
@@ -262,22 +309,19 @@ pub fn sshExec(allocator: std.mem.Allocator, conn: *const SshConnection, command
         _ = child.wait() catch {};
         return null;
     };
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = stdout.read(&buf) catch break;
-        if (n == 0) break;
-        output.appendSlice(allocator, buf[0..n]) catch break;
+    const stdout_drain = drainCapped(stdout, allocator, &output, max_stdout_bytes, true) catch .exceeded;
+    if (stdout_drain == .exceeded) {
+        std.debug.print("sshExec: stdout exceeded {d} bytes; killing ssh\n", .{max_stdout_bytes});
+        _ = child.kill() catch {};
+        return null;
     }
 
+    // stderr is capped but still drained to EOF: a child blocked on a full
+    // stderr pipe could otherwise never exit.
     var stderr_text: std.ArrayListUnmanaged(u8) = .empty;
     defer stderr_text.deinit(allocator);
     if (child.stderr) |stderr| {
-        var errbuf: [1024]u8 = undefined;
-        while (true) {
-            const n = stderr.read(&errbuf) catch break;
-            if (n == 0) break;
-            stderr_text.appendSlice(allocator, errbuf[0..n]) catch break;
-        }
+        _ = drainCapped(stderr, allocator, &stderr_text, SSH_EXEC_MAX_STDERR_BYTES, false) catch {};
     }
 
     const term = child.wait() catch return null;
@@ -402,11 +446,14 @@ pub fn buildRemoteWriteCommand(buf: *[2048]u8, path: []const u8, tmp: []const u8
     return buf[0..pos];
 }
 
-/// Read a remote file via `ssh ... cat`. Returns owned bytes, null on failure.
-pub fn sshReadFile(allocator: std.mem.Allocator, conn: *const SshConnection, path: []const u8) ?[]u8 {
+/// Read a remote file via `ssh ... cat`. Returns owned bytes, null on
+/// failure — including files larger than `max_bytes`, mirroring the local
+/// read_file cap. Failing outright (instead of truncating) matters: a
+/// truncated read that is later written back would corrupt the remote file.
+pub fn sshReadFile(allocator: std.mem.Allocator, conn: *const SshConnection, path: []const u8, max_bytes: usize) ?[]u8 {
     var buf: [2048]u8 = undefined;
     const cmd = buildRemoteReadCommand(&buf, path) orelse return null;
-    return sshExec(allocator, conn, cmd);
+    return sshExecCapped(allocator, conn, cmd, max_bytes);
 }
 
 /// Write `content` to a remote file atomically (temp + mv) via `ssh ... cat >`.
@@ -883,4 +930,68 @@ test "buildRemoteWriteCommand builds an atomic temp+mv" {
     var buf: [2048]u8 = undefined;
     const cmd = buildRemoteWriteCommand(&buf, "/tmp/a.txt", "/tmp/a.txt.tmp").?;
     try std.testing.expectEqualStrings("cat > '/tmp/a.txt.tmp' && mv -- '/tmp/a.txt.tmp' '/tmp/a.txt'", cmd);
+}
+
+/// Test stand-in for a pipe: serves `data` in chunks of at most `chunk` bytes.
+const FakePipeReader = struct {
+    data: []const u8,
+    chunk: usize,
+    pos: usize = 0,
+
+    fn read(self: *FakePipeReader, buf: []u8) !usize {
+        const remaining = self.data[self.pos..];
+        if (remaining.len == 0) return 0;
+        const n = @min(@min(buf.len, remaining.len), self.chunk);
+        @memcpy(buf[0..n], remaining[0..n]);
+        self.pos += n;
+        return n;
+    }
+};
+
+test "drainCapped reads everything when under the cap" {
+    var reader = FakePipeReader{ .data = "hello world", .chunk = 4 };
+    var list: std.ArrayListUnmanaged(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+
+    const result = try drainCapped(&reader, std.testing.allocator, &list, 64, true);
+
+    try std.testing.expectEqual(DrainResult.complete, result);
+    try std.testing.expectEqualStrings("hello world", list.items);
+}
+
+test "drainCapped stops at the cap when asked to abort on exceed" {
+    var reader = FakePipeReader{ .data = "x" ** 100, .chunk = 7 };
+    var list: std.ArrayListUnmanaged(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+
+    const result = try drainCapped(&reader, std.testing.allocator, &list, 10, true);
+
+    try std.testing.expectEqual(DrainResult.exceeded, result);
+    try std.testing.expect(list.items.len <= 10);
+    // Aborted: the reader must NOT have been drained to EOF.
+    try std.testing.expect(reader.pos < reader.data.len);
+}
+
+test "drainCapped keeps draining to EOF when storage is capped" {
+    var reader = FakePipeReader{ .data = "y" ** 100, .chunk = 7 };
+    var list: std.ArrayListUnmanaged(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+
+    const result = try drainCapped(&reader, std.testing.allocator, &list, 10, false);
+
+    try std.testing.expectEqual(DrainResult.exceeded, result);
+    try std.testing.expectEqualStrings("y" ** 10, list.items);
+    // Fully drained so a child blocked on the pipe can exit.
+    try std.testing.expectEqual(reader.data.len, reader.pos);
+}
+
+test "drainCapped output exactly at the cap is complete" {
+    var reader = FakePipeReader{ .data = "z" ** 10, .chunk = 3 };
+    var list: std.ArrayListUnmanaged(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+
+    const result = try drainCapped(&reader, std.testing.allocator, &list, 10, true);
+
+    try std.testing.expectEqual(DrainResult.complete, result);
+    try std.testing.expectEqualStrings("z" ** 10, list.items);
 }

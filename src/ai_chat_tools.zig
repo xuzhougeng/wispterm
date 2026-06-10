@@ -2301,7 +2301,7 @@ fn readFileTool(ctx: *ToolContext, path: []const u8, surface_id: ?[]const u8, of
                 return deniedResult(ctx.allocator, path, "operator rejected remote read");
             }
         }
-        const bytes = scp.sshReadFile(ctx.allocator, &conn, path) orelse
+        const bytes = scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES) orelse
             return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s}", .{path});
         defer ctx.allocator.free(bytes);
         return renderReadResult(ctx, path, bytes, offset, limit);
@@ -2345,7 +2345,7 @@ fn writeFileTool(ctx: *ToolContext, path: []const u8, content: []const u8, surfa
     defer if (owns_old) ctx.allocator.free(old_content);
     if (!gate.blacklisted) {
         if (remote_conn) |conn| {
-            if (scp.sshReadFile(ctx.allocator, &conn, path)) |bytes| {
+            if (scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES)) |bytes| {
                 old_content = bytes;
                 owns_old = true;
             }
@@ -2400,7 +2400,7 @@ fn editFileTool(ctx: *ToolContext, path: []const u8, old_string: []const u8, new
 
     var old_content: []u8 = undefined;
     if (remote_conn) |conn| {
-        old_content = scp.sshReadFile(ctx.allocator, &conn, path) orelse
+        old_content = scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES) orelse
             return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s} for editing", .{path});
     } else {
         const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
