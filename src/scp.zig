@@ -839,6 +839,18 @@ test "buildScpFlagArgs includes -r only for recursive transfers" {
 
     const argc_dir = buildScpFlagArgs(&argv_buf, &conn, null, false, true);
     try std.testing.expect(containsArg(argv_buf[0..argc_dir], "-r"));
+
+    // -q is always present
+    try std.testing.expect(containsArg(argv_buf[0..argc_file], "-q"));
+
+    // -O appears for legacy, and combines with -r for recursive+legacy
+    const argc_legacy = buildScpFlagArgs(&argv_buf, &conn, null, true, false);
+    try std.testing.expect(containsArg(argv_buf[0..argc_legacy], "-O"));
+    try std.testing.expect(!containsArg(argv_buf[0..argc_legacy], "-r"));
+
+    const argc_both = buildScpFlagArgs(&argv_buf, &conn, null, true, true);
+    try std.testing.expect(containsArg(argv_buf[0..argc_both], "-r"));
+    try std.testing.expect(containsArg(argv_buf[0..argc_both], "-O"));
 }
 
 test "buildUploadCommand handles target directories" {
