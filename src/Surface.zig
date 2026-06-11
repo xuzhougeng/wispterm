@@ -481,7 +481,7 @@ pub fn init(
 
     // Last step (after every fallible init step): the agent request worker may
     // only touch this surface while it stays registered.
-    surface_registry.register(surface);
+    surface_registry.register(surface, surface.remote_id[0..]);
 
     return surface;
 }

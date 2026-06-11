@@ -206,6 +206,11 @@ fn appendSshExecPrefix(
 
 const DrainResult = enum { complete, exceeded };
 
+const DrainPipesResult = struct {
+    stdout: DrainResult,
+    stderr: DrainResult,
+};
+
 /// Read `reader` (anything with `read([]u8) !usize`) appending to `list`,
 /// storing at most `max` bytes. The first byte beyond `max` yields
 /// `.exceeded`: with `stop_on_exceed` the read loop aborts immediately (the
@@ -232,6 +237,65 @@ fn drainCapped(
         }
     }
     return if (exceeded) .exceeded else .complete;
+}
+
+fn DrainThreadCtx(comptime Reader: type) type {
+    return struct {
+        reader: Reader,
+        allocator: std.mem.Allocator,
+        list: *std.ArrayListUnmanaged(u8),
+        max: usize,
+        stop_on_exceed: bool,
+        result: DrainResult = .complete,
+        err: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            self.result = drainCapped(
+                self.reader,
+                self.allocator,
+                self.list,
+                self.max,
+                self.stop_on_exceed,
+            ) catch |err| {
+                self.err = err;
+                return;
+            };
+        }
+    };
+}
+
+fn drainOutputPipesCapped(
+    stdout_reader: anytype,
+    stderr_reader: anytype,
+    allocator: std.mem.Allocator,
+    stdout_list: *std.ArrayListUnmanaged(u8),
+    max_stdout: usize,
+    stderr_list: *std.ArrayListUnmanaged(u8),
+    max_stderr: usize,
+) !DrainPipesResult {
+    const StderrDrain = DrainThreadCtx(@TypeOf(stderr_reader));
+    var stderr_ctx = StderrDrain{
+        .reader = stderr_reader,
+        .allocator = allocator,
+        .list = stderr_list,
+        .max = max_stderr,
+        .stop_on_exceed = false,
+    };
+    const stderr_thread = try std.Thread.spawn(.{}, StderrDrain.run, .{&stderr_ctx});
+
+    var stdout_err: ?anyerror = null;
+    const stdout_result = drainCapped(stdout_reader, allocator, stdout_list, max_stdout, true) catch |err| blk: {
+        stdout_err = err;
+        break :blk DrainResult.exceeded;
+    };
+
+    stderr_thread.join();
+    if (stderr_ctx.err) |err| return err;
+    if (stdout_err) |err| return err;
+    return .{
+        .stdout = stdout_result,
+        .stderr = stderr_ctx.result,
+    };
 }
 
 /// Generous ceiling for captured remote stdout: enough for any directory
@@ -309,19 +373,43 @@ pub fn sshExecCapped(allocator: std.mem.Allocator, conn: *const SshConnection, c
         _ = child.wait() catch {};
         return null;
     };
+    child.stdout = null;
+    defer stdout.close();
+
+    var stderr_text: std.ArrayListUnmanaged(u8) = .empty;
+    defer stderr_text.deinit(allocator);
+    const stderr = child.stderr orelse {
+        _ = child.wait() catch {};
+        return null;
+    };
+    child.stderr = null;
+    defer stderr.close();
+
+    const StderrDrain = DrainThreadCtx(@TypeOf(stderr));
+    var stderr_ctx = StderrDrain{
+        .reader = stderr,
+        .allocator = allocator,
+        .list = &stderr_text,
+        .max = SSH_EXEC_MAX_STDERR_BYTES,
+        .stop_on_exceed = false,
+    };
+    const stderr_thread = std.Thread.spawn(.{}, StderrDrain.run, .{&stderr_ctx}) catch |err| {
+        std.debug.print("sshExec: stderr drain thread spawn failed: {}\n", .{err});
+        _ = child.kill() catch {};
+        return null;
+    };
+
     const stdout_drain = drainCapped(stdout, allocator, &output, max_stdout_bytes, true) catch .exceeded;
     if (stdout_drain == .exceeded) {
         std.debug.print("sshExec: stdout exceeded {d} bytes; killing ssh\n", .{max_stdout_bytes});
         _ = child.kill() catch {};
+        stderr_thread.join();
         return null;
     }
 
-    // stderr is capped but still drained to EOF: a child blocked on a full
-    // stderr pipe could otherwise never exit.
-    var stderr_text: std.ArrayListUnmanaged(u8) = .empty;
-    defer stderr_text.deinit(allocator);
-    if (child.stderr) |stderr| {
-        _ = drainCapped(stderr, allocator, &stderr_text, SSH_EXEC_MAX_STDERR_BYTES, false) catch {};
+    stderr_thread.join();
+    if (stderr_ctx.err) |err| {
+        std.debug.print("sshExec: stderr drain failed: {}\n", .{err});
     }
 
     const term = child.wait() catch return null;
@@ -994,4 +1082,64 @@ test "drainCapped output exactly at the cap is complete" {
 
     try std.testing.expectEqual(DrainResult.complete, result);
     try std.testing.expectEqualStrings("z" ** 10, list.items);
+}
+
+const StderrSignalReader = struct {
+    data: []const u8,
+    started: *std.atomic.Value(bool),
+    pos: usize = 0,
+
+    fn read(self: *StderrSignalReader, buf: []u8) !usize {
+        self.started.store(true, .release);
+        const remaining = self.data[self.pos..];
+        if (remaining.len == 0) return 0;
+        const n = @min(buf.len, remaining.len);
+        @memcpy(buf[0..n], remaining[0..n]);
+        self.pos += n;
+        return n;
+    }
+};
+
+const StdoutRequiresStderrReader = struct {
+    data: []const u8,
+    stderr_started: *std.atomic.Value(bool),
+    pos: usize = 0,
+
+    fn read(self: *StdoutRequiresStderrReader, buf: []u8) !usize {
+        var spins: usize = 0;
+        while (!self.stderr_started.load(.acquire) and spins < 200) : (spins += 1) {
+            std.Thread.sleep(std.time.ns_per_ms);
+        }
+        if (!self.stderr_started.load(.acquire)) return error.StderrNotDrained;
+        const remaining = self.data[self.pos..];
+        if (remaining.len == 0) return 0;
+        const n = @min(buf.len, remaining.len);
+        @memcpy(buf[0..n], remaining[0..n]);
+        self.pos += n;
+        return n;
+    }
+};
+
+test "drainOutputPipesCapped starts stderr draining before waiting for stdout EOF" {
+    var stderr_started = std.atomic.Value(bool).init(false);
+    var stdout = StdoutRequiresStderrReader{ .data = "out", .stderr_started = &stderr_started };
+    var stderr = StderrSignalReader{ .data = "err", .started = &stderr_started };
+    var stdout_list: std.ArrayListUnmanaged(u8) = .empty;
+    defer stdout_list.deinit(std.testing.allocator);
+    var stderr_list: std.ArrayListUnmanaged(u8) = .empty;
+    defer stderr_list.deinit(std.testing.allocator);
+
+    const result = try drainOutputPipesCapped(
+        &stdout,
+        &stderr,
+        std.testing.allocator,
+        &stdout_list,
+        64,
+        &stderr_list,
+        64,
+    );
+
+    try std.testing.expectEqual(DrainPipesResult{ .stdout = .complete, .stderr = .complete }, result);
+    try std.testing.expectEqualStrings("out", stdout_list.items);
+    try std.testing.expectEqualStrings("err", stderr_list.items);
 }

@@ -4877,21 +4877,22 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
     };
 }
 
-fn agentSurfaceSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator, surface_ptr: *anyopaque) anyerror![]u8 {
+fn agentSurfaceSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator, surface_id: []const u8, surface_ptr: *anyopaque) anyerror![]u8 {
     _ = ctx;
     // Runs on the agent request worker with a pointer captured at request
     // start; the UI thread may have freed the surface since. The registry
-    // guard blocks Surface.deinit for the duration of the snapshot.
-    if (!surface_registry.acquire(surface_ptr)) return error.SurfaceClosed;
+    // guard blocks Surface.deinit for the duration of the snapshot. Matching
+    // the captured id prevents a reused pointer from targeting a new surface.
+    if (!surface_registry.acquire(surface_ptr, surface_id)) return error.SurfaceClosed;
     defer surface_registry.release();
     const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
     return buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows);
 }
 
-fn agentWriteSurface(ctx: *anyopaque, surface_ptr: *anyopaque, data: []const u8) bool {
+fn agentWriteSurface(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque, data: []const u8) bool {
     _ = ctx;
     // Same worker-thread hazard as agentSurfaceSnapshot.
-    if (!surface_registry.acquire(surface_ptr)) return false;
+    if (!surface_registry.acquire(surface_ptr, surface_id)) return false;
     defer surface_registry.release();
     const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
     surface.queuePtyWrite(data);
@@ -4907,8 +4908,8 @@ test "agent surface callbacks reject a surface that is not registered as live" {
     var dummy_buf: [@sizeOf(Surface)]u8 align(@alignOf(Surface)) = @splat(0);
     const ptr: *anyopaque = @ptrCast(&dummy_buf);
 
-    try std.testing.expectError(error.SurfaceClosed, agentSurfaceSnapshot(ptr, std.testing.allocator, ptr));
-    try std.testing.expect(!agentWriteSurface(ptr, ptr, "x"));
+    try std.testing.expectError(error.SurfaceClosed, agentSurfaceSnapshot(ptr, std.testing.allocator, "missing", ptr));
+    try std.testing.expect(!agentWriteSurface(ptr, "missing", ptr, "x"));
 }
 
 fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surface.SshConnection {
