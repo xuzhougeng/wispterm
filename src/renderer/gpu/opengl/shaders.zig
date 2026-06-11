@@ -113,6 +113,42 @@ pub const color_fg_fragment_source: [*c]const u8 =
     \\}
 ;
 
+// Instanced UI glyph/quad batch (ui_pipeline's batched drawGlyph/fillQuad
+// path). Per-instance screen rect + atlas UV + RGB; the projection mirrors the
+// text pipeline's. Solid quads ride the same shader via the 1x1 solid texture
+// (r=1 -> opaque color), so glyph and quad runs batch by texture only.
+pub const ui_batch_vertex_source: [*c]const u8 =
+    \\#version 330 core
+    \\layout (location = 0) in vec2 aQuad;
+    \\// Per-instance
+    \\layout (location = 1) in vec4 aRect; // x, y (GL bottom-left), w, h in pixels
+    \\layout (location = 2) in vec4 aUV;   // u0, v0 (top), u1, v1 (bottom)
+    \\layout (location = 3) in vec3 aColor;
+    \\uniform mat4 projection;
+    \\out vec2 vTexCoord;
+    \\flat out vec3 vColor;
+    \\void main() {
+    \\    vec2 pos = aRect.xy + aQuad * aRect.zw;
+    \\    gl_Position = projection * vec4(pos, 0.0, 1.0);
+    \\    // Matches ui_pipeline.quadVertices: quad bottom (y=0) samples v1,
+    \\    // quad top (y=1) samples v0 (atlas Y=0 is the glyph top).
+    \\    vTexCoord = vec2(mix(aUV.x, aUV.z, aQuad.x), mix(aUV.w, aUV.y, aQuad.y));
+    \\    vColor = aColor;
+    \\}
+;
+
+pub const ui_batch_fragment_source: [*c]const u8 =
+    \\#version 330 core
+    \\in vec2 vTexCoord;
+    \\flat in vec3 vColor;
+    \\uniform sampler2D text;
+    \\out vec4 color;
+    \\void main() {
+    \\    vec4 sampled = vec4(1.0, 1.0, 1.0, texture(text, vTexCoord).r);
+    \\    color = vec4(vColor, 1.0) * sampled;
+    \\}
+;
+
 // Simple (non-instanced) color emoji fragment shader for titlebar/overlay use.
 // Uses the same vertex layout as the text shader (vec4: xy=pos, zw=texcoord).
 pub const simple_color_fragment_source: [*c]const u8 =

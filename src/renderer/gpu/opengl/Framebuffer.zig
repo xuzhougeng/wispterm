@@ -5,6 +5,7 @@ const std = @import("std");
 const Context = @import("Context.zig");
 const c = @import("c.zig").c;
 const Texture = @import("Texture.zig");
+const render_state = @import("render_state.zig");
 const Framebuffer = @This();
 
 handle: c.GLuint = 0,
@@ -38,8 +39,11 @@ pub fn initColor(width: c_int, height: c_int) ?Framebuffer {
     return .{ .handle = handle, .color = color.handle, .width = width, .height = height };
 }
 
-/// Bind this framebuffer and set the viewport to its full size.
+/// Bind this framebuffer and set the viewport to its full size. Pending
+/// batched UI draws are flushed first (via the state hook) so they land in
+/// the render target they were issued against.
 pub fn bind(self: Framebuffer) void {
+    if (render_state.pre_change_hook) |hook| hook();
     const gl = Context.gl;
     gl.BindFramebuffer.?(c.GL_FRAMEBUFFER, self.handle);
     gl.Viewport.?(0, 0, self.width, self.height);
@@ -47,6 +51,7 @@ pub fn bind(self: Framebuffer) void {
 
 /// Bind the default (window) framebuffer.
 pub fn unbind() void {
+    if (render_state.pre_change_hook) |hook| hook();
     Context.gl.BindFramebuffer.?(c.GL_FRAMEBUFFER, 0);
 }
 

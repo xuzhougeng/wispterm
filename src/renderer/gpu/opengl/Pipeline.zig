@@ -69,7 +69,14 @@ pub fn init(vs_src: [*c]const u8, fs_src: [*c]const u8, vao: c.GLuint) Pipeline 
     return .{ .program = linkProgram(vs_src, fs_src), .vao = vao };
 }
 
+/// Called with the program about to be bound. The UI glyph batcher registers
+/// its flush here: switching to any pipeline other than the batch's own means
+/// a foreign draw is coming, so pending batched UI draws must be submitted
+/// first to preserve draw order. Stays null when batching is disabled.
+pub threadlocal var pre_use_hook: ?*const fn (program: c.GLuint) void = null;
+
 pub fn use(self: Pipeline) void {
+    if (pre_use_hook) |hook| hook(self.program);
     Context.gl.UseProgram.?(self.program);
 }
 pub fn bindVao(self: Pipeline) void {

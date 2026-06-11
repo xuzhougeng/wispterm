@@ -10,6 +10,7 @@ const AppWindow = @import("../AppWindow.zig");
 const gpu = AppWindow.gpu;
 const c = gpu.c;
 const shaders = gpu.shaders;
+const ui_batch = @import("ui_batch.zig");
 
 const Pipeline = gpu.Pipeline;
 const Buffer = gpu.Buffer;
@@ -23,6 +24,57 @@ pub threadlocal var emoji: Pipeline = .{ .program = 0, .vao = 0 };
 pub threadlocal var overlay: Pipeline = .{ .program = 0, .vao = 0 }; // flat-color tint (was gl_init.overlay_shader)
 pub threadlocal var quad: Buffer = .{ .handle = 0, .target = 0 };
 pub threadlocal var solid: Texture = .{ .handle = 0 };
+
+// ---------------------------------------------------------------------------
+// Batched UI glyph/quad path (OpenGL only).
+//
+// drawGlyph/fillQuad calls accumulate per-texture instance runs and submit
+// them as one instanced draw instead of one use+bind+upload+draw per glyph —
+// the dominant CPU cost of chrome/panel text on weak machines. Draw order is
+// preserved by flushing before anything foreign happens: the gpu.state
+// pre_change_hook (viewport/scissor/blend/clear/colormask/endFrame/FBO bind)
+// and the Pipeline pre_use_hook (any non-batch program about to draw). The
+// Metal backend keeps the immediate path (its shader set has no batch mirror).
+// ---------------------------------------------------------------------------
+const batching_supported = gpu.active == .opengl;
+
+threadlocal var batch: Pipeline = .{ .program = 0, .vao = 0 };
+threadlocal var batch_instances: Buffer = .{ .handle = 0, .target = 0 };
+threadlocal var batch_quad: Buffer = .{ .handle = 0, .target = 0 };
+threadlocal var batcher: ui_batch.Batcher = .{};
+/// Shadow of the text pipeline's projection (set in setProjection); the batch
+/// draw applies it at flush time. Flushes happen before any projection change,
+/// so pending instances always use the projection they were issued under.
+threadlocal var batch_projection: [16]f32 = .{
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+};
+
+const GlSink = struct {
+    pub fn draw(_: GlSink, texture: u32, instances: []const ui_batch.Instance) void {
+        const p = batch;
+        p.use(); // own program: the pre_use_hook ignores it (no recursion)
+        p.setMat4("projection", &batch_projection);
+        Texture.fromHandle(texture).bind(0);
+        p.setInt("text", 0);
+        p.bindVao();
+        batch_instances.upload(std.mem.sliceAsBytes(instances));
+        p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(instances.len));
+        drawCallTick();
+    }
+};
+
+/// Submit any pending batched UI draws. Registered into the gpu hooks; also
+/// called directly by frame tails that present without an endFrame (resize).
+pub fn flushBatch() void {
+    batcher.flush(GlSink{});
+}
+
+fn pipelineUseHook(program: c.GLuint) void {
+    if (ui_batch.shouldFlushOnPipelineUse(batcher.pending(), program, batch.program)) flushBatch();
+}
 
 fn drawCallTick() void {
     AppWindow.gpu.gl_init.g_draw_call_count += 1;
@@ -68,9 +120,62 @@ pub fn init() void {
         .wrap = .clamp_to_edge,
         .unpack_alignment = 1,
     });
+
+    if (comptime batching_supported) initBatch();
+}
+
+/// Build the instanced UI batch pipeline and register the flush hooks.
+/// On shader-link failure `batch.program` stays 0 and every draw falls back to
+/// the immediate path (hooks then never fire on an empty batcher).
+fn initBatch() void {
+    const quad_verts = [4][2]f32{
+        .{ 0.0, 0.0 },
+        .{ 1.0, 0.0 },
+        .{ 0.0, 1.0 },
+        .{ 1.0, 1.0 },
+    };
+    batch_quad = Buffer.init(c.GL_ARRAY_BUFFER);
+    batch_quad.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), c.GL_STATIC_DRAW);
+
+    batch_instances = Buffer.init(c.GL_ARRAY_BUFFER);
+    batch_instances.allocate(@sizeOf(ui_batch.Instance) * ui_batch.capacity, c.GL_STREAM_DRAW);
+
+    const stride = @sizeOf(ui_batch.Instance);
+    const batch_vao = gpu.vertex.buildVertexArray(&.{
+        .{
+            .buffer = batch_quad,
+            .attrs = &.{
+                .{ .loc = 0, .count = 2, .stride = 2 * @sizeOf(f32), .offset = 0 },
+            },
+        },
+        .{
+            .buffer = batch_instances,
+            .attrs = &.{
+                .{ .loc = 1, .count = 4, .stride = stride, .offset = 0, .divisor = 1 },
+                .{ .loc = 2, .count = 4, .stride = stride, .offset = 4 * @sizeOf(f32), .divisor = 1 },
+                .{ .loc = 3, .count = 3, .stride = stride, .offset = 8 * @sizeOf(f32), .divisor = 1 },
+            },
+        },
+    });
+    batch = Pipeline.init(shaders.ui_batch_vertex_source, shaders.ui_batch_fragment_source, batch_vao);
+    if (batch.program == 0) {
+        std.debug.print("UI batch pipeline failed — falling back to immediate UI draws\n", .{});
+        return;
+    }
+
+    gpu.state.pre_change_hook = flushBatch;
+    Pipeline.pre_use_hook = pipelineUseHook;
 }
 
 pub fn deinit() void {
+    if (comptime batching_supported) {
+        gpu.state.pre_change_hook = null;
+        Pipeline.pre_use_hook = null;
+        batcher.count = 0;
+        batch.deinit();
+        batch_instances.deinit();
+        batch_quad.deinit();
+    }
     text.deinit();
     emoji.deinit();
     overlay.deinit();
@@ -99,8 +204,12 @@ pub fn setProjection(width: f32, height: f32) void {
         0.0,         0.0,          -1.0, 0.0,
         -1.0,        -1.0,         0.0,  1.0,
     };
+    // text.use() flushes any pending batch (pre_use_hook) under the OLD
+    // projection before the shadow updates — instances are always drawn with
+    // the projection they were issued under.
     text.use();
     text.setMat4("projection", &projection);
+    if (comptime batching_supported) batch_projection = projection;
 }
 
 /// Enable scissor clipping to `rect` (window-space, same convention as the
@@ -140,6 +249,24 @@ pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) 
     const r = color[0] * alpha + bg[0] * (1 - alpha);
     const g = color[1] * alpha + bg[1] * (1 - alpha);
     const b = color[2] * alpha + bg[2] * (1 - alpha);
+    if (comptime batching_supported) {
+        if (batch.program != 0) {
+            batcher.push(solid.handle, .{
+                .x = x,
+                .y = y,
+                .w = w,
+                .h = h,
+                .u0 = 0,
+                .v0 = 0,
+                .u1 = 1,
+                .v1 = 1,
+                .r = r,
+                .g = g,
+                .b = b,
+            }, GlSink{});
+            return;
+        }
+    }
     const verts = quadVertices(.{ .x = x, .y = y, .w = w, .h = h }, .{ .u0 = 0, .v0 = 0, .u1 = 1, .v1 = 1 });
     text.use();
     text.bindVao();
@@ -152,6 +279,24 @@ pub fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) 
 
 /// Grayscale/text glyph via the text pipeline (atlas .r as alpha, modulated by color).
 pub fn drawGlyph(rect: Rect, uv: Uv, tex: c.GLuint, color: [3]f32) void {
+    if (comptime batching_supported) {
+        if (batch.program != 0) {
+            batcher.push(tex, .{
+                .x = rect.x,
+                .y = rect.y,
+                .w = rect.w,
+                .h = rect.h,
+                .u0 = uv.u0,
+                .v0 = uv.v0,
+                .u1 = uv.u1,
+                .v1 = uv.v1,
+                .r = color[0],
+                .g = color[1],
+                .b = color[2],
+            }, GlSink{});
+            return;
+        }
+    }
     const verts = quadVertices(rect, uv);
     text.use();
     text.bindVao();
