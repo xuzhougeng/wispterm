@@ -36,6 +36,28 @@ const OPENFILENAMEW = extern struct {
 extern "comdlg32" fn GetOpenFileNameW(lpofn: *OPENFILENAMEW) callconv(.winapi) windows.BOOL;
 extern "comdlg32" fn GetSaveFileNameW(lpofn: *OPENFILENAMEW) callconv(.winapi) windows.BOOL;
 
+const BIF_RETURNONLYFSDIRS: windows.UINT = 0x00000001;
+const BIF_EDITBOX: windows.UINT = 0x00000010;
+const BIF_NEWDIALOGSTYLE: windows.UINT = 0x00000040;
+const COINIT_APARTMENTTHREADED: windows.DWORD = 0x2;
+
+const BROWSEINFOW = extern struct {
+    hwndOwner: ?windows.HWND = null,
+    pidlRoot: ?*anyopaque = null,
+    pszDisplayName: ?[*]windows.WCHAR = null,
+    lpszTitle: ?[*:0]const windows.WCHAR = null,
+    ulFlags: windows.UINT = 0,
+    lpfn: ?*const anyopaque = null,
+    lParam: windows.LPARAM = 0,
+    iImage: c_int = 0,
+};
+
+extern "shell32" fn SHBrowseForFolderW(lpbi: *BROWSEINFOW) callconv(.winapi) ?*anyopaque;
+extern "shell32" fn SHGetPathFromIDListW(pidl: ?*anyopaque, pszPath: [*]windows.WCHAR) callconv(.winapi) windows.BOOL;
+extern "ole32" fn CoTaskMemFree(pv: ?*anyopaque) callconv(.winapi) void;
+extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: windows.DWORD) callconv(.winapi) windows.LONG;
+extern "ole32" fn CoUninitialize() callconv(.winapi) void;
+
 pub const Owner = struct {
     native_window: ?usize = null,
 };
@@ -74,6 +96,13 @@ pub fn openFile(allocator: std.mem.Allocator, request: OpenRequest) ?[]u8 {
 pub fn saveFile(allocator: std.mem.Allocator, request: SaveRequest) ?[]u8 {
     return switch (builtin.os.tag) {
         .windows => saveWindowsFile(allocator, request),
+        else => null,
+    };
+}
+
+pub fn pickFolder(allocator: std.mem.Allocator, request: OpenRequest) ?[]u8 {
+    return switch (builtin.os.tag) {
+        .windows => pickWindowsFolder(allocator, request),
         else => null,
     };
 }
@@ -181,6 +210,34 @@ fn appendUtf16ZPart(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(w
     defer allocator.free(value_w);
     try out.appendSlice(allocator, value_w);
     try out.append(allocator, 0);
+}
+
+fn pickWindowsFolder(allocator: std.mem.Allocator, request: OpenRequest) ?[]u8 {
+    const title_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, request.title) catch return null;
+    defer allocator.free(title_w);
+
+    // BIF_NEWDIALOGSTYLE needs an apartment-threaded COM context. Initialize it
+    // here; tolerate "already initialized" (S_FALSE) and a pre-existing
+    // different mode (RPC_E_CHANGED_MODE) by only uninitializing when we
+    // actually acquired a reference.
+    const hr = CoInitializeEx(null, COINIT_APARTMENTTHREADED);
+    const we_initialized = (hr == windows.S_OK) or (hr == windows.S_FALSE);
+    defer if (we_initialized) CoUninitialize();
+
+    var display_buf: [windows.MAX_PATH]windows.WCHAR = undefined;
+    var bi: BROWSEINFOW = .{
+        .hwndOwner = ownerHwnd(request.owner),
+        .pszDisplayName = &display_buf,
+        .lpszTitle = title_w.ptr,
+        .ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX,
+    };
+
+    const pidl = SHBrowseForFolderW(&bi) orelse return null;
+    defer CoTaskMemFree(pidl);
+
+    var path_buf: [windows.MAX_PATH]windows.WCHAR = std.mem.zeroes([windows.MAX_PATH]windows.WCHAR);
+    if (SHGetPathFromIDListW(pidl, &path_buf) == 0) return null;
+    return pathFromWindowsBuffer(allocator, path_buf[0..]);
 }
 
 fn pathFromWindowsBuffer(allocator: std.mem.Allocator, file_buf: []const windows.WCHAR) ?[]u8 {

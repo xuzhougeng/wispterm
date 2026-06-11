@@ -302,6 +302,18 @@ char *wispterm_macos_open_file_dialog(const char *title) {
     }
 }
 
+char *wispterm_macos_pick_folder_dialog(const char *title) {
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.canChooseFiles = NO;
+        panel.canChooseDirectories = YES;
+        panel.allowsMultipleSelection = NO;
+        if (title != NULL) panel.title = [NSString stringWithUTF8String:title];
+        if ([panel runModal] != NSModalResponseOK) return NULL;
+        return wispterm_macos_copy_nsstring(panel.URL.path);
+    }
+}
+
 char *wispterm_macos_save_file_dialog(const char *title, const char *initial_dir, const char *default_filename) {
     @autoreleasepool {
         NSSavePanel *panel = [NSSavePanel savePanel];

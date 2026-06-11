@@ -54,6 +54,31 @@ pub const TransferControl = struct {
     }
 };
 
+/// Build the scp argv up to (but excluding) the src/dst path arguments.
+/// Returns the count of arguments written into `argv_buf`. Pure/testable.
+fn buildScpFlagArgs(
+    argv_buf: *[32][]const u8,
+    conn: *const SshConnection,
+    control_path: ?[]const u8,
+    legacy_protocol: bool,
+    recursive: bool,
+) usize {
+    var argc: usize = 0;
+    argv_buf[argc] = platform_pty_command.scpExecutableName();
+    argc += 1;
+    argv_buf[argc] = "-q";
+    argc += 1;
+    if (recursive) {
+        argv_buf[argc] = "-r";
+        argc += 1;
+    }
+    if (legacy_protocol) {
+        argv_buf[argc] = "-O";
+        argc += 1;
+    }
+    return appendSshOptions(argv_buf, argc, conn, .scp, control_path);
+}
+
 /// Run `scp src dst` with proper SSH auth options from the connection.
 /// `src` and `dst` are scp-style paths (local or user@host:remote).
 pub fn transfer(allocator: std.mem.Allocator, conn: *const SshConnection, src: []const u8, dst: []const u8) TransferResult {
@@ -62,6 +87,17 @@ pub fn transfer(allocator: std.mem.Allocator, conn: *const SshConnection, src: [
 }
 
 pub fn transferWithControl(allocator: std.mem.Allocator, conn: *const SshConnection, src: []const u8, dst: []const u8, control: *TransferControl) TransferResult {
+    return transferImpl(allocator, conn, src, dst, control, false);
+}
+
+/// Recursively transfer a directory with `scp -r`. Falls back through the
+/// legacy scp protocol (`-O`) but NOT the ssh `cat` stream (which cannot
+/// transfer directories).
+pub fn transferDirWithControl(allocator: std.mem.Allocator, conn: *const SshConnection, src: []const u8, dst: []const u8, control: *TransferControl) TransferResult {
+    return transferImpl(allocator, conn, src, dst, control, true);
+}
+
+fn transferImpl(allocator: std.mem.Allocator, conn: *const SshConnection, src: []const u8, dst: []const u8, control: *TransferControl, recursive: bool) TransferResult {
     var askpass_path: ?[]const u8 = null;
     defer if (askpass_path) |p| allocator.free(p);
     var env_map: ?std.process.EnvMap = null;
@@ -82,12 +118,16 @@ pub fn transferWithControl(allocator: std.mem.Allocator, conn: *const SshConnect
     const control_path: ?[]const u8 = null;
 
     const env_ptr: ?*std.process.EnvMap = if (env_map) |*map| map else null;
-    const default_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, false, control);
+    const default_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, false, recursive, control);
     if (default_result == .ok or default_result == .spawn_error or default_result == .cancelled) return default_result;
 
     std.debug.print("SCP default mode failed; retrying legacy scp protocol (-O)\n", .{});
-    const legacy_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, true, control);
+    const legacy_result = runScpTransfer(allocator, conn, src, dst, control_path, env_ptr, true, recursive, control);
     if (legacy_result == .ok or legacy_result == .spawn_error or legacy_result == .cancelled) return legacy_result;
+
+    // The ssh `cat` stream fallback only handles single files; directories have
+    // no further fallback after both scp modes fail.
+    if (recursive) return legacy_result;
 
     std.debug.print("SCP legacy mode failed; retrying over ssh stream\n", .{});
     return runSshStreamTransfer(allocator, conn, src, dst, control_path, env_ptr, control);
@@ -125,22 +165,13 @@ fn runScpTransfer(
     control_path: ?[]const u8,
     env_map: ?*std.process.EnvMap,
     legacy_protocol: bool,
+    recursive: bool,
     control: *TransferControl,
 ) TransferResult {
     if (control.cancelRequested()) return .cancelled;
 
     var argv_buf: [32][]const u8 = undefined;
-    var argc: usize = 0;
-    argv_buf[argc] = platform_pty_command.scpExecutableName();
-    argc += 1;
-    argv_buf[argc] = "-q";
-    argc += 1;
-    if (legacy_protocol) {
-        argv_buf[argc] = "-O";
-        argc += 1;
-    }
-
-    argc = appendSshOptions(&argv_buf, argc, conn, .scp, control_path);
+    var argc = buildScpFlagArgs(&argv_buf, conn, control_path, legacy_protocol, recursive);
 
     argv_buf[argc] = src;
     argc += 1;
@@ -787,6 +818,40 @@ test "appendShellQuote escapes single quotes" {
     var pos: usize = 0;
     try std.testing.expect(appendShellQuote(&buf, &pos, "/tmp/it's here.png"));
     try std.testing.expectEqualStrings("'/tmp/it'\\''s here.png'", buf[0..pos]);
+}
+
+fn containsArg(args: []const []const u8, needle: []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, needle)) return true;
+    }
+    return false;
+}
+
+test "buildScpFlagArgs includes -r only for recursive transfers" {
+    var conn: SshConnection = .{};
+    conn.password_auth = false;
+    conn.port_len = 0;
+
+    var argv_buf: [32][]const u8 = undefined;
+
+    // argv_buf is reused, so each build's slice must be asserted before the
+    // next call overwrites it.
+    const argc_file = buildScpFlagArgs(&argv_buf, &conn, null, false, false);
+    try std.testing.expect(!containsArg(argv_buf[0..argc_file], "-r"));
+    try std.testing.expect(containsArg(argv_buf[0..argc_file], "-q"));
+
+    const argc_dir = buildScpFlagArgs(&argv_buf, &conn, null, false, true);
+    try std.testing.expect(containsArg(argv_buf[0..argc_dir], "-r"));
+    try std.testing.expect(containsArg(argv_buf[0..argc_dir], "-q"));
+
+    // -O appears for legacy, and combines with -r for recursive+legacy
+    const argc_legacy = buildScpFlagArgs(&argv_buf, &conn, null, true, false);
+    try std.testing.expect(containsArg(argv_buf[0..argc_legacy], "-O"));
+    try std.testing.expect(!containsArg(argv_buf[0..argc_legacy], "-r"));
+
+    const argc_both = buildScpFlagArgs(&argv_buf, &conn, null, true, true);
+    try std.testing.expect(containsArg(argv_buf[0..argc_both], "-r"));
+    try std.testing.expect(containsArg(argv_buf[0..argc_both], "-O"));
 }
 
 test "buildUploadCommand handles target directories" {

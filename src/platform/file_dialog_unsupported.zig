@@ -39,3 +39,9 @@ pub fn saveFile(allocator: std.mem.Allocator, request: SaveRequest) ?[]u8 {
     _ = request;
     return null;
 }
+
+pub fn pickFolder(allocator: std.mem.Allocator, request: OpenRequest) ?[]u8 {
+    _ = allocator;
+    _ = request;
+    return null;
+}

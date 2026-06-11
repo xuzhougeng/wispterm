@@ -32,6 +32,7 @@ pub const SaveRequest = impl.SaveRequest;
 pub const windowOwner = impl.windowOwner;
 pub const openFile = impl.openFile;
 pub const saveFile = impl.saveFile;
+pub const pickFolder = impl.pickFolder;
 
 test "platform file dialog exposes typed open and save APIs" {
     const owner = windowOwner(1234);
@@ -61,6 +62,13 @@ test "platform file dialog exposes typed open and save APIs" {
     try std.testing.expect(@typeInfo(@TypeOf(saveFile)).@"fn".params[0].type.? == std.mem.Allocator);
     try std.testing.expect(@typeInfo(@TypeOf(saveFile)).@"fn".params[1].type.? == SaveRequest);
     try std.testing.expect(@typeInfo(@TypeOf(saveFile)).@"fn".return_type.? == ?[]u8);
+}
+
+test "platform file dialog exposes a folder picker" {
+    try std.testing.expectEqual(@as(usize, 2), @typeInfo(@TypeOf(pickFolder)).@"fn".params.len);
+    try std.testing.expect(@typeInfo(@TypeOf(pickFolder)).@"fn".params[0].type.? == std.mem.Allocator);
+    try std.testing.expect(@typeInfo(@TypeOf(pickFolder)).@"fn".params[1].type.? == OpenRequest);
+    try std.testing.expect(@typeInfo(@TypeOf(pickFolder)).@"fn".return_type.? == ?[]u8);
 }
 
 test "platform file dialog selects backend by target OS" {

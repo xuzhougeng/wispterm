@@ -60,6 +60,24 @@ pub fn openFile(allocator: std.mem.Allocator, request: OpenRequest) ?[]u8 {
     return runZenityDialog(allocator, a, argv.items);
 }
 
+/// Open a folder-chooser dialog via zenity and return the selected directory,
+/// or null if the user cancelled or zenity is unavailable.
+/// The returned slice is allocated with `allocator`; caller must free it.
+pub fn pickFolder(allocator: std.mem.Allocator, request: OpenRequest) ?[]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    argv.append(a, "zenity") catch return null;
+    argv.append(a, "--file-selection") catch return null;
+    argv.append(a, "--directory") catch return null;
+    argv.append(a, "--title") catch return null;
+    argv.append(a, request.title) catch return null;
+
+    return runZenityDialog(allocator, a, argv.items);
+}
+
 /// Open a save-file dialog via zenity and return the chosen path,
 /// or null if the user cancelled or zenity is unavailable.
 /// The returned slice is allocated with `allocator`; caller must free it.
