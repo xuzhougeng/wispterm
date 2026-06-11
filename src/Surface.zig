@@ -20,6 +20,7 @@ const remote = @import("remote_client.zig");
 const threading = @import("threading.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_detect_throttle = @import("agent_detect_throttle.zig");
+const window_backend = @import("platform/window_backend.zig");
 const sync_output = @import("sync_output.zig");
 const notification = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
@@ -102,8 +103,13 @@ pub const VtHandler = struct {
         comptime action: ghostty_vt.StreamAction.Tag,
         value: ghostty_vt.StreamAction.Value(action),
     ) void {
+        // Bells, notifications, and clipboard writes are staged here on the IO
+        // thread and consumed by the main loop's pre-render-gate sweep. Each
+        // posts its own wakeup: background-tab output does not wake the UI
+        // (its dirty flag stays latched), so these must not rely on it.
         if (action == .bell) {
             self.surface.bell_pending.store(true, .release);
+            window_backend.postWakeup();
             return;
         }
 
@@ -113,6 +119,7 @@ pub const VtHandler = struct {
                 value.title,
                 value.body,
             );
+            window_backend.postWakeup();
             return;
         }
 
@@ -121,6 +128,7 @@ pub const VtHandler = struct {
         // which owns the system clipboard.
         if (action == .clipboard_contents) {
             self.surface.ingestClipboardWrite(value.kind, value.data);
+            window_backend.postWakeup();
             return;
         }
 

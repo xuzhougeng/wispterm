@@ -113,6 +113,9 @@ snap_cols: usize,
 /// Dirty/rebuild tracking
 cells_valid: bool,
 force_rebuild: bool,
+/// Bumped by every rebuildCells; drawCells skips re-uploading the shared GPU
+/// instance buffers when they already hold this renderer's current generation.
+rebuild_generation: u64,
 last_cursor_blink_visible: bool,
 last_viewport_active: bool,
 last_viewport_node: ?*anyopaque,
@@ -192,6 +195,7 @@ pub fn init(surface: *Surface) Renderer {
         .snap_cols = 0,
         .cells_valid = false,
         .force_rebuild = true,
+        .rebuild_generation = 0,
         .last_cursor_blink_visible = true,
         .last_viewport_active = true,
         .last_viewport_node = null,

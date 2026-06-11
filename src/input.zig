@@ -51,6 +51,7 @@ const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
 const ls_path_context = @import("input/ls_path_context.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
+const underline_span = @import("input/underline_span.zig");
 const mouse_report = @import("input/mouse_report.zig");
 const close_confirm = @import("close_confirm.zig");
 const jupyter_picker = @import("jupyter_picker.zig");
@@ -3080,16 +3081,18 @@ fn clearUrlUnderline() void {
     markUrlUnderlineDirty(old_surface);
 }
 
-pub fn isUrlUnderlineCell(surface: *Surface, col: usize, row: usize) bool {
-    if (g_url_underline.surface != surface) return false;
-    const abs_row = viewportOffsetForSurface(surface) + row;
-    if (abs_row < g_url_underline.start_row_abs or abs_row > g_url_underline.end_row_abs) return false;
-    if (g_url_underline.start_row_abs == g_url_underline.end_row_abs) {
-        return col >= g_url_underline.start_col and col <= g_url_underline.end_col;
-    }
-    if (abs_row == g_url_underline.start_row_abs) return col >= g_url_underline.start_col;
-    if (abs_row == g_url_underline.end_row_abs) return col <= g_url_underline.end_col;
-    return true;
+/// The hover-underline range for `surface`, or null when no underline targets
+/// it. One call per frame — the renderer computes per-row spans itself (pure
+/// underline_span.colSpanForRow) using its snapshot-cached viewport offset,
+/// instead of a per-cell predicate that locked the surface each call.
+pub fn urlUnderlineRangeForSurface(surface: *Surface) ?underline_span.Range {
+    if (g_url_underline.surface != surface) return null;
+    return .{
+        .start_row_abs = g_url_underline.start_row_abs,
+        .end_row_abs = g_url_underline.end_row_abs,
+        .start_col = g_url_underline.start_col,
+        .end_col = g_url_underline.end_col,
+    };
 }
 
 fn extractPreviewPathAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: CellPos) ?[]u8 {

@@ -16,6 +16,7 @@ const gpu = AppWindow.gpu;
 const gl_init = gpu.gl_init;
 const ui_pipeline = @import("ui_pipeline.zig");
 const cell_pipeline = @import("cell_pipeline.zig");
+const underline_span = @import("../input/underline_span.zig");
 const image_renderer = @import("image_renderer.zig");
 const cell_geometry = @import("cell_geometry.zig");
 
@@ -221,6 +222,7 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
 /// Build GPU cell buffers from the snapshot. Does NOT require the terminal
 /// mutex — reads from rend.snap which was filled by snapshotCells.
 pub fn rebuildCells(rend: *Renderer) void {
+    rend.rebuild_generation +%= 1;
     const render_rows = rend.snap_rows;
     const render_cols = rend.snap_cols;
     const atlas_size = if (font.g_atlas) |a| @as(f32, @floatFromInt(a.size)) else 512.0;
@@ -388,6 +390,15 @@ pub fn rebuildCells(rend: *Renderer) void {
 pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offset_y: f32) void {
     const g_theme = AppWindow.g_theme;
 
+    // The shared instance buffers already hold this renderer's current cells
+    // unless it rebuilt since, or another renderer drew in between.
+    const need_upload = cell_geometry.needsBufferUpload(
+        cell_pipeline.g_last_uploader,
+        cell_pipeline.g_uploaded_generation,
+        rend,
+        rend.rebuild_generation,
+    );
+
     image_renderer.draw(rend, window_height, offset_x, offset_y, .below_bg);
 
     // --- Draw BG cells ---
@@ -399,7 +410,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         p.setFloat("windowHeight", window_height);
         p.setProjection();
         p.bindVao();
-        cell_pipeline.bg_instances.upload(std.mem.sliceAsBytes(rend.bg_cells.items[0..rend.bg_cell_count]));
+        if (need_upload) cell_pipeline.bg_instances.upload(std.mem.sliceAsBytes(rend.bg_cells.items[0..rend.bg_cell_count]));
         p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.bg_cell_count));
         gl_init.g_draw_call_count += 1;
     }
@@ -417,7 +428,7 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         gpu.Texture.fromHandle(font.g_atlas_texture).bind(0);
         p.setInt("atlas", 0);
         p.bindVao();
-        cell_pipeline.fg_instances.upload(std.mem.sliceAsBytes(rend.fg_cells.items[0..rend.fg_cell_count]));
+        if (need_upload) cell_pipeline.fg_instances.upload(std.mem.sliceAsBytes(rend.fg_cells.items[0..rend.fg_cell_count]));
         p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.fg_cell_count));
         gl_init.g_draw_call_count += 1;
     }
@@ -435,12 +446,15 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
         gpu.Texture.fromHandle(font.g_color_atlas_texture).bind(0);
         p.setInt("atlas", 0);
         p.bindVao();
-        cell_pipeline.color_fg_instances.upload(std.mem.sliceAsBytes(rend.color_fg_cells.items[0..rend.color_fg_cell_count]));
+        if (need_upload) cell_pipeline.color_fg_instances.upload(std.mem.sliceAsBytes(rend.color_fg_cells.items[0..rend.color_fg_cell_count]));
         p.drawArraysInstanced(c.GL_TRIANGLE_STRIP, 0, 4, @intCast(rend.color_fg_cell_count));
         gl_init.g_draw_call_count += 1;
         // Restore standard blend for the cursor/titlebar draws that follow.
         gpu.state.setBlendMode(.alpha);
     }
+
+    cell_pipeline.g_last_uploader = rend;
+    cell_pipeline.g_uploaded_generation = rend.rebuild_generation;
 
     image_renderer.draw(rend, window_height, offset_x, offset_y, .above_text);
     drawUrlUnderline(rend, window_height, offset_x, offset_y);
@@ -477,26 +491,19 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
 }
 
 fn drawUrlUnderline(rend: *const Renderer, window_height: f32, offset_x: f32, offset_y: f32) void {
+    // One range fetch per frame; per-row spans are pure O(1) math against the
+    // snapshot-cached viewport offset (no per-cell surface locking).
+    const range = AppWindow.input.urlUnderlineRangeForSurface(rend.surface) orelse return;
     const thickness: f32 = @max(1.0, @as(f32, @floatFromInt(font.box_thickness)));
     const underline_y_offset: f32 = @max(2.0, thickness);
     const color = AppWindow.g_theme.cursor_color;
 
     for (0..rend.snap_rows) |row| {
-        var col: usize = 0;
-        while (col < rend.snap_cols) {
-            if (!AppWindow.input.isUrlUnderlineCell(rend.surface, col, row)) {
-                col += 1;
-                continue;
-            }
-
-            const start = col;
-            while (col < rend.snap_cols and AppWindow.input.isUrlUnderlineCell(rend.surface, col, row)) : (col += 1) {}
-
-            const x = offset_x + @as(f32, @floatFromInt(start)) * font.cell_width;
-            const y = window_height - offset_y - ((@as(f32, @floatFromInt(row)) + 1) * font.cell_height) + underline_y_offset;
-            const width = @as(f32, @floatFromInt(col - start)) * font.cell_width;
-            gl_init.renderQuad(x, y, width, thickness, color);
-        }
+        const span = underline_span.colSpanForRow(range, rend.cached_viewport_offset + row, rend.snap_cols) orelse continue;
+        const x = offset_x + @as(f32, @floatFromInt(span.start_col)) * font.cell_width;
+        const y = window_height - offset_y - ((@as(f32, @floatFromInt(row)) + 1) * font.cell_height) + underline_y_offset;
+        const width = @as(f32, @floatFromInt(span.end_col - span.start_col + 1)) * font.cell_width;
+        gl_init.renderQuad(x, y, width, thickness, color);
     }
 }
 
