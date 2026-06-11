@@ -203,6 +203,15 @@ exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 /// delays VT parsing until terminal.resize has caught up to the new grid.
 resize_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
+/// Monotonic sequence for correlating resize diagnostics across the IO writer
+/// and reader threads. Updated only for diagnostic logging.
+resize_diag_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+
+/// Millisecond timestamp until which SSH resize output is treated as host
+/// redraw spillover. The writer thread extends it on resize; the reader thread
+/// uses it to catch redraw fragments that arrive just after terminal.resize.
+resize_output_suppress_until_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+
 // ============================================================================
 // Bell state
 // ============================================================================
@@ -384,6 +393,8 @@ pub fn init(
     surface.sync_output_state = .{};
     surface.exited = std.atomic.Value(bool).init(false);
     surface.resize_in_progress = std.atomic.Value(bool).init(false);
+    surface.resize_diag_seq = std.atomic.Value(u64).init(0);
+    surface.resize_output_suppress_until_ms = std.atomic.Value(i64).init(0);
 
     // Desktop-notification state. `allocator.create` returns undefined memory
     // and this constructor initializes every field explicitly (struct-default

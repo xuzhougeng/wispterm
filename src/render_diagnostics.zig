@@ -13,9 +13,12 @@ const LOG_BASENAME = "render-diagnostic.log";
 
 threadlocal var g_checked: bool = false;
 threadlocal var g_enabled: bool = false;
-threadlocal var g_file_open: bool = false;
-threadlocal var g_file: std.fs.File = undefined;
-threadlocal var g_start_ms: i64 = 0;
+
+var g_mutex: std.Thread.Mutex = .{};
+var g_file_open: bool = false;
+var g_file: std.fs.File = undefined;
+var g_start_ms: i64 = 0;
+var g_closed: bool = false;
 
 /// Process-global override flipped on by the `wispterm-debug-render` config key.
 /// Unlike the threadlocal env-var cache above, this is visible to every thread
@@ -47,7 +50,12 @@ pub fn enabled() bool {
 pub fn log(comptime fmt: []const u8, args: anytype) void {
     if (!enabled()) return;
 
-    const file = ensureFile() catch |err| {
+    g_mutex.lock();
+    defer g_mutex.unlock();
+
+    if (g_closed) return;
+
+    const file = ensureFileLocked() catch |err| {
         std.debug.print("[render-diag] failed to open log: {}\n", .{err});
         std.debug.print("[render-diag] " ++ fmt ++ "\n", args);
         return;
@@ -64,6 +72,10 @@ pub fn log(comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn close() void {
+    g_mutex.lock();
+    defer g_mutex.unlock();
+
+    g_closed = true;
     if (!g_file_open) return;
     g_file.close();
     g_file_open = false;
@@ -73,7 +85,7 @@ pub fn logFilePath(allocator: std.mem.Allocator) ![]const u8 {
     return platform_dirs.pathInConfigDir(allocator, LOG_BASENAME);
 }
 
-fn ensureFile() !*std.fs.File {
+fn ensureFileLocked() !*std.fs.File {
     if (g_file_open) return &g_file;
 
     const allocator = std.heap.page_allocator;

@@ -1969,7 +1969,7 @@ fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
     const size = clientSize(win);
-    const preview_w: f64 = @floatCast(markdown_preview_panel.width());
+    const preview_w: f64 = @floatCast(AppWindow.markdownPreviewWidthForWindow(size.width));
     const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
     return xpos >= panel_x and xpos < panel_x + preview_w;
 }
@@ -1978,7 +1978,7 @@ fn markdownPreviewHeaderLayout() ?hit_test.PanelHeaderLayout {
     if (!markdown_preview_panel.isVisibleForActiveTab()) return null;
     const win = AppWindow.g_window orelse return null;
     const size = clientSize(win);
-    const preview_w: f64 = @floatCast(markdown_preview_panel.width());
+    const preview_w: f64 = @floatCast(AppWindow.markdownPreviewWidthForWindow(size.width));
     const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
     return .{
         .visible = true,
@@ -2003,12 +2003,10 @@ fn browserPanelBounds() ?browser_panel.Bounds {
     if (!browser_panel.isVisibleForActiveTab()) return null;
     const win = AppWindow.g_window orelse return null;
     const size = clientSize(win);
-    return browser_panel.boundsForWindow(
+    return AppWindow.browserPanelBoundsForWindow(
         size.width,
         size.height,
         @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        AppWindow.browserPanelRightOffset(),
     );
 }
 
@@ -2066,13 +2064,7 @@ fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
     if (!AppWindow.aiCopilotVisible()) return null;
     const win = AppWindow.g_window orelse return null;
     const fb = window_backend.framebufferSize(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
+    const bounds = AppWindow.aiCopilotBoundsForWindow(@intCast(fb.width), @intCast(fb.height), @floatCast(titlebarHeight()));
     return .{
         .visible = true,
         .left = @floatFromInt(bounds.left),
@@ -2098,9 +2090,10 @@ fn hitTestBrowserResizeHandle(xpos: f64, ypos: f64) bool {
 fn applyBrowserWidthFromMouse(xpos: f64) void {
     const win = AppWindow.g_window orelse return;
     const size = clientSize(win);
-    const right_edge = @as(f64, @floatFromInt(size.width)) - @as(f64, @floatCast(AppWindow.browserPanelRightOffset()));
+    const right_offset = AppWindow.browserPanelRightOffsetForWindow(size.width);
+    const right_edge = @as(f64, @floatFromInt(size.width)) - @as(f64, @floatCast(right_offset));
     const new_width = right_edge - xpos;
-    const available_width: f32 = @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.browserPanelRightOffset();
+    const available_width: f32 = @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - right_offset;
     if (!browser_panel.setWidth(@floatCast(new_width), available_width)) return;
     syncGridFromWindow(win);
     AppWindow.g_force_rebuild = true;
@@ -2116,13 +2109,7 @@ fn hitTestAiCopilotResizeHandle(xpos: f64, ypos: f64) bool {
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
     const fb = window_backend.framebufferSize(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
+    const bounds = AppWindow.aiCopilotBoundsForWindow(@intCast(fb.width), @intCast(fb.height), @floatCast(titlebarHeight()));
     const panel_x: f64 = @floatFromInt(bounds.left);
     const half_hit: f64 = @as(f64, @floatCast(ai_sidebar.RESIZE_HIT_WIDTH)) / 2;
     return xpos >= panel_x - half_hit and xpos <= panel_x + half_hit;
@@ -2147,7 +2134,7 @@ fn hitTestMarkdownPreviewResizeHandle(xpos: f64, ypos: f64) bool {
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
     const size = clientSize(win);
-    const preview_w: f64 = @floatCast(markdown_preview_panel.width());
+    const preview_w: f64 = @floatCast(AppWindow.markdownPreviewWidthForWindow(size.width));
     const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
     const half_hit: f64 = @as(f64, @floatCast(markdown_preview_panel.RESIZE_HIT_WIDTH)) / 2;
     return xpos >= panel_x - half_hit and xpos <= panel_x + half_hit;
@@ -3460,13 +3447,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 if (AppWindow.activeCopilotSessionForInput()) |chat| {
                     const win = AppWindow.g_window orelse return;
                     const fb = window_backend.framebufferSize(win);
-                    const bounds = ai_sidebar.boundsForWindow(
-                        @intCast(fb.width),
-                        @intCast(fb.height),
-                        @floatCast(titlebarHeight()),
-                        AppWindow.leftPanelsWidth(),
-                        0,
-                    );
+                    const bounds = AppWindow.aiCopilotBoundsForWindow(@intCast(fb.width), @intCast(fb.height), @floatCast(titlebarHeight()));
                     const bx_left: f64 = @floatFromInt(bounds.left);
                     const bx_right: f64 = @floatFromInt(bounds.right);
                     const by_top: f64 = @floatFromInt(bounds.top);
@@ -4469,13 +4450,7 @@ fn aiCopilotRegionContains(xf: f64, yf: f64) bool {
     if (!AppWindow.aiCopilotVisible()) return false;
     const win = AppWindow.g_window orelse return false;
     const fb = window_backend.framebufferSize(win);
-    const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        0,
-    );
+    const bounds = AppWindow.aiCopilotBoundsForWindow(@intCast(fb.width), @intCast(fb.height), @floatCast(titlebarHeight()));
     return xf >= @as(f64, @floatFromInt(bounds.left)) and xf < @as(f64, @floatFromInt(bounds.right)) and
         yf >= @as(f64, @floatFromInt(bounds.top)) and yf < @as(f64, @floatFromInt(bounds.bottom));
 }
@@ -4647,13 +4622,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         if (AppWindow.activeCopilotSessionForInput()) |chat| {
             const win = AppWindow.g_window orelse return;
             const size = clientSize(win);
-            const bounds = ai_sidebar.boundsForWindow(
-                size.width,
-                size.height,
-                @floatCast(titlebarHeight()),
-                AppWindow.leftPanelsWidth(),
-                0,
-            );
+            const bounds = AppWindow.aiCopilotBoundsForWindow(size.width, size.height, @floatCast(titlebarHeight()));
             if (ev.xpos >= bounds.left and ev.xpos < bounds.right and ev.ypos >= bounds.top and ev.ypos < bounds.bottom) {
                 const chat_x: f32 = @floatFromInt(bounds.left);
                 const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);

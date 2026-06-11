@@ -75,6 +75,7 @@ const render_gate = @import("appwindow/render_gate.zig");
 const frame_latency = @import("appwindow/frame_latency.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 const resize_throttle = @import("appwindow/resize_throttle.zig");
+const right_panel_layout = @import("appwindow/right_panel_layout.zig");
 pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
@@ -905,8 +906,7 @@ fn scImportItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
 fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32) void {
     if (!aiCopilotVisible()) return;
     const session = ensureActiveCopilotSession() orelse return;
-    const left = leftPanelsWidth();
-    const bounds = ai_sidebar.boundsForWindow(@intCast(fb_width), @intCast(fb_height), titlebar_offset, left, 0);
+    const bounds = aiCopilotBoundsForWindow(@intCast(fb_width), @intCast(fb_height), titlebar_offset);
     const chat_x: f32 = @floatFromInt(bounds.left);
     const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
     ai_chat_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w);
@@ -2285,7 +2285,11 @@ pub fn hideAiCopilot() void {
 
 pub fn aiCopilotWidth(window_width: i32) f32 {
     if (!aiCopilotVisible()) return 0;
-    return ai_sidebar.panelWidthForWindow(window_width, leftPanelsWidth(), 0);
+    return ai_sidebar.panelWidthForWindowWithContentReserve(window_width, leftPanelsWidth(), 0, rightPanelTerminalReserveWidth());
+}
+
+pub fn aiCopilotBoundsForWindow(window_width: i32, window_height: i32, titlebar_height: f32) ai_sidebar.Bounds {
+    return ai_sidebar.boundsForWindowWithContentReserve(window_width, window_height, titlebar_height, leftPanelsWidth(), 0, rightPanelTerminalReserveWidth());
 }
 
 fn makeCopilotSession() ?*ai_chat.Session {
@@ -2333,7 +2337,7 @@ pub fn appendDroppedPathToChatAtPoint(text: []const u8, x: i32, y: i32) bool {
     }
 
     if (aiCopilotVisible()) {
-        const bounds = ai_sidebar.boundsForWindow(size.width, size.height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+        const bounds = aiCopilotBoundsForWindow(size.width, size.height, currentTitlebarHeight());
         if (x >= bounds.left and x < bounds.right and y >= bounds.top and y < bounds.bottom) {
             const session = activeCopilotSessionForInput() orelse return false;
             session.appendInputText(text);
@@ -2365,17 +2369,55 @@ pub fn toggleAiCopilot() void {
 }
 
 pub fn rightPanelsWidth() f32 {
+    if (g_window) |w| {
+        return rightPanelsWidthForWindow(window_backend.clientSize(w).width);
+    }
     const copilot_w = if (aiCopilotVisible()) ai_sidebar.g_width else 0;
     return markdown_preview_panel.width() + browser_panel.width() + copilot_w;
 }
 
+pub fn rightPanelTerminalReserveWidth() f32 {
+    const padding_left: f32 = @floatFromInt(DEFAULT_PADDING);
+    const padding_right: f32 = @as(f32, @floatFromInt(DEFAULT_PADDING)) + overlays.SCROLLBAR_WIDTH;
+    return right_panel_layout.terminalReserveWidth(font.cell_width, padding_left, padding_right);
+}
+
+pub fn markdownPreviewWidthForWindow(window_width: i32) f32 {
+    return markdown_preview_panel.widthForWindowWithContentReserve(window_width, leftPanelsWidth(), 0, rightPanelTerminalReserveWidth());
+}
+
+pub fn browserPanelRightOffsetForWindow(window_width: i32) f32 {
+    return markdownPreviewWidthForWindow(window_width);
+}
+
+pub fn browserPanelWidthForWindow(window_width: i32) f32 {
+    return browser_panel.panelWidthForWindowWithContentReserve(
+        window_width,
+        leftPanelsWidth(),
+        browserPanelRightOffsetForWindow(window_width),
+        rightPanelTerminalReserveWidth(),
+    );
+}
+
+pub fn browserPanelBoundsForWindow(window_width: i32, window_height: i32, titlebar_height: f32) browser_panel.Bounds {
+    return browser_panel.boundsForWindowWithContentReserve(
+        window_width,
+        window_height,
+        titlebar_height,
+        leftPanelsWidth(),
+        browserPanelRightOffsetForWindow(window_width),
+        rightPanelTerminalReserveWidth(),
+    );
+}
+
 pub fn rightPanelsWidthForWindow(window_width: i32) f32 {
-    const preview_w = markdown_preview_panel.width();
-    const browser_w = browser_panel.panelWidthForWindow(window_width, leftPanelsWidth(), preview_w);
+    const preview_w = markdownPreviewWidthForWindow(window_width);
+    const browser_w = browserPanelWidthForWindow(window_width);
     return preview_w + browser_w + aiCopilotWidth(window_width);
 }
 
 pub fn browserPanelRightOffset() f32 {
+    if (g_window) |w| return browserPanelRightOffsetForWindow(window_backend.clientSize(w).width);
     return markdown_preview_panel.width();
 }
 
@@ -3318,7 +3360,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     if (g_window) |w| {
         const perf = ui_perf.begin("appwindow.browser_panel_sync_resize");
         defer perf.end();
-        browser_panel.sync(window_backend.nativeHandle(w), width, height, titlebar_offset, left_panels_w, browserPanelRightOffset(), overlays.anyBlockingOverlayVisible());
+        browser_panel.syncWithContentReserve(window_backend.nativeHandle(w), width, height, titlebar_offset, left_panels_w, browserPanelRightOffsetForWindow(width), rightPanelTerminalReserveWidth(), overlays.anyBlockingOverlayVisible());
     }
 
     // Snapshot + rebuild + draw (split-aware, mirrors main loop)
@@ -5395,7 +5437,7 @@ fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
         if (activeCopilotSessionForInput()) |session| {
             if (win.ime_composing) return;
             const size = window_backend.clientSize(win);
-            const bounds = ai_sidebar.boundsForWindow(size.width, size.height, currentTitlebarHeight(), leftPanelsWidth(), 0);
+            const bounds = aiCopilotBoundsForWindow(size.width, size.height, currentTitlebarHeight());
             const chat_x: f32 = @floatFromInt(bounds.left);
             const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
             syncAiChatImeCaret(win, session, chat_x, chat_w);
@@ -6317,7 +6359,7 @@ fn runMainLoop(self: *AppWindow) !void {
         {
             const perf = ui_perf.begin("appwindow.browser_panel_sync");
             defer perf.end();
-            browser_panel.sync(window_backend.nativeHandle(win), fb_width, fb_height, titlebar_offset, left_panels_w, browserPanelRightOffset(), overlays.anyBlockingOverlayVisible());
+            browser_panel.syncWithContentReserve(window_backend.nativeHandle(win), fb_width, fb_height, titlebar_offset, left_panels_w, browserPanelRightOffsetForWindow(fb_width), rightPanelTerminalReserveWidth(), overlays.anyBlockingOverlayVisible());
         }
 
         if (activeTab()) |active_tab| {

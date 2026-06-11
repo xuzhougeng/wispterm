@@ -7,6 +7,7 @@ const ssh_tunnel = @import("ssh_tunnel.zig");
 const html_server = @import("html_server.zig");
 const window_backend = @import("platform/window_backend.zig");
 const ui_perf = @import("ui_perf.zig");
+const right_panel_layout = @import("appwindow/right_panel_layout.zig");
 const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
 
@@ -75,6 +76,15 @@ pub fn panelWidthForMode(mode: DisplayMode, stored_width: f32, window_width: i32
     }
     const max_width = @max(MIN_WIDTH, @min(MAX_WIDTH, win_w - left_offset - right_offset - MIN_CONTENT_WIDTH));
     return @max(MIN_WIDTH, @min(stored_width, max_width));
+}
+
+pub fn panelWidthForModeWithContentReserve(mode: DisplayMode, stored_width: f32, window_width: i32, left_offset: f32, right_offset: f32, min_content_width: f32) f32 {
+    const win_w: f32 = @floatFromInt(window_width);
+    if (mode == .full) {
+        return @max(0, win_w - left_offset - right_offset);
+    }
+    const budget = right_panel_layout.rightPanelBudget(window_width, left_offset + right_offset, min_content_width);
+    return right_panel_layout.clampPanelWidth(stored_width, MIN_WIDTH, MAX_WIDTH, budget);
 }
 
 pub threadlocal var g_visible: bool = false;
@@ -148,11 +158,21 @@ pub fn panelWidthForWindow(window_width: i32, left_offset: f32, right_offset: f3
     return panelWidthForMode(.side, g_width, window_width, left_offset, right_offset);
 }
 
+pub fn panelWidthForWindowWithContentReserve(window_width: i32, left_offset: f32, right_offset: f32, min_content_width: f32) f32 {
+    if (!isVisibleForActiveTab()) return 0;
+    return panelWidthForModeWithContentReserve(.side, g_width, window_width, left_offset, right_offset, min_content_width);
+}
+
 /// Width of the panel's DRAW rect (the webview + URL-bar chrome). Covers the
 /// whole content area in full mode; side-clamped otherwise.
 pub fn panelDrawWidthForWindow(window_width: i32, left_offset: f32, right_offset: f32) f32 {
     if (!isVisibleForActiveTab()) return 0;
     return panelWidthForMode(g_display_mode, g_width, window_width, left_offset, right_offset);
+}
+
+pub fn panelDrawWidthForWindowWithContentReserve(window_width: i32, left_offset: f32, right_offset: f32, min_content_width: f32) f32 {
+    if (!isVisibleForActiveTab()) return 0;
+    return panelWidthForModeWithContentReserve(g_display_mode, g_width, window_width, left_offset, right_offset, min_content_width);
 }
 
 pub fn embeddedBrowserAvailable() bool {
@@ -266,6 +286,10 @@ pub fn lastError() platform_webview.ErrorCode {
 }
 
 pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32, suppressed: bool) void {
+    syncWithContentReserve(parent, window_width, window_height, titlebar_height, left_offset, right_offset, MIN_CONTENT_WIDTH, suppressed);
+}
+
+pub fn syncWithContentReserve(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32, min_content_width: f32, suppressed: bool) void {
     const perf = ui_perf.begin("browser_panel.sync");
     defer perf.end();
 
@@ -281,7 +305,7 @@ pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_heigh
         return;
     }
 
-    const bounds = boundsForWindow(window_width, window_height, titlebar_height, left_offset, right_offset);
+    const bounds = boundsForWindowWithContentReserve(window_width, window_height, titlebar_height, left_offset, right_offset, min_content_width);
     if (bounds.right <= bounds.left or bounds.bottom <= bounds.top) return;
 
     const webview_bounds = contentBounds(bounds) orelse return;
@@ -449,6 +473,23 @@ pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f
     };
 }
 
+pub fn boundsForWindowWithContentReserve(window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32, min_content_width: f32) Bounds {
+    const win_w: f32 = @floatFromInt(window_width);
+    const win_h: f32 = @floatFromInt(window_height);
+    const panel_w = panelDrawWidthForWindowWithContentReserve(window_width, left_offset, right_offset, min_content_width);
+    const right = @max(0, win_w - right_offset);
+    const left = @max(left_offset, right - panel_w);
+    const top = @max(0, titlebar_height);
+    const bottom = @max(top, win_h);
+
+    return .{
+        .left = @intFromFloat(@round(left)),
+        .top = @intFromFloat(@round(top)),
+        .right = @intFromFloat(@round(right)),
+        .bottom = @intFromFloat(@round(bottom)),
+    };
+}
+
 fn normalizeUrlInput(allocator: std.mem.Allocator, input: []const u8) ?[]u8 {
     const trimmed = std.mem.trim(u8, input, " \t\r\n");
     if (trimmed.len == 0) return null;
@@ -506,6 +547,11 @@ test "panelWidthForMode: full covers the whole content area; side reserves min c
     try std.testing.expectEqual(@as(f32, 1600), panelWidthForMode(.full, 720, 1600, 0, 0));
     try std.testing.expectEqual(@as(f32, 720), panelWidthForMode(.side, 720, 1600, 0, 0));
     try std.testing.expectEqual(@as(f32, 1500), panelWidthForMode(.full, 720, 1600, 60, 40));
+}
+
+test "panelWidthForModeWithContentReserve shrinks side panel to protect terminal" {
+    try std.testing.expectEqual(@as(f32, 180), panelWidthForModeWithContentReserve(.side, 720, 800, 200, 0, 420));
+    try std.testing.expectEqual(@as(f32, 600), panelWidthForModeWithContentReserve(.full, 720, 800, 200, 0, 420));
 }
 
 test "full mode: terminal-layout width stays side; only the draw rect goes full" {

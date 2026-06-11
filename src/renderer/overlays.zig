@@ -1328,12 +1328,10 @@ pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
 pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f32) void {
     if (!browser_panel.isVisibleForActiveTab()) return;
 
-    const bounds = browser_panel.boundsForWindow(
+    const bounds = AppWindow.browserPanelBoundsForWindow(
         @intFromFloat(@round(window_width)),
         @intFromFloat(@round(window_height)),
         top_offset,
-        AppWindow.leftPanelsWidth(),
-        AppWindow.browserPanelRightOffset(),
     );
     const url_bar = browser_panel.urlBarBounds(bounds) orelse return;
 

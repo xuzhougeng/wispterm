@@ -111,6 +111,22 @@ pub fn panelWidthForWindow(window_width: i32, left_offset: f32, right_offset: f3
     return 0;
 }
 
+pub fn panelWidthForWindowWithContentReserve(window_width: i32, left_offset: f32, right_offset: f32, min_content_width: f32) f32 {
+    _ = window_width;
+    _ = left_offset;
+    _ = right_offset;
+    _ = min_content_width;
+    return 0;
+}
+
+pub fn panelDrawWidthForWindowWithContentReserve(window_width: i32, left_offset: f32, right_offset: f32, min_content_width: f32) f32 {
+    _ = window_width;
+    _ = left_offset;
+    _ = right_offset;
+    _ = min_content_width;
+    return 0;
+}
+
 pub fn embeddedBrowserAvailable() bool {
     return false;
 }
@@ -188,6 +204,17 @@ pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_heigh
     _ = suppressed;
 }
 
+pub fn syncWithContentReserve(parent: window_backend.NativeHandle, window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32, min_content_width: f32, suppressed: bool) void {
+    _ = parent;
+    _ = window_width;
+    _ = window_height;
+    _ = titlebar_height;
+    _ = left_offset;
+    _ = right_offset;
+    _ = min_content_width;
+    _ = suppressed;
+}
+
 pub fn deinit() void {
     html_server.stopAll();
     ssh_tunnel.deinit();
@@ -248,6 +275,11 @@ pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f
         .right = @intFromFloat(@round(left)),
         .bottom = @intFromFloat(@round(@max(top, win_h))),
     };
+}
+
+pub fn boundsForWindowWithContentReserve(window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32, min_content_width: f32) Bounds {
+    _ = min_content_width;
+    return boundsForWindow(window_width, window_height, titlebar_height, left_offset, right_offset);
 }
 
 test "browser_panel_stub: visible only on owning active tab" {

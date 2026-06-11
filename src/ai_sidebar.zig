@@ -8,6 +8,7 @@
 //! by the caller (AppWindow).
 
 const std = @import("std");
+const right_panel_layout = @import("appwindow/right_panel_layout.zig");
 
 pub const DEFAULT_WIDTH: f32 = 480;
 pub const MIN_WIDTH: f32 = 320;
@@ -50,12 +51,33 @@ pub fn panelWidthForWindow(window_width: i32, left_offset: f32, right_offset: f3
     return @max(MIN_WIDTH, @min(g_width, max_width));
 }
 
+pub fn panelWidthForWindowWithContentReserve(window_width: i32, left_offset: f32, right_offset: f32, min_content_width: f32) f32 {
+    const budget = right_panel_layout.rightPanelBudget(window_width, left_offset + right_offset, min_content_width);
+    return right_panel_layout.clampPanelWidth(g_width, MIN_WIDTH, MAX_WIDTH, budget);
+}
+
 /// Pixel bounds of the panel (right-docked). PURE MATH — assumes the caller has
 /// already confirmed visibility (see panelWidthForWindow's contract note).
 pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) Bounds {
     const win_w: f32 = @floatFromInt(window_width);
     const win_h: f32 = @floatFromInt(window_height);
     const panel_w = panelWidthForWindow(window_width, left_offset, right_offset);
+    const right = @max(0, win_w - right_offset);
+    const left = @max(left_offset, right - panel_w);
+    const top = @max(0, titlebar_height);
+    const bottom = @max(top, win_h);
+    return .{
+        .left = @intFromFloat(@round(left)),
+        .top = @intFromFloat(@round(top)),
+        .right = @intFromFloat(@round(right)),
+        .bottom = @intFromFloat(@round(bottom)),
+    };
+}
+
+pub fn boundsForWindowWithContentReserve(window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32, min_content_width: f32) Bounds {
+    const win_w: f32 = @floatFromInt(window_width);
+    const win_h: f32 = @floatFromInt(window_height);
+    const panel_w = panelWidthForWindowWithContentReserve(window_width, left_offset, right_offset, min_content_width);
     const right = @max(0, win_w - right_offset);
     const left = @max(left_offset, right - panel_w);
     const top = @max(0, titlebar_height);
@@ -89,6 +111,13 @@ test "panelWidthForWindow never goes below MIN_WIDTH" {
     g_width = 320;
     // Even a tiny window keeps at least MIN_WIDTH.
     try std.testing.expectApproxEqAbs(MIN_WIDTH, panelWidthForWindow(300, 0, 0), 0.001);
+}
+
+test "panelWidthForWindowWithContentReserve can shrink below min to keep terminal reserve" {
+    const saved = g_width;
+    defer g_width = saved;
+    g_width = 480;
+    try std.testing.expectApproxEqAbs(@as(f32, 180), panelWidthForWindowWithContentReserve(800, 200, 0, 420), 0.001);
 }
 
 test "setWidth clamps and reports change" {

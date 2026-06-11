@@ -18,11 +18,13 @@ const std = @import("std");
 const xev = @import("xev");
 const Surface = @import("../Surface.zig");
 const renderer = @import("../renderer.zig");
+const render_diagnostics = @import("../render_diagnostics.zig");
 const window_backend = @import("../platform/window_backend.zig");
 
 const Thread = @This();
 
 const COALESCE_MS = 25;
+const SSH_RESIZE_OUTPUT_SUPPRESS_MS = 120;
 
 loop: xev.Loop,
 stop: xev.Async,
@@ -111,7 +113,12 @@ fn writeToPty(surface: *Surface, data: []const u8) void {
 }
 
 fn handleResize(self: *Thread, grid: renderer.size.GridSize) void {
+    const replaced = self.coalesce_data != null;
     self.coalesce_data = grid;
+    render_diagnostics.log(
+        "termio-resize queue coalesced target={}x{} timer_active={} replaced_pending={}",
+        .{ grid.cols, grid.rows, self.coalesce_active, replaced },
+    );
 
     if (self.coalesce_active) return; // timer already running, it will pick up latest data
 
@@ -123,7 +130,12 @@ fn handleResize(self: *Thread, grid: renderer.size.GridSize) void {
 fn handleResizeImmediate(self: *Thread, grid: renderer.size.GridSize) void {
     // Drop any older coalesced resize so a delayed timer cannot undo the
     // immediate layout change.
+    const dropped = self.coalesce_data != null;
     self.coalesce_data = null;
+    render_diagnostics.log(
+        "termio-resize queue immediate target={}x{} dropped_pending={}",
+        .{ grid.cols, grid.rows, dropped },
+    );
     applyResize(self.surface.?, grid);
 }
 
@@ -150,20 +162,61 @@ fn coalesceCallback(
 }
 
 fn applyResize(surface: *Surface, grid: renderer.size.GridSize) void {
+    const seq = surface.resize_diag_seq.fetchAdd(1, .seq_cst) + 1;
+    const start_ms = std.time.milliTimestamp();
+    const old_grid = old: {
+        surface.render_state.mutex.lock();
+        defer surface.render_state.mutex.unlock();
+        break :old .{
+            .cols = surface.terminal.cols,
+            .rows = surface.terminal.rows,
+        };
+    };
+    render_diagnostics.log(
+        "termio-resize begin seq={} old={}x{} target={}x{} surface_grid={}x{} cell={d:.2}x{d:.2}",
+        .{
+            seq,
+            old_grid.cols,
+            old_grid.rows,
+            grid.cols,
+            grid.rows,
+            surface.size.grid.cols,
+            surface.size.grid.rows,
+            surface.size.cell.width,
+            surface.size.cell.height,
+        },
+    );
+
     // PTY resize first (like Ghostty), then terminal.
     // The ReadThread is concurrently in a blocking PTY read. This keeps
     // backend output draining while resize side effects are emitted.
     surface.resize_in_progress.store(true, .release);
-    defer surface.resize_in_progress.store(false, .release);
+    armResizeOutputSuppression(surface);
+    defer {
+        surface.resize_in_progress.store(false, .release);
+        render_diagnostics.log(
+            "termio-resize end seq={} target={}x{} duration_ms={}",
+            .{ seq, grid.cols, grid.rows, std.time.milliTimestamp() - start_ms },
+        );
+    }
 
-    surface.pty.setSize(.{ .ws_col = grid.cols, .ws_row = grid.rows }) catch {};
+    surface.pty.setSize(.{ .ws_col = grid.cols, .ws_row = grid.rows }) catch |err| {
+        render_diagnostics.log("termio-resize pty-set-size-error seq={} err={}", .{ seq, err });
+    };
+    render_diagnostics.log("termio-resize pty-set-size seq={} target={}x{}", .{ seq, grid.cols, grid.rows });
 
     surface.render_state.mutex.lock();
     defer surface.render_state.mutex.unlock();
 
-    surface.terminal.resize(surface.allocator, grid.cols, grid.rows) catch {};
+    surface.terminal.resize(surface.allocator, grid.cols, grid.rows) catch |err| {
+        render_diagnostics.log("termio-resize terminal-resize-error seq={} err={}", .{ seq, err });
+    };
     surface.terminal.width_px = @intFromFloat(@as(f32, @floatFromInt(grid.cols)) * surface.size.cell.width);
     surface.terminal.height_px = @intFromFloat(@as(f32, @floatFromInt(grid.rows)) * surface.size.cell.height);
+    render_diagnostics.log(
+        "termio-resize terminal-applied seq={} terminal={}x{} px={}x{}",
+        .{ seq, surface.terminal.cols, surface.terminal.rows, surface.terminal.width_px, surface.terminal.height_px },
+    );
 
     // Match Ghostty's Termio.resize behavior: a resize is allowed to break
     // synchronized output mode so TUI redraws become visible immediately.
@@ -172,4 +225,12 @@ fn applyResize(surface: *Surface, grid: renderer.size.GridSize) void {
     surface.terminal.scrollViewport(.{ .bottom = {} });
     surface.dirty.store(true, .release);
     window_backend.postWakeup();
+}
+
+fn armResizeOutputSuppression(surface: *Surface) void {
+    if (surface.launch_kind != .ssh) return;
+    surface.resize_output_suppress_until_ms.store(
+        std.time.milliTimestamp() + SSH_RESIZE_OUTPUT_SUPPRESS_MS,
+        .release,
+    );
 }

@@ -3,6 +3,7 @@
 const std = @import("std");
 const markdown_preview = @import("markdown_preview.zig");
 const preview_source = @import("input/preview_source.zig");
+const right_panel_layout = @import("appwindow/right_panel_layout.zig");
 const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
 
@@ -65,6 +66,12 @@ const IMAGE_ZOOM_STEP: f32 = 1.2;
 
 pub fn width() f32 {
     return if (isVisibleForActiveTab()) g_width else 0;
+}
+
+pub fn widthForWindowWithContentReserve(window_width: i32, left_offset: f32, right_offset: f32, min_content_width: f32) f32 {
+    if (!isVisibleForActiveTab()) return 0;
+    const budget = right_panel_layout.rightPanelBudget(window_width, left_offset + right_offset, min_content_width);
+    return right_panel_layout.clampPanelWidth(g_width, MIN_WIDTH, MAX_WIDTH, budget);
 }
 
 pub fn isVisibleForActiveTab() bool {

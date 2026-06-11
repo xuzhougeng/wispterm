@@ -50,7 +50,7 @@ pub fn render(window_width: f32, window_height: f32, titlebar_h: f32, right_offs
     const perf = ui_perf.begin("markdown_preview_renderer.render");
     defer perf.end();
 
-    const panel_w = panel.width();
+    const panel_w = AppWindow.markdownPreviewWidthForWindow(@intFromFloat(@round(window_width)));
     if (panel_w <= 0) return;
 
     const side_h = window_height - titlebar_h;
