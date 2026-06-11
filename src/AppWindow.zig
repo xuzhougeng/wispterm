@@ -2104,13 +2104,13 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
     var resume_buf: [512]u8 = undefined;
     const resume_cmd = ai_history_resume.resumeCommand(meta, &resume_buf) catch |err| {
         log.warn("failed to build AI History provider resume command for {s}: {}", .{ meta.session_id, err });
-        return failAiHistoryResumePathUnavailable();
+        return showAiHistoryResumeFailure(err, meta);
     };
 
     var checked_buf: [2048]u8 = undefined;
     const checked_cmd = ai_history_resume.checkedPosixResume(resume_cmd, meta.project_dir, &checked_buf) catch |err| {
         log.warn("failed to build AI History checked resume command for {s}: {}", .{ meta.session_id, err });
-        return failAiHistoryResumePathUnavailable();
+        return showAiHistoryResumeFailure(err, meta);
     };
 
     var command_buf: [8192]u8 = undefined;
@@ -2120,49 +2120,56 @@ pub fn spawnResumeTerminal(target: ai_history_source.Target, meta: ai_history_ty
             const local_checked_cmd = switch (platform_pty_command.backend()) {
                 .windows => ai_history_resume.checkedPowerShellResume(meta, &native_checked_buf) catch |err| {
                     log.warn("failed to build AI History PowerShell resume command for {s}: {}", .{ meta.session_id, err });
-                    return failAiHistoryResumePathUnavailable();
+                    return showAiHistoryResumeFailure(err, meta);
                 },
                 .unsupported => checked_cmd,
             };
-            const command = platform_pty_command.localShellInitialCommand(command_buf[0..], tab.getShellCmd(), local_checked_cmd) orelse return failAiHistoryResumePathUnavailable();
+            const shell_cmd = tab.getShellCmd();
+            const command = platform_pty_command.localShellInitialCommand(command_buf[0..], shell_cmd, local_checked_cmd) orelse {
+                if (platform_pty_command.backend() == .windows and !platform_pty_command.shellCommandLooksLikeConfiguredLocalShell(shell_cmd)) {
+                    return showAiHistoryResumeToast("Cannot resume: set shell=powershell or pwsh");
+                }
+                return showAiHistoryResumeToast("Cannot resume: command is too long");
+            };
             if (spawnTabWithCommandUtf8(command)) return true;
-            overlays.showStatusToast("Sessions resume failed");
-            return false;
+            return showAiHistoryResumeToast("Cannot resume: failed to open resume tab");
         },
         .wsl => {
             var user_shell_buf: [4096]u8 = undefined;
             const user_shell_cmd = ai_history_resume.posixUserShellCommand(checked_cmd, &user_shell_buf) catch |err| {
                 log.warn("failed to build AI History WSL user-shell resume command for {s}: {}", .{ meta.session_id, err });
-                return failAiHistoryResumePathUnavailable();
+                return showAiHistoryResumeFailure(err, meta);
             };
-            const command = platform_pty_command.wslShellCommand(command_buf[0..], user_shell_cmd) orelse return failAiHistoryResumePathUnavailable();
+            const command = platform_pty_command.wslShellCommand(command_buf[0..], user_shell_cmd) orelse return showAiHistoryResumeToast("Cannot resume: command is too long");
             if (spawnTabWithCommandUtf8(command)) return true;
-            overlays.showStatusToast("Sessions resume failed");
-            return false;
+            return showAiHistoryResumeToast("Cannot resume: failed to open resume tab");
         },
         .ssh => |ssh| {
             var user_shell_buf: [4096]u8 = undefined;
             const user_shell_cmd = ai_history_resume.posixUserShellCommand(checked_cmd, &user_shell_buf) catch |err| {
                 log.warn("failed to build AI History SSH user-shell resume command for {s}: {}", .{ meta.session_id, err });
-                return failAiHistoryResumePathUnavailable();
+                return showAiHistoryResumeFailure(err, meta);
             };
             return switch (overlays.aiHistoryConnectSshProfile(ssh.profile_name, user_shell_cmd)) {
                 .connected => true,
                 .not_found => {
-                    overlays.showStatusToast("Sessions resume failed: SSH profile unavailable");
-                    return false;
+                    return showAiHistoryResumeToast("Cannot resume: SSH profile not found");
                 },
                 .failed => {
-                    overlays.showStatusToast("Sessions resume failed");
-                    return false;
+                    return showAiHistoryResumeToast("Cannot resume: SSH connection failed");
                 },
             };
         },
     }
 }
 
-fn failAiHistoryResumePathUnavailable() bool {
-    overlays.showStatusToast("Sessions resume failed: project path unavailable");
+fn showAiHistoryResumeFailure(err: ai_history_resume.ResumeError, meta: ai_history_types.SessionMeta) bool {
+    var msg_buf: [160]u8 = undefined;
+    return showAiHistoryResumeToast(ai_history_resume.failureMessage(err, meta, &msg_buf));
+}
+
+fn showAiHistoryResumeToast(message: []const u8) bool {
+    overlays.showStatusToast(message);
     markUiDirty();
     return false;
 }
