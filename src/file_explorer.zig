@@ -1600,6 +1600,18 @@ fn pickDownloadTransferFn(is_dir: bool) TransferFn {
     return if (is_dir) scp.transferDirWithControl else scp.transferWithControl;
 }
 
+/// Remote entry names come from `ls -1p` output, where `\` is a legal file
+/// name byte but a path separator on Windows: a hostile remote can smuggle
+/// `..\..\name` to steer the download destination — and the cancel cleanup's
+/// recursive delete — outside the chosen directory. Reject separators and
+/// `..` outright before a local path is built from the name.
+fn isSafeDownloadEntryName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.mem.indexOfAny(u8, name, "/\\") != null) return false;
+    if (std.mem.indexOf(u8, name, "..") != null) return false;
+    return true;
+}
+
 /// Download the selected remote file or directory to a local directory.
 pub fn downloadSelected(local_dir: []const u8) void {
     if (g_mode != .remote or !g_has_ssh_conn) return;
@@ -1608,6 +1620,12 @@ pub fn downloadSelected(local_dir: []const u8) void {
 
     const entry = &g_entries[sel];
 
+    const name = entry.name_buf[0..entry.name_len];
+    if (!isSafeDownloadEntryName(name)) {
+        setTransferStatusForKind(.download, .failed, "Unsafe file name");
+        return;
+    }
+
     const remote_path = entry.path_buf[0..entry.path_len];
 
     // Build remote spec: user@host:path
@@ -1615,7 +1633,6 @@ pub fn downloadSelected(local_dir: []const u8) void {
     const src = scp.remoteSpec(&spec_buf, &g_ssh_conn, remote_path);
 
     var dst_buf: [512]u8 = undefined;
-    const name = entry.name_buf[0..entry.name_len];
     const dst = platform_local_path.joinInto(dst_buf[0..], local_dir, name) orelse {
         setTransferStatusForKind(.download, .failed, "Path too long");
         return;
@@ -1830,6 +1847,49 @@ test "file_explorer: download picks recursive transfer for directories" {
         @as(TransferFn, scp.transferWithControl),
         pickDownloadTransferFn(false),
     );
+}
+
+test "file_explorer: isSafeDownloadEntryName rejects separators and dot-dot" {
+    try std.testing.expect(isSafeDownloadEntryName("report.txt"));
+    try std.testing.expect(isSafeDownloadEntryName("data dir"));
+    try std.testing.expect(isSafeDownloadEntryName(".hidden"));
+
+    try std.testing.expect(!isSafeDownloadEntryName(""));
+    try std.testing.expect(!isSafeDownloadEntryName(".."));
+    try std.testing.expect(!isSafeDownloadEntryName("..\\..\\evil"));
+    try std.testing.expect(!isSafeDownloadEntryName("a\\b"));
+    try std.testing.expect(!isSafeDownloadEntryName("a/b"));
+    try std.testing.expect(!isSafeDownloadEntryName("archive..tar"));
+}
+
+test "file_explorer: download refuses remote entry names that can escape the destination dir" {
+    resetTransferStateForTest();
+    defer resetTransferStateForTest();
+    defer {
+        g_mode = .local;
+        g_has_ssh_conn = false;
+        g_ssh_conn = .{};
+        g_entry_count = 0;
+        g_selected = null;
+    }
+
+    g_mode = .remote;
+    g_has_ssh_conn = true;
+    g_ssh_conn = .{};
+    g_selected = 0;
+    g_entry_count = 1;
+    g_entries[0] = .{};
+    const evil_name = "..\\..\\evil";
+    @memcpy(g_entries[0].name_buf[0..evil_name.len], evil_name);
+    g_entries[0].name_len = evil_name.len;
+    const evil_path = "/srv/..\\..\\evil";
+    @memcpy(g_entries[0].path_buf[0..evil_path.len], evil_path);
+    g_entries[0].path_len = evil_path.len;
+
+    downloadSelected("/tmp/wispterm-test-downloads");
+
+    try std.testing.expectEqual(@as(?*TransferJob, null), g_transfer_job);
+    try std.testing.expectEqual(TransferStatus.failed, g_transfer_status);
 }
 
 test "file_explorer: download transfer emits notification" {
