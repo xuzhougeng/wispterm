@@ -41,6 +41,7 @@ const command_dispatch = @import("input/command_dispatch.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
+const PreviewPane = @import("preview_pane.zig");
 const selection_unit = @import("selection_unit.zig");
 const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
@@ -550,12 +551,6 @@ pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the s
 pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
 pub threadlocal var g_explorer_resize_dragging: bool = false; // Currently dragging the file explorer edge
-pub threadlocal var g_markdown_preview_resize_hover: bool = false; // Mouse is over the preview resize edge
-pub threadlocal var g_markdown_preview_resize_dragging: bool = false; // Currently dragging the preview edge
-threadlocal var g_markdown_preview_image_dragging: bool = false;
-threadlocal var g_markdown_preview_image_hover: bool = false;
-threadlocal var g_markdown_preview_image_drag_last_x: f64 = 0;
-threadlocal var g_markdown_preview_image_drag_last_y: f64 = 0;
 pub threadlocal var g_browser_resize_hover: bool = false; // Mouse is over the embedded browser edge
 pub threadlocal var g_browser_resize_dragging: bool = false; // Currently dragging the browser edge
 pub threadlocal var g_ai_copilot_resize_hover: bool = false; // Mouse is over the AI copilot left edge
@@ -682,12 +677,6 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_sidebar_resize_dragging = false;
     g_explorer_resize_hover = false;
     g_explorer_resize_dragging = false;
-    g_markdown_preview_resize_hover = false;
-    g_markdown_preview_resize_dragging = false;
-    g_markdown_preview_image_dragging = false;
-    g_markdown_preview_image_hover = false;
-    g_markdown_preview_image_drag_last_x = 0;
-    g_markdown_preview_image_drag_last_y = 0;
     g_browser_resize_hover = false;
     g_browser_resize_dragging = false;
     g_ai_copilot_resize_hover = false;
@@ -830,16 +819,6 @@ pub fn refreshBrowserPanel() void {
     AppWindow.g_cells_valid = false;
 }
 
-fn closeMarkdownPreviewPanel() void {
-    g_close_shortcut_confirm_until_ms = 0;
-    markdown_preview_panel.close();
-    if (AppWindow.g_window) |win| {
-        syncPanelGridFromWindow(win);
-    }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
-}
-
 fn closeAiCopilotPanel() void {
     AppWindow.hideAiCopilot();
     if (AppWindow.g_window) |win| {
@@ -850,10 +829,10 @@ fn closeAiCopilotPanel() void {
 }
 
 pub fn closePanelOrTab() void {
-    if (markdown_preview_panel.isVisibleForActiveTab()) {
-        closeMarkdownPreviewPanel();
-        return;
-    }
+    // A preview pane closes first, mirroring the old right-dock behavior:
+    // opening a preview keeps the terminal focused, so without this the
+    // shortcut would close the focused terminal instead of the preview.
+    if (AppWindow.closeActivePreviewPane()) return;
     if (browser_panel.isVisibleForActiveTab()) {
         closeBrowserPanel();
         return;
@@ -964,7 +943,8 @@ fn splitRectForSurface(surface: *Surface) ?split_layout.SplitRect {
     for (0..split_layout.g_split_rect_count) |i| {
         const rect = split_layout.g_split_rects[i];
         if (!split_layout.cachedRectIsLive(rect)) continue;
-        if (rect.surface == surface) return rect;
+        const s = rect.surface() orelse continue;
+        if (s == surface) return rect;
     }
     return null;
 }
@@ -983,15 +963,16 @@ fn scrollbarTargetAt(xpos: f64, ypos: f64, window_w: f32, window_h: f32, top_pad
         for (0..split_layout.g_split_rect_count) |i| {
             const rect = split_layout.g_split_rects[i];
             if (!split_layout.cachedRectIsLive(rect)) continue;
-            const pad = rect.surface.getPadding();
+            const s = rect.surface() orelse continue;
+            const pad = s.getPadding();
             const view_x: f32 = @floatFromInt(rect.x);
             const view_y: f32 = @floatFromInt(rect.y);
             const view_w: f32 = @floatFromInt(rect.width);
             const view_h: f32 = @floatFromInt(rect.height);
             const local_top_pad: f32 = @floatFromInt(pad.top);
-            if (overlays.scrollbarHitTestForSurface(rect.surface, xpos, ypos, view_x, view_y, view_w, view_h, local_top_pad)) {
+            if (overlays.scrollbarHitTestForSurface(s, xpos, ypos, view_x, view_y, view_w, view_h, local_top_pad)) {
                 return .{
-                    .surface = rect.surface,
+                    .surface = s,
                     .view_x = view_x,
                     .view_y = view_y,
                     .view_w = view_w,
@@ -1360,6 +1341,26 @@ fn handleChar(ev: platform_input.CharEvent) void {
                 AppWindow.g_cells_valid = false;
             }
             return;
+        }
+    }
+    // A focused image preview consumes +/=/- as zoom in/out. Only image previews
+    // claim these chars (markdown previews ignore them so they reach nothing),
+    // and only when such a preview holds focus — terminals are never affected.
+    if (AppWindow.focusedPreviewPane()) |p| {
+        if (p.kind == .image and !ev.ctrl and !ev.alt) {
+            const zoomed = switch (ev.codepoint) {
+                '+', '=' => p.zoomImageBySteps(1, true),
+                '-', '_' => p.zoomImageBySteps(1, false),
+                else => false,
+            };
+            if (zoomed) {
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+            }
+            switch (ev.codepoint) {
+                '+', '=', '-', '_' => return,
+                else => {},
+            }
         }
     }
     if (!AppWindow.isActiveTabTerminal()) return;
@@ -1973,6 +1974,44 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         }
     }
 
+    // A focused preview leaf consumes plain navigation keys for scroll/pan.
+    // Only engaged when a preview actually holds focus; otherwise this block is
+    // skipped entirely and terminal/copilot key handling is unchanged. Modified
+    // keys (ctrl/alt/super) are left for keybinds and the terminal.
+    if (AppWindow.focusedPreviewPane()) |p| {
+        if (!ev.ctrl and !ev.alt and !ev.super) {
+            var consumed = true;
+            switch (ev.key_code) {
+                platform_input.key_page_up => p.scrollBy(-360),
+                platform_input.key_page_down => p.scrollBy(360),
+                platform_input.key_up => if (p.kind == .image) {
+                    _ = p.panImageBy(0, 40);
+                } else p.scrollBy(-60),
+                platform_input.key_down => if (p.kind == .image) {
+                    _ = p.panImageBy(0, -40);
+                } else p.scrollBy(60),
+                platform_input.key_left => if (p.kind == .image) {
+                    _ = p.panImageBy(40, 0);
+                } else {
+                    consumed = false;
+                },
+                platform_input.key_right => if (p.kind == .image) {
+                    _ = p.panImageBy(-40, 0);
+                } else {
+                    consumed = false;
+                },
+                platform_input.key_home => p.scrollBy(-1_000_000),
+                platform_input.key_end => p.scrollBy(1_000_000),
+                else => consumed = false,
+            }
+            if (consumed) {
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                return;
+            }
+        }
+    }
+
     // Don't send input to PTY if active tab isn't the terminal
     if (!AppWindow.isActiveTabTerminal()) return;
 
@@ -2254,41 +2293,6 @@ fn hitTestFileExplorerRefreshButton(xpos: f64, ypos: f64) bool {
     return hit_test.panelHeaderSecondButton(fileExplorerHeaderLayout() orelse return false, xpos, ypos);
 }
 
-fn hitTestMarkdownPreviewPanel(xpos: f64, ypos: f64) bool {
-    if (!markdown_preview_panel.isVisibleForActiveTab()) return false;
-    if (ypos < titlebarHeight()) return false;
-    const win = AppWindow.g_window orelse return false;
-    const size = clientSize(win);
-    const preview_w: f64 = @floatCast(markdown_preview_panel.width());
-    const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
-    return xpos >= panel_x and xpos < panel_x + preview_w;
-}
-
-fn markdownPreviewHeaderLayout() ?hit_test.PanelHeaderLayout {
-    if (!markdown_preview_panel.isVisibleForActiveTab()) return null;
-    const win = AppWindow.g_window orelse return null;
-    const size = clientSize(win);
-    const preview_w: f64 = @floatCast(markdown_preview_panel.width());
-    const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
-    return .{
-        .visible = true,
-        .left = panel_x,
-        .right = panel_x + preview_w,
-        .top = titlebarHeight(),
-        .height = @floatCast(AppWindow.markdown_preview_renderer.HEADER_HEIGHT),
-    };
-}
-
-fn hitTestMarkdownPreviewCloseButton(xpos: f64, ypos: f64) bool {
-    return hit_test.panelHeaderCloseButton(markdownPreviewHeaderLayout() orelse return false, xpos, ypos);
-}
-
-fn hitTestMarkdownPreviewHeader(xpos: f64, ypos: f64) bool {
-    const layout = markdownPreviewHeaderLayout() orelse return false;
-    return xpos >= layout.left and xpos < layout.right and
-        ypos >= layout.top and ypos < layout.top + layout.height;
-}
-
 fn browserPanelBounds() ?browser_panel.Bounds {
     if (!browser_panel.isVisibleForActiveTab()) return null;
     const win = AppWindow.g_window orelse return null;
@@ -2427,28 +2431,6 @@ fn applyAiCopilotWidthFromMouse(xpos: f64) void {
     const new_width = right_edge - xpos;
     const available_width: f32 = @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth();
     if (!ai_sidebar.setWidth(@floatCast(new_width), available_width)) return;
-    syncGridFromWindow(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
-}
-
-fn hitTestMarkdownPreviewResizeHandle(xpos: f64, ypos: f64) bool {
-    if (!markdown_preview_panel.isVisibleForActiveTab()) return false;
-    if (ypos < titlebarHeight()) return false;
-    const win = AppWindow.g_window orelse return false;
-    const size = clientSize(win);
-    const preview_w: f64 = @floatCast(markdown_preview_panel.width());
-    const panel_x: f64 = @as(f64, @floatFromInt(size.width)) - preview_w;
-    const half_hit: f64 = @as(f64, @floatCast(markdown_preview_panel.RESIZE_HIT_WIDTH)) / 2;
-    return xpos >= panel_x - half_hit and xpos <= panel_x + half_hit;
-}
-
-fn applyMarkdownPreviewWidthFromMouse(xpos: f64) void {
-    const win = AppWindow.g_window orelse return;
-    const size = clientSize(win);
-    const right_edge = @as(f64, @floatFromInt(size.width));
-    const new_width = right_edge - xpos;
-    if (!markdown_preview_panel.setWidth(@floatCast(new_width), @floatFromInt(size.width))) return;
     syncGridFromWindow(win);
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
@@ -3209,7 +3191,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
         clearUrlUnderline();
         return;
     }
-    if (ypos < titlebarHeight() or hitTestFileExplorer(xpos, ypos) or hitTestMarkdownPreviewPanel(xpos, ypos) or hitTestBrowserPanel(xpos, ypos)) {
+    if (ypos < titlebarHeight() or hitTestFileExplorer(xpos, ypos) or hitTestBrowserPanel(xpos, ypos)) {
         clearUrlUnderline();
         return;
     }
@@ -3240,12 +3222,37 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
     const perf = ui_perf.begin("input.open_preview_async");
     defer perf.end();
 
-    AppWindow.hideAiCopilot();
-    if (!markdown_preview_panel.beginAsyncLoad(kind, title, path, source_kind)) {
+    const t = tab.activeTab() orelse return false;
+    const gpa = AppWindow.g_allocator orelse return false;
+    const pane: *PreviewPane = if (tab.firstPreviewForReuse(gpa, t)) |h|
+        switch (t.tree.nodes[h.idx()]) {
+            .leaf => |pn| switch (pn) {
+                .preview => |p| p,
+                else => return false,
+            },
+            .split => return false,
+        }
+    else
+        (tab.splitIntoPreview(gpa) orelse return false);
+    if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
     }
-    if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+    return true;
+}
+
+fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind) bool {
+    const perf = ui_perf.begin("input.open_preview_new");
+    defer perf.end();
+
+    const gpa = AppWindow.g_allocator orelse return false;
+    const pane = tab.splitIntoPreview(gpa) orelse return false;
+    if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
+        file_explorer.setTransferStatus(.failed, "Preview failed");
+        return true;
+    }
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
     return true;
@@ -3302,7 +3309,7 @@ fn lsPrefixForCell(surface: *Surface, cell_pos: CellPos, out_buf: []u8) ?[]const
     return ls_path_context.inferPrefixForClick(grid, cell_pos.row, out_buf);
 }
 
-fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
+fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bool {
     const allocator = AppWindow.g_allocator orelse return false;
     const path = extractPreviewPathAtCell(allocator, surface, cell_pos) orelse return false;
     defer allocator.free(path);
@@ -3322,7 +3329,11 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
             return true;
         };
 
-        return openPreviewAsync(kind, basenameForPreview(path), resolved_path, source_kind);
+        if (shift) {
+            return openPreviewNew(kind, basenameForPreview(path), resolved_path, source_kind);
+        } else {
+            return openPreviewAsync(kind, basenameForPreview(path), resolved_path, source_kind);
+        }
     }
 
     const command = buildPreviewCommand(allocator, path) orelse return false;
@@ -3698,10 +3709,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 closeBrowserPanel();
                 return;
             }
-            if (hitTestMarkdownPreviewCloseButton(xpos, ypos)) {
-                closeMarkdownPreviewPanel();
-                return;
-            }
             if (hitTestAiCopilotCloseButton(xpos, ypos)) {
                 closeAiCopilotPanel();
                 return;
@@ -3717,12 +3724,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             if (hitTestFileExplorerResizeHandle(xpos, ypos)) {
                 g_explorer_resize_dragging = true;
                 g_explorer_resize_hover = true;
-                platform_cursor.set(.size_we);
-                return;
-            }
-            if (hitTestMarkdownPreviewResizeHandle(xpos, ypos)) {
-                g_markdown_preview_resize_dragging = true;
-                g_markdown_preview_resize_hover = true;
                 platform_cursor.set(.size_we);
                 return;
             }
@@ -3764,20 +3765,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             // File explorer left sidebar click
             if (hitTestFileExplorer(xpos, ypos)) {
                 handleFileExplorerPress(xpos, ypos, ev.ctrl, ev.shift, ev.alt, ev.super);
-                return;
-            }
-
-            if (hitTestMarkdownPreviewPanel(xpos, ypos)) {
-                file_explorer.g_focused = false;
-                if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
-                if (hitTestMarkdownPreviewHeader(xpos, ypos)) return;
-                if (markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready) {
-                    g_markdown_preview_image_dragging = true;
-                    g_markdown_preview_image_hover = true;
-                    g_markdown_preview_image_drag_last_x = xpos;
-                    g_markdown_preview_image_drag_last_y = ypos;
-                    platform_cursor.set(.size_all);
-                }
                 return;
             }
 
@@ -4064,7 +4051,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 // Initialize per-surface resize tracking with current sizes
                 // so we only show overlays on surfaces that actually change
                 if (AppWindow.activeTab()) |tb| {
-                    var it = tb.tree.iterator();
+                    var it = tb.tree.surfaces();
                     while (it.next()) |entry| {
                         entry.surface.resize_overlay_active = false;
                         entry.surface.resize_overlay_last_cols = entry.surface.size.grid.cols;
@@ -4072,6 +4059,25 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     }
                 }
                 return;
+            }
+
+            // A click on a preview leaf focuses it (so keyboard/wheel scroll-zoom
+            // route there) and consumes the event — previews have no terminal
+            // grid to select into. Terminal leaves fall through to the surface
+            // focus + selection path below, so non-preview clicks are unchanged.
+            if (split_layout.paneAtPoint(ev.x, ev.y)) |hit| {
+                switch (hit.pane) {
+                    .preview => {
+                        const tb = AppWindow.activeTab() orelse return;
+                        if (tb.focused != hit.handle) {
+                            tb.focused = hit.handle;
+                            AppWindow.g_force_rebuild = true;
+                            AppWindow.g_cells_valid = false;
+                        }
+                        return;
+                    },
+                    .terminal => {},
+                }
             }
 
             // Find which surface was clicked and focus it
@@ -4083,9 +4089,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 for (0..split_layout.g_split_rect_count) |i| {
                     const rect = split_layout.g_split_rects[i];
                     if (!split_layout.cachedRectIsLive(rect)) continue;
-                    if (rect.surface == clicked_surface) {
-                        tb.focused = rect.handle;
-                        break;
+                    if (rect.surface()) |s| {
+                        if (s == clicked_surface) {
+                            tb.focused = rect.handle;
+                            break;
+                        }
                     }
                 }
                 if (tb.focused != previous_focus) {
@@ -4101,7 +4109,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 .open_url_or_preview => {
                     if (openUrlAtCell(clicked_surface, cell_pos)) return;
                     if (openHtmlPanelForCell(clicked_surface, cell_pos)) return;
-                    if (openPreviewPanelForCell(clicked_surface, cell_pos)) return;
+                    if (openPreviewPanelForCell(clicked_surface, cell_pos, ev.shift)) return;
                 },
                 .pass_through => {},
             }
@@ -4155,16 +4163,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 platform_cursor.set(.arrow);
                 return;
             }
-            if (g_markdown_preview_image_dragging) {
-                g_markdown_preview_image_dragging = false;
-                const cursor_shape: platform_cursor.Shape = if (hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready)
-                    .size_all
-                else
-                    .arrow;
-                g_markdown_preview_image_hover = cursor_shape == .size_all;
-                platform_cursor.set(cursor_shape);
-                return;
-            }
             if (g_sidebar_resize_dragging) {
                 g_sidebar_resize_dragging = false;
                 g_sidebar_resize_hover = hitTestSidebarResizeHandle(xpos, ypos);
@@ -4175,12 +4173,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 g_explorer_resize_dragging = false;
                 g_explorer_resize_hover = hitTestFileExplorerResizeHandle(xpos, ypos);
                 platform_cursor.set(if (g_explorer_resize_hover) .size_we else .arrow);
-                return;
-            }
-            if (g_markdown_preview_resize_dragging) {
-                g_markdown_preview_resize_dragging = false;
-                g_markdown_preview_resize_hover = hitTestMarkdownPreviewResizeHandle(xpos, ypos);
-                platform_cursor.set(if (g_markdown_preview_resize_hover) .size_we else .arrow);
                 return;
             }
             if (g_browser_resize_dragging) {
@@ -4206,7 +4198,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 g_divider_drag_layout = null;
                 // Reset per-surface resize overlay state
                 if (AppWindow.activeTab()) |tb| {
-                    var it = tb.tree.iterator();
+                    var it = tb.tree.surfaces();
                     while (it.next()) |entry| {
                         entry.surface.resize_overlay_active = false;
                     }
@@ -4419,11 +4411,6 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         platform_cursor.set(.size_we);
         return;
     }
-    if (g_markdown_preview_resize_dragging) {
-        applyMarkdownPreviewWidthFromMouse(xpos);
-        platform_cursor.set(.size_we);
-        return;
-    }
     if (g_browser_resize_dragging) {
         applyBrowserWidthFromMouse(xpos);
         platform_cursor.set(.size_we);
@@ -4447,18 +4434,6 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         platform_cursor.set(.ibeam);
         return;
     }
-    if (g_markdown_preview_image_dragging) {
-        const delta_x: f32 = @floatCast(xpos - g_markdown_preview_image_drag_last_x);
-        const delta_y: f32 = @floatCast(ypos - g_markdown_preview_image_drag_last_y);
-        g_markdown_preview_image_drag_last_x = xpos;
-        g_markdown_preview_image_drag_last_y = ypos;
-        if (markdown_preview_panel.panImageBy(delta_x, delta_y)) {
-            AppWindow.g_force_rebuild = true;
-        }
-        platform_cursor.set(.size_all);
-        return;
-    }
-
     // Alt-drag panel swap: track the drop target / dim the source. Owns the move
     // while a swap source is recorded, so it must precede PTY mouse-report and
     // selection handling below.
@@ -4545,10 +4520,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         return;
     }
     if (!g_selecting and !overlays.scrollbar.g_scrollbar_dragging) {
-        if (hitTestMarkdownPreviewHeader(xpos, ypos) or hitTestAiCopilotCloseButton(xpos, ypos)) {
-            if (g_markdown_preview_image_hover) {
-                g_markdown_preview_image_hover = false;
-            }
+        if (hitTestAiCopilotCloseButton(xpos, ypos)) {
             platform_cursor.set(.arrow);
             return;
         }
@@ -4569,24 +4541,6 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         } else if (g_explorer_resize_hover) {
             platform_cursor.set(.arrow);
             g_explorer_resize_hover = false;
-        }
-        const over_preview_resize = hitTestMarkdownPreviewResizeHandle(xpos, ypos);
-        if (over_preview_resize) {
-            platform_cursor.set(.size_we);
-            g_markdown_preview_resize_hover = true;
-            return;
-        } else if (g_markdown_preview_resize_hover) {
-            platform_cursor.set(.arrow);
-            g_markdown_preview_resize_hover = false;
-        }
-        const over_preview_image = hitTestMarkdownPreviewPanel(xpos, ypos) and markdown_preview_panel.g_kind == .image and markdown_preview_panel.g_load_status == .ready;
-        if (over_preview_image) {
-            platform_cursor.set(.size_all);
-            g_markdown_preview_image_hover = true;
-            return;
-        } else if (g_markdown_preview_image_hover) {
-            platform_cursor.set(.arrow);
-            g_markdown_preview_image_hover = false;
         }
         const over_browser_resize = hitTestBrowserResizeHandle(xpos, ypos);
         if (over_browser_resize) {
@@ -4834,7 +4788,6 @@ fn terminalMouseReportTarget(x_i: i32, y_i: i32) ?*Surface {
     if (hitTestFileExplorer(xf, yf)) return null;
     if (hitTestBrowserUrlBar(xf, yf)) return null;
     if (hitTestBrowserPanel(xf, yf)) return null;
-    if (hitTestMarkdownPreviewPanel(xf, yf)) return null;
     if (aiCopilotRegionContains(xf, yf)) return null;
     const surface = split_layout.surfaceAtPoint(x_i, y_i) orelse return null;
     surface.render_state.mutex.lock();
@@ -4909,16 +4862,6 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     }
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
-    if (hitTestMarkdownPreviewPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) {
-        if (markdown_preview_panel.g_kind == .image) {
-            _ = markdown_preview_panel.zoomImageBySteps(mouseWheelUnits(ev.delta), ev.delta > 0);
-        } else {
-            const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
-            markdown_preview_panel.scrollBy(delta);
-        }
-        AppWindow.g_force_rebuild = true;
-        return;
-    }
     // Scroll in file explorer
     if (file_explorer.isVisibleForActiveTab()) {
         const panel_x = @as(i32, @intFromFloat(titlebar.sidebarWidth()));
@@ -5019,6 +4962,23 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                 AppWindow.g_force_rebuild = true;
                 return;
             }
+        }
+    }
+    // Wheel over a preview leaf scrolls/zooms that pane (mirroring the dock
+    // preview wheel logic above) and consumes the event. Terminal leaves fall
+    // through to the surface-scroll path below, so the default behavior is
+    // unchanged when the cursor is not over a preview.
+    if (split_layout.paneAtPoint(ev.xpos, ev.ypos)) |hit| {
+        if (hit.pane == .preview) {
+            const p = hit.pane.preview;
+            if (p.kind == .image) {
+                _ = p.zoomImageBySteps(mouseWheelUnits(ev.delta), ev.delta > 0);
+            } else {
+                const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
+                p.scrollBy(delta);
+            }
+            AppWindow.g_force_rebuild = true;
+            return;
         }
     }
     // Scroll the surface under the mouse cursor (like Ghostty), not the focused surface.

@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Surface = @import("Surface.zig");
+const PreviewPane = @import("preview_pane.zig");
 
 const SplitTree = @This();
 
@@ -43,8 +44,40 @@ pub const empty: SplitTree = .{
     .zoomed = null,
 };
 
+/// A single pane held by a leaf node. Today a leaf is a terminal surface or a
+/// preview pane; future arms (copilot, webview) add one tag each. PreviewPane
+/// and Surface are both refcounted because the tree is immutable: every edit
+/// clones the nodes and refs each leaf so versions share payloads.
+pub const Pane = union(enum) {
+    terminal: *Surface,
+    preview: *PreviewPane,
+
+    pub fn ref(self: Pane) Pane {
+        return switch (self) {
+            .terminal => |s| .{ .terminal = s.ref() },
+            .preview => |p| .{ .preview = p.ref() },
+        };
+    }
+
+    pub fn unref(self: Pane, gpa: Allocator) void {
+        switch (self) {
+            .terminal => |s| s.unref(gpa),
+            .preview => |p| p.unref(gpa),
+        }
+    }
+
+    /// The terminal surface this pane holds, or null if it is a non-terminal
+    /// pane (e.g. a preview). Lets surface-only consumers skip other panes.
+    pub fn surface(self: Pane) ?*Surface {
+        return switch (self) {
+            .terminal => |s| s,
+            else => null,
+        };
+    }
+};
+
 pub const Node = union(enum) {
-    leaf: *Surface,
+    leaf: Pane,
     split: Split,
 
     /// A handle into the nodes array. This lets us keep track of
@@ -79,14 +112,14 @@ pub const Split = struct {
     pub const Direction = enum { left, right, down, up };
 };
 
-/// Initialize a new tree with a single surface.
-pub fn init(gpa: Allocator, surface: *Surface) Allocator.Error!SplitTree {
+/// Initialize a new tree with a single pane.
+pub fn initPane(gpa: Allocator, pane: Pane) Allocator.Error!SplitTree {
     var arena = ArenaAllocator.init(gpa);
     errdefer arena.deinit();
     const alloc = arena.allocator();
 
     const nodes = try alloc.alloc(Node, 1);
-    nodes[0] = .{ .leaf = surface.ref() };
+    nodes[0] = .{ .leaf = pane.ref() };
 
     return .{
         .arena = arena,
@@ -95,14 +128,19 @@ pub fn init(gpa: Allocator, surface: *Surface) Allocator.Error!SplitTree {
     };
 }
 
+/// Initialize a new tree with a single surface.
+pub fn init(gpa: Allocator, surface: *Surface) Allocator.Error!SplitTree {
+    return initPane(gpa, .{ .terminal = surface });
+}
+
 pub fn deinit(self: *SplitTree) void {
     // Important: only free memory if we have memory to free,
     // because we use an undefined arena for empty trees.
     if (self.nodes.len > 0) {
-        // Unref all our surfaces
+        // Unref all our panes
         const gpa: Allocator = self.arena.child_allocator;
         for (self.nodes) |node| switch (node) {
-            .leaf => |surface| surface.unref(gpa),
+            .leaf => |pane| pane.unref(gpa),
             .split => {},
         };
         self.arena.deinit();
@@ -150,35 +188,62 @@ pub fn isSplit(self: *const SplitTree) bool {
     };
 }
 
-/// An iterator over all the surfaces in the tree.
-pub fn iterator(self: *const SplitTree) Iterator {
-    return .{ .nodes = self.nodes };
-}
-
 pub const SurfaceEntry = struct {
     handle: Node.Handle,
     surface: *Surface,
 };
 
-pub const Iterator = struct {
+pub const PaneEntry = struct {
+    handle: Node.Handle,
+    pane: Pane,
+};
+
+/// Iterates the terminal surfaces in the tree, skipping non-terminal panes
+/// (e.g. previews). This preserves the historical "iterate surfaces" behavior.
+pub const SurfaceIterator = struct {
     i: Node.Handle = .root,
     nodes: []const Node,
 
-    pub fn next(self: *Iterator) ?SurfaceEntry {
-        // If we have no nodes, return null.
-        if (@intFromEnum(self.i) >= self.nodes.len) return null;
-
-        // Get the current node and increment the index.
-        const handle = self.i;
-        self.i = @enumFromInt(handle.idx() + 1);
-        const node = self.nodes[handle.idx()];
-
-        return switch (node) {
-            .leaf => |s| .{ .handle = handle, .surface = s },
-            .split => self.next(),
-        };
+    pub fn next(self: *SurfaceIterator) ?SurfaceEntry {
+        while (@intFromEnum(self.i) < self.nodes.len) {
+            const h = self.i;
+            self.i = @enumFromInt(h.idx() + 1);
+            switch (self.nodes[h.idx()]) {
+                .leaf => |pane| if (pane.surface()) |s| return .{ .handle = h, .surface = s },
+                .split => {},
+            }
+        }
+        return null;
     }
 };
+
+/// Iterates every leaf pane in the tree (terminals AND previews).
+pub const PaneIterator = struct {
+    i: Node.Handle = .root,
+    nodes: []const Node,
+
+    pub fn next(self: *PaneIterator) ?PaneEntry {
+        while (@intFromEnum(self.i) < self.nodes.len) {
+            const h = self.i;
+            self.i = @enumFromInt(h.idx() + 1);
+            switch (self.nodes[h.idx()]) {
+                .leaf => |pane| return .{ .handle = h, .pane = pane },
+                .split => {},
+            }
+        }
+        return null;
+    }
+};
+
+/// An iterator over all the terminal surfaces in the tree.
+pub fn surfaces(self: *const SplitTree) SurfaceIterator {
+    return .{ .nodes = self.nodes };
+}
+
+/// An iterator over all the leaf panes in the tree.
+pub fn panes(self: *const SplitTree) PaneIterator {
+    return .{ .nodes = self.nodes };
+}
 
 /// Change the zoomed state to the given node. Assumes the handle is valid.
 /// This is the one mutable operation on the tree.
@@ -416,9 +481,9 @@ pub fn resizeInPlace(
     s.ratio = ratio;
 }
 
-/// Swap the surfaces held by two leaf nodes in place. Both handles MUST refer
+/// Swap the panes held by two leaf nodes in place. Both handles MUST refer
 /// to leaf nodes (asserted). Topology, layout, ratios, zoom state, and
-/// reference counts are all unchanged — only the two *Surface pointers swap.
+/// reference counts are all unchanged — only the two Pane values swap.
 /// Swapping a node with itself is a harmless no-op.
 ///
 /// Like `resizeInPlace`, this mutates the otherwise-immutable nodes via the
@@ -429,16 +494,16 @@ pub fn swapLeaves(self: *SplitTree, a: Node.Handle, b: Node.Handle) void {
     if (a == b) return;
 
     const nodes: []Node = @constCast(self.nodes);
-    const surf_a = switch (nodes[a.idx()]) {
-        .leaf => |s| s,
+    const pane_a = switch (nodes[a.idx()]) {
+        .leaf => |p| p,
         .split => unreachable,
     };
-    const surf_b = switch (nodes[b.idx()]) {
-        .leaf => |s| s,
+    const pane_b = switch (nodes[b.idx()]) {
+        .leaf => |p| p,
         .split => unreachable,
     };
-    nodes[a.idx()] = .{ .leaf = surf_b };
-    nodes[b.idx()] = .{ .leaf = surf_a };
+    nodes[a.idx()] = .{ .leaf = pane_b };
+    nodes[b.idx()] = .{ .leaf = pane_a };
 }
 
 /// Insert another tree into this tree at the given node in the
@@ -587,8 +652,8 @@ fn removeNode(
         // Leaf is simple, just copy it over. We don't ref anything
         // yet because it'd make undo (errdefer) harder. We do that
         // all at once later.
-        .leaf => |surface| {
-            new_nodes[new_offset] = .{ .leaf = surface };
+        .leaf => |pane| {
+            new_nodes[new_offset] = .{ .leaf = pane };
             return 1;
         },
 
@@ -683,12 +748,12 @@ fn refNodes(nodes: []Node) Allocator.Error!void {
     // We need to increase the reference count of all the nodes.
     // Careful accounting here so that we properly unref on error
     // only the nodes we referenced.
-    // Note: Surface.ref() cannot fail, so no error handling needed,
+    // Note: Pane.ref() cannot fail, so no error handling needed,
     // but we keep the pattern from Ghostty for consistency.
     for (0..nodes.len) |i| {
         switch (nodes[i]) {
             .split => {},
-            .leaf => |surface| nodes[i] = .{ .leaf = surface.ref() },
+            .leaf => |pane| nodes[i] = .{ .leaf = pane.ref() },
         }
     }
 }
@@ -931,7 +996,7 @@ pub fn readingOrder(self: *const SplitTree, alloc: Allocator) Allocator.Error![]
 
     var positions: std.ArrayListUnmanaged(PanelPos) = .empty;
     defer positions.deinit(alloc);
-    var it = self.iterator();
+    var it = self.panes();
     while (it.next()) |entry| {
         const slot = sp.slots[entry.handle.idx()];
         try positions.append(alloc, .{ .handle = entry.handle, .x = slot.x, .y = slot.y });
@@ -1077,14 +1142,16 @@ fn dimensions(self: *const SplitTree, current: Node.Handle) struct {
     };
 }
 
-/// Create a SplitTree from a session_persist NodeSnap. The factory callback
-/// is responsible for materializing one *Surface per leaf snapshot. Returning
-/// null from the factory aborts the rebuild with error.SurfaceCreationFailed.
+/// Create a SplitTree from a session_persist NodeSnap. For a `.terminal` leaf
+/// the factory callback materializes one *Surface; returning null aborts the
+/// rebuild with error.SurfaceCreationFailed. For a `.preview` leaf a fresh
+/// PreviewPane is created and (best-effort) starts an async reload of the
+/// persisted kind+path; a failed PreviewPane allocation likewise aborts with
+/// error.SurfaceCreationFailed.
 ///
-/// On error.SurfaceCreationFailed, any *Surface values returned by previous
-/// successful factory calls are NOT freed by this function — they are leaked.
-/// The factory must either track created surfaces externally for cleanup,
-/// or the caller must accept this leak as a fatal error path.
+/// On error.SurfaceCreationFailed, any panes (surfaces or preview panes) built
+/// by earlier successful nodes are NOT freed by this function — they are
+/// leaked. The caller must accept this as a fatal, best-effort restore path.
 ///
 /// Splits are always binary; ratios are clamped to [0.05, 0.95] for safety.
 /// Pre-order traversal: root first, then left subtree, then right subtree.
@@ -1120,9 +1187,21 @@ pub fn fromSnapshot(
             const my_handle: Node.Handle = @enumFromInt(@as(Node.Handle.Backing, @intCast(self.idx)));
             self.idx += 1;
             switch (n.*) {
-                .leaf => |leaf| {
-                    const surface = self.factory(&leaf.surface, self.gpa) orelse return error.SurfaceCreationFailed;
-                    self.nodes[my_handle.idx()] = .{ .leaf = surface };
+                .leaf => |leaf| switch (leaf.kind) {
+                    .terminal => {
+                        const surface = self.factory(&leaf.surface, self.gpa) orelse return error.SurfaceCreationFailed;
+                        self.nodes[my_handle.idx()] = .{ .leaf = .{ .terminal = surface } };
+                    },
+                    .preview => {
+                        // Mirror the surface path: a failed allocation aborts the
+                        // rebuild (same fail-fast semantics as a null factory).
+                        const pane = PreviewPane.create(self.gpa) catch return error.SurfaceCreationFailed;
+                        if (leaf.preview) |ps| {
+                            // Best-effort async reload; basename is the title.
+                            _ = pane.beginAsyncLoad(ps.kind, std.fs.path.basename(ps.path), ps.path, .local);
+                        }
+                        self.nodes[my_handle.idx()] = .{ .leaf = .{ .preview = pane } };
+                    },
                 },
                 .split => |sp| {
                     // Reserve current index, then write children in pre-order.
@@ -1256,9 +1335,9 @@ test "SplitTree: fromSnapshot rebuilds nested topology with correct handles and 
     const sentinel_a: *Surface = @ptrCast(@alignCast(&Stub.sentinels[0]));
     const sentinel_b: *Surface = @ptrCast(@alignCast(&Stub.sentinels[1]));
     const sentinel_c: *Surface = @ptrCast(@alignCast(&Stub.sentinels[2]));
-    try std.testing.expectEqual(sentinel_a, tree.nodes[2].leaf);
-    try std.testing.expectEqual(sentinel_b, tree.nodes[3].leaf);
-    try std.testing.expectEqual(sentinel_c, tree.nodes[4].leaf);
+    try std.testing.expectEqual(sentinel_a, tree.nodes[2].leaf.terminal);
+    try std.testing.expectEqual(sentinel_b, tree.nodes[3].leaf.terminal);
+    try std.testing.expectEqual(sentinel_c, tree.nodes[4].leaf.terminal);
 }
 
 test "SplitTree: fromSnapshot clamps ratios" {
@@ -1316,8 +1395,8 @@ test "SplitTree: swapLeaves exchanges leaf surfaces and preserves topology" {
     // Pre-order layout: [root_split@0, leaf_a@1, leaf_b@2]
     const a: Node.Handle = @enumFromInt(1);
     const b: Node.Handle = @enumFromInt(2);
-    const surf_a = tree.nodes[1].leaf;
-    const surf_b = tree.nodes[2].leaf;
+    const surf_a = tree.nodes[1].leaf.terminal;
+    const surf_b = tree.nodes[2].leaf.terminal;
     try std.testing.expect(surf_a != surf_b);
 
     // Capture topology before the swap.
@@ -1329,8 +1408,8 @@ test "SplitTree: swapLeaves exchanges leaf surfaces and preserves topology" {
     tree.swapLeaves(a, b);
 
     // Surfaces exchanged.
-    try std.testing.expectEqual(surf_b, tree.nodes[1].leaf);
-    try std.testing.expectEqual(surf_a, tree.nodes[2].leaf);
+    try std.testing.expectEqual(surf_b, tree.nodes[1].leaf.terminal);
+    try std.testing.expectEqual(surf_a, tree.nodes[2].leaf.terminal);
 
     // Topology untouched: layout, ratio, and child handles unchanged.
     try std.testing.expectEqual(layout_before, tree.nodes[0].split.layout);
@@ -1340,8 +1419,8 @@ test "SplitTree: swapLeaves exchanges leaf surfaces and preserves topology" {
 
     // Swapping the same pair again restores the original arrangement.
     tree.swapLeaves(a, b);
-    try std.testing.expectEqual(surf_a, tree.nodes[1].leaf);
-    try std.testing.expectEqual(surf_b, tree.nodes[2].leaf);
+    try std.testing.expectEqual(surf_a, tree.nodes[1].leaf.terminal);
+    try std.testing.expectEqual(surf_b, tree.nodes[2].leaf.terminal);
 }
 
 test "sortReadingOrder orders panels top-left to bottom-right" {
@@ -1425,4 +1504,48 @@ test "SplitTree: readingOrder is row-major top-left to bottom-right" {
     try std.testing.expectEqual(@as(?Node.Handle, @enumFromInt(6)), try tree.panelHandleAt(std.testing.allocator, 4));
     try std.testing.expectEqual(@as(?Node.Handle, null), try tree.panelHandleAt(std.testing.allocator, 5));
     try std.testing.expectEqual(@as(?Node.Handle, null), try tree.panelHandleAt(std.testing.allocator, 0));
+}
+
+test "SplitTree: surfaces() and panes() agree for an all-terminal tree" {
+    const session_persist = @import("session_persist.zig");
+
+    var leaf_a = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var leaf_b = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var leaf_c = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var inner = session_persist.NodeSnap{ .split = .{ .layout = .vertical, .ratio = 0.4, .left = &leaf_a, .right = &leaf_b } };
+    var root = session_persist.NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.6, .left = &inner, .right = &leaf_c } };
+
+    const Stub = struct {
+        var counter: usize = 0;
+        var sentinels: [16]usize = undefined;
+        fn make(_: *const session_persist.SurfaceSnap, _: Allocator) ?*Surface {
+            const ptr = &sentinels[counter];
+            counter += 1;
+            return @ptrCast(@alignCast(ptr));
+        }
+    };
+    Stub.counter = 0;
+
+    var tree = try fromSnapshot(std.testing.allocator, &root, Stub.make);
+    defer {
+        // Sentinel leaves can't be unref'd via the real Surface path.
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    // Three terminal leaves: surfaces() and panes() must report the same count,
+    // and every pane must be a .terminal (no previews are created in this task).
+    var surface_count: usize = 0;
+    var sit = tree.surfaces();
+    while (sit.next()) |_| surface_count += 1;
+
+    var pane_count: usize = 0;
+    var pit = tree.panes();
+    while (pit.next()) |entry| {
+        pane_count += 1;
+        try std.testing.expect(entry.pane == .terminal);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), surface_count);
+    try std.testing.expectEqual(surface_count, pane_count);
 }

@@ -11,6 +11,7 @@ const Config = @import("config.zig");
 const build_options = @import("build_options");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
+const PreviewPane = @import("preview_pane.zig");
 const renderer = @import("renderer.zig");
 const window_backend = @import("platform/window_backend.zig");
 const App = @import("App.zig");
@@ -298,7 +299,6 @@ pub fn deinit(self: *AppWindow) void {
         }
     }
     markdown_preview_renderer.deinit();
-    markdown_preview_panel.deinit();
     browser_panel.deinit();
 }
 
@@ -531,9 +531,27 @@ pub const surfaceAtPoint = split_layout.surfaceAtPoint;
 pub const hitTestDivider = split_layout.hitTestDivider;
 const computeSplitLayout = split_layout.computeSplitLayout;
 
+/// Draw a thin accent-colored focus border around a split-leaf rect, in
+/// window-absolute coordinates (GL origin bottom-left). Used to indicate the
+/// focused non-terminal pane (e.g. a preview), which has no terminal cursor.
+/// The caller must have the full-window viewport/projection set.
+fn drawPaneFocusRing(rect: SplitRect, window_height: f32) void {
+    const accent = g_theme.cursor_color;
+    const border: f32 = 2.0;
+    const px: f32 = @floatFromInt(rect.x);
+    const py: f32 = window_height - @as(f32, @floatFromInt(rect.y + rect.height));
+    const pw: f32 = @floatFromInt(rect.width);
+    const ph: f32 = @floatFromInt(rect.height);
+    if (pw <= 0 or ph <= 0) return;
+    ui_pipeline.fillQuad(px, py, pw, border, accent); // bottom
+    ui_pipeline.fillQuad(px, py + ph - border, pw, border, accent); // top
+    ui_pipeline.fillQuad(px, py, border, ph, accent); // left
+    ui_pipeline.fillQuad(px + pw - border, py, border, ph, accent); // right
+}
+
 fn synchronizedOutputPendingForVisibleSplits(split_count: usize) bool {
     for (0..split_count) |i| {
-        const surface = split_layout.g_split_rects[i].surface;
+        const surface = split_layout.g_split_rects[i].surface() orelse continue;
         surface.render_state.mutex.lock();
         const pending = surface.synchronizedOutputPendingLocked();
         surface.render_state.mutex.unlock();
@@ -770,7 +788,6 @@ fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, le
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     if (activeAiChat()) |session| {
         const chat_x = left_panels_w;
@@ -796,7 +813,6 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     if (active_tab.ai_history_session) |session| {
         const draw: ai_history_renderer.DrawContext = .{
@@ -829,7 +845,6 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     if (active_tab.skill_center_session) |session| {
         const draw: skill_center_renderer.DrawContext = .{
@@ -928,7 +943,6 @@ fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: 
     clearWithBackground(fb_width, fb_height);
     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     const session = active_tab.port_forwarding_session orelse return;
     const app = g_app orelse return;
@@ -1071,7 +1085,7 @@ pub fn activeSurfaceHasRunningProgram() bool {
 
 fn tabStateHasRunningProgram(t: *const TabState) bool {
     if (t.kind != .terminal) return false;
-    var it = t.tree.iterator();
+    var it = t.tree.surfaces();
     while (it.next()) |entry| {
         if (surfaceOnAltScreen(entry.surface)) return true;
     }
@@ -1948,7 +1962,7 @@ pub fn skillCenterPreviewSelected() bool {
     const text = remote_file.localPosixExec(allocator, command, 1024 * 1024) catch null;
     if (text) |t| {
         defer allocator.free(t);
-        markdown_preview_panel.open(.markdown, name_buf[0..name_len], "SKILL.md", t);
+        openSkillMdInPreviewLeaf(allocator, name_buf[0..name_len], t);
         markUiDirty();
     } else {
         overlays.showStatusToast(i18n.s().sc_toast_read_failed);
@@ -2590,6 +2604,23 @@ fn markUiDirty() void {
     g_cells_valid = false;
 }
 
+/// Tick all preview panes across every tab. Returns true if any pane
+/// updated its content (caller should redraw).
+fn tickAllPreviewPanes() bool {
+    var changed = false;
+    for (0..tab.g_tab_count) |ti| {
+        const tb = tab.g_tabs[ti] orelse continue;
+        var it = tb.tree.panes();
+        while (it.next()) |e| switch (e.pane) {
+            .preview => |p| {
+                if (p.tickAsync()) changed = true;
+            },
+            else => {},
+        };
+    }
+    return changed;
+}
+
 fn aiHistoryListVisibleRowsForWindow() usize {
     const win = g_window orelse return 1;
     const fb = window_backend.framebufferSize(win);
@@ -2701,6 +2732,21 @@ pub fn activeCopilotSessionForInput() ?*ai_chat.Session {
     return t.copilot_session;
 }
 
+/// The preview pane that currently has split-tree focus, or null if the
+/// focused leaf is a terminal (or there is no active tab / the handle is
+/// stale). Used to route keyboard scroll/zoom to a focused preview leaf.
+pub fn focusedPreviewPane() ?*PreviewPane {
+    const t = tab.activeTab() orelse return null;
+    if (t.focused.idx() >= t.tree.nodes.len) return null;
+    return switch (t.tree.nodes[t.focused.idx()]) {
+        .leaf => |pane| switch (pane) {
+            .preview => |p| p,
+            else => null,
+        },
+        .split => null,
+    };
+}
+
 /// Inserts `text` into a visible AI chat composer when a file is dropped at
 /// framebuffer-pixel `(x, y)`. Returns true if the point landed over a chat
 /// surface and the text was inserted. Checks the dedicated AI-chat tab first
@@ -2749,7 +2795,6 @@ pub fn toggleAiCopilot() void {
     }
     // Exclusive right slot: close the other right panels first.
     browser_panel.close();
-    markdown_preview_panel.close();
     _ = tab.setActiveCopilotVisible(true);
     _ = ensureActiveCopilotSession();
     input.focusAiCopilot();
@@ -2759,17 +2804,18 @@ pub fn toggleAiCopilot() void {
 
 pub fn rightPanelsWidth() f32 {
     const copilot_w = if (aiCopilotVisible()) ai_sidebar.g_width else 0;
-    return markdown_preview_panel.width() + browser_panel.width() + copilot_w;
+    return browser_panel.width() + copilot_w;
 }
 
 pub fn rightPanelsWidthForWindow(window_width: i32) f32 {
-    const preview_w = markdown_preview_panel.width();
-    const browser_w = browser_panel.panelWidthForWindow(window_width, leftPanelsWidth(), preview_w);
-    return preview_w + browser_w + aiCopilotWidth(window_width);
+    const browser_w = browser_panel.panelWidthForWindow(window_width, leftPanelsWidth(), 0);
+    return browser_w + aiCopilotWidth(window_width);
 }
 
 pub fn browserPanelRightOffset() f32 {
-    return markdown_preview_panel.width();
+    // The preview is a split-tree leaf now, not a right-dock, so it reserves no
+    // right-edge space for the browser panel.
+    return 0;
 }
 
 fn aiChatExportRoot(allocator: std.mem.Allocator) ![]const u8 {
@@ -2887,8 +2933,6 @@ fn clearUiStateOnTabChange() void {
     input.g_sidebar_resize_dragging = false;
     input.g_explorer_resize_hover = false;
     input.g_explorer_resize_dragging = false;
-    input.g_markdown_preview_resize_hover = false;
-    input.g_markdown_preview_resize_dragging = false;
     input.g_browser_resize_hover = false;
     input.g_browser_resize_dragging = false;
     input.blurAiCopilot();
@@ -3397,7 +3441,6 @@ pub fn closeTab(idx: usize) void {
     if (tab.g_tab_count <= 1 or idx >= tab.g_tab_count) return;
     tab.closeTab(idx, allocator);
     file_explorer.onTabClosed(idx);
-    markdown_preview_panel.onTabClosed(idx);
     browser_panel.onTabClosed(idx);
     clearUiStateOnTabChange();
 }
@@ -3416,7 +3459,6 @@ pub fn switchTab(idx: usize) void {
 pub fn reorderTab(from_idx: usize, to_idx: usize) bool {
     if (!tab.reorderTab(from_idx, to_idx)) return false;
     file_explorer.onTabReordered(from_idx, to_idx);
-    markdown_preview_panel.onTabReordered(from_idx, to_idx);
     browser_panel.onTabReordered(from_idx, to_idx);
     clearUiStateOnTabChange();
     return true;
@@ -3446,6 +3488,21 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
     return surface;
 }
 
+/// Close the active tab's preview pane if it has one (the focused preview, else
+/// the first in reading order), keeping the focused terminal focused. Returns
+/// false when there is no preview pane — or the preview is the tab's only pane —
+/// so the caller falls through to the standard split/tab close path. This is the
+/// pane-world successor of the right-dock close that Ctrl+Shift+W used to do
+/// first: opening a preview deliberately keeps the terminal focused, so a plain
+/// focused-split close would silently kill the terminal instead.
+pub fn closeActivePreviewPane() bool {
+    const allocator = g_allocator orelse return false;
+    if (!tab.closePreviewPane(allocator)) return false;
+    handleActiveSurfaceChangeWithinTab();
+    requestImmediateLayoutResize();
+    return true;
+}
+
 pub fn closeFocusedSplit() void {
     const allocator = g_allocator orelse return;
     const closing_tab_idx = active_tab_state.g_active_tab;
@@ -3460,7 +3517,6 @@ pub fn closeFocusedSplit() void {
         },
         .closed_tab => {
             file_explorer.onTabClosed(closing_tab_idx);
-            markdown_preview_panel.onTabClosed(closing_tab_idx);
             browser_panel.onTabClosed(closing_tab_idx);
             clearUiStateOnTabChange();
         },
@@ -3737,7 +3793,9 @@ fn renderResizeFrame(width: i32, height: i32) void {
         };
         if (g_allocator) |alloc| syncRemoteLayout(alloc);
 
-        if (split_count <= 1) {
+        // A lone PREVIEW pane has no terminal surface and must take the generic
+        // split path below so it still paints (preview-only tabs are legal).
+        if (split_count == 0 or split_layout.soleTerminalSurface() != null) {
             if (active_tab.kind == .ai_chat) {
                 renderAiChatFrame(fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .ai_history) {
@@ -3746,7 +3804,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .port_forwarding) {
                 renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
-            } else if (activeSurface()) |surface| {
+            } else if (split_layout.soleTerminalSurface()) |surface| {
                 // Single surface: simple render path
                 const rend = &surface.surface_renderer;
                 var needs_rebuild: bool = false;
@@ -3767,7 +3825,6 @@ fn renderResizeFrame(width: i32, height: i32) void {
                 const pad_top = @as(f32, @floatFromInt(pad.top)) + titlebar_offset;
                 titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                 titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-                markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
                 file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                 cell_renderer.drawCells(rend, @floatFromInt(fb_height), left_panels_w + @as(f32, @floatFromInt(pad.left)), pad_top);
                 overlays.renderScrollbar(@floatFromInt(fb_width), @floatFromInt(fb_height), pad_top);
@@ -3781,38 +3838,58 @@ fn renderResizeFrame(width: i32, height: i32) void {
 
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
             titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-            markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
             file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
 
             for (0..split_count) |i| {
                 const rect = split_layout.g_split_rects[i];
                 const is_focused = (rect.handle == active_tab.focused);
-                const rend = &rect.surface.surface_renderer;
 
-                const viewport_y = fb_height - rect.y - rect.height;
-                gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
-                gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                switch (rect.pane) {
+                    .terminal => |surface| {
+                        const rend = &surface.surface_renderer;
 
-                {
-                    rect.surface.render_state.mutex.lock();
-                    defer rect.surface.render_state.mutex.unlock();
-                    rend.force_rebuild = true;
-                    cell_renderer.g_current_render_surface = rect.surface;
-                    _ = cell_renderer.updateTerminalCellsForSurface(rend, &rect.surface.terminal, is_focused);
-                }
-                cell_renderer.rebuildCells(rend);
+                        const viewport_y = fb_height - rect.y - rect.height;
+                        gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
+                        gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
-                const pad = rect.surface.getPadding();
-                cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
-                overlays.renderScrollbarForSurface(rect.surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
+                        {
+                            surface.render_state.mutex.lock();
+                            defer surface.render_state.mutex.unlock();
+                            rend.force_rebuild = true;
+                            cell_renderer.g_current_render_surface = surface;
+                            _ = cell_renderer.updateTerminalCellsForSurface(rend, &surface.terminal, is_focused);
+                        }
+                        cell_renderer.rebuildCells(rend);
 
-                if (!is_focused) {
-                    overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
-                }
+                        const pad = surface.getPadding();
+                        cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
+                        overlays.renderScrollbarForSurface(surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
 
-                // Show resize overlay on all splits during window resize
-                if (is_focused) {
-                    overlays.renderResizeOverlay(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        if (!is_focused) {
+                            overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        }
+
+                        // Show resize overlay on all splits during window resize
+                        if (is_focused) {
+                            overlays.renderResizeOverlay(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                        }
+                    },
+                    .preview => |p| {
+                        // The preview renderer paints in window-absolute coords, so
+                        // restore the full-window viewport/projection first (the
+                        // terminal arm leaves a per-rect viewport set).
+                        gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+                        gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                        markdown_preview_renderer.renderInto(
+                            p,
+                            @floatFromInt(rect.x),
+                            @floatFromInt(rect.y),
+                            @floatFromInt(rect.width),
+                            @floatFromInt(rect.height),
+                            @floatFromInt(fb_height),
+                        );
+                        if (is_focused) drawPaneFocusRing(rect, @floatFromInt(fb_height));
+                    },
                 }
             }
 
@@ -3827,7 +3904,6 @@ fn renderResizeFrame(width: i32, height: i32) void {
         clearWithBackground(fb_width, fb_height);
         titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-        markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
         file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     }
 
@@ -3897,6 +3973,22 @@ fn pollSkillUpdate(app: *App) void {
     }
 }
 
+/// Open a SKILL.md preview in a reused-or-new preview leaf. UI thread.
+fn openSkillMdInPreviewLeaf(allocator: std.mem.Allocator, title: []const u8, content: []const u8) void {
+    const at = tab.activeTab() orelse return;
+    const pane = if (tab.firstPreviewForReuse(allocator, at)) |h|
+        switch (at.tree.nodes[h.idx()]) {
+            .leaf => |pn| switch (pn) {
+                .preview => |p| p,
+                else => return,
+            },
+            .split => return,
+        }
+    else
+        (tab.splitIntoPreview(allocator) orelse return);
+    pane.open(.markdown, title, "SKILL.md", content);
+}
+
 /// UI thread: consume a finished skill-center op result and apply it (open the
 /// import list, run the deploy decision, or show a transfer toast).
 fn pollSkillCenterOp(session: *skill_center.Session) void {
@@ -3948,7 +4040,7 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
             }
         },
         .preview => |*v| {
-            markdown_preview_panel.open(.markdown, v.title, "SKILL.md", v.content);
+            openSkillMdInPreviewLeaf(allocator, v.title, v.content);
         },
     }
     markUiDirty();
@@ -4035,7 +4127,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
             // Update all surfaces in this tab's split tree
-            var it = tb.tree.iterator();
+            var it = tb.tree.surfaces();
             while (it.next()) |entry| {
                 entry.surface.render_state.mutex.lock();
                 entry.surface.terminal.screens.active.cursor.cursor_style = switch (g_cursor_style) {
@@ -4165,7 +4257,7 @@ fn maybePrintMemoryDebug(now: i64) void {
             continue;
         }
 
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             const visible = tab_index == active_tab_state.g_active_tab;
             const stats = collectSurfaceMemoryDebug(entry.surface);
@@ -4359,7 +4451,7 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
         defer if (spatial) |*sp| sp.deinit(allocator);
 
         var wrote_surface = false;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (wrote_surface) try out.append(allocator, ',');
             wrote_surface = true;
@@ -4674,7 +4766,7 @@ fn weixinTerminalSurfaceFromId(id: [16]u8) ?*Surface {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.surface.remote_id[0..], id[0..])) return entry.surface;
         }
@@ -4891,7 +4983,7 @@ fn findAgentSurfaceLocation(surface: *const Surface) ?AgentSurfaceLocation {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (entry.surface == surface) {
                 return .{
@@ -4939,7 +5031,7 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             const is_context = context_surface_id.len > 0 and std.mem.eql(u8, entry.surface.remote_id[0..], context_surface_id);
             if (is_context) active_tab = tab_index;
@@ -4999,7 +5091,7 @@ fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surfac
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             const sfc = entry.surface;
             if (!std.mem.eql(u8, sfc.remote_id[0..], surface_id)) continue;
@@ -5168,7 +5260,7 @@ fn findTabIndexBySurfaceId(surface_id: []const u8) ?usize {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.surface.remote_id[0..], surface_id)) return tab_index;
         }
@@ -5453,7 +5545,7 @@ fn markAllRenderersDirty() void {
     g_cells_valid = false;
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.iterator();
+            var it = tb.tree.surfaces();
             while (it.next()) |entry| {
                 entry.surface.surface_renderer.markDirty();
             }
@@ -5521,7 +5613,7 @@ fn recordFrameLatencyIfInputDriven() void {
 fn anySurfaceDirtyLoad() bool {
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.iterator();
+            var it = tb.tree.surfaces();
             while (it.next()) |entry| {
                 if (entry.surface.dirty.load(.acquire)) return true;
             }
@@ -5533,7 +5625,7 @@ fn anySurfaceDirtyLoad() bool {
 fn clearAllSurfaceDirty() void {
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.iterator();
+            var it = tb.tree.surfaces();
             while (it.next()) |entry| {
                 _ = entry.surface.dirty.swap(false, .acq_rel);
             }
@@ -5866,10 +5958,12 @@ fn syncImeCaretPosition(win: *window_backend.Window, split_count: usize) void {
     if (split_count > 1) {
         for (0..split_layout.g_split_rect_count) |i| {
             const rect = split_layout.g_split_rects[i];
-            if (rect.surface == surface) {
-                origin_x = @floatFromInt(rect.x);
-                origin_y = @floatFromInt(rect.y);
-                break;
+            if (rect.surface()) |s| {
+                if (s == surface) {
+                    origin_x = @floatFromInt(rect.x);
+                    origin_y = @floatFromInt(rect.y);
+                    break;
+                }
             }
         }
     }
@@ -6563,7 +6657,7 @@ fn runMainLoop(self: *AppWindow) !void {
             g_cells_valid = false;
         }
         syncTransferToastFromFileExplorer();
-        if (markdown_preview_panel.tickAsync()) {
+        if (tickAllPreviewPanes()) {
             g_force_rebuild = true;
             g_cells_valid = false;
         }
@@ -6720,7 +6814,7 @@ fn runMainLoop(self: *AppWindow) !void {
         for (0..tab.g_tab_count) |ti| {
             if (tab.g_tabs[ti]) |tb| {
                 // Check all surfaces in this tab's split tree for pending bells
-                var it = tb.tree.iterator();
+                var it = tb.tree.surfaces();
                 while (it.next()) |entry| {
                     if (entry.surface.bell_pending.swap(false, .acquire)) {
                         handleBell(entry.surface, win, ti == active_tab_state.g_active_tab);
@@ -6776,8 +6870,10 @@ fn runMainLoop(self: *AppWindow) !void {
                 renderSkillCenterFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
             } else if (active_tab.kind == .port_forwarding) {
                 renderPortForwardingFrame(active_tab, fb_width, fb_height, titlebar_offset, left_panels_w, right_panels_w);
-            } else if (post_process.g_post_enabled) {
-                // Post-processing path: only render focused surface for now
+            } else if (post_process.g_post_enabled and activeSurface() != null) {
+                // Post-processing path: only render focused surface for now.
+                // (With no focused terminal — e.g. a preview pane focused — fall
+                // through to the generic split path so the frame still paints.)
                 if (activeSurface()) |surface| {
                     var needs_rebuild: bool = false;
                     const rend = &surface.surface_renderer;
@@ -6792,10 +6888,12 @@ fn runMainLoop(self: *AppWindow) !void {
                     if (needs_rebuild) cell_renderer.rebuildCells(rend);
                     post_process.renderFrameWithPostFromCells(rend, fb_width, fb_height, padding);
                 }
-            } else if (split_count == 1) {
-                // Single surface (no splits): use original simple rendering path
+            } else if (split_layout.soleTerminalSurface()) |surface| {
+                // Single terminal pane (no splits): original simple rendering
+                // path. A lone PREVIEW pane has no terminal surface and must take
+                // the generic split path below so it still paints.
                 // The surface padding is set by computeSplitLayout, so we use it here
-                if (activeSurface()) |surface| {
+                {
                     const rend = &surface.surface_renderer;
                     var needs_rebuild: bool = false;
                     {
@@ -6817,7 +6915,6 @@ fn runMainLoop(self: *AppWindow) !void {
                     const pad_top = @as(f32, @floatFromInt(pad.top)) + titlebar_offset;
                     titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-                    markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
                     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                     cell_renderer.drawCells(rend, @floatFromInt(fb_height), left_panels_w + @as(f32, @floatFromInt(pad.left)), pad_top);
                     overlays.renderScrollbar(@floatFromInt(fb_width), @floatFromInt(fb_height), pad_top);
@@ -6833,7 +6930,6 @@ fn runMainLoop(self: *AppWindow) !void {
 
                 titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
                 titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-                markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
                 file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
 
                 // Render each split surface directly to screen using viewport
@@ -6841,56 +6937,100 @@ fn runMainLoop(self: *AppWindow) !void {
                     for (0..split_count) |i| {
                         const rect = split_layout.g_split_rects[i];
                         const is_focused = (rect.handle == active_tab.focused);
-                        const rend = &rect.surface.surface_renderer;
 
-                        // Set viewport to this split's region
-                        // OpenGL viewport: (x, y, width, height) where y is from bottom
-                        const viewport_y = fb_height - rect.y - rect.height;
-                        gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
+                        switch (rect.pane) {
+                            .terminal => |surface| {
+                                const rend = &surface.surface_renderer;
 
-                        // Set projection for this viewport size
-                        gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                // Set viewport to this split's region
+                                // OpenGL viewport: (x, y, width, height) where y is from bottom
+                                const viewport_y = fb_height - rect.y - rect.height;
+                                gpu.state.setViewport(rect.x, viewport_y, rect.width, rect.height);
 
-                        // Update cells for this surface
-                        {
-                            rect.surface.render_state.mutex.lock();
-                            defer rect.surface.render_state.mutex.unlock();
-                            if (is_focused) updateCursorBlinkForRenderer(rend);
-                            rend.force_rebuild = true;
-                            cell_renderer.g_current_render_surface = rect.surface;
-                            _ = cell_renderer.updateTerminalCellsForSurface(rend, &rect.surface.terminal, is_focused);
-                        }
-                        cell_renderer.rebuildCells(rend);
+                                // Set projection for this viewport size
+                                gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
-                        // Draw cells using the surface's computed padding
-                        const pad = rect.surface.getPadding();
-                        cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
+                                // Update cells for this surface
+                                {
+                                    surface.render_state.mutex.lock();
+                                    defer surface.render_state.mutex.unlock();
+                                    if (is_focused) updateCursorBlinkForRenderer(rend);
+                                    rend.force_rebuild = true;
+                                    cell_renderer.g_current_render_surface = surface;
+                                    _ = cell_renderer.updateTerminalCellsForSurface(rend, &surface.terminal, is_focused);
+                                }
+                                cell_renderer.rebuildCells(rend);
 
-                        // Render scrollbar for this surface within its viewport
-                        overlays.renderScrollbarForSurface(rect.surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
+                                // Draw cells using the surface's computed padding
+                                const pad = surface.getPadding();
+                                cell_renderer.drawCells(rend, @floatFromInt(rect.height), @floatFromInt(pad.left), @floatFromInt(pad.top));
 
-                        // Alt-drag panel swap feedback: highlight the drop target,
-                        // dim the grabbed source. Otherwise dim any unfocused panel.
-                        const is_swap_target = input.g_panel_swap_active and
-                            input.g_panel_swap_target != null and
-                            rect.handle == input.g_panel_swap_target.?;
-                        const is_swap_source = input.g_panel_swap_active and
-                            input.g_panel_swap_source != null and
-                            rect.handle == input.g_panel_swap_source.?;
-                        if (is_swap_target) {
-                            overlays.renderSwapTargetHighlight(@floatFromInt(rect.width), @floatFromInt(rect.height));
-                        } else if (is_swap_source or !is_focused) {
-                            overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
-                        }
+                                // Render scrollbar for this surface within its viewport
+                                overlays.renderScrollbarForSurface(surface, @floatFromInt(rect.width), @floatFromInt(rect.height), @floatFromInt(pad.top));
 
-                        // Render resize overlay:
-                        // - During divider dragging or timed overlay (equalize): show on ALL splits
-                        // - Otherwise: show only on focused split (for window resize)
-                        const show_timed_overlay = std.time.milliTimestamp() < overlays.resize.g_split_resize_overlay_until;
-                        if (input.g_divider_dragging or show_timed_overlay) {
-                            overlays.renderResizeOverlayForSurface(rect.surface, @floatFromInt(rect.width), @floatFromInt(rect.height));
-                        } else if (is_focused) {
-                            overlays.renderResizeOverlay(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                // Alt-drag panel swap feedback: highlight the drop target,
+                                // dim the grabbed source. Otherwise dim any unfocused panel.
+                                const is_swap_target = input.g_panel_swap_active and
+                                    input.g_panel_swap_target != null and
+                                    rect.handle == input.g_panel_swap_target.?;
+                                const is_swap_source = input.g_panel_swap_active and
+                                    input.g_panel_swap_source != null and
+                                    rect.handle == input.g_panel_swap_source.?;
+                                if (is_swap_target) {
+                                    overlays.renderSwapTargetHighlight(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                } else if (is_swap_source or !is_focused) {
+                                    overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                }
+
+                                // Render resize overlay:
+                                // - During divider dragging or timed overlay (equalize): show on ALL splits
+                                // - Otherwise: show only on focused split (for window resize)
+                                const show_timed_overlay = std.time.milliTimestamp() < overlays.resize.g_split_resize_overlay_until;
+                                if (input.g_divider_dragging or show_timed_overlay) {
+                                    overlays.renderResizeOverlayForSurface(surface, @floatFromInt(rect.width), @floatFromInt(rect.height));
+                                } else if (is_focused) {
+                                    overlays.renderResizeOverlay(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                }
+                            },
+                            .preview => |p| {
+                                // The preview renderer paints in window-absolute coords,
+                                // so restore the full-window viewport/projection first.
+                                gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+                                gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                                markdown_preview_renderer.renderInto(
+                                    p,
+                                    @floatFromInt(rect.x),
+                                    @floatFromInt(rect.y),
+                                    @floatFromInt(rect.width),
+                                    @floatFromInt(rect.height),
+                                    @floatFromInt(fb_height),
+                                );
+                                if (is_focused) drawPaneFocusRing(rect, @floatFromInt(fb_height));
+
+                                // Alt-drag panel swap feedback for preview leaves,
+                                // mirroring the terminal branch. The highlight
+                                // overlays draw in panel-local coords, so switch to
+                                // this rect's viewport/projection first, then restore
+                                // the full-window viewport for the next leaf.
+                                const is_swap_target = input.g_panel_swap_active and
+                                    input.g_panel_swap_target != null and
+                                    rect.handle == input.g_panel_swap_target.?;
+                                const is_swap_source = input.g_panel_swap_active and
+                                    input.g_panel_swap_source != null and
+                                    rect.handle == input.g_panel_swap_source.?;
+                                if (is_swap_target or is_swap_source) {
+                                    const vp_y = fb_height - rect.y - rect.height;
+                                    gpu.state.setViewport(rect.x, vp_y, rect.width, rect.height);
+                                    gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                    if (is_swap_target) {
+                                        overlays.renderSwapTargetHighlight(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                    } else {
+                                        overlays.renderUnfocusedOverlaySimple(@floatFromInt(rect.width), @floatFromInt(rect.height));
+                                    }
+                                    gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
+                                    gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                                }
+                            },
                         }
                     }
 
@@ -6908,7 +7048,6 @@ fn runMainLoop(self: *AppWindow) !void {
             clearWithBackground(fb_width, fb_height);
             titlebar.renderTitlebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
             titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
-            markdown_preview_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, 0);
             file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         }
 
@@ -6985,7 +7124,6 @@ fn runMainLoop(self: *AppWindow) !void {
     weixin_qr_panel.deinit();
     clearWeixinTranscriptCache();
     markdown_preview_renderer.deinit();
-    markdown_preview_panel.deinit();
     browser_panel.deinit();
 
     // Tab cleanup is handled by AppWindow.deinit()

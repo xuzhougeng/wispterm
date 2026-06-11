@@ -19,7 +19,10 @@ pub const MAX_SPLITS_PER_TAB = tab.MAX_SPLITS_PER_TAB;
 const SPLIT_DIVIDER_WIDTH = tab.SPLIT_DIVIDER_WIDTH;
 pub const DEFAULT_PADDING = tab.DEFAULT_PADDING;
 
-/// Pixel rectangle for a split surface, including computed terminal dimensions
+/// Pixel rectangle for a split leaf, including computed terminal dimensions.
+/// The leaf may be a terminal or a non-terminal pane (e.g. a preview); use
+/// `surface()` to get the *Surface (null for non-terminal panes). `cols`/`rows`
+/// are 0 for non-terminal panes.
 pub const SplitRect = struct {
     x: i32,
     y: i32,
@@ -27,7 +30,20 @@ pub const SplitRect = struct {
     height: i32,
     cols: u16,
     rows: u16,
-    surface: *Surface,
+    pane: SplitTree.Pane,
+    handle: SplitTree.Node.Handle,
+
+    /// The terminal surface for this rect, or null if it holds a non-terminal
+    /// pane (e.g. a preview).
+    pub fn surface(self: SplitRect) ?*Surface {
+        return self.pane.surface();
+    }
+};
+
+/// A leaf pane plus its handle at a given window point. Unlike `surfaceAtPoint`,
+/// this also reports non-terminal panes (e.g. previews) so focus can target them.
+pub const PaneHit = struct {
+    pane: SplitTree.Pane,
     handle: SplitTree.Node.Handle,
 };
 
@@ -51,13 +67,24 @@ pub fn cachedRectIsLive(rect: SplitRect) bool {
     const active_tab = tab.activeTab() orelse return false;
     if (rect.handle.idx() >= active_tab.tree.nodes.len) return false;
     return switch (active_tab.tree.nodes[rect.handle.idx()]) {
-        .leaf => |surface| surface == rect.surface,
+        .leaf => |pane| std.meta.eql(pane, rect.pane),
         .split => false,
     };
 }
 
-/// Find the surface under a given point (window coordinates).
-/// Returns null if no surface is found at that position.
+/// The lone visible leaf's terminal surface, or null when the active layout is
+/// not exactly one terminal pane (several panes, or a single non-terminal pane
+/// such as a preview). The render paths use this to gate the simple
+/// single-surface fast path; preview-only layouts must take the generic
+/// pane-dispatching path so they still paint.
+pub fn soleTerminalSurface() ?*Surface {
+    if (g_split_rect_count != 1) return null;
+    return g_split_rects[0].surface();
+}
+
+/// Find the terminal surface under a given point (window coordinates).
+/// Returns null if no terminal surface is found at that position (non-terminal
+/// panes such as previews are skipped).
 pub fn surfaceAtPoint(x: i32, y: i32) ?*Surface {
     for (0..g_split_rect_count) |i| {
         const rect = g_split_rects[i];
@@ -65,8 +92,20 @@ pub fn surfaceAtPoint(x: i32, y: i32) ?*Surface {
         if (x >= rect.x and x < rect.x + rect.width and
             y >= rect.y and y < rect.y + rect.height)
         {
-            return rect.surface;
+            if (rect.pane.surface()) |s| return s;
         }
+    }
+    return null;
+}
+
+/// Find the leaf pane (terminal OR non-terminal) under a given point.
+/// Returns null if the point is not inside any live leaf rect.
+pub fn paneAtPoint(x: i32, y: i32) ?PaneHit {
+    for (0..g_split_rect_count) |i| {
+        const r = g_split_rects[i];
+        if (!cachedRectIsLive(r)) continue;
+        if (x >= r.x and x < r.x + r.width and y >= r.y and y < r.y + r.height)
+            return .{ .pane = r.pane, .handle = r.handle };
     }
     return null;
 }
@@ -167,7 +206,7 @@ pub fn computeSplitLayout(
         .coalesced;
 
     var count: usize = 0;
-    var it = active_tab.tree.iterator();
+    var it = active_tab.tree.panes();
     while (it.next()) |entry| {
         if (count >= MAX_SPLITS_PER_TAB) break;
 
@@ -217,44 +256,48 @@ pub fn computeSplitLayout(
         pw = @max(pw, 1);
         ph = @max(ph, 1);
 
-        // Set the surface screen size with padding.
-        // The surface computes grid size and balanced padding internally.
-        // Right padding must account for scrollbar width plus gap.
-        const surface = entry.surface;
-        const scrollbar_padding: u32 = @intFromFloat(overlays.SCROLLBAR_WIDTH + DEFAULT_PADDING);
-        const explicit_padding = renderer.size.Padding{
-            .top = DEFAULT_PADDING,
-            .bottom = DEFAULT_PADDING,
-            .left = DEFAULT_PADDING,
-            .right = scrollbar_padding,
-        };
+        // Surface-only work: resize the terminal and track resize-overlay
+        // bookkeeping. Non-terminal panes (e.g. previews) have no grid to size,
+        // so we skip this entirely and store zero cols/rows for them.
+        if (entry.pane.surface()) |surface| {
+            // Set the surface screen size with padding.
+            // The surface computes grid size and balanced padding internally.
+            // Right padding must account for scrollbar width plus gap.
+            const scrollbar_padding: u32 = @intFromFloat(overlays.SCROLLBAR_WIDTH + DEFAULT_PADDING);
+            const explicit_padding = renderer.size.Padding{
+                .top = DEFAULT_PADDING,
+                .bottom = DEFAULT_PADDING,
+                .left = DEFAULT_PADDING,
+                .right = scrollbar_padding,
+            };
 
-        const resized = surface.setScreenSizeWithPolicy(
-            if (pw > 0) @intCast(pw) else 1,
-            if (ph > 0) @intCast(ph) else 1,
-            font.cell_width,
-            font.cell_height,
-            explicit_padding,
-            resize_policy,
-        );
+            const resized = surface.setScreenSizeWithPolicy(
+                if (pw > 0) @intCast(pw) else 1,
+                if (ph > 0) @intCast(ph) else 1,
+                font.cell_width,
+                font.cell_height,
+                explicit_padding,
+                resize_policy,
+            );
 
-        if (resized) {
-            AppWindow.g_force_rebuild = true;
-            // Show resize overlay with new dimensions (but not during divider drag,
-            // which has its own per-surface overlay logic)
-            if (!input.g_divider_dragging) {
-                overlays.resizeOverlayShow(surface.size.grid.cols, surface.size.grid.rows);
+            if (resized) {
+                AppWindow.g_force_rebuild = true;
+                // Show resize overlay with new dimensions (but not during divider drag,
+                // which has its own per-surface overlay logic)
+                if (!input.g_divider_dragging) {
+                    overlays.resizeOverlayShow(surface.size.grid.cols, surface.size.grid.rows);
+                }
             }
-        }
 
-        // Track per-surface size changes for divider drag overlay
-        if (input.g_divider_dragging) {
-            const cols = surface.size.grid.cols;
-            const rows = surface.size.grid.rows;
-            if (cols != surface.resize_overlay_last_cols or rows != surface.resize_overlay_last_rows) {
-                surface.resize_overlay_active = true;
-                surface.resize_overlay_last_cols = cols;
-                surface.resize_overlay_last_rows = rows;
+            // Track per-surface size changes for divider drag overlay
+            if (input.g_divider_dragging) {
+                const cols = surface.size.grid.cols;
+                const rows = surface.size.grid.rows;
+                if (cols != surface.resize_overlay_last_cols or rows != surface.resize_overlay_last_rows) {
+                    surface.resize_overlay_active = true;
+                    surface.resize_overlay_last_cols = cols;
+                    surface.resize_overlay_last_rows = rows;
+                }
             }
         }
 
@@ -263,9 +306,9 @@ pub fn computeSplitLayout(
             .y = py,
             .width = pw,
             .height = ph,
-            .cols = surface.size.grid.cols,
-            .rows = surface.size.grid.rows,
-            .surface = surface,
+            .cols = if (entry.pane.surface()) |s| s.size.grid.cols else 0,
+            .rows = if (entry.pane.surface()) |s| s.size.grid.rows else 0,
+            .pane = entry.pane,
             .handle = entry.handle,
         };
         count += 1;
@@ -273,4 +316,55 @@ pub fn computeSplitLayout(
 
     g_split_rect_count = count;
     return count;
+}
+
+test "split_layout: soleTerminalSurface only for a single terminal rect" {
+    const PreviewPane = @import("../preview_pane.zig");
+    const saved_count = g_split_rect_count;
+    const saved_rect = g_split_rects[0];
+    defer {
+        g_split_rect_count = saved_count;
+        g_split_rects[0] = saved_rect;
+    }
+
+    var surface: Surface = undefined;
+    var preview: PreviewPane = undefined;
+    const terminal_rect = SplitRect{
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 100,
+        .cols = 80,
+        .rows = 24,
+        .pane = .{ .terminal = &surface },
+        .handle = .root,
+    };
+    const preview_rect = SplitRect{
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 100,
+        .cols = 0,
+        .rows = 0,
+        .pane = .{ .preview = &preview },
+        .handle = .root,
+    };
+
+    // No rects → null.
+    g_split_rect_count = 0;
+    try std.testing.expect(soleTerminalSurface() == null);
+
+    // One terminal rect → its surface.
+    g_split_rects[0] = terminal_rect;
+    g_split_rect_count = 1;
+    try std.testing.expectEqual(@as(?*Surface, &surface), soleTerminalSurface());
+
+    // One preview rect → null (preview-only layouts must take the generic path).
+    g_split_rects[0] = preview_rect;
+    try std.testing.expect(soleTerminalSurface() == null);
+
+    // Multiple rects → null even if the first is a terminal.
+    g_split_rects[0] = terminal_rect;
+    g_split_rect_count = 2;
+    try std.testing.expect(soleTerminalSurface() == null);
 }

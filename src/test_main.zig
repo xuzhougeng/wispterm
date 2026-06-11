@@ -645,6 +645,7 @@ comptime {
     _ = @import("surface_registry.zig");
     _ = @import("png_dimensions.zig");
     _ = @import("appwindow/flush_scheduler.zig");
+    _ = @import("appwindow/split_layout.zig");
     _ = @import("appwindow/tab.zig");
     _ = @import("appwindow/thread_message.zig");
     _ = @import("scp.zig");
@@ -754,6 +755,7 @@ comptime {
     _ = @import("startup_tabs.zig");
     _ = @import("system_browser.zig");
     _ = @import("split_tree.zig");
+    _ = @import("preview_pane.zig");
     _ = @import("ui_perf.zig");
     _ = @import("update_check.zig");
     _ = @import("update_install.zig");

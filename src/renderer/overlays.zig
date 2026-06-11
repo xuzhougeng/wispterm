@@ -583,6 +583,13 @@ fn executeCommand(action: CommandAction) void {
         .open_port_forwarding => {
             _ = AppWindow.spawnPortForwardingTab();
         },
+        .split_preview => {
+            if (AppWindow.g_allocator) |gpa| {
+                _ = AppWindow.tab.splitIntoPreview(gpa);
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+            }
+        },
     }
 }
 
@@ -2795,7 +2802,7 @@ fn surfaceIsOpen(surface: *const Surface) bool {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.iterator();
+        var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
             if (@intFromPtr(entry.surface) == @intFromPtr(surface)) return true;
         }

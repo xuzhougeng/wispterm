@@ -9,7 +9,7 @@ const log = std.log.scoped(.session_persist);
 // Surface kinds appear as {"local_shell": {...}} or {"ssh": {...}}.
 // The spec illustrates the conceptual schema; this is the literal wire format.
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2; // was 1: added LeafSnap.kind + preview
 
 pub const Layout = enum { horizontal, vertical };
 
@@ -36,12 +36,20 @@ pub const SurfaceSnap = union(enum) {
     };
 };
 
+pub const PreviewSnap = struct {
+    kind: @import("markdown_preview.zig").Kind = .markdown,
+    path: []const u8 = "",
+};
+
 pub const NodeSnap = union(enum) {
     leaf: LeafSnap,
     split: SplitSnap,
 
     pub const LeafSnap = struct {
-        surface: SurfaceSnap,
+        kind: Kind = .terminal,
+        surface: SurfaceSnap = .{ .local_shell = .{} }, // valid only when kind == .terminal
+        preview: ?PreviewSnap = null, //                   present when kind == .preview
+        pub const Kind = enum { terminal, preview };
     };
 
     pub const SplitSnap = struct {
@@ -176,7 +184,7 @@ fn findIndex(node: *const NodeSnap, target: *const NodeSnap, idx: *u32) ?u32 {
 
 test "session_persist: empty Session compiles and has expected defaults" {
     const empty: Session = .{ .tabs = &.{} };
-    try std.testing.expectEqual(@as(u32, 1), empty.version);
+    try std.testing.expectEqual(@as(u32, SCHEMA_VERSION), empty.version);
     try std.testing.expectEqual(@as(u32, 0), empty.active_tab);
     try std.testing.expectEqual(@as(usize, 0), empty.tabs.len);
 }
@@ -202,7 +210,7 @@ test "session_persist: round-trip simple local-shell session via JSON" {
     var parsed = try loadSessionFromString(allocator, json);
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(u32, 1), parsed.value.version);
+    try std.testing.expectEqual(@as(u32, SCHEMA_VERSION), parsed.value.version);
     try std.testing.expectEqual(@as(u32, 0), parsed.value.active_tab);
     try std.testing.expectEqual(@as(usize, 1), parsed.value.tabs.len);
     const leaf = switch (parsed.value.tabs[0].tree) {
@@ -293,6 +301,40 @@ test "session_persist: old tab without ai_history defaults to null" {
 
     try std.testing.expectEqual(@as(usize, 1), parsed.value.tabs.len);
     try std.testing.expect(parsed.value.tabs[0].ai_history == null);
+}
+
+test "session_persist: preview leaf round-trips through JSON" {
+    const gpa = std.testing.allocator;
+    var tabs = [_]TabSnap{.{ .tree = .{ .leaf = .{
+        .kind = .preview,
+        .preview = .{ .kind = .markdown, .path = "README.md" },
+    } } }};
+    const session = Session{ .version = SCHEMA_VERSION, .active_tab = 0, .tabs = &tabs };
+    const json = try dumpSessionToString(gpa, session);
+    defer gpa.free(json);
+    var parsed = try loadSessionFromString(gpa, json);
+    defer parsed.deinit();
+    const leaf = switch (parsed.value.tabs[0].tree) {
+        .leaf => |l| l,
+        .split => return error.UnexpectedSplit,
+    };
+    try std.testing.expectEqual(NodeSnap.LeafSnap.Kind.preview, leaf.kind);
+    try std.testing.expect(leaf.preview != null);
+    try std.testing.expectEqualStrings("README.md", leaf.preview.?.path);
+    try std.testing.expectEqual(@import("markdown_preview.zig").Kind.markdown, leaf.preview.?.kind);
+}
+
+test "session_persist: old terminal leaf JSON (no kind field) still parses as terminal" {
+    const gpa = std.testing.allocator;
+    const old = "{\"version\":1,\"active_tab\":0,\"tabs\":[{\"tree\":{\"leaf\":{\"surface\":{\"local_shell\":{}}}}}]}";
+    var parsed = try loadSessionFromString(gpa, old);
+    defer parsed.deinit();
+    const leaf = switch (parsed.value.tabs[0].tree) {
+        .leaf => |l| l,
+        .split => return error.UnexpectedSplit,
+    };
+    try std.testing.expectEqual(NodeSnap.LeafSnap.Kind.terminal, leaf.kind);
+    try std.testing.expect(leaf.preview == null);
 }
 
 test "session_persist: round-trip nested split with SSH leaf" {
