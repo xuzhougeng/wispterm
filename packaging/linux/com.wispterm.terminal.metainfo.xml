@@ -44,6 +44,12 @@
        submitting to Flathub; omitted here so the file validates without a stale URL. -->
 
   <releases>
+    <release version="1.18.0" date="2026-06-11">
+      <description>
+        <p>Improves SSH folder upload/download support, adds terminal click
+        downloads for remote directories, and hardens SSH/Agent edge cases.</p>
+      </description>
+    </release>
     <release version="1.15.0" date="2026-06-09">
       <description>
         <p>First Linux release: SDL3 host, fontconfig fonts with CJK, IME, and
