@@ -1937,8 +1937,17 @@ test "file_explorer: active download transfer can be cancelled" {
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
+    // dst must not be a relative path: cancel cleanup deletes the dst tree,
+    // and a cwd-relative name could collide with a real directory.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+    const dst = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "file.txt" });
+    defer std.testing.allocator.free(dst);
+
     var conn: ssh_connection.SshConnection = .{};
-    try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", "local", "file.txt", transferWaitForCancelForTest));
+    try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", dst, "file.txt", transferWaitForCancelForTest));
     try std.testing.expect(cancelActiveDownloadForTest());
 
     tickTransfersUntilIdleForTest();

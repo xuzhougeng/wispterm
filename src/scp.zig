@@ -834,14 +834,15 @@ test "buildScpFlagArgs includes -r only for recursive transfers" {
 
     var argv_buf: [32][]const u8 = undefined;
 
+    // argv_buf is reused, so each build's slice must be asserted before the
+    // next call overwrites it.
     const argc_file = buildScpFlagArgs(&argv_buf, &conn, null, false, false);
     try std.testing.expect(!containsArg(argv_buf[0..argc_file], "-r"));
+    try std.testing.expect(containsArg(argv_buf[0..argc_file], "-q"));
 
     const argc_dir = buildScpFlagArgs(&argv_buf, &conn, null, false, true);
     try std.testing.expect(containsArg(argv_buf[0..argc_dir], "-r"));
-
-    // -q is always present
-    try std.testing.expect(containsArg(argv_buf[0..argc_file], "-q"));
+    try std.testing.expect(containsArg(argv_buf[0..argc_dir], "-q"));
 
     // -O appears for legacy, and combines with -r for recursive+legacy
     const argc_legacy = buildScpFlagArgs(&argv_buf, &conn, null, true, false);
