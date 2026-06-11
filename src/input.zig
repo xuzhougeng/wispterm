@@ -157,6 +157,22 @@ const arrow_down_event = platform_input.KeyEvent{
     .super = false,
 };
 
+const arrow_left_event = platform_input.KeyEvent{
+    .key_code = platform_input.key_left,
+    .ctrl = false,
+    .shift = false,
+    .alt = false,
+    .super = false,
+};
+
+const arrow_right_event = platform_input.KeyEvent{
+    .key_code = platform_input.key_right,
+    .ctrl = false,
+    .shift = false,
+    .alt = false,
+    .super = false,
+};
+
 const enter_event = platform_input.KeyEvent{
     .key_code = platform_input.key_enter,
     .ctrl = false,
@@ -283,6 +299,55 @@ test "input: port forwarding arrow navigation requests a repaint" {
 
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+test "input: port forwarding form left/right arrows toggle Direction and request a repaint" {
+    const allocator = std.testing.allocator;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    if (!tab.spawnPortForwardingTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > previous_count) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    try std.testing.expect(AppWindow.portForwardingOpenNew());
+    handleKey(arrow_down_event); // Name -> Profile
+    handleKey(arrow_down_event); // Profile -> Direction
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(arrow_right_event);
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    {
+        const session = AppWindow.activePortForwarding() orelse return error.ExpectedPortForwardingTab;
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        const form = session.model.form() orelse return error.ExpectedPortForwardingForm;
+        try std.testing.expect(form.rule.direction == .local);
+    }
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(arrow_left_event);
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+    const session = AppWindow.activePortForwarding() orelse return error.ExpectedPortForwardingTab;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const form = session.model.form() orelse return error.ExpectedPortForwardingForm;
+    try std.testing.expect(form.rule.direction == .reverse);
 }
 
 test "input: port forwarding form letter keys remain text input" {
