@@ -452,15 +452,6 @@ pub fn consumeSizeChanged(window: *Window) bool {
     return changed;
 }
 
-/// True while the OS-modal interactive move/size loop is running for this
-/// window (Windows border drag: WM_ENTERSIZEMOVE..WM_EXITSIZEMOVE). Backends
-/// without that concept report false; in-app drags (split dividers, panel
-/// edges) are tracked separately by input.zig flags.
-pub fn inSizeMove(window: *const Window) bool {
-    if (comptime @hasField(Window, "in_size_move")) return window.in_size_move;
-    return false;
-}
-
 pub fn clearTransientInput(window: *Window) void {
     window.clearTransientInputQueues();
 }

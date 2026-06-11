@@ -13,7 +13,6 @@ const gl_init = AppWindow.gpu.gl_init;
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
 const renderer = @import("../renderer.zig");
-const window_backend = @import("../platform/window_backend.zig");
 
 const TabState = tab.TabState;
 pub const MAX_SPLITS_PER_TAB = tab.MAX_SPLITS_PER_TAB;
@@ -137,23 +136,6 @@ pub fn hitTestDivider(x: i32, y: i32) ?DividerHit {
     return null;
 }
 
-/// True while the user is interactively dragging something that resizes
-/// terminal panes: a split divider, a side-panel edge, or the OS window
-/// border (Windows modal size-move loop). While active, SSH surfaces park
-/// their PTY + terminal resize and commit once on release (issue #171:
-/// the per-frame resize burst corrupts remote scrollback because SIGWINCH
-/// prompt redraws arrive one network round-trip behind the grid).
-fn interactiveResizeDragActive() bool {
-    if (input.g_divider_dragging or
-        input.g_sidebar_resize_dragging or
-        input.g_explorer_resize_dragging or
-        input.g_markdown_preview_resize_dragging or
-        input.g_browser_resize_dragging or
-        input.g_ai_copilot_resize_dragging) return true;
-    const win = AppWindow.g_window orelse return false;
-    return window_backend.inSizeMove(win);
-}
-
 /// Compute split layout for a tab, returning pixel rects for each surface.
 /// Each surface is resized to fit its allocated area with proper padding.
 /// Returns the number of surfaces (0 if tree is empty).
@@ -181,8 +163,6 @@ pub fn computeSplitLayout(
 
     const resize_policy: Surface.ResizePolicy = if (AppWindow.consumeImmediateLayoutResize())
         .immediate
-    else if (interactiveResizeDragActive())
-        .held
     else
         .coalesced;
 

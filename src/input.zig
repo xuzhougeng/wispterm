@@ -4131,16 +4131,6 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 platform_cursor.set(cursor_shape);
                 return;
             }
-            // A pane-resizing drag is ending: guarantee one more layout pass so
-            // SSH surfaces flush the PTY resize parked during the drag (#171),
-            // instead of waiting for the next incidental frame.
-            if (g_sidebar_resize_dragging or g_explorer_resize_dragging or
-                g_markdown_preview_resize_dragging or g_browser_resize_dragging or
-                g_ai_copilot_resize_dragging or g_divider_dragging)
-            {
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
-            }
             if (g_sidebar_resize_dragging) {
                 g_sidebar_resize_dragging = false;
                 g_sidebar_resize_hover = hitTestSidebarResizeHandle(xpos, ypos);

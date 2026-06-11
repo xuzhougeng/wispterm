@@ -26,7 +26,6 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const platform_process = @import("platform/process.zig");
 const ssh_connection_mod = @import("ssh_connection.zig");
 const clipboard_osc52 = @import("clipboard_osc52.zig");
-const resize_gate_mod = @import("resize_gate.zig");
 
 const Surface = @This();
 
@@ -161,11 +160,6 @@ remote_id: [16]u8,
 /// Size information for this surface (screen size, cell size, padding).
 /// Used by the renderer to position content correctly.
 size: renderer.size.Size = .{},
-
-/// Gate between the per-frame layout grid and the IO thread (PTY + terminal
-/// resize). Holds resizes during interactive drags so an SSH surface gets a
-/// single SIGWINCH per drag instead of a burst (issue #171). Main thread only.
-resize_gate: resize_gate_mod.ResizeGate,
 
 // ============================================================================
 // IO threads (Ghostty two-thread architecture: writer + reader)
@@ -420,12 +414,6 @@ pub fn init(
     surface.size.grid.cols = cols;
     surface.size.grid.rows = rows;
 
-    // The IO thread already knows the startup grid; seed the gate with it so
-    // the first layout pass queues no resize (same guarantee as the preset
-    // grid above). allocator.create does not apply struct field defaults, so
-    // this must be initialized explicitly like every other field here.
-    surface.resize_gate = resize_gate_mod.ResizeGate.init(cols, rows);
-
     // Initialize per-surface renderer (Ghostty architecture)
     surface.surface_renderer = Renderer.init(surface);
     surface.renderer_thread = RendererThread.init(&surface.surface_renderer, surface);
@@ -599,12 +587,6 @@ pub fn setSshConnection(
 pub const ResizePolicy = enum {
     coalesced,
     immediate,
-    /// An interactive drag (window border, split divider, side-panel edge) is
-    /// in progress: park the PTY + terminal resize for SSH surfaces and flush
-    /// the final grid once on the first non-held layout pass after release.
-    /// Local surfaces still resize live — their redraw round-trip is fast
-    /// enough that the burst is harmless (issue #171).
-    held,
 };
 
 /// Update the surface size and queue a resize to the IO thread if needed.
@@ -613,10 +595,9 @@ pub const ResizePolicy = enum {
 ///
 /// The main thread updates pixel/grid dimensions in surface.size (needed
 /// for layout/rendering), but the actual PTY + terminal resize happens
-/// on the IO thread via queueIo() with 25ms coalescing. With the `.held`
-/// policy the IO resize is parked until the drag ends (see ResizePolicy).
+/// on the IO thread via queueIo() with 25ms coalescing.
 ///
-/// Returns true if the grid dimensions changed.
+/// Returns true if the grid dimensions changed (resize was queued).
 pub fn setScreenSize(
     self: *Surface,
     screen_width: u32,
@@ -663,23 +644,19 @@ pub fn setScreenSizeWithPolicy(
     self.size.grid.cols = new_cols;
     self.size.grid.rows = new_rows;
 
-    // Queue the resize to the IO thread through the gate. The gate dedupes
-    // against the grid the IO thread last received, which both suppresses
-    // repeat submissions (layout runs every frame) and flushes a held resize
-    // on the first pass after a drag ends. Holding only applies to SSH
-    // surfaces; everything else keeps live resize.
-    const hold = resize_policy == .held and self.launch_kind == .ssh;
-    if (self.resize_gate.submit(hold, .{ .cols = new_cols, .rows = new_rows })) |grid| {
+    // Queue resize to IO thread if grid dimensions changed
+    if (changed) {
         // Terminal rows/cols and pixel dimensions are updated together in
         // the IO thread, under the render-state lock.
-        const msg_grid: renderer.size.GridSize = .{ .cols = grid.cols, .rows = grid.rows };
+        const grid: renderer.size.GridSize = .{ .cols = new_cols, .rows = new_rows };
         switch (resize_policy) {
-            .coalesced, .held => self.queueIo(.{ .resize = msg_grid }),
-            .immediate => self.queueIo(.{ .resize_immediate = msg_grid }),
+            .coalesced => self.queueIo(.{ .resize = grid }),
+            .immediate => self.queueIo(.{ .resize_immediate = grid }),
         }
+        return true;
     }
 
-    return changed;
+    return false;
 }
 
 /// Send a message to the IO writer thread via the mailbox.

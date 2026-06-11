@@ -888,9 +888,6 @@ pub const Window = struct {
     mouse_move_events: RingBuffer(MouseMoveEvent, 64) = .{},
     mouse_wheel_events: RingBuffer(MouseWheelEvent, 16) = .{},
     size_changed: bool = false, // set by WM_SIZE, cleared after processing
-    /// True between WM_ENTERSIZEMOVE and WM_EXITSIZEMOVE (OS-modal border
-    /// drag). SSH surfaces park their PTY resize while this is set (#171).
-    in_size_move: bool = false,
 
     /// Optional callback invoked from WM_SIZE so the application can
     /// do a GL clear+swap during the Win32 modal resize loop. Without
@@ -1786,17 +1783,11 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
         // and blocks our main loop. Drop vsync so the synchronous WM_SIZE paints
         // (Window.on_resize) don't each stall on vblank during the drag.
         WM_ENTERSIZEMOVE => {
-            w.in_size_move = true;
             setSwapInterval(0);
             return 0;
         },
         WM_EXITSIZEMOVE => {
-            w.in_size_move = false;
             setSwapInterval(1);
-            // Force a layout pass after the drag: this is what flushes a
-            // resize parked by an SSH surface during the drag (#171). The
-            // drag may end without a trailing WM_SIZE or mouse move.
-            w.size_changed = true;
             return 0;
         },
 
