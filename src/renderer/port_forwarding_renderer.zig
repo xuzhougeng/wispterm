@@ -1,5 +1,6 @@
 const std = @import("std");
 const rule_mod = @import("../port_forward_rule.zig");
+const form_mod = @import("../port_forwarding.zig");
 
 const HEADER_H: f32 = 54;
 const ROW_H: f32 = 52;
@@ -85,31 +86,31 @@ pub fn autoLabel(auto_start: bool) []const u8 {
 
 pub fn formFieldLabel(index: usize) []const u8 {
     return switch (index) {
-        0 => "Name",
-        1 => "Profile",
-        2 => "Direction",
-        3 => "Local host",
-        4 => "Local port",
-        5 => "Remote host",
-        6 => "Remote port",
-        7 => "Auto start",
+        form_mod.FIELD_NAME => "Name",
+        form_mod.FIELD_PROFILE => "Profile",
+        form_mod.FIELD_DIRECTION => "Direction",
+        form_mod.FIELD_LOCAL_HOST => "Local host",
+        form_mod.FIELD_LOCAL_PORT => "Local port",
+        form_mod.FIELD_REMOTE_HOST => "Remote host",
+        form_mod.FIELD_REMOTE_PORT => "Remote port",
+        form_mod.FIELD_AUTO_START => "Auto start",
         else => "",
     };
 }
 
 pub fn formFieldValue(form: *const FormView, index: usize, buf: []u8) []const u8 {
     return switch (index) {
-        0 => form.rule.name(),
+        form_mod.FIELD_NAME => form.rule.name(),
         // The Profile selector cannot be typed into; an empty name means the
         // ssh_hosts store has no decodable profiles, so hint at that instead
         // of rendering a silently dead blank field.
-        1 => if (form.rule.profileName().len > 0) form.rule.profileName() else "No SSH profiles found",
-        2 => directionLabel(form.rule.direction),
-        3 => form.rule.localHost(),
-        4 => std.fmt.bufPrint(buf, "{d}", .{form.rule.local_port}) catch "",
-        5 => form.rule.remoteHost(),
-        6 => std.fmt.bufPrint(buf, "{d}", .{form.rule.remote_port}) catch "",
-        7 => autoLabel(form.rule.auto_start),
+        form_mod.FIELD_PROFILE => if (form.rule.profileName().len > 0) form.rule.profileName() else "No SSH profiles found",
+        form_mod.FIELD_DIRECTION => directionLabel(form.rule.direction),
+        form_mod.FIELD_LOCAL_HOST => form.rule.localHost(),
+        form_mod.FIELD_LOCAL_PORT => std.fmt.bufPrint(buf, "{d}", .{form.rule.local_port}) catch "",
+        form_mod.FIELD_REMOTE_HOST => form.rule.remoteHost(),
+        form_mod.FIELD_REMOTE_PORT => std.fmt.bufPrint(buf, "{d}", .{form.rule.remote_port}) catch "",
+        form_mod.FIELD_AUTO_START => autoLabel(form.rule.auto_start),
         else => "",
     };
 }

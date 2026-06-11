@@ -1310,8 +1310,8 @@ pub fn portForwardingFormMove(delta: isize) bool {
     return true;
 }
 
-/// Adjust the focused selector field by `delta` steps. Profile (field 1) cycles
-/// through the SSH profiles in the store; Direction and Auto start flip. Other
+/// Adjust the focused selector field by `delta` steps. Profile cycles through
+/// the SSH profiles in the store; Direction and Auto start flip. Other
 /// (text/port) fields are unaffected. Used by Space (+1) and the ←/→ arrows.
 pub fn portForwardingFormAdjust(delta: isize) bool {
     const session = activePortForwarding() orelse return false;
@@ -1325,7 +1325,7 @@ pub fn portForwardingFormAdjust(delta: isize) bool {
     };
     var current_buf: [port_forward_rule.PROFILE_MAX]u8 = undefined;
     var current_len: usize = 0;
-    if (focus == 1) {
+    if (focus == port_forwarding.FIELD_PROFILE) {
         const form = session.model.form().?;
         const current = form.rule.profileName();
         current_len = @min(current_buf.len, current.len);
@@ -1333,7 +1333,7 @@ pub fn portForwardingFormAdjust(delta: isize) bool {
     }
     session.mutex.unlock();
 
-    if (focus == 1) {
+    if (focus == port_forwarding.FIELD_PROFILE) {
         const manager = activePortForwardManager() orelse return false;
         const allocator = manager.allocator;
         const content = readSshHostsContent(allocator) orelse return false;
@@ -1353,7 +1353,7 @@ pub fn portForwardingFormAdjust(delta: isize) bool {
     session.mutex.lock();
     defer session.mutex.unlock();
     const form = session.model.form() orelse return false;
-    if (form.focus != 2 and form.focus != 7) return false;
+    if (form.focus != port_forwarding.FIELD_DIRECTION and form.focus != port_forwarding.FIELD_AUTO_START) return false;
     form.toggleFocused();
     markUiDirty();
     return true;

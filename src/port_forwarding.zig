@@ -2,7 +2,23 @@ const std = @import("std");
 const rule_mod = @import("port_forward_rule.zig");
 
 pub const FormMode = enum { new, edit };
+
+/// Form field indices in focus order. Referenced by the input router
+/// (AppWindow.portForwardingFormAdjust) and the form renderer; adding or
+/// removing a field means updating all three switch sites plus the count.
+pub const FIELD_NAME: usize = 0;
+pub const FIELD_PROFILE: usize = 1;
+pub const FIELD_DIRECTION: usize = 2;
+pub const FIELD_LOCAL_HOST: usize = 3;
+pub const FIELD_LOCAL_PORT: usize = 4;
+pub const FIELD_REMOTE_HOST: usize = 5;
+pub const FIELD_REMOTE_PORT: usize = 6;
+pub const FIELD_AUTO_START: usize = 7;
 pub const FORM_FIELD_COUNT: usize = 8;
+
+comptime {
+    std.debug.assert(FIELD_AUTO_START + 1 == FORM_FIELD_COUNT);
+}
 
 pub const FormState = struct {
     mode: FormMode,
@@ -33,35 +49,35 @@ pub const FormState = struct {
     pub fn insertChar(self: *FormState, ch: u8) void {
         if (!isPrintableAscii(ch)) return;
         switch (self.focus) {
-            0 => _ = appendAscii(&self.rule.name_buf, &self.rule.name_len, ch),
-            // Profile (field 1) is a selector cycled with arrows/space, not typed.
-            3 => _ = appendAscii(&self.rule.local_host_buf, &self.rule.local_host_len, ch),
-            4 => insertPortDigit(&self.rule.local_port, ch),
-            5 => _ = appendAscii(&self.rule.remote_host_buf, &self.rule.remote_host_len, ch),
-            6 => insertPortDigit(&self.rule.remote_port, ch),
+            FIELD_NAME => _ = appendAscii(&self.rule.name_buf, &self.rule.name_len, ch),
+            // FIELD_PROFILE is a selector cycled with arrows/space, not typed.
+            FIELD_LOCAL_HOST => _ = appendAscii(&self.rule.local_host_buf, &self.rule.local_host_len, ch),
+            FIELD_LOCAL_PORT => insertPortDigit(&self.rule.local_port, ch),
+            FIELD_REMOTE_HOST => _ = appendAscii(&self.rule.remote_host_buf, &self.rule.remote_host_len, ch),
+            FIELD_REMOTE_PORT => insertPortDigit(&self.rule.remote_port, ch),
             else => {},
         }
     }
 
     pub fn backspace(self: *FormState) void {
         switch (self.focus) {
-            0 => truncateText(&self.rule.name_len),
-            // Profile (field 1) is a selector cycled with arrows/space, not typed.
-            3 => truncateText(&self.rule.local_host_len),
-            4 => backspacePort(&self.rule.local_port),
-            5 => truncateText(&self.rule.remote_host_len),
-            6 => backspacePort(&self.rule.remote_port),
+            FIELD_NAME => truncateText(&self.rule.name_len),
+            // FIELD_PROFILE is a selector cycled with arrows/space, not typed.
+            FIELD_LOCAL_HOST => truncateText(&self.rule.local_host_len),
+            FIELD_LOCAL_PORT => backspacePort(&self.rule.local_port),
+            FIELD_REMOTE_HOST => truncateText(&self.rule.remote_host_len),
+            FIELD_REMOTE_PORT => backspacePort(&self.rule.remote_port),
             else => {},
         }
     }
 
     pub fn toggleFocused(self: *FormState) void {
         switch (self.focus) {
-            2 => self.rule.direction = switch (self.rule.direction) {
+            FIELD_DIRECTION => self.rule.direction = switch (self.rule.direction) {
                 .local => .reverse,
                 .reverse => .local,
             },
-            7 => self.rule.auto_start = !self.rule.auto_start,
+            FIELD_AUTO_START => self.rule.auto_start = !self.rule.auto_start,
             else => {},
         }
     }
