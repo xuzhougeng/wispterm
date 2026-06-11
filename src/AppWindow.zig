@@ -1206,8 +1206,17 @@ fn firstSshProfileName(buf: []u8) []const u8 {
     return ssh_profile_store.cycleProfileName(content, "", 0, buf);
 }
 
+/// Test seam: when set, readSshHostsContent serves a copy of this instead of
+/// the real store, so tests never depend on the host's ssh_hosts file.
+threadlocal var g_ssh_hosts_content_for_test: ?[]const u8 = null;
+
+pub fn setSshHostsContentForTest(content: ?[]const u8) void {
+    g_ssh_hosts_content_for_test = content;
+}
+
 /// Read the encoded ssh_hosts file. Caller frees. Returns null when unavailable.
 fn readSshHostsContent(allocator: std.mem.Allocator) ?[]u8 {
+    if (g_ssh_hosts_content_for_test) |content| return allocator.dupe(u8, content) catch null;
     const path = platform_dirs.sshHostsPath(allocator) catch return null;
     defer allocator.free(path);
     return std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch null;

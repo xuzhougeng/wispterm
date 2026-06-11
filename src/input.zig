@@ -303,6 +303,8 @@ test "input: port forwarding arrow navigation requests a repaint" {
 
 test "input: port forwarding form left/right arrows toggle Direction and request a repaint" {
     const allocator = std.testing.allocator;
+    AppWindow.setSshHostsContentForTest("");
+    defer AppWindow.setSshHostsContentForTest(null);
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
     if (!tab.spawnPortForwardingTab(allocator)) return error.SkipZigTest;
@@ -352,6 +354,8 @@ test "input: port forwarding form left/right arrows toggle Direction and request
 
 test "input: port forwarding form letter keys remain text input" {
     const allocator = std.testing.allocator;
+    AppWindow.setSshHostsContentForTest("");
+    defer AppWindow.setSshHostsContentForTest(null);
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
     if (!tab.spawnPortForwardingTab(allocator)) return error.SkipZigTest;
@@ -382,6 +386,8 @@ test "input: port forwarding form letter keys remain text input" {
 
 test "input: port forwarding new command suppresses its follow-up char event" {
     const allocator = std.testing.allocator;
+    AppWindow.setSshHostsContentForTest("");
+    defer AppWindow.setSshHostsContentForTest(null);
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
     if (!tab.spawnPortForwardingTab(allocator)) return error.SkipZigTest;
