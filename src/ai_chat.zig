@@ -5359,10 +5359,10 @@ const CopilotTestHost = struct {
         };
         return .{ .surfaces = surfaces, .active_tab = 0 };
     }
-    fn unsupportedSurfaceSnapshot(_: *anyopaque, _: std.mem.Allocator, _: *anyopaque) anyerror![]u8 {
+    fn unsupportedSurfaceSnapshot(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: *anyopaque) anyerror![]u8 {
         return error.Unsupported;
     }
-    fn unsupportedWrite(_: *anyopaque, _: *anyopaque, _: []const u8) bool {
+    fn unsupportedWrite(_: *anyopaque, _: []const u8, _: *anyopaque, _: []const u8) bool {
         return false;
     }
     fn unsupportedSpawn(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?[]const u8) anyerror!ToolSurface {
@@ -6665,10 +6665,10 @@ const CopilotBoundSnapshotTestHost = struct {
         };
         return .{ .surfaces = surfaces, .active_tab = 0 };
     }
-    fn unsupportedSurfaceSnapshot(_: *anyopaque, _: std.mem.Allocator, _: *anyopaque) anyerror![]u8 {
+    fn unsupportedSurfaceSnapshot(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: *anyopaque) anyerror![]u8 {
         return error.Unsupported;
     }
-    fn unsupportedWrite(_: *anyopaque, _: *anyopaque, _: []const u8) bool {
+    fn unsupportedWrite(_: *anyopaque, _: []const u8, _: *anyopaque, _: []const u8) bool {
         return false;
     }
     fn unsupportedSpawn(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?[]const u8) anyerror!ai_chat_types.ToolSurface {

@@ -23,6 +23,7 @@ const agent_detector = @import("agent_detector.zig");
 const sync_output = @import("sync_output.zig");
 const notification = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
+const surface_registry = @import("surface_registry.zig");
 const platform_process = @import("platform/process.zig");
 const ssh_connection_mod = @import("ssh_connection.zig");
 const clipboard_osc52 = @import("clipboard_osc52.zig");
@@ -478,12 +479,21 @@ pub fn init(
     // only adds an idle per-surface thread and stack without moving work off the
     // main render loop.
 
+    // Last step (after every fallible init step): the agent request worker may
+    // only touch this surface while it stays registered.
+    surface_registry.register(surface, surface.remote_id[0..]);
+
     return surface;
 }
 
 /// Deinitialize and free a Surface.
 /// Stops the IO thread first, then cleans up PTY and terminal.
 pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
+    // 0. Withdraw the surface from the agent-tool liveness registry. This
+    // blocks until any in-flight guarded access on the agent request worker
+    // finishes, so nothing below can tear state out from under it.
+    surface_registry.unregister(self);
+
     // 1. Stop the renderer thread first (it accesses terminal state)
     self.renderer_thread.stop();
     self.surface_renderer.deinit();

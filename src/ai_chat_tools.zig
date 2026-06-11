@@ -551,7 +551,7 @@ fn terminalSnapshotTool(ctx: *const ToolContext, surface_id: ?[]const u8) ![]u8 
         defer if (live) |t| ctx.allocator.free(t);
         if (target_id != null) {
             if (ctx.tool_host) |host| {
-                live = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch null;
+                live = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch null;
             }
         }
         try out.appendSlice(ctx.allocator, live orelse surface.snapshot);
@@ -1120,7 +1120,7 @@ fn controlKeyByte(code: []const u8) ?u8 {
 /// recovered state.
 fn sendControlKey(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, label: []const u8, byte: u8) ![]u8 {
     const bytes = [_]u8{byte};
-    if (!host.writeSurface(host.ctx, surface.ptr, &bytes)) {
+    if (!host.writeSurface(host.ctx, surface.id, surface.ptr, &bytes)) {
         return ctx.allocator.dupe(u8, "Failed to write control key to terminal surface.");
     }
 
@@ -1130,7 +1130,7 @@ fn sendControlKey(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface,
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
 
-    const latest = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+    const latest = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch
         return std.fmt.allocPrint(ctx.allocator, "Sent {s}; failed to read terminal snapshot.", .{label});
     defer ctx.allocator.free(latest);
     const out = try std.fmt.allocPrint(ctx.allocator, "Sent {s} to terminal.\nLatest snapshot:\n{s}", .{ label, latest });
@@ -1203,7 +1203,7 @@ fn terminalAnswerPromptTool(ctx: *ToolContext, surface_id: ?[]const u8, answer: 
     const surface = resolveSurfaceId(snapshot, sid, selectedWriteContext(ctx)) orelse return allocNoSurfaceError(ctx.allocator, snapshot, sid);
 
     // Read the LIVE screen (per-surface, mutex-protected, worker-safe).
-    const screen = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+    const screen = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch
         return ctx.allocator.dupe(u8, "Failed to read terminal snapshot.");
     defer ctx.allocator.free(screen);
 
@@ -1242,12 +1242,12 @@ fn terminalAnswerPromptTool(ctx: *ToolContext, surface_id: ?[]const u8, answer: 
     // pre-selected (e.g. a non-copilot caller).
     setWriteContext(ctx, surface.id);
 
-    if (!host.writeSurface(host.ctx, surface.ptr, keystroke.bytes)) {
+    if (!host.writeSurface(host.ctx, surface.id, surface.ptr, keystroke.bytes)) {
         return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
     }
     if (keystroke.confirm_enter) {
         std.Thread.sleep(CODEX_SUBMIT_DELAY_MS * std.time.ns_per_ms);
-        _ = host.writeSurface(host.ctx, surface.ptr, "\r");
+        _ = host.writeSurface(host.ctx, surface.id, surface.ptr, "\r");
     }
 
     const deadline = std.time.milliTimestamp() + 400;
@@ -1256,7 +1256,7 @@ fn terminalAnswerPromptTool(ctx: *ToolContext, surface_id: ?[]const u8, answer: 
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
 
-    const latest = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+    const latest = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch
         return std.fmt.allocPrint(ctx.allocator, "Answer sent ({s}); failed to read terminal snapshot.", .{answer});
     defer ctx.allocator.free(latest);
     const out = try std.fmt.allocPrint(ctx.allocator, "Answered prompt ({s}).\nLatest snapshot:\n{s}", .{ answer, latest });
@@ -1290,17 +1290,17 @@ pub fn plainReplInputTool(ctx: *const ToolContext, host: ToolHost, surface: Tool
         // submits (the "多余的换行" / unsent-at-prompt symptom). Send the body,
         // pause so the burst ends, then send the submit key as its own
         // keystroke — emulating type-then-Enter.
-        if (!host.writeSurface(host.ctx, surface.ptr, text)) {
+        if (!host.writeSurface(host.ctx, surface.id, surface.ptr, text)) {
             return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
         }
         std.Thread.sleep(CODEX_SUBMIT_DELAY_MS * std.time.ns_per_ms);
-        if (!host.writeSurface(host.ctx, surface.ptr, plainReplSubmitKey(repl, surface))) {
+        if (!host.writeSurface(host.ctx, surface.id, surface.ptr, plainReplSubmitKey(repl, surface))) {
             return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
         }
     } else {
         const input = try allocPlainReplInput(ctx.allocator, repl, surface, text);
         defer ctx.allocator.free(input);
-        if (!host.writeSurface(host.ctx, surface.ptr, input)) {
+        if (!host.writeSurface(host.ctx, surface.id, surface.ptr, input)) {
             return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
         }
     }
@@ -1366,7 +1366,7 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
     // model is thread-local to the UI thread and reads empty on the worker (see
     // the pre-capture comment in ai_chat.zig), which previously left this wait
     // blind and spinning to the full timeout while the model saw a stale screen.
-    var last_text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+    var last_text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch
         try ctx.allocator.dupe(u8, surface.snapshot);
     defer ctx.allocator.free(last_text);
     var last_change_ms = started;
@@ -1376,7 +1376,7 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
         std.Thread.sleep(150 * std.time.ns_per_ms);
         const now = std.time.milliTimestamp();
 
-        const text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch continue;
+        const text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch continue;
         if (std.mem.eql(u8, last_text, text)) {
             ctx.allocator.free(text);
         } else {
@@ -1430,7 +1430,7 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
 fn lineReplEvalTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurface, repl: ReplKind, code: []const u8, timeout_ms: u32) ![]u8 {
     // Learn the prompt currently shown so we can recognise its return. Read the
     // live per-surface snapshot (collectSnapshot is empty on the worker thread).
-    const before = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+    const before = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch
         try ctx.allocator.dupe(u8, surface.snapshot);
     defer ctx.allocator.free(before);
     const captured_prompt = try ctx.allocator.dupe(u8, extractPromptLine(before));
@@ -1438,7 +1438,7 @@ fn lineReplEvalTool(ctx: *const ToolContext, host: ToolHost, surface: ToolSurfac
 
     const input = try allocPlainReplInput(ctx.allocator, repl, surface, code);
     defer ctx.allocator.free(input);
-    if (!host.writeSurface(host.ctx, surface.ptr, input)) {
+    if (!host.writeSurface(host.ctx, surface.id, surface.ptr, input)) {
         return ctx.allocator.dupe(u8, "Failed to write to terminal surface.");
     }
 
@@ -1466,7 +1466,7 @@ fn waitForReplPromptReturn(
     const started = std.time.milliTimestamp();
     const deadline = started + @as(i64, @intCast(wait_ms));
 
-    var last_text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch
+    var last_text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch
         try ctx.allocator.dupe(u8, surface.snapshot);
     defer ctx.allocator.free(last_text);
     var last_change_ms = started;
@@ -1476,7 +1476,7 @@ fn waitForReplPromptReturn(
         std.Thread.sleep(150 * std.time.ns_per_ms);
         const now = std.time.milliTimestamp();
 
-        const text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch continue;
+        const text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch continue;
         if (std.mem.eql(u8, last_text, text)) {
             ctx.allocator.free(text);
         } else {
@@ -1602,7 +1602,7 @@ fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []c
     // interleaved sentinels confuse parsing and the model tends to re-issue,
     // duplicating side effects (e.g. a second git clone). A fresh snapshot is
     // authoritative; the cached surface snapshot may be stale.
-    if (host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch null) |guard_snapshot| {
+    if (host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch null) |guard_snapshot| {
         defer ctx.allocator.free(guard_snapshot);
         if (agentCommandStillRunning(guard_snapshot)) {
             return std.fmt.allocPrint(ctx.allocator, "A previous command is still running in this {s} terminal. Do not start another command. Wait and re-check with terminal_snapshot, or interrupt it first with terminal_repl_exec repl=plain code=<ctrl-c>.", .{kind.label()});
@@ -1626,7 +1626,7 @@ fn unixSessionExecTool(ctx: *ToolContext, kind: UnixSessionKind, surface_id: []c
     );
     defer ctx.allocator.free(wrapped);
 
-    if (!host.writeSurface(host.ctx, surface.ptr, wrapped)) {
+    if (!host.writeSurface(host.ctx, surface.id, surface.ptr, wrapped)) {
         return std.fmt.allocPrint(ctx.allocator, "Failed to write to {s} terminal surface.", .{kind.label()});
     }
 
@@ -1665,7 +1665,7 @@ fn waitForSentinelResult(
     while (std.time.milliTimestamp() < deadline) {
         if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
         if (last) |old| ctx.allocator.free(old);
-        last = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.ptr) catch null;
+        last = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch null;
         if (last) |text| {
             if (findCompletedEnd(text, end_marker) != null) {
                 return extractUnixCommandResult(ctx.allocator, text, start_marker, end_marker);
@@ -2315,7 +2315,7 @@ fn readFileTool(ctx: *ToolContext, path: []const u8, surface_id: ?[]const u8, of
                 return deniedResult(ctx.allocator, path, "operator rejected remote read");
             }
         }
-        const bytes = scp.sshReadFile(ctx.allocator, &conn, path) orelse
+        const bytes = scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES) orelse
             return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s}", .{path});
         defer ctx.allocator.free(bytes);
         return renderReadResult(ctx, path, bytes, offset, limit);
@@ -2359,7 +2359,7 @@ fn writeFileTool(ctx: *ToolContext, path: []const u8, content: []const u8, surfa
     defer if (owns_old) ctx.allocator.free(old_content);
     if (!gate.blacklisted) {
         if (remote_conn) |conn| {
-            if (scp.sshReadFile(ctx.allocator, &conn, path)) |bytes| {
+            if (scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES)) |bytes| {
                 old_content = bytes;
                 owns_old = true;
             }
@@ -2414,7 +2414,7 @@ fn editFileTool(ctx: *ToolContext, path: []const u8, old_string: []const u8, new
 
     var old_content: []u8 = undefined;
     if (remote_conn) |conn| {
-        old_content = scp.sshReadFile(ctx.allocator, &conn, path) orelse
+        old_content = scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES) orelse
             return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s} for editing", .{path});
     } else {
         const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
@@ -2475,6 +2475,7 @@ fn deniedResult(allocator: std.mem.Allocator, command: []const u8, reason: []con
 fn truncateOwned(allocator: std.mem.Allocator, settings: AgentSettings, text: []u8) ![]u8 {
     const limit = settings.output_limit;
     if (text.len <= limit) return text;
+    errdefer allocator.free(text); // owned: must not leak when allocPrint fails
     const truncated = try std.fmt.allocPrint(allocator, "{s}\n...[truncated to {d} bytes]", .{ text[0..limit], limit });
     allocator.free(text);
     return truncated;
@@ -2487,6 +2488,7 @@ fn truncateOwned(allocator: std.mem.Allocator, settings: AgentSettings, text: []
 fn truncateTailOwned(allocator: std.mem.Allocator, settings: AgentSettings, text: []u8) ![]u8 {
     const limit: usize = settings.output_limit;
     if (text.len <= limit) return text;
+    errdefer allocator.free(text); // owned: must not leak when allocPrint fails
     const tail = text[text.len - limit ..];
     const truncated = try std.fmt.allocPrint(allocator, "...[older output truncated to {d} bytes]\n{s}", .{ limit, tail });
     allocator.free(text);
@@ -3530,14 +3532,14 @@ const ReplWaitTestHost = struct {
 
     // The per-surface snapshot holds the surface's render mutex and therefore
     // works from the worker thread. It reports a busy screen, then a settled one.
-    fn surfaceSnapshot(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, _: *anyopaque) anyerror![]u8 {
+    fn surfaceSnapshot(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: *anyopaque) anyerror![]u8 {
         const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr));
         ctx.snap_calls += 1;
         const busy = ctx.snap_calls <= ctx.busy_until;
         return allocator.dupe(u8, if (busy) "Claude Code\nthinking… (esc to interrupt)" else ctx.settled_text);
     }
 
-    fn writeSurface(ctx_ptr: *anyopaque, _: *anyopaque, data: []const u8) bool {
+    fn writeSurface(ctx_ptr: *anyopaque, _: []const u8, _: *anyopaque, data: []const u8) bool {
         const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr));
         const len = @min(data.len, ctx.last_write.len);
         @memcpy(ctx.last_write[0..len], data[0..len]);
@@ -4021,6 +4023,24 @@ test "truncateTailOwned returns short text unchanged" {
     const out = try truncateTailOwned(a, settings, text);
     defer a.free(out);
     try std.testing.expectEqualStrings("small", out);
+}
+
+test "truncate helpers free the owned input when the truncation alloc fails" {
+    // Both helpers take ownership of `text`; if the replacement allocPrint
+    // hits OOM they must free it. std.testing.allocator's leak check is the
+    // assertion here (allocation #0 = the input dupe, #1 = the failing
+    // allocPrint).
+    const settings = AgentSettings{ .output_limit = 4 };
+
+    var failing_tail = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const tail_alloc = failing_tail.allocator();
+    const tail_text = try tail_alloc.dupe(u8, "0123456789");
+    try std.testing.expectError(error.OutOfMemory, truncateTailOwned(tail_alloc, settings, tail_text));
+
+    var failing_head = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const head_alloc = failing_head.allocator();
+    const head_text = try head_alloc.dupe(u8, "0123456789");
+    try std.testing.expectError(error.OutOfMemory, truncateOwned(head_alloc, settings, head_text));
 }
 
 test "terminal_snapshot keeps the live screen tail when output exceeds the limit" {

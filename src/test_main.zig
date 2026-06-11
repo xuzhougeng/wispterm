@@ -642,6 +642,8 @@ comptime {
     _ = @import("agent_prompt_answer.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
+    _ = @import("surface_registry.zig");
+    _ = @import("png_dimensions.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("appwindow/tab.zig");
     _ = @import("appwindow/thread_message.zig");

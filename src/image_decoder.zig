@@ -1,5 +1,6 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
+const png_dimensions = @import("png_dimensions.zig");
 
 const c = @cImport({
     @cInclude("stb_image.h");
@@ -14,6 +15,13 @@ fn decodePng(
     data: []const u8,
 ) ghostty_vt.sys.DecodeError!ghostty_vt.sys.Image {
     const len = std.math.cast(c_int, data.len) orelse return error.InvalidData;
+
+    // Reject oversized declarations before stb allocates the decode buffer:
+    // a tiny crafted PNG can otherwise force a multi-GB transient allocation
+    // (kitty graphics bytes are attacker-controllable via any program that
+    // writes to the terminal).
+    const declared = png_dimensions.parse(data) orelse return error.InvalidData;
+    if (png_dimensions.exceedsLimit(declared)) return error.InvalidData;
 
     var width: c_int = 0;
     var height: c_int = 0;
