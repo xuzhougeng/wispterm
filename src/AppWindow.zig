@@ -1345,6 +1345,9 @@ pub fn portForwardingFormAdjust(delta: isize) bool {
         session.mutex.lock();
         defer session.mutex.unlock();
         const form = session.model.form() orelse return false;
+        // The lock was released across the ssh_hosts read; re-verify the
+        // Profile field still has focus before writing the cycled name.
+        if (form.focus != port_forwarding.FIELD_PROFILE) return false;
         form.rule.setProfileName(next);
         markUiDirty();
         return true;
