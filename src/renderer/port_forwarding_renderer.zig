@@ -169,7 +169,6 @@ pub fn render(
     width: f32,
 ) void {
     _ = window_width;
-    _ = draw.glyphAdvance;
 
     const content_x = @round(x);
     const content_w = @round(@max(1.0, width));
@@ -404,6 +403,14 @@ fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32,
         _ = draw.renderTextLimited(form.mode, title_x, yTextFromTop(draw, window_height, title_top), fg, clampedTextWidth(title_x, content_right, content_right - title_x));
     }
 
+    // Start the value column just past the widest label so no label is clipped,
+    // even at large font sizes. Keep the previous offset as a lower bound so the
+    // value column never collapses for short labels.
+    const label_x = box_x + @min(22.0, box_w);
+    const widest_label = widestFormLabelWidth(draw);
+    const min_value_x = box_x + @min(190.0, @max(72.0, box_w * 0.34));
+    const value_x = @min(content_right, @max(min_value_x, label_x + widest_label + COL_GAP));
+
     var field: usize = 0;
     while (field < 8) : (field += 1) {
         const row_top = box_top + draw.cell_h * @as(f32, @floatFromInt(field + 3));
@@ -417,12 +424,23 @@ fn renderForm(draw: DrawContext, form: FormView, content_x: f32, content_w: f32,
             draw.fillQuadAlpha(focus_x, focus_y, clampedTextWidth(focus_x, box_x + box_w, box_w), focus_h, accent, 0.20);
         }
         var value_buf: [32]u8 = undefined;
-        const label_x = box_x + @min(22.0, box_w);
-        const preferred_value_offset = @min(190.0, @max(72.0, box_w * 0.34));
-        const value_x = @min(content_right, box_x + preferred_value_offset);
         _ = draw.renderTextLimited(formFieldLabel(field), label_x, text_y, accent, clampedTextWidth(label_x, content_right, value_x - label_x - COL_GAP));
         _ = draw.renderTextLimited(formFieldValue(&form, field, &value_buf), value_x, text_y, fg, clampedTextWidth(value_x, content_right, content_right - value_x));
     }
+}
+
+/// Pixel width of the widest form field label at the current font, used to size
+/// the value column so labels render in full.
+fn widestFormLabelWidth(draw: DrawContext) f32 {
+    var widest: f32 = 0;
+    var i: usize = 0;
+    while (i < 8) : (i += 1) {
+        const label = formFieldLabel(i);
+        var w: f32 = 0;
+        for (label) |ch| w += draw.glyphAdvance(ch);
+        widest = @max(widest, w);
+    }
+    return widest;
 }
 
 fn renderLegend(draw: DrawContext, legend: []const u8, content_x: f32, content_w: f32, muted: [3]f32, line: [3]f32) void {
@@ -621,6 +639,62 @@ test "port_forwarding_renderer: render does not request rows with zero visible c
     }, 200, 80, 0, 0, 200);
 
     try std.testing.expectEqual(@as(usize, 0), rows.calls);
+}
+
+test "port_forwarding_renderer: form labels get full width at large font sizes" {
+    const Probe = struct {
+        const advance: f32 = 20;
+        const widest = "Remote port";
+        var widest_label_max_w: f32 = -1;
+
+        fn fillQuad(_: f32, _: f32, _: f32, _: f32, _: [3]f32) void {}
+        fn fillQuadAlpha(_: f32, _: f32, _: f32, _: f32, _: [3]f32, _: f32) void {}
+        fn renderTextLimited(text: []const u8, x: f32, _: f32, _: [3]f32, max_w: f32) f32 {
+            if (std.mem.eql(u8, text, widest)) widest_label_max_w = max_w;
+            return x + max_w;
+        }
+        fn glyphAdvance(_: u32) f32 {
+            return advance;
+        }
+    };
+
+    const Rows = struct {
+        fn rowAt(_: *anyopaque, index: usize) RowView {
+            _ = index;
+            return .{ .rule = rule_mod.defaultReverseProxy("devbox"), .status = .running, .auto_start = true };
+        }
+    };
+
+    Probe.widest_label_max_w = -1;
+    const draw = DrawContext{
+        .bg = .{ 0.02, 0.02, 0.02 },
+        .fg = .{ 0.95, 0.95, 0.95 },
+        .accent = .{ 0.2, 0.6, 1.0 },
+        .cell_h = 28,
+        .fillQuad = Probe.fillQuad,
+        .fillQuadAlpha = Probe.fillQuadAlpha,
+        .renderTextLimited = Probe.renderTextLimited,
+        .glyphAdvance = Probe.glyphAdvance,
+    };
+    var rows = Rows{};
+
+    render(draw, .{
+        .title = "Port Forwarding",
+        .legend = "x",
+        .count = 1,
+        .selected = 0,
+        .scroll = 0,
+        .ctx = &rows,
+        .rowAt = Rows.rowAt,
+        .form = .{
+            .mode = "New forwarding rule",
+            .focus = 1,
+            .rule = rule_mod.defaultReverseProxy("devbox"),
+        },
+    }, 900, 600, 40, 0, 760);
+
+    const natural = @as(f32, @floatFromInt(Probe.widest.len)) * Probe.advance;
+    try std.testing.expect(Probe.widest_label_max_w >= natural);
 }
 
 test "port_forwarding_renderer: narrow row text widths stay within content" {

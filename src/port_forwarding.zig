@@ -34,7 +34,7 @@ pub const FormState = struct {
         if (!isPrintableAscii(ch)) return;
         switch (self.focus) {
             0 => _ = appendAscii(&self.rule.name_buf, &self.rule.name_len, ch),
-            1 => _ = appendAscii(&self.rule.profile_buf, &self.rule.profile_len, ch),
+            // Profile (field 1) is a selector cycled with arrows/space, not typed.
             3 => _ = appendAscii(&self.rule.local_host_buf, &self.rule.local_host_len, ch),
             4 => insertPortDigit(&self.rule.local_port, ch),
             5 => _ = appendAscii(&self.rule.remote_host_buf, &self.rule.remote_host_len, ch),
@@ -46,7 +46,7 @@ pub const FormState = struct {
     pub fn backspace(self: *FormState) void {
         switch (self.focus) {
             0 => truncateText(&self.rule.name_len),
-            1 => truncateText(&self.rule.profile_len),
+            // Profile (field 1) is a selector cycled with arrows/space, not typed.
             3 => truncateText(&self.rule.local_host_len),
             4 => backspacePort(&self.rule.local_port),
             5 => truncateText(&self.rule.remote_host_len),
@@ -292,6 +292,20 @@ test "port_forwarding: form edits text and port fields" {
     form_state.insertChar('1');
     form_state.insertChar('x');
     try std.testing.expectEqual(@as(u16, 7891), form_state.rule.local_port);
+}
+
+test "port_forwarding: profile field ignores typed input (it is a selector)" {
+    var session = try Session.create(std.testing.allocator);
+    defer session.destroy();
+    try session.model.openNewForm("devbox");
+    const form_state = session.model.form() orelse return error.ExpectedForm;
+
+    form_state.moveFocus(1);
+    try std.testing.expectEqual(@as(usize, 1), form_state.focus);
+    form_state.insertChar('x');
+    try std.testing.expectEqualStrings("devbox", form_state.rule.profileName());
+    form_state.backspace();
+    try std.testing.expectEqualStrings("devbox", form_state.rule.profileName());
 }
 
 test "port_forwarding: form toggles direction and auto start" {
