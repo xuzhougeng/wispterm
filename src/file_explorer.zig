@@ -1065,13 +1065,23 @@ fn startTransferRequestNow(request: TransferRequest) bool {
 
 fn transferThread(job: *TransferJob) void {
     const allocator = std.heap.page_allocator;
+    const dst = job.request.dst_buf[0..job.request.dst_len];
+    // Snapshot dst existence before scp runs: on cancel only a path this
+    // transfer created may be deleted. A pre-existing dst holds user data
+    // (scp -r nests into an existing same-name directory; a file dst may be
+    // an earlier completed download) and must survive.
+    const cleanup_on_cancel = job.request.kind == .download and !localPathExists(dst);
     job.result = job.request.transfer_fn(
         allocator,
         &job.request.conn,
         job.request.src_buf[0..job.request.src_len],
-        job.request.dst_buf[0..job.request.dst_len],
+        dst,
         &job.control,
     );
+    // Cleanup runs here, on the worker thread, so deleting a large partial
+    // tree never stalls the UI tick; done is stored after, so the next queued
+    // transfer cannot race the deletion.
+    if (job.result == .cancelled and cleanup_on_cancel) removePartialDownload(dst);
     job.done.store(true, .release);
 }
 
@@ -1101,12 +1111,7 @@ fn tickTransferJob() void {
                 rescanRemote();
             }
         },
-        .cancelled => {
-            if (job.request.kind == .download) {
-                removePartialDownload(job.request.dst_buf[0..job.request.dst_len]);
-            }
-            setTransferStatusForKind(job.request.kind, .cancelled, display);
-        },
+        .cancelled => setTransferStatusForKind(job.request.kind, .cancelled, display),
         else => setTransferStatusForKind(job.request.kind, .failed, display),
     }
 }
@@ -1190,6 +1195,16 @@ fn formatTransferRate(buf: []u8, bytes_per_sec: u64) ![]u8 {
     if (speed < mb) return std.fmt.bufPrint(buf, "{d:.1} KB/s", .{speed / kb});
     if (speed < gb) return std.fmt.bufPrint(buf, "{d:.1} MB/s", .{speed / mb});
     return std.fmt.bufPrint(buf, "{d:.1} GB/s", .{speed / gb});
+}
+
+fn localPathExists(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (std.fs.path.isAbsolute(path)) {
+        std.fs.accessAbsolute(path, .{}) catch return false;
+    } else {
+        std.fs.cwd().access(path, .{}) catch return false;
+    }
+    return true;
 }
 
 /// Remove a partially-transferred download destination — a half-written file or
@@ -1873,25 +1888,56 @@ test "file_explorer: active download transfer can be cancelled" {
     try std.testing.expectEqualStrings("file.txt", g_transfer_msg[0..g_transfer_msg_len]);
 }
 
-test "file_explorer: cancelling a download deletes the partial destination" {
+fn transferCreateDstThenWaitForCancelForTest(allocator: std.mem.Allocator, conn: *const ssh_connection.SshConnection, src: []const u8, dst: []const u8, control: *scp.TransferControl) scp.TransferResult {
+    if (std.fs.createFileAbsolute(dst, .{})) |file| {
+        file.close();
+    } else |_| {}
+    return transferWaitForCancelForTest(allocator, conn, src, dst, control);
+}
+
+test "file_explorer: cancelling a download deletes the partial destination it created" {
     resetTransferStateForTest();
     defer resetTransferStateForTest();
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "partial.bin", .data = "incomplete" });
-    const dst = try tmp.dir.realpathAlloc(std.testing.allocator, "partial.bin");
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+    const dst = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "partial.bin" });
     defer std.testing.allocator.free(dst);
 
     var conn: ssh_connection.SshConnection = .{};
-    try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", dst, "partial.bin", transferWaitForCancelForTest));
+    try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", dst, "partial.bin", transferCreateDstThenWaitForCancelForTest));
     try std.testing.expect(cancelActiveDownloadForTest());
 
     tickTransfersUntilIdleForTest();
 
     try std.testing.expectEqual(TransferStatus.cancelled, g_transfer_status);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access("partial.bin", .{}));
+}
+
+test "file_explorer: cancelling a download preserves a pre-existing destination" {
+    resetTransferStateForTest();
+    defer resetTransferStateForTest();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "existing.bin", .data = "precious" });
+    const dst = try tmp.dir.realpathAlloc(std.testing.allocator, "existing.bin");
+    defer std.testing.allocator.free(dst);
+
+    var conn: ssh_connection.SshConnection = .{};
+    try std.testing.expect(startTransferJobForTest(.download, &conn, "remote", dst, "existing.bin", transferWaitForCancelForTest));
+    try std.testing.expect(cancelActiveDownloadForTest());
+
+    tickTransfersUntilIdleForTest();
+
+    try std.testing.expectEqual(TransferStatus.cancelled, g_transfer_status);
+    const contents = try tmp.dir.readFileAlloc(std.testing.allocator, "existing.bin", 64);
+    defer std.testing.allocator.free(contents);
+    try std.testing.expectEqualStrings("precious", contents);
 }
 
 test "buildChildPathInto avoids duplicate separators" {
