@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-12
 **Worktree:** `copilot-repeat-problem`
-**Status:** Approved (ready for implementation plan)
+**Status:** Implemented (suites green; GUI verify pending)
 
 ## Goal
 
