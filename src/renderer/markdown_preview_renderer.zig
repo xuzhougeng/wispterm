@@ -114,6 +114,7 @@ fn renderFooter(
         .csv => "CSV",
         .tsv => "TSV",
         .image => "IMG",
+        .pdf => "PDF",
     };
     const text_y = pane_gl_bottom + (FOOTER_HEIGHT - font.g_titlebar_cell_height) / 2;
     const badge_end = titlebar.renderTextLimited(badge, panel_x + PAD_X, text_y, accent, 40);

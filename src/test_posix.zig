@@ -20,6 +20,68 @@ const run_on_main = @import("apprt/run_on_main.zig");
 comptime {
     _ = @import("ai_loop_store.zig");
     _ = @import("child_output.zig");
+    _ = @import("platform/pdf_render_linux.zig");
+}
+
+test "pdf_render_linux rasterizes a generated two-page PDF via poppler" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+
+    // Skip cleanly on hosts without poppler-utils.
+    const probe = std.process.Child.run(.{ .allocator = alloc, .argv = &.{ "pdftoppm", "-v" } }) catch return error.SkipZigTest;
+    alloc.free(probe.stdout);
+    alloc.free(probe.stderr);
+
+    const pdf = try buildMinimalTwoPagePdf(alloc);
+    defer alloc.free(pdf);
+
+    const pdf_render = @import("platform/pdf_render.zig");
+    const page0 = try pdf_render.renderPage(alloc, pdf, 0, 320);
+    defer alloc.free(page0.png);
+    try std.testing.expectEqual(@as(u32, 2), page0.page_count);
+    // PNG magic
+    try std.testing.expect(page0.png.len > 8);
+    try std.testing.expectEqualSlices(u8, &.{ 0x89, 'P', 'N', 'G' }, page0.png[0..4]);
+
+    const page1 = try pdf_render.renderPage(alloc, pdf, 1, 320);
+    defer alloc.free(page1.png);
+    try std.testing.expectEqual(@as(u32, 2), page1.page_count);
+
+    // Out-of-range page fails, invalid bytes fail.
+    try std.testing.expectError(error.RenderFailed, pdf_render.renderPage(alloc, pdf, 2, 320));
+    try std.testing.expectError(error.InvalidPdf, pdf_render.renderPage(alloc, "not a pdf", 0, 320));
+}
+
+/// Assemble a minimal valid 2-page PDF, computing xref offsets at runtime so
+/// the fixture never drifts out of sync with its body.
+fn buildMinimalTwoPagePdf(alloc: std.mem.Allocator) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var offsets: [6]usize = undefined; // objects 1..5; index 0 unused
+
+    try out.appendSlice(alloc, "%PDF-1.4\n");
+    const objects = [_][]const u8{
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        "2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>\nendobj\n",
+        "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
+        "4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
+        "5 0 obj\n<< >>\nendobj\n",
+    };
+    for (objects, 1..) |obj, num| {
+        offsets[num] = out.items.len;
+        try out.appendSlice(alloc, obj);
+    }
+    const xref_at = out.items.len;
+    try out.appendSlice(alloc, "xref\n0 6\n0000000000 65535 f \n");
+    for (offsets[1..6]) |off| {
+        try out.print(alloc, "{d:0>10} 00000 n \n", .{off});
+    }
+    try out.print(
+        alloc,
+        "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{d}\n%%EOF\n",
+        .{xref_at},
+    );
+    return out.toOwnedSlice(alloc);
 }
 
 test "run_on_main marshals a task from a worker thread to the draining thread" {
