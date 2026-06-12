@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <os/lock.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -133,16 +134,23 @@ struct WispTermMacWindowState {
     size_t file_drop_count;
 };
 
+// Defined with the other worker-wakeup primitives below; the close callbacks
+// need it early so a worker window blocked in its idle wait notices
+// close_requested promptly instead of sleeping out its full timeout.
+static void wispterm_macos_worker_wakeup_signal(void);
+
 @implementation WispTermMacWindowDelegate
 - (BOOL)windowShouldClose:(id)sender {
     (void)sender;
     if (self.state != NULL) self.state->close_requested = true;
+    wispterm_macos_worker_wakeup_signal();
     return YES;
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
     if (self.state != NULL) self.state->close_requested = true;
+    wispterm_macos_worker_wakeup_signal();
 }
 @end
 
@@ -281,6 +289,50 @@ static double wispterm_macos_scale(WispTermMacWindowState *state) {
     return scale > 0.0 ? scale : 1.0;
 }
 
+// ---------------------------------------------------------------------------
+// Worker-thread idle wait. -[NSApp nextEventMatchingMask:] is main-thread-only
+// (AppKit throws NSInternalInconsistencyException off-main), but every window
+// past the first runs its loop on a worker thread and blocks in
+// wispterm_macos_app_pump_events between frames. Off-main the pump waits on
+// this condition instead; producers signal it: the main thread after pushing
+// into any per-window event ring, the window-close delegate callbacks, and
+// wispterm_macos_post_wakeup (already the cross-thread render wakeup).
+//
+// Each waiter remembers the last sequence it consumed, so a signal landing
+// between a caller's "nothing to render" check and the wait itself is never
+// lost — the next wait returns immediately. Same semantics the Windows
+// backend gets from MsgWaitForMultipleObjectsEx(MWMO_INPUTAVAILABLE).
+// ---------------------------------------------------------------------------
+
+static pthread_mutex_t g_worker_wakeup_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_worker_wakeup_cond = PTHREAD_COND_INITIALIZER;
+static uint64_t g_worker_wakeup_seq = 0;
+static _Thread_local uint64_t t_worker_wakeup_seen = 0;
+
+static void wispterm_macos_worker_wakeup_signal(void) {
+    pthread_mutex_lock(&g_worker_wakeup_mutex);
+    g_worker_wakeup_seq += 1;
+    pthread_cond_broadcast(&g_worker_wakeup_cond);
+    pthread_mutex_unlock(&g_worker_wakeup_mutex);
+}
+
+static void wispterm_macos_worker_wakeup_wait(double timeout_seconds) {
+    pthread_mutex_lock(&g_worker_wakeup_mutex);
+    if (t_worker_wakeup_seen == g_worker_wakeup_seq && timeout_seconds > 0) {
+        struct timespec rel;
+        rel.tv_sec = (time_t)timeout_seconds;
+        rel.tv_nsec = (long)((timeout_seconds - (double)rel.tv_sec) * 1e9);
+        if (rel.tv_nsec > 999999999L) rel.tv_nsec = 999999999L;
+        if (rel.tv_nsec < 0) rel.tv_nsec = 0;
+        // A single timed wait suffices: a spurious wakeup just returns to the
+        // caller's loop, which re-checks its rings and render gate anyway.
+        (void)pthread_cond_timedwait_relative_np(
+            &g_worker_wakeup_cond, &g_worker_wakeup_mutex, &rel);
+    }
+    t_worker_wakeup_seen = g_worker_wakeup_seq;
+    pthread_mutex_unlock(&g_worker_wakeup_mutex);
+}
+
 static void wispterm_macos_push_key_event(WispTermMacWindowState *state, WispTermMacKeyEvent event) {
     if (state == NULL) return;
     const size_t capacity = sizeof(state->key_events) / sizeof(state->key_events[0]);
@@ -293,6 +345,7 @@ static void wispterm_macos_push_key_event(WispTermMacWindowState *state, WispTer
         state->key_head = (state->key_head + 1) % capacity;
     }
     os_unfair_lock_unlock(&state->input_lock);
+    wispterm_macos_worker_wakeup_signal();
 }
 
 static bool wispterm_macos_pop_key_event(WispTermMacWindowState *state, WispTermMacKeyEvent *out) {
@@ -321,6 +374,7 @@ static void wispterm_macos_push_char_event(WispTermMacWindowState *state, WispTe
         state->char_head = (state->char_head + 1) % capacity;
     }
     os_unfair_lock_unlock(&state->input_lock);
+    wispterm_macos_worker_wakeup_signal();
 }
 
 static bool wispterm_macos_pop_char_event(WispTermMacWindowState *state, WispTermMacCharEvent *out) {
@@ -349,6 +403,7 @@ static void wispterm_macos_push_mouse_button_event(WispTermMacWindowState *state
         state->mouse_button_head = (state->mouse_button_head + 1) % capacity;
     }
     os_unfair_lock_unlock(&state->input_lock);
+    wispterm_macos_worker_wakeup_signal();
 }
 
 static bool wispterm_macos_pop_mouse_button_event(WispTermMacWindowState *state, WispTermMacMouseButtonEvent *out) {
@@ -377,6 +432,7 @@ static void wispterm_macos_push_mouse_move_event(WispTermMacWindowState *state, 
         state->mouse_move_head = (state->mouse_move_head + 1) % capacity;
     }
     os_unfair_lock_unlock(&state->input_lock);
+    wispterm_macos_worker_wakeup_signal();
 }
 
 static bool wispterm_macos_pop_mouse_move_event(WispTermMacWindowState *state, WispTermMacMouseMoveEvent *out) {
@@ -405,6 +461,7 @@ static void wispterm_macos_push_mouse_wheel_event(WispTermMacWindowState *state,
         state->mouse_wheel_head = (state->mouse_wheel_head + 1) % capacity;
     }
     os_unfair_lock_unlock(&state->input_lock);
+    wispterm_macos_worker_wakeup_signal();
 }
 
 static bool wispterm_macos_pop_mouse_wheel_event(WispTermMacWindowState *state, WispTermMacMouseWheelEvent *out) {
@@ -437,6 +494,7 @@ static void wispterm_macos_push_message_event(WispTermMacWindowState *state, Wis
         state->message_head = (state->message_head + 1) % capacity;
     }
     os_unfair_lock_unlock(&state->message_lock);
+    wispterm_macos_worker_wakeup_signal();
 }
 
 static bool wispterm_macos_pop_message_event(WispTermMacWindowState *state, WispTermMacMessageEvent *out) {
@@ -472,6 +530,7 @@ static bool wispterm_macos_push_file_drop_event(WispTermMacWindowState *state, c
         state->file_drop_head = (state->file_drop_head + 1) % capacity;
     }
     os_unfair_lock_unlock(&state->input_lock);
+    wispterm_macos_worker_wakeup_signal();
     return true;
 }
 
@@ -1114,7 +1173,8 @@ void wispterm_macos_window_poll(void *handle) {
 // Pump pending NSApp events without requiring a window handle. Used by the
 // zig idle loop in App.run() between window sessions so the AppDelegate's
 // reopen / terminate callbacks (Dock icon, cmd+Q) still fire while no
-// AppWindow loop is running.
+// AppWindow loop is running, and by every AppWindow render loop as its idle
+// block between frames.
 //
 // `timeout_seconds` is how long the main thread is willing to block waiting
 // for the next event. Blocking (rather than spinning + sleeping in zig) is
@@ -1124,6 +1184,13 @@ void wispterm_macos_window_poll(void *handle) {
 // worker dispatch_sync to main deadlocks until something else wakes the run
 // loop.
 void wispterm_macos_app_pump_events(double timeout_seconds) {
+    // Worker-thread window loops (every window past the first) must not touch
+    // NSApp — AppKit throws off-main. They block on the wakeup condition; the
+    // main thread's pump dispatches their input into the rings and signals it.
+    if (![NSThread isMainThread]) {
+        wispterm_macos_worker_wakeup_wait(timeout_seconds);
+        return;
+    }
     @autoreleasepool {
         NSDate *first_until = (timeout_seconds > 0)
             ? [NSDate dateWithTimeIntervalSinceNow:timeout_seconds]
@@ -1145,8 +1212,9 @@ void wispterm_macos_app_pump_events(double timeout_seconds) {
     }
 }
 
-// Wake the main thread's -nextEventMatchingMask: (used by the idle render loop)
-// from any thread, by posting an application-defined NSEvent. Safe off-main.
+// Wake any blocked idle pump from any thread: posts an application-defined
+// NSEvent for the main thread's -nextEventMatchingMask: and signals the
+// worker-window wakeup condition. Safe off-main.
 void wispterm_macos_post_wakeup(void) {
     @autoreleasepool {
         NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
@@ -1160,6 +1228,7 @@ void wispterm_macos_post_wakeup(void) {
                                                data2:0];
         if (event != nil) [NSApp postEvent:event atStart:NO];
     }
+    wispterm_macos_worker_wakeup_signal();
 }
 
 bool wispterm_macos_window_close_requested(void *handle) {
