@@ -675,6 +675,9 @@ extern "opengl32" fn wglGetProcAddress(lpszProc: [*:0]const u8) callconv(.winapi
 var g_wgl_swap_interval: ?*const fn (c_int) callconv(.winapi) BOOL = null;
 var g_swap_interval_loaded: bool = false;
 
+extern "opengl32" fn glGetString(name: u32) callconv(.winapi) ?[*:0]const u8;
+const GL_VENDOR: u32 = 0x1F00;
+
 /// Desired vsync interval, consumed by the DXGI flip-model presenter's
 /// `Present` call (wglSwapIntervalEXT only affects the GDI fallback path).
 var g_present_interval: c_int = 1;
@@ -840,6 +843,11 @@ pub const Window = struct {
     /// DXGI flip-model presenter; null = legacy GDI SwapBuffers path (either
     /// disabled by config or unavailable/failed on this machine).
     dx: ?dx_present.Presenter = null,
+    /// Set when the presenter latched a mid-session failure and the window
+    /// reverted to GDI. Consumed by the app loop (takePresentFallbackEvent)
+    /// to rebuild GPU-side caches the broken period may have corrupted
+    /// (glyph-atlas uploads dropped during a device reset → missing glyphs).
+    present_fallback_event: bool = false,
     should_close: bool = false,
     close_requested: bool = false,
     width: i32 = 800,
@@ -1184,9 +1192,11 @@ pub const Window = struct {
         // BLT present composites through the DWM redirection surface, which is
         // what produced the cross-DPI / resize artifacts of #46/#47/#88 on
         // Intel Arc and AMD iGPU drivers. Requires the GL context current.
+        // The GL vendor pins the D3D device to the GPU the context runs on.
+        const gl_vendor: []const u8 = if (glGetString(GL_VENDOR)) |v| std.mem.span(v) else "";
         const dx: ?dx_present.Presenter = if (g_flip_present_enabled)
-            dx_present.Presenter.init(hwnd, rect.right - rect.left, rect.bottom - rect.top) catch |err| blk: {
-                render_diagnostics.log("dx-present unavailable ({s}) — using GDI SwapBuffers", .{@errorName(err)});
+            dx_present.Presenter.init(hwnd, rect.right - rect.left, rect.bottom - rect.top, gl_vendor) catch |err| blk: {
+                render_diagnostics.log("dx-present unavailable ({s}, GL vendor \"{s}\") — using GDI SwapBuffers", .{ @errorName(err), gl_vendor });
                 std.debug.print("Win32: DXGI flip present unavailable ({s}), using SwapBuffers\n", .{@errorName(err)});
                 break :blk null;
             }
@@ -1194,8 +1204,8 @@ pub const Window = struct {
             null;
         if (dx != null) {
             render_diagnostics.log(
-                "dx-present active: flip-model swapchain {}x{}",
-                .{ rect.right - rect.left, rect.bottom - rect.top },
+                "dx-present active: flip-model swapchain {}x{} (GL vendor \"{s}\")",
+                .{ rect.right - rect.left, rect.bottom - rect.top, gl_vendor },
             );
             std.debug.print("Win32: presenting via DXGI flip-model swapchain\n", .{});
         }
@@ -1257,8 +1267,17 @@ pub const Window = struct {
             std.debug.print("Win32: DXGI present failed, reverting to SwapBuffers\n", .{});
             dx.deinit();
             self.dx = null;
+            self.present_fallback_event = true;
         }
         _ = SwapBuffers(self.hdc);
+    }
+
+    /// One-shot: true when the DXGI presenter latched a mid-session failure
+    /// since the last call. The app loop reacts by rebuilding GPU caches.
+    pub fn takePresentFallbackEvent(self: *Window) bool {
+        const fired = self.present_fallback_event;
+        self.present_fallback_event = false;
+        return fired;
     }
 
     /// Get the client area size (for OpenGL viewport).

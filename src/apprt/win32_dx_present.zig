@@ -18,6 +18,23 @@
 //! Every failure latches `PresentPolicy.fail()` and the caller reverts to
 //! GDI `SwapBuffers` for the rest of the session, so machines without
 //! `WGL_NV_DX_interop2` (or with a broken driver) keep the old behavior.
+//!
+//! Errors alone are not enough, though — the v1.18.0 field reports (black
+//! "slideshow" frames, multi-second stalls, crashes at launch) came from
+//! drivers that misbehave *without* failing any call. Three guards cover
+//! those silent modes:
+//!   • adapter matching: the D3D11 device is created on the DXGI adapter
+//!     whose PCI vendor matches `GL_VENDOR`, never the default adapter —
+//!     cross-adapter interop on hybrid-GPU laptops is what stalled/blacked
+//!     out, and matching also keeps dGPU laptops on the flip-model path;
+//!   • a first-frames content probe: GL readback vs staging readback of the
+//!     shared texture must agree on a frame with real content, otherwise the
+//!     path is silently dropping pixels → latch fallback;
+//!   • a present-duration watchdog: sustained multi-hundred-ms presents
+//!     (cross-GPU syncs, TDR recovery loops) → latch fallback.
+//! Crashes *inside* driver init are handled one level up by the bring-up
+//! fuse (state-file marker, see dxgi_core + main.zig): the next launch skips
+//! the D3D path for this app version.
 
 const std = @import("std");
 const windows = std.os.windows;
@@ -48,6 +65,8 @@ const GL_COLOR_BUFFER_BIT: u32 = 0x00004000;
 const GL_NEAREST: u32 = 0x2600;
 const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
 const GL_SCISSOR_TEST: u32 = 0x0C11;
+const GL_RGBA: u32 = 0x1908;
+const GL_UNSIGNED_BYTE: u32 = 0x1401;
 
 const WGL_ACCESS_WRITE_DISCARD_NV: u32 = 0x0002;
 
@@ -62,8 +81,11 @@ const GlFns = struct {
     delete_renderbuffers: *const fn (i32, [*]const u32) callconv(.winapi) void,
     blit_framebuffer: *const fn (i32, i32, i32, i32, i32, i32, i32, i32, u32, u32) callconv(.winapi) void,
     check_framebuffer_status: *const fn (u32) callconv(.winapi) u32,
-    // GL 1.0 entry point: comes from opengl32.dll directly, not wglGetProcAddress.
+    // GL 1.0/1.1 entry points: come from opengl32.dll directly, not
+    // wglGetProcAddress.
     disable: *const fn (u32) callconv(.winapi) void,
+    read_pixels: *const fn (i32, i32, i32, i32, u32, u32, *anyopaque) callconv(.winapi) void,
+    get_error: *const fn () callconv(.winapi) u32,
 
     fn load() error{GlFunctionsMissing}!GlFns {
         const opengl32 = GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("opengl32.dll")) orelse
@@ -78,6 +100,8 @@ const GlFns = struct {
             .blit_framebuffer = @ptrCast(wglGetProcAddress("glBlitFramebuffer") orelse return error.GlFunctionsMissing),
             .check_framebuffer_status = @ptrCast(wglGetProcAddress("glCheckFramebufferStatus") orelse return error.GlFunctionsMissing),
             .disable = @ptrCast(GetProcAddress(opengl32, "glDisable") orelse return error.GlFunctionsMissing),
+            .read_pixels = @ptrCast(GetProcAddress(opengl32, "glReadPixels") orelse return error.GlFunctionsMissing),
+            .get_error = @ptrCast(GetProcAddress(opengl32, "glGetError") orelse return error.GlFunctionsMissing),
         };
     }
 };
@@ -146,6 +170,7 @@ pub const InitError = error{
     D3D11Unavailable,
     DeviceCreateFailed,
     FactoryUnavailable,
+    AdapterVendorMismatch,
     SwapchainCreateFailed,
     InteropUnavailable,
     InteropOpenFailed,
@@ -161,6 +186,8 @@ pub const InitError = error{
 const PresentError = error{
     LockFailed,
     PresentFailed,
+    ProbeReadbackFailed,
+    ProbeMismatch,
 };
 
 // ============================================================================
@@ -182,16 +209,29 @@ pub const Presenter = struct {
     interop_object: ?HANDLE = null,
     gl_fbo: u32 = 0,
     gl_rbo: u32 = 0,
+    // First-frames probe: a CPU-readable copy of shared_tex, compared against
+    // GL readbacks until the path has verifiably carried real content once.
+    probe_staging: ?*anyopaque = null, // ID3D11Texture2D (STAGING)
+    probe_done: bool = false,
+    probe_frames: u32 = 0,
 
     policy: core.PresentPolicy,
 
     /// Requires the window's GL context to be current (interop + GL function
-    /// loading both depend on it).
-    pub fn init(hwnd: HWND, width: i32, height: i32) InitError!Presenter {
+    /// loading both depend on it). `gl_vendor` is `glGetString(GL_VENDOR)`:
+    /// the D3D11 device must be created on the same adapter the GL context
+    /// runs on — interop with the default adapter on a hybrid-GPU machine
+    /// silently presents black or stalls on cross-GPU syncs.
+    pub fn init(hwnd: HWND, width: i32, height: i32, gl_vendor: []const u8) InitError!Presenter {
         if (width <= 0 or height <= 0) return error.SwapchainCreateFailed;
 
         const gl = try GlFns.load();
         const interop = try InteropFns.load();
+
+        const want_vendor = core.pciVendorForGlVendor(gl_vendor) orelse
+            return error.AdapterVendorMismatch;
+        const adapter = try pickAdapter(want_vendor);
+        defer comRelease(adapter);
 
         const d3d11 = LoadLibraryW(std.unicode.utf8ToUtf16LeStringLiteral("d3d11.dll")) orelse
             return error.D3D11Unavailable;
@@ -200,9 +240,10 @@ pub const Presenter = struct {
 
         var device: ?*anyopaque = null;
         var context: ?*anyopaque = null;
+        // Driver type must be UNKNOWN when an explicit adapter is passed.
         if (create_device(
-            null,
-            core.D3D_DRIVER_TYPE_HARDWARE,
+            adapter,
+            core.D3D_DRIVER_TYPE_UNKNOWN,
             null,
             core.D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             null,
@@ -234,6 +275,42 @@ pub const Presenter = struct {
         };
         try self.createSizedResources(width, height);
         return self;
+    }
+
+    /// Find the first DXGI adapter belonging to the GL context's GPU vendor.
+    /// No match → the machine has no adapter we can safely interop with
+    /// (or GL runs on something exotic) → caller falls back to GDI.
+    fn pickAdapter(want_vendor: u32) InitError!*anyopaque {
+        const dxgi = LoadLibraryW(std.unicode.utf8ToUtf16LeStringLiteral("dxgi.dll")) orelse
+            return error.FactoryUnavailable;
+        const CreateFactoryFn = *const fn (*const core.Guid, *?*anyopaque) callconv(.winapi) HRESULT;
+        const create_factory: CreateFactoryFn = @ptrCast(GetProcAddress(dxgi, "CreateDXGIFactory1") orelse
+            return error.FactoryUnavailable);
+
+        var factory: ?*anyopaque = null;
+        if (create_factory(&core.IID_IDXGIFactory1, &factory) < 0 or factory == null)
+            return error.FactoryUnavailable;
+        defer comRelease(factory.?);
+
+        const enum_adapters = comCall(factory.?, core.slot.DXGIFactory1_EnumAdapters1, *const fn (*anyopaque, u32, *?*anyopaque) callconv(.winapi) HRESULT);
+        var index: u32 = 0;
+        while (index < 16) : (index += 1) {
+            var adapter: ?*anyopaque = null;
+            if (enum_adapters(factory.?, index, &adapter) < 0 or adapter == null) break;
+            const get_desc = comCall(adapter.?, core.slot.DXGIAdapter1_GetDesc1, *const fn (*anyopaque, *core.DXGI_ADAPTER_DESC1) callconv(.winapi) HRESULT);
+            var desc: core.DXGI_ADAPTER_DESC1 = undefined;
+            if (get_desc(adapter.?, &desc) >= 0 and
+                core.adapterUsableForVendor(desc.vendor_id, desc.flags, want_vendor))
+            {
+                render_diagnostics.log(
+                    "dx-present adapter {}: vendor=0x{x} device=0x{x} (GL vendor match)",
+                    .{ index, desc.vendor_id, desc.device_id },
+                );
+                return adapter.?;
+            }
+            comRelease(adapter.?);
+        }
+        return error.AdapterVendorMismatch;
     }
 
     fn createSwapchain(device: *anyopaque, hwnd: HWND, width: i32, height: i32) InitError!*anyopaque {
@@ -359,6 +436,10 @@ pub const Presenter = struct {
     }
 
     fn destroySizedResources(self: *Presenter) void {
+        if (self.probe_staging) |s| {
+            comRelease(s);
+            self.probe_staging = null;
+        }
         if (self.backbuffer) |b| {
             comRelease(b);
             self.backbuffer = null;
@@ -406,11 +487,34 @@ pub const Presenter = struct {
             },
             .present => {},
         }
+        const start_ms = std.time.milliTimestamp();
         self.blitAndPresent(width, height, interval) catch |err| {
             self.policy.fail();
             render_diagnostics.log("dx-present present failed: {s}", .{@errorName(err)});
             return false;
         };
+        const elapsed_ms: u64 = @intCast(@max(std.time.milliTimestamp() - start_ms, 0));
+
+        // The dangerous failure modes here never return an error: a broken
+        // interop path happily "presents" frames GL never wrote (hybrid-GPU
+        // share bugs, driver-forced MSAA making the Y-flip blit an illegal
+        // no-op) or takes seconds per frame (cross-GPU syncs, TDR loops).
+        // Two watchers convert those into the latched GDI fallback.
+        if (!self.probe_done) {
+            self.probeStep(width, height) catch |err| {
+                self.policy.fail();
+                render_diagnostics.log("dx-present probe failed: {s} — frames are not reaching the swapchain", .{@errorName(err)});
+                return false;
+            };
+        }
+        if (self.policy.notePresentMillis(elapsed_ms)) {
+            render_diagnostics.log(
+                "dx-present watchdog: {} consecutive presents over {}ms (last {}ms)",
+                .{ core.PresentPolicy.slow_latch_frames, core.PresentPolicy.slow_frame_ms, elapsed_ms },
+            );
+            // This frame did reach the screen; the latch takes effect on the
+            // next call via frameAction → .fallback.
+        }
         return true;
     }
 
@@ -437,6 +541,98 @@ pub const Presenter = struct {
         const present = comCall(self.swapchain, core.slot.DXGISwapChain_Present, *const fn (*anyopaque, u32, u32) callconv(.winapi) HRESULT);
         const interval_u: u32 = if (interval > 0) 1 else 0;
         if (present(self.swapchain, interval_u, 0) < 0) return error.PresentFailed;
+    }
+
+    /// Verify the present path actually carries pixels: read the same sample
+    /// points back from GL FBO 0 and from the D3D shared texture and compare.
+    /// Runs after each present until a frame with real content matches
+    /// (`probe_done`), erroring out the moment any sample disagrees. Bounded
+    /// by `probe_max_frames` so the Map() sync cost doesn't run forever.
+    fn probeStep(self: *Presenter, width: i32, height: i32) PresentError!void {
+        self.probe_frames += 1;
+        if (self.probe_frames > core.probe_max_frames) {
+            self.settleProbe(true);
+            return;
+        }
+        if (width < 8 or height < 8) return;
+
+        // Informational only: renderer code may legitimately leave a stale
+        // error queued, so a GL error must not fail the probe by itself —
+        // but it's the smoking gun for the forced-MSAA illegal-blit case.
+        const gl_err = self.gl.get_error();
+        if (gl_err != 0)
+            render_diagnostics.log("dx-present probe: GL error 0x{x} pending after blit", .{gl_err});
+
+        if (self.probe_staging == null) try self.createProbeStaging(width, height);
+        const staging = self.probe_staging.?;
+
+        const copy_resource = comCall(self.context, core.slot.D3D11DeviceContext_CopyResource, *const fn (*anyopaque, *anyopaque, *anyopaque) callconv(.winapi) void);
+        copy_resource(self.context, staging, self.shared_tex.?);
+
+        const map = comCall(self.context, core.slot.D3D11DeviceContext_Map, *const fn (*anyopaque, *anyopaque, u32, u32, u32, *core.D3D11_MAPPED_SUBRESOURCE) callconv(.winapi) HRESULT);
+        const unmap = comCall(self.context, core.slot.D3D11DeviceContext_Unmap, *const fn (*anyopaque, *anyopaque, u32) callconv(.winapi) void);
+        var mapped: core.D3D11_MAPPED_SUBRESOURCE = undefined;
+        if (map(self.context, staging, 0, core.D3D11_MAP_READ, 0, &mapped) < 0 or mapped.p_data == null)
+            return error.ProbeReadbackFailed;
+        defer unmap(self.context, staging, 0);
+        const dx_bytes: [*]const u8 = @ptrCast(mapped.p_data.?);
+
+        // 3×3 grid; corners-ish + center so titlebar/background/content areas
+        // are all represented.
+        var gl_rgb: [9][3]u8 = undefined;
+        var dx_rgb: [9][3]u8 = undefined;
+        var i: usize = 0;
+        for ([3]i32{ @divTrunc(height, 4), @divTrunc(height, 2), @divTrunc(height * 3, 4) }) |y| {
+            for ([3]i32{ @divTrunc(width, 4), @divTrunc(width, 2), @divTrunc(width * 3, 4) }) |x| {
+                var px: [4]u8 = undefined; // RGBA from GL
+                // The shared texture holds the Y-flipped (top-down) image;
+                // FBO 0 is bottom-up, so sample its mirrored row.
+                self.gl.read_pixels(x, height - 1 - y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &px);
+                gl_rgb[i] = .{ px[0], px[1], px[2] };
+                const row_offset: usize = @as(usize, @intCast(y)) * mapped.row_pitch;
+                const dx_px = dx_bytes[row_offset + @as(usize, @intCast(x)) * 4 ..][0..4]; // BGRA
+                dx_rgb[i] = .{ dx_px[2], dx_px[1], dx_px[0] };
+                i += 1;
+            }
+        }
+
+        switch (core.evaluateProbe(&gl_rgb, &dx_rgb)) {
+            .mismatched => return error.ProbeMismatch,
+            .matched_uniform => {}, // keep probing until a frame has content
+            .matched_content => self.settleProbe(false),
+        }
+    }
+
+    fn settleProbe(self: *Presenter, gave_up: bool) void {
+        self.probe_done = true;
+        if (self.probe_staging) |s| {
+            comRelease(s);
+            self.probe_staging = null;
+        }
+        if (gave_up)
+            render_diagnostics.log("dx-present probe: no content frame within {} frames — accepting path, watchdog stays armed", .{core.probe_max_frames})
+        else
+            render_diagnostics.log("dx-present probe passed: swapchain verifiably carries GL content", .{});
+    }
+
+    fn createProbeStaging(self: *Presenter, width: i32, height: i32) PresentError!void {
+        const desc = core.D3D11_TEXTURE2D_DESC{
+            .width = @intCast(width),
+            .height = @intCast(height),
+            .mip_levels = 1,
+            .array_size = 1,
+            .format = core.DXGI_FORMAT_B8G8R8A8_UNORM,
+            .sample_desc = .{ .count = 1, .quality = 0 },
+            .usage = core.D3D11_USAGE_STAGING,
+            .bind_flags = 0,
+            .cpu_access_flags = core.D3D11_CPU_ACCESS_READ,
+            .misc_flags = 0,
+        };
+        const create_tex = comCall(self.device, core.slot.D3D11Device_CreateTexture2D, *const fn (*anyopaque, *const core.D3D11_TEXTURE2D_DESC, ?*const anyopaque, *?*anyopaque) callconv(.winapi) HRESULT);
+        var tex: ?*anyopaque = null;
+        if (create_tex(self.device, &desc, null, &tex) < 0 or tex == null)
+            return error.ProbeReadbackFailed;
+        self.probe_staging = tex;
     }
 
     /// Requires the GL context to still be current (interop teardown).

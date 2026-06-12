@@ -50,7 +50,7 @@ fn loadPersisted(allocator: std.mem.Allocator) codec.PersistedState {
 fn savePersisted(allocator: std.mem.Allocator, state: codec.PersistedState) void {
     const path = stateFilePath(allocator) orelse return;
     defer allocator.free(path);
-    var buf: [256]u8 = undefined;
+    var buf: [384]u8 = undefined;
     const content = codec.format(&buf, state) catch return;
     if (std.fs.cwd().createFile(path, .{})) |file| {
         defer file.close();
@@ -143,4 +143,30 @@ pub fn recordSeenVersion(allocator: std.mem.Allocator, version: []const u8) void
     const current = loadPersisted(allocator);
     if (std.mem.eql(u8, current.lastSeenVersion(), version)) return;
     savePersisted(allocator, codec.withLastSeenVersion(current, version));
+}
+
+/// The stored D3D present bring-up marker (empty when none). The returned
+/// slice is copied into `buf`; pass at least `codec.bringup_max_len` bytes.
+pub fn d3dBringup(allocator: std.mem.Allocator, buf: []u8) []const u8 {
+    const m = loadPersisted(allocator).d3dBringup();
+    const n = @min(m.len, buf.len);
+    @memcpy(buf[0..n], m[0..n]);
+    return buf[0..n];
+}
+
+/// Persist a D3D bring-up marker (read-modify-write). Written *before* the
+/// first presenter init so a driver crash during bring-up leaves it behind.
+pub fn recordD3dBringup(allocator: std.mem.Allocator, marker: []const u8) void {
+    const current = loadPersisted(allocator);
+    savePersisted(allocator, codec.withD3dBringup(current, marker));
+}
+
+/// Clear the marker after the process survived its first present — but only
+/// a "probing" marker. A "blocked" marker must persist across launches, or a
+/// machine whose driver crashes at init would alternate crash/run forever.
+pub fn settleD3dBringup(allocator: std.mem.Allocator) void {
+    const current = loadPersisted(allocator);
+    if (current.d3d_bringup_len == 0) return;
+    if (!std.mem.startsWith(u8, current.d3dBringup(), "probing:")) return;
+    savePersisted(allocator, codec.withD3dBringup(current, ""));
 }

@@ -174,6 +174,15 @@ pub fn swapBuffers(window: *Window) void {
     window.swapBuffers();
 }
 
+/// One-shot (Windows-only): true when the DXGI presenter latched a
+/// mid-session failure and the window reverted to GDI since the last call.
+/// The app loop rebuilds GPU-side caches (glyph atlas) in response, since a
+/// stalling/TDR-ing present path drops texture uploads made while broken.
+pub fn takePresentFallbackEvent(window: *Window) bool {
+    if (comptime @hasDecl(Window, "takePresentFallbackEvent")) return window.takePresentFallbackEvent();
+    return false;
+}
+
 pub fn framebufferSize(window: *Window) Size {
     const size = window.getFramebufferSize();
     return .{ .width = size.width, .height = size.height };

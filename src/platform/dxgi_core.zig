@@ -51,6 +51,7 @@ fn hexByte(comptime pair: *const [2]u8) u8 {
 
 // Interface IDs the presenter queries.
 pub const IID_IDXGIDevice = guid("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
+pub const IID_IDXGIFactory1 = guid("770aae78-f26f-4dba-a829-253c83d1b387");
 pub const IID_IDXGIFactory2 = guid("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
 pub const IID_IDXGIResource = guid("035f3ab4-482e-4e50-b41f-8a7f8bd8960b");
 pub const IID_ID3D11Texture2D = guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
@@ -93,19 +94,89 @@ pub const D3D11_TEXTURE2D_DESC = extern struct {
     misc_flags: u32,
 };
 
+/// dxgi.h LUID (8 bytes, two-int layout).
+pub const LUID = extern struct {
+    low_part: u32,
+    high_part: i32,
+};
+
+/// dxgi1_2.h DXGI_ADAPTER_DESC1. `dedicated_*`/`shared_*` are SIZE_T, so the
+/// layout test below pins the 64-bit shape the presenter actually runs on.
+pub const DXGI_ADAPTER_DESC1 = extern struct {
+    description: [128]u16,
+    vendor_id: u32,
+    device_id: u32,
+    sub_sys_id: u32,
+    revision: u32,
+    dedicated_video_memory: usize,
+    dedicated_system_memory: usize,
+    shared_system_memory: usize,
+    adapter_luid: LUID,
+    flags: u32,
+};
+
+/// d3d11.h D3D11_MAPPED_SUBRESOURCE.
+pub const D3D11_MAPPED_SUBRESOURCE = extern struct {
+    p_data: ?*anyopaque,
+    row_pitch: u32,
+    depth_pitch: u32,
+};
+
 pub const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
 pub const DXGI_USAGE_RENDER_TARGET_OUTPUT: u32 = 0x20;
 pub const DXGI_SCALING_NONE: u32 = 1;
 pub const DXGI_SCALING_STRETCH: u32 = 0;
 pub const DXGI_SWAP_EFFECT_FLIP_DISCARD: u32 = 4;
 pub const DXGI_ALPHA_MODE_IGNORE: u32 = 3;
+pub const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
 
+pub const D3D_DRIVER_TYPE_UNKNOWN: u32 = 0;
 pub const D3D_DRIVER_TYPE_HARDWARE: u32 = 1;
 pub const D3D11_SDK_VERSION: u32 = 7;
 pub const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
 pub const D3D11_USAGE_DEFAULT: u32 = 0;
+pub const D3D11_USAGE_STAGING: u32 = 3;
 pub const D3D11_BIND_RENDER_TARGET: u32 = 0x20;
+pub const D3D11_CPU_ACCESS_READ: u32 = 0x20000;
 pub const D3D11_RESOURCE_MISC_SHARED: u32 = 0x2;
+pub const D3D11_MAP_READ: u32 = 1;
+
+// PCI vendor IDs, for matching the GL context's GPU to a DXGI adapter.
+pub const PCI_VENDOR_NVIDIA: u32 = 0x10DE;
+pub const PCI_VENDOR_INTEL: u32 = 0x8086;
+pub const PCI_VENDOR_AMD: u32 = 0x1002;
+pub const PCI_VENDOR_MICROSOFT: u32 = 0x1414; // WARP / Basic Render
+
+/// Map `glGetString(GL_VENDOR)` to the PCI vendor id of the GPU the GL
+/// context runs on. WGL_NV_DX_interop2 sharing is only defined when the D3D11
+/// device lives on the *same* adapter as the GL context; on hybrid-GPU
+/// laptops `D3D11CreateDevice(adapter=null)` picks the default adapter, which
+/// is frequently the *other* GPU — drivers then either stall every frame on
+/// cross-GPU syncs or "succeed" while presenting frames GL never wrote
+/// (the v1.18.0 black-screen/slideshow reports). Returns null for vendors
+/// with no reliable interop story (e.g. ARM GL emulation) — callers must
+/// fall back to GDI rather than guess.
+pub fn pciVendorForGlVendor(gl_vendor: []const u8) ?u32 {
+    var lower_buf: [64]u8 = undefined;
+    if (gl_vendor.len == 0 or gl_vendor.len > lower_buf.len) return null;
+    const lower = std.ascii.lowerString(&lower_buf, gl_vendor);
+    if (std.mem.indexOf(u8, lower, "nvidia") != null) return PCI_VENDOR_NVIDIA;
+    if (std.mem.indexOf(u8, lower, "intel") != null) return PCI_VENDOR_INTEL;
+    if (std.mem.indexOf(u8, lower, "amd") != null) return PCI_VENDOR_AMD;
+    if (std.mem.indexOf(u8, lower, "ati ") != null or
+        std.mem.startsWith(u8, lower, "ati")) return PCI_VENDOR_AMD;
+    if (std.mem.indexOf(u8, lower, "microsoft") != null) return PCI_VENDOR_MICROSOFT;
+    return null;
+}
+
+/// Whether a DXGI adapter is an acceptable home for the presenter's D3D11
+/// device given the GL context's vendor. Software adapters (WARP) only match
+/// when GL itself is software-rendered.
+pub fn adapterUsableForVendor(desc_vendor_id: u32, desc_flags: u32, want_vendor: u32) bool {
+    if ((desc_flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 and want_vendor != PCI_VENDOR_MICROSOFT)
+        return false;
+    return desc_vendor_id == want_vendor;
+}
 
 // ============================================================================
 // COM vtable slots
@@ -125,7 +196,10 @@ pub const slot = struct {
     // ID3D11Device (derives IUnknown directly)
     pub const D3D11Device_CreateTexture2D: usize = 5;
 
-    // ID3D11DeviceContext (IUnknown + ID3D11DeviceChild(4) → first own slot 7)
+    // ID3D11DeviceContext (IUnknown + ID3D11DeviceChild(4) → first own slot 7:
+    // VSSetConstantBuffers(7) … Draw(13) Map(14) Unmap(15) … CopyResource(47))
+    pub const D3D11DeviceContext_Map: usize = 14;
+    pub const D3D11DeviceContext_Unmap: usize = 15;
     pub const D3D11DeviceContext_CopyResource: usize = 47;
 
     // IDXGIObject: SetPrivateData(3) SetPrivateDataInterface(4)
@@ -138,9 +212,16 @@ pub const slot = struct {
     // IDXGIFactory (IDXGIObject + EnumAdapters(7) MakeWindowAssociation(8) …)
     pub const DXGIFactory_MakeWindowAssociation: usize = 8;
 
+    // IDXGIFactory1 (IDXGIObject + IDXGIFactory(5) → EnumAdapters1(12))
+    pub const DXGIFactory1_EnumAdapters1: usize = 12;
+
     // IDXGIFactory2 (IDXGIObject + IDXGIFactory(5) + IDXGIFactory1(2) →
     // IsWindowedStereoEnabled(14), CreateSwapChainForHwnd(15))
     pub const DXGIFactory2_CreateSwapChainForHwnd: usize = 15;
+
+    // IDXGIAdapter1 (IDXGIObject + EnumOutputs(7) GetDesc(8)
+    // CheckInterfaceSupport(9) → GetDesc1(10))
+    pub const DXGIAdapter1_GetDesc1: usize = 10;
 
     // IDXGIDeviceSubObject: GetDevice(7)
     // IDXGISwapChain: Present(8) GetBuffer(9) SetFullscreenState(10)
@@ -162,9 +243,17 @@ pub const slot = struct {
 pub const PresentPolicy = struct {
     pub const Action = enum { skip, present, resize_then_present, fallback };
 
+    /// Watchdog: a present this slow is a stalled interop sync / TDR loop,
+    /// not vsync (16ms) or a scheduler hiccup.
+    pub const slow_frame_ms: u64 = 400;
+    /// Consecutive slow presents before latching fallback. High enough that a
+    /// burst of post-resume / driver-recovery frames doesn't trip it.
+    pub const slow_latch_frames: u32 = 5;
+
     width: i32,
     height: i32,
     failed: bool = false,
+    slow_streak: u32 = 0,
 
     pub fn init(width: i32, height: i32) PresentPolicy {
         return .{ .width = width, .height = height };
@@ -184,12 +273,111 @@ pub const PresentPolicy = struct {
         self.height = height;
     }
 
+    /// Watchdog feed: duration of a *successful* present. A broken interop
+    /// path can stall for seconds per frame without ever returning an error
+    /// (cross-GPU syncs, TDR recovery loops) — the only externally visible
+    /// signal is time. Latches `failed` after `slow_latch_frames` consecutive
+    /// slow presents; returns true exactly when this call latched it.
+    pub fn notePresentMillis(self: *PresentPolicy, ms: u64) bool {
+        if (self.failed) return false;
+        if (ms < slow_frame_ms) {
+            self.slow_streak = 0;
+            return false;
+        }
+        self.slow_streak += 1;
+        if (self.slow_streak < slow_latch_frames) return false;
+        self.failed = true;
+        return true;
+    }
+
     /// Latch the fallback path for the rest of the session — a presenter that
     /// failed once must not flap between DXGI and GDI presents.
     pub fn fail(self: *PresentPolicy) void {
         self.failed = true;
     }
 };
+
+// ============================================================================
+// First-frames content probe
+// ============================================================================
+
+/// Stop probing after this many presented frames without a verdict: the cost
+/// of the staging-readback sync isn't worth carrying forever, and the
+/// watchdog still covers late-onset stalls.
+pub const probe_max_frames: u32 = 120;
+
+pub const ProbeVerdict = enum {
+    /// A sampled pixel differs between what GL rendered and what reached the
+    /// swapchain: the interop path is silently dropping/corrupting frames.
+    mismatched,
+    /// Samples agree but the GL frame was a single flat color — consistent
+    /// with a broken path that happens to show the same flat color (e.g.
+    /// black-on-black), so not yet proof the path works.
+    matched_uniform,
+    /// Samples agree on a frame with real content: the path verifiably
+    /// carries pixels end-to-end.
+    matched_content,
+};
+
+/// Compare per-sample RGB read back from the GL framebuffer against the same
+/// points read back from the D3D shared texture (callers handle the Y-flip
+/// and BGRA→RGB swizzle when sampling). The blit + CopyResource chain is
+/// bit-exact, so any difference means the present path is broken even though
+/// every API call "succeeded".
+pub fn evaluateProbe(gl_rgb: []const [3]u8, dx_rgb: []const [3]u8) ProbeVerdict {
+    std.debug.assert(gl_rgb.len == dx_rgb.len and gl_rgb.len > 0);
+    for (gl_rgb, dx_rgb) |g, d| {
+        if (g[0] != d[0] or g[1] != d[1] or g[2] != d[2]) return .mismatched;
+    }
+    for (gl_rgb[1..]) |g| {
+        if (g[0] != gl_rgb[0][0] or g[1] != gl_rgb[0][1] or g[2] != gl_rgb[0][2])
+            return .matched_content;
+    }
+    return .matched_uniform;
+}
+
+// ============================================================================
+// Bring-up crash fuse
+// ============================================================================
+//
+// Presenter init + the first present run driver code (wglDX*NV, D3D11) that
+// on broken ICDs can crash the process outright instead of returning an
+// error — the "v1.18 won't open" reports. The fuse is a state-file marker
+// written before the first window is created and removed after the first
+// successful present: a leftover "probing:<version>" marker on the next
+// launch means the last bring-up died mid-flight, so that app version stops
+// trying D3D on this machine ("blocked:<version>"). A new app version
+// retries once.
+
+pub const bringup_probing_prefix = "probing:";
+pub const bringup_blocked_prefix = "blocked:";
+/// Marker = prefix + version; sized for window_state_codec's version cap.
+pub const bringup_marker_max_len: usize = 32;
+
+pub const BringupFuse = enum { attempt, blocked };
+
+pub fn bringupProbingMarker(buf: []u8, version: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, bringup_probing_prefix ++ "{s}", .{version});
+}
+
+pub fn bringupBlockedMarker(buf: []u8, version: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, bringup_blocked_prefix ++ "{s}", .{version});
+}
+
+pub fn bringupMarkerIsProbing(stored: []const u8) bool {
+    return std.mem.startsWith(u8, stored, bringup_probing_prefix);
+}
+
+/// Decide whether this launch may try the D3D present path. Only markers for
+/// the *current* version block: an upgrade retries once (the driver bug may
+/// be fixed, ours may be), and stale markers from other versions are ignored.
+pub fn bringupFuseDecision(stored: []const u8, version: []const u8) BringupFuse {
+    inline for (.{ bringup_probing_prefix, bringup_blocked_prefix }) |prefix| {
+        if (std.mem.startsWith(u8, stored, prefix) and
+            std.mem.eql(u8, stored[prefix.len..], version)) return .blocked;
+    }
+    return .attempt;
+}
 
 // ============================================================================
 // Tests (fast suite — registered in test_fast.zig)
@@ -275,4 +463,84 @@ test "PresentPolicy latches fallback after a failure" {
     // No recovery mid-session: a flaky presenter must not flap between paths.
     p.noteResized(800, 600);
     try std.testing.expectEqual(PresentPolicy.Action.fallback, p.frameAction(800, 600));
+}
+
+test "DXGI_ADAPTER_DESC1 matches the documented 64-bit layout" {
+    try std.testing.expectEqual(@as(usize, 312), @sizeOf(DXGI_ADAPTER_DESC1));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(DXGI_ADAPTER_DESC1, "description"));
+    try std.testing.expectEqual(@as(usize, 256), @offsetOf(DXGI_ADAPTER_DESC1, "vendor_id"));
+    try std.testing.expectEqual(@as(usize, 272), @offsetOf(DXGI_ADAPTER_DESC1, "dedicated_video_memory"));
+    try std.testing.expectEqual(@as(usize, 296), @offsetOf(DXGI_ADAPTER_DESC1, "adapter_luid"));
+    try std.testing.expectEqual(@as(usize, 304), @offsetOf(DXGI_ADAPTER_DESC1, "flags"));
+}
+
+test "D3D11_MAPPED_SUBRESOURCE matches the documented 64-bit layout" {
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(D3D11_MAPPED_SUBRESOURCE));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(D3D11_MAPPED_SUBRESOURCE, "row_pitch"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(D3D11_MAPPED_SUBRESOURCE, "depth_pitch"));
+}
+
+test "pciVendorForGlVendor maps the real GL vendor strings" {
+    try std.testing.expectEqual(@as(?u32, PCI_VENDOR_NVIDIA), pciVendorForGlVendor("NVIDIA Corporation"));
+    try std.testing.expectEqual(@as(?u32, PCI_VENDOR_INTEL), pciVendorForGlVendor("Intel"));
+    try std.testing.expectEqual(@as(?u32, PCI_VENDOR_INTEL), pciVendorForGlVendor("Intel Open Source Technology Center"));
+    try std.testing.expectEqual(@as(?u32, PCI_VENDOR_AMD), pciVendorForGlVendor("ATI Technologies Inc."));
+    try std.testing.expectEqual(@as(?u32, PCI_VENDOR_AMD), pciVendorForGlVendor("AMD"));
+    try std.testing.expectEqual(@as(?u32, PCI_VENDOR_MICROSOFT), pciVendorForGlVendor("Microsoft Corporation"));
+    // Unknown vendors must NOT guess an adapter — callers fall back to GDI.
+    try std.testing.expectEqual(@as(?u32, null), pciVendorForGlVendor("Mesa/X.org"));
+    try std.testing.expectEqual(@as(?u32, null), pciVendorForGlVendor(""));
+}
+
+test "adapterUsableForVendor rejects software adapters for hardware GL" {
+    try std.testing.expect(adapterUsableForVendor(PCI_VENDOR_NVIDIA, 0, PCI_VENDOR_NVIDIA));
+    // Hybrid laptop: iGPU enumerated first must not match a dGPU GL context.
+    try std.testing.expect(!adapterUsableForVendor(PCI_VENDOR_INTEL, 0, PCI_VENDOR_NVIDIA));
+    // WARP only pairs with software GL.
+    try std.testing.expect(!adapterUsableForVendor(PCI_VENDOR_MICROSOFT, DXGI_ADAPTER_FLAG_SOFTWARE, PCI_VENDOR_NVIDIA));
+    try std.testing.expect(adapterUsableForVendor(PCI_VENDOR_MICROSOFT, DXGI_ADAPTER_FLAG_SOFTWARE, PCI_VENDOR_MICROSOFT));
+}
+
+test "PresentPolicy watchdog latches only on a sustained slow streak" {
+    var p = PresentPolicy.init(800, 600);
+    // A fast frame resets the streak: 4 slow + fast + 4 slow never latches.
+    for (0..PresentPolicy.slow_latch_frames - 1) |_| try std.testing.expect(!p.notePresentMillis(900));
+    try std.testing.expect(!p.notePresentMillis(5));
+    for (0..PresentPolicy.slow_latch_frames - 1) |_| try std.testing.expect(!p.notePresentMillis(900));
+    try std.testing.expectEqual(PresentPolicy.Action.present, p.frameAction(800, 600));
+    // The Nth consecutive slow frame latches, exactly once.
+    try std.testing.expect(p.notePresentMillis(900));
+    try std.testing.expect(!p.notePresentMillis(900));
+    try std.testing.expectEqual(PresentPolicy.Action.fallback, p.frameAction(800, 600));
+}
+
+test "evaluateProbe verdicts: mismatch, uniform match, content match" {
+    const black: [3]u8 = .{ 0, 0, 0 };
+    const grey: [3]u8 = .{ 30, 33, 40 };
+    const text: [3]u8 = .{ 220, 220, 225 };
+    // Broken interop: GL drew content, swapchain got nothing.
+    try std.testing.expectEqual(ProbeVerdict.mismatched, evaluateProbe(&.{ grey, text }, &.{ black, black }));
+    // Single-channel corruption counts too.
+    try std.testing.expectEqual(ProbeVerdict.mismatched, evaluateProbe(&.{ grey, grey }, &.{ grey, .{ 30, 33, 41 } }));
+    // Flat frame matching is not yet proof.
+    try std.testing.expectEqual(ProbeVerdict.matched_uniform, evaluateProbe(&.{ black, black }, &.{ black, black }));
+    // Real content matching settles the probe.
+    try std.testing.expectEqual(ProbeVerdict.matched_content, evaluateProbe(&.{ grey, text }, &.{ grey, text }));
+}
+
+test "bringup fuse blocks only markers for the current version" {
+    var buf: [bringup_marker_max_len]u8 = undefined;
+    const probing = try bringupProbingMarker(&buf, "1.19.0");
+    try std.testing.expectEqualStrings("probing:1.19.0", probing);
+    try std.testing.expect(bringupMarkerIsProbing(probing));
+
+    // Crashed during last bring-up of this version → blocked.
+    try std.testing.expectEqual(BringupFuse.blocked, bringupFuseDecision("probing:1.19.0", "1.19.0"));
+    try std.testing.expectEqual(BringupFuse.blocked, bringupFuseDecision("blocked:1.19.0", "1.19.0"));
+    // A new version retries once; stale/garbage markers don't block.
+    try std.testing.expectEqual(BringupFuse.attempt, bringupFuseDecision("blocked:1.18.0", "1.19.0"));
+    try std.testing.expectEqual(BringupFuse.attempt, bringupFuseDecision("probing:1.18.0", "1.19.0"));
+    try std.testing.expectEqual(BringupFuse.attempt, bringupFuseDecision("", "1.19.0"));
+    try std.testing.expectEqual(BringupFuse.attempt, bringupFuseDecision("garbage", "1.19.0"));
+    try std.testing.expect(!bringupMarkerIsProbing("blocked:1.19.0"));
 }

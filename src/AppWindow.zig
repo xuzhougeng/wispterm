@@ -3588,6 +3588,11 @@ pub threadlocal var term_rows: u16 = 24;
 // Dirty tracking — skip rebuildCells when nothing changed
 pub threadlocal var g_cells_valid: bool = false;
 pub threadlocal var g_force_rebuild: bool = true;
+/// One-shot per window thread: the first present that returns settles the
+/// D3D bring-up crash fuse (the process survived presenter bring-up, so the
+/// "probing" state-file marker can be removed). No-op off-Windows and when
+/// no marker exists.
+threadlocal var g_present_bringup_settled: bool = false;
 
 pub threadlocal var window_focused: bool = true; // Track window focus state
 
@@ -7130,10 +7135,24 @@ fn runMainLoop(self: *AppWindow) !void {
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
         window_backend.swapBuffers(win);
+        if (!g_present_bringup_settled) {
+            g_present_bringup_settled = true;
+            platform_window_state.settleD3dBringup(allocator);
+        }
         recordFrameLatencyIfInputDriven();
         clearVisibleSurfaceDirty();
         g_force_rebuild = false;
         g_cells_valid = true;
+        if (window_backend.takePresentFallbackEvent(win)) {
+            // The DXGI present path was just latched off mid-session. While
+            // it was broken the GPU may have dropped glyph-atlas uploads
+            // (device reset / stalled context), leaving every glyph first
+            // seen during that window permanently blank — rebuild the atlas
+            // and re-render everything on the GDI path.
+            font.clearGlyphCache(allocator);
+            g_force_rebuild = true;
+            g_cells_valid = false;
+        }
     }
 
     // Save window position + size for next session

@@ -385,8 +385,12 @@ language: i18n.LanguageSetting = .auto,
 /// SwapBuffers (Windows only). The legacy BLT present goes through the DWM
 /// redirection surface, which on some iGPU drivers (Intel Arc, AMD) produces
 /// ghosting/black regions on cross-DPI drags and resizes (#46/#47/#88). Set to
-/// false to force the legacy path; machines where DXGI/interop is unavailable
-/// fall back automatically. Read at startup.
+/// false to force the legacy path. Machines where the D3D path can't work
+/// revert to the legacy path automatically: at init (no interop / no DXGI
+/// adapter matching the GL context's GPU), at runtime (first-frames content
+/// probe + sustained-slow-present watchdog, both latch GDI for the session),
+/// and across launches (a bring-up that crashed the process trips a
+/// state-file fuse for that app version). Read at startup.
 @"wispterm-d3d-present": bool = true,
 
 // ============================================================================

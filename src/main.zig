@@ -173,6 +173,39 @@ pub fn main() !void {
     // created (the presenter is built right after the GL context).
     window_backend.setFlipPresentEnabled(cfg.@"wispterm-d3d-present");
 
+    // Bring-up crash fuse: presenter init runs driver code (wglDX*NV, D3D11)
+    // that broken ICDs crash in instead of failing — which previously meant
+    // the app never opened again on those machines. Leave a marker before
+    // the first attempt; AppWindow clears it after the first survived
+    // present. Finding our own marker at startup = last bring-up died →
+    // stop trying the D3D path for this app version (an upgrade retries).
+    if (comptime builtin.os.tag == .windows) {
+        if (cfg.@"wispterm-d3d-present") {
+            const window_state = @import("platform/window_state.zig");
+            const dxgi_core = @import("platform/dxgi_core.zig");
+            var stored_buf: [dxgi_core.bringup_marker_max_len]u8 = undefined;
+            const stored = window_state.d3dBringup(allocator, &stored_buf);
+            var marker_buf: [dxgi_core.bringup_marker_max_len]u8 = undefined;
+            switch (dxgi_core.bringupFuseDecision(stored, app_metadata.version)) {
+                .blocked => {
+                    window_backend.setFlipPresentEnabled(false);
+                    render_diagnostics.log("dx-present bring-up fuse tripped (\"{s}\") — GDI for this version", .{stored});
+                    std.debug.print("Win32: last DXGI present bring-up did not survive; using SwapBuffers for v{s}\n", .{app_metadata.version});
+                    if (dxgi_core.bringupMarkerIsProbing(stored)) {
+                        if (dxgi_core.bringupBlockedMarker(&marker_buf, app_metadata.version)) |m|
+                            window_state.recordD3dBringup(allocator, m)
+                        else |_| {}
+                    }
+                },
+                .attempt => {
+                    if (dxgi_core.bringupProbingMarker(&marker_buf, app_metadata.version)) |m|
+                        window_state.recordD3dBringup(allocator, m)
+                    else |_| {}
+                },
+            }
+        }
+    }
+
     // Create the App and run (first window on main thread, spawned windows on separate threads)
     var app = try App.init(allocator, cfg);
     defer ai_chat.deinitAccessRules();
