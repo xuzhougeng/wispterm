@@ -31,7 +31,18 @@
 //!     shared texture must agree on a frame with real content, otherwise the
 //!     path is silently dropping pixels → latch fallback;
 //!   • a present-duration watchdog: sustained multi-hundred-ms presents
-//!     (cross-GPU syncs, TDR recovery loops) → latch fallback.
+//!     (cross-GPU syncs, TDR recovery loops) → flag the session degraded.
+//!
+//! The two react differently because the mid-session fallback is itself
+//! dangerous: an HWND that has presented through a flip-model swapchain
+//! cannot revert to GDI/blt presents (DWM behavior is undefined; in the
+//! v1.19.0 field reports it rendered the window black on machines that were
+//! merely *slow* in v1.18.0). Only failure modes where pixels verifiably do
+//! NOT reach the screen (API errors, probe mismatch) still switch to GDI
+//! in-session — the screen is already broken there, GDI is a best effort.
+//! The watchdog instead keeps the session on the flip path and emits a
+//! degraded event; the caller persists a state-file marker so the NEXT
+//! launch uses GDI from frame 0, which is the supported configuration.
 //! Crashes *inside* driver init are handled one level up by the bring-up
 //! fuse (state-file marker, see dxgi_core + main.zig): the next launch skips
 //! the D3D path for this app version.
@@ -214,6 +225,10 @@ pub const Presenter = struct {
     probe_staging: ?*anyopaque = null, // ID3D11Texture2D (STAGING)
     probe_done: bool = false,
     probe_frames: u32 = 0,
+    // One-shot: the watchdog saw sustained slow presents. The session stays
+    // on the flip path (see module docs); the consumer persists the marker
+    // that sends the next launch down the GDI path from frame 0.
+    degraded_event: bool = false,
 
     policy: core.PresentPolicy,
 
@@ -509,13 +524,22 @@ pub const Presenter = struct {
         }
         if (self.policy.notePresentMillis(elapsed_ms)) {
             render_diagnostics.log(
-                "dx-present watchdog: {} consecutive presents over {}ms (last {}ms)",
+                "dx-present watchdog: {} consecutive presents over {}ms (last {}ms) — staying on the flip path this session, GDI from next launch",
                 .{ core.PresentPolicy.slow_latch_frames, core.PresentPolicy.slow_frame_ms, elapsed_ms },
             );
-            // This frame did reach the screen; the latch takes effect on the
-            // next call via frameAction → .fallback.
+            // Frames ARE reaching the screen, just slowly — switching this
+            // HWND to GDI now would blank it (flip→blt is unsupported).
+            self.degraded_event = true;
         }
         return true;
+    }
+
+    /// One-shot: true when the watchdog flagged sustained slow presents
+    /// since the last call. Presentation continues on the flip path.
+    pub fn takeDegradedEvent(self: *Presenter) bool {
+        const fired = self.degraded_event;
+        self.degraded_event = false;
+        return fired;
     }
 
     fn blitAndPresent(self: *Presenter, width: i32, height: i32, interval: i32) PresentError!void {

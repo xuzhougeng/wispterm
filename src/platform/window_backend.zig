@@ -183,6 +183,16 @@ pub fn takePresentFallbackEvent(window: *Window) bool {
     return false;
 }
 
+/// One-shot (Windows-only): true when the DXGI presenter's watchdog flagged
+/// sustained slow presents. The session stays on the flip path (an HWND that
+/// has flip-presented cannot revert to GDI without going blank); the app
+/// loop persists the state-file marker that makes the next launch use GDI
+/// from frame 0.
+pub fn takePresentDegradedEvent(window: *Window) bool {
+    if (comptime @hasDecl(Window, "takePresentDegradedEvent")) return window.takePresentDegradedEvent();
+    return false;
+}
+
 pub fn framebufferSize(window: *Window) Size {
     const size = window.getFramebufferSize();
     return .{ .width = size.width, .height = size.height };

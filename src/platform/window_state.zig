@@ -170,3 +170,15 @@ pub fn settleD3dBringup(allocator: std.mem.Allocator) void {
     if (!std.mem.startsWith(u8, current.d3dBringup(), "probing:")) return;
     savePersisted(allocator, codec.withD3dBringup(current, ""));
 }
+
+/// Persist "blocked:<version>" so every later launch of this app version
+/// skips the D3D present path from frame 0. Written when the flip path
+/// proved broken or degraded *mid-session* — the only supported way to be on
+/// GDI is to never flip-present the HWND, so recovery happens at the next
+/// launch rather than in-session. An upgrade retries the flip path once.
+pub fn blockD3dBringup(allocator: std.mem.Allocator, version: []const u8) void {
+    const dxgi_core = @import("dxgi_core.zig");
+    var buf: [dxgi_core.bringup_marker_max_len]u8 = undefined;
+    const marker = dxgi_core.bringupBlockedMarker(&buf, version) catch return;
+    recordD3dBringup(allocator, marker);
+}

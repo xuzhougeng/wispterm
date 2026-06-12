@@ -846,8 +846,14 @@ pub const Window = struct {
     /// Set when the presenter latched a mid-session failure and the window
     /// reverted to GDI. Consumed by the app loop (takePresentFallbackEvent)
     /// to rebuild GPU-side caches the broken period may have corrupted
-    /// (glyph-atlas uploads dropped during a device reset → missing glyphs).
+    /// (glyph-atlas uploads dropped during a device reset → missing glyphs)
+    /// and to persist the marker that keeps the next launch on GDI.
     present_fallback_event: bool = false,
+    /// Set when the presenter's watchdog flagged sustained slow presents.
+    /// The session stays on the flip path (flip→GDI on a presented HWND is
+    /// unsupported and blanks the window); the app loop persists the marker
+    /// that sends the next launch down the GDI path from frame 0.
+    present_degraded_event: bool = false,
     should_close: bool = false,
     close_requested: bool = false,
     width: i32 = 800,
@@ -1260,9 +1266,16 @@ pub const Window = struct {
     pub fn swapBuffers(self: *Window) void {
         if (self.dx) |*dx| {
             const size = self.getFramebufferSize();
-            if (dx.presentFrame(size.width, size.height, g_present_interval)) return;
-            // The presenter latched a failure; tear it down and finish the
-            // session on the GDI path (this frame included).
+            if (dx.presentFrame(size.width, size.height, g_present_interval)) {
+                if (dx.takeDegradedEvent()) self.present_degraded_event = true;
+                return;
+            }
+            // The presenter latched a hard failure (API error / probe
+            // mismatch): pixels were not reaching the screen anyway, so a
+            // GDI finish for the session is a best effort — flip→blt on an
+            // already-presented HWND is unsupported and may stay blank. The
+            // fallback event also persists the marker that guarantees the
+            // next launch runs GDI from frame 0.
             render_diagnostics.log("dx-present failed mid-session — reverting to GDI SwapBuffers", .{});
             std.debug.print("Win32: DXGI present failed, reverting to SwapBuffers\n", .{});
             dx.deinit();
@@ -1273,10 +1286,20 @@ pub const Window = struct {
     }
 
     /// One-shot: true when the DXGI presenter latched a mid-session failure
-    /// since the last call. The app loop reacts by rebuilding GPU caches.
+    /// since the last call. The app loop reacts by rebuilding GPU caches and
+    /// persisting the next-launch GDI marker.
     pub fn takePresentFallbackEvent(self: *Window) bool {
         const fired = self.present_fallback_event;
         self.present_fallback_event = false;
+        return fired;
+    }
+
+    /// One-shot: true when the presenter's watchdog flagged sustained slow
+    /// presents since the last call. Presentation continues on the flip path;
+    /// the app loop persists the next-launch GDI marker.
+    pub fn takePresentDegradedEvent(self: *Window) bool {
+        const fired = self.present_degraded_event;
+        self.present_degraded_event = false;
         return fired;
     }
 

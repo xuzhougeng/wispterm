@@ -7154,6 +7154,17 @@ fn runMainLoop(self: *AppWindow) !void {
             font.clearGlyphCache(allocator);
             g_force_rebuild = true;
             g_cells_valid = false;
+            // The in-session GDI switch is best-effort only: this HWND has
+            // already flip-presented, and blt presents on such a window are
+            // undefined (often blank). Persist the marker so the next launch
+            // of this version runs GDI from frame 0, which always works.
+            platform_window_state.blockD3dBringup(allocator, build_options.app_version);
+        }
+        if (window_backend.takePresentDegradedEvent(win)) {
+            // Watchdog: presents are sustained-slow but frames do reach the
+            // screen, so the session keeps the flip path (switching would
+            // blank the window). Next launch goes straight to GDI instead.
+            platform_window_state.blockD3dBringup(allocator, build_options.app_version);
         }
     }
 

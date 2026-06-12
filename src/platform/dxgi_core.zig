@@ -254,6 +254,7 @@ pub const PresentPolicy = struct {
     height: i32,
     failed: bool = false,
     slow_streak: u32 = 0,
+    slow_reported: bool = false,
 
     pub fn init(width: i32, height: i32) PresentPolicy {
         return .{ .width = width, .height = height };
@@ -276,17 +277,24 @@ pub const PresentPolicy = struct {
     /// Watchdog feed: duration of a *successful* present. A broken interop
     /// path can stall for seconds per frame without ever returning an error
     /// (cross-GPU syncs, TDR recovery loops) — the only externally visible
-    /// signal is time. Latches `failed` after `slow_latch_frames` consecutive
-    /// slow presents; returns true exactly when this call latched it.
+    /// signal is time. Returns true exactly once, on the `slow_latch_frames`th
+    /// consecutive slow present.
+    ///
+    /// Sustained slowness must NOT switch the present path mid-session: the
+    /// frames *are* reaching the screen (unlike a probe mismatch), and an
+    /// HWND that has presented through a flip-model swapchain cannot revert
+    /// to GDI/blt presents — DWM behavior is undefined and in the field that
+    /// "fallback" rendered the window black. The caller persists a marker so
+    /// the *next* launch uses GDI from frame 0 instead.
     pub fn notePresentMillis(self: *PresentPolicy, ms: u64) bool {
-        if (self.failed) return false;
+        if (self.failed or self.slow_reported) return false;
         if (ms < slow_frame_ms) {
             self.slow_streak = 0;
             return false;
         }
         self.slow_streak += 1;
         if (self.slow_streak < slow_latch_frames) return false;
-        self.failed = true;
+        self.slow_reported = true;
         return true;
     }
 
@@ -319,15 +327,26 @@ pub const ProbeVerdict = enum {
     matched_content,
 };
 
+/// Per-channel slack for the GL↔DX comparison. The blit + CopyResource chain
+/// is bit-exact for an RGBA8 backbuffer, but drivers can hand the window a
+/// deeper default framebuffer (10bpc pipelines) or dither it, and then the
+/// readback→u8 and blit→8bit conversions round independently — off-by-a-LSB
+/// differences on a perfectly working path. A real failure (content rendered,
+/// black presented) differs by whole channel ranges, far beyond this.
+pub const probe_channel_tolerance: u8 = 2;
+
 /// Compare per-sample RGB read back from the GL framebuffer against the same
 /// points read back from the D3D shared texture (callers handle the Y-flip
-/// and BGRA→RGB swizzle when sampling). The blit + CopyResource chain is
-/// bit-exact, so any difference means the present path is broken even though
-/// every API call "succeeded".
+/// and BGRA→RGB swizzle when sampling). Any sample differing beyond
+/// `probe_channel_tolerance` means pixels are not reaching the swapchain even
+/// though every API call "succeeded".
 pub fn evaluateProbe(gl_rgb: []const [3]u8, dx_rgb: []const [3]u8) ProbeVerdict {
     std.debug.assert(gl_rgb.len == dx_rgb.len and gl_rgb.len > 0);
     for (gl_rgb, dx_rgb) |g, d| {
-        if (g[0] != d[0] or g[1] != d[1] or g[2] != d[2]) return .mismatched;
+        for (g, d) |gc, dc| {
+            if (@abs(@as(i16, gc) - @as(i16, dc)) > probe_channel_tolerance)
+                return .mismatched;
+        }
     }
     for (gl_rgb[1..]) |g| {
         if (g[0] != gl_rgb[0][0] or g[1] != gl_rgb[0][1] or g[2] != gl_rgb[0][2])
@@ -501,17 +520,20 @@ test "adapterUsableForVendor rejects software adapters for hardware GL" {
     try std.testing.expect(adapterUsableForVendor(PCI_VENDOR_MICROSOFT, DXGI_ADAPTER_FLAG_SOFTWARE, PCI_VENDOR_MICROSOFT));
 }
 
-test "PresentPolicy watchdog latches only on a sustained slow streak" {
+test "PresentPolicy watchdog reports a sustained slow streak once, without switching paths" {
     var p = PresentPolicy.init(800, 600);
-    // A fast frame resets the streak: 4 slow + fast + 4 slow never latches.
+    // A fast frame resets the streak: 4 slow + fast + 4 slow never reports.
     for (0..PresentPolicy.slow_latch_frames - 1) |_| try std.testing.expect(!p.notePresentMillis(900));
     try std.testing.expect(!p.notePresentMillis(5));
     for (0..PresentPolicy.slow_latch_frames - 1) |_| try std.testing.expect(!p.notePresentMillis(900));
     try std.testing.expectEqual(PresentPolicy.Action.present, p.frameAction(800, 600));
-    // The Nth consecutive slow frame latches, exactly once.
+    // The Nth consecutive slow frame reports, exactly once.
     try std.testing.expect(p.notePresentMillis(900));
     try std.testing.expect(!p.notePresentMillis(900));
-    try std.testing.expectEqual(PresentPolicy.Action.fallback, p.frameAction(800, 600));
+    // Slowness must NOT flip the session to GDI: frames are reaching the
+    // screen, and blt presents on a flip-presented HWND are undefined (black
+    // in the field). The session stays on the flip path.
+    try std.testing.expectEqual(PresentPolicy.Action.present, p.frameAction(800, 600));
 }
 
 test "evaluateProbe verdicts: mismatch, uniform match, content match" {
@@ -520,8 +542,12 @@ test "evaluateProbe verdicts: mismatch, uniform match, content match" {
     const text: [3]u8 = .{ 220, 220, 225 };
     // Broken interop: GL drew content, swapchain got nothing.
     try std.testing.expectEqual(ProbeVerdict.mismatched, evaluateProbe(&.{ grey, text }, &.{ black, black }));
-    // Single-channel corruption counts too.
-    try std.testing.expectEqual(ProbeVerdict.mismatched, evaluateProbe(&.{ grey, grey }, &.{ grey, .{ 30, 33, 41 } }));
+    // Single-channel corruption beyond the rounding tolerance counts too.
+    try std.testing.expectEqual(ProbeVerdict.mismatched, evaluateProbe(&.{ grey, grey }, &.{ grey, .{ 30, 33, 43 } }));
+    // 10bpc/dither rounding skew within the tolerance is a working path, not
+    // a broken one — a bit-exact probe latched the black GDI fallback on
+    // machines whose flip path was fine.
+    try std.testing.expectEqual(ProbeVerdict.matched_content, evaluateProbe(&.{ grey, text }, &.{ .{ 30, 33, 42 }, .{ 222, 218, 225 } }));
     // Flat frame matching is not yet proof.
     try std.testing.expectEqual(ProbeVerdict.matched_uniform, evaluateProbe(&.{ black, black }, &.{ black, black }));
     // Real content matching settles the probe.
@@ -533,6 +559,13 @@ test "bringup fuse blocks only markers for the current version" {
     const probing = try bringupProbingMarker(&buf, "1.19.0");
     try std.testing.expectEqualStrings("probing:1.19.0", probing);
     try std.testing.expect(bringupMarkerIsProbing(probing));
+
+    // Mid-session degraded/failed sessions persist this marker; the next
+    // launch of the same version must come out blocked (GDI from frame 0).
+    var blocked_buf: [bringup_marker_max_len]u8 = undefined;
+    const blocked = try bringupBlockedMarker(&blocked_buf, "1.19.0");
+    try std.testing.expectEqualStrings("blocked:1.19.0", blocked);
+    try std.testing.expectEqual(BringupFuse.blocked, bringupFuseDecision(blocked, "1.19.0"));
 
     // Crashed during last bring-up of this version → blocked.
     try std.testing.expectEqual(BringupFuse.blocked, bringupFuseDecision("probing:1.19.0", "1.19.0"));
