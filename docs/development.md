@@ -237,7 +237,7 @@ OpenSSH error so regressions can be diagnosed without guessing.
 WispTerm supports three portable Windows packages plus the local installer build:
 
 - `portable` - lightweight portable build, run directly without installation
-- `portable-webview2` - portable build with `WebView2Loader.dll` for the embedded browser
+- `portable-compat` - full-featured portable build for older Windows 10 machines: `WebView2Loader.dll` for the embedded browser plus a bundled modern ConPTY (`conpty.dll` + `OpenConsole.exe`) so TUI apps like Codex get mouse scrolling and scrollbars on old inbox conhosts
 - `portable-no-webview` - portable build compiled with embedded WebView2 disabled
 - `wispterm-setup.exe` - installer build, installs to the current user's profile and creates a Start menu shortcut
 
@@ -253,10 +253,12 @@ Key outputs include:
 zig-out\dist\portable\wispterm.exe
 zig-out\dist\portable\version.txt
 zig-out\dist\portable\plugins\...
-zig-out\dist\portable-webview2\wispterm.exe
-zig-out\dist\portable-webview2\WebView2Loader.dll
-zig-out\dist\portable-webview2\version.txt
-zig-out\dist\portable-webview2\plugins\...
+zig-out\dist\portable-compat\wispterm.exe
+zig-out\dist\portable-compat\WebView2Loader.dll
+zig-out\dist\portable-compat\conpty.dll
+zig-out\dist\portable-compat\OpenConsole.exe
+zig-out\dist\portable-compat\version.txt
+zig-out\dist\portable-compat\plugins\...
 zig-out\dist\portable-no-webview\wispterm.exe
 zig-out\dist\portable-no-webview\version.txt
 zig-out\dist\portable-no-webview\plugins\...
@@ -297,7 +299,7 @@ Two GitHub Actions workflows publish release assets whenever a tag matching
 **Windows assets** (per tagged release):
 
 - `wispterm-windows-portable-vX.Y.Z.zip`
-- `wispterm-windows-portable-webview2-vX.Y.Z.zip`
+- `wispterm-windows-portable-compat-vX.Y.Z.zip`
 - `wispterm-windows-portable-no-webview-vX.Y.Z.zip`
 
 When WispTerm detects a newer release on Windows, it downloads the matching
@@ -306,8 +308,12 @@ your existing install to update.
 
 The unsigned IExpress installer is not published for now because Windows
 Defender can quarantine it as a false positive. Use the portable zip release
-asset, the `portable-webview2` zip when using the embedded browser panel, or
-the `portable-no-webview` zip when embedded WebView2 should be disabled.
+asset; the `portable-compat` zip when using the embedded browser panel or on
+older Windows 10 machines (its bundled ConPTY restores TUI mouse support); or
+the `portable-no-webview` zip when embedded WebView2 should be disabled. The
+bundled ConPTY is preferred automatically when its files sit next to
+`wispterm.exe`; set `windows-conpty = system` in the config to force the OS
+inbox ConPTY.
 
 **macOS assets** (per tagged release):
 
