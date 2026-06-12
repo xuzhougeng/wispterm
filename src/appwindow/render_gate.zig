@@ -16,6 +16,10 @@ pub const RenderSignals = struct {
     cursor_blink_due: bool, // 到达光标翻转点（仅聚焦且开启闪烁）
     ai_streaming: bool, // 任一相关 AI session.request_inflight
     overlay_active: bool, // 任一 overlay/面板/时间动画活动
+    // 上一渲染帧把新字形（如首个 emoji）光栅化进了 atlas，但 GPU 纹理是在
+    // 帧首同步的——那一帧采样的是旧纹理。必须再渲染一帧让帧首同步把新
+    // 字形上传，否则坏帧会被本门控冻结在屏幕上（重开窗口首个 emoji 乱码）。
+    atlas_sync_pending: bool,
 };
 
 /// 空闲阻塞超时计算的输入。
@@ -37,7 +41,8 @@ pub fn frameNeedsRender(s: RenderSignals) bool {
         s.any_surface_dirty or
         s.cursor_blink_due or
         s.ai_streaming or
-        s.overlay_active;
+        s.overlay_active or
+        s.atlas_sync_pending;
 }
 
 pub fn computeBlockTimeoutMs(in: TimeoutInputs) i64 {
@@ -59,6 +64,7 @@ test "frameNeedsRender: 任一信号为真即需渲染" {
         .cursor_blink_due = false,
         .ai_streaming = false,
         .overlay_active = false,
+        .atlas_sync_pending = false,
     };
     try std.testing.expect(!frameNeedsRender(base));
 
@@ -80,6 +86,10 @@ test "frameNeedsRender: 任一信号为真即需渲染" {
 
     s = base;
     s.overlay_active = true;
+    try std.testing.expect(frameNeedsRender(s));
+
+    s = base;
+    s.atlas_sync_pending = true;
     try std.testing.expect(frameNeedsRender(s));
 }
 

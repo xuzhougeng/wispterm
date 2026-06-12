@@ -435,6 +435,7 @@ test "input: overlay navigation drives the render gate to repaint" {
         .cursor_blink_due = false,
         .ai_streaming = false,
         .overlay_active = false,
+        .atlas_sync_pending = false,
     };
     try std.testing.expect(render_gate.frameNeedsRender(signals));
 }

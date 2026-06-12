@@ -756,3 +756,61 @@ test "macOS backend drains file drop events" {
     try std.testing.expectEqual(@as(i32, 11), test_drop_x);
     try std.testing.expectEqual(@as(i32, 22), test_drop_y);
 }
+
+// Worker-thread idle wait: every window past the first runs its loop on a
+// worker thread (Dock reopen / new-window), and the event-driven render gate
+// blocks in pumpAppEvents between frames. -[NSApp nextEventMatchingMask:] is
+// main-thread-only (AppKit throws NSInternalInconsistencyException off-main),
+// so off-main the pump must block on the wakeup condition instead.
+const WorkerPumpProbe = struct {
+    ready: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    elapsed_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(-1),
+
+    fn run(self: *@This()) void {
+        // Consume any wakeup signalled before this test (earlier tests push
+        // events) so the timed pump below measures only the test's wakeup.
+        platform_window.pumpAppEvents(0.001);
+        self.ready.store(true, .release);
+        var timer = std.time.Timer.start() catch unreachable;
+        platform_window.pumpAppEvents(5.0);
+        self.elapsed_ms.store(@intCast(timer.read() / std.time.ns_per_ms), .release);
+    }
+
+    fn awaitReady(self: *@This()) void {
+        while (!self.ready.load(.acquire)) std.Thread.yield() catch {};
+    }
+};
+
+test "macOS pumpAppEvents on a worker thread blocks and wakes on postWakeup" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Worker Pump");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    var probe = WorkerPumpProbe{};
+    const worker = try std.Thread.spawn(.{}, WorkerPumpProbe.run, .{&probe});
+    probe.awaitReady();
+    // Even if this lands before the worker re-enters the pump, the wakeup must
+    // not be lost: the next pump call has to return immediately.
+    platform_window.postWakeup();
+    worker.join();
+
+    const elapsed = probe.elapsed_ms.load(.acquire);
+    try std.testing.expect(elapsed >= 0);
+    try std.testing.expect(elapsed < 3000);
+}
+
+test "macOS pumpAppEvents on a worker thread wakes when input is pushed" {
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("WispTerm Worker Pump Input");
+    var window = try Window.init(320, 180, title, null, null, false);
+    defer window.deinit();
+
+    var probe = WorkerPumpProbe{};
+    const worker = try std.Thread.spawn(.{}, WorkerPumpProbe.run, .{&probe});
+    probe.awaitReady();
+    wispterm_macos_window_test_push_key(window.hwnd, 0x41, false, false, false);
+    worker.join();
+
+    const elapsed = probe.elapsed_ms.load(.acquire);
+    try std.testing.expect(elapsed >= 0);
+    try std.testing.expect(elapsed < 3000);
+}

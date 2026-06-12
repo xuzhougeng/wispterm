@@ -55,6 +55,7 @@ test {
     _ = @import("apprt/window_registry.zig");
     _ = @import("appwindow/active_tab.zig");
     _ = @import("appwindow/frame_latency.zig");
+    _ = @import("appwindow/render_gate.zig");
     _ = @import("scp.zig");
     _ = @import("surface_registry.zig");
     _ = @import("png_dimensions.zig");

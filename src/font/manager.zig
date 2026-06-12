@@ -662,6 +662,29 @@ pub fn packColorBitmapIntoAtlas(
     return region;
 }
 
+/// True when any of this thread's atlases has CPU pixel writes the GPU
+/// texture has not seen yet (mirrors syncAtlasTexture's modified check).
+/// Glyphs are rasterized lazily DURING a frame's cell rebuild and overlay
+/// draws — after that frame's top-of-frame syncAtlasTexture already ran — so
+/// the presented frame sampled stale textures. The render gate uses this to
+/// schedule one follow-up frame; without it the event-driven idle loop can
+/// freeze the garbled frame on screen (e.g. the first emoji a window shows).
+pub fn atlasSyncPending() bool {
+    if (g_atlas) |a| {
+        if (a.modified.load(.monotonic) > g_atlas_modified) return true;
+    }
+    if (g_color_atlas) |a| {
+        if (a.modified.load(.monotonic) > g_color_atlas_modified) return true;
+    }
+    if (g_icon_atlas) |a| {
+        if (a.modified.load(.monotonic) > g_icon_atlas_modified) return true;
+    }
+    if (g_titlebar_atlas) |a| {
+        if (a.modified.load(.monotonic) > g_titlebar_atlas_modified) return true;
+    }
+    return false;
+}
+
 /// Sync the font atlas CPU data to the GPU texture.
 /// Called once per frame before rendering. Only uploads if the atlas was modified.
 /// Supports both grayscale (GL_RED) and BGRA (GL_RGBA) atlas formats.

@@ -6783,6 +6783,7 @@ fn runMainLoop(self: *AppWindow) !void {
             .cursor_blink_due = blink_due,
             .ai_streaming = aiStreamingActive(),
             .overlay_active = overlays.anyOverlayActive(gate_now),
+            .atlas_sync_pending = font.atlasSyncPending(),
         };
 
         const needs_render = render_gate.frameNeedsRender(signals);
