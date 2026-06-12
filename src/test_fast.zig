@@ -116,6 +116,7 @@ test {
     _ = @import("ai_sidebar.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("appwindow/resize_throttle.zig");
+    _ = @import("termio/read_coalesce.zig");
     _ = @import("ai_chat_protocol.zig");
     _ = @import("weixin/types.zig");
     _ = @import("weixin/ilink_codec.zig");

@@ -11,6 +11,7 @@
 const std = @import("std");
 const Surface = @import("../Surface.zig");
 const window_backend = @import("../platform/window_backend.zig");
+const read_coalesce = @import("read_coalesce.zig");
 
 /// Large reads keep the per-chunk overhead (render-lock acquisition, VT parse
 /// setup, OSC/agent scans, UI wakeup) off the hot path during output floods:
@@ -22,6 +23,8 @@ pub fn threadMain(surface: *Surface) void {
     var buf: [READ_BUF_SIZE]u8 = undefined;
     var resize_pending: std.ArrayListUnmanaged(u8) = .empty;
     defer resize_pending.deinit(surface.allocator);
+    var output_pending: std.ArrayListUnmanaged(u8) = .empty;
+    defer output_pending.deinit(surface.allocator);
 
     while (!surface.exited.load(.acquire)) {
         const bytes_read = surface.pty.readOutput(&buf) catch |err| {
@@ -68,13 +71,13 @@ pub fn threadMain(surface: *Surface) void {
             resize_pending.appendSlice(surface.allocator, data) catch {
                 processOutput(surface, resize_pending.items);
                 resize_pending.clearRetainingCapacity();
-                processOutput(surface, data);
+                processOutputCoalesced(surface, data, &output_pending, &buf);
                 continue;
             };
             processOutput(surface, resize_pending.items);
             resize_pending.clearRetainingCapacity();
         } else {
-            processOutput(surface, data);
+            processOutputCoalesced(surface, data, &output_pending, &buf);
         }
     }
 }
@@ -106,6 +109,53 @@ fn drainResizeOutput(
         }
         pending.appendSlice(surface.allocator, data) catch {
             pending.clearRetainingCapacity();
+            return;
+        };
+    }
+}
+
+fn processOutputCoalesced(
+    surface: *Surface,
+    first: []const u8,
+    pending: *std.ArrayListUnmanaged(u8),
+    scratch: *[READ_BUF_SIZE]u8,
+) void {
+    if (first.len == 0) return;
+
+    pending.clearRetainingCapacity();
+    pending.appendSlice(surface.allocator, first) catch {
+        processOutput(surface, first);
+        return;
+    };
+
+    drainAvailableOutput(surface, pending, scratch);
+    processOutput(surface, pending.items);
+}
+
+fn drainAvailableOutput(
+    surface: *Surface,
+    pending: *std.ArrayListUnmanaged(u8),
+    scratch: *[READ_BUF_SIZE]u8,
+) void {
+    while (!surface.exited.load(.acquire)) {
+        const available = surface.pty.outputAvailable() orelse return;
+        const to_read = read_coalesce.nextDrainLen(available, scratch.len, pending.items.len);
+        if (to_read == 0) return;
+
+        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (err) {
+            error.ReadInterrupted => continue,
+            else => return,
+        };
+        if (bytes_read == 0) return;
+
+        const data = scratch[0..bytes_read];
+        if (surface.remote_client) |client| {
+            client.sendOutput(surface.remote_id[0..], data);
+        }
+        pending.appendSlice(surface.allocator, data) catch {
+            processOutput(surface, pending.items);
+            pending.clearRetainingCapacity();
+            processOutput(surface, data);
             return;
         };
     }
