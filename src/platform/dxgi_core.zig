@@ -560,6 +560,13 @@ test "bringup fuse blocks only markers for the current version" {
     try std.testing.expectEqualStrings("probing:1.19.0", probing);
     try std.testing.expect(bringupMarkerIsProbing(probing));
 
+    // Mid-session degraded/failed sessions persist this marker; the next
+    // launch of the same version must come out blocked (GDI from frame 0).
+    var blocked_buf: [bringup_marker_max_len]u8 = undefined;
+    const blocked = try bringupBlockedMarker(&blocked_buf, "1.19.0");
+    try std.testing.expectEqualStrings("blocked:1.19.0", blocked);
+    try std.testing.expectEqual(BringupFuse.blocked, bringupFuseDecision(blocked, "1.19.0"));
+
     // Crashed during last bring-up of this version → blocked.
     try std.testing.expectEqual(BringupFuse.blocked, bringupFuseDecision("probing:1.19.0", "1.19.0"));
     try std.testing.expectEqual(BringupFuse.blocked, bringupFuseDecision("blocked:1.19.0", "1.19.0"));
