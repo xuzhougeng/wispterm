@@ -5203,6 +5203,18 @@ test "copilot prompt keeps tool guidance and adds the binding clause" {
     try std.testing.expect(std.mem.indexOf(u8, COPILOT_SYSTEM_PROMPT, "terminal_select") != null);
 }
 
+test "default system prompt mentions subagent delegation" {
+    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "`subagent`") != null);
+}
+
+test "subagent system prompt is self-contained researcher guidance" {
+    const prompt = platform_agent_prompt.subagentSystemPrompt;
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "research subagent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "final report") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "websearch") != null);
+    try std.testing.expect(prompt.len < 1200);
+}
+
 test "ai chat empty profile system prompt uses full embedded default" {
     const allocator = std.testing.allocator;
     const session = try Session.init(
