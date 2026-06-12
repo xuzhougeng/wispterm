@@ -85,6 +85,8 @@ remote-enabled = false
 | `copy-on-select` | `false` | 自动复制终端选区 —— 见 [[AI 副驾与智能体|AI-Copilot-zh]] |
 | `right-click-action` | *(无)* | `paste`，或 `copy-or-paste`（有选区时复制，否则粘贴） |
 | `confirm-close-running-program` | `true` | 关闭正在运行全屏 TUI 的面板/标签前先确认 |
+| `windows-conpty` | `auto` | Windows 控制台宿主：`auto` 在 `wispterm.exe` 旁存在 `conpty.dll` + `OpenConsole.exe` 时优先使用捆绑的现代 ConPTY（随 portable-compat 包提供；可在老 Windows 10 上恢复 TUI 鼠标支持）；`system` 强制使用系统自带 ConPTY —— 见 [[常见问题|FAQ-zh]] |
+| `wispterm-d3d-present` | `true` | Windows：通过 DXGI flip-model 交换链呈现画面。设为 `false` 强制使用经典 GDI 呈现（适合弱核显；v1.19.1 起受影响机器也会自动切换）—— 见 [[常见问题|FAQ-zh]] |
 
 ## 设置页
 

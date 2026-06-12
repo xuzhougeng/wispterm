@@ -23,6 +23,36 @@ account is in the Administrators group (UAC split token).
 There is no supported way to promote an existing non-elevated shell to elevated
 without a new process and UAC consent.
 
+## Mouse wheel / scrollbars don't work in Codex or Claude Code (Windows 10)
+
+Older Windows 10 builds ship an in-box ConPTY console host that does not
+forward modern mouse input, so full-screen TUI apps such as **Codex** and
+**Claude Code** lose wheel scrolling and scrollbar interaction inside the
+terminal.
+
+Fix: use the **`wispterm-windows-portable-compat-*.zip`** release package
+(available since v1.19.0). It bundles a modern `conpty.dll` +
+`OpenConsole.exe` next to `wispterm.exe`, and WispTerm prefers that bundled
+pair automatically whenever both files are present (`windows-conpty = auto`,
+the default). To force the OS in-box ConPTY instead, set
+`windows-conpty = system` — see [[Configuration]].
+
+## WispTerm is laggy or turns black on a low-spec PC (weak integrated GPU)
+
+On Windows, WispTerm presents frames through a DXGI flip-model swapchain by
+default. On machines with a weak integrated GPU — typically Win11
+thin-and-light laptops — that path can be noticeably slow (v1.18.0), and
+v1.19.0 could even leave the window black.
+
+Since **v1.19.1** WispTerm detects a sustained-slow or broken present path on
+its own: the first launch after upgrading may still feel slow once, and from
+the **next** launch onward the app permanently switches to the classic GDI
+presenter on that machine — both the lag and the black screen disappear.
+Running on a discrete or external GPU avoids the slow path entirely.
+
+To opt out manually at any time, set `wispterm-d3d-present = false` — see
+[[Configuration]].
+
 ## Why does remote mirror the local terminal size on phones?
 
 WispTerm Remote mirrors the local window because the desktop app is the source
