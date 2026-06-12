@@ -612,6 +612,13 @@ pub threadlocal var g_panel_swap_source: ?SplitTree.Node.Handle = null;
 pub threadlocal var g_panel_swap_target: ?SplitTree.Node.Handle = null;
 threadlocal var g_panel_swap_start_x: f64 = 0;
 threadlocal var g_panel_swap_start_y: f64 = 0;
+
+// Left-drag pan of a ready image preview pane (the pane-world successor of the
+// old right-dock image drag). The pane is ref'd for the drag's lifetime so a
+// mid-drag tree edit (e.g. a keyboard close) cannot free it under the cursor.
+threadlocal var g_preview_image_drag_pane: ?*PreviewPane = null;
+threadlocal var g_preview_image_drag_last_x: f64 = 0;
+threadlocal var g_preview_image_drag_last_y: f64 = 0;
 threadlocal var g_scrollbar_drag_surface: ?*Surface = null;
 threadlocal var g_scrollbar_drag_view_y: f32 = 0;
 threadlocal var g_scrollbar_drag_view_h: f32 = 0;
@@ -764,6 +771,7 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_selecting = false;
     plus_btn_pressed = false;
     tab.g_tab_close_pressed = null;
+    releasePreviewImageDrag();
     resetPanelSwapState();
     resetSidebarTabDragState();
     overlays.scrollbar.g_scrollbar_dragging = false;
@@ -1178,6 +1186,14 @@ fn resetPanelSwapState() void {
     g_panel_swap_target = null;
     g_panel_swap_start_x = 0;
     g_panel_swap_start_y = 0;
+}
+
+/// End an image-preview pan drag, dropping the drag's pane reference.
+fn releasePreviewImageDrag() void {
+    const p = g_preview_image_drag_pane orelse return;
+    g_preview_image_drag_pane = null;
+    const gpa = AppWindow.g_allocator orelse return; // drag only starts when set
+    p.unref(gpa);
 }
 
 /// Begin a potential Alt-drag panel swap if the active terminal tab is split and
@@ -4147,14 +4163,22 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             // route there) and consumes the event — previews have no terminal
             // grid to select into. Terminal leaves fall through to the surface
             // focus + selection path below, so non-preview clicks are unchanged.
+            // A ready image preview additionally starts a drag-to-pan.
             if (split_layout.paneAtPoint(ev.x, ev.y)) |hit| {
                 switch (hit.pane) {
-                    .preview => {
+                    .preview => |p| {
                         const tb = AppWindow.activeTab() orelse return;
                         if (tb.focused != hit.handle) {
                             tb.focused = hit.handle;
                             AppWindow.g_force_rebuild = true;
                             AppWindow.g_cells_valid = false;
+                        }
+                        if (p.kind == .image and p.load_status == .ready and AppWindow.g_allocator != null) {
+                            releasePreviewImageDrag();
+                            g_preview_image_drag_pane = p.ref();
+                            g_preview_image_drag_last_x = xpos;
+                            g_preview_image_drag_last_y = ypos;
+                            platform_cursor.set(.size_all);
                         }
                         return;
                     },
@@ -4226,6 +4250,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
         } else {
             // Mouse up
+            if (g_preview_image_drag_pane != null) {
+                releasePreviewImageDrag();
+                platform_cursor.set(.arrow);
+                return;
+            }
             overlays.scrollbar.g_scrollbar_dragging = false;
             g_scrollbar_drag_surface = null;
             g_ai_input_scroll_dragging = false;
@@ -4514,6 +4543,17 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     if (g_ai_transcript_selecting) {
         if (g_ai_transcript_select_chat) |chat| updateAiTranscriptSelectionDrag(chat, xpos, ypos);
         platform_cursor.set(.ibeam);
+        return;
+    }
+    // Left-drag pans a ready image preview (the renderer clamps the pan to the
+    // image's overflow each frame).
+    if (g_preview_image_drag_pane) |p| {
+        const delta_x: f32 = @floatCast(xpos - g_preview_image_drag_last_x);
+        const delta_y: f32 = @floatCast(ypos - g_preview_image_drag_last_y);
+        g_preview_image_drag_last_x = xpos;
+        g_preview_image_drag_last_y = ypos;
+        if (p.panImageBy(delta_x, delta_y)) AppWindow.g_force_rebuild = true;
+        platform_cursor.set(.size_all);
         return;
     }
     // Alt-drag panel swap: track the drop target / dim the source. Owns the move
