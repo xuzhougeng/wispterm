@@ -20,6 +20,14 @@ pub threadlocal var fg_instances: Buffer = .{ .handle = 0, .target = 0 };
 pub threadlocal var color_fg_instances: Buffer = .{ .handle = 0, .target = 0 };
 pub threadlocal var quad: Buffer = .{ .handle = 0, .target = 0 };
 
+/// The instance buffers above are shared across all surfaces, so they hold the
+/// cells of whichever renderer uploaded last. drawCells skips the (hundreds of
+/// KB per frame) re-upload when the buffers already contain its current
+/// rebuild generation — the single-surface steady state (cursor blink, toast
+/// animation frames) re-draws without re-uploading.
+pub threadlocal var g_last_uploader: ?*const anyopaque = null;
+pub threadlocal var g_uploaded_generation: u64 = 0;
+
 /// Build the cell pipelines. Call once after the GL context is current.
 /// On shader link failure a pipeline's `program` is 0 (draws are guarded on
 /// `program != 0`); its VAO is still owned and released by `deinit()`.

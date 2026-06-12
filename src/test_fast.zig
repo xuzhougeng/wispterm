@@ -27,12 +27,15 @@ test {
     _ = @import("input/preview_path.zig");
     _ = @import("input/ls_path_context.zig");
     _ = @import("input/terminal_link_action.zig");
+    _ = @import("input/underline_span.zig");
     _ = @import("input/file_drop_path.zig");
     _ = @import("input/sdl_keymap.zig");
     _ = @import("renderer/overlays/profile_codec.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("renderer/overlays/whats_new_model.zig");
+    _ = @import("agent_detect_throttle.zig");
+    _ = @import("renderer/ui_batch.zig");
     _ = @import("close_confirm.zig");
     _ = @import("command_palette_model.zig");
     _ = @import("command_center_state.zig");

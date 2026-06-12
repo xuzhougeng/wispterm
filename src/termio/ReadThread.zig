@@ -12,7 +12,11 @@ const std = @import("std");
 const Surface = @import("../Surface.zig");
 const window_backend = @import("../platform/window_backend.zig");
 
-const READ_BUF_SIZE = 4096;
+/// Large reads keep the per-chunk overhead (render-lock acquisition, VT parse
+/// setup, OSC/agent scans, UI wakeup) off the hot path during output floods:
+/// fewer, bigger chunks instead of thousands of 4KB ones. Both PTY backends
+/// accept arbitrary buffer sizes.
+const READ_BUF_SIZE = 64 * 1024;
 
 pub fn threadMain(surface: *Surface) void {
     var buf: [READ_BUF_SIZE]u8 = undefined;
@@ -117,6 +121,8 @@ fn processOutput(surface: *Surface, data: []const u8) void {
     surface.feedVtWithWispTermImageFallback(data);
     surface.scanForOscTitle(data);
     surface.noteAgentOutput(data);
-    surface.dirty.store(true, .release);
-    window_backend.postWakeup();
+    // One wakeup per UI consume cycle is enough — the render loop drains all
+    // pending output on a single frame; per-chunk posts only flood the
+    // platform event queue during output bursts.
+    if (surface.markOutputDirty()) window_backend.postWakeup();
 }

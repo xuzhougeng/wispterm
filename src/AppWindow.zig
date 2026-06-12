@@ -5610,27 +5610,61 @@ fn recordFrameLatencyIfInputDriven() void {
     g_frame_latency.resetWindow();
 }
 
-fn anySurfaceDirtyLoad() bool {
+/// Run deferred agent detections (throttled on the IO thread during output
+/// floods, see Surface.agent_throttle) so detection converges once output
+/// stops — e.g. an approval prompt arriving as the last chunk of a burst.
+/// Repaints only when the detection result actually changed.
+fn flushAgentDetectionSweep() void {
+    const now = std.time.milliTimestamp();
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |tb| {
             var it = tb.tree.surfaces();
             while (it.next()) |entry| {
-                if (entry.surface.dirty.load(.acquire)) return true;
+                const surface = entry.surface;
+                if (!surface.agent_throttle.pendingPeek()) continue;
+                const before = surface.agent_detection;
+                surface.render_state.mutex.lock();
+                const ran = surface.flushAgentDetection(now);
+                surface.render_state.mutex.unlock();
+                if (ran and !std.meta.eql(before, surface.agent_detection)) {
+                    g_force_rebuild = true;
+                    g_cells_valid = false;
+                }
             }
         }
+    }
+}
+
+/// Whether any surface in `tb` has unconsumed PTY output. Pure over the tab so
+/// the active-tab-only render gate is unit-testable.
+fn anyTabSurfaceDirty(tb: *const tab.TabState) bool {
+    var it = tb.tree.surfaces();
+    while (it.next()) |entry| {
+        if (entry.surface.dirty.load(.acquire)) return true;
     }
     return false;
 }
 
-fn clearAllSurfaceDirty() void {
-    for (0..tab.g_tab_count) |ti| {
-        if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.surfaces();
-            while (it.next()) |entry| {
-                _ = entry.surface.dirty.swap(false, .acq_rel);
-            }
-        }
+fn clearTabSurfaceDirty(tb: *const tab.TabState) void {
+    var it = tb.tree.surfaces();
+    while (it.next()) |entry| {
+        _ = entry.surface.dirty.swap(false, .acq_rel);
     }
+}
+
+/// Render-gate dirty signal: only the active tab's surfaces are drawn, so only
+/// their output should trigger frames. Background-tab output leaves its dirty
+/// flag latched (consumed on tab switch, which force-rebuilds); with the
+/// one-wakeup-per-consume dedupe this also means a backgrounded build stops
+/// waking the UI thread entirely instead of driving vsync-rate repaints.
+fn anyVisibleSurfaceDirty() bool {
+    const tb = activeTab() orelse return false;
+    return anyTabSurfaceDirty(tb);
+}
+
+fn clearVisibleSurfaceDirty() void {
+    const tb = activeTab() orelse return;
+    clearTabSurfaceDirty(tb);
 }
 
 fn aiStreamingActive() bool {
@@ -6745,6 +6779,31 @@ fn runMainLoop(self: *AppWindow) !void {
         rememberWindowedPosition(win);
         // Fire any due /loop or /watch tasks (UI thread: tab.g_tabs is populated).
         ai_loop_store.tick(std.time.milliTimestamp());
+        // Catch up agent detections deferred by the IO-thread throttle.
+        flushAgentDetectionSweep();
+
+        // Handle bells, notifications, and OSC 52 clipboard writes staged by
+        // the IO threads. This runs before the render gate: background-tab
+        // output no longer triggers frames, so these must not depend on one.
+        for (0..tab.g_tab_count) |ti| {
+            if (tab.g_tabs[ti]) |tb| {
+                var it = tb.tree.surfaces();
+                while (it.next()) |entry| {
+                    if (entry.surface.bell_pending.swap(false, .acquire)) {
+                        handleBell(entry.surface, win, ti == active_tab_state.g_active_tab);
+                    }
+                    {
+                        const is_active_surface = (ti == active_tab_state.g_active_tab) and
+                            (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
+                        handleNotification(entry.surface, is_active_surface);
+                    }
+                    if (entry.surface.takeClipboardWrite()) |text| {
+                        _ = input.copyTextToClipboard(text);
+                        entry.surface.allocator.free(text);
+                    }
+                }
+            }
+        }
 
         // Update focus state
         const focused = window_backend.isFocused(win);
@@ -6779,7 +6838,7 @@ fn runMainLoop(self: *AppWindow) !void {
 
         const signals = render_gate.RenderSignals{
             .force_rebuild = g_force_rebuild or !g_cells_valid or g_pending_resize or g_layout_resize_immediate,
-            .any_surface_dirty = anySurfaceDirtyLoad(),
+            .any_surface_dirty = anyVisibleSurfaceDirty(),
             .cursor_blink_due = blink_due,
             .ai_streaming = aiStreamingActive(),
             .overlay_active = overlays.anyOverlayActive(gate_now),
@@ -6811,29 +6870,6 @@ fn runMainLoop(self: *AppWindow) !void {
         if (font.g_icon_atlas != null) font.syncAtlasTexture(&font.g_icon_atlas, &font.g_icon_atlas_texture, &font.g_icon_atlas_modified);
         if (font.g_titlebar_atlas != null) font.syncAtlasTexture(&font.g_titlebar_atlas, &font.g_titlebar_atlas_texture, &font.g_titlebar_atlas_modified);
 
-        // Check all tabs for pending bell notifications (set by IO thread)
-        for (0..tab.g_tab_count) |ti| {
-            if (tab.g_tabs[ti]) |tb| {
-                // Check all surfaces in this tab's split tree for pending bells
-                var it = tb.tree.surfaces();
-                while (it.next()) |entry| {
-                    if (entry.surface.bell_pending.swap(false, .acquire)) {
-                        handleBell(entry.surface, win, ti == active_tab_state.g_active_tab);
-                    }
-                    {
-                        const is_active_surface = (ti == active_tab_state.g_active_tab) and
-                            (if (tb.focusedSurface()) |fs| fs == entry.surface else false);
-                        handleNotification(entry.surface, is_active_surface);
-                    }
-                    // Apply any OSC 52 clipboard write staged by the IO reader thread.
-                    if (entry.surface.takeClipboardWrite()) |text| {
-                        _ = input.copyTextToClipboard(text);
-                        entry.surface.allocator.free(text);
-                    }
-                }
-            }
-        }
-
         // Render padding constants - used for content area and titlebar positioning
         const padding: f32 = 10;
         const titlebar_offset = syncWindowTitlebarHeight(win);
@@ -6857,7 +6893,10 @@ fn runMainLoop(self: *AppWindow) !void {
             syncRemoteLayout(allocator);
             syncImeCaretPosition(win, split_count);
             if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and synchronizedOutputPendingForVisibleSplits(split_count)) {
-                std.Thread.sleep(std.time.ns_per_ms);
+                // Block instead of spinning at ~1kHz: the IO thread posts a
+                // wakeup when the application ends synchronized output (or new
+                // output arrives), and the timeout bounds the watchdog check.
+                window_backend.pumpAppEvents(@as(f64, @floatFromInt(render_gate.MIN_TIMEOUT_MS)) / 1000.0);
                 continue;
             }
 
@@ -6952,15 +6991,24 @@ fn runMainLoop(self: *AppWindow) !void {
                                 gpu.gl_init.setProjection(@floatFromInt(rect.width), @floatFromInt(rect.height));
 
                                 // Update cells for this surface
+                                var needs_rebuild: bool = false;
                                 {
                                     surface.render_state.mutex.lock();
                                     defer surface.render_state.mutex.unlock();
                                     if (is_focused) updateCursorBlinkForRenderer(rend);
-                                    rend.force_rebuild = true;
+                                    // One-shot global invalidations (window focus,
+                                    // theme or layout events that set
+                                    // g_force_rebuild) must reach every pane.
+                                    // Otherwise the per-renderer dirty check
+                                    // decides, so panes whose content did not
+                                    // change skip the full snapshot+rebuild —
+                                    // with one pane streaming output, the others
+                                    // no longer pay a per-frame full-grid rebuild.
+                                    if (g_force_rebuild or !g_cells_valid) rend.force_rebuild = true;
                                     cell_renderer.g_current_render_surface = surface;
-                                    _ = cell_renderer.updateTerminalCellsForSurface(rend, &surface.terminal, is_focused);
+                                    needs_rebuild = cell_renderer.updateTerminalCellsForSurface(rend, &surface.terminal, is_focused);
                                 }
-                                cell_renderer.rebuildCells(rend);
+                                if (needs_rebuild) cell_renderer.rebuildCells(rend);
 
                                 // Draw cells using the surface's computed padding
                                 const pad = surface.getPadding();
@@ -7083,7 +7131,7 @@ fn runMainLoop(self: *AppWindow) !void {
         gpu.state.endFrame();
         window_backend.swapBuffers(win);
         recordFrameLatencyIfInputDriven();
-        clearAllSurfaceDirty();
+        clearVisibleSurfaceDirty();
         g_force_rebuild = false;
         g_cells_valid = true;
     }
@@ -7165,6 +7213,50 @@ test "appwindow: configured local shell session labels reflect shell config" {
             try std.testing.expectEqualStrings("cmd", configuredLocalShellSessionDetail());
         },
     }
+}
+
+test "appwindow: render gate ignores background-tab surface dirty" {
+    const allocator = std.testing.allocator;
+    for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    defer {
+        for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
+        tab.g_tab_count = 0;
+        active_tab_state.g_active_tab = 0;
+    }
+
+    // Stack surfaces: the tree refs/unrefs them, so seed ref_count at 1 to
+    // keep unref from ever reaching 0 (which would run the full deinit).
+    var active_surface: Surface = undefined;
+    active_surface.ref_count = 1;
+    active_surface.dirty = std.atomic.Value(bool).init(false);
+    var background_surface: Surface = undefined;
+    background_surface.ref_count = 1;
+    background_surface.dirty = std.atomic.Value(bool).init(true);
+
+    var active_tab_v = tab.TabState{ .tree = try SplitTree.init(allocator, &active_surface) };
+    defer active_tab_v.tree.deinit();
+    var background_tab_v = tab.TabState{ .tree = try SplitTree.init(allocator, &background_surface) };
+    defer background_tab_v.tree.deinit();
+
+    tab.g_tabs[0] = &active_tab_v;
+    tab.g_tabs[1] = &background_tab_v;
+    tab.g_tab_count = 2;
+    active_tab_state.g_active_tab = 0;
+
+    // Background output alone must not trigger frames.
+    try std.testing.expect(!anyVisibleSurfaceDirty());
+
+    // Active-tab output does.
+    active_surface.dirty.store(true, .release);
+    try std.testing.expect(anyVisibleSurfaceDirty());
+
+    // Frame-end clear consumes only the rendered (active) tab; the background
+    // tab's dirty flag stays latched for its eventual tab switch.
+    clearVisibleSurfaceDirty();
+    try std.testing.expect(!active_surface.dirty.load(.acquire));
+    try std.testing.expect(background_surface.dirty.load(.acquire));
 }
 
 test "appwindow: ai history content width accounts for right panels" {

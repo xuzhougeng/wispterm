@@ -186,3 +186,35 @@ test "backgroundFor: selected cell with null selection_foreground falls back to 
     try std.testing.expectEqual([3]f32{ 0.8, 0.8, 0.8 }, r.fg); // selection_foreground orelse foreground
     try std.testing.expect(r.bg != null);
 }
+
+// ============================================================================
+// GPU instance-buffer upload gating
+// ============================================================================
+
+/// Whether drawCells must re-upload its CPU cell buffers to the shared GPU
+/// instance buffers. The buffers are global (one set for all surfaces), so a
+/// renderer's upload survives only until another renderer draws; a renderer
+/// also re-uploads after each rebuild (its CPU buffers changed). `uploader` /
+/// `current` are opaque renderer identities (pointer compare only).
+pub fn needsBufferUpload(
+    last_uploader: ?*const anyopaque,
+    uploaded_generation: u64,
+    current: *const anyopaque,
+    current_generation: u64,
+) bool {
+    if (last_uploader != current) return true;
+    return uploaded_generation != current_generation;
+}
+
+test "needsBufferUpload: 同 renderer 同代可跳过，重建或换 renderer 必须重传" {
+    var a: u8 = 0;
+    var b: u8 = 0;
+    // 同 renderer、同一次 rebuild 的产物仍在 GPU 缓冲里 → 跳过
+    try std.testing.expect(!needsBufferUpload(&a, 7, &a, 7));
+    // rebuild 之后（代数变了）→ 重传
+    try std.testing.expect(needsBufferUpload(&a, 7, &a, 8));
+    // 共享缓冲被另一个 renderer 覆盖过 → 重传
+    try std.testing.expect(needsBufferUpload(&b, 7, &a, 7));
+    // 首帧（从未上传过）→ 重传
+    try std.testing.expect(needsBufferUpload(null, 0, &a, 0));
+}
