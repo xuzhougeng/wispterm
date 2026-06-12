@@ -23,6 +23,7 @@ test {
     _ = @import("input/command_dispatch.zig");
     _ = @import("input/click_tracker.zig");
     _ = @import("input/hit_test.zig");
+    _ = @import("input/mouse_wheel_scroll.zig");
     _ = @import("input/mouse_report.zig");
     _ = @import("input/preview_path.zig");
     _ = @import("input/ls_path_context.zig");

@@ -53,6 +53,7 @@ const preview_source = @import("input/preview_source.zig");
 const ls_path_context = @import("input/ls_path_context.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
 const mouse_report = @import("input/mouse_report.zig");
+const mouse_wheel_scroll = @import("input/mouse_wheel_scroll.zig");
 const close_confirm = @import("close_confirm.zig");
 const jupyter_picker = @import("jupyter_picker.zig");
 const jupyter_detect = @import("jupyter_detect.zig");
@@ -299,6 +300,83 @@ test "input: port forwarding arrow navigation requests a repaint" {
     AppWindow.g_force_rebuild = false;
     AppWindow.g_cells_valid = true;
     handleKey(arrow_down_event);
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+test "input: terminal viewport mouse wheel scroll requests a repaint" {
+    const allocator = std.testing.allocator;
+    const ghostty_vt = @import("ghostty-vt");
+    const renderer = @import("renderer.zig");
+
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_sidebar = tab.g_sidebar_visible;
+    const previous_split_rect_count = split_layout.g_split_rect_count;
+    const previous_file_visible = file_explorer.g_visible;
+    const previous_file_owner = file_explorer.g_owner_tab;
+    const previous_browser_visible = browser_panel.g_visible;
+    const previous_browser_owner = browser_panel.g_owner_tab;
+    const previous_selecting = g_selecting;
+    const previous_whats_new_visible = overlays.whatsNewVisible();
+    defer {
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        tab.g_sidebar_visible = previous_sidebar;
+        split_layout.g_split_rect_count = previous_split_rect_count;
+        file_explorer.g_visible = previous_file_visible;
+        file_explorer.g_owner_tab = previous_file_owner;
+        browser_panel.g_visible = previous_browser_visible;
+        browser_panel.g_owner_tab = previous_browser_owner;
+        g_selecting = previous_selecting;
+        if (previous_whats_new_visible) overlays.showWhatsNew() else overlays.hideWhatsNew();
+    }
+
+    var surface: Surface = undefined;
+    surface.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 80,
+        .rows = 24,
+        .max_scrollback = 1024,
+        .default_modes = .{ .grapheme_cluster = true },
+    });
+    defer surface.terminal.deinit(allocator);
+    surface.render_state = renderer.State.init(&surface.terminal);
+    surface.selection = .{};
+    surface.ref_count = 1;
+    surface.scrollbar_opacity = 0;
+    surface.scrollbar_show_time = 0;
+
+    var tab_state = tab.TabState{
+        .kind = .terminal,
+        .tree = try SplitTree.init(allocator, &surface),
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .skill_center_session = null,
+        .port_forwarding_session = null,
+        .copilot_session = null,
+        .copilot_visible = false,
+    };
+    defer tab_state.tree.deinit();
+
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &tab_state;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    tab.g_sidebar_visible = false;
+    split_layout.g_split_rect_count = 0;
+    file_explorer.g_visible = false;
+    browser_panel.g_visible = false;
+    g_selecting = false;
+    overlays.hideWhatsNew();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+
+    handleMouseWheel(.{ .delta = 120, .xpos = 20, .ypos = 40 });
 
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
@@ -5002,6 +5080,10 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         const notches = @as(f64, @floatFromInt(ev.delta)) / 120.0;
         const delta: isize = @intFromFloat(-notches * 3);
         surface.terminal.scrollViewport(.{ .delta = delta });
+        if (mouse_wheel_scroll.repaintFlagsForViewportScroll(delta)) |flags| {
+            AppWindow.g_force_rebuild = flags.force_rebuild;
+            AppWindow.g_cells_valid = flags.cells_valid;
+        }
 
         // Show scrollbar for the scrolled surface
         surface.scrollbar_opacity = 1.0;
