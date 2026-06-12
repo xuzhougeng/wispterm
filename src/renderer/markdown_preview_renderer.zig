@@ -3,6 +3,7 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const markdown_preview = @import("../markdown_preview.zig");
+const pdf_preview = @import("../pdf_preview.zig");
 const text_wrap = @import("../text_wrap.zig");
 const ui_perf = @import("../ui_perf.zig");
 const PreviewPane = @import("../preview_pane.zig");
@@ -117,7 +118,12 @@ fn renderFooter(
         .pdf => "PDF",
     };
     const text_y = pane_gl_bottom + (FOOTER_HEIGHT - font.g_titlebar_cell_height) / 2;
-    const badge_end = titlebar.renderTextLimited(badge, panel_x + PAD_X, text_y, accent, 40);
+    var badge_end = titlebar.renderTextLimited(badge, panel_x + PAD_X, text_y, accent, 40);
+    if (pane.kind == .pdf and pane.pdf_page_count > 0) {
+        var page_buf: [24]u8 = undefined;
+        const label = pdf_preview.formatPageIndicator(&page_buf, pane.pdf_page, pane.pdf_page_count);
+        badge_end = titlebar.renderTextLimited(label, badge_end + 8, text_y, muted, 64);
+    }
     const content_right = panel_x + panel_w - PAD_X;
     const title_x = badge_end + 10;
     const title_max_w = @max(40, @min(panel_w * 0.34, content_right - title_x));
@@ -156,7 +162,7 @@ fn renderDocument(
     const body_h = window_height - body_top - body_bottom_margin;
     if (body_h <= 0) return;
 
-    if (pane.kind == .image) {
+    if (pane.kind.isRaster()) {
         renderImageDocument(pane, panel_x, panel_w, window_height, body_top, body_h, normal, muted, border);
         return;
     }
@@ -597,7 +603,10 @@ fn renderImageDocument(
             return;
         },
         .failed => {
-            renderStatusMessage(content_x, content_w, window_height, body_top, body_h, "Image preview failed", normal);
+            // PDF failures carry a specific message in the pane source
+            // (tool missing, encrypted, invalid document).
+            const msg = if (pane.kind == .pdf and pane.sourceText().len > 0) pane.sourceText() else "Image preview failed";
+            renderStatusMessage(content_x, content_w, window_height, body_top, body_h, msg, normal);
             return;
         },
         .too_large => {
