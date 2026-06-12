@@ -30,6 +30,14 @@ pub const WriteError = impl.WriteError;
 pub const winsize = impl.winsize;
 pub const Pty = impl.Pty;
 
+pub const ConsoleHostPreference = @import("console_host_policy.zig").Preference;
+
+/// Which console host implementation services new sessions (no-op on
+/// platforms whose PTY backend has only one implementation).
+pub fn setConsoleHostPreference(pref: ConsoleHostPreference) void {
+    impl.setConsoleHostPreference(pref);
+}
+
 test "platform pty exposes size and lifecycle API" {
     try std.testing.expect(@hasDecl(@This(), "winsize"));
     try std.testing.expect(@hasDecl(@This(), "Pty"));
@@ -82,4 +90,9 @@ test "platform pty selects backend by target OS" {
     // BSD IOC codes unverified; wasi has no pty.
     try std.testing.expectEqual(Backend.unsupported, backendForOs(.freebsd));
     try std.testing.expectEqual(Backend.unsupported, backendForOs(.wasi));
+}
+
+test "platform pty exposes console host preference setter on all backends" {
+    try std.testing.expect(@hasDecl(@This(), "setConsoleHostPreference"));
+    try std.testing.expect(@hasDecl(@This(), "ConsoleHostPreference"));
 }

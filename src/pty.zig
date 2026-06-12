@@ -12,3 +12,6 @@ test "pty module re-exports platform PTY API" {
     try std.testing.expect(Pty == platform_pty.Pty);
     try std.testing.expect(winsize == platform_pty.winsize);
 }
+
+pub const ConsoleHostPreference = platform_pty.ConsoleHostPreference;
+pub const setConsoleHostPreference = platform_pty.setConsoleHostPreference;

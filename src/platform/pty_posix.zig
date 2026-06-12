@@ -616,3 +616,7 @@ test "cancelOutputRead interrupts a blocking readOutput" {
     const result = pty.readOutput(&buf);
     try std.testing.expectError(error.ReadInterrupted, result);
 }
+
+pub fn setConsoleHostPreference(pref: @import("console_host_policy.zig").Preference) void {
+    _ = pref;
+}

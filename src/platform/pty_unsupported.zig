@@ -61,3 +61,7 @@ pub const Pty = struct {
         _ = self;
     }
 };
+
+pub fn setConsoleHostPreference(pref: @import("console_host_policy.zig").Preference) void {
+    _ = pref;
+}

@@ -1,6 +1,8 @@
 const std = @import("std");
 const pty_command = @import("pty_command.zig");
 const pty_command_windows = @import("pty_command_windows.zig");
+const conpty_dll = @import("conpty_dll.zig");
+const console_host_policy = @import("console_host_policy.zig");
 
 const windows = std.os.windows;
 const HANDLE = windows.HANDLE;
@@ -8,15 +10,20 @@ const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
 const DWORD = windows.DWORD;
 const BOOL = windows.BOOL;
 const HRESULT = i32;
-const PseudoConsoleHandle = windows.HANDLE;
+const PseudoConsoleHandle = conpty_dll.HPCON;
+
+const log = std.log.scoped(.conpty);
 
 const s_ok: HRESULT = 0;
 const handle_flag_inherit: DWORD = 0x00000001;
 
-const COORD = extern struct {
-    X: i16,
-    Y: i16,
-};
+const COORD = conpty_dll.COORD;
+
+/// Which console host implementation services new sessions; forwarded from
+/// the `windows-conpty` config key by the app layer.
+pub fn setConsoleHostPreference(pref: console_host_policy.Preference) void {
+    conpty_dll.setPreference(pref);
+}
 
 const SECURITY_ATTRIBUTES = extern struct {
     nLength: DWORD,
@@ -32,18 +39,6 @@ extern "kernel32" fn CreatePipe(
     lpPipeAttributes: ?*const SECURITY_ATTRIBUTES,
     nSize: DWORD,
 ) callconv(.winapi) BOOL;
-
-extern "kernel32" fn CreatePseudoConsole(
-    size: COORD,
-    hInput: HANDLE,
-    hOutput: HANDLE,
-    dwFlags: DWORD,
-    phPC: *PseudoConsoleHandle,
-) callconv(.winapi) HRESULT;
-
-extern "kernel32" fn ClosePseudoConsole(hPC: PseudoConsoleHandle) callconv(.winapi) void;
-
-extern "kernel32" fn ResizePseudoConsole(hPC: PseudoConsoleHandle, size: COORD) callconv(.winapi) HRESULT;
 
 extern "kernel32" fn ReadFile(
     hFile: HANDLE,
@@ -91,6 +86,7 @@ pub const Pty = struct {
     out_pipe_pty: HANDLE,
     in_pipe_pty: HANDLE,
     pseudo_console: PseudoConsoleHandle,
+    api: *const conpty_dll.Api,
     size: winsize,
 
     pub fn open(size: winsize) !Pty {
@@ -119,8 +115,18 @@ pub const Pty = struct {
         _ = SetHandleInformation(self.in_pipe_pty, handle_flag_inherit, 0);
 
         const coord = COORD{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) };
-        const hr = CreatePseudoConsole(coord, self.in_pipe_pty, self.out_pipe_pty, 0, &self.pseudo_console);
+        var api = conpty_dll.acquire();
+        var hr = api.create(coord, self.in_pipe_pty, self.out_pipe_pty, 0, &self.pseudo_console);
+        if (hr != s_ok and api.choice == .bundled) {
+            // One broken redistributable must not break every new tab: latch
+            // back to the inbox implementation and retry once.
+            log.warn("bundled create failed (hr=0x{x}); falling back to system pseudo console", .{@as(u32, @bitCast(hr))});
+            conpty_dll.stickToSystem();
+            api = conpty_dll.systemApi();
+            hr = api.create(coord, self.in_pipe_pty, self.out_pipe_pty, 0, &self.pseudo_console);
+        }
         if (hr != s_ok) return error.CreatePseudoConsoleFailed;
+        self.api = api;
 
         return self;
     }
@@ -130,7 +136,7 @@ pub const Pty = struct {
         // (or a double cleanup path) cannot close an already-closed handle, which
         // on Windows corrupts the heap (STATUS_HEAP_CORRUPTION, 0xc0000374).
         if (self.pseudo_console != INVALID_HANDLE_VALUE) {
-            ClosePseudoConsole(self.pseudo_console);
+            self.api.close(self.pseudo_console);
             self.pseudo_console = INVALID_HANDLE_VALUE;
         }
         if (self.out_pipe != INVALID_HANDLE_VALUE) {
@@ -157,7 +163,7 @@ pub const Pty = struct {
 
     pub fn setSize(self: *Pty, s: winsize) !void {
         const coord = COORD{ .X = @intCast(s.ws_col), .Y = @intCast(s.ws_row) };
-        const hr = ResizePseudoConsole(self.pseudo_console, coord);
+        const hr = self.api.resize(self.pseudo_console, coord);
         if (hr != s_ok) return error.ResizePseudoConsoleFailed;
         self.size = s;
     }
@@ -255,4 +261,8 @@ test "platform pty owns pipe IO operations" {
     const cancel_info = @typeInfo(@TypeOf(PtyType.cancelOutputRead)).@"fn";
     try std.testing.expectEqual(@as(usize, 1), cancel_info.params.len);
     try std.testing.expect(cancel_info.params[0].type.? == *PtyType);
+}
+
+test "platform pty binds each session to its creating console host api" {
+    try std.testing.expect(@hasField(Pty, "api"));
 }
