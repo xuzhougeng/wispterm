@@ -2,9 +2,10 @@ param(
     [string]$Version,
     [string]$OutputDir = '.\zig-out\dist',
     [string]$WebView2Version = '1.0.3912.50',
+    [string]$ConPtyVersion = '1.24.260512001',
     [switch]$SkipBuild,
     [switch]$SkipInstaller,
-    [switch]$SkipWebView2Bundle,
+    [switch]$SkipCompatBundle,
     [switch]$SkipNoWebViewBundle
 )
 
@@ -76,12 +77,55 @@ function Get-WebView2Loader {
     return $cachedLoader
 }
 
+function Get-ConPtyPair {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+
+    $cacheRoot = Join-Path $RepoRoot '.zig-cache\conpty'
+    $packageDir = Join-Path $cacheRoot "Microsoft.Windows.Console.ConPTY.$Version"
+    $dllPath = Join-Path $packageDir 'runtimes\win-x64\native\conpty.dll'
+    $hostPath = Join-Path $packageDir 'build\native\runtimes\x64\OpenConsole.exe'
+    if ((Test-Path $dllPath) -and (Test-Path $hostPath)) {
+        return @{ Dll = $dllPath; HostExe = $hostPath }
+    }
+
+    New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
+    $nupkgPath = Join-Path $cacheRoot "Microsoft.Windows.Console.ConPTY.$Version.nupkg"
+    $zipPath = Join-Path $cacheRoot "Microsoft.Windows.Console.ConPTY.$Version.zip"
+    $packageUrl = "https://www.nuget.org/api/v2/package/Microsoft.Windows.Console.ConPTY/$Version"
+
+    if (-not (Test-Path $nupkgPath)) {
+        Write-Host "Downloading Microsoft.Windows.Console.ConPTY $Version"
+        Invoke-WebRequest -Uri $packageUrl -OutFile $nupkgPath
+    }
+
+    Remove-Item -Path $packageDir -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path $nupkgPath -Destination $zipPath -Force
+    try {
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $packageDir -Force
+    } finally {
+        Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not (Test-Path $dllPath)) {
+        throw "conpty.dll was not found in Microsoft.Windows.Console.ConPTY $Version."
+    }
+    if (-not (Test-Path $hostPath)) {
+        throw "OpenConsole.exe was not found in Microsoft.Windows.Console.ConPTY $Version."
+    }
+
+    return @{ Dll = $dllPath; HostExe = $hostPath }
+}
+
 function Copy-PortablePayload {
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$ReleaseVersion,
-        [string]$WebView2LoaderPath
+        [string]$WebView2LoaderPath,
+        [hashtable]$ConPtyPair
     )
 
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
@@ -103,6 +147,11 @@ function Copy-PortablePayload {
 
     if (-not [string]::IsNullOrWhiteSpace($WebView2LoaderPath)) {
         Copy-Item -Path $WebView2LoaderPath -Destination (Join-Path $TargetDir 'WebView2Loader.dll') -Force
+    }
+
+    if ($null -ne $ConPtyPair) {
+        Copy-Item -Path $ConPtyPair.Dll -Destination (Join-Path $TargetDir 'conpty.dll') -Force
+        Copy-Item -Path $ConPtyPair.HostExe -Destination (Join-Path $TargetDir 'OpenConsole.exe') -Force
     }
 }
 
@@ -140,7 +189,7 @@ if (-not $SkipNoWebViewBundle -and -not (Test-Path $noWebViewBinaryPath)) {
 }
 
 $portableDir = Join-Path $resolvedOutputDir 'portable'
-$portableWebView2Dir = Join-Path $resolvedOutputDir 'portable-webview2'
+$portableCompatDir = Join-Path $resolvedOutputDir 'portable-compat'
 $portableNoWebViewDir = Join-Path $resolvedOutputDir 'portable-no-webview'
 $installerDir = Join-Path $resolvedOutputDir 'installer'
 $stagingDir = Join-Path $installerDir 'staging'
@@ -148,16 +197,18 @@ $setupExe = Join-Path $installerDir 'wispterm-setup.exe'
 $versionFile = Join-Path $stagingDir 'version.txt'
 $sedFile = Join-Path $installerDir 'wispterm-installer.sed'
 $webView2LoaderPath = $null
+$conPtyPair = $null
 
-if (-not $SkipWebView2Bundle) {
+if (-not $SkipCompatBundle) {
     $webView2LoaderPath = Get-WebView2Loader -RepoRoot $repoRoot -Version $WebView2Version
+    $conPtyPair = Get-ConPtyPair -RepoRoot $repoRoot -Version $ConPtyVersion
 }
 
-Remove-Item -Path $portableDir, $portableWebView2Dir, $portableNoWebViewDir, $installerDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $portableDir, $portableCompatDir, $portableNoWebViewDir, $installerDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableDir -ReleaseVersion $releaseVersion
 if ($webView2LoaderPath) {
-    Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableWebView2Dir -ReleaseVersion $releaseVersion -WebView2LoaderPath $webView2LoaderPath
+    Copy-PortablePayload -BinaryPath $binaryPath -TargetDir $portableCompatDir -ReleaseVersion $releaseVersion -WebView2LoaderPath $webView2LoaderPath -ConPtyPair $conPtyPair
 }
 if (-not $SkipNoWebViewBundle) {
     Copy-PortablePayload -BinaryPath $noWebViewBinaryPath -TargetDir $portableNoWebViewDir -ReleaseVersion $releaseVersion
@@ -166,7 +217,7 @@ if (-not $SkipNoWebViewBundle) {
 if ($SkipInstaller) {
     Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
     if ($webView2LoaderPath) {
-        Write-Host "Portable WebView2 build: $(Join-Path $portableWebView2Dir 'wispterm.exe')"
+        Write-Host "Portable compat build: $(Join-Path $portableCompatDir 'wispterm.exe')"
     }
     if (-not $SkipNoWebViewBundle) {
         Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'wispterm.exe')"
@@ -259,7 +310,7 @@ try {
 
 Write-Host "Portable build: $(Join-Path $portableDir 'wispterm.exe')"
 if ($webView2LoaderPath) {
-    Write-Host "Portable WebView2 build: $(Join-Path $portableWebView2Dir 'wispterm.exe')"
+    Write-Host "Portable compat build: $(Join-Path $portableCompatDir 'wispterm.exe')"
 }
 if (-not $SkipNoWebViewBundle) {
     Write-Host "Portable no-WebView build: $(Join-Path $portableNoWebViewDir 'wispterm.exe')"
