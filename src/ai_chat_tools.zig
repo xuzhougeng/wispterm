@@ -269,13 +269,13 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
     return std.fmt.allocPrint(ctx.allocator, "Unknown tool: {s}", .{call.name});
 }
 
-fn parseArgs(allocator: std.mem.Allocator, text: []const u8) ?std.json.Parsed(std.json.Value) {
+pub fn parseArgs(allocator: std.mem.Allocator, text: []const u8) ?std.json.Parsed(std.json.Value) {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     const body = if (trimmed.len == 0) "{}" else trimmed;
     return std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch null;
 }
 
-fn jsonStringArg(root: std.json.Value, name: []const u8) ?[]const u8 {
+pub fn jsonStringArg(root: std.json.Value, name: []const u8) ?[]const u8 {
     if (root != .object) return null;
     const value = root.object.get(name) orelse return null;
     if (value != .string or value.string.len == 0) return null;
@@ -2472,7 +2472,7 @@ fn deniedResult(allocator: std.mem.Allocator, command: []const u8, reason: []con
     return std.fmt.allocPrint(allocator, "DENIED by operator (reason: {s})\ncommand: {s}", .{ reason, command });
 }
 
-fn truncateOwned(allocator: std.mem.Allocator, settings: AgentSettings, text: []u8) ![]u8 {
+pub fn truncateOwned(allocator: std.mem.Allocator, settings: AgentSettings, text: []u8) ![]u8 {
     const limit = settings.output_limit;
     if (text.len <= limit) return text;
     errdefer allocator.free(text); // owned: must not leak when allocPrint fails

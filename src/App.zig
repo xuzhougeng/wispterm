@@ -107,6 +107,7 @@ ai_agent_permission: ai_chat.AgentPermission,
 ai_agent_command_timeout_ms: u32,
 ai_agent_output_limit: u32,
 ai_agent_working_dir: []const u8,
+ai_subagent_profile: []const u8,
 jina_api_key: []const u8,
 ai_memory_enabled: bool,
 ai_distill_suggest: bool,
@@ -201,6 +202,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
     errdefer freeOptStr(allocator, background_image);
     const ai_agent_working_dir = try dupeStr(allocator, cfg.@"ai-agent-working-dir");
     errdefer allocator.free(ai_agent_working_dir);
+    const ai_subagent_profile = try dupeStr(allocator, cfg.@"ai-subagent-profile");
+    errdefer allocator.free(ai_subagent_profile);
     const jina_api_key = try dupeStr(allocator, cfg.@"jina-api-key");
     errdefer allocator.free(jina_api_key);
 
@@ -254,6 +257,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms",
         .ai_agent_output_limit = cfg.@"ai-agent-output-limit",
         .ai_agent_working_dir = ai_agent_working_dir,
+        .ai_subagent_profile = ai_subagent_profile,
         .jina_api_key = jina_api_key,
         .ai_memory_enabled = cfg.@"ai-memory-enabled",
         .ai_distill_suggest = cfg.@"ai-distill-suggest",
@@ -451,6 +455,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.ai_agent_command_timeout_ms = cfg.@"ai-agent-command-timeout-ms";
     self.ai_agent_output_limit = cfg.@"ai-agent-output-limit";
     self.replaceStr(&self.ai_agent_working_dir, cfg.@"ai-agent-working-dir");
+    self.replaceStr(&self.ai_subagent_profile, cfg.@"ai-subagent-profile");
     self.replaceStr(&self.jina_api_key, cfg.@"jina-api-key");
     self.ai_memory_enabled = cfg.@"ai-memory-enabled";
     self.ai_distill_suggest = cfg.@"ai-distill-suggest";
@@ -1095,6 +1100,7 @@ pub fn deinit(self: *App) void {
     freeOptStr(self.allocator, self.font_family_cjk);
     freeOptStr(self.allocator, self.font_family_fallback);
     self.allocator.free(self.ai_agent_working_dir);
+    self.allocator.free(self.ai_subagent_profile);
     self.allocator.free(self.jina_api_key);
     freeOptStr(self.allocator, self.shader_path);
     freeOptStr(self.allocator, self.title);

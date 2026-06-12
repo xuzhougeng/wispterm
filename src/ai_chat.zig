@@ -169,6 +169,12 @@ pub const ChatRequest = struct {
     started_ms: i64,
     write_context_surface_id: [64]u8 = undefined,
     write_context_surface_id_len: usize = 0,
+    toolset: ai_chat_protocol.Toolset = .full,
+    subagent_profile: ?SubagentProfileOverride = null,
+    /// Usage burned by nested subagent runs; merged into the agent loop's
+    /// total when the final answer returns.
+    subagent_usage: ai_chat_protocol.ApiUsage = .{},
+    subagent_usage_present: bool = false,
 
     pub fn deinit(self: *ChatRequest) void {
         self.allocator.free(self.base_url);
@@ -180,6 +186,7 @@ pub const ChatRequest = struct {
         self.allocator.free(self.messages);
         if (self.tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
         if (self.weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
+        if (self.subagent_profile) |profile| profile.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -193,6 +200,7 @@ pub const ChatRequest = struct {
             .stream = self.stream,
             .max_tokens = self.max_tokens,
             .memory_enabled = self.memory_enabled,
+            .toolset = self.toolset,
         };
     }
 };
@@ -327,6 +335,42 @@ var g_markdown_export_trigger: ?*const fn (MarkdownExportMode) void = null;
 /// startup by the app layer (mirrors `configureAgent` / `setToolHost`).
 pub fn setSkillUpdateTrigger(cb: *const fn () void) void {
     g_skill_update_trigger = cb;
+}
+
+/// Resolved credentials for the `ai-subagent-profile` config key. Owned
+/// strings; freed by ChatRequest.deinit.
+pub const SubagentProfileOverride = struct {
+    base_url: []u8,
+    api_key: []u8,
+    model: []u8,
+    protocol: ApiProtocol,
+    thinking_enabled: bool,
+    reasoning_effort: []u8,
+    max_tokens: u32,
+
+    pub fn deinit(self: SubagentProfileOverride, allocator: std.mem.Allocator) void {
+        allocator.free(self.base_url);
+        allocator.free(self.api_key);
+        allocator.free(self.model);
+        allocator.free(self.reasoning_effort);
+    }
+};
+
+pub const SubagentProfileResolver = *const fn (allocator: std.mem.Allocator) ?SubagentProfileOverride;
+var g_subagent_profile_resolver: ?SubagentProfileResolver = null;
+
+/// Wire the UI-thread resolver that maps the `ai-subagent-profile` config key
+/// to concrete profile credentials. Registered at startup by the app layer
+/// (mirrors setSkillUpdateTrigger). Resolution happens in buildRequestLocked
+/// on the UI thread; the worker only reads the owned copy on its ChatRequest.
+pub fn setSubagentProfileResolver(cb: ?SubagentProfileResolver) void {
+    g_subagent_profile_resolver = cb;
+}
+
+fn resolveSubagentProfileForRequest(allocator: std.mem.Allocator, agent_enabled: bool) ?SubagentProfileOverride {
+    if (!agent_enabled) return null;
+    const resolve = g_subagent_profile_resolver orelse return null;
+    return resolve(allocator);
 }
 
 /// Wire the callback that `/resume` fires to open the agent history picker.
@@ -3319,6 +3363,9 @@ pub const Session = struct {
         var reasoning_effort_owned = true;
         errdefer if (reasoning_effort_owned) self.allocator.free(reasoning_effort);
 
+        var subagent_profile = resolveSubagentProfileForRequest(self.allocator, agent_enabled);
+        errdefer if (subagent_profile) |profile| profile.deinit(self.allocator);
+
         req.* = .{
             .allocator = self.allocator,
             .session = self,
@@ -3339,6 +3386,7 @@ pub const Session = struct {
             .tool_snapshot = tool_snapshot,
             .weixin_reply_context = weixin_ctx,
             .started_ms = std.time.milliTimestamp(),
+            .subagent_profile = subagent_profile,
         };
         base_url_owned = false;
         api_key_owned = false;
@@ -3346,6 +3394,7 @@ pub const Session = struct {
         system_prompt_owned = false;
         reasoning_effort_owned = false;
         weixin_ctx = null;
+        subagent_profile = null;
         if (self.copilot and self.bound_surface_id_len > 0) {
             // Inline the write-context seed directly on ChatRequest (the field
             // layout is identical to ToolContext; setWriteContext in
@@ -5203,6 +5252,18 @@ test "copilot prompt keeps tool guidance and adds the binding clause" {
     try std.testing.expect(std.mem.indexOf(u8, COPILOT_SYSTEM_PROMPT, "terminal_select") != null);
 }
 
+test "default system prompt mentions subagent delegation" {
+    try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "`subagent`") != null);
+}
+
+test "subagent system prompt is self-contained researcher guidance" {
+    const prompt = platform_agent_prompt.subagentSystemPrompt;
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "research subagent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "final report") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "websearch") != null);
+    try std.testing.expect(prompt.len < 1200);
+}
+
 test "ai chat empty profile system prompt uses full embedded default" {
     const allocator = std.testing.allocator;
     const session = try Session.init(
@@ -6986,6 +7047,76 @@ test "copilot loop command lists and stops tasks from other sessions" {
     const remaining = try store.snapshotForSession(a, "old-copilot-session", .loop);
     defer ai_loop_store.freeSnapshot(a, remaining);
     try std.testing.expectEqual(@as(usize, 0), remaining.len);
+}
+
+fn testSubagentResolver(allocator: std.mem.Allocator) ?SubagentProfileOverride {
+    const base_url = allocator.dupe(u8, "https://sub.example") catch return null;
+    const api_key = allocator.dupe(u8, "sub-key") catch {
+        allocator.free(base_url);
+        return null;
+    };
+    const model = allocator.dupe(u8, "sub-model") catch {
+        allocator.free(base_url);
+        allocator.free(api_key);
+        return null;
+    };
+    const reasoning_effort = allocator.dupe(u8, "low") catch {
+        allocator.free(base_url);
+        allocator.free(api_key);
+        allocator.free(model);
+        return null;
+    };
+    return .{
+        .base_url = base_url,
+        .api_key = api_key,
+        .model = model,
+        .protocol = .chat_completions,
+        .thinking_enabled = false,
+        .reasoning_effort = reasoning_effort,
+        .max_tokens = 4096,
+    };
+}
+
+test "resolveSubagentProfileForRequest gates on resolver and agent flag" {
+    const a = std.testing.allocator;
+    setSubagentProfileResolver(null);
+    try std.testing.expect(resolveSubagentProfileForRequest(a, true) == null);
+
+    setSubagentProfileResolver(testSubagentResolver);
+    defer setSubagentProfileResolver(null);
+    try std.testing.expect(resolveSubagentProfileForRequest(a, false) == null);
+
+    const override = resolveSubagentProfileForRequest(a, true) orelse return error.TestUnexpectedResult;
+    defer override.deinit(a);
+    try std.testing.expectEqualStrings("https://sub.example", override.base_url);
+    try std.testing.expectEqualStrings("sub-model", override.model);
+}
+
+test "ChatRequest deinit frees the subagent profile override" {
+    const a = std.testing.allocator;
+    var session = try Session.init(a, "test", "https://api.example", "key", "model", "prompt", "enabled", "medium", "false", "true");
+    defer session.deinit();
+
+    const request = try a.create(ChatRequest);
+    request.* = .{
+        .allocator = a,
+        .session = session,
+        .base_url = try a.dupe(u8, "https://api.example"),
+        .api_key = try a.dupe(u8, "key"),
+        .model = try a.dupe(u8, "model"),
+        .system_prompt = try a.dupe(u8, "prompt"),
+        .messages = &.{},
+        .thinking_enabled = false,
+        .reasoning_effort = try a.dupe(u8, "medium"),
+        .stream = false,
+        .agent_enabled = true,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .started_ms = 0,
+        .subagent_profile = testSubagentResolver(a),
+    };
+    request.deinit();
+    // std.testing.allocator fails the test on leak — nothing else to assert.
 }
 
 test "composeSystemPromptWithMemory appends the index block when enabled" {

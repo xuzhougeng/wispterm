@@ -192,6 +192,8 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
         .distill_suggest_enabled = app.ai_distill_suggest,
     });
     ai_chat.setDefaultWorkingDir(app.ai_agent_working_dir);
+    overlays.setSubagentProfileName(app.ai_subagent_profile);
+    ai_chat.setSubagentProfileResolver(overlays.resolveSubagentProfileOverride);
     @import("web_search.zig").setJinaApiKey(app.jina_api_key);
     @import("pty.zig").setConsoleHostPreference(app.console_host_preference);
     // Copy shell command from App
@@ -4087,6 +4089,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
         .distill_suggest_enabled = cfg.@"ai-distill-suggest",
     });
     ai_chat.setDefaultWorkingDir(cfg.@"ai-agent-working-dir");
+    overlays.setSubagentProfileName(cfg.@"ai-subagent-profile");
     @import("web_search.zig").setJinaApiKey(cfg.@"jina-api-key");
     @import("pty.zig").setConsoleHostPreference(cfg.@"windows-conpty");
 

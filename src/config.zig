@@ -336,6 +336,10 @@ shell: []const u8 = platform_pty_command.default_shell_name,
 /// first saved profile.
 @"ai-default-profile": []const u8 = "",
 
+/// Name of the saved AI profile the Copilot `subagent` tool runs on. Empty =
+/// the subagent uses the main conversation's profile.
+@"ai-subagent-profile": []const u8 = "",
+
 /// UI language. auto follows the system locale. Restart required.
 language: i18n.LanguageSetting = .auto,
 
@@ -880,6 +884,8 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         self.shell = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "ai-default-profile")) {
         self.@"ai-default-profile" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "ai-subagent-profile")) {
+        self.@"ai-subagent-profile" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "remote-enabled")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"remote-enabled" = true;
@@ -1603,6 +1609,7 @@ pub const settings_reset_keys = [_][]const u8{
     "focus-follows-mouse",
     "shell",
     "ai-default-profile",
+    "ai-subagent-profile",
     "weixin-direct-enabled",
     "language",
     "restore-tabs-on-startup",
@@ -2109,6 +2116,15 @@ test "config: ai-default-profile parses" {
     try std.testing.expectEqualStrings("", cfg.@"ai-default-profile");
     cfg.applyKeyValue(allocator, "ai-default-profile", "GPT-4o", ".");
     try std.testing.expectEqualStrings("GPT-4o", cfg.@"ai-default-profile");
+}
+
+test "config: ai-subagent-profile parses" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqualStrings("", cfg.@"ai-subagent-profile");
+    cfg.applyKeyValue(allocator, "ai-subagent-profile", "cheap-fast", ".");
+    try std.testing.expectEqualStrings("cheap-fast", cfg.@"ai-subagent-profile");
 }
 
 test "config: language parses auto/en/zh-CN and rejects invalid" {

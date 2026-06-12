@@ -3373,6 +3373,65 @@ fn invalidateAiDefaultName() void {
     g_ai_default_loaded = false;
 }
 
+threadlocal var g_subagent_profile_name_buf: [256]u8 = undefined;
+threadlocal var g_subagent_profile_name_len: usize = 0;
+
+/// Cache of the `ai-subagent-profile` config key, pushed by the app layer at
+/// startup and on config reload (no file IO on the resolve path).
+pub fn setSubagentProfileName(name: []const u8) void {
+    const len = @min(name.len, g_subagent_profile_name_buf.len);
+    @memcpy(g_subagent_profile_name_buf[0..len], name[0..len]);
+    g_subagent_profile_name_len = len;
+}
+
+/// ai_chat.SubagentProfileResolver: map the configured profile name to owned
+/// credentials. Any miss (unset key, unknown name, invalid profile) returns
+/// null — the subagent then falls back to the main conversation's profile.
+pub fn resolveSubagentProfileOverride(allocator: std.mem.Allocator) ?ai_chat.SubagentProfileOverride {
+    const name = g_subagent_profile_name_buf[0..g_subagent_profile_name_len];
+    if (name.len == 0) return null;
+    loadAiProfiles();
+    var found: ?usize = null;
+    for (0..g_ai_profile_count) |i| {
+        if (std.mem.eql(u8, aiProfileField(&g_ai_profiles[i], .name), name)) {
+            found = i;
+            break;
+        }
+    }
+    const idx = found orelse return null;
+    const profile = &g_ai_profiles[idx];
+    const base_url = aiProfileField(profile, .base_url);
+    const model = aiProfileField(profile, .model);
+    if (base_url.len == 0 or model.len == 0) return null;
+    if (!isHttpUrlish(base_url)) return null;
+
+    const base_url_copy = allocator.dupe(u8, base_url) catch return null;
+    const api_key_copy = allocator.dupe(u8, aiProfileField(profile, .api_key)) catch {
+        allocator.free(base_url_copy);
+        return null;
+    };
+    const model_copy = allocator.dupe(u8, model) catch {
+        allocator.free(base_url_copy);
+        allocator.free(api_key_copy);
+        return null;
+    };
+    const reasoning_copy = allocator.dupe(u8, aiProfileField(profile, .reasoning_effort)) catch {
+        allocator.free(base_url_copy);
+        allocator.free(api_key_copy);
+        allocator.free(model_copy);
+        return null;
+    };
+    return .{
+        .base_url = base_url_copy,
+        .api_key = api_key_copy,
+        .model = model_copy,
+        .protocol = ai_chat.ApiProtocol.parse(aiProfileField(profile, .protocol)),
+        .thinking_enabled = !std.mem.eql(u8, aiProfileField(profile, .thinking), "disabled"),
+        .reasoning_effort = reasoning_copy,
+        .max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192,
+    };
+}
+
 /// Index of the default AI profile, resolved by name from config. Falls back
 /// to the first profile. Returns 0 when no profiles exist (callers guard).
 fn defaultAiProfileIndex() usize {
