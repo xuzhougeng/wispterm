@@ -37,6 +37,7 @@ const wait_object_0: DWORD = 0x00000000;
 const wait_timeout: DWORD = 0x00000102;
 const infinite: DWORD = 0xFFFFFFFF;
 const extended_startupinfo_present: DWORD = 0x00080000;
+const create_unicode_environment: DWORD = 0x00000400;
 const proc_thread_attribute_pseudoconsole: usize = 0x00020016;
 
 const SECURITY_ATTRIBUTES = extern struct {
@@ -364,6 +365,65 @@ pub fn launchKindForCommand(command: CommandLine) LaunchKind {
     return .local;
 }
 
+fn wslenvContainsEntry(wslenv: []const u8, entry: []const u8) bool {
+    var it = std.mem.splitScalar(u8, wslenv, ':');
+    while (it.next()) |part| {
+        if (std.mem.eql(u8, part, entry)) return true;
+    }
+    return false;
+}
+
+fn countWslenvEntry(wslenv: []const u8, entry: []const u8) usize {
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, wslenv, ':');
+    while (it.next()) |part| {
+        if (std.mem.eql(u8, part, entry)) count += 1;
+    }
+    return count;
+}
+
+fn appendWslenvEntry(allocator: std.mem.Allocator, env: *std.process.EnvMap, entry: []const u8) !void {
+    const key = "WSLENV";
+    if (env.get(key)) |current| {
+        if (wslenvContainsEntry(current, entry)) return;
+        const merged = if (current.len == 0)
+            try allocator.dupe(u8, entry)
+        else
+            try std.fmt.allocPrint(allocator, "{s}:{s}", .{ current, entry });
+        defer allocator.free(merged);
+        try env.put(key, merged);
+        return;
+    }
+
+    try env.put(key, entry);
+}
+
+fn applyWslTerminalEnvironment(allocator: std.mem.Allocator, env: *std.process.EnvMap) !void {
+    try env.put("TERM", "xterm-256color");
+    try env.put("COLORTERM", "truecolor");
+    try env.put("TERM_PROGRAM", "wispterm");
+
+    try appendWslenvEntry(allocator, env, "TERM/u");
+    try appendWslenvEntry(allocator, env, "COLORTERM/u");
+    try appendWslenvEntry(allocator, env, "TERM_PROGRAM/u");
+}
+
+fn allocWslEnvironmentBlock(
+    allocator: std.mem.Allocator,
+    command: CommandLine,
+    env_map_out: *?std.process.EnvMap,
+) !?[]u16 {
+    if (launchKindForCommand(command) != .wsl) return null;
+
+    var env = try std.process.getEnvMap(allocator);
+    errdefer env.deinit();
+    try applyWslTerminalEnvironment(allocator, &env);
+
+    const env_block = try std.process.createWindowsEnvBlock(allocator, &env);
+    env_map_out.* = env;
+    return env_block;
+}
+
 pub const Command = struct {
     pub const Exit = union(enum) {
         exited: u32,
@@ -417,6 +477,15 @@ pub const Command = struct {
         defer std.heap.page_allocator.free(cmd_buf);
         @memcpy(cmd_buf, command[0..cmd_len]);
 
+        var env_map: ?std.process.EnvMap = null;
+        defer if (env_map) |*map| map.deinit();
+
+        const env_block = try allocWslEnvironmentBlock(std.heap.page_allocator, command, &env_map);
+        defer if (env_block) |block| std.heap.page_allocator.free(block);
+
+        const creation_flags: DWORD = extended_startupinfo_present |
+            (if (env_block != null) create_unicode_environment else 0);
+
         var proc_info: windows.PROCESS_INFORMATION = undefined;
         if (CreateProcessW(
             null,
@@ -424,8 +493,8 @@ pub const Command = struct {
             null,
             null,
             0,
-            extended_startupinfo_present,
-            null,
+            creation_flags,
+            if (env_block) |block| @ptrCast(block.ptr) else null,
             cwd,
             &startup_info,
             &proc_info,
@@ -600,6 +669,25 @@ test "windows pty command builds WSL exec argv for helper processes" {
     try std.testing.expectEqualStrings("sh", argv[2]);
     try std.testing.expectEqualStrings("-lc", argv[3]);
     try std.testing.expectEqualStrings("printf %s \"$HOME\"", argv[4]);
+}
+
+test "windows pty command applies WSL terminal environment bridge" {
+    var env = std.process.EnvMap.init(std.testing.allocator);
+    defer env.deinit();
+
+    try env.put("WSLENV", "EXISTING/u:TERM_PROGRAM/u");
+    try applyWslTerminalEnvironment(std.testing.allocator, &env);
+
+    try std.testing.expectEqualStrings("xterm-256color", env.get("TERM").?);
+    try std.testing.expectEqualStrings("truecolor", env.get("COLORTERM").?);
+    try std.testing.expectEqualStrings("wispterm", env.get("TERM_PROGRAM").?);
+
+    const wslenv = env.get("WSLENV").?;
+    try std.testing.expect(wslenvContainsEntry(wslenv, "EXISTING/u"));
+    try std.testing.expect(wslenvContainsEntry(wslenv, "TERM/u"));
+    try std.testing.expect(wslenvContainsEntry(wslenv, "COLORTERM/u"));
+    try std.testing.expect(wslenvContainsEntry(wslenv, "TERM_PROGRAM/u"));
+    try std.testing.expectEqual(@as(usize, 1), countWslenvEntry(wslenv, "TERM_PROGRAM/u"));
 }
 
 test "windows pty command exposes session launcher command details" {
