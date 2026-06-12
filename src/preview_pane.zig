@@ -6,6 +6,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const markdown_preview = @import("markdown_preview.zig");
 const preview_source = @import("input/preview_source.zig");
+const pdf_preview = @import("pdf_preview.zig");
+const pdf_render = @import("platform/pdf_render.zig");
 const gpu = @import("renderer/gpu/gpu.zig");
 
 const PreviewPane = @This();
@@ -15,6 +17,7 @@ pub const LoadStatus = enum { idle, loading, ready, failed, too_large };
 pub const PreviewSourceKind = preview_source.SourceKind;
 pub const PreviewReadResult = union(enum) { ok: []u8, failed, too_large };
 const PreviewReadFn = *const fn (Allocator, PreviewSourceKind, markdown_preview.Kind, []const u8) PreviewReadResult;
+pub const PdfRenderFn = *const fn (Allocator, []const u8, u32, u32) pdf_render.RenderError!pdf_render.RenderResult;
 
 const LOADING_SOURCE = "Loading preview...";
 const FAILED_SOURCE = "Preview failed";
@@ -37,6 +40,13 @@ const PreviewJob = struct {
     thread: ?std.Thread = null,
     read_fn: PreviewReadFn = defaultPreviewRead,
     owner: *PreviewPane = undefined,
+    pdf_input: ?[]u8 = null, // flip jobs: job-owned copy of the document
+    pdf_page: u32 = 0,
+    is_pdf_flip: bool = false,
+    pdf_out_data: ?[]u8 = null, // on success: document bytes for the pane
+    pdf_page_count: u32 = 0,
+    fail_msg: ?[]const u8 = null, // static strings only
+    render_fn: PdfRenderFn = pdf_render.renderPage,
 };
 
 refcount: usize = 1,
@@ -54,6 +64,11 @@ image_pan_y: f32 = 0,
 content_generation: u64 = 0,
 request_id: u64 = 0,
 jobs: std.ArrayListUnmanaged(*PreviewJob) = .empty,
+pdf_data: ?[]u8 = null, // page_allocator-owned original document bytes
+pdf_page: u32 = 0,
+pdf_page_count: u32 = 0,
+pdf_pending_page: ?u32 = null, // optimistic flip target while a job runs
+pdf_render_fn: PdfRenderFn = pdf_render.renderPage,
 // GL image-texture cache (migrated from markdown_preview_renderer.zig). Touched
 // only on the render thread.
 image_texture: gpu.c.GLuint = 0,
@@ -79,6 +94,7 @@ pub fn unref(self: *PreviewPane, gpa: Allocator) void {
     if (self.refcount == 0) {
         self.resetJobs();
         self.freeSource();
+        self.clearPdfDocument();
         self.unloadImageTexture(); // render-thread; see GL threading assumption
         gpa.destroy(self);
     }
@@ -105,6 +121,7 @@ pub fn open(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p: [
 }
 
 fn applyOwned(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p: []const u8, owned: ?[]u8, status: LoadStatus) void {
+    self.clearPdfDocument();
     self.kind = kind;
     self.load_status = if (owned == null and status == .ready) .failed else status;
     self.scroll_offset = 0;
@@ -123,13 +140,13 @@ pub fn scrollBy(self: *PreviewPane, delta: f32) void {
 }
 
 fn estimatedMaxScroll(self: *const PreviewPane) f32 {
-    if (self.kind == .image) return 0;
+    if (self.kind.isRaster()) return 0;
     const line_count = @max(@as(usize, 1), std.mem.count(u8, self.sourceText(), "\n") + 1);
     return @max(0, @as(f32, @floatFromInt(line_count)) * 28 - 360);
 }
 
 pub fn zoomImageBySteps(self: *PreviewPane, steps: usize, zoom_in: bool) bool {
-    if (self.kind != .image) return false;
+    if (!self.kind.isRaster()) return false;
     var next = self.image_zoom;
     var remaining = @max(@as(usize, 1), steps);
     while (remaining > 0) : (remaining -= 1) next = if (zoom_in) next * IMAGE_ZOOM_STEP else next / IMAGE_ZOOM_STEP;
@@ -140,7 +157,7 @@ pub fn zoomImageBySteps(self: *PreviewPane, steps: usize, zoom_in: bool) bool {
 }
 
 pub fn panImageBy(self: *PreviewPane, dx: f32, dy: f32) bool {
-    if (self.kind != .image or self.load_status != .ready) return false;
+    if (!self.kind.isRaster() or self.load_status != .ready) return false;
     if (dx == 0 and dy == 0) return false;
     self.image_pan_x += dx;
     self.image_pan_y += dy;
@@ -164,7 +181,7 @@ fn beginAsyncLoadWith(self: *PreviewPane, kind: markdown_preview.Kind, t: []cons
     self.applyOwned(kind, t, p, std.heap.page_allocator.dupe(u8, LOADING_SOURCE) catch null, .loading);
     const alloc = std.heap.page_allocator;
     const job = alloc.create(PreviewJob) catch return false;
-    job.* = .{ .request_id = self.request_id, .kind = kind, .source_kind = source_kind, .path_len = p.len, .title_len = @min(t.len, 256), .read_fn = read_fn, .owner = self };
+    job.* = .{ .request_id = self.request_id, .kind = kind, .source_kind = source_kind, .path_len = p.len, .title_len = @min(t.len, 256), .read_fn = read_fn, .render_fn = self.pdf_render_fn, .owner = self };
     @memcpy(job.path_buf[0..p.len], p);
     @memcpy(job.title_buf[0..job.title_len], t[0..job.title_len]);
     self.jobs.append(alloc, job) catch { alloc.destroy(job); return false; };
@@ -185,9 +202,17 @@ pub fn tickAsync(self: *PreviewPane) bool {
         if (job.request_id != self.request_id) continue;
         if (job.status == .ready and job.source != null) {
             const s = job.source.?; job.source = null;
+            const keep_zoom: ?f32 = if (job.is_pdf_flip) self.image_zoom else null;
             self.applyOwned(job.kind, job.title_buf[0..job.title_len], job.path_buf[0..job.path_len], s, .ready);
+            if (job.kind == .pdf) {
+                if (job.pdf_out_data) |doc| {
+                    job.pdf_out_data = null;
+                    self.setPdfDocument(doc, job.pdf_page, job.pdf_page_count);
+                }
+                if (keep_zoom) |z| self.image_zoom = z;
+            }
         } else {
-            const msg = if (job.status == .too_large) TOO_LARGE_SOURCE else FAILED_SOURCE;
+            const msg = job.fail_msg orelse if (job.status == .too_large) TOO_LARGE_SOURCE else FAILED_SOURCE;
             self.applyOwned(job.kind, job.title_buf[0..job.title_len], job.path_buf[0..job.path_len], std.heap.page_allocator.dupe(u8, msg) catch null, job.status);
         }
         changed = true;
@@ -196,12 +221,116 @@ pub fn tickAsync(self: *PreviewPane) bool {
 }
 
 fn jobThread(job: *PreviewJob) void {
+    if (job.kind == .pdf) {
+        pdfJobThread(job);
+        job.done.store(true, .release);
+        return;
+    }
     switch (job.read_fn(std.heap.page_allocator, job.source_kind, job.kind, job.path_buf[0..job.path_len])) {
         .ok => |s| { job.source = s; job.status = .ready; },
         .too_large => job.status = .too_large,
         .failed => job.status = .failed,
     }
     job.done.store(true, .release);
+}
+
+fn pdfJobThread(job: *PreviewJob) void {
+    const alloc = std.heap.page_allocator;
+    const data: []u8 = blk: {
+        if (job.pdf_input) |d| {
+            job.pdf_input = null;
+            break :blk d;
+        }
+        switch (job.read_fn(alloc, job.source_kind, job.kind, job.path_buf[0..job.path_len])) {
+            .ok => |s| break :blk s,
+            .too_large => {
+                job.status = .too_large;
+                return;
+            },
+            .failed => {
+                job.status = .failed;
+                return;
+            },
+        }
+    };
+    const rendered = job.render_fn(alloc, data, job.pdf_page, pdf_preview.TARGET_RENDER_WIDTH) catch |err| {
+        alloc.free(data);
+        job.status = .failed;
+        job.fail_msg = pdfFailMessage(err);
+        return;
+    };
+    job.source = rendered.png;
+    job.pdf_out_data = data;
+    job.pdf_page_count = rendered.page_count;
+    job.status = .ready;
+}
+
+fn pdfFailMessage(err: pdf_render.RenderError) []const u8 {
+    return switch (err) {
+        error.Unsupported => "PDF preview is not supported on this platform yet",
+        error.ToolMissing => "PDF preview requires poppler-utils (pdftoppm/pdfinfo)",
+        error.PasswordProtected => "Encrypted PDF is not supported",
+        error.InvalidPdf => "Not a valid PDF",
+        error.RenderFailed, error.OutOfMemory => FAILED_SOURCE,
+    };
+}
+
+/// Start rendering the previous/next page. Returns false when not a ready
+/// PDF, at the document edge, or when the job could not start. The current
+/// page keeps displaying until the new raster arrives.
+pub fn flipPdfPage(self: *PreviewPane, forward: bool) bool {
+    if (self.kind != .pdf or self.load_status != .ready) return false;
+    const data = self.pdf_data orelse return false;
+    const base = self.pdf_pending_page orelse self.pdf_page;
+    const target = pdf_preview.flipTarget(base, self.pdf_page_count, forward) orelse return false;
+
+    const alloc = std.heap.page_allocator;
+    const copy = alloc.dupe(u8, data) catch return false;
+    self.request_id +%= 1;
+    const job = alloc.create(PreviewJob) catch {
+        alloc.free(copy);
+        return false;
+    };
+    job.* = .{
+        .request_id = self.request_id,
+        .kind = .pdf,
+        .source_kind = .local,
+        .path_len = self.path_len,
+        .title_len = self.title_len,
+        .pdf_input = copy,
+        .pdf_page = target,
+        .is_pdf_flip = true,
+        .render_fn = self.pdf_render_fn,
+        .owner = self,
+    };
+    @memcpy(job.path_buf[0..self.path_len], self.path());
+    @memcpy(job.title_buf[0..job.title_len], self.title());
+    self.jobs.append(alloc, job) catch {
+        destroyJob(job);
+        return false;
+    };
+    job.thread = std.Thread.spawn(.{}, jobThread, .{job}) catch {
+        _ = self.jobs.pop();
+        destroyJob(job);
+        return false;
+    };
+    self.pdf_pending_page = target;
+    return true;
+}
+
+fn clearPdfDocument(self: *PreviewPane) void {
+    if (self.pdf_data) |d| std.heap.page_allocator.free(d);
+    self.pdf_data = null;
+    self.pdf_page = 0;
+    self.pdf_page_count = 0;
+    self.pdf_pending_page = null;
+}
+
+fn setPdfDocument(self: *PreviewPane, data: []u8, page: u32, count: u32) void {
+    self.clearPdfDocument();
+    self.pdf_data = data;
+    self.pdf_page = page;
+    self.pdf_page_count = count;
 }
 
 fn defaultPreviewRead(alloc: Allocator, source_kind: PreviewSourceKind, kind: markdown_preview.Kind, p: []const u8) PreviewReadResult {
@@ -222,6 +351,8 @@ fn resetJobs(self: *PreviewPane) void {
 
 fn destroyJob(job: *PreviewJob) void {
     if (job.source) |s| std.heap.page_allocator.free(s);
+    if (job.pdf_input) |d| std.heap.page_allocator.free(d);
+    if (job.pdf_out_data) |d| std.heap.page_allocator.free(d);
     std.heap.page_allocator.destroy(job);
 }
 
@@ -283,4 +414,105 @@ test "PreviewPane: async load applies content then clears job" {
     while (p.jobs.items.len > 0 and attempts < 200) : (attempts += 1) { _ = p.tickAsync(); if (p.jobs.items.len > 0) std.Thread.sleep(std.time.ns_per_ms); }
     try std.testing.expectEqual(LoadStatus.ready, p.load_status);
     try std.testing.expectEqualStrings("# Loaded\n", p.sourceText());
+}
+
+fn fakePdfReadOk(alloc: Allocator, _: PreviewSourceKind, _: markdown_preview.Kind, _: []const u8) PreviewReadResult {
+    return .{ .ok = alloc.dupe(u8, "%PDF-fake") catch return .failed };
+}
+
+fn fakePdfRenderOk(alloc: Allocator, pdf: []const u8, page_index: u32, _: u32) pdf_render.RenderError!pdf_render.RenderResult {
+    std.debug.assert(std.mem.startsWith(u8, pdf, "%PDF-fake"));
+    const png = try std.fmt.allocPrint(alloc, "PNG-page-{d}", .{page_index});
+    return .{ .png = png, .page_count = 3 };
+}
+
+fn fakePdfRenderFail(_: Allocator, _: []const u8, _: u32, _: u32) pdf_render.RenderError!pdf_render.RenderResult {
+    return error.ToolMissing;
+}
+
+fn drainJobs(p: *PreviewPane) void {
+    var attempts: usize = 0;
+    while (p.jobs.items.len > 0 and attempts < 500) : (attempts += 1) {
+        _ = p.tickAsync();
+        if (p.jobs.items.len > 0) std.Thread.sleep(std.time.ns_per_ms);
+    }
+}
+
+test "PreviewPane: pdf load renders page 0 and caches the document" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    p.pdf_render_fn = fakePdfRenderOk;
+    try std.testing.expect(p.beginAsyncLoadWith(.pdf, "a.pdf", "a.pdf", .local, fakePdfReadOk));
+    drainJobs(p);
+    try std.testing.expectEqual(LoadStatus.ready, p.load_status);
+    try std.testing.expectEqualStrings("PNG-page-0", p.sourceText());
+    try std.testing.expect(p.pdf_data != null);
+    try std.testing.expectEqual(@as(u32, 0), p.pdf_page);
+    try std.testing.expectEqual(@as(u32, 3), p.pdf_page_count);
+}
+
+test "PreviewPane: pdf page flip preserves zoom, resets pan, bumps generation" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    p.pdf_render_fn = fakePdfRenderOk;
+    try std.testing.expect(p.beginAsyncLoadWith(.pdf, "a.pdf", "a.pdf", .local, fakePdfReadOk));
+    drainJobs(p);
+    p.image_zoom = 2.0;
+    p.image_pan_x = 50;
+    const g0 = p.contentGeneration();
+
+    try std.testing.expect(p.flipPdfPage(true));
+    drainJobs(p);
+    try std.testing.expectEqualStrings("PNG-page-1", p.sourceText());
+    try std.testing.expectEqual(@as(u32, 1), p.pdf_page);
+    try std.testing.expectEqual(@as(f32, 2.0), p.image_zoom);
+    try std.testing.expectEqual(@as(f32, 0), p.image_pan_x);
+    try std.testing.expect(p.contentGeneration() != g0);
+
+    // backward to 0; then backward again is a no-op
+    try std.testing.expect(p.flipPdfPage(false));
+    drainJobs(p);
+    try std.testing.expectEqual(@as(u32, 0), p.pdf_page);
+    try std.testing.expect(!p.flipPdfPage(false));
+}
+
+test "PreviewPane: rapid pdf flips advance from the pending page" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    p.pdf_render_fn = fakePdfRenderOk;
+    try std.testing.expect(p.beginAsyncLoadWith(.pdf, "a.pdf", "a.pdf", .local, fakePdfReadOk));
+    drainJobs(p);
+    try std.testing.expect(p.flipPdfPage(true));
+    try std.testing.expect(p.flipPdfPage(true));
+    try std.testing.expect(!p.flipPdfPage(true)); // pending already at last page (2)
+    drainJobs(p);
+    try std.testing.expectEqual(@as(u32, 2), p.pdf_page);
+    try std.testing.expectEqualStrings("PNG-page-2", p.sourceText());
+}
+
+test "PreviewPane: pdf render failure surfaces a specific message" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    p.pdf_render_fn = fakePdfRenderFail;
+    try std.testing.expect(p.beginAsyncLoadWith(.pdf, "a.pdf", "a.pdf", .local, fakePdfReadOk));
+    drainJobs(p);
+    try std.testing.expectEqual(LoadStatus.failed, p.load_status);
+    try std.testing.expect(std.mem.indexOf(u8, p.sourceText(), "poppler-utils") != null);
+    try std.testing.expect(!p.flipPdfPage(true));
+}
+
+test "PreviewPane: non-pdf open clears pdf document state" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    p.pdf_render_fn = fakePdfRenderOk;
+    try std.testing.expect(p.beginAsyncLoadWith(.pdf, "a.pdf", "a.pdf", .local, fakePdfReadOk));
+    drainJobs(p);
+    p.open(.markdown, "b.md", "b.md", "# hi");
+    try std.testing.expect(p.pdf_data == null);
+    try std.testing.expectEqual(@as(u32, 0), p.pdf_page_count);
 }
