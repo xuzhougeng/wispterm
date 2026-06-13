@@ -13,7 +13,7 @@ const impl = switch (builtin.os.tag) {
     .linux, .macos => @import("tmux_controller_posix.zig"),
     else => struct {
         const Allocator = std.mem.Allocator;
-        pub fn start(_: Allocator, _: []const u8, _: []const u8, _: []const u8, _: u16, _: u16, _: u32, _: Config.CursorStyle, _: bool) bool {
+        pub fn start(_: Allocator, _: []const u8, _: []const u8, _: []const u8, _: u16, _: u16, _: u32, _: Config.CursorStyle, _: bool, _: ?@import("../ssh_connection.zig").SshConnection) bool {
             return false;
         }
         pub fn activeProfileNames(_: Allocator) []const []const u8 {
