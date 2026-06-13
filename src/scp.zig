@@ -329,10 +329,12 @@ fn drainOutputPipesCapped(
     };
 }
 
-/// Generous ceiling for captured remote stdout: enough for any directory
-/// listing / pwd / preview read, while bounding memory if a remote command
-/// unexpectedly streams gigabytes.
-const SSH_EXEC_MAX_STDOUT_BYTES: usize = 16 * 1024 * 1024;
+/// Default ceiling for captured remote stdout: enough for any directory
+/// listing / pwd, while bounding memory if a remote command unexpectedly
+/// streams gigabytes. Callers that read whole files (e.g. PDF/image previews,
+/// whose documents can exceed this) must use `sshExecCapped` with a cap sized
+/// to their own read limit — otherwise ssh is killed mid-transfer.
+pub const SSH_EXEC_MAX_STDOUT_BYTES: usize = 16 * 1024 * 1024;
 /// stderr is diagnostics only; keep the first chunk for the error log.
 const SSH_EXEC_MAX_STDERR_BYTES: usize = 16 * 1024;
 

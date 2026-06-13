@@ -61,6 +61,14 @@ pub fn sourceLimit(kind: Kind) usize {
     };
 }
 
+/// Whether an over-limit file of this kind should be shown as a truncated head
+/// window (the first `sourceLimit` bytes) rather than refused outright. Text-like
+/// kinds stream fine, so a huge log is previewable as a scrollable head; raster
+/// kinds (image/pdf) can't be partially decoded, so they still fail as too-large.
+pub fn allowsTruncatedHead(kind: Kind) bool {
+    return !kind.isRaster();
+}
+
 pub fn isImagePath(path: []const u8) bool {
     return detectKind(path) == .image;
 }
@@ -497,6 +505,17 @@ test "raster kinds are image and pdf" {
     try std.testing.expect(!Kind.text.isRaster());
     try std.testing.expect(!Kind.csv.isRaster());
     try std.testing.expect(!Kind.tsv.isRaster());
+}
+
+test "text-like kinds allow a truncated head; raster kinds do not" {
+    // A huge log/markdown/csv shows its head and scrolls; image/pdf can't be
+    // partially decoded, so they still fail as too-large.
+    try std.testing.expect(allowsTruncatedHead(.text));
+    try std.testing.expect(allowsTruncatedHead(.markdown));
+    try std.testing.expect(allowsTruncatedHead(.csv));
+    try std.testing.expect(allowsTruncatedHead(.tsv));
+    try std.testing.expect(!allowsTruncatedHead(.image));
+    try std.testing.expect(!allowsTruncatedHead(.pdf));
 }
 
 test "delimited row parser handles csv quotes and tsv" {

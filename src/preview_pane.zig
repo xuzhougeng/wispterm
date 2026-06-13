@@ -15,7 +15,7 @@ const PreviewPane = @This();
 pub const DEFAULT_WIDTH: f32 = 440; // used to derive the initial right-edge split ratio
 pub const LoadStatus = enum { idle, loading, ready, failed, too_large };
 pub const PreviewSourceKind = preview_source.SourceKind;
-pub const PreviewReadResult = union(enum) { ok: []u8, failed, too_large };
+pub const PreviewReadResult = union(enum) { ok: []u8, ok_truncated: []u8, failed, too_large };
 const PreviewReadFn = *const fn (Allocator, PreviewSourceKind, markdown_preview.Kind, []const u8) PreviewReadResult;
 pub const PdfRenderFn = *const fn (Allocator, []const u8, u32, u32) pdf_render.RenderError!pdf_render.RenderResult;
 
@@ -54,6 +54,7 @@ const PreviewJob = struct {
     pdf_out_data: ?[]u8 = null, // on success: document bytes for the pane
     pdf_page_count: u32 = 0,
     fail_msg: ?[]const u8 = null, // static strings only
+    truncated: bool = false, // text-like head was clipped to the size limit
     render_fn: PdfRenderFn = pdf_render.renderPage,
 };
 
@@ -66,6 +67,13 @@ path_buf: [512]u8 = undefined,
 path_len: usize = 0,
 source: ?[]u8 = null,
 scroll_offset: f32 = 0,
+// Max vertical scroll for text/markdown/csv content, set by the renderer each
+// pass from the actual height it laid out (so scrolling stops exactly at the
+// last rendered line instead of falling into blank space past it).
+max_scroll: f32 = 0,
+// True when the source is only the head of a file that exceeded the size limit
+// (text-like kinds); drives the "truncated" banner. See preview_source.PreviewRead.
+content_truncated: bool = false,
 image_zoom: f32 = 1.0,
 image_pan_x: f32 = 0,
 image_pan_y: f32 = 0,
@@ -133,6 +141,8 @@ fn applyOwned(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p:
     self.kind = kind;
     self.load_status = if (owned == null and status == .ready) .failed else status;
     self.scroll_offset = 0;
+    self.max_scroll = 0;
+    self.content_truncated = false;
     self.image_zoom = 1.0;
     self.image_pan_x = 0;
     self.image_pan_y = 0;
@@ -143,15 +153,15 @@ fn applyOwned(self: *PreviewPane, kind: markdown_preview.Kind, t: []const u8, p:
 }
 
 pub fn scrollBy(self: *PreviewPane, delta: f32) void {
-    const max_scroll = self.estimatedMaxScroll();
-    self.scroll_offset = @max(0, @min(max_scroll, self.scroll_offset + delta));
+    // Raster panes (image/pdf) use zoom/pan, not scroll. Text/markdown/csv clamp
+    // to the renderer-reported content height so scrolling can't run past the
+    // last rendered line into blank space (the old line-count estimate let a big
+    // file scroll into a void well below its rendered content).
+    if (self.kind.isRaster()) return;
+    self.scroll_offset = @max(0, @min(self.max_scroll, self.scroll_offset + delta));
 }
 
-fn estimatedMaxScroll(self: *const PreviewPane) f32 {
-    if (self.kind.isRaster()) return 0;
-    const line_count = @max(@as(usize, 1), std.mem.count(u8, self.sourceText(), "\n") + 1);
-    return @max(0, @as(f32, @floatFromInt(line_count)) * 28 - 360);
-}
+pub fn isContentTruncated(self: *const PreviewPane) bool { return self.content_truncated; }
 
 pub fn zoomImageBySteps(self: *PreviewPane, steps: usize, zoom_in: bool) bool {
     if (!self.kind.isRaster()) return false;
@@ -230,6 +240,7 @@ pub fn tickAsync(self: *PreviewPane) bool {
             const s = job.source.?; job.source = null;
             const keep_zoom: ?f32 = if (job.is_pdf_flip) self.image_zoom else null;
             self.applyOwned(job.kind, job.title_buf[0..job.title_len], job.path_buf[0..job.path_len], s, .ready);
+            self.content_truncated = job.truncated;
             if (job.kind == .pdf) {
                 if (job.pdf_out_data) |doc| {
                     job.pdf_out_data = null;
@@ -259,6 +270,7 @@ fn jobThread(job: *PreviewJob) void {
     }
     switch (job.read_fn(std.heap.page_allocator, job.source_kind, job.kind, job.path_buf[0..job.path_len])) {
         .ok => |s| { job.source = s; job.status = .ready; },
+        .ok_truncated => |s| { job.source = s; job.status = .ready; job.truncated = true; },
         .too_large => job.status = .too_large,
         .failed => job.status = .failed,
     }
@@ -273,7 +285,9 @@ fn pdfJobThread(job: *PreviewJob) void {
             break :blk d;
         }
         switch (job.read_fn(alloc, job.source_kind, job.kind, job.path_buf[0..job.path_len])) {
-            .ok => |s| break :blk s,
+            // PDFs are raster (allowsTruncatedHead == false), so a real read never
+            // truncates; handle the variant defensively as a full read regardless.
+            .ok, .ok_truncated => |s| break :blk s,
             .too_large => {
                 job.status = .too_large;
                 return;
@@ -370,9 +384,9 @@ fn setPdfDocument(self: *PreviewPane, data: []u8, page: u32, count: u32) void {
 }
 
 fn defaultPreviewRead(alloc: Allocator, source_kind: PreviewSourceKind, kind: markdown_preview.Kind, p: []const u8) PreviewReadResult {
-    const s = preview_source.readPreviewSourceForKind(alloc, source_kind, p, kind) catch |err|
+    const r = preview_source.readPreviewSourceForKind(alloc, source_kind, p, kind) catch |err|
         return if (err == error.PreviewTooLarge) .too_large else .failed;
-    return .{ .ok = s };
+    return if (r.truncated) .{ .ok_truncated = r.bytes } else .{ .ok = r.bytes };
 }
 
 fn freeSource(self: *PreviewPane) void {
@@ -624,4 +638,49 @@ test "PreviewPane: non-pdf open clears pdf document state" {
     p.open(.markdown, "b.md", "b.md", "# hi");
     try std.testing.expect(p.pdf_data == null);
     try std.testing.expectEqual(@as(u32, 0), p.pdf_page_count);
+}
+
+fn fakeTruncatedReadOk(alloc: Allocator, _: PreviewSourceKind, _: markdown_preview.Kind, _: []const u8) PreviewReadResult {
+    return .{ .ok_truncated = alloc.dupe(u8, "line1\nline2\n") catch return .failed };
+}
+
+test "PreviewPane: truncated text read is ready and flags content as truncated" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    try std.testing.expect(p.beginAsyncLoadWith(.text, "big.log", "big.log", .local, fakeTruncatedReadOk));
+    drainJobs(p);
+    try std.testing.expectEqual(LoadStatus.ready, p.load_status);
+    try std.testing.expect(p.isContentTruncated());
+    try std.testing.expectEqualStrings("line1\nline2\n", p.sourceText());
+
+    // Loading new content clears the truncated flag.
+    p.open(.markdown, "b.md", "b.md", "# hi");
+    try std.testing.expect(!p.isContentTruncated());
+}
+
+test "PreviewPane: scrollBy clamps to the renderer-reported max_scroll" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+    p.kind = .text;
+    p.load_status = .ready;
+
+    // No content height reported yet -> cannot scroll into a void.
+    p.scrollBy(500);
+    try std.testing.expectEqual(@as(f32, 0), p.scroll_offset);
+
+    // The renderer reports the laid-out height; scroll clamps to it.
+    p.max_scroll = 200;
+    p.scrollBy(500);
+    try std.testing.expectEqual(@as(f32, 200), p.scroll_offset);
+    p.scrollBy(-1000);
+    try std.testing.expectEqual(@as(f32, 0), p.scroll_offset);
+
+    // Raster panes ignore scroll entirely (they zoom/pan instead).
+    p.kind = .image;
+    p.max_scroll = 200;
+    p.scroll_offset = 0;
+    p.scrollBy(500);
+    try std.testing.expectEqual(@as(f32, 0), p.scroll_offset);
 }
