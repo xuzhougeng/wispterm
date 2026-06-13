@@ -1724,6 +1724,16 @@ fn downloadSelectedSkillsToLibrary(
     defer std.fs.deleteTreeAbsolute(tmp_dir) catch {};
 
     for (entries) |entry| {
+        // Defense-in-depth: never let a downloaded skill name escape the library dir.
+        if (entry.name.len == 0 or
+            std.mem.eql(u8, entry.name, ".") or
+            std.mem.eql(u8, entry.name, "..") or
+            std.mem.indexOfScalar(u8, entry.name, '/') != null or
+            std.mem.indexOfScalar(u8, entry.name, '\\') != null)
+        {
+            failed += 1;
+            continue;
+        }
         var ok = true;
         for (entry.files) |file_path| {
             const rel = skill_install.relInstallPath(entry.root_path, file_path) orelse continue;
