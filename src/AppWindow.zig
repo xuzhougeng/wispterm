@@ -4729,6 +4729,7 @@ const WeixinRequest = struct {
     out_surface_id: [16]u8 = [_]u8{0} ** 16,
     open_result: weixin_control.OpenResult = .failed,
     sent: bool = false,
+    busy: bool = false, // send_input: AI chat rejected the prompt (request inflight)
     transcript: []u8 = &.{},
     dir: []u8 = &.{}, // inbound_file_dir (heap, page_allocator)
 };
@@ -4814,7 +4815,7 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
                 if (tab_state.kind != .ai_chat) return;
                 const session = tab_state.ai_chat_session orelse return;
                 if (req.reply_context) |ctx| {
-                    session.applyWeixinInput(req.bytes, ctx);
+                    req.busy = !session.applyWeixinInput(req.bytes, ctx);
                 } else {
                     session.applyRemoteInput(req.bytes);
                 }
@@ -4904,10 +4905,10 @@ fn wxOpenAiAgent(_: *anyopaque, _: u32) weixin_control.OpenResult {
     return req.open_result;
 }
 
-fn wxSendInput(_: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?weixin_types.ReplyContext) bool {
+fn wxSendInput(_: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?weixin_types.ReplyContext) weixin_control.SendResult {
     var req = WeixinRequest{ .op = .send_input, .surface_id = surface_id, .bytes = bytes, .reply_context = reply_context };
-    if (!weixinDispatch(&req)) return false;
-    return req.sent;
+    if (!weixinDispatch(&req) or !req.sent) return .offline;
+    return if (req.busy) .busy else .ok;
 }
 
 fn wxTranscript(_: *anyopaque) []const u8 {

@@ -7,6 +7,10 @@ pub const Surface = struct { id: [16]u8, title: []const u8 };
 
 pub const OpenResult = enum { opened, no_profile, failed, offline, timeout };
 
+/// Outcome of sendInput. `busy` is AI-surface only: a chat request is already
+/// inflight, so the message was rejected rather than silently swallowed.
+pub const SendResult = enum { ok, offline, busy };
+
 pub const Control = struct {
     ctx: *anyopaque,
     vtable: *const VTable,
@@ -16,7 +20,7 @@ pub const Control = struct {
         find_ai_surface: *const fn (ctx: *anyopaque) ?Surface,
         find_terminal_surface: *const fn (ctx: *anyopaque) ?Surface,
         open_ai_agent: *const fn (ctx: *anyopaque, timeout_ms: u32) OpenResult,
-        send_input: *const fn (ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) bool,
+        send_input: *const fn (ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) SendResult,
         latest_transcript: *const fn (ctx: *anyopaque) []const u8,
         ai_approval_pending: *const fn (ctx: *anyopaque) bool,
         resolve_ai_approval: *const fn (ctx: *anyopaque, approve: bool) bool,
@@ -37,7 +41,7 @@ pub const Control = struct {
     pub fn openAiAgent(self: Control, timeout_ms: u32) OpenResult {
         return self.vtable.open_ai_agent(self.ctx, timeout_ms);
     }
-    pub fn sendInput(self: Control, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) bool {
+    pub fn sendInput(self: Control, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) SendResult {
         return self.vtable.send_input(self.ctx, surface_id, bytes, reply_context);
     }
     pub fn latestTranscript(self: Control) []const u8 {
@@ -70,8 +74,8 @@ test "inboundFileDir forwards to the vtable and copies into the caller buffer" {
         fn open_ai_agent(_: *anyopaque, _: u32) OpenResult {
             return .offline;
         }
-        fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
-            return false;
+        fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) SendResult {
+            return .offline;
         }
         fn latest_transcript(_: *anyopaque) []const u8 {
             return "";

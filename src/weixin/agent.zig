@@ -6,6 +6,7 @@ const types = @import("types.zig");
 const approval_reply = @import("approval_reply.zig");
 
 const AI_ACK = "信息已收到，开始处理。\n发送 /stop 可停止本次处理。";
+const AI_BUSY = "副驾正在处理上一条消息，请稍候再发，或发送 /stop 停止当前处理。";
 const ESC = "\x1b";
 const AI_OPEN_TIMEOUT_MS: u32 = 2000;
 
@@ -125,7 +126,13 @@ fn sendAi(ctrl: control.Control, text: []const u8, reply_context: ?types.ReplyCo
     defer buf.deinit(out.allocator);
     try buf.appendSlice(out.allocator, text);
     try buf.append(out.allocator, '\r');
-    if (!ctrl.sendInput(ai.id, buf.items, reply_context)) return out.set("WispTerm 当前离线，无法发送给副驾。");
+    switch (ctrl.sendInput(ai.id, buf.items, reply_context)) {
+        .offline => return out.set("WispTerm 当前离线，无法发送给副驾。"),
+        // The copilot still has a request inflight: the message was rejected,
+        // not queued, so tell the user instead of acking "开始处理" for nothing.
+        .busy => return out.set(AI_BUSY),
+        .ok => {},
+    }
     try out.set(AI_ACK);
     out.expect_ai_progress = true;
 }
@@ -136,7 +143,7 @@ fn stopAi(ctrl: control.Control, out: *Reply) !void {
     // sent after the stop (otherwise a trailing reply looks like /stop failed).
     out.stop_followup = true;
     const ai = ctrl.findAiSurface() orelse return out.set("当前没有副驾可停止。");
-    if (!ctrl.sendInput(ai.id, ESC, null)) return out.set("WispTerm 当前离线，无法停止副驾。");
+    if (ctrl.sendInput(ai.id, ESC, null) != .ok) return out.set("WispTerm 当前离线，无法停止副驾。");
     return out.set("已发送停止指令。");
 }
 
@@ -146,7 +153,7 @@ fn sendTerminal(ctrl: control.Control, text: []const u8, enter: bool, out: *Repl
     defer buf.deinit(out.allocator);
     try buf.appendSlice(out.allocator, text);
     if (enter) try buf.append(out.allocator, '\r');
-    if (!ctrl.sendInput(term.id, buf.items, null)) return out.set("WispTerm 当前离线，无法发送到终端。");
+    if (ctrl.sendInput(term.id, buf.items, null) != .ok) return out.set("WispTerm 当前离线，无法发送到终端。");
     return out.set("已发送到终端。");
 }
 
@@ -172,6 +179,7 @@ const t = std.testing;
 const FakeControl = struct {
     connected: bool = true,
     has_ai: bool = true,
+    busy: bool = false,
     buf: [256]u8 = undefined,
     len: usize = 0,
     last_surface: [16]u8 = [_]u8{0} ** 16,
@@ -198,15 +206,16 @@ const FakeControl = struct {
     fn open_ai_agent(_: *anyopaque, _: u32) control.OpenResult {
         return .opened;
     }
-    fn send_input(ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) bool {
+    fn send_input(ctx: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?types.ReplyContext) control.SendResult {
         const self = cast(ctx);
-        if (!self.connected) return false;
+        if (!self.connected) return .offline;
+        if (self.busy) return .busy;
         self.last_surface = surface_id;
         self.last_reply_context = reply_context;
         const n = @min(bytes.len, self.buf.len);
         @memcpy(self.buf[0..n], bytes[0..n]);
         self.len = n;
-        return true;
+        return .ok;
     }
     fn latest_transcript(_: *anyopaque) []const u8 {
         return "";
@@ -266,6 +275,15 @@ test "default text goes to the AI surface with a carriage return" {
     try t.expectEqualStrings("hello world\r", fake.lastInput());
     try t.expectEqualSlices(u8, &FakeControl.aiId(), &fake.last_surface);
     try t.expect(out.expect_ai_progress);
+}
+
+test "busy copilot replies with a busy notice and does not start a follow-up" {
+    var fake = FakeControl{ .busy = true };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "hello", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "正在处理") != null);
+    try t.expect(!out.expect_ai_progress);
 }
 
 test "default AI route forwards Weixin reply context only to AI surface" {

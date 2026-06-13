@@ -1299,12 +1299,28 @@ pub const Session = struct {
         return true;
     }
 
-    pub fn applyWeixinInput(self: *Session, data: []const u8, ctx: weixin_types.ReplyContext) void {
+    /// WeChat delivers complete messages, not keystrokes: the whole payload is
+    /// one prompt (embedded newlines are content, unlike applyRemoteInput where
+    /// each one submits); only the trailing CR/LF byte-stream submit convention
+    /// is stripped. Returns false (busy) without touching the composer when a
+    /// request is already inflight, so the poller reports it to the sender
+    /// instead of silently swallowing the message.
+    pub fn applyWeixinInput(self: *Session, data: []const u8, ctx: weixin_types.ReplyContext) bool {
         self.mutex.lock();
+        if (self.request_inflight) {
+            self.mutex.unlock();
+            return false;
+        }
         if (self.pending_weixin_reply_context) |*old| old.deinit(self.allocator);
         self.pending_weixin_reply_context = WeixinReplyContext.init(self.allocator, ctx) catch null;
         self.mutex.unlock();
-        self.applyRemoteInput(data);
+        if (self.submitScheduledPrompt(std.mem.trimRight(u8, data, "\r\n"))) return true;
+        // Lost the race with a concurrently started request: drop the stale
+        // context so a later local prompt cannot inherit this WeChat target.
+        self.mutex.lock();
+        self.clearPendingWeixinReplyContextLocked();
+        self.mutex.unlock();
+        return false;
     }
 
     fn clearPendingWeixinReplyContextLocked(self: *Session) void {
@@ -6966,6 +6982,46 @@ test "submitScheduledPrompt sets composer and reports busy state" {
     const skipped = session.submitScheduledPrompt("again");
     try std.testing.expect(!skipped);
     session.request_inflight = false;
+}
+
+test "applyWeixinInput submits the whole multi-line message as one prompt" {
+    const a = std.testing.allocator;
+    const session = try Session.init(a, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+
+    var capture = WeixinAttachmentCapture{};
+    const ctx = weixin_types.ReplyContext{
+        .sender = testWeixinSender(&capture),
+        .to_user_id = "wx-user",
+        .context_token = "ctx-1",
+    };
+
+    // A WeChat message is a complete message, not a keystroke stream: embedded
+    // newlines are content, only the trailing CR is the submit convention. With
+    // no API key submit() stops at the missing-key gate WITHOUT consuming the
+    // composer, so the composer shows exactly what the single submit sent.
+    try std.testing.expect(session.applyWeixinInput("第一段\n\n第二段\r", ctx));
+    try std.testing.expectEqualStrings("第一段\n\n第二段", session.input());
+}
+
+test "applyWeixinInput reports busy and leaves composer and reply context untouched" {
+    const a = std.testing.allocator;
+    const session = try Session.init(a, "test", "", "", "", "", "", "", "", "");
+    defer session.deinit();
+
+    var capture = WeixinAttachmentCapture{};
+    const ctx = weixin_types.ReplyContext{
+        .sender = testWeixinSender(&capture),
+        .to_user_id = "wx-user",
+        .context_token = "ctx-1",
+    };
+
+    session.appendInputText("draft");
+    session.request_inflight = true;
+    try std.testing.expect(!session.applyWeixinInput("新任务\r", ctx));
+    session.request_inflight = false;
+    try std.testing.expectEqualStrings("draft", session.input());
+    try std.testing.expect(session.pending_weixin_reply_context == null);
 }
 
 test "runLoopCommandLocked creates, lists, and stops a loop task" {

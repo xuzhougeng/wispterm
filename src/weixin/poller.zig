@@ -954,8 +954,8 @@ const NoopControl = struct {
     fn openAiAgent(_: *anyopaque, _: u32) control_mod.OpenResult {
         return .offline;
     }
-    fn sendInput(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
-        return false;
+    fn sendInput(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) control_mod.SendResult {
+        return .offline;
     }
     fn latestTranscript(_: *anyopaque) []const u8 {
         return "";
@@ -1305,8 +1305,8 @@ const ApprovalTranscriptControl = struct {
     fn openAiAgent(_: *anyopaque, _: u32) control_mod.OpenResult {
         return .offline;
     }
-    fn sendInput(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
-        return false;
+    fn sendInput(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) control_mod.SendResult {
+        return .offline;
     }
     fn latestTranscript(_: *anyopaque) []const u8 {
         return "Model:\nGLM\n\nStatus:\nApproval needed\n\n" ++
@@ -1393,8 +1393,8 @@ const TmpDirControl = struct {
     fn open_ai_agent(_: *anyopaque, _: u32) control_mod.OpenResult {
         return .offline;
     }
-    fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) bool {
-        return false;
+    fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) control_mod.SendResult {
+        return .offline;
     }
     fn latest_transcript(_: *anyopaque) []const u8 {
         return "";
