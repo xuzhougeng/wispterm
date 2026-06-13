@@ -21,6 +21,8 @@ const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
 const weixin = @import("weixin/controller.zig");
 const weixin_types = @import("weixin/types.zig");
+const ctl_server = @import("ctl/server.zig");
+const ctl_discovery = @import("ctl/discovery.zig");
 const port_forward_manager_mod = @import("port_forward_manager.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_open_url = @import("platform/open_url.zig");
@@ -98,6 +100,9 @@ remote_client: ?*remote.Client,
 
 // WeChat direct (embedded ilink). Independent from the remote relay client.
 weixin_controller: ?*weixin.Controller,
+
+// Local agent terminal control API (wisptermctl). Created by startAgentControl().
+agent_control_server: ?*ctl_server.Server = null,
 
 port_forward_manager: port_forward_manager_mod.Manager,
 
@@ -251,6 +256,8 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .remote_client = remote_client_ptr,
         // Created later by startWeixin(), once App lives at a stable address.
         .weixin_controller = null,
+        // Created later by startAgentControl().
+        .agent_control_server = null,
         .port_forward_manager = port_forward_manager_mod.Manager.init(allocator),
         .ai_agent_enabled = cfg.@"ai-agent-enabled",
         .ai_agent_permission = cfg.@"ai-agent-permission",
@@ -374,6 +381,37 @@ pub fn startWeixin(self: *App, cfg: *const Config) void {
     };
     controller.start() catch {};
     self.weixin_controller = controller;
+}
+
+/// Starts the local agent terminal control API (wisptermctl) when enabled.
+/// Binds 127.0.0.1, generates a random token, and writes the discovery file
+/// (port + token, 0600) so the client can auto-connect. Call once, after App is
+/// at its final address (see main.zig). No-op unless agent-control-enabled.
+pub fn startAgentControl(self: *App, cfg: *const Config) void {
+    if (!cfg.@"agent-control-enabled") return;
+
+    var token_bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&token_bytes);
+    const token_hex = std.fmt.bytesToHex(token_bytes, .lower); // [32]u8
+
+    const server = ctl_server.Server.create(self.allocator, AppWindow.agentControl(), &token_hex, cfg.@"agent-control-port") catch |err| {
+        std.debug.print("agent-control disabled: {}\n", .{err});
+        return;
+    };
+    ctl_discovery.write(self.allocator, .{ .port = server.port, .token = server.token }) catch |err| {
+        std.debug.print("agent-control discovery file write failed: {}\n", .{err});
+        server.destroy();
+        return;
+    };
+    server.start() catch |err| {
+        std.debug.print("agent-control listener failed to start: {}\n", .{err});
+        ctl_discovery.remove(self.allocator);
+        server.destroy();
+        return;
+    };
+    self.agent_control_server = server;
+    AppWindow.enableAgentControl();
+    std.debug.print("agent-control listening on 127.0.0.1:{d}\n", .{server.port});
 }
 
 /// Get the shell command as a native null-terminated command line.
@@ -1080,6 +1118,12 @@ pub fn deinit(self: *App) void {
     if (self.remote_client) |client| {
         client.destroy();
         self.remote_client = null;
+    }
+
+    if (self.agent_control_server) |server| {
+        server.destroy(); // stops + joins the accept thread, frees the listener
+        self.agent_control_server = null;
+        ctl_discovery.remove(self.allocator);
     }
 
     if (self.weixin_controller) |controller| {

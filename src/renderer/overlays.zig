@@ -585,7 +585,10 @@ fn executeCommand(action: CommandAction) void {
         },
         .split_preview => {
             if (AppWindow.g_allocator) |gpa| {
-                _ = AppWindow.tab.splitIntoPreview(gpa);
+                // Focus the new (empty) preview so Ctrl+Shift+W closes it.
+                if (AppWindow.tab.splitIntoPreview(gpa)) |pane| {
+                    _ = AppWindow.tab.focusPreviewPane(pane);
+                }
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
             }

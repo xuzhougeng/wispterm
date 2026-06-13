@@ -97,6 +97,22 @@ pub fn acquire(ptr: *anyopaque, id: []const u8) bool {
     return false;
 }
 
+/// If a live surface is registered under `id`, returns its pointer with the
+/// registry lock HELD — the caller MUST call release() when done. Returns null
+/// (lock not held) when no live surface matches. The ctl server uses this to
+/// pin a surface by id from its background thread, exactly as the agent worker
+/// uses acquire() with a pre-captured pointer.
+pub fn acquireById(id: []const u8) ?*anyopaque {
+    g_mutex.lock();
+    for (g_entries) |entry| {
+        if (entry) |live| {
+            if (std.mem.eql(u8, live.idSlice(), id)) return live.ptr;
+        }
+    }
+    g_mutex.unlock();
+    return null;
+}
+
 /// Release the lock taken by a successful acquire().
 pub fn release() void {
     g_mutex.unlock();
@@ -170,4 +186,42 @@ test "unregister blocks until an in-flight guarded access releases" {
     thread.join();
     try std.testing.expect(unregistered.load(.acquire));
     try std.testing.expect(!acquire(&test_target_a, "surface-a"));
+}
+
+test "acquireById returns the live pointer for a registered id (lock held until release)" {
+    register(&test_target_a, "find-me");
+    defer unregister(&test_target_a);
+
+    const got = acquireById("find-me");
+    try std.testing.expect(got != null);
+    try std.testing.expectEqual(@as(*anyopaque, @ptrCast(&test_target_a)), got.?);
+    release();
+}
+
+test "acquireById returns null for an unknown id without holding the lock" {
+    try std.testing.expect(acquireById("nope") == null);
+    // If the lock were still held this would deadlock; it must not.
+    register(&test_target_b, "present");
+    defer unregister(&test_target_b);
+    try std.testing.expect(acquireById("present") != null);
+    release();
+}
+
+test "acquireById holds the lock so unregister blocks until release" {
+    register(&test_target_a, "guarded");
+    try std.testing.expect(acquireById("guarded") != null);
+
+    var done = std.atomic.Value(bool).init(false);
+    const Closure = struct {
+        fn run(flag: *std.atomic.Value(bool)) void {
+            unregister(&test_target_a);
+            flag.store(true, .release);
+        }
+    };
+    const th = try std.Thread.spawn(.{}, Closure.run, .{&done});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!done.load(.acquire));
+    release();
+    th.join();
+    try std.testing.expect(done.load(.acquire));
 }

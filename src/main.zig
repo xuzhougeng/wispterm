@@ -219,6 +219,9 @@ pub fn main() !void {
     // Start the WeChat direct bridge (no-op unless weixin-direct-enabled is set).
     app.startWeixin(&cfg);
 
+    // Start the local agent terminal control API (no-op unless agent-control-enabled).
+    app.startAgentControl(&cfg);
+
     try app.run();
 
     std.debug.print("WispTerm exiting...\n", .{});

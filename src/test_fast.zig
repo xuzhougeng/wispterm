@@ -26,6 +26,7 @@ test {
     _ = @import("input/mouse_wheel_scroll.zig");
     _ = @import("input/mouse_report.zig");
     _ = @import("input/preview_path.zig");
+    _ = @import("input/preview_close_button.zig");
     _ = @import("input/ls_path_context.zig");
     _ = @import("input/terminal_link_action.zig");
     _ = @import("input/underline_span.zig");
@@ -63,6 +64,11 @@ test {
     _ = @import("appwindow/render_gate.zig");
     _ = @import("scp.zig");
     _ = @import("surface_registry.zig");
+    _ = @import("ctl/protocol.zig");
+    _ = @import("ctl/discovery.zig");
+    _ = @import("ctl/control.zig");
+    _ = @import("ctl/server.zig");
+    _ = @import("ctl/client.zig");
     _ = @import("png_dimensions.zig");
     _ = @import("pdf_preview.zig");
     _ = @import("file_backend.zig");
@@ -115,6 +121,7 @@ test {
     _ = @import("renderer/cell_geometry.zig");
     _ = @import("renderer/titlebar_layout.zig");
     _ = @import("ai_chat_layout.zig");
+    _ = @import("ai_chat_types.zig");
     _ = @import("ai_sidebar.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("appwindow/resize_throttle.zig");

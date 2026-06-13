@@ -598,6 +598,10 @@ const TokenAtCell = struct {
 pub const SPLIT_DIVIDER_HIT_WIDTH: f32 = 8; // Larger hit area for easier grabbing
 
 pub threadlocal var g_divider_hover: bool = false; // Mouse is over a divider
+// Handle of the preview pane whose close (×) button the mouse is currently
+// hovering, or null. The renderer brightens that pane's button; updated on
+// mouse-move. Just a hover hint — clicks are hit-tested independently.
+pub threadlocal var g_preview_close_hover: ?SplitTree.Node.Handle = null;
 pub threadlocal var g_divider_dragging: bool = false; // Currently dragging a divider
 pub threadlocal var g_divider_drag_handle: ?SplitTree.Node.Handle = null; // Handle of the split node being resized
 pub threadlocal var g_divider_drag_layout: ?SplitTree.Split.Layout = null; // horizontal or vertical
@@ -946,6 +950,30 @@ pub fn closePanelOrTab() void {
     }
     g_close_shortcut_confirm_until_ms = 0;
     AppWindow.closeFocusedSplit();
+}
+
+/// Close a specific preview pane by handle (the preview's × button). Focuses
+/// the pane, then reuses the standard close-split path, which removes it and
+/// refocuses the surviving terminal. Defensive: a no-op unless `handle` is still
+/// a live preview leaf (the tree may reshape between the cached rect and the
+/// click). Closing a preview never closes the window or hits a running program,
+/// so the close-shortcut/running-program confirmations are intentionally skipped.
+fn closePreviewPaneByHandle(handle: SplitTree.Node.Handle) void {
+    const tb = AppWindow.activeTab() orelse return;
+    if (tb.kind != .terminal) return;
+    if (handle.idx() >= tb.tree.nodes.len) return;
+    switch (tb.tree.nodes[handle.idx()]) {
+        .leaf => |pane| switch (pane) {
+            .preview => {},
+            else => return,
+        },
+        .split => return,
+    }
+    g_preview_close_hover = null;
+    tb.focused = handle;
+    AppWindow.closeFocusedSplit();
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
 }
 
 /// Close a tab via a pointer gesture (middle-click or the × button), honoring
@@ -3334,6 +3362,9 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
         }
     else
         (tab.splitIntoPreviewStacked(gpa) orelse return false);
+    // Select the just-opened/reused preview so Ctrl+Shift+W closes it (not the
+    // terminal) and PgUp/PgDn/arrows scroll it.
+    _ = tab.focusPreviewPane(pane);
     if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -3349,6 +3380,8 @@ fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const 
 
     const gpa = AppWindow.g_allocator orelse return false;
     const pane = tab.splitIntoPreviewStacked(gpa) orelse return false;
+    // Select the new preview so Ctrl+Shift+W closes it (not the terminal).
+    _ = tab.focusPreviewPane(pane);
     if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -4161,6 +4194,15 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 return;
             }
 
+            // A click on a preview's top-right × button closes that preview, so
+            // users who don't know the close-split keybind can dismiss it with
+            // the mouse. Checked before the focus/drag path below (the button
+            // sits inside the pane rect).
+            if (split_layout.previewCloseButtonAtPoint(ev.x, ev.y)) |close_handle| {
+                closePreviewPaneByHandle(close_handle);
+                return;
+            }
+
             // A click on a preview leaf focuses it (so keyboard/wheel scroll-zoom
             // route there) and consumes the event — previews have no terminal
             // grid to select into. Terminal leaves fall through to the surface
@@ -4730,6 +4772,15 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
             platform_cursor.set(.arrow);
             g_divider_hover = false;
         }
+    }
+
+    // Track which preview's × button (if any) the mouse is over, so the renderer
+    // can brighten it. Re-render only when the hovered button changes.
+    const new_close_hover = if (!g_selecting) split_layout.previewCloseButtonAtPoint(ev.x, ev.y) else null;
+    if (new_close_hover != g_preview_close_hover) {
+        g_preview_close_hover = new_close_hover;
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
     }
 
     // Normal selection handling

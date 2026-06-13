@@ -595,6 +595,28 @@ pub fn build(b: *std.Build) void {
             askpass_exe.subsystem = .Windows;
             b.installArtifact(askpass_exe);
         }
+
+        // Standalone CLI client for the agent terminal control API. Lean: it
+        // imports only ctl/* + platform/dirs.zig (std/builtin), so it links
+        // without any GUI/SDL dependencies on every desktop target.
+        //
+        // Deliberately NOT part of the default install / app packaging:
+        // wisptermctl ships as a separate artifact for third-party agents
+        // (Claude Code / Codex / scripts). The release workflows run a plain
+        // `zig build` and copy named files, so the client never lands in the
+        // app bundle. Build it on its own with `zig build wisptermctl`.
+        const ctl_mod = b.createModule(.{
+            .root_source_file = b.path("src/wisptermctl.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const ctl_exe = b.addExecutable(.{
+            .name = "wisptermctl",
+            .root_module = ctl_mod,
+        });
+        if (platform.supports_gui_subsystem) ctl_exe.subsystem = .Console; // it is a CLI
+        const wisptermctl_step = b.step("wisptermctl", "Build the standalone wisptermctl CLI client (separate artifact; not bundled with the app)");
+        wisptermctl_step.dependOn(&b.addInstallArtifact(ctl_exe, .{}).step);
     }
 
     b.installDirectory(.{

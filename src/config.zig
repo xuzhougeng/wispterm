@@ -384,6 +384,15 @@ language: i18n.LanguageSetting = .auto,
 /// finish/confirm notifications to the bound WeChat owner. Opt-in; default off.
 @"weixin-notify-forward": bool = false,
 
+/// Enable the local agent terminal control API (wisptermctl). Lets external
+/// agents list panes / read text / send input over a loopback socket. Opt-in;
+/// default off. Binds 127.0.0.1 only; a random token + the chosen port are
+/// written to <config-dir>/agent-control.json (0600) for client auto-discovery.
+@"agent-control-enabled": bool = false,
+
+/// Fixed loopback port for the agent control API (0 = let the OS assign one).
+@"agent-control-port": u16 = 0,
+
 /// Show a debug FPS overlay in the bottom-right corner.
 @"wispterm-debug-fps": bool = false,
 @"wispterm-debug-draw-calls": bool = false,
@@ -927,6 +936,19 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid weixin-notify-forward: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "agent-control-enabled")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"agent-control-enabled" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"agent-control-enabled" = false;
+        } else {
+            log.warn("invalid agent-control-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "agent-control-port")) {
+        self.@"agent-control-port" = std.fmt.parseInt(u16, std.mem.trim(u8, value, " \t"), 10) catch {
+            log.warn("invalid agent-control-port: {s}", .{value});
+            return;
+        };
     } else if (std.mem.eql(u8, key, "wispterm-debug-fps")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"wispterm-debug-fps" = true;
@@ -1372,6 +1394,8 @@ pub fn writeHelp(writer: anytype) !void {
         \\  --weixin-reply-timeout-ms <n> Deprecated (no-op); AI-reply window is ~30 min
         \\  --weixin-allowed-user <id>   Restrict control to one ilink user_id
         \\  --weixin-notify-forward <bool> Forward agent notifications to the bound WeChat owner
+        \\  --agent-control-enabled <bool> Enable the local wisptermctl terminal control API (loopback)
+        \\  --agent-control-port <n>     Fixed loopback port for the control API (0 = auto)
         \\  --quake-mode <bool>          Enable Quake-style drop-down mode (default: true)
         \\
         \\Color Options (override theme):

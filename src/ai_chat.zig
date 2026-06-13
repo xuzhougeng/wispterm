@@ -5238,7 +5238,10 @@ test "ai chat responses endpoint normalization" {
 }
 
 test "ai chat default system prompt comes from platform agent prompt" {
-    try std.testing.expect(DEFAULT_SYSTEM_PROMPT.len < 3200);
+    // Length budget: the system prompt ships on every AI API call, so this guards
+    // against silent bloat. The Windows variant is the longest (it adds the WSL
+    // tool guidance); keep headroom above it for future additions.
+    try std.testing.expect(DEFAULT_SYSTEM_PROMPT.len < 4000);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "wispterm_docs") != null);
     try std.testing.expectEqualStrings(platform_agent_prompt.defaultSystemPrompt, DEFAULT_SYSTEM_PROMPT);
     try std.testing.expect(std.mem.indexOf(u8, DEFAULT_SYSTEM_PROMPT, "uv") != null);
