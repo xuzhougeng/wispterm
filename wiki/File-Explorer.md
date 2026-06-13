@@ -15,12 +15,17 @@ active environment:
 
 ## Previewing files
 
-Open the right-side preview panel in either of two ways:
+Open a preview pane on the right in either of two ways:
 
 - Hold `Ctrl` (`Cmd` on macOS) and click a `.md`, `.txt`, `.csv`, `.tsv`, a
   source-code or script file (including R scripts `.r` / `.R`), or a supported
   image file in terminal output, **or**
 - double-click a supported file in the File Explorer.
+
+Each content type (Markdown, plain text, CSV/TSV, image) keeps its own pane:
+previewing another file of the same type replaces that pane's content, while a
+different type opens a new pane stacked below the existing previews — a
+Markdown file, an image, and a CSV table can stay on screen at the same time.
 
 What each type renders:
 
@@ -56,7 +61,8 @@ without `Ctrl` always performs the configured `right-click-action`.
 - Markdown, text, CSV, and TSV previews scroll with the mouse wheel; CSV/TSV
   cells show a larger hover popup when content does not fit.
 - Image previews zoom with the mouse wheel and can be dragged to pan once zoomed.
-- `Ctrl+Shift+W` closes the preview panel before it closes a split.
+- `Ctrl+Shift+W` closes the focused pane — click a preview pane (or press
+  `Ctrl+1-9`) to select it, then close it like any other split.
 
 ## Downloading remote files
 

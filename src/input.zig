@@ -42,6 +42,7 @@ const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
 const PreviewPane = @import("preview_pane.zig");
+const PreviewImageDrag = @import("input/preview_image_drag.zig");
 const selection_unit = @import("selection_unit.zig");
 const Selection = Surface.Selection;
 const CellPos = struct { col: usize, row: usize };
@@ -612,6 +613,11 @@ pub threadlocal var g_panel_swap_source: ?SplitTree.Node.Handle = null;
 pub threadlocal var g_panel_swap_target: ?SplitTree.Node.Handle = null;
 threadlocal var g_panel_swap_start_x: f64 = 0;
 threadlocal var g_panel_swap_start_y: f64 = 0;
+
+// Left-drag pan of a ready image preview pane (the pane-world successor of the
+// old right-dock image drag). All state and the drag-lifetime pane ref live in
+// the tested state machine; input.zig only routes press/move/release into it.
+threadlocal var g_preview_image_drag: PreviewImageDrag = .{};
 threadlocal var g_scrollbar_drag_surface: ?*Surface = null;
 threadlocal var g_scrollbar_drag_view_y: f32 = 0;
 threadlocal var g_scrollbar_drag_view_h: f32 = 0;
@@ -764,6 +770,7 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_selecting = false;
     plus_btn_pressed = false;
     tab.g_tab_close_pressed = null;
+    releasePreviewImageDrag();
     resetPanelSwapState();
     resetSidebarTabDragState();
     overlays.scrollbar.g_scrollbar_dragging = false;
@@ -909,10 +916,10 @@ fn closeAiCopilotPanel() void {
 }
 
 pub fn closePanelOrTab() void {
-    // A preview pane closes first, mirroring the old right-dock behavior:
-    // opening a preview keeps the terminal focused, so without this the
-    // shortcut would close the focused terminal instead of the preview.
-    if (AppWindow.closeActivePreviewPane()) return;
+    // Close the FOCUSED pane, preview or terminal alike — click a preview (or
+    // Ctrl+1-9) to select it, then Ctrl+Shift+W closes it. The browser panel
+    // still closes first: it is an unfocusable side dock, so this shortcut is
+    // its only keyboard close.
     if (browser_panel.isVisibleForActiveTab()) {
         closeBrowserPanel();
         return;
@@ -1178,6 +1185,12 @@ fn resetPanelSwapState() void {
     g_panel_swap_target = null;
     g_panel_swap_start_x = 0;
     g_panel_swap_start_y = 0;
+}
+
+/// End an image-preview pan drag, dropping the drag's pane reference.
+fn releasePreviewImageDrag() void {
+    const gpa = AppWindow.g_allocator orelse return; // drag only starts when set
+    g_preview_image_drag.release(gpa);
 }
 
 /// Begin a potential Alt-drag panel swap if the active terminal tab is split and
@@ -3306,7 +3319,7 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
 
     const t = tab.activeTab() orelse return false;
     const gpa = AppWindow.g_allocator orelse return false;
-    const pane: *PreviewPane = if (tab.firstPreviewForReuse(gpa, t)) |h|
+    const pane: *PreviewPane = if (tab.previewForReuse(gpa, t, kind)) |h|
         switch (t.tree.nodes[h.idx()]) {
             .leaf => |pn| switch (pn) {
                 .preview => |p| p,
@@ -3315,7 +3328,7 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
             .split => return false,
         }
     else
-        (tab.splitIntoPreview(gpa) orelse return false);
+        (tab.splitIntoPreviewStacked(gpa) orelse return false);
     if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -3330,7 +3343,7 @@ fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const 
     defer perf.end();
 
     const gpa = AppWindow.g_allocator orelse return false;
-    const pane = tab.splitIntoPreview(gpa) orelse return false;
+    const pane = tab.splitIntoPreviewStacked(gpa) orelse return false;
     if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -4147,14 +4160,19 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             // route there) and consumes the event — previews have no terminal
             // grid to select into. Terminal leaves fall through to the surface
             // focus + selection path below, so non-preview clicks are unchanged.
+            // A ready image preview additionally starts a drag-to-pan.
             if (split_layout.paneAtPoint(ev.x, ev.y)) |hit| {
                 switch (hit.pane) {
-                    .preview => {
+                    .preview => |p| {
                         const tb = AppWindow.activeTab() orelse return;
                         if (tb.focused != hit.handle) {
                             tb.focused = hit.handle;
                             AppWindow.g_force_rebuild = true;
                             AppWindow.g_cells_valid = false;
+                        }
+                        if (AppWindow.g_allocator) |gpa| {
+                            if (g_preview_image_drag.begin(gpa, p, xpos, ypos))
+                                platform_cursor.set(.size_all);
                         }
                         return;
                     },
@@ -4226,6 +4244,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
         } else {
             // Mouse up
+            if (g_preview_image_drag.active()) {
+                releasePreviewImageDrag();
+                platform_cursor.set(.arrow);
+                return;
+            }
             overlays.scrollbar.g_scrollbar_dragging = false;
             g_scrollbar_drag_surface = null;
             g_ai_input_scroll_dragging = false;
@@ -4514,6 +4537,13 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     if (g_ai_transcript_selecting) {
         if (g_ai_transcript_select_chat) |chat| updateAiTranscriptSelectionDrag(chat, xpos, ypos);
         platform_cursor.set(.ibeam);
+        return;
+    }
+    // Left-drag pans a ready image preview (the renderer clamps the pan to the
+    // image's overflow each frame).
+    if (g_preview_image_drag.active()) {
+        if (g_preview_image_drag.move(xpos, ypos)) AppWindow.g_force_rebuild = true;
+        platform_cursor.set(.size_all);
         return;
     }
     // Alt-drag panel swap: track the drop target / dim the source. Owns the move

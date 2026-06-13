@@ -372,6 +372,20 @@ comptime {
     {
         @compileError("input/clipboard.zig must ask platform remote-file helpers to adapt local paths for terminal paste targets");
     }
+    // Image-preview drag-to-pan wiring guard: the behavior was silently lost
+    // once before (the #185 right-dock → pane migration) because it lived only
+    // in mouse glue. The state machine is unit-tested in
+    // input/preview_image_drag.zig; these checks pin the input.zig call sites
+    // that route mouse press/move/release into it.
+    if (std.mem.indexOf(u8, input_source, "g_preview_image_drag.begin(") == null) {
+        @compileError("input.zig mouse-down must start the image-preview pan drag via PreviewImageDrag.begin");
+    }
+    if (std.mem.indexOf(u8, input_source, "g_preview_image_drag.move(") == null) {
+        @compileError("input.zig mouse-move must pan the image preview via PreviewImageDrag.move");
+    }
+    if (std.mem.indexOf(u8, input_source, "g_preview_image_drag.release(") == null) {
+        @compileError("input.zig must drop the image-preview pan drag via PreviewImageDrag.release on mouse-up/cancel");
+    }
     const platform_wsl_source = @embedFile("platform/wsl.zig");
     if (std.mem.indexOf(u8, platform_wsl_source, "pub fn windowsPathToWslPathAlloc") != null or
         std.mem.indexOf(u8, platform_wsl_source, "pub fn unixPathToWindows") != null or
@@ -668,6 +682,7 @@ comptime {
     _ = @import("input/hit_test.zig");
     _ = @import("input/key.zig");
     _ = @import("input/preview_source.zig");
+    _ = @import("input/preview_image_drag.zig");
     _ = @import("input_shortcuts.zig");
     _ = @import("html_server.zig");
     _ = @import("keybind.zig");

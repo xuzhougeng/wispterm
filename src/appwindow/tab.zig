@@ -9,6 +9,7 @@ const Config = @import("../config.zig");
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
 const PreviewPane = @import("../preview_pane.zig");
+const markdown_preview = @import("../markdown_preview.zig");
 const input_key = @import("../input/key.zig");
 const remote_client = @import("../remote_client.zig");
 const session_persist = @import("../session_persist.zig");
@@ -780,80 +781,99 @@ pub fn splitIntoPreview(gpa: std.mem.Allocator) ?*PreviewPane {
     return p; // borrowed — tree holds the owning ref
 }
 
-/// Handle of the preview pane to reuse: the focused leaf if it is a preview,
-/// else the first preview in reading order, else null. Stateless/deterministic.
-/// `gpa` is used only for the transient readingOrder slice (freed before return).
-pub fn firstPreviewForReuse(gpa: std.mem.Allocator, t: *const TabState) ?SplitTree.Node.Handle {
-    // Fast path: focused node is already a preview leaf
+/// Handle of the bottom-most preview pane in reading order, or null when the
+/// tab has no preview pane.
+fn lastPreviewInReadingOrder(gpa: std.mem.Allocator, t: *const TabState) ?SplitTree.Node.Handle {
+    const order = t.tree.readingOrder(gpa) catch return null;
+    defer gpa.free(order);
+    var last: ?SplitTree.Node.Handle = null;
+    for (order) |h| {
+        switch (t.tree.nodes[h.idx()]) {
+            .leaf => |pane| switch (pane) {
+                .preview => last = h,
+                else => {},
+            },
+            .split => {},
+        }
+    }
+    return last;
+}
+
+/// Create a preview pane stacked BELOW the bottom-most existing preview pane,
+/// so previews pile up in the right column instead of carving another
+/// full-height column off the terminal. Falls back to splitIntoPreview (the
+/// right-edge column) when the tab has no preview yet. Does NOT move focus.
+/// Returns the new PreviewPane (BORROWED — the tree owns it). The refcount
+/// dance mirrors splitIntoPreview.
+pub fn splitIntoPreviewStacked(gpa: std.mem.Allocator) ?*PreviewPane {
+    const t = activeTab() orelse return null;
+    if (t.kind != .terminal) return null;
+
+    const at = lastPreviewInReadingOrder(gpa, t) orelse return splitIntoPreview(gpa);
+
+    const p = PreviewPane.create(gpa) catch return null;
+    var insert = SplitTree.initPane(gpa, .{ .preview = p }) catch {
+        p.unref(gpa);
+        return null;
+    };
+    defer insert.deinit();
+
+    const old_len = t.tree.nodes.len;
+    const old_focused = t.focused;
+
+    const new_tree = t.tree.split(gpa, at, .down, 0.5, &insert) catch {
+        p.unref(gpa);
+        return null;
+    };
+
+    var old_tree = t.tree;
+    t.tree = new_tree;
+    old_tree.deinit();
+
+    // split(at) copies the node at `at` to the LAST index (old_len + insert
+    // count) and writes the new split node at `at`'s old index; every other
+    // old handle keeps its index. So only a focus sitting exactly on `at`
+    // needs remapping.
+    t.focused = if (old_focused == at)
+        @enumFromInt(old_len + 1) // = new nodes.len - 1
+    else
+        old_focused;
+
+    p.unref(gpa);
+    return p;
+}
+
+/// Handle of the preview pane to reuse for `kind`: the focused leaf if it is a
+/// preview of that kind, else the first same-kind preview in reading order,
+/// else null (caller creates a new pane). Per-kind reuse keeps one pane per
+/// content type so e.g. an image preview never evicts the markdown preview.
+pub fn previewForReuse(gpa: std.mem.Allocator, t: *const TabState, kind: markdown_preview.Kind) ?SplitTree.Node.Handle {
+    // Fast path: focused node is a same-kind preview leaf.
     if (t.focused.idx() < t.tree.nodes.len) {
         switch (t.tree.nodes[t.focused.idx()]) {
             .leaf => |pane| switch (pane) {
-                .preview => return t.focused,
+                .preview => |p| if (p.kind == kind) return t.focused,
                 else => {},
             },
             .split => {},
         }
     }
 
-    // Scan in reading order (top-left → bottom-right) for the first preview.
+    // Scan in reading order (top-left → bottom-right) for the first
+    // same-kind preview.
     const order = t.tree.readingOrder(gpa) catch return null;
     defer gpa.free(order);
 
     for (order) |h| {
         switch (t.tree.nodes[h.idx()]) {
             .leaf => |pane| switch (pane) {
-                .preview => return h,
+                .preview => |p| if (p.kind == kind) return h,
                 else => {},
             },
             .split => {},
         }
     }
     return null;
-}
-
-/// Close the active tab's preview pane: the focused leaf when it is a preview,
-/// else the first preview in reading order (the same pane Ctrl+click reuses).
-/// Declines (returns false) when the tab has no preview pane, or when the
-/// preview is the tab's only pane — closing the last pane is tab/window-close
-/// territory, which the caller's standard close path already handles.
-pub fn closePreviewPane(allocator: std.mem.Allocator) bool {
-    const t = activeTab() orelse return false;
-    if (t.kind != .terminal) return false;
-    if (!t.tree.isSplit()) return false;
-    const handle = firstPreviewForReuse(allocator, t) orelse return false;
-
-    // Handles renumber on removal, so capture the focused leaf's pane VALUE to
-    // re-find it afterwards. Tag+pointer comparison only — never dereferenced.
-    const keep_focused: ?SplitTree.Pane = if (handle != t.focused and t.focused.idx() < t.tree.nodes.len)
-        switch (t.tree.nodes[t.focused.idx()]) {
-            .leaf => |pane| pane,
-            .split => null,
-        }
-    else
-        null;
-
-    const new_tree = t.tree.remove(allocator, handle) catch {
-        std.debug.print("Failed to remove preview pane from tree\n", .{});
-        return false;
-    };
-    var old_tree = t.tree;
-    t.tree = new_tree;
-    old_tree.deinit();
-
-    t.focused = focus: {
-        if (keep_focused) |pane| {
-            var it = t.tree.panes();
-            while (it.next()) |entry| {
-                if (std.meta.eql(entry.pane, pane)) break :focus entry.handle;
-            }
-        }
-        // Fall back to the first terminal, then to the first leaf pane.
-        var sit = t.tree.surfaces();
-        if (sit.next()) |entry| break :focus entry.handle;
-        var pit = t.tree.panes();
-        break :focus if (pit.next()) |entry| entry.handle else .root;
-    };
-    return true;
 }
 
 /// Split the focused surface in the given direction.
@@ -2515,70 +2535,7 @@ test "tab: splitIntoPreview adds a preview leaf and grows the tree by 2 nodes" {
     // must report no leak after the defer runs.
 }
 
-test "tab: closePreviewPane closes the unfocused preview and keeps the terminal focused" {
-    resetTestTabGlobals();
-    const gpa = std.testing.allocator;
-
-    var surface: Surface = undefined;
-    surface.ref_count = 1;
-    surface.ssh_connection = null;
-    surface.cwd_path_len = 0;
-    surface.initial_cwd_path_len = 0;
-    surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
-
-    const t = try gpa.create(TabState);
-    t.* = .{
-        .kind = .terminal,
-        .tree = try SplitTree.init(gpa, &surface),
-        .focused = .root,
-        .ai_chat_session = null,
-        .ai_history_session = null,
-        .skill_center_session = null,
-        .copilot_session = null,
-        .copilot_visible = false,
-    };
-    defer {
-        t.deinit(gpa);
-        gpa.destroy(t);
-        resetTestTabGlobals();
-    }
-
-    const saved_active = active_tab_state.g_active_tab;
-    const saved_count = g_tab_count;
-    const saved_tab0 = g_tabs[0];
-    defer {
-        active_tab_state.g_active_tab = saved_active;
-        g_tab_count = saved_count;
-        g_tabs[0] = saved_tab0;
-    }
-    g_tabs[0] = t;
-    active_tab_state.g_active_tab = 0;
-    g_tab_count = 1;
-
-    // No preview pane yet → nothing to close.
-    try std.testing.expect(!closePreviewPane(gpa));
-
-    _ = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
-    // Tree: [0]=split, [1]=preview, [2]=terminal; focus stayed on the terminal.
-    const focused_before = t.focused;
-    try std.testing.expect(focused_before.idx() == 2);
-
-    try std.testing.expect(closePreviewPane(gpa));
-
-    // Only the terminal leaf remains and it keeps focus.
-    try std.testing.expectEqual(@as(usize, 1), t.tree.nodes.len);
-    try std.testing.expect(t.focused.idx() < t.tree.nodes.len);
-    switch (t.tree.nodes[t.focused.idx()]) {
-        .leaf => |pane| switch (pane) {
-            .terminal => {},
-            .preview => return error.FocusedIsPreview,
-        },
-        .split => return error.FocusedIsSplit,
-    }
-}
-
-test "tab: closePreviewPane closes a focused preview and refocuses the terminal" {
+test "tab: closeFocusedSplit closes a focused preview and refocuses the terminal" {
     resetTestTabGlobals();
     const gpa = std.testing.allocator;
 
@@ -2620,9 +2577,10 @@ test "tab: closePreviewPane closes a focused preview and refocuses the terminal"
     g_tab_count = 1;
 
     _ = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
-    t.focused = firstPreviewForReuse(gpa, t) orelse return error.NoPreviewAfterSplit;
+    t.focused = previewForReuse(gpa, t, .markdown) orelse return error.NoPreviewAfterSplit;
 
-    try std.testing.expect(closePreviewPane(gpa));
+    // Ctrl+Shift+W now closes the focused pane — a focused preview included.
+    try std.testing.expectEqual(CloseResult.closed_split, closeFocusedSplit(gpa));
 
     // The surviving terminal leaf takes focus.
     try std.testing.expectEqual(@as(usize, 1), t.tree.nodes.len);
@@ -2634,51 +2592,6 @@ test "tab: closePreviewPane closes a focused preview and refocuses the terminal"
         },
         .split => return error.FocusedIsSplit,
     }
-}
-
-test "tab: closePreviewPane leaves a lone preview pane for the standard close path" {
-    resetTestTabGlobals();
-    const gpa = std.testing.allocator;
-
-    // Preview-only tab (single preview leaf, no terminal).
-    const p = try PreviewPane.create(gpa);
-    var tree = try SplitTree.initPane(gpa, .{ .preview = p });
-    p.unref(gpa); // tree holds the sole owning ref
-    errdefer tree.deinit();
-
-    const t = try gpa.create(TabState);
-    t.* = .{
-        .kind = .terminal,
-        .tree = tree,
-        .focused = .root,
-        .ai_chat_session = null,
-        .ai_history_session = null,
-        .skill_center_session = null,
-        .copilot_session = null,
-        .copilot_visible = false,
-    };
-    defer {
-        t.deinit(gpa);
-        gpa.destroy(t);
-        resetTestTabGlobals();
-    }
-
-    const saved_active = active_tab_state.g_active_tab;
-    const saved_count = g_tab_count;
-    const saved_tab0 = g_tabs[0];
-    defer {
-        active_tab_state.g_active_tab = saved_active;
-        g_tab_count = saved_count;
-        g_tabs[0] = saved_tab0;
-    }
-    g_tabs[0] = t;
-    active_tab_state.g_active_tab = 0;
-    g_tab_count = 1;
-
-    // A lone preview pane is the whole tab; closing it is tab/window-close
-    // territory, so closePreviewPane declines and the caller falls through.
-    try std.testing.expect(!closePreviewPane(gpa));
-    try std.testing.expectEqual(@as(usize, 1), t.tree.nodes.len);
 }
 
 test "tab: closeFocusedSplit on the last terminal focuses a preview leaf, not a split node" {
@@ -2741,7 +2654,7 @@ test "tab: closeFocusedSplit on the last terminal focuses a preview leaf, not a 
     }
 }
 
-test "tab: firstPreviewForReuse returns the preview leaf, null when only terminals" {
+test "tab: previewForReuse matches preview panes by kind" {
     resetTestTabGlobals();
     const gpa = std.testing.allocator;
 
@@ -2782,21 +2695,241 @@ test "tab: firstPreviewForReuse returns the preview leaf, null when only termina
     active_tab_state.g_active_tab = 0;
     g_tab_count = 1;
 
-    // Before splitIntoPreview: no preview leaf → null
-    try std.testing.expect(firstPreviewForReuse(gpa, t) == null);
+    // No preview pane at all → null for every kind.
+    try std.testing.expect(previewForReuse(gpa, t, .markdown) == null);
 
-    // After splitIntoPreview: one preview leaf → its handle
-    _ = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
-
-    const handle = firstPreviewForReuse(gpa, t) orelse return error.NoPreviewAfterSplit;
-
-    // The handle must point to a preview leaf
-    try std.testing.expect(handle.idx() < t.tree.nodes.len);
-    switch (t.tree.nodes[handle.idx()]) {
+    // One markdown pane: markdown matches it, image does not.
+    const p1 = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
+    p1.kind = .markdown;
+    const h_md = previewForReuse(gpa, t, .markdown) orelse return error.NoMarkdownMatch;
+    switch (t.tree.nodes[h_md.idx()]) {
         .leaf => |pane| switch (pane) {
-            .preview => {}, // correct
-            .terminal => return error.HandlePointsToTerminal,
+            .preview => |p| try std.testing.expectEqual(p1, p),
+            .terminal => return error.MatchedTerminal,
         },
-        .split => return error.HandlePointsToSplit,
+        .split => return error.MatchedSplit,
+    }
+    try std.testing.expect(previewForReuse(gpa, t, .image) == null);
+
+    // Add an image pane: each kind now resolves to its own pane.
+    const p2 = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
+    p2.kind = .image;
+    const h_img = previewForReuse(gpa, t, .image) orelse return error.NoImageMatch;
+    switch (t.tree.nodes[h_img.idx()]) {
+        .leaf => |pane| switch (pane) {
+            .preview => |p| try std.testing.expectEqual(p2, p),
+            .terminal => return error.MatchedTerminal,
+        },
+        .split => return error.MatchedSplit,
+    }
+    const h_md2 = previewForReuse(gpa, t, .markdown) orelse return error.NoMarkdownMatch;
+    switch (t.tree.nodes[h_md2.idx()]) {
+        .leaf => |pane| switch (pane) {
+            .preview => |p| try std.testing.expectEqual(p1, p),
+            .terminal => return error.MatchedTerminal,
+        },
+        .split => return error.MatchedSplit,
+    }
+    // No csv pane exists → null even though other kinds do.
+    try std.testing.expect(previewForReuse(gpa, t, .csv) == null);
+}
+
+test "tab: previewForReuse prefers the focused same-kind preview" {
+    resetTestTabGlobals();
+    const gpa = std.testing.allocator;
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    surface.ssh_connection = null;
+    surface.cwd_path_len = 0;
+    surface.initial_cwd_path_len = 0;
+    surface.title_override_len = 0;
+    surface.agent_recent_output_len = 0;
+
+    const t = try gpa.create(TabState);
+    t.* = .{
+        .kind = .terminal,
+        .tree = try SplitTree.init(gpa, &surface),
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .skill_center_session = null,
+        .copilot_session = null,
+        .copilot_visible = false,
+    };
+    defer {
+        t.deinit(gpa);
+        gpa.destroy(t);
+        resetTestTabGlobals();
+    }
+
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_count = g_tab_count;
+    const saved_tab0 = g_tabs[0];
+    defer {
+        active_tab_state.g_active_tab = saved_active;
+        g_tab_count = saved_count;
+        g_tabs[0] = saved_tab0;
+    }
+    g_tabs[0] = t;
+    active_tab_state.g_active_tab = 0;
+    g_tab_count = 1;
+
+    // Two markdown panes; reading order would pick p1, but focusing p2's leaf
+    // must win.
+    const p1 = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
+    p1.kind = .markdown;
+    const p2 = splitIntoPreview(gpa) orelse return error.SplitIntoPreviewFailed;
+    p2.kind = .markdown;
+
+    var h_p2: ?SplitTree.Node.Handle = null;
+    for (t.tree.nodes, 0..) |node, i| switch (node) {
+        .leaf => |pane| switch (pane) {
+            .preview => |p| if (p == p2) {
+                h_p2 = @enumFromInt(i);
+            },
+            .terminal => {},
+        },
+        .split => {},
+    };
+    t.focused = h_p2 orelse return error.P2NotInTree;
+
+    const h = previewForReuse(gpa, t, .markdown) orelse return error.NoMatch;
+    try std.testing.expectEqual(t.focused, h);
+}
+
+test "tab: splitIntoPreviewStacked stacks below the existing preview column" {
+    resetTestTabGlobals();
+    const gpa = std.testing.allocator;
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    surface.ssh_connection = null;
+    surface.cwd_path_len = 0;
+    surface.initial_cwd_path_len = 0;
+    surface.title_override_len = 0;
+    surface.agent_recent_output_len = 0;
+
+    const t = try gpa.create(TabState);
+    t.* = .{
+        .kind = .terminal,
+        .tree = try SplitTree.init(gpa, &surface),
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .skill_center_session = null,
+        .copilot_session = null,
+        .copilot_visible = false,
+    };
+    defer {
+        t.deinit(gpa);
+        gpa.destroy(t);
+        resetTestTabGlobals();
+    }
+
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_count = g_tab_count;
+    const saved_tab0 = g_tabs[0];
+    defer {
+        active_tab_state.g_active_tab = saved_active;
+        g_tab_count = saved_count;
+        g_tabs[0] = saved_tab0;
+    }
+    g_tabs[0] = t;
+    active_tab_state.g_active_tab = 0;
+    g_tab_count = 1;
+
+    // First preview: no preview exists yet → delegates to the right-edge
+    // column split. Tree: [0]=split, [1]=preview, [2]=terminal(focused).
+    _ = splitIntoPreviewStacked(gpa) orelse return error.StackedFailed;
+    try std.testing.expectEqual(@as(usize, 3), t.tree.nodes.len);
+    try std.testing.expectEqual(@as(usize, 2), t.focused.idx());
+
+    // Second preview: splits the existing preview (handle 1) downward.
+    // split(at=1): node[1] becomes the new VERTICAL split, old preview moves
+    // to the last index, the new pane lands at old_len. Terminal focus (2)
+    // is not the split target, so it must not move.
+    _ = splitIntoPreviewStacked(gpa) orelse return error.StackedFailed;
+    try std.testing.expectEqual(@as(usize, 5), t.tree.nodes.len);
+    switch (t.tree.nodes[1]) {
+        .split => |s| try std.testing.expectEqual(SplitTree.Split.Layout.vertical, s.layout),
+        .leaf => return error.ExpectedSplitNode,
+    }
+
+    // Both previews exist; the terminal keeps focus.
+    var preview_count: usize = 0;
+    var it = t.tree.panes();
+    while (it.next()) |entry| {
+        switch (entry.pane) {
+            .preview => preview_count += 1,
+            .terminal => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), preview_count);
+    try std.testing.expectEqual(@as(usize, 2), t.focused.idx());
+    switch (t.tree.nodes[t.focused.idx()]) {
+        .leaf => |pane| switch (pane) {
+            .terminal => {},
+            .preview => return error.FocusedIsPreview,
+        },
+        .split => return error.FocusedIsSplit,
+    }
+}
+
+test "tab: splitIntoPreviewStacked remaps focus when the split target is focused" {
+    resetTestTabGlobals();
+    const gpa = std.testing.allocator;
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    surface.ssh_connection = null;
+    surface.cwd_path_len = 0;
+    surface.initial_cwd_path_len = 0;
+    surface.title_override_len = 0;
+    surface.agent_recent_output_len = 0;
+
+    const t = try gpa.create(TabState);
+    t.* = .{
+        .kind = .terminal,
+        .tree = try SplitTree.init(gpa, &surface),
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .skill_center_session = null,
+        .copilot_session = null,
+        .copilot_visible = false,
+    };
+    defer {
+        t.deinit(gpa);
+        gpa.destroy(t);
+        resetTestTabGlobals();
+    }
+
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_count = g_tab_count;
+    const saved_tab0 = g_tabs[0];
+    defer {
+        active_tab_state.g_active_tab = saved_active;
+        g_tab_count = saved_count;
+        g_tabs[0] = saved_tab0;
+    }
+    g_tabs[0] = t;
+    active_tab_state.g_active_tab = 0;
+    g_tab_count = 1;
+
+    // One preview at handle 1; focus it, then stack a second preview. The
+    // split target IS the focused node, so focus must follow the original
+    // preview to the last index (old_len + 1 = 4).
+    const p1 = splitIntoPreviewStacked(gpa) orelse return error.StackedFailed;
+    t.focused = @enumFromInt(1);
+
+    _ = splitIntoPreviewStacked(gpa) orelse return error.StackedFailed;
+    try std.testing.expectEqual(@as(usize, 4), t.focused.idx());
+    switch (t.tree.nodes[t.focused.idx()]) {
+        .leaf => |pane| switch (pane) {
+            .preview => |p| try std.testing.expectEqual(p1, p),
+            .terminal => return error.FocusedIsTerminal,
+        },
+        .split => return error.FocusedIsSplit,
     }
 }

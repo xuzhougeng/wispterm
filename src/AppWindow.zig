@@ -3491,21 +3491,6 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
     return surface;
 }
 
-/// Close the active tab's preview pane if it has one (the focused preview, else
-/// the first in reading order), keeping the focused terminal focused. Returns
-/// false when there is no preview pane — or the preview is the tab's only pane —
-/// so the caller falls through to the standard split/tab close path. This is the
-/// pane-world successor of the right-dock close that Ctrl+Shift+W used to do
-/// first: opening a preview deliberately keeps the terminal focused, so a plain
-/// focused-split close would silently kill the terminal instead.
-pub fn closeActivePreviewPane() bool {
-    const allocator = g_allocator orelse return false;
-    if (!tab.closePreviewPane(allocator)) return false;
-    handleActiveSurfaceChangeWithinTab();
-    requestImmediateLayoutResize();
-    return true;
-}
-
 pub fn closeFocusedSplit() void {
     const allocator = g_allocator orelse return;
     const closing_tab_idx = active_tab_state.g_active_tab;
@@ -3984,7 +3969,7 @@ fn pollSkillUpdate(app: *App) void {
 /// Open a SKILL.md preview in a reused-or-new preview leaf. UI thread.
 fn openSkillMdInPreviewLeaf(allocator: std.mem.Allocator, title: []const u8, content: []const u8) void {
     const at = tab.activeTab() orelse return;
-    const pane = if (tab.firstPreviewForReuse(allocator, at)) |h|
+    const pane = if (tab.previewForReuse(allocator, at, .markdown)) |h|
         switch (at.tree.nodes[h.idx()]) {
             .leaf => |pn| switch (pn) {
                 .preview => |p| p,
@@ -3993,7 +3978,7 @@ fn openSkillMdInPreviewLeaf(allocator: std.mem.Allocator, title: []const u8, con
             .split => return,
         }
     else
-        (tab.splitIntoPreview(allocator) orelse return);
+        (tab.splitIntoPreviewStacked(allocator) orelse return);
     pane.open(.markdown, title, "SKILL.md", content);
 }
 
