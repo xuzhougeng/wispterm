@@ -444,6 +444,16 @@ test "PreviewPane: async load stores current source kind" {
         else => false,
     });
     drainJobs(p);
+    try std.testing.expect(switch (p.currentSourceKind()) {
+        .wsl => true,
+        else => false,
+    });
+
+    p.open(.markdown, "b.md", "b.md", "# Reset\n");
+    try std.testing.expect(switch (p.currentSourceKind()) {
+        .local => true,
+        else => false,
+    });
 }
 
 test "PreviewPane: image zoom/pan are image-only and clamped" {
