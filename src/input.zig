@@ -14,8 +14,10 @@ const font = AppWindow.font;
 const overlays = AppWindow.overlays;
 const split_layout = AppWindow.split_layout;
 const file_explorer = AppWindow.file_explorer;
+const file_backend = @import("file_backend.zig");
 const markdown_preview = @import("markdown_preview.zig");
 const markdown_preview_panel = AppWindow.markdown_preview_panel;
+const preview_gallery = @import("preview_gallery.zig");
 const preview_token = @import("preview_token.zig");
 const browser_panel = AppWindow.browser_panel;
 const html_server = @import("html_server.zig");
@@ -148,6 +150,38 @@ test "input: command palette shortcut toggles command center" {
 test "input: browser toolbar has a refresh action entrypoint" {
     const info = @typeInfo(@TypeOf(refreshBrowserPanel)).@"fn";
     try std.testing.expectEqual(@as(usize, 0), info.params.len);
+}
+
+test "input: preview gallery neighbor opens next raster sibling" {
+    const gpa = std.testing.allocator;
+    const prev_allocator = AppWindow.g_allocator;
+    defer AppWindow.g_allocator = prev_allocator;
+    AppWindow.g_allocator = gpa;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "a.png", .data = "a" });
+    try tmp.dir.writeFile(.{ .sub_path = "b.pdf", .data = "b" });
+    try tmp.dir.writeFile(.{ .sub_path = "c.jpg", .data = "c" });
+
+    const root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(root);
+    const current_path = try std.fs.path.join(gpa, &.{ root, "b.pdf" });
+    defer gpa.free(current_path);
+    const next_path = try std.fs.path.join(gpa, &.{ root, "c.jpg" });
+    defer gpa.free(next_path);
+
+    var pane = try PreviewPane.create(gpa);
+    defer pane.unref(gpa);
+    pane.open(.pdf, "b.pdf", current_path, "current");
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    try std.testing.expect(openPreviewGalleryNeighbor(pane, true));
+    try std.testing.expectEqualStrings("c.jpg", pane.title());
+    try std.testing.expectEqualStrings(next_path, pane.path());
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
 // Regression: the event-driven render loop (PR #168) only paints a frame when
@@ -2089,12 +2123,12 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                     _ = p.panImageBy(0, -40);
                 } else p.scrollBy(60),
                 platform_input.key_left => if (p.kind.isRaster()) {
-                    _ = p.panImageBy(40, 0);
+                    _ = openPreviewGalleryNeighbor(p, false);
                 } else {
                     consumed = false;
                 },
                 platform_input.key_right => if (p.kind.isRaster()) {
-                    _ = p.panImageBy(-40, 0);
+                    _ = openPreviewGalleryNeighbor(p, true);
                 } else {
                     consumed = false;
                 },
@@ -3341,6 +3375,29 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
     return true;
+}
+
+fn openPreviewGalleryNeighbor(p: *PreviewPane, forward: bool) bool {
+    const gpa = AppWindow.g_allocator orelse return false;
+    var target = findPreviewGalleryNeighbor(gpa, p, forward) orelse return false;
+    defer target.deinit(gpa);
+
+    if (!p.beginAsyncLoad(target.kind, target.title(), target.path, p.currentSourceKind())) {
+        file_explorer.setTransferStatus(.failed, "Preview failed");
+        return false;
+    }
+
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+    return true;
+}
+
+fn findPreviewGalleryNeighbor(allocator: std.mem.Allocator, p: *const PreviewPane, forward: bool) ?preview_gallery.Target {
+    return switch (p.currentSourceKind()) {
+        .local => preview_gallery.findNeighbor(allocator, @as(file_backend.Backend, .local), p.path(), forward) catch null,
+        .wsl => preview_gallery.findNeighbor(allocator, @as(file_backend.Backend, .wsl), p.path(), forward) catch null,
+        .remote => |conn| preview_gallery.findNeighbor(allocator, .{ .ssh = &conn }, p.path(), forward) catch null,
+    };
 }
 
 fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind) bool {
