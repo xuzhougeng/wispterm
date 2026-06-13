@@ -233,5 +233,5 @@ MIT
 
 ## Citation
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.19.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). *WispTerm* (Version 1.20.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660542
