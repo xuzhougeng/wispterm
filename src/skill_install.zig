@@ -103,6 +103,31 @@ pub fn parseGithubUrl(a: std.mem.Allocator, url_in: []const u8) !RepoRef {
     return .{ .owner = owner_o, .repo = repo_o, .ref = ref_o, .subpath = subpath_o };
 }
 
+/// `https://api.github.com/repos/<owner>/<repo>/git/trees/<ref>?recursive=1`
+pub fn treeApiUrl(a: std.mem.Allocator, owner: []const u8, repo: []const u8, ref: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "https://api.github.com/repos/{s}/{s}/git/trees/{s}?recursive=1", .{ owner, repo, ref });
+}
+
+/// `https://api.github.com/repos/<owner>/<repo>` (for default_branch).
+pub fn repoApiUrl(a: std.mem.Allocator, owner: []const u8, repo: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "https://api.github.com/repos/{s}/{s}", .{ owner, repo });
+}
+
+/// `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`
+pub fn rawUrl(a: std.mem.Allocator, owner: []const u8, repo: []const u8, ref: []const u8, path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "https://raw.githubusercontent.com/{s}/{s}/{s}/{s}", .{ owner, repo, ref, path });
+}
+
+/// Pull `default_branch` from a `/repos/<owner>/<repo>` response. Caller owns.
+pub fn parseDefaultBranch(a: std.mem.Allocator, repo_json: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, repo_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidRepoJson;
+    const v = parsed.value.object.get("default_branch") orelse return error.InvalidRepoJson;
+    if (v != .string) return error.InvalidRepoJson;
+    return a.dupe(u8, v.string);
+}
+
 // --- Tests ---
 
 test "skill_install: parseGithubUrl tree URL with subpath" {
@@ -149,4 +174,24 @@ test "skill_install: parseGithubUrl nested subpath" {
 
 test "skill_install: parseGithubUrl rejects non-github" {
     try std.testing.expectError(ParseError.NotGithubUrl, parseGithubUrl(std.testing.allocator, "https://gitlab.com/o/r"));
+}
+
+test "skill_install: URL builders produce exact strings" {
+    const a = std.testing.allocator;
+    const t = try treeApiUrl(a, "o", "r", "main");
+    defer a.free(t);
+    try std.testing.expectEqualStrings("https://api.github.com/repos/o/r/git/trees/main?recursive=1", t);
+    const rp = try repoApiUrl(a, "o", "r");
+    defer a.free(rp);
+    try std.testing.expectEqualStrings("https://api.github.com/repos/o/r", rp);
+    const raw = try rawUrl(a, "o", "r", "main", "skills/foo/SKILL.md");
+    defer a.free(raw);
+    try std.testing.expectEqualStrings("https://raw.githubusercontent.com/o/r/main/skills/foo/SKILL.md", raw);
+}
+
+test "skill_install: parseDefaultBranch reads the field" {
+    const a = std.testing.allocator;
+    const b = try parseDefaultBranch(a, "{\"name\":\"r\",\"default_branch\":\"master\"}");
+    defer a.free(b);
+    try std.testing.expectEqualStrings("master", b);
 }
