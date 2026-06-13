@@ -84,6 +84,7 @@ test {
     _ = @import("ai_chat_title.zig");
     _ = @import("command_registry.zig");
     _ = @import("agent_detector.zig");
+    _ = @import("claude_integration.zig");
     // Generic POSIX SSH/WSL command builder: asserts native (non-Windows)
     // command-line shapes, so it runs here rather than in test-full's Windows
     // cross-compile path. (The Windows backend stays in test-full.)
