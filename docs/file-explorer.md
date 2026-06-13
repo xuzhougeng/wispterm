@@ -29,7 +29,7 @@ PDF engine: `Windows.Data.Pdf` on Windows 10+, CoreGraphics on macOS, and the
 your package manager (for example `sudo apt install poppler-utils`) if the
 preview reports they are missing. With the PDF preview focused, `PageUp` /
 `PageDown` switch pages inside the current PDF; the footer shows the current
-page as `N / M` next to the
+page as `N/M` next to the
 `PDF` badge. Zoom and pan work like image previews. Encrypted PDFs are not
 supported.
 
