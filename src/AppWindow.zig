@@ -3889,6 +3889,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                         // terminal arm leaves a per-rect viewport set).
                         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
                         gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                        const close_hovered = if (input.g_preview_close_hover) |h| h == rect.handle else false;
                         markdown_preview_renderer.renderInto(
                             p,
                             @floatFromInt(rect.x),
@@ -3896,6 +3897,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
                             @floatFromInt(rect.width),
                             @floatFromInt(rect.height),
                             @floatFromInt(fb_height),
+                            close_hovered,
                         );
                         if (is_focused) drawPaneFocusRing(rect, @floatFromInt(fb_height));
                     },
@@ -3995,6 +3997,8 @@ fn openSkillMdInPreviewLeaf(allocator: std.mem.Allocator, title: []const u8, con
         }
     else
         (tab.splitIntoPreviewStacked(allocator) orelse return);
+    // Select the preview so Ctrl+Shift+W closes it (not the terminal).
+    _ = tab.focusPreviewPane(pane);
     pane.open(.markdown, title, "SKILL.md", content);
 }
 
@@ -7067,6 +7071,7 @@ fn runMainLoop(self: *AppWindow) !void {
                                 // so restore the full-window viewport/projection first.
                                 gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
                                 gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
+                                const close_hovered = if (input.g_preview_close_hover) |h| h == rect.handle else false;
                                 markdown_preview_renderer.renderInto(
                                     p,
                                     @floatFromInt(rect.x),
@@ -7074,6 +7079,7 @@ fn runMainLoop(self: *AppWindow) !void {
                                     @floatFromInt(rect.width),
                                     @floatFromInt(rect.height),
                                     @floatFromInt(fb_height),
+                                    close_hovered,
                                 );
                                 if (is_focused) drawPaneFocusRing(rect, @floatFromInt(fb_height));
 

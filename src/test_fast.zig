@@ -26,6 +26,7 @@ test {
     _ = @import("input/mouse_wheel_scroll.zig");
     _ = @import("input/mouse_report.zig");
     _ = @import("input/preview_path.zig");
+    _ = @import("input/preview_close_button.zig");
     _ = @import("input/ls_path_context.zig");
     _ = @import("input/terminal_link_action.zig");
     _ = @import("input/underline_span.zig");
