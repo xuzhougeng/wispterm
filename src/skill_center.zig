@@ -6,6 +6,7 @@
 //! sibling modules.
 const std = @import("std");
 const scan = @import("skill_scan.zig");
+const install = @import("skill_install.zig");
 
 /// Target software — a skills root under $HOME on the target machine. Both use
 /// the same SKILL.md directory format, so a library skill deploys to either.
@@ -263,6 +264,10 @@ pub const OpResult = union(enum) {
     transfer: struct { is_import: bool, ok: bool, err_summary: ?[]u8 },
     /// preview finished: show the fetched SKILL.md in the markdown preview panel.
     preview: struct { title: []u8, content: []u8 },
+    /// install-enumerate finished: show the checklist built from `entries`.
+    install_enumerate: struct { repo: install.RepoRef, entries: []install.SkillEntry, truncated: bool },
+    /// install-download finished: report counts via toast.
+    install_done: struct { installed: usize, overwritten: usize, failed: usize },
     /// generic failure before work could run (e.g. lost connection).
     failed,
 
@@ -285,6 +290,11 @@ pub const OpResult = union(enum) {
                 allocator.free(v.title);
                 allocator.free(v.content);
             },
+            .install_enumerate => |*v| {
+                v.repo.deinit(allocator);
+                install.freeEntries(allocator, v.entries);
+            },
+            .install_done => {},
             .failed => {},
         }
         self.* = .failed;
@@ -689,4 +699,26 @@ test "OpResult.preview deinit frees title and content" {
     } };
     r.deinit(a); // must free both; testing allocator catches a leak
     try std.testing.expect(r == .failed); // deinit resets to .failed
+}
+
+test "skill_center: OpResult.install_enumerate deinit frees repo and entries" {
+    const a = std.testing.allocator;
+    var repo = try install.parseGithubUrl(a, "https://github.com/o/r/tree/main/skills");
+    errdefer repo.deinit(a);
+    var entries = try a.alloc(install.SkillEntry, 1);
+    {
+        var files = try a.alloc([]u8, 1);
+        files[0] = try a.dupe(u8, "skills/foo/SKILL.md");
+        entries[0] = .{ .name = try a.dupe(u8, "foo"), .root_path = try a.dupe(u8, "skills/foo"), .files = files };
+    }
+    var r: OpResult = .{ .install_enumerate = .{ .repo = repo, .entries = entries, .truncated = false } };
+    r.deinit(a); // testing allocator catches a leak
+    try std.testing.expect(r == .failed);
+}
+
+test "skill_center: OpResult.install_done deinit is a no-op" {
+    const a = std.testing.allocator;
+    var r: OpResult = .{ .install_done = .{ .installed = 3, .overwritten = 1, .failed = 0 } };
+    r.deinit(a);
+    try std.testing.expect(r == .failed);
 }
