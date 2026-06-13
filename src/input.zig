@@ -637,6 +637,7 @@ threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_select_auto_copy: bool = false;
 threadlocal var g_ai_history_suppress_refresh_char: bool = false;
 threadlocal var g_port_forwarding_suppress_command_char: ?u21 = null;
+threadlocal var g_skill_center_suppress_command_char: ?u21 = null;
 pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
 pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
@@ -1435,6 +1436,11 @@ fn handleChar(ev: platform_input.CharEvent) void {
         return;
     }
     if (AppWindow.activeSkillCenter() != null) {
+        if (g_skill_center_suppress_command_char) |codepoint| {
+            const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
+            g_skill_center_suppress_command_char = null;
+            if (suppress) return;
+        }
         if (!ev.ctrl and !ev.alt and !ev.super) {
             _ = AppWindow.skillCenterUrlInsertChar(ev.codepoint); // no-op unless url_input active
         }
@@ -2073,6 +2079,10 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             },
             0x47 => if (plain and !ev.shift and !text_capture and !picking) { // 'G'
                 _ = AppWindow.skillCenterOpenUrlInput();
+                // SDL text-input mode also fires a 'g' CHAR event after this
+                // key-down; suppress it so it doesn't land in the now-active
+                // URL field. (Only 'G' opens a text field, so only it suppresses.)
+                g_skill_center_suppress_command_char = 'g';
                 return;
             },
             0x41 => if (plain and !ev.shift and picking) { // 'A' select-all

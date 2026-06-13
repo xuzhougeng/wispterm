@@ -1593,6 +1593,17 @@ fn skillCenterStartEnumerate(session: *skill_center.Session, allocator: std.mem.
         markUiDirty();
         return;
     };
+    // Validate the URL on the UI thread so a parse error gets a precise toast
+    // (a worker-thread .failed can't distinguish bad-URL from network error).
+    if (skill_install.parseGithubUrl(allocator, url)) |rr| {
+        var probe = rr;
+        probe.deinit(allocator);
+    } else |_| {
+        allocator.free(url);
+        overlays.showStatusToast(i18n.s().sc_toast_bad_url);
+        markUiDirty();
+        return;
+    }
     const job = allocator.create(SkillInstallEnumerateJob) catch {
         allocator.free(url);
         return;
