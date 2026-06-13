@@ -384,20 +384,20 @@ Compile-checked + GUI-verified.
 
 - [ ] **Step 1: Confirm how a normal SSH surface gets `ssh_connection`/`launch_kind`**
 
-Read `src/Surface.zig` around the `ssh_connection` field and `launch_kind` (and how `tab.zig` sets them for an SSH-launched surface). Reuse the same setter; if assignment is direct (`surface.ssh_connection = …`), the connection's lifetime must outlive the surfaces — store the owning copy on the **bridge** (`self.ssh_conn`, added in A4) and point surfaces at `&self.ssh_conn.?` so all panes share one connection owned by the bridge.
+Read `src/Surface.zig` around the `ssh_connection` field and `launch_kind` (and how `tab.zig` sets them for an SSH-launched surface). **IMPORTANT (confirmed during A4 review):** `surface.ssh_connection` is `?SshConnection` — a **by-value** field (~880B POD), NOT a pointer. So **copy the value** onto the surface; do NOT point it at `&bridge.ssh_conn`. A pointer would dangle: `TmuxBridge.destroy()` frees the bridge but deliberately does NOT free its pane surfaces (they're owned by their tabs/`SplitTree`s), so a surface can outlive the bridge (reachable via `forgetClosedTab` / shutdown). Copying sidesteps the lifetime question entirely — it's a one-time POD copy per pane, and the bridge's stored value never mutates after `create`.
 
 - [ ] **Step 2: Set them in the factory after `Surface.initVirtual`**
 
 In `FactoryCtx.make`, right after `surface.attachRemoteClient(tab.g_remote_client);` (tmux_bridge.zig:167):
 
 ```zig
-            if (self.ssh_conn != null) {
-                surface.ssh_connection = &self.ssh_conn.?;
+            if (self.ssh_conn) |conn| {
+                surface.ssh_connection = conn; // copy the POD value; field is ?SshConnection
                 surface.launch_kind = .ssh;
             }
 ```
 
-(Match the real field types: if `surface.ssh_connection` is `?*const SshConnection`, `&self.ssh_conn.?` is correct since the bridge outlives its surfaces and is pinned/`create`-allocated. If `launch_kind` uses a different enum tag for remote ssh, use that tag — read `src/input.zig:3310` `terminalPathClickAction` to confirm which `launch_kind` value selects the `.ssh`/remote branch.)
+(`launch_kind`: read `src/input.zig:3310` `terminalPathClickAction` to confirm which `launch_kind` value selects the `.ssh`/remote branch, and use that exact tag. Confirm how a normal SSH-launched surface sets `ssh_connection`/`launch_kind` in `tab.zig` and mirror it.)
 
 - [ ] **Step 3: Build + GUI verify**
 
