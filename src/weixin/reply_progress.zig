@@ -61,6 +61,14 @@ pub fn progress(baseline: []const u8, current: []const u8) Progress {
     if (last_assistant) |content| {
         if (!isActiveStatus(status)) return .{ .done = true, .text = content };
     }
+    // "Stopped" is a terminal state (manual stop in the copilot UI): the run
+    // ended without an answer, so finish the follow-up with an explicit notice.
+    // Checked before the tool branch — a stopped run may have tool messages.
+    // Note "Stopped"/"Stopping..." don't contain each other, so this never
+    // fires while the stop is still winding down (isActiveStatus covers that).
+    if (containsIgnoreCase(status, "stopped")) {
+        return .{ .done = true, .text = "本次处理已停止，未生成新的回复。" };
+    }
     if (containsIgnoreCase(status, "running tools") or hasRole(new_msgs, .tool)) {
         return .{ .done = false, .text = "还在处理中，工具调用仍在执行。" };
     }
@@ -255,6 +263,44 @@ test "no approval section leaves needs_approval false" {
     const p = progress("You:\nhi\n", "You:\nhi\nAI:\nthere\nStatus:\nidle\n");
     try t.expect(!p.needs_approval);
     try t.expect(p.done);
+}
+
+test "manual stop with no new assistant message reports done with a stop notice" {
+    // The user stopped the run in the copilot UI: status becomes "Stopped" and
+    // no assistant answer was produced. The follow-up must end (done) with an
+    // explicit notice instead of "还在处理中" until the 30-minute window expires.
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n";
+    const current = "Model:\nGLM\n\nStatus:\nStopped\n\nYou:\n重新做个任务\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expect(std.mem.indexOf(u8, p.text, "已停止") != null);
+}
+
+test "manual stop after a tool ran still reports done (stop beats the tool branch)" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nStopped\n\n" ++
+        "You:\nq\n\nTool:\nterminal completed.\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expect(std.mem.indexOf(u8, p.text, "已停止") != null);
+}
+
+test "manual stop with a partial assistant answer reports done with that answer" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nStopped\n\nYou:\nq\n\nAI:\npartial answer\n";
+    const p = progress(baseline, current);
+    try t.expect(p.done);
+    try t.expectEqualStrings("partial answer", p.text);
+}
+
+test "Stopping... still counts as in progress" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n";
+    const current = "Model:\nGLM\n\nStatus:\nStopping...\n\nYou:\nq\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.done);
+    try t.expect(p.text.len != 0);
 }
 
 test "a resolved approval (gone from current) does not re-fire even if baseline had one" {
