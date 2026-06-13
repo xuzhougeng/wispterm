@@ -1436,11 +1436,12 @@ fn handleChar(ev: platform_input.CharEvent) void {
             return;
         }
     }
-    // A focused image preview consumes +/=/- as zoom in/out. Only image previews
-    // claim these chars (markdown previews ignore them so they reach nothing),
-    // and only when such a preview holds focus — terminals are never affected.
+    // A focused raster (image/PDF) preview consumes +/=/- as zoom in/out. Only
+    // raster previews claim these chars (markdown previews ignore them so they
+    // reach nothing), and only when such a preview holds focus — terminals are
+    // never affected.
     if (AppWindow.focusedPreviewPane()) |p| {
-        if (p.kind == .image and !ev.ctrl and !ev.alt) {
+        if (p.kind.isRaster() and !ev.ctrl and !ev.alt) {
             const zoomed = switch (ev.codepoint) {
                 '+', '=' => p.zoomImageBySteps(1, true),
                 '-', '_' => p.zoomImageBySteps(1, false),
@@ -2075,20 +2076,24 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         if (!ev.ctrl and !ev.alt and !ev.super) {
             var consumed = true;
             switch (ev.key_code) {
-                platform_input.key_page_up => p.scrollBy(-360),
-                platform_input.key_page_down => p.scrollBy(360),
-                platform_input.key_up => if (p.kind == .image) {
+                platform_input.key_page_up => if (p.kind == .pdf) {
+                    _ = p.flipPdfPage(false);
+                } else p.scrollBy(-360),
+                platform_input.key_page_down => if (p.kind == .pdf) {
+                    _ = p.flipPdfPage(true);
+                } else p.scrollBy(360),
+                platform_input.key_up => if (p.kind.isRaster()) {
                     _ = p.panImageBy(0, 40);
                 } else p.scrollBy(-60),
-                platform_input.key_down => if (p.kind == .image) {
+                platform_input.key_down => if (p.kind.isRaster()) {
                     _ = p.panImageBy(0, -40);
                 } else p.scrollBy(60),
-                platform_input.key_left => if (p.kind == .image) {
+                platform_input.key_left => if (p.kind.isRaster()) {
                     _ = p.panImageBy(40, 0);
                 } else {
                     consumed = false;
                 },
-                platform_input.key_right => if (p.kind == .image) {
+                platform_input.key_right => if (p.kind.isRaster()) {
                     _ = p.panImageBy(-40, 0);
                 } else {
                     consumed = false;
@@ -5083,8 +5088,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     if (split_layout.paneAtPoint(ev.xpos, ev.ypos)) |hit| {
         if (hit.pane == .preview) {
             const p = hit.pane.preview;
-            if (p.kind == .image) {
-                _ = p.zoomImageBySteps(mouseWheelUnits(ev.delta), ev.delta > 0);
+            if (p.kind.isRaster()) {
+                // Continuous, per-event-bounded zoom: mouseWheelUnits is tuned
+                // for line-scrolling and turns macOS precise/trackpad deltas
+                // into a runaway 1.2^N zoom (see zoomImageByWheel).
+                _ = p.zoomImageByWheel(ev.delta);
             } else {
                 const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
                 p.scrollBy(delta);

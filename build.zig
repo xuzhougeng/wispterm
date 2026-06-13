@@ -41,6 +41,7 @@ const macos_app_frameworks = [_][]const u8{
     "UserNotifications",
     "CoreFoundation",
     "Carbon",
+    "ImageIO", // PDF preview page rasters are PNG-encoded with ImageIO
 };
 
 const macos_objective_c_sources = [_][]const u8{
@@ -51,6 +52,7 @@ const macos_objective_c_sources = [_][]const u8{
     "src/platform/text_macos_bridge.m",
     "src/platform/menu_macos_bridge.m",
     "src/platform/http_client_macos_bridge.m",
+    "src/platform/pdf_render_macos_bridge.m",
 };
 
 const MacosBundleMetadata = struct {
@@ -332,7 +334,7 @@ test "windows system libraries are gated by platform" {
 
 test "macOS platform advertises required app frameworks" {
     const frameworks = appFrameworksFor(PlatformFeatures.forOs(.macos));
-    try std.testing.expectEqual(@as(usize, 10), frameworks.len);
+    try std.testing.expectEqual(@as(usize, 11), frameworks.len);
     try expectContainsString(frameworks, "WebKit");
     try expectContainsString(frameworks, "Metal");
     try expectContainsString(frameworks, "QuartzCore");
@@ -343,6 +345,7 @@ test "macOS platform advertises required app frameworks" {
     try expectContainsString(frameworks, "CoreFoundation");
     try expectContainsString(frameworks, "Carbon");
     try expectContainsString(frameworks, "UserNotifications");
+    try expectContainsString(frameworks, "ImageIO");
 
     try std.testing.expectEqual(@as(usize, 0), appFrameworksFor(PlatformFeatures.forOs(.windows)).len);
     try std.testing.expectEqual(@as(usize, 0), appFrameworksFor(PlatformFeatures.forOs(.linux)).len);
@@ -1007,6 +1010,15 @@ fn createAppModuleWithRoot(
             app_mod.addImport("harfbuzz", hb_mod);
             app_mod.linkLibrary(hb_lib);
         }
+    }
+
+    // System WinRT PDF rasterizer bridge (preview pane PDF support); loads its
+    // combase/shlwapi/shcore entry points dynamically, so no extra libraries.
+    if (target.result.os.tag == .windows) {
+        app_mod.addCSourceFile(.{
+            .file = b.path("src/platform/pdf_render_windows_bridge.c"),
+            .flags = &.{},
+        });
     }
 
     // OpenGL backend (Windows + Linux): the glad loader needs its include path

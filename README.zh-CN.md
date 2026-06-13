@@ -17,7 +17,7 @@
 - **主题支持** —— 兼容 Ghostty 主题文件，内置 450+ 主题（默认：Poimandres）
 - **背景图与着色器** —— 壁纸混合，外加 Ghostty 兼容的 GLSL 后处理
 - **分屏与标签页** —— 横/纵向分屏、标签栏、焦点跟随鼠标、均分尺寸
-- **文件浏览器与预览** —— 浏览本地、WSL、SSH 文件；无需离开终端即可预览 Markdown / 文本 / 表格 / 图片
+- **文件浏览器与预览** —— 浏览本地、WSL、SSH 文件；无需离开终端即可预览 Markdown / 文本 / 表格 / 图片 / PDF
 - **内嵌浏览器面板** —— 在侧边 WebView2 面板或默认浏览器中打开网址，并为 profile 会话提供持久的 SSH 回环端口转发
 - **AI 智能体会话** —— 启动 OpenAI 兼容的智能体标签页，配置 profile、恢复历史，导出完整或精简的 Markdown 对话记录
 - **Kitty 图形协议** —— 通过 `imgcat.py` / `pdfcat.py` 在远程 shell 中内联显示图片和 PDF
@@ -125,6 +125,7 @@ keybind = global:ctrl+backquote=toggle_quake
 | 切换文件浏览器侧边栏 | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
 | 切换 AI Copilot 侧边栏（当前终端） | **Ctrl+Shift+A** | **Cmd+Shift+A** |
 | 预览文件（终端内 Ctrl/Cmd 单击，或文件浏览器中双击） | Ctrl 单击 | Cmd 单击 |
+| PDF 预览上一页 / 下一页（PDF 预览面板聚焦时） | PageUp / PageDown | PageUp / PageDown |
 | 下载 SSH 远程文件 | 在 SSH 输出中 Ctrl+Shift 单击路径 | 在 SSH 输出中 Cmd+Shift 单击路径 |
 | 关闭聚焦的面板、标签页或窗口 | **Ctrl+Shift+W** | **Cmd+Shift+W** |
 | 最大化或还原窗口 | **Alt+Enter** | **Opt+Enter** |
@@ -205,7 +206,7 @@ __wispterm_report_cwd
 
 - 原始项目：[arya-s/phantty](https://github.com/arya-s/phantty) —— Zig + libghostty-vt
 的基础与 Windows 终端核心。WispTerm 在此基础上构建，并在其上叠加了更多特性：内嵌
-WebView2 浏览器面板、带 Markdown/文本/表格/图片预览的文件浏览器、可导出 Markdown 的
+WebView2 浏览器面板、带 Markdown/文本/表格/图片/PDF 预览的文件浏览器、可导出 Markdown 的
 AI 智能体会话、可选的远程访问客户端、Kitty 图形图片协议支持，以及可配置的背景图。
 - 终端模拟：[ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)，通过
 `libghostty-vt`。

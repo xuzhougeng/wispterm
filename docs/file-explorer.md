@@ -8,18 +8,27 @@ active environment:
 - WispTerm SSH profile sessions browse the remote host through OpenSSH helpers.
 
 Hold `Ctrl` (`Cmd` on macOS) and click a `.md`, `.txt`, `.csv`, `.tsv`, a
-source-code or script file (including R scripts `.r` / `.R`), or a supported
-image file in terminal output, or double-click a supported file in the File
-Explorer, to open a preview pane on the right. Each content type (Markdown,
-plain text, CSV/TSV, image) keeps its own pane: previewing another file of the
-same type replaces that pane's content, while a different type opens a new pane
-stacked below the existing previews — a Markdown file, an image, and a CSV
-table can stay on screen at the same time.
+source-code or script file (including R scripts `.r` / `.R`), a supported
+image file, or a `.pdf` in terminal output, or double-click a supported file in
+the File Explorer, to open a preview pane on the right. Each content type
+(Markdown, plain text, CSV/TSV, image, PDF) keeps its own pane: previewing
+another file of the same type replaces that pane's content, while a different
+type opens a new pane stacked below the existing previews — a Markdown file, an
+image, and a CSV table can stay on screen at the same time.
 Markdown previews render headings, lists, blockquotes, code blocks, inline code,
 links, and horizontal rules. Text, source-code, and script files (such as `.r`,
 `.R`, `.py`, `.zig`, `.sh`, `.json`) are shown as plain text. CSV and TSV
 files are shown as a grid table. Image previews decode PNG, JPEG, GIF, BMP, and
 WebP bytes directly into the panel.
+
+PDF previews rasterize one page at a time with the operating system's own
+PDF engine: `Windows.Data.Pdf` on Windows 10+, CoreGraphics on macOS, and the
+`poppler-utils` tools (`pdfinfo` / `pdftoppm`) on Linux — install them with
+your package manager (for example `sudo apt install poppler-utils`) if the
+preview reports they are missing. With the PDF preview focused, `PageUp` /
+`PageDown` turn pages; the footer shows the current page as `N/M` next to the
+`PDF` badge. Zoom and pan work like image previews. Encrypted PDFs are not
+supported.
 
 Hold `Ctrl` (`Cmd` on macOS) and **right-click** a file path in a local terminal
 to open it in your operating system's default application for that file type
@@ -55,9 +64,9 @@ navigate. Drag the browser panel's left edge to resize it.
 The left File Explorer and right-side preview/browser panels can be resized by
 dragging their inner edges. Markdown, text, CSV, and TSV previews scroll with
 the mouse wheel; CSV and TSV cells show a larger hover popup when their content
-does not fit in the visible cell. Image previews zoom in and out with the mouse
-wheel and can be dragged to pan after zooming. `Ctrl+Shift+W` closes the
-focused pane — click a preview pane (or press `Ctrl+1-9`) to select it, then
+does not fit in the visible cell. Image and PDF previews zoom in and out with
+the mouse wheel and can be dragged to pan after zooming. `Ctrl+Shift+W` closes
+the focused pane — click a preview pane (or press `Ctrl+1-9`) to select it, then
 close it like any other split.
 
 SSH previews require WispTerm's SSH profile metadata, so sessions launched from

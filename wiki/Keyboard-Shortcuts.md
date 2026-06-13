@@ -65,7 +65,8 @@ Some actions are mouse-only and are not bound through `keybind`:
   their contents.
 - **Preview / open a file path:** hold `Ctrl` (`Cmd` on macOS) and left-click a
   file path to preview it, or right-click it to open it in your default app
-  (local terminals only). See [[File-Explorer]].
+  (local terminals only). With a PDF preview focused, `PageUp` / `PageDown`
+  turn pages. See [[File-Explorer]].
 - **Resize panels:** drag the divider between two panels.
 - **Reorder tabs:** drag a tab up or down in the sidebar (`Ctrl+Shift+B`).
 - **New / close a tab:** click the `+` button to add one; click a tab's `×` or

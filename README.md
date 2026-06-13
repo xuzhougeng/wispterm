@@ -17,7 +17,7 @@ English | [简体中文](README.zh-CN.md)
 - **Theme support** - Ghostty-compatible theme files, 450+ themes built in (default: Poimandres)
 - **Background image and shaders** - wallpaper blending plus Ghostty-compatible GLSL post-processing
 - **Splits and tabs** - vertical/horizontal splits, tab strip, focus-follows-mouse, equalize sizes
-- **File Explorer and previews** - browse local, WSL, and SSH files; preview Markdown/text/tables/images without leaving the terminal
+- **File Explorer and previews** - browse local, WSL, and SSH files; preview Markdown/text/tables/images/PDFs without leaving the terminal
 - **Embedded browser panel** - open web URLs in a side WebView2 panel or the default browser, with persistent SSH loopback port forwarding for profile sessions
 - **SSH port forwarding manager** - silently manage local and reverse SSH forwarding rules from a dedicated tab
 - **AI Agent sessions** - launch OpenAI-compatible Agent tabs, configure profiles, restore history, export Markdown transcripts, and distill reusable local skills
@@ -119,6 +119,7 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Toggle file explorer sidebar | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
 | Toggle AI Copilot sidebar (current terminal) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
 | Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |
+| Previous / next PDF page (PDF preview focused) | PageUp / PageDown | PageUp / PageDown |
 | Download SSH remote file | Ctrl+Shift-click path in SSH output | Cmd+Shift-click path in SSH output |
 | Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+Shift+W** |
 | Maximize or restore window | **Alt+Enter** | **Opt+Enter** |
@@ -212,7 +213,7 @@ __wispterm_report_cwd
 - Original project: [arya-s/phantty](https://github.com/arya-s/phantty) - the
 Zig + libghostty-vt foundation and the Windows terminal core. WispTerm builds on
 that base and layers additional features on top: an embedded WebView2 browser
-panel, a file explorer with Markdown/text/table/image preview, AI Agent sessions
+panel, a file explorer with Markdown/text/table/image/PDF preview, AI Agent sessions
 with Markdown export, an opt-in remote-access client, Kitty Graphics image
 protocol support, and a configurable background image.
 - Terminal emulation: [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)
