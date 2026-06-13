@@ -119,6 +119,7 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | Toggle file explorer sidebar | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
 | Toggle AI Copilot sidebar (current terminal) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
 | Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |
+| Previous / next image/PDF in gallery (preview focused) | Left / Right | Left / Right |
 | Previous / next PDF page (PDF preview focused) | PageUp / PageDown | PageUp / PageDown |
 | Download SSH remote file | Ctrl+Shift-click path in SSH output | Cmd+Shift-click path in SSH output |
 | Close focused panel, tab, or window | **Ctrl+Shift+W** | **Cmd+Shift+W** |

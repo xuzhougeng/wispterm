@@ -19,14 +19,17 @@ Markdown previews render headings, lists, blockquotes, code blocks, inline code,
 links, and horizontal rules. Text, source-code, and script files (such as `.r`,
 `.R`, `.py`, `.zig`, `.sh`, `.json`) are shown as plain text. CSV and TSV
 files are shown as a grid table. Image previews decode PNG, JPEG, GIF, BMP, and
-WebP bytes directly into the panel.
+WebP bytes directly into the panel. With an image or PDF preview focused,
+`Left` / `Right` open the previous or next supported image/PDF in the same
+directory.
 
 PDF previews rasterize one page at a time with the operating system's own
 PDF engine: `Windows.Data.Pdf` on Windows 10+, CoreGraphics on macOS, and the
 `poppler-utils` tools (`pdfinfo` / `pdftoppm`) on Linux — install them with
 your package manager (for example `sudo apt install poppler-utils`) if the
 preview reports they are missing. With the PDF preview focused, `PageUp` /
-`PageDown` turn pages; the footer shows the current page as `N/M` next to the
+`PageDown` switch pages inside the current PDF; the footer shows the current
+page as `N / M` next to the
 `PDF` badge. Zoom and pan work like image previews. Encrypted PDFs are not
 supported.
 
