@@ -319,7 +319,11 @@ pub fn findSkills(a: std.mem.Allocator, tree_json: []const u8, subpath: []const 
             files.deinit(a);
         }
         for (blobs.items) |q| {
-            if (isUnderDir(q, dir)) try files.append(a, try a.dupe(u8, q));
+            if (isUnderDir(q, dir)) {
+                const dup = try a.dupe(u8, q);
+                errdefer a.free(dup);
+                try files.append(a, dup);
+            }
         }
 
         const name_o = try a.dupe(u8, baseName(dir));
@@ -327,6 +331,10 @@ pub fn findSkills(a: std.mem.Allocator, tree_json: []const u8, subpath: []const 
         const dir_o = try a.dupe(u8, dir);
         errdefer a.free(dir_o);
         const files_o = try files.toOwnedSlice(a);
+        errdefer {
+            for (files_o) |f| a.free(f);
+            a.free(files_o);
+        }
         try entries.append(a, .{ .name = name_o, .root_path = dir_o, .files = files_o });
     }
 
@@ -403,4 +411,21 @@ test "skill_install: relInstallPath strips the skill dir's parent prefix" {
     try std.testing.expectEqualStrings("foo/references/x.md", relInstallPath("skills/foo", "skills/foo/references/x.md").?);
     try std.testing.expectEqualStrings("foo/SKILL.md", relInstallPath("foo", "foo/SKILL.md").?);
     try std.testing.expectEqual(@as(?[]const u8, null), relInstallPath("skills/foo", "other/x.md"));
+}
+
+test "skill_install: SkillEntry.clone is an independent deep copy" {
+    const a = std.testing.allocator;
+    var orig: SkillEntry = .{
+        .name = try a.dupe(u8, "foo"),
+        .root_path = try a.dupe(u8, "skills/foo"),
+        .files = try a.alloc([]u8, 1),
+    };
+    orig.files[0] = try a.dupe(u8, "skills/foo/SKILL.md");
+    var copy = try orig.clone(a);
+    orig.deinit(a); // free original first; copy must be independent
+    defer copy.deinit(a);
+    try std.testing.expectEqualStrings("foo", copy.name);
+    try std.testing.expectEqualStrings("skills/foo", copy.root_path);
+    try std.testing.expectEqual(@as(usize, 1), copy.files.len);
+    try std.testing.expectEqualStrings("skills/foo/SKILL.md", copy.files[0]);
 }
