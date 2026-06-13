@@ -114,6 +114,7 @@ test {
     _ = @import("renderer/cell_geometry.zig");
     _ = @import("renderer/titlebar_layout.zig");
     _ = @import("ai_chat_layout.zig");
+    _ = @import("ai_chat_types.zig");
     _ = @import("ai_sidebar.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("appwindow/resize_throttle.zig");
