@@ -318,6 +318,9 @@ pub const Session = struct {
         try self.capture_queue.append(self.alloc, pane_id);
     }
 
+    /// The `list-panes` format string shared between `start` and `refreshPaneMeta`.
+    const list_panes_cmd = "list-panes -s -F \"#{pane_id}\t#{pane_current_path}\t#{pane_current_command}\"\n";
+
     /// Enqueue the attach bootstrap: tell tmux our client size and ask for the
     /// window list. (Parsing the list-windows reply for complete initial
     /// enumeration is Phase 3; the live model is built from pushed
@@ -325,6 +328,14 @@ pub const Session = struct {
     pub fn start(self: *Session) Allocator.Error!void {
         try self.enqueueResize();
         try self.cmds.appendSlice(self.alloc, "list-windows -F \"#{window_id}\t#{window_active}\t#{window_layout}\t#{window_name}\"\n");
+        try self.cmds.appendSlice(self.alloc, list_panes_cmd);
+    }
+
+    /// Re-query per-pane metadata (cwd + current command). Called periodically
+    /// by the controller; cwd/command change infrequently so a coarse cadence
+    /// is fine.
+    pub fn refreshPaneMeta(self: *Session) Allocator.Error!void {
+        try self.cmds.appendSlice(self.alloc, list_panes_cmd);
     }
 
     pub fn resizeClient(self: *Session, cols: u16, rows: u16) Allocator.Error!void {
@@ -867,6 +878,15 @@ test "a queued capture-pane reply is not stolen by applyPaneList" {
     // "capture-pane reply is routed to the pane sink" test assertions).
     try std.testing.expectEqual(@as(usize, 5), col.last_pane);
     try std.testing.expectEqualSlices(u8, "\x1b[2J\x1b[H%5\tx\ty", col.buf.items);
+}
+
+test "start enqueues a list-panes metadata query" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+    try s.start();
+    try std.testing.expect(std.mem.indexOf(u8, s.cmds.items, "list-panes -s -F") != null);
 }
 
 test "applyPaneList skips malformed lines and counts only valid pane-list entries" {
