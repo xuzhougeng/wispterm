@@ -136,32 +136,34 @@ pub const Session = struct {
             // A command-reply block. On attach tmux does NOT emit %layout-change,
             // so the initial windows/layouts are learned from the `list-windows`
             // reply that arrives here as `@<id> <layout>` lines (Phase 3d
-            // bootstrap). If it is not a window list, it may be a `capture-pane`
-            // reply seeding a pane's scrollback — route it to that pane's sink
-            // (FIFO, since replies arrive in command order). Anything else is a
-            // benign empty/other reply and is ignored.
+            // bootstrap). If it is not a window list, check by content whether it
+            // is a `list-panes` reply (`%<id>\t…` shape on every non-empty line);
+            // if so emit onPaneMeta — this must take priority over the capture FIFO
+            // because `start()` enqueues list-panes before any captures but
+            // `capturePane()` may be called during layout reconcile (inside the
+            // earlier list-windows reply) so the queue can already be non-empty
+            // when the list-panes reply lands. Otherwise route to the next queued
+            // `capture-pane` pane sink (FIFO). Anything else is ignored.
             .block_end => |body| {
                 if (!try self.applyWindowList(body)) {
-                    if (self.capture_queue.items.len == 0 and self.applyPaneList(body)) {
-                        // list-panes metadata handled
-                    } else {
-                        if (self.capture_queue.items.len > 0) {
-                            const pane_id = self.capture_queue.orderedRemove(0);
-                            // Repaint from the top-left, translating LF→CRLF: the
-                            // capture's rows are joined by '\n' only, and the
-                            // terminal's line feed moves down without returning to
-                            // column 0 — without the '\r' each row staircases right.
-                            self.scratch.clearRetainingCapacity();
-                            try self.scratch.appendSlice(self.alloc, "\x1b[2J\x1b[H");
-                            for (body) |c| {
-                                if (c == '\n') {
-                                    try self.scratch.appendSlice(self.alloc, "\r\n");
-                                } else {
-                                    try self.scratch.append(self.alloc, c);
-                                }
+                    if (isPaneListReply(body)) {
+                        _ = self.applyPaneList(body); // emits onPaneMeta per line
+                    } else if (self.capture_queue.items.len > 0) {
+                        const pane_id = self.capture_queue.orderedRemove(0);
+                        // Repaint from the top-left, translating LF→CRLF: the
+                        // capture's rows are joined by '\n' only, and the
+                        // terminal's line feed moves down without returning to
+                        // column 0 — without the '\r' each row staircases right.
+                        self.scratch.clearRetainingCapacity();
+                        try self.scratch.appendSlice(self.alloc, "\x1b[2J\x1b[H");
+                        for (body) |c| {
+                            if (c == '\n') {
+                                try self.scratch.appendSlice(self.alloc, "\r\n");
+                            } else {
+                                try self.scratch.append(self.alloc, c);
                             }
-                            self.sink.write(pane_id, self.scratch.items);
                         }
+                        self.sink.write(pane_id, self.scratch.items);
                     }
                 }
             },
@@ -269,9 +271,9 @@ pub const Session = struct {
 
     /// Parse a `list-panes -s -F "#{pane_id}\t#{pane_current_path}\t#{pane_current_command}"`
     /// reply body. Each line: `%<id>\t<path>\t<cmd>`. Emits onPaneMeta per line.
-    /// Returns true if at least one line applied (lets block_end tell it apart).
-    /// NOTE: The `list-panes` enqueuer that feeds capture_queue is wired in a later task;
-    /// this function is only reached when capture_queue is empty (see block_end guard).
+    /// Returns true if at least one line applied. The caller (block_end) gates
+    /// this via `isPaneListReply` so it is only reached when the body is
+    /// unambiguously a pane-list; per-line parsing is lenient (skips malformed).
     fn applyPaneList(self: *Session, body: []const u8) bool {
         var applied = false;
         var lines = std.mem.splitScalar(u8, body, '\n');
@@ -418,6 +420,28 @@ fn parseTabbedWindowListLine(line: []const u8) ?WindowListLine {
         .layout_str = layout_str,
         .name = if (tab3) |idx| rest2[idx + 1 ..] else null,
     };
+}
+
+/// Returns true iff `body` is a `list-panes` reply: there is at least one
+/// non-empty line AND every non-empty line matches `%<digits>\t…` (starts with
+/// `%`, has a numeric id before the first `\t`, and contains at least one `\t`).
+/// A single non-matching non-empty line → false. Blank/whitespace-only lines
+/// are ignored. This strict check lets block_end distinguish a pane-list reply
+/// from real capture scrollback (which won't have ALL lines in that shape).
+fn isPaneListReply(body: []const u8) bool {
+    var found_any = false;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \r\t");
+        if (line.len == 0) continue; // ignore blank lines
+        // Must start with '%' and have at least one '\t'.
+        if (line[0] != '%') return false;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse return false;
+        // The part between '%' and '\t' must be a valid decimal integer (pane id).
+        _ = std.fmt.parseInt(usize, line[1..tab], 10) catch return false;
+        found_any = true;
+    }
+    return found_any;
 }
 
 fn containsId(ids: []const usize, id: usize) bool {
@@ -859,7 +883,7 @@ test "list-panes reply drives onPaneMeta per pane" {
     try std.testing.expectEqualStrings("tail", log.last_pane_meta_cmd.items);
 }
 
-test "a queued capture-pane reply is not stolen by applyPaneList" {
+test "a pending capture does not steal a list-panes reply (startup ordering)" {
     var col = Collector{ .alloc = std.testing.allocator };
     defer col.deinit();
     var log = EventLog{ .alloc = std.testing.allocator };
@@ -868,16 +892,34 @@ test "a queued capture-pane reply is not stolen by applyPaneList" {
     defer s.deinit();
     s.events = log.eventSink();
 
-    // A capture for pane 5 is pending; the reply body looks like a pane-list
-    // line. It MUST seed pane 5's sink (capture), NOT emit onPaneMeta.
-    try s.capturePane(5);
-    try s.feed("%begin 1 1 0\n%5\tx\ty\n%end 1 1 0\n");
+    // Captures are queued (as during attach reconcile) BEFORE the list-panes
+    // reply arrives. The reply must be parsed as pane metadata, NOT consumed as
+    // a capture seed, and the capture queue must stay intact.
+    try s.capturePane(1);
+    try s.capturePane(2);
+    try s.feed("%begin 7 7 0\n%1\t/home/u\tnvim\n%2\t/var/log\ttail\n%end 7 7 0\n");
 
-    try std.testing.expectEqual(@as(usize, 0), log.pane_meta_count);
-    // Assert pane 5's sink received the captured body (mirrors the existing
-    // "capture-pane reply is routed to the pane sink" test assertions).
-    try std.testing.expectEqual(@as(usize, 5), col.last_pane);
-    try std.testing.expectEqualSlices(u8, "\x1b[2J\x1b[H%5\tx\ty", col.buf.items);
+    try std.testing.expectEqual(@as(usize, 2), log.pane_meta_count);
+    try std.testing.expectEqual(@as(usize, 2), s.capture_queue.items.len); // untouched
+    try std.testing.expectEqual(@as(usize, 0), col.buf.items.len); // no capture seed written
+}
+
+test "a realistic capture reply is seeded even with pane-list-like ids elsewhere" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var log = EventLog{ .alloc = std.testing.allocator };
+    defer log.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+    s.events = log.eventSink();
+
+    try s.capturePane(5);
+    // Real scrollback: NOT every line is `%<id>\t..`, so it's a capture, not pane-list.
+    try s.feed("%begin 1 1 0\n$ ls\nfile.txt  %notapaneline\n%end 1 1 0\n");
+
+    try std.testing.expectEqual(@as(usize, 0), log.pane_meta_count); // not pane-list
+    try std.testing.expectEqual(@as(usize, 0), s.capture_queue.items.len); // capture consumed
+    try std.testing.expect(std.mem.indexOf(u8, col.buf.items, "file.txt") != null); // seeded
 }
 
 test "start enqueues a list-panes metadata query" {
@@ -898,15 +940,14 @@ test "applyPaneList skips malformed lines and counts only valid pane-list entrie
     defer s.deinit();
     s.events = log.eventSink();
 
-    // No capture pending so applyPaneList is exercised. Mix of:
-    //   blank line            — skipped (len < 2)
-    //   %abc\t/p\tcmd         — skipped (non-numeric id)
-    //   %3\t/only-one-tab     — skipped (missing second tab / no cmd field)
-    //   %7\t/home\tbash       — valid → pane_meta_count == 1
+    // All non-empty lines have the %<digits>\t shape (pass isPaneListReply), but
+    // applyPaneList's deeper per-line checks filter the malformed ones:
+    //   blank line              — skipped (ignored by both predicates)
+    //   %3\t/only-one-tab      — skipped by applyPaneList (missing second tab)
+    //   %7\t/home\tbash        — valid → pane_meta_count == 1
     try s.feed(
         "%begin 5 5 0\n" ++
             "\n" ++
-            "%abc\t/p\tcmd\n" ++
             "%3\t/only-one-tab\n" ++
             "%7\t/home\tbash\n" ++
             "%end 5 5 0\n",
