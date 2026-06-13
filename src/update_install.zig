@@ -102,10 +102,7 @@ pub fn httpGetAlloc(allocator: std.mem.Allocator, url: []const u8, max_bytes: us
 
     var list = body.toArrayList();
     errdefer list.deinit(allocator);
-    if (list.items.len > max_bytes) {
-        list.deinit(allocator);
-        return error.ResponseTooLarge;
-    }
+    if (list.items.len > max_bytes) return error.ResponseTooLarge;
     return list.toOwnedSlice(allocator);
 }
 
