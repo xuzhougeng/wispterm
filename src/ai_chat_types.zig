@@ -55,6 +55,50 @@ pub const ToolSurface = struct {
         allocator.free(self.snapshot);
     }
 
+    pub const InitMeta = struct {
+        tab_index: usize,
+        focused: bool,
+        is_ssh: bool,
+        is_wsl: bool,
+        agent_app: agent_detector.App = .none,
+        agent_state: agent_detector.State = .none,
+        agent_confidence: u8 = 0,
+        ptr: *anyopaque,
+    };
+
+    /// Build an owned ToolSurface from borrowed strings plus an already-owned
+    /// snapshot. Takes ownership of `snapshot` even on failure, so a caller
+    /// can pass a freshly built snapshot without its own cleanup path.
+    pub fn initOwned(
+        allocator: std.mem.Allocator,
+        id: []const u8,
+        title: []const u8,
+        cwd: []const u8,
+        snapshot: []u8,
+        meta: InitMeta,
+    ) !ToolSurface {
+        errdefer allocator.free(snapshot);
+        const id_owned = try allocator.dupe(u8, id);
+        errdefer allocator.free(id_owned);
+        const title_owned = try allocator.dupe(u8, title);
+        errdefer allocator.free(title_owned);
+        const cwd_owned = try allocator.dupe(u8, cwd);
+        return .{
+            .id = id_owned,
+            .title = title_owned,
+            .cwd = cwd_owned,
+            .snapshot = snapshot,
+            .tab_index = meta.tab_index,
+            .focused = meta.focused,
+            .is_ssh = meta.is_ssh,
+            .is_wsl = meta.is_wsl,
+            .agent_app = meta.agent_app,
+            .agent_state = meta.agent_state,
+            .agent_confidence = meta.agent_confidence,
+            .ptr = meta.ptr,
+        };
+    }
+
     pub fn clone(self: ToolSurface, allocator: std.mem.Allocator) !ToolSurface {
         const id = try allocator.dupe(u8, self.id);
         errdefer allocator.free(id);
@@ -243,3 +287,55 @@ pub const ToolContext = struct {
         return resolver(host.ctx, surface_id);
     }
 };
+
+test "ToolSurface.initOwned dupes borrowed strings and adopts the owned snapshot" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    const snapshot = try a.dupe(u8, "snap");
+    const id_src = "surface-1";
+    const ts = try ToolSurface.initOwned(a, id_src, "title-1", "/work", snapshot, .{
+        .tab_index = 3,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = true,
+        .ptr = @ptrCast(&dummy),
+    });
+    defer ts.deinit(a);
+
+    try std.testing.expectEqualStrings("surface-1", ts.id);
+    try std.testing.expect(ts.id.ptr != id_src.ptr); // copied, not aliased
+    try std.testing.expectEqualStrings("title-1", ts.title);
+    try std.testing.expectEqualStrings("/work", ts.cwd);
+    try std.testing.expect(ts.snapshot.ptr == snapshot.ptr); // ownership moved, no copy
+    try std.testing.expectEqual(@as(usize, 3), ts.tab_index);
+    try std.testing.expect(ts.focused);
+    try std.testing.expect(ts.is_wsl);
+}
+
+test "ToolSurface.initOwned frees the snapshot and earlier dupes when an allocation fails" {
+    // Fail each of the three dupes in turn. The adopted snapshot comes from
+    // the leak-checking testing allocator, so any path that drops it (or an
+    // earlier dupe) fails the test at the end-of-test leak check.
+    var dummy: u8 = 0;
+    var fail_index: usize = 0;
+    while (fail_index < 3) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        const snapshot = try std.testing.allocator.dupe(u8, "snap");
+        try std.testing.expectError(error.OutOfMemory, ToolSurface.initOwned(
+            failing.allocator(),
+            "surface-1",
+            "title-1",
+            "/work",
+            snapshot,
+            .{
+                .tab_index = 0,
+                .focused = false,
+                .is_ssh = false,
+                .is_wsl = false,
+                .ptr = @ptrCast(&dummy),
+            },
+        ));
+    }
+}

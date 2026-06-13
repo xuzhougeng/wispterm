@@ -202,9 +202,12 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     tab.g_shell_cmd_len = app.shell_cmd_len;
 
     // Store config values we need for init
-    g_requested_font = app.font_family;
-    font.g_cjk_font_family = app.font_family_cjk;
-    font.g_fallback_font_families = app.font_family_fallback;
+    setRequestedFont(app.font_family);
+    // Copy into the font module's own buffers rather than aliasing App's
+    // strings: App frees and reallocates these on every config reload (see
+    // App.replaceOptStr), which would leave the globals dangling.
+    font.setCjkFontFamily(app.font_family_cjk);
+    font.setFallbackFontFamilies(app.font_family_fallback);
     g_requested_weight = app.font_weight;
     font.g_font_size = app.font_size;
     g_shader_path = app.shader_path;
@@ -496,6 +499,11 @@ var g_session_restore_attempted: std.atomic.Value(bool) = .init(false);
 
 // Stored config values for deferred initialization
 threadlocal var g_requested_font: []const u8 = "";
+// Backing buffer for g_requested_font. The configured family must be copied
+// here rather than aliasing App.font_family: App frees and reallocates that
+// string on every config reload (App.replaceStr), and g_requested_font is read
+// later in the event loop (handleWindowDpiChanged), which would dangle.
+threadlocal var g_requested_font_buf: [256]u8 = undefined;
 threadlocal var g_requested_weight: font_backend.FontWeight = .NORMAL;
 threadlocal var g_shader_path: ?[]const u8 = null;
 threadlocal var g_start_maximize: bool = false;
@@ -3132,6 +3140,14 @@ pub fn syncDefaultShellCommandFromConfig(shell: []const u8) void {
     tab.g_shell_cmd_len = App.resolveShellCommandLine(&tab.g_shell_cmd_buf, shell);
 }
 
+/// Store the configured primary font family in our own buffer. Must be used
+/// instead of aliasing App.font_family, which is freed/reallocated on reload.
+fn setRequestedFont(family: []const u8) void {
+    const n = @min(family.len, g_requested_font_buf.len);
+    @memcpy(g_requested_font_buf[0..n], family[0..n]);
+    g_requested_font = g_requested_font_buf[0..n];
+}
+
 threadlocal var g_configured_shell_title_buf: [1024]u8 = undefined;
 threadlocal var g_configured_shell_detail_buf: [1024]u8 = undefined;
 
@@ -4140,8 +4156,11 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     const new_font_size = cfg.@"font-size";
     const new_weight = font_backend.fontWeightFromValue(cfg.@"font-style".value());
     const new_family = cfg.@"font-family";
-    font.g_cjk_font_family = cfg.@"font-family-cjk";
-    font.g_fallback_font_families = cfg.@"font-family-fallback";
+    // Copy into the font module's own buffers: `cfg` is deinit'd right after
+    // this returns, and these globals are read lazily on the next fallback
+    // lookup. Aliasing the config-owned slices here was a use-after-free.
+    font.setCjkFontFamily(cfg.@"font-family-cjk");
+    font.setFallbackFontFamilies(cfg.@"font-family-fallback");
 
     const font_changed = new_font_size != font.g_font_size;
 
@@ -4998,20 +5017,24 @@ fn makeAgentToolSurface(
     tab_index: usize,
     focused: bool,
 ) anyerror!ai_chat.ToolSurface {
-    return .{
-        .id = try allocator.dupe(u8, surface.remote_id[0..]),
-        .title = try allocator.dupe(u8, surface.getTitle()),
-        .cwd = try allocator.dupe(u8, surface.getCwd() orelse surface.getInitialCwd() orelse ""),
-        .snapshot = buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows) catch try allocator.dupe(u8, ""),
-        .tab_index = tab_index,
-        .focused = focused,
-        .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
-        .is_wsl = surface.launch_kind == .wsl,
-        .agent_app = surface.agent_detection.app,
-        .agent_state = surface.agent_detection.state,
-        .agent_confidence = surface.agent_detection.confidence,
-        .ptr = @ptrCast(surface),
-    };
+    const snapshot = buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows) catch try allocator.dupe(u8, "");
+    return ai_chat.ToolSurface.initOwned(
+        allocator,
+        surface.remote_id[0..],
+        surface.getTitle(),
+        surface.getCwd() orelse surface.getInitialCwd() orelse "",
+        snapshot,
+        .{
+            .tab_index = tab_index,
+            .focused = focused,
+            .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
+            .is_wsl = surface.launch_kind == .wsl,
+            .agent_app = surface.agent_detection.app,
+            .agent_state = surface.agent_detection.state,
+            .agent_confidence = surface.agent_detection.confidence,
+            .ptr = @ptrCast(surface),
+        },
+    );
 }
 
 fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!ai_chat.ToolSnapshot {
@@ -5031,12 +5054,14 @@ fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyer
         while (it.next()) |entry| {
             const is_context = context_surface_id.len > 0 and std.mem.eql(u8, entry.surface.remote_id[0..], context_surface_id);
             if (is_context) active_tab = tab_index;
-            try surfaces.append(allocator, try makeAgentToolSurface(
+            const tool_surface = try makeAgentToolSurface(
                 allocator,
                 entry.surface,
                 tab_index,
                 is_context,
-            ));
+            );
+            errdefer tool_surface.deinit(allocator);
+            try surfaces.append(allocator, tool_surface);
         }
     }
 
@@ -7197,6 +7222,26 @@ fn runMainLoop(self: *AppWindow) !void {
     browser_panel.deinit();
 
     // Tab cleanup is handled by AppWindow.deinit()
+}
+
+test "appwindow: setRequestedFont keeps a private copy of the family string" {
+    // Regression: g_requested_font aliased App.font_family, which App frees and
+    // reallocates on every config reload (App.replaceStr). The captured family
+    // is read later in the event loop (handleWindowDpiChanged), so it must not
+    // point into freed memory. The setter copies into its own buffer.
+    defer {
+        @memset(&g_requested_font_buf, 0);
+        g_requested_font = "";
+    }
+    var src: [16]u8 = undefined;
+    @memcpy(src[0..11], "JetBrains M");
+    setRequestedFont(src[0..11]);
+    @memset(&src, 'x'); // clobber the source the way replaceStr would
+    try std.testing.expectEqualStrings("JetBrains M", g_requested_font);
+
+    const long = "z" ** 1000;
+    setRequestedFont(long);
+    try std.testing.expect(g_requested_font.len < long.len);
 }
 
 test "appwindow: syncDefaultShellCommandFromConfig refreshes tab default shell" {

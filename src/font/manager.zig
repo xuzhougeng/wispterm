@@ -126,6 +126,64 @@ pub threadlocal var g_dpi: u32 = platform_display.default_dpi;
 pub threadlocal var g_cjk_font_family: ?[]const u8 = null;
 pub threadlocal var g_fallback_font_families: ?[]const u8 = null;
 
+// The globals above must never alias config-owned memory: the config that
+// carries these strings is deinit'd right after a reload is applied, and the
+// globals are read lazily on the next fallback-face lookup. Set them only
+// through these setters, which copy into the thread's own buffers.
+threadlocal var g_cjk_font_family_buf: [256]u8 = undefined;
+threadlocal var g_fallback_font_families_buf: [1024]u8 = undefined;
+
+pub fn setCjkFontFamily(family: ?[]const u8) void {
+    const value = family orelse {
+        g_cjk_font_family = null;
+        return;
+    };
+    const n = @min(value.len, g_cjk_font_family_buf.len);
+    @memcpy(g_cjk_font_family_buf[0..n], value[0..n]);
+    g_cjk_font_family = g_cjk_font_family_buf[0..n];
+}
+
+pub fn setFallbackFontFamilies(csv: ?[]const u8) void {
+    const value = csv orelse {
+        g_fallback_font_families = null;
+        return;
+    };
+    const n = @min(value.len, g_fallback_font_families_buf.len);
+    @memcpy(g_fallback_font_families_buf[0..n], value[0..n]);
+    g_fallback_font_families = g_fallback_font_families_buf[0..n];
+}
+
+test "fallback family setters keep a private copy of config-owned strings" {
+    // Regression: config reload assigned cfg-owned slices directly to the
+    // globals, which dangled once the reloaded Config was deinit'd. The
+    // setters must copy, so clobbering the source must not change the values.
+    var src: [16]u8 = undefined;
+    @memcpy(src[0..6], "Sarasa");
+    setCjkFontFamily(src[0..6]);
+    @memset(&src, 'x');
+    try std.testing.expectEqualStrings("Sarasa", g_cjk_font_family.?);
+
+    @memcpy(src[0..8], "AA, B, C");
+    setFallbackFontFamilies(src[0..8]);
+    @memset(&src, 'y');
+    try std.testing.expectEqualStrings("AA, B, C", g_fallback_font_families.?);
+
+    setCjkFontFamily(null);
+    try std.testing.expect(g_cjk_font_family == null);
+    setFallbackFontFamilies(null);
+    try std.testing.expect(g_fallback_font_families == null);
+}
+
+test "fallback family setters truncate values longer than their buffers" {
+    const long = "x" ** 2000;
+    setCjkFontFamily(long);
+    try std.testing.expect(g_cjk_font_family.?.len < long.len);
+    setFallbackFontFamilies(long);
+    try std.testing.expect(g_fallback_font_families.?.len < long.len);
+    setCjkFontFamily(null);
+    setFallbackFontFamilies(null);
+}
+
 // HarfBuzz shaping state
 pub threadlocal var g_hb_buf: ?harfbuzz.Buffer = null;
 pub threadlocal var g_hb_font: ?harfbuzz.Font = null; // HB font for primary face
