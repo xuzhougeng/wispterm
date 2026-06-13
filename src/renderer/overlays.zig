@@ -36,6 +36,7 @@ const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
 const claude_integration = @import("../claude_integration.zig");
 const platform_atomic_file = @import("../platform/atomic_file.zig");
+const agent_detector = @import("../agent_detector.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");
 
@@ -4527,6 +4528,53 @@ pub fn renderSplitDividers(active_tab: *const TabState, content_x: i32, content_
                 }
             },
         }
+    }
+}
+
+/// Draw a small filled dot at the top-right corner of each split pane that has
+/// a visible agent running. The dot is colored by agentBadgeColor(state) and is
+/// additive — it does not replace the existing focused-surface titlebar badge.
+///
+/// Coordinate system: OpenGL Y=0 is bottom. content_x/y/w/h are in framebuffer
+/// pixels (same as renderSplitDividers). window_height is the framebuffer height.
+pub fn renderPaneAgentDots(active_tab: *const TabState, content_x: i32, content_y: i32, content_w: i32, content_h: i32, window_height: f32) void {
+    if (!active_tab.tree.isSplit()) {
+        // Single-pane tab — no per-pane dot needed (focused badge in titlebar covers it).
+        return;
+    }
+
+    const allocator = AppWindow.g_allocator orelse return;
+
+    var spatial = active_tab.tree.spatial(allocator) catch return;
+    defer spatial.deinit(allocator);
+
+    const dot_size: f32 = 6; // diameter of the dot square
+    const dot_margin: f32 = 4; // inset from the pane corner
+
+    var it = active_tab.tree.iterator();
+    while (it.next()) |entry| {
+        const det = entry.surface.agent_detection;
+        if (!det.visible()) continue;
+
+        const idx = @intFromEnum(entry.handle);
+        if (idx >= spatial.slots.len) continue;
+        const slot = spatial.slots[idx];
+
+        // Convert normalized slot to framebuffer pixel rect.
+        const px: f32 = @as(f32, @floatCast(slot.x)) * @as(f32, @floatFromInt(content_w)) + @as(f32, @floatFromInt(content_x));
+        const py: f32 = @as(f32, @floatCast(slot.y)) * @as(f32, @floatFromInt(content_h)) + @as(f32, @floatFromInt(content_y));
+        const pw: f32 = @as(f32, @floatCast(slot.width)) * @as(f32, @floatFromInt(content_w));
+        const ph: f32 = @as(f32, @floatCast(slot.height)) * @as(f32, @floatFromInt(content_h));
+
+        // Top-right corner in GL coords (Y=0 at bottom):
+        //   pane GL top = window_height - py - ph  (py is top-down from content_y)
+        //   pane GL right = px + pw
+        const gl_top = window_height - py - ph;
+        const dot_x = px + pw - dot_size - dot_margin;
+        const dot_y = gl_top + dot_margin;
+
+        const color = titlebar.agentBadgeColor(det.state);
+        ui_pipeline.fillQuad(dot_x, dot_y, dot_size, dot_size, color);
     }
 }
 

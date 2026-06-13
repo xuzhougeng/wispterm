@@ -2400,6 +2400,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
             gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
             gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
+            overlays.renderPaneAgentDots(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
         }
     } else {
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
@@ -5162,8 +5163,9 @@ fn runMainLoop(self: *AppWindow) !void {
                     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
                     gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
-                    // Draw split dividers
+                    // Draw split dividers and per-pane agent dots
                     overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
+                    overlays.renderPaneAgentDots(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
                 }
             }
         } else if (!post_process.g_post_enabled) {
