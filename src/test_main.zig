@@ -759,6 +759,7 @@ comptime {
     _ = @import("agent_memory.zig");
     _ = @import("skill_registry.zig");
     _ = @import("skill_scan.zig");
+    _ = @import("skill_install.zig");
     _ = @import("skill_inventory.zig");
     _ = @import("skill_inventory_cache.zig");
     _ = @import("skill_center.zig");

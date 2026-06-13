@@ -6,6 +6,7 @@
 //! sibling modules.
 const std = @import("std");
 const scan = @import("skill_scan.zig");
+const install = @import("skill_install.zig");
 
 /// Target software — a skills root under $HOME on the target machine. Both use
 /// the same SKILL.md directory format, so a library skill deploys to either.
@@ -152,12 +153,72 @@ pub const ConfirmState = struct {
     }
 };
 
+/// Editable single-line URL buffer for the "install from GitHub" overlay.
+pub const UrlInputState = struct {
+    buf: std.ArrayListUnmanaged(u8) = .empty,
+
+    pub fn insertSlice(self: *UrlInputState, allocator: std.mem.Allocator, bytes: []const u8) void {
+        self.buf.appendSlice(allocator, bytes) catch {};
+    }
+    pub fn backspace(self: *UrlInputState) void {
+        if (self.buf.items.len > 0) self.buf.items.len -= 1;
+    }
+    pub fn text(self: *const UrlInputState) []const u8 {
+        return self.buf.items;
+    }
+    fn deinit(self: *UrlInputState, allocator: std.mem.Allocator) void {
+        self.buf.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+/// Checklist of skills enumerated from a GitHub URL. Owns the resolved RepoRef
+/// (with its ref filled in) and the entry list; `checked` is parallel to
+/// `entries`. `sel` is the cursor row.
+pub const InstallPickState = struct {
+    repo: install.RepoRef,
+    entries: []install.SkillEntry,
+    checked: []bool,
+    sel: usize = 0,
+
+    pub fn toggle(self: *InstallPickState) void {
+        if (self.sel < self.checked.len) self.checked[self.sel] = !self.checked[self.sel];
+    }
+    pub fn setAll(self: *InstallPickState, value: bool) void {
+        for (self.checked) |*c| c.* = value;
+    }
+    pub fn anyChecked(self: *const InstallPickState) bool {
+        for (self.checked) |c| if (c) return true;
+        return false;
+    }
+    /// Owned clone of just the checked entries (caller frees via freeEntries).
+    pub fn selectedEntries(self: *const InstallPickState, allocator: std.mem.Allocator) ![]install.SkillEntry {
+        var out: std.ArrayListUnmanaged(install.SkillEntry) = .empty;
+        errdefer {
+            for (out.items) |*e| e.deinit(allocator);
+            out.deinit(allocator);
+        }
+        for (self.entries, 0..) |e, i| {
+            if (i < self.checked.len and self.checked[i]) try out.append(allocator, try e.clone(allocator));
+        }
+        return out.toOwnedSlice(allocator);
+    }
+    fn deinit(self: *InstallPickState, allocator: std.mem.Allocator) void {
+        self.repo.deinit(allocator);
+        install.freeEntries(allocator, self.entries);
+        allocator.free(self.checked);
+        self.* = undefined;
+    }
+};
+
 pub const Overlay = union(enum) {
     none,
     picker: PickerState,
     import_list: ImportState,
     confirm: ConfirmState,
     busy: []u8, // owned message
+    url_input: UrlInputState,
+    install_pick: InstallPickState,
 
     pub fn deinit(self: *Overlay, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -166,6 +227,8 @@ pub const Overlay = union(enum) {
             .import_list => |*i| i.deinit(allocator),
             .confirm => |*c| c.deinit(allocator),
             .busy => |m| allocator.free(m),
+            .url_input => |*u| u.deinit(allocator),
+            .install_pick => |*p| p.deinit(allocator),
         }
         self.* = .none;
     }
@@ -263,6 +326,10 @@ pub const OpResult = union(enum) {
     transfer: struct { is_import: bool, ok: bool, err_summary: ?[]u8 },
     /// preview finished: show the fetched SKILL.md in the markdown preview panel.
     preview: struct { title: []u8, content: []u8 },
+    /// install-enumerate finished: show the checklist built from `entries`.
+    install_enumerate: struct { repo: install.RepoRef, entries: []install.SkillEntry, truncated: bool },
+    /// install-download finished: report counts via toast.
+    install_done: struct { installed: usize, overwritten: usize, failed: usize },
     /// generic failure before work could run (e.g. lost connection).
     failed,
 
@@ -285,6 +352,11 @@ pub const OpResult = union(enum) {
                 allocator.free(v.title);
                 allocator.free(v.content);
             },
+            .install_enumerate => |*v| {
+                v.repo.deinit(allocator);
+                install.freeEntries(allocator, v.entries);
+            },
+            .install_done => {},
             .failed => {},
         }
         self.* = .failed;
@@ -560,6 +632,54 @@ test "skill_center: overlay set/clear frees owned data (no leak)" {
     try std.testing.expect(m.overlay == .none);
 }
 
+test "skill_center: UrlInputState edits and frees" {
+    const a = std.testing.allocator;
+    var m = PanelModel.init(a);
+    defer m.deinit();
+    m.setOverlay(.{ .url_input = .{} });
+    switch (m.overlay) {
+        .url_input => |*u| {
+            u.insertSlice(a, "https://github.com/o/r");
+            u.backspace();
+            try std.testing.expectEqualStrings("https://github.com/o/", u.text());
+        },
+        else => return error.WrongOverlay,
+    }
+    // PanelModel.deinit frees the overlay buffer; testing allocator catches leaks.
+}
+
+test "skill_center: InstallPickState toggle/setAll/selectedEntries" {
+    const a = std.testing.allocator;
+    var repo = try install.parseGithubUrl(a, "https://github.com/o/r/tree/main/skills");
+    errdefer repo.deinit(a);
+    var entries = try a.alloc(install.SkillEntry, 2);
+    inline for (.{ "a", "b" }, 0..) |nm, i| {
+        var files = try a.alloc([]u8, 1);
+        files[0] = try std.fmt.allocPrint(a, "skills/{s}/SKILL.md", .{nm});
+        entries[i] = .{ .name = try a.dupe(u8, nm), .root_path = try std.fmt.allocPrint(a, "skills/{s}", .{nm}), .files = files };
+    }
+    const checked = try a.alloc(bool, 2);
+    checked[0] = false;
+    checked[1] = false;
+
+    var m = PanelModel.init(a);
+    defer m.deinit();
+    m.setOverlay(.{ .install_pick = .{ .repo = repo, .entries = entries, .checked = checked } });
+    switch (m.overlay) {
+        .install_pick => |*p| {
+            p.sel = 1;
+            p.toggle();
+            try std.testing.expect(p.anyChecked());
+            const sel = try p.selectedEntries(a);
+            defer install.freeEntries(a, sel);
+            try std.testing.expectEqual(@as(usize, 1), sel.len);
+            try std.testing.expectEqualStrings("b", sel[0].name);
+            p.setAll(true);
+        },
+        else => return error.WrongOverlay,
+    }
+}
+
 test "skill_center: libraryFromRows moves ownership" {
     const a = std.testing.allocator;
     const rows = try a.alloc(scan.SkillRow, 1);
@@ -689,4 +809,26 @@ test "OpResult.preview deinit frees title and content" {
     } };
     r.deinit(a); // must free both; testing allocator catches a leak
     try std.testing.expect(r == .failed); // deinit resets to .failed
+}
+
+test "skill_center: OpResult.install_enumerate deinit frees repo and entries" {
+    const a = std.testing.allocator;
+    var repo = try install.parseGithubUrl(a, "https://github.com/o/r/tree/main/skills");
+    errdefer repo.deinit(a);
+    var entries = try a.alloc(install.SkillEntry, 1);
+    {
+        var files = try a.alloc([]u8, 1);
+        files[0] = try a.dupe(u8, "skills/foo/SKILL.md");
+        entries[0] = .{ .name = try a.dupe(u8, "foo"), .root_path = try a.dupe(u8, "skills/foo"), .files = files };
+    }
+    var r: OpResult = .{ .install_enumerate = .{ .repo = repo, .entries = entries, .truncated = false } };
+    r.deinit(a); // testing allocator catches a leak
+    try std.testing.expect(r == .failed);
+}
+
+test "skill_center: OpResult.install_done deinit is a no-op" {
+    const a = std.testing.allocator;
+    var r: OpResult = .{ .install_done = .{ .installed = 3, .overwritten = 1, .failed = 0 } };
+    r.deinit(a);
+    try std.testing.expect(r == .failed);
 }

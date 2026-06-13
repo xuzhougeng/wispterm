@@ -29,10 +29,17 @@ pub const ListView = struct {
     sel: usize,
 };
 
+/// A single-line text-input overlay (the GitHub URL field).
+pub const InputView = struct {
+    prompt: []const u8,
+    text: []const u8,
+};
+
 pub const Overlay = union(enum) {
     none,
     list: ListView,
     confirm: []const u8, // confirm bar text
+    input: InputView,
 };
 
 pub const View = struct {
@@ -141,6 +148,20 @@ pub fn render(
                 _ = draw.renderTextLimited(view.overlay.confirm, content_x + PAD_X, t_y, fg, content_w - PAD_X * 2);
                 return; // confirm replaces the legend line
             }
+            if (view.overlay == .input) {
+                const iv = view.overlay.input;
+                const bar_h = rowHeight(draw.cell_h) * 2;
+                const bar_y = legendHeight(draw.cell_h);
+                draw.fillQuadAlpha(content_x, bar_y, content_w, bar_h, mixColor(bg, accent, 0.22), 0.97);
+                const prompt_y = bar_y + bar_h - draw.cell_h - 6;
+                _ = draw.renderTextLimited(iv.prompt, content_x + PAD_X, prompt_y, muted, content_w - PAD_X * 2);
+                // editable line with a trailing caret
+                var line_buf: [600]u8 = undefined;
+                const shown = std.fmt.bufPrint(&line_buf, "{s}_", .{iv.text}) catch iv.text;
+                const text_y = bar_y + (rowHeight(draw.cell_h) - draw.cell_h) / 2;
+                _ = draw.renderTextLimited(shown, content_x + PAD_X, text_y, fg, content_w - PAD_X * 2);
+                return; // input replaces the legend line
+            }
         },
     }
 
@@ -242,4 +263,10 @@ test "skill_center_renderer: bodyVisibleCapacity grows with height" {
     const cell_h: f32 = 16;
     try std.testing.expect(bodyVisibleCapacity(800, 40, cell_h) >= bodyVisibleCapacity(200, 40, cell_h));
     try std.testing.expectEqual(@as(usize, 0), bodyVisibleCapacity(40, 40, cell_h));
+}
+
+test "skill_center_renderer: input overlay variant is constructible" {
+    const ov: Overlay = .{ .input = .{ .prompt = "Paste URL", .text = "https://github.com/o/r" } };
+    try std.testing.expect(ov == .input);
+    try std.testing.expectEqualStrings("https://github.com/o/r", ov.input.text);
 }
