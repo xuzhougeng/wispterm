@@ -1748,7 +1748,11 @@ fn downloadSelectedSkillsToLibrary(
         var ok = true;
         for (entry.files) |file_path| {
             const rel = skill_install.relInstallPath(entry.root_path, file_path) orelse continue;
-            const url = skill_install.rawUrl(allocator, repo.owner, repo.repo, ref, file_path) catch {
+            // Fetch via the GitHub Contents API (api.github.com) rather than
+            // raw.githubusercontent.com: the same host that enumeration used and
+            // proved reachable. `Accept: application/vnd.github.raw` returns the
+            // file's raw bytes.
+            const url = skill_install.contentsApiUrl(allocator, repo.owner, repo.repo, file_path, ref) catch {
                 ok = false;
                 break;
             };
@@ -1758,7 +1762,7 @@ fn downloadSelectedSkillsToLibrary(
                 break;
             };
             defer allocator.free(dest);
-            update_install.downloadAsset(allocator, url, dest) catch {
+            update_install.downloadAssetAccept(allocator, url, dest, "application/vnd.github.raw") catch {
                 ok = false;
                 break;
             };

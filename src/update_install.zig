@@ -32,6 +32,14 @@ fn siblingTempPath(allocator: std.mem.Allocator, path: []const u8, suffix: []con
 /// Writes to a `.part` sibling first and renames into place so a failed or
 /// interrupted download never leaves a truncated file at `dest_path`.
 pub fn downloadAsset(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
+    return downloadAssetAccept(allocator, url, dest_path, null);
+}
+
+/// Like `downloadAsset`, but additionally sends an `Accept: <accept>` header when
+/// `accept != null`. Used to fetch GitHub file contents via the Contents API
+/// (`Accept: application/vnd.github.raw`) so downloads stay on the api.github.com
+/// host instead of raw.githubusercontent.com.
+pub fn downloadAssetAccept(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8, accept: ?[]const u8) !void {
     if (std.fs.path.dirname(dest_path)) |dir_path| {
         try std.fs.cwd().makePath(dir_path);
     }
@@ -50,6 +58,15 @@ pub fn downloadAsset(allocator: std.mem.Allocator, url: []const u8, dest_path: [
     };
     defer client.deinit();
 
+    // `extra_headers` is externally owned and must outlive the fetch; this local
+    // array does (the fetch completes within this function).
+    var accept_buf: [1]std.http.Header = undefined;
+    var extra_headers: []const std.http.Header = &.{};
+    if (accept) |acc| {
+        accept_buf[0] = .{ .name = "Accept", .value = acc };
+        extra_headers = accept_buf[0..1];
+    }
+
     const status = blk: {
         var out = try std.fs.createFileAbsolute(temp_path, .{ .truncate = true });
         errdefer out.close();
@@ -61,6 +78,7 @@ pub fn downloadAsset(allocator: std.mem.Allocator, url: []const u8, dest_path: [
             .method = .GET,
             .keep_alive = false,
             .headers = .{ .user_agent = .{ .override = "wispterm" } },
+            .extra_headers = extra_headers,
             .response_writer = &writer.interface,
         });
         try writer.end();

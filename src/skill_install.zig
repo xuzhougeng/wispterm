@@ -118,6 +118,17 @@ pub fn rawUrl(a: std.mem.Allocator, owner: []const u8, repo: []const u8, ref: []
     return std.fmt.allocPrint(a, "https://raw.githubusercontent.com/{s}/{s}/{s}/{s}", .{ owner, repo, ref, path });
 }
 
+/// `https://api.github.com/repos/<owner>/<repo>/contents/<path>?ref=<ref>` — the
+/// GitHub Contents API. Fetched with `Accept: application/vnd.github.raw` it
+/// returns the file's raw bytes from the **api.github.com** host, which is far
+/// more widely reachable than raw.githubusercontent.com on some networks (the
+/// latter is commonly DNS-blocked). Downloads use this so all traffic stays on
+/// the same host that enumeration already proved reachable. (Raw responses are
+/// served for files up to 1 MiB; larger files would need the blobs API.)
+pub fn contentsApiUrl(a: std.mem.Allocator, owner: []const u8, repo: []const u8, path: []const u8, ref: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "https://api.github.com/repos/{s}/{s}/contents/{s}?ref={s}", .{ owner, repo, path, ref });
+}
+
 /// Pull `default_branch` from a `/repos/<owner>/<repo>` response. Caller owns.
 pub fn parseDefaultBranch(a: std.mem.Allocator, repo_json: []const u8) ![]u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, a, repo_json, .{});
@@ -187,6 +198,9 @@ test "skill_install: URL builders produce exact strings" {
     const raw = try rawUrl(a, "o", "r", "main", "skills/foo/SKILL.md");
     defer a.free(raw);
     try std.testing.expectEqualStrings("https://raw.githubusercontent.com/o/r/main/skills/foo/SKILL.md", raw);
+    const c = try contentsApiUrl(a, "o", "r", "skills/foo/SKILL.md", "main");
+    defer a.free(c);
+    try std.testing.expectEqualStrings("https://api.github.com/repos/o/r/contents/skills/foo/SKILL.md?ref=main", c);
 }
 
 test "skill_install: parseDefaultBranch reads the field" {
