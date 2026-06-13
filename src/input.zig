@@ -184,6 +184,52 @@ test "input: preview gallery neighbor opens next raster sibling" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: focused preview ignores shift-modified navigation keys" {
+    const gpa = std.testing.allocator;
+    const prev_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+
+    var pane = try PreviewPane.create(gpa);
+    defer pane.unref(gpa);
+    pane.open(.image, "a.png", "a.png", "current");
+
+    var tab_state = tab.TabState{
+        .tree = try SplitTree.initPane(gpa, .{ .preview = pane }),
+    };
+    defer tab_state.tree.deinit();
+
+    AppWindow.g_allocator = gpa;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &tab_state;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    defer {
+        AppWindow.g_allocator = prev_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+    }
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{
+        .key_code = platform_input.key_right,
+        .ctrl = false,
+        .shift = true,
+        .alt = false,
+        .super = false,
+    });
+
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+}
+
 // Regression: the event-driven render loop (PR #168) only paints a frame when
 // something marks the UI dirty. Command-center family overlays consume their own
 // key/char events and never reach the terminal, so each navigation/typing keystroke
@@ -2105,9 +2151,9 @@ fn handleKey(ev: platform_input.KeyEvent) void {
     // A focused preview leaf consumes plain navigation keys for scroll/pan.
     // Only engaged when a preview actually holds focus; otherwise this block is
     // skipped entirely and terminal/copilot key handling is unchanged. Modified
-    // keys (ctrl/alt/super) are left for keybinds and the terminal.
+    // keys (ctrl/shift/alt/super) are left for keybinds and the terminal.
     if (AppWindow.focusedPreviewPane()) |p| {
-        if (!ev.ctrl and !ev.alt and !ev.super) {
+        if (!ev.ctrl and !ev.shift and !ev.alt and !ev.super) {
             var consumed = true;
             switch (ev.key_code) {
                 platform_input.key_page_up => if (p.kind == .pdf) {
