@@ -444,6 +444,8 @@ test "PreviewPane: async load stores current source kind" {
         else => false,
     });
     drainJobs(p);
+    try std.testing.expectEqual(@as(usize, 0), p.jobs.items.len);
+    try std.testing.expectEqual(LoadStatus.ready, p.load_status);
     try std.testing.expect(switch (p.currentSourceKind()) {
         .wsl => true,
         else => false,
