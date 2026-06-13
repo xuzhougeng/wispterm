@@ -13,6 +13,7 @@ const gl_init = AppWindow.gpu.gl_init;
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
 const renderer = @import("../renderer.zig");
+const preview_close_button = @import("../input/preview_close_button.zig");
 
 const TabState = tab.TabState;
 pub const MAX_SPLITS_PER_TAB = tab.MAX_SPLITS_PER_TAB;
@@ -106,6 +107,32 @@ pub fn paneAtPoint(x: i32, y: i32) ?PaneHit {
         if (!cachedRectIsLive(r)) continue;
         if (x >= r.x and x < r.x + r.width and y >= r.y and y < r.y + r.height)
             return .{ .pane = r.pane, .handle = r.handle };
+    }
+    return null;
+}
+
+/// If (x, y) lands on a preview pane's top-right close (×) button, return that
+/// preview's handle; null otherwise. Mirrors the button geometry the preview
+/// renderer draws (shared via preview_close_button), so the clickable box and
+/// the drawn box stay in sync. Only live preview leaves are considered.
+pub fn previewCloseButtonAtPoint(x: i32, y: i32) ?SplitTree.Node.Handle {
+    const xf: f32 = @floatFromInt(x);
+    const yf: f32 = @floatFromInt(y);
+    for (0..g_split_rect_count) |i| {
+        const r = g_split_rects[i];
+        if (!cachedRectIsLive(r)) continue;
+        switch (r.pane) {
+            .preview => {
+                if (preview_close_button.contains(
+                    @floatFromInt(r.x),
+                    @floatFromInt(r.y),
+                    @floatFromInt(r.width),
+                    xf,
+                    yf,
+                )) return r.handle;
+            },
+            .terminal => {},
+        }
     }
     return null;
 }

@@ -7,6 +7,7 @@ const pdf_preview = @import("../pdf_preview.zig");
 const text_wrap = @import("../text_wrap.zig");
 const ui_perf = @import("../ui_perf.zig");
 const PreviewPane = @import("../preview_pane.zig");
+const preview_close_button = @import("../input/preview_close_button.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const gpu = AppWindow.gpu;
@@ -16,7 +17,9 @@ const c = @cImport({
 });
 
 const FOOTER_HEIGHT: f32 = 44;
-pub const HEADER_HEIGHT: f32 = 42;
+/// Re-exported from the pure geometry module so the drawn header height and the
+/// close-button hit-test share a single source of truth.
+pub const HEADER_HEIGHT: f32 = preview_close_button.HEADER_HEIGHT;
 const PAD_X: f32 = 16;
 const PAD_Y: f32 = 18;
 const LINE_GAP: f32 = 6;
@@ -46,6 +49,7 @@ pub fn renderInto(
     panel_w: f32,
     panel_h: f32,
     window_height: f32,
+    close_hovered: bool,
 ) void {
     if (panel_h <= 0) return;
 
@@ -67,7 +71,7 @@ pub fn renderInto(
     // Side background: fillQuad(x, gl_y, w, h) — gl_y = pane_gl_bottom
     ui_pipeline.fillQuad(panel_x, pane_gl_bottom, panel_w, panel_h, panel_bg);
 
-    renderHeader(panel_x, panel_w, window_height, panel_top, card_bg, border);
+    renderHeader(panel_x, panel_w, window_height, panel_top, card_bg, border, muted, normal, close_hovered);
     renderFooter(pane, panel_x, panel_w, pane_gl_bottom, card_bg, border, muted, normal, accent);
 
     renderDocument(pane, panel_x, panel_w, window_height, panel_top, panel_h, pane_gl_bottom, normal, muted, strong, accent, code_bg, border);
@@ -84,13 +88,29 @@ fn renderHeader(
     panel_top: f32,
     card_bg: [3]f32,
     border: [3]f32,
+    muted: [3]f32,
+    normal: [3]f32,
+    close_hovered: bool,
 ) void {
-    // A preview pane closes via the standard close-split keybind (like a terminal
-    // pane), so the header is just a top separator bar — no close button.
+    // The header is a top separator bar (badge/title/path live in the footer),
+    // so its top-right corner is free for a close (×) button. The button lets
+    // users dismiss the preview with the mouse without knowing the close-split
+    // keybind; Ctrl+Shift+W still works too.
     // header_y (GL): window_height - panel_top - HEADER_HEIGHT.
     const header_y = window_height - panel_top - HEADER_HEIGHT;
     ui_pipeline.fillQuad(panel_x, header_y, panel_w, HEADER_HEIGHT, card_bg);
     ui_pipeline.fillQuad(panel_x, header_y, panel_w, 1, border);
+
+    // Close (×) button, top-right. Geometry comes from the shared pure module
+    // (top-down px); flip to GL for drawing. Symmetric box, so the X centers the
+    // same in either y-convention.
+    const b = preview_close_button.rect(panel_x, panel_top, panel_w);
+    const btn_gl_y = window_height - b.y - b.h;
+    if (close_hovered) {
+        ui_pipeline.fillQuad(b.x, btn_gl_y, b.w, b.h, blend(card_bg, normal, 0.18));
+    }
+    const icon_color = if (close_hovered) normal else muted;
+    titlebar.renderCloseIcon(b.x, btn_gl_y, b.w, b.h, icon_color);
 }
 
 fn renderFooter(
