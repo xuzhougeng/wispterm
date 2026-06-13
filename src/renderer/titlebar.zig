@@ -1130,6 +1130,11 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
             if (tab.g_tabs[tab_idx]) |t| {
                 var states_buf: [64]agent_detector.State = undefined;
                 var states_len: usize = 0;
+                // Source the badge's app from a pane that actually has a visible
+                // agent (NOT the focused surface — it may be a plain shell while a
+                // split-sibling runs the agent). visible() requires app != .none,
+                // so this guarantees the synthetic Detection below is visible.
+                var agg_app: agent_detector.App = .none;
                 var it = t.tree.iterator();
                 while (it.next()) |entry| {
                     if (states_len >= states_buf.len) break;
@@ -1137,6 +1142,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
                     if (det.visible()) {
                         states_buf[states_len] = det.state;
                         states_len += 1;
+                        if (agg_app == .none) agg_app = det.app;
                     }
                 }
                 if (states_len > 0) {
@@ -1145,7 +1151,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
                         // Build a synthetic Detection so the existing badge renderer works.
                         break :blk agent_detector.Detection{
                             .state = agg_state,
-                            .app = if (t.focusedSurface()) |s| s.agent_detection.app else .none,
+                            .app = agg_app,
                             .confidence = 100,
                         };
                     }
