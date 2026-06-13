@@ -153,12 +153,32 @@ pub const ConfirmState = struct {
     }
 };
 
+/// Editable single-line URL buffer for the "install from GitHub" overlay.
+pub const UrlInputState = struct {
+    buf: std.ArrayListUnmanaged(u8) = .empty,
+
+    pub fn insertSlice(self: *UrlInputState, allocator: std.mem.Allocator, bytes: []const u8) void {
+        self.buf.appendSlice(allocator, bytes) catch {};
+    }
+    pub fn backspace(self: *UrlInputState) void {
+        if (self.buf.items.len > 0) self.buf.items.len -= 1;
+    }
+    pub fn text(self: *const UrlInputState) []const u8 {
+        return self.buf.items;
+    }
+    fn deinit(self: *UrlInputState, allocator: std.mem.Allocator) void {
+        self.buf.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 pub const Overlay = union(enum) {
     none,
     picker: PickerState,
     import_list: ImportState,
     confirm: ConfirmState,
     busy: []u8, // owned message
+    url_input: UrlInputState,
 
     pub fn deinit(self: *Overlay, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -167,6 +187,7 @@ pub const Overlay = union(enum) {
             .import_list => |*i| i.deinit(allocator),
             .confirm => |*c| c.deinit(allocator),
             .busy => |m| allocator.free(m),
+            .url_input => |*u| u.deinit(allocator),
         }
         self.* = .none;
     }
@@ -568,6 +589,22 @@ test "skill_center: overlay set/clear frees owned data (no leak)" {
     try std.testing.expect(m.overlay == .confirm);
     m.clearOverlay();
     try std.testing.expect(m.overlay == .none);
+}
+
+test "skill_center: UrlInputState edits and frees" {
+    const a = std.testing.allocator;
+    var m = PanelModel.init(a);
+    defer m.deinit();
+    m.setOverlay(.{ .url_input = .{} });
+    switch (m.overlay) {
+        .url_input => |*u| {
+            u.insertSlice(a, "https://github.com/o/r");
+            u.backspace();
+            try std.testing.expectEqualStrings("https://github.com/o/", u.text());
+        },
+        else => return error.WrongOverlay,
+    }
+    // PanelModel.deinit frees the overlay buffer; testing allocator catches leaks.
 }
 
 test "skill_center: libraryFromRows moves ownership" {
