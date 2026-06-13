@@ -63,6 +63,11 @@ test {
     _ = @import("appwindow/render_gate.zig");
     _ = @import("scp.zig");
     _ = @import("surface_registry.zig");
+    _ = @import("ctl/protocol.zig");
+    _ = @import("ctl/discovery.zig");
+    _ = @import("ctl/control.zig");
+    _ = @import("ctl/server.zig");
+    _ = @import("ctl/client.zig");
     _ = @import("png_dimensions.zig");
     _ = @import("pdf_preview.zig");
     _ = @import("file_backend.zig");

@@ -20,6 +20,7 @@ const remote = @import("remote_client.zig");
 const remote_snapshot = @import("remote_snapshot.zig");
 const weixin_control = @import("weixin/control.zig");
 const weixin_types = @import("weixin/types.zig");
+const ctl_control = @import("ctl/control.zig");
 const memory_debug = @import("memory_debug.zig");
 const surface_registry = @import("surface_registry.zig");
 const agent_detector = @import("agent_detector.zig");
@@ -4503,6 +4504,101 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
     try out.appendSlice(allocator, "]}");
 }
 
+/// Lightweight panes listing for the agent-control API. Mirrors
+/// buildRemoteLayoutJson's terminal branch but omits the heavy per-surface
+/// scrollback snapshot (that is get-text's job) and adds the surface cwd.
+/// Non-terminal tabs (AI chat / history / etc.) appear as a minimal entry so
+/// the listing is complete. UI-thread only (reads threadlocal tab state).
+fn buildCtlPanesJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
+    try out.appendSlice(allocator, "{\"activeTab\":");
+    try out.print(allocator, "{d}", .{active_tab_state.g_active_tab});
+    try out.appendSlice(allocator, ",\"tabs\":[");
+
+    var wrote_tab = false;
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (wrote_tab) try out.append(allocator, ',');
+        wrote_tab = true;
+
+        if (tab_state.kind != .terminal) {
+            try out.appendSlice(allocator, "{\"index\":");
+            try out.print(allocator, "{d}", .{tab_index});
+            try out.appendSlice(allocator, ",\"title\":\"");
+            try remote.appendJsonString(out, allocator, tab_state.getTitle());
+            try out.appendSlice(allocator, "\",\"kind\":\"");
+            try remote.appendJsonString(out, allocator, @tagName(tab_state.kind));
+            try out.appendSlice(allocator, "\",\"surfaces\":[]}");
+            continue;
+        }
+
+        try out.appendSlice(allocator, "{\"index\":");
+        try out.print(allocator, "{d}", .{tab_index});
+        try out.appendSlice(allocator, ",\"title\":\"");
+        try remote.appendJsonString(out, allocator, tab_state.getTitle());
+        try out.appendSlice(allocator, "\",\"kind\":\"terminal\",\"focusedSurfaceId\":\"");
+        if (tab_state.focusedSurface()) |focused|
+            try remote.appendJsonString(out, allocator, focused.remote_id[0..]);
+        try out.appendSlice(allocator, "\",\"surfaces\":[");
+
+        var spatial = tab_state.tree.spatial(allocator) catch null;
+        defer if (spatial) |*sp| sp.deinit(allocator);
+
+        var wrote_surface = false;
+        var it = tab_state.tree.surfaces();
+        while (it.next()) |entry| {
+            if (wrote_surface) try out.append(allocator, ',');
+            wrote_surface = true;
+
+            try out.appendSlice(allocator, "{\"id\":\"");
+            try remote.appendJsonString(out, allocator, entry.surface.remote_id[0..]);
+            try out.appendSlice(allocator, "\",\"title\":\"");
+            try remote.appendJsonString(out, allocator, entry.surface.getTitle());
+            try out.appendSlice(allocator, "\",\"focused\":");
+            try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
+            try appendAgentDetectionJson(allocator, out, entry.surface);
+            try out.appendSlice(allocator, ",\"cols\":");
+            try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
+            try out.appendSlice(allocator, ",\"rows\":");
+            try out.print(allocator, "{d}", .{entry.surface.size.grid.rows});
+            var cx: usize = 0;
+            var cy: usize = 0;
+            {
+                entry.surface.render_state.mutex.lock();
+                defer entry.surface.render_state.mutex.unlock();
+                cx = entry.surface.terminal.screens.active.cursor.x;
+                cy = entry.surface.terminal.screens.active.cursor.y;
+            }
+            try out.appendSlice(allocator, ",\"cursorX\":");
+            try out.print(allocator, "{d}", .{cx});
+            try out.appendSlice(allocator, ",\"cursorY\":");
+            try out.print(allocator, "{d}", .{cy});
+            try out.appendSlice(allocator, ",\"cwd\":\"");
+            if (entry.surface.getCwd()) |cwd| try remote.appendJsonString(out, allocator, cwd);
+            try out.append(allocator, '"');
+
+            if (spatial) |sp| {
+                const slot = sp.slots[entry.handle.idx()];
+                try out.appendSlice(allocator, ",\"x\":");
+                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.x))});
+                try out.appendSlice(allocator, ",\"y\":");
+                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.y))});
+                try out.appendSlice(allocator, ",\"w\":");
+                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.width))});
+                try out.appendSlice(allocator, ",\"h\":");
+                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.height))});
+            } else {
+                try out.appendSlice(allocator, ",\"x\":0,\"y\":0,\"w\":1,\"h\":1");
+            }
+
+            try out.append(allocator, '}');
+        }
+
+        try out.appendSlice(allocator, "]}");
+    }
+
+    try out.appendSlice(allocator, "]}");
+}
+
 fn remoteAiSurfaceId(tab_index: usize) [16]u8 {
     var id: [16]u8 = undefined;
     _ = std.fmt.bufPrint(&id, "aichat{d:0>10}", .{tab_index}) catch unreachable;
@@ -4951,6 +5047,105 @@ fn clearWeixinTranscriptCache() void {
     defer g_weixin_transcript_mutex.unlock();
     if (g_weixin_transcript_owned.len != 0) std.heap.page_allocator.free(g_weixin_transcript_owned);
     g_weixin_transcript_owned = &.{};
+}
+
+// ============================================================================
+// Agent terminal control (wisptermctl) — cross-platform Control surface.
+//
+// Unlike the weixin path, this does NOT marshal to the UI thread: Win32
+// SendMessage is a no-op on Linux (window_linux.zig). get-text/send-text pin
+// the target surface through surface_registry (a mutex liveness guard) and run
+// directly on the ctl server thread, exactly like the agent worker host
+// (agentSurfaceSnapshot / agentWriteSurface). Only `panes` needs threadlocal
+// tab topology, so the UI thread publishes a JSON snapshot into
+// g_ctl_panes_json on the render tick (syncCtlPanes).
+// ============================================================================
+
+var g_agent_control_enabled = std.atomic.Value(bool).init(false);
+var g_ctl_ctx: u8 = 0;
+var g_ctl_panes_mutex: std.Thread.Mutex = .{};
+var g_ctl_panes_json: []u8 = &.{}; // page_allocator-owned latest panes JSON
+// Atomic: syncCtlPanes runs from every window's render thread (the panes cache
+// is process-global, last-writer-wins — acceptable, matching the relay layout
+// sync). The timestamp must be touched atomically to avoid a data race.
+var g_ctl_panes_last_ms = std.atomic.Value(i64).init(0);
+
+const ctl_default_rows: u32 = 1000;
+
+pub fn enableAgentControl() void {
+    g_agent_control_enabled.store(true, .release);
+}
+
+fn ctlListPanes(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
+    _ = ctx;
+    g_ctl_panes_mutex.lock();
+    defer g_ctl_panes_mutex.unlock();
+    if (g_ctl_panes_json.len == 0) return null;
+    return try allocator.dupe(u8, g_ctl_panes_json);
+}
+
+fn ctlGetText(ctx: *anyopaque, allocator: std.mem.Allocator, id: []const u8, recent: ?u32) anyerror!?[]u8 {
+    _ = ctx;
+    // Cross-platform + UAF-safe: the registry blocks Surface.deinit for the
+    // duration of the snapshot, and the id match rejects a reused pointer.
+    const ptr = surface_registry.acquireById(id) orelse return null;
+    defer surface_registry.release();
+    const surface: *Surface = @ptrCast(@alignCast(ptr));
+    const want: usize = if (recent) |r| r else ctl_default_rows;
+    const rows = @min(want, remote_snapshot.default_max_history_rows);
+    return try buildRemoteSurfaceSnapshot(allocator, surface, rows);
+}
+
+fn ctlSendText(ctx: *anyopaque, id: []const u8, data: []const u8) bool {
+    _ = ctx;
+    const ptr = surface_registry.acquireById(id) orelse return false;
+    defer surface_registry.release();
+    const surface: *Surface = @ptrCast(@alignCast(ptr));
+    surface.queuePtyWrite(data);
+    return true;
+}
+
+const ctl_vtable = ctl_control.Control.VTable{
+    .list_panes = ctlListPanes,
+    .get_text = ctlGetText,
+    .send_text = ctlSendText,
+};
+
+/// The Control the agent-control server drives. Backed by process-global state,
+/// so the dummy ctx is unused.
+pub fn agentControl() ctl_control.Control {
+    return .{ .ctx = &g_ctl_ctx, .vtable = &ctl_vtable };
+}
+
+fn clearCtlPanesCache() void {
+    g_ctl_panes_mutex.lock();
+    defer g_ctl_panes_mutex.unlock();
+    if (g_ctl_panes_json.len != 0) std.heap.page_allocator.free(g_ctl_panes_json);
+    g_ctl_panes_json = &.{};
+}
+
+/// UI-thread: publish a fresh panes JSON snapshot (throttled). Called from the
+/// render loop next to syncRemoteLayout. No-op unless ctl is enabled.
+fn syncCtlPanes(allocator: std.mem.Allocator) void {
+    if (!g_agent_control_enabled.load(.acquire)) return;
+    const now = std.time.milliTimestamp();
+    if (now - g_ctl_panes_last_ms.load(.monotonic) < 200) return;
+    g_ctl_panes_last_ms.store(now, .monotonic);
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+    buildCtlPanesJson(allocator, &out) catch return;
+
+    const owned = std.heap.page_allocator.dupe(u8, out.items) catch return;
+    g_ctl_panes_mutex.lock();
+    defer g_ctl_panes_mutex.unlock();
+    if (g_ctl_panes_json.len != 0) std.heap.page_allocator.free(g_ctl_panes_json);
+    g_ctl_panes_json = owned;
+}
+
+test "ctl surface callbacks reject an unregistered id without dereferencing" {
+    try std.testing.expect((try ctlGetText(&g_ctl_ctx, std.testing.allocator, "missing", null)) == null);
+    try std.testing.expect(!ctlSendText(&g_ctl_ctx, "missing", "x"));
 }
 
 fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface, max_history_rows: usize) ![]u8 {
@@ -6887,6 +7082,7 @@ fn runMainLoop(self: *AppWindow) !void {
             const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_height)) - top_padding - padding);
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
             syncRemoteLayout(allocator);
+            syncCtlPanes(allocator);
             syncImeCaretPosition(win, split_count);
             if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 // Block instead of spinning at ~1kHz: the IO thread posts a
@@ -7193,6 +7389,7 @@ fn runMainLoop(self: *AppWindow) !void {
     weixin_qr_renderer.deinit();
     weixin_qr_panel.deinit();
     clearWeixinTranscriptCache();
+    clearCtlPanesCache();
     markdown_preview_renderer.deinit();
     browser_panel.deinit();
 
