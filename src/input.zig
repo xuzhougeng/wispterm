@@ -5059,7 +5059,10 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         if (hit.pane == .preview) {
             const p = hit.pane.preview;
             if (p.kind.isRaster()) {
-                _ = p.zoomImageBySteps(mouseWheelUnits(ev.delta), ev.delta > 0);
+                // Continuous, per-event-bounded zoom: mouseWheelUnits is tuned
+                // for line-scrolling and turns macOS precise/trackpad deltas
+                // into a runaway 1.2^N zoom (see zoomImageByWheel).
+                _ = p.zoomImageByWheel(ev.delta);
             } else {
                 const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
                 p.scrollBy(delta);

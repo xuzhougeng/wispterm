@@ -25,6 +25,14 @@ const TOO_LARGE_SOURCE = "Preview too large";
 const IMAGE_ZOOM_MIN: f32 = 0.25;
 const IMAGE_ZOOM_MAX: f32 = 16.0;
 const IMAGE_ZOOM_STEP: f32 = 1.2;
+// Wheel-zoom sensitivity. One classic mouse-wheel notch reports |delta| == 120;
+// REF_UNITS maps that to a single IMAGE_ZOOM_STEP (1.2x). macOS precise/trackpad
+// scrolling instead reports large, magnified deltas across a torrent of events
+// (window_macos_bridge.m scales precise scrollingDeltaY by 10), so the wheel
+// delta is fed through a continuous exponential rate and PER_EVENT_MAX caps a
+// single event — a big precise delta can no longer jump straight to the clamp.
+const IMAGE_ZOOM_WHEEL_REF_UNITS: f32 = 120.0;
+const IMAGE_ZOOM_WHEEL_PER_EVENT_MAX: f32 = 1.25;
 
 const PreviewJob = struct {
     request_id: u64 = 0,
@@ -152,6 +160,24 @@ pub fn zoomImageBySteps(self: *PreviewPane, steps: usize, zoom_in: bool) bool {
     while (remaining > 0) : (remaining -= 1) next = if (zoom_in) next * IMAGE_ZOOM_STEP else next / IMAGE_ZOOM_STEP;
     next = @max(IMAGE_ZOOM_MIN, @min(IMAGE_ZOOM_MAX, next));
     if (@abs(next - self.image_zoom) < 0.001) return false;
+    self.image_zoom = next;
+    return true;
+}
+
+/// Zoom from a raw mouse-wheel delta. Unlike zoomImageBySteps (keyboard +/-,
+/// a fixed 1.2x per press), this maps the wheel delta through a continuous
+/// exponential rate so macOS precise/trackpad scrolling zooms smoothly instead
+/// of exploding to the clamp on a tiny scroll. A single event is bounded by
+/// IMAGE_ZOOM_WHEEL_PER_EVENT_MAX.
+pub fn zoomImageByWheel(self: *PreviewPane, delta: i16) bool {
+    if (!self.kind.isRaster()) return false;
+    if (delta == 0) return false;
+    const rate: f32 = @log(IMAGE_ZOOM_STEP) / IMAGE_ZOOM_WHEEL_REF_UNITS;
+    var factor: f32 = @exp(rate * @as(f32, @floatFromInt(delta)));
+    // Cap a single event so a large precise/trackpad delta cannot jump the zoom.
+    factor = @max(1.0 / IMAGE_ZOOM_WHEEL_PER_EVENT_MAX, @min(IMAGE_ZOOM_WHEEL_PER_EVENT_MAX, factor));
+    const next = @max(IMAGE_ZOOM_MIN, @min(IMAGE_ZOOM_MAX, self.image_zoom * factor));
+    if (@abs(next - self.image_zoom) < 0.0001) return false;
     self.image_zoom = next;
     return true;
 }
@@ -412,6 +438,54 @@ test "PreviewPane: image zoom/pan are image-only and clamped" {
     try std.testing.expect(p.panImageBy(200, -80));
     p.clampImagePan(100, 100, 300, 160);
     try std.testing.expectEqual(@as(f32, 100), p.imagePanX());
+}
+
+test "PreviewPane: wheel zoom is gentle and bounded per event (no precise-scroll explosion)" {
+    const gpa = std.testing.allocator;
+    var p = try create(gpa);
+    defer p.unref(gpa);
+
+    // Non-raster panes ignore wheel zoom entirely.
+    p.kind = .text;
+    try std.testing.expect(!p.zoomImageByWheel(600));
+
+    p.kind = .image;
+    p.load_status = .ready;
+
+    // A single huge precise-scroll delta must NOT explode: the old path fed
+    // delta=600 through mouseWheelUnits -> ~15 steps of 1.2x (>16x). One event
+    // is now capped at IMAGE_ZOOM_WHEEL_PER_EVENT_MAX.
+    p.image_zoom = 1.0;
+    try std.testing.expect(p.zoomImageByWheel(600));
+    try std.testing.expect(p.imageZoom() > 1.0);
+    try std.testing.expect(p.imageZoom() <= IMAGE_ZOOM_WHEEL_PER_EVENT_MAX + 0.01);
+
+    // A small scroll nudges the zoom only slightly.
+    p.image_zoom = 1.0;
+    try std.testing.expect(p.zoomImageByWheel(12));
+    try std.testing.expect(p.imageZoom() < 1.05);
+
+    // One classic wheel notch (|delta| == 120) is ~1.2x.
+    p.image_zoom = 1.0;
+    try std.testing.expect(p.zoomImageByWheel(120));
+    try std.testing.expect(@abs(p.imageZoom() - IMAGE_ZOOM_STEP) < 0.02);
+
+    // Negative delta zooms out, also bounded per event.
+    p.image_zoom = 1.0;
+    try std.testing.expect(p.zoomImageByWheel(-600));
+    try std.testing.expect(p.imageZoom() < 1.0);
+    try std.testing.expect(p.imageZoom() >= 1.0 / IMAGE_ZOOM_WHEEL_PER_EVENT_MAX - 0.01);
+
+    // Repeated events still reach the max clamp, then report "no change".
+    p.image_zoom = 1.0;
+    var i: usize = 0;
+    while (i < 400) : (i += 1) _ = p.zoomImageByWheel(600);
+    try std.testing.expectEqual(IMAGE_ZOOM_MAX, p.imageZoom());
+    try std.testing.expect(!p.zoomImageByWheel(600));
+
+    // delta == 0 is a no-op.
+    p.image_zoom = 2.0;
+    try std.testing.expect(!p.zoomImageByWheel(0));
 }
 
 test "PreviewPane: async load applies content then clears job" {
