@@ -357,7 +357,7 @@ const en = Strings{
 
     .toast_updating_skills = "Updating skills...",
     .toast_update_skills_unavailable = "Update Skills unavailable",
-    .toast_enable_weixin_first = "Enable weixin-direct-enabled first",
+    .toast_enable_weixin_first = "Enable weixin-direct-enabled first, then restart WispTerm",
     .toast_wechat_login_failed = "WeChat login failed to start",
     .toast_wechat_poller_already_running = "WeChat poller already running",
     .toast_wechat_start_failed = "WeChat start failed",
@@ -541,7 +541,7 @@ const zh_CN = Strings{
 
     .toast_updating_skills = "正在更新技能…",
     .toast_update_skills_unavailable = "更新技能不可用",
-    .toast_enable_weixin_first = "请先启用 weixin-direct-enabled",
+    .toast_enable_weixin_first = "请先启用 weixin-direct-enabled，然后重启 WispTerm",
     .toast_wechat_login_failed = "微信登录启动失败",
     .toast_wechat_poller_already_running = "微信轮询已在运行",
     .toast_wechat_start_failed = "微信启动失败",
