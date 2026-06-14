@@ -2966,7 +2966,7 @@ fn clearUiStateOnTabChange() void {
 fn getActiveCwd(cwd_buf: *platform_pty_command.CwdBuffer) platform_pty_command.Cwd {
     if (tab.activeSurface()) |surface| {
         if (surface.getCwd()) |guest_path| {
-            if (platform_wsl.guestPathToNativeCwd(guest_path, cwd_buf)) |cwd| {
+            if (platform_wsl.nativeCwdForLaunchKind(surface.launch_kind, guest_path, cwd_buf)) |cwd| {
                 return platform_pty_command.cwdFromBuffer(cwd_buf, cwd.len);
             }
         }

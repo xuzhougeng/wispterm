@@ -72,6 +72,22 @@ fn guestPathToHostPath(guest_path: []const u8, out: *[260]u16) ?usize {
     return guestPathToNativePath(guest_path, out);
 }
 
+/// Convert a surface's reported cwd to a native Windows cwd, but ONLY for WSL
+/// surfaces. SSH surfaces report REMOTE paths (e.g. `/home/...`) that must never
+/// be treated as WSL guest paths: doing so calls `defaultDistroName()`, which
+/// spawns `wsl.exe --list` to resolve a `\\wsl.localhost\<distro>\` path. On a
+/// machine without WSL that pops a blocking "install WSL" window (freeze); on a
+/// machine with WSL it adds first-call latency. Local surfaces already carry
+/// native paths and need no guest conversion here.
+pub fn nativeCwdForLaunchKind(
+    launch_kind: platform_pty_command.LaunchKind,
+    guest_path: []const u8,
+    out: *platform_pty_command.CwdBuffer,
+) ?platform_pty_command.CwdSlice {
+    if (launch_kind != .wsl) return null;
+    return guestPathToNativeCwd(guest_path, out);
+}
+
 pub fn guestPathToNativeCwd(guest_path: []const u8, out: *platform_pty_command.CwdBuffer) ?platform_pty_command.CwdSlice {
     const len = guestPathToNativePath(guest_path, out) orelse return null;
     _ = platform_pty_command.cwdFromBuffer(out, len) orelse return null;
@@ -168,4 +184,18 @@ test "platform WSL exposes converted local paths as UTF-8" {
 
     const local = guestPathToLocalPathUtf8("/mnt/c/Users/me/project", &native_buf, &utf8_buf).?;
     try std.testing.expectEqualStrings("C:\\Users\\me\\project", local);
+}
+
+test "platform WSL only converts cwd for WSL surfaces" {
+    var buf: platform_pty_command.CwdBuffer = undefined;
+
+    // SSH surfaces report REMOTE paths (e.g. /home/...). Treating them as WSL
+    // guest paths would call defaultDistroName() -> spawn `wsl.exe --list`,
+    // which freezes on machines without WSL and lags on machines with it.
+    try std.testing.expect(nativeCwdForLaunchKind(.ssh, "/home/xzg/project", &buf) == null);
+    try std.testing.expect(nativeCwdForLaunchKind(.local, "/home/xzg/project", &buf) == null);
+
+    // A genuine WSL surface still converts a mounted path (the /mnt/ branch
+    // needs no distro probe, so this is spawn-free).
+    try std.testing.expect(nativeCwdForLaunchKind(.wsl, "/mnt/c/Users/me", &buf) != null);
 }

@@ -16,6 +16,7 @@ const linux_system_libraries = [_][]const u8{ "SDL3", "fontconfig" };
 
 const windows_system_libraries = [_][]const u8{
     "user32",
+    "advapi32", // registry access for WSL availability detection
     "gdi32",
     "gdiplus",
     "dwmapi",
