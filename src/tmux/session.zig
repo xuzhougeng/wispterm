@@ -37,6 +37,12 @@ pub const Session = struct {
     active_window: ?usize = null,
     active_pane: ?usize = null,
     exited: bool = false,
+    /// Set when a command reply is a `%error` whose body says the attach target
+    /// is gone ("can't find session" / "no sessions"). On a reconnect `attach`
+    /// this means the user genuinely ended the session, so the controller closes
+    /// rather than looping reconnects. Distinct from `exited` (which also fires on
+    /// a survivable transport drop). Reset by `resetForReconnect`.
+    session_gone: bool = false,
     events: EventSink = .{},
 
     pub const Window = struct {
@@ -117,6 +123,7 @@ pub const Session = struct {
         self.cmds.clearRetainingCapacity();
         self.capture_queue.clearRetainingCapacity();
         self.exited = false;
+        self.session_gone = false;
     }
 
     pub fn feed(self: *Session, bytes: []const u8) Allocator.Error!void {
@@ -167,7 +174,11 @@ pub const Session = struct {
                     }
                 }
             },
-            .block_err => {
+            .block_err => |body| {
+                // A reconnect `attach` to a session the user ended replies with a
+                // `%error` whose body names the failure; flag it so the controller
+                // tears down instead of recreating the session.
+                if (isSessionGoneError(body)) self.session_gone = true;
                 // Keep the capture FIFO aligned if a capture errored.
                 if (self.capture_queue.items.len > 0) _ = self.capture_queue.orderedRemove(0);
             },
@@ -444,6 +455,17 @@ fn isPaneListReply(body: []const u8) bool {
     return found_any;
 }
 
+/// True if a `%error` reply body says the attach target no longer exists: the
+/// session was killed, or the last one exited and the server quit. These are
+/// tmux's own English (non-localized) messages. Used to tell a reconnect that
+/// found a dead session (close) from one that re-attached a live one (continue).
+pub fn isSessionGoneError(body: []const u8) bool {
+    return std.mem.indexOf(u8, body, "can't find session") != null or
+        std.mem.indexOf(u8, body, "no sessions") != null or
+        std.mem.indexOf(u8, body, "no server running") != null or
+        std.mem.indexOf(u8, body, "no current session") != null;
+}
+
 fn containsId(ids: []const usize, id: usize) bool {
     for (ids) |candidate| {
         if (candidate == id) return true;
@@ -629,6 +651,30 @@ test "a realistic notification stream builds the full model" {
     try std.testing.expectEqual(@as(usize, 2), col.last_pane);
     try std.testing.expectEqualSlices(u8, "done", col.buf.items);
     try std.testing.expect(s.exited);
+}
+
+test "a failed reconnect attach flags session_gone, not just exited" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+
+    // What `tmux -CC attach -t <gone>` actually replies (control-mode enter DCS
+    // glued onto %begin, a %error block naming the failure, then %exit).
+    try s.feed("\x1bP1000p%begin 1 1 0\r\ncan't find session: wispterm-ngs00\r\n%error 1 1 0\r\n%exit\r\n");
+    try std.testing.expect(s.session_gone);
+    try std.testing.expect(s.exited);
+
+    // A bare %exit (survivable transport drop) is NOT a gone session.
+    var s2 = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s2.deinit();
+    try s2.feed("%exit\n");
+    try std.testing.expect(s2.exited);
+    try std.testing.expect(!s2.session_gone);
+
+    // The "no sessions" variant (server quit) also counts as gone.
+    try std.testing.expect(isSessionGoneError("no sessions"));
+    try std.testing.expect(!isSessionGoneError("boom: a normal command error"));
 }
 
 const EventLog = struct {

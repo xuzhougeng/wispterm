@@ -29,6 +29,21 @@ threadlocal var g_controllers: std.ArrayListUnmanaged(*TmuxController) = .empty;
 const INITIAL_BACKOFF_MS: i64 = 500;
 const MAX_BACKOFF_MS: i64 = 5000;
 
+/// Rewrite the stored `… tmux -CC new -A -s <name>` connect command into its
+/// reconnect form `… tmux -CC attach -t <name>`. Reconnecting with `attach`
+/// (not `new -A`) is what lets us tell a transport drop from a genuine exit: a
+/// session that merely lost its transport (network loss / ssh killed / detach)
+/// is re-attached intact, while a session the user actually ended is NOT
+/// recreated — the attach fails (see `Session.session_gone`) and we tear down.
+/// `"new -A -s"` and `"attach -t"` are the same length, so the output is a
+/// same-size copy; if the needle is absent (e.g. a profile-less launch) the
+/// command is copied unchanged.
+fn buildAttachCommand(alloc: Allocator, connect_cmd: []const u8) Allocator.Error![]u8 {
+    const out = try alloc.alloc(u8, connect_cmd.len);
+    _ = std.mem.replace(u8, connect_cmd, "new -A -s", "attach -t", out);
+    return out;
+}
+
 pub const TmuxController = struct {
     alloc: Allocator,
     pty: Pty,
@@ -56,12 +71,18 @@ pub const TmuxController = struct {
     /// login / password prompt and tmux is not yet listening, so an early
     /// bootstrap write would be lost.
     handshake_seen: bool = false,
+    /// Sticky: set once any handshake has succeeded. After that, reconnects use
+    /// `attach` (not `new -A`) and scan for a session-gone error, so a genuine
+    /// exit tears down while a dropped transport re-attaches. Before the first
+    /// handshake, a drop is a login/connect failure and retries `new -A`.
+    had_handshake: bool = false,
     /// Last client size forwarded to tmux, to avoid redundant refresh-client.
     last_cols: u16 = 0,
     last_rows: u16 = 0,
-    /// Pre-handshake transport setup failed; retry login/connect with backoff.
-    /// Once tmux control mode has started, transport exit closes the controller
-    /// instead of re-running `new -A` and recreating a user-killed session.
+    /// A dropped transport reconnects with backoff: pre-handshake retries the
+    /// original `new -A` connect; post-handshake re-`attach`es the live session.
+    /// The controller only tears down when the reconnect attempt reports the
+    /// session is gone (`Session.session_gone`) — i.e. the user actually ended it.
     reconnecting: bool = false,
     closed: bool = false,
     next_retry_ms: i64 = 0,
@@ -97,12 +118,25 @@ pub const TmuxController = struct {
                 self.maybeInjectPassword(chunk);
                 if (!self.handshake_seen and std.mem.indexOf(u8, chunk, "\x1bP1000p") != null) {
                     self.handshake_seen = true;
+                    self.had_handshake = true;
                     self.backoff_ms = INITIAL_BACKOFF_MS; // real connection — reset backoff
                     std.debug.print("tmux: control-mode handshake seen\n", .{});
                 }
                 self.bridge.session.feed(chunk) catch {};
-                if (self.bridge.session.exited) {
+                // A reconnect `attach` to a session the user ended replies with a
+                // `%error` ("can't find session" / "no sessions"). tmux still sends
+                // the control handshake first, so this is detected from the parsed
+                // reply (Session.session_gone), not the raw prefix — tear down
+                // instead of looping reconnects forever.
+                if (self.bridge.session.session_gone) {
+                    std.debug.print("tmux: remote session gone — closing controller\n", .{});
                     self.closeFromRemoteExit();
+                    return;
+                }
+                if (self.bridge.session.exited) {
+                    // %exit on an established session: reconnect via `attach`; the
+                    // attempt re-attaches a live session or trips session_gone.
+                    self.markDisconnected();
                     return;
                 }
             } else if (fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
@@ -111,8 +145,13 @@ pub const TmuxController = struct {
             } else break;
         }
 
-        if (self.bridge.session.exited) {
+        if (self.bridge.session.session_gone) {
+            std.debug.print("tmux: remote session gone — closing controller\n", .{});
             self.closeFromRemoteExit();
+            return;
+        }
+        if (self.bridge.session.exited) {
+            self.markDisconnected();
             return;
         }
 
@@ -147,14 +186,12 @@ pub const TmuxController = struct {
         self.closed = true;
     }
 
-    /// Pre-handshake transport failed: tear it down and schedule a retry.
-    /// Post-handshake transport close means the tmux control session ended.
+    /// The transport went away (EOF/HUP/read error or a tmux `%exit`). Always
+    /// schedule a reconnect with backoff — never tear down here. The reconnect
+    /// attempt (`tryReconnect`) decides the outcome: a live session re-attaches,
+    /// a gone one is detected via `Session.session_gone` and closes the controller.
     fn markDisconnected(self: *TmuxController) void {
         if (self.reconnecting) return;
-        if (self.handshake_seen) {
-            self.closeFromRemoteExit();
-            return;
-        }
         std.debug.print("tmux: transport lost — reconnecting…\n", .{});
         self.command.deinit();
         self.pty.deinit();
@@ -168,12 +205,25 @@ pub const TmuxController = struct {
         self.next_retry_ms = std.time.milliTimestamp() + self.backoff_ms;
     }
 
-    /// Re-spawn the transport when the backoff elapses. On success the read loop
-    /// resumes; the list-windows reply reconciles onto the existing surfaces.
+    /// Re-spawn the transport when the backoff elapses. After a prior handshake
+    /// this reconnects with `attach` (so a user-ended session is not recreated);
+    /// before one it retries the original `new -A` connect. On success the read
+    /// loop resumes and the list-windows reply reconciles onto existing surfaces.
     fn tryReconnect(self: *TmuxController) void {
         if (std.time.milliTimestamp() < self.next_retry_ms) return;
 
-        const owned = pty_command.allocCommandLineFromUtf8(self.alloc, self.ssh_cmd) catch {
+        var attach_cmd: ?[]u8 = null;
+        const reconnect_cmd: []const u8 = if (self.had_handshake) blk: {
+            const a = buildAttachCommand(self.alloc, self.ssh_cmd) catch {
+                self.scheduleRetry();
+                return;
+            };
+            attach_cmd = a;
+            break :blk a;
+        } else self.ssh_cmd;
+        defer if (attach_cmd) |a| self.alloc.free(a);
+
+        const owned = pty_command.allocCommandLineFromUtf8(self.alloc, reconnect_cmd) catch {
             self.scheduleRetry();
             return;
         };
@@ -428,4 +478,19 @@ pub fn requestClosePane(surface: *anyopaque) bool {
         }
     }
     return false;
+}
+
+test "buildAttachCommand rewrites the connect command to its attach form" {
+    const alloc = std.testing.allocator;
+    const connect = "ssh -tt -p 28001 xzg@host 'tmux -CC new -A -s wispterm-ngs00'";
+    const reconnect = try buildAttachCommand(alloc, connect);
+    defer alloc.free(reconnect);
+    try std.testing.expectEqualStrings(
+        "ssh -tt -p 28001 xzg@host 'tmux -CC attach -t wispterm-ngs00'",
+        reconnect,
+    );
+    // No needle (e.g. a profile-less launch): copied unchanged.
+    const other = try buildAttachCommand(alloc, "ssh host 'tmux -CC'");
+    defer alloc.free(other);
+    try std.testing.expectEqualStrings("ssh host 'tmux -CC'", other);
 }

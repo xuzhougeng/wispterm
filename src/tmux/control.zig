@@ -75,7 +75,15 @@ pub const Parser = struct {
         return self.processLine(line);
     }
 
-    fn processLine(self: *Parser, line: []const u8) Allocator.Error!?Notification {
+    fn processLine(self: *Parser, raw_line: []const u8) Allocator.Error!?Notification {
+        // tmux glues the control-mode enter DCS (ESC P 1000 p) onto the first
+        // reply line — e.g. `\x1bP1000p%begin …`. Strip it so the following
+        // %begin/%error is still recognized; otherwise a failed reconnect
+        // `attach` (whose %error names a gone session) would be silently dropped.
+        const line = if (std.mem.startsWith(u8, raw_line, "\x1bP1000p"))
+            raw_line["\x1bP1000p".len..]
+        else
+            raw_line;
         if (self.in_block) {
             if (std.mem.startsWith(u8, line, "%end")) {
                 self.in_block = false;
@@ -340,4 +348,15 @@ test "%error closes a block as block_err" {
     _ = try feed(&p, "%begin 2 2 0\n");
     const n = (try feed(&p, "boom\n%error 2 2 0\n")).?;
     try std.testing.expectEqualStrings("boom", n.block_err);
+}
+
+test "strips the control-mode enter DCS glued onto the first %begin (failed attach)" {
+    // A reconnect `attach` to a gone session: tmux glues its enter DCS onto the
+    // first reply, so `%begin` is not at column 0. The body must still surface as
+    // block_err (else the controller never learns the session is gone).
+    var p = Parser.init(std.testing.allocator);
+    defer p.deinit();
+    try std.testing.expectEqual(@as(?Notification, null), try feed(&p, "\x1bP1000p%begin 1 1 0\n"));
+    const n = (try feed(&p, "can't find session: wispterm-ngs00\n%error 1 1 0\n")).?;
+    try std.testing.expectEqualStrings("can't find session: wispterm-ngs00", n.block_err);
 }

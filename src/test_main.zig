@@ -683,6 +683,14 @@ comptime {
         },
         else => {},
     }
+    // The posix tmux controller (drop/reconnect decision) is posix-only; it uses
+    // std.posix poll/read paths that don't compile for the windows app target.
+    switch (@import("builtin").os.tag) {
+        .linux, .macos => {
+            _ = @import("appwindow/tmux_controller_posix.zig");
+        },
+        else => {},
+    }
     _ = @import("platform/pty_command.zig");
     _ = @import("platform/remote_file.zig");
     _ = @import("platform/remote_transport.zig");
