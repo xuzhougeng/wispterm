@@ -1970,8 +1970,8 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
             return;
         }
         switch (ev.key) {
-            .arrow_down, .tab => g_session_launcher_selected = (g_session_launcher_selected + 1) % command_center_state.SESSION_LAUNCHER_ROW_COUNT,
-            .arrow_up => g_session_launcher_selected = if (g_session_launcher_selected == 0) command_center_state.SESSION_LAUNCHER_ROW_COUNT - 1 else g_session_launcher_selected - 1,
+            .arrow_down, .tab => g_session_launcher_selected = (g_session_launcher_selected + 1) % platform_pty_command.sessionLauncherRowCount(),
+            .arrow_up => g_session_launcher_selected = if (g_session_launcher_selected == 0) platform_pty_command.sessionLauncherRowCount() - 1 else g_session_launcher_selected - 1,
             .enter => runSessionLauncherRow(g_session_launcher_selected),
             .key_p => {
                 g_session_launcher_selected = 0;
@@ -1988,11 +1988,11 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
                 }
             },
             .key_a => {
-                g_session_launcher_selected = command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT;
+                g_session_launcher_selected = platform_pty_command.sessionLauncherAiAgentRow();
                 runSessionLauncherRow(g_session_launcher_selected);
             },
             .key_h => {
-                g_session_launcher_selected = command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY;
+                g_session_launcher_selected = platform_pty_command.sessionLauncherAiHistoryRow();
                 runSessionLauncherRow(g_session_launcher_selected);
             },
             else => {},
@@ -2149,9 +2149,9 @@ fn runSessionLauncherRow(row: usize) void {
             return;
         }
     }
-    if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT) {
+    if (row == platform_pty_command.sessionLauncherAiAgentRow()) {
         openDefaultAiSession();
-    } else if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY) {
+    } else if (row == platform_pty_command.sessionLauncherAiHistoryRow()) {
         openAiHistorySourcePicker();
     }
 }
@@ -3822,7 +3822,7 @@ fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) Session
     else if (g_ssh_list_visible)
         sshListRowCount()
     else
-        command_center_state.SESSION_LAUNCHER_ROW_COUNT;
+        platform_pty_command.sessionLauncherRowCount();
     const box_h = @round(header_h + row_h * @as(f32, @floatFromInt(row_count)) + bottom_pad);
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
@@ -3884,15 +3884,15 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     }
 
     if (!g_ssh_form_visible and !g_ai_form_visible) {
-        if (row >= command_center_state.SESSION_LAUNCHER_ROW_COUNT) return null;
+        if (row >= platform_pty_command.sessionLauncherRowCount()) return null;
         g_session_launcher_selected = row;
         if (row == 0) return .local_shell;
         if (row == 1) return .ssh;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             if (row == wsl_row) return .wsl;
         }
-        if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT) return .ai_chat;
-        if (row == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY) return .ai_history;
+        if (row == platform_pty_command.sessionLauncherAiAgentRow()) return .ai_chat;
+        if (row == platform_pty_command.sessionLauncherAiHistoryRow()) return .ai_history;
         return null;
     }
 
@@ -4111,8 +4111,8 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             renderSessionRow(layout, window_height, row, "WSL", platform_pty_command.wslLauncherDetail(), g_session_launcher_selected == row);
             row += 1;
         }
-        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT, i18n.s().sl_ai_agent, defaultAiModeLabel(), g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_AGENT);
-        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY, i18n.s().sl_sessions, i18n.s().sl_sessions_detail, g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_AI_HISTORY);
+        renderSessionRow(layout, window_height, platform_pty_command.sessionLauncherAiAgentRow(), i18n.s().sl_ai_agent, defaultAiModeLabel(), g_session_launcher_selected == platform_pty_command.sessionLauncherAiAgentRow());
+        renderSessionRow(layout, window_height, platform_pty_command.sessionLauncherAiHistoryRow(), i18n.s().sl_sessions, i18n.s().sl_sessions_detail, g_session_launcher_selected == platform_pty_command.sessionLauncherAiHistoryRow());
         return;
     }
 

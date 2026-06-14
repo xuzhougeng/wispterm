@@ -267,6 +267,39 @@ fn appendCommandLineQuotedArg(buf: []u8, pos: *usize, arg: []const u8) bool {
     return true;
 }
 
+threadlocal var g_wsl_available_cached: bool = false;
+threadlocal var g_wsl_available_value: bool = false;
+
+/// Whether WSL has at least one installed distribution.
+///
+/// Detected by reading the per-user `Lxss` registry key that WSL populates when
+/// a distro is registered — NOT by spawning `wsl.exe`. On a machine that only
+/// has the System32 `wsl.exe` stub (WSL feature not installed), running any
+/// `wsl.exe` subcommand pops an interactive "press a key to install WSL" window
+/// and blocks for up to 60s, which would freeze app startup. The registry probe
+/// is silent, non-blocking, and spawns no process. Cached after the first call.
+pub fn wslAvailable() bool {
+    if (g_wsl_available_cached) return g_wsl_available_value;
+    g_wsl_available_cached = true;
+    g_wsl_available_value = probeWslInstalledDistro();
+    return g_wsl_available_value;
+}
+
+fn probeWslInstalledDistro() bool {
+    const advapi32 = windows.advapi32;
+    const subkey = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss");
+    var hkey: windows.HKEY = undefined;
+    if (advapi32.RegOpenKeyExW(windows.HKEY_CURRENT_USER, subkey, 0, windows.KEY_READ, &hkey) != 0) {
+        return false;
+    }
+    defer _ = advapi32.RegCloseKey(hkey);
+    // `DefaultDistribution` (a distro GUID) exists only while at least one distro
+    // is registered; WSL removes it once the last distro is unregistered. Passing
+    // null data/size queries the value's mere existence.
+    const value_name = std.unicode.utf8ToUtf16LeStringLiteral("DefaultDistribution");
+    return advapi32.RegQueryValueExW(hkey, value_name, null, null, null, null) == 0;
+}
+
 pub fn wslInteractiveCommand(buf: []u8, cwd: ?[]const u8) ?[]const u8 {
     var pos: usize = 0;
     if (!appendAscii(buf, &pos, "wsl.exe")) return null;

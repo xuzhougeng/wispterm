@@ -1676,7 +1676,7 @@ fn requestNewWindowFromActiveCwd() void {
     if (AppWindow.activeSurface()) |surface| {
         if (surface.getCwd()) |guest_path| {
             std.debug.print("CWD from OSC 7: {s}\n", .{guest_path});
-            if (platform_wsl.guestPathToNativeCwd(guest_path, &cwd_buf)) |native_cwd| {
+            if (platform_wsl.nativeCwdForLaunchKind(surface.launch_kind, guest_path, &cwd_buf)) |native_cwd| {
                 cwd = native_cwd;
                 var path_u8: [260]u8 = undefined;
                 var display_buf: platform_pty_command.CwdBuffer = undefined;

@@ -178,7 +178,18 @@ fn freeOptStr(allocator: std.mem.Allocator, s: ?[]const u8) void {
 }
 
 pub fn resolveShellCommandLine(out_buf: *platform_pty_command.CommandLineBuffer, cmd: []const u8) usize {
-    return platform_pty_command.resolveShellCommandLine(out_buf, cmd);
+    const len = platform_pty_command.resolveShellCommandLine(out_buf, cmd);
+    // shell=wsl (or any custom command that resolves to wsl.exe) is only honored
+    // when a WSL distro is actually installed. Otherwise fall back to a
+    // guaranteed local shell so the default tab does not spawn a broken wsl.exe
+    // pane that splits would then propagate.
+    if (platform_pty_command.shellFallBackDecision(
+        platform_pty_command.launchKindForCommand(out_buf[0..len :0]),
+        platform_pty_command.wslAvailable(),
+    )) {
+        return platform_pty_command.resolveShellCommandLine(out_buf, platform_pty_command.guaranteedLocalShellCommand());
+    }
+    return len;
 }
 
 /// Initialize the App with configuration.

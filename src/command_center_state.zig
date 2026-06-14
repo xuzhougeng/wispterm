@@ -107,10 +107,6 @@ pub const NewAgentLaunchAction = enum {
     connect_default_profile_as_agent,
 };
 
-pub const SESSION_LAUNCHER_ROW_COUNT: usize = platform_pty_command.session_launcher_row_count;
-pub const SESSION_LAUNCHER_ROW_AI_AGENT: usize = platform_pty_command.session_launcher_ai_agent_row;
-pub const SESSION_LAUNCHER_ROW_AI_HISTORY: usize = platform_pty_command.session_launcher_ai_history_row;
-
 pub const State = struct {
     command_palette_visible: bool = false,
     command_palette_selected: usize = 0,

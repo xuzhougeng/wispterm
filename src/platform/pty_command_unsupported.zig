@@ -157,6 +157,10 @@ pub fn tabCommandForKind(kind: []const u8, current_shell: CommandLine) ![]const 
     return error.InvalidTabKind;
 }
 
+pub fn wslAvailable() bool {
+    return false;
+}
+
 pub fn wslInteractiveCommand(buf: []u8, cwd: ?[]const u8) ?[]const u8 {
     _ = buf;
     _ = cwd;
