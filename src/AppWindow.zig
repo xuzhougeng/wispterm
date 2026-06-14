@@ -292,6 +292,16 @@ pub fn deinit(self: *AppWindow) void {
         }
     }
 
+    // Tear down this thread's tmux control-mode controllers. They are
+    // thread-local and persist across transport drops (reconnect-with-backoff,
+    // no auto-teardown), so quit is the only place they are freed — closing
+    // each transport PTY detaches (not kills) the remote tmux session, the
+    // persistence we want. Must run AFTER dumpSessionToFile above, which reads
+    // the live controllers' profile names to persist them, and BEFORE the tab
+    // cleanup below: destroy closes every pane's virtual controller (EOF'ing the
+    // Surfaces) without freeing the Surfaces, which the tab teardown then owns.
+    tmux_controller.shutdownAll(self.allocator);
+
     // Clean up all tabs
     for (0..tab.g_tab_count) |ti| {
         if (tab.g_tabs[ti]) |t| {
@@ -349,6 +359,17 @@ test "AppWindow: current backend window handle is exposed through platform facad
 test "AppWindow: native handle bit conversion stays in platform backend" {
     const source = @embedFile("AppWindow.zig");
     try std.testing.expect(std.mem.indexOf(u8, source, "builtin." ++ "os.tag") == null);
+}
+
+// deinit runs on the same thread as runMainLoop (first window → main thread,
+// spawned window → its worker thread), so it is the only place the thread-local
+// tmux controller list can be freed. A restored persistent tmux session
+// allocates a TmuxController/TmuxBridge/Session there; without this teardown
+// call they leak at clean exit (GPA reports ~14 leaks). Guard the wiring.
+test "AppWindow: deinit tears down tmux controllers so restored sessions don't leak" {
+    const source = @embedFile("AppWindow.zig");
+    // Split the needle so this assertion does not match its own literal.
+    try std.testing.expect(std.mem.indexOf(u8, source, "tmux_controller." ++ "shutdownAll") != null);
 }
 
 test "AppWindow: platform window callbacks use backend-neutral names" {
