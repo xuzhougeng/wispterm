@@ -1152,6 +1152,13 @@ pub fn activeSurfaceHasRunningProgram() bool {
     return surfaceOnAltScreen(s);
 }
 
+/// True when the focused pane in the active tab is a terminal surface (rather than
+/// a preview pane, a split node, or a non-terminal tab). Used to guard terminal
+/// closes behind a confirm while preview panes still close on a single press.
+pub fn focusedPaneIsTerminal() bool {
+    return activeSurface() != null;
+}
+
 fn tabStateHasRunningProgram(t: *const TabState) bool {
     if (t.kind != .terminal) return false;
     var it = t.tree.surfaces();
@@ -2527,15 +2534,19 @@ pub fn skillCenterSpacePreview() bool {
 
 pub fn aiHistoryInsertCodepoint(codepoint: u21) bool {
     const session = activeAiHistory() orelse return false;
-    if (codepoint == ' ') return aiHistoryPreviewSelectedTranscript();
-    if (codepoint < 0x20 or codepoint == 0x7f) return false;
-    var buf: [4]u8 = undefined;
-    const len = std.unicode.utf8Encode(codepoint, &buf) catch return false;
     session.mutex.lock();
-    session.appendFilterBytes(buf[0..len]);
+    const consumed = session.typeIntoSearch(codepoint);
     session.mutex.unlock();
-    markUiDirty();
-    return true;
+    if (consumed) markUiDirty();
+    return consumed;
+}
+
+/// True while the Sessions panel's Search box has keyboard focus. The input layer
+/// uses this to decide whether 'r'/Space type into the query or fire the
+/// Scan/Preview shortcuts.
+pub fn aiHistorySearchFocused() bool {
+    const session = activeAiHistory() orelse return false;
+    return session.focus == .search;
 }
 
 pub fn aiHistoryBackspaceFilter() bool {
@@ -2578,7 +2589,9 @@ pub fn aiHistoryNav(delta: isize) bool {
             session.ensureFilterCursorVisible(aiHistoryDateDaySlotsForWindow());
             session.ensureSelectionVisible(aiHistoryListVisibleRowsForWindow());
         },
-        .sessions => {
+        // While typing in the Search box, ↑/↓ still walk the result list so you can
+        // filter then arrow straight to a hit without leaving the query.
+        .search, .sessions => {
             session.moveSelection(delta);
             session.ensureSelectionVisible(aiHistoryListVisibleRowsForWindow());
         },
@@ -3347,6 +3360,13 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
 
     switch (hit) {
         .none => {},
+        .search => {
+            session.mutex.lock();
+            session.focus = .search;
+            session.mutex.unlock();
+            markUiDirty();
+            return true;
+        },
         .refresh => {
             _ = aiHistoryScanLocalNow();
             return true;
@@ -3371,8 +3391,10 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
         .row => |visible_index| {
             // Re-lock independently of the hit-test above: a worker may have
             // replaced rows in between, but selectVisibleIndex clamps to the
-            // current visible count, so a now-stale index is safe.
+            // current visible count, so a now-stale index is safe. Clicking a row
+            // also moves focus to the list so 'r'/Space act as Scan/Preview again.
             session.mutex.lock();
+            session.focus = .sessions;
             session.selectVisibleIndex(visible_index);
             session.ensureSelectionVisible(visible_rows);
             session.mutex.unlock();

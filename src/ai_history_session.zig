@@ -161,12 +161,15 @@ pub const SshScannerHost = struct {
     }
 };
 
-/// Which of the three workbench panels keyboard ↑/↓ acts on. ←/→ moves focus
-/// between them (Filters ⟷ Sessions ⟷ Transcript).
+/// Which workbench panel keyboard input acts on. ←/→ moves focus between them in
+/// reading order (Filters ⟷ Search ⟷ Sessions ⟷ Transcript). The Search box owns
+/// all printable typing while focused — that is why the single-key Scan ('r') and
+/// Preview (Space) shortcuts only fire when focus has moved off the Search box.
 pub const Focus = enum(u8) {
     filters = 0,
-    sessions = 1,
-    transcript = 2,
+    search = 1,
+    sessions = 2,
+    transcript = 3,
 };
 
 /// Max day buckets considered when walking the combined filter list by keyboard.
@@ -214,9 +217,10 @@ pub const Session = struct {
     /// Scroll offset into the transcript preview, in wrapped visual lines. The
     /// renderer clamps this against the actual content height each frame.
     transcript_scroll: usize = 0,
-    /// Which panel keyboard ↑/↓ acts on; ←/→ switches it. Sessions by default so
-    /// the list is immediately navigable when the workbench opens.
-    focus: Focus = .sessions,
+    /// Which panel keyboard ↑/↓ acts on; ←/→ switches it. The Search box is focused
+    /// by default so the workbench is immediately type-to-filter; → (or Space/r once
+    /// you stop typing) steps over to the navigable list.
+    focus: Focus = .search,
     /// Keyboard cursor into the combined CATEGORY+DATE list while the Filters
     /// panel is focused. Indices follow FILTER_* constants above.
     filter_cursor: usize = 0,
@@ -787,11 +791,27 @@ pub const Session = struct {
 
     // --- panel focus + combined-filter keyboard navigation ----------------
 
-    /// Move keyboard focus between the three panels (←/→). Clamped at the ends.
+    /// Move keyboard focus between the panels (←/→). Clamped at the ends.
     pub fn focusMove(self: *Session, delta: isize) void {
+        const last: isize = @intCast(@typeInfo(Focus).@"enum".fields.len - 1);
         const cur: isize = @intFromEnum(self.focus);
-        const next = std.math.clamp(cur + delta, 0, 2);
+        const next = std.math.clamp(cur + delta, 0, last);
         self.focus = @enumFromInt(@as(u8, @intCast(next)));
+    }
+
+    /// Append a typed codepoint to the search filter, but only while the Search box
+    /// owns keyboard focus. Returns true when the codepoint was consumed. Keeping the
+    /// focus check here (rather than at the input layer) is what lets 'r' and Space
+    /// be typed into the query while still working as Scan/Preview shortcuts
+    /// elsewhere. Callers hold `mutex`.
+    pub fn typeIntoSearch(self: *Session, codepoint: u21) bool {
+        if (self.focus != .search) return false;
+        if (codepoint < 0x20 or codepoint == 0x7f) return false;
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(codepoint, &buf) catch return false;
+        if (len > self.filter.len - self.filter_len) return false;
+        self.appendFilterBytes(buf[0..len]);
+        return true;
     }
 
     /// Number of rows in the combined CATEGORY+DATE list the Filters cursor walks
@@ -2273,6 +2293,34 @@ test "ai_history_session: filter truncates to fixed buffer length" {
     try std.testing.expectEqualSlices(u8, long_filter[0..128], session.filter[0..session.filter_len]);
 }
 
+test "ai_history_session: search box is the default keyboard focus" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    try std.testing.expectEqual(Focus.search, session.focus);
+}
+
+test "ai_history_session: typeIntoSearch only edits the filter while the search box is focused" {
+    var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
+    defer session.deinit();
+
+    // Default focus is the search box: printable codepoints append, including the
+    // 'r' and space that double as single-key shortcuts when the list is focused.
+    try std.testing.expect(session.typeIntoSearch('r'));
+    try std.testing.expect(session.typeIntoSearch(' '));
+    try std.testing.expect(session.typeIntoSearch('R'));
+    try std.testing.expectEqualSlices(u8, "r R", session.filter[0..session.filter_len]);
+
+    // Control characters are never inserted.
+    try std.testing.expect(!session.typeIntoSearch(0x1b));
+    try std.testing.expectEqual(@as(usize, 3), session.filter_len);
+
+    // When another panel owns focus, typing is ignored (the keys are shortcuts).
+    session.focus = .sessions;
+    try std.testing.expect(!session.typeIntoSearch('x'));
+    try std.testing.expectEqualSlices(u8, "r R", session.filter[0..session.filter_len]);
+}
+
 test "ai_history_session: scan host replaces rows and marks ready" {
     const allocator = std.testing.allocator;
     var fake = struct {
@@ -3051,14 +3099,16 @@ test "ai_history_session: setDateFilter resets selection and is a no-op when unc
     try std.testing.expectEqual(@as(usize, 1), session.selected);
 }
 
-test "ai_history_session: focusMove clamps across the three panels" {
+test "ai_history_session: focusMove walks all four panels and clamps at the ends" {
     var session = Session.init(std.testing.allocator, .{ .id = "local", .name = "Local", .target = .local });
     defer session.deinit();
-    try std.testing.expectEqual(Focus.sessions, session.focus); // default
+    try std.testing.expectEqual(Focus.search, session.focus); // default
     session.focusMove(-1);
     try std.testing.expectEqual(Focus.filters, session.focus);
     session.focusMove(-1); // clamp at left edge
     try std.testing.expectEqual(Focus.filters, session.focus);
+    session.focusMove(1);
+    try std.testing.expectEqual(Focus.search, session.focus);
     session.focusMove(1);
     try std.testing.expectEqual(Focus.sessions, session.focus);
     session.focusMove(1);

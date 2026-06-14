@@ -715,7 +715,6 @@ threadlocal var g_ai_transcript_scroll_drag_offset: f32 = 0;
 threadlocal var g_ai_transcript_selecting: bool = false;
 threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_select_auto_copy: bool = false;
-threadlocal var g_ai_history_suppress_refresh_char: bool = false;
 threadlocal var g_port_forwarding_suppress_command_char: ?u21 = null;
 threadlocal var g_skill_center_suppress_command_char: ?u21 = null;
 pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
@@ -1001,36 +1000,48 @@ fn closeAiCopilotPanel() void {
 }
 
 pub fn closePanelOrTab() void {
-    // Close the FOCUSED pane, preview or terminal alike — click a preview (or
-    // Ctrl+1-9) to select it, then Ctrl+Shift+W closes it. The browser panel
-    // still closes first: it is an unfocusable side dock, so this shortcut is
-    // its only keyboard close.
-    if (browser_panel.isVisibleForActiveTab()) {
-        closeBrowserPanel();
-        return;
-    }
-    if (close_confirm.shouldConfirm(AppWindow.g_confirm_close_running_program, AppWindow.activeSurfaceHasRunningProgram())) {
-        g_close_shortcut_confirm_until_ms = 0;
-        overlays.closeConfirmOpen(.focused_split, .running_program);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
-    }
-    if (AppWindow.closeFocusedSplitWouldCloseWindow()) {
-        const now = std.time.milliTimestamp();
-        if (now < g_close_shortcut_confirm_until_ms) {
+    // Close the FOCUSED pane. A preview pane closes on one press; a terminal pane is
+    // guarded by a confirm so a stray Ctrl+Shift+W can't drop the terminal you are
+    // typing in (focus stays on the terminal after a preview opens). The browser
+    // panel still closes first: it is an unfocusable side dock, so this shortcut is
+    // its only keyboard close. Priority order lives in close_confirm.decideClose.
+    switch (close_confirm.decideClose(.{
+        .browser_visible = browser_panel.isVisibleForActiveTab(),
+        .confirm_running_enabled = AppWindow.g_confirm_close_running_program,
+        .has_running_program = AppWindow.activeSurfaceHasRunningProgram(),
+        .would_close_window = AppWindow.closeFocusedSplitWouldCloseWindow(),
+        .focused_is_terminal = AppWindow.focusedPaneIsTerminal(),
+    })) {
+        .close_browser => closeBrowserPanel(),
+        .confirm_running_program => {
+            g_close_shortcut_confirm_until_ms = 0;
+            overlays.closeConfirmOpen(.focused_split, .running_program);
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        },
+        .window_press_again => {
+            const now = std.time.milliTimestamp();
+            if (now < g_close_shortcut_confirm_until_ms) {
+                g_close_shortcut_confirm_until_ms = 0;
+                AppWindow.closeFocusedSplit();
+                return;
+            }
+            g_close_shortcut_confirm_until_ms = now + CLOSE_SHORTCUT_CONFIRM_MS;
+            overlays.showCloseShortcutConfirm(CLOSE_SHORTCUT_CONFIRM_MS);
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        },
+        .confirm_terminal => {
+            g_close_shortcut_confirm_until_ms = 0;
+            overlays.closeConfirmOpen(.focused_split, .terminal_split);
+            AppWindow.g_force_rebuild = true;
+            AppWindow.g_cells_valid = false;
+        },
+        .close_now => {
             g_close_shortcut_confirm_until_ms = 0;
             AppWindow.closeFocusedSplit();
-            return;
-        }
-        g_close_shortcut_confirm_until_ms = now + CLOSE_SHORTCUT_CONFIRM_MS;
-        overlays.showCloseShortcutConfirm(CLOSE_SHORTCUT_CONFIRM_MS);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        },
     }
-    g_close_shortcut_confirm_until_ms = 0;
-    AppWindow.closeFocusedSplit();
 }
 
 /// Close a specific preview pane by handle (the preview's × button). Focuses
@@ -1396,17 +1407,13 @@ pub fn processEvents(win: anytype) void {
 fn processKeyAndCharEvents(win: anytype) void {
     while (true) {
         var did_anything = false;
-        var handled_key = false;
         if (window_backend.popKeyEvent(win)) |ev| {
             handleKey(ev);
             did_anything = true;
-            handled_key = true;
         }
         if (window_backend.popCharEvent(win)) |ev| {
             handleChar(ev);
             did_anything = true;
-        } else if (handled_key) {
-            g_ai_history_suppress_refresh_char = false;
         }
         if (!did_anything) break;
         // Stamp the input→present latency clock on every handled key/char so the
@@ -1505,11 +1512,9 @@ fn handleChar(ev: platform_input.CharEvent) void {
         return;
     }
     if (AppWindow.activeAiHistory() != null) {
-        if (g_ai_history_suppress_refresh_char) {
-            const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == 'r';
-            g_ai_history_suppress_refresh_char = false;
-            if (suppress) return;
-        }
+        // aiHistoryInsertCodepoint only consumes the codepoint while the Search box
+        // owns focus, so 'r'/Space type into the query there yet stay free to act as
+        // Scan/Preview shortcuts when another panel is focused.
         if (!ev.ctrl and !ev.alt and !ev.super) {
             _ = AppWindow.aiHistoryInsertCodepoint(ev.codepoint);
         }
@@ -1969,9 +1974,13 @@ fn handleKey(ev: platform_input.KeyEvent) void {
 
     if (AppWindow.activeAiHistory() != null) {
         const plain = !ev.ctrl and !ev.alt and !ev.super;
+        // The Search box owns plain typing while focused, so Backspace edits the
+        // query there and the single-key Scan/Preview shortcuts stand down — letting
+        // their characters fall through to the filter instead.
+        const search_focused = AppWindow.aiHistorySearchFocused();
         switch (ev.key_code) {
             platform_input.key_backspace => {
-                _ = AppWindow.aiHistoryBackspaceFilter();
+                if (search_focused) _ = AppWindow.aiHistoryBackspaceFilter();
                 return;
             },
             platform_input.key_up => {
@@ -2010,12 +2019,12 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 _ = AppWindow.aiHistoryScrollTranscript(1 << 30);
                 return;
             },
-            0x20 => if (plain) {
+            0x20 => if (plain and !search_focused) {
                 _ = AppWindow.aiHistoryPreviewSelectedTranscript();
                 return;
             },
-            0x52 => if (plain and !ev.shift) {
-                g_ai_history_suppress_refresh_char = AppWindow.aiHistoryScanLocalNow();
+            0x52 => if (plain and !ev.shift and !search_focused) {
+                _ = AppWindow.aiHistoryScanLocalNow();
                 return;
             },
             else => {},
@@ -3475,7 +3484,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     setUrlUnderline(surface, vp_off + token.start_row, vp_off + token.end_row, token.start_col, token.end_col);
 }
 
-fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind) bool {
+fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind, move_focus: bool) bool {
     const perf = ui_perf.begin("input.open_preview_async");
     defer perf.end();
 
@@ -3491,9 +3500,10 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
         }
     else
         (tab.splitIntoPreviewStacked(gpa) orelse return false);
-    // Select the just-opened/reused preview so Ctrl+Shift+W closes it (not the
-    // terminal) and PgUp/PgDn/arrows scroll it.
-    _ = tab.focusPreviewPane(pane);
+    // Only steal focus when the caller asks (file-explorer preview). A Ctrl+click
+    // from the terminal keeps focus on the terminal so typing continues there; the
+    // preview's PgUp/PgDn/close keys then require clicking it first.
+    if (move_focus) _ = tab.focusPreviewPane(pane);
     if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -3526,14 +3536,14 @@ fn findPreviewGalleryNeighbor(allocator: std.mem.Allocator, p: *const PreviewPan
     };
 }
 
-fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind) bool {
+fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind, move_focus: bool) bool {
     const perf = ui_perf.begin("input.open_preview_new");
     defer perf.end();
 
     const gpa = AppWindow.g_allocator orelse return false;
     const pane = tab.splitIntoPreviewStacked(gpa) orelse return false;
-    // Select the new preview so Ctrl+Shift+W closes it (not the terminal).
-    _ = tab.focusPreviewPane(pane);
+    // Keep focus on the terminal for Ctrl+click opens; see openPreviewAsync.
+    if (move_focus) _ = tab.focusPreviewPane(pane);
     if (!pane.beginAsyncLoad(kind, title, path, source_kind)) {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -3575,7 +3585,9 @@ fn openFileExplorerPreview(row_idx: usize) bool {
         return true;
     };
 
-    return openPreviewAsync(kind, title, path, source_kind);
+    // File-explorer preview keeps moving focus onto the preview so its scroll /
+    // gallery keys work straight away (the user is browsing files, not typing).
+    return openPreviewAsync(kind, title, path, source_kind, true);
 }
 
 /// Infer the `ls <dir>/` directory prefix for the clicked cell, copied into
@@ -3615,9 +3627,9 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bo
         };
 
         if (shift) {
-            return openPreviewNew(kind, basenameForPreview(path), resolved_path, source_kind);
+            return openPreviewNew(kind, basenameForPreview(path), resolved_path, source_kind, false);
         } else {
-            return openPreviewAsync(kind, basenameForPreview(path), resolved_path, source_kind);
+            return openPreviewAsync(kind, basenameForPreview(path), resolved_path, source_kind, false);
         }
     }
 

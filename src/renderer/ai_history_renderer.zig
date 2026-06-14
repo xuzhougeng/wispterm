@@ -41,6 +41,7 @@ pub const Hit = union(enum) {
     none,
     refresh,
     @"resume",
+    search,
     category: types.CategoryFilter,
     date: ?types.DateKey,
     row: usize,
@@ -244,6 +245,12 @@ pub fn interactionHitTest(
         }
     }
 
+    // The Search box spans the filter strip at the top of the list column; clicking
+    // it focuses the query field (so plain typing edits the search).
+    if (rectContains(mx, my, layout.list_x, top, layout.list_w, filterHeight(cell_h))) {
+        return .search;
+    }
+
     const max_rows = listVisibleCapacity(window_height, top, cell_h);
     const start = session.listWindowStart(max_rows);
     const row_count = if (visible_count > start) @min(max_rows, visible_count - start) else 0;
@@ -428,8 +435,9 @@ fn renderList(
     const filter_y = yFromTop(window_height, top, filter_h);
     draw.fillQuadAlpha(layout.list_x, filter_y, layout.list_w, filter_h, mixColor(draw.bg, fg, 0.055), 0.98);
     draw.fillQuad(layout.list_x, yFromTop(window_height, top + filter_h, 1), layout.list_w, 1, line);
-    drawFocusUnderline(draw, layout.list_x, layout.list_w, window_height, top, filter_h, accent, session.focus == .sessions);
+    drawFocusUnderline(draw, layout.list_x, layout.list_w, window_height, top, filter_h, accent, session.focus == .search);
 
+    const list_focused = session.focus == .sessions;
     const query = session.filter[0..session.filter_len];
     const filter_label = if (query.len == 0) "Search sessions" else query;
     const filter_color = if (query.len == 0) muted else fg;
@@ -458,8 +466,10 @@ fn renderList(
         const row_y = yFromTop(window_height, row_top_px, row_h);
         const selected = visible_index == session.selected;
         if (selected) {
-            draw.fillQuadAlpha(layout.list_x, row_y, layout.list_w, row_h, selected_bg, 0.92);
-            draw.fillQuad(layout.list_x, row_y, 3, row_h, accent);
+            // Brighten the selection while the list owns focus so it reads as active
+            // versus a dim "remembered" selection when focus is on Search/Filters.
+            draw.fillQuadAlpha(layout.list_x, row_y, layout.list_w, row_h, selected_bg, if (list_focused) 0.92 else 0.55);
+            draw.fillQuad(layout.list_x, row_y, if (list_focused) 4 else 3, row_h, accent);
         }
         draw.fillQuadAlpha(layout.list_x, row_y, layout.list_w, 1, line, 0.55);
 
@@ -905,6 +915,12 @@ test "ai_history_renderer: interaction hit test maps buttons and row offset" {
     );
     const row_hit = interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.list_x + 8, top + FILTER_H + ROW_H + 2);
     try std.testing.expectEqual(@as(usize, 4), row_hit.row);
+
+    // Clicking the Search box strip at the top of the list column focuses the query.
+    try std.testing.expectEqual(
+        Hit.search,
+        interactionHitTest(session, 1000, 700, top, 0, 1000, cell_h, layout.list_x + 8, top + 4),
+    );
 }
 
 // A fixed-advance metric so wrapping tests are deterministic without a font.

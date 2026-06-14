@@ -139,7 +139,7 @@ threadlocal var g_update_prompt_rect: ?DebugLineRect = null;
 
 threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
-pub const CloseConfirmVariant = enum { running_program, window_generic };
+pub const CloseConfirmVariant = enum { running_program, window_generic, terminal_split };
 threadlocal var g_window_close_confirm_visible: bool = false;
 threadlocal var g_close_confirm_pending: close_confirm.PendingClose = .window;
 threadlocal var g_close_confirm_variant: CloseConfirmVariant = .window_generic;
@@ -5543,10 +5543,12 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
     const title_text = switch (g_close_confirm_variant) {
         .running_program => "A program is still running",
         .window_generic => "Close WispTerm?",
+        .terminal_split => "Close this terminal?",
     };
     const body_text = switch (g_close_confirm_variant) {
         .running_program => "Closing now will end it.",
         .window_generic => "Running panels in this window will be terminated.",
+        .terminal_split => "This terminal pane will be closed.",
     };
     const hint_text = "Press Enter or Close to proceed, Esc to cancel.";
     renderTitlebarTextStrongLimited(title_text, text_x, title_y, fg, text_right - text_x);
