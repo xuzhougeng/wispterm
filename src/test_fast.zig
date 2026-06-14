@@ -93,6 +93,7 @@ test {
     _ = @import("ai_history_source.zig");
     _ = @import("ai_history_cache.zig");
     _ = @import("skill_scan.zig");
+    _ = @import("skill_install.zig");
     _ = @import("ssh_error.zig");
     _ = @import("skill_inventory.zig");
     _ = @import("skill_inventory_cache.zig");

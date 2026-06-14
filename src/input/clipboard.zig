@@ -359,6 +359,11 @@ fn readClipboardText(allocator: std.mem.Allocator) ?[]u8 {
     return platform_clipboard.readText(allocator, owner);
 }
 
+/// Public: read the system clipboard as owned text (caller frees), or null.
+pub fn readClipboardTextOwned(allocator: std.mem.Allocator) ?[]u8 {
+    return readClipboardText(allocator);
+}
+
 pub fn copyTextToClipboard(text: []const u8) bool {
     const allocator = AppWindow.g_allocator orelse return false;
     const owner = clipboardOwner() orelse return false;

@@ -717,6 +717,7 @@ threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_select_auto_copy: bool = false;
 threadlocal var g_ai_history_suppress_refresh_char: bool = false;
 threadlocal var g_port_forwarding_suppress_command_char: ?u21 = null;
+threadlocal var g_skill_center_suppress_command_char: ?u21 = null;
 pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
 pub threadlocal var g_sidebar_resize_dragging: bool = false; // Currently dragging the sidebar edge
 pub threadlocal var g_explorer_resize_hover: bool = false; // Mouse is over the file explorer resize edge
@@ -1514,6 +1515,17 @@ fn handleChar(ev: platform_input.CharEvent) void {
         }
         return;
     }
+    if (AppWindow.activeSkillCenter() != null) {
+        if (g_skill_center_suppress_command_char) |codepoint| {
+            const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
+            g_skill_center_suppress_command_char = null;
+            if (suppress) return;
+        }
+        if (!ev.ctrl and !ev.alt and !ev.super) {
+            _ = AppWindow.skillCenterUrlInsertChar(ev.codepoint); // no-op unless url_input active
+        }
+        return;
+    }
     if (AppWindow.activePortForwarding() != null) {
         if (g_port_forwarding_suppress_command_char) |codepoint| {
             const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
@@ -1523,11 +1535,6 @@ fn handleChar(ev: platform_input.CharEvent) void {
         if (!ev.ctrl and !ev.alt and !ev.super) {
             _ = AppWindow.portForwardingInsertChar(ev.codepoint);
         }
-        return;
-    }
-    // Skill Center has no text input; swallow character input so the rescan
-    // hotkey ('r') and other keys never leak to the terminal/copilot.
-    if (AppWindow.activeSkillCenter() != null) {
         return;
     }
     // AI copilot sidebar (terminal tabs): when the copilot owns focus, route
@@ -2099,9 +2106,18 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         return;
     }
 
-    // Skill Center: ↑/↓ move, space preview, ⏎ confirm (deploy in library), esc cancel, d deploy, i import, r rescan.
+    // Skill Center: ↑/↓ move, space preview/toggle, ⏎ confirm, esc cancel,
+    // d deploy, i import, g get-from-GitHub, r rescan. The URL-input overlay
+    // captures text; the checklist captures space + 'a'.
     if (AppWindow.activeSkillCenter() != null) {
         const plain = !ev.ctrl and !ev.alt and !ev.super;
+        const text_capture = AppWindow.skillCenterUrlInputActive();
+        const picking = AppWindow.skillCenterPickActive();
+        // Ctrl/Cmd+V paste into the URL field.
+        if (text_capture and (ev.ctrl or ev.super) and ev.key_code == 0x56) { // 'V'
+            _ = AppWindow.skillCenterUrlPaste();
+            return;
+        }
         switch (ev.key_code) {
             platform_input.key_up => {
                 _ = AppWindow.skillCenterMove(-1);
@@ -2123,20 +2139,38 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 _ = AppWindow.skillCenterOverlayCancel();
                 return;
             },
-            0x52 => if (plain and !ev.shift) {
+            platform_input.key_backspace => {
+                if (text_capture) {
+                    _ = AppWindow.skillCenterUrlBackspace();
+                    return;
+                }
+            },
+            0x52 => if (plain and !ev.shift and !text_capture) { // 'R'
                 _ = AppWindow.skillCenterRescan();
                 return;
             },
-            0x44 => if (plain and !ev.shift) {
+            0x44 => if (plain and !ev.shift and !text_capture and !picking) { // 'D'
                 _ = AppWindow.skillCenterDeploy();
                 return;
             },
-            0x49 => if (plain and !ev.shift) {
+            0x49 => if (plain and !ev.shift and !text_capture and !picking) { // 'I'
                 _ = AppWindow.skillCenterImport();
                 return;
             },
-            platform_input.key_space => if (plain and !ev.shift) {
-                _ = AppWindow.skillCenterSpacePreview();
+            0x47 => if (plain and !ev.shift and !text_capture and !picking) { // 'G'
+                _ = AppWindow.skillCenterOpenUrlInput();
+                // SDL text-input mode also fires a 'g' CHAR event after this
+                // key-down; suppress it so it doesn't land in the now-active
+                // URL field. (Only 'G' opens a text field, so only it suppresses.)
+                g_skill_center_suppress_command_char = 'g';
+                return;
+            },
+            0x41 => if (plain and !ev.shift and picking) { // 'A' select-all
+                _ = AppWindow.skillCenterPickSelectAll();
+                return;
+            },
+            platform_input.key_space => if (plain and !ev.shift and !text_capture) {
+                _ = AppWindow.skillCenterSpacePreview(); // toggles when picking
                 return;
             },
             else => {},

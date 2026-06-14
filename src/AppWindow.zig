@@ -53,6 +53,9 @@ const ai_history_types = @import("ai_history_types.zig");
 pub const ai_history_session = @import("ai_history_session.zig");
 pub const ai_history_source = @import("ai_history_source.zig");
 pub const skill_center = @import("skill_center.zig");
+const skill_install = @import("skill_install.zig");
+const update_install = @import("update_install.zig");
+const clipboard = @import("input/clipboard.zig");
 pub const port_forwarding = @import("port_forwarding.zig");
 const port_forward_manager = @import("port_forward_manager.zig");
 const port_forward_rule = @import("port_forward_rule.zig");
@@ -891,6 +894,14 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
                 .sel = il.sel,
             } },
             .confirm => |*c| .{ .confirm = c.text },
+            .url_input => |*u| .{ .input = .{ .prompt = i18n.s().sc_url_prompt, .text = u.text() } },
+            .install_pick => |*p| .{ .list = .{
+                .title = i18n.s().sc_pick_install,
+                .len = p.entries.len,
+                .ctx = @ptrCast(p),
+                .itemAt = scInstallPickItemAt,
+                .sel = p.sel,
+            } },
         };
         const view: skill_center_renderer.View = .{
             .skills_len = lib_len,
@@ -899,7 +910,11 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
             .sel_row = m.sel_row,
             .scroll = m.scroll,
             .title = i18n.s().sl_skill_center,
-            .legend = if (std.meta.activeTag(m.overlay) == .import_list) i18n.s().sc_legend_import else i18n.s().sc_legend_v2,
+            .legend = switch (m.overlay) {
+                .import_list => i18n.s().sc_legend_import,
+                .install_pick => i18n.s().sc_pick_install,
+                else => i18n.s().sc_legend_v2,
+            },
             .status = session.status,
             .overlay = overlay,
         };
@@ -1028,6 +1043,17 @@ fn scImportItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
         .differ => .{ .label = il.names[i], .marker = t.sc_marker_differ, .marker_color = .{ 0.86, 0.70, 0.28 } },
     };
 }
+fn scInstallPickItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
+    const p: *const skill_center.InstallPickState = @ptrCast(@alignCast(ctx));
+    if (i >= p.entries.len) return .{ .label = "", .marker = "" };
+    // Static buffers keyed off a small ring so labels survive the frame draw.
+    const checked = i < p.checked.len and p.checked[i];
+    const box = if (checked) "[x] " else "[ ] ";
+    const slot = &g_sc_pick_label_buf[i % g_sc_pick_label_buf.len];
+    const label = std.fmt.bufPrint(slot, "{s}{s}", .{ box, p.entries[i].name }) catch p.entries[i].name;
+    return .{ .label = label, .marker = "" };
+}
+var g_sc_pick_label_buf: [64][256]u8 = undefined;
 
 fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32) void {
     if (!aiCopilotVisible()) return;
@@ -1436,6 +1462,8 @@ pub fn skillCenterMove(delta: isize) bool {
     switch (session.model.overlay) {
         .picker => |*p| scMoveSel(&p.sel, p.labels.len, delta),
         .import_list => |*il| scMoveSel(&il.sel, il.names.len, delta),
+        .install_pick => |*p| scMoveSel(&p.sel, p.entries.len, delta),
+        .url_input => {},
         else => {
             const n = if (session.model.library) |l| l.len else 0;
             scMoveSel(&session.model.sel_row, n, delta);
@@ -1463,9 +1491,315 @@ pub fn skillCenterOverlayCancel() bool {
     return true;
 }
 
+/// True when the URL-input overlay is capturing text. UI thread.
+pub fn skillCenterUrlInputActive() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    return session.model.overlay == .url_input;
+}
+
+/// 'g': open the URL-input overlay, prefilled from the clipboard if it looks
+/// like a GitHub URL. UI thread.
+pub fn skillCenterOpenUrlInput() bool {
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    if (session.model.overlay != .none) return false;
+    var st: skill_center.UrlInputState = .{};
+    if (clipboard.readClipboardTextOwned(allocator)) |clip| {
+        defer allocator.free(clip);
+        const trimmed = std.mem.trim(u8, clip, " \t\r\n");
+        if (std.mem.indexOf(u8, trimmed, "github.com/") != null and trimmed.len < 512)
+            st.insertSlice(allocator, trimmed);
+    }
+    session.model.setOverlay(.{ .url_input = st });
+    markUiDirty();
+    return true;
+}
+
+/// Append a typed codepoint to the URL buffer (no-op unless url_input active).
+pub fn skillCenterUrlInsertChar(codepoint: u21) bool {
+    if (codepoint < 0x20 or codepoint == 0x7f) return false;
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    switch (session.model.overlay) {
+        .url_input => |*u| {
+            var buf: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(codepoint, &buf) catch return false;
+            u.insertSlice(allocator, buf[0..len]);
+            markUiDirty();
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// Backspace in the URL buffer. UI thread.
+pub fn skillCenterUrlBackspace() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    switch (session.model.overlay) {
+        .url_input => |*u| {
+            u.backspace();
+            markUiDirty();
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// Ctrl/Cmd+V: append clipboard text to the URL buffer. UI thread.
+pub fn skillCenterUrlPaste() bool {
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    switch (session.model.overlay) {
+        .url_input => |*u| {
+            if (clipboard.readClipboardTextOwned(allocator)) |clip| {
+                defer allocator.free(clip);
+                const trimmed = std.mem.trim(u8, clip, " \t\r\n");
+                u.insertSlice(allocator, trimmed);
+            }
+            markUiDirty();
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// Enter in the URL-input overlay: snapshot the URL, clear the overlay, start
+/// the enumerate op. UI thread.
+fn skillCenterStartEnumerate(session: *skill_center.Session, allocator: std.mem.Allocator) void {
+    var url_owned: ?[]u8 = null;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .url_input => |*u| {
+                const t = std.mem.trim(u8, u.text(), " \t\r\n");
+                if (t.len > 0) url_owned = allocator.dupe(u8, t) catch null;
+                session.model.clearOverlay();
+            },
+            else => return,
+        }
+    }
+    const url = url_owned orelse {
+        markUiDirty();
+        return;
+    };
+    // Validate the URL on the UI thread so a parse error gets a precise toast
+    // (a worker-thread .failed can't distinguish bad-URL from network error).
+    if (skill_install.parseGithubUrl(allocator, url)) |rr| {
+        var probe = rr;
+        probe.deinit(allocator);
+    } else |_| {
+        allocator.free(url);
+        overlays.showStatusToast(i18n.s().sc_toast_bad_url);
+        markUiDirty();
+        return;
+    }
+    const job = allocator.create(SkillInstallEnumerateJob) catch {
+        allocator.free(url);
+        return;
+    };
+    job.* = .{ .url = url };
+    if (!session.startOp(.{ .ctx = job, .run = SkillInstallEnumerateJob.run, .destroy = SkillInstallEnumerateJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_fetching)) {
+        SkillInstallEnumerateJob.destroy(@ptrCast(job), allocator);
+        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
+    }
+    markUiDirty();
+}
+
+/// True when the install checklist is active. UI thread.
+pub fn skillCenterPickActive() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    return session.model.overlay == .install_pick;
+}
+
+/// Space: toggle the highlighted checklist row. UI thread.
+pub fn skillCenterPickToggle() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    switch (session.model.overlay) {
+        .install_pick => |*p| {
+            p.toggle();
+            markUiDirty();
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// 'a': toggle select-all in the checklist. UI thread.
+pub fn skillCenterPickSelectAll() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    switch (session.model.overlay) {
+        .install_pick => |*p| {
+            p.setAll(!p.anyChecked());
+            markUiDirty();
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// Enter in the checklist: snapshot the selection + repo, clear the overlay,
+/// start the download op. UI thread.
+fn skillCenterStartInstall(session: *skill_center.Session, allocator: std.mem.Allocator) void {
+    var repo_owned: ?skill_install.RepoRef = null;
+    var entries_owned: ?[]skill_install.SkillEntry = null;
+    var empty = false;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .install_pick => |*p| {
+                if (!p.anyChecked()) {
+                    empty = true;
+                } else {
+                    repo_owned = p.repo.clone(allocator) catch null;
+                    entries_owned = p.selectedEntries(allocator) catch null;
+                    session.model.clearOverlay();
+                }
+            },
+            else => return,
+        }
+    }
+    if (empty) {
+        overlays.showStatusToast(i18n.s().sc_toast_no_skills);
+        markUiDirty();
+        return;
+    }
+    const repo = repo_owned orelse {
+        if (entries_owned) |e| skill_install.freeEntries(allocator, e);
+        markUiDirty();
+        return;
+    };
+    const entries = entries_owned orelse {
+        var rr = repo;
+        rr.deinit(allocator);
+        markUiDirty();
+        return;
+    };
+    const job = allocator.create(SkillInstallDownloadJob) catch {
+        var rr = repo;
+        rr.deinit(allocator);
+        skill_install.freeEntries(allocator, entries);
+        return;
+    };
+    job.* = .{ .repo = repo, .entries = entries };
+    if (!session.startOp(.{ .ctx = job, .run = SkillInstallDownloadJob.run, .destroy = SkillInstallDownloadJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_installing)) {
+        SkillInstallDownloadJob.destroy(@ptrCast(job), allocator);
+        overlays.showStatusToast(i18n.s().sc_toast_op_busy);
+    }
+    markUiDirty();
+}
+
 /// Library root `<config>/skills`. Caller frees.
 fn skillCenterLibraryDir(allocator: std.mem.Allocator) ?[]const u8 {
     return platform_dirs.pathInConfigDir(allocator, "skills") catch null;
+}
+
+/// Download every selected skill's files into a temp staging dir under the
+/// library, then per-skill atomically replace `<config>/skills/<name>`. Returns
+/// {installed, overwritten, failed}. A skill whose download fails is skipped
+/// (counted in `failed`); others still install. Staging dir is always removed.
+fn downloadSelectedSkillsToLibrary(
+    allocator: std.mem.Allocator,
+    repo: skill_install.RepoRef,
+    entries: []const skill_install.SkillEntry,
+) struct { installed: usize, overwritten: usize, failed: usize } {
+    var installed: usize = 0;
+    var overwritten: usize = 0;
+    var failed: usize = 0;
+
+    const lib_dir = skillCenterLibraryDir(allocator) orelse return .{ .installed = 0, .overwritten = 0, .failed = entries.len };
+    defer allocator.free(lib_dir);
+    const ref = repo.ref orelse "main";
+
+    const tmp_dir = std.fs.path.join(allocator, &.{ lib_dir, ".install-tmp" }) catch
+        return .{ .installed = 0, .overwritten = 0, .failed = entries.len };
+    defer allocator.free(tmp_dir);
+    std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+    defer std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+
+    for (entries) |entry| {
+        // Defense-in-depth: never let a downloaded skill name escape the library dir.
+        if (entry.name.len == 0 or
+            std.mem.eql(u8, entry.name, ".") or
+            std.mem.eql(u8, entry.name, "..") or
+            std.mem.indexOfScalar(u8, entry.name, '/') != null or
+            std.mem.indexOfScalar(u8, entry.name, '\\') != null)
+        {
+            failed += 1;
+            continue;
+        }
+        var ok = true;
+        for (entry.files) |file_path| {
+            const rel = skill_install.relInstallPath(entry.root_path, file_path) orelse continue;
+            // Fetch via the GitHub Contents API (api.github.com) rather than
+            // raw.githubusercontent.com: the same host that enumeration used and
+            // proved reachable. `Accept: application/vnd.github.raw` returns the
+            // file's raw bytes.
+            const url = skill_install.contentsApiUrl(allocator, repo.owner, repo.repo, file_path, ref) catch {
+                ok = false;
+                break;
+            };
+            defer allocator.free(url);
+            const dest = std.fs.path.join(allocator, &.{ tmp_dir, rel }) catch {
+                ok = false;
+                break;
+            };
+            defer allocator.free(dest);
+            update_install.downloadAssetAccept(allocator, url, dest, "application/vnd.github.raw") catch {
+                ok = false;
+                break;
+            };
+        }
+        if (!ok) {
+            failed += 1;
+            continue;
+        }
+
+        const final = std.fs.path.join(allocator, &.{ lib_dir, entry.name }) catch {
+            failed += 1;
+            continue;
+        };
+        defer allocator.free(final);
+        const staged = std.fs.path.join(allocator, &.{ tmp_dir, entry.name }) catch {
+            failed += 1;
+            continue;
+        };
+        defer allocator.free(staged);
+
+        const existed = blk: {
+            std.fs.accessAbsolute(final, .{}) catch break :blk false;
+            break :blk true;
+        };
+        std.fs.deleteTreeAbsolute(final) catch {
+            failed += 1;
+            continue;
+        };
+        std.fs.renameAbsolute(staged, final) catch {
+            failed += 1;
+            continue;
+        };
+        installed += 1;
+        if (existed) overwritten += 1;
+    }
+
+    return .{ .installed = installed, .overwritten = overwritten, .failed = failed };
 }
 
 /// ExecHost over a location: local POSIX, or SSH when a conn is present.
@@ -1866,6 +2200,16 @@ fn skillCenterImportAct(allocator: std.mem.Allocator, target: skill_center.Targe
 pub fn skillCenterOverlaySelect() bool {
     const session = activeSkillCenter() orelse return false;
     const allocator = g_allocator orelse return false;
+    // URL input submits to the enumerate op (manages its own lock).
+    if (skillCenterUrlInputActive()) {
+        skillCenterStartEnumerate(session, allocator);
+        return true;
+    }
+    // The install checklist submits to the download op (manages its own lock).
+    if (skillCenterPickActive()) {
+        skillCenterStartInstall(session, allocator);
+        return true;
+    }
     const Act = enum { none, deploy_picked, import_picked, import_item, confirm };
     var act: Act = .none;
     var target: ?skill_center.Target = null;
@@ -1912,6 +2256,9 @@ pub fn skillCenterOverlaySelect() bool {
                 act = .confirm;
                 session.model.clearOverlay();
             },
+            // Handled by the early guards above; safety no-ops here.
+            .url_input => {},
+            .install_pick => {},
             .none, .busy => {},
         }
     }
@@ -1986,6 +2333,7 @@ pub fn skillCenterPreviewSelected() bool {
 /// import_list → server skill (async); main library / deploy picker → local
 /// library skill; import picker / confirm → no-op. UI thread.
 pub fn skillCenterSpacePreview() bool {
+    if (skillCenterPickActive()) return skillCenterPickToggle();
     const session = activeSkillCenter() orelse return false;
     const allocator = g_allocator orelse return false;
     const Kind = enum { lib, server, none };
@@ -1998,6 +2346,8 @@ pub fn skillCenterSpacePreview() bool {
             .import_list => kind = .server,
             .picker => |*p| kind = if (p.purpose == .deploy) .lib else .none,
             .confirm => kind = .none,
+            .url_input => kind = .none,
+            .install_pick => kind = .none,
         }
     }
     switch (kind) {
@@ -2488,6 +2838,72 @@ const SkillPreviewJob = struct {
         allocator.destroy(job);
     }
 };
+
+/// Background op: parse the URL, resolve the default branch if absent, fetch the
+/// Git Trees response, and enumerate skills for the checklist.
+const SkillInstallEnumerateJob = struct {
+    url: []u8, // owned
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
+        const job: *SkillInstallEnumerateJob = @ptrCast(@alignCast(ctx));
+        var repo = skill_install.parseGithubUrl(allocator, job.url) catch return .failed;
+        // NB: `enumerate` is error-returning so `errdefer` fires on every failure
+        // path below (the bare `return .failed` of the plan's code would leak
+        // `repo` because a value-return does not trigger errdefer).
+        return enumerate(allocator, &repo) catch {
+            repo.deinit(allocator);
+            return .failed;
+        };
+    }
+    fn enumerate(allocator: std.mem.Allocator, repo: *skill_install.RepoRef) !skill_center.OpResult {
+        // Resolve the ref if the URL had none.
+        if (repo.ref == null) {
+            repo.ref = resolveDefaultBranch(allocator, repo.owner, repo.repo) catch
+                try allocator.dupe(u8, "main");
+        }
+
+        const api = try skill_install.treeApiUrl(allocator, repo.owner, repo.repo, repo.ref.?);
+        defer allocator.free(api);
+        const json = try update_install.httpGetAlloc(allocator, api, 8 * 1024 * 1024);
+        defer allocator.free(json);
+
+        const res = try skill_install.findSkills(allocator, json, repo.subpath);
+        return .{ .install_enumerate = .{ .repo = repo.*, .entries = res.entries, .truncated = res.truncated } };
+    }
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *SkillInstallEnumerateJob = @ptrCast(@alignCast(ctx));
+        allocator.free(job.url);
+        allocator.destroy(job);
+    }
+};
+
+/// Background op: download + install the selected skills into the library.
+const SkillInstallDownloadJob = struct {
+    repo: skill_install.RepoRef, // owned
+    entries: []skill_install.SkillEntry, // owned
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
+        const job: *SkillInstallDownloadJob = @ptrCast(@alignCast(ctx));
+        const r = downloadSelectedSkillsToLibrary(allocator, job.repo, job.entries);
+        return .{ .install_done = .{ .installed = r.installed, .overwritten = r.overwritten, .failed = r.failed } };
+    }
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *SkillInstallDownloadJob = @ptrCast(@alignCast(ctx));
+        job.repo.deinit(allocator);
+        skill_install.freeEntries(allocator, job.entries);
+        allocator.destroy(job);
+    }
+};
+
+/// Best-effort default-branch resolution. Tries the repo API's `default_branch`,
+/// then falls back to "master" (the caller defaults to "main" on total failure).
+fn resolveDefaultBranch(allocator: std.mem.Allocator, owner: []const u8, repo: []const u8) ![]u8 {
+    const api = try skill_install.repoApiUrl(allocator, owner, repo);
+    defer allocator.free(api);
+    const json = update_install.httpGetAlloc(allocator, api, 1024 * 1024) catch return allocator.dupe(u8, "master");
+    defer allocator.free(json);
+    return skill_install.parseDefaultBranch(allocator, json) catch allocator.dupe(u8, "master");
+}
 
 /// Kick off an async library scan for `session`. UI thread.
 fn startSkillCenterScan(allocator: std.mem.Allocator, session: *skill_center.Session) void {
@@ -4055,6 +4471,38 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
         },
         .preview => |*v| {
             openSkillMdInPreviewLeaf(allocator, v.title, v.content);
+        },
+        .install_enumerate => {
+            const moved = result; // shallow copy of the union (owns repo+entries)
+            result = .failed; // outer defer now no-ops; `moved` is sole owner
+            const v = moved.install_enumerate;
+            if (v.entries.len == 0) {
+                var mv = moved;
+                mv.deinit(allocator); // free repo+entries
+                overlays.showStatusToast(i18n.s().sc_toast_no_skills);
+            } else {
+                if (v.truncated) overlays.showStatusToast(i18n.s().sc_toast_truncated);
+                const checked = allocator.alloc(bool, v.entries.len) catch {
+                    var mv = moved;
+                    mv.deinit(allocator);
+                    markUiDirty();
+                    return;
+                };
+                for (checked) |*c| c.* = true; // default: all selected
+                session.mutex.lock();
+                session.model.setOverlay(.{ .install_pick = .{ .repo = v.repo, .entries = v.entries, .checked = checked } });
+                session.mutex.unlock();
+                // ownership of v.repo + v.entries now belongs to the overlay; do NOT deinit `moved`.
+            }
+        },
+        .install_done => |*v| {
+            if (v.failed == 0) {
+                overlays.showStatusToast(i18n.s().sc_toast_installed);
+            } else {
+                overlays.showStatusToast(i18n.s().sc_toast_install_partial);
+            }
+            log.info("skill install: {d} installed, {d} updated, {d} failed", .{ v.installed, v.overwritten, v.failed });
+            startSkillCenterScan(allocator, session); // refresh the library list
         },
     }
     markUiDirty();
