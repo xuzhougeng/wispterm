@@ -205,3 +205,54 @@ test "run_on_main marshals a task from a worker thread to the draining thread" {
     st.done.wait();
     try std.testing.expectEqual(@as(i32, 42), st.value);
 }
+
+test "skill_local_fs aggHashHex matches the POSIX find|sha256sum recipe byte-for-byte" {
+    const skill_local_fs = @import("skill_local_fs.zig");
+    const a = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A skill dir with a top-level file, nested files, and a dotfile — exercises
+    // bytewise path sorting and recursion, exactly what the shell pipeline sees.
+    try tmp.dir.makePath("skill/refs");
+    try tmp.dir.writeFile(.{ .sub_path = "skill/SKILL.md", .data = "# title\nbody\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "skill/z.txt", .data = "zzz" });
+    try tmp.dir.writeFile(.{ .sub_path = "skill/refs/a.md", .data = "alpha" });
+    try tmp.dir.writeFile(.{ .sub_path = "skill/refs/b.md", .data = "beta\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "skill/.keep", .data = "" });
+    // A whitespace name: default `xargs` word-splits it, so the shell drops it
+    // from the aggregate — the native scan must drop it too (parity).
+    try tmp.dir.writeFile(.{ .sub_path = "skill/a b.txt", .data = "ws" });
+
+    const skill_abs = try tmp.dir.realpathAlloc(a, "skill");
+    defer a.free(skill_abs);
+
+    // Run the exact recipe the scan command uses for a skill_md target dir.
+    const script = try std.fmt.allocPrint(a,
+        \\HASHCMD="";
+        \\if command -v sha256sum >/dev/null 2>&1; then HASHCMD="sha256sum";
+        \\elif command -v shasum >/dev/null 2>&1; then HASHCMD="shasum -a 256"; fi;
+        \\if [ -z "$HASHCMD" ]; then echo NOHASH; exit 0; fi;
+        \\cd '{s}' && find . -type f | LC_ALL=C sort | xargs $HASHCMD | $HASHCMD | cut -d' ' -f1
+    , .{skill_abs});
+    defer a.free(script);
+
+    const argv = [_][]const u8{ "sh", "-c", script };
+    var child = std.process.Child.init(&argv, a);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+    const stdout = child.stdout.?;
+    const raw = try stdout.readToEndAlloc(a, 4096);
+    defer a.free(raw);
+    _ = child.wait() catch {};
+
+    const shell_hex = std.mem.trim(u8, raw, " \t\r\n");
+    if (std.mem.eql(u8, shell_hex, "NOHASH")) return error.SkipZigTest; // no hash tool
+
+    var dir = try tmp.dir.openDir("skill", .{ .iterate = true });
+    defer dir.close();
+    const native = try skill_local_fs.aggHashHex(a, dir);
+
+    try std.testing.expectEqualStrings(shell_hex, &native);
+}

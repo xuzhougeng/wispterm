@@ -95,6 +95,46 @@ pub fn absRootExpr(allocator: std.mem.Allocator, abs: []const u8) ![]u8 {
     return buf.toOwnedSlice(allocator);
 }
 
+/// Staging dir name used by the native (scp -r) transfer path on both ends.
+pub const XFER_STAGING = ".wispterm-xfer";
+
+/// `D=<root>; mkdir -p "$D"; rm -rf "$D"/'.wispterm-xfer'; mkdir -p "$D"/'.wispterm-xfer'`
+/// — prepare a fresh remote staging dir for an `scp -r` upload.
+pub fn remoteStagePrepCmd(allocator: std.mem.Allocator, root_expr: []const u8) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "D=");
+    try buf.appendSlice(allocator, root_expr);
+    try buf.appendSlice(allocator, "; mkdir -p \"$D\"; rm -rf \"$D\"/");
+    try appendQuoted(&buf, allocator, XFER_STAGING);
+    try buf.appendSlice(allocator, "; mkdir -p \"$D\"/");
+    try appendQuoted(&buf, allocator, XFER_STAGING);
+    return buf.toOwnedSlice(allocator);
+}
+
+/// `D=<root>; rm -rf "$D"/'<name>' && mv "$D"/'.wispterm-xfer'/'<name>' "$D"/'<name>' && rm -rf "$D"/'.wispterm-xfer'`
+/// — atomically swap the staged skill into place, then remove the staging dir.
+/// The whole chain is `&&`-joined so the command's exit status reflects the
+/// `mv` (the operation that matters): a failed mv propagates non-zero, letting
+/// the caller report failure instead of masking it behind the cleanup `rm`.
+pub fn remoteStageSwapCmd(allocator: std.mem.Allocator, root_expr: []const u8, name: []const u8) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "D=");
+    try buf.appendSlice(allocator, root_expr);
+    try buf.appendSlice(allocator, "; rm -rf \"$D\"/");
+    try appendQuoted(&buf, allocator, name);
+    try buf.appendSlice(allocator, " && mv \"$D\"/");
+    try appendQuoted(&buf, allocator, XFER_STAGING);
+    try buf.append(allocator, '/');
+    try appendQuoted(&buf, allocator, name);
+    try buf.appendSlice(allocator, " \"$D\"/");
+    try appendQuoted(&buf, allocator, name);
+    try buf.appendSlice(allocator, " && rm -rf \"$D\"/");
+    try appendQuoted(&buf, allocator, XFER_STAGING);
+    return buf.toOwnedSlice(allocator);
+}
+
 // --- Tests ---
 
 test "skill_transfer_cmd: homeRootExpr + tarCreateCmd for a $HOME target" {
@@ -139,4 +179,38 @@ test "skill_transfer_cmd: catSkillMdCmd shell-escapes a tricky name" {
     const c = try catSkillMdCmd(a, root, "it's mine");
     defer a.free(c);
     try std.testing.expectEqualStrings("cat '/cfg/skills'/'it'\\''s mine'/'SKILL.md'", c);
+}
+
+test "skill_transfer_cmd: remoteStagePrepCmd makes a fresh staging dir" {
+    const a = std.testing.allocator;
+    const root = try homeRootExpr(a, ".codex/skills");
+    defer a.free(root);
+    const c = try remoteStagePrepCmd(a, root);
+    defer a.free(c);
+    try std.testing.expectEqualStrings(
+        "D=\"$HOME\"/'.codex/skills'; mkdir -p \"$D\"; rm -rf \"$D\"/'.wispterm-xfer'; mkdir -p \"$D\"/'.wispterm-xfer'",
+        c,
+    );
+}
+
+test "skill_transfer_cmd: remoteStageSwapCmd swaps staged skill into place" {
+    const a = std.testing.allocator;
+    const root = try absRootExpr(a, "/cfg/skills");
+    defer a.free(root);
+    const c = try remoteStageSwapCmd(a, root, "pdf");
+    defer a.free(c);
+    try std.testing.expectEqualStrings(
+        "D='/cfg/skills'; rm -rf \"$D\"/'pdf' && mv \"$D\"/'.wispterm-xfer'/'pdf' \"$D\"/'pdf' && rm -rf \"$D\"/'.wispterm-xfer'",
+        c,
+    );
+}
+
+test "skill_transfer_cmd: remoteStageSwapCmd shell-escapes a tricky name" {
+    const a = std.testing.allocator;
+    const root = try homeRootExpr(a, ".claude/skills");
+    defer a.free(root);
+    const c = try remoteStageSwapCmd(a, root, "it's mine");
+    defer a.free(c);
+    try std.testing.expect(std.mem.indexOf(u8, c, "'it'\\''s mine'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c, "mv \"$D\"/'.wispterm-xfer'/'it'\\''s mine'") != null);
 }

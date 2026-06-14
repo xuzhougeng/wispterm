@@ -174,6 +174,32 @@ pub fn openSshConfigPathFromEnvForOs(
     return std.fs.path.join(allocator, &.{ base, ".ssh", "config" });
 }
 
+/// The user's home directory (`$HOME`, or `%USERPROFILE%` on Windows). Used to
+/// resolve a target software's skills root (e.g. `~/.claude/skills`) natively
+/// when no POSIX shell is available to expand `$HOME`.
+pub fn homeDir(allocator: std.mem.Allocator) ![]const u8 {
+    const userprofile = envVarOwned(allocator, "USERPROFILE");
+    defer if (userprofile) |value| allocator.free(value);
+    const home = envVarOwned(allocator, "HOME");
+    defer if (home) |value| allocator.free(value);
+    return homeDirFromEnvForOs(allocator, builtin.os.tag, .{
+        .userprofile = userprofile,
+        .home = home,
+    });
+}
+
+pub fn homeDirFromEnvForOs(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    env: Env,
+) ![]const u8 {
+    const base = switch (os_tag) {
+        .windows => nonEmpty(env.userprofile) orelse nonEmpty(env.home) orelse return error.NoHomeDir,
+        else => nonEmpty(env.home) orelse return error.NoHomeDir,
+    };
+    return allocator.dupe(u8, base);
+}
+
 pub fn agentHistoryPath(allocator: std.mem.Allocator) ![]const u8 {
     return pathInConfigDir(allocator, "agent-history.json");
 }
@@ -577,4 +603,21 @@ test "platform dirs resolve openssh config path per OS" {
     try std.testing.expectEqualStrings(expected_linux, linux);
 
     try std.testing.expectError(error.NoOpenSshConfigPath, openSshConfigPathFromEnvForOs(allocator, .linux, .{}));
+}
+
+test "platform dirs resolve home directory per OS" {
+    const allocator = std.testing.allocator;
+
+    const windows = try homeDirFromEnvForOs(allocator, .windows, .{
+        .userprofile = "C:/Users/alice",
+        .home = "/ignored",
+    });
+    defer allocator.free(windows);
+    try std.testing.expectEqualStrings("C:/Users/alice", windows);
+
+    const linux = try homeDirFromEnvForOs(allocator, .linux, .{ .home = "/home/alice" });
+    defer allocator.free(linux);
+    try std.testing.expectEqualStrings("/home/alice", linux);
+
+    try std.testing.expectError(error.NoHomeDir, homeDirFromEnvForOs(allocator, .linux, .{}));
 }

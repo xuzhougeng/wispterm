@@ -61,6 +61,7 @@ const port_forward_manager = @import("port_forward_manager.zig");
 const port_forward_rule = @import("port_forward_rule.zig");
 const ssh_profile_store = @import("ssh_profile_store.zig");
 const skill_scan = @import("skill_scan.zig");
+const skill_local_fs = @import("skill_local_fs.zig");
 const skill_transfer_cmd = @import("skill_transfer_cmd.zig");
 const remote_file = @import("platform/remote_file.zig");
 const ssh_connection = @import("ssh_connection.zig");
@@ -1824,6 +1825,43 @@ fn skillCenterTargetConn(target: skill_center.Target) ?ssh_connection.SshConnect
     return null;
 }
 
+/// Absolute path of a local target software's skills root (`~/.claude/skills`).
+/// Used by the native (non-POSIX) scan/transfer path where `$HOME` can't be
+/// expanded by a shell. Null if the home dir can't be resolved. Caller frees.
+fn skillCenterLocalRootPath(allocator: std.mem.Allocator, software: skill_center.Software) ?[]u8 {
+    const home = platform_dirs.homeDir(allocator) catch return null;
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, software.rootRel() }) catch null;
+}
+
+/// Scan a skills endpoint, picking the right backend:
+///   - remote (conn set): the POSIX `find`/`sha256sum` command over SSH.
+///   - local on a POSIX host: the same command via `sh -c` (preserves the
+///     existing Linux/macOS hashes).
+///   - local on a non-POSIX host (Windows, no WSL): a native `std.fs` scan whose
+///     aggregate hash matches the POSIX recipe byte-for-byte.
+/// `root_expr` is the shell root expression (for the SSH/POSIX paths);
+/// `local_path` is the raw absolute root (for the native path; null when remote).
+fn skillCenterScanOutcome(
+    allocator: std.mem.Allocator,
+    root_expr: []const u8,
+    local_path: ?[]const u8,
+    conn: ?ssh_connection.SshConnection,
+) skill_scan.ScanOutcome {
+    if (conn) |c| {
+        var le = SkillLocExec{ .conn = c };
+        return skill_scan.scanLocation(allocator, root_expr, le.host()) catch
+            return .{ .reachable = false, .rows = &.{} };
+    }
+    if (remote_file.localPosixExecSupported()) {
+        var le = SkillLocExec{ .conn = null };
+        return skill_scan.scanLocation(allocator, root_expr, le.host()) catch
+            return .{ .reachable = false, .rows = &.{} };
+    }
+    const lp = local_path orelse return .{ .reachable = false, .rows = &.{} };
+    return skill_local_fs.scanOutcome(allocator, lp);
+}
+
 /// Adapts skill_transfer.Ops onto local/ssh/scp. conn null → a local-only target.
 /// `err_buf`/`err_len` capture the last ssh error summary for the UI toast.
 const SkillTransferCtx = struct {
@@ -2002,18 +2040,22 @@ fn skillCenterOpenImportList(allocator: std.mem.Allocator, target: skill_center.
         return;
     }
     const root_expr = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch return;
-    // ownership of root_expr moves into the job on success
+    // Raw root for the native (non-POSIX) path; null when remote or unresolvable.
+    const local_path: ?[]u8 = if (target.is_local) skillCenterLocalRootPath(allocator, target.software) else null;
+    // ownership of root_expr + local_path moves into the job on success
     const tgt = target.clone(allocator) catch {
         allocator.free(root_expr);
+        if (local_path) |p| allocator.free(p);
         return;
     };
     const job = allocator.create(SkillImportScanJob) catch {
         allocator.free(root_expr);
+        if (local_path) |p| allocator.free(p);
         var t = tgt;
         t.deinit(allocator);
         return;
     };
-    job.* = .{ .target = tgt, .conn = conn, .root_expr = root_expr };
+    job.* = .{ .target = tgt, .conn = conn, .root_expr = root_expr, .local_path = local_path };
     if (!session.startOp(.{ .ctx = job, .run = SkillImportScanJob.run, .destroy = SkillImportScanJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
         SkillImportScanJob.destroy(@ptrCast(job), allocator);
         overlays.showStatusToast(i18n.s().sc_toast_op_busy);
@@ -2036,14 +2078,25 @@ fn skillCenterRunTransfer(allocator: std.mem.Allocator, is_import: bool, target:
         allocator.free(lib_root);
         return;
     };
+    const lib_path = allocator.dupe(u8, lib_dir) catch {
+        allocator.free(lib_root);
+        allocator.free(tgt_root);
+        return;
+    };
+    // Raw target root for the native (non-POSIX) path; null when remote.
+    const tgt_path: ?[]u8 = if (target.is_local) skillCenterLocalRootPath(allocator, target.software) else null;
     const name_dup = allocator.dupe(u8, name) catch {
         allocator.free(lib_root);
         allocator.free(tgt_root);
+        allocator.free(lib_path);
+        if (tgt_path) |p| allocator.free(p);
         return;
     };
     const job = allocator.create(SkillTransferJob) catch {
         allocator.free(lib_root);
         allocator.free(tgt_root);
+        allocator.free(lib_path);
+        if (tgt_path) |p| allocator.free(p);
         allocator.free(name_dup);
         return;
     };
@@ -2054,6 +2107,9 @@ fn skillCenterRunTransfer(allocator: std.mem.Allocator, is_import: bool, target:
         .tgt_root = tgt_root,
         .tgt_is_local = target.is_local,
         .name = name_dup,
+        .lib_path = lib_path,
+        .tgt_path = tgt_path,
+        .tgt_software = target.software,
     };
     if (!session.startOp(.{ .ctx = job, .run = SkillTransferJob.run, .destroy = SkillTransferJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
         SkillTransferJob.destroy(@ptrCast(job), allocator);
@@ -2151,12 +2207,16 @@ fn skillCenterDeployDecide(allocator: std.mem.Allocator, target: skill_center.Ta
         return;
     }
     const root_expr = skill_transfer_cmd.homeRootExpr(allocator, target.software.rootRel()) catch return;
+    // Raw root for the native (non-POSIX) path; null when remote or unresolvable.
+    const local_path: ?[]u8 = if (target.is_local) skillCenterLocalRootPath(allocator, target.software) else null;
     const tgt = target.clone(allocator) catch {
         allocator.free(root_expr);
+        if (local_path) |p| allocator.free(p);
         return;
     };
     const name_dup = allocator.dupe(u8, name) catch {
         allocator.free(root_expr);
+        if (local_path) |p| allocator.free(p);
         var t = tgt;
         t.deinit(allocator);
         return;
@@ -2165,6 +2225,7 @@ fn skillCenterDeployDecide(allocator: std.mem.Allocator, target: skill_center.Ta
     if (src_hash) |h| {
         hash_dup = allocator.dupe(u8, h) catch {
             allocator.free(root_expr);
+            if (local_path) |p| allocator.free(p);
             var t = tgt;
             t.deinit(allocator);
             allocator.free(name_dup);
@@ -2173,13 +2234,14 @@ fn skillCenterDeployDecide(allocator: std.mem.Allocator, target: skill_center.Ta
     }
     const job = allocator.create(SkillDeployScanJob) catch {
         allocator.free(root_expr);
+        if (local_path) |p| allocator.free(p);
         var t = tgt;
         t.deinit(allocator);
         allocator.free(name_dup);
         if (hash_dup) |h| allocator.free(h);
         return;
     };
-    job.* = .{ .target = tgt, .conn = conn, .root_expr = root_expr, .name = name_dup, .src_hash = hash_dup };
+    job.* = .{ .target = tgt, .conn = conn, .root_expr = root_expr, .local_path = local_path, .name = name_dup, .src_hash = hash_dup };
     if (!session.startOp(.{ .ctx = job, .run = SkillDeployScanJob.run, .destroy = SkillDeployScanJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_syncing)) {
         SkillDeployScanJob.destroy(@ptrCast(job), allocator);
         overlays.showStatusToast(i18n.s().sc_toast_op_busy);
@@ -2686,12 +2748,12 @@ fn startAiHistoryScan(allocator: std.mem.Allocator, session: *ai_history_session
 /// that could not be resolved, or local on a non-POSIX host).
 /// Background job: scan the local library (`<config>/skills`) off the UI thread.
 const SkillLibraryScanJob = struct {
-    root_expr: []u8, // owned shell expression for the library root
+    root_expr: []u8, // owned shell expression for the library root (POSIX path)
+    local_path: []u8, // owned raw absolute library root (native path)
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror![]skill_center.LibrarySkill {
         const job: *SkillLibraryScanJob = @ptrCast(@alignCast(ctx));
-        var le = SkillLocExec{ .conn = null };
-        const outcome = try skill_scan.scanLocation(allocator, job.root_expr, le.host());
+        const outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, null);
         // Move the scanned rows into the library list (frees the rows slice).
         return skill_center.libraryFromRows(allocator, outcome.rows);
     }
@@ -2699,6 +2761,7 @@ const SkillLibraryScanJob = struct {
     fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
         const job: *SkillLibraryScanJob = @ptrCast(@alignCast(ctx));
         allocator.free(job.root_expr);
+        allocator.free(job.local_path);
         allocator.destroy(job);
     }
 };
@@ -2708,26 +2771,24 @@ const SkillImportScanJob = struct {
     target: skill_center.Target, // owned
     conn: ?ssh_connection.SshConnection,
     root_expr: []u8, // owned
+    local_path: ?[]u8, // owned raw root when local; null when remote (native path)
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
         const job: *SkillImportScanJob = @ptrCast(@alignCast(ctx));
-        var le = SkillLocExec{ .conn = job.conn };
-        var outcome = skill_scan.scanLocation(allocator, job.root_expr, le.host()) catch {
-            return .failed;
-        };
+        var outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, job.conn);
         const tgt = job.target.clone(allocator) catch {
             outcome.deinit(allocator);
             return .failed;
         };
-        // An unreachable source yields `{ reachable = false, rows = &.{} }` (not an
-        // exec error), so it survives the catch above; importScanResult turns it
-        // into `.failed` rather than an empty import list.
+        // An unreachable source yields `{ reachable = false, rows = &.{} }`;
+        // importScanResult turns it into `.failed` rather than an empty list.
         return skill_center.importScanResult(allocator, &outcome, tgt);
     }
     fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
         const job: *SkillImportScanJob = @ptrCast(@alignCast(ctx));
         job.target.deinit(allocator);
         allocator.free(job.root_expr);
+        if (job.local_path) |p| allocator.free(p);
         allocator.destroy(job);
     }
 };
@@ -2738,15 +2799,19 @@ const SkillDeployScanJob = struct {
     target: skill_center.Target, // owned
     conn: ?ssh_connection.SshConnection,
     root_expr: []u8, // owned
+    local_path: ?[]u8, // owned raw root when local; null when remote (native path)
     name: []u8, // owned
     src_hash: ?[]u8, // owned
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
         const job: *SkillDeployScanJob = @ptrCast(@alignCast(ctx));
-        var le = SkillLocExec{ .conn = job.conn };
-        var outcome = skill_scan.scanLocation(allocator, job.root_expr, le.host()) catch {
+        var outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, job.conn);
+        // A genuinely unreachable target (SSH failure) → fail fast, as the old
+        // scan-error path did; a reachable-but-empty target deploys via `.direct`.
+        if (!outcome.reachable) {
+            outcome.deinit(allocator);
             return .failed;
-        };
+        }
         const tgt = job.target.clone(allocator) catch {
             outcome.deinit(allocator);
             return .failed;
@@ -2775,6 +2840,7 @@ const SkillDeployScanJob = struct {
         const job: *SkillDeployScanJob = @ptrCast(@alignCast(ctx));
         job.target.deinit(allocator);
         allocator.free(job.root_expr);
+        if (job.local_path) |p| allocator.free(p);
         allocator.free(job.name);
         if (job.src_hash) |h| allocator.free(h);
         allocator.destroy(job);
@@ -2785,20 +2851,25 @@ const SkillDeployScanJob = struct {
 const SkillTransferJob = struct {
     is_import: bool,
     conn: ?ssh_connection.SshConnection,
-    lib_root: []u8, // owned
-    tgt_root: []u8, // owned
+    lib_root: []u8, // owned shell expr (POSIX path)
+    tgt_root: []u8, // owned shell expr (POSIX path)
     tgt_is_local: bool,
     name: []u8, // owned
+    lib_path: []u8, // owned raw absolute library root (native path)
+    tgt_path: ?[]u8, // owned raw absolute target root when local; null when remote
+    tgt_software: skill_center.Software, // for resolving the remote root natively
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
         const job: *SkillTransferJob = @ptrCast(@alignCast(ctx));
         var tctx = SkillTransferCtx{ .conn = job.conn };
-        const lib_ep = skill_transfer.Endpoint{ .root_expr = job.lib_root, .is_local = true };
-        const tgt_ep = skill_transfer.Endpoint{ .root_expr = job.tgt_root, .is_local = job.tgt_is_local };
-        const from = if (job.is_import) tgt_ep else lib_ep;
-        const to = if (job.is_import) lib_ep else tgt_ep;
-        const r = skill_transfer.transfer(allocator, tctx.ops(), from, to, job.name);
-        const ok = (r == .ok);
+        const ok = if (remote_file.localPosixExecSupported()) blk: {
+            // POSIX local host: the proven tar-over-scp dance (Linux/macOS).
+            const lib_ep = skill_transfer.Endpoint{ .root_expr = job.lib_root, .is_local = true };
+            const tgt_ep = skill_transfer.Endpoint{ .root_expr = job.tgt_root, .is_local = job.tgt_is_local };
+            const from = if (job.is_import) tgt_ep else lib_ep;
+            const to = if (job.is_import) lib_ep else tgt_ep;
+            break :blk skill_transfer.transfer(allocator, tctx.ops(), from, to, job.name) == .ok;
+        } else nativeSkillTransfer(allocator, job, &tctx);
         var summary: ?[]u8 = null;
         if (!ok) {
             if (tctx.lastErr()) |s| summary = allocator.dupe(u8, s) catch null;
@@ -2810,9 +2881,143 @@ const SkillTransferJob = struct {
         allocator.free(job.lib_root);
         allocator.free(job.tgt_root);
         allocator.free(job.name);
+        allocator.free(job.lib_path);
+        if (job.tgt_path) |p| allocator.free(p);
         allocator.destroy(job);
     }
 };
+
+/// Transfer a skill without a POSIX shell (native Windows, no WSL):
+///   - local↔local: a native `std.fs` directory copy with atomic swap.
+///   - local↔remote: `scp -r` to/from a staging dir + an SSH stage/swap, so the
+///     local side never needs `tar` or a `/tmp` path. The remote side stays
+///     POSIX (its `mkdir`/`mv` run over SSH). Returns true on full success.
+fn nativeSkillTransfer(allocator: std.mem.Allocator, job: *SkillTransferJob, tctx: *SkillTransferCtx) bool {
+    if (job.conn == null) {
+        const tgt_path = job.tgt_path orelse {
+            tctx.noteErr("could not resolve target path");
+            return false;
+        };
+        const src = if (job.is_import) tgt_path else job.lib_path;
+        const dst = if (job.is_import) job.lib_path else tgt_path;
+        skill_local_fs.transferLocalToLocal(allocator, src, dst, job.name) catch {
+            tctx.noteErr("local copy failed");
+            return false;
+        };
+        return true;
+    }
+    var conn = job.conn.?;
+    if (job.is_import) return nativeImportFromRemote(allocator, job, &conn, tctx);
+    return nativeDeployToRemote(allocator, job, &conn, tctx);
+}
+
+/// Resolve the target's ABSOLUTE skills root on the remote (e.g.
+/// `/home/user/.claude/skills`) by asking the remote shell to expand `$HOME`.
+/// scp must be handed a literal path: its default (SFTP) protocol does NOT
+/// shell-expand a `"$HOME"`/quoted remote spec — passing the shell expression
+/// would only work via the legacy `-O` fallback on a POSIX login shell, which
+/// breaks on modern Windows OpenSSH (SFTP default) and non-POSIX login shells.
+/// Caller frees. Null if the home can't be resolved.
+fn resolveRemoteSkillRoot(
+    allocator: std.mem.Allocator,
+    conn: *const ssh_connection.SshConnection,
+    software: skill_center.Software,
+) ?[]u8 {
+    const home = remote_file.sshExecCapture(allocator, conn.*, "printf %s \"$HOME\"") catch return null;
+    defer allocator.free(home);
+    const trimmed = std.mem.trim(u8, home, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    // POSIX remote path → always '/' separators, never std.fs.path.join.
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ trimmed, software.rootRel() }) catch null;
+}
+
+/// Deploy the library skill to a remote target via `scp -r` (no local tar).
+fn nativeDeployToRemote(
+    allocator: std.mem.Allocator,
+    job: *SkillTransferJob,
+    conn: *const ssh_connection.SshConnection,
+    tctx: *SkillTransferCtx,
+) bool {
+    const abs_root = resolveRemoteSkillRoot(allocator, conn, job.tgt_software) orelse {
+        tctx.noteErr("could not resolve remote home");
+        return false;
+    };
+    defer allocator.free(abs_root);
+    const root_expr = skill_transfer_cmd.absRootExpr(allocator, abs_root) catch return false;
+    defer allocator.free(root_expr);
+
+    const prep = skill_transfer_cmd.remoteStagePrepCmd(allocator, root_expr) catch return false;
+    defer allocator.free(prep);
+    if (!SkillTransferCtx.remoteExec(tctx, allocator, prep)) return false;
+
+    const local_src = std.fs.path.join(allocator, &.{ job.lib_path, job.name }) catch return false;
+    defer allocator.free(local_src);
+    // Clean absolute remote path for scp (works under both the SFTP-default and
+    // legacy protocols); the ssh prep above created exactly this dir.
+    const remote_stage = std.fmt.allocPrint(allocator, "{s}/{s}", .{ abs_root, skill_transfer_cmd.XFER_STAGING }) catch return false;
+    defer allocator.free(remote_stage);
+    var spec_buf: [512]u8 = undefined;
+    const dst_spec = scp.remoteSpec(&spec_buf, conn, remote_stage);
+    var control: scp.TransferControl = .{};
+    if (scp.transferDirWithControl(allocator, conn, local_src, dst_spec, &control) != .ok) {
+        tctx.noteErr("scp upload failed");
+        return false;
+    }
+
+    const swap = skill_transfer_cmd.remoteStageSwapCmd(allocator, root_expr, job.name) catch return false;
+    defer allocator.free(swap);
+    return SkillTransferCtx.remoteExec(tctx, allocator, swap);
+}
+
+/// Import a remote skill into the library via `scp -r` into a local staging dir,
+/// then a native atomic swap.
+fn nativeImportFromRemote(
+    allocator: std.mem.Allocator,
+    job: *SkillTransferJob,
+    conn: *const ssh_connection.SshConnection,
+    tctx: *SkillTransferCtx,
+) bool {
+    const abs_root = resolveRemoteSkillRoot(allocator, conn, job.tgt_software) orelse {
+        tctx.noteErr("could not resolve remote home");
+        return false;
+    };
+    defer allocator.free(abs_root);
+
+    skill_local_fs.ensureDirAbsolute(job.lib_path) catch {
+        tctx.noteErr("library dir unavailable");
+        return false;
+    };
+    const staging = std.fs.path.join(allocator, &.{ job.lib_path, skill_transfer_cmd.XFER_STAGING }) catch return false;
+    defer allocator.free(staging);
+    std.fs.deleteTreeAbsolute(staging) catch {};
+    skill_local_fs.ensureDirAbsolute(staging) catch {
+        tctx.noteErr("local staging failed");
+        return false;
+    };
+    defer std.fs.deleteTreeAbsolute(staging) catch {};
+
+    // Clean absolute remote source path for scp (SFTP-default safe).
+    const remote_src = std.fmt.allocPrint(allocator, "{s}/{s}", .{ abs_root, job.name }) catch return false;
+    defer allocator.free(remote_src);
+    var spec_buf: [512]u8 = undefined;
+    const src_spec = scp.remoteSpec(&spec_buf, conn, remote_src);
+    var control: scp.TransferControl = .{};
+    if (scp.transferDirWithControl(allocator, conn, src_spec, staging, &control) != .ok) {
+        tctx.noteErr("scp download failed");
+        return false;
+    }
+
+    const staged_skill = std.fs.path.join(allocator, &.{ staging, job.name }) catch return false;
+    defer allocator.free(staged_skill);
+    const final = std.fs.path.join(allocator, &.{ job.lib_path, job.name }) catch return false;
+    defer allocator.free(final);
+    std.fs.deleteTreeAbsolute(final) catch {};
+    std.fs.renameAbsolute(staged_skill, final) catch {
+        tctx.noteErr("local install failed");
+        return false;
+    };
+    return true;
+}
 
 /// Background op: read one skill's SKILL.md (local or via ssh) for preview.
 const SkillPreviewJob = struct {
@@ -2916,12 +3121,18 @@ fn startSkillCenterScan(allocator: std.mem.Allocator, session: *skill_center.Ses
         session.publishScanFailure(session.scan_generation);
         return;
     };
-    const job = allocator.create(SkillLibraryScanJob) catch {
+    const local_path = allocator.dupe(u8, lib_dir) catch {
         allocator.free(root_expr);
         session.publishScanFailure(session.scan_generation);
         return;
     };
-    job.* = .{ .root_expr = root_expr };
+    const job = allocator.create(SkillLibraryScanJob) catch {
+        allocator.free(root_expr);
+        allocator.free(local_path);
+        session.publishScanFailure(session.scan_generation);
+        return;
+    };
+    job.* = .{ .root_expr = root_expr, .local_path = local_path };
     session.scanAsync(.{ .ctx = job, .run = SkillLibraryScanJob.run, .destroy = SkillLibraryScanJob.destroy });
 }
 
