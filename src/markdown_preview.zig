@@ -71,6 +71,10 @@ const text_file_suffixes = &.{
     ".yaml",
     ".toml",
     ".sh",
+    ".html",
+    ".htm",
+    ".xml",
+    ".css",
 };
 
 const image_file_suffixes = &.{
@@ -466,6 +470,10 @@ test "detect preview kind" {
     try std.testing.expectEqual(Kind.text, detectKind("config.yaml").?);
     try std.testing.expectEqual(Kind.text, detectKind("Cargo.toml").?);
     try std.testing.expectEqual(Kind.text, detectKind("deploy.sh").?);
+    try std.testing.expectEqual(Kind.text, detectKind("index.html").?);
+    try std.testing.expectEqual(Kind.text, detectKind("page.HTM").?);
+    try std.testing.expectEqual(Kind.text, detectKind("data.xml").?);
+    try std.testing.expectEqual(Kind.text, detectKind("style.css").?);
     try std.testing.expectEqual(Kind.image, detectKind("image.png").?);
     try std.testing.expectEqual(Kind.image, detectKind("photo.JPEG").?);
     try std.testing.expectEqual(MAX_SOURCE_BYTES, sourceLimit(.markdown));
