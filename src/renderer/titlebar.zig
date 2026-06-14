@@ -123,7 +123,7 @@ fn sidebarTabNumberWidth() f32 {
     return @max(@as(f32, 24), @ceil(titlebarTextWidth(max_prefix)) + 4);
 }
 
-fn agentBadgeColor(state: agent_detector.State) [3]f32 {
+pub fn agentBadgeColor(state: agent_detector.State) [3]f32 {
     return switch (state) {
         .running => .{ 0.22, 0.72, 0.40 },
         .waiting_approval => .{ 0.95, 0.64, 0.20 },
@@ -911,6 +911,37 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             }
         }
 
+        // Per-tab aggregate agent-state dot — bottom-center of the tab strip.
+        // Collects all panes' visible agent states, aggregates them, draws a
+        // small filled dot if any pane has a visible agent. The dot sits on the
+        // bottom border so it's unobtrusive (2px tall, 6px wide pill shape).
+        {
+            var states_buf: [64]agent_detector.State = undefined;
+            var states_len: usize = 0;
+            if (tab.g_tabs[tab_idx]) |tb| {
+                var it = tb.tree.surfaces();
+                while (it.next()) |entry| {
+                    if (states_len >= states_buf.len) break;
+                    const det = entry.surface.agent_detection;
+                    if (det.visible()) {
+                        states_buf[states_len] = det.state;
+                        states_len += 1;
+                    }
+                }
+            }
+            if (states_len > 0) {
+                const agg = agent_detector.aggregate(states_buf[0..states_len]);
+                if (agg != .none) {
+                    const dot_color = agentBadgeColor(agg);
+                    const dot_w: f32 = 6;
+                    const dot_h: f32 = 2;
+                    const dot_x = cursor_x + (tab_w - dot_w) / 2;
+                    const dot_y = tb_top; // bottom edge of titlebar in GL coords
+                    gl_init.renderQuad(dot_x, dot_y, dot_w, dot_h, dot_color);
+                }
+            }
+        }
+
         cursor_x += tab_w;
     }
 
@@ -1092,9 +1123,39 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         const close_opacity = tab.g_tab_close_opacity[tab_idx];
         const close_btn_x = sidebar_w - tab.TAB_CLOSE_BTN_W - 4;
         var right_content_x = close_btn_x - 4;
+        // Use aggregate of all panes' visible states so the sidebar badge
+        // reflects the most attention-worthy agent across all split panes,
+        // not just the focused one.
         const detection = if (!tab.g_tab_rename_active) blk: {
             if (tab.g_tabs[tab_idx]) |t| {
-                if (t.focusedSurface()) |surface| break :blk surface.agent_detection;
+                var states_buf: [64]agent_detector.State = undefined;
+                var states_len: usize = 0;
+                // Source the badge's app from a pane that actually has a visible
+                // agent (NOT the focused surface — it may be a plain shell while a
+                // split-sibling runs the agent). visible() requires app != .none,
+                // so this guarantees the synthetic Detection below is visible.
+                var agg_app: agent_detector.App = .none;
+                var it = t.tree.surfaces();
+                while (it.next()) |entry| {
+                    if (states_len >= states_buf.len) break;
+                    const det = entry.surface.agent_detection;
+                    if (det.visible()) {
+                        states_buf[states_len] = det.state;
+                        states_len += 1;
+                        if (agg_app == .none) agg_app = det.app;
+                    }
+                }
+                if (states_len > 0) {
+                    const agg_state = agent_detector.aggregate(states_buf[0..states_len]);
+                    if (agg_state != .none) {
+                        // Build a synthetic Detection so the existing badge renderer works.
+                        break :blk agent_detector.Detection{
+                            .state = agg_state,
+                            .app = agg_app,
+                            .confidence = 100,
+                        };
+                    }
+                }
             }
             break :blk agent_detector.Detection{};
         } else agent_detector.Detection{};

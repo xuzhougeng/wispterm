@@ -1243,6 +1243,128 @@ fn countSnapNodes(snap: *const @import("session_persist.zig").NodeSnap) usize {
     };
 }
 
+/// Build a SplitTree from a parsed tmux `layout.Node` tree (`%layout-change`).
+/// The factory materializes one `*Surface` per pane id; the new tree assumes
+/// ownership of exactly one ref per returned surface (it does NOT call `.ref()`
+/// itself), identical to `fromSnapshot`. Returning null aborts with
+/// error.SurfaceCreationFailed, leaking any surfaces already produced (the
+/// caller — Phase 3c-2 — treats this as fatal).
+///
+/// tmux splits are N-ary; WispTerm splits are binary, so an N-child row/column
+/// is folded into a right-leaning chain of binary splits whose ratios come from
+/// each child's cell width (horizontal) or height (vertical), preserving
+/// geometry. `zoomed` is null; the caller resolves focus/active-pane.
+pub fn fromTmuxLayout(
+    gpa: Allocator,
+    root: *const @import("tmux/layout.zig").Node,
+    ctx: *anyopaque,
+    factory: *const fn (ctx: *anyopaque, pane_id: usize) ?*Surface,
+) !SplitTree {
+    const tmux_layout = @import("tmux/layout.zig");
+    // Explicit error set: build/buildChain are mutually recursive, so Zig
+    // cannot infer their error sets.
+    const BuildError = error{SurfaceCreationFailed};
+    const total = countLayoutNodes(root);
+    if (total > std.math.maxInt(Node.Handle.Backing)) return error.OutOfMemory;
+
+    var arena = ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
+    const alloc = arena.allocator();
+
+    const nodes = try alloc.alloc(Node, total);
+
+    const Ctx = struct {
+        nodes: []Node,
+        idx: usize = 0,
+        ctx: *anyopaque,
+        factory: *const fn (ctx: *anyopaque, pane_id: usize) ?*Surface,
+
+        fn build(self: *@This(), n: *const tmux_layout.Node) BuildError!Node.Handle {
+            switch (n.*) {
+                .leaf => |leaf| {
+                    const handle: Node.Handle = @enumFromInt(@as(Node.Handle.Backing, @intCast(self.idx)));
+                    self.idx += 1;
+                    const surface = self.factory(self.ctx, leaf.pane_id) orelse return error.SurfaceCreationFailed;
+                    self.nodes[handle.idx()] = .{ .leaf = .{ .terminal = surface } };
+                    return handle;
+                },
+                .split => |sp| return self.buildChain(sp.children, sp.dir),
+            }
+        }
+
+        fn buildChain(self: *@This(), children: []const tmux_layout.Node, dir: tmux_layout.Dir) BuildError!Node.Handle {
+            // A tmux split always has >= 2 children; a lone child is just that child.
+            if (children.len == 1) return self.build(&children[0]);
+
+            // Reserve this split's index before its children (pre-order).
+            const handle: Node.Handle = @enumFromInt(@as(Node.Handle.Backing, @intCast(self.idx)));
+            self.idx += 1;
+
+            // Fold right: this split separates children[0] from the rest.
+            const left = try self.build(&children[0]);
+            const right = if (children.len == 2)
+                try self.build(&children[1])
+            else
+                try self.buildChain(children[1..], dir);
+
+            const first = tmuxSizeAlong(children[0], dir);
+            var total_size: u32 = 0;
+            for (children) |child| total_size += tmuxSizeAlong(child, dir);
+            const ratio: f16 = if (total_size == 0)
+                0.5
+            else
+                @as(f16, @floatFromInt(first)) / @as(f16, @floatFromInt(total_size));
+
+            self.nodes[handle.idx()] = .{ .split = .{
+                .layout = switch (dir) {
+                    .horizontal => .horizontal,
+                    .vertical => .vertical,
+                },
+                .ratio = ratio,
+                .left = left,
+                .right = right,
+            } };
+            return handle;
+        }
+    };
+
+    var c = Ctx{ .nodes = nodes, .ctx = ctx, .factory = factory };
+    _ = try c.build(root);
+
+    return .{
+        .arena = arena,
+        .nodes = nodes,
+        .zoomed = null,
+    };
+}
+
+/// Number of SplitTree nodes a tmux layout tree expands to: each leaf is one
+/// node, and an N-child split contributes its children's nodes plus (N-1)
+/// binary split nodes.
+fn countLayoutNodes(n: *const @import("tmux/layout.zig").Node) usize {
+    return switch (n.*) {
+        .leaf => 1,
+        .split => |s| blk: {
+            var sum: usize = 0;
+            for (s.children) |*child| sum += countLayoutNodes(child);
+            break :blk sum + (s.children.len - 1);
+        },
+    };
+}
+
+/// Size of a layout node along the split axis: width for a horizontal row,
+/// height for a vertical column.
+fn tmuxSizeAlong(n: @import("tmux/layout.zig").Node, dir: @import("tmux/layout.zig").Dir) u32 {
+    const w: u32, const h: u32 = switch (n) {
+        .leaf => |l| .{ l.w, l.h },
+        .split => |s| .{ s.w, s.h },
+    };
+    return switch (dir) {
+        .horizontal => w,
+        .vertical => h,
+    };
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1365,6 +1487,174 @@ test "SplitTree: fromSnapshot clamps ratios" {
     }
 
     try std.testing.expect(tree.nodes[0].split.ratio <= 0.95);
+}
+
+test "fromTmuxLayout: single leaf becomes a one-node tree" {
+    const layout = @import("tmux/layout.zig");
+    var parsed = try layout.parse(std.testing.allocator, "bd1b,80x24,0,0,5");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        var sentinels: [8]usize = undefined;
+        fn make(_: *anyopaque, pane_id: usize) ?*Surface {
+            return @ptrCast(@alignCast(&sentinels[pane_id]));
+        }
+    };
+
+    var tree = try fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make);
+    defer {
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), tree.nodes.len);
+    try std.testing.expect(tree.nodes[0] == .leaf);
+    const sentinel_5: *Surface = @ptrCast(@alignCast(&Stub.sentinels[5]));
+    try std.testing.expectEqual(sentinel_5, tree.nodes[0].leaf.terminal);
+}
+
+test "fromTmuxLayout: two-pane horizontal row -> binary split with width ratio" {
+    const layout = @import("tmux/layout.zig");
+    // Two 40-wide panes in an 80-wide window: ratio 40/80 = 0.5.
+    var parsed = try layout.parse(std.testing.allocator, "bd1b,80x24,0,0{40x24,0,0,1,40x24,40,0,2}");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        var sentinels: [8]usize = undefined;
+        fn make(_: *anyopaque, pane_id: usize) ?*Surface {
+            return @ptrCast(@alignCast(&sentinels[pane_id]));
+        }
+    };
+
+    var tree = try fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make);
+    defer {
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    // Pre-order: [split, leaf%1, leaf%2].
+    try std.testing.expectEqual(@as(usize, 3), tree.nodes.len);
+    try std.testing.expect(tree.nodes[0] == .split);
+    try std.testing.expectEqual(SplitTree.Split.Layout.horizontal, tree.nodes[0].split.layout);
+    try std.testing.expectApproxEqAbs(@as(f16, 0.5), tree.nodes[0].split.ratio, 0.01);
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 1), @intFromEnum(tree.nodes[0].split.left));
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 2), @intFromEnum(tree.nodes[0].split.right));
+    const s1: *Surface = @ptrCast(@alignCast(&Stub.sentinels[1]));
+    const s2: *Surface = @ptrCast(@alignCast(&Stub.sentinels[2]));
+    try std.testing.expectEqual(s1, tree.nodes[1].leaf.terminal);
+    try std.testing.expectEqual(s2, tree.nodes[2].leaf.terminal);
+}
+
+test "fromTmuxLayout: two-pane vertical column maps to vertical layout" {
+    const layout = @import("tmux/layout.zig");
+    var parsed = try layout.parse(std.testing.allocator, "80x24,0,0[80x18,0,0,1,80x6,0,18,2]");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        var sentinels: [8]usize = undefined;
+        fn make(_: *anyopaque, pane_id: usize) ?*Surface {
+            return @ptrCast(@alignCast(&sentinels[pane_id]));
+        }
+    };
+
+    var tree = try fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make);
+    defer {
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    try std.testing.expectEqual(SplitTree.Split.Layout.vertical, tree.nodes[0].split.layout);
+    // Top pane is 18 of 24 rows: ratio 0.75.
+    try std.testing.expectApproxEqAbs(@as(f16, 0.75), tree.nodes[0].split.ratio, 0.01);
+}
+
+test "fromTmuxLayout: three-pane row folds into nested binary splits with geometry ratios" {
+    const layout = @import("tmux/layout.zig");
+    // Widths 20, 40, 20 across an 80-wide window.
+    var parsed = try layout.parse(std.testing.allocator, "80x24,0,0{20x24,0,0,1,40x24,20,0,2,20x24,60,0,3}");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        var sentinels: [8]usize = undefined;
+        fn make(_: *anyopaque, pane_id: usize) ?*Surface {
+            return @ptrCast(@alignCast(&sentinels[pane_id]));
+        }
+    };
+
+    var tree = try fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make);
+    defer {
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    // {a,b,c} -> split(a, split(b,c)). Pre-order:
+    // [outer_split, leaf%1, inner_split, leaf%2, leaf%3]  => 5 nodes.
+    try std.testing.expectEqual(@as(usize, 5), tree.nodes.len);
+
+    const outer = tree.nodes[0].split;
+    try std.testing.expectEqual(SplitTree.Split.Layout.horizontal, outer.layout);
+    // Pane %1 is 20 of 80: ratio 0.25.
+    try std.testing.expectApproxEqAbs(@as(f16, 0.25), outer.ratio, 0.01);
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 1), @intFromEnum(outer.left));
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 2), @intFromEnum(outer.right));
+
+    const inner = tree.nodes[2].split;
+    try std.testing.expectEqual(SplitTree.Split.Layout.horizontal, inner.layout);
+    // Inner separates 40 from 20: ratio 40/60 = 0.667.
+    try std.testing.expectApproxEqAbs(@as(f16, 0.667), inner.ratio, 0.01);
+
+    const s1: *Surface = @ptrCast(@alignCast(&Stub.sentinels[1]));
+    const s2: *Surface = @ptrCast(@alignCast(&Stub.sentinels[2]));
+    const s3: *Surface = @ptrCast(@alignCast(&Stub.sentinels[3]));
+    try std.testing.expectEqual(s1, tree.nodes[1].leaf.terminal);
+    try std.testing.expectEqual(s2, tree.nodes[3].leaf.terminal);
+    try std.testing.expectEqual(s3, tree.nodes[4].leaf.terminal);
+}
+
+test "fromTmuxLayout: a column nested inside a row preserves nesting and per-axis ratios" {
+    const layout = @import("tmux/layout.zig");
+    // Left pane %1 (40 wide); right is a vertical stack of %2 (18 high) over %3 (6 high).
+    var parsed = try layout.parse(std.testing.allocator, "80x24,0,0{40x24,0,0,1,40x24,40,0[40x18,40,0,2,40x6,40,18,3]}");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        var sentinels: [8]usize = undefined;
+        fn make(_: *anyopaque, pane_id: usize) ?*Surface {
+            return @ptrCast(@alignCast(&sentinels[pane_id]));
+        }
+    };
+
+    var tree = try fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make);
+    defer {
+        if (tree.nodes.len > 0) tree.arena.deinit();
+        tree = undefined;
+    }
+
+    // Pre-order: [outer(horizontal), leaf%1, inner(vertical), leaf%2, leaf%3].
+    try std.testing.expectEqual(@as(usize, 5), tree.nodes.len);
+    try std.testing.expectEqual(SplitTree.Split.Layout.horizontal, tree.nodes[0].split.layout);
+    try std.testing.expectApproxEqAbs(@as(f16, 0.5), tree.nodes[0].split.ratio, 0.01);
+    const inner = tree.nodes[tree.nodes[0].split.right.idx()].split;
+    try std.testing.expectEqual(SplitTree.Split.Layout.vertical, inner.layout);
+    // Vertical inner: top %2 is 18 of 24 -> 0.75.
+    try std.testing.expectApproxEqAbs(@as(f16, 0.75), inner.ratio, 0.01);
+}
+
+test "fromTmuxLayout: a null from the factory aborts with SurfaceCreationFailed" {
+    const layout = @import("tmux/layout.zig");
+    var parsed = try layout.parse(std.testing.allocator, "80x24,0,0{40x24,0,0,1,40x24,40,0,2}");
+    defer parsed.deinit();
+
+    const Stub = struct {
+        fn make(_: *anyopaque, _: usize) ?*Surface {
+            return null;
+        }
+    };
+
+    try std.testing.expectError(
+        error.SurfaceCreationFailed,
+        fromTmuxLayout(std.testing.allocator, &parsed.root, undefined, Stub.make),
+    );
 }
 
 test "SplitTree: swapLeaves exchanges leaf surfaces and preserves topology" {

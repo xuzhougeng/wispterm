@@ -653,6 +653,7 @@ comptime {
     _ = @import("ai_history_session.zig");
     _ = @import("renderer/ai_history_renderer.zig");
     _ = @import("agent_detector.zig");
+    _ = @import("Surface.zig");
     _ = @import("agent_prompt_answer.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
@@ -720,6 +721,22 @@ comptime {
     _ = @import("platform/process.zig");
     _ = @import("platform/console_host_policy.zig");
     _ = @import("platform/pty.zig");
+    switch (@import("builtin").os.tag) {
+        .windows, .linux, .macos => {
+            _ = @import("platform/pty_virtual_test.zig");
+            _ = @import("tmux/pane_io_test.zig");
+            _ = @import("appwindow/tmux_bridge.zig");
+        },
+        else => {},
+    }
+    // The posix tmux controller (drop/reconnect decision) is posix-only; it uses
+    // std.posix poll/read paths that don't compile for the windows app target.
+    switch (@import("builtin").os.tag) {
+        .linux, .macos => {
+            _ = @import("appwindow/tmux_controller_posix.zig");
+        },
+        else => {},
+    }
     _ = @import("platform/pty_command.zig");
     _ = @import("platform/remote_file.zig");
     _ = @import("platform/remote_transport.zig");

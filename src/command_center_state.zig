@@ -40,6 +40,8 @@ pub const CommandAction = enum {
     download_update,
     open_latest_release,
     show_whats_new,
+    install_claude_code_integration,
+    remove_claude_code_integration,
     open_skill_center,
     open_port_forwarding,
     split_preview,
@@ -91,6 +93,8 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Download Update", .detail = "Download the latest update to your Downloads folder", .shortcut = "", .action = .download_update },
     .{ .title = "Open Latest Release", .detail = "Open the latest WispTerm GitHub Release", .shortcut = "", .action = .open_latest_release },
     .{ .title = "What's New", .detail = "Show what changed in this version of WispTerm", .shortcut = app_metadata.version, .action = .show_whats_new },
+    .{ .title = "Install Claude Code Integration", .detail = "Add WispTerm agent hooks to ~/.claude/settings.json", .shortcut = "", .action = .install_claude_code_integration },
+    .{ .title = "Remove Claude Code Integration", .detail = "Remove WispTerm agent hooks from ~/.claude/settings.json", .shortcut = "", .action = .remove_claude_code_integration },
     .{ .title = "Port Forwarding", .detail = "Manage SSH port forwarding rules", .shortcut = "", .action = .open_port_forwarding },
     .{ .title = "Split Preview", .detail = "Open a preview panel on the right", .shortcut = "", .action = .split_preview },
 };
@@ -104,6 +108,11 @@ pub const NewAgentLaunchAction = enum {
     open_form,
     connect_default_profile_as_agent,
 };
+
+pub const SESSION_LAUNCHER_ROW_COUNT: usize = platform_pty_command.session_launcher_row_count;
+pub const SESSION_LAUNCHER_ROW_TMUX: usize = platform_pty_command.session_launcher_tmux_row;
+pub const SESSION_LAUNCHER_ROW_AI_AGENT: usize = platform_pty_command.session_launcher_ai_agent_row;
+pub const SESSION_LAUNCHER_ROW_AI_HISTORY: usize = platform_pty_command.session_launcher_ai_history_row;
 
 pub const State = struct {
     command_palette_visible: bool = false,

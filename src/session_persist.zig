@@ -83,6 +83,12 @@ pub const Session = struct {
     version: u32 = SCHEMA_VERSION,
     active_tab: u32 = 0,
     tabs: []TabSnap,
+    /// SSH profile names of active tmux control-mode sessions (Phase 3d #4c).
+    /// tmux is per-connection (one controller → N window-tabs), so these are
+    /// persisted once per connection (not as per-tab surface trees); on restore
+    /// each re-attaches via the profile (which re-supplies the password). Older
+    /// session files omit this; it defaults to empty.
+    tmux_profiles: []const []const u8 = &.{},
 };
 
 pub fn dumpSessionToString(allocator: std.mem.Allocator, session: Session) ![]u8 {
@@ -95,6 +101,11 @@ pub fn loadSessionFromString(
 ) !std.json.Parsed(Session) {
     return std.json.parseFromSlice(Session, allocator, bytes, .{
         .ignore_unknown_fields = true,
+        // Copy ALL strings into the Parsed arena. The default (alloc_if_needed)
+        // slices escape-free strings straight from `bytes`, which loadSession
+        // frees right after — leaving every such string (tab titles, ssh fields,
+        // tmux profile names) dangling once the buffer is reused.
+        .allocate = .alloc_always,
     });
 }
 

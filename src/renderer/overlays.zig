@@ -34,6 +34,9 @@ const close_confirm = @import("../close_confirm.zig");
 const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
+const claude_integration = @import("../claude_integration.zig");
+const platform_atomic_file = @import("../platform/atomic_file.zig");
+const agent_detector = @import("../agent_detector.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");
 
@@ -198,6 +201,7 @@ const COMMAND_ENTRIES = command_center_state.command_entries;
 const PaletteItem = union(enum) {
     command: usize,
     ssh_profile: usize,
+    tmux_profile: usize,
     ai_profile: usize,
     theme: usize,
 };
@@ -569,6 +573,8 @@ fn executeCommand(action: CommandAction) void {
         },
         .open_latest_release => openLatestRelease(),
         .show_whats_new => showWhatsNew(),
+        .install_claude_code_integration => installClaudeCodeIntegration(),
+        .remove_claude_code_integration => removeClaudeCodeIntegration(),
         .open_skill_center => {
             _ = AppWindow.spawnSkillCenterTab();
         },
@@ -767,6 +773,14 @@ fn commandEntrySecondaryMatches(entry: CommandEntry, filter: []const u8) bool {
     return containsIgnoreCase(commandEntryShortcut(entry, &shortcut_buf), filter);
 }
 
+test "tmuxSessionName sanitizes a profile name to a tmux-safe session name" {
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings("wispterm-NGS00", tmuxSessionName(&buf, "NGS00"));
+    try std.testing.expectEqualStrings("wispterm-prod_db_1", tmuxSessionName(&buf, "prod.db:1"));
+    try std.testing.expectEqualStrings("wispterm-a_b_c", tmuxSessionName(&buf, "a b\tc"));
+    try std.testing.expectEqualStrings("wispterm", tmuxSessionName(&buf, ""));
+}
+
 test "command palette filter accepts UTF-8 CJK and backspaces whole codepoints" {
     commandPaletteClearFilter();
     defer commandPaletteClearFilter();
@@ -797,6 +811,86 @@ test "command palette matches English source even when title is localized" {
     i18n.setLang(.en);
     try std.testing.expect(commandEntryTitleMatches(entry, "Settings"));
     try std.testing.expect(!commandEntryTitleMatches(entry, "设置")); // no localized title under en
+}
+
+fn setCommandPaletteFilterForTest(filter: []const u8) void {
+    const len = @min(filter.len, g_command_palette_filter.len);
+    @memcpy(g_command_palette_filter[0..len], filter[0..len]);
+    g_command_palette_filter_len = len;
+    g_command_palette_selected = 0;
+}
+
+fn paletteContainsSshProfileForTest(profile_idx: usize) bool {
+    for (g_palette_scratch[0..g_palette_scratch_len]) |item| {
+        switch (item) {
+            .ssh_profile => |idx| {
+                if (idx == profile_idx) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn paletteContainsTmuxProfileForTest(profile_idx: usize) bool {
+    for (g_palette_scratch[0..g_palette_scratch_len]) |item| {
+        switch (item) {
+            .tmux_profile => |idx| {
+                if (idx == profile_idx) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+test "command palette includes tmux profile actions for SSH profile search" {
+    const previous_mode = g_command_palette_mode;
+    const previous_filter_len = g_command_palette_filter_len;
+    var previous_filter: [COMMAND_PALETTE_FILTER_MAX]u8 = undefined;
+    if (previous_filter_len > 0) @memcpy(previous_filter[0..previous_filter_len], g_command_palette_filter[0..previous_filter_len]);
+    const previous_selected = g_command_palette_selected;
+    const previous_scratch_len = g_palette_scratch_len;
+    const previous_ssh_loaded = g_ssh_profiles_loaded;
+    const previous_ssh_count = g_ssh_profile_count;
+    var previous_ssh_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
+    if (previous_ssh_count > 0) @memcpy(previous_ssh_profiles[0..previous_ssh_count], g_ssh_profiles[0..previous_ssh_count]);
+    const previous_ai_loaded = g_ai_profiles_loaded;
+    const previous_ai_count = g_ai_profile_count;
+    var previous_ai_profiles: [AI_PROFILE_MAX]AiProfile = undefined;
+    if (previous_ai_count > 0) @memcpy(previous_ai_profiles[0..previous_ai_count], g_ai_profiles[0..previous_ai_count]);
+    defer {
+        g_command_palette_mode = previous_mode;
+        g_command_palette_filter_len = previous_filter_len;
+        if (previous_filter_len > 0) @memcpy(g_command_palette_filter[0..previous_filter_len], previous_filter[0..previous_filter_len]);
+        g_command_palette_selected = previous_selected;
+        g_palette_scratch_len = previous_scratch_len;
+        g_ssh_profiles_loaded = previous_ssh_loaded;
+        g_ssh_profile_count = previous_ssh_count;
+        if (previous_ssh_count > 0) @memcpy(g_ssh_profiles[0..previous_ssh_count], previous_ssh_profiles[0..previous_ssh_count]);
+        g_ai_profiles_loaded = previous_ai_loaded;
+        g_ai_profile_count = previous_ai_count;
+        if (previous_ai_count > 0) @memcpy(g_ai_profiles[0..previous_ai_count], previous_ai_profiles[0..previous_ai_count]);
+    }
+
+    g_command_palette_mode = .commands;
+    g_ssh_profiles_loaded = true;
+    g_ssh_profile_count = 2;
+    g_ssh_profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
+    g_ssh_profiles[1] = makeSshProfile("GPU", "10.0.0.2", "user", "22");
+    g_ai_profiles_loaded = true;
+    g_ai_profile_count = 0;
+
+    setCommandPaletteFilterForTest("CPU");
+    rebuildPaletteScratch();
+    try std.testing.expect(paletteContainsSshProfileForTest(0));
+    try std.testing.expect(paletteContainsTmuxProfileForTest(0));
+    try std.testing.expect(!paletteContainsTmuxProfileForTest(1));
+
+    setCommandPaletteFilterForTest("tmux");
+    rebuildPaletteScratch();
+    try std.testing.expect(paletteContainsTmuxProfileForTest(0));
+    try std.testing.expect(paletteContainsTmuxProfileForTest(1));
 }
 
 fn commandEntryKeybindAction(action: CommandAction) ?keybind.Action {
@@ -861,9 +955,16 @@ fn rebuildPaletteScratch() void {
     for (0..g_ssh_profile_count) |profile_idx| {
         if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
         const profile = &g_ssh_profiles[profile_idx];
-        if (!command_palette_model.sshProfileNameMatchesFilter(profileField(profile, .name), filter)) continue;
-        g_palette_scratch[g_palette_scratch_len] = .{ .ssh_profile = profile_idx };
-        g_palette_scratch_len += 1;
+        const name = profileField(profile, .name);
+        if (command_palette_model.sshProfileNameMatchesFilter(name, filter)) {
+            g_palette_scratch[g_palette_scratch_len] = .{ .ssh_profile = profile_idx };
+            g_palette_scratch_len += 1;
+            if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
+        }
+        if (command_palette_model.tmuxProfileMatchesFilter(name, filter)) {
+            g_palette_scratch[g_palette_scratch_len] = .{ .tmux_profile = profile_idx };
+            g_palette_scratch_len += 1;
+        }
     }
     loadAiProfiles();
     for (0..g_ai_profile_count) |ai_idx| {
@@ -885,6 +986,7 @@ fn executePaletteItem(item: PaletteItem) void {
     switch (item) {
         .command => |cmd_idx| executeCommand(COMMAND_ENTRIES[cmd_idx].action),
         .ssh_profile => |profile_idx| connectSshProfile(profile_idx),
+        .tmux_profile => |profile_idx| connectSshProfileTmux(profile_idx),
         .ai_profile => |profile_idx| _ = spawnAiProfileWithAgentOverride(profile_idx, null),
         .theme => |ti| applyEmbeddedThemeFromPalette(ti),
     }
@@ -1543,7 +1645,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
     } else {
         rebuildPaletteScratch();
         if (g_palette_scratch_len == 0) {
-            const empty_text = "No matching commands or themes";
+            const empty_text = "No matching results";
             const empty_y = @round(window_height - layout.row_top_px - layout.row_h + (layout.row_h - overlayTextHeight()) / 2);
             renderTitlebarText(empty_text, layout.box_x + (layout.box_w - measureTitlebarText(empty_text)) / 2, empty_y, muted);
         } else {
@@ -1593,6 +1695,19 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                         const target_left = @round(layout.box_x + layout.box_w - pad_x - target_max_w);
                         renderTitlebarTextLimited(target, target_left, text_y, shortcut_color, target_max_w);
                         renderTitlebarTextLimited(ssh_title, title_x, text_y, row_title_color, @max(1.0, target_left - title_x - 18));
+                    },
+                    .tmux_profile => |profile_idx| {
+                        if (profile_idx >= g_ssh_profile_count) continue;
+                        const profile = &g_ssh_profiles[profile_idx];
+                        var title_buf: [SSH_FIELD_MAX + 6]u8 = undefined;
+                        const tmux_title = std.fmt.bufPrint(title_buf[0..], "tmux: {s}", .{profileField(profile, .name)}) catch "tmux";
+                        var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
+                        const target = sshProfileTarget(profile, target_buf[0..]);
+                        const target_w = measureTitlebarText(target);
+                        const target_max_w = @min(target_w, @max(80.0, layout.box_w * 0.40));
+                        const target_left = @round(layout.box_x + layout.box_w - pad_x - target_max_w);
+                        renderTitlebarTextLimited(target, target_left, text_y, shortcut_color, target_max_w);
+                        renderTitlebarTextLimited(tmux_title, title_x, text_y, row_title_color, @max(1.0, target_left - title_x - 18));
                     },
                     .ai_profile => |profile_idx| {
                         if (profile_idx >= g_ai_profile_count) continue;
@@ -1647,6 +1762,7 @@ const AiField = profile_codec.AiField;
 const SessionAction = enum {
     local_shell,
     ssh,
+    tmux,
     wsl,
     ai_chat,
     ai_history,
@@ -1674,6 +1790,7 @@ const SshListMode = enum {
     edit_select,
     delete_select,
     ai_history_select,
+    tmux_connect,
 };
 
 const AiListMode = enum {
@@ -2037,6 +2154,7 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
     switch (action) {
         .local_shell => openLocalShellSession(),
         .ssh => openSshList(),
+        .tmux => openTmuxSshPicker(),
         .wsl => openWslSession(),
         .ai_chat => openDefaultAiSession(),
         .ai_history => openAiHistorySourcePicker(),
@@ -2135,6 +2253,9 @@ fn runSessionLauncherRow(row: usize) void {
         openLocalShellSession();
     } else if (row == 1) {
         openSshList();
+    } else if (row == command_center_state.SESSION_LAUNCHER_ROW_TMUX) {
+        openTmuxSshPicker();
+        return;
     } else if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
         if (row == wsl_row) {
             openWslSession();
@@ -2168,7 +2289,7 @@ fn openSshDeletePicker() void {
 }
 
 fn openSshProfilePicker(mode: SshListMode) void {
-    if (g_ssh_profile_count == 0 and mode != .ai_history_select) return;
+    if (g_ssh_profile_count == 0 and mode != .ai_history_select and mode != .tmux_connect) return;
     g_session_launcher_visible = false;
     g_ai_history_source_visible = false;
     g_ssh_list_visible = true;
@@ -2229,7 +2350,7 @@ fn handleSshListKey(ev: input_key.KeyEvent) void {
 fn sshListRowCount() usize {
     return switch (g_ssh_list_mode) {
         .manage => sshVisibleProfileCount() + 5,
-        .edit_select, .delete_select, .ai_history_select => sshVisibleProfileCount() + 1,
+        .edit_select, .delete_select, .ai_history_select, .tmux_connect => sshVisibleProfileCount() + 1,
     };
 }
 
@@ -2611,6 +2732,14 @@ fn runSshListRow(row: usize) void {
                 openAiHistorySourcePicker();
             }
         },
+        .tmux_connect => {
+            if (row < visible_profile_count) {
+                const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
+                connectSshProfileTmux(profile_idx);
+            } else {
+                sessionLauncherClose();
+            }
+        },
     }
 }
 
@@ -2685,6 +2814,100 @@ fn saveSshFormProfile() ?usize {
 
 fn connectSshProfile(idx: usize) void {
     _ = connectSshProfileReturningSurface(idx);
+}
+
+/// Derive a tmux-safe session name from a profile name: `wispterm-<name>` with
+/// every char outside [A-Za-z0-9_-] replaced by '_'. Empty name → "wispterm".
+/// `buf` must be at least 9 + name.len bytes.
+fn tmuxSessionName(buf: []u8, profile_name: []const u8) []const u8 {
+    const prefix = "wispterm";
+    @memcpy(buf[0..prefix.len], prefix);
+    if (profile_name.len == 0) return buf[0..prefix.len];
+    buf[prefix.len] = '-';
+    var n: usize = prefix.len + 1;
+    for (profile_name) |c| {
+        if (n >= buf.len) break;
+        buf[n] = if (std.ascii.isAlphanumeric(c) or c == '_' or c == '-') c else '_';
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+/// Open the SSH profile picker in tmux-connect mode (mirrors the AI-history SSH
+/// picker). Picking a profile starts a tmux control-mode session.
+fn openTmuxSshPicker() void {
+    loadSshProfiles();
+    openSshProfilePicker(.tmux_connect);
+}
+
+/// Connect the profile at `idx` in tmux control mode: `ssh … tmux -CC new -A -s
+/// wispterm-<profile>`. No surface is spawned — the controller owns the tabs.
+fn connectSshProfileTmux(idx: usize) void {
+    if (idx >= g_ssh_profile_count) return;
+    const profile = &g_ssh_profiles[idx];
+    const ip = profileField(profile, .ip);
+    const user = profileField(profile, .user);
+    const port = profileField(profile, .port);
+    const password = profileField(profile, .password);
+    const proxy_jump = profileField(profile, .proxy_jump);
+    const name = profileField(profile, .name);
+    if (ip.len == 0 or user.len == 0) return;
+    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return;
+    if (port.len > 0 and !isPortTokenSafe(port)) return;
+    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return;
+
+    var name_buf: [96]u8 = undefined;
+    const session_name = tmuxSessionName(&name_buf, name);
+    var remote_buf: [128]u8 = undefined;
+    const remote = std.fmt.bufPrint(&remote_buf, "tmux -CC new -A -s {s}", .{session_name}) catch return;
+
+    var cmd_buf: [8192]u8 = undefined;
+    const cmd = platform_pty_command.sshControlCommand(cmd_buf[0..], .{
+        .user = user,
+        .host = ip,
+        .port = port,
+        .password_auth = password.len > 0,
+        .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
+        .proxy_jump = proxy_jump,
+        .remote_command = remote,
+    }) orelse return;
+
+    const conn = ssh_connection.SshConnection.fromParts(.{
+        .user = user,
+        .host = ip,
+        .port = port,
+        .proxy_jump = proxy_jump,
+        .password = password,
+    });
+    sessionLauncherClose();
+    _ = AppWindow.startTmuxSession(cmd, password, name, conn);
+}
+
+/// Connect a profile by name in tmux mode (dev/automation hook).
+pub fn connectProfileByNameTmux(name: []const u8) bool {
+    loadSshProfiles();
+    var idx: usize = 0;
+    while (idx < g_ssh_profile_count) : (idx += 1) {
+        if (std.mem.eql(u8, profileField(&g_ssh_profiles[idx], .name), name)) {
+            connectSshProfileTmux(idx);
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Connect the SSH profile with the given name (Phase 3d programmatic/test
+/// entry). Loads profiles if needed; returns false if no profile matches.
+pub fn connectProfileByName(name: []const u8) bool {
+    loadSshProfiles();
+    var idx: usize = 0;
+    while (idx < g_ssh_profile_count) : (idx += 1) {
+        if (std.mem.eql(u8, profileField(&g_ssh_profiles[idx], .name), name)) {
+            connectSshProfile(idx);
+            return true;
+        }
+    }
+    return false;
 }
 
 fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
@@ -3649,6 +3872,7 @@ fn sessionLauncherTitle() []const u8 {
             .edit_select => i18n.s().sl_edit_ssh_server,
             .delete_select => i18n.s().sl_delete_ssh_server,
             .ai_history_select => "Sessions SSH Profile",
+            .tmux_connect => "tmux SSH Profile",
         };
     }
     return i18n.s().sl_new_session;
@@ -3674,6 +3898,7 @@ fn sessionLauncherHint() []const u8 {
             .edit_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_edit else i18n.s().sl_hint_choose_server_edit,
             .delete_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_delete else i18n.s().sl_hint_choose_server_delete,
             .ai_history_select => if (has_filter) "Filter profiles" else "Choose a profile or go back",
+            .tmux_connect => if (has_filter) "Filter profiles" else "Choose a profile or go back",
         };
     }
     return i18n.s().sl_hint_main;
@@ -3770,6 +3995,9 @@ fn sessionDesiredBoxWidth() f32 {
             },
             .ai_history_select => {
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_sessions));
+            },
+            .tmux_connect => {
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, "tmux"));
             },
         }
         return desired;
@@ -3880,6 +4108,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         g_session_launcher_selected = row;
         if (row == 0) return .local_shell;
         if (row == 1) return .ssh;
+        if (row == command_center_state.SESSION_LAUNCHER_ROW_TMUX) return .tmux;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             if (row == wsl_row) return .wsl;
         }
@@ -4090,6 +4319,9 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
                 .ai_history_select => {
                     renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_sessions, g_ssh_list_selected == row);
                 },
+                .tmux_connect => {
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, "tmux", g_ssh_list_selected == row);
+                },
             }
             return;
         }
@@ -4097,6 +4329,8 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderSessionRow(layout, window_height, row, AppWindow.configuredLocalShellSessionTitle(), AppWindow.configuredLocalShellSessionDetail(), g_session_launcher_selected == row);
         row += 1;
         renderSessionRow(layout, window_height, row, "SSH", i18n.s().sl_v_connect_server, g_session_launcher_selected == row);
+        row += 1;
+        renderSessionRow(layout, window_height, command_center_state.SESSION_LAUNCHER_ROW_TMUX, "tmux", "Alive session", g_session_launcher_selected == command_center_state.SESSION_LAUNCHER_ROW_TMUX);
         row += 1;
         if (platform_pty_command.sessionLauncherWslRow()) |wsl_row| {
             row = wsl_row;
@@ -4739,6 +4973,54 @@ pub fn renderSplitDividers(active_tab: *const TabState, content_x: i32, content_
                 }
             },
         }
+    }
+}
+
+/// Draw a small filled dot at the top-right corner of each split pane that has
+/// a visible agent running. The dot is colored by agentBadgeColor(state) and is
+/// additive — it does not replace the existing focused-surface titlebar badge.
+///
+/// Coordinate system: OpenGL Y=0 is bottom. content_x/y/w/h are in framebuffer
+/// pixels (same as renderSplitDividers). window_height is the framebuffer height.
+pub fn renderPaneAgentDots(active_tab: *const TabState, content_x: i32, content_y: i32, content_w: i32, content_h: i32, window_height: f32) void {
+    if (!active_tab.tree.isSplit()) {
+        // Single-pane tab — no per-pane dot needed (focused badge in titlebar covers it).
+        return;
+    }
+
+    const allocator = AppWindow.g_allocator orelse return;
+
+    var spatial = active_tab.tree.spatial(allocator) catch return;
+    defer spatial.deinit(allocator);
+
+    const dot_size: f32 = 6; // diameter of the dot square
+    const dot_margin: f32 = 4; // inset from the pane corner
+
+    var it = active_tab.tree.surfaces();
+    while (it.next()) |entry| {
+        const det = entry.surface.agent_detection;
+        if (!det.visible()) continue;
+
+        const idx = @intFromEnum(entry.handle);
+        if (idx >= spatial.slots.len) continue;
+        const slot = spatial.slots[idx];
+
+        // Convert normalized slot to framebuffer pixel rect.
+        const px: f32 = @as(f32, @floatCast(slot.x)) * @as(f32, @floatFromInt(content_w)) + @as(f32, @floatFromInt(content_x));
+        const py: f32 = @as(f32, @floatCast(slot.y)) * @as(f32, @floatFromInt(content_h)) + @as(f32, @floatFromInt(content_y));
+        const pw: f32 = @as(f32, @floatCast(slot.width)) * @as(f32, @floatFromInt(content_w));
+
+        // Top-right corner in GL coords (Y=0 at bottom). py is top-down from the
+        // framebuffer top, so the pane spans GL-Y [window_height - py - ph,
+        // window_height - py]; its visual top edge is the higher value
+        // (window_height - py). fillQuad's y is the quad's bottom edge (it extends
+        // upward by dot_size), so inset the dot below the top edge by the margin.
+        const gl_pane_top = window_height - py;
+        const dot_x = px + pw - dot_size - dot_margin;
+        const dot_y = gl_pane_top - dot_size - dot_margin;
+
+        const color = titlebar.agentBadgeColor(det.state);
+        ui_pipeline.fillQuad(dot_x, dot_y, dot_size, dot_size, color);
     }
 }
 
@@ -5899,6 +6181,77 @@ pub fn openLatestRelease() void {
     var url_buf: [256]u8 = undefined;
     const url = latestReleaseUrl(&url_buf);
     _ = platform_open_url.open(allocator, .{ .url = url });
+}
+
+/// Read the Claude Code hook settings file (empty string if absent), call
+/// claude_integration.install, write atomically, show a toast.
+fn installClaudeCodeIntegration() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    applyClaudeIntegration(allocator, true);
+}
+
+/// Read the Claude Code hook settings file (empty string if absent), call
+/// claude_integration.uninstall, write atomically, show a toast.
+fn removeClaudeCodeIntegration() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    applyClaudeIntegration(allocator, false);
+}
+
+fn applyClaudeIntegration(allocator: std.mem.Allocator, comptime do_install: bool) void {
+    // Resolve the Claude Code settings file path via platform_dirs.
+    const settings_path = platform_dirs.agentHookSettingsPath(allocator) catch |err| {
+        std.log.warn("claude integration: cannot resolve settings path: {}", .{err});
+        showStatusToast("Claude Code integration: cannot resolve home directory");
+        return;
+    };
+    defer allocator.free(settings_path);
+
+    // Read existing content; treat missing file as "".
+    const existing = std.fs.cwd().readFileAlloc(allocator, settings_path, 16 * 1024 * 1024) catch |err| switch (err) {
+        error.FileNotFound => allocator.dupe(u8, "") catch {
+            showStatusToast("Claude Code integration: out of memory");
+            return;
+        },
+        else => {
+            std.log.warn("claude integration: read {s}: {}", .{ settings_path, err });
+            showStatusToast("Claude Code integration: failed to read settings.json");
+            return;
+        },
+    };
+    defer allocator.free(existing);
+
+    // Apply install or uninstall (pure, no IO).
+    const new_content = if (do_install)
+        claude_integration.install(allocator, existing)
+    else
+        claude_integration.uninstall(allocator, existing);
+    const result = new_content catch |err| {
+        std.log.warn("claude integration: transform failed: {}", .{err});
+        showStatusToast("Claude Code integration: settings.json parse error");
+        return;
+    };
+    defer allocator.free(result);
+
+    // Ensure the settings directory exists.
+    const settings_dir = std.fs.path.dirname(settings_path) orelse settings_path;
+    std.fs.cwd().makePath(settings_dir) catch |err| {
+        std.log.warn("claude integration: makePath {s}: {}", .{ settings_dir, err });
+        showStatusToast("Claude Code integration: cannot create settings directory");
+        return;
+    };
+
+    // Write atomically (temp file + rename via platform helper).
+    platform_atomic_file.writeFileReplaceSafe(settings_path, result) catch |err| {
+        std.log.warn("claude integration: write {s}: {}", .{ settings_path, err });
+        showStatusToast("Claude Code integration: failed to write settings.json");
+        return;
+    };
+
+    if (do_install) {
+        showStatusToast("Claude Code agent integration installed");
+    } else {
+        showStatusToast("Claude Code agent integration removed");
+    }
 }
 
 fn openStoredPromptUrl() void {

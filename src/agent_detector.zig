@@ -457,3 +457,117 @@ test "agent detector recognizes Codex ready screen" {
     try std.testing.expectEqual(App.codex, detection.app);
     try std.testing.expectEqual(State.needs_input, detection.state);
 }
+
+// ---------------------------------------------------------------------------
+// OSC 7748 authoritative marker (replaces the old agent_state.zig vocabulary)
+// ---------------------------------------------------------------------------
+
+/// Our private agent-state OSC: OSC 7748 ; wispterm-agent ; state=<label> [; app=<label>] ST
+/// Emitted by agent hooks (e.g. Claude Code) for an AUTHORITATIVE state signal
+/// that overrides the heuristic `detect`. The wire labels are this module's own
+/// State/App `.label()` strings (running/waiting_approval/needs_input/halted/
+/// failed/done; codex/claude_code), so no separate vocabulary exists.
+pub const OSC_NUM: u16 = 7748;
+pub const TAG = "wispterm-agent";
+
+/// Inverse of State.label().
+pub fn stateFromLabel(s: []const u8) ?State {
+    if (std.mem.eql(u8, s, "none")) return .none;
+    if (std.mem.eql(u8, s, "running")) return .running;
+    if (std.mem.eql(u8, s, "waiting_approval")) return .waiting_approval;
+    if (std.mem.eql(u8, s, "needs_input")) return .needs_input;
+    if (std.mem.eql(u8, s, "halted")) return .halted;
+    if (std.mem.eql(u8, s, "failed")) return .failed;
+    if (std.mem.eql(u8, s, "done")) return .done;
+    return null;
+}
+
+/// Inverse of App.label().
+pub fn appFromLabel(s: []const u8) ?App {
+    if (std.mem.eql(u8, s, "none")) return .none;
+    if (std.mem.eql(u8, s, "codex")) return .codex;
+    if (std.mem.eql(u8, s, "claude_code")) return .claude_code;
+    return null;
+}
+
+/// Map a tmux `#{pane_current_command}` (process basename) to an App.
+pub fn appFromCommand(cmd: []const u8) App {
+    const base = std.fs.path.basename(std.mem.trim(u8, cmd, " "));
+    if (std.mem.eql(u8, base, "claude")) return .claude_code;
+    if (std.mem.eql(u8, base, "codex")) return .codex;
+    return .none;
+}
+
+/// Parse the OSC 7748 payload (after `OSC 7748;`, terminator stripped):
+/// `wispterm-agent;state=running;app=claude_code`. Returns an authoritative
+/// Detection (confidence 100). Requires a recognized `state=`; `app=` optional
+/// (defaults .none). Returns null if the tag is missing or state is absent/unknown.
+pub fn parseMarker(payload: []const u8) ?Detection {
+    var it = std.mem.splitScalar(u8, payload, ';');
+    const first = it.next() orelse return null;
+    if (!std.mem.eql(u8, std.mem.trim(u8, first, " "), TAG)) return null;
+    var st: ?State = null;
+    var app: App = .none;
+    while (it.next()) |field| {
+        const f = std.mem.trim(u8, field, " ");
+        if (std.mem.startsWith(u8, f, "state=")) {
+            st = stateFromLabel(f["state=".len..]);
+        } else if (std.mem.startsWith(u8, f, "app=")) {
+            if (appFromLabel(f["app=".len..])) |a| app = a;
+        }
+    }
+    const state = st orelse return null;
+    return .{ .app = app, .state = state, .confidence = 100 };
+}
+
+/// Aggregate pane states into one tab-level indicator by attention priority.
+/// Empty -> .none.
+pub fn aggregate(states: []const State) State {
+    var best: State = .none;
+    for (states) |s| if (rank(s) > rank(best)) {
+        best = s;
+    };
+    return best;
+}
+
+fn rank(s: State) u8 {
+    return switch (s) {
+        .none => 0,
+        .done => 1,
+        .running => 2,
+        .halted, .failed => 3,
+        .needs_input => 4,
+        .waiting_approval => 5,
+    };
+}
+
+test "parseMarker yields an authoritative Detection in the existing vocabulary" {
+    const d = parseMarker("wispterm-agent;state=running;app=claude_code").?;
+    try std.testing.expectEqual(App.claude_code, d.app);
+    try std.testing.expectEqual(State.running, d.state);
+    try std.testing.expectEqual(@as(u8, 100), d.confidence);
+    try std.testing.expect(d.visible());
+}
+
+test "parseMarker maps waiting_approval and done" {
+    try std.testing.expectEqual(State.waiting_approval, parseMarker("wispterm-agent;state=waiting_approval;app=claude_code").?.state);
+    try std.testing.expectEqual(State.done, parseMarker("wispterm-agent;state=done;app=claude_code").?.state);
+}
+
+test "parseMarker rejects wrong tag / missing or unknown state" {
+    try std.testing.expect(parseMarker("other;state=running") == null);
+    try std.testing.expect(parseMarker("wispterm-agent;app=claude_code") == null);
+    try std.testing.expect(parseMarker("wispterm-agent;state=bogus") == null);
+}
+
+test "appFromCommand maps known agents" {
+    try std.testing.expectEqual(App.claude_code, appFromCommand("claude"));
+    try std.testing.expectEqual(App.codex, appFromCommand("/usr/bin/codex"));
+    try std.testing.expectEqual(App.none, appFromCommand("bash"));
+}
+
+test "aggregate prefers the most attention-worthy state" {
+    try std.testing.expectEqual(State.waiting_approval, aggregate(&.{ .running, .done, .waiting_approval }));
+    try std.testing.expectEqual(State.running, aggregate(&.{ .none, .done, .running }));
+    try std.testing.expectEqual(State.none, aggregate(&.{}));
+}

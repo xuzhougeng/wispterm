@@ -88,10 +88,12 @@ pub const Pty = struct {
     pseudo_console: PseudoConsoleHandle,
     api: *const conpty_dll.Api,
     size: winsize,
+    is_virtual: bool,
 
     pub fn open(size: winsize) !Pty {
         var self: Pty = undefined;
         self.size = size;
+        self.is_virtual = false;
 
         if (CreatePipe(&self.out_pipe, &self.out_pipe_pty, null, 0) == 0) {
             return error.CreatePipeFailed;
@@ -131,6 +133,92 @@ pub const Pty = struct {
         return self;
     }
 
+    pub const VirtualController = struct {
+        /// Surface input written via `Pty.writeInput` is read from this handle.
+        input_read: HANDLE,
+        /// tmux pane output is written here and read by the Surface via
+        /// `Pty.readOutput`.
+        output_write: HANDLE,
+
+        pub fn invalidForTest() VirtualController {
+            return .{
+                .input_read = INVALID_HANDLE_VALUE,
+                .output_write = INVALID_HANDLE_VALUE,
+            };
+        }
+
+        pub fn deinit(self: *VirtualController) void {
+            if (self.input_read != INVALID_HANDLE_VALUE) {
+                windows.CloseHandle(self.input_read);
+                self.input_read = INVALID_HANDLE_VALUE;
+            }
+            if (self.output_write != INVALID_HANDLE_VALUE) {
+                windows.CloseHandle(self.output_write);
+                self.output_write = INVALID_HANDLE_VALUE;
+            }
+        }
+
+        pub fn writeOutput(self: *VirtualController, bytes: []const u8) void {
+            writeAllHandle(self.output_write, bytes);
+        }
+
+        pub fn inputAvailable(self: *const VirtualController) bool {
+            if (self.input_read == INVALID_HANDLE_VALUE) return false;
+            var available: DWORD = 0;
+            if (PeekNamedPipe(self.input_read, null, 0, null, &available, null) == 0) return false;
+            return available > 0;
+        }
+
+        pub fn readInput(self: *VirtualController, buffer: []u8) ?usize {
+            if (self.input_read == INVALID_HANDLE_VALUE or buffer.len == 0) return null;
+            var bytes_read: DWORD = 0;
+            const to_read: DWORD = @intCast(@min(buffer.len, std.math.maxInt(DWORD)));
+            if (ReadFile(self.input_read, buffer.ptr, to_read, &bytes_read, null) == 0) return null;
+            return @intCast(bytes_read);
+        }
+    };
+
+    pub const VirtualPair = struct {
+        pty: Pty,
+        controller: VirtualController,
+    };
+
+    /// Create a virtual PTY backed by two pipes. The returned `pty` is owned by
+    /// a Surface; the returned controller is owned by the tmux bridge.
+    pub fn openVirtual(size: winsize) !VirtualPair {
+        var self: Pty = undefined;
+        self.size = size;
+        self.is_virtual = true;
+        self.out_pipe_pty = INVALID_HANDLE_VALUE;
+        self.in_pipe_pty = INVALID_HANDLE_VALUE;
+        self.pseudo_console = INVALID_HANDLE_VALUE;
+
+        var controller = VirtualController.invalidForTest();
+
+        if (CreatePipe(&self.out_pipe, &controller.output_write, null, 0) == 0) {
+            return error.CreatePipeFailed;
+        }
+        errdefer {
+            windows.CloseHandle(self.out_pipe);
+            windows.CloseHandle(controller.output_write);
+        }
+
+        if (CreatePipe(&controller.input_read, &self.in_pipe, null, 0) == 0) {
+            return error.CreatePipeFailed;
+        }
+        errdefer {
+            windows.CloseHandle(controller.input_read);
+            windows.CloseHandle(self.in_pipe);
+        }
+
+        _ = SetHandleInformation(self.out_pipe, handle_flag_inherit, 0);
+        _ = SetHandleInformation(controller.output_write, handle_flag_inherit, 0);
+        _ = SetHandleInformation(controller.input_read, handle_flag_inherit, 0);
+        _ = SetHandleInformation(self.in_pipe, handle_flag_inherit, 0);
+
+        return .{ .pty = self, .controller = controller };
+    }
+
     pub fn deinit(self: *Pty) void {
         // Idempotent: every handle is cleared after release so a second deinit
         // (or a double cleanup path) cannot close an already-closed handle, which
@@ -162,6 +250,10 @@ pub const Pty = struct {
     }
 
     pub fn setSize(self: *Pty, s: winsize) !void {
+        if (self.is_virtual) {
+            self.size = s;
+            return;
+        }
         const coord = COORD{ .X = @intCast(s.ws_col), .Y = @intCast(s.ws_row) };
         const hr = self.api.resize(self.pseudo_console, coord);
         if (hr != s_ok) return error.ResizePseudoConsoleFailed;
@@ -169,6 +261,7 @@ pub const Pty = struct {
     }
 
     pub fn startCommand(self: *Pty, command: *pty_command.Command, command_line: pty_command.CommandLine, cwd: pty_command.Cwd) !void {
+        if (self.is_virtual) return error.VirtualPtyHasNoProcess;
         return pty_command_windows.startInPseudoConsole(command, self.pseudo_console, command_line, cwd);
     }
 
@@ -221,6 +314,26 @@ pub const Pty = struct {
         _ = CancelIoEx(self.out_pipe, null);
     }
 };
+
+fn writeAllHandle(handle: HANDLE, data: []const u8) void {
+    if (handle == INVALID_HANDLE_VALUE) return;
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const remaining = data.len - offset;
+        const chunk_len: DWORD = @intCast(@min(remaining, std.math.maxInt(DWORD)));
+        var bytes_written: DWORD = 0;
+
+        if (WriteFile(
+            handle,
+            data[offset..].ptr,
+            chunk_len,
+            &bytes_written,
+            null,
+        ) == 0) return;
+        if (bytes_written == 0) return;
+        offset += @intCast(bytes_written);
+    }
+}
 
 test "platform pty exposes size and lifecycle API" {
     try std.testing.expect(@hasDecl(@This(), "winsize"));

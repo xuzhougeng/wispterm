@@ -72,6 +72,7 @@ const ssh_error = @import("ssh_error.zig");
 const i18n = @import("i18n.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
+const tmux_controller = @import("appwindow/tmux_controller.zig");
 pub const font = @import("font/manager.zig");
 pub const cell_renderer = @import("renderer/cell_renderer.zig");
 pub const cell_pipeline = @import("renderer/cell_pipeline.zig");
@@ -3749,6 +3750,10 @@ fn installSessionRestoreHooks() void {
     // tab.zig routes persisted AI snapshots back through these hooks.
     tab.g_ai_restore_hook = reopenAiChatTabFromHistorySessionId;
     tab.g_ai_history_restore_hook = reopenAiHistoryTabFromSnapshot;
+    // tmux session persistence (#4c): save the active tmux profile names; on
+    // restore, re-attach each via the launcher's tmux connect path.
+    tab.g_tmux_active_profiles_hook = tmux_controller.activeProfileNames;
+    tab.g_tmux_restore_hook = overlays.connectProfileByNameTmux;
 }
 
 fn deinitGlobalAgentHistoryStore(allocator: std.mem.Allocator) void {
@@ -3874,6 +3879,27 @@ pub fn spawnTab(allocator: std.mem.Allocator) bool {
 
 pub fn spawnTabWithCommandUtf8(command: []const u8) bool {
     return spawnTabWithCommandUtf8ReturningSurface(command) != null;
+}
+
+/// Start a tmux control-mode session (Phase 3d). `ssh_cmd` is a full
+/// `ssh … tmux -CC …` command; `password` is injected at the SSH prompt (empty
+/// for key auth). The controller (pumped from the main loop) builds tabs/splits
+/// from the remote tmux windows/panes. Returns false if the transport could not
+/// be launched.
+pub fn startTmuxSession(ssh_cmd: []const u8, password: []const u8, profile_name: []const u8, ssh_conn: ?@import("ssh_connection.zig").SshConnection) bool {
+    const allocator = g_allocator orelse return false;
+    return tmux_controller.start(
+        allocator,
+        ssh_cmd,
+        password,
+        profile_name,
+        term_cols,
+        term_rows,
+        tab.g_scrollback_limit,
+        g_cursor_style,
+        g_cursor_blink,
+        ssh_conn,
+    );
 }
 
 pub fn spawnTabWithCommandUtf8ReturningSurface(command: []const u8) ?*Surface {
@@ -4210,6 +4236,9 @@ fn syncFileExplorerToActiveTerminalSurface(force: bool) void {
 pub fn closeTab(idx: usize) void {
     const allocator = g_allocator orelse return;
     if (tab.g_tab_count <= 1 or idx >= tab.g_tab_count) return;
+    if (tab.g_tabs[idx]) |closing| {
+        if (closing.tmux_window_id != null) tmux_controller.forgetClosedTab(closing);
+    }
     tab.closeTab(idx, allocator);
     file_explorer.onTabClosed(idx);
     browser_panel.onTabClosed(idx);
@@ -4241,6 +4270,21 @@ pub fn splitFocused(direction: SplitTree.Split.Direction) void {
 
 pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surface {
     const allocator = g_allocator orelse return null;
+
+    // In a tmux-backed tab, a split must be a real tmux pane: drive
+    // `split-window` and let the echoed %layout-change reconcile the new pane.
+    // Returning null here is correct — the new surface arrives asynchronously
+    // via the controller, not from this call.
+    if (tab.activeTab()) |t| {
+        if (t.tmux_window_id != null) {
+            if (t.focusedSurface()) |focused| {
+                const horizontal = direction == .left or direction == .right;
+                _ = tmux_controller.requestSplit(focused, horizontal);
+            }
+            return null; // a tmux tab's splits are owned by tmux; never spawn a local/ssh surface
+        }
+    }
+
     var cwd_buf: platform_pty_command.CwdBuffer = undefined;
     const cwd = getActiveCwd(&cwd_buf);
     const surface = tab.splitFocusedReturningSurface(allocator, direction, font.cell_width, font.cell_height, g_cursor_style, g_cursor_blink, cwd) orelse return null;
@@ -4261,6 +4305,17 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
 
 pub fn closeFocusedSplit() void {
     const allocator = g_allocator orelse return;
+
+    // tmux tab: kill-pane and let tmux drive removal — its %layout-change drops
+    // the split, or %window-close drops the whole tab when the last pane goes.
+    if (tab.activeTab()) |t| {
+        if (t.tmux_window_id != null) {
+            if (t.focusedSurface()) |focused| {
+                if (tmux_controller.requestClosePane(focused)) return;
+            }
+        }
+    }
+
     const closing_tab_idx = active_tab_state.g_active_tab;
     var closing_surface_id: ?[16]u8 = null;
     if (tab.activeSurface()) |surface| closing_surface_id = surface.remote_id;
@@ -4660,6 +4715,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
             gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
             gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
             overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
+            overlays.renderPaneAgentDots(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
         }
     } else {
         gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
@@ -7607,6 +7663,24 @@ fn runMainLoop(self: *AppWindow) !void {
                 }
             },
         }
+
+        // Dev/automation hook: WISPTERM_AUTOCONNECT names an SSH profile to
+        // connect (plain) on launch; WISPTERM_AUTOCONNECT_TMUX connects one in
+        // tmux control mode. No manual launcher click — for testing/automation.
+        if (std.process.getEnvVarOwned(allocator, "WISPTERM_AUTOCONNECT")) |autoconnect_profile| {
+            defer allocator.free(autoconnect_profile);
+            if (autoconnect_profile.len > 0) {
+                std.debug.print("ssh: auto-connecting profile '{s}'\n", .{autoconnect_profile});
+                _ = overlays.connectProfileByName(autoconnect_profile);
+            }
+        } else |_| {}
+        if (std.process.getEnvVarOwned(allocator, "WISPTERM_AUTOCONNECT_TMUX")) |p| {
+            defer allocator.free(p);
+            if (p.len > 0) {
+                std.debug.print("tmux: auto-connecting profile '{s}' (tmux)\n", .{p});
+                _ = overlays.connectProfileByNameTmux(p);
+            }
+        } else |_| {}
     }
 
     gpu.state.setBlendEnabled(true);
@@ -7650,6 +7724,7 @@ fn runMainLoop(self: *AppWindow) !void {
         g_loop_iter +%= 1; // tag each iteration so the latency probe can tell same-iteration paints from stalls
         // Check for config file changes
         if (config_watcher) |*w| checkConfigReload(allocator, w);
+        tmux_controller.tickAll(allocator, term_cols, term_rows);
         overlays.tickSessionLauncher();
         if (file_explorer.tickAsync()) {
             g_force_rebuild = true;
@@ -8054,8 +8129,9 @@ fn runMainLoop(self: *AppWindow) !void {
                     gpu.state.setViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
                     gpu.gl_init.setProjection(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
-                    // Draw split dividers
+                    // Draw split dividers and per-pane agent dots
                     overlays.renderSplitDividers(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
+                    overlays.renderPaneAgentDots(active_tab, content_x, content_y, content_w, content_h, @floatFromInt(fb_height));
                 }
             }
         } else if (!post_process.g_post_enabled) {

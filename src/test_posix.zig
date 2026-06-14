@@ -21,6 +21,12 @@ comptime {
     _ = @import("ai_loop_store.zig");
     _ = @import("child_output.zig");
     _ = @import("platform/pdf_render_linux.zig");
+    // tmux posix-only tests: socketpair virtual PTY + pane I/O bridge. They need
+    // libc and a real posix target, and are guarded out of the windows app test
+    // binary, so this native runner is the only place they execute.
+    _ = @import("platform/pty_virtual_test.zig");
+    _ = @import("tmux/pane.zig");
+    _ = @import("tmux/pane_io_test.zig");
 }
 
 test "ctl server answers a real loopback request and stops cleanly" {

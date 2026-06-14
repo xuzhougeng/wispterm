@@ -704,10 +704,12 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(&b.addRunArtifact(fast_tests).step);
 
-    // Posix-native libc-linked tests: file I/O, libc (localtime), fork.
-    // Runs on any non-Windows host. Added to test-full so the store tests
-    // (ai_loop_store) execute on the Linux CI host where test_main.zig is skipped
-    // (Linux has no desktop backend, so supports_desktop_exe = false there).
+    // Posix-native libc-linked tests: file I/O, libc (localtime), fork, plus the
+    // socketpair virtual-PTY and tmux pane I/O bridge tests. Runs on any
+    // non-Windows host. Added to test-full so the store tests (ai_loop_store)
+    // execute on the Linux CI host where test_main.zig is skipped (no desktop
+    // backend → supports_desktop_exe = false), and so the tmux posix tests run on
+    // a posix host (they are guarded out of the windows app test binary).
     if (b.graph.host.result.os.tag != .windows) {
         const posix_test_mod = b.createModule(.{
             .root_source_file = b.path("src/test_posix.zig"),

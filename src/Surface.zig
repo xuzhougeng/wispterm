@@ -62,10 +62,26 @@ const ImageOscParseState = enum {
     image_overflow_esc,
     passthrough_osc,
     passthrough_osc_esc,
+    /// Waiting for the ';' that follows "7748" in an agent-state OSC.
+    agent_osc_prefix,
+    /// Collecting the payload bytes of an OSC 7748 agent-state marker.
+    agent_osc,
+    /// Saw ESC inside an agent_osc payload; next byte should be '\' (ST).
+    agent_osc_esc,
+    /// Agent OSC payload overflowed the cap; drain until terminator.
+    agent_overflow,
+    /// Saw ESC inside agent_overflow; next byte should be '\' (ST).
+    agent_overflow_esc,
 };
 
 const WISPTERM_IMAGE_OSC_PREFIX = "7747;WispTermImage=";
 const WISPTERM_IMAGE_OSC_MAX = 16 * 1024;
+
+/// OSC number prefix shared by image (7747) and agent (7748): the bytes "774".
+const WISPTERM_PRIVATE_OSC_SHARED = "774";
+/// Maximum agent marker payload size (bytes after "7748;"); sequences longer
+/// than this are silently discarded via the overflow states.
+const WISPTERM_AGENT_OSC_MAX = 256;
 
 /// Coarse launch environment for terminal-side integrations such as path paste.
 pub const LaunchKind = platform_pty_command.LaunchKind;
@@ -294,6 +310,16 @@ got_osc7_this_batch: bool = false,
 wispterm_image_osc_state: ImageOscParseState = .ground,
 wispterm_image_osc_buf: std.ArrayListUnmanaged(u8) = .empty,
 
+/// Fixed-size payload buffer for OSC 7748 agent-state markers. Sized to
+/// WISPTERM_AGENT_OSC_MAX; no heap allocation needed for these small sequences.
+wispterm_agent_osc_buf: [WISPTERM_AGENT_OSC_MAX]u8 = undefined,
+wispterm_agent_osc_buf_len: usize = 0,
+
+/// True once this surface has received an authoritative OSC 7748 agent-state
+/// marker. While true, the heuristic `refreshAgentDetection` is skipped (the
+/// hook signal is ground truth). Reset is handled elsewhere (B3, on command change).
+agent_osc_active: bool = false,
+
 // Raw CWD path from OSC 7 (Unix-style, e.g., "/home/user/dir")
 cwd_path: [512]u8 = undefined,
 cwd_path_len: usize = 0,
@@ -379,11 +405,26 @@ pub fn init(
     try surface.command.start(&surface.pty, shell_cmd, cwd);
     errdefer surface.command.deinit();
 
+    return finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd);
+}
+
+/// Shared constructor tail for `init` (real PTY + child) and `initVirtual`
+/// (virtual PTY, no child). The terminal, `pty`, and `command` are already set
+/// up by the caller (with their `errdefer`s); this initializes every remaining
+/// field and spawns the IO threads. `launch_kind`/`cwd` differ per caller.
+fn finishInit(
+    surface: *Surface,
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    launch_kind: LaunchKind,
+    cwd: platform_pty_command.Cwd,
+) !*Surface {
     // Init remaining fields
     surface.allocator = allocator;
     surface.selection = .{};
     surface.render_state = renderer.State.init(&surface.terminal);
-    surface.launch_kind = platform_pty_command.launchKindForCommand(shell_cmd);
+    surface.launch_kind = launch_kind;
     surface.ssh_connection = null;
     surface.remote_client = null;
     remote.nextSurfaceId(&surface.remote_id);
@@ -437,6 +478,8 @@ pub fn init(
     surface.got_osc7_this_batch = false;
     surface.wispterm_image_osc_state = .ground;
     surface.wispterm_image_osc_buf = .empty;
+    surface.wispterm_agent_osc_buf_len = 0;
+    surface.agent_osc_active = false;
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.agent_detection = .{};
@@ -492,6 +535,56 @@ pub fn init(
     surface_registry.register(surface, surface.remote_id[0..]);
 
     return surface;
+}
+
+/// Build a Surface around a pre-opened *virtual* PTY (`Pty.openVirtual`).
+/// Used for tmux control-mode panes: there is no child process — the Phase 2
+/// controller feeds pane output into the PTY and reads keystrokes back across
+/// the pair's controller side. The caller retains that controller (typically
+/// in a `tmux/pane.zig` PaneMap); this Surface owns only the `pty` end.
+///
+/// `command` is left as `.{}` (pid -1): its `wait()` reports "still running"
+/// and its `deinit()` is a no-op, so the no-child pane never looks "exited"
+/// until its controller is closed (which gives the reader an EOF).
+pub fn initVirtual(
+    allocator: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    pty: Pty,
+    scrollback_limit: u32,
+    cursor_style: Config.CursorStyle,
+    cursor_blink: bool,
+) !*Surface {
+    const surface = try allocator.create(Surface);
+    errdefer allocator.destroy(surface);
+
+    surface.terminal = ghostty_vt.Terminal.init(allocator, .{
+        .cols = cols,
+        .rows = rows,
+        .max_scrollback = scrollback_limit,
+        .default_modes = .{ .grapheme_cluster = true },
+        .kitty_image_storage_limit = 50 * 1024 * 1024,
+        .kitty_image_loading_limits = .all,
+    }) catch |err| {
+        return err;
+    };
+    errdefer surface.terminal.deinit(allocator);
+
+    surface.terminal.screens.active.cursor.cursor_style = switch (cursor_style) {
+        .bar => .bar,
+        .block => .block,
+        .underline => .underline,
+        .block_hollow => .block_hollow,
+    };
+    surface.terminal.modes.set(.cursor_blinking, cursor_blink);
+
+    // Adopt the caller's virtual PTY; no child process is launched.
+    surface.pty = pty;
+    errdefer surface.pty.deinit();
+    surface.command = .{};
+    errdefer surface.command.deinit();
+
+    return finishInit(surface, allocator, cols, rows, .ssh, null);
 }
 
 /// Deinitialize and free a Surface.
@@ -770,10 +863,39 @@ pub fn flushAgentDetection(self: *Surface, now_ms: i64) bool {
 }
 
 fn refreshAgentDetection(self: *Surface) void {
+    // OSC 7748 marker is authoritative; don't let the heuristic clobber it.
+    if (self.agent_osc_active) return;
     self.agent_detection = agent_detector.detect(
         self.getTitle(),
         self.agent_recent_output[0..self.agent_recent_output_len],
     );
+}
+
+/// Set the working directory used for path resolution. Used by the tmux
+/// bridge, which sources cwd from `#{pane_current_path}` rather than OSC 7
+/// (tmux consumes OSC 7). Truncates to the cwd_path buffer.
+pub fn setCwdPath(self: *Surface, path: []const u8) void {
+    const n = @min(self.cwd_path.len, path.len);
+    @memcpy(self.cwd_path[0..n], path[0..n]);
+    self.cwd_path_len = n;
+}
+
+/// Note the pane's current foreground command (from tmux `#{pane_current_command}`),
+/// classified to an agent App. Two effects:
+///  - If the command is no longer an agent (`.none`) and an OSC marker had been
+///    driving this surface, release the authoritative latch so the heuristic
+///    detector resumes (the agent process has exited back to a shell).
+///  - Otherwise, if no app is known yet and the OSC marker isn't driving the
+///    surface, seed `agent_detection.app` from the (reliable) process name so the
+///    badge identifies the agent even before output heuristics fire.
+pub fn noteAgentCommand(self: *Surface, app: agent_detector.App) void {
+    if (app == .none) {
+        if (self.agent_osc_active) self.agent_osc_active = false;
+        return;
+    }
+    if (!self.agent_osc_active and self.agent_detection.app == .none) {
+        self.agent_detection.app = app;
+    }
 }
 
 /// Get the current working directory path (from OSC 7), or null if not set.
@@ -947,6 +1069,14 @@ pub fn feedVtWithWispTermImageFallback(self: *Surface, data: []const u8) void {
                         self.wispterm_image_osc_state = .image_osc;
                     }
                     passthrough_start = i + 1;
+                } else if (matched == WISPTERM_PRIVATE_OSC_SHARED.len and byte == '8') {
+                    // The first 3 bytes ("774") are shared between image (7747)
+                    // and agent (7748) OSCs.  Seeing '8' here means this is the
+                    // private agent-state OSC — transition to wait for the ';'.
+                    self.wispterm_image_osc_buf.clearRetainingCapacity();
+                    self.wispterm_agent_osc_buf_len = 0;
+                    self.wispterm_image_osc_state = .agent_osc_prefix;
+                    passthrough_start = i + 1;
                 } else {
                     self.replayNonImageOscPrefix();
                     self.vt_stream.nextSlice(data[i .. i + 1]);
@@ -957,6 +1087,82 @@ pub fn feedVtWithWispTermImageFallback(self: *Surface, data: []const u8) void {
                     };
                     passthrough_start = i + 1;
                 }
+            },
+            .agent_osc_prefix => {
+                // Waiting for the ';' that completes "7748;" after the shared "774" + "8".
+                if (byte == ';') {
+                    self.wispterm_image_osc_state = .agent_osc;
+                } else {
+                    // Not a valid agent OSC — replay "\x1b]7748" + this byte as
+                    // passthrough so the VT sees it and the byte is not swallowed.
+                    self.vt_stream.nextSlice("\x1b]7748");
+                    self.vt_stream.nextSlice(data[i .. i + 1]);
+                    self.wispterm_image_osc_state = switch (byte) {
+                        0x07 => .ground,
+                        0x1b => .passthrough_osc_esc,
+                        else => .passthrough_osc,
+                    };
+                }
+                passthrough_start = i + 1;
+            },
+            .agent_osc => switch (byte) {
+                0x07 => {
+                    // BEL terminator — complete marker.
+                    self.handleWispTermAgentOsc();
+                    self.wispterm_image_osc_state = .ground;
+                    passthrough_start = i + 1;
+                },
+                0x1b => {
+                    // Possible ST (ESC \) terminator.
+                    self.wispterm_image_osc_state = .agent_osc_esc;
+                    passthrough_start = i + 1;
+                },
+                else => {
+                    if (self.wispterm_agent_osc_buf_len < WISPTERM_AGENT_OSC_MAX) {
+                        self.wispterm_agent_osc_buf[self.wispterm_agent_osc_buf_len] = byte;
+                        self.wispterm_agent_osc_buf_len += 1;
+                    } else {
+                        // Payload exceeded cap — switch to overflow drain.
+                        self.wispterm_agent_osc_buf_len = 0;
+                        self.wispterm_image_osc_state = .agent_overflow;
+                    }
+                    passthrough_start = i + 1;
+                },
+            },
+            .agent_osc_esc => {
+                if (byte == '\\') {
+                    // ST terminator — complete marker.
+                    self.handleWispTermAgentOsc();
+                    self.wispterm_image_osc_state = .ground;
+                } else {
+                    // Not a valid ST; treat the ESC + this byte as part of payload.
+                    if (self.wispterm_agent_osc_buf_len + 2 <= WISPTERM_AGENT_OSC_MAX) {
+                        self.wispterm_agent_osc_buf[self.wispterm_agent_osc_buf_len] = 0x1b;
+                        self.wispterm_agent_osc_buf_len += 1;
+                        self.wispterm_agent_osc_buf[self.wispterm_agent_osc_buf_len] = byte;
+                        self.wispterm_agent_osc_buf_len += 1;
+                        self.wispterm_image_osc_state = .agent_osc;
+                    } else {
+                        self.wispterm_agent_osc_buf_len = 0;
+                        self.wispterm_image_osc_state = .agent_overflow;
+                    }
+                }
+                passthrough_start = i + 1;
+            },
+            .agent_overflow => switch (byte) {
+                0x07 => {
+                    self.wispterm_image_osc_state = .ground;
+                    passthrough_start = i + 1;
+                },
+                0x1b => {
+                    self.wispterm_image_osc_state = .agent_overflow_esc;
+                    passthrough_start = i + 1;
+                },
+                else => passthrough_start = i + 1,
+            },
+            .agent_overflow_esc => {
+                self.wispterm_image_osc_state = if (byte == '\\') .ground else .agent_overflow;
+                passthrough_start = i + 1;
             },
             .image_osc => switch (byte) {
                 0x07 => {
@@ -1053,6 +1259,19 @@ fn replayNonImageOscPrefix(self: *Surface) void {
     if (self.wispterm_image_osc_buf.items.len > 0) {
         self.vt_stream.nextSlice(self.wispterm_image_osc_buf.items);
         self.wispterm_image_osc_buf.clearRetainingCapacity();
+    }
+}
+
+/// Called when a complete OSC 7748 agent-state marker has been received.
+/// The payload (bytes after "7748;") is in wispterm_agent_osc_buf[0..len].
+/// If parseMarker succeeds, the Detection is applied and the heuristic is
+/// suppressed. The marker is consumed (not forwarded to the VT).
+fn handleWispTermAgentOsc(self: *Surface) void {
+    const payload = self.wispterm_agent_osc_buf[0..self.wispterm_agent_osc_buf_len];
+    self.wispterm_agent_osc_buf_len = 0;
+    if (agent_detector.parseMarker(payload)) |det| {
+        self.agent_detection = det;
+        self.agent_osc_active = true;
     }
 }
 
@@ -1191,4 +1410,17 @@ fn updateTitle(self: *Surface, title: []const u8, osc_num: u8) void {
     }
 
     self.refreshAgentDetection();
+}
+
+test "Surface exposes init and initVirtual (forces analysis of the shared finishInit refactor)" {
+    // Address-of forces full semantic analysis + codegen of both constructors,
+    // and therefore of the shared finishInit they call. Without this, an unused
+    // initVirtual could carry a refactor bug that the headless suite never sees.
+    _ = &init;
+    _ = &initVirtual;
+
+    const info = @typeInfo(@TypeOf(initVirtual)).@"fn";
+    // allocator, cols, rows, pty, scrollback_limit, cursor_style, cursor_blink
+    try std.testing.expectEqual(@as(usize, 7), info.params.len);
+    try std.testing.expect(info.params[3].type.? == Pty);
 }

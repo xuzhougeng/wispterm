@@ -52,6 +52,10 @@ test {
     _ = @import("agent_file_edit.zig");
     _ = @import("agent_file_copy.zig");
     _ = @import("ssh_connection.zig");
+    _ = @import("tmux/control.zig");
+    _ = @import("tmux/layout.zig");
+    _ = @import("tmux/protocol_test.zig");
+    _ = @import("tmux/session.zig");
     _ = @import("port_forward_rule.zig");
     _ = @import("ssh_profile_store.zig");
     _ = @import("port_forward_manager.zig");
@@ -137,6 +141,8 @@ test {
     _ = @import("weixin/approval_reply.zig");
     _ = @import("ai_chat_title.zig");
     _ = @import("command_registry.zig");
+    _ = @import("agent_detector.zig");
+    _ = @import("claude_integration.zig");
     _ = @import("jupyter_detect.zig");
     _ = @import("jupyter_picker.zig");
     _ = @import("html_server_model.zig");

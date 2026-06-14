@@ -46,6 +46,7 @@ extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 /// Raw `_exit(2)` — used in the forked child so we never run libc `atexit`
 /// handlers or flush stdio buffers inherited from the parent.
 extern "c" fn _exit(code: c_int) noreturn;
+extern "c" fn socketpair(domain: c_int, sock_type: c_int, protocol: c_int, sv: *[2]c_int) c_int;
 
 const SLAVE_PATH_MAX = 128;
 const MAX_ARGV = 64;
@@ -87,10 +88,12 @@ pub const Pty = struct {
     slave_path: [SLAVE_PATH_MAX]u8,
     size: winsize,
     cancel_pipe: [2]fd_t,
+    is_virtual: bool,
 
     pub fn open(size: winsize) !Pty {
         var self: Pty = undefined;
         self.size = size;
+        self.is_virtual = false;
 
         const open_flags = std.posix.O{ .ACCMODE = .RDWR, .NOCTTY = true };
         const o_int: c_int = @bitCast(open_flags);
@@ -118,6 +121,68 @@ pub const Pty = struct {
         return self;
     }
 
+    pub const VirtualController = struct {
+        /// The controller's end of the socketpair. The owner must call
+        /// `deinit`; `Pty.deinit` only closes the pty's own `master`.
+        fd: fd_t,
+
+        pub fn invalidForTest() VirtualController {
+            return .{ .fd = -1 };
+        }
+
+        pub fn deinit(self: *VirtualController) void {
+            if (self.fd >= 0) {
+                std.posix.close(self.fd);
+                self.fd = -1;
+            }
+        }
+
+        pub fn writeOutput(self: *VirtualController, bytes: []const u8) void {
+            if (self.fd < 0) return;
+            writeAllVirtual(self.fd, bytes);
+        }
+
+        pub fn inputAvailable(self: *const VirtualController) bool {
+            if (self.fd < 0) return false;
+            return readableVirtual(self.fd);
+        }
+
+        pub fn readInput(self: *VirtualController, buffer: []u8) ?usize {
+            if (self.fd < 0) return null;
+            return std.posix.read(self.fd, buffer) catch null;
+        }
+    };
+
+    pub const VirtualPair = struct {
+        pty: Pty,
+        controller: VirtualController,
+    };
+
+    /// Create a virtual PTY backed by a socketpair. The returned `pty` reads
+    /// what is written to the controller and vice-versa, so the tmux controller
+    /// can feed pane output in and read keystrokes back out. No child process.
+    pub fn openVirtual(size: winsize) !VirtualPair {
+        var sv: [2]c_int = undefined;
+        if (socketpair(
+            @intCast(std.posix.AF.UNIX),
+            @intCast(std.posix.SOCK.STREAM),
+            0,
+            &sv,
+        ) != 0) return error.SocketPairFailed;
+        errdefer {
+            _ = c.close(sv[0]);
+            _ = c.close(sv[1]);
+        }
+
+        var self: Pty = undefined;
+        self.master = sv[0];
+        self.is_virtual = true;
+        self.slave_path = std.mem.zeroes([SLAVE_PATH_MAX]u8);
+        self.size = size;
+        self.cancel_pipe = try std.posix.pipe();
+        return .{ .pty = self, .controller = .{ .fd = sv[1] } };
+    }
+
     pub fn deinit(self: *Pty) void {
         if (self.master >= 0) {
             _ = c.close(self.master);
@@ -138,6 +203,12 @@ pub const Pty = struct {
     }
 
     pub fn setSize(self: *Pty, s: winsize) !void {
+        if (self.is_virtual) {
+            // A socketpair has no window size; the tmux controller owns sizing
+            // via refresh-client. Just record it for getSize.
+            self.size = s;
+            return;
+        }
         try setWindowSize(self.master, self.slavePathSlice(), s);
         self.size = s;
     }
@@ -257,6 +328,22 @@ fn readableFallback(fd: fd_t) ?usize {
     if (ready == 0) return 0;
     if (fds[0].revents & std.posix.POLL.IN != 0) return 1;
     return 0;
+}
+
+fn readableVirtual(fd: fd_t) bool {
+    var fds = [1]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    const ready = std.posix.poll(&fds, 0) catch return false;
+    if (ready == 0) return false;
+    return fds[0].revents & std.posix.POLL.IN != 0;
+}
+
+fn writeAllVirtual(fd: fd_t, bytes: []const u8) void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const n = std.posix.write(fd, bytes[off..]) catch return;
+        if (n == 0) return;
+        off += n;
+    }
 }
 
 /// Runs entirely in the forked child. Sets up the controlling terminal on the

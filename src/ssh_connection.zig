@@ -3,6 +3,8 @@
 //! file_backend, file_explorer) can use it without compiling the heavy
 //! ghostty-vt / renderer graph that Surface pulls in.
 
+const std = @import("std");
+
 pub const SshConnection = struct {
     user_buf: [128]u8 = undefined,
     user_len: usize = 0,
@@ -36,4 +38,58 @@ pub const SshConnection = struct {
     pub fn password(self: *const SshConnection) []const u8 {
         return self.password_buf[0..self.password_len];
     }
+
+    pub const Parts = struct {
+        user: []const u8,
+        host: []const u8,
+        port: []const u8 = "",
+        proxy_jump: []const u8 = "",
+        password: []const u8 = "",
+    };
+
+    /// Build a connection from already-validated SSH params (the caller
+    /// validates with isSshTokenSafe/isPortTokenSafe). Truncates to buffer
+    /// capacity.
+    pub fn fromParts(p: Parts) SshConnection {
+        var c: SshConnection = .{};
+        c.user_len = copyInto(&c.user_buf, p.user);
+        c.host_len = copyInto(&c.host_buf, p.host);
+        c.port_len = copyInto(&c.port_buf, p.port);
+        c.proxy_jump_len = copyInto(&c.proxy_jump_buf, p.proxy_jump);
+        c.password_len = copyInto(&c.password_buf, p.password);
+        c.password_auth = p.password.len > 0;
+        return c;
+    }
+
+    fn copyInto(buf: []u8, src: []const u8) usize {
+        const n = @min(buf.len, src.len);
+        @memcpy(buf[0..n], src[0..n]);
+        return n;
+    }
 };
+
+test "fromParts copies fields into the fixed buffers" {
+    const c = SshConnection.fromParts(.{
+        .user = "alice",
+        .host = "10.0.0.5",
+        .port = "2222",
+        .proxy_jump = "jump.example",
+        .password = "s3cret",
+    });
+    try std.testing.expectEqualStrings("alice", c.user());
+    try std.testing.expectEqualStrings("10.0.0.5", c.host());
+    try std.testing.expectEqualStrings("2222", c.port());
+    try std.testing.expectEqualStrings("jump.example", c.proxyJump());
+    try std.testing.expectEqualStrings("s3cret", c.password());
+    try std.testing.expect(c.password_auth);
+}
+
+test "fromParts handles empty optional fields" {
+    const c = SshConnection.fromParts(.{ .user = "u", .host = "h" });
+    try std.testing.expectEqualStrings("u", c.user());
+    try std.testing.expectEqualStrings("h", c.host());
+    try std.testing.expectEqualStrings("", c.port());
+    try std.testing.expectEqualStrings("", c.proxyJump());
+    try std.testing.expectEqualStrings("", c.password());
+    try std.testing.expect(!c.password_auth);
+}
