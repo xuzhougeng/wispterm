@@ -2110,6 +2110,21 @@ fn handleKey(ev: platform_input.KeyEvent) void {
     // d deploy, i import, g get-from-GitHub, r rescan. The URL-input overlay
     // captures text; the checklist captures space + 'a'.
     if (AppWindow.activeSkillCenter() != null) {
+        // SKILL.md preview overlay captures all keys: esc/space/⏎ close,
+        // arrows/PgUp/PgDn/Home/End scroll.
+        if (AppWindow.skillCenterTextPreviewActive()) {
+            switch (ev.key_code) {
+                platform_input.key_escape, platform_input.key_space, platform_input.key_enter => _ = AppWindow.skillCenterPreviewClose(),
+                platform_input.key_up => _ = AppWindow.skillCenterPreviewScroll(-1),
+                platform_input.key_down => _ = AppWindow.skillCenterPreviewScroll(1),
+                platform_input.key_page_up => _ = AppWindow.skillCenterPreviewScroll(-12),
+                platform_input.key_page_down => _ = AppWindow.skillCenterPreviewScroll(12),
+                platform_input.key_home => _ = AppWindow.skillCenterPreviewScroll(-1_000_000),
+                platform_input.key_end => _ = AppWindow.skillCenterPreviewScroll(1_000_000),
+                else => {},
+            }
+            return;
+        }
         const plain = !ev.ctrl and !ev.alt and !ev.super;
         const text_capture = AppWindow.skillCenterUrlInputActive();
         const picking = AppWindow.skillCenterPickActive();

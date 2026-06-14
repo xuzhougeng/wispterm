@@ -35,11 +35,24 @@ pub const InputView = struct {
     text: []const u8,
 };
 
+/// A scrollable, read-only text overlay — a skill's SKILL.md preview. The Skill
+/// Center is a non-terminal tab and can't host a split preview pane, so it shows
+/// the content here. `scroll_out`, when set, receives the clamped scroll offset
+/// (the caller holds the model under the render lock), so over-scroll never lags.
+pub const TextView = struct {
+    title: []const u8,
+    content: []const u8,
+    hint: []const u8,
+    scroll: usize,
+    scroll_out: ?*usize = null,
+};
+
 pub const Overlay = union(enum) {
     none,
     list: ListView,
     confirm: []const u8, // confirm bar text
     input: InputView,
+    text: TextView,
 };
 
 pub const View = struct {
@@ -137,6 +150,10 @@ pub fn render(
     switch (view.overlay) {
         .list => |lv| {
             renderList(draw, lv, content_x, content_w, window_height, body_top, fg, muted, accent, line, selected_bg);
+        },
+        .text => |tv| {
+            renderTextPreview(draw, tv, content_x, content_w, window_height, top, body_top, fg, muted, accent, line);
+            return; // own footer hint; no action legend
         },
         else => {
             renderSkillList(draw, view, content_x, content_w, window_height, top, body_top, fg, muted, accent, line, selected_bg);
@@ -244,6 +261,110 @@ fn renderList(
     }
 }
 
+// --- Text preview overlay (scrollable SKILL.md) ---
+
+/// Fixed-width columns that fit in `width` px at glyph `advance` (≥1).
+fn wrapCols(width: f32, advance: f32) usize {
+    if (advance <= 0 or width <= 0) return 80;
+    const c: usize = @intFromFloat(@floor(width / advance));
+    return @max(1, c);
+}
+
+/// Iterate `content` as wrapped display lines: a '\n' ends a line, long logical
+/// lines wrap every `cols` codepoints, and a trailing '\n' adds no empty line.
+/// A trailing '\r' (CRLF) is trimmed per line.
+const WrapIter = struct {
+    content: []const u8,
+    cols: usize,
+    pos: usize = 0,
+
+    fn next(self: *WrapIter) ?[]const u8 {
+        if (self.pos >= self.content.len) return null;
+        const start = self.pos;
+        var i = start;
+        var count: usize = 0;
+        while (i < self.content.len) {
+            if (self.content[i] == '\n') {
+                self.pos = i + 1;
+                return trimCr(self.content[start..i]);
+            }
+            const cp_len = std.unicode.utf8ByteSequenceLength(self.content[i]) catch 1;
+            i += @min(cp_len, self.content.len - i);
+            count += 1;
+            if (count >= self.cols) {
+                self.pos = i;
+                return trimCr(self.content[start..i]);
+            }
+        }
+        self.pos = i;
+        return trimCr(self.content[start..i]);
+    }
+};
+
+fn trimCr(s: []const u8) []const u8 {
+    if (s.len > 0 and s[s.len - 1] == '\r') return s[0 .. s.len - 1];
+    return s;
+}
+
+/// Count the wrapped display lines `content` occupies at `cols` columns.
+pub fn wrappedLineCount(content: []const u8, cols: usize) usize {
+    var it = WrapIter{ .content = content, .cols = cols };
+    var n: usize = 0;
+    while (it.next()) |_| n += 1;
+    return n;
+}
+
+fn renderTextPreview(
+    draw: DrawContext,
+    tv: TextView,
+    content_x: f32,
+    content_w: f32,
+    window_height: f32,
+    top: f32,
+    body_top: f32,
+    fg: [3]f32,
+    muted: [3]f32,
+    accent: [3]f32,
+    line: [3]f32,
+) void {
+    const row_h = rowHeight(draw.cell_h);
+    // Title row.
+    const title_y = yTextFromTop(draw, window_height, body_top + 8);
+    _ = draw.renderTextLimited(tv.title, content_x + PAD_X, title_y, accent, content_w - PAD_X * 2);
+    draw.fillQuad(content_x, yFromTop(window_height, body_top + row_h, 1), content_w, 1, line);
+
+    const text_top = body_top + row_h;
+    const footer_h = legendHeight(draw.cell_h);
+    const line_pitch = draw.cell_h + 6;
+    const avail_h = window_height - top - text_top - footer_h - 6;
+
+    if (avail_h > line_pitch) {
+        const visible: usize = @intFromFloat(@floor(avail_h / line_pitch));
+        const advance = draw.glyphAdvance('M');
+        const cols = wrapCols(content_w - PAD_X * 2, advance);
+        const total = wrappedLineCount(tv.content, cols);
+        const scroll = clampScroll(tv.scroll, total, visible);
+        if (tv.scroll_out) |p| p.* = scroll;
+
+        var it = WrapIter{ .content = tv.content, .cols = cols };
+        var skipped: usize = 0;
+        while (skipped < scroll) : (skipped += 1) _ = it.next();
+        var rendered: usize = 0;
+        while (rendered < visible) : (rendered += 1) {
+            const dl = it.next() orelse break;
+            const top_px = text_top + @as(f32, @floatFromInt(rendered)) * line_pitch + 4;
+            const ly = yTextFromTop(draw, window_height, top_px);
+            if (dl.len > 0) _ = draw.renderTextLimited(dl, content_x + PAD_X, ly, fg, content_w - PAD_X * 2);
+        }
+    }
+
+    // Footer hint replaces the action legend.
+    const legend_h = legendHeight(draw.cell_h);
+    draw.fillQuad(content_x, legend_h, content_w, 1, line);
+    const hint_y = (legend_h - draw.cell_h) / 2;
+    _ = draw.renderTextLimited(tv.hint, content_x + PAD_X, hint_y, muted, content_w - PAD_X * 2);
+}
+
 fn renderLegend(draw: DrawContext, legend: []const u8, content_x: f32, content_w: f32, muted: [3]f32, line: [3]f32) void {
     const legend_h = legendHeight(draw.cell_h);
     draw.fillQuad(content_x, legend_h, content_w, 1, line);
@@ -269,4 +390,36 @@ test "skill_center_renderer: input overlay variant is constructible" {
     const ov: Overlay = .{ .input = .{ .prompt = "Paste URL", .text = "https://github.com/o/r" } };
     try std.testing.expect(ov == .input);
     try std.testing.expectEqualStrings("https://github.com/o/r", ov.input.text);
+}
+
+test "skill_center_renderer: wrappedLineCount wraps on newlines and column width" {
+    // Three logical lines, trailing newline adds no empty line.
+    try std.testing.expectEqual(@as(usize, 3), wrappedLineCount("a\nbb\nccc\n", 80));
+    // No trailing newline → last line still counts.
+    try std.testing.expectEqual(@as(usize, 2), wrappedLineCount("a\nb", 80));
+    // Soft-wrap a long logical line every `cols` columns: "abcde" at 2 → ab|cd|e.
+    try std.testing.expectEqual(@as(usize, 3), wrappedLineCount("abcde", 2));
+    // Empty content → no lines.
+    try std.testing.expectEqual(@as(usize, 0), wrappedLineCount("", 80));
+}
+
+test "skill_center_renderer: WrapIter yields trimmed CRLF lines in order" {
+    var it = WrapIter{ .content = "x1\r\nyy\r\nz", .cols = 80 };
+    try std.testing.expectEqualStrings("x1", it.next().?);
+    try std.testing.expectEqualStrings("yy", it.next().?);
+    try std.testing.expectEqualStrings("z", it.next().?);
+    try std.testing.expect(it.next() == null);
+}
+
+test "skill_center_renderer: text overlay variant carries scroll write-back" {
+    var scroll: usize = 7;
+    const ov: Overlay = .{ .text = .{
+        .title = "t",
+        .content = "body",
+        .hint = "Esc close",
+        .scroll = scroll,
+        .scroll_out = &scroll,
+    } };
+    try std.testing.expect(ov == .text);
+    try std.testing.expectEqual(@as(usize, 7), ov.text.scroll);
 }

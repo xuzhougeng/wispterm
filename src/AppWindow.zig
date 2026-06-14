@@ -903,6 +903,15 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
                 .itemAt = scInstallPickItemAt,
                 .sel = p.sel,
             } },
+            // scroll_out lets the renderer clamp `scroll` against the wrapped
+            // height and write it back — safe here under the session lock.
+            .text_preview => |*tp| .{ .text = .{
+                .title = tp.title,
+                .content = tp.content,
+                .hint = i18n.s().sc_preview_hint,
+                .scroll = tp.scroll,
+                .scroll_out = &tp.scroll,
+            } },
         };
         const view: skill_center_renderer.View = .{
             .skills_len = lib_len,
@@ -2329,6 +2338,7 @@ pub fn skillCenterOverlaySelect() bool {
             // Handled by the early guards above; safety no-ops here.
             .url_input => {},
             .install_pick => {},
+            .text_preview => {},
             .none, .busy => {},
         }
     }
@@ -2391,11 +2401,43 @@ pub fn skillCenterPreviewSelected() bool {
     const text = skill_local_fs.readFileAllocAbsolute(allocator, abs, 1024 * 1024) catch null;
     if (text) |t| {
         defer allocator.free(t);
-        openSkillMdInPreviewLeaf(allocator, name_buf[0..name_len], t);
+        var title_buf: [160]u8 = undefined;
+        const title = std.fmt.bufPrint(&title_buf, "{s} / SKILL.md", .{name_buf[0..name_len]}) catch name_buf[0..name_len];
+        session.mutex.lock();
+        session.model.openTextPreview(title, t) catch {};
+        session.mutex.unlock();
         markUiDirty();
     } else {
         overlays.showStatusToast(i18n.s().sc_toast_read_failed);
     }
+    return true;
+}
+
+/// True when the scrollable SKILL.md preview overlay is showing.
+pub fn skillCenterTextPreviewActive() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    return session.model.isTextPreview();
+}
+
+/// Scroll the open SKILL.md preview by `delta` wrapped lines (renderer clamps).
+pub fn skillCenterPreviewScroll(delta: isize) bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    session.model.scrollTextPreview(delta);
+    session.mutex.unlock();
+    markUiDirty();
+    return true;
+}
+
+/// Close the SKILL.md preview overlay.
+pub fn skillCenterPreviewClose() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    session.model.clearOverlay();
+    session.mutex.unlock();
+    markUiDirty();
     return true;
 }
 
@@ -2418,6 +2460,7 @@ pub fn skillCenterSpacePreview() bool {
             .confirm => kind = .none,
             .url_input => kind = .none,
             .install_pick => kind = .none,
+            .text_preview => kind = .none, // input intercepts Space while previewing
         }
     }
     switch (kind) {
@@ -4631,24 +4674,6 @@ fn pollSkillUpdate(app: *App) void {
     }
 }
 
-/// Open a SKILL.md preview in a reused-or-new preview leaf. UI thread.
-fn openSkillMdInPreviewLeaf(allocator: std.mem.Allocator, title: []const u8, content: []const u8) void {
-    const at = tab.activeTab() orelse return;
-    const pane = if (tab.previewForReuse(allocator, at, .markdown)) |h|
-        switch (at.tree.nodes[h.idx()]) {
-            .leaf => |pn| switch (pn) {
-                .preview => |p| p,
-                else => return,
-            },
-            .split => return,
-        }
-    else
-        (tab.splitIntoPreviewStacked(allocator) orelse return);
-    // Select the preview so Ctrl+Shift+W closes it (not the terminal).
-    _ = tab.focusPreviewPane(pane);
-    pane.open(.markdown, title, "SKILL.md", content);
-}
-
 /// UI thread: consume a finished skill-center op result and apply it (open the
 /// import list, run the deploy decision, or show a transfer toast).
 fn pollSkillCenterOp(session: *skill_center.Session) void {
@@ -4700,7 +4725,9 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
             }
         },
         .preview => |*v| {
-            openSkillMdInPreviewLeaf(allocator, v.title, v.content);
+            session.mutex.lock();
+            session.model.openTextPreview(v.title, v.content) catch {};
+            session.mutex.unlock();
         },
         .install_enumerate => {
             const moved = result; // shallow copy of the union (owns repo+entries)

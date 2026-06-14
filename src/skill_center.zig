@@ -211,6 +211,22 @@ pub const InstallPickState = struct {
     }
 };
 
+/// Scrollable in-panel preview of a skill's SKILL.md (the Skill Center is a
+/// non-terminal tab, so it can't host a split preview pane — it shows the text
+/// in this overlay instead). `scroll` is a wrapped-line offset; the renderer
+/// clamps it against the actual wrapped height each frame.
+pub const TextPreviewState = struct {
+    title: []u8, // owned
+    content: []u8, // owned
+    scroll: usize = 0,
+
+    fn deinit(self: *TextPreviewState, allocator: std.mem.Allocator) void {
+        allocator.free(self.title);
+        allocator.free(self.content);
+        self.* = undefined;
+    }
+};
+
 pub const Overlay = union(enum) {
     none,
     picker: PickerState,
@@ -219,6 +235,7 @@ pub const Overlay = union(enum) {
     busy: []u8, // owned message
     url_input: UrlInputState,
     install_pick: InstallPickState,
+    text_preview: TextPreviewState,
 
     pub fn deinit(self: *Overlay, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -227,25 +244,13 @@ pub const Overlay = union(enum) {
             .import_list => |*i| i.deinit(allocator),
             .confirm => |*c| c.deinit(allocator),
             .busy => |m| allocator.free(m),
+            .text_preview => |*t| t.deinit(allocator),
             .url_input => |*u| u.deinit(allocator),
             .install_pick => |*p| p.deinit(allocator),
         }
         self.* = .none;
     }
 };
-
-/// Build a `cat '<path>'` command for an absolute path (the library skill's
-/// SKILL.md). Single-quote-escaped.
-pub fn catCommand(allocator: std.mem.Allocator, abs_path: []const u8) ![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer buf.deinit(allocator);
-    try buf.appendSlice(allocator, "cat '");
-    for (abs_path) |c| {
-        if (c == '\'') try buf.appendSlice(allocator, "'\\''") else try buf.append(allocator, c);
-    }
-    try buf.append(allocator, '\'');
-    return buf.toOwnedSlice(allocator);
-}
 
 /// Panel state: the library list, selection, and the active overlay.
 pub const PanelModel = struct {
@@ -296,6 +301,34 @@ pub const PanelModel = struct {
     }
     pub fn clearOverlay(self: *PanelModel) void {
         self.overlay.deinit(self.allocator);
+    }
+
+    /// Open the scrollable SKILL.md preview overlay (owns copies of the strings).
+    pub fn openTextPreview(self: *PanelModel, title: []const u8, content: []const u8) !void {
+        const t = try self.allocator.dupe(u8, title);
+        errdefer self.allocator.free(t);
+        const c = try self.allocator.dupe(u8, content);
+        self.setOverlay(.{ .text_preview = .{ .title = t, .content = c } });
+    }
+
+    pub fn isTextPreview(self: *const PanelModel) bool {
+        return self.overlay == .text_preview;
+    }
+
+    /// Scroll the text preview by `delta` wrapped lines (saturating at 0; the
+    /// upper bound is clamped by the renderer against the wrapped height).
+    pub fn scrollTextPreview(self: *PanelModel, delta: isize) void {
+        switch (self.overlay) {
+            .text_preview => |*tp| {
+                if (delta < 0) {
+                    const d: usize = @intCast(-delta);
+                    tp.scroll = if (tp.scroll > d) tp.scroll - d else 0;
+                } else {
+                    tp.scroll +|= @intCast(delta);
+                }
+            },
+            else => {},
+        }
     }
 
     pub fn deinit(self: *PanelModel) void {
@@ -691,11 +724,26 @@ test "skill_center: libraryFromRows moves ownership" {
     try std.testing.expectEqualStrings("h", lib[0].agg_hash.?);
 }
 
-test "skill_center: catCommand quotes an absolute path" {
+test "skill_center: text preview overlay opens, scrolls, and frees" {
     const a = std.testing.allocator;
-    const cmd = try catCommand(a, "/cfg/skills/pdf/SKILL.md");
-    defer a.free(cmd);
-    try std.testing.expectEqualStrings("cat '/cfg/skills/pdf/SKILL.md'", cmd);
+    var m = PanelModel.init(a);
+    defer m.deinit();
+
+    try m.openTextPreview("pdf-tools / SKILL.md", "line1\nline2\nline3\n");
+    try std.testing.expect(m.isTextPreview());
+    try std.testing.expectEqual(@as(usize, 0), m.overlay.text_preview.scroll);
+
+    m.scrollTextPreview(3);
+    try std.testing.expectEqual(@as(usize, 3), m.overlay.text_preview.scroll);
+    m.scrollTextPreview(-1);
+    try std.testing.expectEqual(@as(usize, 2), m.overlay.text_preview.scroll);
+    m.scrollTextPreview(-100); // saturates at 0
+    try std.testing.expectEqual(@as(usize, 0), m.overlay.text_preview.scroll);
+
+    // scrolling a non-preview overlay is a no-op (doesn't crash)
+    m.clearOverlay();
+    try std.testing.expect(!m.isTextPreview());
+    m.scrollTextPreview(5);
 }
 
 test "skill_center: Session.finishScan publishes then discards stale (no leak)" {
