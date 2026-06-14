@@ -23,10 +23,16 @@ pub const Software = enum {
 
 /// A deploy/import destination: a machine × a software root.
 pub const Target = struct {
-    machine_id: []u8, // owned: "local" or "ssh:<profile>"
+    machine_id: []u8, // owned: "local", "ssh:<profile>", or "wsl"
     machine_label: []u8, // owned display name
     software: Software,
     is_local: bool,
+    /// A WSL distro reached on the Windows host via `wsl.exe --exec sh -lc`.
+    /// Mutually exclusive with `is_local`/SSH: a WSL target is neither local nor
+    /// an SSH connection, so guards must check this before falling back to a
+    /// "needs an SSH connection" error. `dupe` defaults it false; `clone`
+    /// preserves it.
+    is_wsl: bool = false,
 
     pub fn dupe(
         allocator: std.mem.Allocator,
@@ -41,7 +47,16 @@ pub const Target = struct {
         return .{ .machine_id = id, .machine_label = label, .software = software, .is_local = is_local };
     }
     pub fn clone(self: Target, allocator: std.mem.Allocator) !Target {
-        return dupe(allocator, self.machine_id, self.machine_label, self.software, self.is_local);
+        var t = try dupe(allocator, self.machine_id, self.machine_label, self.software, self.is_local);
+        t.is_wsl = self.is_wsl;
+        return t;
+    }
+    /// True when reaching this target requires an SSH connection (i.e. it is a
+    /// remote SSH profile, not the local host and not a WSL distro). Centralizes
+    /// the picker/scan/transfer guards so a WSL target is never rejected for
+    /// "no connection".
+    pub fn requiresSshConn(self: Target) bool {
+        return !self.is_local and !self.is_wsl;
     }
     pub fn deinit(self: *Target, allocator: std.mem.Allocator) void {
         allocator.free(self.machine_id);
@@ -814,6 +829,34 @@ test "startOp rejects a second op while one is in flight" {
     OpTestCtx.destroy(@ptrCast(ctx), a);
     // let the dummy thread be joinable at destroy
     session.op_done.store(true, .release);
+}
+
+test "Target.clone preserves the WSL discriminator" {
+    const a = std.testing.allocator;
+    var t = try Target.dupe(a, "wsl", "WSL", .claude, false);
+    t.is_wsl = true;
+    defer t.deinit(a);
+    var c = try t.clone(a);
+    defer c.deinit(a);
+    try std.testing.expect(c.is_wsl);
+    try std.testing.expectEqualStrings("wsl", c.machine_id);
+    try std.testing.expect(!c.is_local);
+}
+
+test "Target.requiresSshConn is true only for non-local non-WSL targets" {
+    const a = std.testing.allocator;
+    var local = try Target.dupe(a, "local", "Local", .claude, true);
+    defer local.deinit(a);
+    try std.testing.expect(!local.requiresSshConn());
+
+    var ssh = try Target.dupe(a, "ssh:web", "web", .codex, false);
+    defer ssh.deinit(a);
+    try std.testing.expect(ssh.requiresSshConn());
+
+    var wsl = try Target.dupe(a, "wsl", "WSL", .claude, false);
+    wsl.is_wsl = true;
+    defer wsl.deinit(a);
+    try std.testing.expect(!wsl.requiresSshConn());
 }
 
 test "importScanResult: unreachable source becomes failed (not an empty import list)" {

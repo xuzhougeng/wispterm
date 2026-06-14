@@ -124,6 +124,24 @@ test "skill_transfer: local→remote deploy does create-local, copy, extract-rem
     try std.testing.expect(std.mem.indexOf(u8, rec.remote_cmds.items[0], "tar -xzf") != null);
 }
 
+test "skill_transfer: remote→remote (WSL) tars and extracts without a host copy" {
+    // The WSL deploy path treats BOTH endpoints as remote (reachable from one
+    // `wsl.exe` shell): the library under /mnt/<drive> and the target under
+    // $HOME. With from.is_local == to.is_local, transfer must skip the copy
+    // primitive entirely and run tar-create + extract over remoteExec.
+    const a = std.testing.allocator;
+    var rec = Recorder{ .allocator = a };
+    defer rec.deinit();
+    const from = Endpoint{ .root_expr = "'/mnt/c/lib/skills'", .is_local = false };
+    const to = Endpoint{ .root_expr = "\"$HOME\"/'.claude/skills'", .is_local = false };
+    try std.testing.expectEqual(Result.ok, transfer(a, rec.ops(), from, to, "pdf"));
+    try std.testing.expectEqual(@as(usize, 0), rec.copies);
+    try std.testing.expect(std.mem.startsWith(u8, rec.remote_cmds.items[0], "tar -czf"));
+    try std.testing.expect(std.mem.indexOf(u8, rec.remote_cmds.items[1], "tar -xzf") != null);
+    // The staged tarball is cleaned up on the remote (WSL /tmp).
+    try std.testing.expect(std.mem.indexOf(u8, rec.remote_cmds.items[2], "rm -f") != null);
+}
+
 test "skill_transfer: remote→local import does create-remote, copy, extract-local" {
     const a = std.testing.allocator;
     var rec = Recorder{ .allocator = a };

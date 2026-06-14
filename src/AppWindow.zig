@@ -1812,12 +1812,15 @@ fn downloadSelectedSkillsToLibrary(
     return .{ .installed = installed, .overwritten = overwritten, .failed = failed };
 }
 
-/// ExecHost over a location: local POSIX, or SSH when a conn is present.
+/// ExecHost over a location: local POSIX, SSH when a conn is present, or the
+/// default WSL distro (`wsl.exe --exec sh -lc`) when `is_wsl` is set.
 const SkillLocExec = struct {
     conn: ?ssh_connection.SshConnection,
+    is_wsl: bool = false,
     fn exec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) anyerror![]u8 {
         const self: *SkillLocExec = @ptrCast(@alignCast(ctx));
         if (self.conn) |c| return remote_file.sshExecCapture(allocator, c, command);
+        if (self.is_wsl) return remote_file.wslExec(allocator, command) orelse error.RemoteExecFailed;
         return remote_file.localPosixExec(allocator, command, 4 * 1024 * 1024);
     }
     fn host(self: *SkillLocExec) skill_scan.ExecHost {
@@ -1845,20 +1848,27 @@ fn skillCenterLocalRootPath(allocator: std.mem.Allocator, software: skill_center
 
 /// Scan a skills endpoint, picking the right backend:
 ///   - remote (conn set): the POSIX `find`/`sha256sum` command over SSH.
+///   - WSL (`is_wsl`): the same command via `wsl.exe --exec sh -lc`.
 ///   - local on a POSIX host: the same command via `sh -c` (preserves the
 ///     existing Linux/macOS hashes).
 ///   - local on a non-POSIX host (Windows, no WSL): a native `std.fs` scan whose
 ///     aggregate hash matches the POSIX recipe byte-for-byte.
-/// `root_expr` is the shell root expression (for the SSH/POSIX paths);
+/// `root_expr` is the shell root expression (for the SSH/POSIX/WSL paths);
 /// `local_path` is the raw absolute root (for the native path; null when remote).
 fn skillCenterScanOutcome(
     allocator: std.mem.Allocator,
     root_expr: []const u8,
     local_path: ?[]const u8,
     conn: ?ssh_connection.SshConnection,
+    is_wsl: bool,
 ) skill_scan.ScanOutcome {
     if (conn) |c| {
         var le = SkillLocExec{ .conn = c };
+        return skill_scan.scanLocation(allocator, root_expr, le.host()) catch
+            return .{ .reachable = false, .rows = &.{} };
+    }
+    if (is_wsl) {
+        var le = SkillLocExec{ .conn = null, .is_wsl = true };
         return skill_scan.scanLocation(allocator, root_expr, le.host()) catch
             return .{ .reachable = false, .rows = &.{} };
     }
@@ -1871,10 +1881,14 @@ fn skillCenterScanOutcome(
     return skill_local_fs.scanOutcome(allocator, lp);
 }
 
-/// Adapts skill_transfer.Ops onto local/ssh/scp. conn null → a local-only target.
+/// Adapts skill_transfer.Ops onto local/ssh/scp/WSL. conn null + !is_wsl → a
+/// local-only target; is_wsl → both endpoints reached via `wsl.exe` (see
+/// `wslSkillTransfer`, where the library lives under /mnt/<drive> and the target
+/// under $HOME, so the copy primitive is never invoked).
 /// `err_buf`/`err_len` capture the last ssh error summary for the UI toast.
 const SkillTransferCtx = struct {
     conn: ?ssh_connection.SshConnection,
+    is_wsl: bool = false,
     // Sized off ssh_error.MAX (+ margin) so a summary never gets re-truncated here.
     err_buf: [ssh_error.MAX + 40]u8 = undefined,
     err_len: usize = 0,
@@ -1889,11 +1903,22 @@ const SkillTransferCtx = struct {
     }
 
     fn localExec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) bool {
-        _ = ctx;
+        const self: *SkillTransferCtx = @ptrCast(@alignCast(ctx));
+        // A WSL transfer runs every step (tar/extract/cleanup) over `wslExec`;
+        // skill_transfer only calls localExec for the LOCAL_TMP cleanup, whose
+        // path lives in the WSL /tmp and is already removed by the remoteExec
+        // `rm`. A no-op keeps that ignored cleanup from spuriously failing.
+        if (self.is_wsl) return true;
         return remote_file.localPosixExecOk(allocator, command);
     }
     fn remoteExec(ctx: *anyopaque, allocator: std.mem.Allocator, command: []const u8) bool {
         const self: *SkillTransferCtx = @ptrCast(@alignCast(ctx));
+        if (self.is_wsl) {
+            // Default WSL distro; stdout discarded (only exit status matters).
+            const out = remote_file.wslExec(allocator, command) orelse return false;
+            allocator.free(out);
+            return true;
+        }
         const c = self.conn orelse return false;
         // stdout is discarded; remoteExec only cares about exit status + stderr.
         var cap = remote_file.sshExecCaptureFull(allocator, c, command) catch return false;
@@ -1963,7 +1988,7 @@ fn skillCenterMakeImportState(allocator: std.mem.Allocator, model: *const skill_
     };
 }
 
-fn skillCenterAddMachine(allocator: std.mem.Allocator, labels: *std.ArrayListUnmanaged([]u8), targets: *std.ArrayListUnmanaged(skill_center.Target), machine_id: []const u8, machine_label: []const u8, is_local: bool) !void {
+fn skillCenterAddMachine(allocator: std.mem.Allocator, labels: *std.ArrayListUnmanaged([]u8), targets: *std.ArrayListUnmanaged(skill_center.Target), machine_id: []const u8, machine_label: []const u8, is_local: bool, is_wsl: bool) !void {
     const sws = [_]skill_center.Software{ .claude, .codex };
     for (sws) |sw| {
         const sw_label = switch (sw) {
@@ -1978,6 +2003,7 @@ fn skillCenterAddMachine(allocator: std.mem.Allocator, labels: *std.ArrayListUnm
             return e;
         };
         var tgt = try skill_center.Target.dupe(allocator, machine_id, machine_label, sw, is_local);
+        tgt.is_wsl = is_wsl;
         targets.append(allocator, tgt) catch |e| {
             tgt.deinit(allocator);
             return e;
@@ -1985,7 +2011,7 @@ fn skillCenterAddMachine(allocator: std.mem.Allocator, labels: *std.ArrayListUnm
     }
 }
 
-/// Build a target picker over {local, ssh profiles} × {claude, codex}.
+/// Build a target picker over {local, WSL (Windows), ssh profiles} × {claude, codex}.
 fn skillCenterBuildPicker(allocator: std.mem.Allocator, purpose: skill_center.Purpose, skill_name: []const u8) !skill_center.PickerState {
     var labels: std.ArrayListUnmanaged([]u8) = .empty;
     var targets: std.ArrayListUnmanaged(skill_center.Target) = .empty;
@@ -1995,7 +2021,13 @@ fn skillCenterBuildPicker(allocator: std.mem.Allocator, purpose: skill_center.Pu
         for (targets.items) |*t| t.deinit(allocator);
         targets.deinit(allocator);
     }
-    try skillCenterAddMachine(allocator, &labels, &targets, "local", i18n.s().sc_local, true);
+    try skillCenterAddMachine(allocator, &labels, &targets, "local", i18n.s().sc_local, true, false);
+    // The default WSL distro, only when one is actually installed (registry
+    // probe — never spawns wsl.exe, so a WSL-less machine never pops the
+    // "install WSL" window). Hidden on non-Windows hosts (wslAvailable false).
+    if (platform_pty_command.wslAvailable()) {
+        try skillCenterAddMachine(allocator, &labels, &targets, "wsl", i18n.s().sc_wsl, false, true);
+    }
     const names = overlays.sshProfileNames(allocator) catch &[_][]u8{};
     defer {
         for (names) |n| allocator.free(n);
@@ -2004,7 +2036,7 @@ fn skillCenterBuildPicker(allocator: std.mem.Allocator, purpose: skill_center.Pu
     for (names) |nm| {
         const id = try std.fmt.allocPrint(allocator, "ssh:{s}", .{nm});
         defer allocator.free(id);
-        try skillCenterAddMachine(allocator, &labels, &targets, id, nm, false);
+        try skillCenterAddMachine(allocator, &labels, &targets, id, nm, false, false);
     }
     const name_copy = try allocator.dupe(u8, skill_name);
     errdefer allocator.free(name_copy);
@@ -2044,7 +2076,7 @@ pub fn skillCenterImport() bool {
 fn skillCenterOpenImportList(allocator: std.mem.Allocator, target: skill_center.Target) void {
     const session = activeSkillCenter() orelse return;
     const conn = skillCenterTargetConn(target);
-    if (!target.is_local and conn == null) {
+    if (target.requiresSshConn() and conn == null) {
         overlays.showStatusToast(i18n.s().sc_toast_no_conn);
         return;
     }
@@ -2076,7 +2108,7 @@ fn skillCenterOpenImportList(allocator: std.mem.Allocator, target: skill_center.
 fn skillCenterRunTransfer(allocator: std.mem.Allocator, is_import: bool, target: skill_center.Target, name: []const u8) void {
     const session = activeSkillCenter() orelse return;
     const conn = skillCenterTargetConn(target);
-    if (!target.is_local and conn == null) {
+    if (target.requiresSshConn() and conn == null) {
         overlays.showStatusToast(i18n.s().sc_toast_no_conn);
         return;
     }
@@ -2112,6 +2144,7 @@ fn skillCenterRunTransfer(allocator: std.mem.Allocator, is_import: bool, target:
     job.* = .{
         .is_import = is_import,
         .conn = conn,
+        .is_wsl = target.is_wsl,
         .lib_root = lib_root,
         .tgt_root = tgt_root,
         .tgt_is_local = target.is_local,
@@ -2156,7 +2189,7 @@ fn skillCenterPreviewServerSkill(allocator: std.mem.Allocator) void {
     defer target.deinit(allocator); // only need conn + software here
 
     const conn = skillCenterTargetConn(target);
-    if (!target.is_local and conn == null) {
+    if (target.requiresSshConn() and conn == null) {
         overlays.showStatusToast(i18n.s().sc_toast_no_conn);
         allocator.free(name);
         return;
@@ -2183,7 +2216,7 @@ fn skillCenterPreviewServerSkill(allocator: std.mem.Allocator) void {
         if (local_md_path) |p| allocator.free(p);
         return;
     };
-    job.* = .{ .conn = conn, .name = name, .cmd = cmd, .local_md_path = local_md_path };
+    job.* = .{ .conn = conn, .is_wsl = target.is_wsl, .name = name, .cmd = cmd, .local_md_path = local_md_path };
     if (!session.startOp(.{ .ctx = job, .run = SkillPreviewJob.run, .destroy = SkillPreviewJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_loading)) {
         SkillPreviewJob.destroy(@ptrCast(job), allocator);
         overlays.showStatusToast(i18n.s().sc_toast_op_busy);
@@ -2219,7 +2252,7 @@ fn skillCenterArmConfirm(allocator: std.mem.Allocator, is_import: bool, target: 
 fn skillCenterDeployDecide(allocator: std.mem.Allocator, target: skill_center.Target, name: []const u8, src_hash: ?[]const u8) void {
     const session = activeSkillCenter() orelse return;
     const conn = skillCenterTargetConn(target);
-    if (!target.is_local and conn == null) {
+    if (target.requiresSshConn() and conn == null) {
         overlays.showStatusToast(i18n.s().sc_toast_no_conn);
         return;
     }
@@ -2804,7 +2837,7 @@ const SkillLibraryScanJob = struct {
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror![]skill_center.LibrarySkill {
         const job: *SkillLibraryScanJob = @ptrCast(@alignCast(ctx));
-        const outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, null);
+        const outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, null, false);
         // Move the scanned rows into the library list (frees the rows slice).
         return skill_center.libraryFromRows(allocator, outcome.rows);
     }
@@ -2826,7 +2859,7 @@ const SkillImportScanJob = struct {
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
         const job: *SkillImportScanJob = @ptrCast(@alignCast(ctx));
-        var outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, job.conn);
+        var outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, job.conn, job.target.is_wsl);
         const tgt = job.target.clone(allocator) catch {
             outcome.deinit(allocator);
             return .failed;
@@ -2856,7 +2889,7 @@ const SkillDeployScanJob = struct {
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
         const job: *SkillDeployScanJob = @ptrCast(@alignCast(ctx));
-        var outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, job.conn);
+        var outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, job.conn, job.target.is_wsl);
         // A genuinely unreachable target (SSH failure) → fail fast, as the old
         // scan-error path did; a reachable-but-empty target deploys via `.direct`.
         if (!outcome.reachable) {
@@ -2902,6 +2935,7 @@ const SkillDeployScanJob = struct {
 const SkillTransferJob = struct {
     is_import: bool,
     conn: ?ssh_connection.SshConnection,
+    is_wsl: bool,
     lib_root: []u8, // owned shell expr (POSIX path)
     tgt_root: []u8, // owned shell expr (POSIX path)
     tgt_is_local: bool,
@@ -2912,8 +2946,10 @@ const SkillTransferJob = struct {
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
         const job: *SkillTransferJob = @ptrCast(@alignCast(ctx));
-        var tctx = SkillTransferCtx{ .conn = job.conn };
-        const ok = if (remote_file.localPosixExecSupported()) blk: {
+        var tctx = SkillTransferCtx{ .conn = job.conn, .is_wsl = job.is_wsl };
+        const ok = if (job.is_wsl)
+            wslSkillTransfer(allocator, job, &tctx)
+        else if (remote_file.localPosixExecSupported()) blk: {
             // POSIX local host: the proven tar-over-scp dance (Linux/macOS).
             const lib_ep = skill_transfer.Endpoint{ .root_expr = job.lib_root, .is_local = true };
             const tgt_ep = skill_transfer.Endpoint{ .root_expr = job.tgt_root, .is_local = job.tgt_is_local };
@@ -2937,6 +2973,31 @@ const SkillTransferJob = struct {
         allocator.destroy(job);
     }
 };
+
+/// Transfer a skill to/from the default WSL distro. Both endpoints are visible
+/// to a single `wsl.exe` shell — the library on the Windows filesystem reached
+/// at `/mnt/<drive>/…`, the target under `$HOME` — so the whole transfer runs
+/// inside WSL with no host↔guest file copy: tar-create + extract over `wslExec`
+/// (see `SkillTransferCtx` and the both-remote case of `skill_transfer`).
+/// `job.lib_path` is a native Windows path that must be converted to its guest
+/// `/mnt` form before `tar -C` can read it. Returns true on full success.
+fn wslSkillTransfer(allocator: std.mem.Allocator, job: *SkillTransferJob, tctx: *SkillTransferCtx) bool {
+    const guest_lib = (platform_wsl.hostPathToGuestPathAlloc(allocator, job.lib_path) catch null) orelse {
+        tctx.noteErr("library is not on a mounted drive");
+        return false;
+    };
+    defer allocator.free(guest_lib);
+    const lib_root = skill_transfer_cmd.absRootExpr(allocator, guest_lib) catch return false;
+    defer allocator.free(lib_root);
+
+    // Both endpoints remote (is_local = false) → skill_transfer skips its copy
+    // primitive and runs tar-create + extract entirely over wslExec.
+    const lib_ep = skill_transfer.Endpoint{ .root_expr = lib_root, .is_local = false };
+    const tgt_ep = skill_transfer.Endpoint{ .root_expr = job.tgt_root, .is_local = false };
+    const from = if (job.is_import) tgt_ep else lib_ep;
+    const to = if (job.is_import) lib_ep else tgt_ep;
+    return skill_transfer.transfer(allocator, tctx.ops(), from, to, job.name) == .ok;
+}
 
 /// Transfer a skill without a POSIX shell (native Windows, no WSL):
 ///   - local↔local: a native `std.fs` directory copy with atomic swap.
@@ -3073,6 +3134,7 @@ fn nativeImportFromRemote(
 /// Background op: read one skill's SKILL.md (local or via ssh) for preview.
 const SkillPreviewJob = struct {
     conn: ?ssh_connection.SshConnection,
+    is_wsl: bool,
     name: []u8, // owned — becomes the preview title
     cmd: []u8, // owned — `cat <root>/'<name>'/'SKILL.md'`
     local_md_path: ?[]u8, // owned absolute SKILL.md path for a LOCAL target (native read)
@@ -3080,14 +3142,15 @@ const SkillPreviewJob = struct {
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
         const job: *SkillPreviewJob = @ptrCast(@alignCast(ctx));
         // Local target on a non-POSIX host (Windows): read SKILL.md natively;
-        // `cat` via localPosixExec is unavailable. Remote/posix use the shell cmd.
-        const content = if (job.conn == null and !remote_file.localPosixExecSupported())
+        // `cat` via localPosixExec is unavailable. Remote/posix/WSL use the shell
+        // cmd (WSL via `wsl.exe`, see SkillLocExec).
+        const content = if (job.conn == null and !job.is_wsl and !remote_file.localPosixExecSupported())
             blk: {
                 const p = job.local_md_path orelse return .failed;
                 break :blk skill_local_fs.readFileAllocAbsolute(allocator, p, 1024 * 1024) catch return .failed;
             }
         else blk: {
-            var le = SkillLocExec{ .conn = job.conn };
+            var le = SkillLocExec{ .conn = job.conn, .is_wsl = job.is_wsl };
             const host = le.host();
             break :blk host.exec(host.ctx, allocator, job.cmd) catch return .failed;
         };

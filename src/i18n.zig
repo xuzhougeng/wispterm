@@ -62,6 +62,7 @@ pub const Strings = struct {
 
     // —— Skill Center 面板 ——
     sc_local: []const u8,
+    sc_wsl: []const u8,
     sc_scanning: []const u8,
     sc_no_server: []const u8,
     sc_cached: []const u8,
@@ -261,6 +262,7 @@ const en = Strings{
     .pf_form_legend = "[up/down] move   [left/right/space] change   [enter] save   [esc] cancel",
 
     .sc_local = "Local",
+    .sc_wsl = "WSL",
     .sc_scanning = "No skills found. Scanning…",
     .sc_no_server = "(no server)",
     .sc_cached = "(cached)",
@@ -455,6 +457,7 @@ const zh_CN = Strings{
     .pf_form_legend = "[上/下] 切换字段   [左/右 或 空格] 切换选项   [enter] 保存   [esc] 取消",
 
     .sc_local = "本地",
+    .sc_wsl = "WSL",
     .sc_scanning = "未发现技能，扫描中…",
     .sc_no_server = "（无服务器）",
     .sc_cached = "（缓存）",
