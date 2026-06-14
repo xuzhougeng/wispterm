@@ -107,6 +107,10 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
         .underline => .underline,
         .block_hollow => .block_hollow,
     };
+    // Atlas sizes glyph UVs will be normalized against this pass (mirrors the
+    // `else 512.0` fallback rebuildCells uses when an atlas is not yet created).
+    const cur_atlas_size: u32 = if (font.g_atlas) |a| a.size else 512;
+    const cur_color_atlas_size: u32 = if (font.g_color_atlas) |a| a.size else 512;
 
     const needs_rebuild = blk: {
         if (rend.force_rebuild) {
@@ -114,6 +118,17 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
             break :blk true;
         }
         if (!rend.cells_valid) break :blk true;
+        // A shared font atlas can grow mid-frame (during this or another
+        // surface's glyph loads), resizing the GPU texture. Cell UVs were baked
+        // against the old atlas size, so without a rebuild every glyph samples
+        // the wrong place and the whole pane garbles until unrelated activity
+        // happens to trigger a rebuild. Tie rebuild to atlas size directly.
+        if (cell_geometry.needsRebuildAfterAtlasResize(
+            rend.last_atlas_size,
+            rend.last_color_atlas_size,
+            cur_atlas_size,
+            cur_color_atlas_size,
+        )) break :blk true;
         if (rend.cursor_blink_visible != rend.last_cursor_blink_visible) break :blk true;
         if (viewport_active != rend.last_viewport_active) break :blk true;
         if (terminal.rows != rend.last_rows or terminal.cols != rend.last_cols) break :blk true;
@@ -206,6 +221,11 @@ pub fn updateTerminalCells(rend: *Renderer, terminal: *ghostty_vt.Terminal) bool
         rend.last_cols = terminal.cols;
         rend.last_selection_active = selection_active;
         rend.last_kitty_dirty = screen.kitty_images.dirty;
+        // Record the atlas sizes the upcoming rebuildCells will normalize UVs
+        // against. If an atlas grows during that rebuild (loadGlyph), the next
+        // updateTerminalCells sees cur != last and rebuilds at the new size.
+        rend.last_atlas_size = cur_atlas_size;
+        rend.last_color_atlas_size = cur_color_atlas_size;
 
         // Clear dirty flags after snapshot
         terminal.flags.dirty = .{};

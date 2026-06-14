@@ -132,6 +132,13 @@ last_cols: usize,
 last_rows: usize,
 last_selection_active: bool,
 last_kitty_dirty: bool,
+/// Atlas sizes the cached cell UVs were last built against. A shared font
+/// atlas can grow mid-frame (during another surface's glyph loads), resizing
+/// the GPU texture; cells built against the old size then sample the wrong
+/// place and garble the whole pane. Comparing these to the live atlas sizes in
+/// updateTerminalCells forces a rebuild after any grow. 0 = never built.
+last_atlas_size: u32,
+last_color_atlas_size: u32,
 
 /// Cached cursor state (for lock-free rendering)
 cached_cursor_x: usize,
@@ -212,6 +219,8 @@ pub fn init(surface: *Surface) Renderer {
         .last_rows = 0,
         .last_selection_active = false,
         .last_kitty_dirty = false,
+        .last_atlas_size = 0,
+        .last_color_atlas_size = 0,
         .cached_cursor_x = 0,
         .cached_cursor_y = 0,
         .cached_cursor_style = .block,
