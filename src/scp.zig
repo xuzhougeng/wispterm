@@ -58,7 +58,7 @@ pub const TransferControl = struct {
 /// Build the scp argv up to (but excluding) the src/dst path arguments.
 /// Returns the count of arguments written into `argv_buf`. Pure/testable.
 fn buildScpFlagArgs(
-    argv_buf: *[32][]const u8,
+    argv_buf: *[40][]const u8,
     conn: *const SshConnection,
     control_path: ?[]const u8,
     legacy_protocol: bool,
@@ -171,7 +171,7 @@ fn runScpTransfer(
 ) TransferResult {
     if (control.cancelRequested()) return .cancelled;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     var argc = buildScpFlagArgs(&argv_buf, conn, control_path, legacy_protocol, recursive);
 
     argv_buf[argc] = src;
@@ -213,7 +213,7 @@ fn runScpTransfer(
 }
 
 fn appendSshExecPrefix(
-    argv_buf: *[32][]const u8,
+    argv_buf: *[40][]const u8,
     conn: *const SshConnection,
     control_path: ?[]const u8,
     dest_buf: *[280]u8,
@@ -424,7 +424,7 @@ pub fn sshExecCappedOpts(allocator: std.mem.Allocator, conn: *const SshConnectio
 
     const control_path: ?[]const u8 = null;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     var argc: usize = 0;
     argv_buf[argc] = platform_pty_command.sshExecutableName();
     argc += 1;
@@ -680,7 +680,7 @@ fn sshExecStdin(allocator: std.mem.Allocator, conn: *const SshConnection, comman
 
     const control_path: ?[]const u8 = null;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     var argc: usize = 0;
     argv_buf[argc] = platform_pty_command.sshExecutableName();
     argc += 1;
@@ -757,7 +757,7 @@ fn sshStreamUpload(
     var command_buf: [2048]u8 = undefined;
     const command = buildUploadCommand(&command_buf, remote_path, local_path) orelse return .failed;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     var dest_buf: [280]u8 = undefined;
     var argc = appendSshExecPrefix(&argv_buf, conn, control_path, &dest_buf);
     argv_buf[argc] = command;
@@ -840,7 +840,7 @@ fn sshStreamDownload(
     var command_buf: [2048]u8 = undefined;
     const command = buildDownloadCommand(&command_buf, remote_path) orelse return .failed;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     var dest_buf: [280]u8 = undefined;
     var argc = appendSshExecPrefix(&argv_buf, conn, control_path, &dest_buf);
     argv_buf[argc] = command;
@@ -895,7 +895,7 @@ fn logProcessFailure(label: []const u8, stderr_output: ?[]const u8) void {
 }
 
 fn appendSshOptions(
-    argv_buf: *[32][]const u8,
+    argv_buf: *[40][]const u8,
     start_argc: usize,
     conn: *const SshConnection,
     port_mode: PortMode,
@@ -966,6 +966,16 @@ fn appendSshOptions(
         argv_buf[argc] = path;
         argc += 1;
     }
+    // Detect a dead post-connect session (ConnectTimeout only covers connect).
+    // ~10 s to give up: ServerAliveInterval=5 x ServerAliveCountMax=2.
+    argv_buf[argc] = "-o";
+    argc += 1;
+    argv_buf[argc] = "ServerAliveInterval=5";
+    argc += 1;
+    argv_buf[argc] = "-o";
+    argc += 1;
+    argv_buf[argc] = "ServerAliveCountMax=2";
+    argc += 1;
     return argc;
 }
 
@@ -1045,7 +1055,7 @@ test "buildScpFlagArgs includes -r only for recursive transfers" {
     conn.password_auth = false;
     conn.port_len = 0;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
 
     // argv_buf is reused, so each build's slice must be asserted before the
     // next call overwrites it.
@@ -1078,11 +1088,13 @@ test "appendSshOptions key-based auth" {
     conn.password_auth = false;
     conn.port_len = 0;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, null);
-    // -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o BatchMode=yes = 6 args
-    try std.testing.expectEqual(@as(usize, 6), argc);
+    // Strict + ConnectTimeout + BatchMode (6) + ServerAliveInterval/CountMax (4) = 10
+    try std.testing.expectEqual(@as(usize, 10), argc);
     try std.testing.expectEqualStrings("BatchMode=yes", argv_buf[5]);
+    try std.testing.expectEqualStrings("ServerAliveInterval=5", argv_buf[7]);
+    try std.testing.expectEqualStrings("ServerAliveCountMax=2", argv_buf[9]);
 }
 
 test "appendSshOptions password auth" {
@@ -1090,10 +1102,10 @@ test "appendSshOptions password auth" {
     conn.password_auth = true;
     conn.port_len = 0;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, null);
-    // -o StrictHostKeyChecking -o ConnectTimeout -o PreferredAuth -o NumPasswords = 8
-    try std.testing.expectEqual(@as(usize, 8), argc);
+    // Strict + ConnectTimeout + Preferred + NumPasswords (8) + ServerAlive (4) = 12
+    try std.testing.expectEqual(@as(usize, 12), argc);
     try std.testing.expectEqualStrings("NumberOfPasswordPrompts=1", argv_buf[7]);
 }
 
@@ -1103,10 +1115,10 @@ test "appendSshOptions with ssh port" {
     @memcpy(conn.port_buf[0..4], "2222");
     conn.port_len = 4;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, null);
-    // 6 (base key-auth) + 2 (-p 2222) = 8
-    try std.testing.expectEqual(@as(usize, 8), argc);
+    // 6 (base key-auth) + 2 (-p 2222) + 4 (ServerAlive) = 12
+    try std.testing.expectEqual(@as(usize, 12), argc);
     try std.testing.expectEqualStrings("-p", argv_buf[6]);
     try std.testing.expectEqualStrings("2222", argv_buf[7]);
 }
@@ -1117,9 +1129,10 @@ test "appendSshOptions with scp port" {
     @memcpy(conn.port_buf[0..4], "2222");
     conn.port_len = 4;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     const argc = appendSshOptions(&argv_buf, 0, &conn, .scp, null);
-    try std.testing.expectEqual(@as(usize, 8), argc);
+    // 6 (base key-auth) + 2 (-P 2222) + 4 (ServerAlive) = 12
+    try std.testing.expectEqual(@as(usize, 12), argc);
     try std.testing.expectEqualStrings("-P", argv_buf[6]);
     try std.testing.expectEqualStrings("2222", argv_buf[7]);
 }
@@ -1129,9 +1142,10 @@ test "appendSshOptions with control path" {
     conn.password_auth = false;
     conn.port_len = 0;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, "ControlPath=C:/Temp/wispterm-ssh-%C");
-    try std.testing.expectEqual(@as(usize, 12), argc);
+    // 6 (base key-auth) + 6 (control path) + 4 (ServerAlive) = 16
+    try std.testing.expectEqual(@as(usize, 16), argc);
     try std.testing.expectEqualStrings("ControlMaster=auto", argv_buf[7]);
     try std.testing.expectEqualStrings("ControlPersist=10m", argv_buf[9]);
     try std.testing.expectEqualStrings("ControlPath=C:/Temp/wispterm-ssh-%C", argv_buf[11]);
@@ -1142,9 +1156,10 @@ test "appendSshOptions includes legacy algorithms when enabled" {
     conn.password_auth = false;
     conn.legacy_algorithms = true;
 
-    var argv_buf: [32][]const u8 = undefined;
+    var argv_buf: [40][]const u8 = undefined;
     const argc = appendSshOptions(&argv_buf, 0, &conn, .ssh, null);
-    try std.testing.expectEqual(@as(usize, 14), argc);
+    // 6 (base key-auth) + 8 (legacy algorithms) + 4 (ServerAlive) = 18
+    try std.testing.expectEqual(@as(usize, 18), argc);
     try std.testing.expectEqualStrings("HostkeyAlgorithms=+ssh-rsa,ssh-dss", argv_buf[7]);
     try std.testing.expectEqualStrings("PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss", argv_buf[9]);
     try std.testing.expectEqualStrings("KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1", argv_buf[11]);
