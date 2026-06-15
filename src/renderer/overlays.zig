@@ -1080,6 +1080,14 @@ fn overlayTextHeight() f32 {
     return @max(1.0, font.g_titlebar_cell_height);
 }
 
+/// Clamp an overlay box height so the centered panel never paints past the
+/// content area on very short windows. The *RowCapacity helpers already size the
+/// box to fit in the common case; this guards the degenerate case where even the
+/// header + one row + footer exceeds the window.
+fn clampOverlayBoxHeight(box_h: f32, content_height: f32) f32 {
+    return @max(1.0, @min(box_h, content_height - 32.0));
+}
+
 fn overlayLineHeight() f32 {
     return @round(@max(24.0, overlayTextHeight() + 8.0));
 }
@@ -1132,7 +1140,7 @@ fn commandPaletteLayout(window_width: f32, window_height: f32, top_offset: f32) 
     const max_rows = commandPaletteRowCapacity(content_height, base_h, row_h);
     const rendered_rows = @min(visible_count, max_rows);
     const row_area_h = row_h * @as(f32, @floatFromInt(@max(rendered_rows, 1)));
-    const box_h = @round(base_h + row_area_h);
+    const box_h = @round(clampOverlayBoxHeight(base_h + row_area_h, content_height));
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
     const row_top_px = @round(box_top_px + header_h + filter_h + 12);
@@ -1436,7 +1444,7 @@ pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
     const fit: usize = @intFromFloat(@max(1.0, @floor(usable_h / row_h)));
     const visible = @min(n, fit);
     const scroll = jupyter_picker.firstVisible(jupyter_picker.selectedIndex(), visible, n);
-    const box_h: f32 = title_h + row_h * @as(f32, @floatFromInt(visible)) + bottom_pad;
+    const box_h: f32 = clampOverlayBoxHeight(title_h + row_h * @as(f32, @floatFromInt(visible)) + bottom_pad, window_height);
     const box_x = @round((window_width - box_w) / 2);
     const box_top = @round(@max(16.0, (window_height - box_h) / 2));
     const box_y = @round(window_height - box_top - box_h);
@@ -4198,7 +4206,7 @@ fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) Session
     const row_count = sessionActiveRowCount();
     const visible_rows = sessionRowCapacity(content_height, header_h + bottom_pad, row_h, row_count);
     const scroll = sessionFirstVisibleRow(sessionActiveSelection(), visible_rows, row_count);
-    const box_h = @round(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + bottom_pad);
+    const box_h = @round(clampOverlayBoxHeight(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + bottom_pad, content_height));
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
     return .{
@@ -4706,7 +4714,7 @@ fn settingsLayout(window_width: f32, window_height: f32, top_offset: f32) Settin
     const footer_h = @round(@max(52.0, overlayTextHeight() + 28.0));
     const visible_rows = settingsRowCapacity(content_height, header_h + footer_h, row_h);
     const scroll = settingsFirstVisibleRow(visible_rows);
-    const box_h = @round(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + footer_h);
+    const box_h = @round(clampOverlayBoxHeight(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + footer_h, content_height));
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
     const row_top_px = @round(box_top_px + header_h);
@@ -5587,6 +5595,27 @@ test "overlays: session launcher mouse wheel moves selection without wrapping" {
     g_session_launcher_selected = count - 1;
     sessionLauncherHandleScroll(-1);
     try std.testing.expectEqual(count - 1, g_session_launcher_selected);
+}
+
+test "overlays: short-window overlay boxes stay within the window" {
+    // A window far too short to hold the full box must still keep the panel
+    // inside the content area (never paint past the bottom edge).
+    {
+        const layout = settingsLayout(800, 120, 0);
+        try std.testing.expect(layout.box_top_px + layout.box_h <= 120);
+    }
+    {
+        sessionLauncherOpen();
+        defer sessionLauncherClose();
+        const layout = sessionLayout(800, 120, 0);
+        try std.testing.expect(layout.box_top_px + layout.box_h <= 120);
+    }
+    {
+        commandPaletteOpen();
+        defer commandPaletteClose();
+        const layout = commandPaletteLayout(800, 120, 0);
+        try std.testing.expect(layout.box_top_px + layout.box_h <= 120);
+    }
 }
 
 test "overlays: active download toast can be clicked for interruption" {
