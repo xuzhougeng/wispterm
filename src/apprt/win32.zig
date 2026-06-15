@@ -13,6 +13,7 @@ const windows = std.os.windows;
 const platform_input = @import("../platform/input_events.zig");
 const platform_window = @import("../platform/window.zig");
 const render_diagnostics = @import("../render_diagnostics.zig");
+const uia_probe = @import("../platform/uia_probe.zig");
 const dx_present = @import("win32_dx_present.zig");
 
 // ============================================================================
@@ -186,6 +187,7 @@ const WM_ENTERSIZEMOVE: UINT = 0x0231;
 const WM_EXITSIZEMOVE: UINT = 0x0232;
 const WM_KEYDOWN: UINT = 0x0100;
 const WM_KEYUP: UINT = 0x0101;
+const WM_GETOBJECT: UINT = 0x003D;
 const WM_SYSKEYDOWN: UINT = 0x0104;
 const WM_SYSKEYUP: UINT = 0x0105;
 const WM_CHAR: UINT = 0x0102;
@@ -1695,6 +1697,13 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
     }
 
     switch (msg) {
+        WM_GETOBJECT => {
+            // UIA probe (Step 1): if a UIA client is inspecting us, answer with a
+            // barebones provider that logs the query. Only active when input
+            // diagnostics are on; otherwise falls through to DefWindowProc.
+            if (uia_probe.handleGetObject(hwnd, wParam, lParam)) |lr| return lr;
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
+        },
         WM_CLOSE => {
             w.close_requested = true;
             return 0;

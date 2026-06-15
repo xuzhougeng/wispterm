@@ -20,9 +20,15 @@ const LOG_BASENAME = "input-diagnostic.log";
 
 threadlocal var g_checked: bool = false;
 threadlocal var g_enabled: bool = false;
-threadlocal var g_file_open: bool = false;
-threadlocal var g_file: std.fs.File = undefined;
-threadlocal var g_start_ms: i64 = 0;
+
+// File state is process-global (not threadlocal): UIA providers and the IO/agent
+// paths can call into the log from threads other than the UI thread, and a
+// threadlocal file opened with truncate would race and clobber the log. A single
+// shared handle guarded by a mutex keeps every line intact and in order.
+var g_mutex: std.Thread.Mutex = .{};
+var g_file_open: bool = false;
+var g_file: std.fs.File = undefined;
+var g_start_ms: i64 = 0;
 
 /// Process-global override flipped on by the `wispterm-debug-input` config key.
 /// Mirrors render_diagnostics: visible to every thread, consulted before the
@@ -54,7 +60,10 @@ pub fn enabled() bool {
 pub fn log(comptime fmt: []const u8, args: anytype) void {
     if (!enabled()) return;
 
-    const file = ensureFile() catch |err| {
+    g_mutex.lock();
+    defer g_mutex.unlock();
+
+    const file = ensureFileLocked() catch |err| {
         std.debug.print("[input-diag] failed to open log: {}\n", .{err});
         std.debug.print("[input-diag] " ++ fmt ++ "\n", args);
         return;
@@ -82,6 +91,8 @@ pub fn logPtyWrite(tag: []const u8, data: []const u8) void {
 }
 
 pub fn close() void {
+    g_mutex.lock();
+    defer g_mutex.unlock();
     if (!g_file_open) return;
     g_file.close();
     g_file_open = false;
@@ -91,7 +102,8 @@ pub fn logFilePath(allocator: std.mem.Allocator) ![]const u8 {
     return platform_dirs.pathInConfigDir(allocator, LOG_BASENAME);
 }
 
-fn ensureFile() !*std.fs.File {
+// Caller must hold g_mutex.
+fn ensureFileLocked() !*std.fs.File {
     if (g_file_open) return &g_file;
 
     const allocator = std.heap.page_allocator;
