@@ -122,6 +122,7 @@ test {
     _ = @import("agent_history.zig");
     _ = @import("render_diagnostics.zig");
     _ = @import("input_diagnostics.zig");
+    _ = @import("input/ctrl_c_selection.zig");
     _ = @import("notification.zig");
     _ = @import("clipboard_osc52.zig");
     _ = @import("renderer/gpu/backend.zig");

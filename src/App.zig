@@ -79,6 +79,7 @@ unfocused_split_opacity: f32,
 split_divider_color: ?Config.Color,
 focus_follows_mouse: bool,
 copy_on_select: bool,
+ctrl_c_copies_selection: bool,
 right_click_action: Config.RightClickAction,
 url_open_mode: Config.UrlOpenMode,
 ssh_legacy_algorithms: bool,
@@ -248,6 +249,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .split_divider_color = cfg.@"split-divider-color",
         .focus_follows_mouse = cfg.@"focus-follows-mouse",
         .copy_on_select = cfg.@"copy-on-select",
+        .ctrl_c_copies_selection = cfg.@"ctrl-c-copies-selection",
         .right_click_action = cfg.@"right-click-action",
         .url_open_mode = cfg.@"url-open-mode",
         .ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms",
@@ -477,6 +479,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.split_divider_color = cfg.@"split-divider-color";
     self.focus_follows_mouse = cfg.@"focus-follows-mouse";
     self.copy_on_select = cfg.@"copy-on-select";
+    self.ctrl_c_copies_selection = cfg.@"ctrl-c-copies-selection";
     self.right_click_action = cfg.@"right-click-action";
     self.url_open_mode = cfg.@"url-open-mode";
     self.ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";

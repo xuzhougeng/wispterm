@@ -66,6 +66,8 @@ const scp = @import("scp.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
+const clearActiveTerminalSelection = clipboard.clearActiveTerminalSelection;
+const ctrl_c_selection = @import("input/ctrl_c_selection.zig");
 const handleConfiguredRightClick = clipboard.handleConfiguredRightClick;
 const copyAiChatToClipboard = clipboard.copyAiChatToClipboard;
 const copyAiChatCutToClipboard = clipboard.copyAiChatCutToClipboard;
@@ -2323,6 +2325,25 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         platform_input.key_insert => "\x1b[2~",
         platform_input.key_delete => "\x1b[3~",
         else => blk: {
+            // Windows-Terminal-style: Ctrl+C copies an active selection (and
+            // clears it) instead of sending SIGINT. Also neutralizes external
+            // "copy on select" tools that synthesize a Ctrl+C after a mouse
+            // selection. With no selection, Ctrl+C falls through to 0x03 below.
+            if (ctrl_c_selection.ctrlCCopiesSelection(
+                ev.key_code,
+                ev.ctrl,
+                ev.shift,
+                AppWindow.g_ctrl_c_copies_selection,
+                activeTerminalSelectionExists(),
+            )) {
+                if (input_diagnostics.enabled())
+                    input_diagnostics.log("ctrl-c: active selection -> copy (suppress SIGINT)", .{});
+                copySelectionToClipboard();
+                clearActiveTerminalSelection();
+                AppWindow.g_force_rebuild = true;
+                AppWindow.g_cells_valid = false;
+                break :blk null;
+            }
             // Ctrl+A through Ctrl+Z
             if (ev.ctrl and ev.key_code >= 0x41 and ev.key_code <= 0x5A) {
                 // Shifted Ctrl+letter chords are application shortcuts above.

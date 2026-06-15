@@ -176,6 +176,7 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     overlays.g_unfocused_split_opacity = app.unfocused_split_opacity;
     g_focus_follows_mouse = app.focus_follows_mouse;
     g_copy_on_select = app.copy_on_select;
+    g_ctrl_c_copies_selection = app.ctrl_c_copies_selection;
     g_right_click_action = app.right_click_action;
     input.g_url_open_mode = app.url_open_mode;
     g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
@@ -4495,6 +4496,7 @@ pub threadlocal var g_focus_follows_mouse: bool = false;
 threadlocal var g_agent_context_surface_id: [16]u8 = undefined;
 threadlocal var g_agent_context_surface_id_len: usize = 0;
 pub threadlocal var g_copy_on_select: bool = false;
+pub threadlocal var g_ctrl_c_copies_selection: bool = true;
 pub threadlocal var g_right_click_action: Config.RightClickAction = .copy;
 pub threadlocal var g_ssh_legacy_algorithms: bool = false;
 pub threadlocal var g_desktop_notifications: bool = true;
@@ -4963,6 +4965,7 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     overlays.g_unfocused_split_opacity = cfg.@"unfocused-split-opacity";
     g_focus_follows_mouse = cfg.@"focus-follows-mouse";
     g_copy_on_select = cfg.@"copy-on-select";
+    g_ctrl_c_copies_selection = cfg.@"ctrl-c-copies-selection";
     g_right_click_action = cfg.@"right-click-action";
     input.g_url_open_mode = cfg.@"url-open-mode";
     g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";

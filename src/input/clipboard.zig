@@ -334,6 +334,13 @@ pub fn activeTerminalSelectionExists() bool {
     return surface.selection.active;
 }
 
+/// Clear the active terminal selection (the one copySelectionToClipboard would
+/// copy). Used after a Ctrl+C copy so a second Ctrl+C interrupts as usual.
+pub fn clearActiveTerminalSelection() void {
+    const surface = selectionSurfaceForClipboard() orelse return;
+    surface.selection.active = false;
+}
+
 pub fn handleConfiguredRightClick() void {
     switch (AppWindow.g_right_click_action) {
         .ignore => {},

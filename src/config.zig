@@ -409,6 +409,12 @@ language: i18n.LanguageSetting = .auto,
 /// program (e.g. Codex) actually receives, e.g. the "selecting text emits ^C"
 /// report. Every PTY write is logged in caret notation (0x03 -> "^C").
 @"wispterm-debug-input": bool = false,
+/// When a terminal selection is active, treat Ctrl+C as "copy the selection"
+/// (and clear it) instead of sending SIGINT (0x03) — matching Windows Terminal.
+/// With no selection, Ctrl+C still interrupts as usual. Also neutralizes
+/// "copy on select" trackpad/clipboard tools that synthesize a Ctrl+C right
+/// after a mouse selection (which otherwise interrupts the running program).
+@"ctrl-c-copies-selection": bool = true,
 /// Present frames through a DXGI flip-model swapchain instead of GDI
 /// SwapBuffers (Windows only). The legacy BLT present goes through the DWM
 /// redirection surface, which on some iGPU drivers (Intel Arc, AMD) produces
@@ -995,6 +1001,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"wispterm-debug-input" = false;
         } else {
             log.warn("invalid wispterm-debug-input: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "ctrl-c-copies-selection")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"ctrl-c-copies-selection" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"ctrl-c-copies-selection" = false;
+        } else {
+            log.warn("invalid ctrl-c-copies-selection: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "wispterm-d3d-present")) {
         if (std.mem.eql(u8, value, "true")) {
@@ -2287,4 +2301,15 @@ test "config: wispterm-debug-input parses from a config line" {
     try std.testing.expect(cfg.@"wispterm-debug-input");
     cfg.applyKeyValue(allocator, "wispterm-debug-input", "false", ".");
     try std.testing.expect(!cfg.@"wispterm-debug-input");
+}
+
+test "config: ctrl-c-copies-selection defaults true and parses" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expect(cfg.@"ctrl-c-copies-selection");
+    cfg.applyKeyValue(allocator, "ctrl-c-copies-selection", "false", ".");
+    try std.testing.expect(!cfg.@"ctrl-c-copies-selection");
+    cfg.applyKeyValue(allocator, "ctrl-c-copies-selection", "true", ".");
+    try std.testing.expect(cfg.@"ctrl-c-copies-selection");
 }
