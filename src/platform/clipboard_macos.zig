@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform_dirs = @import("dirs.zig");
 
 pub const Owner = struct {
     native_window: ?usize = null,
@@ -6,6 +7,7 @@ pub const Owner = struct {
 
 extern fn wispterm_macos_clipboard_write_text(text: [*:0]const u8) bool;
 extern fn wispterm_macos_clipboard_copy_text() ?[*:0]u8;
+extern fn wispterm_macos_clipboard_image_png_path(dir: [*:0]const u8) ?[*:0]u8;
 extern fn wispterm_macos_services_free(ptr: ?*anyopaque) void;
 
 pub fn windowOwner(native_window: usize) Owner {
@@ -29,9 +31,15 @@ pub fn readText(allocator: std.mem.Allocator, owner: Owner) ?[]u8 {
 }
 
 pub fn readImageAsPngTemp(allocator: std.mem.Allocator, owner: Owner) ?[]u8 {
-    _ = allocator;
     _ = owner;
-    return null;
+    const dir = platform_dirs.tempDir(allocator) catch return null;
+    defer allocator.free(dir);
+    const dir_z = allocator.dupeZ(u8, dir) catch return null;
+    defer allocator.free(dir_z);
+
+    const raw = wispterm_macos_clipboard_image_png_path(dir_z.ptr) orelse return null;
+    defer wispterm_macos_services_free(raw);
+    return allocator.dupe(u8, std.mem.span(raw)) catch null;
 }
 
 pub fn normalizeText(allocator: std.mem.Allocator, text: []const u8) ![]u8 {

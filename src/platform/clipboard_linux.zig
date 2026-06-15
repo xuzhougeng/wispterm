@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../apprt/sdl.zig").c;
+const platform_dirs = @import("dirs.zig");
 
 pub const Owner = struct {
     native_window: ?usize = null,
@@ -28,10 +29,34 @@ pub fn readText(allocator: std.mem.Allocator, owner: Owner) ?[]u8 {
 }
 
 pub fn readImageAsPngTemp(allocator: std.mem.Allocator, owner: Owner) ?[]u8 {
-    _ = allocator;
     _ = owner;
-    // Image paste is deferred on Linux.
-    return null;
+    // Most Linux screenshot tools and browsers expose pasted images as
+    // image/png on the clipboard. Pull that target through SDL's clipboard
+    // data provider and spill it to a temp file the terminal can reference.
+    var size: usize = 0;
+    const raw = c.SDL_GetClipboardData("image/png", &size) orelse return null;
+    defer c.SDL_free(raw);
+    if (size == 0) return null;
+
+    const bytes = @as([*]const u8, @ptrCast(raw))[0..size];
+    return writeClipboardPngTemp(allocator, bytes);
+}
+
+fn writeClipboardPngTemp(allocator: std.mem.Allocator, bytes: []const u8) ?[]u8 {
+    const dir = platform_dirs.tempDir(allocator) catch return null;
+    defer allocator.free(dir);
+
+    const ts = std.time.milliTimestamp();
+    const path = std.fmt.allocPrint(allocator, "{s}/wispterm-clipboard-{d}.png", .{ dir, ts }) catch return null;
+    var keep_path = false;
+    defer if (!keep_path) allocator.free(path);
+
+    const file = std.fs.createFileAbsolute(path, .{ .truncate = true }) catch return null;
+    defer file.close();
+    file.writeAll(bytes) catch return null;
+
+    keep_path = true;
+    return path;
 }
 
 pub fn normalizeText(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
