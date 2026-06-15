@@ -1,0 +1,160 @@
+name: Publish wisptermctl Release
+
+# Builds and publishes the standalone wisptermctl CLI client (the agent terminal
+# control API client). wisptermctl is deliberately NOT bundled into the app
+# packages (see build.zig) and the macOS/Windows/Linux release workflows only
+# copy named app files, so before this workflow existed it never shipped at all
+# (e.g. v1.21.0 had no wisptermctl asset).
+#
+# wisptermctl is lean pure-Zig (imports only ctl/* + platform/dirs.zig, no
+# SDL/GUI deps), so it cross-compiles to every desktop platform from a single
+# Linux runner with no native toolchain. We build all platforms and ship them in
+# ONE zip; users extract it and pick the binary for their OS/arch.
+
+on:
+  push:
+    tags:
+      - '[0-9]*'
+      - 'v[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  wisptermctl:
+    name: Build & publish wisptermctl (all platforms)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${{ github.ref_name }}"
+          if [[ ! "$tag" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
+            echo "Release tag must match vX.Y.Z, X.Y, or X.Y.Z. Received: $tag" >&2
+            exit 1
+          fi
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cross-compile wisptermctl for every desktop platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          stage="wisptermctl-${tag}"
+          rm -rf "${stage}"
+          mkdir -p "${stage}"
+
+          # "<platform label>:<zig target triple>" — the label becomes the
+          # subfolder name inside the zip so users know which file to pick.
+          for entry in \
+            "linux-x86_64:x86_64-linux-gnu" \
+            "linux-aarch64:aarch64-linux-gnu" \
+            "macos-x86_64:x86_64-macos" \
+            "macos-aarch64:aarch64-macos" \
+            "windows-x86_64:x86_64-windows-gnu"; do
+            label="${entry%%:*}"
+            triple="${entry##*:}"
+            echo "::group::build ${label} (${triple})"
+            rm -rf zig-out
+            zig build wisptermctl -Dtarget="${triple}" -Doptimize=ReleaseSafe
+            mkdir -p "${stage}/${label}"
+            if [[ "${label}" == windows-* ]]; then
+              cp zig-out/bin/wisptermctl.exe "${stage}/${label}/wisptermctl.exe"
+            else
+              cp zig-out/bin/wisptermctl "${stage}/${label}/wisptermctl"
+              chmod +x "${stage}/${label}/wisptermctl"
+            fi
+            echo "::endgroup::"
+          done
+
+          cat > "${stage}/README.txt" <<EOF
+          wisptermctl ${tag} — standalone CLI client for the WispTerm agent
+          terminal control API.
+
+          This archive bundles every desktop build. Pick the one for your
+          OS/architecture and put it on your PATH:
+
+            linux-x86_64/wisptermctl      Linux, Intel/AMD 64-bit
+            linux-aarch64/wisptermctl     Linux, ARM 64-bit
+            macos-x86_64/wisptermctl      macOS, Intel
+            macos-aarch64/wisptermctl     macOS, Apple Silicon
+            windows-x86_64/wisptermctl.exe  Windows, 64-bit
+
+          On macOS/Linux the binary is already marked executable; if your
+          extractor dropped the bit run: chmod +x wisptermctl
+
+          Enable the API in WispTerm: set "agent-control-enabled = true" in your
+          config and restart, then run "wisptermctl panes".
+          EOF
+
+          zip -r "${stage}.zip" "${stage}"
+          ls -la "${stage}.zip"
+
+      - name: Upload wisptermctl artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisptermctl-${{ github.ref_name }}
+          path: wisptermctl-${{ github.ref_name }}.zip
+          if-no-files-found: error
+
+      - name: Publish wisptermctl to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          asset="wisptermctl-${tag}.zip"
+
+          if [[ ! -f "${asset}" ]]; then
+            echo "wisptermctl asset not found: ${asset}" >&2
+            exit 1
+          fi
+
+          asset_notes=$(printf '%s\n' \
+            'wisptermctl (agent terminal control CLI) included in this release:' \
+            '' \
+            '- `wisptermctl-<version>.zip`: all desktop builds in one archive (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x86_64). Extract it and pick the binary for your platform — see the bundled `README.txt`.' \
+            '- Enable the API in WispTerm with `agent-control-enabled = true`, restart, then run `wisptermctl panes`.' \
+            '' \
+            '> wisptermctl 是 WispTerm 智能体终端控制 API 的独立命令行客户端。该压缩包内含所有桌面平台的构建,解压后按需选择对应平台的可执行文件即可(详见包内 `README.txt`)。')
+
+          # Whichever platform workflow finishes first creates the release; the
+          # others just upload + append their notes section. Mirror that here:
+          # upload idempotently, append the wisptermctl notes only once.
+          if gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            gh release upload "${tag}" "${asset}" --clobber --repo "${GH_REPO}"
+            body="$(gh release view "${tag}" --repo "${GH_REPO}" --json body --jq '.body')"
+            if ! printf '%s' "${body}" | grep -qF 'wisptermctl (agent terminal control CLI) included in this release:'; then
+              gh release edit "${tag}" --repo "${GH_REPO}" \
+                --notes "$(printf '%s\n\n%s\n' "${body}" "${asset_notes}")"
+            fi
+          else
+            release_notes_path="release-notes/${tag}.md"
+            if [[ -f "${release_notes_path}" ]]; then
+              curated="$(cat "${release_notes_path}")"
+              curated_trimmed="$(printf '%s' "${curated}" | awk 'NF {found=1} found')"
+              if [[ -n "${curated_trimmed}" ]]; then
+                notes="$(printf '%s\n\n%s\n' "${curated}" "${asset_notes}")"
+              else
+                notes="${asset_notes}"
+              fi
+            else
+              notes="${asset_notes}"
+            fi
+            gh release create "${tag}" "${asset}" \
+              --repo "${GH_REPO}" \
+              --verify-tag \
+              --generate-notes \
+              --notes "${notes}"
+          fi
