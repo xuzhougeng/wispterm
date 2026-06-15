@@ -112,7 +112,10 @@ fn openLocked() !std.fs.File {
     const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
     g_file = f;
     g_written = 0;
-    g_start_ms = std.time.milliTimestamp();
+    // Stamp the session epoch once. A rollover reopen keeps the original start so
+    // the [+Nms] elapsed clock stays monotonic across the whole session — timing
+    // matters when this log is used to diagnose the ctrl+click freeze.
+    if (g_start_ms == 0) g_start_ms = std.time.milliTimestamp();
     var hdr: [256]u8 = undefined;
     const head = std.fmt.bufPrint(&hdr, "WispTerm debug log started ts_ms={d} version={s}\n", .{ g_start_ms, build_options.app_version }) catch "";
     f.writeAll(head) catch {};
@@ -152,6 +155,9 @@ pub fn panicFn(msg: []const u8, first_trace_addr: ?usize) noreturn {
 /// thread). Uses its own file handle.
 pub fn writeCrashReport(msg: []const u8, first_trace_addr: ?usize) void {
     const a = std.heap.page_allocator;
+    // g_dir is set once in openLocked() and never freed/reassigned, so this
+    // lock-free read from the panic path is safe (we deliberately avoid g_mutex
+    // here — a faulting thread may already hold it inside logFn).
     const dir = g_dir orelse (platform_dirs.configDir(a) catch return);
     // If g_dir was set, it's owned by the module; only free a fresh resolution.
     const owned_dir = g_dir == null;
