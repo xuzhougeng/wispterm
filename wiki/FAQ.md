@@ -53,6 +53,17 @@ Running on a discrete or external GPU avoids the slow path entirely.
 To opt out manually at any time, set `wispterm-d3d-present = false` — see
 [[Configuration]].
 
+## How do I report a crash or freeze? (Windows debug build)
+
+Every Windows release also ships a **`wispterm-windows-debug-<version>.zip`** on
+the [Releases](https://github.com/xuzhougeng/wispterm/releases) page. It is a
+console build with extra safety checks that writes a log to
+`%APPDATA%\wispterm\wispterm-debug.log` (and a `crash-<timestamp>.txt` if it
+crashes). To help diagnose a hard-to-reproduce issue — for example a crash when
+opening the WeChat connection, or a freeze when Ctrl+clicking a remote file —
+download it, reproduce the problem, then attach `wispterm-debug.log` (and any
+`crash-*.txt`) to your report.
+
 ## Why does remote mirror the local terminal size on phones?
 
 WispTerm Remote mirrors the local window because the desktop app is the source

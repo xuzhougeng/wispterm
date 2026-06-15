@@ -40,6 +40,14 @@ Windows 上 WispTerm 默认通过 DXGI flip-model 交换链呈现画面。在核
 
 也可以随时手动关闭：设置 `wispterm-d3d-present = false` —— 见 [[配置|Configuration-zh]]。
 
+## 怎么反馈崩溃或卡死？（Windows 调试版本）
+
+每个 Windows 版本在 [Releases](https://github.com/xuzhougeng/wispterm/releases) 页面都会附带一个
+**`wispterm-windows-debug-<版本>.zip`**。它是带控制台、开了额外安全检查的版本，会把日志写到
+`%APPDATA%\wispterm\wispterm-debug.log`（崩溃时还会写 `crash-<时间戳>.txt`）。遇到难以复现的问题
+—— 比如打开微信连接时崩溃，或 Ctrl+点击远程文件时卡死 —— 下载它、复现问题，然后把
+`wispterm-debug.log`（以及任何 `crash-*.txt`）附在反馈里。
+
 ## 为什么远程在手机上镜像本地终端尺寸？
 
 WispTerm Remote 镜像本地窗口，因为桌面应用是终端状态的唯一真相来源 —— 本地 PTY、VT 状态、

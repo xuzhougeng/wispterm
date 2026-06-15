@@ -88,3 +88,13 @@ Open **Skill Center** from the command center to inventory, install, and sync
 your Claude Code / Codex skills across servers — including installing the latest
 skills from a GitHub repository. Existing conversations keep the skill version
 they originally loaded, so updating does not change past chats.
+
+## How Do I Report a Crash or Freeze? (Windows Debug Build)
+
+Every Windows release also ships a **`wispterm-windows-debug-<version>.zip`** on
+the Releases page. It is a console build with extra safety checks that writes a
+log to `%APPDATA%\wispterm\wispterm-debug.log` (and a `crash-<timestamp>.txt` if
+it crashes). To help diagnose a hard-to-reproduce issue — for example a crash
+when opening the WeChat connection, or a freeze when Ctrl+clicking a remote
+file — download it, reproduce the problem, then attach `wispterm-debug.log` (and
+any `crash-*.txt`) to your report.

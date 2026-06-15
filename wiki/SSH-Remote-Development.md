@@ -13,6 +13,25 @@ download, working-directory detection, and the automatic port forwarding
 described below. Typing `ssh user@host` inside a local shell does **not** get
 these features — see [[File-Explorer]].
 
+## Persistent sessions with tmux (`tmux -CC`)
+
+If the remote host has `tmux` installed, you can connect through tmux control
+mode so the session **survives app close and network drops**. Open the session
+launcher (`Ctrl+Shift+T`) and choose **Connect with tmux (keep alive)**, then
+pick the same SSH profile you'd use for a normal session — there's no per-profile
+setup, and the same server can still be opened as a plain SSH session too.
+
+WispTerm acts as the tmux client, so there is no visible tmux status bar or
+prefix keys: remote tmux **windows become tabs** and **panes become native
+splits**. Splitting, closing a pane, or opening a new tab drives tmux on the
+server, and each pane keeps its own working directory, file preview, and
+agent-status dot.
+
+Because the session lives on the server, you can quit WispTerm (or lose your
+connection) and **reconnect later** through the same tmux entry to reattach
+where you left off. Only the server needs tmux — there is nothing to install
+locally.
+
 ## Reporting the working directory (OSC 7)
 
 Drag-and-drop uploads in SSH profile sessions use the active remote working
