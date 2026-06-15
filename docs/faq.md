@@ -32,6 +32,39 @@ since v1.19.0). It bundles a modern `conpty.dll` + `OpenConsole.exe` next to
 both files are present (`windows-conpty = auto`, the default). Set
 `windows-conpty = system` to force the OS in-box ConPTY instead.
 
+Important: **extract the whole zip to a folder and launch `wispterm.exe` from
+there** so `conpty.dll` and `OpenConsole.exe` stay next to it. If you run
+`wispterm.exe` straight from inside the zip (Explorer extracts only the exe to a
+temporary folder), those two files are left behind, WispTerm silently falls back
+to the OS in-box ConPTY, and wheel scrolling/scrollbars stop working again.
+
+## Why Does Selecting Text Interrupt the Program (^C), or "Copy" Not Actually Copy?
+
+If selecting text in the terminal interrupts the running program — a `^C`
+appears, a command is cancelled, or you get knocked out of Codex / Claude Code —
+or if a copy reports success but pasting returns your *previous* clipboard, the
+cause is almost always a **"select-to-translate" / "copy-on-selection" utility**
+running in the background. Common culprits: 有道词典 (Youdao Dictionary) 划词翻译,
+欧路词典, QTranslate, and some mouse/touchpad drivers or clipboard managers.
+
+These tools watch for a mouse text selection and then synthesize a **Ctrl+C**
+keystroke to grab the selected text. In a normal GUI app Ctrl+C means "copy",
+but **in a terminal Ctrl+C is the interrupt key (SIGINT)** — so it interrupts
+whatever is running. Many of them also restore your old clipboard afterward,
+which is why a deliberate copy from the terminal can look like it worked yet
+paste nothing.
+
+Why does this hit WispTerm and not conhost / Windows Terminal? Those expose the
+terminal's text and selection through **UI Automation (UIA)**, so the utilities
+read the selection directly and never send Ctrl+C. WispTerm does not yet provide
+a UIA text source, so the utilities fall back to the Ctrl+C method.
+
+Fix: turn off the tool's "copy on selection" / 划词 feature (for 有道词典:
+设置 → 取词划词 → disable 划词翻译), add WispTerm to its exclusions, or quit it.
+To confirm a background tool is responsible, select text with **Shift + arrow
+keys** (keyboard only, no mouse): if that does *not* trigger the interrupt, a
+pointing-device/selection utility is the cause.
+
 ## Why Is WispTerm Laggy or Black on a Low-Spec PC (Weak Integrated GPU)?
 
 On Windows, WispTerm presents frames through a DXGI flip-model swapchain by
