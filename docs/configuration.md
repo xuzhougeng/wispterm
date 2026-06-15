@@ -118,7 +118,9 @@ the settings page; it leaves Quake mode, your saved AI profiles, and custom
 Open the command center and run **Load OpenSSH Config** to import compatible
 entries from `~/.ssh/config` into WispTerm's SSH profiles. WispTerm imports
 `Host`, `HostName`, `User`, `Port`, and `ProxyJump`, skips wildcard host
-patterns, and does not import passwords.
+patterns, and does not import passwords. Imported profiles use the
+`credentials` auth method, so OpenSSH config, default keys, ssh-agent, and
+platform credential providers remain in charge of authentication.
 
 ## Keyboard Shortcuts
 

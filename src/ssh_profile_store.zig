@@ -30,10 +30,14 @@ pub fn connectionFromProfile(profile: *const profile_codec.SshProfile, legacy_al
     const port = profile_codec.profileField(profile, .port);
     const password = profile_codec.profileField(profile, .password);
     const proxy_jump = profile_codec.profileField(profile, .proxy_jump);
+    const auth_method = ssh_connection.SshAuthMethod.parse(profile_codec.profileField(profile, .auth_method)) orelse return null;
+    const identity_file = profile_codec.profileField(profile, .identity_file);
     if (host.len == 0 or user.len == 0) return null;
     if (!isSshTokenSafe(host) or !isSshTokenSafe(user)) return null;
     if (port.len > 0 and !isPortTokenSafe(port)) return null;
     if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return null;
+    if (auth_method == .password and password.len == 0) return null;
+    if (auth_method == .key and !isIdentityFileSafe(identity_file)) return null;
 
     var conn: ssh_connection.SshConnection = .{};
     conn.host_len = copyBounded(conn.host_buf[0..], host);
@@ -41,7 +45,9 @@ pub fn connectionFromProfile(profile: *const profile_codec.SshProfile, legacy_al
     conn.port_len = copyBounded(conn.port_buf[0..], port);
     conn.password_len = copyBounded(conn.password_buf[0..], password);
     conn.proxy_jump_len = copyBounded(conn.proxy_jump_buf[0..], proxy_jump);
-    conn.password_auth = password.len > 0;
+    conn.identity_file_len = copyBounded(conn.identity_file_buf[0..], identity_file);
+    conn.auth_method = auth_method;
+    conn.password_auth = conn.usesPasswordAuth();
     conn.legacy_algorithms = legacy_algorithms;
     return conn;
 }
@@ -109,6 +115,14 @@ fn isPortTokenSafe(value: []const u8) bool {
     return true;
 }
 
+fn isIdentityFileSafe(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |ch| {
+        if (ch < 0x20 or ch == 0x7f) return false;
+    }
+    return true;
+}
+
 fn copyBounded(dest: []u8, text: []const u8) usize {
     const n = @min(dest.len, text.len);
     @memcpy(dest[0..n], text[0..n]);
@@ -144,8 +158,22 @@ test "ssh_profile_store: resolves connection from encoded ssh_hosts content" {
     try std.testing.expectEqualStrings("2222", conn.port());
     try std.testing.expectEqualStrings("secret", conn.password());
     try std.testing.expectEqualStrings("jump@example.com:22", conn.proxyJump());
+    try std.testing.expectEqual(ssh_connection.SshAuthMethod.password, conn.auth_method);
     try std.testing.expect(conn.password_auth);
     try std.testing.expect(conn.legacy_algorithms);
+}
+
+test "ssh_profile_store: resolves key-auth connection from encoded ssh_hosts content" {
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    defer content.deinit(std.testing.allocator);
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{
+        "keybox", "key.example", "alice", "", "22", "", "key", "C:/Users/alice/.ssh/id_ed25519",
+    });
+
+    const conn = findConnectionInContent(content.items, "keybox", false) orelse return error.ExpectedConnection;
+    try std.testing.expectEqual(ssh_connection.SshAuthMethod.key, conn.auth_method);
+    try std.testing.expectEqualStrings("C:/Users/alice/.ssh/id_ed25519", conn.identityFile());
+    try std.testing.expect(!conn.password_auth);
 }
 
 test "ssh_profile_store: rejects unsafe profile fields" {

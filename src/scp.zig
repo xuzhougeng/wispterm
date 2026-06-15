@@ -104,7 +104,7 @@ fn transferImpl(allocator: std.mem.Allocator, conn: *const SshConnection, src: [
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return .spawn_error;
         env_map = std.process.getEnvMap(allocator) catch return .spawn_error;
         if (env_map) |*map| {
@@ -418,7 +418,7 @@ pub fn sshExecCappedOpts(allocator: std.mem.Allocator, conn: *const SshConnectio
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return null;
         env_map = std.process.getEnvMap(allocator) catch return null;
         if (env_map) |*map| {
@@ -674,7 +674,7 @@ fn sshExecStdin(allocator: std.mem.Allocator, conn: *const SshConnection, comman
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return false;
         env_map = std.process.getEnvMap(allocator) catch return false;
         if (env_map) |*map| {
@@ -914,7 +914,7 @@ fn appendSshOptions(
     argc += 1;
     argv_buf[argc] = "ConnectTimeout=8";
     argc += 1;
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         argv_buf[argc] = "-o";
         argc += 1;
         argv_buf[argc] = "PreferredAuthentications=publickey,password,keyboard-interactive";
@@ -927,6 +927,12 @@ fn appendSshOptions(
         argv_buf[argc] = "-o";
         argc += 1;
         argv_buf[argc] = "BatchMode=yes";
+        argc += 1;
+    }
+    if (conn.usesIdentityFile()) {
+        argv_buf[argc] = "-i";
+        argc += 1;
+        argv_buf[argc] = conn.identityFile();
         argc += 1;
     }
     if (conn.legacy_algorithms) {

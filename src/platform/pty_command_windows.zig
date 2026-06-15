@@ -1,5 +1,6 @@
 const std = @import("std");
 const windows = std.os.windows;
+const ssh_connection = @import("../ssh_connection.zig");
 
 const PseudoConsoleHandle = windows.HANDLE;
 pub const CommandLineBuffer = [256]u16;
@@ -22,6 +23,8 @@ pub const SshCommandOptions = struct {
     user: []const u8,
     host: []const u8,
     port: []const u8 = "",
+    auth_method: ssh_connection.SshAuthMethod = .credentials,
+    identity_file: []const u8 = "",
     password_auth: bool = false,
     legacy_algorithms: bool = false,
     proxy_jump: []const u8 = "",
@@ -353,27 +356,17 @@ pub fn scpExecutableName() []const u8 {
 }
 
 pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
-    // ServerAlive* prevents long-idle interactive sessions from hanging behind
-    // NAT/firewall drops while preserving the existing OpenSSH invocation shape.
-    const auth_flags = if (options.password_auth)
-        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no "
-    else
-        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ";
-    const legacy_flags = if (options.legacy_algorithms)
-        "-o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc "
-    else
-        "";
-    var proxy_buf: [320]u8 = undefined;
-    const proxy_flags = if (options.proxy_jump.len > 0)
-        (std.fmt.bufPrint(&proxy_buf, "-o ProxyJump={s} ", .{options.proxy_jump}) catch return null)
-    else
-        "";
-
-    const base = (if (options.port.len > 0)
-        std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}-p {s} {s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.port, options.user, options.host }) catch null
-    else
-        std.fmt.bufPrint(buf, "cmd.exe /k ssh.exe -tt {s}{s}{s}{s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.user, options.host }) catch null) orelse return null;
-    var pos = base.len;
+    var pos: usize = 0;
+    if (!appendAscii(buf, &pos, "cmd.exe /k ssh.exe -tt ")) return null;
+    if (!appendSshOptionString(buf, &pos, options, .interactive)) return null;
+    if (options.port.len > 0) {
+        if (!appendAscii(buf, &pos, "-p ")) return null;
+        if (!appendAscii(buf, &pos, options.port)) return null;
+        if (!appendAscii(buf, &pos, " ")) return null;
+    }
+    if (!appendAscii(buf, &pos, options.user)) return null;
+    if (!appendAscii(buf, &pos, "@")) return null;
+    if (!appendAscii(buf, &pos, options.host)) return null;
     if (options.remote_command.len > 0) {
         if (!appendAscii(buf, &pos, " ")) return null;
         if (!appendCommandLineQuotedArg(buf, &pos, options.remote_command)) return null;
@@ -382,33 +375,62 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
 }
 
 pub fn sshControlCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
+    var pos: usize = 0;
     // Hidden controller transport: launch ssh.exe directly so process exit
     // means the transport is really gone. Interactive SSH tabs keep the cmd.exe
     // wrapper above so the user sees a normal shell after ssh exits.
-    const auth_flags = if (options.password_auth)
-        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 "
-    else
-        "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o BatchMode=yes ";
-    const legacy_flags = if (options.legacy_algorithms)
-        "-o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc "
-    else
-        "";
-    var proxy_buf: [320]u8 = undefined;
-    const proxy_flags = if (options.proxy_jump.len > 0)
-        (std.fmt.bufPrint(&proxy_buf, "-o ProxyJump={s} ", .{options.proxy_jump}) catch return null)
-    else
-        "";
-
-    const base = (if (options.port.len > 0)
-        std.fmt.bufPrint(buf, "ssh.exe -tt {s}{s}{s}-p {s} {s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.port, options.user, options.host }) catch null
-    else
-        std.fmt.bufPrint(buf, "ssh.exe -tt {s}{s}{s}{s}@{s}", .{ auth_flags, legacy_flags, proxy_flags, options.user, options.host }) catch null) orelse return null;
-    var pos = base.len;
+    if (!appendAscii(buf, &pos, "ssh.exe -tt ")) return null;
+    if (!appendSshOptionString(buf, &pos, options, .control)) return null;
+    if (options.port.len > 0) {
+        if (!appendAscii(buf, &pos, "-p ")) return null;
+        if (!appendAscii(buf, &pos, options.port)) return null;
+        if (!appendAscii(buf, &pos, " ")) return null;
+    }
+    if (!appendAscii(buf, &pos, options.user)) return null;
+    if (!appendAscii(buf, &pos, "@")) return null;
+    if (!appendAscii(buf, &pos, options.host)) return null;
     if (options.remote_command.len > 0) {
         if (!appendAscii(buf, &pos, " ")) return null;
         if (!appendCommandLineQuotedArg(buf, &pos, options.remote_command)) return null;
     }
     return buf[0..pos];
+}
+
+const SshInvocationMode = enum { interactive, control };
+
+fn effectiveSshAuthMethod(options: SshCommandOptions) ssh_connection.SshAuthMethod {
+    if (options.password_auth) return .password;
+    return options.auth_method;
+}
+
+fn appendSshOptionString(buf: []u8, pos: *usize, options: SshCommandOptions, mode: SshInvocationMode) bool {
+    // ServerAlive* prevents long-idle interactive sessions from hanging behind
+    // NAT/firewall drops while preserving the existing OpenSSH invocation shape.
+    if (!appendAscii(buf, pos, "-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 ")) return false;
+    const auth_method = effectiveSshAuthMethod(options);
+    switch (auth_method) {
+        .password => {
+            if (!appendAscii(buf, pos, "-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no ")) return false;
+            if (mode == .control and !appendAscii(buf, pos, "-o NumberOfPasswordPrompts=1 ")) return false;
+        },
+        .key, .credentials => {
+            if (mode == .control and !appendAscii(buf, pos, "-o BatchMode=yes ")) return false;
+        },
+    }
+    if (options.legacy_algorithms) {
+        if (!appendAscii(buf, pos, "-o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc ")) return false;
+    }
+    if (options.proxy_jump.len > 0) {
+        if (!appendAscii(buf, pos, "-o ProxyJump=")) return false;
+        if (!appendAscii(buf, pos, options.proxy_jump)) return false;
+        if (!appendAscii(buf, pos, " ")) return false;
+    }
+    if (auth_method == .key and options.identity_file.len > 0) {
+        if (!appendAscii(buf, pos, "-i ")) return false;
+        if (!appendCommandLineQuotedArg(buf, pos, options.identity_file)) return false;
+        if (!appendAscii(buf, pos, " ")) return false;
+    }
+    return true;
 }
 
 pub fn launchKindForCommand(command: CommandLine) LaunchKind {
@@ -722,6 +744,16 @@ test "windows pty command builds SSH interactive command lines" {
             .proxy_jump = "admin@jump.test:2200",
         }).?,
     );
+
+    try std.testing.expectEqualStrings(
+        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test",
+        sshInteractiveCommand(&buf, .{
+            .user = "user",
+            .host = "example.test",
+            .auth_method = .key,
+            .identity_file = "C:/Users/user/.ssh/id_ed25519",
+        }).?,
+    );
 }
 
 test "windows pty command builds direct SSH control command lines" {
@@ -743,6 +775,17 @@ test "windows pty command builds direct SSH control command lines" {
             .user = "user",
             .host = "example.test",
             .password_auth = true,
+            .remote_command = "tmux -CC new -A -s wispterm-test",
+        }).?,
+    );
+
+    try std.testing.expectEqualStrings(
+        "ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o BatchMode=yes -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test \"tmux -CC new -A -s wispterm-test\"",
+        sshControlCommand(&buf, .{
+            .user = "user",
+            .host = "example.test",
+            .auth_method = .key,
+            .identity_file = "C:/Users/user/.ssh/id_ed25519",
             .remote_command = "tmux -CC new -A -s wispterm-test",
         }).?,
     );

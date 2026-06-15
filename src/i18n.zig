@@ -164,6 +164,8 @@ pub const Strings = struct {
     sl_ssh_password: []const u8,
     sl_ssh_port: []const u8,
     sl_ssh_jump_host: []const u8,
+    sl_ssh_auth_method: []const u8,
+    sl_ssh_identity_file: []const u8,
     sl_mode_chat: []const u8,
     sl_default_suffix: []const u8,
 
@@ -361,6 +363,8 @@ const en = Strings{
     .sl_ssh_password = "Password",
     .sl_ssh_port = "Port",
     .sl_ssh_jump_host = "Jump host",
+    .sl_ssh_auth_method = "Auth method",
+    .sl_ssh_identity_file = "Identity file",
     .sl_mode_chat = "Chat",
     .sl_default_suffix = " (default)",
 
@@ -554,6 +558,8 @@ const zh_CN = Strings{
     .sl_ssh_password = "密码",
     .sl_ssh_port = "端口",
     .sl_ssh_jump_host = "跳板机",
+    .sl_ssh_auth_method = "认证方式",
+    .sl_ssh_identity_file = "密钥文件",
     .sl_mode_chat = "对话",
     .sl_default_suffix = "（默认）",
 

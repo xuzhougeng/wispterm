@@ -472,6 +472,8 @@ fn sshConnectionsEqual(a: *const ssh_connection.SshConnection, b: *const ssh_con
         std.mem.eql(u8, a.host(), b.host()) and
         std.mem.eql(u8, a.port(), b.port()) and
         std.mem.eql(u8, a.password(), b.password()) and
+        std.mem.eql(u8, a.identityFile(), b.identityFile()) and
+        a.auth_method == b.auth_method and
         a.password_auth == b.password_auth and
         a.legacy_algorithms == b.legacy_algorithms;
 }

@@ -332,11 +332,13 @@ fn splitSshCommand(
 ) ?platform_pty_command.OwnedCommandLine {
     const conn = surface.ssh_connection orelse return null;
 
-    var command_buf: [512]u8 = undefined;
+    var command_buf: [8192]u8 = undefined;
     const command = platform_pty_command.sshInteractiveCommand(command_buf[0..], .{
         .user = conn.user(),
         .host = conn.host(),
         .port = conn.port(),
+        .auth_method = conn.auth_method,
+        .identity_file = conn.identityFile(),
         .password_auth = conn.password_auth,
         .legacy_algorithms = conn.legacy_algorithms,
         .proxy_jump = conn.proxyJump(),
@@ -1058,7 +1060,7 @@ fn splitFocusedSurfaceWithCommand(
 
     if (inherit_ssh_connection) {
         if (focused_surface.ssh_connection) |conn| {
-            new_surface.setSshConnection(conn.user(), conn.host(), conn.port(), conn.password(), conn.proxyJump(), conn.password_auth, conn.legacy_algorithms);
+            new_surface.setSshConnectionValue(conn);
         }
     }
 

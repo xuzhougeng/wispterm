@@ -136,7 +136,7 @@ pub fn sshExecCaptureFull(allocator: std.mem.Allocator, conn: anytype, command: 
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return error.SpawnFailed;
         env_map = try std.process.getEnvMap(allocator);
         if (env_map) |*map| {
@@ -159,7 +159,7 @@ pub fn sshExecCaptureFull(allocator: std.mem.Allocator, conn: anytype, command: 
     argc += 1;
     argv_buf[argc] = "ConnectTimeout=8";
     argc += 1;
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         argv_buf[argc] = "-o";
         argc += 1;
         argv_buf[argc] = "PreferredAuthentications=publickey,password,keyboard-interactive";
@@ -172,6 +172,12 @@ pub fn sshExecCaptureFull(allocator: std.mem.Allocator, conn: anytype, command: 
         argv_buf[argc] = "-o";
         argc += 1;
         argv_buf[argc] = "BatchMode=yes";
+        argc += 1;
+    }
+    if (conn.usesIdentityFile()) {
+        argv_buf[argc] = "-i";
+        argc += 1;
+        argv_buf[argc] = conn.identityFile();
         argc += 1;
     }
     if (conn.legacy_algorithms) {

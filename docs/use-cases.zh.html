@@ -66,10 +66,10 @@
             <div class="tp-tab">ssh: lab</div>
           </div>
           <div class="tp-body">
-            <pre><span class="prompt">你</span> <span class="cmd">帮我创建一个 SSH profile：lab，alice@192.0.2.10:2222。</span>
+            <pre><span class="prompt">你</span> <span class="cmd">帮我创建一个 SSH profile：lab，alice@192.0.2.10:2222，用我的 SSH 密钥。</span>
 <span class="muted">WispTerm 工具请求</span>
-<span class="branch">ssh_profile_save</span> <span class="muted">name=lab host=192.0.2.10 user=alice port=2222 password=&lt;redacted&gt;</span>
-<span class="ok">saved profile="lab" password_saved=true</span>
+<span class="branch">ssh_profile_save</span> <span class="muted">name=lab host=192.0.2.10 user=alice port=2222 auth_method=key identity_file=~/.ssh/id_ed25519</span>
+<span class="ok">saved profile="lab" auth_method="key" identity_file_saved=true</span>
 
 <span class="branch">ssh_profile_connect</span> <span class="muted">profile_name=lab</span>
 <span class="ok">connected surface_id=03 tab=2</span></pre>
@@ -85,21 +85,21 @@
         <div class="feature-grid">
           <div class="feature">
             <h3>怎么说</h3>
-            <p>告诉 Agent profile 名称、host、user、port，以及是否要保存 password。它会调用 <code>ssh_profile_save</code>，不再靠手写 profile 文件。</p>
+            <p>告诉 Agent profile 名称、host、user、port，以及认证方式：password、key 或 credentials。它会调用 <code>ssh_profile_save</code>，不再靠手写 profile 文件。</p>
           </div>
           <div class="feature">
             <h3>保存到哪里</h3>
             <p>profile 会进入 WispTerm 正常的 SSH server 列表。已有 profile 会按名称或 host 更新；新 profile 默认端口是 <code>22</code>。</p>
           </div>
           <div class="feature">
-            <h3>密码处理</h3>
-            <p>审批文本和工具输出都会隐藏密码原文。如果更新已有 profile 时不传 password，已有密码会被保留。</p>
+            <h3>凭证处理</h3>
+            <p>password 会在审批文本和工具输出里隐藏原文。key 方式保存私钥路径；credentials 方式交给 OpenSSH config、默认密钥、ssh-agent 或平台凭证处理。</p>
           </div>
         </div>
 <pre class="code-block"><code>可以这样问：
 帮我创建一个 SSH profile，名字叫 lab：
 host 192.0.2.10，user alice，port 2222。
-保存这个密码，然后连接它。
+用 auth_method key，identity_file ~/.ssh/id_ed25519，然后连接它。
 
 Agent 会用：
 ssh_profile_save

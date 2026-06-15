@@ -209,8 +209,9 @@ When changing SSH/SCP code paths (`src/scp.zig`, SSH clipboard image paste,
 remote file explorer listing/upload/download, or SSH session metadata), test
 against the existing real SSH profile in `%APPDATA%\wispterm\ssh_hosts` whenever
 it is available. The profile fields are hex encoded as
-`name, host, user, password, port`; decode them locally for the test, but never
-print or commit the password. At minimum, verify:
+`name, host, user, password, port, proxy_jump, auth_method, identity_file`;
+decode them locally for the test, but never print or commit passwords or private
+key material. At minimum, verify:
 
 ```powershell
 ssh.exe ... user@host pwd

@@ -3178,12 +3178,10 @@ const SkillPreviewJob = struct {
         // Local target on a non-POSIX host (Windows): read SKILL.md natively;
         // `cat` via localPosixExec is unavailable. Remote/posix/WSL use the shell
         // cmd (WSL via `wsl.exe`, see SkillLocExec).
-        const content = if (job.conn == null and !job.is_wsl and !remote_file.localPosixExecSupported())
-            blk: {
-                const p = job.local_md_path orelse return .failed;
-                break :blk skill_local_fs.readFileAllocAbsolute(allocator, p, 1024 * 1024) catch return .failed;
-            }
-        else blk: {
+        const content = if (job.conn == null and !job.is_wsl and !remote_file.localPosixExecSupported()) blk: {
+            const p = job.local_md_path orelse return .failed;
+            break :blk skill_local_fs.readFileAllocAbsolute(allocator, p, 1024 * 1024) catch return .failed;
+        } else blk: {
             var le = SkillLocExec{ .conn = job.conn, .is_wsl = job.is_wsl };
             const host = le.host();
             break :blk host.exec(host.ctx, allocator, job.cmd) catch return .failed;
@@ -4332,7 +4330,7 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
     const cwd = getActiveCwd(&cwd_buf);
     const surface = tab.splitFocusedReturningSurface(allocator, direction, font.cell_width, font.cell_height, g_cursor_style, g_cursor_blink, cwd) orelse return null;
     if (surface.ssh_connection) |conn| {
-        if (conn.password_auth) {
+        if (conn.usesPasswordAuth()) {
             const pw = conn.password();
             if (pw.len > 0)
                 overlays.scheduleSshPasswordForSurface(surface, pw);

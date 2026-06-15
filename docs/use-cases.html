@@ -66,10 +66,10 @@
             <div class="tp-tab">ssh: lab</div>
           </div>
           <div class="tp-body">
-            <pre><span class="prompt">You</span> <span class="cmd">Create an SSH profile named lab for alice@192.0.2.10:2222.</span>
+            <pre><span class="prompt">You</span> <span class="cmd">Create an SSH profile named lab for alice@192.0.2.10:2222 using my SSH key.</span>
 <span class="muted">WispTerm tool request</span>
-<span class="branch">ssh_profile_save</span> <span class="muted">name=lab host=192.0.2.10 user=alice port=2222 password=&lt;redacted&gt;</span>
-<span class="ok">saved profile="lab" password_saved=true</span>
+<span class="branch">ssh_profile_save</span> <span class="muted">name=lab host=192.0.2.10 user=alice port=2222 auth_method=key identity_file=~/.ssh/id_ed25519</span>
+<span class="ok">saved profile="lab" auth_method="key" identity_file_saved=true</span>
 
 <span class="branch">ssh_profile_connect</span> <span class="muted">profile_name=lab</span>
 <span class="ok">connected surface_id=03 tab=2</span></pre>
@@ -85,21 +85,21 @@
         <div class="feature-grid">
           <div class="feature">
             <h3>What to ask</h3>
-            <p>Tell the Agent the profile name, host, user, port, and whether a password should be saved. It will call <code>ssh_profile_save</code> instead of editing files by hand.</p>
+            <p>Tell the Agent the profile name, host, user, port, and auth method: password, key, or credentials. It will call <code>ssh_profile_save</code> instead of editing files by hand.</p>
           </div>
           <div class="feature">
             <h3>What gets saved</h3>
             <p>The profile is stored in WispTerm's normal SSH profile list. Existing profiles are updated by name or host, and new profiles default to port <code>22</code>.</p>
           </div>
           <div class="feature">
-            <h3>Password handling</h3>
-            <p>Approval text and tool output redact the password. If you omit the password while updating an existing profile, the saved password is preserved.</p>
+            <h3>Secret handling</h3>
+            <p>Password values are redacted in approval text and tool output. Key profiles store the private key path, while credentials profiles use OpenSSH config, default keys, ssh-agent, or platform credentials.</p>
           </div>
         </div>
 <pre class="code-block"><code>Ask:
 Create an SSH profile named lab:
 host 192.0.2.10, user alice, port 2222.
-Save this password, then connect it.
+Use auth_method key with identity_file ~/.ssh/id_ed25519, then connect it.
 
 Agent tools:
 ssh_profile_save

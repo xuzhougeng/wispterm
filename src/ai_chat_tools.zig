@@ -115,6 +115,8 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
             .password = jsonStringArg(args.value, "password") orelse "",
             .port = jsonStringArg(args.value, "port") orelse "",
             .proxy_jump = jsonStringArg(args.value, "proxy_jump") orelse "",
+            .auth_method = jsonStringArg(args.value, "auth_method") orelse "",
+            .identity_file = jsonStringArg(args.value, "identity_file") orelse "",
         });
     }
     if (std.mem.eql(u8, call.name, "ssh_profile_connect")) {
@@ -1685,13 +1687,15 @@ fn waitForSentinelResult(
 pub fn sshProfileSaveApprovalText(allocator: std.mem.Allocator, args: SshProfileSaveArgs) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "name=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" proxy_jump=\"{s}\" password={s}",
+        "name=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" proxy_jump=\"{s}\" auth_method=\"{s}\" identity_file=\"{s}\" password={s}",
         .{
             if (args.name.len > 0) args.name else "<default>",
             args.host,
             args.user,
             if (args.port.len > 0) args.port else "22",
             if (args.proxy_jump.len > 0) args.proxy_jump else "<none>",
+            if (args.auth_method.len > 0) args.auth_method else "<auto>",
+            if (args.identity_file.len > 0) args.identity_file else "<none>",
             if (args.password.len > 0) "<redacted>" else "<empty>",
         },
     );
@@ -1718,14 +1722,16 @@ fn sshProfileSaveTool(ctx: *ToolContext, args: SshProfileSaveArgs) ![]u8 {
 
     const out = try std.fmt.allocPrint(
         ctx.allocator,
-        "saved profile=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" updated_existing={} password_saved={}. Use ssh_profile_connect with profile_name=\"{s}\" to open it.",
+        "saved profile=\"{s}\" host=\"{s}\" user=\"{s}\" port=\"{s}\" auth_method=\"{s}\" updated_existing={} password_saved={} identity_file_saved={}. Use ssh_profile_connect with profile_name=\"{s}\" to open it.",
         .{
             saved.name,
             saved.host,
             saved.user,
             saved.port,
+            saved.auth_method,
             saved.updated_existing,
             saved.password_saved,
+            saved.identity_file_saved,
             saved.name,
         },
     );

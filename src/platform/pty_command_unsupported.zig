@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const process_shared = @import("process_shared.zig");
+const ssh_connection = @import("../ssh_connection.zig");
 
 pub const CommandLineBuffer = [256]u8;
 pub const CwdBuffer = [260]u8;
@@ -22,6 +23,8 @@ pub const SshCommandOptions = struct {
     user: []const u8,
     host: []const u8,
     port: []const u8 = "",
+    auth_method: ssh_connection.SshAuthMethod = .credentials,
+    identity_file: []const u8 = "",
     password_auth: bool = false,
     legacy_algorithms: bool = false,
     proxy_jump: []const u8 = "",
@@ -223,17 +226,27 @@ pub fn scpExecutableName() []const u8 {
 }
 
 pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
-    var proxy_buf: [320]u8 = undefined;
-    const proxy = if (options.proxy_jump.len > 0)
-        (std.fmt.bufPrint(&proxy_buf, "-o ProxyJump={s} ", .{options.proxy_jump}) catch return null)
-    else
-        "";
-
-    const base = (if (options.port.len > 0)
-        std.fmt.bufPrint(buf, "ssh -tt {s}-p {s} {s}@{s}", .{ proxy, options.port, options.user, options.host }) catch null
-    else
-        std.fmt.bufPrint(buf, "ssh -tt {s}{s}@{s}", .{ proxy, options.user, options.host }) catch null) orelse return null;
-    var pos = base.len;
+    var pos: usize = 0;
+    if (!appendAscii(buf, &pos, "ssh -tt ")) return null;
+    if (options.proxy_jump.len > 0) {
+        if (!appendAscii(buf, &pos, "-o ProxyJump=")) return null;
+        if (!appendAscii(buf, &pos, options.proxy_jump)) return null;
+        if (!appendAscii(buf, &pos, " ")) return null;
+    }
+    const auth_method: ssh_connection.SshAuthMethod = if (options.password_auth) .password else options.auth_method;
+    if (auth_method == .key and options.identity_file.len > 0) {
+        if (!appendAscii(buf, &pos, "-i ")) return null;
+        if (!appendPosixSingleQuotedArg(buf, &pos, options.identity_file)) return null;
+        if (!appendAscii(buf, &pos, " ")) return null;
+    }
+    if (options.port.len > 0) {
+        if (!appendAscii(buf, &pos, "-p ")) return null;
+        if (!appendAscii(buf, &pos, options.port)) return null;
+        if (!appendAscii(buf, &pos, " ")) return null;
+    }
+    if (!appendAscii(buf, &pos, options.user)) return null;
+    if (!appendAscii(buf, &pos, "@")) return null;
+    if (!appendAscii(buf, &pos, options.host)) return null;
     if (options.remote_command.len > 0) {
         if (!appendAscii(buf, &pos, " ")) return null;
         if (!appendPosixSingleQuotedArg(buf, &pos, options.remote_command)) return null;

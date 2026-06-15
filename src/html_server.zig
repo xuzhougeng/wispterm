@@ -386,7 +386,7 @@ fn spawnSshCommand(
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return null;
         env_map = std.process.getEnvMap(allocator) catch return null;
         if (env_map) |*map| {
@@ -405,11 +405,17 @@ fn spawnSshCommand(
     appendSshOption(&argv_buf, &argc, "ConnectTimeout=8");
     appendSshOption(&argv_buf, &argc, "ServerAliveInterval=60");
     appendSshOption(&argv_buf, &argc, "ServerAliveCountMax=3");
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         appendSshOption(&argv_buf, &argc, "PreferredAuthentications=publickey,password,keyboard-interactive");
         appendSshOption(&argv_buf, &argc, "NumberOfPasswordPrompts=1");
     } else {
         appendSshOption(&argv_buf, &argc, "BatchMode=yes");
+    }
+    if (conn.usesIdentityFile()) {
+        argv_buf[argc] = "-i";
+        argc += 1;
+        argv_buf[argc] = conn.identityFile();
+        argc += 1;
     }
     var proxy_opt_buf: [288]u8 = undefined;
     if (conn.proxyJump().len > 0) {

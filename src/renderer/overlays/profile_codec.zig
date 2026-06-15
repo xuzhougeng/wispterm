@@ -6,9 +6,10 @@
 //! re-exports these symbols so its call sites are unchanged.
 const std = @import("std");
 const ai_chat_protocol = @import("../../ai_chat_protocol.zig");
+const ssh_connection = @import("../../ssh_connection.zig");
 
-pub const SSH_FIELD_COUNT = 6;
-pub const SSH_FIELD_MAX = 128;
+pub const SSH_FIELD_COUNT = 8;
+pub const SSH_FIELD_MAX = ssh_connection.IDENTITY_FILE_MAX;
 pub const AI_FIELD_COUNT = 12;
 pub const AI_FIELD_MAX = 8192;
 
@@ -19,6 +20,8 @@ pub const SshField = enum(usize) {
     password = 3,
     port = 4,
     proxy_jump = 5,
+    auth_method = 6,
+    identity_file = 7,
 };
 
 pub const AiField = enum(usize) {
@@ -64,7 +67,12 @@ pub fn makeSshProfile(name: []const u8, host: []const u8, user: []const u8, port
     copySshProfileField(&profile, .ip, host);
     copySshProfileField(&profile, .user, user);
     copySshProfileField(&profile, .port, port);
+    copySshProfileField(&profile, .auth_method, ssh_connection.SshAuthMethod.credentials.fieldValue());
     return profile;
+}
+
+pub fn defaultSshFormAuthMethod() []const u8 {
+    return ssh_connection.SshAuthMethod.password.fieldValue();
 }
 
 pub fn aiProfileField(profile: *const AiProfile, field: AiField) []const u8 {
@@ -114,6 +122,13 @@ pub fn decodeSshProfileLine(line: []const u8) ?SshProfile {
         const part = parts.next() orelse break;
         const decoded = decodeHexField(part, &profile.fields[field_idx]) orelse return null;
         profile.lens[field_idx] = decoded;
+    }
+    if (profile.lens[@intFromEnum(SshField.auth_method)] == 0) {
+        const legacy_method: ssh_connection.SshAuthMethod = if (profile.lens[@intFromEnum(SshField.password)] > 0)
+            .password
+        else
+            .credentials;
+        copySshProfileField(&profile, .auth_method, legacy_method.fieldValue());
     }
     return profile;
 }
@@ -165,6 +180,8 @@ test "overlays: SSH profile line decode preserves all fields including proxy jum
     try std.testing.expectEqualStrings("secret", profileField(&profile, .password));
     try std.testing.expectEqualStrings("2222", profileField(&profile, .port));
     try std.testing.expectEqualStrings("admin@jump.test:22", profileField(&profile, .proxy_jump));
+    try std.testing.expectEqualStrings("password", profileField(&profile, .auth_method));
+    try std.testing.expectEqualStrings("", profileField(&profile, .identity_file));
 }
 
 test "overlays: SSH profile line decode accepts legacy lines without a proxy jump field" {
@@ -177,6 +194,45 @@ test "overlays: SSH profile line decode accepts legacy lines without a proxy jum
     try std.testing.expectEqualStrings("10.0.0.1", profileField(&profile, .ip));
     try std.testing.expectEqualStrings("22", profileField(&profile, .port));
     try std.testing.expectEqualStrings("", profileField(&profile, .proxy_jump));
+    try std.testing.expectEqualStrings("credentials", profileField(&profile, .auth_method));
+    try std.testing.expectEqualStrings("", profileField(&profile, .identity_file));
+}
+
+test "overlays: SSH profile line decode preserves auth method and identity file" {
+    var buf: [1024]u8 = undefined;
+    const line = testEncodeProfileLine(&buf, &.{
+        "KeyBox",
+        "key.example",
+        "alice",
+        "",
+        "2222",
+        "jump.example",
+        "key",
+        "C:/Users/alice/.ssh/id_ed25519",
+    });
+    const profile = decodeSshProfileLine(line) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("key", profileField(&profile, .auth_method));
+    try std.testing.expectEqualStrings("C:/Users/alice/.ssh/id_ed25519", profileField(&profile, .identity_file));
+}
+
+test "overlays: SSH profile line decode defaults auth method for legacy password profile" {
+    var buf: [1024]u8 = undefined;
+    const legacy = testEncodeProfileLine(&buf, &.{ "Old", "10.0.0.1", "user", "secret", "22", "" });
+    const profile = decodeSshProfileLine(legacy) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("password", profileField(&profile, .auth_method));
+    try std.testing.expectEqualStrings("", profileField(&profile, .identity_file));
+}
+
+test "overlays: SSH profile line decode defaults auth method for legacy credential profile" {
+    var buf: [1024]u8 = undefined;
+    const legacy = testEncodeProfileLine(&buf, &.{ "Old", "10.0.0.1", "user", "", "22", "" });
+    const profile = decodeSshProfileLine(legacy) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("credentials", profileField(&profile, .auth_method));
+    try std.testing.expectEqualStrings("", profileField(&profile, .identity_file));
+}
+
+test "overlays: new SSH form defaults to password auth" {
+    try std.testing.expectEqualStrings("password", defaultSshFormAuthMethod());
 }
 
 test "overlays: SSH profile line decode rejects malformed hex" {
@@ -187,7 +243,8 @@ test "overlays: AI profile line decode round-trips all fields including max_toke
     var buf: [1024]u8 = undefined;
     const line = testEncodeProfileLine(&buf, &.{
         "Claude", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic", "4096",
+        "sys",    "enabled",                   "high",   "false",
+        "true",   "anthropic",                 "4096",
     });
     const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
     try std.testing.expectEqualStrings("Claude", aiProfileField(&profile, .name));
@@ -202,7 +259,8 @@ test "overlays: AI profile line decode defaults max_tokens for legacy 10-field p
     var buf: [1024]u8 = undefined;
     const legacy = testEncodeProfileLine(&buf, &.{
         "Legacy", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic",
+        "sys",    "enabled",                   "high",   "false",
+        "true",   "anthropic",
     });
     const profile = decodeAiProfileLine(legacy) orelse return error.ExpectedProfile;
     try std.testing.expectEqualStrings("Legacy", aiProfileField(&profile, .name));
@@ -214,7 +272,8 @@ test "overlays: AI profile line decode defaults max_tokens when the field is emp
     var buf: [1024]u8 = undefined;
     const line = testEncodeProfileLine(&buf, &.{
         "Empty", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic", "",
+        "sys",   "enabled",                   "high",   "false",
+        "true",  "anthropic",                 "",
     });
     const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
     try std.testing.expectEqualStrings("8192", aiProfileField(&profile, .max_tokens));
@@ -224,7 +283,8 @@ test "overlays: AI profile line decode round-trips the vision field" {
     var buf: [1024]u8 = undefined;
     const line = testEncodeProfileLine(&buf, &.{
         "Vision", "https://api.openai.com", "sk-key", "gpt-4o",
-        "sys", "enabled", "high", "false", "true", "chat_completions", "8192", "on",
+        "sys",    "enabled",                "high",   "false",
+        "true",   "chat_completions",       "8192",   "on",
     });
     const profile = decodeAiProfileLine(line) orelse return error.ExpectedProfile;
     try std.testing.expectEqualStrings("Vision", aiProfileField(&profile, .name));
@@ -239,7 +299,8 @@ test "overlays: AI profile line decode defaults vision off for legacy 11-field p
     var buf: [1024]u8 = undefined;
     const legacy = testEncodeProfileLine(&buf, &.{
         "Legacy", "https://api.anthropic.com", "sk-key", "claude-x",
-        "sys", "enabled", "high", "false", "true", "anthropic", "4096",
+        "sys",    "enabled",                   "high",   "false",
+        "true",   "anthropic",                 "4096",
     });
     const profile = decodeAiProfileLine(legacy) orelse return error.ExpectedProfile;
     try std.testing.expectEqualStrings("4096", aiProfileField(&profile, .max_tokens));

@@ -672,11 +672,15 @@ fn buildSshArgv(allocator: std.mem.Allocator, rule: *const rule_mod.Rule, conn: 
         try appendSshOption(allocator, &argv, "KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1");
         try appendSshOption(allocator, &argv, "Ciphers=+aes128-cbc,3des-cbc");
     }
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         try appendSshOption(allocator, &argv, "PreferredAuthentications=publickey,password,keyboard-interactive");
         try appendSshOption(allocator, &argv, "NumberOfPasswordPrompts=1");
     } else {
         try appendSshOption(allocator, &argv, "BatchMode=yes");
+    }
+    if (conn.usesIdentityFile()) {
+        try argv.append(allocator, "-i");
+        try argv.append(allocator, try allocator.dupe(u8, conn.identityFile()));
     }
     if (conn.proxyJump().len > 0) {
         try appendSshOption(allocator, &argv, try std.fmt.allocPrint(allocator, "ProxyJump={s}", .{conn.proxyJump()}));
@@ -715,7 +719,7 @@ fn spawnForward(allocator: std.mem.Allocator, rule: *const rule_mod.Rule, conn: 
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
-    if (conn.password_auth) {
+    if (conn.usesPasswordAuth()) {
         askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return error.AskPassUnavailable;
         env_map = try std.process.getEnvMap(allocator);
         if (env_map) |*map| {

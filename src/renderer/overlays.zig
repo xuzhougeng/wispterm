@@ -2439,6 +2439,7 @@ fn clearSshForm() void {
     g_ssh_bufs[@intFromEnum(SshField.port)][0] = '2';
     g_ssh_bufs[@intFromEnum(SshField.port)][1] = '2';
     g_ssh_lens[@intFromEnum(SshField.port)] = 2;
+    appendSshFormText(@intFromEnum(SshField.auth_method), profile_codec.defaultSshFormAuthMethod());
 }
 
 fn handleSshListKey(ev: input_key.KeyEvent) void {
@@ -2557,6 +2558,62 @@ fn sshField(field: SshField) []const u8 {
 
 const profileField = profile_codec.profileField;
 
+fn parseSshAuthMethod(value: []const u8) ?ssh_connection.SshAuthMethod {
+    return ssh_connection.SshAuthMethod.parse(std.mem.trim(u8, value, " \t\r\n"));
+}
+
+fn defaultSshAuthMethodForPassword(password: []const u8) ssh_connection.SshAuthMethod {
+    return if (password.len > 0) .password else .credentials;
+}
+
+fn sshFormAuthMethod() ?ssh_connection.SshAuthMethod {
+    const raw = sshField(.auth_method);
+    if (std.mem.trim(u8, raw, " \t\r\n").len == 0) return defaultSshAuthMethodForPassword(sshField(.password));
+    return parseSshAuthMethod(raw);
+}
+
+fn sshProfileAuthMethod(profile: *const SshProfile) ?ssh_connection.SshAuthMethod {
+    const raw = profileField(profile, .auth_method);
+    if (std.mem.trim(u8, raw, " \t\r\n").len == 0) return defaultSshAuthMethodForPassword(profileField(profile, .password));
+    return parseSshAuthMethod(raw);
+}
+
+fn isIdentityFileSafe(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |ch| {
+        if (ch < 0x20 or ch == 0x7f) return false;
+    }
+    return true;
+}
+
+fn sshConnectionFromProfile(profile: *const SshProfile) ?ssh_connection.SshConnection {
+    const ip = profileField(profile, .ip);
+    const user = profileField(profile, .user);
+    const port = profileField(profile, .port);
+    const password = profileField(profile, .password);
+    const proxy_jump = profileField(profile, .proxy_jump);
+    const auth_method = sshProfileAuthMethod(profile) orelse return null;
+    const identity_file = profileField(profile, .identity_file);
+    if (ip.len == 0 or user.len == 0) return null;
+    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
+    if (port.len > 0 and !isPortTokenSafe(port)) return null;
+    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return null;
+    if (auth_method == .password and password.len == 0) return null;
+    if (auth_method == .key and !isIdentityFileSafe(identity_file)) return null;
+
+    var conn = ssh_connection.SshConnection.fromParts(.{
+        .user = user,
+        .host = ip,
+        .port = port,
+        .proxy_jump = proxy_jump,
+        .password = password,
+        .auth_method = auth_method,
+        .identity_file = identity_file,
+    });
+    conn.legacy_algorithms = AppWindow.g_ssh_legacy_algorithms;
+    return conn;
+}
+
 fn findSshProfileIndex(identifier_raw: []const u8) ?usize {
     loadSshProfiles();
     return findLoadedSshProfileIndex(identifier_raw);
@@ -2595,31 +2652,7 @@ pub fn aiHistoryConnectSshProfile(identifier: []const u8, remote_command: []cons
 pub fn aiHistorySshConnection(identifier: []const u8) ?ssh_connection.SshConnection {
     const idx = findSshProfileIndex(identifier) orelse return null;
     if (idx >= g_ssh_profile_count) return null;
-    const profile = &g_ssh_profiles[idx];
-    const ip = profileField(profile, .ip);
-    const user = profileField(profile, .user);
-    const port = profileField(profile, .port);
-    const password = profileField(profile, .password);
-    const proxy_jump = profileField(profile, .proxy_jump);
-    if (ip.len == 0 or user.len == 0) return null;
-    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
-    if (port.len > 0 and !isPortTokenSafe(port)) return null;
-    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return null;
-
-    var conn: ssh_connection.SshConnection = .{};
-    conn.user_len = @min(user.len, conn.user_buf.len);
-    conn.host_len = @min(ip.len, conn.host_buf.len);
-    conn.port_len = @min(port.len, conn.port_buf.len);
-    conn.password_len = @min(password.len, conn.password_buf.len);
-    conn.proxy_jump_len = @min(proxy_jump.len, conn.proxy_jump_buf.len);
-    @memcpy(conn.user_buf[0..conn.user_len], user[0..conn.user_len]);
-    @memcpy(conn.host_buf[0..conn.host_len], ip[0..conn.host_len]);
-    @memcpy(conn.port_buf[0..conn.port_len], port[0..conn.port_len]);
-    @memcpy(conn.password_buf[0..conn.password_len], password[0..conn.password_len]);
-    @memcpy(conn.proxy_jump_buf[0..conn.proxy_jump_len], proxy_jump[0..conn.proxy_jump_len]);
-    conn.password_auth = password.len > 0;
-    conn.legacy_algorithms = AppWindow.g_ssh_legacy_algorithms;
-    return conn;
+    return sshConnectionFromProfile(&g_ssh_profiles[idx]);
 }
 
 /// Enumerate the saved SSH profile names (UI thread; loads the threadlocal
@@ -2701,6 +2734,10 @@ fn mergeOpenSshCandidate(candidate: openssh_config_import.Candidate, stats: *Ope
     copySshProfileField(profile, .user, user);
     copySshProfileField(profile, .port, if (port.len > 0) port else "22");
     copySshProfileField(profile, .proxy_jump, proxy_jump);
+    if (created_new) {
+        copySshProfileField(profile, .auth_method, ssh_connection.SshAuthMethod.credentials.fieldValue());
+        copySshProfileField(profile, .identity_file, "");
+    }
 }
 
 fn opensshCandidateSetForTest(candidate: *openssh_config_import.Candidate, comptime field: enum { name, host, user, port, proxy_jump }, value: []const u8) void {
@@ -2738,6 +2775,8 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     const port_raw = std.mem.trim(u8, args.port, " \t\r\n");
     const port = if (port_raw.len > 0) port_raw else "22";
     const proxy_jump = std.mem.trim(u8, args.proxy_jump, " \t\r\n");
+    const identity_file = std.mem.trim(u8, args.identity_file, " \t\r\n");
+    const auth_method_raw = std.mem.trim(u8, args.auth_method, " \t\r\n");
     if (host.len == 0 or user.len == 0) return error.InvalidProfile;
     if (!isSshTokenSafe(host) or !isSshTokenSafe(user)) return error.InvalidProfile;
     if (!isPortTokenSafe(port)) return error.InvalidProfile;
@@ -2750,10 +2789,32 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
         if (g_ssh_profile_count >= SSH_PROFILE_MAX) return error.ProfileLimit;
         const next = g_ssh_profile_count;
         g_ssh_profile_count += 1;
+        g_ssh_profiles[next] = .{};
         break :blk next;
     };
 
     const profile = &g_ssh_profiles[idx];
+    const auth_method = if (auth_method_raw.len > 0)
+        (parseSshAuthMethod(auth_method_raw) orelse return error.InvalidProfile)
+    else if (args.password.len > 0)
+        ssh_connection.SshAuthMethod.password
+    else if (identity_file.len > 0)
+        ssh_connection.SshAuthMethod.key
+    else if (updated_existing)
+        (sshProfileAuthMethod(profile) orelse defaultSshAuthMethodForPassword(profileField(profile, .password)))
+    else
+        ssh_connection.SshAuthMethod.credentials;
+    const password_to_save = if (auth_method == .password)
+        (if (args.password.len > 0) args.password else profileField(profile, .password))
+    else
+        "";
+    const identity_to_save = if (auth_method == .key)
+        (if (identity_file.len > 0) identity_file else profileField(profile, .identity_file))
+    else
+        "";
+    if (auth_method == .password and password_to_save.len == 0) return error.InvalidProfile;
+    if (auth_method == .key and !isIdentityFileSafe(identity_to_save)) return error.InvalidProfile;
+
     const final_name = if (name_raw.len > 0)
         name_raw
     else if (updated_existing and profileField(profile, .name).len > 0)
@@ -2764,13 +2825,13 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     copySshProfileField(profile, .name, final_name);
     copySshProfileField(profile, .ip, host);
     copySshProfileField(profile, .user, user);
-    if (args.password.len > 0 or !updated_existing) {
-        copySshProfileField(profile, .password, args.password);
-    }
+    copySshProfileField(profile, .password, password_to_save);
     if (proxy_jump.len > 0 or !updated_existing) {
         copySshProfileField(profile, .proxy_jump, proxy_jump);
     }
     copySshProfileField(profile, .port, port);
+    copySshProfileField(profile, .auth_method, auth_method.fieldValue());
+    copySshProfileField(profile, .identity_file, identity_to_save);
 
     saveSshProfiles(allocator);
 
@@ -2778,6 +2839,7 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     const saved_host = profileField(profile, .ip);
     const saved_user = profileField(profile, .user);
     const saved_port = profileField(profile, .port);
+    const saved_auth_method = profileField(profile, .auth_method);
     const name_copy = try allocator.dupe(u8, saved_name);
     errdefer allocator.free(name_copy);
     const host_copy = try allocator.dupe(u8, saved_host);
@@ -2786,13 +2848,17 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     errdefer allocator.free(user_copy);
     const port_copy = try allocator.dupe(u8, saved_port);
     errdefer allocator.free(port_copy);
+    const auth_method_copy = try allocator.dupe(u8, saved_auth_method);
+    errdefer allocator.free(auth_method_copy);
     return .{
         .name = name_copy,
         .host = host_copy,
         .user = user_copy,
         .port = port_copy,
+        .auth_method = auth_method_copy,
         .updated_existing = updated_existing,
         .password_saved = profileField(profile, .password).len > 0,
+        .identity_file_saved = profileField(profile, .identity_file).len > 0,
     };
 }
 
@@ -2887,10 +2953,13 @@ fn saveSshFormProfile() ?usize {
     const ip = sshField(.ip);
     const user = sshField(.user);
     const port = sshField(.port);
+    const auth_method = sshFormAuthMethod() orelse return null;
     if (ip.len == 0 or user.len == 0) return null;
     if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
     if (port.len > 0 and !isPortTokenSafe(port)) return null;
     if (!command_palette_model.isProxyJumpSafe(sshField(.proxy_jump))) return null;
+    if (auth_method == .password and sshField(.password).len == 0) return null;
+    if (auth_method == .key and !isIdentityFileSafe(sshField(.identity_file))) return null;
 
     const idx = if (g_ssh_edit_index != SSH_PROFILE_NONE)
         g_ssh_edit_index
@@ -2905,6 +2974,9 @@ fn saveSshFormProfile() ?usize {
         g_ssh_profiles[idx].lens[i] = g_ssh_lens[i];
         @memcpy(g_ssh_profiles[idx].fields[i][0..g_ssh_lens[i]], g_ssh_bufs[i][0..g_ssh_lens[i]]);
     }
+    copySshProfileField(&g_ssh_profiles[idx], .auth_method, auth_method.fieldValue());
+    if (auth_method != .password) copySshProfileField(&g_ssh_profiles[idx], .password, "");
+    if (auth_method != .key) copySshProfileField(&g_ssh_profiles[idx], .identity_file, "");
     if (g_ssh_profiles[idx].lens[@intFromEnum(SshField.name)] == 0) {
         const host = sshField(.ip);
         const len = @min(host.len, SSH_FIELD_MAX);
@@ -2950,16 +3022,8 @@ fn openTmuxSshPicker() void {
 fn connectSshProfileTmux(idx: usize) void {
     if (idx >= g_ssh_profile_count) return;
     const profile = &g_ssh_profiles[idx];
-    const ip = profileField(profile, .ip);
-    const user = profileField(profile, .user);
-    const port = profileField(profile, .port);
-    const password = profileField(profile, .password);
-    const proxy_jump = profileField(profile, .proxy_jump);
     const name = profileField(profile, .name);
-    if (ip.len == 0 or user.len == 0) return;
-    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return;
-    if (port.len > 0 and !isPortTokenSafe(port)) return;
-    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return;
+    const conn = sshConnectionFromProfile(profile) orelse return;
 
     var name_buf: [96]u8 = undefined;
     const session_name = tmuxSessionName(&name_buf, name);
@@ -2968,24 +3032,19 @@ fn connectSshProfileTmux(idx: usize) void {
 
     var cmd_buf: [8192]u8 = undefined;
     const cmd = platform_pty_command.sshControlCommand(cmd_buf[0..], .{
-        .user = user,
-        .host = ip,
-        .port = port,
-        .password_auth = password.len > 0,
+        .user = conn.user(),
+        .host = conn.host(),
+        .port = conn.port(),
+        .auth_method = conn.auth_method,
+        .identity_file = conn.identityFile(),
+        .password_auth = conn.password_auth,
         .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
-        .proxy_jump = proxy_jump,
+        .proxy_jump = conn.proxyJump(),
         .remote_command = remote,
     }) orelse return;
 
-    const conn = ssh_connection.SshConnection.fromParts(.{
-        .user = user,
-        .host = ip,
-        .port = port,
-        .proxy_jump = proxy_jump,
-        .password = password,
-    });
     sessionLauncherClose();
-    _ = AppWindow.startTmuxSession(cmd, password, name, conn);
+    _ = AppWindow.startTmuxSession(cmd, if (conn.usesPasswordAuth()) conn.password() else "", name, conn);
 }
 
 /// Connect a profile by name in tmux mode (dev/automation hook).
@@ -3022,36 +3081,30 @@ fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
 fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []const u8) ?*Surface {
     if (idx >= g_ssh_profile_count) return null;
     const profile = &g_ssh_profiles[idx];
-    const ip = profileField(profile, .ip);
-    const user = profileField(profile, .user);
-    const port = profileField(profile, .port);
-    const password = profileField(profile, .password);
-    const proxy_jump = profileField(profile, .proxy_jump);
     const server_name = profileField(profile, .name);
-    if (ip.len == 0 or user.len == 0) return null;
-    if (!isSshTokenSafe(ip) or !isSshTokenSafe(user)) return null;
-    if (port.len > 0 and !isPortTokenSafe(port)) return null;
-    if (!command_palette_model.isProxyJumpSafe(proxy_jump)) return null;
+    const conn = sshConnectionFromProfile(profile) orelse return null;
 
     var command_buf: [8192]u8 = undefined;
     const command = platform_pty_command.sshInteractiveCommand(command_buf[0..], .{
-        .user = user,
-        .host = ip,
-        .port = port,
-        .password_auth = password.len > 0,
+        .user = conn.user(),
+        .host = conn.host(),
+        .port = conn.port(),
+        .auth_method = conn.auth_method,
+        .identity_file = conn.identityFile(),
+        .password_auth = conn.password_auth,
         .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
-        .proxy_jump = proxy_jump,
+        .proxy_jump = conn.proxyJump(),
         .remote_command = remote_command,
     }) orelse return null;
 
     sessionLauncherClose();
     if (AppWindow.spawnTabWithCommandUtf8ReturningSurface(command)) |surface| {
-        surface.setSshConnection(user, ip, port, password, proxy_jump, password.len > 0, AppWindow.g_ssh_legacy_algorithms);
+        surface.setSshConnectionValue(conn);
         if (server_name.len > 0) {
             surface.setTitleOverride(server_name);
         }
-        if (password.len > 0) {
-            scheduleSshPasswordForSurface(surface, password);
+        if (conn.usesPasswordAuth()) {
+            scheduleSshPasswordForSurface(surface, conn.password());
         }
         return surface;
     }
@@ -3887,7 +3940,7 @@ fn saveSshProfilesChecked(allocator: std.mem.Allocator) bool {
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
-    out.appendSlice(allocator, "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump.\n") catch return false;
+    out.appendSlice(allocator, "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump, auth_method, identity_file.\n") catch return false;
     for (g_ssh_profiles[0..g_ssh_profile_count]) |profile| {
         for (0..SSH_FIELD_COUNT) |i| {
             if (i > 0) out.append(allocator, '\t') catch return false;
@@ -4039,6 +4092,8 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_password, sshField(.password)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_port, sshField(.port)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_jump_host, sshField(.proxy_jump)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_auth_method, sshField(.auth_method)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_identity_file, sshField(.identity_file)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail()));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save, i18n.s().sl_v_profile));
         desired = @max(desired, sessionTwoColumnWidth(sessionLauncherCancelLabel(), "Esc"));
@@ -4559,6 +4614,8 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderSessionField(layout, window_height, @intFromEnum(SshField.password), i18n.s().sl_ssh_password, sshField(.password), true);
     renderSessionField(layout, window_height, @intFromEnum(SshField.port), i18n.s().sl_ssh_port, sshField(.port), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), i18n.s().sl_ssh_jump_host, sshField(.proxy_jump), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.auth_method), i18n.s().sl_ssh_auth_method, sshField(.auth_method), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.identity_file), i18n.s().sl_ssh_identity_file, sshField(.identity_file), false);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT, i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail(), g_ssh_focus == SSH_FIELD_COUNT);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, g_ssh_focus == SSH_FIELD_COUNT + 1);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", g_ssh_focus == SSH_FIELD_COUNT + 2);

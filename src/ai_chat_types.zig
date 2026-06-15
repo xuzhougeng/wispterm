@@ -169,6 +169,8 @@ pub const SshProfileSaveArgs = struct {
     password: []const u8 = "",
     port: []const u8 = "",
     proxy_jump: []const u8 = "",
+    auth_method: []const u8 = "",
+    identity_file: []const u8 = "",
 };
 
 pub const SavedSshProfile = struct {
@@ -176,14 +178,17 @@ pub const SavedSshProfile = struct {
     host: []u8,
     user: []u8,
     port: []u8,
+    auth_method: []u8,
     updated_existing: bool,
     password_saved: bool,
+    identity_file_saved: bool,
 
     pub fn deinit(self: SavedSshProfile, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.host);
         allocator.free(self.user);
         allocator.free(self.port);
+        allocator.free(self.auth_method);
     }
 };
 

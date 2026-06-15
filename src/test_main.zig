@@ -118,10 +118,12 @@ comptime {
     }
 
     const profile_codec_source = @embedFile("renderer/overlays/profile_codec.zig");
-    if (std.mem.indexOf(u8, profile_codec_source, "pub const SSH_FIELD_COUNT = 6") == null or
+    if (std.mem.indexOf(u8, profile_codec_source, "pub const SSH_FIELD_COUNT = 8") == null or
+        std.mem.indexOf(u8, profile_codec_source, "auth_method = 6") == null or
+        std.mem.indexOf(u8, profile_codec_source, "identity_file = 7") == null or
         std.mem.indexOf(u8, profile_codec_source, "port_forward") != null)
     {
-        @compileError("Port forwarding must not extend the existing ssh_hosts profile schema");
+        @compileError("ssh_hosts profile schema must only add server auth fields; port forwarding must not extend it");
     }
 
     const ssh_tunnel_source = @embedFile("ssh_tunnel.zig");
