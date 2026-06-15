@@ -534,6 +534,11 @@ pub fn build(b: *std.Build) void {
     if (webview and !platform.supports_embedded_browser) {
         @panic("-Dwebview requires a platform backend with embedded browser support");
     }
+    const debug_console = b.option(
+        bool,
+        "debug-console",
+        "Force a console subsystem and enable on-disk debug logging + crash capture (diagnostic builds).",
+    ) orelse false;
     const run_foreign_tests = b.option(
         bool,
         "run-foreign-tests",
@@ -555,7 +560,7 @@ pub fn build(b: *std.Build) void {
     const app_version = packageVersion(b);
 
     if (emit_desktop_exe) {
-        const exe_mod = createAppModule(b, target, optimize, app_version, platform, webview);
+        const exe_mod = createAppModule(b, target, optimize, app_version, platform, webview, debug_console);
 
         const exe = b.addExecutable(.{
             .name = "wispterm",
@@ -576,9 +581,10 @@ pub fn build(b: *std.Build) void {
         }
 
         if (platform.supports_gui_subsystem) {
-            // Debug builds use Console subsystem so std.debug.print output is visible.
-            // Release builds use Windows GUI subsystem to avoid a background console window.
-            exe.subsystem = if (optimize == .Debug) .Console else .Windows;
+            // Debug builds and diagnostic (-Ddebug-console) builds use the Console
+            // subsystem so std.debug.print / std.log are visible; normal release
+            // uses the Windows GUI subsystem to avoid a background console window.
+            exe.subsystem = if (optimize == .Debug or debug_console) .Console else .Windows;
         }
 
         b.installArtifact(exe);
@@ -855,6 +861,7 @@ pub fn build(b: *std.Build) void {
             app_version,
             PlatformFeatures.forOs(.macos),
             false,
+            false,
         );
         const macos_ui_tests = b.addTest(.{
             .name = "wispterm-macos-ui-test",
@@ -870,6 +877,7 @@ pub fn build(b: *std.Build) void {
             optimize,
             app_version,
             PlatformFeatures.forOs(.macos),
+            false,
             false,
         );
         const macos_menu_tests = b.addTest(.{
@@ -896,6 +904,7 @@ pub fn build(b: *std.Build) void {
             app_version,
             platform,
             webview,
+            false,
         );
 
         const tests = b.addTest(.{
@@ -922,8 +931,9 @@ fn createAppModule(
     app_version: []const u8,
     platform: PlatformFeatures,
     webview: bool,
+    debug_console: bool,
 ) *std.Build.Module {
-    return createAppModuleWithRoot(b, "src/main.zig", target, optimize, app_version, platform, webview);
+    return createAppModuleWithRoot(b, "src/main.zig", target, optimize, app_version, platform, webview, debug_console);
 }
 
 fn createAppModuleWithRoot(
@@ -934,6 +944,7 @@ fn createAppModuleWithRoot(
     app_version: []const u8,
     platform: PlatformFeatures,
     webview: bool,
+    debug_console: bool,
 ) *std.Build.Module {
     const app_mod = b.createModule(.{
         .root_source_file = b.path(root_source_path),
@@ -944,6 +955,7 @@ fn createAppModuleWithRoot(
 
     const app_options = b.addOptions();
     app_options.addOption(bool, "webview", webview);
+    app_options.addOption(bool, "debug_console", debug_console);
     app_options.addOption([]const u8, "app_version", app_version);
     app_options.addOption([]const u8, "release_notes", readReleaseNotes(b, app_version));
     app_mod.addOptions("build_options", app_options);
@@ -1119,7 +1131,7 @@ fn addMacosAppBundle(
     platform: PlatformFeatures,
 ) *std.Build.Step.InstallDir {
     const metadata = macosBundleMetadata();
-    const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser);
+    const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser, false);
 
     const exe = b.addExecutable(.{
         .name = metadata.executable_name,
