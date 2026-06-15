@@ -1788,6 +1788,11 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
 }
 
 fn handleKey(ev: platform_input.KeyEvent) void {
+    if (input_diagnostics.enabled()) {
+        input_diagnostics.log("key-event code=0x{x} ctrl={} shift={} alt={} super={} selection_active={}", .{
+            ev.key_code, ev.ctrl, ev.shift, ev.alt, ev.super, activeTerminalSelectionExists(),
+        });
+    }
     overlays.startupShortcutsDismiss();
     const key_event = logicalKeyEvent(ev);
     if (overlays.whatsNewVisible()) {
@@ -2323,6 +2328,10 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 // Shifted Ctrl+letter chords are application shortcuts above.
                 if (!ev.shift) {
                     const ctrl_char: u8 = @intCast(ev.key_code - 0x41 + 1);
+                    if (input_diagnostics.enabled())
+                        input_diagnostics.log("ctrl-key emit byte=0x{x} (Ctrl+{c}) selection_active={}", .{
+                            ctrl_char, @as(u8, @intCast(ev.key_code)), activeTerminalSelectionExists(),
+                        });
                     writeToPty(surface, &[_]u8{ctrl_char});
                     wrote_to_pty = true;
                 }
