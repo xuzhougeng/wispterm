@@ -39,6 +39,15 @@ pub fn nextIndex(selected: usize, delta: i32, n: usize) usize {
     return @intCast(ni);
 }
 
+/// First row to render so the selected row stays visible when the list is taller
+/// than the window. Mirrors the scroll-follow helpers used by the overlays.
+pub fn firstVisible(selected: usize, visible_rows: usize, n: usize) usize {
+    if (visible_rows == 0 or n <= visible_rows) return 0;
+    const sel = @min(selected, n - 1);
+    if (sel < visible_rows) return 0;
+    return @min(sel - visible_rows + 1, n - visible_rows);
+}
+
 pub fn show(urls: []const []const u8) void {
     g_count = @min(urls.len, MAX_URLS);
     for (0..g_count) |i| {
@@ -58,6 +67,17 @@ pub fn hide() void {
     g_visible = false;
     g_count = 0;
     g_selected = 0;
+}
+
+test "firstVisible keeps the selected row within the visible window" {
+    // Everything fits → no scroll.
+    try std.testing.expectEqual(@as(usize, 0), firstVisible(5, 10, 8));
+    // Selection inside the first window → pinned to top.
+    try std.testing.expectEqual(@as(usize, 0), firstVisible(2, 4, 16));
+    // Selecting the last row scrolls so it is the bottom visible row.
+    try std.testing.expectEqual(@as(usize, 12), firstVisible(15, 4, 16));
+    // Mid-list selection.
+    try std.testing.expectEqual(@as(usize, 5), firstVisible(8, 4, 16));
 }
 
 test "nextIndex clamps at both ends" {

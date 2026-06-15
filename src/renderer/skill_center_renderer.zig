@@ -87,6 +87,15 @@ pub fn bodyVisibleCapacity(window_height: f32, titlebar_offset: f32, cell_h: f32
     return @intFromFloat(@max(0.0, @floor(usable / rowHeight(cell_h))));
 }
 
+/// Scroll offset that keeps the selected row visible, for lists that have only a
+/// selection (no stored scroll). Mirrors the overlay scroll-follow helpers.
+fn firstVisibleForSelection(selected: usize, visible: usize, total: usize) usize {
+    if (visible == 0 or total <= visible) return 0;
+    const sel = @min(selected, total - 1);
+    if (sel < visible) return 0;
+    return @min(sel - visible + 1, total - visible);
+}
+
 fn clampScroll(requested: usize, total: usize, visible: usize) usize {
     if (total <= visible) return 0;
     return @min(requested, total - visible);
@@ -238,13 +247,20 @@ fn renderList(
     // Title line.
     const title_y = yTextFromTop(draw, window_height, body_top + 8);
     _ = draw.renderTextLimited(lv.title, content_x + PAD_X, title_y, muted, content_w - PAD_X * 2);
-    const list_top = body_top + rowHeight(draw.cell_h);
-
     const row_h = rowHeight(draw.cell_h);
+    const list_top = body_top + row_h;
+
+    // Clamp rows to what fits below the title and above the legend, then scroll
+    // to keep the selected row visible (the list is keyboard navigable).
+    const usable = window_height - list_top - legendHeight(draw.cell_h);
+    const cap: usize = if (usable <= 0) 0 else @intFromFloat(@max(0.0, @floor(usable / row_h)));
+    const scroll = firstVisibleForSelection(lv.sel, cap, lv.len);
+
     const marker_w: f32 = 110;
-    var i: usize = 0;
-    while (i < lv.len) : (i += 1) {
-        const row_top_px = list_top + @as(f32, @floatFromInt(i)) * row_h;
+    var rendered: usize = 0;
+    var i: usize = scroll;
+    while (i < lv.len and rendered < cap) : (i += 1) {
+        const row_top_px = list_top + @as(f32, @floatFromInt(rendered)) * row_h;
         const row_y = yFromTop(window_height, row_top_px, row_h);
         if (i == lv.sel) {
             draw.fillQuadAlpha(content_x, row_y, content_w, row_h, selected_bg, 0.55);
@@ -258,6 +274,24 @@ fn renderList(
             const mx = content_x + content_w - PAD_X - marker_w;
             _ = draw.renderTextLimited(item.marker, mx, text_y, item.marker_color, marker_w);
         }
+        rendered += 1;
+    }
+
+    // Scrollbar thumb when the list is taller than the visible area.
+    if (lv.len > cap and cap > 0) {
+        const total_f: f32 = @floatFromInt(lv.len);
+        const vis_f: f32 = @floatFromInt(cap);
+        const track_h = row_h * vis_f;
+        const sb_w: f32 = 3;
+        const sb_x = content_x + content_w - sb_w - 4;
+        const track_gl_y = yFromTop(window_height, list_top, track_h);
+        draw.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(muted, fg, 0.2), 0.30);
+        const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
+        const max_scroll_f: f32 = @floatFromInt(lv.len - cap);
+        const scroll_f: f32 = @floatFromInt(scroll);
+        const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
+        const thumb_gl_y = yFromTop(window_height, list_top + thumb_offset, thumb_h);
+        draw.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
     }
 }
 
@@ -373,6 +407,13 @@ fn renderLegend(draw: DrawContext, legend: []const u8, content_x: f32, content_w
 }
 
 // --- Tests ---
+
+test "skill_center_renderer: firstVisibleForSelection keeps selection in view" {
+    try std.testing.expectEqual(@as(usize, 0), firstVisibleForSelection(5, 10, 8));
+    try std.testing.expectEqual(@as(usize, 0), firstVisibleForSelection(2, 4, 16));
+    try std.testing.expectEqual(@as(usize, 12), firstVisibleForSelection(15, 4, 16));
+    try std.testing.expectEqual(@as(usize, 5), firstVisibleForSelection(8, 4, 16));
+}
 
 test "skill_center_renderer: clampScroll keeps scroll within range" {
     try std.testing.expectEqual(@as(usize, 0), clampScroll(5, 3, 10));
