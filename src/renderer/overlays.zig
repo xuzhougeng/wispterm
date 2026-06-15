@@ -4809,6 +4809,15 @@ fn executeSettingsAction(action: SettingsAction) void {
         .close => settingsPageClose(),
     }
     settingsPageReloadCfg();
+
+    // Apply the change to the running terminal right away instead of waiting for
+    // the config-file watcher's debounce (mirrors applyEmbeddedThemeFromPalette).
+    // cycle_theme already applies via cycleThemePreset; the excluded actions open
+    // an editor/confirm dialog or close the page and write nothing to apply.
+    switch (action) {
+        .cycle_theme, .open_raw_config, .restore_defaults, .close => {},
+        else => AppWindow.reloadConfigImmediate(allocator),
+    }
 }
 
 fn writeConfigInt(key: []const u8, value: u32) void {
@@ -4896,6 +4905,9 @@ fn cycleThemePreset(delta: i32) void {
     const next = @mod(current + delta, count);
     applyThemePreset(@intCast(next));
     settingsPageReloadCfg();
+    // Theme rows reach here directly from the focus handlers (not via
+    // executeSettingsAction), so apply the new theme to the terminal immediately.
+    AppWindow.reloadConfigImmediate(allocator);
 }
 
 fn themePresetIsActive(cfg: *const Config, preset: ThemePreset) bool {
