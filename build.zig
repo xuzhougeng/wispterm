@@ -54,6 +54,7 @@ const macos_objective_c_sources = [_][]const u8{
     "src/platform/menu_macos_bridge.m",
     "src/platform/http_client_macos_bridge.m",
     "src/platform/pdf_render_macos_bridge.m",
+    "src/platform/remote_transport_macos_bridge.m",
 };
 
 const MacosBundleMetadata = struct {
@@ -834,6 +835,11 @@ pub fn build(b: *std.Build) void {
         });
         macos_services_test_mod.addCSourceFile(.{
             .file = b.path("src/platform/text_macos_bridge.m"),
+            .flags = &.{},
+            .language = .objective_c,
+        });
+        macos_services_test_mod.addCSourceFile(.{
+            .file = b.path("src/platform/remote_transport_macos_bridge.m"),
             .flags = &.{},
             .language = .objective_c,
         });

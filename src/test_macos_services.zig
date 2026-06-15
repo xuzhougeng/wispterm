@@ -11,6 +11,7 @@ const global_hotkey = @import("platform/global_hotkey.zig");
 const global_hotkey_macos = @import("platform/global_hotkey_macos.zig");
 const notifications = @import("platform/notifications.zig");
 const open_url = @import("platform/open_url.zig");
+const remote_transport = @import("platform/remote_transport.zig");
 const text = @import("platform/text.zig");
 const update_package = @import("platform/update_package.zig");
 
@@ -64,6 +65,22 @@ test "macOS clipboard reads a pasted image as a temp PNG file" {
     // ready-made image/png the bytes pass through verbatim.
     try std.testing.expect(std.mem.startsWith(u8, data, "\x89PNG\r\n\x1a\n"));
     try std.testing.expectEqualSlices(u8, &sample_png, data);
+}
+
+test "macOS remote transport selects the native backend and fails closed on a dead endpoint" {
+    try std.testing.expectEqualStrings("macos", @tagName(remote_transport.backendForOs(.macos)));
+
+    // Nothing is listening on this loopback port, so connect must fail promptly
+    // and tear the native session down cleanly (exercises the connect + shutdown
+    // path of the NSURLSessionWebSocketTask bridge; full duplex needs a live
+    // relay server and is verified on-device).
+    const result = remote_transport.connect(std.testing.allocator, .{
+        .secure = false,
+        .host = "127.0.0.1",
+        .port = 9,
+        .object_name = "/ws",
+    });
+    try std.testing.expectError(error.RemoteTransportConnectFailed, result);
 }
 
 test "macOS display and text services return native answers" {

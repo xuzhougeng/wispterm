@@ -3,18 +3,21 @@ const builtin = @import("builtin");
 
 pub const Backend = enum {
     windows,
+    macos,
     unsupported,
 };
 
 pub fn backendForOs(os_tag: std.Target.Os.Tag) Backend {
     return switch (os_tag) {
         .windows => .windows,
+        .macos => .macos,
         else => .unsupported,
     };
 }
 
 const impl = switch (backendForOs(builtin.os.tag)) {
     .windows => @import("remote_transport_windows.zig"),
+    .macos => @import("remote_transport_macos.zig"),
     .unsupported => @import("remote_transport_unsupported.zig"),
 };
 
@@ -55,5 +58,5 @@ test "platform remote transport exposes websocket API" {
 test "platform remote transport selects backend per OS" {
     try std.testing.expectEqual(Backend.windows, backendForOs(.windows));
     try std.testing.expectEqual(Backend.unsupported, backendForOs(.linux));
-    try std.testing.expectEqual(Backend.unsupported, backendForOs(.macos));
+    try std.testing.expectEqual(Backend.macos, backendForOs(.macos));
 }
