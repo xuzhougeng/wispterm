@@ -32,6 +32,10 @@ pub const PaneMap = struct {
         /// opaque pointer so `pane.zig` stays Surface-free and unit-testable.
         /// `removePane`/`deinit` never touch it — the tree owns the ref.
         surface: ?*anyopaque = null,
+        /// Set after the bridge has requested an initial alternate-screen seed
+        /// for this pane. Periodic pane metadata refreshes should not keep
+        /// re-capturing a live full-screen TUI.
+        alternate_capture_requested: bool = false,
     };
 
     pub fn init(alloc: Allocator) PaneMap {
