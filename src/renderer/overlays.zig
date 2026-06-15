@@ -1429,9 +1429,16 @@ pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
     const row_h: f32 = @max(28.0, font.g_titlebar_cell_height + 12);
     const box_w: f32 = @min(window_width - 80, 720);
     const title_h: f32 = row_h;
-    const box_h: f32 = title_h + row_h * @as(f32, @floatFromInt(n)) + 16;
+    const bottom_pad: f32 = 16;
+    // Clamp the row count to what fits the window, then scroll to keep the
+    // selected server visible (the list is keyboard/wheel navigable).
+    const usable_h = @max(row_h, window_height - 32.0 - title_h - bottom_pad);
+    const fit: usize = @intFromFloat(@max(1.0, @floor(usable_h / row_h)));
+    const visible = @min(n, fit);
+    const scroll = jupyter_picker.firstVisible(jupyter_picker.selectedIndex(), visible, n);
+    const box_h: f32 = title_h + row_h * @as(f32, @floatFromInt(visible)) + bottom_pad;
     const box_x = @round((window_width - box_w) / 2);
-    const box_top = @round((window_height - box_h) / 2);
+    const box_top = @round(@max(16.0, (window_height - box_h) / 2));
     const box_y = @round(window_height - box_top - box_h);
 
     ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.30);
@@ -1441,15 +1448,35 @@ pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
     const title_y = @round(box_y + box_h - title_h + (title_h - font.g_titlebar_cell_height) / 2);
     _ = titlebar.renderTextLimited("Select a Jupyter server (Up/Down, Enter, Esc)", box_x + 16, title_y, mixColor(bg, fg, 0.6), box_w - 32);
 
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        const row_top_px = box_top + title_h + row_h * @as(f32, @floatFromInt(i));
+    var display: usize = 0;
+    while (display < visible) : (display += 1) {
+        const i = scroll + display;
+        if (i >= n) break;
+        const row_top_px = box_top + title_h + row_h * @as(f32, @floatFromInt(display));
         const row_y = @round(window_height - row_top_px - row_h);
         if (i == jupyter_picker.selectedIndex()) {
             renderRoundedQuadAlpha(box_x + 8, row_y + 3, box_w - 16, row_h - 6, 5, sel_bg, 0.6);
         }
         const ty = @round(row_y + (row_h - font.g_titlebar_cell_height) / 2);
         _ = titlebar.renderTextLimited(jupyter_picker.urlAt(i), box_x + 18, ty, text_color, box_w - 36);
+    }
+
+    // Scrollbar thumb when the list is taller than the window.
+    if (n > visible and visible > 0) {
+        const total_f: f32 = @floatFromInt(n);
+        const vis_f: f32 = @floatFromInt(visible);
+        const track_h = row_h * vis_f;
+        const track_top_px = box_top + title_h;
+        const sb_w: f32 = 3;
+        const sb_x = box_x + box_w - sb_w - 6;
+        const track_gl_y = @round(window_height - track_top_px - track_h);
+        ui_pipeline.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(bg, fg, 0.25), 0.30);
+        const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
+        const max_scroll_f: f32 = @floatFromInt(n - visible);
+        const scroll_f: f32 = @floatFromInt(scroll);
+        const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
+        const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);
+        ui_pipeline.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
     }
 }
 
@@ -1868,6 +1895,12 @@ const SessionLayout = struct {
     header_h: f32,
     first_row_top_px: f32,
     row_h: f32,
+    /// Total rows in the active mode.
+    row_count: usize,
+    /// Rows that fit in the box for the current window height.
+    visible_rows: usize,
+    /// Index of the first rendered row (scroll offset, selection-following).
+    scroll: usize,
 };
 
 pub threadlocal var g_session_launcher_visible: bool = false;
@@ -2182,6 +2215,26 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
         },
         .enter => runSshFormFocusAction(),
         else => {},
+    }
+}
+
+/// Mouse-wheel handling for the session launcher. Scrolls by moving the active
+/// mode's selected/focused row (the view follows it), clamped at the ends so the
+/// wheel never wraps. Positive delta scrolls toward the top, mirroring
+/// whatsNewHandleScroll().
+pub fn sessionLauncherHandleScroll(delta_y: f64) void {
+    if (!sessionLauncherVisible()) return;
+    const step: i32 = if (delta_y > 0) -1 else if (delta_y < 0) 1 else 0;
+    if (step == 0) return;
+    const count = sessionActiveRowCount();
+    if (count == 0) return;
+    const sel = sessionActiveSelectionPtr();
+    if (step < 0) {
+        if (sel.* == 0) return;
+        sel.* -= 1;
+    } else {
+        if (sel.* + 1 >= count) return;
+        sel.* += 1;
     }
 }
 
@@ -4067,15 +4120,9 @@ fn sessionDesiredBoxWidth() f32 {
     return desired;
 }
 
-fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) SessionLayout {
-    const content_height = @max(1, window_height - top_offset);
-    const min_box_w: f32 = if (g_ssh_form_visible or g_ssh_list_visible or g_ai_form_visible or g_ai_list_visible) 460 else 360;
-    const max_box_w = @max(260.0, @min(760.0, window_width - 48.0));
-    const box_w: f32 = @round(@min(@max(min_box_w, sessionDesiredBoxWidth()), max_box_w));
-    const row_h = overlayRowHeight(38);
-    const header_h = @round(18 + overlayLineHeight() * 2 + 12);
-    const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
-    const row_count: usize = if (g_ai_form_visible)
+/// Total rows in the currently active session-launcher mode.
+fn sessionActiveRowCount() usize {
+    return if (g_ai_form_visible)
         AI_FIELD_COUNT + 3
     else if (g_ai_list_visible)
         aiListRowCount()
@@ -4087,7 +4134,71 @@ fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) Session
         sshListRowCount()
     else
         platform_pty_command.sessionLauncherRowCount();
-    const box_h = @round(header_h + row_h * @as(f32, @floatFromInt(row_count)) + bottom_pad);
+}
+
+/// Selected/focused row of the currently active session-launcher mode.
+fn sessionActiveSelection() usize {
+    return if (g_ai_form_visible)
+        g_ai_focus
+    else if (g_ai_list_visible)
+        g_ai_list_selected
+    else if (g_ai_history_source_visible)
+        g_ai_history_source_selected
+    else if (g_ssh_form_visible)
+        g_ssh_focus
+    else if (g_ssh_list_visible)
+        g_ssh_list_selected
+    else
+        g_session_launcher_selected;
+}
+
+/// Mutable pointer to the active mode's selection (for the mouse wheel).
+fn sessionActiveSelectionPtr() *usize {
+    return if (g_ai_form_visible)
+        &g_ai_focus
+    else if (g_ai_list_visible)
+        &g_ai_list_selected
+    else if (g_ai_history_source_visible)
+        &g_ai_history_source_selected
+    else if (g_ssh_form_visible)
+        &g_ssh_focus
+    else if (g_ssh_list_visible)
+        &g_ssh_list_selected
+    else
+        &g_session_launcher_selected;
+}
+
+/// Rows that fit within the box for the given window height. Mirrors
+/// commandPaletteRowCapacity().
+fn sessionRowCapacity(content_height: f32, base_h: f32, row_h: f32, row_count: usize) usize {
+    if (row_count == 0) return 0;
+    const usable_h = @max(row_h, content_height - 32.0 - base_h);
+    if (usable_h <= row_h) return 1;
+    const fit: usize = @intFromFloat(@max(1.0, @floor(usable_h / row_h)));
+    return @min(row_count, fit);
+}
+
+/// First row to render so the selected row stays visible. Mirrors
+/// commandPaletteFirstVisibleIndex().
+fn sessionFirstVisibleRow(selection: usize, visible_rows: usize, row_count: usize) usize {
+    if (visible_rows == 0 or row_count <= visible_rows) return 0;
+    const sel = @min(selection, row_count - 1);
+    if (sel < visible_rows) return 0;
+    return @min(sel - visible_rows + 1, row_count - visible_rows);
+}
+
+fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) SessionLayout {
+    const content_height = @max(1, window_height - top_offset);
+    const min_box_w: f32 = if (g_ssh_form_visible or g_ssh_list_visible or g_ai_form_visible or g_ai_list_visible) 460 else 360;
+    const max_box_w = @max(260.0, @min(760.0, window_width - 48.0));
+    const box_w: f32 = @round(@min(@max(min_box_w, sessionDesiredBoxWidth()), max_box_w));
+    const row_h = overlayRowHeight(38);
+    const header_h = @round(18 + overlayLineHeight() * 2 + 12);
+    const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
+    const row_count = sessionActiveRowCount();
+    const visible_rows = sessionRowCapacity(content_height, header_h + bottom_pad, row_h, row_count);
+    const scroll = sessionFirstVisibleRow(sessionActiveSelection(), visible_rows, row_count);
+    const box_h = @round(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + bottom_pad);
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
     return .{
@@ -4098,6 +4209,9 @@ fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) Session
         .header_h = header_h,
         .first_row_top_px = box_top_px + header_h,
         .row_h = row_h,
+        .row_count = row_count,
+        .visible_rows = visible_rows,
+        .scroll = scroll,
     };
 }
 
@@ -4107,7 +4221,9 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     const y: f32 = @floatCast(ypos);
     if (x < layout.box_x or x > layout.box_x + layout.box_w) return null;
     if (y < layout.first_row_top_px) return null;
-    const row: usize = @intFromFloat(@floor((y - layout.first_row_top_px) / layout.row_h));
+    const visible_index: usize = @intFromFloat(@floor((y - layout.first_row_top_px) / layout.row_h));
+    if (visible_index >= layout.visible_rows) return null;
+    const row = visible_index + layout.scroll;
 
     if (g_ai_history_source_visible) {
         if (row >= aiHistorySourceRowCount()) return null;
@@ -4189,7 +4305,11 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
 }
 
 fn renderSessionRow(layout: SessionLayout, window_height: f32, row: usize, left: []const u8, right: []const u8, selected: bool) void {
-    const row_top = @round(layout.first_row_top_px + @as(f32, @floatFromInt(row)) * layout.row_h);
+    // Skip rows scrolled out of view above or below the visible window.
+    if (row < layout.scroll) return;
+    const visible_index = row - layout.scroll;
+    if (visible_index >= layout.visible_rows) return;
+    const row_top = @round(layout.first_row_top_px + @as(f32, @floatFromInt(visible_index)) * layout.row_h);
     const row_y = @round(window_height - row_top - layout.row_h);
     const x = layout.box_x + 18;
     const w = layout.box_w - 36;
@@ -4293,6 +4413,26 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.18);
     renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
     renderRoundedQuadAlpha(layout.box_x, box_y, layout.box_w, layout.box_h, 10, panel_color, 0.96);
+
+    // Scrollbar indicator when more rows exist than fit (short windows or long
+    // lists). The list scrolls via keyboard/click selection-follow and the wheel.
+    if (layout.row_count > layout.visible_rows and layout.visible_rows > 0) {
+        const total_f: f32 = @floatFromInt(layout.row_count);
+        const vis_f: f32 = @floatFromInt(layout.visible_rows);
+        const track_h = layout.row_h * vis_f;
+        const track_top_px = layout.first_row_top_px;
+        const sb_w: f32 = 3;
+        const sb_x = layout.box_x + layout.box_w - sb_w - 7;
+        const track_gl_y = @round(window_height - track_top_px - track_h);
+        ui_pipeline.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(bg, fg, 0.25), 0.30);
+
+        const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
+        const max_scroll_f: f32 = @floatFromInt(layout.row_count - layout.visible_rows);
+        const scroll_f: f32 = @floatFromInt(layout.scroll);
+        const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
+        const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);
+        ui_pipeline.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
+    }
 
     const title = sessionLauncherTitle();
     const hint = sessionLauncherHint();
@@ -5396,6 +5536,57 @@ test "overlays: command center mouse wheel moves selection without wrapping" {
     g_command_palette_selected = count - 1;
     commandPaletteHandleScroll(-1);
     try std.testing.expectEqual(count - 1, g_command_palette_selected);
+}
+
+test "overlays: session launcher caps rows and scrolls to keep selection visible on short windows" {
+    const row_h = overlayRowHeight(38);
+    const header_h = @round(18 + overlayLineHeight() * 2 + 12);
+    const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
+    const base_h = header_h + bottom_pad;
+
+    // The tallest mode is the AI form (12 fields + 3 action rows = 15 rows).
+    const total: usize = AI_FIELD_COUNT + 3;
+
+    // A tall window fits every row.
+    try std.testing.expectEqual(total, sessionRowCapacity(2000, base_h, row_h, total));
+
+    // The reported short window cannot fit all rows.
+    const short_vis = sessionRowCapacity(522, base_h, row_h, total);
+    try std.testing.expect(short_vis >= 1);
+    try std.testing.expect(short_vis < total);
+
+    // Selection near the top keeps the list pinned to the top.
+    try std.testing.expectEqual(@as(usize, 0), sessionFirstVisibleRow(0, short_vis, total));
+
+    // Selecting the last row scrolls just far enough to reveal it.
+    const scroll = sessionFirstVisibleRow(total - 1, short_vis, total);
+    try std.testing.expectEqual(total - short_vis, scroll);
+    try std.testing.expect(total - 1 >= scroll);
+    try std.testing.expect(total - 1 < scroll + short_vis);
+}
+
+test "overlays: session launcher mouse wheel moves selection without wrapping" {
+    sessionLauncherOpen();
+    defer sessionLauncherClose();
+
+    const count = platform_pty_command.sessionLauncherRowCount();
+    try std.testing.expect(count >= 2);
+
+    g_session_launcher_selected = 0;
+    sessionLauncherHandleScroll(-1);
+    try std.testing.expectEqual(@as(usize, 1), g_session_launcher_selected);
+
+    sessionLauncherHandleScroll(1);
+    try std.testing.expectEqual(@as(usize, 0), g_session_launcher_selected);
+
+    // At the top, scrolling up does not wrap.
+    sessionLauncherHandleScroll(1);
+    try std.testing.expectEqual(@as(usize, 0), g_session_launcher_selected);
+
+    // At the bottom, scrolling down does not wrap.
+    g_session_launcher_selected = count - 1;
+    sessionLauncherHandleScroll(-1);
+    try std.testing.expectEqual(count - 1, g_session_launcher_selected);
 }
 
 test "overlays: active download toast can be clicked for interruption" {
