@@ -345,13 +345,36 @@ static bool wispterm_macos_install_hotkey_handler(void) {
     return status == noErr;
 }
 
-char *wispterm_macos_open_file_dialog(const char *title) {
+// Parse a ';'-joined list of bare extensions (e.g. "md" or "png;jpg") into the
+// NSArray<NSString *> that NSOpenPanel/NSSavePanel.allowedFileTypes expects, or
+// nil when there is nothing to constrain.
+static NSArray<NSString *> *wispterm_macos_allowed_file_types(const char *exts) {
+    if (exts == NULL) return nil;
+    NSString *joined = [NSString stringWithUTF8String:exts];
+    if (joined == nil || joined.length == 0) return nil;
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    for (NSString *raw in [joined componentsSeparatedByString:@";"]) {
+        NSString *ext = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (ext.length == 0 || [ext isEqualToString:@"*"]) continue;
+        if (![out containsObject:ext]) [out addObject:ext];
+    }
+    return out.count > 0 ? out : nil;
+}
+
+char *wispterm_macos_open_file_dialog(const char *title, const char *allowed_exts) {
     @autoreleasepool {
         NSOpenPanel *panel = [NSOpenPanel openPanel];
         panel.canChooseFiles = YES;
         panel.canChooseDirectories = NO;
         panel.allowsMultipleSelection = NO;
         if (title != NULL) panel.title = [NSString stringWithUTF8String:title];
+        NSArray<NSString *> *types = wispterm_macos_allowed_file_types(allowed_exts);
+        if (types != nil) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            panel.allowedFileTypes = types;
+#pragma clang diagnostic pop
+        }
         if ([panel runModal] != NSModalResponseOK) return NULL;
         return wispterm_macos_copy_nsstring(panel.URL.path);
     }
@@ -369,7 +392,7 @@ char *wispterm_macos_pick_folder_dialog(const char *title) {
     }
 }
 
-char *wispterm_macos_save_file_dialog(const char *title, const char *initial_dir, const char *default_filename) {
+char *wispterm_macos_save_file_dialog(const char *title, const char *initial_dir, const char *default_filename, const char *allowed_exts, const char *default_ext) {
     @autoreleasepool {
         NSSavePanel *panel = [NSSavePanel savePanel];
         if (title != NULL) panel.title = [NSString stringWithUTF8String:title];
@@ -378,6 +401,27 @@ char *wispterm_macos_save_file_dialog(const char *title, const char *initial_dir
             if (dir != nil) panel.directoryURL = [NSURL fileURLWithPath:dir];
         }
         if (default_filename != NULL) panel.nameFieldStringValue = [NSString stringWithUTF8String:default_filename];
+
+        // Restrict to the filter extensions (auto-appends when the user omits
+        // one); make sure the requested default extension is the primary type.
+        NSMutableArray<NSString *> *types = [NSMutableArray array];
+        NSArray<NSString *> *filter_types = wispterm_macos_allowed_file_types(allowed_exts);
+        if (filter_types != nil) [types addObjectsFromArray:filter_types];
+        if (default_ext != NULL) {
+            NSString *ext = [[NSString stringWithUTF8String:default_ext]
+                stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if (ext.length > 0 && ![ext isEqualToString:@"*"]) {
+                [types removeObject:ext];
+                [types insertObject:ext atIndex:0];
+            }
+        }
+        if (types.count > 0) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            panel.allowedFileTypes = types;
+#pragma clang diagnostic pop
+        }
+
         if ([panel runModal] != NSModalResponseOK) return NULL;
         return wispterm_macos_copy_nsstring(panel.URL.path);
     }

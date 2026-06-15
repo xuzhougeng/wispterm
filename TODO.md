@@ -675,6 +675,69 @@ verification in progress.
 | Draggable titlebar | ⚠️ only via traffic-light gaps until D8.4a |
 | Embedded browser panel | ❌ disabled (D5 — no WKWebView backend yet) |
 
+### Silent platform stubs — audit 2026-06-15
+
+A code audit of every `src/platform/*` facade for the clipboard image-paste
+shape (facade wired, but a platform's `backendForOs` resolves to a
+`*_unsupported`/no-op impl, so the capability silently does nothing with no
+error surfaced). macOS items are the priority (active port); Linux items fold
+into the Linux-host work below.
+
+**macOS:**
+- [x] Clipboard image paste (`readImageAsPngTemp`) — fixed (PR #228).
+- [x] File dialog type filters + save default-extension — fixed: `file_dialog_macos.zig`
+      derives `NSOpenPanel`/`NSSavePanel.allowedFileTypes` from the filter
+      patterns and auto-appends the save extension (previously `_ = request.filters`).
+- [ ] **Remote-relay client (`remote_transport`)** — macOS **and** Linux resolve to
+      `.unsupported` (`remote_transport.zig:11-14`); with `remote-enabled = true`
+      the relay never connects — `remote_client.zig:321` errors, only a
+      `std.debug.print` to stderr, then a perpetual 2s reconnect loop. No UI
+      error. Add `remote_transport_posix.zig` (macOS `NSURLSessionWebSocketTask`
+      bridge like `http_client_macos_bridge.m`; Linux minimal RFC6455 over
+      `std.net` + `std.crypto.tls`), route `.macos|.linux → .posix`. **HIGH.**
+- [ ] **Single-instance session lock (`session_lock`)** — macOS+Linux use
+      `session_lock_local_process` whose `reserveSessionKey` always returns
+      success (`:11-15`); no cross-process lock (Windows uses a named mutex), so
+      a double-launched/restored session key isn't detected. Add
+      `session_lock_posix.zig` (`flock`/`O_CREAT|O_EXCL` lockfile). **MEDIUM.**
+- [ ] **Process memory HUD (`memory`)** — macOS+Linux → `memory_unsupported`
+      (`queryProcess` null); the debug memory overlay line is blank. Add
+      `memory_macos.zig` (`task_info`/`TASK_VM_INFO`) and `memory_linux.zig`
+      (`/proc/self/status`). **LOW** (developer diagnostic only).
+- [ ] **Cooperative blocking-thread shutdown (`thread_control`)** — macOS+Linux →
+      `thread_control_unsupported` (no-op); a WeChat login/poll worker stuck in a
+      long-poll is force-killed at quit instead of cooperatively cancelled
+      (`weixin/controller.zig:397`). Add `thread_control_posix.zig`
+      (`pthread_kill` interrupt + timed join). **LOW** (only with WeChat).
+
+**Linux (in addition to the deferred Linux host below):**
+- [ ] **Quake-mode global hotkey** — `global_hotkey_unsupported.register()` →
+      false; `quake-mode` never binds a system-wide hotkey, and the
+      "already registered by another app" print (`AppWindow.zig:6532`) is
+      misleading. Add `global_hotkey_linux.zig` (X11 `XGrabKey` / Wayland
+      global-shortcuts portal), mirroring the macOS Carbon path.
+- [ ] **Live config reload** — `config_watcher_unsupported.initPath()` → null;
+      config edits need a full restart ("Config watcher not available",
+      `AppWindow.zig:7749`). Add `config_watcher_linux.zig` (inotify), mirroring
+      `config_watcher_macos.zig` (kqueue `EVFILT_VNODE`).
+- [ ] **Auto-update asset detection** — `update_package.zig:48-60` has no
+      `.linux` arm, so the update check can never match a Linux asset →
+      `state.failed`. Add `update_package_linux.zig`.
+- [ ] **Font family enumeration** — `font_discovery_linux.zig:119` returns an
+      empty list; any font picker/auto-complete is blank (exact `font-family`
+      still works). Implement via fontconfig `FcFontList`.
+- [ ] **Off-screen window guard** — `display_portable.isPointOnAnyDisplay`
+      always returns true; a restored window can open off-screen on Linux. Add
+      an SDL3 `SDL_GetDisplayBounds` containment check.
+
+**Doc corrections found in the same audit (code already done; text stale):**
+- Embedded browser on macOS appears implemented (`webview_macos.zig` + WKWebView;
+  `build.zig` maps macOS → webkit), but D5 (504-514) and the status table (676)
+  still say "❌ disabled" — verify on-device and flip to ✅.
+- Desktop notifications on macOS/Linux are implemented
+  (`notifications_macos.zig` UNUserNotificationCenter; Linux `notify-send`), but
+  D4 (486-492) still reads "bell + window attention only" — update the caveat.
+
 ### Linux — deferred
 
 Postponed in favor of the macOS port. The groundwork already exists (Phase A
