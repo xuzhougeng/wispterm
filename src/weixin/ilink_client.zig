@@ -7,6 +7,8 @@ const codec = @import("ilink_codec.zig");
 const media = @import("media.zig");
 const types = @import("types.zig");
 
+const log = std.log.scoped(.weixin);
+
 /// Abstract transport the poller depends on, so it can be faked in tests.
 pub const ClientApi = struct {
     ctx: *anyopaque,
@@ -510,8 +512,7 @@ pub const Client = struct {
         });
         const response_items = body.toArrayList().items;
         if (response.status != .ok) {
-            std.debug.print("weixin http({d}): endpoint={s} status=failed http_status={} body_excerpt={s}\n", .{
-                std.time.milliTimestamp(),
+            log.warn("http endpoint={s} status=failed http_status={} body_excerpt={s}", .{
                 endpointForLog(path),
                 response.status,
                 logSafeResponseExcerpt(arena, response_items),

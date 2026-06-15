@@ -9,6 +9,8 @@ const control_mod = @import("control.zig");
 const reply_progress = @import("reply_progress.zig");
 const media_inbound_mod = @import("media_inbound.zig");
 
+const log = std.log.scoped(.weixin);
+
 pub const SESSION_EXPIRED_ERRCODE: i64 = -14;
 /// Elapsed times at which an in-progress AI follow-up pings the user so a slow
 /// task visibly stays alive: 30s, then 2m, 5m, 10m, 20m. The ~30-minute mark is
@@ -237,7 +239,7 @@ pub const Poller = struct {
     pub fn start(self: *Poller) !void {
         self.stop_requested.store(false, .release);
         self.thread = try std.Thread.spawn(.{}, threadMain, .{self});
-        std.debug.print("weixin poller started\n", .{});
+        log.info("poller started", .{});
     }
 
     pub fn stop(self: *Poller) void {
@@ -248,7 +250,7 @@ pub const Poller = struct {
             self.thread = null;
         }
         self.cancelAiFollowup();
-        std.debug.print("weixin poller stopped\n", .{});
+        log.info("poller stopped", .{});
     }
 
     pub fn stopForProcessExit(self: *Poller, thread_control: ThreadControl) bool {
@@ -273,7 +275,7 @@ pub const Poller = struct {
     fn threadMain(self: *Poller) void {
         while (!self.stop_requested.load(.acquire)) {
             self.tickOnce() catch |err| {
-                std.debug.print("weixin poll failed: {}; retrying in {d}ms\n", .{ err, POLL_ERROR_BACKOFF_MS });
+                log.warn("poll failed: {}; retrying in {d}ms", .{ err, POLL_ERROR_BACKOFF_MS });
                 std.Thread.sleep(POLL_ERROR_BACKOFF_MS * std.time.ns_per_ms);
             };
         }

@@ -9,6 +9,8 @@ const ilink = @import("ilink_client.zig");
 const poller = @import("poller.zig");
 const control_mod = @import("control.zig");
 
+const log = std.log.scoped(.weixin);
+
 const SHUTDOWN_JOIN_TIMEOUT_MS: u32 = 1500;
 const NOTIFY_TEXT_MAX: usize = 2000;
 pub const ThreadControl = poller.ThreadControl;
@@ -100,7 +102,7 @@ pub const Controller = struct {
             self.login_active.store(false, .release);
             return err;
         };
-        std.debug.print("weixin QR login started\n", .{});
+        log.info("QR login started", .{});
     }
 
     pub fn cancelLogin(self: *Controller) void {
@@ -152,9 +154,11 @@ pub const Controller = struct {
     }
 
     fn loginThreadMain(self: *Controller) void {
+        log.info("login: thread start", .{});
         var qr_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer qr_arena.deinit();
-        const qr = self.beginLogin(qr_arena.allocator()) catch {
+        const qr = self.beginLogin(qr_arena.allocator()) catch |err| {
+            log.warn("login: beginLogin failed: {}", .{err});
             self.setLoginStatus(.expired);
             self.login_active.store(false, .release);
             return;
@@ -164,7 +168,8 @@ pub const Controller = struct {
 
         while (self.login_active.load(.acquire)) {
             var poll_arena = std.heap.ArenaAllocator.init(self.allocator);
-            const status = self.pollLogin(poll_arena.allocator(), qr.qrcode) catch {
+            const status = self.pollLogin(poll_arena.allocator(), qr.qrcode) catch |err| {
+                log.warn("login: pollLogin failed: {}", .{err});
                 poll_arena.deinit();
                 std.Thread.sleep(2 * std.time.ns_per_s);
                 continue;
@@ -175,7 +180,7 @@ pub const Controller = struct {
             }
             self.setLoginStatus(status.status);
             if (status.status == .confirmed) {
-                self.confirmLogin(status) catch {}; // uses `status` before poll_arena frees
+                self.confirmLogin(status) catch |err| log.err("login: confirmLogin failed: {}", .{err}); // uses `status` before poll_arena frees
                 poll_arena.deinit();
                 break;
             }
@@ -312,7 +317,7 @@ pub const Controller = struct {
         };
         try self.persistBinding(binding);
         try self.startWithBinding(binding, .{ .bootstrap_skip_pending = false });
-        std.debug.print("weixin QR login confirmed; polling started\n", .{});
+        log.info("QR login confirmed; polling started", .{});
     }
 
     // --- internals ---
@@ -346,7 +351,7 @@ pub const Controller = struct {
         };
         try self.poll.start();
         self.running = true;
-        std.debug.print("weixin direct binding loaded; poller active\n", .{});
+        log.info("direct binding loaded; poller active", .{});
     }
 
     fn setBinding(self: *Controller, b: types.Binding) !void {
