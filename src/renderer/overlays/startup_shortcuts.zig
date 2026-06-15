@@ -55,7 +55,7 @@ const STARTUP_SHORTCUT_ENTRIES = [_]StartupShortcut{
     .{ .keys = "Ctrl+Shift+P", .kind = .action, .first = .toggle_command_palette, .action = "Command center", .action_zh = "命令中心" },
     .{ .keys = "Ctrl+Shift+T", .kind = .action, .first = .new_session, .action = "New session", .action_zh = "新建会话" },
     .{ .keys = "Ctrl+Shift+B", .kind = .action, .first = .toggle_sidebar, .action = "Toggle sidebar", .action_zh = "切换侧边栏" },
-    .{ .keys = "Ctrl+Shift+O", .kind = .action, .first = .split_right, .action = "Split right", .action_zh = "向右分屏" },
+    .{ .keys = "Ctrl+Shift++ / Ctrl+Shift+-", .kind = .pair, .first = .split_right, .second = .split_down, .action = "Split right / down", .action_zh = "向右 / 向下分屏" },
     .{ .keys = "Ctrl+Shift+Alt+E", .kind = .action, .first = .toggle_file_explorer, .action = "File explorer", .action_zh = "文件浏览器" },
     .{ .keys = "Ctrl/double-click file", .keys_macos = "Cmd/double-click file", .action = "Preview file", .action_zh = "预览文件" },
     .{ .keys = "Ctrl+Shift-click SSH file", .keys_macos = "Cmd+Shift-click SSH file", .action = "Download file", .action_zh = "下载文件" },

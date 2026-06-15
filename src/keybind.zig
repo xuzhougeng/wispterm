@@ -61,6 +61,7 @@ pub const Action = enum {
     new_window,
     new_session,
     split_right,
+    split_down,
     toggle_file_explorer,
     toggle_sidebar,
     toggle_ai_copilot,
@@ -413,13 +414,18 @@ pub const default_bindings = [_]Binding{
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'N' }, .action = .new_window },
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'B' }, .action = .toggle_sidebar },
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'A' }, .action = .toggle_ai_copilot },
-    .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'O' }, .action = .split_right },
+    // Windows-Terminal-style split chords: Ctrl+Shift++ splits vertically (a pane
+    // to the right), Ctrl+Shift+- splits horizontally (a pane below). These take
+    // the shifted "+" chord that font-size-increase used to share, so font size
+    // keeps only the unshifted Ctrl+= / Ctrl+- chords below.
+    .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = Key.plus }, .action = .split_right },
+    .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = Key.minus }, .action = .split_down },
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true, .alt = true }, .key_code = 'E' }, .action = .toggle_file_explorer },
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'W' }, .action = .close_panel_or_tab },
     .{ .trigger = .{ .mods = .{ .alt = true }, .key_code = Key.enter }, .action = .toggle_maximize },
+    // Font size lives on the unshifted chord (press Ctrl and the "=/+" key
+    // without Shift). The shifted Ctrl+Shift++ chord is now split_right above.
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = Key.plus }, .action = .font_size_increase },
-    // The "+" glyph needs Shift on most layouts, so accept the shifted chord too.
-    .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = Key.plus }, .action = .font_size_increase },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = Key.minus }, .action = .font_size_decrease },
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'C' }, .action = .copy },
     .{ .trigger = .{ .mods = .{ .ctrl = true }, .key_code = 'V' }, .action = .paste },
@@ -550,6 +556,21 @@ test "keybind formats display labels" {
         if (is_macos) "Cmd+P" else "Win+P",
         try formatTrigger(.{ .mods = .{ .win = true }, .key_code = 'P' }, &buf),
     );
+}
+
+test "split right/down use Windows-Terminal-style Ctrl+Shift +/- bindings" {
+    const set = Set.defaults();
+    const is_macos = builtin.target.os.tag == .macos;
+    // Ctrl→Cmd on macOS for non-global app shortcuts.
+    const split_mods: Mods = if (is_macos) .{ .win = true, .shift = true } else .{ .ctrl = true, .shift = true };
+    // "+" (vertical) opens a pane to the right; "-" (horizontal) opens one below.
+    try std.testing.expectEqual(Action.split_right, set.lookupApp(.{ .mods = split_mods, .key_code = Key.plus }).?);
+    try std.testing.expectEqual(Action.split_down, set.lookupApp(.{ .mods = split_mods, .key_code = Key.minus }).?);
+    // The shifted-plus chord is no longer font increase; font size keeps the
+    // unshifted Ctrl/Cmd +/- chords.
+    const font_mods: Mods = if (is_macos) .{ .win = true } else .{ .ctrl = true };
+    try std.testing.expectEqual(Action.font_size_increase, set.lookupApp(.{ .mods = font_mods, .key_code = Key.plus }).?);
+    try std.testing.expectEqual(Action.font_size_decrease, set.lookupApp(.{ .mods = font_mods, .key_code = Key.minus }).?);
 }
 
 test "keybind parses displayed plus shortcut spelling" {

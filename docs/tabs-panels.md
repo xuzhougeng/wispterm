@@ -29,8 +29,10 @@ terminals together.
 
 ## Splitting a tab into panels
 
-- **Split the focused panel:** `Ctrl+Shift+O` (`split_right`). The command center
-  also offers `Split Right`, `Split Down`, `Split Left`, and `Split Up`.
+- **Split the focused panel:** `Ctrl+Shift++` splits to the right (`split_right`)
+  and `Ctrl+Shift+-` splits downward (`split_down`), mirroring Windows Terminal.
+  The command center also offers `Split Right`, `Split Down`, `Split Left`, and
+  `Split Up`.
 - **Move focus between panels:** `Alt+←` / `Alt+→` / `Alt+↑` / `Alt+↓`
   (`focus_left` / `focus_right` / `focus_up` / `focus_down`).
 - **Cycle focus:** `Ctrl+Shift+[` (`focus_previous`) and `Ctrl+Shift+]`

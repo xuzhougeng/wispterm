@@ -24,7 +24,7 @@
 
 ## 创建与切换分屏
 
-- **分屏当前面板：** `Ctrl+Shift+O`（`split_right`）。
+- **分屏当前面板：** `Ctrl+Shift++` 向右分屏（`split_right`），`Ctrl+Shift+-` 向下分屏（`split_down`），与 Windows Terminal 一致。
 - **在面板间移动焦点：** `Alt+←` / `Alt+→` / `Alt+↑` / `Alt+↓`。
 - **循环切换焦点：** `Ctrl+Shift+[`（上一个）与 `Ctrl+Shift+]`（下一个）。
 - **均分大小：** `Ctrl+Shift+Z`（`equalize_splits`）把该标签内所有分屏重置为等比。

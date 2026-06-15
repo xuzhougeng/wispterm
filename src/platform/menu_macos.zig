@@ -98,7 +98,8 @@ fn buildDefaultMenu() void {
     wispterm_macos_menu_begin_submenu("File");
     wispterm_macos_menu_add_item("New Tab", id(.new_session), "t", ModCtrl | ModShift);
     wispterm_macos_menu_add_item("New Window", id(.new_window), "n", ModCtrl | ModShift);
-    wispterm_macos_menu_add_item("Split Right", id(.split_right), "o", ModCtrl | ModShift);
+    wispterm_macos_menu_add_item("Split Right", id(.split_right), "+", ModCtrl | ModShift);
+    wispterm_macos_menu_add_item("Split Down", id(.split_down), "-", ModCtrl | ModShift);
     wispterm_macos_menu_add_separator();
     wispterm_macos_menu_add_item("Close Tab", id(.close_panel_or_tab), "w", ModCtrl | ModShift);
     wispterm_macos_menu_end_submenu();

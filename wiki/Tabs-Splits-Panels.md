@@ -28,7 +28,8 @@ unrelated work apart, and splits to see related terminals side by side.
 
 ## Creating & focusing splits
 
-- **Split the current panel:** `Ctrl+Shift+O` (`split_right`).
+- **Split the current panel:** `Ctrl+Shift++` splits to the right (`split_right`)
+  and `Ctrl+Shift+-` splits downward (`split_down`), mirroring Windows Terminal.
 - **Move focus between panels:** `Alt+←` / `Alt+→` / `Alt+↑` / `Alt+↓`.
 - **Cycle focus:** `Ctrl+Shift+[` (previous) and `Ctrl+Shift+]` (next).
 - **Equalize sizes:** `Ctrl+Shift+Z` (`equalize_splits`) resets all splits in

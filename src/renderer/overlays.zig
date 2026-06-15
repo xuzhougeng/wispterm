@@ -897,6 +897,7 @@ fn commandEntryKeybindAction(action: CommandAction) ?keybind.Action {
     return switch (action) {
         .new_tab => .new_session,
         .split_right => .split_right,
+        .split_down => .split_down,
         .focus_previous => .focus_previous,
         .focus_next => .focus_next,
         .equalize_splits => .equalize_splits,

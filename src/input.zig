@@ -1720,6 +1720,7 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .new_window => requestNewWindowFromActiveCwd(),
         .new_session => overlays.sessionLauncherOpen(),
         .split_right => AppWindow.splitFocused(.right),
+        .split_down => AppWindow.splitFocused(.down),
         .toggle_file_explorer => toggleFileExplorer(),
         .toggle_sidebar => toggleSidebar(),
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),

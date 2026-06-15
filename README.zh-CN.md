@@ -121,7 +121,8 @@ keybind = global:ctrl+backquote=toggle_quake
 | 新建会话（会话启动器） | **Ctrl+Shift+T** | **Cmd+Shift+T** |
 | 新建窗口 | **Ctrl+Shift+N** | **Cmd+Shift+N** |
 | 切换标签侧边栏 | **Ctrl+Shift+B** | **Cmd+Shift+B** |
-| 向右分屏 | **Ctrl+Shift+O** | **Cmd+Shift+O** |
+| 向右分屏 | **Ctrl+Shift++** | **Cmd+Shift++** |
+| 向下分屏 | **Ctrl+Shift+-** | **Cmd+Shift+-** |
 | 切换文件浏览器侧边栏 | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
 | 切换 AI Copilot 侧边栏（当前终端） | **Ctrl+Shift+A** | **Cmd+Shift+A** |
 | 预览文件（终端内 Ctrl/Cmd 单击，或文件浏览器中双击） | Ctrl 单击 | Cmd 单击 |

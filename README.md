@@ -115,7 +115,8 @@ Use `keybind = clear` before custom bindings if you want to remove all defaults 
 | New session (session launcher) | **Ctrl+Shift+T** | **Cmd+Shift+T** |
 | New window | **Ctrl+Shift+N** | **Cmd+Shift+N** |
 | Toggle tab sidebar | **Ctrl+Shift+B** | **Cmd+Shift+B** |
-| Split to the right | **Ctrl+Shift+O** | **Cmd+Shift+O** |
+| Split to the right | **Ctrl+Shift++** | **Cmd+Shift++** |
+| Split downward | **Ctrl+Shift+-** | **Cmd+Shift+-** |
 | Toggle file explorer sidebar | **Ctrl+Shift+Alt+E** | **Cmd+Shift+Opt+E** |
 | Toggle AI Copilot sidebar (current terminal) | **Ctrl+Shift+A** | **Cmd+Shift+A** |
 | Preview files (Ctrl/Cmd-click in terminal, or double-click in File Explorer) | Ctrl-click | Cmd-click |

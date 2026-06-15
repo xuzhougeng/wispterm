@@ -36,13 +36,14 @@ keybind = global:ctrl+backquote=toggle_quake
 | `Ctrl+Shift+P` | `toggle_command_palette` | Open the command center |
 | `Ctrl+Shift+T` | `new_session` | Open the session launcher (shell / Copilot / Sessions) |
 | `Ctrl+Shift+N` | `new_window` | Open a new window |
-| `Ctrl+Shift+O` | `split_right` | Split the focused panel |
+| `Ctrl+Shift++` | `split_right` | Split the focused panel to the right |
+| `Ctrl+Shift+-` | `split_down` | Split the focused panel downward |
 | `Ctrl+Shift+B` | `toggle_sidebar` | Toggle the sidebar |
 | `Ctrl+Shift+A` | `toggle_ai_copilot` | Toggle the Copilot sidebar on a terminal |
 | `Ctrl+Shift+Alt+E` | `toggle_file_explorer` | Toggle the File Explorer |
 | `Ctrl+Shift+W` | `close_panel_or_tab` | Close the focused panel/tab |
 | `Alt+Enter` | `toggle_maximize` | Maximize/restore the focused panel |
-| `Ctrl++` (also `Ctrl+Shift++`) | `font_size_increase` | Increase font size |
+| `Ctrl++` (press without Shift) | `font_size_increase` | Increase font size |
 | `Ctrl+-` | `font_size_decrease` | Decrease font size |
 | `Ctrl+Shift+C` | `copy` | Copy the selection |
 | `Ctrl+V` | `paste` | Paste |
@@ -77,7 +78,7 @@ Some actions are mouse-only and are not bound through `keybind`:
 Every app-level action you can bind:
 
 `toggle_quake`, `toggle_command_palette`, `new_window`, `new_session`,
-`split_right`, `toggle_file_explorer`, `toggle_sidebar`, `toggle_ai_copilot`,
+`split_right`, `split_down`, `toggle_file_explorer`, `toggle_sidebar`, `toggle_ai_copilot`,
 `close_panel_or_tab`, `toggle_maximize`, `font_size_increase`,
 `font_size_decrease`, `copy`, `paste`, `paste_image`, `focus_left`,
 `focus_right`, `focus_up`, `focus_down`, `focus_previous`, `focus_next`,

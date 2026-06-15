@@ -21,6 +21,7 @@ pub const Command = union(enum) {
     new_window,
     new_session,
     split_right,
+    split_down,
     toggle_file_explorer,
     toggle_sidebar,
     toggle_ai_copilot,
@@ -50,6 +51,7 @@ pub fn resolve(action: keybind.Action, phase: Phase) ?Command {
             .new_window => .new_window,
             .new_session => .new_session,
             .split_right => .split_right,
+            .split_down => .split_down,
             .toggle_file_explorer => .toggle_file_explorer,
             .toggle_sidebar => .toggle_sidebar,
             .toggle_ai_copilot => .toggle_ai_copilot,
@@ -119,6 +121,12 @@ test "early commands resolve only in the early phase" {
     try std.testing.expectEqual(Command.toggle_quake, resolve(.toggle_quake, .early).?);
     try std.testing.expectEqual(Command.split_right, resolve(.split_right, .early).?);
     try std.testing.expectEqual(@as(?Command, null), resolve(.toggle_quake, .late));
+}
+
+test "split_right and split_down resolve in the early phase" {
+    try std.testing.expectEqual(Command.split_right, resolve(.split_right, .early).?);
+    try std.testing.expectEqual(Command.split_down, resolve(.split_down, .early).?);
+    try std.testing.expectEqual(@as(?Command, null), resolve(.split_down, .late));
 }
 
 test "font size carries the delta" {
