@@ -186,10 +186,10 @@ pub const TmuxBridge = struct {
                 return null;
             };
             self.panes.setSurface(pane_id, surface);
-            // Seed the pane's visible screen: tmux doesn't replay it via %output
-            // on attach. `capture-pane -p` (no -J) gives one line per visible row
-            // ≤ pane width, so with size-sync matching the surface to the pane it
-            // paints 1:1 (clear+home prefix in the Session block_end handler).
+            // Seed the pane's primary screen as a fallback: tmux doesn't replay
+            // it via %output on attach. If pane metadata later reports that the
+            // pane is on the alternate screen, onPaneMeta queues an alternate
+            // capture that switches the surface to that screen.
             self.session.capturePane(pane_id) catch {};
             return surface; // ref 1, transferred to the tree
         }
@@ -371,9 +371,13 @@ pub const TmuxBridge = struct {
         }
     }
 
-    fn onPaneMeta(ctx: *anyopaque, pane_id: usize, path: []const u8, cmd: []const u8) void {
+    fn onPaneMeta(ctx: *anyopaque, pane_id: usize, path: []const u8, cmd: []const u8, alternate_on: bool) void {
         const self: *TmuxBridge = @ptrCast(@alignCast(ctx));
         const p = self.panes.find(pane_id) orelse return;
+        if (alternate_on and !p.alternate_capture_requested) {
+            p.alternate_capture_requested = true;
+            self.session.capturePaneAlternate(pane_id) catch {};
+        }
         const op = p.surface orelse return;
         const s: *Surface = @ptrCast(@alignCast(op));
         if (path.len > 0) s.setCwdPath(path);

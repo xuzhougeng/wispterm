@@ -55,6 +55,10 @@ const OscParseState = enum { ground, esc, osc_num, osc_semi, osc_title };
 const ImageOscParseState = enum {
     ground,
     esc,
+    /// Swallow tmux/screen title sequences: ESC k <title> ST.
+    screen_title,
+    /// Saw ESC inside a screen-title sequence; next byte may be '\' (ST).
+    screen_title_esc,
     osc_prefix,
     image_osc,
     image_osc_esc,
@@ -1049,12 +1053,34 @@ pub fn feedVtWithWispTermImageFallback(self: *Surface, data: []const u8) void {
                     self.wispterm_image_osc_buf.clearRetainingCapacity();
                     self.wispterm_image_osc_state = .osc_prefix;
                     passthrough_start = i + 1;
+                } else if (byte == 'k') {
+                    // GNU screen/tmux title sequence: ESC k <title> ESC \.
+                    // ghostty-vt doesn't implement ESC k yet; forwarding it
+                    // lets the title payload (often the running command such
+                    // as "ls" or "cd") render as stray pane text.
+                    self.wispterm_image_osc_state = .screen_title;
+                    passthrough_start = i + 1;
                 } else {
                     self.vt_stream.nextSlice("\x1b");
                     self.vt_stream.nextSlice(data[i .. i + 1]);
                     self.wispterm_image_osc_state = .ground;
                     passthrough_start = i + 1;
                 }
+            },
+            .screen_title => switch (byte) {
+                0x07 => {
+                    self.wispterm_image_osc_state = .ground;
+                    passthrough_start = i + 1;
+                },
+                0x1b => {
+                    self.wispterm_image_osc_state = .screen_title_esc;
+                    passthrough_start = i + 1;
+                },
+                else => passthrough_start = i + 1,
+            },
+            .screen_title_esc => {
+                self.wispterm_image_osc_state = if (byte == '\\') .ground else .screen_title;
+                passthrough_start = i + 1;
             },
             .osc_prefix => {
                 const matched = self.wispterm_image_osc_buf.items.len;
