@@ -5236,6 +5236,10 @@ fn reportMouseMotion(surface: *Surface, button: mouse_report.Button, ev: platfor
 }
 
 fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
+    if (input_diagnostics.enabled())
+        input_diagnostics.log("mouse-wheel raw delta={d} x={d} y={d} ctrl={} shift={} alt={}", .{
+            ev.delta, ev.xpos, ev.ypos, ev.ctrl, ev.shift, ev.alt,
+        });
     overlays.startupShortcutsDismiss();
     if (overlays.whatsNewVisible()) {
         overlays.whatsNewHandleScroll(@floatFromInt(ev.delta));
@@ -5373,15 +5377,21 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     var terminal_input_buf: [512]u8 = undefined;
     var terminal_input_len: usize = 0;
     var sent_to_terminal = false;
+    var dbg_branch: []const u8 = "viewport";
 
     surface.render_state.mutex.lock();
+    const dbg_mode = surface.terminal.flags.mouse_event;
+    const dbg_alt_screen = surface.terminal.screens.active_key == .alternate;
+    const dbg_alt_scroll = surface.terminal.modes.get(.mouse_alternate_scroll);
     if (surface.terminal.flags.mouse_event != .none) {
         for (0..mouseWheelUnits(ev.delta)) |_| {
             if (!appendMouseWheelReport(surface, ev, &terminal_input_buf, &terminal_input_len)) break;
         }
         sent_to_terminal = terminal_input_len > 0;
+        dbg_branch = "report";
     } else if (appendAlternateScrollKeys(surface, ev, &terminal_input_buf, &terminal_input_len)) {
         sent_to_terminal = true;
+        dbg_branch = "altscroll";
     } else {
         // WHEEL_DELTA is 120 per notch. Convert to lines (3 lines per notch, like GLFW).
         const notches = @as(f64, @floatFromInt(ev.delta)) / 120.0;
@@ -5397,6 +5407,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         surface.scrollbar_show_time = std.time.milliTimestamp();
     }
     surface.render_state.mutex.unlock();
+
+    if (input_diagnostics.enabled())
+        input_diagnostics.log("mouse-wheel handled mode={s} alt_screen={} alt_scroll_mode={} branch={s} sent_len={d}", .{
+            @tagName(dbg_mode), dbg_alt_screen, dbg_alt_scroll, dbg_branch, terminal_input_len,
+        });
 
     if (g_selecting and !sent_to_terminal) {
         updateDragSelection(surface, @floatFromInt(ev.xpos), @floatFromInt(ev.ypos));

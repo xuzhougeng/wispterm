@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const policy = @import("console_host_policy.zig");
+const input_diagnostics = @import("../input_diagnostics.zig");
 
 const windows = std.os.windows;
 const HANDLE = windows.HANDLE;
@@ -107,6 +108,10 @@ fn resolveLocked() *const Api {
 
     const dll_present = siblingExists(exe_dir, bundled_dll_name);
     const host_present = siblingExists(exe_dir, bundled_host_name);
+    if (input_diagnostics.enabled())
+        input_diagnostics.log("conpty resolve: preference={s} conpty.dll_present={} OpenConsole.exe_present={} -> choice={s}", .{
+            @tagName(g_preference), dll_present, host_present, @tagName(policy.choose(g_preference, dll_present, host_present)),
+        });
     if (policy.choose(g_preference, dll_present, host_present) == .system) {
         if (g_preference == .auto and (dll_present != host_present)) {
             log.warn(
