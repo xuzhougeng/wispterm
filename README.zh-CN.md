@@ -3,9 +3,9 @@
 # WispTerm
 
 <p>
-<a href="https://github.com/xuzhougeng/wispterm/actions/workflows/windows-release.yml"><img src="https://img.shields.io/github/actions/workflow/status/xuzhougeng/wispterm/windows-release.yml?label=Windows" alt="Windows release"></a>
-<a href="https://github.com/xuzhougeng/wispterm/actions/workflows/macos-release.yml"><img src="https://img.shields.io/github/actions/workflow/status/xuzhougeng/wispterm/macos-release.yml?label=macOS" alt="macOS release"></a>
-<a href="https://github.com/xuzhougeng/wispterm/actions/workflows/linux-release.yml"><img src="https://img.shields.io/github/actions/workflow/status/xuzhougeng/wispterm/linux-release.yml?label=Linux" alt="Linux release"></a>
+<a href="https://github.com/xuzhougeng/wispterm/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="Windows supported"></a>
+<a href="https://github.com/xuzhougeng/wispterm/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="macOS supported"></a>
+<a href="https://github.com/xuzhougeng/wispterm/releases"><img src="https://img.shields.io/badge/Linux-experimental-FCC624" alt="Linux experimental"></a>
 <a href="https://github.com/xuzhougeng/wispterm/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/wispterm" alt="License"></a>
 <br>
 <a href="https://github.com/xuzhougeng/wispterm/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wispterm?style=social" alt="Stars"></a>
