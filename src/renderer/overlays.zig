@@ -288,6 +288,26 @@ pub fn commandPaletteMove(delta: i32) void {
     g_command_palette_selected = @intCast(next);
 }
 
+/// Mouse-wheel handling for the command center. The list scrolls by moving the
+/// selection (which the view follows via commandPaletteFirstVisibleIndex),
+/// matching the keyboard Up/Down model. Positive delta scrolls toward the top,
+/// mirroring whatsNewHandleScroll(). Clamps at the ends so the wheel never wraps.
+pub fn commandPaletteHandleScroll(delta_y: f64) void {
+    if (!g_command_palette_visible) return;
+    const step: i32 = if (delta_y > 0) -1 else if (delta_y < 0) 1 else 0;
+    if (step == 0) return;
+    if (commandPaletteIsHistoryMode()) {
+        commandPaletteMoveAgentHistory(step);
+        return;
+    }
+    const count = commandPaletteVisibleCount();
+    if (count == 0) return;
+    if (step < 0) {
+        if (g_command_palette_selected == 0) return;
+    } else if (g_command_palette_selected + 1 >= count) return;
+    commandPaletteMove(step);
+}
+
 pub fn commandPaletteAgentHistoryVisible() bool {
     return commandPaletteIsHistoryMode();
 }
@@ -1737,6 +1757,29 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                 }
             }
         }
+    }
+
+    // Scrollbar indicator when more results exist than fit (short windows or
+    // long result lists). The list scrolls via keyboard/click selection-follow
+    // and the mouse wheel.
+    const total_results = commandPaletteResultCount();
+    if (total_results > layout.rendered_rows and layout.rendered_rows > 0) {
+        const total_f: f32 = @floatFromInt(total_results);
+        const vis_f: f32 = @floatFromInt(layout.rendered_rows);
+        const track_h = layout.row_h * vis_f;
+        const track_top_px = layout.row_top_px;
+        const sb_w: f32 = 3;
+        const sb_x = layout.box_x + layout.box_w - sb_w - 7;
+        const track_gl_y = @round(window_height - track_top_px - track_h);
+        ui_pipeline.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(bg, fg, 0.25), 0.30);
+
+        const first_row = commandPaletteFirstVisibleIndex(layout.rendered_rows);
+        const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
+        const max_scroll_f: f32 = @floatFromInt(total_results - layout.rendered_rows);
+        const scroll_f: f32 = @floatFromInt(first_row);
+        const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
+        const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);
+        ui_pipeline.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
     }
 
     const footer = if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_footer_history else i18n.s().cmd_palette_footer;
@@ -5326,6 +5369,33 @@ test "overlays: settings page caps visible rows and scrolls to keep focus visibl
     try std.testing.expectEqual(SETTINGS_ROW_COUNT - short_rows, scroll);
     try std.testing.expect(g_settings_focus >= scroll);
     try std.testing.expect(g_settings_focus < scroll + short_rows);
+}
+
+test "overlays: command center mouse wheel moves selection without wrapping" {
+    commandPaletteOpen();
+    defer commandPaletteClose();
+
+    // Default command mode with an empty filter lists many commands.
+    const count = commandPaletteVisibleCount();
+    try std.testing.expect(count >= 2);
+
+    g_command_palette_selected = 0;
+    // Positive delta scrolls toward the top; negative toward the bottom
+    // (mirrors whatsNewHandleScroll / the wheel sign convention).
+    commandPaletteHandleScroll(-1);
+    try std.testing.expectEqual(@as(usize, 1), g_command_palette_selected);
+
+    commandPaletteHandleScroll(1);
+    try std.testing.expectEqual(@as(usize, 0), g_command_palette_selected);
+
+    // At the top, scrolling up does not wrap to the bottom.
+    commandPaletteHandleScroll(1);
+    try std.testing.expectEqual(@as(usize, 0), g_command_palette_selected);
+
+    // At the bottom, scrolling down does not wrap to the top.
+    g_command_palette_selected = count - 1;
+    commandPaletteHandleScroll(-1);
+    try std.testing.expectEqual(count - 1, g_command_palette_selected);
 }
 
 test "overlays: active download toast can be clicked for interruption" {

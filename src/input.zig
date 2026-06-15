@@ -5203,6 +5203,12 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         AppWindow.g_force_rebuild = true;
         return;
     }
+    if (overlays.commandPaletteVisible()) {
+        overlays.commandPaletteHandleScroll(@floatFromInt(ev.delta));
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
     if (hitTestBrowserPanel(@floatFromInt(ev.xpos), @floatFromInt(ev.ypos))) return;
     // Scroll in file explorer
