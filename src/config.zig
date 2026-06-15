@@ -1545,6 +1545,23 @@ pub fn setConfigValue(allocator: std.mem.Allocator, key: []const u8, value: []co
     };
     defer if (content.len > 0) allocator.free(content);
 
+    const out = try setConfigValueInContent(allocator, content, key, value);
+    defer allocator.free(out);
+
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(out);
+}
+
+/// Pure: return a copy of `content` with `key`'s active value set to `value`.
+/// The first active occurrence is rewritten in place and any later duplicate
+/// occurrences are dropped, so the value the loader applies matches what was just
+/// set — config keys are last-wins during load, so without dropping duplicates a
+/// file with two active `font-size` lines would keep applying the second one and
+/// the Settings page (which only rewrote the first) would appear to do nothing.
+/// Comments and unrelated lines are preserved; the line is appended if the key is
+/// absent. Caller owns the returned slice.
+pub fn setConfigValueInContent(allocator: std.mem.Allocator, content: []const u8, key: []const u8, value: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
 
@@ -1552,9 +1569,12 @@ pub fn setConfigValue(allocator: std.mem.Allocator, key: []const u8, value: []co
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line_raw| {
         const line = std.mem.trimRight(u8, line_raw, "\r");
-        if (!replaced and configLineMatchesKey(line, key)) {
-            try out.writer(allocator).print("{s} = {s}\n", .{ key, value });
-            replaced = true;
+        if (configLineMatchesKey(line, key)) {
+            if (!replaced) {
+                try out.writer(allocator).print("{s} = {s}\n", .{ key, value });
+                replaced = true;
+            }
+            // Drop later duplicate active lines for the same key.
         } else if (line.len > 0) {
             try out.appendSlice(allocator, line);
             try out.append(allocator, '\n');
@@ -1568,9 +1588,7 @@ pub fn setConfigValue(allocator: std.mem.Allocator, key: []const u8, value: []co
         try out.writer(allocator).print("{s} = {s}\n", .{ key, value });
     }
 
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(out.items);
+    return out.toOwnedSlice(allocator);
 }
 
 /// Pure: return a copy of `content` with active `key = value` lines for any of
@@ -2020,6 +2038,46 @@ test "config: settings reset strips settings-page keys but preserves everything 
     try std.testing.expect(std.mem.indexOf(u8, stripped, "font-family = JetBrains Mono") != null);
     try std.testing.expect(std.mem.indexOf(u8, stripped, "keybind = ctrl+shift+p=toggle_command_palette") != null);
     try std.testing.expect(std.mem.indexOf(u8, stripped, "quake-mode = true") != null);
+}
+
+test "setConfigValueInContent rewrites first active line and drops duplicates" {
+    const allocator = std.testing.allocator;
+    // Two active font-size lines (as can accumulate in a real config): load is
+    // last-wins, so the Settings page rewriting only the first would never take
+    // effect. The dedupe collapses them to one line carrying the new value.
+    const content =
+        \\# Font
+        \\font-size = 20
+        \\theme = dracula
+        \\font-size = 16
+        \\
+    ;
+    const out = try setConfigValueInContent(allocator, content, "font-size", "24");
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings(
+        \\# Font
+        \\font-size = 24
+        \\theme = dracula
+        \\
+    , out);
+}
+
+test "setConfigValueInContent leaves commented lines and appends when key absent" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\# font-size = 13
+        \\theme = dracula
+        \\
+    ;
+    const out = try setConfigValueInContent(allocator, content, "font-size", "18");
+    defer allocator.free(out);
+    // The comment is preserved (not matched) and the active key is appended.
+    try std.testing.expectEqualStrings(
+        \\# font-size = 13
+        \\theme = dracula
+        \\font-size = 18
+        \\
+    , out);
 }
 
 test "config: inline comments after values are ignored" {
