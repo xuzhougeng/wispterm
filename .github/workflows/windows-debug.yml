@@ -1,0 +1,80 @@
+name: Build Windows Diagnostic
+
+# Manually-triggered diagnostic build: a console-subsystem, ReleaseSafe build
+# that writes an on-disk debug log + crash reports. Hand to a user to reproduce
+# a hard-to-diagnose crash/freeze. Not for release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or SHA to build
+        type: string
+        default: main
+      optimize:
+        description: Optimize mode (ReleaseSafe keeps safety checks; Debug adds richer traces)
+        type: choice
+        default: ReleaseSafe
+        options:
+          - ReleaseSafe
+          - Debug
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug:
+    name: Build Windows diagnostic (${{ github.event.inputs.optimize }})
+    runs-on: windows-latest
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}\.zig-global-cache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cache Zig packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache/p
+            .zig-global-cache
+          key: ${{ runner.os }}-zig-0.15.2-${{ hashFiles('build.zig', 'build.zig.zon', 'pkg/**/build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-0.15.2-
+
+      - name: Build diagnostic bundle
+        shell: pwsh
+        run: |
+          $opt = "${{ github.event.inputs.optimize }}"
+          zig build "-Doptimize=$opt" -Ddebug-console --fetch
+          powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1 -DebugConsole -Optimize $opt -SkipInstaller
+
+      - name: Package debug zip
+        shell: pwsh
+        run: |
+          $sha = "${{ github.sha }}".Substring(0,8)
+          $opt = "${{ github.event.inputs.optimize }}"
+          $asset = "wispterm-windows-debug-$opt-$sha.zip"
+          if (Test-Path $asset) { Remove-Item $asset -Force }
+          Compress-Archive -Path zig-out\dist\portable-debug\* -DestinationPath $asset -Force
+          "ASSET_PATH=$asset"  | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ASSET_NAME=wispterm-windows-debug-$opt-$sha" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET_NAME }}
+          path: ${{ env.ASSET_PATH }}
+          if-no-files-found: error
+
+      - name: How to run
+        shell: pwsh
+        run: Get-Content docs\windows-debug-build.md
