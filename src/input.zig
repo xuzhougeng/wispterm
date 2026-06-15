@@ -25,6 +25,7 @@ const html_server_model = @import("html_server_model.zig");
 const ai_sidebar = @import("ai_sidebar.zig");
 const ui_perf = AppWindow.ui_perf;
 const render_diagnostics = @import("render_diagnostics.zig");
+const input_diagnostics = @import("input_diagnostics.zig");
 const link_open = @import("link_open.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_local_path = @import("platform/local_path.zig");
@@ -3745,6 +3746,11 @@ fn openInEditorAtRightClick(ev: platform_input.MouseButtonEvent) bool {
 }
 
 fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
+    if (input_diagnostics.enabled()) {
+        input_diagnostics.log("mouse-button {s} {s} x={d} y={d} shift={} ctrl={} alt={} super={}", .{
+            @tagName(ev.button), @tagName(ev.action), ev.x, ev.y, ev.shift, ev.ctrl, ev.alt, ev.super,
+        });
+    }
     if (ev.action == .press) g_close_shortcut_confirm_until_ms = 0;
     if (overlays.whatsNewVisible()) {
         if (ev.button == .left and ev.action == .press) {
@@ -5132,8 +5138,20 @@ fn terminalMouseReportTarget(x_i: i32, y_i: i32) ?*Surface {
 /// Begin a reported press for an event that landed on terminal content.
 /// Returns true if the press was consumed (delivered to the PTY).
 fn beginTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
-    const surface = terminalMouseReportTarget(ev.x, ev.y) orelse return false;
+    const surface = terminalMouseReportTarget(ev.x, ev.y) orelse {
+        if (input_diagnostics.enabled())
+            input_diagnostics.log("mouse-report begin: no target (mode none / off terminal) -> local selection", .{});
+        return false;
+    };
     const button = platformMouseButton(ev.button);
+    if (input_diagnostics.enabled()) {
+        surface.render_state.mutex.lock();
+        const mode = surface.terminal.flags.mouse_event;
+        surface.render_state.mutex.unlock();
+        input_diagnostics.log("mouse-report begin: reporting to surface=0x{x} mode={s} button={s}", .{
+            @intFromPtr(surface), @tagName(mode), @tagName(button),
+        });
+    }
     updateFocusFromMouse(ev.x, ev.y);
     _ = sendTerminalMouseReport(surface, .press, button, ev.x, ev.y, .{
         .shift = ev.shift,
@@ -5152,6 +5170,8 @@ fn beginTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
 fn finishTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
     const active = g_mouse_report_button orelse return false;
     if (active != platformMouseButton(ev.button)) return false;
+    if (input_diagnostics.enabled())
+        input_diagnostics.log("mouse-report finish: release button={s}", .{@tagName(active)});
     const surface = g_mouse_report_surface;
     g_mouse_report_button = null;
     g_mouse_report_surface = null;

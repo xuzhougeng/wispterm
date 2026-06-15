@@ -13,6 +13,7 @@ const app_metadata = @import("app_metadata.zig");
 const platform_console = @import("platform/console.zig");
 const font_backend = @import("platform/font_backend.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
+const input_diagnostics = @import("input_diagnostics.zig");
 const window_backend = @import("platform/window_backend.zig");
 const i18n = @import("i18n.zig");
 const ai_chat = @import("ai_chat.zig");
@@ -168,6 +169,7 @@ pub fn main() !void {
     // Honor the config opt-in for render diagnostics before any window/GL
     // exists, so the very first WM_SIZE/WM_DPICHANGED events are captured.
     render_diagnostics.enableFromConfig(cfg.@"wispterm-debug-render");
+    input_diagnostics.enableFromConfig(cfg.@"wispterm-debug-input");
 
     // Present-path selection must be decided before the first window is
     // created (the presenter is built right after the GL context).

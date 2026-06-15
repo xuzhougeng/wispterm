@@ -402,6 +402,13 @@ language: i18n.LanguageSetting = .auto,
 /// the `WISPTERM_RENDER_DIAGNOSTICS=1` env var, but survives restarts and needs
 /// no shell setup — intended for users helping debug resize/DPI render glitches.
 @"wispterm-debug-render": bool = false,
+/// Write input / PTY-write diagnostics to
+/// `%APPDATA%\wispterm\input-diagnostic.log` (Windows). Equivalent to setting
+/// the `WISPTERM_INPUT_DIAGNOSTICS=1` env var, but survives restarts and needs
+/// no shell setup — intended for debugging what keystrokes / mouse reports a
+/// program (e.g. Codex) actually receives, e.g. the "selecting text emits ^C"
+/// report. Every PTY write is logged in caret notation (0x03 -> "^C").
+@"wispterm-debug-input": bool = false,
 /// Present frames through a DXGI flip-model swapchain instead of GDI
 /// SwapBuffers (Windows only). The legacy BLT present goes through the DWM
 /// redirection surface, which on some iGPU drivers (Intel Arc, AMD) produces
@@ -980,6 +987,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"wispterm-debug-render" = false;
         } else {
             log.warn("invalid wispterm-debug-render: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "wispterm-debug-input")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"wispterm-debug-input" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"wispterm-debug-input" = false;
+        } else {
+            log.warn("invalid wispterm-debug-input: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "wispterm-d3d-present")) {
         if (std.mem.eql(u8, value, "true")) {
@@ -2261,4 +2276,15 @@ test "config: wispterm-debug-render parses from a config line" {
     try std.testing.expect(cfg.@"wispterm-debug-render");
     cfg.applyKeyValue(allocator, "wispterm-debug-render", "false", ".");
     try std.testing.expect(!cfg.@"wispterm-debug-render");
+}
+
+test "config: wispterm-debug-input parses from a config line" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{};
+    defer cfg.deinit(allocator);
+    try std.testing.expect(!cfg.@"wispterm-debug-input");
+    cfg.applyKeyValue(allocator, "wispterm-debug-input", "true", ".");
+    try std.testing.expect(cfg.@"wispterm-debug-input");
+    cfg.applyKeyValue(allocator, "wispterm-debug-input", "false", ".");
+    try std.testing.expect(!cfg.@"wispterm-debug-input");
 }

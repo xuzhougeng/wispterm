@@ -43,6 +43,7 @@ const quick_terminal = @import("quick_terminal.zig");
 const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
+const input_diagnostics = @import("input_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
 const hit_test = @import("input/hit_test.zig");
 pub const ai_chat = @import("ai_chat.zig");
@@ -8277,6 +8278,7 @@ fn runMainLoop(self: *AppWindow) !void {
     g_weixin_ui_handle.store(0, .release);
     render_diagnostics.log("shutdown window-loop-ended", .{});
     render_diagnostics.close();
+    input_diagnostics.close();
 
     // Clean up file explorer async state (join background thread, free job)
     file_explorer.deinit();

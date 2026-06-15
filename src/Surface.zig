@@ -14,6 +14,7 @@ const Pty = @import("pty.zig").Pty;
 const Command = @import("Command.zig");
 const renderer = @import("renderer.zig");
 const termio = @import("termio.zig");
+const input_diagnostics = @import("input_diagnostics.zig");
 const Config = @import("config.zig");
 const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
@@ -779,6 +780,19 @@ pub fn queueIo(self: *Surface, msg: termio.Message) void {
 /// This mirrors Ghostty's write-message boundary so local and remote input
 /// share the same PTY write path instead of writing directly to the pipe.
 pub fn queuePtyWrite(self: *Surface, data: []const u8) void {
+    if (input_diagnostics.enabled()) {
+        // Best-effort, lock-free read of the active mouse-tracking mode so the
+        // log shows whether a write coincides with mouse reporting being on
+        // (e.g. leaked from a mouse-aware TUI like Codex). A torn enum read is
+        // harmless for diagnostics.
+        var tag_buf: [96]u8 = undefined;
+        const tag = std.fmt.bufPrint(&tag_buf, "surface=0x{x} mouse_event={s} mouse_format={s}", .{
+            @intFromPtr(self),
+            @tagName(self.terminal.flags.mouse_event),
+            @tagName(self.terminal.flags.mouse_format),
+        }) catch "surface=?";
+        input_diagnostics.logPtyWrite(tag, data);
+    }
     const msg = termio.Message.writeReq(self.allocator, data) catch return;
     self.queueIo(msg);
 }
