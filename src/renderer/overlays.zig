@@ -4423,6 +4423,10 @@ const SettingsLayout = struct {
     footer_h: f32,
     row_top_px: f32,
     row_h: f32,
+    /// Number of rows that fit in the box for the current window height.
+    visible_rows: usize,
+    /// Index of the first rendered row (scroll offset).
+    scroll: usize,
 };
 
 pub threadlocal var g_settings_visible: bool = false;
@@ -4492,13 +4496,34 @@ pub fn settingsPageExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_hei
     return true;
 }
 
+/// Number of settings rows that fit within the box for the given window height,
+/// leaving room for the header and footer. Mirrors commandPaletteRowCapacity().
+fn settingsRowCapacity(content_height: f32, base_h: f32, row_h: f32) usize {
+    const usable_h = @max(row_h, content_height - 32.0 - base_h);
+    if (usable_h <= row_h) return 1;
+    const count_f = @floor(usable_h / row_h);
+    const count: usize = @intFromFloat(@max(1.0, count_f));
+    return @min(count, SETTINGS_ROW_COUNT);
+}
+
+/// First row to render so the focused row stays visible (scroll offset).
+/// Mirrors commandPaletteFirstVisibleIndex().
+fn settingsFirstVisibleRow(visible_rows: usize) usize {
+    if (visible_rows == 0 or SETTINGS_ROW_COUNT <= visible_rows) return 0;
+    const focus = @min(g_settings_focus, SETTINGS_ROW_COUNT - 1);
+    if (focus < visible_rows) return 0;
+    return @min(focus - visible_rows + 1, SETTINGS_ROW_COUNT - visible_rows);
+}
+
 fn settingsLayout(window_width: f32, window_height: f32, top_offset: f32) SettingsLayout {
     const content_height = @max(1, window_height - top_offset);
     const box_w = @round(@min(@max(420, window_width - 48), 760));
     const row_h = overlayRowHeight(42);
     const header_h = @round(18 + overlayLineHeight() * 2 + 12);
     const footer_h = @round(@max(52.0, overlayTextHeight() + 28.0));
-    const box_h = @round(header_h + row_h * SETTINGS_ROW_COUNT + footer_h);
+    const visible_rows = settingsRowCapacity(content_height, header_h + footer_h, row_h);
+    const scroll = settingsFirstVisibleRow(visible_rows);
+    const box_h = @round(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + footer_h);
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
     const row_top_px = @round(box_top_px + header_h);
@@ -4511,6 +4536,8 @@ fn settingsLayout(window_width: f32, window_height: f32, top_offset: f32) Settin
         .footer_h = footer_h,
         .row_top_px = row_top_px,
         .row_h = row_h,
+        .visible_rows = visible_rows,
+        .scroll = scroll,
     };
 }
 
@@ -4526,7 +4553,9 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
 
     if (x < layout.box_x + 18 or x > layout.box_x + layout.box_w - 18) return null;
     if (y < layout.row_top_px) return null;
-    const row: usize = @intFromFloat(@floor((y - layout.row_top_px) / layout.row_h));
+    const visible_index: usize = @intFromFloat(@floor((y - layout.row_top_px) / layout.row_h));
+    if (visible_index >= layout.visible_rows) return null;
+    const row = visible_index + layout.scroll;
     if (row >= SETTINGS_ROW_COUNT) return null;
     g_settings_focus = row;
 
@@ -4733,7 +4762,11 @@ fn languageSettingText(setting: i18n.LanguageSetting) []const u8 {
 }
 
 fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, title: []const u8, value: []const u8, hint: []const u8, clickable: bool, selected: bool) void {
-    const row_y = @round(@as(f32, @floatFromInt(row)) * layout.row_h);
+    // Skip rows scrolled out of view above or below the visible window.
+    if (row < layout.scroll) return;
+    const visible_index = row - layout.scroll;
+    if (visible_index >= layout.visible_rows) return;
+    const row_y = @round(@as(f32, @floatFromInt(visible_index)) * layout.row_h);
     const y_top_px = layout.row_top_px + row_y;
     const gl_y = @round(window_height - y_top_px - layout.row_h);
     const x = layout.box_x + 18;
@@ -4833,6 +4866,38 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 9);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10, i18n.s().settings_restore_defaults, "Enter", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 10);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 11, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 11);
+
+    // Scrollbar indicator when not all rows fit (short windows). The list is
+    // scrolled via keyboard/click focus-follow and the mouse wheel.
+    if (layout.visible_rows < SETTINGS_ROW_COUNT) {
+        const total: f32 = @floatFromInt(SETTINGS_ROW_COUNT);
+        const vis: f32 = @floatFromInt(layout.visible_rows);
+        const track_h = layout.row_h * vis;
+        const track_top_px = layout.row_top_px;
+        const sb_w: f32 = 3;
+        const sb_x = layout.box_x + layout.box_w - sb_w - 7;
+        const track_gl_y = @round(window_height - track_top_px - track_h);
+        ui_pipeline.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(bg, fg, 0.25), 0.30);
+
+        const thumb_h = @max(24.0, @round(track_h * vis / total));
+        const max_scroll_f: f32 = @floatFromInt(SETTINGS_ROW_COUNT - layout.visible_rows);
+        const scroll_f: f32 = @floatFromInt(layout.scroll);
+        const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
+        const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);
+        ui_pipeline.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
+    }
+}
+
+/// Mouse-wheel handling for the settings page. The list scrolls by moving the
+/// focused row (which the view follows), matching the keyboard navigation model.
+/// Positive delta scrolls toward the top, mirroring whatsNewHandleScroll().
+pub fn settingsPageHandleScroll(delta_y: f64) void {
+    if (!g_settings_visible) return;
+    if (delta_y > 0) {
+        if (g_settings_focus > 0) g_settings_focus -= 1;
+    } else if (delta_y < 0) {
+        if (g_settings_focus + 1 < SETTINGS_ROW_COUNT) g_settings_focus += 1;
+    }
 }
 
 // ============================================================================
@@ -5231,6 +5296,36 @@ test "macOS UI smoke: settings toggles WeChat direct" {
     defer allocator.free(content);
 
     try std.testing.expect(std.mem.indexOf(u8, content, "weixin-direct-enabled = true") != null);
+}
+
+test "overlays: settings page caps visible rows and scrolls to keep focus visible on short windows" {
+    const row_h = overlayRowHeight(42);
+    const header_h = @round(18 + overlayLineHeight() * 2 + 12);
+    const footer_h = @round(@max(52.0, overlayTextHeight() + 28.0));
+    const base_h = header_h + footer_h;
+
+    // A tall window fits every row, so no scrolling is needed.
+    try std.testing.expectEqual(SETTINGS_ROW_COUNT, settingsRowCapacity(2000, base_h, row_h));
+
+    // The reported short window (~522px tall) cannot fit all rows.
+    const short_rows = settingsRowCapacity(522, base_h, row_h);
+    try std.testing.expect(short_rows >= 1);
+    try std.testing.expect(short_rows < SETTINGS_ROW_COUNT);
+
+    const saved_focus = g_settings_focus;
+    defer g_settings_focus = saved_focus;
+
+    // Focus near the top keeps the list pinned to the top.
+    g_settings_focus = 0;
+    try std.testing.expectEqual(@as(usize, 0), settingsFirstVisibleRow(short_rows));
+
+    // Focusing the last row (the close action that was clipped in the report)
+    // scrolls just far enough to reveal it as the bottom visible row.
+    g_settings_focus = SETTINGS_ROW_COUNT - 1;
+    const scroll = settingsFirstVisibleRow(short_rows);
+    try std.testing.expectEqual(SETTINGS_ROW_COUNT - short_rows, scroll);
+    try std.testing.expect(g_settings_focus >= scroll);
+    try std.testing.expect(g_settings_focus < scroll + short_rows);
 }
 
 test "overlays: active download toast can be clicked for interruption" {
