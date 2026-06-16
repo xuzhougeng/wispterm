@@ -277,18 +277,6 @@ pub const Session = struct {
         return null;
     }
 
-    fn takeNextCaptureReply(self: *Session) ?CaptureRequest {
-        self.dropLeadingIgnoredReplies();
-        if (self.reply_queue.items.len == 0) return null;
-        switch (self.reply_queue.items[0]) {
-            .capture => |cap| {
-                _ = self.reply_queue.orderedRemove(0);
-                return cap;
-            },
-            else => return null,
-        }
-    }
-
     fn handleBlockEnd(self: *Session, body: []const u8) Allocator.Error!void {
         // tmux may emit empty replies for commands whose output we do not care
         // about (for example size refreshes). Do not let those stale ignored
@@ -317,11 +305,6 @@ pub const Session = struct {
             self.dropLeadingIgnoredReplies();
             _ = self.takeFirstWindowListReply();
             _ = try self.applyWindowList(body);
-            return;
-        }
-
-        if (self.takeNextCaptureReply()) |cap| {
-            try self.seedCapturePane(cap.pane_id, cap.screen, body);
             return;
         }
 
@@ -1336,6 +1319,28 @@ test "a pending capture does not steal a list-panes reply (startup ordering)" {
     try std.testing.expectEqual(@as(usize, 2), log.pane_meta_count);
     try std.testing.expectEqual(@as(usize, 2), s.reply_queue.items.len); // captures untouched
     try std.testing.expectEqual(@as(usize, 0), col.buf.items.len); // no capture seed written
+}
+
+test "split-window reply cannot be stolen by a later capture-pane" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+
+    try s.splitPane(1, .horizontal);
+    try s.capturePane(2);
+
+    // A split-window command can reply with the new pane id while the layout
+    // reconcile has already queued a capture for that pane. The split reply
+    // belongs to the ignored split command, not to the later capture.
+    try s.feed("%begin 3 3 0\n%2\n%end 3 3 0\n");
+
+    try std.testing.expectEqual(@as(usize, 0), col.buf.items.len);
+    try std.testing.expectEqual(@as(usize, 1), s.reply_queue.items.len);
+
+    try s.feed("%begin 4 4 0\nreal pane\n%end 4 4 0\n");
+    try std.testing.expectEqual(@as(usize, 2), col.last_pane);
+    try std.testing.expectEqualSlices(u8, "\x1b[?1049l\x1b[2J\x1b[Hreal pane", col.buf.items);
 }
 
 test "list-panes reply is parsed even if stale replies precede it" {
