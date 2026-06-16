@@ -28,12 +28,10 @@ pub const Session = struct {
     cols: u16,
     rows: u16,
     cmds: std.ArrayListUnmanaged(u8) = .empty,
+    reply_queue: std.ArrayListUnmanaged(PendingReply) = .empty,
+    replies_awaiting: usize = 0,
     scratch: std.ArrayListUnmanaged(u8) = .empty,
     windows: std.ArrayListUnmanaged(Window) = .empty,
-    /// FIFO of pane ids awaiting a `capture-pane` reply (Phase 3d scrollback
-    /// seeding). Replies arrive in command order, so the front matches the next
-    /// non-window-list `block_end`.
-    capture_queue: std.ArrayListUnmanaged(usize) = .empty,
     active_window: ?usize = null,
     active_pane: ?usize = null,
     exited: bool = false,
@@ -44,6 +42,13 @@ pub const Session = struct {
     /// a survivable transport drop). Reset by `resetForReconnect`.
     session_gone: bool = false,
     events: EventSink = .{},
+
+    const PendingReply = union(enum) {
+        ignore,
+        list_windows,
+        list_panes,
+        capture: usize,
+    };
 
     pub const Window = struct {
         id: usize,
@@ -94,8 +99,8 @@ pub const Session = struct {
     pub fn deinit(self: *Session) void {
         self.parser.deinit();
         self.cmds.deinit(self.alloc);
+        self.reply_queue.deinit(self.alloc);
         self.scratch.deinit(self.alloc);
-        self.capture_queue.deinit(self.alloc);
         for (self.windows.items) |*w| w.deinit(self.alloc);
         self.windows.deinit(self.alloc);
     }
@@ -109,19 +114,27 @@ pub const Session = struct {
     }
 
     pub fn clearCommands(self: *Session) void {
+        if (self.cmds.items.len > 0) {
+            // The controller calls this only after writing the queued bytes to
+            // tmux. Mark every queued command as now awaiting its guarded
+            // %begin/%end reply. Unsent commands appended later stay behind
+            // `replies_awaiting` until the next write.
+            self.replies_awaiting = self.reply_queue.items.len;
+        }
         self.cmds.clearRetainingCapacity();
     }
 
     /// Reset transient stream state for a transport reconnect: the byte parser
     /// (the dropped stream may have left a partial line), the outbound command
-    /// queue, and the pending capture-pane FIFO. The window/pane model is kept —
-    /// the post-reconnect `list-windows` refreshes it and the bridge reuses the
-    /// same surfaces by pane id.
+    /// queue, and guarded-reply queue. The window/pane model is kept; the
+    /// post-reconnect `list-windows` refreshes it and the bridge reuses the same
+    /// surfaces by pane id.
     pub fn resetForReconnect(self: *Session) void {
         self.parser.deinit();
         self.parser = control.Parser.init(self.alloc);
         self.cmds.clearRetainingCapacity();
-        self.capture_queue.clearRetainingCapacity();
+        self.reply_queue.clearRetainingCapacity();
+        self.replies_awaiting = 0;
         self.exited = false;
         self.session_gone = false;
     }
@@ -140,48 +153,8 @@ pub const Session = struct {
                 self.sink.write(o.pane_id, self.scratch.items);
             },
             .layout_change => |lc| try self.applyLayout(lc.window_id, lc.layout),
-            // A command-reply block. On attach tmux does NOT emit %layout-change,
-            // so the initial windows/layouts are learned from the `list-windows`
-            // reply that arrives here as `@<id> <layout>` lines (Phase 3d
-            // bootstrap). If it is not a window list, check by content whether it
-            // is a `list-panes` reply (`%<id>\t…` shape on every non-empty line);
-            // if so emit onPaneMeta — this must take priority over the capture FIFO
-            // because `start()` enqueues list-panes before any captures but
-            // `capturePane()` may be called during layout reconcile (inside the
-            // earlier list-windows reply) so the queue can already be non-empty
-            // when the list-panes reply lands. Otherwise route to the next queued
-            // `capture-pane` pane sink (FIFO). Anything else is ignored.
-            .block_end => |body| {
-                if (!try self.applyWindowList(body)) {
-                    if (isPaneListReply(body)) {
-                        _ = self.applyPaneList(body); // emits onPaneMeta per line
-                    } else if (self.capture_queue.items.len > 0) {
-                        const pane_id = self.capture_queue.orderedRemove(0);
-                        // Repaint from the top-left, translating LF→CRLF: the
-                        // capture's rows are joined by '\n' only, and the
-                        // terminal's line feed moves down without returning to
-                        // column 0 — without the '\r' each row staircases right.
-                        self.scratch.clearRetainingCapacity();
-                        try self.scratch.appendSlice(self.alloc, "\x1b[2J\x1b[H");
-                        for (body) |c| {
-                            if (c == '\n') {
-                                try self.scratch.appendSlice(self.alloc, "\r\n");
-                            } else {
-                                try self.scratch.append(self.alloc, c);
-                            }
-                        }
-                        self.sink.write(pane_id, self.scratch.items);
-                    }
-                }
-            },
-            .block_err => |body| {
-                // A reconnect `attach` to a session the user ended replies with a
-                // `%error` whose body names the failure; flag it so the controller
-                // tears down instead of recreating the session.
-                if (isSessionGoneError(body)) self.session_gone = true;
-                // Keep the capture FIFO aligned if a capture errored.
-                if (self.capture_queue.items.len > 0) _ = self.capture_queue.orderedRemove(0);
-            },
+            .block_end => |body| try self.handleCommandReply(body, false),
+            .block_err => |body| try self.handleCommandReply(body, true),
             .window_add => |w| _ = try self.ensureWindow(w.window_id),
             .window_renamed => |w| {
                 try self.renameWindow(w.window_id, w.name);
@@ -199,6 +172,59 @@ pub const Session = struct {
             .exit => self.exited = true,
             else => {},
         }
+    }
+
+    fn handleCommandReply(self: *Session, body: []const u8, is_err: bool) Allocator.Error!void {
+        // A reconnect `attach` to a session the user ended replies with a
+        // `%error` whose body names the failure; flag it so the controller
+        // tears down instead of recreating the session. This reply belongs to
+        // the external `tmux -CC attach` command, so it may arrive before any
+        // WispTerm-enqueued command has been sent.
+        if (is_err and isSessionGoneError(body)) self.session_gone = true;
+
+        const pending = self.popPendingReply() orelse {
+            if (!is_err) {
+                // Startup can produce an initial empty block for the command
+                // that launched tmux itself. Keep lenient parsing for useful
+                // unsolicited refresh blocks, but never route unknown blocks to
+                // a pane: that is how stray `%...` text leaks into splits.
+                if (!try self.applyWindowList(body) and isPaneListReply(body)) {
+                    _ = self.applyPaneList(body);
+                }
+            }
+            return;
+        };
+
+        if (is_err) return;
+        switch (pending) {
+            .ignore => {},
+            .list_windows => _ = try self.applyWindowList(body),
+            .list_panes => _ = self.applyPaneList(body),
+            .capture => |pane_id| try self.seedCapturePane(pane_id, body),
+        }
+    }
+
+    fn popPendingReply(self: *Session) ?PendingReply {
+        if (self.replies_awaiting == 0 or self.reply_queue.items.len == 0) return null;
+        self.replies_awaiting -= 1;
+        return self.reply_queue.orderedRemove(0);
+    }
+
+    fn seedCapturePane(self: *Session, pane_id: usize, body: []const u8) Allocator.Error!void {
+        // Repaint from the top-left, translating LF to CRLF: the capture's rows
+        // are joined by '\n' only, and the terminal's line feed moves down
+        // without returning to column 0; without the '\r' each row staircases
+        // right.
+        self.scratch.clearRetainingCapacity();
+        try self.scratch.appendSlice(self.alloc, "\x1b[2J\x1b[H");
+        for (body) |c| {
+            if (c == '\n') {
+                try self.scratch.appendSlice(self.alloc, "\r\n");
+            } else {
+                try self.scratch.append(self.alloc, c);
+            }
+        }
+        self.sink.write(pane_id, self.scratch.items);
     }
 
     pub fn findWindow(self: *Session, id: usize) ?*Window {
@@ -248,8 +274,9 @@ pub const Session = struct {
     ///
     ///     #{window_id}\t#{window_active}\t#{window_layout}\t#{window_name}
     ///
-    /// Returns true if at least one line applied — the `block_end` handler uses
-    /// that to tell a window-list reply apart from a capture-pane reply.
+    /// Returns true if at least one line applied. Unknown unsolicited blocks use
+    /// this as a compatibility fallback; normal command replies are routed by
+    /// the explicit `reply_queue`.
     /// Non-matching lines are skipped.
     fn applyWindowList(self: *Session, body: []const u8) Allocator.Error!bool {
         var applied = false;
@@ -282,9 +309,8 @@ pub const Session = struct {
 
     /// Parse a `list-panes -s -F "#{pane_id}\t#{pane_current_path}\t#{pane_current_command}"`
     /// reply body. Each line: `%<id>\t<path>\t<cmd>`. Emits onPaneMeta per line.
-    /// Returns true if at least one line applied. The caller (block_end) gates
-    /// this via `isPaneListReply` so it is only reached when the body is
-    /// unambiguously a pane-list; per-line parsing is lenient (skips malformed).
+    /// Returns true if at least one line applied. Command replies route here via
+    /// `reply_queue`; unknown fallback calls still gate it with `isPaneListReply`.
     fn applyPaneList(self: *Session, body: []const u8) bool {
         var applied = false;
         var lines = std.mem.splitScalar(u8, body, '\n');
@@ -319,16 +345,18 @@ pub const Session = struct {
         }
     }
 
-    /// Enqueue a `capture-pane` for a pane and remember it (FIFO) so the reply
-    /// can be routed back to the pane's sink to seed its visible screen on
-    /// attach. Plain `-p` (NOT `-J`): each visible row is one line ≤ pane width,
-    /// so writing it to a matched-width surface reproduces the screen 1:1
-    /// without re-wrapping.
+    /// Enqueue a `capture-pane` for a pane and remember the expected guarded
+    /// reply so it can be routed back to the pane's sink to seed its visible
+    /// screen on attach. Plain `-p` (NOT `-J`): each visible row is one line ≤
+    /// pane width, so writing it to a matched-width surface reproduces the
+    /// screen 1:1 without re-wrapping.
     pub fn capturePane(self: *Session, pane_id: usize) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
         var buf: [48]u8 = undefined;
         const s = std.fmt.bufPrint(&buf, "capture-pane -p -t %{d}\n", .{pane_id}) catch unreachable;
         try self.cmds.appendSlice(self.alloc, s);
-        try self.capture_queue.append(self.alloc, pane_id);
+        try self.reply_queue.append(self.alloc, .{ .capture = pane_id });
     }
 
     /// The `list-panes` format string shared between `start` and `refreshPaneMeta`.
@@ -340,15 +368,15 @@ pub const Session = struct {
     /// notifications.)
     pub fn start(self: *Session) Allocator.Error!void {
         try self.enqueueResize();
-        try self.cmds.appendSlice(self.alloc, "list-windows -F \"#{window_id}\t#{window_active}\t#{window_layout}\t#{window_name}\"\n");
-        try self.cmds.appendSlice(self.alloc, list_panes_cmd);
+        try self.enqueueListWindows();
+        try self.enqueueListPanes();
     }
 
     /// Re-query per-pane metadata (cwd + current command). Called periodically
     /// by the controller; cwd/command change infrequently so a coarse cadence
     /// is fine.
     pub fn refreshPaneMeta(self: *Session) Allocator.Error!void {
-        try self.cmds.appendSlice(self.alloc, list_panes_cmd);
+        try self.enqueueListPanes();
     }
 
     pub fn resizeClient(self: *Session, cols: u16, rows: u16) Allocator.Error!void {
@@ -358,13 +386,32 @@ pub const Session = struct {
     }
 
     fn enqueueResize(self: *Session) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
         var buf: [64]u8 = undefined;
         const s = std.fmt.bufPrint(&buf, "refresh-client -C {d}x{d}\n", .{ self.cols, self.rows }) catch unreachable;
         try self.cmds.appendSlice(self.alloc, s);
+        try self.reply_queue.append(self.alloc, .ignore);
+    }
+
+    fn enqueueListWindows(self: *Session) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
+        try self.cmds.appendSlice(self.alloc, "list-windows -F \"#{window_id}\t#{window_active}\t#{window_layout}\t#{window_name}\"\n");
+        try self.reply_queue.append(self.alloc, .list_windows);
+    }
+
+    fn enqueueListPanes(self: *Session) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
+        try self.cmds.appendSlice(self.alloc, list_panes_cmd);
+        try self.reply_queue.append(self.alloc, .list_panes);
     }
 
     /// Queue raw key bytes for a pane as a hex `send-keys` command.
     pub fn sendKeys(self: *Session, pane_id: usize, raw: []const u8) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
         var head: [48]u8 = undefined;
         const h = std.fmt.bufPrint(&head, "send-keys -t %{d} -H", .{pane_id}) catch unreachable;
         try self.cmds.appendSlice(self.alloc, h);
@@ -374,9 +421,12 @@ pub const Session = struct {
             try self.cmds.appendSlice(self.alloc, hs);
         }
         try self.cmds.append(self.alloc, '\n');
+        try self.reply_queue.append(self.alloc, .ignore);
     }
 
     pub fn splitPane(self: *Session, pane_id: usize, dir: layout.Dir) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
         const flag = switch (dir) {
             .horizontal => "-h",
             .vertical => "-v",
@@ -384,22 +434,32 @@ pub const Session = struct {
         var buf: [48]u8 = undefined;
         const s = std.fmt.bufPrint(&buf, "split-window {s} -t %{d}\n", .{ flag, pane_id }) catch unreachable;
         try self.cmds.appendSlice(self.alloc, s);
+        try self.reply_queue.append(self.alloc, .ignore);
     }
 
     pub fn newWindow(self: *Session) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
         try self.cmds.appendSlice(self.alloc, "new-window\n");
+        try self.reply_queue.append(self.alloc, .ignore);
     }
 
     pub fn killWindow(self: *Session, id: usize) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
         var buf: [48]u8 = undefined;
         const s = std.fmt.bufPrint(&buf, "kill-window -t @{d}\n", .{id}) catch unreachable;
         try self.cmds.appendSlice(self.alloc, s);
+        try self.reply_queue.append(self.alloc, .ignore);
     }
 
     pub fn killPane(self: *Session, pane_id: usize) Allocator.Error!void {
+        const old_len = self.cmds.items.len;
+        errdefer self.cmds.shrinkRetainingCapacity(old_len);
         var buf: [48]u8 = undefined;
         const s = std.fmt.bufPrint(&buf, "kill-pane -t %{d}\n", .{pane_id}) catch unreachable;
         try self.cmds.appendSlice(self.alloc, s);
+        try self.reply_queue.append(self.alloc, .ignore);
     }
 };
 
@@ -887,10 +947,11 @@ test "capture-pane reply is routed to the pane sink (scrollback seed)" {
 
     try s.capturePane(5);
     try std.testing.expect(std.mem.indexOf(u8, s.pendingCommands(), "capture-pane -p -t %5\n") != null);
+    s.clearCommands(); // mark the capture command as written to tmux
 
     // The capture-pane reply: a %begin/%end block of plain pane content. It is
-    // not a window list, so it routes to the queued pane (%5), prefixed with a
-    // clear+home so it paints from the top-left.
+    // routed to the queued pane (%5), prefixed with a clear+home so it paints
+    // from the top-left.
     try s.feed("%begin 1 1 0\nline-a\nline-b\n%end 1 1 0\n");
     try std.testing.expectEqual(@as(usize, 5), col.last_pane);
     try std.testing.expectEqualSlices(u8, "\x1b[2J\x1b[Hline-a\r\nline-b", col.buf.items);
@@ -938,16 +999,47 @@ test "a pending capture does not steal a list-panes reply (startup ordering)" {
     defer s.deinit();
     s.events = log.eventSink();
 
-    // Captures are queued (as during attach reconcile) BEFORE the list-panes
-    // reply arrives. The reply must be parsed as pane metadata, NOT consumed as
-    // a capture seed, and the capture queue must stay intact.
+    // Bootstrap commands were already sent. A list-windows reply may reconcile
+    // layouts and enqueue captures BEFORE the already-sent list-panes reply
+    // arrives. The list-panes reply must be parsed as pane metadata, NOT
+    // consumed as a capture seed, and queued capture replies must stay intact.
+    try s.start();
+    s.clearCommands();
+    try s.feed("%begin 1 1 0\n%end 1 1 0\n"); // refresh-client reply
+    try s.feed("%begin 2 2 0\n@1\t1\tb25e,80x24,0,0,1\tshell\n%end 2 2 0\n");
     try s.capturePane(1);
     try s.capturePane(2);
     try s.feed("%begin 7 7 0\n%1\t/home/u\tnvim\n%2\t/var/log\ttail\n%end 7 7 0\n");
 
     try std.testing.expectEqual(@as(usize, 2), log.pane_meta_count);
-    try std.testing.expectEqual(@as(usize, 2), s.capture_queue.items.len); // untouched
+    try std.testing.expectEqual(@as(usize, 2), s.reply_queue.items.len); // captures untouched
+    try std.testing.expectEqual(@as(usize, 0), s.replies_awaiting); // captures are queued, not sent yet
     try std.testing.expectEqual(@as(usize, 0), col.buf.items.len); // no capture seed written
+}
+
+test "split-window reply cannot be stolen by a later capture-pane" {
+    var col = Collector{ .alloc = std.testing.allocator };
+    defer col.deinit();
+    var s = Session.init(std.testing.allocator, col.sink(), 80, 24);
+    defer s.deinit();
+
+    try s.splitPane(1, .horizontal);
+    s.clearCommands(); // split-window is awaiting its guarded reply
+
+    // A layout-change for the split can create the pane and queue a capture
+    // before the split-window command reply arrives. Even if that reply body
+    // looks like a pane id, it belongs to split-window and must be ignored.
+    try s.capturePane(2);
+    try s.feed("%begin 3 3 0\n%2\n%end 3 3 0\n");
+
+    try std.testing.expectEqual(@as(usize, 0), col.buf.items.len);
+    try std.testing.expectEqual(@as(usize, 1), s.reply_queue.items.len);
+    try std.testing.expectEqual(@as(usize, 0), s.replies_awaiting);
+
+    s.clearCommands(); // now the capture command itself has been sent
+    try s.feed("%begin 4 4 0\nreal pane\n%end 4 4 0\n");
+    try std.testing.expectEqual(@as(usize, 2), col.last_pane);
+    try std.testing.expect(std.mem.indexOf(u8, col.buf.items, "real pane") != null);
 }
 
 test "a realistic capture reply is seeded even with pane-list-like ids elsewhere" {
@@ -960,11 +1052,13 @@ test "a realistic capture reply is seeded even with pane-list-like ids elsewhere
     s.events = log.eventSink();
 
     try s.capturePane(5);
+    s.clearCommands();
     // Real scrollback: NOT every line is `%<id>\t..`, so it's a capture, not pane-list.
     try s.feed("%begin 1 1 0\n$ ls\nfile.txt  %notapaneline\n%end 1 1 0\n");
 
     try std.testing.expectEqual(@as(usize, 0), log.pane_meta_count); // not pane-list
-    try std.testing.expectEqual(@as(usize, 0), s.capture_queue.items.len); // capture consumed
+    try std.testing.expectEqual(@as(usize, 0), s.reply_queue.items.len); // capture consumed
+    try std.testing.expectEqual(@as(usize, 0), s.replies_awaiting);
     try std.testing.expect(std.mem.indexOf(u8, col.buf.items, "file.txt") != null); // seeded
 }
 

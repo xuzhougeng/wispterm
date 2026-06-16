@@ -85,15 +85,13 @@ pub const Parser = struct {
         else
             raw_line;
         if (self.in_block) {
-            if (std.mem.startsWith(u8, line, "%end")) {
+            if (parseBlockTerminator(line)) |terminator| {
                 self.in_block = false;
                 self.block_done = true;
-                return .{ .block_end = self.block.items };
-            }
-            if (std.mem.startsWith(u8, line, "%error")) {
-                self.in_block = false;
-                self.block_done = true;
-                return .{ .block_err = self.block.items };
+                return switch (terminator) {
+                    .end => .{ .block_end = self.block.items },
+                    .err => .{ .block_err = self.block.items },
+                };
             }
             if (self.block.items.len > 0) try self.block.append(self.alloc, '\n');
             try self.block.appendSlice(self.alloc, line);
@@ -121,6 +119,35 @@ pub const Parser = struct {
         return null;
     }
 };
+
+const BlockTerminator = enum { end, err };
+
+/// Block payload is raw command output, so a line that merely starts with
+/// `%end` or `%error` may still be pane content. tmux terminators have the
+/// exact guard-line shape `%end <time> <command_id> <flags>` or `%error ...`.
+fn parseBlockTerminator(line_raw: []const u8) ?BlockTerminator {
+    var line = line_raw;
+    if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
+
+    var fields = std.mem.tokenizeScalar(u8, line, ' ');
+    const cmd = fields.next() orelse return null;
+    const terminator: BlockTerminator = if (std.mem.eql(u8, cmd, "%end"))
+        .end
+    else if (std.mem.eql(u8, cmd, "%error"))
+        .err
+    else
+        return null;
+
+    const time = fields.next() orelse return null;
+    const command_id = fields.next() orelse return null;
+    const flags = fields.next() orelse return null;
+    if (fields.next() != null) return null;
+
+    _ = std.fmt.parseInt(usize, time, 10) catch return null;
+    _ = std.fmt.parseInt(usize, command_id, 10) catch return null;
+    _ = std.fmt.parseInt(usize, flags, 10) catch return null;
+    return terminator;
+}
 
 fn parseOutput(line: []const u8) ?Notification {
     const prefix = "%output ";
@@ -348,6 +375,26 @@ test "%error closes a block as block_err" {
     _ = try feed(&p, "%begin 2 2 0\n");
     const n = (try feed(&p, "boom\n%error 2 2 0\n")).?;
     try std.testing.expectEqualStrings("boom", n.block_err);
+}
+
+test "block payload may contain lines starting with %end or %error" {
+    var p = Parser.init(std.testing.allocator);
+    defer p.deinit();
+    try std.testing.expectEqual(@as(?Notification, null), try feed(&p, "%begin 1 1 1\n"));
+    try std.testing.expectEqual(@as(?Notification, null), try feed(&p, "%end not really\n"));
+    try std.testing.expectEqual(@as(?Notification, null), try feed(&p, "%error also not really\n"));
+    const n = (try feed(&p, "hello\n%end 1 1 1\n")).?;
+    try std.testing.expectEqualStrings("%end not really\n%error also not really\nhello", n.block_end);
+}
+
+test "block terminator rejects extra fields and nonnumeric metadata" {
+    var p = Parser.init(std.testing.allocator);
+    defer p.deinit();
+    try std.testing.expectEqual(@as(?Notification, null), try feed(&p, "%begin 1 1 1\n"));
+    try std.testing.expectEqual(@as(?Notification, null), try feed(&p, "%end 1 1 1 trailing\n"));
+    try std.testing.expectEqual(@as(?Notification, null), try feed(&p, "%error x y z\n"));
+    const n = (try feed(&p, "%end 1 1 1\n")).?;
+    try std.testing.expectEqualStrings("%end 1 1 1 trailing\n%error x y z", n.block_end);
 }
 
 test "strips the control-mode enter DCS glued onto the first %begin (failed attach)" {
