@@ -6,6 +6,7 @@ pub const CommandAction = enum {
     new_tab,
     load_openssh_config,
     new_agent,
+    toggle_ai_copilot,
     manage_ai_profiles,
     select_agent_history,
     split_right,
@@ -57,6 +58,7 @@ pub const CommandEntry = struct {
 pub const command_entries = [_]CommandEntry{
     .{ .title = "New Session", .detail = platform_pty_command.session_launcher_detail, .shortcut = "", .action = .new_tab },
     .{ .title = "New Copilot", .detail = "Open a new Copilot tab with the default AI config", .shortcut = "", .action = .new_agent },
+    .{ .title = "Toggle Copilot", .detail = "Open or close the Copilot sidebar on the current terminal", .shortcut = "", .action = .toggle_ai_copilot },
     .{ .title = "Manage AI Profiles", .detail = "Create, edit, or delete saved AI profiles", .shortcut = "", .action = .manage_ai_profiles },
     .{ .title = "Select Copilot History", .detail = "Open the command-center Copilot history picker", .shortcut = "", .action = .select_agent_history },
     .{ .title = "Skill Center", .detail = "Inventory Claude Code / Codex skills across servers", .shortcut = "", .action = .open_skill_center },
@@ -286,6 +288,10 @@ pub fn resolveNewAgentLaunch(has_profiles: bool) NewAgentLaunchAction {
 
 test "command center includes New Copilot action" {
     try std.testing.expectEqual(CommandAction.new_agent, findCommandAction("New Copilot"));
+}
+
+test "command center exposes Toggle Copilot" {
+    try std.testing.expectEqual(CommandAction.toggle_ai_copilot, findCommandAction("Toggle Copilot"));
 }
 
 test "command center includes Manage AI Profiles action" {

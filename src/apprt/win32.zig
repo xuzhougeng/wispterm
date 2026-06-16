@@ -1628,6 +1628,15 @@ fn getCaptionButtonWidth() i32 {
     return 46 * 3;
 }
 
+/// Total width of the app-handled titlebar buttons immediately left of the
+/// native caption buttons: Copilot + help + settings (each 46px). This strip is
+/// carved out of the draggable caption region (WM_NCHITTEST / WM_LBUTTONDOWN) so
+/// their clicks reach the app instead of starting a window drag. Keep in sync
+/// with titlebar.zig's TITLEBAR_COPILOT_W + TITLEBAR_HELP_W + TITLEBAR_CONFIG_W.
+fn getAppButtonStripWidth() i32 {
+    return 46 * 3;
+}
+
 fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT {
     // Let DWM handle some non-client messages first (for window shadow, etc.)
     // BUT skip WM_NCCALCSIZE and WM_NCHITTEST — we handle those ourselves
@@ -1910,8 +1919,8 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
                     return HTMINBUTTON;
                 }
 
-                // App-handled settings + help buttons immediately left of caption buttons.
-                if (pt.x >= client_rect.right - btn_width - 92 and pt.x < client_rect.right - btn_width) {
+                // App-handled Copilot + help + settings buttons immediately left of caption buttons.
+                if (pt.x >= client_rect.right - btn_width - getAppButtonStripWidth() and pt.x < client_rect.right - btn_width) {
                     return HTCLIENT;
                 }
 
@@ -2074,7 +2083,7 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.wina
                 var rect: RECT = undefined;
                 _ = GetClientRect(hwnd, &rect);
                 const btn_width = getCaptionButtonWidth();
-                break :blk x >= rect.right - btn_width - 92 and x < rect.right - btn_width;
+                break :blk x >= rect.right - btn_width - getAppButtonStripWidth() and x < rect.right - btn_width;
             };
             if (y < w.titlebar_height and x >= 46 and !in_toolbar_button) {
                 _ = ReleaseCapture();

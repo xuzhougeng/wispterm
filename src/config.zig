@@ -439,6 +439,8 @@ language: i18n.LanguageSetting = .auto,
 /// Show the "What's New" changelog once after upgrading to a newer build.
 /// Disables only the automatic popup; the command-center entry always works.
 @"whats-new-on-update": bool = true,
+/// Show the Copilot discovery hint to new users. Set to false to suppress permanently.
+@"copilot-hint": bool = true,
 
 /// Load an additional config file. Can be repeated. Relative paths are
 /// resolved relative to the file containing the directive. Prefix with
@@ -1032,6 +1034,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"whats-new-on-update" = false;
         } else {
             log.warn("invalid whats-new-on-update: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "copilot-hint")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"copilot-hint" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"copilot-hint" = false;
+        } else {
+            log.warn("invalid copilot-hint: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "config-file")) {
         self.loadConfigFileDirective(allocator, value, base_dir);

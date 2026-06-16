@@ -116,6 +116,7 @@ fn buildDefaultMenu() void {
     wispterm_macos_menu_add_item("Open Command Center", id(.toggle_command_palette), "p", ModCtrl | ModShift);
     wispterm_macos_menu_add_separator();
     wispterm_macos_menu_add_item("Toggle Tab Sidebar", id(.toggle_sidebar), "b", ModCtrl | ModShift);
+    wispterm_macos_menu_add_item("Toggle Copilot", id(.toggle_ai_copilot), "a", ModCtrl | ModShift);
     wispterm_macos_menu_add_item("Toggle File Explorer", id(.toggle_file_explorer), "e", ModCtrl | ModShift | ModOpt);
     wispterm_macos_menu_add_separator();
     wispterm_macos_menu_add_item("Increase Font Size", id(.font_size_increase), "+", ModCtrl);
@@ -140,6 +141,10 @@ test "menu_macos: actionFromId round-trips known WispTerm actions" {
     const expected = keybind.Action.toggle_command_palette;
     const action_id: i32 = @intCast(@intFromEnum(expected));
     try std.testing.expectEqual(@as(?keybind.Action, expected), actionFromId(action_id));
+
+    // The Copilot menu item round-trips too (View ▸ Toggle Copilot).
+    const copilot = keybind.Action.toggle_ai_copilot;
+    try std.testing.expectEqual(@as(?keybind.Action, copilot), actionFromId(@intCast(@intFromEnum(copilot))));
 }
 
 test "menu_macos: actionFromId rejects system action ids" {

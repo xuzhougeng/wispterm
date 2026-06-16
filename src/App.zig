@@ -123,6 +123,7 @@ restore_tabs_on_startup: bool,
 // Update check state
 auto_update_check: bool,
 whats_new_on_update: bool,
+copilot_hint: bool,
 update_mutex: std.Thread.Mutex,
 update_result: update_check.CheckResult,
 update_latest_version_buf: [32]u8,
@@ -279,6 +280,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .restore_tabs_on_startup = cfg.@"restore-tabs-on-startup",
         .auto_update_check = cfg.@"auto-update-check",
         .whats_new_on_update = cfg.@"whats-new-on-update",
+        .copilot_hint = cfg.@"copilot-hint",
         .update_mutex = .{},
         .update_result = .{ .state = .idle },
         .update_latest_version_buf = undefined,
@@ -505,6 +507,7 @@ pub fn updateConfig(self: *App, cfg: *const Config) void {
     self.restore_tabs_on_startup = cfg.@"restore-tabs-on-startup";
     self.auto_update_check = cfg.@"auto-update-check";
     self.whats_new_on_update = cfg.@"whats-new-on-update";
+    self.copilot_hint = cfg.@"copilot-hint";
     self.shell_cmd_len = resolveShellCommandLine(&self.shell_cmd_buf, cfg.shell);
 }
 

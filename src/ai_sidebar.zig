@@ -14,6 +14,8 @@ pub const MIN_WIDTH: f32 = 320;
 pub const MAX_WIDTH: f32 = 1200;
 pub const MIN_CONTENT_WIDTH: f32 = 320;
 pub const RESIZE_HIT_WIDTH: f32 = 12;
+pub const HANDLE_W: f32 = 6;
+pub const HANDLE_H: f32 = 56;
 
 pub const Bounds = struct {
     left: i32,
@@ -21,6 +23,28 @@ pub const Bounds = struct {
     right: i32,
     bottom: i32,
 };
+
+pub const HandleRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    /// false when opening the panel would not fit (window too narrow); the
+    /// caller suppresses the handle in that case.
+    eligible: bool,
+};
+
+/// Closed-state summon-handle rect in the same top-down logical space as
+/// `boundsForWindow` (y measured down from the top; `titlebar_height` is the top
+/// inset). The renderer converts to GL bottom-left coords exactly the way
+/// `renderAiCopilotCloseButton` does: `gl_y = window_h - (rect.y + rect.h)`.
+pub fn closedHandleRect(window_w: f32, window_h: f32, titlebar_h: f32, left_offset: f32) HandleRect {
+    const content_h = @max(0, window_h - titlebar_h);
+    const y = titlebar_h + @max(0, (content_h - HANDLE_H) / 2);
+    const x = window_w - HANDLE_W;
+    const fits = (window_w - left_offset) >= (MIN_WIDTH + MIN_CONTENT_WIDTH);
+    return .{ .x = x, .y = y, .w = HANDLE_W, .h = HANDLE_H, .eligible = fits };
+}
 
 /// Shared width across tabs; not persisted across restarts (design decision).
 pub threadlocal var g_width: f32 = DEFAULT_WIDTH;
@@ -117,4 +141,22 @@ test "boundsForWindow respects left_offset and right_offset" {
     const b = boundsForWindow(1600, 900, 30, 200, 100);
     try std.testing.expectEqual(@as(i32, 1500), b.right); // 1600 - 100
     try std.testing.expectEqual(@as(i32, 1020), b.left); // 1500 - 480
+}
+
+test "closedHandleRect sits at the right edge, vertically centered" {
+    const r = closedHandleRect(1600, 900, 30, 0);
+    try std.testing.expect(r.eligible);
+    try std.testing.expectApproxEqAbs(@as(f32, 1600 - HANDLE_W), r.x, 0.001);
+    try std.testing.expectApproxEqAbs(HANDLE_W, r.w, 0.001);
+    try std.testing.expectApproxEqAbs(HANDLE_H, r.h, 0.001);
+    // content height 870, centered: top = 30 + (870-56)/2 = 437
+    try std.testing.expectApproxEqAbs(@as(f32, 437), r.y, 0.001);
+}
+
+test "closedHandleRect is ineligible when the panel cannot fit" {
+    // window_w - left_offset must be >= MIN_WIDTH + MIN_CONTENT_WIDTH (640)
+    const tight = closedHandleRect(600, 800, 30, 0);
+    try std.testing.expect(!tight.eligible);
+    const ok = closedHandleRect(700, 800, 30, 0);
+    try std.testing.expect(ok.eligible);
 }

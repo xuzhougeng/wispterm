@@ -48,6 +48,7 @@ pub const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
 pub const scrollbar = @import("overlays/scrollbar.zig");
 pub const resize = @import("overlays/resize.zig");
 pub const startup_shortcuts = @import("overlays/startup_shortcuts.zig");
+pub const copilot_edge_handle = @import("overlays/copilot_edge_handle.zig");
 
 pub const SCROLLBAR_WIDTH = scrollbar.SCROLLBAR_WIDTH;
 pub const ScrollbarGeometry = scrollbar.ScrollbarGeometry;
@@ -74,6 +75,10 @@ pub const startupShortcutsShow = startup_shortcuts.startupShortcutsShow;
 pub const startupShortcutsDismiss = startup_shortcuts.startupShortcutsDismiss;
 pub const startupShortcutsToggle = startup_shortcuts.startupShortcutsToggle;
 pub const renderStartupShortcutsOverlay = startup_shortcuts.renderStartupShortcutsOverlay;
+pub const renderCopilotEdgeHandle = copilot_edge_handle.render;
+pub const copilotEdgeHandleSetTarget = copilot_edge_handle.setProximityTarget;
+pub const copilotEdgeHandleSetHovered = copilot_edge_handle.setHovered;
+pub const copilotEdgeHandleStartShimmer = copilot_edge_handle.startShimmer;
 
 // ============================================================================
 // Split divider rendering
@@ -543,6 +548,7 @@ fn executeCommand(action: CommandAction) void {
         .new_tab => sessionLauncherOpenFromCommandPalette(),
         .load_openssh_config => loadOpenSshConfigDefault(),
         .new_agent => openDefaultAgentSessionFromCommandCenter(),
+        .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
         .manage_ai_profiles => openAiListFromCommandPalette(),
         .select_agent_history => commandPaletteOpenAgentHistory(),
         .split_right => AppWindow.splitFocused(.right),
@@ -6284,6 +6290,9 @@ pub fn anyOverlayActive(now: i64) bool {
     if (now < g_close_shortcut_confirm_until_ms) return true;
     if (now < g_remote_key_copied_until_ms) return true;
     if (now < resize.g_split_resize_overlay_until) return true;
+
+    // Copilot edge handle: shimmer / reveal-fade / hover-tooltip dwell.
+    if (copilot_edge_handle.isAnimating()) return true;
 
     // FPS 叠层开启时每秒刷新
     if (g_debug_fps) return true;
