@@ -14,7 +14,7 @@
   <link rel="apple-touch-icon" href="assets/wispterm.png">
   <link rel="alternate" hreflang="en" href="./">
   <link rel="alternate" hreflang="zh-CN" href="./zh.html">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
   <header class="site-header">
@@ -24,6 +24,7 @@
         <span>WispTerm</span>
       </a>
       <nav class="nav-links">
+        <a href="#quickstart">快速上手</a>
         <a href="#features">特性</a>
         <a href="#install">安装</a>
         <a href="#config">配置</a>
@@ -79,6 +80,27 @@
 工作区干净，无可提交内容
 
 <span class="prompt">PS C:\Users\you&gt;</span> <span class="cursor">▌</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="quickstart" class="section alt">
+      <div class="container">
+        <h2>快速上手</h2>
+        <p class="section-lead">三步获得一个高效的 WispTerm 会话：安装应用、为 AI 副驾配置 LLM 服务商、让 SSH 服务器上报工作目录。</p>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>1 · 安装</h3>
+            <p>下载最新的 Windows 或 macOS 版本，或用 Zig 从源码构建。<a href="#install">查看安装方式 ↓</a></p>
+          </div>
+          <div class="feature">
+            <h3>2 · 配置 LLM 服务商</h3>
+            <p>用 <kbd>Ctrl/Cmd</kbd><kbd>Shift</kbd><kbd>T</kbd> 打开会话启动器，选择 <code>AI Agent</code>，填入 Base URL、API Key 和模型——默认是 DeepSeek V4。<a href="./ai.zh.html#setup">配置 LLM 服务商 →</a></p>
+          </div>
+          <div class="feature">
+            <h3>3 · 配置 SSH 服务器</h3>
+            <p>在远端 shell 里加一小段 OSC 7 片段，下载和拖拽上传就会落到你真正 <code>cd</code> 进去的目录。<a href="#ssh-setup">SSH 服务器设置 ↓</a></p>
           </div>
         </div>
       </div>
@@ -216,6 +238,39 @@ ai-agent-output-limit  = 16384</code></pre>
       </div>
     </section>
 
+    <section id="ssh-setup" class="section">
+      <div class="container">
+        <h2>让 SSH 下载与上传跟随当前目录</h2>
+        <p class="section-lead">WispTerm 只有在远端 shell 通过 <strong>OSC 7</strong> 上报当前目录时，才能从 SSH 终端输出里下载相对路径文件，并把拖拽进来的文件上传到当前交互 shell 的真实目录——这与 <a href="https://ghostty.org/docs/help/terminfo" target="_blank" rel="noopener">Ghostty shell 集成</a>使用的是同一套终端约定。如果缺少 OSC 7，辅助的 <code>ssh.exe</code> / <code>scp.exe</code> 命令会另开一个新会话，通常只能看到登录目录，而不是你 <code>cd</code> 之后的目录，于是 WispTerm 会显示<em>“SSH cwd unknown；点击查看设置”</em>，而不是去猜 <code>~/file</code>。</p>
+        <p class="section-lead">把下面任意一段加到远端 shell 的启动文件里，然后重新开一个 WispTerm SSH 会话即可。</p>
+        <div class="shell-setup">
+          <div class="setup-panel">
+            <h3>Bash — <code>~/.bashrc</code></h3>
+<pre class="code-block"><code>__wispterm_report_cwd() {
+  printf '\033]7;file://%s%s\a' "${HOSTNAME:-localhost}" "$PWD"
+}
+PROMPT_COMMAND="__wispterm_report_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"</code></pre>
+          </div>
+          <div class="setup-panel">
+            <h3>Zsh — <code>~/.zshrc</code></h3>
+<pre class="code-block"><code>__wispterm_report_cwd() {
+  printf '\033]7;file://%s%s\a' "${HOST:-localhost}" "$PWD"
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook chpwd __wispterm_report_cwd
+add-zsh-hook precmd __wispterm_report_cwd</code></pre>
+          </div>
+          <div class="setup-panel">
+            <h3>Fish — <code>~/.config/fish/config.fish</code></h3>
+<pre class="code-block"><code>function __wispterm_report_cwd --on-variable PWD
+    printf '\e]7;file://%s%s\a' (hostname) (string escape --style=url $PWD)
+end
+__wispterm_report_cwd</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section id="shortcuts" class="section alt">
       <div class="container">
         <h2>键盘快捷键</h2>
@@ -270,7 +325,7 @@ ai-agent-output-limit  = 16384</code></pre>
           </div>
           <div class="feature" id="ssh-current-directory">
             <h3>为什么 SSH 相对路径下载或拖拽上传找不到当前目录？</h3>
-            <p>WispTerm 只有在远端 shell 上报 OSC 7 时，才能下载 SSH 相对路径，并把拖拽文件上传到当前交互 shell 的真实目录。如果没有 OSC 7，辅助 <code>ssh.exe</code> / <code>scp.exe</code> 命令会启动一个新会话，通常只能看到登录目录，而不是你 <code>cd</code> 之后的目录。请让远端 shell 输出 OSC 7；配置片段见 <a href="https://github.com/xuzhougeng/wispterm#ssh-current-directory-for-downloads-and-uploads" target="_blank" rel="noopener">README 说明</a>。</p>
+            <p>WispTerm 只有在远端 shell 上报 OSC 7 时，才能下载 SSH 相对路径，并把拖拽文件上传到当前交互 shell 的真实目录。如果没有 OSC 7，辅助 <code>ssh.exe</code> / <code>scp.exe</code> 命令会启动一个新会话，通常只能看到登录目录，而不是你 <code>cd</code> 之后的目录。请让远端 shell 输出 OSC 7；配置片段见<a href="#ssh-setup">上方的 SSH 设置片段</a>。</p>
           </div>
           <div class="feature">
             <h3>AI Chat / Agent 的 prompt 长度上限是多少？</h3>

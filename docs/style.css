@@ -997,6 +997,21 @@ pre.code-block code {
   }
 }
 
+/* SSH cwd setup */
+.shell-setup {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 1fr;
+}
+.shell-setup .setup-panel h3 {
+  margin: 0 0 12px;
+}
+.shell-setup pre.code-block {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Credits */
 .credits ul {
   margin: 0;
