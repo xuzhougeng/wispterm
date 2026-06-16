@@ -127,6 +127,20 @@ pub fn setAiSetupPrompted(allocator: std.mem.Allocator) void {
     savePersisted(allocator, current);
 }
 
+/// Whether the one-time Copilot discoverability hint has already been shown.
+pub fn copilotHintShown(allocator: std.mem.Allocator) bool {
+    return loadPersisted(allocator).copilot_hint_shown;
+}
+
+/// Record that the Copilot hint has been shown (read-modify-write to preserve
+/// geometry + other onboarding flags). No-op if already set.
+pub fn setCopilotHintShown(allocator: std.mem.Allocator) void {
+    var current = loadPersisted(allocator);
+    if (current.copilot_hint_shown) return;
+    current.copilot_hint_shown = true;
+    savePersisted(allocator, current);
+}
+
 /// The last app version whose "What's New" the user has seen (empty when none).
 /// The returned slice is copied into `buf`; pass a buffer at least
 /// `codec.version_max_len` bytes.

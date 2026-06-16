@@ -212,6 +212,14 @@ test "run_on_main marshals a task from a worker thread to the draining thread" {
     try std.testing.expectEqual(@as(i32, 42), st.value);
 }
 
+test "copilot hint flag I/O wrappers are callable" {
+    const window_state = @import("platform/window_state.zig");
+    const alloc = std.testing.allocator;
+    _ = window_state.copilotHintShown(alloc);
+    window_state.setCopilotHintShown(alloc);
+    _ = window_state.copilotHintShown(alloc);
+}
+
 test "skill_local_fs aggHashHex matches the POSIX find|sha256sum recipe byte-for-byte" {
     const skill_local_fs = @import("skill_local_fs.zig");
     const a = std.testing.allocator;
