@@ -233,6 +233,54 @@ fn joinUnixPreviewPath(allocator: std.mem.Allocator, cwd: []const u8, path: []co
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, path });
 }
 
+/// Remote command that prints the working directory of tmux's active pane.
+/// Run over SSH when a relative path is clicked while tmux is attached: plain
+/// tmux consumes OSC 7, so `surface.getCwd()` is frozen at the pre-tmux dir and
+/// can't anchor the relative path. tmux errors (no server, not installed) go to
+/// stderr, leaving stdout empty so the caller falls back to the OSC 7 cwd.
+const TMUX_PANE_CWD_COMMAND = "tmux display-message -p '#{pane_current_path}'";
+
+/// Bound the pane-cwd probe on the UI thread (mirrors the download dir probe):
+/// a hung remote becomes a bounded delay + OSC 7 fallback, never a freeze.
+const TMUX_CWD_PROBE_TIMEOUT_MS = 5_000;
+/// A POSIX path is at most PATH_MAX (~4096); cap stdout there so junk output
+/// can't drive an unbounded read.
+const TMUX_CWD_MAX_STDOUT = 4096;
+
+/// Parse the stdout of `TMUX_PANE_CWD_COMMAND`. Returns the pane's working
+/// directory only when the output is a single, non-empty, absolute Unix path;
+/// otherwise null (tmux not running, command-not-found, unexpanded format, or
+/// error spew) so the caller keeps the OSC 7 cwd. The slice points into `output`.
+fn parseTmuxPaneCwd(output: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, output, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    if (trimmed[0] != '/') return null; // relative result / error text / unexpanded format
+    if (std.mem.indexOfScalar(u8, trimmed, '\n') != null) return null; // multi-line junk
+    return trimmed;
+}
+
+/// Best-effort live cwd for an SSH surface whose OSC 7 cwd may be stale because
+/// plain tmux is attached. Returns an owned absolute path only when tmux is
+/// plausibly attached (alternate screen active) AND the remote query yields a
+/// valid path; otherwise null so the caller uses the OSC 7 cwd. The probe runs
+/// against tmux's *current* client, so with one attached session it targets the
+/// pane the user is looking at; multiple concurrent tmux sessions on the same
+/// host may resolve against the most-recently-active one.
+fn sshPreviewCwd(allocator: std.mem.Allocator, surface: *Surface) ?[]u8 {
+    if (!surface.isAltScreenActive()) return null;
+    const conn = surface.ssh_connection orelse return null;
+    const output = scp.sshExecCappedOpts(
+        allocator,
+        &conn,
+        TMUX_PANE_CWD_COMMAND,
+        TMUX_CWD_MAX_STDOUT,
+        .{ .timeout_ms = TMUX_CWD_PROBE_TIMEOUT_MS },
+    ) orelse return null;
+    defer allocator.free(output);
+    const path = parseTmuxPaneCwd(output) orelse return null;
+    return allocator.dupe(u8, path) catch null;
+}
+
 fn resolveUnixTerminalPath(
     allocator: std.mem.Allocator,
     cwd: ?[]const u8,
@@ -264,6 +312,40 @@ test "preview_source: ssh relative paths require a reported cwd" {
     const relative = try resolveUnixTerminalPath(allocator, "/srv/project/data", "sample.fa", true);
     defer allocator.free(relative);
     try std.testing.expectEqualStrings("/srv/project/data/sample.fa", relative);
+}
+
+test "preview_source: parseTmuxPaneCwd accepts a single absolute path and rejects everything else" {
+    // Happy path: tmux prints the pane's cwd plus a trailing newline. The
+    // surrounding whitespace is trimmed and the absolute path is returned.
+    try std.testing.expectEqualStrings(
+        "/data1/home/xzg/project/Plant-Root-Atlas-Project",
+        parseTmuxPaneCwd("/data1/home/xzg/project/Plant-Root-Atlas-Project\n").?,
+    );
+    // CRLF and leading/trailing spaces are trimmed too.
+    try std.testing.expectEqualStrings(
+        "/srv/data",
+        parseTmuxPaneCwd("  /srv/data\r\n").?,
+    );
+
+    // Empty / whitespace-only output (no tmux value) -> null, caller uses OSC 7.
+    try std.testing.expect(parseTmuxPaneCwd("") == null);
+    try std.testing.expect(parseTmuxPaneCwd("  \r\n") == null);
+    // A relative result can't anchor a cwd -> reject.
+    try std.testing.expect(parseTmuxPaneCwd("project/foo\n") == null);
+    // tmux error spew leaks to stderr, but be defensive if it reaches stdout:
+    // "no server running on /tmp/tmux-1000/default" starts with 'n', not '/'.
+    try std.testing.expect(parseTmuxPaneCwd("no server running on /tmp/tmux-1000/default\n") == null);
+    // Unexpanded format (ancient tmux) doesn't start with '/'.
+    try std.testing.expect(parseTmuxPaneCwd("#{pane_current_path}\n") == null);
+    // Multi-line output is junk, not a single path.
+    try std.testing.expect(parseTmuxPaneCwd("/a\n/b\n") == null);
+}
+
+test "preview_source: tmux pane cwd command queries the active pane path" {
+    try std.testing.expectEqualStrings(
+        "tmux display-message -p '#{pane_current_path}'",
+        TMUX_PANE_CWD_COMMAND,
+    );
 }
 
 test "preview_source: ssh read cap admits head output and beats the default 16 MiB cap" {
@@ -365,7 +447,16 @@ pub fn resolveTerminalPreviewPath(allocator: std.mem.Allocator, surface: *Surfac
 
     return switch (surface.launch_kind) {
         .wsl => try resolveUnixTerminalPath(allocator, surface.getCwd() orelse "~", eff, false),
-        .ssh => try resolveUnixTerminalPath(allocator, surface.getCwd(), eff, true),
+        .ssh => blk: {
+            // Plain tmux consumes OSC 7, so surface.getCwd() can be a stale
+            // pre-tmux dir (the login home). For a relative click, prefer a live
+            // remote pane-cwd query and fall back to the OSC 7 cwd. Absolute/home
+            // paths ignore cwd, so skip the round-trip for them.
+            const remote_cwd: ?[]u8 = if (isUnixAbsoluteOrHome(eff)) null else sshPreviewCwd(allocator, surface);
+            defer if (remote_cwd) |c| allocator.free(c);
+            const cwd: ?[]const u8 = if (remote_cwd) |c| c else surface.getCwd();
+            break :blk try resolveUnixTerminalPath(allocator, cwd, eff, true);
+        },
         .local => blk: {
             if (std.fs.path.isAbsolute(eff) or (eff.len >= 2 and eff[1] == ':')) {
                 break :blk try allocator.dupe(u8, eff);
