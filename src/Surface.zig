@@ -909,6 +909,14 @@ pub fn getCwd(self: *const Surface) ?[]const u8 {
     return null;
 }
 
+/// True when the alternate screen buffer is active. Used as a cheap, local
+/// signal that a full-screen app (notably an attached `tmux`) is running:
+/// plain tmux consumes OSC 7, so the OSC 7-derived cwd goes stale and a live
+/// remote pane-cwd query is preferred for path resolution.
+pub fn isAltScreenActive(self: *const Surface) bool {
+    return self.terminal.screens.active_key == .alternate;
+}
+
 /// Get the platform launch directory for shells that do not report OSC 7.
 pub fn getInitialCwd(self: *const Surface) ?[]const u8 {
     if (self.initial_cwd_path_len > 0)
