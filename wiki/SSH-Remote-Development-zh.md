@@ -11,6 +11,21 @@
 以及下文所述的自动端口转发。在本地 shell 里敲 `ssh user@host` **得不到**这些功能 ——
 见 [[文件浏览器与预览|File-Explorer-zh]]。
 
+## 认证方式
+
+在会话启动器里保存或编辑 SSH profile 时，**认证方式**字段决定它如何认证 —— 可设为
+`password`、`key` 或 `credentials`：
+
+- `password` —— 把密码随 profile 一起保存（此前的行为）。
+- `key` —— 用私钥认证。在**密钥文件**字段填入私钥路径，WispTerm 会以 `ssh -i <路径>`
+  传入。
+- `credentials` —— 什么都不保存，交给你已有的 SSH 配置来认证：OpenSSH 配置
+  （`~/.ssh/config`）、默认密钥、`ssh-agent`，或平台凭据助手。
+
+已有的密码 profile 保持不变；通过 **Load OpenSSH Config** 导入的 profile 默认使用
+`credentials`，从而复用你的密钥和 agent。Copilot 的 `ssh_profile_save` 工具也接受同样的
+`auth_method` 和 `identity_file` 选项。
+
 ## 用 tmux 保持会话不掉（`tmux -CC`）
 
 如果远程主机装了 `tmux`，可以通过 tmux 控制模式连接，让会话在**关闭 App 或网络掉线后依然存活**。

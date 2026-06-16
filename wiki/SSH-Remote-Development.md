@@ -13,6 +13,24 @@ download, working-directory detection, and the automatic port forwarding
 described below. Typing `ssh user@host` inside a local shell does **not** get
 these features — see [[File-Explorer]].
 
+## Authentication methods
+
+When you save or edit an SSH profile in the session launcher, the **Auth
+method** field chooses how it authenticates — set it to `password`, `key`, or
+`credentials`:
+
+- `password` — store a password with the profile (the previous behavior).
+- `key` — authenticate with a private key. Put the key path in the **Identity
+  file** field; WispTerm passes it as `ssh -i <path>`.
+- `credentials` — store nothing and let your existing SSH setup authenticate:
+  your OpenSSH config (`~/.ssh/config`), default keys, `ssh-agent`, or platform
+  credential helpers.
+
+Existing password profiles keep working unchanged, and profiles imported with
+**Load OpenSSH Config** default to `credentials` so they reuse your keys and
+agent. The Copilot's `ssh_profile_save` tool accepts the same `auth_method` and
+`identity_file` options.
+
 ## Persistent sessions with tmux (`tmux -CC`)
 
 If the remote host has `tmux` installed, you can connect through tmux control

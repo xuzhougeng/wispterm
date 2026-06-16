@@ -14,7 +14,7 @@
 <a href="https://github.com/xuzhougeng/wispterm/commits/main"><img src="https://img.shields.io/github/last-commit/xuzhougeng/wispterm" alt="Last commit"></a>
 </p>
 
-**WispTerm**（原名 Phantty）是一个面向远程开发与 AI 智能体工作流的跨平台终端工作区。它用 Zig 编写，终端模拟由 [libghostty-vt](https://github.com/ghostty-org/ghostty) 驱动。
+**WispTerm** 是一个面向远程开发与 AI 智能体工作流的跨平台终端工作区。它用 Zig 编写，终端模拟由 [libghostty-vt](https://github.com/ghostty-org/ghostty) 驱动。
 
 > [!NOTE]
 > WispTerm 提供 **Windows** 与 **macOS**（Apple Silicon 与 Intel）版本。**Linux**

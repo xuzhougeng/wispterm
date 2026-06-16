@@ -14,7 +14,7 @@ English | [简体中文](README.zh-CN.md)
 <a href="https://github.com/xuzhougeng/wispterm/commits/main"><img src="https://img.shields.io/github/last-commit/xuzhougeng/wispterm" alt="Last commit"></a>
 </p>
 
-**WispTerm**, formerly Phantty, is a cross-platform terminal workspace for remote development and AI agent workflows. It is written in Zig and powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
+**WispTerm** is a cross-platform terminal workspace for remote development and AI agent workflows. It is written in Zig and powered by [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
 
 > [!NOTE]
 > WispTerm ships for **Windows** and **macOS** (Apple Silicon and Intel). The

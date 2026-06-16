@@ -4,7 +4,7 @@
 
 > WispTerm is a cross-platform terminal workspace for remote development and AI agent workflows. This wiki is the hands-on usage guide.
 
-WispTerm (formerly **Phantty**) is written in Zig and powered by
+WispTerm is written in Zig and powered by
 [libghostty-vt](https://github.com/ghostty-org/ghostty) for terminal emulation.
 It bundles a fast terminal, tabs and splits, hundreds of themes, a file
 explorer with previews, an embedded browser panel, and a built-in AI Copilot —

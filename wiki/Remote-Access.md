@@ -14,6 +14,9 @@ enable it.
 When enabled, WispTerm creates one shared outbound RemoteClient for the running
 instance. All tabs and splits publish their PTY output through that client.
 
+Remote access works on **Windows and macOS** (the macOS transport was added in
+v1.23.0). Linux support is still in progress.
+
 ## Enabling it
 
 Set these keys in the [[config|Configuration]]:

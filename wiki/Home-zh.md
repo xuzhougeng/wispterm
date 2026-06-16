@@ -4,7 +4,7 @@
 
 > WispTerm 是一个面向远程开发与 AI 智能体工作流的跨平台终端工作区。本 Wiki 是它的实操使用指南。
 
-WispTerm（原名 **Phantty**）用 Zig 编写，终端模拟由
+WispTerm 用 Zig 编写，终端模拟由
 [libghostty-vt](https://github.com/ghostty-org/ghostty) 驱动。它集成了高性能终端、
 标签与分屏、数百款主题、带预览的文件浏览器、内嵌浏览器面板，以及内置的 AI 副驾，
 并对 SSH 与远程开发提供一流支持。
