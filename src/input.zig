@@ -4297,6 +4297,20 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             }
                             return;
                         }
+                        if (AppWindow.ai_chat_renderer.modelLabelHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) {
+                            overlays.openSwitchModelPicker(chat);
+                            AppWindow.g_force_rebuild = true;
+                            AppWindow.g_cells_valid = false;
+                            return;
+                        }
                         if (AppWindow.ai_chat_renderer.permissionChipHitTest(
                             xpos,
                             ypos,
@@ -4374,6 +4388,20 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             AppWindow.g_cells_valid = false;
                         },
                     }
+                    return;
+                }
+                if (AppWindow.ai_chat_renderer.modelLabelHitTest(
+                    chat,
+                    xpos,
+                    ypos,
+                    @floatFromInt(fb.width),
+                    @floatCast(titlebarHeight()),
+                    AppWindow.leftPanelsWidth(),
+                    @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                )) {
+                    overlays.openSwitchModelPicker(chat);
+                    AppWindow.g_force_rebuild = true;
+                    AppWindow.g_cells_valid = false;
                     return;
                 }
                 if (AppWindow.ai_chat_renderer.permissionChipHitTest(

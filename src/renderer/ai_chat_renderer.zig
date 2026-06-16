@@ -3,6 +3,8 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
+const ai_model_switch = @import("../ai_model_switch.zig");
+const i18n = @import("../i18n.zig");
 const composer_layout = @import("../ai_chat_composer_layout.zig");
 const scrollbar_model = @import("../ai_chat_scrollbar_model.zig");
 const md = @import("../markdown_text.zig");
@@ -320,7 +322,7 @@ pub fn render(
 
     for (session.messages.items, 0..) |msg, message_index| {
         const block_h = messageBlockHeight(msg, content_w);
-        if (msg.role == .tool) {
+        if (rendersAsCard(msg)) {
             if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
                 renderToolCard(msg, content_x, cursor_top, content_w, block_h, window_height, transcript_selected);
             }
@@ -418,7 +420,7 @@ pub fn interactionHitTest(
 
     for (session.messages.items, 0..) |msg, message_index| {
         const block_h = messageBlockHeight(msg, content_w);
-        if (msg.role == .tool) {
+        if (rendersAsCard(msg)) {
             if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
                 const copy_rect = detailCopyButtonRect(content_x, cursor_top, content_w);
                 if (pointInRect(px, py, copy_rect)) return .{ .copy_message = message_index };
@@ -565,6 +567,35 @@ pub fn permissionChipHitTest(
         .w = PERMISSION_CHIP_W,
         .h = PERMISSION_CHIP_H,
     });
+}
+
+/// Bounding box of the header model label (top-left of the panel), or null when
+/// the label is hidden because the panel is too narrow (mirrors the render-time
+/// `model_limit > 24` guard in `render`).
+fn modelLabelRect(session: *ai_chat.Session, x: f32, w: f32, titlebar_offset: f32) ?Rect {
+    const chip_x = permissionChipX(x, w);
+    const mode_x = @max(x + LINE_PAD_X, chip_x - MODE_SLOT_W - 8);
+    const model_x = x + LINE_PAD_X;
+    const model_limit = mode_x - model_x - 12;
+    if (model_limit <= 24) return null;
+    const text_w = @min(measureText(session.model()), model_limit);
+    return .{ .x = model_x, .top_px = titlebar_offset + 8, .w = @max(1.0, text_w), .h = 32 };
+}
+
+pub fn modelLabelHitTest(
+    session: *ai_chat.Session,
+    xpos: f64,
+    ypos: f64,
+    window_width: f32,
+    titlebar_offset: f32,
+    chat_x: f32,
+    chat_w: f32,
+) bool {
+    _ = window_width;
+    const x = @round(chat_x);
+    const w = @round(@max(1.0, chat_w));
+    const rect = modelLabelRect(session, x, w, titlebar_offset) orelse return false;
+    return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
 }
 
 pub fn missingApiKeyStatusHitTest(
@@ -785,11 +816,15 @@ pub fn transcriptScrollbarScrollPxAt(
     return scrollbar_model.scrollPxAt(geo, @floatCast(ypos), drag_offset);
 }
 
+/// A message rendered as a collapsible card (the detail/tool style): real tool
+/// messages, and the synthetic "上文摘要" context-summary card.
+fn rendersAsCard(msg: ai_chat.Message) bool {
+    return msg.role == .tool or msg.is_context_summary;
+}
+
 fn messageBlockHeight(msg: ai_chat.Message, max_w: f32) f32 {
-    return switch (msg.role) {
-        .tool => toolCardHeight(msg, max_w),
-        else => bubbleHeight(msg.role, msg.content, max_w),
-    };
+    if (rendersAsCard(msg)) return toolCardHeight(msg, max_w);
+    return bubbleHeight(msg.role, msg.content, max_w);
 }
 
 fn bubbleHeight(role: ai_chat.Role, text: []const u8, max_w: f32) f32 {
@@ -912,7 +947,11 @@ fn renderToolCard(msg: ai_chat.Message, x: f32, top_px: f32, w: f32, h: f32, win
     const accent = AppWindow.g_theme.cursor_color;
     const y = window_height - top_px - h;
     const header_h = detailHeaderHeight();
-    const meta = toolSectionMeta(msg.content);
+    const meta = if (msg.is_context_summary) ToolSectionMeta{
+        .title = i18n.s().ai_summary_card_title,
+        .name = "",
+        .preview = ai_model_switch.cardPreview(msg.content),
+    } else toolSectionMeta(msg.content);
     const card_bg = if (selected) mixColor(bg, accent, 0.22) else mixColor(bg, fg, 0.055);
     const header_bg = if (selected) mixColor(bg, accent, 0.28) else mixColor(bg, fg, 0.08);
     const header_y = y + h - header_h;

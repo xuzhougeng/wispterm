@@ -100,6 +100,26 @@ pub fn titleThreadMain(req: *ChatRequest) void {
     ai_chat.applyGeneratedTitle(session, result.content);
 }
 
+/// Background worker for the post-model-switch context summary. Owns `sreq`
+/// (and its inner ChatRequest) and frees it on exit. On success, splices the
+/// pre-switch transcript into a single "上文摘要" card; on failure, keeps the
+/// full raw history.
+pub fn summaryThreadMain(sreq: *ai_chat.SummaryRequest) void {
+    defer sreq.deinit();
+    const session = sreq.req.session;
+    const allocator = sreq.req.allocator;
+    if (session.closing.load(.acquire)) return;
+
+    const result = runChatRequestForMessages(sreq.req, sreq.req.messages, false) catch {
+        ai_chat.failSummaryResult(session);
+        return;
+    };
+    defer result.deinit(allocator);
+    if (session.closing.load(.acquire)) return;
+
+    ai_chat.applySummaryResult(session, result.content, sreq.boundary, sreq.fromModel());
+}
+
 /// Background worker for one skill-distillation request. Owns `request` and
 /// frees it on exit. Distillation is tool-free and never appends a normal
 /// assistant message; it stores a preview candidate in Session state.

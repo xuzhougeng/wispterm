@@ -34,6 +34,7 @@ const close_confirm = @import("../close_confirm.zig");
 const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
+const ai_model_switch = @import("../ai_model_switch.zig");
 const claude_integration = @import("../claude_integration.zig");
 const platform_atomic_file = @import("../platform/atomic_file.zig");
 const agent_detector = @import("../agent_detector.zig");
@@ -1882,6 +1883,7 @@ const AiListMode = enum {
     manage,
     edit_select,
     delete_select,
+    switch_model,
 };
 
 const AiHistorySourceChoice = enum { local, wsl, ssh };
@@ -1924,6 +1926,9 @@ threadlocal var g_ssh_list_visible: bool = false;
 threadlocal var g_ssh_form_visible: bool = false;
 threadlocal var g_ai_list_visible: bool = false;
 threadlocal var g_ai_form_visible: bool = false;
+/// Live session bound to a `.switch_model` picker; set when the picker opens,
+/// cleared when a row is chosen or the picker closes.
+threadlocal var g_switch_model_target: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_history_source_visible: bool = false;
 threadlocal var g_ai_history_source_selected: usize = 0;
 threadlocal var g_ssh_focus: usize = @intFromEnum(SshField.name);
@@ -3521,7 +3526,7 @@ fn handleAiListKey(ev: input_key.KeyEvent) void {
 fn aiListRowCount() usize {
     return switch (g_ai_list_mode) {
         .manage => g_ai_profile_count + 4,
-        .edit_select, .delete_select => g_ai_profile_count + 1,
+        .edit_select, .delete_select, .switch_model => g_ai_profile_count + 1,
     };
 }
 
@@ -3561,6 +3566,13 @@ fn runAiListRow(row: usize) void {
             } else {
                 openAiList();
             }
+        },
+        .switch_model => {
+            if (row < g_ai_profile_count) {
+                if (g_switch_model_target) |session| _ = applyProfileToSession(session, row);
+            }
+            g_switch_model_target = null;
+            sessionLauncherClose();
         },
     }
 }
@@ -3688,6 +3700,56 @@ fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool
 
     sessionLauncherClose();
     return AppWindow.spawnAiChatTab(name, base_url, api_key, model, protocol, system_prompt, thinking, reasoning_effort, stream_val, agent_val, max_tokens, vision_val);
+}
+
+/// Apply profile `idx` to the given live session in place (provider/model only)
+/// and kick off the background summary. Returns false on an invalid profile.
+fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
+    if (idx >= g_ai_profile_count) return false;
+    const profile = &g_ai_profiles[idx];
+    const base_url = aiProfileField(profile, .base_url);
+    const api_key = aiProfileField(profile, .api_key);
+    const model = aiProfileField(profile, .model);
+    const thinking = aiProfileField(profile, .thinking);
+    const reasoning_effort = aiProfileField(profile, .reasoning_effort);
+    const protocol = aiProfileField(profile, .protocol);
+    const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
+    const vision_val = aiProfileField(profile, .vision);
+    if (base_url.len == 0 or model.len == 0) return false;
+    if (!isHttpUrlish(base_url)) return false;
+    ai_chat.applyProviderProfile(session, base_url, api_key, model, protocol, thinking, reasoning_effort, max_tokens, vision_val);
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+    return true;
+}
+
+/// Open the profile picker in switch-model mode, bound to `session`.
+pub fn openSwitchModelPicker(session: *AppWindow.ai_chat.Session) void {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) {
+        session.appendLocalToolMessage(i18n.s().ai_model_no_profiles);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
+    g_switch_model_target = session;
+    openAiList(); // sets visibility flags + mode .manage
+    g_ai_list_mode = .switch_model;
+    g_ai_list_selected = @min(g_ai_list_selected, aiListRowCount() - 1);
+}
+
+/// `/model <name>`: match by name and apply directly; on no match, note the
+/// available profiles in the transcript and fall back to opening the picker.
+pub fn switchModelByName(session: *AppWindow.ai_chat.Session, name: []const u8) void {
+    loadAiProfiles();
+    var names: [AI_PROFILE_MAX][]const u8 = undefined;
+    for (0..g_ai_profile_count) |i| names[i] = aiProfileField(&g_ai_profiles[i], .name);
+    if (ai_model_switch.matchProfileByName(names[0..g_ai_profile_count], name)) |idx| {
+        _ = applyProfileToSession(session, idx);
+        return;
+    }
+    session.appendLocalToolMessage(i18n.s().ai_model_unknown_profile);
+    openSwitchModelPicker(session);
 }
 
 /// Build a standalone copilot Session from the default AI profile (Issue #98).
@@ -4027,6 +4089,7 @@ fn sessionLauncherTitle() []const u8 {
             .manage => i18n.s().sl_llm_providers,
             .edit_select => i18n.s().sl_edit_llm_provider,
             .delete_select => i18n.s().sl_delete_llm_provider,
+            .switch_model => i18n.s().sl_switch_model_title,
         };
     }
     if (g_ssh_form_visible) return i18n.s().sl_ssh_server;
@@ -4052,6 +4115,7 @@ fn sessionLauncherHint() []const u8 {
             .manage => i18n.s().sl_hint_ai_manage,
             .edit_select => i18n.s().sl_hint_choose_profile_edit,
             .delete_select => i18n.s().sl_hint_choose_profile_delete,
+            .switch_model => i18n.s().sl_switch_model_hint,
         };
     }
     if (g_ssh_form_visible) return i18n.s().sl_hint_ssh_form;
@@ -4126,7 +4190,7 @@ fn sessionDesiredBoxWidth() f32 {
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
                 desired = @max(desired, sessionTwoColumnWidth(sessionLauncherCancelLabel(), "Esc"));
             },
-            .edit_select, .delete_select => {
+            .edit_select, .delete_select, .switch_model => {
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_v_manage));
             },
         }
@@ -4539,7 +4603,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
                     row += 1;
                     renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", g_ai_list_selected == row);
                 },
-                .edit_select, .delete_select => {
+                .edit_select, .delete_select, .switch_model => {
                     renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, g_ai_list_selected == row);
                 },
             }

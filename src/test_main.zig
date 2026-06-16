@@ -633,6 +633,7 @@ comptime {
 comptime {
     _ = @import("ai_chat.zig");
     _ = @import("ai_chat_request.zig");
+    _ = @import("ai_model_switch.zig");
     _ = @import("ai_chat_tools.zig");
     _ = @import("ai_chat_skills.zig");
     _ = @import("ai_chat_types.zig");
