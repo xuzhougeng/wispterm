@@ -32,6 +32,10 @@ pub const PersistedState = struct {
     quake_width: ?i32 = null,
     quake_height: ?i32 = null,
     ai_setup_prompted: bool = false,
+    /// Whether the one-time Copilot discoverability hint (edge-handle shimmer)
+    /// has already been shown. Set the first time the handle is eligible, or as
+    /// soon as the user opens Copilot by any means.
+    copilot_hint_shown: bool = false,
     // Last app version whose "What's New" was seen. Stored inline (fixed buffer)
     // so this pure codec stays allocation-free and never aliases the parse input.
     last_seen_version_buf: [version_max_len]u8 = undefined,
@@ -88,6 +92,8 @@ pub fn parse(data: []const u8) PersistedState {
             state.quake_height = std.fmt.parseInt(i32, val, 10) catch null;
         } else if (std.mem.eql(u8, key, "ai-setup-prompted")) {
             state.ai_setup_prompted = std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
+        } else if (std.mem.eql(u8, key, "copilot-hint-shown")) {
+            state.copilot_hint_shown = std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
         } else if (std.mem.eql(u8, key, "last-seen-version")) {
             const n = @min(val.len, version_max_len);
             @memcpy(state.last_seen_version_buf[0..n], val[0..n]);
@@ -114,6 +120,7 @@ pub fn format(buf: []u8, state: PersistedState) ![]const u8 {
     if (state.quake_width) |w| len += (try std.fmt.bufPrint(buf[len..], "quake-width = {d}\n", .{w})).len;
     if (state.quake_height) |h| len += (try std.fmt.bufPrint(buf[len..], "quake-height = {d}\n", .{h})).len;
     len += (try std.fmt.bufPrint(buf[len..], "ai-setup-prompted = {d}\n", .{@intFromBool(state.ai_setup_prompted)})).len;
+    len += (try std.fmt.bufPrint(buf[len..], "copilot-hint-shown = {d}\n", .{@intFromBool(state.copilot_hint_shown)})).len;
     if (state.last_seen_version_len > 0) {
         len += (try std.fmt.bufPrint(buf[len..], "last-seen-version = {s}\n", .{state.lastSeenVersion()})).len;
     }
@@ -202,10 +209,10 @@ test "format round-trips through parse" {
     try std.testing.expectEqual(original.ai_setup_prompted, reparsed.ai_setup_prompted);
 }
 
-test "format omits null geometry but always writes the flag" {
+test "format omits null geometry but always writes the flags" {
     var buf: [256]u8 = undefined;
     const text = try format(&buf, .{ .ai_setup_prompted = false });
-    try std.testing.expectEqualStrings("ai-setup-prompted = 0\n", text);
+    try std.testing.expectEqualStrings("ai-setup-prompted = 0\ncopilot-hint-shown = 0\n", text);
 }
 
 test "sizeIsValid rejects degenerate sizes" {
@@ -330,9 +337,28 @@ test "a full state file fits the save buffer with the bring-up marker" {
         .x = -32768, .y = -32768, .width = 32767, .height = 32767,
         .quake_x = -32768, .quake_y = -32768, .quake_width = 32767, .quake_height = 32767,
         .ai_setup_prompted = true,
+        .copilot_hint_shown = true,
     };
     full = withLastSeenVersion(full, "1.2.3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     full = withD3dBringup(full, "probing:1.2.3-aaaaaaaaaaaaaaaaaaaaaaaa");
     var buf: [384]u8 = undefined;
     _ = try format(&buf, full);
+}
+
+test "parse reads copilot-hint-shown" {
+    const s = parse("copilot-hint-shown = 1\n");
+    try std.testing.expectEqual(true, s.copilot_hint_shown);
+}
+
+test "old state file without copilot-hint-shown defaults to false" {
+    const s = parse("window-x = 10\nai-setup-prompted = 1\n");
+    try std.testing.expectEqual(false, s.copilot_hint_shown);
+}
+
+test "copilot-hint-shown round-trips and is always written" {
+    var buf: [384]u8 = undefined;
+    const text = try format(&buf, .{ .copilot_hint_shown = true });
+    try std.testing.expect(std.mem.indexOf(u8, text, "copilot-hint-shown = 1") != null);
+    const reparsed = parse(text);
+    try std.testing.expectEqual(true, reparsed.copilot_hint_shown);
 }
