@@ -261,7 +261,7 @@ const MeasuredFaceMetrics = struct {
 
 fn glyphBitmapHeight(face: freetype.Face, codepoint: u32) ?f64 {
     const glyph_index = face.getCharIndex(codepoint) orelse return null;
-    face.loadGlyph(glyph_index, .{ .target = .normal }) catch return null;
+    face.loadGlyph(glyph_index, .{ .target = .normal, .no_autohint = true }) catch return null;
     face.renderGlyph(.normal) catch return null;
     return @floatFromInt(face.handle.*.glyph.*.bitmap.rows);
 }
@@ -273,7 +273,7 @@ fn measureAsciiHeight(face: freetype.Face) f64 {
 
     for (32..127) |cp| {
         const glyph_index = face.getCharIndex(@intCast(cp)) orelse continue;
-        face.loadGlyph(glyph_index, .{ .target = .normal }) catch continue;
+        face.loadGlyph(glyph_index, .{ .target = .normal, .no_autohint = true }) catch continue;
         face.renderGlyph(.normal) catch continue;
 
         const glyph = face.handle.*.glyph;
@@ -365,7 +365,7 @@ fn measureFaceMetrics(face: freetype.Face) MeasuredFaceMetrics {
     var max_advance: f64 = 0;
     for (32..127) |cp| {
         const glyph_index = face.getCharIndex(@intCast(cp)) orelse continue;
-        face.loadGlyph(glyph_index, .{ .target = .normal }) catch continue;
+        face.loadGlyph(glyph_index, .{ .target = .normal, .no_autohint = true }) catch continue;
         const advance = f26dot6ToF64(face.handle.*.glyph.*.advance.x);
         max_advance = @max(max_advance, advance);
     }
@@ -378,7 +378,7 @@ fn measureFaceMetrics(face: freetype.Face) MeasuredFaceMetrics {
     };
     const ic_width = blk: {
         const glyph_index = face.getCharIndex(0x6C34) orelse break :blk @min(ascii_height, 2.0 * max_advance);
-        face.loadGlyph(glyph_index, .{ .target = .normal }) catch break :blk @min(ascii_height, 2.0 * max_advance);
+        face.loadGlyph(glyph_index, .{ .target = .normal, .no_autohint = true }) catch break :blk @min(ascii_height, 2.0 * max_advance);
         break :blk f26dot6ToF64(face.handle.*.glyph.*.advance.x);
     };
 
@@ -834,6 +834,7 @@ pub fn loadGlyph(codepoint: u32) ?Character {
     face_to_use.loadGlyph(@intCast(glyph_index), .{
         .target = target,
         .color = is_color_face,
+        .no_autohint = true,
     }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(codepoint)) .normal else .light) catch return null;
 
@@ -1027,6 +1028,7 @@ pub fn loadGraphemeGlyph(base_cp: u21, extra_cps: []const u21) ?Character {
     face_to_use.loadGlyph(@intCast(shaped_glyph_index), .{
         .target = target,
         .color = is_color_face,
+        .no_autohint = true,
     }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(@intCast(base_cp))) .normal else .light) catch return null;
 
@@ -1170,7 +1172,7 @@ pub fn loadTitlebarGlyph(codepoint: u32) ?Character {
     }
 
     const target = glyphTargetForCodepoint(codepoint);
-    face_to_use.loadGlyph(@intCast(glyph_index), .{ .target = target }) catch return null;
+    face_to_use.loadGlyph(@intCast(glyph_index), .{ .target = target, .no_autohint = true }) catch return null;
     face_to_use.renderGlyph(if (isCjkCodepoint(codepoint)) .normal else .light) catch return null;
 
     const glyph = face_to_use.handle.*.glyph;
@@ -1208,8 +1210,9 @@ pub fn loadIconGlyph(codepoint: u32) ?Character {
     const glyph_index = face.getCharIndex(codepoint) orelse return null;
     if (glyph_index == 0) return null;
 
-    // Use mono hinting for crisp icon rendering (snaps to pixel grid)
-    face.loadGlyph(@intCast(glyph_index), .{ .target = .normal }) catch return null;
+    // Native (non-autofit) hinting for the icon font. no_autohint avoids the
+    // FreeType autofitter, which faults (af_*_metrics_init) on macOS x86_64.
+    face.loadGlyph(@intCast(glyph_index), .{ .target = .normal, .no_autohint = true }) catch return null;
     face.renderGlyph(.normal) catch return null;
 
     const glyph = face.handle.*.glyph;
@@ -1272,7 +1275,7 @@ pub fn loadBellEmoji() ?BellCache {
     const glyph_index = face.getCharIndex(bell_cp) orelse return null;
     if (glyph_index == 0) return null;
 
-    face.loadGlyph(@intCast(glyph_index), .{ .target = .light, .color = true }) catch return null;
+    face.loadGlyph(@intCast(glyph_index), .{ .target = .light, .color = true, .no_autohint = true }) catch return null;
     face.renderGlyph(.light) catch return null;
 
     const glyph = face.handle.*.glyph;

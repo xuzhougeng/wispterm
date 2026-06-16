@@ -7564,8 +7564,31 @@ fn runMainLoop(self: *AppWindow) !void {
     defer {
         background_image.deinit();
         post_process.deinit();
-        cell_pipeline.deinit();
-        ui_pipeline.deinit();
+        // macOS/Metal: cell_pipeline/ui_pipeline.deinit() release the
+        // MTLRenderPipelineState/MTLBuffer objects held in the render thread's
+        // _Thread_local slot tables (renderer/gpu/metal/bridge.m). At TRUE
+        // process exit on x86_64 that manual-refcount [obj release] cascade
+        // faults as the thread's TLV storage is torn down (the reported crash is
+        // inside cell_pipeline.deinit). The Metal device/queue/layer are already
+        // leaked on purpose (gpu.Context.deinit is never called) and the OS
+        // reclaims all GPU memory on process death, so skip these two on the LAST
+        // window. A SECONDARY window closing while the app keeps running still
+        // tears them down on its own live render thread to avoid leaking the
+        // slot-table objects. OpenGL (Windows/Linux) teardown is well-behaved
+        // and stays unchanged: gpu.active is comptime, so `skip` folds to false
+        // off Metal and both deinits always run there.
+        const is_last_window = blk: {
+            self.app.mutex.lock();
+            defer self.app.mutex.unlock();
+            // This window is still in app.windows here — the caller swap-removes
+            // it only AFTER runMainLoop returns — so len <= 1 means it is last.
+            break :blk self.app.windows.items.len <= 1;
+        };
+        const skip_pipeline_teardown = gpu.active == .metal and is_last_window;
+        if (!skip_pipeline_teardown) {
+            cell_pipeline.deinit();
+            ui_pipeline.deinit();
+        }
     }
 
     // Ghostty approach: calculate grid size from ACTUAL window size.
