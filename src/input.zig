@@ -3051,11 +3051,31 @@ fn hitTestHelpButton(xpos: f64, ypos: f64) bool {
     return xpos >= help_x and xpos < help_x + help_w;
 }
 
+fn hitTestCopilotButton(xpos: f64, ypos: f64) bool {
+    const titlebar_h = titlebarHeight();
+    if (ypos < 0 or ypos >= titlebar_h) return false;
+    if (titlebar.TITLEBAR_COPILOT_W <= 0) return false;
+    const win = AppWindow.g_window orelse return false;
+    const size = clientSize(win);
+    const window_width: f64 = @floatFromInt(size.width);
+    const caption_w: f64 = 46 * 3;
+    const config_w: f64 = @floatCast(titlebar.TITLEBAR_CONFIG_W);
+    const help_w: f64 = @floatCast(titlebar.TITLEBAR_HELP_W);
+    const copilot_w: f64 = @floatCast(titlebar.TITLEBAR_COPILOT_W);
+    const copilot_x = window_width - caption_w - config_w - help_w - copilot_w;
+    return xpos >= copilot_x and xpos < copilot_x + copilot_w;
+}
+
 fn handleTopbarPress(xpos: f64) void {
     const toggle_x: f64 = @floatCast(titlebar.titlebarLeftReserved());
     const toggle_end: f64 = toggle_x + @as(f64, titlebar.TITLEBAR_TOGGLE_W);
     if (xpos >= toggle_x and xpos < toggle_end) {
         toggleSidebar();
+        return;
+    }
+
+    if (hitTestCopilotButton(xpos, titlebarHeight() / 2)) {
+        AppWindow.toggleAiCopilot();
         return;
     }
 

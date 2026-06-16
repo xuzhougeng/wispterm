@@ -33,6 +33,7 @@ pub const TITLEBAR_TOGGLE_W: f32 = 46;
 // these in-titlebar buttons, so they collapse to zero width and are not drawn.
 pub const TITLEBAR_CONFIG_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
 pub const TITLEBAR_HELP_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
+pub const TITLEBAR_COPILOT_W: f32 = if (builtin.os.tag == .macos) 0 else 46;
 // macOS draws the close / minimize / zoom (red / yellow / green) controls over
 // the left edge of the titlebar via AppKit when NSWindowStyleMaskFullSizeContentView
 // is set. Reserve a strip in *framebuffer pixels* so wispterm's own toggle and
@@ -263,6 +264,23 @@ fn renderFallbackHelpIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     }
 }
 
+/// A minimal speech-bubble icon (outline body + a small tail), matching the
+/// stroked style of the help/gear fallbacks. Vector so it is font-independent.
+fn renderFallbackCopilotIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const stroke: f32 = 2;
+    const bw: f32 = 16;
+    const bh: f32 = 11;
+    const bx = cx - bw / 2;
+    const by = cy - bh / 2 + 1;
+    gl_init.renderQuad(bx, by, bw, stroke, color); // top
+    gl_init.renderQuad(bx, by + bh - stroke, bw, stroke, color); // bottom
+    gl_init.renderQuad(bx, by, stroke, bh, color); // left
+    gl_init.renderQuad(bx + bw - stroke, by, stroke, bh, color); // right
+    gl_init.renderQuad(bx + 3, by - 3, stroke, 3, color); // tail
+}
+
 fn renderPlusIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     if (font.icon_face != null) {
         if (font.loadIconGlyph(font_backend.titlebarIconGlyph(.add))) |ch| {
@@ -477,11 +495,28 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             }
         }
 
+        const copilot_x = help_x - TITLEBAR_COPILOT_W;
+        if (TITLEBAR_COPILOT_W > 0) {
+            const copilot_open = AppWindow.aiCopilotVisible();
+            const copilot_usable = AppWindow.isActiveTabTerminal();
+            const copilot_hovered = mouseInTitlebarRange(titlebar_h, copilot_x, copilot_x + TITLEBAR_COPILOT_W);
+            if (copilot_hovered and copilot_usable) {
+                gl_init.renderQuad(copilot_x, tb_top, TITLEBAR_COPILOT_W, titlebar_h, hover_bg);
+            }
+            const copilot_tint = if (!copilot_usable)
+                blend(bg, fg, 0.30) // dimmed: no terminal target
+            else if (copilot_open)
+                blend(bg, AppWindow.g_theme.cursor_color, 0.85) // active
+            else
+                icon_color;
+            renderFallbackCopilotIcon(copilot_x, tb_top, TITLEBAR_COPILOT_W, titlebar_h, copilot_tint);
+        }
+
         if (tab.activeTab()) |active_tab| {
             const title = active_tab.getTitle();
             const text_y = tb_top + (titlebar_h - font.g_titlebar_cell_height) / 2;
             const text_x = titlebarLeftReserved() + TITLEBAR_TOGGLE_W + 10;
-            _ = renderTextLimited(title, text_x, text_y, blend(bg, fg, 0.90), help_x - text_x - 12);
+            _ = renderTextLimited(title, text_x, text_y, blend(bg, fg, 0.90), copilot_x - text_x - 12);
         }
 
         renderCaptionButton(top_caption_start, tb_top, top_caption_btn_w, top_btn_h, .minimize, top_hovered == .minimize);
