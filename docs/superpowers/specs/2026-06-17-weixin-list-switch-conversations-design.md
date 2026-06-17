@@ -1,7 +1,7 @@
 # WeChat-direct conversation list & switch
 
 **Date:** 2026-06-17
-**Status:** Design approved, pending spec review
+**Status:** Implemented (Linux suites green; Windows GUI verification pending)
 **Branch:** `weixin-list-switch-conversations`
 
 ## Problem
