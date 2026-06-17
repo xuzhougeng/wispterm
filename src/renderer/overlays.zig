@@ -1958,6 +1958,20 @@ pub const RemoteAgentOpenResult = enum {
     failed,
 };
 
+pub const NamedAgentOpenResult = enum {
+    opened,
+    no_profile,
+    unknown_profile,
+    failed,
+};
+
+pub const ModelProfileSwitchResult = enum {
+    switched,
+    no_profile,
+    unknown_profile,
+    failed,
+};
+
 threadlocal var g_pending_ssh_password: [SSH_FIELD_MAX + 1]u8 = undefined;
 threadlocal var g_pending_ssh_password_len: usize = 0;
 threadlocal var g_pending_ssh_password_due_ms: i64 = 0;
@@ -3298,6 +3312,39 @@ pub fn openDefaultAgentSessionForRemote() RemoteAgentOpenResult {
     return if (spawnAiProfileWithAgentOverride(defaultAiProfileIndex(), "true")) .opened else .failed;
 }
 
+pub fn openAgentSessionForRemoteProfile(profile_name: []const u8) NamedAgentOpenResult {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) return .no_profile;
+    const idx = blk: {
+        const name = std.mem.trim(u8, profile_name, " \t\r\n");
+        if (name.len == 0) break :blk defaultAiProfileIndex();
+        var names: [AI_PROFILE_MAX][]const u8 = undefined;
+        for (0..g_ai_profile_count) |i| names[i] = aiProfileField(&g_ai_profiles[i], .name);
+        break :blk ai_model_switch.matchProfileByName(names[0..g_ai_profile_count], name) orelse return .unknown_profile;
+    };
+    return if (spawnAiProfileWithAgentOverride(idx, "true")) .opened else .failed;
+}
+
+pub fn aiModelProfileList(allocator: std.mem.Allocator) ![]u8 {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) return allocator.dupe(u8, "");
+    const default_idx = defaultAiProfileIndex();
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (0..g_ai_profile_count) |idx| {
+        const profile = &g_ai_profiles[idx];
+        const name = aiProfileField(profile, .name);
+        const model = aiProfileField(profile, .model);
+        try out.print(allocator, "- {s}", .{name});
+        if (model.len != 0 and !std.mem.eql(u8, name, model)) {
+            try out.print(allocator, " ({s})", .{model});
+        }
+        if (idx == default_idx) try out.appendSlice(allocator, " [default]");
+        try out.append(allocator, '\n');
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 fn openAiEditPicker() void {
     openAiProfilePicker(.edit_select);
 }
@@ -3723,6 +3770,15 @@ fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
     return true;
 }
 
+pub fn switchSessionModelByProfileName(session: *AppWindow.ai_chat.Session, profile_name: []const u8) ModelProfileSwitchResult {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) return .no_profile;
+    var names: [AI_PROFILE_MAX][]const u8 = undefined;
+    for (0..g_ai_profile_count) |i| names[i] = aiProfileField(&g_ai_profiles[i], .name);
+    const idx = ai_model_switch.matchProfileByName(names[0..g_ai_profile_count], profile_name) orelse return .unknown_profile;
+    return if (applyProfileToSession(session, idx)) .switched else .failed;
+}
+
 /// Open the profile picker in switch-model mode, bound to `session`.
 pub fn openSwitchModelPicker(session: *AppWindow.ai_chat.Session) void {
     loadAiProfiles();
@@ -3741,15 +3797,13 @@ pub fn openSwitchModelPicker(session: *AppWindow.ai_chat.Session) void {
 /// `/model <name>`: match by name and apply directly; on no match, note the
 /// available profiles in the transcript and fall back to opening the picker.
 pub fn switchModelByName(session: *AppWindow.ai_chat.Session, name: []const u8) void {
-    loadAiProfiles();
-    var names: [AI_PROFILE_MAX][]const u8 = undefined;
-    for (0..g_ai_profile_count) |i| names[i] = aiProfileField(&g_ai_profiles[i], .name);
-    if (ai_model_switch.matchProfileByName(names[0..g_ai_profile_count], name)) |idx| {
-        _ = applyProfileToSession(session, idx);
-        return;
+    switch (switchSessionModelByProfileName(session, name)) {
+        .switched => return,
+        .no_profile, .unknown_profile, .failed => {
+            session.appendLocalToolMessage(i18n.s().ai_model_unknown_profile);
+            openSwitchModelPicker(session);
+        },
     }
-    session.appendLocalToolMessage(i18n.s().ai_model_unknown_profile);
-    openSwitchModelPicker(session);
 }
 
 /// Build a standalone copilot Session from the default AI profile (Issue #98).

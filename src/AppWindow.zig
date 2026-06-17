@@ -5694,11 +5694,12 @@ var g_weixin_transcript_owned: []u8 = &.{};
 var g_weixin_pinned_session: ?*ai_chat.Session = null;
 
 const WeixinRequest = struct {
-    op: enum { find_ai, find_term, open_ai, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, inbound_file_dir, list_conversations, pin_by_index },
+    op: enum { find_ai, find_term, open_ai, open_ai_profile, model_profiles, switch_ai_profile, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, inbound_file_dir, list_conversations, pin_by_index },
     // operation inputs (valid for the duration of the synchronous call):
     surface_id: [16]u8 = [_]u8{0} ** 16, // send_input
     bytes: []const u8 = "", // send_input
     reply_context: ?weixin_types.ReplyContext = null, // send_input
+    profile_name: []const u8 = "", // open_ai_profile / switch_ai_profile
     approve: bool = false, // resolve_ai_approval
     pin_index: usize = 0, // pin_by_index input
     conv_list_out: ?*weixin_control.ConversationList = null, // list_conversations output
@@ -5707,9 +5708,11 @@ const WeixinRequest = struct {
     found: bool = false,
     out_surface_id: [16]u8 = [_]u8{0} ** 16,
     open_result: weixin_control.OpenResult = .failed,
+    switch_result: weixin_control.SwitchModelResult = .failed,
     sent: bool = false,
     busy: bool = false, // send_input: AI chat rejected the prompt (request inflight)
     transcript: []u8 = &.{},
+    profiles: []u8 = &.{}, // model_profiles (heap, page_allocator)
     dir: []u8 = &.{}, // inbound_file_dir (heap, page_allocator)
 };
 
@@ -5808,6 +5811,40 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
                 .failed => .failed,
             };
             if (req.open_result == .opened) g_force_rebuild = true;
+        },
+        .open_ai_profile => {
+            req.open_result = switch (overlays.openAgentSessionForRemoteProfile(req.profile_name)) {
+                .opened => .opened,
+                .no_profile => .no_profile,
+                .unknown_profile => .unknown_profile,
+                .failed => .failed,
+            };
+            if (req.open_result == .opened) g_force_rebuild = true;
+        },
+        .model_profiles => {
+            req.profiles = overlays.aiModelProfileList(std.heap.page_allocator) catch return;
+            req.found = true;
+        },
+        .switch_ai_profile => {
+            const idx = weixinActiveAiTabIndex() orelse {
+                req.switch_result = .no_ai;
+                return;
+            };
+            const tab_state = tab.g_tabs[idx] orelse {
+                req.switch_result = .no_ai;
+                return;
+            };
+            const session = tabConversationSession(tab_state) orelse {
+                req.switch_result = .no_ai;
+                return;
+            };
+            req.switch_result = switch (overlays.switchSessionModelByProfileName(session, req.profile_name)) {
+                .switched => .switched,
+                .no_profile => .no_profile,
+                .unknown_profile => .unknown_profile,
+                .failed => .failed,
+            };
+            if (req.switch_result == .switched) g_force_rebuild = true;
         },
         .send_input => {
             if (weixinTabIndexFromSurfaceId(req.surface_id)) |idx| {
@@ -5948,6 +5985,27 @@ fn wxOpenAiAgent(_: *anyopaque, _: u32) weixin_control.OpenResult {
     return req.open_result;
 }
 
+fn wxOpenAiAgentProfile(_: *anyopaque, profile_name: []const u8, _: u32) weixin_control.OpenResult {
+    var req = WeixinRequest{ .op = .open_ai_profile, .profile_name = profile_name };
+    if (!weixinDispatch(&req)) return .offline;
+    return req.open_result;
+}
+
+fn wxModelProfiles(_: *anyopaque, buf: []u8) []const u8 {
+    var req = WeixinRequest{ .op = .model_profiles };
+    if (!weixinDispatch(&req) or !req.found) return "";
+    defer if (req.profiles.len != 0) std.heap.page_allocator.free(req.profiles);
+    const n = @min(req.profiles.len, buf.len);
+    @memcpy(buf[0..n], req.profiles[0..n]);
+    return buf[0..n];
+}
+
+fn wxSwitchAiProfile(_: *anyopaque, profile_name: []const u8) weixin_control.SwitchModelResult {
+    var req = WeixinRequest{ .op = .switch_ai_profile, .profile_name = profile_name };
+    if (!weixinDispatch(&req)) return .offline;
+    return req.switch_result;
+}
+
 fn wxSendInput(_: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?weixin_types.ReplyContext) weixin_control.SendResult {
     var req = WeixinRequest{ .op = .send_input, .surface_id = surface_id, .bytes = bytes, .reply_context = reply_context };
     if (!weixinDispatch(&req) or !req.sent) return .offline;
@@ -6004,6 +6062,9 @@ const weixin_vtable = weixin_control.Control.VTable{
     .find_ai_surface = wxFindAiSurface,
     .find_terminal_surface = wxFindTerminalSurface,
     .open_ai_agent = wxOpenAiAgent,
+    .open_ai_agent_profile = wxOpenAiAgentProfile,
+    .model_profiles = wxModelProfiles,
+    .switch_ai_profile = wxSwitchAiProfile,
     .send_input = wxSendInput,
     .latest_transcript = wxTranscript,
     .ai_approval_pending = wxAiApprovalPending,

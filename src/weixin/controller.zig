@@ -500,6 +500,15 @@ const NoopControl = struct {
     fn open_ai_agent(_: *anyopaque, _: u32) control_mod.OpenResult {
         return .offline;
     }
+    fn open_ai_agent_profile(_: *anyopaque, _: []const u8, _: u32) control_mod.OpenResult {
+        return .offline;
+    }
+    fn model_profiles(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
+    fn switch_ai_profile(_: *anyopaque, _: []const u8) control_mod.SwitchModelResult {
+        return .offline;
+    }
     fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?types.ReplyContext) control_mod.SendResult {
         return .offline;
     }
@@ -528,6 +537,9 @@ const NoopControl = struct {
             .find_ai_surface = find_ai_surface,
             .find_terminal_surface = find_terminal_surface,
             .open_ai_agent = open_ai_agent,
+            .open_ai_agent_profile = open_ai_agent_profile,
+            .model_profiles = model_profiles,
+            .switch_ai_profile = switch_ai_profile,
             .send_input = send_input,
             .latest_transcript = latest_transcript,
             .ai_approval_pending = ai_approval_pending,
