@@ -5687,15 +5687,23 @@ var g_weixin_ui_handle = std.atomic.Value(usize).init(0);
 var g_weixin_ctx: u8 = 0;
 var g_weixin_transcript_mutex: std.Thread.Mutex = .{};
 var g_weixin_transcript_owned: []u8 = &.{};
+/// The AI conversation WeChat is pinned to (independent of the on-screen active
+/// tab). UI-thread-only — read/written exclusively inside
+/// handleWeixinControlRequest, so no lock is needed. Cleared automatically when
+/// its conversation closes (see weixinActiveAiTabIndex).
+var g_weixin_pinned_session: ?*ai_chat.Session = null;
 
 const WeixinRequest = struct {
-    op: enum { find_ai, find_term, open_ai, open_ai_profile, model_profiles, switch_ai_profile, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, inbound_file_dir },
+    op: enum { find_ai, find_term, open_ai, open_ai_profile, model_profiles, switch_ai_profile, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, inbound_file_dir, list_conversations, pin_by_index },
     // operation inputs (valid for the duration of the synchronous call):
     surface_id: [16]u8 = [_]u8{0} ** 16, // send_input
     bytes: []const u8 = "", // send_input
     reply_context: ?weixin_types.ReplyContext = null, // send_input
     profile_name: []const u8 = "", // open_ai_profile / switch_ai_profile
     approve: bool = false, // resolve_ai_approval
+    pin_index: usize = 0, // pin_by_index input
+    conv_list_out: ?*weixin_control.ConversationList = null, // list_conversations output
+    conv_one_out: ?*weixin_control.Conversation = null, // pin_by_index output
     // outputs filled by the UI-thread handler:
     found: bool = false,
     out_surface_id: [16]u8 = [_]u8{0} ** 16,
@@ -5708,9 +5716,31 @@ const WeixinRequest = struct {
     dir: []u8 = &.{}, // inbound_file_dir (heap, page_allocator)
 };
 
+/// The *ai_chat.Session a tab contributes as its AI conversation, or null:
+/// a dedicated AI-chat tab's session, or a terminal tab's Copilot sidebar
+/// session (once opened). A tab contributes at most one.
+fn tabConversationSession(ts: *tab.TabState) ?*ai_chat.Session {
+    if (ts.kind == .ai_chat) return ts.ai_chat_session;
+    return ts.copilot_session;
+}
+
 /// Index of the AI-chat tab to target: the active tab if it is AI chat, else the
 /// first AI-chat tab. UI-thread only (reads threadlocal tab state).
 fn weixinActiveAiTabIndex() ?usize {
+    // 1) Honor an explicit WeChat pin if its conversation is still open.
+    //    Pointer identity only — never dereference a possibly-stale pointer.
+    if (g_weixin_pinned_session) |pinned| {
+        for (0..tab.g_tab_count) |i| {
+            if (tab.g_tabs[i]) |ts| {
+                if (tabConversationSession(ts) == pinned) return i;
+            }
+        }
+        // The pinned conversation was closed: drop the stale pin and fall back.
+        g_weixin_pinned_session = null;
+    }
+    // 2) Default (unchanged): the active tab if it is an AI-chat tab, else the
+    //    first AI-chat tab. Copilot sidebars are reachable only via an explicit
+    //    /switch pin, not the default.
     if (active_tab_state.g_active_tab < tab.g_tab_count) {
         if (tab.g_tabs[active_tab_state.g_active_tab]) |ts| {
             if (ts.kind == .ai_chat) return active_tab_state.g_active_tab;
@@ -5804,11 +5834,7 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
                 req.switch_result = .no_ai;
                 return;
             };
-            if (tab_state.kind != .ai_chat) {
-                req.switch_result = .no_ai;
-                return;
-            }
-            const session = tab_state.ai_chat_session orelse {
+            const session = tabConversationSession(tab_state) orelse {
                 req.switch_result = .no_ai;
                 return;
             };
@@ -5824,8 +5850,10 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
             if (weixinTabIndexFromSurfaceId(req.surface_id)) |idx| {
                 if (idx >= tab.g_tab_count) return;
                 const tab_state = tab.g_tabs[idx] orelse return;
-                if (tab_state.kind != .ai_chat) return;
-                const session = tab_state.ai_chat_session orelse return;
+                // copilot_session is unreachable here in practice: aichat{N} surface
+                // IDs are only issued for .ai_chat tabs. The fallthrough keeps this
+                // correct if the surface registry is ever extended to Copilot panes.
+                const session = tabConversationSession(tab_state) orelse return;
                 if (req.reply_context) |ctx| {
                     req.busy = !session.applyWeixinInput(req.bytes, ctx);
                 } else {
@@ -5842,23 +5870,20 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
         .latest_transcript => {
             const idx = weixinActiveAiTabIndex() orelse return;
             const tab_state = tab.g_tabs[idx] orelse return;
-            if (tab_state.kind != .ai_chat) return;
-            const session = tab_state.ai_chat_session orelse return;
+            const session = tabConversationSession(tab_state) orelse return;
             req.transcript = session.allocRemoteSnapshot(std.heap.page_allocator) catch return;
             req.found = true;
         },
         .ai_approval_pending => {
             const idx = weixinActiveAiTabIndex() orelse return;
             const tab_state = tab.g_tabs[idx] orelse return;
-            if (tab_state.kind != .ai_chat) return;
-            const session = tab_state.ai_chat_session orelse return;
+            const session = tabConversationSession(tab_state) orelse return;
             req.found = session.approvalView() != null;
         },
         .resolve_ai_approval => {
             const idx = weixinActiveAiTabIndex() orelse return;
             const tab_state = tab.g_tabs[idx] orelse return;
-            if (tab_state.kind != .ai_chat) return;
-            const session = tab_state.ai_chat_session orelse return;
+            const session = tabConversationSession(tab_state) orelse return;
             req.sent = session.resolveApprovalExternal(req.approve);
             if (req.sent) g_force_rebuild = true;
         },
@@ -5866,13 +5891,11 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
             // Per-conversation working dir if set, else the global default.
             if (weixinActiveAiTabIndex()) |idx| {
                 if (tab.g_tabs[idx]) |tab_state| {
-                    if (tab_state.kind == .ai_chat) {
-                        if (tab_state.ai_chat_session) |session| {
-                            if (session.workingDirOverride()) |w| {
-                                req.dir = std.heap.page_allocator.dupe(u8, w) catch return;
-                                req.found = true;
-                                return;
-                            }
+                    if (tabConversationSession(tab_state)) |session| {
+                        if (session.workingDirOverride()) |w| {
+                            req.dir = std.heap.page_allocator.dupe(u8, w) catch return;
+                            req.found = true;
+                            return;
                         }
                     }
                 }
@@ -5880,6 +5903,51 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
             if (ai_chat.defaultWorkingDir()) |w| {
                 req.dir = std.heap.page_allocator.dupe(u8, w) catch return;
                 req.found = true;
+            }
+        },
+        .list_conversations => {
+            const out = req.conv_list_out orelse return;
+            // Also clears g_weixin_pinned_session as a side effect if the pin is
+            // stale (its conversation closed) — listing then correctly marks no
+            // row current and drops the dead pin.
+            const cur = weixinActiveAiTabIndex();
+            var n: usize = 0;
+            for (0..tab.g_tab_count) |i| {
+                if (n >= out.items.len) break;
+                const ts = tab.g_tabs[i] orelse continue;
+                const session = tabConversationSession(ts) orelse continue;
+                var c = &out.items[n];
+                c.* = .{};
+                c.is_copilot = (ts.kind != .ai_chat);
+                c.is_current = (cur != null and cur.? == i);
+                c.busy = session.request_inflight;
+                c.setTitle(ts.getTitle());
+                c.setModel(session.model());
+                if (session.workingDirOverride()) |w| c.setCwd(w);
+                n += 1;
+            }
+            out.count = n;
+            req.found = true;
+        },
+        .pin_by_index => {
+            const out = req.conv_one_out orelse return;
+            var n: usize = 0;
+            for (0..tab.g_tab_count) |i| {
+                const ts = tab.g_tabs[i] orelse continue;
+                const session = tabConversationSession(ts) orelse continue;
+                if (n == req.pin_index) {
+                    g_weixin_pinned_session = session;
+                    out.* = .{};
+                    out.is_copilot = (ts.kind != .ai_chat);
+                    out.is_current = true;
+                    out.busy = session.request_inflight;
+                    out.setTitle(ts.getTitle());
+                    out.setModel(session.model());
+                    if (session.workingDirOverride()) |w| out.setCwd(w);
+                    req.found = true;
+                    return;
+                }
+                n += 1;
             }
         },
     }
@@ -5964,6 +6032,19 @@ fn wxInboundFileDir(_: *anyopaque, buf: []u8) []const u8 {
     return buf[0..n];
 }
 
+fn wxListAiConversations(_: *anyopaque, out: *weixin_control.ConversationList) void {
+    out.count = 0;
+    var req = WeixinRequest{ .op = .list_conversations, .conv_list_out = out };
+    _ = weixinDispatch(&req);
+    // On dispatch failure (no UI window) out stays count=0, which is correct.
+}
+
+fn wxPinAiConversationByIndex(_: *anyopaque, idx0: usize, out: *weixin_control.Conversation) bool {
+    var req = WeixinRequest{ .op = .pin_by_index, .pin_index = idx0, .conv_one_out = out };
+    if (!weixinDispatch(&req)) return false;
+    return req.found;
+}
+
 fn wxAiApprovalPending(_: *anyopaque) bool {
     var req = WeixinRequest{ .op = .ai_approval_pending };
     if (!weixinDispatch(&req)) return false;
@@ -5989,6 +6070,8 @@ const weixin_vtable = weixin_control.Control.VTable{
     .ai_approval_pending = wxAiApprovalPending,
     .resolve_ai_approval = wxResolveAiApproval,
     .inbound_file_dir = wxInboundFileDir,
+    .list_ai_conversations = wxListAiConversations,
+    .pin_ai_conversation_by_index = wxPinAiConversationByIndex,
 };
 
 /// The Control the weixin controller drives. Backed by process-global state, so

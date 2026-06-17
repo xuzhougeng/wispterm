@@ -980,6 +980,12 @@ const NoopControl = struct {
     fn inboundFileDir(_: *anyopaque, _: []u8) []const u8 {
         return "";
     }
+    fn listAiConversations(_: *anyopaque, out: *control_mod.ConversationList) void {
+        out.count = 0;
+    }
+    fn pinAiConversationByIndex(_: *anyopaque, _: usize, _: *control_mod.Conversation) bool {
+        return false;
+    }
     var dummy: u8 = 0;
     fn iface() control_mod.Control {
         return .{ .ctx = &dummy, .vtable = &.{
@@ -995,6 +1001,8 @@ const NoopControl = struct {
             .ai_approval_pending = aiApprovalPending,
             .resolve_ai_approval = resolveAiApproval,
             .inbound_file_dir = inboundFileDir,
+            .list_ai_conversations = listAiConversations,
+            .pin_ai_conversation_by_index = pinAiConversationByIndex,
         } };
     }
 };
@@ -1344,6 +1352,12 @@ const ApprovalTranscriptControl = struct {
     fn inboundFileDir(_: *anyopaque, _: []u8) []const u8 {
         return "";
     }
+    fn listAiConversations(_: *anyopaque, out: *control_mod.ConversationList) void {
+        out.count = 0;
+    }
+    fn pinAiConversationByIndex(_: *anyopaque, _: usize, _: *control_mod.Conversation) bool {
+        return false;
+    }
     var dummy: u8 = 0;
     fn iface() control_mod.Control {
         return .{ .ctx = &dummy, .vtable = &.{
@@ -1359,6 +1373,8 @@ const ApprovalTranscriptControl = struct {
             .ai_approval_pending = aiApprovalPending,
             .resolve_ai_approval = resolveAiApproval,
             .inbound_file_dir = inboundFileDir,
+            .list_ai_conversations = listAiConversations,
+            .pin_ai_conversation_by_index = pinAiConversationByIndex,
         } };
     }
 };
@@ -1446,6 +1462,12 @@ const TmpDirControl = struct {
         @memcpy(buf[0..n], self.dir[0..n]);
         return buf[0..n];
     }
+    fn list_ai_conversations(_: *anyopaque, out: *control_mod.ConversationList) void {
+        out.count = 0;
+    }
+    fn pin_ai_conversation_by_index(_: *anyopaque, _: usize, _: *control_mod.Conversation) bool {
+        return false;
+    }
     fn iface(self: *TmpDirControl) control_mod.Control {
         return .{ .ctx = self, .vtable = &.{
             .is_connected = is_connected,
@@ -1460,6 +1482,8 @@ const TmpDirControl = struct {
             .ai_approval_pending = ai_approval_pending,
             .resolve_ai_approval = resolve_ai_approval,
             .inbound_file_dir = inbound_file_dir,
+            .list_ai_conversations = list_ai_conversations,
+            .pin_ai_conversation_by_index = pin_ai_conversation_by_index,
         } };
     }
 };

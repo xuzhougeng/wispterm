@@ -524,6 +524,12 @@ const NoopControl = struct {
     fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 {
         return "";
     }
+    fn list_ai_conversations(_: *anyopaque, out: *control_mod.ConversationList) void {
+        out.count = 0;
+    }
+    fn pin_ai_conversation_by_index(_: *anyopaque, _: usize, _: *control_mod.Conversation) bool {
+        return false;
+    }
     var dummy: u8 = 0;
     fn iface() control_mod.Control {
         return .{ .ctx = &dummy, .vtable = &.{
@@ -539,6 +545,8 @@ const NoopControl = struct {
             .ai_approval_pending = ai_approval_pending,
             .resolve_ai_approval = resolve_ai_approval,
             .inbound_file_dir = inbound_file_dir,
+            .list_ai_conversations = list_ai_conversations,
+            .pin_ai_conversation_by_index = pin_ai_conversation_by_index,
         } };
     }
 };

@@ -615,6 +615,11 @@ pub const Session = struct {
     input_scroll_row: usize = 0,
     input_scroll_follow_cursor: bool = true,
     input_select_all: bool = false,
+    composer_history_active: bool = false,
+    composer_history_selected: usize = 0,
+    composer_history_draft_buf: [INPUT_PROMPT_MAX_BYTES]u8 = undefined,
+    composer_history_draft_len: usize = 0,
+    composer_history_draft_cursor: usize = 0,
     suggestion_selected: usize = 0,
     skill_suggestions: []skill_registry.SkillMeta = &.{},
     skill_suggestions_loaded: bool = false,
@@ -1257,6 +1262,7 @@ pub const Session = struct {
 
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.clearComposerHistoryNavigationLocked();
         if (self.input_select_all) {
             self.input_len = 0;
             self.input_cursor = 0;
@@ -1274,6 +1280,7 @@ pub const Session = struct {
     pub fn appendInputText(self: *Session, text: []const u8) void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.clearComposerHistoryNavigationLocked();
         if (self.input_select_all) {
             self.input_len = 0;
             self.input_cursor = 0;
@@ -1296,6 +1303,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         if (!self.input_select_all or self.input_len == 0) return null;
         const text = try allocator.dupe(u8, self.input_buf[0..self.input_len]);
+        self.clearComposerHistoryNavigationLocked();
         self.input_len = 0;
         self.input_cursor = 0;
         self.input_scroll_row = 0;
@@ -1409,6 +1417,7 @@ pub const Session = struct {
         }
         if (ev.ctrl and !ev.alt and ev.key == .key_u) {
             self.mutex.lock();
+            self.clearComposerHistoryNavigationLocked();
             self.input_len = 0;
             self.input_cursor = 0;
             self.input_scroll_row = 0;
@@ -1428,8 +1437,12 @@ pub const Session = struct {
             .delete => self.deleteInput(),
             .arrow_left => self.moveInputCursorLeft(),
             .arrow_right => self.moveInputCursorRight(),
-            .arrow_up => if (!self.moveComposerSuggestionSelection(-1)) self.moveInputCursorVertical(max_cols, -1),
-            .arrow_down => if (!self.moveComposerSuggestionSelection(1)) self.moveInputCursorVertical(max_cols, 1),
+            .arrow_up => if (!self.moveComposerSuggestionSelection(-1)) {
+                if (!self.navigateComposerHistory(max_cols, -1)) self.moveInputCursorVertical(max_cols, -1);
+            },
+            .arrow_down => if (!self.moveComposerSuggestionSelection(1)) {
+                if (!self.navigateComposerHistory(max_cols, 1)) self.moveInputCursorVertical(max_cols, 1);
+            },
             .home => self.moveInputCursorHome(),
             .end => self.moveInputCursorEnd(),
             .tab => _ = self.completeComposerSuggestion(.tab),
@@ -2777,6 +2790,7 @@ pub const Session = struct {
     fn backspaceInput(self: *Session) void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.clearComposerHistoryNavigationLocked();
         if (self.input_select_all) {
             self.input_len = 0;
             self.input_cursor = 0;
@@ -2799,6 +2813,7 @@ pub const Session = struct {
     fn deleteInput(self: *Session) void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.clearComposerHistoryNavigationLocked();
         if (self.input_select_all) {
             self.input_len = 0;
             self.input_cursor = 0;
@@ -2869,6 +2884,42 @@ pub const Session = struct {
         self.suggestion_selected = 0;
     }
 
+    fn navigateComposerHistory(self: *Session, max_cols_raw: usize, delta: i32) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const prompt_count = self.composerHistoryPromptCountLocked();
+        if (prompt_count == 0 or delta == 0) return false;
+        self.clampInputCursorLocked();
+
+        const max_cols = @max(@as(usize, 1), max_cols_raw);
+        const text = self.input();
+        const current = visualCursorPosition(text, self.input_cursor, max_cols);
+        const rows = inputWrappedLineCount(text, max_cols);
+
+        if (delta < 0) {
+            if (current.row != 0) return false;
+            if (!self.composer_history_active) {
+                self.saveComposerHistoryDraftLocked();
+                self.composer_history_active = true;
+                self.composer_history_selected = prompt_count - 1;
+            } else if (self.composer_history_selected > 0) {
+                self.composer_history_selected -= 1;
+            }
+            return self.restoreComposerHistoryPromptLocked(self.composer_history_selected);
+        }
+
+        if (current.row + 1 < rows or !self.composer_history_active) return false;
+        if (self.composer_history_selected + 1 < prompt_count) {
+            self.composer_history_selected += 1;
+            return self.restoreComposerHistoryPromptLocked(self.composer_history_selected);
+        }
+
+        self.restoreComposerHistoryDraftLocked();
+        self.clearComposerHistoryNavigationLocked();
+        return true;
+    }
+
     fn moveComposerSuggestionSelection(self: *Session, delta: i32) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -2906,6 +2957,7 @@ pub const Session = struct {
         const suffix_len = self.input_len - prefix.token_end;
         if (replacement.len + suffix_len > self.input_buf.len) return false;
 
+        self.clearComposerHistoryNavigationLocked();
         if (replacement.len > prefix.token_end) {
             std.mem.copyBackwards(
                 u8,
@@ -2984,6 +3036,7 @@ pub const Session = struct {
     }
 
     fn clearSubmittedInputLocked(self: *Session) void {
+        self.clearComposerHistoryNavigationLocked();
         self.input_len = 0;
         self.input_cursor = 0;
         self.input_scroll_row = 0;
@@ -2994,6 +3047,11 @@ pub const Session = struct {
 
     /// 用 text 覆盖输入框内容，光标置于末尾。纯缓冲区操作、无 IO。
     fn setInputTextLocked(self: *Session, text: []const u8) void {
+        self.clearComposerHistoryNavigationLocked();
+        self.replaceInputTextLocked(text);
+    }
+
+    fn replaceInputTextLocked(self: *Session, text: []const u8) void {
         self.input_len = 0;
         self.input_cursor = 0;
         self.input_scroll_row = 0;
@@ -3001,6 +3059,55 @@ pub const Session = struct {
         self.suggestion_selected = 0;
         self.clearSelectionLocked();
         self.insertInputBytesLocked(text);
+    }
+
+    fn clearComposerHistoryNavigationLocked(self: *Session) void {
+        self.composer_history_active = false;
+        self.composer_history_selected = 0;
+        self.composer_history_draft_len = 0;
+        self.composer_history_draft_cursor = 0;
+    }
+
+    fn saveComposerHistoryDraftLocked(self: *Session) void {
+        const len = @min(self.input_len, self.composer_history_draft_buf.len);
+        if (len > 0) @memcpy(self.composer_history_draft_buf[0..len], self.input_buf[0..len]);
+        self.composer_history_draft_len = len;
+        self.composer_history_draft_cursor = @min(self.input_cursor, len);
+    }
+
+    fn restoreComposerHistoryDraftLocked(self: *Session) void {
+        const draft = self.composer_history_draft_buf[0..self.composer_history_draft_len];
+        const cursor = self.composer_history_draft_cursor;
+        self.replaceInputTextLocked(draft);
+        self.input_cursor = @min(cursor, self.input_len);
+        self.clampInputCursorLocked();
+        self.input_scroll_follow_cursor = true;
+    }
+
+    fn composerHistoryPromptCountLocked(self: *Session) usize {
+        var n: usize = 0;
+        for (self.messages.items) |msg| {
+            if (msg.role == .user) n += 1;
+        }
+        return n;
+    }
+
+    fn composerHistoryPromptMessageIndexLocked(self: *Session, n: usize) usize {
+        var seen: usize = 0;
+        for (self.messages.items, 0..) |msg, i| {
+            if (msg.role == .user) {
+                if (seen == n) return i;
+                seen += 1;
+            }
+        }
+        return self.messages.items.len;
+    }
+
+    fn restoreComposerHistoryPromptLocked(self: *Session, selected: usize) bool {
+        const idx = self.composerHistoryPromptMessageIndexLocked(selected);
+        if (idx >= self.messages.items.len) return false;
+        self.replaceInputTextLocked(self.messages.items[idx].content);
+        return true;
     }
 
     /// 打开回溯选择器：仅在空闲且至少有一个回溯点时；默认选中最近一条。
@@ -5973,6 +6080,79 @@ test "ai chat input cursor moves vertically across wrapped rows" {
 
     session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 5);
     try std.testing.expectEqual(@as(usize, 7), session.inputCursor());
+}
+
+test "ai chat composer history recalls prompts at visual boundaries" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "first prompt") });
+    try session.messages.append(allocator, .{ .role = .assistant, .content = try allocator.dupe(u8, "first reply") });
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "second prompt") });
+
+    session.appendInputText("draft");
+    session.handleKey(.{ .key = input_key.Key.home });
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
+    try std.testing.expectEqualStrings("second prompt", session.input());
+    try std.testing.expectEqual(@as(usize, "second prompt".len), session.inputCursor());
+
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
+    try std.testing.expectEqualStrings("first prompt", session.input());
+    try std.testing.expectEqual(@as(usize, "first prompt".len), session.inputCursor());
+
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 80);
+    try std.testing.expectEqualStrings("second prompt", session.input());
+
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 80);
+    try std.testing.expectEqualStrings("draft", session.input());
+    try std.testing.expectEqual(@as(usize, 0), session.inputCursor());
+}
+
+test "ai chat composer history preserves multiline vertical editing" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "previous prompt") });
+
+    session.appendInputText("abc\ndefg\nhi");
+    session.handleKey(.{ .key = input_key.Key.home });
+    session.handleKey(.{ .key = input_key.Key.arrow_down });
+    try std.testing.expectEqual(@as(usize, 4), session.inputCursor());
+
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
+    try std.testing.expectEqualStrings("abc\ndefg\nhi", session.input());
+    try std.testing.expectEqual(@as(usize, 0), session.inputCursor());
+
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
+    try std.testing.expectEqualStrings("previous prompt", session.input());
+}
+
+test "ai chat composer history exits after editing recalled prompt" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "old prompt") });
+
+    session.appendInputText("draft");
+    session.handleKey(.{ .key = input_key.Key.home });
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_up }, 80);
+    try std.testing.expectEqualStrings("old prompt", session.input());
+
+    session.handleChar('!');
+    try std.testing.expectEqualStrings("old prompt!", session.input());
+
+    session.handleKey(.{ .key = input_key.Key.home });
+    session.handleKeyWithWrapCols(.{ .key = input_key.Key.arrow_down }, 80);
+    try std.testing.expectEqualStrings("old prompt!", session.input());
 }
 
 test "ai chat composer wrapped row count grows with explicit lines and wrapping" {
