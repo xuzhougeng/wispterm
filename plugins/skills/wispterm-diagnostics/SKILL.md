@@ -8,31 +8,38 @@ description: Use when a user wants to report, troubleshoot, or collect context f
 ## Overview
 
 Generate a safe, copyable Markdown diagnostic report for users filing WispTerm
-issues. On **Windows**, use the bundled PowerShell script instead of asking the
-user to manually discover WispTerm, Windows, OpenSSH, WebView2, bundled ConPTY,
-GPU, logs, and config details. For startup crashes on Windows, prefer the
-automated crash workflow so users do not have to manually copy Event Viewer XML.
+issues. On **Windows**, installed WispTerm release packages include this plugin,
+so the preferred user-facing path is to ask the user to invoke
+`$wispterm-diagnostics` from WispTerm's AI Chat or Copilot and include their
+symptoms/reproduction steps. The skill then uses the bundled PowerShell script
+to collect WispTerm, Windows, OpenSSH, WebView2, bundled ConPTY, GPU, logs, and
+config details. Do not ask Windows users to find a source checkout first.
 
 On **macOS**, there is no equivalent script yet — use the manual bash workflow
 in the macOS section below.
 
 ## Windows Workflow
 
-1. If the user already described the problem, infer `-ProblemType` from it.
-   Otherwise use an empty problem type.
-2. Run the script from this skill directory:
+1. If a user needs instructions, tell them to open a WispTerm AI Chat tab or
+   Copilot sidebar and send a request like:
+
+```text
+$wispterm-diagnostics
+Problem type: ssh-disconnect
+Symptom: SSH Profile disconnects after 5-10 minutes idle with "Connection reset".
+Repro steps: connect to the saved SSH profile, leave it idle, then run ls.
+What I already tried: external ssh.exe with ServerAliveInterval works.
+```
+
+2. Infer `-ProblemType` from the user's text. If it is unclear, use `other` and
+   keep the user's symptom/repro text in the generated issue draft.
+3. Run the script from this skill directory as the implementation detail:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_wispterm_diagnostics.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_wispterm_diagnostics.ps1 -ProblemType "other"
 ```
 
 Use `pwsh` instead of `powershell` only if Windows PowerShell is unavailable.
-
-3. For a known issue type, pass one of these labels:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_wispterm_diagnostics.ps1 -ProblemType "SSH/SCP"
-```
 
 Recommended labels: `startup/crash`, `rendering/DPI`, `high-cpu`,
 `keyboard/input`, `selection/copy/scrolling`, `SSH/SCP`,
@@ -68,9 +75,14 @@ This writes HKCU-only WER settings for `wispterm.exe` and reports the dump
 folder. Do not ask the user to attach `.dmp` files publicly; dumps may contain
 terminal text, environment fragments, tokens, paths, or other process memory.
 
-7. Paste the generated Markdown report back to the user. Ask them to review it
-   before posting and to fill in blank human-only fields such as the exact
-   description and reproduction steps.
+7. Return a GitHub-ready Markdown issue body. Include the user's symptom,
+   reproduction steps, expected behavior, diagnostic report, and issue-specific
+   next steps. Ask them to review it before posting publicly and remove secrets.
+
+If WispTerm cannot start or the AI Agent is unavailable, use the script command
+above from the installed/extracted WispTerm folder that contains
+`plugins\skills\wispterm-diagnostics`. That is a fallback, not the normal FAQ
+path.
 
 ## High-Signal Issue Workflows
 
@@ -80,10 +92,13 @@ only non-secret output.
 
 ### SSH image preview fails, Markdown preview works
 
-1. Run:
+1. Use the skill with this context:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_wispterm_diagnostics.ps1 -ProblemType "ssh-image-preview"
+```text
+$wispterm-diagnostics
+Problem type: ssh-image-preview
+Symptom: SSH image preview fails, but Markdown/text preview works.
+Repro steps: ...
 ```
 
 2. Ask the user to confirm the SSH tab was opened from WispTerm's built-in SSH
@@ -99,10 +114,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_wispterm_d
 
 ### HTML preview fails
 
-1. Run:
+1. Use the skill with this context:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_wispterm_diagnostics.ps1 -ProblemType "html-preview"
+```text
+$wispterm-diagnostics
+Problem type: html-preview
+Symptom: HTML preview or browser panel fails.
+Repro steps: ...
 ```
 
 2. Identify the environment: local Windows, WSL, or SSH. For SSH, confirm it is
@@ -124,10 +142,13 @@ npx --version 2>/dev/null || true
 
 ### SSH disconnects (`ssh_packet_write_poll`, `eother`, idle reset)
 
-1. Run:
+1. Use the skill with this context:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect_wispterm_diagnostics.ps1 -ProblemType "ssh-disconnect"
+```text
+$wispterm-diagnostics
+Problem type: ssh-disconnect
+Symptom: SSH drops with ssh_packet_write_poll/eother or idle-time Connection reset.
+Repro steps: ...
 ```
 
 2. Treat `client_loop: ssh_packet_write_poll ... eother` as a Windows OpenSSH

@@ -1,4 +1,4 @@
 interface:
   display_name: "WispTerm Diagnostics"
-  short_description: "Collect WispTerm issue diagnostics"
-  default_prompt: "Use $wispterm-diagnostics to generate a Markdown diagnostic report for my WispTerm issue."
+  short_description: "Analyze WispTerm issues and draft reports"
+  default_prompt: "Use $wispterm-diagnostics to collect my WispTerm environment, analyze this issue, and draft a GitHub issue report. Problem type: other. Symptoms: ..."
