@@ -1,9 +1,10 @@
 //! WeChat command routing into the local WispTerm surfaces. Port of agent.ts,
-//! minus /sessions and /use (one local app).
+//! including /list + /switch conversation switching (aliases /sessions, /ls, /use).
 const std = @import("std");
 const control = @import("control.zig");
 const types = @import("types.zig");
 const approval_reply = @import("approval_reply.zig");
+const session_list = @import("session_list.zig");
 
 const AI_ACK = "信息已收到，开始处理。\n发送 /stop 可停止本次处理。";
 const AI_BUSY = "副驾正在处理上一条消息，请稍候再发，或发送 /stop 停止当前处理。";
@@ -51,6 +52,25 @@ fn isPing(text: []const u8) bool {
     return eqIgnoreCase(n, "ping") or eqIgnoreCase(n, "/ping");
 }
 
+fn isListCommand(cmd: []const u8) bool {
+    return eqIgnoreCase(cmd, "/list") or eqIgnoreCase(cmd, "/sessions") or eqIgnoreCase(cmd, "/ls");
+}
+
+fn isSwitchCommand(cmd: []const u8) bool {
+    return eqIgnoreCase(cmd, "/switch") or eqIgnoreCase(cmd, "/use");
+}
+
+fn isKnownCommand(cmd: []const u8) bool {
+    return eqIgnoreCase(cmd, "/term") or eqIgnoreCase(cmd, "/keys") or
+        eqIgnoreCase(cmd, "/ai") or eqIgnoreCase(cmd, "/stop") or
+        isListCommand(cmd) or isSwitchCommand(cmd);
+}
+
+/// Commands that are valid with no argument.
+fn isNoArgCommand(cmd: []const u8) bool {
+    return eqIgnoreCase(cmd, "/stop") or isListCommand(cmd);
+}
+
 pub fn route(
     allocator: std.mem.Allocator,
     ctrl: control.Control,
@@ -69,13 +89,11 @@ pub fn route(
     const cmd = parts.cmd;
 
     if (eqIgnoreCase(cmd, "/help")) return out.set(helpTextConst);
-    if (eqIgnoreCase(cmd, "/status")) return out.set(statusText(ctrl));
-    if (cmd.len != 0 and !eqIgnoreCase(cmd, "/term") and !eqIgnoreCase(cmd, "/keys") and
-        !eqIgnoreCase(cmd, "/ai") and !eqIgnoreCase(cmd, "/stop"))
-    {
+    if (eqIgnoreCase(cmd, "/status")) return statusReply(ctrl, out);
+    if (cmd.len != 0 and !isKnownCommand(cmd)) {
         return out.set("未知命令。\n\n" ++ helpTextConst);
     }
-    if (cmd.len != 0 and !eqIgnoreCase(cmd, "/stop") and parts.arg.len == 0) {
+    if (cmd.len != 0 and !isNoArgCommand(cmd) and parts.arg.len == 0) {
         return out.set(usageText(cmd));
     }
 
@@ -84,6 +102,8 @@ pub fn route(
     if (eqIgnoreCase(cmd, "/stop")) return stopAi(ctrl, out);
     if (eqIgnoreCase(cmd, "/term")) return sendTerminal(ctrl, parts.arg, true, out);
     if (eqIgnoreCase(cmd, "/keys")) return sendTerminal(ctrl, parts.arg, false, out);
+    if (isListCommand(cmd)) return listConversations(ctrl, out);
+    if (isSwitchCommand(cmd)) return switchConversation(ctrl, parts.arg, out);
     if (eqIgnoreCase(cmd, "/ai")) return sendAi(ctrl, parts.arg, reply_context, out);
     return sendAi(ctrl, text, reply_context, out);
 }
@@ -147,6 +167,43 @@ fn stopAi(ctrl: control.Control, out: *Reply) !void {
     return out.set("已发送停止指令。");
 }
 
+fn listConversations(ctrl: control.Control, out: *Reply) !void {
+    var list: control.ConversationList = .{};
+    ctrl.listAiConversations(&list);
+    out.text.clearRetainingCapacity();
+    try session_list.writeList(&out.text, out.allocator, list.slice());
+}
+
+fn switchConversation(ctrl: control.Control, arg: []const u8, out: *Reply) !void {
+    const n = std.fmt.parseInt(usize, arg, 10) catch
+        return out.set("无效的会话编号，请先 /list 查看。");
+    if (n == 0) return out.set("无效的会话编号，请先 /list 查看。");
+
+    var conv: control.Conversation = .{};
+    if (!ctrl.pinAiConversationByIndex(n - 1, &conv))
+        return out.set("无效的会话编号，请先 /list 查看。");
+
+    // latestTranscript() now resolves to the just-pinned conversation; take a
+    // short UTF-8-safe tail for the digest (borrowed, used immediately).
+    const tail = session_list.tailLines(ctrl.latestTranscript(), 6, 600);
+    out.text.clearRetainingCapacity();
+    try session_list.writeDigest(&out.text, out.allocator, n, conv, tail);
+}
+
+fn statusReply(ctrl: control.Control, out: *Reply) !void {
+    if (!ctrl.isConnected()) return out.set("微信直连：离线");
+    var list: control.ConversationList = .{};
+    ctrl.listAiConversations(&list);
+    for (list.slice()) |c| {
+        if (!c.is_current) continue;
+        const tag: []const u8 = if (c.is_copilot) " · 副驾" else "";
+        const s = try std.fmt.allocPrint(out.allocator, "微信直连：在线\n当前会话：{s}{s}  [{s}]", .{ c.title(), tag, c.model() });
+        defer out.allocator.free(s);
+        return out.set(s);
+    }
+    return out.set("微信直连：在线\n当前会话：默认（发送消息将新建副驾会话）");
+}
+
 fn sendTerminal(ctrl: control.Control, text: []const u8, enter: bool, out: *Reply) !void {
     const term = ctrl.findTerminalSurface() orelse return out.set("当前没有可写终端 surface。");
     var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -159,18 +216,16 @@ fn sendTerminal(ctrl: control.Control, text: []const u8, enter: bool, out: *Repl
 
 const helpTextConst =
     "WispTerm 微信直连命令：\n" ++
-    "/ping 验证连接\n/status 查看状态\n/ai <内容> 发送给副驾\n" ++
+    "/ping 验证连接\n/status 查看状态\n/list 列出副驾会话\n" ++
+    "/switch <编号> 切换并固定会话\n/ai <内容> 发送给副驾\n" ++
     "/stop 停止当前 AI 处理\n/term <命令> 发送到终端并回车\n/keys <文本> 发送原始文本\n" ++
-    "普通文本默认发送给副驾。";
-
-fn statusText(ctrl: control.Control) []const u8 {
-    return if (ctrl.isConnected()) "微信直连：在线" else "微信直连：离线";
-}
+    "普通文本默认发送给当前会话。";
 
 fn usageText(cmd: []const u8) []const u8 {
     if (eqIgnoreCase(cmd, "/term")) return "用法：/term <命令>";
     if (eqIgnoreCase(cmd, "/keys")) return "用法：/keys <文本>";
     if (eqIgnoreCase(cmd, "/ai")) return "用法：/ai <内容>";
+    if (isSwitchCommand(cmd)) return "用法：/switch <会话编号>";
     return helpTextConst;
 }
 
@@ -187,6 +242,13 @@ const FakeControl = struct {
     approval_pending: bool = false,
     resolved_calls: u8 = 0,
     last_resolve_approve: bool = false,
+    // Conversation fixture for /list and /switch tests.
+    conv_titles: []const []const u8 = &.{},
+    conv_models: []const []const u8 = &.{},
+    conv_busy: []const bool = &.{},
+    conv_copilot: []const bool = &.{},
+    conv_current: ?usize = null,
+    pin_called_index: ?usize = null,
 
     /// Bytes captured from the last send_input. send_input borrows its argument
     /// (production consumes it synchronously), so the fake copies for inspection.
@@ -234,6 +296,33 @@ const FakeControl = struct {
     fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 {
         return "";
     }
+    fn list_ai_conversations(ctx: *anyopaque, out: *control.ConversationList) void {
+        const self = cast(ctx);
+        var n: usize = 0;
+        for (self.conv_titles, 0..) |title_v, i| {
+            if (n >= out.items.len) break;
+            var c = &out.items[n];
+            c.* = .{};
+            c.setTitle(title_v);
+            if (i < self.conv_models.len) c.setModel(self.conv_models[i]);
+            if (i < self.conv_busy.len) c.busy = self.conv_busy[i];
+            if (i < self.conv_copilot.len) c.is_copilot = self.conv_copilot[i];
+            c.is_current = (self.conv_current != null and self.conv_current.? == i);
+            n += 1;
+        }
+        out.count = n;
+    }
+    fn pin_ai_conversation_by_index(ctx: *anyopaque, idx0: usize, out: *control.Conversation) bool {
+        const self = cast(ctx);
+        if (idx0 >= self.conv_titles.len) return false;
+        self.pin_called_index = idx0;
+        out.* = .{};
+        out.setTitle(self.conv_titles[idx0]);
+        if (idx0 < self.conv_models.len) out.setModel(self.conv_models[idx0]);
+        if (idx0 < self.conv_copilot.len) out.is_copilot = self.conv_copilot[idx0];
+        out.is_current = true;
+        return true;
+    }
     fn cast(ctx: *anyopaque) *FakeControl {
         return @ptrCast(@alignCast(ctx));
     }
@@ -254,6 +343,8 @@ const FakeControl = struct {
             .ai_approval_pending = ai_approval_pending,
             .resolve_ai_approval = resolve_ai_approval,
             .inbound_file_dir = inbound_file_dir,
+            .list_ai_conversations = list_ai_conversations,
+            .pin_ai_conversation_by_index = pin_ai_conversation_by_index,
         } };
     }
 };
@@ -386,4 +477,104 @@ test "no approval pending: default text still goes to the AI surface" {
     try route(t.allocator, fake.control_iface(), defaultSettings(), "hello world", null, &out);
     try t.expectEqualStrings("hello world\r", fake.lastInput());
     try t.expect(out.expect_ai_progress);
+}
+
+test "/list shows conversations with current marker and copilot tag" {
+    var fake = FakeControl{
+        .conv_titles = &.{ "Claude", "zsh ~/p" },
+        .conv_models = &.{ "glm-5.2", "opus" },
+        .conv_busy = &.{ false, true },
+        .conv_copilot = &.{ false, true },
+        .conv_current = 0,
+    };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/list", null, &out);
+    const s = out.text.items;
+    try t.expect(std.mem.indexOf(u8, s, "共 2 个") != null);
+    try t.expect(std.mem.indexOf(u8, s, "➤") != null);
+    try t.expect(std.mem.indexOf(u8, s, "· 副驾") != null);
+    try t.expect(std.mem.indexOf(u8, s, "忙") != null);
+}
+
+test "/list with no conversations" {
+    var fake = FakeControl{};
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/list", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "没有副驾会话") != null);
+}
+
+test "/switch pins the right conversation and replies with a digest" {
+    var fake = FakeControl{ .conv_titles = &.{ "A", "B" }, .conv_models = &.{ "m1", "m2" } };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch 2", null, &out);
+    try t.expectEqual(@as(?usize, 1), fake.pin_called_index);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "已切换到会话 2：B") != null);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "未作为对话上下文") != null);
+}
+
+test "/switch out of range does not pin" {
+    var fake = FakeControl{ .conv_titles = &.{"A"} };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch 9", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "无效的会话编号") != null);
+    try t.expect(fake.pin_called_index == null);
+}
+
+test "/switch non-numeric arg" {
+    var fake = FakeControl{ .conv_titles = &.{"A"} };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch abc", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "无效的会话编号") != null);
+}
+
+test "/switch with no argument shows usage" {
+    var fake = FakeControl{};
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "用法") != null);
+}
+
+test "/sessions, /ls, /use are aliases" {
+    var fake = FakeControl{ .conv_titles = &.{ "A", "B" }, .conv_models = &.{ "m1", "m2" } };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/sessions", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "共 2 个") != null);
+
+    var out2 = Reply.init(t.allocator);
+    defer out2.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/use 1", null, &out2);
+    try t.expectEqual(@as(?usize, 0), fake.pin_called_index);
+
+    var out3 = Reply.init(t.allocator);
+    defer out3.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/ls", null, &out3);
+    try t.expect(std.mem.indexOf(u8, out3.text.items, "共 2 个") != null);
+}
+
+test "unknown command is still rejected" {
+    var fake = FakeControl{};
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/bogus x", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "未知命令") != null);
+}
+
+test "/status reports the current conversation" {
+    var fake = FakeControl{
+        .conv_titles = &.{ "Claude", "B" },
+        .conv_models = &.{ "glm", "m2" },
+        .conv_current = 0,
+    };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/status", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "在线") != null);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "Claude") != null);
 }
