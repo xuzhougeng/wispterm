@@ -44,6 +44,12 @@
        submitting to Flathub; omitted here so the file validates without a stale URL. -->
 
   <releases>
+    <release version="1.25.0" date="2026-06-18">
+      <description>
+        <p>Hides SSH browser tunnel helper windows, strengthens diagnostics,
+        and adds Copilot and WeChat workflow improvements.</p>
+      </description>
+    </release>
     <release version="1.24.0" date="2026-06-17">
       <description>
         <p>Adds in-session AI model switching, improves Copilot discoverability,

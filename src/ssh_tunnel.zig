@@ -242,15 +242,20 @@ fn spawnSshTunnel(allocator: std.mem.Allocator, conn: *const ssh_connection.SshC
     // Keep this helper independent. Windows OpenSSH ControlMaster options are
     // intentionally not used here; they break on Windows socket semantics.
     var child = std.process.Child.init(argv_buf[0..argc], allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Inherit;
+    configureSshTunnelChild(&child);
     if (env_map) |*map| child.env_map = map;
     child.spawn() catch |err| {
         std.debug.print("SSH browser tunnel spawn failed: {}\n", .{err});
         return null;
     };
     return child;
+}
+
+fn configureSshTunnelChild(child: *std.process.Child) void {
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Inherit;
+    child.create_no_window = true;
 }
 
 fn firstEmptySlot() ?usize {
@@ -386,6 +391,16 @@ test "ssh_tunnel external URL helper maps unspecified hosts to loopback" {
     defer std.testing.allocator.free(target);
 
     try std.testing.expectEqualStrings("http://127.0.0.1:1234/app?q=1", target);
+}
+
+test "ssh_tunnel configures browser tunnel helper as hidden background process" {
+    var child = std.process.Child.init(&.{"ssh.exe"}, std.testing.allocator);
+    configureSshTunnelChild(&child);
+
+    try std.testing.expectEqual(std.process.Child.StdIo.Ignore, child.stdin_behavior);
+    try std.testing.expectEqual(std.process.Child.StdIo.Ignore, child.stdout_behavior);
+    try std.testing.expectEqual(std.process.Child.StdIo.Inherit, child.stderr_behavior);
+    try std.testing.expect(child.create_no_window);
 }
 
 test "reservePreferredLocalPort returns the preferred port when it is free" {
