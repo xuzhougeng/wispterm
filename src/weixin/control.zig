@@ -84,6 +84,12 @@ pub const Control = struct {
         latest_transcript: *const fn (ctx: *anyopaque) []const u8,
         ai_approval_pending: *const fn (ctx: *anyopaque) bool,
         resolve_ai_approval: *const fn (ctx: *anyopaque, approve: bool) bool,
+        /// Number of options on the pending ask_user question, or 0 if none is
+        /// pending. The inbound router uses the count to classify a reply.
+        ai_question_option_count: *const fn (ctx: *anyopaque) usize,
+        /// Resolve the pending ask_user question from a remote driver (WeChat).
+        /// `.ignore` never reaches here — the router drops it.
+        resolve_ai_question: *const fn (ctx: *anyopaque, reply: types.QuestionReply) bool,
         /// Writes the effective agent working directory into `buf` and returns
         /// the slice; empty when no working dir is configured. UI-thread backed.
         inbound_file_dir: *const fn (ctx: *anyopaque, buf: []u8) []const u8,
@@ -127,6 +133,15 @@ pub const Control = struct {
     }
     pub fn resolveAiApproval(self: Control, approve: bool) bool {
         return self.vtable.resolve_ai_approval(self.ctx, approve);
+    }
+    pub fn aiQuestionOptionCount(self: Control) usize {
+        return self.vtable.ai_question_option_count(self.ctx);
+    }
+    pub fn aiQuestionPending(self: Control) bool {
+        return self.vtable.ai_question_option_count(self.ctx) > 0;
+    }
+    pub fn resolveAiQuestion(self: Control, reply: types.QuestionReply) bool {
+        return self.vtable.resolve_ai_question(self.ctx, reply);
     }
     pub fn inboundFileDir(self: Control, buf: []u8) []const u8 {
         return self.vtable.inbound_file_dir(self.ctx, buf);
@@ -176,6 +191,12 @@ test "inboundFileDir forwards to the vtable and copies into the caller buffer" {
         fn resolve_ai_approval(_: *anyopaque, _: bool) bool {
             return false;
         }
+        fn ai_question_option_count(_: *anyopaque) usize {
+            return 0;
+        }
+        fn resolve_ai_question(_: *anyopaque, _: types.QuestionReply) bool {
+            return false;
+        }
         fn inbound_file_dir(_: *anyopaque, buf: []u8) []const u8 {
             const dir = "/tmp/proj";
             @memcpy(buf[0..dir.len], dir);
@@ -201,6 +222,8 @@ test "inboundFileDir forwards to the vtable and copies into the caller buffer" {
                 .latest_transcript = latest_transcript,
                 .ai_approval_pending = ai_approval_pending,
                 .resolve_ai_approval = resolve_ai_approval,
+                .ai_question_option_count = ai_question_option_count,
+                .resolve_ai_question = resolve_ai_question,
                 .inbound_file_dir = inbound_file_dir,
                 .list_ai_conversations = list_ai_conversations,
                 .pin_ai_conversation_by_index = pin_ai_conversation_by_index,

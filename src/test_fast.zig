@@ -141,6 +141,7 @@ test {
     _ = @import("weixin/media.zig");
     _ = @import("weixin/binding.zig");
     _ = @import("weixin/approval_reply.zig");
+    _ = @import("weixin/question_reply.zig");
     _ = @import("ai_chat_title.zig");
     _ = @import("ai_model_switch.zig");
     _ = @import("command_registry.zig");

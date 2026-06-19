@@ -68,7 +68,14 @@ pub const HitTarget = union(enum) {
     copy_message: usize,
     toggle_tool: usize,
     toggle_reasoning: usize,
+    /// Click on the Nth (zero-based) visible option of a pending ask_user card.
+    question_option: usize,
 };
+
+/// Visible option rows in the question card before it scrolls. Beyond this, the
+/// extra options are still answerable by typing the option number in the
+/// composer (consistent with the WeChat digit reply).
+const MAX_VISIBLE_QUESTION_OPTIONS: usize = 6;
 
 pub const TranscriptTextHit = struct {
     message_index: usize,
@@ -291,9 +298,14 @@ pub fn render(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
+    // A pending question shares the footer slot with approval; they are mutually
+    // exclusive (the worker blocks on one tool at a time), so at most one is set.
+    const question = if (approval == null) session.questionView() else null;
+    const question_h: f32 = if (question) |view| questionCardHeight(view) + APPROVAL_GAP else 0;
+    const card_footer_h = approval_h + question_h;
 
     const transcript_top = top + HEADER_H + 18;
-    const transcript_bottom = input_h + approval_h + 18;
+    const transcript_bottom = input_h + card_footer_h + 18;
     const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
     const content_w = w - LINE_PAD_X * 2;
     const content_x = x + LINE_PAD_X;
@@ -364,6 +376,8 @@ pub fn render(
 
     if (approval) |view| {
         renderApprovalCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, approvalCardHeight(view));
+    } else if (question) |view| {
+        renderQuestionCard(view, x + LINE_PAD_X, input_h + APPROVAL_GAP, w - LINE_PAD_X * 2, questionCardHeight(view));
     }
     if (session.rewind_open) {
         renderRewindPicker(session, layout);
@@ -392,13 +406,32 @@ pub fn interactionHitTest(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
+    const question = if (approval == null) session.questionView() else null;
+    const question_h: f32 = if (question) |view| questionCardHeight(view) + APPROVAL_GAP else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
-    const transcript_bottom = input_h + approval_h + 18;
+    const transcript_bottom = input_h + approval_h + question_h + 18;
     const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
     const viewport_bottom_top_px = window_height - transcript_bottom;
     const content_w = w - LINE_PAD_X * 2;
     const content_x = x + LINE_PAD_X;
+
+    const px: f32 = @floatCast(xpos);
+    const py: f32 = @floatCast(ypos);
+
+    // Clicks on a visible option row of the question card resolve the question.
+    if (question) |qv| {
+        const cell_h = font.g_titlebar_cell_height;
+        const card_y = input_h + APPROVAL_GAP; // y-up bottom edge, matches the renderer
+        const lay = ai_chat_layout.questionLayout(cell_h, qv.options.len, MAX_VISIBLE_QUESTION_OPTIONS);
+        var k: usize = 0;
+        while (k < lay.visible_options) : (k += 1) {
+            const baseline = card_y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
+            const top_px = window_height - baseline - cell_h;
+            const rect = Rect{ .x = content_x, .top_px = top_px - 2, .w = content_w, .h = cell_h + 4 };
+            if (pointInRect(px, py, rect)) return .{ .question_option = k };
+        }
+    }
 
     var content_h: f32 = 0;
     for (session.messages.items) |msg| {
@@ -414,8 +447,6 @@ pub fn interactionHitTest(
 
     const scroll_px = @min(session.scroll_px, @max(0.0, content_h - transcript_h));
     const gravity_offset = @max(0.0, transcript_h - content_h);
-    const px: f32 = @floatCast(xpos);
-    const py: f32 = @floatCast(ypos);
     var cursor_top = transcript_top + gravity_offset - scroll_px;
 
     for (session.messages.items, 0..) |msg, message_index| {
@@ -472,9 +503,10 @@ pub fn transcriptTextHitTest(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
+    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view) + APPROVAL_GAP else 0) else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
-    const transcript_bottom = input_h + approval_h + 18;
+    const transcript_bottom = input_h + approval_h + question_h + 18;
     const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
     const viewport_bottom_top_px = window_height - transcript_bottom;
     const content_w = w - LINE_PAD_X * 2;
@@ -743,9 +775,10 @@ fn transcriptLayoutLocked(
 
     const approval = session.approvalView();
     const approval_h: f32 = if (approval) |view| approvalCardHeight(view) + APPROVAL_GAP else 0;
+    const question_h: f32 = if (approval == null) (if (session.questionView()) |view| questionCardHeight(view) + APPROVAL_GAP else 0) else 0;
     const input_h = inputLayout(x, w, session.input()).input_h;
     const transcript_top = titlebar_offset + HEADER_H + 18;
-    const transcript_bottom = input_h + approval_h + 18;
+    const transcript_bottom = input_h + approval_h + question_h + 18;
     const transcript_h = @max(1.0, window_height - transcript_top - transcript_bottom);
     const content_w = w - LINE_PAD_X * 2;
 
@@ -1367,6 +1400,48 @@ fn suggestionLabel(buf: []u8, suggestion: ai_chat.ComposerSuggestion) []const u8
 /// it stay aligned.
 fn approvalCardHeight(view: ai_chat.ApprovalView) f32 {
     return ai_chat_layout.approvalLayout(font.g_titlebar_cell_height, view.reason.len > 0).height;
+}
+
+fn questionCardHeight(view: ai_chat.QuestionView) f32 {
+    return ai_chat_layout.questionLayout(font.g_titlebar_cell_height, view.options.len, MAX_VISIBLE_QUESTION_OPTIONS).height;
+}
+
+fn renderQuestionCard(view: ai_chat.QuestionView, x: f32, y: f32, w: f32, h: f32) void {
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const card_bg = mixColor(bg, accent, 0.08);
+    ui_pipeline.fillQuadAlpha(x, y, w, h, card_bg, 0.98);
+    ui_pipeline.fillQuadAlpha(x, y + h - 1, w, 1, accent, 0.65);
+    ui_pipeline.fillQuadAlpha(x, y, w, 1, mixColor(bg, fg, 0.18), 0.8);
+    ui_pipeline.fillQuadAlpha(x, y, 4, h, accent, 0.85);
+
+    const cell_h = font.g_titlebar_cell_height;
+    const lay = ai_chat_layout.questionLayout(cell_h, view.options.len, MAX_VISIBLE_QUESTION_OPTIONS);
+
+    var title_buf: [320]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "❓ {s}", .{view.question}) catch view.question;
+    _ = titlebar.renderTextLimited(title, x + 16, y + lay.title_y, mixColor(fg, accent, 0.20), w - 32);
+
+    var k: usize = 0;
+    while (k < lay.visible_options) : (k += 1) {
+        const opt = view.options[k];
+        const row_y = y + lay.first_option_y - @as(f32, @floatFromInt(k)) * lay.option_pitch;
+        // Subtle row background so each option reads as a clickable target.
+        ui_pipeline.fillQuadAlpha(x + 12, row_y - 2, w - 24, cell_h + 4, mixColor(bg, fg, 0.06), 0.9);
+        var row_buf: [320]u8 = undefined;
+        const line = if (opt.description.len != 0)
+            std.fmt.bufPrint(&row_buf, "{d}. {s} — {s}", .{ k + 1, opt.label, opt.description }) catch opt.label
+        else
+            std.fmt.bufPrint(&row_buf, "{d}. {s}", .{ k + 1, opt.label }) catch opt.label;
+        _ = titlebar.renderTextLimited(line, x + 20, row_y, fg, w - 40);
+    }
+
+    const hint = if (view.options.len > lay.visible_options)
+        "点选项，或在下方输入序号/你的答案"
+    else
+        "点选项，或在下方直接输入你的答案";
+    _ = titlebar.renderTextLimited(hint, x + 16, y + lay.hint_y, mixColor(bg, fg, 0.62), w - 32);
 }
 
 fn renderApprovalCard(view: ai_chat.ApprovalView, x: f32, y: f32, w: f32, h: f32) void {

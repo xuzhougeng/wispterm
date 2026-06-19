@@ -161,6 +161,17 @@ pub const Binding = struct {
     sync_buf: []const u8 = "",
 };
 
+/// A WeChat reply classified against a pending `ask_user` question.
+/// `.ignore` never reaches the Control vtable — the agent router drops it so the
+/// question stays pending (mirrors `approval_reply` ignoring empty replies).
+pub const QuestionReply = union(enum) {
+    /// Zero-based index into the option list.
+    option: usize,
+    /// Free-text answer (trimmed). Borrowed from the inbound message buffer.
+    custom: []const u8,
+    ignore,
+};
+
 const t = std.testing;
 
 test "AttachmentKind parses accepted tool values" {

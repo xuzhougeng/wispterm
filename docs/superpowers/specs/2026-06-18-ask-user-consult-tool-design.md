@@ -1,8 +1,31 @@
 # `ask_user` — agent-consults-user tool (Copilot card + WeChat prompt)
 
 **Date:** 2026-06-18
-**Status:** Design — not yet implemented
-**Branch:** `ask-user-consult-tool` (anticipated)
+**Status:** Implemented (2026-06-19) — `zig build test`, `test-full` (native + windows-gnu under wine), and the windows-gnu cross-compile all green. GUI / WeChat (Windows-only) smoke verification pending.
+**Branch:** `ask-user-consult-tool`
+
+## Implementation notes (as built)
+
+A few details settled during implementation, deviating slightly from the design above:
+
+- **WeChat push rides the transcript snapshot, not a poller vtable accessor.** A
+  pending question is emitted as a `Question:` section in `allocRemoteSnapshot`
+  (sibling of `Approval:`), `reply_progress` detects it (`needs_question` +
+  `question_text`), and the poller wraps it with the Chinese prompt and pushes
+  once via a second `ApprovalAnnouncer`. So `question_reply.formatPrompt` was not
+  needed and was dropped; `question_reply.classify(text, n)` (digit→option, else
+  custom, empty→ignore) is the only pure piece, used by the inbound router.
+- **Vtable gained two entries** (across all 7 implementers): `ai_question_option_count`
+  (0 = none pending; the router needs the count to classify) and
+  `resolve_ai_question(types.QuestionReply)`. `aiQuestionPending()` = count > 0.
+- **Copilot answer = composer submit**, classified identically to WeChat (a digit
+  in range → option, else custom) via an inlined `digitOption` in `ai_chat.zig`
+  (no weixin dependency). Plus click on an option row (`HitTarget.question_option`).
+  The card caps visible options at `MAX_VISIBLE_QUESTION_OPTIONS = 6`; extra
+  options stay answerable by typing the number. Arrow-key row navigation deferred.
+- **AskResult is `{ option_index, custom, cancelled }`**; the executor maps
+  `option_index` back to its own parsed `options[i]` for the result label, so the
+  Session need not retain option labels past the blocking call.
 
 ## Problem
 

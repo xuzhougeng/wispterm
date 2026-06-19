@@ -38,6 +38,9 @@ pub const SshProfileSaveArgs = ai_chat_types.SshProfileSaveArgs;
 pub const SavedSshProfile = ai_chat_types.SavedSshProfile;
 pub const ToolHost = ai_chat_types.ToolHost;
 pub const ApprovalView = ai_chat_types.ApprovalView;
+pub const QuestionOption = ai_chat_types.QuestionOption;
+pub const QuestionView = ai_chat_types.QuestionView;
+pub const AskResult = ai_chat_types.AskResult;
 const WeixinReplyContext = ai_chat_types.WeixinReplyContext;
 pub const ToolContext = ai_chat_types.ToolContext;
 
@@ -686,6 +689,20 @@ pub const Session = struct {
     approval_command_len: usize = 0,
     approval_reason_buf: [256]u8 = undefined,
     approval_reason_len: usize = 0,
+    // Pending `ask_user` question. Independent of the approval slot (separate
+    // mutex/cond so the two never cross-wake) because a question carries a
+    // variable-length, owned option list rather than fixed buffers.
+    question_mutex: std.Thread.Mutex = .{},
+    question_cond: std.Thread.Condition = .{},
+    question_pending: bool = false,
+    question_resolved: bool = false,
+    /// Set when the wait was broken by a stop/close rather than a real answer.
+    question_cancelled: bool = false,
+    question_text: []u8 = &.{}, // owned
+    question_options: []QuestionOption = &.{}, // owned (each label/description owned)
+    question_answer: ?[]u8 = null, // owned; valid until the next askUser/deinit
+    question_answer_is_custom: bool = false,
+    question_selected_index: usize = 0,
     /// Copilot mode: when true, requests pre-target the bound surface and exec
     /// tools fall back to it when the model omits surface_id (Issue #98).
     copilot: bool = false,
@@ -930,6 +947,7 @@ pub const Session = struct {
     pub fn deinit(self: *Session) void {
         self.closing.store(true, .release);
         self.approval_cond.broadcast();
+        self.question_cond.broadcast();
         if (self.request_thread) |thread| {
             thread.join();
             self.request_thread = null;
@@ -952,6 +970,8 @@ pub const Session = struct {
         command_registry.freeCommandList(self.allocator, self.custom_commands);
         if (self.pending_weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
         if (self.distill_candidate) |*candidate| candidate.deinit(self.allocator);
+        self.freeQuestionPayloadLocked();
+        self.freeQuestionAnswerLocked();
         self.allocator.destroy(self);
     }
 
@@ -1493,6 +1513,15 @@ pub const Session = struct {
         }
         self.approval_mutex.unlock();
 
+        self.question_mutex.lock();
+        if (self.question_pending and !self.question_resolved) {
+            self.question_cancelled = true;
+            self.question_resolved = true;
+            self.question_pending = false;
+            self.question_cond.signal();
+        }
+        self.question_mutex.unlock();
+
         self.mutex.lock();
         defer self.mutex.unlock();
         if (!self.request_inflight) {
@@ -1618,6 +1647,30 @@ pub const Session = struct {
             }
         }
 
+        // Capture any pending ask_user question the same way as the approval
+        // above: under its own mutex, into an owned formatted blob, BEFORE taking
+        // self.mutex. Numbered options are language-neutral; the WeChat layer adds
+        // the Chinese wrapper when it pushes.
+        var question_section: ?[]u8 = null;
+        defer if (question_section) |qs| allocator.free(qs);
+        {
+            self.question_mutex.lock();
+            defer self.question_mutex.unlock();
+            if (self.question_pending and !self.question_resolved) {
+                var qbuf: std.ArrayListUnmanaged(u8) = .empty;
+                errdefer qbuf.deinit(allocator);
+                try qbuf.appendSlice(allocator, self.question_text);
+                for (self.question_options, 0..) |opt, i| {
+                    try qbuf.writer(allocator).print("\n{d}. {s}", .{ i + 1, opt.label });
+                    if (opt.description.len != 0) {
+                        try qbuf.appendSlice(allocator, " — ");
+                        try qbuf.appendSlice(allocator, opt.description);
+                    }
+                }
+                question_section = try qbuf.toOwnedSlice(allocator);
+            }
+        }
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -1636,6 +1689,10 @@ pub const Session = struct {
                 try approval_text.appendSlice(allocator, cap_command);
             }
             try appendLimitedSection(allocator, &out, "Approval", approval_text.items, REMOTE_SNAPSHOT_MAX_BYTES);
+        }
+
+        if (question_section) |qs| {
+            try appendLimitedSection(allocator, &out, "Question", qs, REMOTE_SNAPSHOT_MAX_BYTES);
         }
 
         var sections: std.ArrayListUnmanaged(RemoteSnapshotSection) = .empty;
@@ -1759,6 +1816,143 @@ pub const Session = struct {
         return allowed;
     }
 
+    /// Snapshot of the pending question for the UI / WeChat push. Borrowed slices
+    /// are valid only while holding nothing across the next mutate — copy if kept.
+    pub fn questionView(self: *Session) ?QuestionView {
+        self.question_mutex.lock();
+        defer self.question_mutex.unlock();
+        if (!self.question_pending or self.question_resolved) return null;
+        return .{ .question = self.question_text, .options = self.question_options };
+    }
+
+    /// Resolve a pending question by option index. Out-of-range index is a no-op
+    /// that returns false (the question stays pending).
+    pub fn resolveQuestionOption(self: *Session, index: usize) bool {
+        self.question_mutex.lock();
+        defer self.question_mutex.unlock();
+        if (!self.question_pending or self.question_resolved) return false;
+        if (index >= self.question_options.len) return false;
+        self.question_selected_index = index;
+        self.question_answer_is_custom = false;
+        self.question_resolved = true;
+        self.question_pending = false;
+        self.question_cond.signal();
+        return true;
+    }
+
+    /// Resolve a pending question with a free-text custom answer. Returns false
+    /// if no question is pending or the answer could not be copied (OOM), leaving
+    /// the question pending so the caller can retry.
+    pub fn resolveQuestionCustom(self: *Session, text: []const u8) bool {
+        self.question_mutex.lock();
+        defer self.question_mutex.unlock();
+        if (!self.question_pending or self.question_resolved) return false;
+        const copy = self.allocator.dupe(u8, text) catch return false;
+        self.freeQuestionAnswerLocked();
+        self.question_answer = copy;
+        self.question_answer_is_custom = true;
+        self.question_resolved = true;
+        self.question_pending = false;
+        self.question_cond.signal();
+        return true;
+    }
+
+    /// Present `question` + `options` and block the calling (worker) thread until
+    /// the user answers via the Copilot card or WeChat, or the request is stopped.
+    /// Mirrors `requestApproval`. The returned `.custom` slice borrows Session
+    /// memory valid until the next `askUser` call.
+    pub fn askUser(self: *Session, question: []const u8, options: []const QuestionOption) AskResult {
+        if (self.stop_requested.load(.acquire)) return .cancelled;
+
+        self.question_mutex.lock();
+        if (!self.copyQuestionLocked(question, options)) {
+            self.question_mutex.unlock();
+            self.setStatus("Out of memory");
+            return .cancelled;
+        }
+        self.question_pending = true;
+        self.question_resolved = false;
+        self.question_cancelled = false;
+        self.question_answer_is_custom = false;
+        self.question_mutex.unlock();
+
+        self.setStatus("Waiting for your answer");
+
+        self.question_mutex.lock();
+        defer self.question_mutex.unlock();
+        while (!self.question_resolved and !self.closing.load(.acquire)) {
+            self.question_cond.wait(&self.question_mutex);
+        }
+        const cancelled = self.question_cancelled or self.closing.load(.acquire) or !self.question_resolved;
+        const result: AskResult = if (cancelled)
+            .cancelled
+        else if (self.question_answer_is_custom)
+            .{ .custom = self.question_answer.? }
+        else
+            .{ .option_index = self.question_selected_index };
+        self.question_pending = false;
+        self.question_resolved = false;
+        self.freeQuestionPayloadLocked();
+        return result;
+    }
+
+    fn copyQuestionLocked(self: *Session, question: []const u8, options: []const QuestionOption) bool {
+        self.freeQuestionPayloadLocked();
+        self.freeQuestionAnswerLocked();
+        const text = self.allocator.dupe(u8, question) catch return false;
+        const list = self.allocator.alloc(QuestionOption, options.len) catch {
+            self.allocator.free(text);
+            return false;
+        };
+        var filled: usize = 0;
+        for (options, 0..) |opt, i| {
+            const label = self.allocator.dupe(u8, opt.label) catch {
+                freeOptionPrefix(self.allocator, list[0..filled]);
+                self.allocator.free(list);
+                self.allocator.free(text);
+                return false;
+            };
+            const description = self.allocator.dupe(u8, opt.description) catch {
+                self.allocator.free(label);
+                freeOptionPrefix(self.allocator, list[0..filled]);
+                self.allocator.free(list);
+                self.allocator.free(text);
+                return false;
+            };
+            list[i] = .{ .label = label, .description = description };
+            filled = i + 1;
+        }
+        self.question_text = text;
+        self.question_options = list;
+        return true;
+    }
+
+    fn freeQuestionPayloadLocked(self: *Session) void {
+        if (self.question_text.len > 0) {
+            self.allocator.free(self.question_text);
+            self.question_text = &.{};
+        }
+        freeOptionPrefix(self.allocator, self.question_options);
+        if (self.question_options.len > 0) {
+            self.allocator.free(self.question_options);
+            self.question_options = &.{};
+        }
+    }
+
+    fn freeQuestionAnswerLocked(self: *Session) void {
+        if (self.question_answer) |answer| {
+            self.allocator.free(answer);
+            self.question_answer = null;
+        }
+    }
+
+    fn freeOptionPrefix(allocator: std.mem.Allocator, options: []QuestionOption) void {
+        for (options) |opt| {
+            allocator.free(opt.label);
+            allocator.free(opt.description);
+        }
+    }
+
     fn canUseDistillSuggestionLocked(self: *Session) bool {
         return self.distill_suggestion_pending and
             self.input_len == 0 and
@@ -1835,9 +2029,54 @@ pub const Session = struct {
         }
     }
 
+    /// Map a whole-string digit in `1..=n` to a zero-based option index. Mirrors
+    /// the WeChat `question_reply.classify` digit rule so the Copilot composer and
+    /// the WeChat reply select options identically.
+    fn digitOption(text: []const u8, n: usize) ?usize {
+        if (text.len == 0 or n == 0) return null;
+        for (text) |c| if (!std.ascii.isDigit(c)) return null;
+        const v = std.fmt.parseInt(usize, text, 10) catch return null;
+        if (v >= 1 and v <= n) return v - 1;
+        return null;
+    }
+
+    /// Called with self.mutex held. If an ask_user question is pending, consume
+    /// the composer text as the answer (a digit in range selects that option,
+    /// anything else is a custom answer) and return true so submit() does not
+    /// start a new turn. An empty composer is swallowed (the question stays
+    /// pending) rather than starting a turn under the blocked worker.
+    fn tryAnswerPendingQuestionLocked(self: *Session) bool {
+        self.question_mutex.lock();
+        const pending = self.question_pending and !self.question_resolved;
+        const n = self.question_options.len;
+        self.question_mutex.unlock();
+        if (!pending) return false;
+
+        const text = std.mem.trim(u8, self.input(), " \t\r\n");
+        if (text.len != 0) {
+            if (digitOption(text, n)) |idx| {
+                _ = self.resolveQuestionOption(idx);
+            } else {
+                _ = self.resolveQuestionCustom(text);
+            }
+        }
+        self.clearComposerHistoryNavigationLocked();
+        self.input_len = 0;
+        self.input_cursor = 0;
+        self.input_scroll_row = 0;
+        self.input_scroll_follow_cursor = true;
+        self.suggestion_selected = 0;
+        self.clearSelectionLocked();
+        return true;
+    }
+
     pub fn submit(self: *Session) void {
         var history_change: ?PendingHistoryChange = null;
         self.mutex.lock();
+        if (self.tryAnswerPendingQuestionLocked()) {
+            self.mutex.unlock();
+            return;
+        }
         if (self.request_thread) |thread| {
             if (self.request_inflight) {
                 self.clearPendingWeixinReplyContextLocked();
@@ -6394,6 +6633,37 @@ test "ai chat remote snapshot approval section omits the command line when empty
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "Approval:\r\nweather_lookup") != null);
 }
 
+test "ai chat remote snapshot emits a Question section with numbered options" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+
+    session.question_text = @constCast("Which database?");
+    var opts = [_]QuestionOption{
+        .{ .label = "Postgres", .description = "prod default" },
+        .{ .label = "SQLite" },
+    };
+    session.question_options = &opts;
+    session.question_pending = true;
+    session.question_resolved = false;
+
+    const with = try session.allocRemoteSnapshot(allocator);
+    defer allocator.free(with);
+    try std.testing.expect(std.mem.indexOf(u8, with, "Question:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with, "Which database?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with, "1. Postgres — prod default") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with, "2. SQLite") != null);
+
+    // Once resolved, the section disappears.
+    session.question_pending = false;
+    const without = try session.allocRemoteSnapshot(allocator);
+    defer allocator.free(without);
+    try std.testing.expect(std.mem.indexOf(u8, without, "Question:") == null);
+}
+
 test "ai chat clipboard text exports transcript when input is empty" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
@@ -7663,4 +7933,141 @@ test "applySummaryResult is a no-op when boundary exceeds message count" {
     applySummaryResult(session, "S", 5, "X"); // stale boundary (e.g. after /clear)
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
     try std.testing.expectEqualStrings("only", session.messages.items[0].content);
+}
+
+const AskRunner = struct {
+    session: *Session,
+    question: []const u8,
+    options: []const QuestionOption,
+    result: AskResult = .cancelled,
+
+    fn run(self: *AskRunner) void {
+        self.result = self.session.askUser(self.question, self.options);
+    }
+};
+
+fn waitForQuestion(session: *Session) void {
+    while (session.questionView() == null) {
+        std.Thread.yield() catch {};
+    }
+}
+
+test "askUser blocks until an option is selected, then clears the question" {
+    var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+
+    var runner = AskRunner{ .session = session, .question = "Pick one", .options = &.{
+        .{ .label = "A" },
+        .{ .label = "B", .description = "bee" },
+    } };
+    var thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+
+    // The view reflects the pending question while blocked.
+    const view = session.questionView().?;
+    try std.testing.expectEqualStrings("Pick one", view.question);
+    try std.testing.expectEqual(@as(usize, 2), view.options.len);
+    try std.testing.expectEqualStrings("bee", view.options[1].description);
+
+    try std.testing.expect(session.resolveQuestionOption(1));
+    thread.join();
+
+    try std.testing.expect(runner.result == .option_index);
+    try std.testing.expectEqual(@as(usize, 1), runner.result.option_index);
+    try std.testing.expect(session.questionView() == null); // cleared on resolve
+}
+
+test "askUser returns a free-text custom answer" {
+    var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+
+    var runner = AskRunner{ .session = session, .question = "Which DB?", .options = &.{
+        .{ .label = "Postgres" },
+        .{ .label = "SQLite" },
+    } };
+    var thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+
+    try std.testing.expect(session.resolveQuestionCustom("用 DuckDB"));
+    thread.join();
+
+    try std.testing.expect(runner.result == .custom);
+    try std.testing.expectEqualStrings("用 DuckDB", runner.result.custom);
+}
+
+test "askUser returns cancelled when the request is stopped" {
+    var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+
+    var runner = AskRunner{ .session = session, .question = "Pick one", .options = &.{
+        .{ .label = "A" },
+        .{ .label = "B" },
+    } };
+    var thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+
+    session.stopRequest();
+    thread.join();
+
+    try std.testing.expect(runner.result == .cancelled);
+}
+
+test "resolveQuestionOption out of range leaves the question pending" {
+    var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+
+    var runner = AskRunner{ .session = session, .question = "Pick one", .options = &.{
+        .{ .label = "A" },
+        .{ .label = "B" },
+    } };
+    var thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+
+    try std.testing.expect(!session.resolveQuestionOption(5)); // beyond 2 options
+    try std.testing.expect(session.questionView() != null); // still pending
+
+    try std.testing.expect(session.resolveQuestionOption(0)); // clean up
+    thread.join();
+    try std.testing.expect(runner.result == .option_index);
+    try std.testing.expectEqual(@as(usize, 0), runner.result.option_index);
+}
+
+test "composer submit of a digit answers a pending question as that option" {
+    var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+
+    var runner = AskRunner{ .session = session, .question = "Pick one", .options = &.{
+        .{ .label = "A" },
+        .{ .label = "B" },
+    } };
+    var thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+
+    session.appendInputText("2");
+    session.submit();
+    thread.join();
+
+    try std.testing.expect(runner.result == .option_index);
+    try std.testing.expectEqual(@as(usize, 1), runner.result.option_index);
+    try std.testing.expect(session.questionView() == null);
+    try std.testing.expectEqual(@as(usize, 0), session.input().len); // composer cleared
+}
+
+test "composer submit of free text answers a pending question as custom" {
+    var session = try Session.init(std.testing.allocator, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer session.deinit();
+
+    var runner = AskRunner{ .session = session, .question = "Pick one", .options = &.{
+        .{ .label = "A" },
+        .{ .label = "B" },
+    } };
+    var thread = try std.Thread.spawn(.{}, AskRunner.run, .{&runner});
+    waitForQuestion(session);
+
+    session.appendInputText("neither, use C");
+    session.submit();
+    thread.join();
+
+    try std.testing.expect(runner.result == .custom);
+    try std.testing.expectEqualStrings("neither, use C", runner.result.custom);
 }

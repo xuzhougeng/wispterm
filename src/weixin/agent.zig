@@ -4,6 +4,7 @@ const std = @import("std");
 const control = @import("control.zig");
 const types = @import("types.zig");
 const approval_reply = @import("approval_reply.zig");
+const question_reply = @import("question_reply.zig");
 const session_list = @import("session_list.zig");
 
 const AI_ACK = "信息已收到，开始处理。\n发送 /stop 可停止本次处理。";
@@ -198,6 +199,24 @@ fn sendAi(ctrl: control.Control, text: []const u8, reply_context: ?types.ReplyCo
         break :blk ctrl.findAiSurface() orelse return out.set("已请求打开副驾，但未等到副驾标签页。");
     };
 
+    // A pending ask_user question turns this reply into the answer for it. A
+    // digit in range selects that option; anything else (except an empty reply,
+    // which is .ignore and left pending) is a free-text custom answer. Checked
+    // before approval — the two states are mutually exclusive (the worker blocks
+    // on one tool at a time), placed first only for clarity.
+    if (ctrl.aiQuestionPending()) {
+        const reply = question_reply.classify(text, ctrl.aiQuestionOptionCount());
+        switch (reply) {
+            .ignore => try out.set("当前有一个问题待你回答，请回复序号，或直接输入你的答案。"),
+            else => {
+                _ = ctrl.resolveAiQuestion(reply);
+                try out.set("已记录你的回答，副驾继续执行。");
+                out.expect_ai_progress = true;
+            },
+        }
+        return;
+    }
+
     // A pending approval turns this reply into the answer for it, not a new
     // prompt. resolveAiApproval's bool is discarded: we just checked pending
     // above, and a lost race (resolved locally in between) needs no different
@@ -326,6 +345,10 @@ const FakeControl = struct {
     approval_pending: bool = false,
     resolved_calls: u8 = 0,
     last_resolve_approve: bool = false,
+    // ask_user question fixture.
+    question_option_count: usize = 0,
+    question_resolved_calls: u8 = 0,
+    last_question_reply: ?types.QuestionReply = null,
     // Conversation fixture for /list and /switch tests.
     conv_titles: []const []const u8 = &.{},
     conv_models: []const []const u8 = &.{},
@@ -418,6 +441,17 @@ const FakeControl = struct {
         self.last_resolve_approve = approve;
         return true;
     }
+    fn ai_question_option_count(ctx: *anyopaque) usize {
+        return cast(ctx).question_option_count;
+    }
+    fn resolve_ai_question(ctx: *anyopaque, reply: types.QuestionReply) bool {
+        const self = cast(ctx);
+        if (self.question_option_count == 0) return false;
+        self.question_option_count = 0;
+        self.question_resolved_calls += 1;
+        self.last_question_reply = reply;
+        return true;
+    }
     fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 {
         return "";
     }
@@ -470,6 +504,8 @@ const FakeControl = struct {
             .latest_transcript = latest_transcript,
             .ai_approval_pending = ai_approval_pending,
             .resolve_ai_approval = resolve_ai_approval,
+            .ai_question_option_count = ai_question_option_count,
+            .resolve_ai_question = resolve_ai_question,
             .inbound_file_dir = inbound_file_dir,
             .list_ai_conversations = list_ai_conversations,
             .pin_ai_conversation_by_index = pin_ai_conversation_by_index,
@@ -615,6 +651,39 @@ test "approval pending: unrecognized reply reminds without acting" {
     try t.expect(std.mem.indexOf(u8, out.text.items, "请先回复") != null);
     // The unrecognized text must NOT be forwarded to the composer.
     try t.expectEqual(@as(usize, 0), fake.len);
+}
+
+test "question pending: a digit selects that option and streams progress" {
+    var fake = FakeControl{ .question_option_count = 3 };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "2", null, &out);
+    try t.expectEqual(@as(u8, 1), fake.question_resolved_calls);
+    try t.expect(fake.last_question_reply.? == .option);
+    try t.expectEqual(@as(usize, 1), fake.last_question_reply.?.option); // zero-based
+    try t.expect(out.expect_ai_progress);
+    try t.expectEqual(@as(usize, 0), fake.len); // not forwarded to the composer
+}
+
+test "question pending: free text becomes a custom answer" {
+    var fake = FakeControl{ .question_option_count = 3 };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "用 DuckDB", null, &out);
+    try t.expectEqual(@as(u8, 1), fake.question_resolved_calls);
+    try t.expect(fake.last_question_reply.? == .custom);
+    try t.expectEqualStrings("用 DuckDB", fake.last_question_reply.?.custom);
+    try t.expect(out.expect_ai_progress);
+}
+
+test "no question pending: a digit flows on as a normal prompt" {
+    var fake = FakeControl{}; // question_option_count defaults to 0
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "2", null, &out);
+    try t.expectEqual(@as(u8, 0), fake.question_resolved_calls);
+    // The digit reached the composer as ordinary input (trailing carriage return).
+    try t.expect(fake.len > 0);
 }
 
 test "/models lists saved model profiles" {

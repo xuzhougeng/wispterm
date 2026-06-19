@@ -759,6 +759,11 @@ fn toolNote(ctx: *anyopaque, text: []const u8) void {
     session.appendLocalToolMessage(text);
 }
 
+fn toolAsk(ctx: *anyopaque, question: []const u8, options: []const ai_chat_types.QuestionOption) ai_chat_types.AskResult {
+    const session: *Session = @ptrCast(@alignCast(ctx));
+    return session.askUser(question, options);
+}
+
 fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
     var settings = ai_chat.currentAgentSettings();
     // Per-conversation override beats the global default.
@@ -776,6 +781,7 @@ fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
         .approve = toolApprove,
         .cancelled = toolCancelled,
         .note = toolNote,
+        .ask = toolAsk,
     };
 }
 

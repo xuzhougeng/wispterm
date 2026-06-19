@@ -5694,13 +5694,16 @@ var g_weixin_transcript_owned: []u8 = &.{};
 var g_weixin_pinned_session: ?*ai_chat.Session = null;
 
 const WeixinRequest = struct {
-    op: enum { find_ai, find_term, open_ai, open_ai_profile, model_profiles, switch_ai_profile, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, inbound_file_dir, list_conversations, pin_by_index },
+    op: enum { find_ai, find_term, open_ai, open_ai_profile, model_profiles, switch_ai_profile, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, ai_question_option_count, resolve_ai_question, inbound_file_dir, list_conversations, pin_by_index },
     // operation inputs (valid for the duration of the synchronous call):
     surface_id: [16]u8 = [_]u8{0} ** 16, // send_input
     bytes: []const u8 = "", // send_input
     reply_context: ?weixin_types.ReplyContext = null, // send_input
     profile_name: []const u8 = "", // open_ai_profile / switch_ai_profile
     approve: bool = false, // resolve_ai_approval
+    // resolve_ai_question input. A `.custom` reply borrows the caller's bytes,
+    // which stay alive because weixinDispatch is synchronous (SendMessage).
+    question_reply: weixin_types.QuestionReply = .ignore,
     pin_index: usize = 0, // pin_by_index input
     conv_list_out: ?*weixin_control.ConversationList = null, // list_conversations output
     conv_one_out: ?*weixin_control.Conversation = null, // pin_by_index output
@@ -5711,6 +5714,7 @@ const WeixinRequest = struct {
     switch_result: weixin_control.SwitchModelResult = .failed,
     sent: bool = false,
     busy: bool = false, // send_input: AI chat rejected the prompt (request inflight)
+    option_count: usize = 0, // ai_question_option_count output
     transcript: []u8 = &.{},
     profiles: []u8 = &.{}, // model_profiles (heap, page_allocator)
     dir: []u8 = &.{}, // inbound_file_dir (heap, page_allocator)
@@ -5887,6 +5891,26 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
             req.sent = session.resolveApprovalExternal(req.approve);
             if (req.sent) g_force_rebuild = true;
         },
+        .ai_question_option_count => {
+            const idx = weixinActiveAiTabIndex() orelse return;
+            const tab_state = tab.g_tabs[idx] orelse return;
+            const session = tabConversationSession(tab_state) orelse return;
+            if (session.questionView()) |view| {
+                req.option_count = view.options.len;
+                req.found = true;
+            }
+        },
+        .resolve_ai_question => {
+            const idx = weixinActiveAiTabIndex() orelse return;
+            const tab_state = tab.g_tabs[idx] orelse return;
+            const session = tabConversationSession(tab_state) orelse return;
+            req.sent = switch (req.question_reply) {
+                .option => |i| session.resolveQuestionOption(i),
+                .custom => |txt| session.resolveQuestionCustom(txt),
+                .ignore => false,
+            };
+            if (req.sent) g_force_rebuild = true;
+        },
         .inbound_file_dir => {
             // Per-conversation working dir if set, else the global default.
             if (weixinActiveAiTabIndex()) |idx| {
@@ -6051,6 +6075,16 @@ fn wxAiApprovalPending(_: *anyopaque) bool {
     return req.found;
 }
 
+fn wxAiQuestionOptionCount(_: *anyopaque) usize {
+    var req = WeixinRequest{ .op = .ai_question_option_count };
+    if (!weixinDispatch(&req) or !req.found) return 0;
+    return req.option_count;
+}
+fn wxResolveAiQuestion(_: *anyopaque, reply: weixin_types.QuestionReply) bool {
+    var req = WeixinRequest{ .op = .resolve_ai_question, .question_reply = reply };
+    if (!weixinDispatch(&req)) return false;
+    return req.sent;
+}
 fn wxResolveAiApproval(_: *anyopaque, approve: bool) bool {
     var req = WeixinRequest{ .op = .resolve_ai_approval, .approve = approve };
     if (!weixinDispatch(&req)) return false;
@@ -6069,6 +6103,8 @@ const weixin_vtable = weixin_control.Control.VTable{
     .latest_transcript = wxTranscript,
     .ai_approval_pending = wxAiApprovalPending,
     .resolve_ai_approval = wxResolveAiApproval,
+    .ai_question_option_count = wxAiQuestionOptionCount,
+    .resolve_ai_question = wxResolveAiQuestion,
     .inbound_file_dir = wxInboundFileDir,
     .list_ai_conversations = wxListAiConversations,
     .pin_ai_conversation_by_index = wxPinAiConversationByIndex,

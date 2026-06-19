@@ -253,7 +253,35 @@ pub const ApprovalView = struct {
     reason: []const u8,
 };
 
+/// One selectable answer to an `ask_user` question.
+pub const QuestionOption = struct {
+    label: []const u8,
+    description: []const u8 = "",
+};
+
+/// Snapshot of a pending `ask_user` question for the UI / WeChat push. Slices
+/// borrow Session-owned memory and are only valid while the question is pending
+/// (read under the Session's question mutex via `questionView`).
+pub const QuestionView = struct {
+    question: []const u8,
+    options: []const QuestionOption,
+};
+
+/// Outcome of a blocking `askUser` call.
+pub const AskResult = union(enum) {
+    /// Zero-based index into the option list the caller supplied.
+    option_index: usize,
+    /// Free-text answer. Borrows Session-owned memory valid until the next
+    /// `askUser` call (the single worker thread reads it immediately).
+    custom: []const u8,
+    /// The request was stopped or the session closed before an answer arrived.
+    cancelled,
+};
+
 fn noopNote(_: *anyopaque, _: []const u8) void {}
+fn noopAsk(_: *anyopaque, _: []const u8, _: []const QuestionOption) AskResult {
+    return .cancelled;
+}
 
 /// Narrow context handed to the tool layer so it never touches `Session`.
 pub const ToolContext = struct {
@@ -272,6 +300,9 @@ pub const ToolContext = struct {
     /// Post a transcript note (e.g. a diff) before an approval prompt. Defaults
     /// to a no-op so test contexts need not wire it.
     note: *const fn (ctx: *anyopaque, text: []const u8) void = noopNote,
+    /// Present a blocking multiple-choice question to the user (ask_user tool).
+    /// Defaults to immediate cancellation so test contexts need not wire it.
+    ask: *const fn (ctx: *anyopaque, question: []const u8, options: []const QuestionOption) AskResult = noopAsk,
 
     pub fn requestApproval(self: *const ToolContext, tool: []const u8, command: []const u8, reason: []const u8) bool {
         return self.approve(self.ctx, tool, command, reason);
@@ -285,6 +316,9 @@ pub const ToolContext = struct {
     }
     pub fn emitNote(self: *const ToolContext, text: []const u8) void {
         self.note(self.ctx, text);
+    }
+    pub fn askUser(self: *const ToolContext, question: []const u8, options: []const QuestionOption) AskResult {
+        return self.ask(self.ctx, question, options);
     }
     pub fn sshConnectionForSurface(self: *const ToolContext, surface_id: []const u8) ?SshConnection {
         const host = self.tool_host orelse return null;

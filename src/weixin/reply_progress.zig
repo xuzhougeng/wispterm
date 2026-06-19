@@ -8,9 +8,11 @@ pub const Progress = struct {
     needs_approval: bool = false,
     approval_tool: []const u8 = "", // borrows from `current`
     approval_command: []const u8 = "", // borrows from `current`
+    needs_question: bool = false,
+    question_text: []const u8 = "", // borrows from `current`; question + numbered options
 };
 
-const Role = enum { metadata, user, assistant, tool, reasoning, approval };
+const Role = enum { metadata, user, assistant, tool, reasoning, approval, question };
 const Section = struct { role: Role, label: []const u8, content: []const u8 };
 
 const MAX_SECTIONS = 256;
@@ -50,6 +52,15 @@ pub fn progress(baseline: []const u8, current: []const u8) Progress {
                 .approval_tool = tool,
                 .approval_command = command,
             };
+        }
+    }
+
+    // A pending ask_user question, like approval, is a live-state signal emitted
+    // into the snapshot only while the copilot is blocked on it. Mutually
+    // exclusive with approval (the worker blocks on one tool at a time).
+    for (cur_sections) |s| {
+        if (s.role == .question) {
+            return .{ .needs_question = true, .done = false, .question_text = trim(s.content) };
         }
     }
 
@@ -131,6 +142,7 @@ fn asLabel(line: []const u8) ?Role {
     if (eq(name, "Reasoning")) return .reasoning;
     if (eq(name, "Model") or eq(name, "Status")) return .metadata;
     if (eq(name, "Approval")) return .approval;
+    if (eq(name, "Question")) return .question;
     return null;
 }
 
@@ -263,6 +275,25 @@ test "no approval section leaves needs_approval false" {
     const p = progress("You:\nhi\n", "You:\nhi\nAI:\nthere\nStatus:\nidle\n");
     try t.expect(!p.needs_approval);
     try t.expect(p.done);
+}
+
+test "question section is detected and takes priority over done/tool branches" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nwhich db\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nWaiting for your answer\n\n" ++
+        "Question:\nWhich database?\n1. Postgres — prod\n2. SQLite\n\n" ++
+        "You:\nwhich db\n\nAI:\nlet me ask\n";
+    const p = progress(baseline, current);
+    try t.expect(p.needs_question);
+    try t.expect(!p.done);
+    try t.expect(std.mem.indexOf(u8, p.question_text, "Which database?") != null);
+    try t.expect(std.mem.indexOf(u8, p.question_text, "1. Postgres") != null);
+    try t.expect(std.mem.indexOf(u8, p.question_text, "2. SQLite") != null);
+}
+
+test "no question section leaves needs_question false" {
+    const p = progress("You:\nhi\n", "You:\nhi\nAI:\nthere\nStatus:\nidle\n");
+    try t.expect(!p.needs_question);
 }
 
 test "manual stop with no new assistant message reports done with a stop notice" {

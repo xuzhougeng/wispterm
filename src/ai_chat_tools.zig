@@ -103,6 +103,14 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const answer = jsonStringArg(args.value, "answer") orelse return ctx.allocator.dupe(u8, "Missing answer");
         return terminalAnswerPromptTool(ctx, surface_id, answer);
     }
+    if (std.mem.eql(u8, call.name, "ask_user")) {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const question = jsonStringArg(args.value, "question") orelse return ctx.allocator.dupe(u8, "Missing question");
+        var opts_buf: [16]types.QuestionOption = undefined;
+        const options = parseAskOptions(args.value, &opts_buf);
+        return askUserTool(ctx, question, options);
+    }
     if (std.mem.eql(u8, call.name, "ssh_profile_save")) {
         const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
@@ -310,6 +318,54 @@ fn jsonBoolArg(root: std.json.Value, name: []const u8) ?bool {
     return switch (value) {
         .bool => |b| b,
         else => null,
+    };
+}
+
+/// Extract the `options` array of an ask_user call into `buf`. Each item needs a
+/// non-empty string `label`; `description` is optional. The returned slices
+/// borrow the parsed JSON (valid for the duration of the tool call). Items past
+/// `buf.len`, or with a missing/empty label, are skipped.
+fn parseAskOptions(root: std.json.Value, buf: []types.QuestionOption) []const types.QuestionOption {
+    if (root != .object) return buf[0..0];
+    const value = root.object.get("options") orelse return buf[0..0];
+    if (value != .array) return buf[0..0];
+    var n: usize = 0;
+    for (value.array.items) |item| {
+        if (n >= buf.len) break;
+        if (item != .object) continue;
+        const label_v = item.object.get("label") orelse continue;
+        if (label_v != .string or label_v.string.len == 0) continue;
+        const description: []const u8 = blk: {
+            const d = item.object.get("description") orelse break :blk "";
+            if (d != .string) break :blk "";
+            break :blk d.string;
+        };
+        buf[n] = .{ .label = label_v.string, .description = description };
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+/// ask_user executor: validate ≥2 options, block on the user via the ToolContext
+/// hook, and format the answer as the tool result string. `options` is owned by
+/// the caller and stays valid here, so the selected option's label/description
+/// are read straight from it after the blocking call returns.
+fn askUserTool(ctx: *ToolContext, question: []const u8, options: []const types.QuestionOption) ![]u8 {
+    if (options.len < 2) {
+        return ctx.allocator.dupe(u8, "ask_user needs at least 2 options.");
+    }
+    return switch (ctx.askUser(question, options)) {
+        .option_index => |i| blk: {
+            // i is in range: the Session only resolves a valid option index, and
+            // it duped exactly these options, so options[i] is safe.
+            const opt = options[i];
+            if (opt.description.len != 0) {
+                break :blk std.fmt.allocPrint(ctx.allocator, "User selected option {d}: \"{s}\" — {s}", .{ i + 1, opt.label, opt.description });
+            }
+            break :blk std.fmt.allocPrint(ctx.allocator, "User selected option {d}: \"{s}\"", .{ i + 1, opt.label });
+        },
+        .custom => |text| std.fmt.allocPrint(ctx.allocator, "User answered (custom): \"{s}\"", .{text}),
+        .cancelled => ctx.allocator.dupe(u8, "User did not answer (request cancelled)."),
     };
 }
 
@@ -2593,6 +2649,85 @@ fn fakeApprove(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8) bool 
 }
 fn fakeCancelled(_: *anyopaque) bool {
     return false;
+}
+
+const FakeAsker = struct {
+    result: types.AskResult,
+    captured_count: usize = 0,
+
+    fn ask(ctx: *anyopaque, question: []const u8, options: []const types.QuestionOption) types.AskResult {
+        const self: *FakeAsker = @ptrCast(@alignCast(ctx));
+        _ = question; // borrows the parsed JSON, freed after the call — don't retain
+        self.captured_count = options.len;
+        return self.result;
+    }
+};
+
+fn askCtx(asker: *FakeAsker) ToolContext {
+    return .{
+        .allocator = std.testing.allocator,
+        .ctx = asker,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{},
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+        .ask = FakeAsker.ask,
+    };
+}
+
+fn askCall() ToolCall {
+    return .{
+        .id = @constCast("c1"),
+        .name = @constCast("ask_user"),
+        .arguments = @constCast(
+            \\{"question":"Which DB?","options":[{"label":"Postgres"},{"label":"SQLite","description":"local dev"}]}
+        ),
+    };
+}
+
+test "ask_user tool formats the selected option with its label and description" {
+    var asker = FakeAsker{ .result = .{ .option_index = 1 } };
+    var ctx = askCtx(&asker);
+    const out = try executeToolCall(&ctx, askCall());
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "option 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "SQLite") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "local dev") != null);
+    try std.testing.expectEqual(@as(usize, 2), asker.captured_count);
+}
+
+test "ask_user tool formats a free-text custom answer" {
+    var asker = FakeAsker{ .result = .{ .custom = "用 DuckDB" } };
+    var ctx = askCtx(&asker);
+    const out = try executeToolCall(&ctx, askCall());
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "custom") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "用 DuckDB") != null);
+}
+
+test "ask_user tool reports cancellation" {
+    var asker = FakeAsker{ .result = .cancelled };
+    var ctx = askCtx(&asker);
+    const out = try executeToolCall(&ctx, askCall());
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "cancel") != null);
+}
+
+test "ask_user tool rejects fewer than two options without asking" {
+    var asker = FakeAsker{ .result = .{ .option_index = 0 } };
+    var ctx = askCtx(&asker);
+    const call = ToolCall{
+        .id = @constCast("c1"),
+        .name = @constCast("ask_user"),
+        .arguments = @constCast(
+            \\{"question":"Only one?","options":[{"label":"A"}]}
+        ),
+    };
+    const out = try executeToolCall(&ctx, call);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "at least 2") != null);
+    try std.testing.expectEqual(@as(usize, 0), asker.captured_count); // ask hook never called
 }
 
 test "isDangerousCommand flags destructive verbs without a Session" {
