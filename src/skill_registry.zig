@@ -236,10 +236,16 @@ fn parseSkillMeta(
     const frontmatter = frontmatterSlice(bytes) orelse return LookupError.InvalidSkillMarkdown;
 
     var parsed_name: ?[]const u8 = null;
-    var parsed_description: ?[]const u8 = null;
+    var inline_description: ?[]const u8 = null;
+    var folded_description: ?[]u8 = null;
+    errdefer if (folded_description) |d| allocator.free(d);
 
-    var lines = std.mem.splitScalar(u8, frontmatter, '\n');
-    while (lines.next()) |raw_line| {
+    var pos: usize = 0;
+    while (pos < frontmatter.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, frontmatter, pos, '\n') orelse frontmatter.len;
+        const raw_line = frontmatter[pos..line_end];
+        pos = if (line_end < frontmatter.len) line_end + 1 else frontmatter.len;
+
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
 
@@ -250,7 +256,22 @@ fn parseSkillMeta(
         if (std.mem.eql(u8, key, "name")) {
             parsed_name = value;
         } else if (std.mem.eql(u8, key, "description")) {
-            parsed_description = value;
+            if (isBlockScalarHeader(value)) {
+                // YAML block scalar (">" folded / "|" literal): the real text
+                // lives on the following more-indented lines. Fold it into one
+                // line so the single-row suggestion popup and `/skills` listing
+                // (which terminates each entry with "\n") stay intact.
+                const key_indent = leadingWhitespace(raw_line);
+                if (folded_description) |d| allocator.free(d);
+                folded_description = try foldBlockScalar(allocator, frontmatter, &pos, key_indent);
+                inline_description = null;
+            } else {
+                inline_description = value;
+                if (folded_description) |d| {
+                    allocator.free(d);
+                    folded_description = null;
+                }
+            }
         }
     }
 
@@ -258,11 +279,13 @@ fn parseSkillMeta(
         if (name.len == 0) dir_name else name
     else
         dir_name;
-    const description_value = parsed_description orelse "";
 
     const name = try allocator.dupe(u8, name_value);
     errdefer allocator.free(name);
-    const description = try allocator.dupe(u8, description_value);
+    const description: []u8 = if (folded_description) |d| desc: {
+        folded_description = null; // ownership moves into the returned SkillMeta
+        break :desc d;
+    } else try allocator.dupe(u8, inline_description orelse "");
     errdefer allocator.free(description);
     const dir_name_copy = try allocator.dupe(u8, dir_name);
     errdefer allocator.free(dir_name_copy);
@@ -275,6 +298,58 @@ fn parseSkillMeta(
         .dir_name = dir_name_copy,
         .rel_dir = rel_dir,
     };
+}
+
+fn leadingWhitespace(line: []const u8) usize {
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    return i;
+}
+
+fn isBlockScalarHeader(value: []const u8) bool {
+    if (value.len == 0) return false;
+    if (value[0] != '>' and value[0] != '|') return false;
+    // Permit chomping ("+"/"-") and explicit-indent (digit) indicators only;
+    // a value like ">text" is a plain scalar, not a block scalar header.
+    for (value[1..]) |c| {
+        switch (c) {
+            '-', '+', '0'...'9' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
+/// Fold the indented body of a YAML block scalar (whose ">"/"|" header was just
+/// consumed) into a single line: content lines joined by single spaces, blank
+/// lines dropped. `pos` starts on the first body line and is left on the first
+/// line that dedents to the key's indent (the next key) or at end of input.
+fn foldBlockScalar(
+    allocator: std.mem.Allocator,
+    frontmatter: []const u8,
+    pos: *usize,
+    key_indent: usize,
+) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    while (pos.* < frontmatter.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, frontmatter, pos.*, '\n') orelse frontmatter.len;
+        const raw_line = frontmatter[pos.*..line_end];
+        const content = std.mem.trim(u8, raw_line, " \t\r");
+
+        if (content.len != 0) {
+            // A non-blank line indented no deeper than the key terminates the
+            // block; leave `pos` on it so the caller parses it as the next key.
+            if (leadingWhitespace(raw_line) <= key_indent) break;
+            if (out.items.len != 0) try out.append(allocator, ' ');
+            try out.appendSlice(allocator, content);
+        }
+
+        pos.* = if (line_end < frontmatter.len) line_end + 1 else frontmatter.len;
+    }
+
+    return out.toOwnedSlice(allocator);
 }
 
 fn frontmatterSlice(bytes: []const u8) ?[]const u8 {
@@ -350,6 +425,61 @@ test "skill_registry: parses CRLF SKILL frontmatter" {
     try std.testing.expectEqual(@as(usize, 1), skills.len);
     try std.testing.expectEqualStrings("pdf", skills[0].name);
     try std.testing.expectEqualStrings("Work with PDF files.", skills[0].description);
+}
+
+test "skill_registry: folds a YAML block scalar description into one line" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("skills/bear");
+    try tmp.dir.writeFile(.{
+        .sub_path = "skills/bear/SKILL.md",
+        .data =
+            "---\n" ++
+            "name: bear\n" ++
+            "description: >\n" ++
+            "  Find papers that argue against a claim.\n" ++
+            "  Sort them by threat level.\n" ++
+            "\n" ++
+            "  Trigger when the user wants counter-evidence.\n" ++
+            "---\n" ++
+            "# Bear\n",
+    });
+
+    const skills = try listSkills(std.testing.allocator, tmp.dir, "skills");
+    defer freeSkillList(std.testing.allocator, skills);
+
+    try std.testing.expectEqual(@as(usize, 1), skills.len);
+    try std.testing.expectEqualStrings("bear", skills[0].name);
+    try std.testing.expectEqualStrings(
+        "Find papers that argue against a claim. Sort them by threat level. Trigger when the user wants counter-evidence.",
+        skills[0].description,
+    );
+}
+
+test "skill_registry: folds a literal block scalar description into one line" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("skills/note");
+    try tmp.dir.writeFile(.{
+        .sub_path = "skills/note/SKILL.md",
+        .data =
+            "---\n" ++
+            "name: note\n" ++
+            "description: |\n" ++
+            "  First line.\n" ++
+            "  Second line.\n" ++
+            "---\n" ++
+            "# Note\n",
+    });
+
+    const skills = try listSkills(std.testing.allocator, tmp.dir, "skills");
+    defer freeSkillList(std.testing.allocator, skills);
+
+    try std.testing.expectEqual(@as(usize, 1), skills.len);
+    try std.testing.expectEqualStrings("note", skills[0].name);
+    try std.testing.expectEqualStrings("First line. Second line.", skills[0].description);
 }
 
 test "skill_registry: listSkills cleans up appended metadata on later error" {

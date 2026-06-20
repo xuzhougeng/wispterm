@@ -8,6 +8,7 @@ const i18n = @import("../i18n.zig");
 const composer_layout = @import("../ai_chat_composer_layout.zig");
 const scrollbar_model = @import("../ai_chat_scrollbar_model.zig");
 const md = @import("../markdown_text.zig");
+const detail_wrap = @import("../composer_detail_wrap.zig");
 
 // Transcript scrollbar interaction state (one mouse). Set by input.zig,
 // read by the fade computation in renderTranscriptScrollbar.
@@ -62,6 +63,9 @@ const SUGGESTION_MAX_W: f32 = 1120;
 const SUGGESTION_COMMAND_W: f32 = 420;
 const SUGGESTION_PAD_X: f32 = 18;
 const SUGGESTION_COLUMN_GAP: f32 = 34;
+// Vertical padding around the divider that separates the suggestion list from
+// the selected item's full-description detail panel.
+const SUGGESTION_DETAIL_GAP: f32 = 8;
 const MISSING_API_KEY_ACTION_TEXT = "Missing API key. Click to configure";
 
 pub const HitTarget = union(enum) {
@@ -1346,10 +1350,25 @@ fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, win
     const popup_y = layout.field_y + layout.field_h + SUGGESTION_GAP;
     const row_h = @round(@max(SUGGESTION_ROW_H, font.g_titlebar_cell_height + 14.0));
     const command_w = @min(@max(SUGGESTION_COMMAND_W, font.g_titlebar_cell_width * 16.0), popup_w * 0.58);
-    const popup_h = SUGGESTION_PAD_Y * 2 + row_h * @as(f32, @floatFromInt(count));
     const popup_bg = mixColor(bg, fg, 0.105);
     const border = mixColor(bg, accent, 0.36);
     const selected = @min(session.suggestion_selected, count - 1);
+
+    // Detail panel: the selected item's full description, wrapped under the
+    // list (capped at detail_wrap.MAX_LINES so the popup never grows unbounded).
+    const detail_w = popup_w - SUGGESTION_PAD_X * 2;
+    const selected_suggestion = ai_chat.composerSuggestionAtForInput(input_text, session.input_cursor, session.skill_suggestions, session.custom_command_suggestions, selected);
+    const detail_desc: []const u8 = if (selected_suggestion) |s| s.description else "";
+    const detail_line_h = lineHeight();
+    const detail = if (detail_desc.len > 0 and detail_w > 0)
+        detail_wrap.wrap(detail_desc, detail_w, detail_wrap.MAX_LINES, &glyphAdvance)
+    else
+        detail_wrap.WrapResult{ .lines = undefined, .count = 0, .truncated = false };
+    const detail_content_h: f32 = @as(f32, @floatFromInt(detail.count)) * detail_line_h;
+    const detail_block: f32 = if (detail.count > 0) detail_content_h + SUGGESTION_DETAIL_GAP * 2 + 1 else 0;
+
+    const list_h = row_h * @as(f32, @floatFromInt(count));
+    const popup_h = SUGGESTION_PAD_Y * 2 + list_h + detail_block;
 
     ui_pipeline.fillQuadAlpha(popup_x, popup_y, popup_w, popup_h, popup_bg, 0.98);
     ui_pipeline.fillQuadAlpha(popup_x, popup_y + popup_h - 1, popup_w, 1, border, 0.78);
@@ -1386,6 +1405,30 @@ fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, win
             );
         }
     }
+
+    if (detail.count > 0) {
+        const detail_color = mixColor(bg, fg, 0.72);
+        const content_top = popup_y + SUGGESTION_PAD_Y + detail_content_h;
+        const divider_y = content_top + SUGGESTION_DETAIL_GAP;
+        ui_pipeline.fillQuadAlpha(popup_x + SUGGESTION_PAD_X, divider_y, detail_w, 1, mixColor(bg, fg, 0.16), 0.7);
+
+        for (0..detail.count) |k| {
+            const line_y = content_top - @as(f32, @floatFromInt(k + 1)) * detail_line_h + @round((detail_line_h - font.g_titlebar_cell_height) / 2);
+            const line = detail.lines[k];
+            const is_last = k + 1 == detail.count;
+            // On the truncated final line, hand renderTextLimited the remaining
+            // text so it clips to width and appends its own overflow ellipsis.
+            const slice = if (is_last and detail.truncated)
+                detail_desc[line.start..]
+            else
+                detail_desc[line.start..line.end];
+            _ = titlebar.renderTextLimited(slice, popup_x + SUGGESTION_PAD_X, line_y, detail_color, detail_w);
+        }
+    }
+}
+
+fn glyphAdvance(cp: u21) f32 {
+    return titlebar.titlebarGlyphAdvance(@as(u32, cp));
 }
 
 fn suggestionLabel(buf: []u8, suggestion: ai_chat.ComposerSuggestion) []const u8 {
