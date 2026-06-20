@@ -66,6 +66,9 @@ const SUGGESTION_COLUMN_GAP: f32 = 34;
 // Vertical padding around the divider that separates the suggestion list from
 // the selected item's full-description detail panel.
 const SUGGESTION_DETAIL_GAP: f32 = 8;
+// Gap kept between the top of the suggestion popup and the chat header bar, so a
+// long skill/tool list caps its row count instead of growing under the header.
+const SUGGESTION_TOP_GAP: f32 = 8;
 const MISSING_API_KEY_ACTION_TEXT = "Missing API key. Click to configure";
 
 pub const HitTarget = union(enum) {
@@ -386,7 +389,7 @@ pub fn render(
     if (session.rewind_open) {
         renderRewindPicker(session, layout);
     } else {
-        renderComposerSuggestions(session, layout, window_width);
+        renderComposerSuggestions(session, layout, window_width, header_y);
     }
 }
 
@@ -1336,7 +1339,7 @@ fn renderRewindPicker(session: *ai_chat.Session, layout: InputLayout) void {
     }
 }
 
-fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, window_width: f32) void {
+fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, window_width: f32, ceiling_y: f32) void {
     const input_text = session.input();
     const count = ai_chat.composerSuggestionCountForInput(input_text, session.input_cursor, session.skill_suggestions, session.custom_command_suggestions);
     if (count == 0) return;
@@ -1367,7 +1370,12 @@ fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, win
     const detail_content_h: f32 = @as(f32, @floatFromInt(detail.count)) * detail_line_h;
     const detail_block: f32 = if (detail.count > 0) detail_content_h + SUGGESTION_DETAIL_GAP * 2 + 1 else 0;
 
-    const list_h = row_h * @as(f32, @floatFromInt(count));
+    // The popup grows *upward* from the input field; cap the visible rows to the
+    // space below the chat header so a long skill/tool list can never overflow
+    // the top of the window. Overflow scrolls to keep the selection in view.
+    const avail_list_h = ceiling_y - SUGGESTION_TOP_GAP - popup_y - SUGGESTION_PAD_Y * 2 - detail_block;
+    const win = ai_chat_layout.composerSuggestionWindow(count, selected, row_h, avail_list_h);
+    const list_h = win.list_h;
     const popup_h = SUGGESTION_PAD_Y * 2 + list_h + detail_block;
 
     ui_pipeline.fillQuadAlpha(popup_x, popup_y, popup_w, popup_h, popup_bg, 0.98);
@@ -1377,8 +1385,10 @@ fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, win
     ui_pipeline.fillQuadAlpha(popup_x + popup_w - 1, popup_y, 1, popup_h, mixColor(bg, fg, 0.16), 0.72);
 
     const top = popup_y + popup_h - SUGGESTION_PAD_Y;
-    for (0..count) |i| {
-        const row_y = top - @as(f32, @floatFromInt(i + 1)) * row_h;
+    var row: usize = 0;
+    while (row < win.visible) : (row += 1) {
+        const i = win.first + row;
+        const row_y = top - @as(f32, @floatFromInt(row + 1)) * row_h;
         if (i == selected) {
             ui_pipeline.fillQuadAlpha(popup_x + 5, row_y + 4, popup_w - 10, row_h - 8, mixColor(bg, accent, 0.20), 0.90);
             ui_pipeline.fillQuadAlpha(popup_x + 5, row_y + 4, 3, row_h - 8, accent, 0.82);
@@ -1404,6 +1414,22 @@ fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, win
                 popup_x + popup_w - SUGGESTION_PAD_X - desc_x,
             );
         }
+    }
+
+    // Scrollbar shown only while the list is windowed, so the user can tell more
+    // suggestions exist above/below and where the selection sits.
+    if (count > win.visible and win.visible > 0) {
+        const sb_w: f32 = 3;
+        const sb_x = popup_x + popup_w - sb_w - 4;
+        ui_pipeline.fillQuadAlpha(sb_x, top - list_h, sb_w, list_h, mixColor(bg, fg, 0.14), 0.5);
+        const count_f: f32 = @floatFromInt(count);
+        const vis_f: f32 = @floatFromInt(win.visible);
+        const first_f: f32 = @floatFromInt(win.first);
+        const thumb_h = @max(20.0, @round(list_h * vis_f / count_f));
+        const max_scroll = count_f - vis_f;
+        const scroll_frac = if (max_scroll > 0) first_f / max_scroll else 0;
+        const thumb_top = top - (list_h - thumb_h) * scroll_frac;
+        ui_pipeline.fillQuadAlpha(sb_x, thumb_top - thumb_h, sb_w, thumb_h, mixColor(bg, accent, 0.5), 0.85);
     }
 
     if (detail.count > 0) {

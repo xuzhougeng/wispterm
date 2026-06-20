@@ -182,6 +182,50 @@ pub fn questionLayout(cell_h: f32, n_options: usize, max_visible_options: usize)
     };
 }
 
+/// Visible window for the composer's `$`/`/` suggestion list. Row 0 renders at
+/// the top and the list grows downward, while the whole popup grows *upward*
+/// from the input field — so when there are more suggestions than fit between
+/// the input and the chat header, the list must cap its row count and scroll to
+/// keep the selection in view. Without this the popup overflowed the top of the
+/// window and clipped the first suggestions off-screen.
+pub const SuggestionWindow = struct {
+    /// Rows actually drawn (1..=count; 0 only when count == 0).
+    visible: usize,
+    /// Index of the first (topmost) drawn row.
+    first: usize,
+    /// Pixel height of the drawn rows (visible * row_h).
+    list_h: f32,
+};
+
+/// `avail_list_h` is the vertical space the list rows may occupy (the caller
+/// reserves padding and the detail panel separately). `selected` is clamped
+/// into range, so callers may pass a stale index safely.
+pub fn composerSuggestionWindow(
+    count: usize,
+    selected: usize,
+    row_h: f32,
+    avail_list_h: f32,
+) SuggestionWindow {
+    if (count == 0 or row_h <= 0) return .{ .visible = 0, .first = 0, .list_h = 0 };
+    // Always keep at least one row so a tiny window can still show (and reach)
+    // the selection.
+    const fit_f = @floor(avail_list_h / row_h);
+    const fit: usize = if (fit_f >= 1) @intFromFloat(fit_f) else 1;
+    const visible = @min(fit, count);
+    const sel = @min(selected, count - 1);
+    const first: usize = if (count <= visible)
+        0
+    else if (sel < visible)
+        0
+    else
+        @min(sel - visible + 1, count - visible);
+    return .{
+        .visible = visible,
+        .first = first,
+        .list_h = row_h * @as(f32, @floatFromInt(visible)),
+    };
+}
+
 test "pointInRect inside, edges, outside" {
     const r = Rect{ .x = 0, .top_px = 0, .w = 20, .h = 20 };
     try std.testing.expect(pointInRect(10, 10, r));
@@ -296,4 +340,58 @@ test "questionLayout clamps visible options to the row cap (rest scroll)" {
     const exact5 = questionLayout(18, 5, 5);
     try std.testing.expectApproxEqAbs(exact5.height, capped.height, 0.001);
     try std.testing.expect(few.height < capped.height);
+}
+
+test "composerSuggestionWindow shows everything when it fits" {
+    // 5 rows of 28px fit in 1000px → no scrolling, no cap.
+    const w = composerSuggestionWindow(5, 0, 28, 1000);
+    try std.testing.expectEqual(@as(usize, 5), w.visible);
+    try std.testing.expectEqual(@as(usize, 0), w.first);
+    try std.testing.expectApproxEqAbs(@as(f32, 140), w.list_h, 0.001);
+}
+
+test "composerSuggestionWindow caps rows to the available height" {
+    // 25 suggestions, but only 140px of room → 5 rows. This is the bug: before
+    // the cap the popup grew to 25*28=700px and clipped the top off-screen.
+    const w = composerSuggestionWindow(25, 0, 28, 140);
+    try std.testing.expectEqual(@as(usize, 5), w.visible);
+    try std.testing.expectEqual(@as(usize, 0), w.first);
+    try std.testing.expectApproxEqAbs(@as(f32, 140), w.list_h, 0.001);
+}
+
+test "composerSuggestionWindow scrolls to keep the selection visible" {
+    // Window of 5 over 25 items. Selecting item 10 puts it on the bottom row.
+    const mid = composerSuggestionWindow(25, 10, 28, 140);
+    try std.testing.expectEqual(@as(usize, 5), mid.visible);
+    try std.testing.expectEqual(@as(usize, 6), mid.first); // 10 - 5 + 1
+
+    // Selection inside the first window keeps first at 0.
+    const near_top = composerSuggestionWindow(25, 3, 28, 140);
+    try std.testing.expectEqual(@as(usize, 0), near_top.first);
+
+    // Selecting the last item clamps first at count - visible (no overscroll).
+    const last = composerSuggestionWindow(25, 24, 28, 140);
+    try std.testing.expectEqual(@as(usize, 20), last.first);
+    try std.testing.expectEqual(@as(usize, 24), last.first + last.visible - 1);
+}
+
+test "composerSuggestionWindow always keeps at least one row" {
+    // A window shorter than a single row still shows the selected suggestion.
+    const w = composerSuggestionWindow(25, 12, 28, 5);
+    try std.testing.expectEqual(@as(usize, 1), w.visible);
+    try std.testing.expectEqual(@as(usize, 12), w.first);
+}
+
+test "composerSuggestionWindow handles an empty list" {
+    const w = composerSuggestionWindow(0, 0, 28, 500);
+    try std.testing.expectEqual(@as(usize, 0), w.visible);
+    try std.testing.expectEqual(@as(usize, 0), w.first);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), w.list_h, 0.001);
+}
+
+test "composerSuggestionWindow clamps an out-of-range selection" {
+    // A stale selected index beyond the list must not panic or overscroll.
+    const w = composerSuggestionWindow(25, 999, 28, 140);
+    try std.testing.expectEqual(@as(usize, 20), w.first);
+    try std.testing.expectEqual(@as(usize, 5), w.visible);
 }
