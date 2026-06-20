@@ -710,12 +710,19 @@ threadlocal var g_scrollbar_drag_top_pad: f32 = 0;
 threadlocal var g_ai_input_scroll_dragging: bool = false;
 threadlocal var g_ai_input_scroll_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_input_scroll_drag_offset: f32 = 0;
+const AiTranscriptPanel = enum {
+    active_chat,
+    copilot_sidebar,
+};
+const AiTranscriptPanelGeometry = ai_sidebar.PanelGeometry;
 threadlocal var g_ai_transcript_scroll_dragging: bool = false;
 threadlocal var g_ai_transcript_scroll_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_scroll_drag_offset: f32 = 0;
+threadlocal var g_ai_transcript_scroll_panel: AiTranscriptPanel = .active_chat;
 threadlocal var g_ai_transcript_selecting: bool = false;
 threadlocal var g_ai_transcript_select_chat: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_transcript_select_auto_copy: bool = false;
+threadlocal var g_ai_transcript_select_panel: AiTranscriptPanel = .active_chat;
 threadlocal var g_port_forwarding_suppress_command_char: ?u21 = null;
 threadlocal var g_skill_center_suppress_command_char: ?u21 = null;
 pub threadlocal var g_sidebar_resize_hover: bool = false; // Mouse is over the sidebar resize edge
@@ -866,9 +873,11 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_ai_transcript_scroll_chat = null;
     AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = false;
     AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = false;
+    g_ai_transcript_scroll_panel = .active_chat;
     g_ai_transcript_selecting = false;
     g_ai_transcript_select_chat = null;
     g_ai_transcript_select_auto_copy = false;
+    g_ai_transcript_select_panel = .active_chat;
     window_backend.clearTransientInput(win);
 }
 
@@ -1655,8 +1664,51 @@ fn logicalKeyFromCode(key_code: platform_input.KeyCode) input_key.Key {
     };
 }
 
+fn aiTranscriptPanelGeometryForBounds(window_width: i32, window_height: i32, bounds: ai_sidebar.Bounds) AiTranscriptPanelGeometry {
+    return ai_sidebar.panelGeometryForBounds(window_width, window_height, bounds);
+}
+
+fn aiTranscriptPanelGeometry(panel: AiTranscriptPanel) ?AiTranscriptPanelGeometry {
+    const win = AppWindow.g_window orelse return null;
+    const fb = window_backend.framebufferSize(win);
+    return switch (panel) {
+        .active_chat => .{
+            .window_width = @floatFromInt(fb.width),
+            .window_height = @floatFromInt(fb.height),
+            .chat_x = AppWindow.leftPanelsWidth(),
+            .chat_w = @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+        },
+        .copilot_sidebar => blk: {
+            if (!AppWindow.aiCopilotVisible()) return null;
+            const bounds = ai_sidebar.boundsForWindow(
+                @intCast(fb.width),
+                @intCast(fb.height),
+                @floatCast(titlebarHeight()),
+                AppWindow.leftPanelsWidth(),
+                0,
+            );
+            break :blk aiTranscriptPanelGeometryForBounds(@intCast(fb.width), @intCast(fb.height), bounds);
+        },
+    };
+}
+
 test "input: logical key mapping includes session launcher H mnemonic" {
     try std.testing.expectEqual(input_key.Key.key_h, logicalKeyFromCode(0x48));
+}
+
+test "input: copilot transcript panel geometry uses sidebar bounds" {
+    const bounds = ai_sidebar.Bounds{
+        .left = 1120,
+        .top = 30,
+        .right = 1600,
+        .bottom = 900,
+    };
+    const geometry = aiTranscriptPanelGeometryForBounds(1600, 900, bounds);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1600), geometry.window_width, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 900), geometry.window_height, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1120), geometry.chat_x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 480), geometry.chat_w, 0.001);
 }
 
 fn actionIs(action: ?keybind.Action, expected: keybind.Action) bool {
@@ -4221,10 +4273,9 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             // a click inside its rect focuses the copilot and routes one-shot
             // interactions (stop / missing-api-key / message toggle / copy /
             // permission chip). A click outside the panel blurs the copilot and
-            // falls through to normal terminal handling. Drag-based interactions
-            // (transcript text selection, scrollbar drags) are intentionally not
-            // wired here: their continue-handlers recompute the full-tab rect and
-            // would mis-track against the narrower sidebar rect.
+            // falls through to normal terminal handling. Transcript selection
+            // and scrollbar drags record that they started in the sidebar, so
+            // their continue-handlers keep using the narrower panel geometry.
             if (AppWindow.aiCopilotVisible()) {
                 if (AppWindow.activeCopilotSessionForInput()) |chat| {
                     const win = AppWindow.g_window orelse return;
@@ -4321,6 +4372,48 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         )) {
                             toggleAiAgentPermission();
                             return;
+                        }
+                        if (AppWindow.ai_chat_renderer.transcriptScrollbarHitTest(
+                            chat,
+                            xpos,
+                            ypos,
+                            @floatFromInt(fb.width),
+                            @floatFromInt(fb.height),
+                            @floatCast(titlebarHeight()),
+                            chat_x,
+                            chat_w,
+                        )) |drag_offset| {
+                            g_ai_transcript_scroll_dragging = true;
+                            g_ai_transcript_scroll_chat = chat;
+                            g_ai_transcript_scroll_drag_offset = drag_offset;
+                            g_ai_transcript_scroll_panel = .copilot_sidebar;
+                            AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = true;
+                            applyAiTranscriptScrollbarDrag(chat, ypos);
+                            AppWindow.g_force_rebuild = true;
+                            AppWindow.g_cells_valid = false;
+                            return;
+                        }
+                        if (!ev.ctrl and !ev.alt) {
+                            if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
+                                chat,
+                                xpos,
+                                ypos,
+                                @floatFromInt(fb.width),
+                                @floatFromInt(fb.height),
+                                @floatCast(titlebarHeight()),
+                                chat_x,
+                                chat_w,
+                            )) |hit| {
+                                chat.beginTranscriptSelection(hit.message_index, hit.byte_offset);
+                                g_ai_transcript_selecting = true;
+                                g_ai_transcript_select_chat = chat;
+                                g_ai_transcript_select_auto_copy = ev.shift;
+                                g_ai_transcript_select_panel = .copilot_sidebar;
+                                platform_cursor.set(.ibeam);
+                                AppWindow.g_force_rebuild = true;
+                                AppWindow.g_cells_valid = false;
+                                return;
+                            }
                         }
                         // Click landed in the panel but not on an interactive
                         // element: keep focus, clear any selection, consume it.
@@ -4428,6 +4521,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     g_ai_transcript_scroll_dragging = true;
                     g_ai_transcript_scroll_chat = chat;
                     g_ai_transcript_scroll_drag_offset = drag_offset;
+                    g_ai_transcript_scroll_panel = .active_chat;
                     AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = true;
                     applyAiTranscriptScrollbarDrag(chat, ypos);
                     AppWindow.g_force_rebuild = true;
@@ -4449,6 +4543,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         g_ai_transcript_selecting = true;
                         g_ai_transcript_select_chat = chat;
                         g_ai_transcript_select_auto_copy = ev.shift;
+                        g_ai_transcript_select_panel = .active_chat;
                         platform_cursor.set(.ibeam);
                         AppWindow.g_force_rebuild = true;
                         AppWindow.g_cells_valid = false;
@@ -4577,6 +4672,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             g_ai_input_scroll_chat = null;
             g_ai_transcript_scroll_dragging = false;
             g_ai_transcript_scroll_chat = null;
+            g_ai_transcript_scroll_panel = .active_chat;
             AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = false;
             if (g_ai_transcript_selecting) {
                 if (g_ai_transcript_select_chat) |chat| {
@@ -4585,6 +4681,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 g_ai_transcript_selecting = false;
                 g_ai_transcript_select_chat = null;
                 g_ai_transcript_select_auto_copy = false;
+                g_ai_transcript_select_panel = .active_chat;
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
                 platform_cursor.set(.arrow);
@@ -4788,16 +4885,15 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
 }
 
 fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
-    const win = AppWindow.g_window orelse return;
-    const size = clientSize(win);
+    const geometry = aiTranscriptPanelGeometry(g_ai_transcript_scroll_panel) orelse return;
     if (AppWindow.ai_chat_renderer.transcriptScrollbarScrollPxAt(
         chat,
         ypos,
-        @floatFromInt(size.width),
-        @floatFromInt(size.height),
+        geometry.window_width,
+        geometry.window_height,
         @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(size.width),
+        geometry.chat_x,
+        geometry.chat_w,
         g_ai_transcript_scroll_drag_offset,
     )) |px| {
         chat.scrollToPx(px);
@@ -4807,17 +4903,16 @@ fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) v
 }
 
 fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
-    const win = AppWindow.g_window orelse return;
-    const fb = window_backend.framebufferSize(win);
+    const geometry = aiTranscriptPanelGeometry(g_ai_transcript_select_panel) orelse return;
     if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
         chat,
         xpos,
         ypos,
-        @floatFromInt(fb.width),
-        @floatFromInt(fb.height),
+        geometry.window_width,
+        geometry.window_height,
         @floatCast(titlebarHeight()),
-        AppWindow.leftPanelsWidth(),
-        @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+        geometry.chat_x,
+        geometry.chat_w,
     )) |hit| {
         chat.updateTranscriptSelection(hit.message_index, hit.byte_offset);
         AppWindow.g_force_rebuild = true;
