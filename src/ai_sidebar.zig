@@ -24,6 +24,13 @@ pub const Bounds = struct {
     bottom: i32,
 };
 
+pub const PanelGeometry = struct {
+    window_width: f32,
+    window_height: f32,
+    chat_x: f32,
+    chat_w: f32,
+};
+
 pub const HandleRect = struct {
     x: f32,
     y: f32,
@@ -92,6 +99,15 @@ pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f
     };
 }
 
+pub fn panelGeometryForBounds(window_width: i32, window_height: i32, bounds: Bounds) PanelGeometry {
+    return .{
+        .window_width = @floatFromInt(window_width),
+        .window_height = @floatFromInt(window_height),
+        .chat_x = @floatFromInt(bounds.left),
+        .chat_w = @floatFromInt(@max(0, bounds.right - bounds.left)),
+    };
+}
+
 test "panelWidthForWindow clamps to g_width when it fits" {
     const saved = g_width;
     defer g_width = saved;
@@ -132,6 +148,21 @@ test "boundsForWindow right-docks the panel" {
     try std.testing.expectEqual(@as(i32, 1120), b.left); // 1600 - 480
     try std.testing.expectEqual(@as(i32, 30), b.top);
     try std.testing.expectEqual(@as(i32, 900), b.bottom);
+}
+
+test "panelGeometryForBounds exposes chat origin and width" {
+    const b = Bounds{
+        .left = 1120,
+        .top = 30,
+        .right = 1600,
+        .bottom = 900,
+    };
+    const geometry = panelGeometryForBounds(1600, 900, b);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1600), geometry.window_width, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 900), geometry.window_height, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1120), geometry.chat_x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 480), geometry.chat_w, 0.001);
 }
 
 test "boundsForWindow respects left_offset and right_offset" {
