@@ -470,6 +470,7 @@ test "skill suggestions filter by prefix against a fixture" {
     const sug = skillSuggestionAtForPrefix("$b", &test_skills, 1).?;
     try std.testing.expectEqual(ComposerSuggestionKind.skill, sug.kind);
     try std.testing.expectEqualStrings("build", sug.text);
+    try std.testing.expectEqualStrings("build something", sug.description);
 }
 
 test "parseSkillInvocation splits name and prompt" {

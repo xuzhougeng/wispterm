@@ -4958,6 +4958,7 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
     const suggestion = session.composerSuggestionAt(1).?;
     try std.testing.expectEqual(ComposerSuggestionKind.skill, suggestion.kind);
     try std.testing.expectEqualStrings("pdf", suggestion.text);
+    try std.testing.expectEqualStrings("Work with PDF files.", suggestion.description);
 
     // Navigate down once to select the "pdf" skill (index 1) and then confirm.
     session.handleKey(.{ .key = input_key.Key.arrow_down });
