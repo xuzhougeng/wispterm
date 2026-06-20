@@ -194,8 +194,18 @@ static atomic_bool g_quit_pending = false;
     // the close_requested flag and exits cleanly; App.run() then drains the
     // quit flag and breaks out of its idle loop. We return Cancel so AppKit
     // doesn't tear NSApp down underneath us — zig owns the actual shutdown.
+    //
+    // Only message WispTerm's own terminal windows. -[NSApplication windows]
+    // also returns AppKit's borderless helper windows (e.g. TUINSWindow from
+    // the text-input / Touch Bar subsystem), which have no close button and so
+    // are not closable. Sending -performClose: to a non-closable window makes
+    // AppKit emit the system alert sound, so quitting (Dock menu Quit, ⌘Q, menu
+    // Quit — all routed here) would ring a bell. Gating on our delegate class
+    // skips those helper windows; our terminal windows all carry it (and are
+    // closable), so the intended shutdown is unchanged.
     NSArray<NSWindow *> *snapshot = [[NSApp windows] copy];
     for (NSWindow *win in snapshot) {
+        if (![win.delegate isKindOfClass:[WispTermMacWindowDelegate class]]) continue;
         [win performClose:nil];
     }
     [snapshot release];
