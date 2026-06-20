@@ -151,6 +151,13 @@ opening the WeChat connection, or a freeze when Ctrl+clicking a remote file —
 download it, reproduce the problem, then attach `wispterm-debug.log` (and any
 `crash-*.txt`) to your report.
 
+For Ctrl+click preview/browser issues, the debug log also includes copyable
+single-line records that begin with `preview-diagnostic`. After reproducing the
+problem, paste the nearby `preview-diagnostic` lines into the issue if the full
+log is too large. They cover preview path resolution, async file reads, image
+decode, HTML server startup, SSH browser tunnels, URL routing, and the embedded
+browser panel.
+
 ## Why does remote mirror the local terminal size on phones?
 
 WispTerm Remote mirrors the local window because the desktop app is the source

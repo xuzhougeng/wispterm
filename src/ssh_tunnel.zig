@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const Surface = @import("Surface.zig");
 const ssh_connection = @import("ssh_connection.zig");
 const browser_url = @import("browser_url.zig");
+const preview_diagnostics = @import("preview_diagnostics.zig");
 const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const ui_perf = @import("ui_perf.zig");
@@ -79,18 +80,48 @@ const SshTunnel = struct {
 
 pub fn externalUrlForSurface(allocator: std.mem.Allocator, url: []const u8, surface: ?*const Surface) ?[]u8 {
     if (sshLoopbackUrl(surface, url)) |request| {
+        var remote_port_buf: [16]u8 = undefined;
+        const remote_port_s = std.fmt.bufPrint(&remote_port_buf, "{d}", .{request.parsed.port}) catch "";
+        preview_diagnostics.debug("ssh-tunnel", &.{
+            .{ .key = "stage", .value = "loopback-url" },
+            .{ .key = "url", .value = url },
+            .{ .key = "host", .value = request.parsed.host },
+            .{ .key = "remote_port", .value = remote_port_s },
+        });
         const local_port = ensureSshTunnel(
             allocator,
             &request.conn,
             request.parsed.port,
             browser_url.localTunnelHost(request.parsed.host),
             browser_url.remoteTunnelHost(request.parsed.host),
-        ) orelse return null;
-        return browser_url.buildLocalTunnelUrl(allocator, request.parsed, local_port);
+        ) orelse {
+            preview_diagnostics.debug("ssh-tunnel", &.{
+                .{ .key = "stage", .value = "ensure-failed" },
+                .{ .key = "url", .value = url },
+                .{ .key = "remote_port", .value = remote_port_s },
+            });
+            return null;
+        };
+        var local_port_buf: [16]u8 = undefined;
+        const local_port_s = std.fmt.bufPrint(&local_port_buf, "{d}", .{local_port}) catch "";
+        const target = browser_url.buildLocalTunnelUrl(allocator, request.parsed, local_port) orelse return null;
+        preview_diagnostics.debug("ssh-tunnel", &.{
+            .{ .key = "stage", .value = "rewritten" },
+            .{ .key = "url", .value = url },
+            .{ .key = "remote_port", .value = remote_port_s },
+            .{ .key = "local_port", .value = local_port_s },
+            .{ .key = "target", .value = target },
+        });
+        return target;
     }
 
     if (browser_url.parseHttpUrl(url)) |parsed| {
         if (browser_url.isUnspecifiedHost(parsed.host)) {
+            preview_diagnostics.debug("ssh-tunnel", &.{
+                .{ .key = "stage", .value = "unspecified-host" },
+                .{ .key = "url", .value = url },
+                .{ .key = "host", .value = parsed.host },
+            });
             return browser_url.buildLocalTunnelUrl(allocator, parsed, parsed.port);
         }
     }
@@ -129,16 +160,44 @@ fn ensureSshTunnel(allocator: std.mem.Allocator, conn: *const ssh_connection.Ssh
     pruneExitedTunnels();
 
     if (findReusableTunnel(allocator, conn, remote_port, local_host, remote_host)) |local_port| {
+        var remote_port_buf: [16]u8 = undefined;
+        var local_port_buf: [16]u8 = undefined;
+        const remote_port_s = std.fmt.bufPrint(&remote_port_buf, "{d}", .{remote_port}) catch "";
+        const local_port_s = std.fmt.bufPrint(&local_port_buf, "{d}", .{local_port}) catch "";
+        preview_diagnostics.debug("ssh-tunnel", &.{
+            .{ .key = "stage", .value = "reuse" },
+            .{ .key = "host", .value = conn.host() },
+            .{ .key = "remote_port", .value = remote_port_s },
+            .{ .key = "local_port", .value = local_port_s },
+        });
         return local_port;
     }
 
     const slot = firstEmptySlot() orelse return null;
     const local_port = reservePreferredLocalPort(remote_port) orelse return null;
+    var remote_port_buf: [16]u8 = undefined;
+    var local_port_buf: [16]u8 = undefined;
+    const remote_port_s = std.fmt.bufPrint(&remote_port_buf, "{d}", .{remote_port}) catch "";
+    const local_port_s = std.fmt.bufPrint(&local_port_buf, "{d}", .{local_port}) catch "";
+    preview_diagnostics.debug("ssh-tunnel", &.{
+        .{ .key = "stage", .value = "spawn" },
+        .{ .key = "host", .value = conn.host() },
+        .{ .key = "remote_host", .value = remote_host },
+        .{ .key = "local_host", .value = local_host },
+        .{ .key = "remote_port", .value = remote_port_s },
+        .{ .key = "local_port", .value = local_port_s },
+    });
     const child = spawnSshTunnel(allocator, conn, remote_port, local_port, local_host, remote_host) orelse return null;
 
     g_tunnels[slot] = SshTunnel.init(child, conn, remote_port, local_port, local_host, remote_host);
     if (g_tunnels[slot]) |*tunnel| {
         if (!waitForTunnelReady(allocator, local_host, local_port, &tunnel.child)) {
+            preview_diagnostics.debug("ssh-tunnel", &.{
+                .{ .key = "stage", .value = "ready-failed" },
+                .{ .key = "host", .value = conn.host() },
+                .{ .key = "remote_port", .value = remote_port_s },
+                .{ .key = "local_port", .value = local_port_s },
+            });
             std.debug.print("SSH browser tunnel did not become ready on {s}:{d}\n", .{ local_host, local_port });
             stopTunnelSlot(&g_tunnels[slot]);
             return null;
@@ -148,6 +207,12 @@ fn ensureSshTunnel(allocator: std.mem.Allocator, conn: *const ssh_connection.Ssh
     }
 
     std.debug.print("SSH browser tunnel: {s}:{d} -> remote {s}:{d}\n", .{ local_host, local_port, remote_host, remote_port });
+    preview_diagnostics.debug("ssh-tunnel", &.{
+        .{ .key = "stage", .value = "ready" },
+        .{ .key = "host", .value = conn.host() },
+        .{ .key = "remote_port", .value = remote_port_s },
+        .{ .key = "local_port", .value = local_port_s },
+    });
     return local_port;
 }
 

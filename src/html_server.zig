@@ -4,6 +4,7 @@ const Surface = @import("Surface.zig");
 const model = @import("html_server_model.zig");
 const ssh_tunnel = @import("ssh_tunnel.zig");
 const preview_source = @import("input/preview_source.zig");
+const preview_diagnostics = @import("preview_diagnostics.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_process = @import("platform/process.zig");
 const platform_remote_file = @import("platform/remote_file.zig");
@@ -145,20 +146,51 @@ pub fn stopForSurfaceId(source_surface_id: *const [16]u8) void {
 
 pub fn openForSurface(allocator: std.mem.Allocator, surface: *Surface, path: []const u8, ls_prefix: ?[]const u8) OpenResult {
     if (!model.isHtmlPath(path)) return .{ .err = error.NotHtml };
+    preview_diagnostics.debug("html-server", &.{
+        .{ .key = "stage", .value = "open" },
+        .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+        .{ .key = "path", .value = path },
+        .{ .key = "ls_prefix", .value = ls_prefix orelse "" },
+    });
     const resolved = preview_source.resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch |err| {
+        preview_diagnostics.debug("html-server", &.{
+            .{ .key = "stage", .value = "resolve-failed" },
+            .{ .key = "path", .value = path },
+            .{ .key = "err", .value = @errorName(err) },
+        });
         return .{ .err = if (err == error.CwdUnavailable) error.CwdUnavailable else error.PathTooLong };
     };
     defer allocator.free(resolved);
 
     const root = dirname(resolved);
+    preview_diagnostics.debug("html-server", &.{
+        .{ .key = "stage", .value = "resolved" },
+        .{ .key = "path", .value = path },
+        .{ .key = "resolved", .value = resolved },
+        .{ .key = "root", .value = root },
+    });
     const port = ensureServerForSurface(allocator, surface, root) catch |err| return .{ .err = err };
     var url = localUrlForPath(allocator, port, resolved) catch |err| return .{ .err = err };
+    preview_diagnostics.debug("html-server", &.{
+        .{ .key = "stage", .value = "local-url" },
+        .{ .key = "resolved", .value = resolved },
+        .{ .key = "url", .value = url },
+    });
 
     if (surface.launch_kind == .ssh) {
         const tunneled = ssh_tunnel.externalUrlForSurface(allocator, url, surface) orelse {
+            preview_diagnostics.debug("html-server", &.{
+                .{ .key = "stage", .value = "tunnel-failed" },
+                .{ .key = "url", .value = url },
+            });
             allocator.free(url);
             return .{ .err = error.TunnelFailed };
         };
+        preview_diagnostics.debug("html-server", &.{
+            .{ .key = "stage", .value = "tunneled-url" },
+            .{ .key = "local", .value = url },
+            .{ .key = "external", .value = tunneled },
+        });
         allocator.free(url);
         url = tunneled;
     }
@@ -176,6 +208,14 @@ fn ensureServerForSurface(allocator: std.mem.Allocator, surface: *Surface, root:
     pruneExitedServers();
     if (findReusableServerSlot(allocator, surface, root)) |server_slot| {
         const port = g_servers[server_slot].?.port;
+        var port_buf: [16]u8 = undefined;
+        const port_s = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch "";
+        preview_diagnostics.debug("html-server", &.{
+            .{ .key = "stage", .value = "reuse-server" },
+            .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+            .{ .key = "root", .value = root },
+            .{ .key = "port", .value = port_s },
+        });
         stopServersExcept(server_slot);
         return port;
     }
@@ -184,10 +224,32 @@ fn ensureServerForSurface(allocator: std.mem.Allocator, surface: *Surface, root:
     var attempts: usize = 0;
     while (attempts < 8) : (attempts += 1) {
         const port = reserveServerPort() orelse return error.ServerUnavailable;
+        var port_buf: [16]u8 = undefined;
+        const port_s = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch "";
+        preview_diagnostics.debug("html-server", &.{
+            .{ .key = "stage", .value = "spawn-attempt" },
+            .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+            .{ .key = "root", .value = root },
+            .{ .key = "port", .value = port_s },
+        });
         const started = spawnReadyServerForSurface(allocator, surface, root, port) catch |err| {
+            preview_diagnostics.debug("html-server", &.{
+                .{ .key = "stage", .value = "spawn-attempt-failed" },
+                .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+                .{ .key = "root", .value = root },
+                .{ .key = "port", .value = port_s },
+                .{ .key = "err", .value = @errorName(err) },
+            });
             if (err == error.ServerUnavailable or err == error.SpawnFailed or err == error.ServerNotReady) continue;
             return err;
         };
+        preview_diagnostics.debug("html-server", &.{
+            .{ .key = "stage", .value = "spawn-ready" },
+            .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+            .{ .key = "kind", .value = @tagName(started.kind) },
+            .{ .key = "root", .value = root },
+            .{ .key = "port", .value = port_s },
+        });
         const server = Server.init(started.child, surface.launch_kind, started.kind, port, root, surface) orelse {
             var child = started.child;
             stopChild(&child);
@@ -242,7 +304,14 @@ fn serverReachable(allocator: std.mem.Allocator, surface: *Surface, server: *Ser
 
 fn spawnReadyLocal(allocator: std.mem.Allocator, root: []const u8, port: u16) Error!StartedServer {
     if (builtin.os.tag != .windows) {
-        const kind = probeLocalPosix(allocator) orelse return error.ServerUnavailable;
+        const kind = probeLocalPosix(allocator) orelse {
+            preview_diagnostics.debug("html-server", &.{
+                .{ .key = "stage", .value = "probe-failed" },
+                .{ .key = "launch", .value = "local" },
+                .{ .key = "root", .value = root },
+            });
+            return error.ServerUnavailable;
+        };
         var child = try spawnLocal(allocator, root, kind, port);
         if (waitForLocalPortReady(allocator, port, &child)) return .{ .child = child, .kind = kind };
         stopChild(&child);
@@ -258,7 +327,14 @@ fn spawnReadyLocal(allocator: std.mem.Allocator, root: []const u8, port: u16) Er
 }
 
 fn spawnReadyWsl(allocator: std.mem.Allocator, root: []const u8, port: u16) Error!StartedServer {
-    const kind = probeWsl(allocator) orelse return error.ServerUnavailable;
+    const kind = probeWsl(allocator) orelse {
+        preview_diagnostics.debug("html-server", &.{
+            .{ .key = "stage", .value = "probe-failed" },
+            .{ .key = "launch", .value = "wsl" },
+            .{ .key = "root", .value = root },
+        });
+        return error.ServerUnavailable;
+    };
     var child = try spawnWsl(allocator, root, kind, port);
     if (waitForLocalPortReady(allocator, port, &child)) return .{ .child = child, .kind = kind };
     stopChild(&child);
@@ -267,7 +343,16 @@ fn spawnReadyWsl(allocator: std.mem.Allocator, root: []const u8, port: u16) Erro
 
 fn spawnReadySsh(allocator: std.mem.Allocator, surface: *Surface, root: []const u8, port: u16) Error!StartedServer {
     const conn = surface.ssh_connection orelse return error.ServerUnavailable;
-    const kind = probeSsh(allocator, &conn) orelse return error.ServerUnavailable;
+    const kind = probeSsh(allocator, &conn) orelse {
+        preview_diagnostics.debug("html-server", &.{
+            .{ .key = "stage", .value = "probe-failed" },
+            .{ .key = "launch", .value = "ssh" },
+            .{ .key = "root", .value = root },
+            .{ .key = "host", .value = conn.host() },
+            .{ .key = "port", .value = conn.port() },
+        });
+        return error.ServerUnavailable;
+    };
     var child = try spawnSsh(allocator, &conn, root, kind, port);
     if (waitForRemotePortReady(allocator, &conn, kind, port, &child)) return .{ .child = child, .kind = kind };
     stopChild(&child);

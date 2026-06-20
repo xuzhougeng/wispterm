@@ -6,6 +6,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const markdown_preview = @import("markdown_preview.zig");
 const preview_source = @import("input/preview_source.zig");
+const preview_diagnostics = @import("preview_diagnostics.zig");
 const pdf_preview = @import("pdf_preview.zig");
 const pdf_render = @import("platform/pdf_render.zig");
 const gpu = @import("renderer/gpu/gpu.zig");
@@ -33,6 +34,7 @@ const IMAGE_ZOOM_STEP: f32 = 1.2;
 // single event — a big precise delta can no longer jump straight to the clamp.
 const IMAGE_ZOOM_WHEEL_REF_UNITS: f32 = 120.0;
 const IMAGE_ZOOM_WHEEL_PER_EVENT_MAX: f32 = 1.25;
+threadlocal var g_usize_field_buf: [32]u8 = undefined;
 
 const PreviewJob = struct {
     request_id: u64 = 0,
@@ -273,10 +275,47 @@ fn jobThread(job: *PreviewJob) void {
         return;
     }
     switch (job.read_fn(std.heap.page_allocator, job.source_kind, job.kind, job.path_buf[0..job.path_len])) {
-        .ok => |s| { job.source = s; job.status = .ready; },
-        .ok_truncated => |s| { job.source = s; job.status = .ready; job.truncated = true; },
-        .too_large => job.status = .too_large,
-        .failed => job.status = .failed,
+        .ok => |s| {
+            preview_diagnostics.debug("preview-read", &.{
+                .{ .key = "stage", .value = "ok" },
+                .{ .key = "kind", .value = @tagName(job.kind) },
+                .{ .key = "source", .value = previewSourceKindName(job.source_kind) },
+                .{ .key = "path", .value = job.path_buf[0..job.path_len] },
+                .{ .key = "bytes", .value = usizeField(s.len) },
+            });
+            job.source = s;
+            job.status = .ready;
+        },
+        .ok_truncated => |s| {
+            preview_diagnostics.debug("preview-read", &.{
+                .{ .key = "stage", .value = "ok-truncated" },
+                .{ .key = "kind", .value = @tagName(job.kind) },
+                .{ .key = "source", .value = previewSourceKindName(job.source_kind) },
+                .{ .key = "path", .value = job.path_buf[0..job.path_len] },
+                .{ .key = "bytes", .value = usizeField(s.len) },
+            });
+            job.source = s;
+            job.status = .ready;
+            job.truncated = true;
+        },
+        .too_large => {
+            preview_diagnostics.debug("preview-read", &.{
+                .{ .key = "stage", .value = "too-large" },
+                .{ .key = "kind", .value = @tagName(job.kind) },
+                .{ .key = "source", .value = previewSourceKindName(job.source_kind) },
+                .{ .key = "path", .value = job.path_buf[0..job.path_len] },
+            });
+            job.status = .too_large;
+        },
+        .failed => {
+            preview_diagnostics.debug("preview-read", &.{
+                .{ .key = "stage", .value = "failed" },
+                .{ .key = "kind", .value = @tagName(job.kind) },
+                .{ .key = "source", .value = previewSourceKindName(job.source_kind) },
+                .{ .key = "path", .value = job.path_buf[0..job.path_len] },
+            });
+            job.status = .failed;
+        },
     }
     job.done.store(true, .release);
 }
@@ -312,6 +351,18 @@ fn pdfJobThread(job: *PreviewJob) void {
     job.pdf_out_data = data;
     job.pdf_page_count = rendered.page_count;
     job.status = .ready;
+}
+
+fn previewSourceKindName(kind: PreviewSourceKind) []const u8 {
+    return switch (kind) {
+        .local => "local",
+        .wsl => "wsl",
+        .remote => "ssh",
+    };
+}
+
+fn usizeField(value: usize) []const u8 {
+    return std.fmt.bufPrint(&g_usize_field_buf, "{d}", .{value}) catch "";
 }
 
 fn pdfFailMessage(err: pdf_render.RenderError) []const u8 {
