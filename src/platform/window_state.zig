@@ -52,6 +52,12 @@ fn savePersisted(allocator: std.mem.Allocator, state: codec.PersistedState) void
     defer allocator.free(path);
     var buf: [384]u8 = undefined;
     const content = codec.format(&buf, state) catch return;
+    // Create the config directory first: on a first-ever launch it does not
+    // exist yet (Config.ensureConfigExists only runs later, in the window
+    // loop), and the bring-up crash fuse writes its marker through here before
+    // then — without this, createFile fails and the marker is silently lost,
+    // so the fuse never engages and the app crashes again (issue #259).
+    if (std.fs.path.dirname(path)) |dir| std.fs.cwd().makePath(dir) catch {};
     if (std.fs.cwd().createFile(path, .{})) |file| {
         defer file.close();
         file.writeAll(content) catch {};
@@ -195,4 +201,29 @@ pub fn blockD3dBringup(allocator: std.mem.Allocator, version: []const u8) void {
     var buf: [dxgi_core.bringup_marker_max_len]u8 = undefined;
     const marker = dxgi_core.bringupBlockedMarker(&buf, version) catch return;
     recordD3dBringup(allocator, marker);
+}
+
+test "savePersisted creates the config directory on a fresh profile" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Point the config dir at a not-yet-created nested subdirectory, mirroring
+    // a first-ever launch where %APPDATA%\wispterm has never existed. The
+    // bring-up crash fuse writes its marker here *before* the window loop runs
+    // ensureConfigExists, so savePersisted must create the directory itself or
+    // the marker is silently lost and the fuse never engages (issue #259).
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const config_dir = try std.fs.path.join(allocator, &.{ base, "missing", "wispterm" });
+    defer allocator.free(config_dir);
+
+    platform_dirs.setTestConfigDirForCurrentThread(config_dir);
+    defer platform_dirs.clearTestConfigDirForCurrentThread();
+
+    recordD3dBringup(allocator, "probing:9.9.9");
+
+    var buf: [codec.bringup_max_len]u8 = undefined;
+    try std.testing.expectEqualStrings("probing:9.9.9", d3dBringup(allocator, &buf));
 }
