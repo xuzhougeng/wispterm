@@ -7,6 +7,7 @@ const pdf_preview = @import("../pdf_preview.zig");
 const text_wrap = @import("../text_wrap.zig");
 const ui_perf = @import("../ui_perf.zig");
 const PreviewPane = @import("../preview_pane.zig");
+const preview_diagnostics = @import("../preview_diagnostics.zig");
 const preview_close_button = @import("../input/preview_close_button.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
@@ -749,13 +750,33 @@ fn ensureImageTexture(pane: *PreviewPane) bool {
     pane.image_failed = true;
 
     const source = pane.sourceText();
-    if (source.len == 0 or source.len > std.math.maxInt(c_int)) return false;
+    if (source.len == 0 or source.len > std.math.maxInt(c_int)) {
+        var bytes_buf: [32]u8 = undefined;
+        const bytes_s = std.fmt.bufPrint(&bytes_buf, "{d}", .{source.len}) catch "";
+        preview_diagnostics.debug("image-decode", &.{
+            .{ .key = "stage", .value = "invalid-source-size" },
+            .{ .key = "kind", .value = @tagName(pane.kind) },
+            .{ .key = "path", .value = pane.path() },
+            .{ .key = "bytes", .value = bytes_s },
+        });
+        return false;
+    }
 
     var w: c_int = 0;
     var h: c_int = 0;
     var n: c_int = 0;
     const data = c.stbi_load_from_memory(@ptrCast(source.ptr), @intCast(source.len), &w, &h, &n, 4);
-    if (data == null or w <= 0 or h <= 0) return false;
+    if (data == null or w <= 0 or h <= 0) {
+        var bytes_buf: [32]u8 = undefined;
+        const bytes_s = std.fmt.bufPrint(&bytes_buf, "{d}", .{source.len}) catch "";
+        preview_diagnostics.debug("image-decode", &.{
+            .{ .key = "stage", .value = "decode-failed" },
+            .{ .key = "kind", .value = @tagName(pane.kind) },
+            .{ .key = "path", .value = pane.path() },
+            .{ .key = "bytes", .value = bytes_s },
+        });
+        return false;
+    }
     defer c.stbi_image_free(data);
 
     const t = gpu.Texture.create();
@@ -767,6 +788,20 @@ fn ensureImageTexture(pane: *PreviewPane) bool {
     pane.image_width = w;
     pane.image_height = h;
     pane.image_failed = false;
+    var width_buf: [32]u8 = undefined;
+    var height_buf: [32]u8 = undefined;
+    var bytes_buf: [32]u8 = undefined;
+    const width_s = std.fmt.bufPrint(&width_buf, "{d}", .{w}) catch "";
+    const height_s = std.fmt.bufPrint(&height_buf, "{d}", .{h}) catch "";
+    const bytes_s = std.fmt.bufPrint(&bytes_buf, "{d}", .{source.len}) catch "";
+    preview_diagnostics.debug("image-decode", &.{
+        .{ .key = "stage", .value = "ready" },
+        .{ .key = "kind", .value = @tagName(pane.kind) },
+        .{ .key = "path", .value = pane.path() },
+        .{ .key = "bytes", .value = bytes_s },
+        .{ .key = "width", .value = width_s },
+        .{ .key = "height", .value = height_s },
+    });
     return true;
 }
 

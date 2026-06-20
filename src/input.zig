@@ -54,6 +54,7 @@ const clipboard = @import("input/clipboard.zig");
 const click_tracker = @import("input/click_tracker.zig");
 const hit_test = @import("input/hit_test.zig");
 const preview_source = @import("input/preview_source.zig");
+const preview_diagnostics = @import("preview_diagnostics.zig");
 const ls_path_context = @import("input/ls_path_context.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
 const underline_span = @import("input/underline_span.zig");
@@ -3562,7 +3563,17 @@ fn openUrl(surface: *Surface, url: []const u8) bool {
     defer allocator.free(target);
 
     const handle = AppWindow.currentNativeHandle();
-    switch (link_open.destinationForUrlClick(browser_panel.embeddedBrowserAvailable(), g_url_open_mode)) {
+    const embedded_available = browser_panel.embeddedBrowserAvailable();
+    const destination = link_open.destinationForUrlClick(embedded_available, g_url_open_mode);
+    preview_diagnostics.debug("url", &.{
+        .{ .key = "stage", .value = "open" },
+        .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+        .{ .key = "mode", .value = @tagName(g_url_open_mode) },
+        .{ .key = "embedded_available", .value = if (embedded_available) "true" else "false" },
+        .{ .key = "destination", .value = @tagName(destination) },
+        .{ .key = "target", .value = target },
+    });
+    switch (destination) {
         .embedded_browser => {
             if (!browser_panel.openForSurface(allocator, handle, target, surface)) return false;
             if (AppWindow.g_window) |win| {
@@ -3575,6 +3586,11 @@ fn openUrl(surface: *Surface, url: []const u8) bool {
         .system_browser => {
             const external_target = browser_panel.externalUrlForSurface(allocator, target, surface) orelse return false;
             defer allocator.free(external_target);
+            preview_diagnostics.debug("url", &.{
+                .{ .key = "stage", .value = "system-browser" },
+                .{ .key = "target", .value = target },
+                .{ .key = "external", .value = external_target },
+            });
             return platform_open_url.open(allocator, .{ .url = external_target });
         },
     }
@@ -3599,10 +3615,21 @@ fn openHtmlPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
 
     var ls_prefix_buf: [256]u8 = undefined;
     const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
+    preview_diagnostics.debug("html", &.{
+        .{ .key = "stage", .value = "click" },
+        .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+        .{ .key = "path", .value = path },
+        .{ .key = "ls_prefix", .value = ls_prefix orelse "" },
+    });
 
     switch (html_server.openForSurface(allocator, surface, path, ls_prefix)) {
         .url => |url| {
             defer allocator.free(url);
+            preview_diagnostics.debug("html", &.{
+                .{ .key = "stage", .value = "open-browser" },
+                .{ .key = "path", .value = path },
+                .{ .key = "url", .value = url },
+            });
             const parent = AppWindow.currentNativeHandle();
             browser_panel.open(parent, url);
             if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
@@ -3611,6 +3638,11 @@ fn openHtmlPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
             return true;
         },
         .err => |err| {
+            preview_diagnostics.debug("html", &.{
+                .{ .key = "stage", .value = "failed" },
+                .{ .key = "path", .value = path },
+                .{ .key = "err", .value = @errorName(err) },
+            });
             file_explorer.setTransferStatus(.failed, switch (err) {
                 error.CwdUnavailable => "HTML cwd unknown",
                 error.ServerUnavailable => "Install Python 3 in this environment",
@@ -3786,16 +3818,43 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bo
     const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
 
     if (markdown_preview.detectKind(path)) |kind| {
-        const resolved_path = resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch {
+        preview_diagnostics.debug("preview", &.{
+            .{ .key = "stage", .value = "click" },
+            .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+            .{ .key = "kind", .value = @tagName(kind) },
+            .{ .key = "path", .value = path },
+            .{ .key = "ls_prefix", .value = ls_prefix orelse "" },
+        });
+        const resolved_path = resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch |err| {
+            preview_diagnostics.debug("preview", &.{
+                .{ .key = "stage", .value = "resolve-failed" },
+                .{ .key = "kind", .value = @tagName(kind) },
+                .{ .key = "path", .value = path },
+                .{ .key = "err", .value = @errorName(err) },
+            });
             file_explorer.setTransferStatus(.failed, "Preview failed");
             return true;
         };
         defer allocator.free(resolved_path);
 
         const source_kind = terminalPreviewSourceKind(surface) orelse {
+            preview_diagnostics.debug("preview", &.{
+                .{ .key = "stage", .value = "source-kind-failed" },
+                .{ .key = "kind", .value = @tagName(kind) },
+                .{ .key = "path", .value = path },
+                .{ .key = "resolved", .value = resolved_path },
+            });
             file_explorer.setTransferStatus(.failed, "Preview failed");
             return true;
         };
+        preview_diagnostics.debug("preview", &.{
+            .{ .key = "stage", .value = "open-pane" },
+            .{ .key = "kind", .value = @tagName(kind) },
+            .{ .key = "path", .value = path },
+            .{ .key = "resolved", .value = resolved_path },
+            .{ .key = "source", .value = previewSourceKindName(source_kind) },
+            .{ .key = "new_pane", .value = if (shift) "true" else "false" },
+        });
 
         if (shift) {
             return openPreviewNew(kind, basenameForPreview(path), resolved_path, source_kind, false);
@@ -3810,6 +3869,14 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bo
     const preview_surface = AppWindow.splitFocusedReturningSurface(.right) orelse return false;
     writeTextToSurfacePty(preview_surface, command);
     return true;
+}
+
+fn previewSourceKindName(kind: markdown_preview_panel.PreviewSourceKind) []const u8 {
+    return switch (kind) {
+        .local => "local",
+        .wsl => "wsl",
+        .remote => "ssh",
+    };
 }
 
 fn buildRemotePathKindCommand(buf: []u8, remote_path: []const u8) ?[]const u8 {

@@ -121,6 +121,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\plugins\skills\wispterm-di
 —— 比如打开微信连接时崩溃，或 Ctrl+点击远程文件时卡死 —— 下载它、复现问题，然后把
 `wispterm-debug.log`（以及任何 `crash-*.txt`）附在反馈里。
 
+如果问题是 Ctrl+点击预览或浏览器面板失败，调试日志里还会出现以 `preview-diagnostic`
+开头、可以直接复制的单行记录。复现后，如果完整日志太大，可以只把附近这些
+`preview-diagnostic` 行贴到 issue 里。它们覆盖预览路径解析、异步文件读取、图片解码、
+HTML server 启动、SSH 浏览器隧道、URL 路由和内嵌浏览器面板。
+
 ## 为什么远程在手机上镜像本地终端尺寸？
 
 WispTerm Remote 镜像本地窗口，因为桌面应用是终端状态的唯一真相来源 —— 本地 PTY、VT 状态、

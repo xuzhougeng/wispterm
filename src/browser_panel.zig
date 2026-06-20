@@ -5,6 +5,7 @@ const Surface = @import("Surface.zig");
 const platform_webview = @import("platform/webview.zig");
 const ssh_tunnel = @import("ssh_tunnel.zig");
 const html_server = @import("html_server.zig");
+const preview_diagnostics = @import("preview_diagnostics.zig");
 const window_backend = @import("platform/window_backend.zig");
 const ui_perf = @import("ui_perf.zig");
 const tab = @import("appwindow/tab.zig");
@@ -159,16 +160,28 @@ pub fn embeddedBrowserAvailable() bool {
     if (!g_availability_checked) {
         g_embedded_browser_available = platform_webview.loaderAvailable();
         g_availability_checked = true;
+        preview_diagnostics.debug("browser-panel", &.{
+            .{ .key = "stage", .value = "loader-check" },
+            .{ .key = "available", .value = if (g_embedded_browser_available) "true" else "false" },
+        });
     }
     return g_embedded_browser_available;
 }
 
 pub fn open(parent: ?window_backend.NativeHandle, url: []const u8) void {
     if (!embeddedBrowserAvailable()) {
+        preview_diagnostics.debug("browser-panel", &.{
+            .{ .key = "stage", .value = "open-unavailable" },
+            .{ .key = "url", .value = url },
+        });
         close();
         return;
     }
 
+    preview_diagnostics.debug("browser-panel", &.{
+        .{ .key = "stage", .value = "open" },
+        .{ .key = "url", .value = url },
+    });
     setUrl(url);
     g_visible = true;
     g_owner_tab = active_tab_state.g_active_tab;
@@ -188,12 +201,29 @@ pub fn openForSurface(allocator: std.mem.Allocator, parent: ?window_backend.Nati
     defer perf.end();
 
     if (!embeddedBrowserAvailable()) {
+        preview_diagnostics.debug("browser-panel", &.{
+            .{ .key = "stage", .value = "open-for-surface-unavailable" },
+            .{ .key = "url", .value = url },
+        });
         close();
         return false;
     }
 
-    const target = externalUrlForSurface(allocator, url, surface) orelse return false;
+    const target = externalUrlForSurface(allocator, url, surface) orelse {
+        preview_diagnostics.debug("browser-panel", &.{
+            .{ .key = "stage", .value = "external-url-failed" },
+            .{ .key = "launch", .value = if (surface) |s| @tagName(s.launch_kind) else "none" },
+            .{ .key = "url", .value = url },
+        });
+        return false;
+    };
     defer allocator.free(target);
+    preview_diagnostics.debug("browser-panel", &.{
+        .{ .key = "stage", .value = "open-for-surface" },
+        .{ .key = "launch", .value = if (surface) |s| @tagName(s.launch_kind) else "none" },
+        .{ .key = "url", .value = url },
+        .{ .key = "target", .value = target },
+    });
 
     open(parent, target);
     return true;
@@ -293,10 +323,25 @@ pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_heigh
         if (g_browser) |browser| {
             g_last_error = platform_webview.lastError(browser);
             if (platform_webview.failed(g_last_error)) {
+                var err_buf: [32]u8 = undefined;
+                const err_s = std.fmt.bufPrint(&err_buf, "{d}", .{g_last_error}) catch "";
+                preview_diagnostics.debug("browser-panel", &.{
+                    .{ .key = "stage", .value = "create-failed" },
+                    .{ .key = "url", .value = currentUrl() },
+                    .{ .key = "last_error", .value = err_s },
+                });
                 close();
                 return;
             }
+            preview_diagnostics.debug("browser-panel", &.{
+                .{ .key = "stage", .value = "created" },
+                .{ .key = "url", .value = currentUrl() },
+            });
         } else {
+            preview_diagnostics.debug("browser-panel", &.{
+                .{ .key = "stage", .value = "create-null" },
+                .{ .key = "url", .value = currentUrl() },
+            });
             close();
             return;
         }
@@ -306,6 +351,15 @@ pub fn sync(parent: window_backend.NativeHandle, window_width: i32, window_heigh
         platform_webview.setBounds(browser, toWebviewBounds(webview_bounds));
         platform_webview.setVisible(browser, true);
         g_last_error = platform_webview.lastError(browser);
+        if (platform_webview.failed(g_last_error)) {
+            var err_buf: [32]u8 = undefined;
+            const err_s = std.fmt.bufPrint(&err_buf, "{d}", .{g_last_error}) catch "";
+            preview_diagnostics.debug("browser-panel", &.{
+                .{ .key = "stage", .value = "sync-error" },
+                .{ .key = "url", .value = currentUrl() },
+                .{ .key = "last_error", .value = err_s },
+            });
+        }
     }
 }
 
@@ -427,9 +481,22 @@ fn replaceSelectedUrlBeforeEdit() void {
 
 fn navigateCurrentUrl(browser: *platform_webview.Browser) void {
     var url_buf: platform_webview.UrlBuffer = undefined;
-    const url = platform_webview.urlFromUtf8(currentUrl(), &url_buf) orelse return;
+    const url = platform_webview.urlFromUtf8(currentUrl(), &url_buf) orelse {
+        preview_diagnostics.debug("browser-panel", &.{
+            .{ .key = "stage", .value = "url-encode-failed" },
+            .{ .key = "url", .value = currentUrl() },
+        });
+        return;
+    };
     platform_webview.navigate(browser, url);
     g_last_error = platform_webview.lastError(browser);
+    var err_buf: [32]u8 = undefined;
+    const err_s = std.fmt.bufPrint(&err_buf, "{d}", .{g_last_error}) catch "";
+    preview_diagnostics.debug("browser-panel", &.{
+        .{ .key = "stage", .value = "navigate" },
+        .{ .key = "url", .value = currentUrl() },
+        .{ .key = "last_error", .value = err_s },
+    });
 }
 
 pub fn boundsForWindow(window_width: i32, window_height: i32, titlebar_height: f32, left_offset: f32, right_offset: f32) Bounds {
