@@ -713,6 +713,14 @@ fn builtinToolNameReserved(name: []const u8) bool {
     return false;
 }
 
+fn dynamicToolNameSeenBefore(tools: []const DynamicToolSpec, index: usize) bool {
+    const name = tools[index].name;
+    for (tools[0..index]) |previous| {
+        if (std.mem.eql(u8, previous.name, name)) return true;
+    }
+    return false;
+}
+
 // Single source of truth for the agent tool set. Each tool's name, description,
 // and JSON Schema `properties` object is defined exactly once here and yielded to
 // a per-format emitter (OpenAI chat-completions, OpenAI responses, Anthropic), so
@@ -765,8 +773,9 @@ fn forEachToolSpec(
         try Filtered.emitTool(ctx, opts, "memory_delete", "Delete a memory that is wrong or obsolete.", "{\"name\":{\"type\":\"string\",\"description\":\"The memory name (slug) to delete.\"},\"tier\":{\"type\":\"string\",\"description\":\"Optional: global or project. Omit to search both.\"}}");
     }
     if (opts.toolset == .full) {
-        for (opts.dynamic_tools) |tool| {
+        for (opts.dynamic_tools, 0..) |tool, i| {
             if (builtinToolNameReserved(tool.name)) continue;
+            if (dynamicToolNameSeenBefore(opts.dynamic_tools, i)) continue;
             try Filtered.emitTool(
                 ctx,
                 opts,
@@ -1667,6 +1676,31 @@ test "dynamic binary tools skip built-in tool name collisions" {
 
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, json, "\"name\":\"terminal_list\""));
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_docx_review\"") != null);
+}
+
+test "dynamic binary tools skip duplicate dynamic tool names" {
+    const a = std.testing.allocator;
+    const tools = [_]DynamicToolSpec{
+        .{ .name = "agent_docx_review", .description = "First DOCX review tool." },
+        .{ .name = "agent_docx_review", .description = "Second DOCX review tool." },
+        .{ .name = "agent_pdf_review", .description = "PDF review tool." },
+    };
+    const params = RequestParams{
+        .model = "m",
+        .system_prompt = "s",
+        .protocol = .chat_completions,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+        .dynamic_tools = tools[0..],
+    };
+    const json = try buildRequestJson(a, params, &.{}, true);
+    defer a.free(json);
+
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, json, "\"name\":\"agent_docx_review\""));
+    try std.testing.expect(std.mem.indexOf(u8, json, "First DOCX review tool.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Second DOCX review tool.") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_pdf_review\"") != null);
 }
 
 test "subagent toolset excludes binary tools" {
