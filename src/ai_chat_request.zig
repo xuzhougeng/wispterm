@@ -767,6 +767,7 @@ fn toolAsk(ctx: *anyopaque, question: []const u8, options: []const ai_chat_types
 fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
     var settings = ai_chat.currentAgentSettings();
     settings.dynamic_tools = request.dynamic_tools;
+    settings.dynamic_binary_tools = request.dynamic_binary_tools;
     // Per-conversation override beats the global default.
     if (request.session.workingDirOverride()) |override| settings.working_dir = override;
     return .{
@@ -1181,6 +1182,36 @@ test "subagent tool call requires a task argument" {
     const out = try executeToolCall(env.request, call);
     defer a.free(out);
     try std.testing.expectEqualStrings("Missing task", out);
+}
+
+test "request-owned dynamic binary tool dispatches through executeToolCall" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    const saved_settings = ai_chat.currentAgentSettings();
+    defer ai_chat.configureAgent(saved_settings);
+    ai_chat.configureAgent(.{ .enabled = true, .permission = .full });
+
+    const env = try testSessionAndRequest(a);
+    defer env.session.deinit();
+    defer env.request.deinit();
+    const runtime = try a.alloc(ai_chat_types.DynamicBinaryTool, 1);
+    runtime[0] = .{
+        .function_name = try a.dupe(u8, "fake_tool"),
+        .executable_abs = try a.dupe(u8, "/bin/echo"),
+        .description = try a.dupe(u8, "Echo test"),
+    };
+    env.request.dynamic_binary_tools = runtime;
+
+    const out = try executeToolCall(env.request, .{
+        .id = @constCast("1"),
+        .name = @constCast("fake_tool"),
+        .arguments = @constCast("{\"args\":[\"hello\",\"runtime\"]}"),
+    });
+    defer a.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Unknown tool") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "hello runtime") != null);
 }
 
 test "applySubagentUsage merges into the loop total" {

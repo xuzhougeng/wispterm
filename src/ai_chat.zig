@@ -171,6 +171,7 @@ pub const ChatRequest = struct {
     agent_enabled: bool,
     memory_enabled: bool = false,
     dynamic_tools: []const ai_chat_protocol.DynamicToolSpec = &.{},
+    dynamic_binary_tools: []const ai_chat_types.DynamicBinaryTool = &.{},
     copilot: bool = false,
     tool_host: ?ToolHost,
     tool_snapshot: ?ToolSnapshot,
@@ -194,6 +195,7 @@ pub const ChatRequest = struct {
         for (self.messages) |msg| msg.deinit(self.allocator);
         self.allocator.free(self.messages);
         freeOwnedDynamicToolSpecs(self.allocator, self.dynamic_tools);
+        freeOwnedDynamicBinaryTools(self.allocator, self.dynamic_binary_tools);
         if (self.tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
         if (self.weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
         if (self.subagent_profile) |profile| profile.deinit(self.allocator);
@@ -371,6 +373,8 @@ var g_markdown_export_trigger: ?*const fn (MarkdownExportMode) void = null;
 var g_model_switch_trigger: ?*const fn (*Session) void = null;
 threadlocal var g_dynamic_tool_specs: []ai_chat_protocol.DynamicToolSpec = &.{};
 threadlocal var g_dynamic_tool_specs_owned: bool = false;
+threadlocal var g_dynamic_binary_tools: []ai_chat_types.DynamicBinaryTool = &.{};
+threadlocal var g_dynamic_binary_tools_owned: bool = false;
 
 /// Resolved credentials for the `ai-subagent-profile` config key. Owned
 /// strings; freed by ChatRequest.deinit.
@@ -433,6 +437,11 @@ pub fn setDynamicToolSpecsForTest(specs: []ai_chat_protocol.DynamicToolSpec) voi
     g_dynamic_tool_specs_owned = false;
 }
 
+pub fn setDynamicBinaryToolsForTest(tools: []ai_chat_types.DynamicBinaryTool) void {
+    g_dynamic_binary_tools = tools;
+    g_dynamic_binary_tools_owned = false;
+}
+
 fn freeDynamicToolSpecsSlice(allocator: std.mem.Allocator, specs: []ai_chat_protocol.DynamicToolSpec) void {
     freeOwnedDynamicToolSpecs(allocator, specs);
 }
@@ -444,6 +453,16 @@ fn freeOwnedDynamicToolSpecs(allocator: std.mem.Allocator, specs: []const ai_cha
         allocator.free(spec.description);
     }
     allocator.free(specs);
+}
+
+fn freeOwnedDynamicBinaryTools(allocator: std.mem.Allocator, tools: []const ai_chat_types.DynamicBinaryTool) void {
+    if (tools.len == 0) return;
+    for (tools) |tool| {
+        allocator.free(tool.function_name);
+        allocator.free(tool.executable_abs);
+        allocator.free(tool.description);
+    }
+    allocator.free(tools);
 }
 
 fn cloneDynamicToolSpecs(allocator: std.mem.Allocator, specs: []const ai_chat_protocol.DynamicToolSpec) ![]ai_chat_protocol.DynamicToolSpec {
@@ -467,6 +486,34 @@ fn cloneDynamicToolSpecs(allocator: std.mem.Allocator, specs: []const ai_chat_pr
     return out;
 }
 
+fn cloneDynamicBinaryTools(allocator: std.mem.Allocator, tools: []const ai_chat_types.DynamicBinaryTool) ![]ai_chat_types.DynamicBinaryTool {
+    if (tools.len == 0) return &.{};
+    const out = try allocator.alloc(ai_chat_types.DynamicBinaryTool, tools.len);
+    var written: usize = 0;
+    errdefer {
+        for (out[0..written]) |tool| {
+            allocator.free(tool.function_name);
+            allocator.free(tool.executable_abs);
+            allocator.free(tool.description);
+        }
+        allocator.free(out);
+    }
+    for (tools) |tool| {
+        const function_name = try allocator.dupe(u8, tool.function_name);
+        errdefer allocator.free(function_name);
+        const executable_abs = try allocator.dupe(u8, tool.executable_abs);
+        errdefer allocator.free(executable_abs);
+        const description = try allocator.dupe(u8, tool.description);
+        out[written] = .{
+            .function_name = function_name,
+            .executable_abs = executable_abs,
+            .description = description,
+        };
+        written += 1;
+    }
+    return out;
+}
+
 fn freeDynamicToolSpecs(allocator: std.mem.Allocator) void {
     if (!g_dynamic_tool_specs_owned) return;
     freeDynamicToolSpecsSlice(allocator, g_dynamic_tool_specs);
@@ -474,39 +521,45 @@ fn freeDynamicToolSpecs(allocator: std.mem.Allocator) void {
     g_dynamic_tool_specs_owned = false;
 }
 
-fn loadDynamicToolSpecs(allocator: std.mem.Allocator) ![]ai_chat_protocol.DynamicToolSpec {
+fn freeDynamicBinaryTools(allocator: std.mem.Allocator) void {
+    if (!g_dynamic_binary_tools_owned) return;
+    freeOwnedDynamicBinaryTools(allocator, g_dynamic_binary_tools);
+    g_dynamic_binary_tools = &.{};
+    g_dynamic_binary_tools_owned = false;
+}
+
+const DynamicToolSnapshots = struct {
+    specs: []ai_chat_protocol.DynamicToolSpec,
+    runtime: []ai_chat_types.DynamicBinaryTool,
+};
+
+fn loadDynamicToolSnapshots(allocator: std.mem.Allocator) !DynamicToolSnapshots {
     const tools_root = try platform_dirs.toolsDir(allocator);
     defer allocator.free(tools_root);
 
     const installed = try tool_registry.scanInstalledTools(allocator, tools_root);
     defer tool_registry.freeInstalledTools(allocator, installed);
 
-    var list: std.ArrayListUnmanaged(ai_chat_protocol.DynamicToolSpec) = .empty;
-    errdefer {
-        for (list.items) |spec| {
-            allocator.free(spec.name);
-            allocator.free(spec.description);
-        }
-        list.deinit(allocator);
-    }
-
-    for (installed) |tool| {
-        if (!tool.enabled) continue;
-        const name = try allocator.dupe(u8, tool.function_name);
-        errdefer allocator.free(name);
-        const description = try allocator.dupe(u8, tool.description);
-        errdefer allocator.free(description);
-        try list.append(allocator, .{ .name = name, .description = description });
-    }
-
-    if (list.items.len == 0) return &.{};
-    return list.toOwnedSlice(allocator);
+    const specs = try tool_registry.dynamicSpecsFromInstalled(allocator, installed);
+    errdefer tool_registry.freeDynamicSpecs(allocator, specs);
+    const runtime = try tool_registry.dynamicRuntimeFromInstalled(allocator, installed);
+    return .{ .specs = specs, .runtime = runtime };
 }
 
 pub fn reloadDynamicToolSpecs(allocator: std.mem.Allocator) void {
     freeDynamicToolSpecs(allocator);
-    g_dynamic_tool_specs = loadDynamicToolSpecs(allocator) catch &.{};
+    freeDynamicBinaryTools(allocator);
+    const snapshots = loadDynamicToolSnapshots(allocator) catch {
+        g_dynamic_tool_specs = &.{};
+        g_dynamic_tool_specs_owned = false;
+        g_dynamic_binary_tools = &.{};
+        g_dynamic_binary_tools_owned = false;
+        return;
+    };
+    g_dynamic_tool_specs = snapshots.specs;
     g_dynamic_tool_specs_owned = g_dynamic_tool_specs.len != 0;
+    g_dynamic_binary_tools = snapshots.runtime;
+    g_dynamic_binary_tools_owned = g_dynamic_binary_tools.len != 0;
 }
 
 pub fn configureAgent(settings: AgentSettings) void {
@@ -600,6 +653,7 @@ pub fn currentAgentSettings() AgentSettings {
     s.access_rules = g_access_rules;
     if (g_default_working_dir_len > 0) s.working_dir = g_default_working_dir_buf[0..g_default_working_dir_len];
     s.dynamic_tools = g_dynamic_tool_specs;
+    s.dynamic_binary_tools = g_dynamic_binary_tools;
     return s;
 }
 
@@ -3881,6 +3935,9 @@ pub const Session = struct {
         const dynamic_tools = try cloneDynamicToolSpecs(self.allocator, settings.dynamic_tools);
         var dynamic_tools_owned = true;
         errdefer if (dynamic_tools_owned) freeOwnedDynamicToolSpecs(self.allocator, dynamic_tools);
+        const dynamic_binary_tools = try cloneDynamicBinaryTools(self.allocator, settings.dynamic_binary_tools);
+        var dynamic_binary_tools_owned = true;
+        errdefer if (dynamic_binary_tools_owned) freeOwnedDynamicBinaryTools(self.allocator, dynamic_binary_tools);
 
         req.* = .{
             .allocator = self.allocator,
@@ -3898,6 +3955,7 @@ pub const Session = struct {
             .agent_enabled = agent_enabled,
             .memory_enabled = settings.memory_enabled,
             .dynamic_tools = dynamic_tools,
+            .dynamic_binary_tools = dynamic_binary_tools,
             .copilot = self.copilot,
             .tool_host = tool_host,
             .tool_snapshot = tool_snapshot,
@@ -3913,6 +3971,7 @@ pub const Session = struct {
         weixin_ctx = null;
         subagent_profile = null;
         dynamic_tools_owned = false;
+        dynamic_binary_tools_owned = false;
         if (self.copilot and self.bound_surface_id_len > 0) {
             // Inline the write-context seed directly on ChatRequest (the field
             // layout is identical to ToolContext; setWriteContext in
@@ -7562,6 +7621,61 @@ test "ai chat session request owns dynamic tool specs snapshot" {
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_docx_review\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_xlsx_review\"") == null);
+}
+
+test "ai chat session request owns dynamic binary runtime snapshot" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const saved_settings = currentAgentSettings();
+    const saved_dynamic_runtime = g_dynamic_binary_tools;
+    const saved_dynamic_runtime_owned = g_dynamic_binary_tools_owned;
+    defer {
+        configureAgent(saved_settings);
+        g_dynamic_binary_tools = saved_dynamic_runtime;
+        g_dynamic_binary_tools_owned = saved_dynamic_runtime_owned;
+    }
+
+    const function_name = try allocator.dupe(u8, "fake_tool");
+    defer allocator.free(function_name);
+    const executable_abs = try allocator.dupe(u8, "/bin/echo");
+    defer allocator.free(executable_abs);
+    const description = try allocator.dupe(u8, "Echo test");
+    defer allocator.free(description);
+    var runtime = [_]ai_chat_types.DynamicBinaryTool{.{
+        .function_name = function_name,
+        .executable_abs = executable_abs,
+        .description = description,
+    }};
+    setDynamicBinaryToolsForTest(runtime[0..]);
+    configureAgent(.{ .enabled = true, .permission = .full });
+
+    const session = try Session.init(
+        allocator,
+        "Test",
+        DEFAULT_BASE_URL,
+        "test-key",
+        DEFAULT_MODEL,
+        DEFAULT_SYSTEM_PROMPT,
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    session.mutex.lock();
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "hello") });
+    const request = try session.buildRequestLocked();
+    session.mutex.unlock();
+    defer request.deinit();
+
+    @memcpy(function_name, "gone_tool");
+    setDynamicBinaryToolsForTest(&.{});
+
+    try std.testing.expectEqual(@as(usize, 1), request.dynamic_binary_tools.len);
+    try std.testing.expectEqualStrings("fake_tool", request.dynamic_binary_tools[0].function_name);
+    try std.testing.expectEqualStrings("/bin/echo", request.dynamic_binary_tools[0].executable_abs);
 }
 
 const CopilotBoundSnapshotTestHost = struct {
