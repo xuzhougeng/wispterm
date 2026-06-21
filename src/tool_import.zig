@@ -5,6 +5,7 @@ const tool_registry = @import("tool_registry.zig");
 
 pub const PROBE_TIMEOUT_MS: u32 = 3000;
 pub const PROBE_OUTPUT_LIMIT: u32 = 64 * 1024;
+const PROBE_CAPTURE_MEMORY_LIMIT: usize = PROBE_OUTPUT_LIMIT * 4 + 64 * 1024;
 
 pub const DocSource = enum { skill_flag, sibling_skill, generated_from_help, ai_draft };
 
@@ -182,6 +183,9 @@ const PROBE_POLL_STEP_MS: i64 = 25;
 const PROBE_TERMINATE_WAIT_MS: u32 = 1000;
 
 fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+    const poll_storage = try allocator.alloc(u8, PROBE_CAPTURE_MEMORY_LIMIT);
+    defer allocator.free(poll_storage);
+
     var child = std.process.Child.init(argv, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
@@ -189,7 +193,8 @@ fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     child.create_no_window = true;
     child.spawn() catch return allocator.dupe(u8, "");
 
-    var poller = std.Io.poll(allocator, enum { stdout, stderr }, .{
+    var fixed_poll_allocator = std.heap.FixedBufferAllocator.init(poll_storage);
+    var poller = std.Io.poll(fixed_poll_allocator.allocator(), enum { stdout, stderr }, .{
         .stdout = child.stdout.?,
         .stderr = child.stderr.?,
     });
@@ -216,7 +221,11 @@ fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
         const remaining_ms = @max(@as(i64, 0), deadline - std.time.milliTimestamp());
         const wait_ms = @min(PROBE_POLL_STEP_MS, remaining_ms);
         _ = poller.pollTimeout(@as(u64, @intCast(wait_ms)) * std.time.ns_per_ms) catch |err| {
-            poll_error = err;
+            if (err == error.OutOfMemory) {
+                output_capped = true;
+            } else {
+                poll_error = err;
+            }
             break;
         };
 
@@ -231,7 +240,11 @@ fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
         while (!output_capped) {
             const before = poller.reader(.stdout).bufferedLen() + poller.reader(.stderr).bufferedLen();
             _ = poller.pollTimeout(0) catch |err| {
-                poll_error = err;
+                if (err == error.OutOfMemory) {
+                    output_capped = true;
+                } else {
+                    poll_error = err;
+                }
                 break;
             };
             const after = poller.reader(.stdout).bufferedLen() + poller.reader(.stderr).bufferedLen();
@@ -620,6 +633,12 @@ test "tool_import: runArgvProbe is bounded when child leaves inherited pipes ope
 
     try std.testing.expectEqualStrings("help text\n", output);
     try std.testing.expect(elapsed < 1000);
+}
+
+test "tool_import: probe poller must not use the caller allocator for stream buffers" {
+    const source = @embedFile("tool_import.zig");
+    const pattern = "std.Io." ++ "poll(allocator";
+    try std.testing.expect(std.mem.indexOf(u8, source, pattern) == null);
 }
 
 test "tool_import: probeBinary treats capped nonzero help output as empty" {
