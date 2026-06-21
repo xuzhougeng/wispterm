@@ -178,18 +178,8 @@ pub fn installToolPackage(
     return target;
 }
 
-const CaptureOutput = struct {
-    allocator: std.mem.Allocator,
-    file: std.fs.File,
-    max_bytes: usize,
-    data: []u8 = &.{},
-    failed: bool = false,
-
-    fn deinit(self: *CaptureOutput) void {
-        self.allocator.free(self.data);
-        self.data = &.{};
-    }
-};
+const PROBE_POLL_STEP_MS: i64 = 25;
+const PROBE_TERMINATE_WAIT_MS: u32 = 1000;
 
 fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     var child = std.process.Child.init(argv, allocator);
@@ -199,104 +189,163 @@ fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     child.create_no_window = true;
     child.spawn() catch return allocator.dupe(u8, "");
 
-    var stdout_capture = CaptureOutput{
-        .allocator = allocator,
-        .file = child.stdout.?,
-        .max_bytes = PROBE_OUTPUT_LIMIT,
-    };
-    errdefer stdout_capture.deinit();
-    var stderr_capture = CaptureOutput{
-        .allocator = allocator,
-        .file = child.stderr.?,
-        .max_bytes = PROBE_OUTPUT_LIMIT,
-    };
-    errdefer stderr_capture.deinit();
-
-    const stdout_thread = std.Thread.spawn(.{}, captureOutputThread, .{&stdout_capture}) catch |err| {
-        _ = child.kill() catch {};
-        return err;
-    };
-    const stderr_thread = std.Thread.spawn(.{}, captureOutputThread, .{&stderr_capture}) catch |err| {
-        _ = child.kill() catch {};
-        stdout_thread.join();
-        return err;
-    };
-
+    var poller = std.Io.poll(allocator, enum { stdout, stderr }, .{
+        .stdout = child.stdout.?,
+        .stderr = child.stderr.?,
+    });
     const deadline = std.time.milliTimestamp() + PROBE_TIMEOUT_MS;
     var timed_out = false;
+    var output_capped = false;
+    var child_done = false;
     var exit_code: i32 = -1;
+    var poll_error: ?anyerror = null;
+
     while (true) {
-        switch (platform_process.childExited(child.id, 25)) {
-            .running => {},
-            .exited => |code| {
-                if (builtin.os.tag != .windows) child.term = .{ .Exited = @intCast(code) };
-                exit_code = @intCast(code);
-                break;
-            },
-            .gone => {
-                if (builtin.os.tag != .windows) child.term = .{ .Unknown = 0 };
-                break;
-            },
+        if (poller.reader(.stdout).bufferedLen() >= PROBE_OUTPUT_LIMIT or
+            poller.reader(.stderr).bufferedLen() >= PROBE_OUTPUT_LIMIT)
+        {
+            output_capped = true;
+            break;
         }
+
         if (std.time.milliTimestamp() >= deadline) {
             timed_out = true;
-            _ = child.kill() catch {};
+            break;
+        }
+
+        const remaining_ms = @max(@as(i64, 0), deadline - std.time.milliTimestamp());
+        const wait_ms = @min(PROBE_POLL_STEP_MS, remaining_ms);
+        _ = poller.pollTimeout(@as(u64, @intCast(wait_ms)) * std.time.ns_per_ms) catch |err| {
+            poll_error = err;
+            break;
+        };
+
+        if (pollChildExited(&child, 0)) |code| {
+            child_done = true;
+            exit_code = code;
             break;
         }
     }
 
-    stdout_thread.join();
-    stderr_thread.join();
-    if (stdout_capture.failed or stderr_capture.failed) return error.OutOfMemory;
-
-    if (!timed_out) {
-        const term = try child.wait();
-        exit_code = switch (term) {
-            .Exited => |code| @intCast(code),
-            .Signal => |sig| -@as(i32, @intCast(sig)),
-            .Stopped => |sig| -@as(i32, @intCast(sig)),
-            .Unknown => |code| @intCast(code),
-        };
+    if (child_done and poll_error == null) {
+        while (!output_capped) {
+            const before = poller.reader(.stdout).bufferedLen() + poller.reader(.stderr).bufferedLen();
+            _ = poller.pollTimeout(0) catch |err| {
+                poll_error = err;
+                break;
+            };
+            const after = poller.reader(.stdout).bufferedLen() + poller.reader(.stderr).bufferedLen();
+            if (after >= PROBE_OUTPUT_LIMIT * 2) {
+                output_capped = true;
+                break;
+            }
+            if (after == before) break;
+        }
     }
 
-    if (timed_out or exit_code != 0) {
-        stdout_capture.deinit();
-        stderr_capture.deinit();
+    if (!child_done and (timed_out or output_capped or poll_error != null)) {
+        terminateChildRaw(child.id);
+        if (pollChildExited(&child, PROBE_TERMINATE_WAIT_MS)) |code| {
+            child_done = true;
+            exit_code = code;
+        }
+    }
+
+    var stdout_owned: ?[]u8 = null;
+    var stderr_owned: ?[]u8 = null;
+    var result_error = poll_error;
+    if (result_error == null) {
+        stdout_owned = dupeCapped(allocator, poller.reader(.stdout).buffered()) catch |err| blk: {
+            result_error = err;
+            break :blk null;
+        };
+        if (result_error == null) {
+            stderr_owned = dupeCapped(allocator, poller.reader(.stderr).buffered()) catch |err| blk: {
+                result_error = err;
+                break :blk null;
+            };
+        }
+    }
+    poller.deinit();
+    errdefer if (stdout_owned) |out| allocator.free(out);
+    errdefer if (stderr_owned) |err| allocator.free(err);
+
+    if (child_done) {
+        _ = child.wait() catch {};
+    } else {
+        terminateChildRaw(child.id);
+        if (pollChildExited(&child, PROBE_TERMINATE_WAIT_MS) != null) {
+            _ = child.wait() catch {};
+        } else {
+            closeChildResourcesNoWait(&child);
+        }
+    }
+
+    if (result_error) |err| return err;
+    const stdout_data = stdout_owned orelse try allocator.dupe(u8, "");
+    const stderr_data = stderr_owned orelse try allocator.dupe(u8, "");
+
+    if (timed_out) {
+        allocator.free(stdout_data);
+        allocator.free(stderr_data);
+        return allocator.dupe(u8, "");
+    }
+    if (!output_capped and exit_code != 0) {
+        allocator.free(stdout_data);
+        allocator.free(stderr_data);
         return allocator.dupe(u8, "");
     }
 
-    if (stdout_capture.data.len != 0 or stderr_capture.data.len == 0) {
-        const out = stdout_capture.data;
-        stdout_capture.data = &.{};
-        stderr_capture.deinit();
-        return out;
+    if (stdout_data.len != 0 or stderr_data.len == 0) {
+        allocator.free(stderr_data);
+        return stdout_data;
     }
-    const out = stderr_capture.data;
-    stderr_capture.data = &.{};
-    stdout_capture.deinit();
-    return out;
+    allocator.free(stdout_data);
+    return stderr_data;
 }
 
-fn captureOutputThread(capture: *CaptureOutput) void {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer if (capture.failed) out.deinit(capture.allocator);
-
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = capture.file.read(&buf) catch break;
-        if (n == 0) break;
-        if (out.items.len >= capture.max_bytes) continue;
-        const remaining = capture.max_bytes - out.items.len;
-        const take = @min(remaining, n);
-        out.appendSlice(capture.allocator, buf[0..take]) catch {
-            capture.failed = true;
-            return;
-        };
+fn pollChildExited(child: *std.process.Child, timeout_ms: u32) ?i32 {
+    switch (platform_process.childExited(child.id, timeout_ms)) {
+        .running => return null,
+        .exited => |code| {
+            if (builtin.os.tag != .windows) child.term = .{ .Exited = @intCast(code) };
+            return @intCast(code);
+        },
+        .gone => {
+            if (builtin.os.tag != .windows) child.term = .{ .Unknown = 0 };
+            return -1;
+        },
     }
-    capture.data = out.toOwnedSlice(capture.allocator) catch {
-        capture.failed = true;
-        return;
-    };
+}
+
+fn terminateChildRaw(id: std.process.Child.Id) void {
+    switch (builtin.os.tag) {
+        .windows => std.os.windows.TerminateProcess(id, 1) catch {},
+        else => std.posix.kill(id, std.posix.SIG.KILL) catch {},
+    }
+}
+
+fn closeChildResourcesNoWait(child: *std.process.Child) void {
+    if (child.stdin) |stdin| {
+        stdin.close();
+        child.stdin = null;
+    }
+    if (child.stdout) |stdout| {
+        stdout.close();
+        child.stdout = null;
+    }
+    if (child.stderr) |stderr| {
+        stderr.close();
+        child.stderr = null;
+    }
+    if (builtin.os.tag == .windows) {
+        std.os.windows.CloseHandle(child.id);
+        std.os.windows.CloseHandle(child.thread_handle);
+    }
+}
+
+fn dupeCapped(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    return allocator.dupe(u8, bytes[0..@min(bytes.len, PROBE_OUTPUT_LIMIT)]);
 }
 
 fn trimAscii(bytes: []const u8) []const u8 {
@@ -532,4 +581,34 @@ test "tool_import: installToolPackage stages package with manifest and binary" {
         "---\nname: docx\n---\nUse docs.\n",
         false,
     ));
+}
+
+test "tool_import: runArgvProbe is bounded when child leaves inherited pipes open" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const script =
+        "#!/bin/sh\n" ++
+        "if [ \"$1\" = \"--help\" ]; then\n" ++
+        "  ( sleep 2 ) &\n" ++
+        "  printf 'help text\\n'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "exit 1\n";
+    try tmp.dir.writeFile(.{ .sub_path = "probe.sh", .data = script });
+    var file = try tmp.dir.openFile("probe.sh", .{});
+    defer file.close();
+    try file.chmod(0o755);
+    const script_path = try tmp.dir.realpathAlloc(a, "probe.sh");
+    defer a.free(script_path);
+
+    const started = std.time.milliTimestamp();
+    const output = try runArgvProbe(a, &.{ script_path, "--help" });
+    defer a.free(output);
+    const elapsed = std.time.milliTimestamp() - started;
+
+    try std.testing.expectEqualStrings("help text\n", output);
+    try std.testing.expect(elapsed < 1000);
 }
