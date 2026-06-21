@@ -210,6 +210,7 @@ pub fn readInstalledTool(
     defer allocator.free(manifest_bytes);
     var manifest = try parseManifestJson(allocator, manifest_bytes);
     defer manifest.deinit(allocator);
+    try validateInstalledManifest(id, manifest);
 
     const skill_md = try tool_dir.readFileAlloc(allocator, "SKILL.md", MAX_SKILL_MD_BYTES);
     errdefer allocator.free(skill_md);
@@ -321,6 +322,29 @@ fn jsonI64(root: std.json.Value, name: []const u8) ?i64 {
     };
 }
 
+fn validateInstalledManifest(dir_id: []const u8, manifest: OwnedManifest) !void {
+    if (!std.mem.eql(u8, dir_id, manifest.id)) return error.InvalidToolManifest;
+    try validateExecutablePath(manifest.executable);
+}
+
+fn validateExecutablePath(path: []const u8) !void {
+    if (path.len <= "bin/".len) return error.InvalidToolManifest;
+    if (path[0] == '/') return error.InvalidToolManifest;
+    if (hasWindowsDrivePrefix(path)) return error.InvalidToolManifest;
+    if (std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidToolManifest;
+    if (!std.mem.startsWith(u8, path, "bin/")) return error.InvalidToolManifest;
+
+    var segments = std.mem.splitScalar(u8, path, '/');
+    while (segments.next()) |segment| {
+        if (segment.len == 0) return error.InvalidToolManifest;
+        if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..")) return error.InvalidToolManifest;
+    }
+}
+
+fn hasWindowsDrivePrefix(path: []const u8) bool {
+    return path.len >= 2 and std.ascii.isAlphabetic(path[0]) and path[1] == ':';
+}
+
 fn copyInstalledTool(allocator: std.mem.Allocator, tool: InstalledTool) !InstalledTool {
     const id = try allocator.dupe(u8, tool.id);
     errdefer allocator.free(id);
@@ -408,6 +432,49 @@ test "tool_registry: manifest rejects non-string kind" {
     );
 }
 
+test "tool_registry: readInstalledTool rejects executable paths outside bin" {
+    const a = std.testing.allocator;
+    const cases = [_][]const u8{
+        "../evil",
+        "bin/../evil",
+        "/tmp/evil",
+        "C:\\evil.exe",
+        "\\\\server\\share\\evil.exe",
+        "..\\evil",
+        "bin\\..\\evil",
+    };
+
+    for (cases, 0..) |executable, i| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const tools_root = try tmp.dir.realpathAlloc(a, ".");
+        defer a.free(tools_root);
+        const id = try std.fmt.allocPrint(a, "bad{d}", .{i});
+        defer a.free(id);
+
+        try writeInstalledToolFixture(a, tmp.dir, id, id, executable);
+        try std.testing.expectError(error.InvalidToolManifest, readInstalledTool(a, tools_root, id));
+    }
+}
+
+test "tool_registry: scanInstalledTools ignores malformed executable paths and id mismatches" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tools_root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(tools_root);
+
+    try writeInstalledToolFixture(a, tmp.dir, "ok", "ok", "bin/ok.exe");
+    try writeInstalledToolFixture(a, tmp.dir, "escape", "escape", "../evil");
+    try writeInstalledToolFixture(a, tmp.dir, "mismatch", "other", "bin/mismatch.exe");
+
+    const tools = try scanInstalledTools(a, tools_root);
+    defer freeInstalledTools(a, tools);
+    try std.testing.expectEqual(@as(usize, 1), tools.len);
+    try std.testing.expectEqualStrings("ok", tools[0].id);
+    try std.testing.expectEqualStrings("ok", tools[0].function_name);
+}
+
 test "tool_registry: enabledToolSchemas skips disabled tools" {
     const a = std.testing.allocator;
     const enabled = InstalledTool{
@@ -433,4 +500,36 @@ test "tool_registry: enabledToolSchemas skips disabled tools" {
     defer freeEnabledSnapshot(a, snapshot);
     try std.testing.expectEqual(@as(usize, 1), snapshot.len);
     try std.testing.expectEqualStrings("docx", snapshot[0].function_name);
+}
+
+fn writeInstalledToolFixture(
+    allocator: std.mem.Allocator,
+    dir: std.fs.Dir,
+    id: []const u8,
+    manifest_id: []const u8,
+    executable: []const u8,
+) !void {
+    const bin_path = try std.fmt.allocPrint(allocator, "{s}/bin", .{id});
+    defer allocator.free(bin_path);
+    try dir.makePath(bin_path);
+
+    const manifest_json = try manifestToJson(allocator, .{
+        .id = manifest_id,
+        .function_name = manifest_id,
+        .enabled = true,
+        .executable = executable,
+        .source_path = "",
+        .sha256 = "",
+        .imported_at_ms = 1781971200000,
+        .description = "Fixture tool",
+    });
+    defer allocator.free(manifest_json);
+
+    const manifest_path = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{id});
+    defer allocator.free(manifest_path);
+    try dir.writeFile(.{ .sub_path = manifest_path, .data = manifest_json });
+
+    const skill_path = try std.fmt.allocPrint(allocator, "{s}/SKILL.md", .{id});
+    defer allocator.free(skill_path);
+    try dir.writeFile(.{ .sub_path = skill_path, .data = "---\nname: fixture\n---\nUse fixture.\n" });
 }
