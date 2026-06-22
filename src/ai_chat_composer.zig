@@ -86,7 +86,7 @@ pub const slash_command_entries = [_]SlashCommandEntry{
         .action = .rewind_picker,
     },
     .{
-        .suggestion = .{ .command = "/resume", .description = "resume a saved conversation" },
+        .suggestion = .{ .command = "/resume", .description = "resume a saved Copilot conversation or CLI session" },
         .action = .resume_session,
     },
     .{

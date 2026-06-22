@@ -87,6 +87,7 @@ pub const ui_pipeline = @import("renderer/ui_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
+const copilot_picker = @import("copilot_picker.zig");
 const preview_diagnostics = @import("preview_diagnostics.zig");
 pub const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
@@ -145,6 +146,12 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     ai_chat.setSessionResumeTrigger(struct {
         fn cb() void {
             overlays.commandPaletteOpenAgentHistory();
+        }
+    }.cb);
+    // `/resume` in the Copilot sidebar opens the Copilot conversation picker.
+    ai_chat.setCopilotPickerTrigger(struct {
+        fn cb() void {
+            openCopilotConversationPicker();
         }
     }.cb);
     // `/export [full|clean]` writes the active AI Chat transcript as Markdown.
@@ -1194,6 +1201,119 @@ test "AppWindow: open AI chat tabs are persisted to agent history before session
 
     try std.testing.expectEqualStrings("Agent", restored.title);
     try std.testing.expect(restored.agent_enabled);
+}
+
+test "AppWindow: terminal tab copilot sessions are persisted to agent history before session dump" {
+    const allocator = std.testing.allocator;
+
+    const previous_store = g_agent_history;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_agent_history = previous_store;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+
+    var store = agent_history.Store.init(allocator);
+    defer store.deinit();
+    g_agent_history = &store;
+
+    const session = try ai_chat.Session.init(
+        allocator,
+        "Copilot",
+        "https://api.example.test",
+        "key",
+        "model",
+        "system",
+        "enabled",
+        "",
+        "false",
+        "true",
+    );
+    session.copilot = true;
+
+    // Append one message so shouldPersistCopilot() returns true (persist_to_history defaults to true)
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        try session.messages.append(allocator, .{
+            .role = .user,
+            .content = try allocator.dupe(u8, "hello from copilot"),
+        });
+    }
+
+    const tab_state = try allocator.create(tab.TabState);
+    tab_state.* = .{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .copilot_session = session,
+    };
+    defer {
+        tab_state.deinit(allocator);
+        allocator.destroy(tab_state);
+        tab.g_tabs[0] = null;
+        tab.g_tab_count = 0;
+    }
+
+    tab.g_tabs[0] = tab_state;
+    tab.g_tab_count = 1;
+
+    persistOpenAiChatTabsToHistoryStore(allocator);
+
+    var restored = try store.cloneRecordBySessionId(allocator, session.sessionId()) orelse return error.ExpectedHistoryRecord;
+    defer agent_history.freeOwnedRecord(allocator, &restored);
+
+    try std.testing.expect(restored.copilot);
+}
+
+test "AppWindow: copilot restore hook rehydrates a copilot session by id" {
+    const allocator = std.testing.allocator;
+    const previous_store = g_agent_history;
+    const previous_hook = tab.g_copilot_restore_hook;
+    const previous_alloc = g_allocator;
+    defer {
+        g_agent_history = previous_store;
+        tab.g_copilot_restore_hook = previous_hook;
+        g_allocator = previous_alloc;
+    }
+
+    var store = agent_history.Store.init(allocator);
+    defer store.deinit();
+    g_agent_history = &store;
+    g_allocator = allocator;
+
+    try store.upsertRecord(.{
+        .session_id = "cp-restore",
+        .title = "T",
+        .base_url = "https://x",
+        .api_key = "k",
+        .model = "m",
+        .system_prompt = "s",
+        .thinking_enabled = false,
+        .reasoning_effort = "low",
+        .stream = true,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 2,
+        .copilot = true,
+        .messages = &[_]agent_history.MessageRecord{},
+    });
+
+    tab.g_copilot_restore_hook = reopenCopilotSessionFromHistorySessionId;
+    const session = tab.g_copilot_restore_hook.?("cp-restore") orelse return error.RestoreFailed;
+    defer session.deinit();
+    try std.testing.expect(session.copilot);
+    try std.testing.expectEqualStrings("cp-restore", session.sessionId());
 }
 
 // ============================================================================
@@ -5079,6 +5199,80 @@ pub fn activeCopilotSessionForInput() ?*ai_chat.Session {
     return t.copilot_session;
 }
 
+/// Build the picker rows from the store (copilot records only) and open it.
+pub fn openCopilotConversationPicker() void {
+    refreshCopilotPickerRows();
+}
+
+/// (Re)load picker rows from the store. Called on open and after a delete.
+pub fn refreshCopilotPickerRows() void {
+    const allocator = g_allocator orelse return;
+    var empty_rows = [_]agent_history.Row{};
+    g_agent_history_mutex.lock();
+    const rows: []agent_history.Row = blk: {
+        const store = g_agent_history orelse break :blk empty_rows[0..];
+        break :blk store.buildCopilotRows(allocator) catch empty_rows[0..];
+    };
+    g_agent_history_mutex.unlock();
+    defer if (rows.len > 0) agent_history.freeRows(allocator, rows);
+
+    var picker_rows: [copilot_picker.MAX_ROWS]copilot_picker.Row = undefined;
+    const n = @min(rows.len, copilot_picker.MAX_ROWS);
+    for (0..n) |i| picker_rows[i] = .{
+        .session_id = rows[i].session_id,
+        .title = rows[i].title,
+        .updated_at = rows[i].updated_at,
+    };
+    copilot_picker.show(picker_rows[0..n]);
+}
+
+/// Load conversation `session_id` into the active terminal tab's sidebar. If a
+/// live copy is already open in some tab, switch to that tab instead (a second
+/// live Session with the same id would corrupt the store).
+pub fn loadCopilotConversationById(session_id: []const u8) void {
+    if (tab.switchToCopilotTabBySessionId(session_id)) {
+        browser_panel.close(); // exclusive right slot, mirror toggleAiCopilot
+        _ = tab.setActiveCopilotVisible(true);
+        input.focusAiCopilot();
+        g_force_rebuild = true;
+        g_cells_valid = false;
+        return;
+    }
+    if (!isActiveTabTerminal()) return;
+    const t = tab.activeTab() orelse return;
+    const session = reopenCopilotSessionFromHistorySessionId(session_id) orelse return;
+    if (t.copilot_session) |old| old.deinit(); // already saved by its hook
+    t.copilot_session = session;
+    browser_panel.close();
+    _ = tab.setActiveCopilotVisible(true);
+    input.focusAiCopilot();
+    g_force_rebuild = true;
+    g_cells_valid = false;
+}
+
+pub fn deleteCopilotConversationById(session_id: []const u8) void {
+    g_agent_history_mutex.lock();
+    defer g_agent_history_mutex.unlock();
+    const store = g_agent_history orelse return;
+    if (store.deleteBySessionId(session_id)) markAgentHistoryDirtyLocked();
+}
+
+/// Start a fresh, empty Copilot conversation on the active terminal tab.
+pub fn newCopilotConversation() void {
+    if (!isActiveTabTerminal()) return;
+    const t = tab.activeTab() orelse return;
+    if (t.copilot_session) |old| {
+        old.deinit(); // already persisted by its hook if non-empty
+        t.copilot_session = null;
+    }
+    browser_panel.close();
+    _ = tab.setActiveCopilotVisible(true);
+    _ = ensureActiveCopilotSession();
+    input.focusAiCopilot();
+    g_force_rebuild = true;
+    g_cells_valid = false;
+}
+
 /// The preview pane that currently has split-tree focus, or null if the
 /// focused leaf is a terminal (or there is no active tab / the handle is
 /// stale). Used to route keyboard scroll/zoom to a focused preview leaf.
@@ -5334,6 +5528,9 @@ fn installSessionRestoreHooks() void {
     // tab.zig routes persisted AI snapshots back through these hooks.
     tab.g_ai_restore_hook = reopenAiChatTabFromHistorySessionId;
     tab.g_ai_history_restore_hook = reopenAiHistoryTabFromSnapshot;
+    // Copilot sidebar conversations are stored in the same agent-history store;
+    // rehydrate them in place when restoring their owning terminal tab.
+    tab.g_copilot_restore_hook = reopenCopilotSessionFromHistorySessionId;
     // tmux session persistence (#4c): save the active tmux profile names; on
     // restore, re-attach each via the launcher's tmux connect path.
     tab.g_tmux_active_profiles_hook = tmux_controller.activeProfileNames;
@@ -5373,8 +5570,15 @@ fn saveAiHistoryChangeEvent(event: ai_chat.HistoryChangeEvent) void {
 fn persistOpenAiChatTabsToHistoryStore(allocator: std.mem.Allocator) void {
     for (0..tab.g_tab_count) |idx| {
         const tab_state = tab.g_tabs[idx] orelse continue;
-        if (tab_state.kind != .ai_chat) continue;
-        const session = tab_state.ai_chat_session orelse continue;
+        const session: *ai_chat.Session = switch (tab_state.kind) {
+            .ai_chat => tab_state.ai_chat_session orelse continue,
+            .terminal => blk: {
+                const cs = tab_state.copilot_session orelse continue;
+                if (!cs.shouldPersistCopilot()) continue;
+                break :blk cs;
+            },
+            else => continue,
+        };
 
         var record = session.toHistoryRecord(allocator) catch |err| {
             log.warn("failed to snapshot open AI tab for session restore: {}", .{err});
@@ -5657,6 +5861,25 @@ pub fn reopenAiChatTabFromHistorySessionId(session_id: []const u8) bool {
     if (!tab.spawnAiChatTabFromHistoryRecord(allocator, owned_record)) return false;
     clearUiStateOnTabChange();
     return true;
+}
+
+fn reopenCopilotSessionFromHistorySessionId(session_id: []const u8) ?*ai_chat.Session {
+    const allocator = g_allocator orelse return null;
+
+    const maybe_record: ?agent_history.SessionRecord = blk: {
+        g_agent_history_mutex.lock();
+        defer g_agent_history_mutex.unlock();
+        const store = g_agent_history orelse break :blk null;
+        break :blk store.cloneRecordBySessionId(allocator, session_id) catch null;
+    };
+    var record = maybe_record orelse return null;
+    defer agent_history.freeOwnedRecord(allocator, &record);
+
+    const session = ai_chat.Session.initFromHistoryRecord(allocator, record) catch return null;
+    // initFromHistoryRecord set session.copilot from the record marker; wire the
+    // same incremental-save hook AI-chat tabs use so future turns keep persisting.
+    session.setHistoryChangeHook(saveAiHistoryChangeEvent);
+    return session;
 }
 
 fn aiHistorySourceFromSnap(snap: session_persist.AiHistorySnap) ?ai_history_source.Source {
@@ -6320,6 +6543,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -9996,6 +10220,7 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderStartupShortcutsOverlay(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);

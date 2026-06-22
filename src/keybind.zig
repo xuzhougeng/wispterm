@@ -65,6 +65,7 @@ pub const Action = enum {
     toggle_file_explorer,
     toggle_sidebar,
     toggle_ai_copilot,
+    copilot_conversation_picker,
     close_panel_or_tab,
     toggle_maximize,
     font_size_increase,
@@ -416,6 +417,7 @@ pub const default_bindings = [_]Binding{
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'N' }, .action = .new_window },
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'B' }, .action = .toggle_sidebar },
     .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'A' }, .action = .toggle_ai_copilot },
+    .{ .trigger = .{ .mods = .{ .ctrl = true, .shift = true }, .key_code = 'R' }, .action = .copilot_conversation_picker },
     // Windows-Terminal-style split chords: Ctrl+Shift++ splits vertically (a pane
     // to the right), Ctrl+Shift+- splits horizontally (a pane below). These take
     // the shifted "+" chord that font-size-increase used to share, so font size

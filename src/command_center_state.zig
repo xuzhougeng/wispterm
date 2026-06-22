@@ -9,6 +9,7 @@ pub const CommandAction = enum {
     toggle_ai_copilot,
     manage_ai_profiles,
     select_agent_history,
+    load_copilot_conversation,
     split_right,
     split_down,
     split_left,
@@ -61,6 +62,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Toggle Copilot", .detail = "Open or close the Copilot sidebar on the current terminal", .shortcut = "", .action = .toggle_ai_copilot },
     .{ .title = "Manage AI Profiles", .detail = "Create, edit, or delete saved AI profiles", .shortcut = "", .action = .manage_ai_profiles },
     .{ .title = "Select Copilot History", .detail = "Open the command-center Copilot history picker", .shortcut = "", .action = .select_agent_history },
+    .{ .title = "Load Copilot Conversation", .detail = "Reopen a saved Copilot sidebar conversation", .shortcut = "", .action = .load_copilot_conversation },
     .{ .title = "Skill Center", .detail = "Manage Claude Code / Codex skills and local executable tools", .shortcut = "", .action = .open_skill_center },
     .{ .title = "Split Right", .detail = "Create a panel to the right", .shortcut = "", .action = .split_right },
     .{ .title = "Split Down", .detail = "Create a panel below", .shortcut = "", .action = .split_down },
@@ -300,6 +302,13 @@ test "command center includes Manage AI Profiles action" {
 
 test "command center includes Select Copilot History action" {
     try std.testing.expectEqual(CommandAction.select_agent_history, findCommandAction("Select Copilot History"));
+}
+
+test "command catalog includes Load Copilot Conversation" {
+    try std.testing.expectEqual(
+        CommandAction.load_copilot_conversation,
+        findCommandAction("Load Copilot Conversation"),
+    );
 }
 
 test "command center includes update check actions" {

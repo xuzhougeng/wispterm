@@ -167,6 +167,7 @@ test {
     _ = @import("claude_integration.zig");
     _ = @import("jupyter_detect.zig");
     _ = @import("jupyter_picker.zig");
+    _ = @import("copilot_picker.zig");
     _ = @import("html_server_model.zig");
     // Platform-aware agent prompt: pure string constants, no heavy deps.
     _ = @import("platform/agent_prompt.zig");

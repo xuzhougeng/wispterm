@@ -825,3 +825,40 @@ test "command center browser entries do not expose backend implementation names"
         try std.testing.expect(std.mem.indexOf(u8, entry.detail, "WebView2") == null);
     }
 }
+
+test "copilot conversation picker has a keybind action and dispatch" {
+    const kb_src = @embedFile("keybind.zig");
+    try std.testing.expect(std.mem.indexOf(u8, kb_src, "copilot_conversation_picker") != null);
+    const input_src = @embedFile("input.zig");
+    try std.testing.expect(std.mem.indexOf(u8, input_src, ".copilot_conversation_picker =>") != null);
+}
+
+test "activeCopilotSession installs the history-change hook" {
+    const src = @embedFile("appwindow/tab.zig");
+    const anchor = "t.copilot_session = make() orelse return null;";
+    const idx = std.mem.indexOf(u8, src, anchor) orelse return error.AnchorMissing;
+    try std.testing.expect(std.mem.indexOf(u8, src[idx..], "installAiChatHistoryHook(") != null);
+}
+
+test "snapshotTab records copilot_session_id for terminal tabs" {
+    const src = @embedFile("appwindow/tab.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, ".copilot_session_id = ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "shouldPersistCopilot()") != null);
+}
+
+test "copilot load de-dups against open tabs" {
+    const tab_src = @embedFile("appwindow/tab.zig");
+    try std.testing.expect(std.mem.indexOf(u8, tab_src, "pub fn switchToCopilotTabBySessionId(") != null);
+    const aw_src = @embedFile("AppWindow.zig");
+    const load_idx = std.mem.indexOf(u8, aw_src, "pub fn loadCopilotConversationById(") orelse return error.Missing;
+    try std.testing.expect(std.mem.indexOf(u8, aw_src[load_idx..], "switchToCopilotTabBySessionId(") != null);
+}
+
+test "copilot picker is rendered and key-routed" {
+    const overlays_src = @embedFile("renderer/overlays.zig");
+    try std.testing.expect(std.mem.indexOf(u8, overlays_src, "pub fn renderCopilotPicker(") != null);
+    const input_src = @embedFile("input.zig");
+    try std.testing.expect(std.mem.indexOf(u8, input_src, "copilot_picker.isVisible()") != null);
+    const aw_src = @embedFile("AppWindow.zig");
+    try std.testing.expect(std.mem.indexOf(u8, aw_src, "renderCopilotPicker(") != null);
+}

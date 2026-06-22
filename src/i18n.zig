@@ -191,6 +191,9 @@ pub const Strings = struct {
     cmd_palette_no_sessions: []const u8,
     cmd_palette_footer: []const u8,
     cmd_palette_footer_history: []const u8,
+    copilot_picker_title: []const u8,
+    copilot_picker_new: []const u8,
+    copilot_picker_empty: []const u8,
 
     // —— 状态 Toast ——
     toast_enable_weixin_first: []const u8,
@@ -400,6 +403,9 @@ const en = Strings{
     .cmd_palette_no_sessions = "No saved Copilot sessions",
     .cmd_palette_footer = "Up/Down + Enter applies",
     .cmd_palette_footer_history = "Up/Down selects, Enter reopens, Delete removes, Esc returns",
+    .copilot_picker_title = "Copilot conversations (Up/Down, Enter, Delete, Esc)",
+    .copilot_picker_new = "+ New conversation",
+    .copilot_picker_empty = "No saved Copilot conversations",
 
     .toast_enable_weixin_first = "Enable weixin-direct-enabled first, then restart WispTerm",
     .toast_wechat_login_failed = "WeChat login failed to start",
@@ -606,6 +612,9 @@ const zh_CN = Strings{
     .cmd_palette_no_sessions = "没有已保存的副驾会话",
     .cmd_palette_footer = "上下选择，回车执行",
     .cmd_palette_footer_history = "上下选择，回车重开，Delete 删除，Esc 返回",
+    .copilot_picker_title = "副驾对话（上下选择，回车打开，Delete 删除，Esc 关闭）",
+    .copilot_picker_new = "+ 新建对话",
+    .copilot_picker_empty = "没有已保存的副驾对话",
 
     .toast_enable_weixin_first = "请先启用 weixin-direct-enabled，然后重启 WispTerm",
     .toast_wechat_login_failed = "微信登录启动失败",
@@ -748,6 +757,7 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
         .toggle_ai_copilot => "开 / 关 Copilot",
         .manage_ai_profiles => "管理 AI 配置",
         .select_agent_history => "选择副驾历史",
+        .load_copilot_conversation => "载入副驾对话",
         .split_right => "向右分屏",
         .split_down => "向下分屏",
         .split_left => "向左分屏",
@@ -800,6 +810,7 @@ pub fn commandDetail(action: CommandAction) ?[]const u8 {
         .toggle_ai_copilot => "在当前终端上打开或关闭 Copilot 侧栏",
         .manage_ai_profiles => "创建、编辑或删除已保存的 AI 配置",
         .select_agent_history => "打开命令中心的副驾历史选择器",
+        .load_copilot_conversation => "重新打开已保存的副驾侧栏对话",
         .split_right => "在右侧创建一个面板",
         .split_down => "在下方创建一个面板",
         .split_left => "在左侧创建一个面板",

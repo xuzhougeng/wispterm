@@ -35,6 +35,7 @@ pub const SessionRecord = struct {
     max_tokens: u32 = 8192,
     agent_enabled: bool,
     vision_enabled: bool = false,
+    copilot: bool = false,
     created_at: i64,
     updated_at: i64,
     messages: []MessageRecord,
@@ -112,6 +113,29 @@ pub const Store = struct {
             });
             initialized += 1;
         }
+        sortRows(rows);
+        return rows;
+    }
+
+    /// Like `buildRows` but only `copilot == true` records (the Copilot conversation
+    /// picker). Owned slices; call `freeRows()` when done. Sorted newest-first.
+    pub fn buildCopilotRows(self: *const Store, allocator: std.mem.Allocator) ![]Row {
+        var list: std.ArrayListUnmanaged(Row) = .empty;
+        errdefer {
+            for (list.items) |*r| freeOwnedRow(allocator, r);
+            list.deinit(allocator);
+        }
+        for (self.records.items) |record| {
+            if (!record.copilot) continue;
+            const row = try cloneRow(allocator, .{
+                .session_id = record.session_id,
+                .title = record.title,
+                .model = record.model,
+                .updated_at = record.updated_at,
+            });
+            try list.append(allocator, row);
+        }
+        const rows = try list.toOwnedSlice(allocator);
         sortRows(rows);
         return rows;
     }
@@ -248,6 +272,7 @@ pub fn cloneRecord(allocator: std.mem.Allocator, input: anytype) !SessionRecord 
         .max_tokens = if (@hasField(@TypeOf(input), "max_tokens")) input.max_tokens else 8192,
         .agent_enabled = input.agent_enabled,
         .vision_enabled = if (@hasField(@TypeOf(input), "vision_enabled")) input.vision_enabled else false,
+        .copilot = if (@hasField(@TypeOf(input), "copilot")) input.copilot else false,
         .created_at = input.created_at,
         .updated_at = input.updated_at,
         .messages = messages,
@@ -650,6 +675,30 @@ test "agent_history: json round trip preserves max_tokens" {
     try std.testing.expectEqual(@as(u32, 2048), parsed.records.items[0].max_tokens);
 }
 
+test "agent_history: buildCopilotRows lists only copilot records, newest first" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+    const base = SessionRecord{
+        .session_id = "", .title = "", .base_url = "u", .api_key = "k", .model = "m",
+        .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
+        .stream = true, .agent_enabled = true, .created_at = 0, .updated_at = 0,
+        .messages = &[_]MessageRecord{},
+    };
+    var a = base; a.session_id = "a"; a.title = "A"; a.updated_at = 10; a.copilot = true;
+    var b = base; b.session_id = "b"; b.title = "B"; b.updated_at = 20; b.copilot = true;
+    var c = base; c.session_id = "c"; c.title = "C"; c.updated_at = 99; c.copilot = false;
+    try store.upsertRecord(a);
+    try store.upsertRecord(b);
+    try store.upsertRecord(c);
+
+    const rows = try store.buildCopilotRows(allocator);
+    defer freeRows(allocator, rows);
+    try std.testing.expectEqual(@as(usize, 2), rows.len);
+    try std.testing.expectEqualStrings("b", rows[0].session_id); // newest (20) first
+    try std.testing.expectEqualStrings("a", rows[1].session_id);
+}
+
 test "agent_history: missing vision_enabled defaults to false" {
     const allocator = std.testing.allocator;
     const json =
@@ -898,6 +947,50 @@ test "agent_history: buildRows returns owned rows that survive store cleanup" {
     try std.testing.expectEqualStrings("s1", rows[0].session_id);
     try std.testing.expectEqualStrings("Chat 1", rows[0].title);
     try std.testing.expectEqualStrings("m1", rows[0].model);
+}
+
+test "agent_history: SessionRecord copilot flag round-trips through JSON" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+
+    try store.upsertRecord(.{
+        .session_id = "copilot-1",
+        .title = "T",
+        .base_url = "https://x",
+        .api_key = "k",
+        .model = "m",
+        .system_prompt = "s",
+        .thinking_enabled = false,
+        .reasoning_effort = "low",
+        .stream = true,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 2,
+        .copilot = true,
+        .messages = &[_]MessageRecord{},
+    });
+
+    const json = try store.toJsonString(allocator);
+    defer allocator.free(json);
+
+    var reloaded = try Store.fromJsonString(allocator, json);
+    defer reloaded.deinit();
+    try std.testing.expectEqual(@as(usize, 1), reloaded.records.items.len);
+    try std.testing.expect(reloaded.records.items[0].copilot);
+}
+
+test "agent_history: old record without copilot field defaults to false" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"records":[{"session_id":"old","title":"T","base_url":"u","api_key":"k",
+        \\"model":"m","system_prompt":"s","thinking_enabled":false,"reasoning_effort":"low",
+        \\"stream":true,"agent_enabled":true,"created_at":1,"updated_at":2,"messages":[]}]}
+    ;
+    var store = try Store.fromJsonString(allocator, json);
+    defer store.deinit();
+    try std.testing.expectEqual(@as(usize, 1), store.records.items.len);
+    try std.testing.expect(!store.records.items[0].copilot);
 }
 
 fn expectLenientParseOutOfMemory(json: []const u8) !void {

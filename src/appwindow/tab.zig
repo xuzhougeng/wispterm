@@ -185,6 +185,11 @@ pub threadlocal var g_ai_restore_hook: ?*const fn (session_id: []const u8) bool 
 // keep after returning. Returns true if the tab was reopened.
 pub threadlocal var g_ai_history_restore_hook: ?*const fn (session_persist.AiHistorySnap) bool = null;
 
+/// Rehydrates a Copilot sidebar conversation from the agent-history store by id,
+/// returning an owned `*ai_chat.Session` (with the history hook installed) or
+/// null if the record is gone. AppWindow installs this (it owns the store).
+pub threadlocal var g_copilot_restore_hook: ?*const fn (session_id: []const u8) ?*ai_chat.Session = null;
+
 // tmux session persistence (Phase 3d #4c). The save hook returns the SSH profile
 // names of active tmux controllers (arena-allocated); the restore hook re-attaches
 // a profile by name. Registered by AppWindow so tab.zig stays free of the
@@ -266,6 +271,9 @@ pub fn activeCopilotSession(
     if (t.kind != .terminal) return null;
     if (t.copilot_session == null) {
         t.copilot_session = make() orelse return null;
+        // Wire incremental persistence: each completed turn now upserts this
+        // conversation into the agent-history store (same path as AI-chat tabs).
+        installAiChatHistoryHook(t.copilot_session.?);
     }
     return t.copilot_session;
 }
@@ -302,6 +310,22 @@ pub fn findAiTabBySessionId(session_id: []const u8) ?usize {
 
 pub fn switchToAiTabBySessionId(session_id: []const u8) bool {
     const idx = findAiTabBySessionId(session_id) orelse return false;
+    switchTab(idx);
+    return true;
+}
+
+pub fn findCopilotTabBySessionId(session_id: []const u8) ?usize {
+    for (0..g_tab_count) |idx| {
+        const t = g_tabs[idx] orelse continue;
+        if (t.kind != .terminal) continue;
+        const session = t.copilot_session orelse continue;
+        if (std.mem.eql(u8, session.sessionId(), session_id)) return idx;
+    }
+    return null;
+}
+
+pub fn switchToCopilotTabBySessionId(session_id: []const u8) bool {
+    const idx = findCopilotTabBySessionId(session_id) orelse return false;
     switchTab(idx);
     return true;
 }
@@ -1466,11 +1490,20 @@ pub fn snapshotTab(arena: std.mem.Allocator, t: *const TabState) !session_persis
     // 3. Translate the optional zoomed handle to a pre-order leaf index.
     const zoomed_leaf: ?u32 = if (t.tree.zoomed) |z| computeFocusedLeafIndex(&t.tree, z) else null;
 
+    // Capture the active Copilot sidebar conversation (if worth persisting) so
+    // it can be restored in place. The conversation itself is in the store.
+    var copilot_sid: ?[]const u8 = null;
+    if (t.copilot_session) |cs| {
+        if (cs.shouldPersistCopilot()) copilot_sid = try arena.dupe(u8, cs.sessionId());
+    }
+
     return session_persist.TabSnap{
         .title_override = try snapshotFocusedTitleOverride(arena, t),
         .focused_leaf = focused_leaf,
         .zoomed_leaf = zoomed_leaf,
         .tree = tree,
+        .copilot_session_id = copilot_sid,
+        .copilot_visible = if (copilot_sid != null) t.copilot_visible else false,
     };
 }
 
@@ -1736,6 +1769,17 @@ pub fn restoreTab(
     t.tmux_owner = null;
     t.tmux_name_len = 0;
     t.copilot_visible = false;
+
+    // Restore the Copilot sidebar conversation in place, if any. Missing record
+    // (deleted / corrupt store) → silent fallback to an empty sidebar.
+    if (snap.copilot_session_id) |sid| {
+        if (g_copilot_restore_hook) |hook| {
+            if (hook(sid)) |session| {
+                t.copilot_session = session;
+                t.copilot_visible = snap.copilot_visible;
+            }
+        }
+    }
     applyRestoredTabMetadata(t, snap);
 
     g_tabs[g_tab_count] = t;

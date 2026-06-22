@@ -62,6 +62,7 @@ const mouse_report = @import("input/mouse_report.zig");
 const mouse_wheel_scroll = @import("input/mouse_wheel_scroll.zig");
 const close_confirm = @import("close_confirm.zig");
 const jupyter_picker = @import("jupyter_picker.zig");
+const copilot_picker = @import("copilot_picker.zig");
 const jupyter_detect = @import("jupyter_detect.zig");
 const scp = @import("scp.zig");
 const writeToPty = clipboard.writeToPty;
@@ -2708,6 +2709,7 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .toggle_file_explorer => toggleFileExplorer(),
         .toggle_sidebar => toggleSidebar(),
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
+        .copilot_conversation_picker => AppWindow.openCopilotConversationPicker(),
         .close_panel_or_tab => closePanelOrTab(),
         .toggle_maximize => toggleMaximize(),
         .font_size => |delta| adjustFontSize(delta),
@@ -2839,6 +2841,31 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         AppWindow.g_cells_valid = false;
         return;
     }
+    if (copilot_picker.isVisible()) {
+        switch (ev.key_code) {
+            platform_input.key_escape => copilot_picker.hide(),
+            platform_input.key_up => copilot_picker.move(-1),
+            platform_input.key_down => copilot_picker.move(1),
+            platform_input.key_delete => {
+                if (!copilot_picker.isNewRowSelected()) {
+                    AppWindow.deleteCopilotConversationById(copilot_picker.selectedId());
+                    AppWindow.refreshCopilotPickerRows();
+                }
+            },
+            platform_input.key_enter => {
+                if (copilot_picker.isNewRowSelected()) {
+                    AppWindow.newCopilotConversation();
+                } else {
+                    AppWindow.loadCopilotConversationById(copilot_picker.selectedId());
+                }
+                copilot_picker.hide();
+            },
+            else => {},
+        }
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
     if (jupyter_picker.isVisible()) {
         switch (ev.key_code) {
             platform_input.key_escape => jupyter_picker.hide(),
@@ -2896,7 +2923,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         handleBrowserUrlBarKey(ev);
         return;
     }
-    if (browser_panel.isVisibleForActiveTab() and !browser_panel.urlBarFocused() and !jupyter_picker.isVisible()) {
+    if (browser_panel.isVisibleForActiveTab() and !browser_panel.urlBarFocused() and !jupyter_picker.isVisible() and !copilot_picker.isVisible()) {
         if (ev.key_code == platform_input.key_escape) {
             closeBrowserPanel();
             AppWindow.g_force_rebuild = true;
@@ -6571,6 +6598,12 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     }
     if (overlays.sessionLauncherVisible()) {
         overlays.sessionLauncherHandleScroll(@floatFromInt(ev.delta));
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
+    if (copilot_picker.isVisible()) {
+        copilot_picker.move(if (ev.delta > 0) -1 else 1);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
         return;
