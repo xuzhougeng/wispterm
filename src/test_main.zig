@@ -837,3 +837,11 @@ test "snapshotTab records copilot_session_id for terminal tabs" {
     try std.testing.expect(std.mem.indexOf(u8, src, ".copilot_session_id = ") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "shouldPersistCopilot()") != null);
 }
+
+test "copilot load de-dups against open tabs" {
+    const tab_src = @embedFile("appwindow/tab.zig");
+    try std.testing.expect(std.mem.indexOf(u8, tab_src, "pub fn switchToCopilotTabBySessionId(") != null);
+    const aw_src = @embedFile("AppWindow.zig");
+    const load_idx = std.mem.indexOf(u8, aw_src, "pub fn loadCopilotConversationById(") orelse return error.Missing;
+    try std.testing.expect(std.mem.indexOf(u8, aw_src[load_idx..], "switchToCopilotTabBySessionId(") != null);
+}

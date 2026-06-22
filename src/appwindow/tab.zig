@@ -314,6 +314,22 @@ pub fn switchToAiTabBySessionId(session_id: []const u8) bool {
     return true;
 }
 
+pub fn findCopilotTabBySessionId(session_id: []const u8) ?usize {
+    for (0..g_tab_count) |idx| {
+        const t = g_tabs[idx] orelse continue;
+        if (t.kind != .terminal) continue;
+        const session = t.copilot_session orelse continue;
+        if (std.mem.eql(u8, session.sessionId(), session_id)) return idx;
+    }
+    return null;
+}
+
+pub fn switchToCopilotTabBySessionId(session_id: []const u8) bool {
+    const idx = findCopilotTabBySessionId(session_id) orelse return false;
+    switchTab(idx);
+    return true;
+}
+
 fn splitSpawnCommand(
     allocator: std.mem.Allocator,
     surface: *const Surface,

@@ -86,6 +86,7 @@ pub const ui_pipeline = @import("renderer/ui_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
+const copilot_picker = @import("copilot_picker.zig");
 const preview_diagnostics = @import("preview_diagnostics.zig");
 pub const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
@@ -5051,6 +5052,79 @@ pub fn activeCopilotSessionForInput() ?*ai_chat.Session {
     if (!aiCopilotVisible()) return null;
     const t = tab.activeTab() orelse return null;
     return t.copilot_session;
+}
+
+/// Build the picker rows from the store (copilot records only) and open it.
+pub fn openCopilotConversationPicker() void {
+    refreshCopilotPickerRows();
+}
+
+/// (Re)load picker rows from the store. Called on open and after a delete.
+pub fn refreshCopilotPickerRows() void {
+    const allocator = g_allocator orelse return;
+    var empty_rows = [_]agent_history.Row{};
+    g_agent_history_mutex.lock();
+    const rows: []agent_history.Row = blk: {
+        const store = g_agent_history orelse break :blk empty_rows[0..];
+        break :blk store.buildCopilotRows(allocator) catch empty_rows[0..];
+    };
+    g_agent_history_mutex.unlock();
+    defer if (rows.len > 0) agent_history.freeRows(allocator, rows);
+
+    var picker_rows: [copilot_picker.MAX_ROWS]copilot_picker.Row = undefined;
+    const n = @min(rows.len, copilot_picker.MAX_ROWS);
+    for (0..n) |i| picker_rows[i] = .{
+        .session_id = rows[i].session_id,
+        .title = rows[i].title,
+        .updated_at = rows[i].updated_at,
+    };
+    copilot_picker.show(picker_rows[0..n]);
+}
+
+/// Load conversation `session_id` into the active terminal tab's sidebar. If a
+/// live copy is already open in some tab, switch to that tab instead (a second
+/// live Session with the same id would corrupt the store).
+pub fn loadCopilotConversationById(session_id: []const u8) void {
+    if (tab.switchToCopilotTabBySessionId(session_id)) {
+        _ = tab.setActiveCopilotVisible(true);
+        input.focusAiCopilot();
+        g_force_rebuild = true;
+        g_cells_valid = false;
+        return;
+    }
+    if (!isActiveTabTerminal()) return;
+    const t = tab.activeTab() orelse return;
+    const session = reopenCopilotSessionFromHistorySessionId(session_id) orelse return;
+    if (t.copilot_session) |old| old.deinit(); // already saved by its hook
+    t.copilot_session = session;
+    browser_panel.close();
+    _ = tab.setActiveCopilotVisible(true);
+    input.focusAiCopilot();
+    g_force_rebuild = true;
+    g_cells_valid = false;
+}
+
+pub fn deleteCopilotConversationById(session_id: []const u8) void {
+    g_agent_history_mutex.lock();
+    defer g_agent_history_mutex.unlock();
+    const store = g_agent_history orelse return;
+    if (store.deleteBySessionId(session_id)) markAgentHistoryDirtyLocked();
+}
+
+/// Start a fresh, empty Copilot conversation on the active terminal tab.
+pub fn newCopilotConversation() void {
+    if (!isActiveTabTerminal()) return;
+    const t = tab.activeTab() orelse return;
+    if (t.copilot_session) |old| {
+        old.deinit(); // already persisted by its hook if non-empty
+        t.copilot_session = null;
+    }
+    browser_panel.close();
+    _ = tab.setActiveCopilotVisible(true);
+    _ = ensureActiveCopilotSession();
+    input.focusAiCopilot();
+    g_force_rebuild = true;
+    g_cells_valid = false;
 }
 
 /// The preview pane that currently has split-tree focus, or null if the
