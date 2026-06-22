@@ -188,6 +188,7 @@ ai-agent-output-limit       = 16384</code></pre>
           <div class="feature">
             <h3>Skill 搜索位置</h3>
             <p>WispTerm 会在平台配置目录（Windows：<code>%APPDATA%\wispterm</code>，macOS：<code>~/Library/Application Support/wispterm</code>）的 <code>skills/</code> 和 <code>plugins/skills/</code> 子目录，以及可执行文件同级和当前工作目录下发现 <code>SKILL.md</code>。</p>
+            <p>Skill Center 也可以管理本地可执行工具。导入的工具会保存在 WispTerm 配置目录下，用 <code>SKILL.md</code> 描述，并且只有启用后的工具才会暴露给 AI Agent 会话。工具可以提供 <code>--skill</code>，也可以在同级目录携带 <code>SKILL.md</code>；如果没有任何说明，WispTerm 可以用已配置的 AI profile 生成草稿供你审阅。</p>
           </div>
           <div class="feature">
             <h3>加载 Skill</h3>
