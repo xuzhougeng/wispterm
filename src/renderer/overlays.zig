@@ -1427,6 +1427,7 @@ fn renderTitlebarTextStrongLimited(text: []const u8, x_start: f32, y: f32, color
 }
 
 const jupyter_picker = @import("../jupyter_picker.zig");
+const copilot_picker = @import("../copilot_picker.zig");
 
 /// Render the multi-server Jupyter picker overlay.
 pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
@@ -1489,6 +1490,84 @@ pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {
         ui_pipeline.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(bg, fg, 0.25), 0.30);
         const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
         const max_scroll_f: f32 = @floatFromInt(n - visible);
+        const scroll_f: f32 = @floatFromInt(scroll);
+        const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
+        const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);
+        ui_pipeline.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
+    }
+}
+
+/// Render the Copilot conversation picker overlay (mirror of renderJupyterPicker).
+pub fn renderCopilotPicker(window_width: f32, window_height: f32) void {
+    if (!copilot_picker.isVisible()) return;
+    const total = copilot_picker.rowCount(); // conversations + "+ New" row
+    if (total == 0) return;
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const panel = mixColor(bg, fg, 0.05);
+    const border = mixColor(bg, fg, 0.18);
+    const sel_bg = mixColor(bg, accent, 0.5);
+    const text_color = mixColor(bg, fg, 0.88);
+    const meta_color = mixColor(bg, fg, 0.54);
+
+    const row_h: f32 = @max(28.0, font.g_titlebar_cell_height + 12);
+    const box_w: f32 = @min(window_width - 80, 720);
+    const title_h: f32 = row_h;
+    const bottom_pad: f32 = 16;
+    const usable_h = @max(row_h, window_height - 32.0 - title_h - bottom_pad);
+    const fit: usize = @intFromFloat(@max(1.0, @floor(usable_h / row_h)));
+    const visible = @min(total, fit);
+    const scroll = copilot_picker.firstVisible(copilot_picker.selectedIndex(), visible, total);
+    const box_h: f32 = clampOverlayBoxHeight(title_h + row_h * @as(f32, @floatFromInt(visible)) + bottom_pad, window_height);
+    const box_x = @round((window_width - box_w) / 2);
+    const box_top = @round(@max(16.0, (window_height - box_h) / 2));
+    const box_y = @round(window_height - box_top - box_h);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.30);
+    renderRoundedQuadAlpha(box_x - 1, box_y - 1, box_w + 2, box_h + 2, 9, border, 0.5);
+    renderRoundedQuadAlpha(box_x, box_y, box_w, box_h, 8, panel, 0.99);
+
+    const title_y = @round(box_y + box_h - title_h + (title_h - font.g_titlebar_cell_height) / 2);
+    _ = titlebar.renderTextLimited(i18n.s().copilot_picker_title, box_x + 16, title_y, mixColor(bg, fg, 0.6), box_w - 32);
+
+    const now_ms = std.time.milliTimestamp();
+    var display: usize = 0;
+    while (display < visible) : (display += 1) {
+        const i = scroll + display;
+        if (i >= total) break;
+        const row_top_px = box_top + title_h + row_h * @as(f32, @floatFromInt(display));
+        const row_y = @round(window_height - row_top_px - row_h);
+        if (i == copilot_picker.selectedIndex()) {
+            renderRoundedQuadAlpha(box_x + 8, row_y + 3, box_w - 16, row_h - 6, 5, sel_bg, 0.6);
+        }
+        const ty = @round(row_y + (row_h - font.g_titlebar_cell_height) / 2);
+        if (i == copilot_picker.count()) {
+            // Trailing "+ New conversation" action row.
+            renderTitlebarTextLimited(i18n.s().copilot_picker_new, box_x + 18, ty, text_color, box_w - 36);
+        } else {
+            var tbuf: [32]u8 = undefined;
+            const rel = copilot_picker.formatRelativeTime(now_ms, copilot_picker.updatedAt(i), &tbuf);
+            const rel_w = measureTitlebarText(rel);
+            const meta_right = box_x + box_w - 18;
+            renderTitlebarText(rel, meta_right - rel_w, ty, meta_color);
+            renderTitlebarTextLimited(copilot_picker.titleAt(i), box_x + 18, ty, text_color, (meta_right - rel_w) - (box_x + 18) - 12);
+        }
+    }
+
+    // Scrollbar thumb when the list is taller than the window.
+    if (total > visible and visible > 0) {
+        const total_f: f32 = @floatFromInt(total);
+        const vis_f: f32 = @floatFromInt(visible);
+        const track_h = row_h * vis_f;
+        const track_top_px = box_top + title_h;
+        const sb_w: f32 = 3;
+        const sb_x = box_x + box_w - sb_w - 6;
+        const track_gl_y = @round(window_height - track_top_px - track_h);
+        ui_pipeline.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(bg, fg, 0.25), 0.30);
+        const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
+        const max_scroll_f: f32 = @floatFromInt(total - visible);
         const scroll_f: f32 = @floatFromInt(scroll);
         const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
         const thumb_gl_y = @round(window_height - (track_top_px + thumb_offset) - thumb_h);

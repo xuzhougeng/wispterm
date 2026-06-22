@@ -845,3 +845,12 @@ test "copilot load de-dups against open tabs" {
     const load_idx = std.mem.indexOf(u8, aw_src, "pub fn loadCopilotConversationById(") orelse return error.Missing;
     try std.testing.expect(std.mem.indexOf(u8, aw_src[load_idx..], "switchToCopilotTabBySessionId(") != null);
 }
+
+test "copilot picker is rendered and key-routed" {
+    const overlays_src = @embedFile("renderer/overlays.zig");
+    try std.testing.expect(std.mem.indexOf(u8, overlays_src, "pub fn renderCopilotPicker(") != null);
+    const input_src = @embedFile("input.zig");
+    try std.testing.expect(std.mem.indexOf(u8, input_src, "copilot_picker.isVisible()") != null);
+    const aw_src = @embedFile("AppWindow.zig");
+    try std.testing.expect(std.mem.indexOf(u8, aw_src, "renderCopilotPicker(") != null);
+}

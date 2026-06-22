@@ -6398,6 +6398,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderBrowserUrlBar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
@@ -10073,6 +10074,7 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderStartupShortcutsOverlay(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderCommandPalette(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderJupyterPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        overlays.renderCopilotPicker(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);

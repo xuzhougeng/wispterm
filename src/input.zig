@@ -62,6 +62,7 @@ const mouse_report = @import("input/mouse_report.zig");
 const mouse_wheel_scroll = @import("input/mouse_wheel_scroll.zig");
 const close_confirm = @import("close_confirm.zig");
 const jupyter_picker = @import("jupyter_picker.zig");
+const copilot_picker = @import("copilot_picker.zig");
 const jupyter_detect = @import("jupyter_detect.zig");
 const scp = @import("scp.zig");
 const writeToPty = clipboard.writeToPty;
@@ -2741,6 +2742,31 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 platform_input.key_delete => overlays.commandPaletteClearFilter(),
                 else => {},
             }
+        }
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
+    if (copilot_picker.isVisible()) {
+        switch (ev.key_code) {
+            platform_input.key_escape => copilot_picker.hide(),
+            platform_input.key_up => copilot_picker.move(-1),
+            platform_input.key_down => copilot_picker.move(1),
+            platform_input.key_delete => {
+                if (!copilot_picker.isNewRowSelected()) {
+                    AppWindow.deleteCopilotConversationById(copilot_picker.selectedId());
+                    AppWindow.refreshCopilotPickerRows();
+                }
+            },
+            platform_input.key_enter => {
+                if (copilot_picker.isNewRowSelected()) {
+                    AppWindow.newCopilotConversation();
+                } else {
+                    AppWindow.loadCopilotConversationById(copilot_picker.selectedId());
+                }
+                copilot_picker.hide();
+            },
+            else => {},
         }
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
