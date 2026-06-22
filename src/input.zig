@@ -697,6 +697,120 @@ test "input: skill center deploy keys ignore selected tool rows" {
     try std.testing.expect(!AppWindow.skillCenterOverlayActive());
 }
 
+test "input: skill center deploy and import keys are blocked while picker overlay is active" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+    }
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const name = try allocator.dupe(u8, "main_prompt");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const rel_path = try allocator.dupe(u8, "main_prompt/SKILL.md");
+    var rel_path_owned = true;
+    errdefer if (rel_path_owned) allocator.free(rel_path);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .prompt = .{
+        .name = name,
+        .rel_path = rel_path,
+        .agg_hash = null,
+    } };
+
+    const picker_labels = try allocator.alloc([]u8, 1);
+    var picker_labels_owned = true;
+    errdefer if (picker_labels_owned) allocator.free(picker_labels);
+    picker_labels[0] = try allocator.dupe(u8, "Local · Claude Code");
+    var picker_label_0_owned = true;
+    errdefer if (picker_label_0_owned) allocator.free(picker_labels[0]);
+    const picker_targets = try allocator.alloc(AppWindow.skill_center.Target, 1);
+    var picker_targets_owned = true;
+    errdefer if (picker_targets_owned) allocator.free(picker_targets);
+    picker_targets[0] = try AppWindow.skill_center.Target.dupe(allocator, "local", "Local", .claude, true);
+    var picker_target_0_owned = true;
+    errdefer if (picker_target_0_owned) picker_targets[0].deinit(allocator);
+    const overlay_skill_name = try allocator.dupe(u8, "overlay_prompt");
+    var overlay_skill_name_owned = true;
+    errdefer if (overlay_skill_name_owned) allocator.free(overlay_skill_name);
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    rel_path_owned = false;
+    session.model.setOverlay(.{ .picker = .{
+        .purpose = .deploy,
+        .skill_name = overlay_skill_name,
+        .labels = picker_labels,
+        .targets = picker_targets,
+        .sel = 0,
+    } });
+    overlay_skill_name_owned = false;
+    picker_labels_owned = false;
+    picker_label_0_owned = false;
+    picker_targets_owned = false;
+    picker_target_0_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x44, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .picker => |picker| try std.testing.expectEqualStrings("overlay_prompt", picker.skill_name),
+            else => return error.ExpectedSkillCenterPicker,
+        }
+    }
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x49, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .picker => |picker| try std.testing.expectEqualStrings("overlay_prompt", picker.skill_name),
+            else => return error.ExpectedSkillCenterPicker,
+        }
+    }
+}
+
 test "input: terminal viewport mouse wheel scroll requests a repaint" {
     const allocator = std.testing.allocator;
     const ghostty_vt = @import("ghostty-vt");
@@ -2542,11 +2656,11 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 if (AppWindow.skillCenterRescan()) markSkillCenterInputDirty();
                 return;
             },
-            0x44 => if (plain and !ev.shift and !text_capture and !picking) { // 'D'
+            0x44 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'D'
                 if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
                 return;
             },
-            0x49 => if (plain and !ev.shift and !text_capture and !picking) { // 'I'
+            0x49 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'I'
                 if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
                 return;
             },
