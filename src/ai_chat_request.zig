@@ -9,6 +9,7 @@ const ChatRequest = ai_chat.ChatRequest;
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_skill_distill = @import("ai_skill_distill.zig");
 const ai_chat_tools = @import("ai_chat_tools.zig");
+const first_party_tools = @import("first_party_tools.zig");
 const web_search = @import("web_search.zig");
 const web_read = @import("web_read.zig");
 const pubmed = @import("pubmed.zig");
@@ -865,6 +866,9 @@ fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
 }
 
 pub fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
+    if (first_party_tools.isKnown(call.name) and first_party_tools.isDisabledName(request.disabled_first_party_tools, call.name)) {
+        return std.fmt.allocPrint(request.allocator, "Tool is disabled: {s}", .{call.name});
+    }
     if (std.mem.eql(u8, call.name, "subagent")) return subagentToolCall(request, call);
     var tool_ctx = toolContextFromRequest(request);
     const result = try ai_chat_tools.executeToolCall(&tool_ctx, call);
@@ -1289,6 +1293,30 @@ test "subagent tool call requires a task argument" {
     const out = try executeToolCall(env.request, call);
     defer a.free(out);
     try std.testing.expectEqualStrings("Missing task", out);
+}
+
+test "executeToolCall rejects disabled subagent before the wrapper special case" {
+    const a = std.testing.allocator;
+    const env = try testSessionAndRequest(a);
+    defer env.session.deinit();
+    defer env.request.deinit();
+
+    const disabled = try a.alloc([]u8, 1);
+    disabled[0] = try a.dupe(u8, "subagent");
+    env.request.disabled_first_party_tools = disabled;
+
+    var call = ToolCall{
+        .id = try a.dupe(u8, "c1"),
+        .name = try a.dupe(u8, "subagent"),
+        .arguments = try a.dupe(u8, "{}"),
+    };
+    defer call.deinit(a);
+
+    const out = try executeToolCall(env.request, call);
+    defer a.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Tool is disabled: subagent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Missing task") == null);
 }
 
 test "request-owned dynamic binary tool dispatches through executeToolCall" {

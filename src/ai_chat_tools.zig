@@ -10,6 +10,7 @@ const agent_file_copy = @import("agent_file_copy.zig");
 const scp = @import("scp.zig");
 const ToolSshConnection = types.SshConnection;
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
+const first_party_tools = @import("first_party_tools.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ToolContext = types.ToolContext;
 const ToolSurface = types.ToolSurface;
@@ -45,6 +46,9 @@ pub const COPILOT_CONTEXT_LINES: usize = 40;
 
 pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+    if (first_party_tools.isKnown(call.name) and first_party_tools.isDisabledName(ctx.settings.disabled_first_party_tools, call.name)) {
+        return std.fmt.allocPrint(ctx.allocator, "Tool is disabled: {s}", .{call.name});
+    }
     if (std.mem.eql(u8, call.name, "terminal_list")) {
         return terminalListTool(ctx);
     }
@@ -2825,6 +2829,57 @@ test "ask_user tool rejects fewer than two options without asking" {
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "at least 2") != null);
     try std.testing.expectEqual(@as(usize, 0), asker.captured_count); // ask hook never called
+}
+
+test "executeToolCall rejects disabled first-party webread before validating args" {
+    const disabled = [_][]const u8{"webread"};
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = std.testing.allocator,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{
+            .disabled_first_party_tools = disabled[0..],
+        },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("c1"),
+        .name = @constCast("webread"),
+        .arguments = @constCast("not-json"),
+    });
+    defer std.testing.allocator.free(out);
+
+    try std.testing.expectEqualStrings("Tool is disabled: webread", out);
+}
+
+test "executeToolCall does not treat disabled dynamic names as first-party tools" {
+    const disabled = [_][]const u8{"project_dynamic_tool"};
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = std.testing.allocator,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{
+            .disabled_first_party_tools = disabled[0..],
+        },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("c1"),
+        .name = @constCast("project_dynamic_tool"),
+        .arguments = @constCast("{}"),
+    });
+    defer std.testing.allocator.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Unknown tool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Tool is disabled") == null);
 }
 
 test "isDangerousCommand flags destructive verbs without a Session" {
