@@ -1052,6 +1052,7 @@ pub const Session = struct {
         if (record.session_id.len > 0) session.copySessionId(record.session_id);
         session.max_tokens = record.max_tokens;
         session.vision_enabled = record.vision_enabled;
+        session.copilot = record.copilot;
         session.created_at_ms = record.created_at;
         session.updated_at_ms = record.updated_at;
         for (record.messages) |msg| {
@@ -4054,6 +4055,7 @@ pub const Session = struct {
             .max_tokens = self.max_tokens,
             .agent_enabled = self.agent_enabled,
             .vision_enabled = self.vision_enabled,
+            .copilot = self.copilot,
             .created_at = self.created_at_ms,
             .updated_at = self.updated_at_ms,
             .messages = messages,
@@ -8328,4 +8330,22 @@ test "composer submit of free text answers a pending question as custom" {
 
     try std.testing.expect(runner.result == .custom);
     try std.testing.expectEqualStrings("neither, use C", runner.result.custom);
+}
+
+test "copilot flag survives toHistoryRecord -> initFromHistoryRecord round-trip" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator, "Copilot", "https://x", "k", "m",
+        "sys", "disabled", "low", "true", "true",
+    );
+    defer session.deinit();
+    session.copilot = true;
+
+    var record = try session.toHistoryRecord(allocator);
+    defer agent_history.freeOwnedRecord(allocator, &record);
+    try std.testing.expect(record.copilot);
+
+    const restored = try Session.initFromHistoryRecord(allocator, record);
+    defer restored.deinit();
+    try std.testing.expect(restored.copilot);
 }
