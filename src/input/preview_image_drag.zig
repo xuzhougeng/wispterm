@@ -1,4 +1,4 @@
-//! Left-drag pan state machine for image preview panes. Extracted from
+//! Left-drag pan state machine for raster preview panes. Extracted from
 //! input.zig threadlocals so the drag wiring is testable: the right-dock →
 //! pane migration (PR #185) silently dropped drag-to-pan because the logic
 //! lived only in untested UI glue. input.zig owns one threadlocal instance
@@ -18,12 +18,12 @@ pub fn active(self: *const PreviewImageDrag) bool {
     return self.pane != null;
 }
 
-/// Start a pan drag on `p` if it is a ready image preview. Replaces any stale
+/// Start a pan drag on `p` if it is a ready image/PDF preview. Replaces any stale
 /// drag. The pane is ref'd for the drag's lifetime so a mid-drag tree edit
 /// (e.g. a keyboard close) cannot free it under the cursor. Returns whether
 /// the drag engaged (caller sets the pan cursor).
 pub fn begin(self: *PreviewImageDrag, gpa: Allocator, p: *PreviewPane, x: f64, y: f64) bool {
-    if (p.kind != .image or p.load_status != .ready) return false;
+    if (!p.kind.isRaster() or p.load_status != .ready) return false;
     self.release(gpa);
     self.pane = p.ref();
     self.last_x = x;
@@ -124,6 +124,23 @@ test "PreviewImageDrag: move pans by the mouse delta and updates the anchor" {
     // Same position again: zero delta, no pan change.
     try std.testing.expect(!drag.move(110, 90));
     try std.testing.expectEqual(@as(f32, 10), p.imagePanX());
+
+    drag.release(gpa);
+}
+
+test "PreviewImageDrag: ready PDF panes can be dragged like images" {
+    const gpa = std.testing.allocator;
+    var drag: PreviewImageDrag = .{};
+
+    const p = try PreviewPane.create(gpa);
+    defer p.unref(gpa);
+    p.kind = .pdf;
+    p.load_status = .ready;
+
+    try std.testing.expect(drag.begin(gpa, p, 20, 30));
+    try std.testing.expect(drag.move(12, 44));
+    try std.testing.expectEqual(@as(f32, -8), p.imagePanX());
+    try std.testing.expectEqual(@as(f32, 14), p.imagePanY());
 
     drag.release(gpa);
 }

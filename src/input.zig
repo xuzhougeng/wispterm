@@ -5762,7 +5762,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             // route there) and consumes the event — previews have no terminal
             // grid to select into. Terminal leaves fall through to the surface
             // focus + selection path below, so non-preview clicks are unchanged.
-            // A ready image preview additionally starts a drag-to-pan.
+            // A ready image/PDF preview additionally starts a drag-to-pan.
             if (split_layout.paneAtPoint(ev.x, ev.y)) |hit| {
                 switch (hit.pane) {
                     .preview => |p| {
@@ -6080,8 +6080,8 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
         platform_cursor.set(.ibeam);
         return;
     }
-    // Left-drag pans a ready image preview (the renderer clamps the pan to the
-    // image's overflow each frame).
+    // Left-drag pans a ready image/PDF preview (the renderer clamps the pan to
+    // the raster content's overflow each frame).
     if (g_preview_image_drag.active()) {
         if (g_preview_image_drag.move(xpos, ypos)) AppWindow.g_force_rebuild = true;
         platform_cursor.set(.size_all);
