@@ -6,6 +6,7 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
+const ai_chat_protocol = @import("../ai_chat_protocol.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
@@ -3900,11 +3901,26 @@ pub fn defaultAiProfileSnapshot(allocator: std.mem.Allocator) ?DefaultAiProfileS
         .base_url = base_url_copy,
         .api_key = api_key_copy,
         .model = model_copy,
-        .protocol = ai_chat.ApiProtocol.parse(protocol),
+        .protocol = defaultAiProfileSnapshotProtocol(base_url, protocol),
         .thinking_enabled = !std.mem.eql(u8, thinking, "disabled"),
         .reasoning_effort = reasoning_copy,
         .max_tokens = max_tokens,
     };
+}
+
+fn defaultAiProfileSnapshotProtocol(base_url: []const u8, protocol: []const u8) ai_chat.ApiProtocol {
+    var parsed = ai_chat.ApiProtocol.parse(protocol);
+    if (parsed == .chat_completions and ai_chat_protocol.isAnthropicBaseUrl(base_url)) {
+        parsed = .anthropic;
+    }
+    return parsed;
+}
+
+test "default AI profile snapshot normalizes Anthropic URL with default protocol" {
+    try std.testing.expectEqual(
+        ai_chat.ApiProtocol.anthropic,
+        defaultAiProfileSnapshotProtocol("https://api.anthropic.com", ""),
+    );
 }
 
 threadlocal var g_ai_default_name_buf: [256]u8 = undefined;
