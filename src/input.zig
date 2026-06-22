@@ -2830,7 +2830,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         handleBrowserUrlBarKey(ev);
         return;
     }
-    if (browser_panel.isVisibleForActiveTab() and !browser_panel.urlBarFocused() and !jupyter_picker.isVisible()) {
+    if (browser_panel.isVisibleForActiveTab() and !browser_panel.urlBarFocused() and !jupyter_picker.isVisible() and !copilot_picker.isVisible()) {
         if (ev.key_code == platform_input.key_escape) {
             closeBrowserPanel();
             AppWindow.g_force_rebuild = true;
@@ -6505,6 +6505,12 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     }
     if (overlays.sessionLauncherVisible()) {
         overlays.sessionLauncherHandleScroll(@floatFromInt(ev.delta));
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        return;
+    }
+    if (copilot_picker.isVisible()) {
+        copilot_picker.move(if (ev.delta > 0) -1 else 1);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
         return;
