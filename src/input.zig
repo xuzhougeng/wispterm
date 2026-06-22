@@ -3025,6 +3025,20 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 }
                 return;
             },
+            .tool_import_confirm => {
+                switch (ev.key_code) {
+                    platform_input.key_enter => if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty(),
+                    platform_input.key_escape => if (AppWindow.skillCenterOverlayCancel()) markSkillCenterInputDirty(),
+                    platform_input.key_up => if (AppWindow.skillCenterPreviewScroll(-1)) markSkillCenterInputDirty(),
+                    platform_input.key_down => if (AppWindow.skillCenterPreviewScroll(1)) markSkillCenterInputDirty(),
+                    platform_input.key_page_up => if (AppWindow.skillCenterPreviewScroll(-12)) markSkillCenterInputDirty(),
+                    platform_input.key_page_down => if (AppWindow.skillCenterPreviewScroll(12)) markSkillCenterInputDirty(),
+                    platform_input.key_home => if (AppWindow.skillCenterPreviewScroll(-1_000_000)) markSkillCenterInputDirty(),
+                    platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
+                    else => {},
+                }
+                return;
+            },
             .tool_import => {
                 switch (ev.key_code) {
                     platform_input.key_enter => if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty(),

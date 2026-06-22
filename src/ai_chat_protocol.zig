@@ -675,7 +675,7 @@ pub fn subagentToolAllowed(name: []const u8) bool {
     return false;
 }
 
-fn builtinToolNameReserved(name: []const u8) bool {
+pub fn builtinToolNameReserved(name: []const u8) bool {
     const reserved = [_][]const u8{
         "terminal_list",
         "terminal_context",

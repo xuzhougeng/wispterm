@@ -329,6 +329,26 @@ pub const TextPreviewState = struct {
     }
 };
 
+pub const ToolImportConfirmState = struct {
+    tool_id: []u8,
+    function_name: []u8,
+    source_path: []u8,
+    staged_binary_path: []u8,
+    warning_text: []u8,
+    owns_staging_dir: bool = true,
+    scroll: usize = 0,
+
+    pub fn deinit(self: *ToolImportConfirmState, allocator: std.mem.Allocator) void {
+        if (self.owns_staging_dir) tool_import.cleanupStagedBinaryPath(self.staged_binary_path);
+        allocator.free(self.tool_id);
+        allocator.free(self.function_name);
+        allocator.free(self.source_path);
+        allocator.free(self.staged_binary_path);
+        allocator.free(self.warning_text);
+        self.* = undefined;
+    }
+};
+
 pub const ToolImportPreviewState = struct {
     tool_id: []u8,
     function_name: []u8,
@@ -361,6 +381,14 @@ pub const ToolImportPreviewInit = struct {
     ai_review_required: bool,
 };
 
+pub const ToolImportConfirmInit = struct {
+    tool_id: []const u8,
+    function_name: []const u8,
+    source_path: []const u8,
+    staged_binary_path: []const u8,
+    warning_text: []const u8,
+};
+
 pub const Overlay = union(enum) {
     none,
     picker: PickerState,
@@ -370,6 +398,7 @@ pub const Overlay = union(enum) {
     url_input: UrlInputState,
     install_pick: InstallPickState,
     text_preview: TextPreviewState,
+    tool_import_confirm: ToolImportConfirmState,
     tool_import_preview: ToolImportPreviewState,
 
     pub fn deinit(self: *Overlay, allocator: std.mem.Allocator) void {
@@ -380,6 +409,7 @@ pub const Overlay = union(enum) {
             .confirm => |*c| c.deinit(allocator),
             .busy => |m| allocator.free(m),
             .text_preview => |*t| t.deinit(allocator),
+            .tool_import_confirm => |*t| t.deinit(allocator),
             .tool_import_preview => |*t| t.deinit(allocator),
             .url_input => |*u| u.deinit(allocator),
             .install_pick => |*p| p.deinit(allocator),
@@ -481,6 +511,25 @@ pub const PanelModel = struct {
         self.setOverlay(.{ .text_preview = .{ .title = t, .content = c } });
     }
 
+    pub fn openToolImportConfirm(self: *PanelModel, input: ToolImportConfirmInit) !void {
+        const tool_id = try self.allocator.dupe(u8, input.tool_id);
+        errdefer self.allocator.free(tool_id);
+        const function_name = try self.allocator.dupe(u8, input.function_name);
+        errdefer self.allocator.free(function_name);
+        const source_path = try self.allocator.dupe(u8, input.source_path);
+        errdefer self.allocator.free(source_path);
+        const staged_binary_path = try self.allocator.dupe(u8, input.staged_binary_path);
+        errdefer self.allocator.free(staged_binary_path);
+        const warning_text = try self.allocator.dupe(u8, input.warning_text);
+        self.setOverlay(.{ .tool_import_confirm = .{
+            .tool_id = tool_id,
+            .function_name = function_name,
+            .source_path = source_path,
+            .staged_binary_path = staged_binary_path,
+            .warning_text = warning_text,
+        } });
+    }
+
     pub fn openToolImportPreview(self: *PanelModel, input: ToolImportPreviewInit) !void {
         const tool_id = try self.allocator.dupe(u8, input.tool_id);
         errdefer self.allocator.free(tool_id);
@@ -511,6 +560,14 @@ pub const PanelModel = struct {
     pub fn scrollTextPreview(self: *PanelModel, delta: isize) void {
         switch (self.overlay) {
             .text_preview => |*tp| {
+                if (delta < 0) {
+                    const d: usize = @intCast(-delta);
+                    tp.scroll = if (tp.scroll > d) tp.scroll - d else 0;
+                } else {
+                    tp.scroll +|= @intCast(delta);
+                }
+            },
+            .tool_import_confirm => |*tp| {
                 if (delta < 0) {
                     const d: usize = @intCast(-delta);
                     tp.scroll = if (tp.scroll > d) tp.scroll - d else 0;
@@ -1047,6 +1104,20 @@ test "skill_center: tool import preview overlay stores staged import" {
     try std.testing.expect(model.overlay == .tool_import_preview);
 }
 
+test "skill_center: tool import confirm overlay stores staged import" {
+    const a = std.testing.allocator;
+    var model = PanelModel.init(a);
+    defer model.deinit();
+    try model.openToolImportConfirm(.{
+        .tool_id = "agent_docx_review",
+        .function_name = "agent_docx_review",
+        .source_path = "/tmp/agent_docx_review",
+        .staged_binary_path = "/tmp/stage/bin/agent_docx_review",
+        .warning_text = "WispTerm will inspect this executable.",
+    });
+    try std.testing.expect(model.overlay == .tool_import_confirm);
+}
+
 const ToolImportStagePaths = struct {
     stage_root: []u8,
     staged_binary_path: []u8,
@@ -1081,6 +1152,27 @@ test "skill_center: tool import preview clearOverlay removes staged dir" {
         .skill_md = "---\nname: agent_docx_review\n---\nDocx.",
         .doc_source = .skill_flag,
         .ai_review_required = false,
+    });
+    model.clearOverlay();
+    try std.testing.expectError(error.FileNotFound, std.fs.accessAbsolute(stage.stage_root, .{}));
+}
+
+test "skill_center: tool import confirm clearOverlay removes staged dir" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const stage = try createToolImportStageForTest(a, &tmp, "agent_docx_review");
+    defer a.free(stage.stage_root);
+    defer a.free(stage.staged_binary_path);
+
+    var model = PanelModel.init(a);
+    defer model.deinit();
+    try model.openToolImportConfirm(.{
+        .tool_id = "agent_docx_review",
+        .function_name = "agent_docx_review",
+        .source_path = "/tmp/original/agent_docx_review",
+        .staged_binary_path = stage.staged_binary_path,
+        .warning_text = "Inspect this executable.",
     });
     model.clearOverlay();
     try std.testing.expectError(error.FileNotFound, std.fs.accessAbsolute(stage.stage_root, .{}));

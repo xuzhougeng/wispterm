@@ -94,6 +94,10 @@ pub fn sanitizeFunctionName(allocator: std.mem.Allocator, raw: []const u8) ![]u8
     return out.toOwnedSlice(allocator);
 }
 
+pub fn validateImportedFunctionName(name: []const u8) !void {
+    if (ai_chat_protocol.builtinToolNameReserved(name)) return error.ReservedToolName;
+}
+
 pub fn generateSkillMdFromHelp(allocator: std.mem.Allocator, input: GenerateHelpInput) ![]u8 {
     return std.fmt.allocPrint(
         allocator,

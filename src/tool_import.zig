@@ -78,6 +78,7 @@ pub fn resolveDocs(allocator: std.mem.Allocator, input: ResolveDocsInput) !Resol
 }
 
 pub fn probeBinary(allocator: std.mem.Allocator, binary_path: []const u8) !ProbeOutput {
+    try validateLaunchableBinaryPath(binary_path);
     const help = try runArgvProbe(allocator, &.{ binary_path, "--help" });
     errdefer allocator.free(help);
     const skill = try runArgvProbe(allocator, &.{ binary_path, "--skill" });
@@ -142,6 +143,7 @@ pub fn installToolPackageWithSource(
     skill_md: []const u8,
     enabled: bool,
 ) ![]u8 {
+    try tool_registry.validateImportedFunctionName(function_name);
     try validatePackageName(function_name);
     const basename = std.fs.path.basename(source_binary_path);
     try validatePackageName(basename);
@@ -216,7 +218,7 @@ fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
     child.create_no_window = true;
-    child.spawn() catch return allocator.dupe(u8, "");
+    child.spawn() catch return error.ProbeSpawnFailed;
 
     var fixed_poll_allocator = std.heap.FixedBufferAllocator.init(poll_storage);
     var poller = std.Io.poll(fixed_poll_allocator.allocator(), enum { stdout, stderr }, .{
@@ -457,6 +459,14 @@ pub fn ensureDirAbsolute(path: []const u8) !void {
 fn openFileAny(path: []const u8) !std.fs.File {
     if (std.fs.path.isAbsolute(path)) return std.fs.openFileAbsolute(path, .{});
     return std.fs.cwd().openFile(path, .{});
+}
+
+fn validateLaunchableBinaryPath(path: []const u8) !void {
+    var file = openFileAny(path) catch return error.ProbeSpawnFailed;
+    defer file.close();
+    const stat = file.stat() catch return error.ProbeSpawnFailed;
+    if (stat.kind != .file) return error.ProbeSpawnFailed;
+    if (builtin.os.tag != .windows and (stat.mode & 0o111) == 0) return error.ProbeSpawnFailed;
 }
 
 fn createFileAbsolute(path: []const u8, mode: std.fs.File.Mode) !std.fs.File {
@@ -742,6 +752,36 @@ test "tool_import: probeBinary treats capped nonzero help output as empty" {
     var probe = try probeBinary(a, script_path);
     defer probe.deinit(a);
     try std.testing.expectEqual(@as(usize, 0), probe.help.len);
+}
+
+test "tool_import: probeBinary returns spawn failure for missing executable" {
+    const a = std.testing.allocator;
+    try std.testing.expectError(error.ProbeSpawnFailed, probeBinary(a, "/definitely/missing/wispterm-tool-probe"));
+}
+
+test "tool_import: installToolPackage rejects reserved built-in function names" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("src");
+    try tmp.dir.makePath("tools");
+    try tmp.dir.writeFile(.{ .sub_path = "src/read-file", .data = "#!/bin/sh\nexit 0\n" });
+    var source_file = try tmp.dir.openFile("src/read-file", .{});
+    defer source_file.close();
+    if (builtin.os.tag != .windows) try source_file.chmod(0o755);
+    const source_path = try tmp.dir.realpathAlloc(a, "src/read-file");
+    defer a.free(source_path);
+    const tools_root = try tmp.dir.realpathAlloc(a, "tools");
+    defer a.free(tools_root);
+
+    try std.testing.expectError(error.ReservedToolName, installToolPackage(
+        a,
+        tools_root,
+        source_path,
+        "read_file",
+        "---\nname: read_file\n---\nReserved.\n",
+        false,
+    ));
 }
 
 test "tool_import: installToolPackage preserves executable bits through restrictive umask" {

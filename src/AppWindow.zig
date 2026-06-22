@@ -737,6 +737,225 @@ test "AppWindow: failed tool import preserves preview overlay and sets status" {
     try std.fs.accessAbsolute(stage_root, .{});
 }
 
+fn countMatchingToolDirs(tools_root: []const u8, prefix: []const u8) !usize {
+    var dir = try std.fs.openDirAbsolute(tools_root, .{ .iterate = true });
+    defer dir.close();
+    var it = dir.iterate();
+    var count: usize = 0;
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        if (std.mem.startsWith(u8, entry.name, prefix)) count += 1;
+    }
+    return count;
+}
+
+test "AppWindow: skill center tool import stages file behind explicit confirmation" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "plain bytes" });
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 1), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqualStrings("", session.status);
+}
+
+test "AppWindow: skill center tool import probe spawn failure aborts without fallback docs" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "plain bytes" });
+    try tmp.dir.writeFile(.{ .sub_path = "source/SKILL.md", .data = "---\nname: docx\n---\nSibling docs.\n" });
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(skillCenterOverlayActive());
+    try std.testing.expect(skillCenterOverlaySelect());
+    try std.testing.expect(!skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, "docx"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "could not inspect the executable") != null);
+}
+
+test "AppWindow: skill center tool import rejects reserved built-in function names" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    const script =
+        "#!/bin/sh\n" ++
+        "if [ \"$1\" = \"--skill\" ]; then\n" ++
+        "  printf '%s\\n' '---' 'name: read_file' 'description: Reserved' '---' 'Reserved tool.'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "if [ \"$1\" = \"--help\" ]; then\n" ++
+        "  printf 'reserved help\\n'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "exit 0\n";
+    try tmp.dir.writeFile(.{ .sub_path = "source/read-file", .data = script });
+    var file = try tmp.dir.openFile("source/read-file", .{});
+    defer file.close();
+    try file.chmod(0o755);
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/read-file");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(!skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, "read_file"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "reserved") != null);
+}
+
 test "AppWindow: tool import draft failure result keeps view and sets status" {
     const allocator = std.testing.allocator;
     const previous_allocator = g_allocator;
@@ -1293,6 +1512,13 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
                 .title = tp.title,
                 .content = tp.content,
                 .hint = i18n.s().sc_preview_hint,
+                .scroll = tp.scroll,
+                .scroll_out = &tp.scroll,
+            } },
+            .tool_import_confirm => |*tp| .{ .text = .{
+                .title = tp.function_name,
+                .content = tp.warning_text,
+                .hint = "Enter inspect/import preview · Esc cancel · ↑/↓ scroll",
                 .scroll = tp.scroll,
                 .scroll_out = &tp.scroll,
             } },
@@ -1882,6 +2108,7 @@ pub fn skillCenterMove(delta: isize) bool {
         .import_list => |*il| scMoveSel(&il.sel, il.names.len, delta),
         .install_pick => |*p| scMoveSel(&p.sel, p.entries.len, delta),
         .url_input => {},
+        .tool_import_confirm => {},
         .tool_import_preview => {},
         else => {
             const n = session.model.entryCount();
@@ -2579,7 +2806,33 @@ fn skillCenterOpenFileDialog(allocator: std.mem.Allocator, request: platform_fil
 }
 
 fn skillCenterImportErrorSummary(allocator: std.mem.Allocator, err: anyerror) []u8 {
+    switch (err) {
+        error.ProbeSpawnFailed => return allocator.dupe(u8, "Tool import failed: could not inspect the executable.") catch return &.{},
+        error.ReservedToolName => return allocator.dupe(u8, "Tool import failed: reserved built-in tool names cannot be imported.") catch return &.{},
+        else => {},
+    }
     return std.fmt.allocPrint(allocator, "Tool import failed: {}", .{err}) catch allocator.dupe(u8, "Tool import failed") catch return &.{};
+}
+
+fn skillCenterCloneToolImportConfirm(
+    allocator: std.mem.Allocator,
+    confirm: skill_center.ToolImportConfirmState,
+) !skill_center.ToolImportConfirmState {
+    var clone: skill_center.ToolImportConfirmState = .{
+        .tool_id = try allocator.dupe(u8, confirm.tool_id),
+        .function_name = &.{},
+        .source_path = &.{},
+        .staged_binary_path = &.{},
+        .warning_text = &.{},
+        .owns_staging_dir = false,
+        .scroll = confirm.scroll,
+    };
+    errdefer clone.deinit(allocator);
+    clone.function_name = try allocator.dupe(u8, confirm.function_name);
+    clone.source_path = try allocator.dupe(u8, confirm.source_path);
+    clone.staged_binary_path = try allocator.dupe(u8, confirm.staged_binary_path);
+    clone.warning_text = try allocator.dupe(u8, confirm.warning_text);
+    return clone;
 }
 
 fn skillCenterCloneToolImportPreview(
@@ -2617,6 +2870,16 @@ fn skillCenterBinaryFileSize(path: []const u8) !u64 {
         try std.fs.cwd().openFile(path, .{});
     defer file.close();
     return (try file.stat()).size;
+}
+
+fn skillCenterToolImportConfirmText(allocator: std.mem.Allocator, source_path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "WispTerm will run the selected executable with `--skill` and `--help` to inspect it before import.\n\n" ++
+            "Press Enter to continue to the import preview, or Esc to cancel and remove the staged copy.\n\n" ++
+            "Selected file:\n{s}\n",
+        .{source_path},
+    );
 }
 
 const TOOL_IMPORT_DRAFT_SYSTEM_PROMPT =
@@ -2710,58 +2973,26 @@ const ToolImportDraftJob = struct {
     }
 };
 
-pub fn skillCenterImportTool() bool {
-    const session = activeSkillCenter() orelse return false;
-    const allocator = g_allocator orelse return false;
-    const filters = [_]platform_file_dialog.Filter{.{ .name = "All Files", .pattern = "*.*" }};
-    const owner: platform_file_dialog.Owner = if (currentNativeHandleBits()) |handle_bits|
-        platform_file_dialog.windowOwner(handle_bits)
-    else
-        .{};
-    const source_path = skillCenterOpenFileDialog(allocator, .{
-        .owner = owner,
-        .title = "Import executable tool",
-        .filters = &filters,
-    }) orelse return false;
-    defer allocator.free(source_path);
-
-    const basename = std.fs.path.basename(source_path);
-    const function_name = tool_registry.sanitizeFunctionName(allocator, basename) catch return false;
-    defer allocator.free(function_name);
-    const tool_id = allocator.dupe(u8, function_name) catch return false;
-    defer allocator.free(tool_id);
-
-    const tools_root = platform_dirs.toolsDir(allocator) catch return false;
-    defer allocator.free(tools_root);
-    const staging_name = std.fmt.allocPrint(allocator, ".import-staging-{d}-{s}", .{ std.time.milliTimestamp(), function_name }) catch return false;
-    defer allocator.free(staging_name);
-    const staging_root = std.fs.path.join(allocator, &.{ tools_root, staging_name }) catch return false;
-    defer allocator.free(staging_root);
-    const staging_bin_dir = std.fs.path.join(allocator, &.{ staging_root, "bin" }) catch return false;
-    defer allocator.free(staging_bin_dir);
-    const staged_binary_path = std.fs.path.join(allocator, &.{ staging_bin_dir, basename }) catch return false;
-    defer allocator.free(staged_binary_path);
-    var keep_stage = false;
-    defer if (!keep_stage) tool_import.cleanupStagedBinaryPath(staged_binary_path);
-    tool_import.ensureDirAbsolute(staging_bin_dir) catch return false;
-    tool_import.copyFilePreserveMode(source_path, staged_binary_path) catch {
-        tool_import.cleanupStagedBinaryPath(staged_binary_path);
-        return false;
-    };
-
-    var probe = tool_import.probeBinary(allocator, staged_binary_path) catch {
+fn skillCenterContinueToolImport(
+    session: *skill_center.Session,
+    allocator: std.mem.Allocator,
+    confirm: *skill_center.ToolImportConfirmState,
+) bool {
+    var probe = tool_import.probeBinary(allocator, confirm.staged_binary_path) catch |err| {
+        const summary = skillCenterImportErrorSummary(allocator, err);
+        defer if (summary.len > 0) allocator.free(summary);
         session.mutex.lock();
-        skillCenterSetStatusLocked(session, "Tool import failed: could not inspect the executable.");
+        skillCenterSetStatusLocked(session, if (summary.len > 0) summary else "Tool import failed");
         session.mutex.unlock();
         markUiDirty();
         return true;
     };
     defer probe.deinit(allocator);
-    const sibling_skill = tool_import.readSiblingSkillMd(allocator, source_path);
+    const sibling_skill = tool_import.readSiblingSkillMd(allocator, confirm.source_path);
     defer if (sibling_skill) |skill_md| allocator.free(skill_md);
 
     const docs = tool_import.resolveDocs(allocator, .{
-        .tool_name = function_name,
+        .tool_name = confirm.function_name,
         .help_output = probe.help,
         .skill_output = probe.skill,
         .sibling_skill = sibling_skill,
@@ -2783,20 +3014,21 @@ pub fn skillCenterImportTool() bool {
         session.mutex.lock();
         skillCenterSetStatusLocked(session, "");
         var opened = true;
+        confirm.owns_staging_dir = false;
         session.model.openToolImportPreview(.{
-            .tool_id = tool_id,
-            .function_name = function_name,
-            .source_path = source_path,
-            .staged_binary_path = staged_binary_path,
+            .tool_id = confirm.tool_id,
+            .function_name = confirm.function_name,
+            .source_path = confirm.source_path,
+            .staged_binary_path = confirm.staged_binary_path,
             .skill_md = resolved.skill_md,
             .doc_source = resolved.source,
             .ai_review_required = false,
         }) catch {
             opened = false;
+            confirm.owns_staging_dir = true;
         };
         if (!opened) skillCenterSetStatusLocked(session, "Tool import failed: could not open the preview.");
         session.mutex.unlock();
-        if (opened) keep_stage = true;
         markUiDirty();
         return true;
     }
@@ -2811,7 +3043,8 @@ pub fn skillCenterImportTool() bool {
     var profile_owned = true;
     defer if (profile_owned) profile.deinit(allocator);
 
-    const staged_sha256 = tool_import.sha256FileHex(allocator, staged_binary_path) catch {
+    const basename = std.fs.path.basename(confirm.source_path);
+    const staged_sha256 = tool_import.sha256FileHex(allocator, confirm.staged_binary_path) catch {
         session.mutex.lock();
         skillCenterSetStatusLocked(session, "Tool import failed: could not hash the executable.");
         session.mutex.unlock();
@@ -2819,7 +3052,7 @@ pub fn skillCenterImportTool() bool {
         return true;
     };
     defer allocator.free(staged_sha256);
-    const staged_size = skillCenterBinaryFileSize(staged_binary_path) catch {
+    const staged_size = skillCenterBinaryFileSize(confirm.staged_binary_path) catch {
         session.mutex.lock();
         skillCenterSetStatusLocked(session, "Tool import failed: could not inspect the staged executable.");
         session.mutex.unlock();
@@ -2827,11 +3060,11 @@ pub fn skillCenterImportTool() bool {
         return true;
     };
     const prompt = tool_skill_draft.buildDraftPrompt(allocator, .{
-        .tool_name = function_name,
+        .tool_name = confirm.function_name,
         .filename = basename,
         .sha256 = staged_sha256,
         .file_size = staged_size,
-        .platform = skillCenterBinaryPlatformLabel(source_path),
+        .platform = skillCenterBinaryPlatformLabel(confirm.source_path),
     }) catch {
         session.mutex.lock();
         skillCenterSetStatusLocked(session, "Tool import failed: could not build the documentation draft request.");
@@ -2849,7 +3082,7 @@ pub fn skillCenterImportTool() bool {
         markUiDirty();
         return true;
     };
-    const job_tool_id = allocator.dupe(u8, tool_id) catch {
+    const job_tool_id = allocator.dupe(u8, confirm.tool_id) catch {
         allocator.destroy(job);
         session.mutex.lock();
         skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
@@ -2857,7 +3090,7 @@ pub fn skillCenterImportTool() bool {
         markUiDirty();
         return true;
     };
-    const job_function_name = allocator.dupe(u8, function_name) catch {
+    const job_function_name = allocator.dupe(u8, confirm.function_name) catch {
         allocator.free(job_tool_id);
         allocator.destroy(job);
         session.mutex.lock();
@@ -2866,7 +3099,7 @@ pub fn skillCenterImportTool() bool {
         markUiDirty();
         return true;
     };
-    const job_source_path = allocator.dupe(u8, source_path) catch {
+    const job_source_path = allocator.dupe(u8, confirm.source_path) catch {
         allocator.free(job_tool_id);
         allocator.free(job_function_name);
         allocator.destroy(job);
@@ -2876,7 +3109,7 @@ pub fn skillCenterImportTool() bool {
         markUiDirty();
         return true;
     };
-    const job_staged_binary_path = allocator.dupe(u8, staged_binary_path) catch {
+    const job_staged_binary_path = allocator.dupe(u8, confirm.staged_binary_path) catch {
         allocator.free(job_tool_id);
         allocator.free(job_function_name);
         allocator.free(job_source_path);
@@ -2905,6 +3138,76 @@ pub fn skillCenterImportTool() bool {
         markUiDirty();
         return true;
     }
+    confirm.owns_staging_dir = false;
+    markUiDirty();
+    return true;
+}
+
+pub fn skillCenterImportTool() bool {
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    const filters = [_]platform_file_dialog.Filter{.{ .name = "All Files", .pattern = "*.*" }};
+    const owner: platform_file_dialog.Owner = if (currentNativeHandleBits()) |handle_bits|
+        platform_file_dialog.windowOwner(handle_bits)
+    else
+        .{};
+    const source_path = skillCenterOpenFileDialog(allocator, .{
+        .owner = owner,
+        .title = "Import executable tool",
+        .filters = &filters,
+    }) orelse return false;
+    defer allocator.free(source_path);
+
+    const basename = std.fs.path.basename(source_path);
+    const function_name = tool_registry.sanitizeFunctionName(allocator, basename) catch return false;
+    defer allocator.free(function_name);
+    tool_registry.validateImportedFunctionName(function_name) catch |err| {
+        const summary = skillCenterImportErrorSummary(allocator, err);
+        defer if (summary.len > 0) allocator.free(summary);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, if (summary.len > 0) summary else "Tool import failed");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const tool_id = allocator.dupe(u8, function_name) catch return false;
+    defer allocator.free(tool_id);
+
+    const tools_root = platform_dirs.toolsDir(allocator) catch return false;
+    defer allocator.free(tools_root);
+    const staging_name = std.fmt.allocPrint(allocator, ".import-staging-{d}-{s}", .{ std.time.milliTimestamp(), function_name }) catch return false;
+    defer allocator.free(staging_name);
+    const staging_root = std.fs.path.join(allocator, &.{ tools_root, staging_name }) catch return false;
+    defer allocator.free(staging_root);
+    const staging_bin_dir = std.fs.path.join(allocator, &.{ staging_root, "bin" }) catch return false;
+    defer allocator.free(staging_bin_dir);
+    const staged_binary_path = std.fs.path.join(allocator, &.{ staging_bin_dir, basename }) catch return false;
+    defer allocator.free(staged_binary_path);
+    var keep_stage = false;
+    defer if (!keep_stage) tool_import.cleanupStagedBinaryPath(staged_binary_path);
+    tool_import.ensureDirAbsolute(staging_bin_dir) catch return false;
+    tool_import.copyFilePreserveMode(source_path, staged_binary_path) catch {
+        tool_import.cleanupStagedBinaryPath(staged_binary_path);
+        return false;
+    };
+
+    const confirm_text = skillCenterToolImportConfirmText(allocator, source_path) catch return false;
+    defer allocator.free(confirm_text);
+    session.mutex.lock();
+    skillCenterSetStatusLocked(session, "");
+    session.model.openToolImportConfirm(.{
+        .tool_id = tool_id,
+        .function_name = function_name,
+        .source_path = source_path,
+        .staged_binary_path = staged_binary_path,
+        .warning_text = confirm_text,
+    }) catch {
+        skillCenterSetStatusLocked(session, "Tool import failed: could not open the warning.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    session.mutex.unlock();
     keep_stage = true;
     markUiDirty();
     return true;
@@ -3229,13 +3532,22 @@ pub fn skillCenterOverlaySelect() bool {
         skillCenterStartInstall(session, allocator);
         return true;
     }
+    var tool_confirm_owned: ?skill_center.ToolImportConfirmState = null;
     var tool_preview_owned: ?skill_center.ToolImportPreviewState = null;
     {
         session.mutex.lock();
         defer session.mutex.unlock();
+        if (session.model.overlay == .tool_import_confirm) {
+            tool_confirm_owned = skillCenterCloneToolImportConfirm(allocator, session.model.overlay.tool_import_confirm) catch return false;
+            session.model.clearOverlay();
+        }
         if (session.model.overlay == .tool_import_preview) {
             tool_preview_owned = skillCenterCloneToolImportPreview(allocator, session.model.overlay.tool_import_preview) catch return false;
         }
+    }
+    if (tool_confirm_owned) |*confirm| {
+        defer confirm.deinit(allocator);
+        return skillCenterContinueToolImport(session, allocator, confirm);
     }
     if (tool_preview_owned) |*preview| {
         defer preview.deinit(allocator);
@@ -3329,6 +3641,7 @@ pub fn skillCenterOverlaySelect() bool {
             .url_input => {},
             .install_pick => {},
             .text_preview => {},
+            .tool_import_confirm => {},
             .tool_import_preview => {},
             .none, .busy => {},
         }
@@ -3370,25 +3683,31 @@ pub fn skillCenterRescan() bool {
 pub fn skillCenterPreviewSelected() bool {
     const session = activeSkillCenter() orelse return false;
     const allocator = g_allocator orelse return false;
-    var rel_owned: ?[]u8 = null;
+    var path_owned: ?[]u8 = null;
     var name_buf: [128]u8 = undefined;
     var name_len: usize = 0;
     {
         session.mutex.lock();
         defer session.mutex.unlock();
-        const sk = session.model.selected() orelse return true;
-        name_len = @min(sk.name.len, name_buf.len);
-        @memcpy(name_buf[0..name_len], sk.name[0..name_len]);
-        rel_owned = allocator.dupe(u8, sk.rel_path) catch null;
+        const entry = session.model.selectedEntry() orelse return true;
+        switch (entry) {
+            .prompt => |sk| {
+                name_len = @min(sk.name.len, name_buf.len);
+                @memcpy(name_buf[0..name_len], sk.name[0..name_len]);
+                const lib_dir = skillCenterLibraryDir(allocator) orelse return true;
+                defer allocator.free(lib_dir);
+                path_owned = std.fs.path.join(allocator, &.{ lib_dir, sk.rel_path }) catch null;
+            },
+            .tool => |tool| {
+                const skill_path = tool.skill_path orelse return true;
+                name_len = @min(tool.name.len, name_buf.len);
+                @memcpy(name_buf[0..name_len], tool.name[0..name_len]);
+                path_owned = allocator.dupe(u8, skill_path) catch null;
+            },
+        }
     }
-    const rp = rel_owned orelse return true;
-    defer allocator.free(rp);
-    const lib_dir = skillCenterLibraryDir(allocator) orelse return true;
-    defer allocator.free(lib_dir);
-    const abs = std.fs.path.join(allocator, &.{ lib_dir, rp }) catch return true;
+    const abs = path_owned orelse return true;
     defer allocator.free(abs);
-    // Read the library file directly (no shell): the library is always a local
-    // absolute path, and `cat` via localPosixExec is unavailable on Windows.
     const text = skill_local_fs.readFileAllocAbsolute(allocator, abs, 1024 * 1024) catch null;
     if (text) |t| {
         defer allocator.free(t);
@@ -3415,6 +3734,7 @@ pub fn skillCenterTextPreviewActive() bool {
 pub const SkillCenterPreviewKind = enum {
     none,
     text,
+    tool_import_confirm,
     tool_import,
 };
 
@@ -3424,6 +3744,7 @@ pub fn skillCenterPreviewKind() SkillCenterPreviewKind {
     defer session.mutex.unlock();
     return switch (session.model.overlay) {
         .text_preview => .text,
+        .tool_import_confirm => .tool_import_confirm,
         .tool_import_preview => .tool_import,
         else => .none,
     };
@@ -3469,6 +3790,7 @@ pub fn skillCenterSpacePreview() bool {
             .url_input => kind = .none,
             .install_pick => kind = .none,
             .text_preview => kind = .none, // input intercepts Space while previewing
+            .tool_import_confirm => kind = .none,
             .tool_import_preview => kind = .none,
         }
     }
