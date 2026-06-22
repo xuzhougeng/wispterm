@@ -1671,6 +1671,7 @@ fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, le
             titlebar_offset,
             chat_x,
             chat_w,
+            false, // full tab: status shown as text + Esc Stop button
         );
     }
 }
@@ -1959,7 +1960,7 @@ fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32)
     const bounds = ai_sidebar.boundsForWindow(@intCast(fb_width), @intCast(fb_height), titlebar_offset, left, 0);
     const chat_x: f32 = @floatFromInt(bounds.left);
     const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-    ai_chat_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w);
+    ai_chat_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w, true); // copilot sidebar: status shown as a colored dot
     renderAiCopilotCloseButton(bounds, @floatFromInt(fb_height));
 }
 

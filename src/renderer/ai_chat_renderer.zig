@@ -36,8 +36,15 @@ pub const INPUT_FIELD_PAD_TOP: f32 = composer_layout.Field.pad_top;
 const PERMISSION_CHIP_W: f32 = 104;
 const PERMISSION_CHIP_H: f32 = 24;
 const STATUS_SLOT_W: f32 = 280;
+// Wide panels (a full AI-chat tab) show the status as text plus an "Esc Stop"
+// button while a request runs.
 const STOP_BUTTON_W: f32 = 104;
 const STOP_BUTTON_H: f32 = 28;
+// The narrow copilot sidebar (compact mode) collapses the status into a small
+// colored disc instead. STATUS_DOT_HIT is the (larger) clickable square that
+// stops an in-flight request when the dot is busy/yellow.
+const STATUS_DOT_D: f32 = 9;
+const STATUS_DOT_HIT: f32 = 28;
 const MODE_SLOT_W: f32 = 76;
 const INPUT_SCROLLBAR_GUTTER: f32 = 10;
 const INPUT_SCROLLBAR_W: f32 = 4;
@@ -159,11 +166,11 @@ pub fn render(
     titlebar_offset: f32,
     chat_x: f32,
     chat_w: f32,
+    compact: bool,
 ) void {
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
     const accent = AppWindow.g_theme.cursor_color;
-    const muted = mixColor(bg, fg, 0.62);
     const panel = mixColor(bg, fg, 0.045);
     const line = mixColor(bg, fg, 0.18);
 
@@ -210,13 +217,35 @@ pub fn render(
     };
     ui_pipeline.fillQuadAlpha(chip_x, header_y + 8, PERMISSION_CHIP_W - 8, 1, accent, perm_alpha);
 
-    if (session.request_inflight) {
+    if (compact) {
+        // Narrow copilot sidebar: collapse the status into a colored dot.
+        //   green  (palette[2]) = ready / done / idle
+        //   yellow (palette[3]) = in progress; the dot doubles as the click
+        //                         target to stop the request (Esc also works)
+        //   red    (palette[1]) = stopped / error; the dot keeps its actionable
+        //                         status text alongside it (e.g. "Missing API key")
+        const status_kind = session.statusKind();
+        const dot_color = switch (status_kind) {
+            .ready => AppWindow.g_theme.palette[2],
+            .busy => AppWindow.g_theme.palette[3],
+            .stopped => AppWindow.g_theme.palette[1],
+        };
+        if (status_kind == .stopped) {
+            const status_text = if (session.missingApiKey()) MISSING_API_KEY_ACTION_TEXT else session.status();
+            const status_rect = statusActionRect(x, w, top, status_text, true);
+            _ = titlebar.renderTextLimited(status_text, status_rect.x, header_y + 10, dot_color, status_rect.w);
+            ui_pipeline.fillQuadAlpha(status_rect.x, header_y + 8, status_rect.w, 1, dot_color, 0.34);
+        }
+        const dot_hit = statusDotRect(x, w, top);
+        fillDot(dot_hit.x + dot_hit.w / 2, header_y + HEADER_H / 2, STATUS_DOT_D, dot_color);
+    } else if (session.request_inflight) {
+        // Wide tab: keep the original status text / "Esc Stop" button.
         renderStopButton(stopButtonRect(x, w, top), window_height, session.request_stopping);
     } else {
         const missing_api_key = session.missingApiKey();
         const status_text = if (missing_api_key) MISSING_API_KEY_ACTION_TEXT else session.status();
-        const status_color = if (missing_api_key) mixColor(fg, accent, 0.22) else muted;
-        const status_rect = statusActionRect(x, w, top, status_text);
+        const status_color = if (missing_api_key) mixColor(fg, accent, 0.22) else mixColor(bg, fg, 0.62);
+        const status_rect = statusActionRect(x, w, top, status_text, false);
         _ = titlebar.renderTextLimited(status_text, status_rect.x, header_y + 10, status_color, STATUS_SLOT_W);
         if (missing_api_key) {
             ui_pipeline.fillQuadAlpha(status_rect.x, header_y + 8, status_rect.w, 1, accent, 0.34);
@@ -575,6 +604,7 @@ pub fn stopButtonHitTest(
     titlebar_offset: f32,
     chat_x: f32,
     chat_w: f32,
+    compact: bool,
 ) bool {
     _ = window_width;
     session.mutex.lock();
@@ -584,7 +614,7 @@ pub fn stopButtonHitTest(
 
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const rect = stopButtonRect(x, w, titlebar_offset);
+    const rect = if (compact) statusDotRect(x, w, titlebar_offset) else stopButtonRect(x, w, titlebar_offset);
     return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
 }
 
@@ -645,6 +675,7 @@ pub fn missingApiKeyStatusHitTest(
     titlebar_offset: f32,
     chat_x: f32,
     chat_w: f32,
+    compact: bool,
 ) bool {
     _ = window_width;
     session.mutex.lock();
@@ -654,7 +685,7 @@ pub fn missingApiKeyStatusHitTest(
 
     const x = @round(chat_x);
     const w = @round(@max(1.0, chat_w));
-    const rect = statusActionRect(x, w, titlebar_offset, MISSING_API_KEY_ACTION_TEXT);
+    const rect = statusActionRect(x, w, titlebar_offset, MISSING_API_KEY_ACTION_TEXT, compact);
     return pointInRect(@floatCast(xpos), @floatCast(ypos), rect);
 }
 
@@ -1203,23 +1234,32 @@ fn permissionChipX(x: f32, w: f32) f32 {
     return ai_chat_layout.permissionChipX(x, w, LINE_PAD_X, status_reserve, 12, PERMISSION_CHIP_W);
 }
 
-fn stopButtonRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
-    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, STOP_BUTTON_W, STOP_BUTTON_H, HEADER_H);
+// Clickable square centered on the status dot. When a request is in flight the
+// dot is yellow and clicking this square stops it (mirrors the old stop button;
+// Esc still works). Reuses the generic header-button geometry.
+fn statusDotRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
+    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, STATUS_DOT_HIT, STATUS_DOT_HIT, HEADER_H);
 }
 
-fn statusActionRect(x: f32, w: f32, titlebar_offset: f32, text: []const u8) Rect {
-    // Keep status to the right of the permission chip; clamp its width to the
-    // space available there so long status text can't overlap the chip on a
-    // narrow panel.
-    const right = x + w - LINE_PAD_X;
-    const avail = @max(1.0, right - (permissionChipX(x, w) + PERMISSION_CHIP_W + 12));
-    const status_w = @min(@min(measureText(text), STATUS_SLOT_W), avail);
-    return .{
-        .x = right - status_w,
-        .top_px = titlebar_offset + 8,
-        .w = @max(1.0, status_w),
-        .h = 32,
-    };
+// Filled disc approximated by stacked 1px scanlines (no circle primitive exists;
+// the UI is quad-based). `cx`/`cy` are the center in the renderer's y-up draw
+// space; `diameter` in px.
+fn fillDot(cx: f32, cy: f32, diameter: f32, color: [3]f32) void {
+    const r = diameter / 2;
+    const r_i: i32 = @intFromFloat(@floor(r));
+    var dy: i32 = -r_i;
+    while (dy <= r_i) : (dy += 1) {
+        const fy: f32 = @floatFromInt(dy);
+        const half_w = @sqrt(@max(0.0, r * r - fy * fy));
+        if (half_w < 0.5) continue;
+        ui_pipeline.fillQuad(@round(cx - half_w), cy + fy, @round(half_w * 2), 1, color);
+    }
+}
+
+// Wide-tab "Esc Stop" button geometry (text mode). The compact sidebar uses
+// statusDotRect instead.
+fn stopButtonRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
+    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, STOP_BUTTON_W, STOP_BUTTON_H, HEADER_H);
 }
 
 fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) void {
@@ -1240,6 +1280,21 @@ fn renderStopButton(rect: HeaderButtonRect, window_height: f32, stopping: bool) 
 
     const label = if (stopping) "Stopping" else "Esc Stop";
     _ = titlebar.renderTextLimited(label, rect.x + 28, y + @round((rect.h - font.g_titlebar_cell_height) / 2), if (stopping) mixColor(bg, fg, 0.72) else fg, rect.w - 34);
+}
+
+fn statusActionRect(x: f32, w: f32, titlebar_offset: f32, text: []const u8, compact: bool) Rect {
+    // Wide tab: text owns the far-right corner. Compact sidebar: text sits to
+    // the LEFT of the status dot. Either way it is clamped to the space right of
+    // the permission chip so it can't overlap the chip/dot on a narrow panel.
+    const right = if (compact) statusDotRect(x, w, titlebar_offset).x - 8 else x + w - LINE_PAD_X;
+    const avail = @max(1.0, right - (permissionChipX(x, w) + PERMISSION_CHIP_W + 12));
+    const status_w = @min(@min(measureText(text), STATUS_SLOT_W), avail);
+    return .{
+        .x = right - status_w,
+        .top_px = titlebar_offset + 8,
+        .w = @max(1.0, status_w),
+        .h = 32,
+    };
 }
 
 fn permissionDisplayName(permission: ai_chat.AgentPermission) []const u8 {

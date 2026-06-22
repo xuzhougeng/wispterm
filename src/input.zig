@@ -5445,6 +5445,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             @floatCast(titlebarHeight()),
                             chat_x,
                             chat_w,
+                            true, // copilot sidebar: dot hit-box
                         )) {
                             chat.stopRequest();
                             AppWindow.g_force_rebuild = true;
@@ -5459,6 +5460,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             @floatCast(titlebarHeight()),
                             chat_x,
                             chat_w,
+                            true, // copilot sidebar: error text left of dot
                         )) {
                             overlays.openAiConfigForSession(chat);
                             AppWindow.g_force_rebuild = true;
@@ -5585,6 +5587,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
                     @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                    false, // full tab: Esc Stop button hit-box
                 )) {
                     chat.stopRequest();
                     AppWindow.g_force_rebuild = true;
@@ -5599,6 +5602,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @floatCast(titlebarHeight()),
                     AppWindow.leftPanelsWidth(),
                     @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+                    false, // full tab: status text hit-box
                 )) {
                     overlays.openAiConfigForSession(chat);
                     AppWindow.g_force_rebuild = true;

@@ -1418,6 +1418,31 @@ pub const Session = struct {
         return self.status_buf[0..self.status_len];
     }
 
+    /// Severity of the current status, for the header status dot.
+    /// ready → green, busy → yellow, stopped → red.
+    pub const StatusKind = enum { ready, busy, stopped };
+
+    /// Classify the current status for the header dot. Caller must hold
+    /// `mutex` (mirrors `status()` / `missingApiKey()`, which don't lock).
+    pub fn statusKind(self: *const Session) StatusKind {
+        if (self.missingApiKey()) return .stopped;
+        if (self.request_inflight) return .busy;
+        const s = self.status();
+        // Stopped / error states → red.
+        if (std.mem.eql(u8, s, "Stopped") or
+            std.mem.startsWith(u8, s, "Out of memory") or
+            std.mem.startsWith(u8, s, "Could not") or
+            std.mem.startsWith(u8, s, "Failed") or
+            std.mem.startsWith(u8, s, "Missing API key") or
+            std.mem.indexOf(u8, s, "unavailable") != null)
+            return .stopped;
+        // Awaiting the user → yellow (mid-task, your turn).
+        if (std.mem.eql(u8, s, "Approval needed") or
+            std.mem.startsWith(u8, s, "Waiting"))
+            return .busy;
+        return .ready;
+    }
+
     pub fn requestState(self: *Session) RequestState {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -7173,6 +7198,67 @@ test "ai chat escape stops in-flight request" {
     try std.testing.expect(session.request_stopping);
     try std.testing.expect(session.stop_requested.load(.acquire));
     try std.testing.expectEqualStrings("Stopping...", session.status());
+}
+
+test "statusKind: missing api key maps to stopped" {
+    var session = Session{ .allocator = std.testing.allocator };
+    // A freshly-constructed session has no API key.
+    try std.testing.expect(session.missingApiKey());
+    try std.testing.expectEqual(Session.StatusKind.stopped, session.statusKind());
+}
+
+test "statusKind: idle error and stopped states map to stopped" {
+    var session = Session{ .allocator = std.testing.allocator };
+    session.copyApiKey("k");
+    const errors = [_][]const u8{
+        "Stopped",
+        "Out of memory",
+        "Could not prepare request",
+        "Could not run command",
+        "Failed to start request thread",
+        "Summary unavailable — kept full history",
+        "Missing API key. Edit the Copilot profile or set DEEPSEEK_API_KEY.",
+    };
+    for (errors) |s| {
+        session.setStatus(s);
+        try std.testing.expectEqual(Session.StatusKind.stopped, session.statusKind());
+    }
+}
+
+test "statusKind: inflight maps to busy" {
+    var session = Session{ .allocator = std.testing.allocator };
+    session.copyApiKey("k");
+    session.request_inflight = true;
+    session.setStatus("Thinking...");
+    try std.testing.expectEqual(Session.StatusKind.busy, session.statusKind());
+}
+
+test "statusKind: idle waiting states map to busy" {
+    var session = Session{ .allocator = std.testing.allocator };
+    session.copyApiKey("k");
+    const waiting = [_][]const u8{ "Approval needed", "Waiting for your answer" };
+    for (waiting) |s| {
+        session.setStatus(s);
+        try std.testing.expectEqual(Session.StatusKind.busy, session.statusKind());
+    }
+}
+
+test "statusKind: idle normal states map to ready" {
+    var session = Session{ .allocator = std.testing.allocator };
+    session.copyApiKey("k");
+    const ready = [_][]const u8{
+        "Ready",
+        "Done",
+        "Done in 3.2s",
+        "Cleared",
+        "Model switched",
+        "Context summarized",
+        "Distill preview ready",
+    };
+    for (ready) |s| {
+        session.setStatus(s);
+        try std.testing.expectEqual(Session.StatusKind.ready, session.statusKind());
+    }
 }
 
 fn testDistillCandidate(allocator: std.mem.Allocator) !ai_skill_distill.Candidate {
