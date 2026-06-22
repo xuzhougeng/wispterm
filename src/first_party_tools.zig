@@ -213,10 +213,20 @@ pub fn toggledDisabledTools(allocator: std.mem.Allocator, current: DisabledTools
             removed = true;
             continue;
         }
-        try list.append(allocator, try allocator.dupe(u8, existing));
+        const owned = try allocator.dupe(u8, existing);
+        list.append(allocator, owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
     }
 
-    if (!removed) try list.append(allocator, try allocator.dupe(u8, name));
+    if (!removed) {
+        const owned = try allocator.dupe(u8, name);
+        list.append(allocator, owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
+    }
     return .{ .names = try list.toOwnedSlice(allocator) };
 }
 
@@ -312,6 +322,21 @@ test "first_party_tools: loadDisabledTools propagates config path allocation fai
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     try std.testing.expectError(error.OutOfMemory, loadDisabledTools(failing.allocator()));
     try std.testing.expect(failing.has_induced_failure);
+}
+
+test "first_party_tools: toggled state frees duplicated name when append fails" {
+    const current = DisabledTools.empty();
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+
+    try std.testing.expectError(error.OutOfMemory, toggledDisabledTools(failing.allocator(), current, "webread"));
+    try std.testing.expect(failing.has_induced_failure);
+
+    var current_names = [_][]u8{@constCast("pubmed")};
+    const current_with_existing = DisabledTools{ .names = current_names[0..] };
+    var failing_existing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+
+    try std.testing.expectError(error.OutOfMemory, toggledDisabledTools(failing_existing.allocator(), current_with_existing, "webread"));
+    try std.testing.expect(failing_existing.has_induced_failure);
 }
 
 test "first_party_tools: toggled state writes and reads atomically" {
