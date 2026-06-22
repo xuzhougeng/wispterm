@@ -27,7 +27,8 @@ pub fn primaryOpenMod(ctrl: bool, super: bool) bool {
 }
 
 pub fn terminalPathClickAction(launch_kind: platform_pty_command.LaunchKind, has_ssh_conn: bool, mod: bool, shift: bool, alt: bool) TerminalPathClickAction {
-    if (mod and shift and !alt and launch_kind == .ssh and has_ssh_conn) return .download_ssh_file;
+    _ = has_ssh_conn;
+    if (mod and shift and !alt and launch_kind == .ssh) return .download_ssh_file;
     if (mod and !shift and !alt) return .open_url_or_preview;
     return .pass_through;
 }
@@ -96,7 +97,7 @@ test "terminal path click action maps ctrl shift ssh to download" {
         terminalPathClickAction(.ssh, true, true, true, false),
     );
     try std.testing.expectEqual(
-        TerminalPathClickAction.pass_through,
+        TerminalPathClickAction.download_ssh_file,
         terminalPathClickAction(.ssh, false, true, true, false),
     );
     try std.testing.expectEqual(

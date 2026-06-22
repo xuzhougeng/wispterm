@@ -19,6 +19,18 @@ const build_options = @import("build_options");
 const std = @import("std");
 const app_metadata = @import("app_metadata.zig");
 
+test "input ssh download surfaces missing connection and helper probe failures" {
+    const input_source = @embedFile("input.zig");
+    try std.testing.expect(std.mem.indexOf(u8, input_source, "\"SSH connection unavailable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, input_source, "\"SSH helper unavailable\"") != null);
+}
+
+test "remote file ssh helpers include short keepalive options" {
+    const remote_file_source = @embedFile("platform/remote_file.zig");
+    try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "\"ServerAliveInterval=5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "\"ServerAliveCountMax=2\"") != null);
+}
+
 test {
     _ = @import("input/command_dispatch.zig");
     _ = @import("input/click_tracker.zig");

@@ -7663,6 +7663,7 @@ fn makeAgentToolSurface(
     focused: bool,
 ) anyerror!ai_chat.ToolSurface {
     const snapshot = buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows) catch try allocator.dupe(u8, "");
+    const ssh_conn = if (surface.launch_kind == .ssh) surface.ssh_connection else null;
     return ai_chat.ToolSurface.initOwned(
         allocator,
         surface.remote_id[0..],
@@ -7672,8 +7673,9 @@ fn makeAgentToolSurface(
         .{
             .tab_index = tab_index,
             .focused = focused,
-            .is_ssh = surface.launch_kind == .ssh and surface.ssh_connection != null,
+            .is_ssh = surface.launch_kind == .ssh,
             .is_wsl = surface.launch_kind == .wsl,
+            .ssh_connection = ssh_conn,
             .agent_app = surface.agent_detection.app,
             .agent_state = surface.agent_detection.state,
             .agent_confidence = surface.agent_detection.confidence,

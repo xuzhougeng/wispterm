@@ -52,6 +52,7 @@ pub const ToolSurface = struct {
     focused: bool,
     is_ssh: bool,
     is_wsl: bool,
+    ssh_connection: ?SshConnection = null,
     agent_app: agent_detector.App = .none,
     agent_state: agent_detector.State = .none,
     agent_confidence: u8 = 0,
@@ -69,6 +70,7 @@ pub const ToolSurface = struct {
         focused: bool,
         is_ssh: bool,
         is_wsl: bool,
+        ssh_connection: ?SshConnection = null,
         agent_app: agent_detector.App = .none,
         agent_state: agent_detector.State = .none,
         agent_confidence: u8 = 0,
@@ -101,6 +103,7 @@ pub const ToolSurface = struct {
             .focused = meta.focused,
             .is_ssh = meta.is_ssh,
             .is_wsl = meta.is_wsl,
+            .ssh_connection = meta.ssh_connection,
             .agent_app = meta.agent_app,
             .agent_state = meta.agent_state,
             .agent_confidence = meta.agent_confidence,
@@ -126,6 +129,7 @@ pub const ToolSurface = struct {
             .focused = self.focused,
             .is_ssh = self.is_ssh,
             .is_wsl = self.is_wsl,
+            .ssh_connection = self.ssh_connection,
             .agent_app = self.agent_app,
             .agent_state = self.agent_state,
             .agent_confidence = self.agent_confidence,
@@ -340,12 +344,19 @@ test "ToolSurface.initOwned dupes borrowed strings and adopts the owned snapshot
     const a = std.testing.allocator;
     var dummy: u8 = 0;
     const snapshot = try a.dupe(u8, "snap");
+    const conn = SshConnection.fromParts(.{
+        .user = "alice",
+        .host = "example.test",
+        .port = "2222",
+        .proxy_jump = "jump.example.test",
+    });
     const id_src = "surface-1";
     const ts = try ToolSurface.initOwned(a, id_src, "title-1", "/work", snapshot, .{
         .tab_index = 3,
         .focused = true,
-        .is_ssh = false,
+        .is_ssh = true,
         .is_wsl = true,
+        .ssh_connection = conn,
         .ptr = @ptrCast(&dummy),
     });
     defer ts.deinit(a);
@@ -357,7 +368,13 @@ test "ToolSurface.initOwned dupes borrowed strings and adopts the owned snapshot
     try std.testing.expect(ts.snapshot.ptr == snapshot.ptr); // ownership moved, no copy
     try std.testing.expectEqual(@as(usize, 3), ts.tab_index);
     try std.testing.expect(ts.focused);
+    try std.testing.expect(ts.is_ssh);
     try std.testing.expect(ts.is_wsl);
+    const stored = ts.ssh_connection orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("alice", stored.user());
+    try std.testing.expectEqualStrings("example.test", stored.host());
+    try std.testing.expectEqualStrings("2222", stored.port());
+    try std.testing.expectEqualStrings("jump.example.test", stored.proxyJump());
 }
 
 test "ToolSurface.initOwned frees the snapshot and earlier dupes when an allocation fails" {

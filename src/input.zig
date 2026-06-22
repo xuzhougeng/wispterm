@@ -4250,9 +4250,8 @@ fn handleTerminalSelectionPress(ev: platform_input.MouseButtonEvent, xpos: f64, 
     const open_mod = primaryOpenMod(ev.ctrl, ev.super);
     const click_action = terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, open_mod, ev.shift, ev.alt);
     // Only instrument the SSH download gesture (Ctrl/Cmd+Shift) so the log is not
-    // flooded by every terminal click. This shows whether a click the user
-    // intended as a download even routes to `download_ssh_file`, or falls back to
-    // pass-through because the surface carries no SSH connection metadata (#268).
+    // flooded by every terminal click. This shows whether a download gesture
+    // routed to `download_ssh_file` and whether the surface had SSH metadata.
     if (open_mod and ev.shift and !ev.alt) {
         preview_diagnostics.debug("download", &.{
             .{ .key = "stage", .value = "click" },
@@ -4818,7 +4817,8 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
             .{ .key = "stage", .value = "abort" },
             .{ .key = "reason", .value = "no-conn" },
         });
-        return false;
+        file_explorer.setTransferStatusForKind(.download, .failed, "SSH connection unavailable");
+        return true;
     };
     const allocator = AppWindow.g_allocator orelse return false;
 
@@ -4866,13 +4866,20 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
         return false;
     }
     const dir_probe = remotePathIsDirectoryForDownload(allocator, &conn, resolved_path);
-    const is_dir = dir_probe orelse false;
+    const is_dir = dir_probe orelse {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "probe-failed" },
+            .{ .key = "resolved", .value = resolved_path },
+        });
+        file_explorer.setTransferStatusForKind(.download, .failed, "SSH helper unavailable");
+        return true;
+    };
     preview_diagnostics.debug("download", &.{
         .{ .key = "stage", .value = "probe" },
         .{ .key = "resolved", .value = resolved_path },
         // Distinguishes "probe ran and said file/dir" from "probe ssh helper
         // failed" (null) — the latter points at the SSH metadata channel (#268).
-        .{ .key = "probe", .value = if (dir_probe == null) "failed" else if (is_dir) "dir" else "file" },
+        .{ .key = "probe", .value = if (is_dir) "dir" else "file" },
     });
 
     var dl_buf: [260]u8 = undefined;

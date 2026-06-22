@@ -2230,6 +2230,7 @@ fn resolveFileTarget(ctx: *ToolContext, surface_id: ?[]const u8) !FileTarget {
         return .{ .err = try allocNoSurfaceError(ctx.allocator, snapshot, sid) };
     };
     if (!surface.is_ssh) return .local;
+    if (surface.ssh_connection) |conn| return .{ .remote = conn };
     if (ctx.sshConnectionForSurface(surface.id)) |conn| return .{ .remote = conn };
     return .{ .err = try std.fmt.allocPrint(ctx.allocator, "Surface {s} is an SSH terminal but its connection is unavailable.", .{surface.id}) };
 }
@@ -2243,6 +2244,9 @@ fn resolveCopyEndpoint(ctx: *ToolContext, surface_id: ?[]const u8) !CopyEndpoint
         return .{ .err = try allocNoSurfaceError(ctx.allocator, snapshot, sid) };
     };
     if (surface.is_ssh) {
+        if (surface.ssh_connection) |conn| {
+            return .{ .ssh = .{ .surface = surface, .conn = conn } };
+        }
         if (ctx.sshConnectionForSurface(surface.id)) |conn| {
             return .{ .ssh = .{ .surface = surface, .conn = conn } };
         }
@@ -4182,6 +4186,74 @@ test "copy_file copies a local artifact into wispterm-files by default" {
     try std.testing.expectEqualStrings("artifact-bytes", copied);
     try std.testing.expect(std.mem.indexOf(u8, out, "local_path=") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "wispterm-files") != null);
+}
+
+test "file tool resolution uses ssh connection carried by the request snapshot" {
+    const a = std.testing.allocator;
+    const conn = ToolSshConnection.fromParts(.{
+        .user = "alice",
+        .host = "example.test",
+        .port = "2222",
+        .proxy_jump = "jump.example.test",
+    });
+    var surfaces = try a.alloc(ToolSurface, 1);
+    surfaces[0] = .{
+        .id = try a.dupe(u8, "ssh-surface"),
+        .title = try a.dupe(u8, "SSH"),
+        .cwd = try a.dupe(u8, "/home/alice"),
+        .snapshot = try a.dupe(u8, "$ "),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = true,
+        .is_wsl = false,
+        .ssh_connection = conn,
+        .agent_app = .none,
+        .agent_state = .none,
+        .agent_confidence = 0,
+        .ptr = @ptrFromInt(1),
+    };
+    const snapshot = ToolSnapshot{ .surfaces = surfaces, .active_tab = 0 };
+    defer snapshot.deinit(a);
+
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = snapshot,
+        .settings = .{},
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+
+    const target = try resolveFileTarget(&ctx, "ssh-surface");
+    switch (target) {
+        .remote => |remote| {
+            try std.testing.expectEqualStrings("alice", remote.user());
+            try std.testing.expectEqualStrings("example.test", remote.host());
+            try std.testing.expectEqualStrings("2222", remote.port());
+            try std.testing.expectEqualStrings("jump.example.test", remote.proxyJump());
+        },
+        .err => |msg| {
+            defer a.free(msg);
+            return error.TestExpectedEqual;
+        },
+        .local => return error.TestExpectedEqual,
+    }
+
+    const endpoint = try resolveCopyEndpoint(&ctx, "ssh-surface");
+    switch (endpoint) {
+        .ssh => |remote| {
+            try std.testing.expectEqualStrings("ssh-surface", remote.surface.id);
+            try std.testing.expectEqualStrings("alice", remote.conn.user());
+            try std.testing.expectEqualStrings("example.test", remote.conn.host());
+        },
+        .err => |msg| {
+            defer a.free(msg);
+            return error.TestExpectedEqual;
+        },
+        else => return error.TestExpectedEqual,
+    }
 }
 
 test "write_file creates a local file in full permission mode" {

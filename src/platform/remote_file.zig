@@ -159,6 +159,14 @@ pub fn sshExecCaptureFull(allocator: std.mem.Allocator, conn: anytype, command: 
     argc += 1;
     argv_buf[argc] = "ConnectTimeout=8";
     argc += 1;
+    argv_buf[argc] = "-o";
+    argc += 1;
+    argv_buf[argc] = "ServerAliveInterval=5";
+    argc += 1;
+    argv_buf[argc] = "-o";
+    argc += 1;
+    argv_buf[argc] = "ServerAliveCountMax=2";
+    argc += 1;
     if (conn.usesPasswordAuth()) {
         argv_buf[argc] = "-o";
         argc += 1;

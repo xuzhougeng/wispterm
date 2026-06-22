@@ -33,6 +33,8 @@ const SshTunnel = struct {
     host_len: usize = 0,
     ssh_port_buf: [16]u8 = undefined,
     ssh_port_len: usize = 0,
+    proxy_jump_buf: [256]u8 = undefined,
+    proxy_jump_len: usize = 0,
 
     fn init(child: std.process.Child, conn: *const ssh_connection.SshConnection, remote_port: u16, local_port: u16, local_host: []const u8, remote_host: []const u8) SshTunnel {
         var tunnel: SshTunnel = .{
@@ -45,6 +47,7 @@ const SshTunnel = struct {
         tunnel.user_len = copyBounded(tunnel.user_buf[0..], conn.user());
         tunnel.host_len = copyBounded(tunnel.host_buf[0..], conn.host());
         tunnel.ssh_port_len = copyBounded(tunnel.ssh_port_buf[0..], conn.port());
+        tunnel.proxy_jump_len = copyBounded(tunnel.proxy_jump_buf[0..], conn.proxyJump());
         return tunnel;
     }
 
@@ -54,7 +57,8 @@ const SshTunnel = struct {
             std.mem.eql(u8, self.remoteHost(), remote_host) and
             std.mem.eql(u8, self.user(), conn.user()) and
             std.mem.eql(u8, self.host(), conn.host()) and
-            std.mem.eql(u8, self.sshPort(), conn.port());
+            std.mem.eql(u8, self.sshPort(), conn.port()) and
+            std.mem.eql(u8, self.proxyJump(), conn.proxyJump());
     }
 
     fn localHost(self: *const SshTunnel) []const u8 {
@@ -75,6 +79,10 @@ const SshTunnel = struct {
 
     fn sshPort(self: *const SshTunnel) []const u8 {
         return self.ssh_port_buf[0..self.ssh_port_len];
+    }
+
+    fn proxyJump(self: *const SshTunnel) []const u8 {
+        return self.proxy_jump_buf[0..self.proxy_jump_len];
     }
 };
 
@@ -466,6 +474,26 @@ test "ssh_tunnel configures browser tunnel helper as hidden background process" 
     try std.testing.expectEqual(std.process.Child.StdIo.Ignore, child.stdout_behavior);
     try std.testing.expectEqual(std.process.Child.StdIo.Inherit, child.stderr_behavior);
     try std.testing.expect(child.create_no_window);
+}
+
+test "ssh_tunnel cache key distinguishes proxy jump" {
+    const child = std.process.Child.init(&.{"ssh.exe"}, std.testing.allocator);
+    const conn_a = ssh_connection.SshConnection.fromParts(.{
+        .user = "alice",
+        .host = "example.test",
+        .port = "2222",
+        .proxy_jump = "jump-a.example.test",
+    });
+    const conn_b = ssh_connection.SshConnection.fromParts(.{
+        .user = "alice",
+        .host = "example.test",
+        .port = "2222",
+        .proxy_jump = "jump-b.example.test",
+    });
+    const tunnel = SshTunnel.init(child, &conn_a, 8888, 50123, "127.0.0.1", "127.0.0.1");
+
+    try std.testing.expect(tunnel.matches(&conn_a, 8888, "127.0.0.1", "127.0.0.1"));
+    try std.testing.expect(!tunnel.matches(&conn_b, 8888, "127.0.0.1", "127.0.0.1"));
 }
 
 test "reservePreferredLocalPort returns the preferred port when it is free" {
