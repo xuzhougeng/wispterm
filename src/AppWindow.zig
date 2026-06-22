@@ -434,6 +434,47 @@ test "AppWindow: AI history restore snapshot rebuilds an SSH source" {
     }
 }
 
+test "AppWindow: skill center tool enabled update matches manifest path" {
+    var entries = [_]skill_center.LibraryEntry{
+        .{ .tool = .{
+            .name = @constCast("tool_a"),
+            .executable_path = @constCast("/tmp/tools/tool_a/bin/tool_a"),
+            .skill_path = @constCast("/tmp/tools/tool_a/SKILL.md"),
+            .enabled = false,
+            .approval = .ask,
+        } },
+        .{ .tool = .{
+            .name = @constCast("tool_b"),
+            .executable_path = @constCast("/tmp/tools/tool_b/bin/tool_b"),
+            .skill_path = @constCast("/tmp/tools/tool_b/SKILL.md"),
+            .enabled = false,
+            .approval = .ask,
+        } },
+    };
+
+    const manifest_b = switch (entries[1]) {
+        .tool => |tool| skillCenterToolManifestPath(std.testing.allocator, tool) orelse return error.ExpectedManifestPath,
+        .prompt => return error.ExpectedSkillCenterTool,
+    };
+    defer std.testing.allocator.free(manifest_b);
+
+    try std.testing.expect(skillCenterApplyToolEnabledByManifestPath(std.testing.allocator, entries[0..], manifest_b, true));
+    switch (entries[0]) {
+        .tool => |tool| try std.testing.expect(!tool.enabled),
+        .prompt => return error.ExpectedSkillCenterTool,
+    }
+    switch (entries[1]) {
+        .tool => |tool| try std.testing.expect(tool.enabled),
+        .prompt => return error.ExpectedSkillCenterTool,
+    }
+
+    try std.testing.expect(!skillCenterApplyToolEnabledByManifestPath(std.testing.allocator, entries[0..], "/tmp/tools/missing/manifest.json", false));
+    switch (entries[1]) {
+        .tool => |tool| try std.testing.expect(tool.enabled),
+        .prompt => return error.ExpectedSkillCenterTool,
+    }
+}
+
 test "AppWindow: open AI chat tabs are persisted to agent history before session dump" {
     const allocator = std.testing.allocator;
 
@@ -2115,7 +2156,7 @@ fn skillCenterOpenPicker(purpose: skill_center.Purpose) bool {
     defer session.mutex.unlock();
     var name: []const u8 = "";
     if (purpose == .deploy) {
-        const sk = session.model.selected() orelse return true;
+        const sk = session.model.selected() orelse return false;
         name = sk.name;
     }
     const picker = skillCenterBuildPicker(allocator, purpose, name) catch return true;
@@ -2167,6 +2208,28 @@ fn skillCenterToolManifestPath(allocator: std.mem.Allocator, tool: skill_center.
     return std.fs.path.join(allocator, &.{ tool_dir, "manifest.json" }) catch null;
 }
 
+fn skillCenterApplyToolEnabledByManifestPath(
+    allocator: std.mem.Allocator,
+    entries: []skill_center.LibraryEntry,
+    manifest_path: []const u8,
+    enabled: bool,
+) bool {
+    for (entries) |*entry| {
+        switch (entry.*) {
+            .prompt => {},
+            .tool => |*tool| {
+                const path = skillCenterToolManifestPath(allocator, tool.*) orelse continue;
+                defer allocator.free(path);
+                if (std.mem.eql(u8, path, manifest_path)) {
+                    tool.enabled = enabled;
+                    return true;
+                }
+            },
+        }
+    }
+    return false;
+}
+
 fn skillCenterSetStatusLocked(session: *skill_center.Session, text: []const u8) void {
     const next = session.allocator.dupe(u8, text) catch return;
     if (session.status.len > 0) session.allocator.free(session.status);
@@ -2186,11 +2249,9 @@ pub fn skillCenterToggleToolEnabled() bool {
     const session = activeSkillCenter() orelse return false;
     const allocator = g_allocator orelse return false;
     var manifest_path: ?[]u8 = null;
-    var selected_row: usize = 0;
     {
         session.mutex.lock();
         defer session.mutex.unlock();
-        selected_row = session.model.sel_row;
         const entry = session.model.selectedEntry() orelse return false;
         switch (entry) {
             .prompt => return false,
@@ -2254,12 +2315,7 @@ pub fn skillCenterToggleToolEnabled() bool {
     ai_chat.reloadDynamicToolSpecs(allocator);
     session.mutex.lock();
     if (session.model.entries) |entries| {
-        if (selected_row < entries.len) {
-            switch (entries[selected_row]) {
-                .prompt => {},
-                .tool => |*tool| tool.enabled = new_enabled,
-            }
-        }
+        _ = skillCenterApplyToolEnabledByManifestPath(allocator, entries, path, new_enabled);
     }
     skillCenterSetStatusLocked(session, if (new_enabled) i18n.s().sc_tool_enabled else i18n.s().sc_tool_disabled);
     session.mutex.unlock();

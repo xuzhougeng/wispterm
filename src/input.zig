@@ -619,6 +619,84 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
     }
 }
 
+test "input: skill center deploy keys ignore selected tool rows" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+    }
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const name = try allocator.dupe(u8, "fake_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const executable_path = try allocator.dupe(u8, "/tmp/tools/fake_tool/bin/fake_tool");
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const skill_path = try allocator.dupe(u8, "/tmp/tools/fake_tool/SKILL.md");
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = false,
+        .approval = .ask,
+    } };
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x44, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    try std.testing.expect(!AppWindow.skillCenterOverlayActive());
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = platform_input.key_enter, .ctrl = false, .shift = false, .alt = false, .super = false });
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
+    try std.testing.expect(!AppWindow.skillCenterOverlayActive());
+}
+
 test "input: terminal viewport mouse wheel scroll requests a repaint" {
     const allocator = std.testing.allocator;
     const ghostty_vt = @import("ghostty-vt");
