@@ -448,12 +448,17 @@ test "input: skill center tool toggle requests a repaint" {
 
     const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
     const executable_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "bin", "fake_tool" });
-    errdefer allocator.free(executable_path);
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
     const skill_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "SKILL.md" });
-    errdefer allocator.free(skill_path);
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
     const name = try allocator.dupe(u8, "fake_tool");
-    errdefer allocator.free(name);
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
     const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
     entries[0] = .{ .tool = .{
         .name = name,
         .executable_path = executable_path,
@@ -463,6 +468,10 @@ test "input: skill center tool toggle requests a repaint" {
     } };
     session.mutex.lock();
     session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
     session.mutex.unlock();
 
     AppWindow.g_force_rebuild = false;
@@ -477,6 +486,137 @@ test "input: skill center tool toggle requests a repaint" {
     try std.testing.expect(std.mem.indexOf(u8, manifest, "\"enabled\": true") != null);
 
     _ = AppWindow.skillCenterToggleToolEnabled();
+}
+
+test "input: skill center tool toggle is blocked while selection overlay is active" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("tools/fake_tool/bin");
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/SKILL.md", .data = "---\nname: fake_tool\n---\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/bin/fake_tool", .data = "" });
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data =
+        \\{
+        \\  "kind": "binary_tool",
+        \\  "id": "fake_tool",
+        \\  "function_name": "fake_tool",
+        \\  "enabled": true,
+        \\  "executable": "bin/fake_tool",
+        \\  "source_path": "/tmp/fake_tool",
+        \\  "sha256": "abc123",
+        \\  "imported_at_ms": 1,
+        \\  "description": "fake"
+        \\}
+    });
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const executable_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "bin", "fake_tool" });
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const skill_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "SKILL.md" });
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
+    const name = try allocator.dupe(u8, "fake_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = true,
+        .approval = .ask,
+    } };
+
+    const picker_labels = try allocator.alloc([]u8, 1);
+    var picker_labels_owned = true;
+    errdefer if (picker_labels_owned) allocator.free(picker_labels);
+    picker_labels[0] = try allocator.dupe(u8, "Local · Claude Code");
+    var picker_label_0_owned = true;
+    errdefer if (picker_label_0_owned) allocator.free(picker_labels[0]);
+    const picker_targets = try allocator.alloc(AppWindow.skill_center.Target, 1);
+    var picker_targets_owned = true;
+    errdefer if (picker_targets_owned) allocator.free(picker_targets);
+    picker_targets[0] = try AppWindow.skill_center.Target.dupe(allocator, "local", "Local", .claude, true);
+    var picker_target_0_owned = true;
+    errdefer if (picker_target_0_owned) picker_targets[0].deinit(allocator);
+    const picker_skill_name = try allocator.dupe(u8, "prompt_skill");
+    var picker_skill_name_owned = true;
+    errdefer if (picker_skill_name_owned) allocator.free(picker_skill_name);
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
+    session.model.setOverlay(.{ .picker = .{
+        .purpose = .deploy,
+        .skill_name = picker_skill_name,
+        .labels = picker_labels,
+        .targets = picker_targets,
+        .sel = 0,
+    } });
+    picker_skill_name_owned = false;
+    picker_labels_owned = false;
+    picker_label_0_owned = false;
+    picker_targets_owned = false;
+    picker_target_0_owned = false;
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    const manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
+    defer allocator.free(manifest);
+    try std.testing.expect(std.mem.indexOf(u8, manifest, "\"enabled\": true") != null);
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const entry = session.model.selectedEntry() orelse return error.ExpectedSkillCenterTool;
+    switch (entry) {
+        .tool => |tool| try std.testing.expect(tool.enabled),
+        .prompt => return error.ExpectedSkillCenterTool,
+    }
 }
 
 test "input: terminal viewport mouse wheel scroll requests a repaint" {
@@ -2287,6 +2427,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         const plain = !ev.ctrl and !ev.alt and !ev.super;
         const text_capture = AppWindow.skillCenterUrlInputActive();
         const picking = AppWindow.skillCenterPickActive();
+        const overlay_active = AppWindow.skillCenterOverlayActive();
         // Ctrl/Cmd+V paste into the URL field.
         if (text_capture and (ev.ctrl or ev.super) and ev.key_code == 0x56) { // 'V'
             if (AppWindow.skillCenterUrlPaste()) markSkillCenterInputDirty();
@@ -2302,7 +2443,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 return;
             },
             platform_input.key_enter => {
-                if (AppWindow.skillCenterOverlayActive()) {
+                if (overlay_active) {
                     if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty();
                 } else {
                     if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
@@ -2331,11 +2472,11 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
                 return;
             },
-            0x54 => if (plain and !ev.shift and !text_capture and !picking) { // 'T'
+            0x54 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'T'
                 if (AppWindow.skillCenterImportTool()) markSkillCenterInputDirty();
                 return;
             },
-            0x45 => if (plain and !ev.shift and !text_capture and !picking) { // 'E'
+            0x45 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'E'
                 if (AppWindow.skillCenterToggleToolEnabled()) markSkillCenterInputDirty();
                 return;
             },
