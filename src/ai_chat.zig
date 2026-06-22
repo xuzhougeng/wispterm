@@ -363,7 +363,9 @@ fn fireDeferredAction(session: *Session, action: DeferredAction) void {
         // Targets the session that submitted `/model` (copilot sidebar OR a tab),
         // not the active tab — they can differ.
         .model_switch_picker => if (g_model_switch_trigger) |t| t(session),
-        .export_markdown => |mode| if (g_markdown_export_trigger) |t| t(mode),
+        // Targets the session that submitted `/export` (copilot sidebar OR a tab),
+        // not the active tab — they can differ.
+        .export_markdown => |mode| if (g_markdown_export_trigger) |t| t(session, mode),
     }
 }
 
@@ -376,7 +378,7 @@ var g_default_working_dir_len: usize = 0;
 var g_session_id_counter = std.atomic.Value(u64).init(1);
 var g_session_resume_trigger: ?*const fn () void = null;
 var g_copilot_picker_trigger: ?*const fn () void = null;
-var g_markdown_export_trigger: ?*const fn (MarkdownExportMode) void = null;
+var g_markdown_export_trigger: ?*const fn (*Session, MarkdownExportMode) void = null;
 var g_model_switch_trigger: ?*const fn (*Session) void = null;
 threadlocal var g_dynamic_tool_specs: []ai_chat_protocol.DynamicToolSpec = &.{};
 threadlocal var g_dynamic_tool_specs_owned: bool = false;
@@ -442,7 +444,7 @@ pub fn setModelSwitchTrigger(cb: ?*const fn (*Session) void) void {
 /// Wire the callback that `/export [full|clean]` fires to write the conversation
 /// Markdown. Fired AFTER the session mutex unlocks, because the export reads the
 /// session under the SAME mutex (`allocMarkdownExport`) and would otherwise deadlock.
-pub fn setMarkdownExportTrigger(cb: ?*const fn (MarkdownExportMode) void) void {
+pub fn setMarkdownExportTrigger(cb: ?*const fn (*Session, MarkdownExportMode) void) void {
     g_markdown_export_trigger = cb;
 }
 threadlocal var g_tool_host: ?ToolHost = null;
@@ -5393,23 +5395,33 @@ test "/clear via submit empties the transcript and shows confirmation" {
 }
 
 var test_export_mode: ?MarkdownExportMode = null;
-fn testExportHook(mode: MarkdownExportMode) void {
+var test_export_session: ?*Session = null;
+fn testExportHook(session: *Session, mode: MarkdownExportMode) void {
+    test_export_session = session;
     test_export_mode = mode;
 }
 
-test "/export via submit fires the export trigger with parsed mode" {
+test "/export via submit fires the export trigger with submitting session and parsed mode" {
     const a = std.testing.allocator;
     setMarkdownExportTrigger(testExportHook);
     defer setMarkdownExportTrigger(null);
     var session = try Session.init(a, "chat", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
     defer session.deinit();
     test_export_mode = null;
+    test_export_session = null;
     session.appendInputText("/export full");
     session.submit();
+    try std.testing.expectEqual(session, test_export_session.?);
     try std.testing.expectEqual(MarkdownExportMode.full, test_export_mode.?);
+
+    var copilot = try Session.init(a, "copilot", "https://api.example.com", "key", "m1", "sys", "false", "", "false", "false");
+    defer copilot.deinit();
+    copilot.copilot = true;
     test_export_mode = null;
-    session.appendInputText("/export");
-    session.submit();
+    test_export_session = null;
+    copilot.appendInputText("/export");
+    copilot.submit();
+    try std.testing.expectEqual(copilot, test_export_session.?);
     try std.testing.expectEqual(MarkdownExportMode.clean, test_export_mode.?);
 }
 

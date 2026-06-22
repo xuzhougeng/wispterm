@@ -156,8 +156,8 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     }.cb);
     // `/export [full|clean]` writes the active AI Chat transcript as Markdown.
     ai_chat.setMarkdownExportTrigger(struct {
-        fn cb(mode: ai_chat.MarkdownExportMode) void {
-            exportActiveAiChatMarkdown(mode);
+        fn cb(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+            exportAiChatMarkdown(session, mode);
         }
     }.cb);
     // `/model [name]` switches the active session's profile (and summarizes the
@@ -1274,6 +1274,48 @@ test "AppWindow: terminal tab copilot sessions are persisted to agent history be
     defer agent_history.freeOwnedRecord(allocator, &restored);
 
     try std.testing.expect(restored.copilot);
+}
+
+test "AppWindow: markdown export target includes visible copilot sidebar" {
+    const allocator = std.testing.allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+
+    var copilot = ai_chat.Session{ .allocator = allocator, .copilot = true };
+    var terminal_tab = tab.TabState{
+        .kind = .terminal,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = null,
+        .ai_history_session = null,
+        .copilot_session = &copilot,
+        .copilot_visible = true,
+    };
+    tab.g_tabs[0] = &terminal_tab;
+    tab.g_tab_count = 1;
+    try std.testing.expectEqual(&copilot, activeMarkdownExportSession().?);
+
+    var chat = ai_chat.Session{ .allocator = allocator };
+    var chat_tab = tab.TabState{
+        .kind = .ai_chat,
+        .tree = .empty,
+        .focused = .root,
+        .ai_chat_session = &chat,
+        .ai_history_session = null,
+        .copilot_session = null,
+    };
+    tab.g_tabs[0] = &chat_tab;
+    try std.testing.expectEqual(&chat, activeMarkdownExportSession().?);
 }
 
 test "AppWindow: copilot restore hook rehydrates a copilot session by id" {
@@ -5111,12 +5153,21 @@ fn localHomeForAiHistory(allocator: std.mem.Allocator) ![]u8 {
     return error.NoHomeDirectory;
 }
 
+fn activeMarkdownExportSession() ?*ai_chat.Session {
+    if (activeAiChat()) |session| return session;
+    return activeCopilotSessionForInput();
+}
+
 pub fn exportActiveAiChatMarkdown(mode: ai_chat.MarkdownExportMode) void {
-    const allocator = g_allocator orelse return;
-    const session = activeAiChat() orelse {
-        overlays.showStatusToast("Open a Copilot tab first");
+    const session = activeMarkdownExportSession() orelse {
+        overlays.showStatusToast("Open a Copilot tab or sidebar first");
         return;
     };
+    exportAiChatMarkdown(session, mode);
+}
+
+fn exportAiChatMarkdown(session: *ai_chat.Session, mode: ai_chat.MarkdownExportMode) void {
+    const allocator = g_allocator orelse return;
 
     const markdown = session.allocMarkdownExport(allocator, mode) catch |err| {
         log.warn("failed to render AI chat Markdown export: {}", .{err});
