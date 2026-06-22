@@ -29,6 +29,7 @@ const close_confirm = @import("close_confirm.zig");
 const font_backend = @import("platform/font_backend.zig");
 const platform_display = @import("platform/display.zig");
 const platform_dirs = @import("platform/dirs.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_file_dialog = @import("platform/file_dialog.zig");
 const platform_global_hotkey = @import("platform/global_hotkey.zig");
 const platform_menu = @import("platform/menu.zig");
@@ -952,7 +953,7 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
         const view: skill_center_renderer.View = .{
             .skills_len = lib_len,
             .ctx = @ptrCast(m),
-            .nameAt = scNameAt,
+            .itemAt = scEntryItemAt,
             .sel_row = m.sel_row,
             .scroll = m.scroll,
             .title = i18n.s().sl_skill_center,
@@ -1069,11 +1070,21 @@ fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: 
     );
 }
 
-/// Renderer accessor: library skill name at index i (read under the session lock).
-fn scNameAt(ctx: *anyopaque, i: usize) []const u8 {
+/// Renderer accessor: library entry metadata at index i (read under the session lock).
+fn scEntryItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
     const m: *const skill_center.PanelModel = @ptrCast(@alignCast(ctx));
-    const entries = m.entries orelse return "";
-    return if (i < entries.len) entries[i].name() else "";
+    const entries = m.entries orelse return .{ .label = "", .marker = "" };
+    if (i >= entries.len) return .{ .label = "", .marker = "" };
+    return switch (entries[i]) {
+        .prompt => |s| .{ .label = s.name, .marker = "", .kind = "skill" },
+        .tool => |t| .{
+            .label = t.name,
+            .marker = "",
+            .kind = "tool",
+            .enabled = if (t.enabled) "on" else "off",
+            .marker_color = if (t.enabled) .{ 0.3, 0.85, 0.45 } else .{ 0.85, 0.45, 0.35 },
+        },
+    };
 }
 fn scPickerItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
     const p: *const skill_center.PickerState = @ptrCast(@alignCast(ctx));
@@ -2117,7 +2128,143 @@ pub fn skillCenterDeploy() bool {
     return skillCenterOpenPicker(.deploy);
 }
 pub fn skillCenterImport() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    const prompt_selected = session.model.selected() != null;
+    session.mutex.unlock();
+    if (!prompt_selected) return false;
     return skillCenterOpenPicker(.import_);
+}
+
+fn scPathParent(path: []const u8) ?[]const u8 {
+    var i = path.len;
+    while (i > 0) {
+        i -= 1;
+        if (path[i] == '/' or path[i] == '\\') return path[0..i];
+    }
+    return null;
+}
+
+fn scPathBase(path: []const u8) []const u8 {
+    var i = path.len;
+    while (i > 0) {
+        i -= 1;
+        if (path[i] == '/' or path[i] == '\\') return path[i + 1 ..];
+    }
+    return path;
+}
+
+fn skillCenterToolManifestPath(allocator: std.mem.Allocator, tool: skill_center.ToolSkill) ?[]u8 {
+    if (tool.skill_path) |skill_path| {
+        if (std.mem.eql(u8, scPathBase(skill_path), "SKILL.md")) {
+            const tool_dir = scPathParent(skill_path) orelse return null;
+            return std.fs.path.join(allocator, &.{ tool_dir, "manifest.json" }) catch null;
+        }
+    }
+    const bin_dir = scPathParent(tool.executable_path) orelse return null;
+    if (!std.mem.eql(u8, scPathBase(bin_dir), "bin")) return null;
+    const tool_dir = scPathParent(bin_dir) orelse return null;
+    return std.fs.path.join(allocator, &.{ tool_dir, "manifest.json" }) catch null;
+}
+
+fn skillCenterSetStatusLocked(session: *skill_center.Session, text: []const u8) void {
+    const next = session.allocator.dupe(u8, text) catch return;
+    if (session.status.len > 0) session.allocator.free(session.status);
+    session.status = next;
+}
+
+pub fn skillCenterImportTool() bool {
+    const session = activeSkillCenter() orelse return false;
+    session.mutex.lock();
+    skillCenterSetStatusLocked(session, i18n.s().sc_tool_import_failed);
+    session.mutex.unlock();
+    markUiDirty();
+    return true;
+}
+
+pub fn skillCenterToggleToolEnabled() bool {
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    var manifest_path: ?[]u8 = null;
+    var selected_row: usize = 0;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        selected_row = session.model.sel_row;
+        const entry = session.model.selectedEntry() orelse return false;
+        switch (entry) {
+            .prompt => return false,
+            .tool => |tool| {
+                manifest_path = skillCenterToolManifestPath(allocator, tool);
+            },
+        }
+    }
+    const path = manifest_path orelse {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_import_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(path);
+
+    const bytes = skill_local_fs.readFileAllocAbsolute(allocator, path, 64 * 1024) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_import_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(bytes);
+    var manifest = tool_registry.parseManifestJson(allocator, bytes) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_import_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer manifest.deinit(allocator);
+
+    const new_enabled = !manifest.enabled;
+    const json = tool_registry.manifestToJson(allocator, .{
+        .id = manifest.id,
+        .function_name = manifest.function_name,
+        .enabled = new_enabled,
+        .executable = manifest.executable,
+        .source_path = manifest.source_path,
+        .sha256 = manifest.sha256,
+        .imported_at_ms = manifest.imported_at_ms,
+        .description = manifest.description,
+    }) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_import_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(json);
+    platform_atomic_file.writeFileReplaceSafe(path, json) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_import_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+
+    ai_chat.reloadDynamicToolSpecs(allocator);
+    session.mutex.lock();
+    if (session.model.entries) |entries| {
+        if (selected_row < entries.len) {
+            switch (entries[selected_row]) {
+                .prompt => {},
+                .tool => |*tool| tool.enabled = new_enabled,
+            }
+        }
+    }
+    skillCenterSetStatusLocked(session, if (new_enabled) i18n.s().sc_tool_enabled else i18n.s().sc_tool_disabled);
+    session.mutex.unlock();
+    markUiDirty();
+    return true;
 }
 
 /// Scan a chosen target and open the import list — off the UI thread.

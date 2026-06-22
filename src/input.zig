@@ -389,6 +389,96 @@ test "input: port forwarding arrow navigation requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: skill center tool toggle requests a repaint" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = AppWindow.g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = AppWindow.g_force_rebuild;
+    const previous_cells_valid = AppWindow.g_cells_valid;
+    defer {
+        AppWindow.g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        AppWindow.g_force_rebuild = previous_force_rebuild;
+        AppWindow.g_cells_valid = previous_cells_valid;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("tools/fake_tool/bin");
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/SKILL.md", .data = "---\nname: fake_tool\n---\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/bin/fake_tool", .data = "" });
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data =
+        \\{
+        \\  "kind": "binary_tool",
+        \\  "id": "fake_tool",
+        \\  "function_name": "fake_tool",
+        \\  "enabled": false,
+        \\  "executable": "bin/fake_tool",
+        \\  "source_path": "/tmp/fake_tool",
+        \\  "sha256": "abc123",
+        \\  "imported_at_ms": 1,
+        \\  "description": "fake"
+        \\}
+    });
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+
+    AppWindow.g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const executable_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "bin", "fake_tool" });
+    errdefer allocator.free(executable_path);
+    const skill_path = try std.fs.path.join(allocator, &.{ root, "tools", "fake_tool", "SKILL.md" });
+    errdefer allocator.free(skill_path);
+    const name = try allocator.dupe(u8, "fake_tool");
+    errdefer allocator.free(name);
+    const entries = try allocator.alloc(AppWindow.skill_center.LibraryEntry, 1);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = false,
+        .approval = .ask,
+    } };
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    session.mutex.unlock();
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+    handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    try std.testing.expect(!AppWindow.g_cells_valid);
+
+    const manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
+    defer allocator.free(manifest);
+    try std.testing.expect(std.mem.indexOf(u8, manifest, "\"enabled\": true") != null);
+
+    _ = AppWindow.skillCenterToggleToolEnabled();
+}
+
 test "input: terminal viewport mouse wheel scroll requests a repaint" {
     const allocator = std.testing.allocator;
     const ghostty_vt = @import("ghostty-vt");
@@ -837,6 +927,11 @@ fn syncPanelGridFromWindowSize(width: i32, height: i32) void {
 }
 
 fn markBrowserUrlBarDirty() void {
+    AppWindow.g_force_rebuild = true;
+    AppWindow.g_cells_valid = false;
+}
+
+fn markSkillCenterInputDirty() void {
     AppWindow.g_force_rebuild = true;
     AppWindow.g_cells_valid = false;
 }
@@ -1538,7 +1633,7 @@ fn handleChar(ev: platform_input.CharEvent) void {
             if (suppress) return;
         }
         if (!ev.ctrl and !ev.alt and !ev.super) {
-            _ = AppWindow.skillCenterUrlInsertChar(ev.codepoint); // no-op unless url_input active
+            if (AppWindow.skillCenterUrlInsertChar(ev.codepoint)) markSkillCenterInputDirty(); // no-op unless url_input active
         }
         return;
     }
@@ -2178,13 +2273,13 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         // arrows/PgUp/PgDn/Home/End scroll.
         if (AppWindow.skillCenterTextPreviewActive()) {
             switch (ev.key_code) {
-                platform_input.key_escape, platform_input.key_space, platform_input.key_enter => _ = AppWindow.skillCenterPreviewClose(),
-                platform_input.key_up => _ = AppWindow.skillCenterPreviewScroll(-1),
-                platform_input.key_down => _ = AppWindow.skillCenterPreviewScroll(1),
-                platform_input.key_page_up => _ = AppWindow.skillCenterPreviewScroll(-12),
-                platform_input.key_page_down => _ = AppWindow.skillCenterPreviewScroll(12),
-                platform_input.key_home => _ = AppWindow.skillCenterPreviewScroll(-1_000_000),
-                platform_input.key_end => _ = AppWindow.skillCenterPreviewScroll(1_000_000),
+                platform_input.key_escape, platform_input.key_space, platform_input.key_enter => if (AppWindow.skillCenterPreviewClose()) markSkillCenterInputDirty(),
+                platform_input.key_up => if (AppWindow.skillCenterPreviewScroll(-1)) markSkillCenterInputDirty(),
+                platform_input.key_down => if (AppWindow.skillCenterPreviewScroll(1)) markSkillCenterInputDirty(),
+                platform_input.key_page_up => if (AppWindow.skillCenterPreviewScroll(-12)) markSkillCenterInputDirty(),
+                platform_input.key_page_down => if (AppWindow.skillCenterPreviewScroll(12)) markSkillCenterInputDirty(),
+                platform_input.key_home => if (AppWindow.skillCenterPreviewScroll(-1_000_000)) markSkillCenterInputDirty(),
+                platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
                 else => {},
             }
             return;
@@ -2194,50 +2289,58 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         const picking = AppWindow.skillCenterPickActive();
         // Ctrl/Cmd+V paste into the URL field.
         if (text_capture and (ev.ctrl or ev.super) and ev.key_code == 0x56) { // 'V'
-            _ = AppWindow.skillCenterUrlPaste();
+            if (AppWindow.skillCenterUrlPaste()) markSkillCenterInputDirty();
             return;
         }
         switch (ev.key_code) {
             platform_input.key_up => {
-                _ = AppWindow.skillCenterMove(-1);
+                if (AppWindow.skillCenterMove(-1)) markSkillCenterInputDirty();
                 return;
             },
             platform_input.key_down => {
-                _ = AppWindow.skillCenterMove(1);
+                if (AppWindow.skillCenterMove(1)) markSkillCenterInputDirty();
                 return;
             },
             platform_input.key_enter => {
                 if (AppWindow.skillCenterOverlayActive()) {
-                    _ = AppWindow.skillCenterOverlaySelect();
+                    if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty();
                 } else {
-                    _ = AppWindow.skillCenterDeploy();
+                    if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
                 }
                 return;
             },
             platform_input.key_escape => {
-                _ = AppWindow.skillCenterOverlayCancel();
+                if (AppWindow.skillCenterOverlayCancel()) markSkillCenterInputDirty();
                 return;
             },
             platform_input.key_backspace => {
                 if (text_capture) {
-                    _ = AppWindow.skillCenterUrlBackspace();
+                    if (AppWindow.skillCenterUrlBackspace()) markSkillCenterInputDirty();
                     return;
                 }
             },
             0x52 => if (plain and !ev.shift and !text_capture) { // 'R'
-                _ = AppWindow.skillCenterRescan();
+                if (AppWindow.skillCenterRescan()) markSkillCenterInputDirty();
                 return;
             },
             0x44 => if (plain and !ev.shift and !text_capture and !picking) { // 'D'
-                _ = AppWindow.skillCenterDeploy();
+                if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
                 return;
             },
             0x49 => if (plain and !ev.shift and !text_capture and !picking) { // 'I'
-                _ = AppWindow.skillCenterImport();
+                if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
+                return;
+            },
+            0x54 => if (plain and !ev.shift and !text_capture and !picking) { // 'T'
+                if (AppWindow.skillCenterImportTool()) markSkillCenterInputDirty();
+                return;
+            },
+            0x45 => if (plain and !ev.shift and !text_capture and !picking) { // 'E'
+                if (AppWindow.skillCenterToggleToolEnabled()) markSkillCenterInputDirty();
                 return;
             },
             0x47 => if (plain and !ev.shift and !text_capture and !picking) { // 'G'
-                _ = AppWindow.skillCenterOpenUrlInput();
+                if (AppWindow.skillCenterOpenUrlInput()) markSkillCenterInputDirty();
                 // SDL text-input mode also fires a 'g' CHAR event after this
                 // key-down; suppress it so it doesn't land in the now-active
                 // URL field. (Only 'G' opens a text field, so only it suppresses.)
@@ -2245,11 +2348,11 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 return;
             },
             0x41 => if (plain and !ev.shift and picking) { // 'A' select-all
-                _ = AppWindow.skillCenterPickSelectAll();
+                if (AppWindow.skillCenterPickSelectAll()) markSkillCenterInputDirty();
                 return;
             },
             platform_input.key_space => if (plain and !ev.shift and !text_capture) {
-                _ = AppWindow.skillCenterSpacePreview(); // toggles when picking
+                if (AppWindow.skillCenterSpacePreview()) markSkillCenterInputDirty(); // toggles when picking
                 return;
             },
             else => {},

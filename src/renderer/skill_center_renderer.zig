@@ -17,6 +17,8 @@ pub const ListItem = struct {
     label: []const u8,
     marker: []const u8, // "" when none (e.g. the picker)
     marker_color: [3]f32 = .{ 0, 0, 0 }, // caller-supplied; ignored when marker is ""
+    kind: []const u8 = "",
+    enabled: []const u8 = "",
 };
 
 /// A selectable list overlay (target picker or import list). Accessor-based so
@@ -59,7 +61,7 @@ pub const View = struct {
     /// Library skill list, via an accessor (no per-frame allocation).
     skills_len: usize,
     ctx: *anyopaque,
-    nameAt: *const fn (*anyopaque, usize) []const u8,
+    itemAt: *const fn (*anyopaque, usize) ListItem,
     sel_row: usize,
     scroll: usize,
     title: []const u8, // localized "Skill Center"
@@ -111,6 +113,23 @@ fn yTextFromTop(draw: DrawContext, window_height: f32, top_px: f32) f32 {
 fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const c = @max(0.0, @min(1.0, t));
     return .{ a[0] + (b[0] - a[0]) * c, a[1] + (b[1] - a[1]) * c, a[2] + (b[2] - a[2]) * c };
+}
+
+fn renderListMetadata(
+    draw: DrawContext,
+    item: ListItem,
+    content_x: f32,
+    content_w: f32,
+    text_y: f32,
+    muted: [3]f32,
+) void {
+    const meta_w: f32 = 160;
+    if (item.kind.len > 0) {
+        _ = draw.renderTextLimited(item.kind, content_x + content_w - PAD_X - meta_w, text_y, muted, 54);
+    }
+    if (item.enabled.len > 0) {
+        _ = draw.renderTextLimited(item.enabled, content_x + content_w - PAD_X - meta_w + 62, text_y, item.marker_color, 54);
+    }
 }
 
 pub fn render(
@@ -226,7 +245,10 @@ fn renderSkillList(
         }
         draw.fillQuadAlpha(content_x, row_y, content_w, 1, line, 0.4);
         const text_y = yTextFromTop(draw, window_height, row_top_px + (row_h - draw.cell_h) / 2);
-        _ = draw.renderTextLimited(view.nameAt(view.ctx, ri), content_x + PAD_X, text_y, fg, content_w - PAD_X * 2);
+        const item = view.itemAt(view.ctx, ri);
+        const meta_w: f32 = if (item.kind.len > 0 or item.enabled.len > 0) 160 else 0;
+        _ = draw.renderTextLimited(item.label, content_x + PAD_X, text_y, fg, @max(0, content_w - PAD_X * 2 - meta_w));
+        renderListMetadata(draw, item, content_x, content_w, text_y, muted);
         rendered += 1;
     }
 }
@@ -257,6 +279,7 @@ fn renderList(
     const scroll = firstVisibleForSelection(lv.sel, cap, lv.len);
 
     const marker_w: f32 = 110;
+    const meta_w: f32 = 160;
     var rendered: usize = 0;
     var i: usize = scroll;
     while (i < lv.len and rendered < cap) : (i += 1) {
@@ -269,7 +292,9 @@ fn renderList(
         draw.fillQuadAlpha(content_x, row_y, content_w, 1, line, 0.4);
         const text_y = yTextFromTop(draw, window_height, row_top_px + (row_h - draw.cell_h) / 2);
         const item = lv.itemAt(lv.ctx, i);
-        _ = draw.renderTextLimited(item.label, content_x + PAD_X, text_y, fg, content_w - PAD_X * 2 - marker_w);
+        const reserved_w = (if (item.kind.len > 0 or item.enabled.len > 0) meta_w else 0) + (if (item.marker.len > 0) marker_w else 0);
+        _ = draw.renderTextLimited(item.label, content_x + PAD_X, text_y, fg, @max(0, content_w - PAD_X * 2 - reserved_w));
+        renderListMetadata(draw, item, content_x - (if (item.marker.len > 0) marker_w else 0), content_w, text_y, muted);
         if (item.marker.len > 0) {
             const mx = content_x + content_w - PAD_X - marker_w;
             _ = draw.renderTextLimited(item.marker, mx, text_y, item.marker_color, marker_w);
@@ -425,6 +450,12 @@ test "skill_center_renderer: bodyVisibleCapacity grows with height" {
     const cell_h: f32 = 16;
     try std.testing.expect(bodyVisibleCapacity(800, 40, cell_h) >= bodyVisibleCapacity(200, 40, cell_h));
     try std.testing.expectEqual(@as(usize, 0), bodyVisibleCapacity(40, 40, cell_h));
+}
+
+test "skill_center_renderer: list item carries kind and enabled marker" {
+    const item = ListItem{ .label = "agent_docx_review", .kind = "tool", .enabled = "on", .marker = "" };
+    try std.testing.expectEqualStrings("tool", item.kind);
+    try std.testing.expectEqualStrings("on", item.enabled);
 }
 
 test "skill_center_renderer: input overlay variant is constructible" {
