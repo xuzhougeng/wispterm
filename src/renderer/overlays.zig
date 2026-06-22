@@ -1837,8 +1837,9 @@ const profile_codec = @import("overlays/profile_codec.zig");
 const openssh_config_import = @import("../openssh_config_import.zig");
 const SSH_FIELD_COUNT = profile_codec.SSH_FIELD_COUNT;
 const SSH_FIELD_MAX = profile_codec.SSH_FIELD_MAX;
-const SSH_PROFILE_MAX = 16;
+const SSH_PROFILE_MAX = 128;
 const SSH_PROFILE_NONE = std.math.maxInt(usize);
+const SSH_LIST_MAX_VISIBLE_ROWS = 5;
 const AI_FIELD_COUNT = profile_codec.AI_FIELD_COUNT;
 const AI_FIELD_MAX = profile_codec.AI_FIELD_MAX;
 const AI_PROFILE_MAX = 16;
@@ -1910,6 +1911,7 @@ const SessionLayout = struct {
     box_w: f32,
     box_h: f32,
     header_h: f32,
+    filter_h: f32,
     first_row_top_px: f32,
     row_h: f32,
     /// Total rows in the active mode.
@@ -1942,6 +1944,7 @@ threadlocal var g_ssh_list_selected: usize = 0;
 threadlocal var g_ssh_list_mode: SshListMode = .manage;
 threadlocal var g_ssh_list_filter_buf: [SSH_FIELD_MAX]u8 = undefined;
 threadlocal var g_ssh_list_filter_len: usize = 0;
+threadlocal var g_ssh_delete_selected: [SSH_PROFILE_MAX]bool = .{false} ** SSH_PROFILE_MAX;
 threadlocal var g_ssh_edit_index: usize = SSH_PROFILE_NONE;
 threadlocal var g_ai_focus: usize = @intFromEnum(AiField.name);
 threadlocal var g_ai_bufs: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined;
@@ -2407,6 +2410,7 @@ fn openSshList() void {
     g_ssh_list_visible = true;
     g_ssh_form_visible = false;
     g_ssh_list_mode = .manage;
+    clearSshDeleteSelection();
     clearSshListFilter();
     clampSshListSelection();
 }
@@ -2426,6 +2430,7 @@ fn openSshProfilePicker(mode: SshListMode) void {
     g_ssh_list_visible = true;
     g_ssh_form_visible = false;
     g_ssh_list_mode = mode;
+    if (mode == .delete_select) clearSshDeleteSelection();
     clearSshListFilter();
     clampSshListSelection();
 }
@@ -2474,6 +2479,11 @@ fn handleSshListKey(ev: input_key.KeyEvent) void {
         .arrow_down, .tab => g_ssh_list_selected = (g_ssh_list_selected + 1) % row_count,
         .arrow_up => g_ssh_list_selected = if (g_ssh_list_selected == 0) row_count - 1 else g_ssh_list_selected - 1,
         .enter => runSshListRow(g_ssh_list_selected),
+        .space => {
+            if (g_ssh_list_mode == .delete_select) {
+                _ = toggleSshDeleteSelectionAtVisibleRow(g_ssh_list_selected);
+            }
+        },
         .backspace => backspaceSshListFilter(),
         else => {},
     }
@@ -2482,7 +2492,8 @@ fn handleSshListKey(ev: input_key.KeyEvent) void {
 fn sshListRowCount() usize {
     return switch (g_ssh_list_mode) {
         .manage => sshVisibleProfileCount() + 5,
-        .edit_select, .delete_select, .ai_history_select, .tmux_connect => sshVisibleProfileCount() + 1,
+        .delete_select => sshVisibleProfileCount() + 2,
+        .edit_select, .ai_history_select, .tmux_connect => sshVisibleProfileCount() + 1,
     };
 }
 
@@ -2542,7 +2553,13 @@ fn appendSshListFilterText(text: []const u8) void {
 fn sshProfileMatchesFilter(profile: *const SshProfile) bool {
     const filter = sshListFilter();
     if (filter.len == 0) return true;
-    return startsWithIgnoreCase(profileField(profile, .name), filter);
+    if (containsIgnoreCase(profileField(profile, .name), filter)) return true;
+    if (containsIgnoreCase(profileField(profile, .ip), filter)) return true;
+    if (containsIgnoreCase(profileField(profile, .user), filter)) return true;
+    if (containsIgnoreCase(profileField(profile, .port), filter)) return true;
+    if (containsIgnoreCase(profileField(profile, .proxy_jump), filter)) return true;
+    var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
+    return containsIgnoreCase(sshProfileTarget(profile, target_buf[0..]), filter);
 }
 
 fn sshVisibleProfileCount() usize {
@@ -2575,6 +2592,46 @@ fn clampSshListSelection() void {
 fn resetSshListSelection() void {
     g_ssh_list_selected = 0;
     clampSshListSelection();
+}
+
+fn clearSshDeleteSelection() void {
+    @memset(g_ssh_delete_selected[0..], false);
+}
+
+fn sshDeleteSelectionCount() usize {
+    var count: usize = 0;
+    for (0..g_ssh_profile_count) |idx| {
+        if (g_ssh_delete_selected[idx]) count += 1;
+    }
+    return count;
+}
+
+fn toggleSshDeleteSelectionAtVisibleRow(row: usize) bool {
+    const profile_idx = sshVisibleProfileIndexAt(row) orelse return false;
+    if (profile_idx >= g_ssh_profile_count) return false;
+    g_ssh_delete_selected[profile_idx] = !g_ssh_delete_selected[profile_idx];
+    return true;
+}
+
+fn deleteSelectedSshProfiles() usize {
+    var write_idx: usize = 0;
+    var deleted: usize = 0;
+    for (0..g_ssh_profile_count) |read_idx| {
+        if (g_ssh_delete_selected[read_idx]) {
+            deleted += 1;
+            continue;
+        }
+        if (write_idx != read_idx) {
+            g_ssh_profiles[write_idx] = g_ssh_profiles[read_idx];
+        }
+        write_idx += 1;
+    }
+    if (deleted == 0) return 0;
+    g_ssh_profile_count = write_idx;
+    clearSshDeleteSelection();
+    clampSshListSelection();
+    if (AppWindow.g_allocator) |allocator| saveSshProfiles(allocator);
+    return deleted;
 }
 
 fn sshField(field: SshField) []const u8 {
@@ -2656,11 +2713,6 @@ fn findLoadedSshProfileIndex(identifier_raw: []const u8) ?usize {
         if (std.ascii.eqlIgnoreCase(identifier, profileField(&g_ssh_profiles[idx], .ip))) return idx;
     }
     return null;
-}
-
-fn startsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
-    if (text.len < prefix.len) return false;
-    return std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
 }
 
 pub fn agentConnectSshProfile(identifier: []const u8) AgentSshConnectResult {
@@ -2914,9 +2966,15 @@ fn runSshListRow(row: usize) void {
         },
         .delete_select => {
             if (row < visible_profile_count) {
-                const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
-                deleteSshProfile(profile_idx);
-                openSshList();
+                if (sshDeleteSelectionCount() > 0) {
+                    _ = toggleSshDeleteSelectionAtVisibleRow(row);
+                } else {
+                    const profile_idx = sshVisibleProfileIndexAt(row) orelse return;
+                    deleteSshProfile(profile_idx);
+                    openSshList();
+                }
+            } else if (row == visible_profile_count) {
+                if (deleteSelectedSshProfiles() > 0) openSshList();
             } else {
                 openSshList();
             }
@@ -2948,6 +3006,7 @@ fn deleteSshProfile(idx: usize) void {
         g_ssh_profiles[i] = g_ssh_profiles[i + 1];
     }
     g_ssh_profile_count -= 1;
+    clearSshDeleteSelection();
     clampSshListSelection();
     if (AppWindow.g_allocator) |allocator| saveSshProfiles(allocator);
 }
@@ -4172,7 +4231,7 @@ fn loadOpenSshConfigDefault() void {
     };
     defer allocator.free(content);
 
-    var candidates_buf: [64]openssh_config_import.Candidate = undefined;
+    var candidates_buf: [SSH_PROFILE_MAX]openssh_config_import.Candidate = undefined;
     const candidates = openssh_config_import.parseCandidates(content, &candidates_buf);
     var stats = OpenSshImportStats{};
     for (candidates) |candidate| mergeOpenSshCandidate(candidate, &stats);
@@ -4267,6 +4326,9 @@ fn sessionDesiredBoxWidth() f32 {
     const title = sessionLauncherTitle();
     const hint = sessionLauncherHint();
     var desired = @max(measureTitlebarText(title), measureTitlebarText(hint)) + 48.0;
+    if (g_ssh_list_visible) {
+        desired = @max(desired, measureTitlebarText(i18n.s().sl_search_ssh_servers) + 96.0);
+    }
 
     if (g_ai_form_visible) {
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ai_profile_name, aiField(.name)));
@@ -4352,6 +4414,9 @@ fn sessionDesiredBoxWidth() f32 {
                 desired = @max(desired, sessionTwoColumnWidth(sessionLauncherCancelLabel(), "Esc"));
             },
             .edit_select, .delete_select => {
+                if (g_ssh_list_mode == .delete_select) {
+                    desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_selected_ssh_servers, i18n.s().sl_v_choose));
+                }
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_v_manage));
             },
             .ai_history_select => {
@@ -4439,7 +4504,8 @@ fn sessionRowCapacity(content_height: f32, base_h: f32, row_h: f32, row_count: u
     const usable_h = @max(row_h, content_height - 32.0 - base_h);
     if (usable_h <= row_h) return 1;
     const fit: usize = @intFromFloat(@max(1.0, @floor(usable_h / row_h)));
-    return @min(row_count, fit);
+    const capped = @min(row_count, fit);
+    return if (g_ssh_list_visible) @min(capped, SSH_LIST_MAX_VISIBLE_ROWS) else capped;
 }
 
 /// First row to render so the selected row stays visible. Mirrors
@@ -4458,11 +4524,13 @@ fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) Session
     const box_w: f32 = @round(@min(@max(min_box_w, sessionDesiredBoxWidth()), max_box_w));
     const row_h = overlayRowHeight(38);
     const header_h = @round(18 + overlayLineHeight() * 2 + 12);
+    const filter_h = if (g_ssh_list_visible) overlayControlHeight(42) else 0;
+    const filter_gap: f32 = if (g_ssh_list_visible) 12 else 0;
     const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
     const row_count = sessionActiveRowCount();
-    const visible_rows = sessionRowCapacity(content_height, header_h + bottom_pad, row_h, row_count);
+    const visible_rows = sessionRowCapacity(content_height, header_h + filter_h + filter_gap + bottom_pad, row_h, row_count);
     const scroll = sessionFirstVisibleRow(sessionActiveSelection(), visible_rows, row_count);
-    const box_h = @round(clampOverlayBoxHeight(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + bottom_pad, content_height));
+    const box_h = @round(clampOverlayBoxHeight(header_h + filter_h + filter_gap + row_h * @as(f32, @floatFromInt(visible_rows)) + bottom_pad, content_height));
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
     return .{
@@ -4471,7 +4539,8 @@ fn sessionLayout(window_width: f32, window_height: f32, top_offset: f32) Session
         .box_w = box_w,
         .box_h = box_h,
         .header_h = header_h,
-        .first_row_top_px = box_top_px + header_h,
+        .filter_h = filter_h,
+        .first_row_top_px = box_top_px + header_h + filter_h + filter_gap,
         .row_h = row_h,
         .row_count = row_count,
         .visible_rows = visible_rows,
@@ -4624,6 +4693,20 @@ fn renderSshProfileRow(layout: SessionLayout, window_height: f32, row: usize, pr
     renderSessionRow(layout, window_height, row, profileField(profile, .name), target, selected);
 }
 
+fn renderSshListProfileRow(layout: SessionLayout, window_height: f32, row: usize, profile_idx: usize, profile: *const SshProfile, selected: bool) void {
+    if (g_ssh_list_mode != .delete_select) {
+        renderSshProfileRow(layout, window_height, row, profile, selected);
+        return;
+    }
+
+    var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
+    const target = sshProfileTarget(profile, target_buf[0..]);
+    var label_buf: [SSH_FIELD_MAX + 4]u8 = undefined;
+    const mark = if (profile_idx < g_ssh_delete_selected.len and g_ssh_delete_selected[profile_idx]) "[x]" else "[ ]";
+    const label = std.fmt.bufPrint(label_buf[0..], "{s} {s}", .{ mark, profileField(profile, .name) }) catch profileField(profile, .name);
+    renderSessionRow(layout, window_height, row, label, target, selected);
+}
+
 fn sshProfileTarget(profile: *const SshProfile, target_buf: []u8) []const u8 {
     const host = profileField(profile, .ip);
     const user = profileField(profile, .user);
@@ -4671,8 +4754,11 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     const accent = AppWindow.g_theme.cursor_color;
     const panel_color = mixColor(bg, fg, 0.035);
     const border_color = mixColor(bg, accent, 0.24);
+    const field_color = mixColor(bg, fg, 0.075);
+    const field_border = mixColor(bg, fg, 0.19);
     const title_color = mixColor(fg, accent, 0.14);
     const muted_color = mixColor(bg, fg, 0.58);
+    const dim_color = mixColor(bg, fg, 0.44);
 
     ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.18);
     renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
@@ -4704,6 +4790,19 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
     renderTitlebarTextStrong(title, layout.box_x + 24, title_y, title_color);
     renderTitlebarTextStrongLimited(hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
+
+    if (g_ssh_list_visible and layout.filter_h > 0) {
+        const filter_x = @round(layout.box_x + 18);
+        const filter_box_y = @round(window_height - (layout.box_top_px + layout.header_h + layout.filter_h));
+        const filter_w = layout.box_w - 36;
+        renderRoundedQuadAlpha(filter_x - 1, filter_box_y - 1, filter_w + 2, layout.filter_h + 2, 6, field_border, 0.42);
+        renderRoundedQuadAlpha(filter_x, filter_box_y, filter_w, layout.filter_h, 5, field_color, 0.92);
+
+        const filter = sshListFilter();
+        const text = if (filter.len > 0) filter else i18n.s().sl_search_ssh_servers;
+        const color = if (filter.len > 0) fg else dim_color;
+        renderTitlebarTextLimited(text, filter_x + 12, rowTextY(filter_box_y, layout.filter_h), color, filter_w - 24);
+    }
 
     if (!g_ssh_form_visible and !g_ai_form_visible) {
         if (g_ai_history_source_visible) {
@@ -4746,7 +4845,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
             while (profile_idx < g_ssh_profile_count) : (profile_idx += 1) {
                 const profile = &g_ssh_profiles[profile_idx];
                 if (!sshProfileMatchesFilter(profile)) continue;
-                renderSshProfileRow(layout, window_height, row, profile, g_ssh_list_selected == row);
+                renderSshListProfileRow(layout, window_height, row, profile_idx, profile, g_ssh_list_selected == row);
                 row += 1;
             }
             switch (g_ssh_list_mode) {
@@ -4762,6 +4861,16 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
                     renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", g_ssh_list_selected == row);
                 },
                 .edit_select, .delete_select => {
+                    if (g_ssh_list_mode == .delete_select) {
+                        var count_buf: [32]u8 = undefined;
+                        const selected_count = sshDeleteSelectionCount();
+                        const detail = if (selected_count == 0)
+                            i18n.s().sl_v_no_server
+                        else
+                            std.fmt.bufPrint(count_buf[0..], "{d} selected", .{selected_count}) catch i18n.s().sl_v_choose;
+                        renderSessionRow(layout, window_height, row, i18n.s().sl_delete_selected_ssh_servers, detail, g_ssh_list_selected == row);
+                        row += 1;
+                    }
                     renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, g_ssh_list_selected == row);
                 },
                 .ai_history_select => {
@@ -5843,6 +5952,44 @@ test "overlays: session launcher caps rows and scrolls to keep selection visible
     try std.testing.expect(total - 1 < scroll + short_vis);
 }
 
+test "overlays: SSH list caps visible rows to five when many profiles exist" {
+    const saved_ssh_list = g_ssh_list_visible;
+    const saved_session = g_session_launcher_visible;
+    const saved_count = g_ssh_profile_count;
+    const saved_mode = g_ssh_list_mode;
+    const saved_selected = g_ssh_list_selected;
+    const saved_filter_len = g_ssh_list_filter_len;
+    var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], g_ssh_profiles[0..saved_count]);
+    defer {
+        g_ssh_list_visible = saved_ssh_list;
+        g_session_launcher_visible = saved_session;
+        g_ssh_profile_count = saved_count;
+        if (saved_count > 0) @memcpy(g_ssh_profiles[0..saved_count], saved_profiles[0..saved_count]);
+        g_ssh_list_mode = saved_mode;
+        g_ssh_list_selected = saved_selected;
+        g_ssh_list_filter_len = saved_filter_len;
+    }
+
+    g_ssh_list_visible = true;
+    g_session_launcher_visible = false;
+    g_ssh_list_mode = .manage;
+    g_ssh_list_selected = 0;
+    g_ssh_list_filter_len = 0;
+    g_ssh_profile_count = 12;
+    for (0..g_ssh_profile_count) |idx| {
+        var name_buf: [16]u8 = undefined;
+        var host_buf: [32]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "host-{d}", .{idx}) catch unreachable;
+        const host = std.fmt.bufPrint(&host_buf, "10.0.0.{d}", .{idx}) catch unreachable;
+        g_ssh_profiles[idx] = makeSshProfile(name, host, "user", "22");
+    }
+
+    const layout = sessionLayout(900, 2000, 0);
+    try std.testing.expectEqual(@as(usize, 5), layout.visible_rows);
+    try std.testing.expect(layout.filter_h > 0);
+}
+
 test "overlays: session launcher mouse wheel moves selection without wrapping" {
     sessionLauncherOpen();
     defer sessionLauncherClose();
@@ -5950,6 +6097,102 @@ test "overlays: SSH list filter matches server name prefixes case-insensitively"
     appendSshListFilterText("x1");
     try std.testing.expectEqual(@as(usize, 1), sshVisibleProfileCount());
     try std.testing.expectEqual(@as(?usize, 1), sshVisibleProfileIndexAt(0));
+}
+
+test "overlays: SSH list filter matches server target fields" {
+    const saved_count = g_ssh_profile_count;
+    const saved_mode = g_ssh_list_mode;
+    const saved_filter_len = g_ssh_list_filter_len;
+    const saved_selected = g_ssh_list_selected;
+    var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], g_ssh_profiles[0..saved_count]);
+    defer {
+        g_ssh_profile_count = saved_count;
+        if (saved_count > 0) @memcpy(g_ssh_profiles[0..saved_count], saved_profiles[0..saved_count]);
+        g_ssh_list_mode = saved_mode;
+        g_ssh_list_filter_len = saved_filter_len;
+        g_ssh_list_selected = saved_selected;
+    }
+
+    g_ssh_profile_count = 2;
+    g_ssh_profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "alice", "22");
+    g_ssh_profiles[1] = makeSshProfile("GPU", "gpu.example", "builder", "2202");
+    g_ssh_list_mode = .manage;
+    g_ssh_list_selected = 0;
+    g_ssh_list_filter_len = 0;
+
+    appendSshListFilterText("2202");
+    try std.testing.expectEqual(@as(usize, 1), sshVisibleProfileCount());
+    try std.testing.expectEqual(@as(?usize, 1), sshVisibleProfileIndexAt(0));
+}
+
+test "overlays: OpenSSH import keeps more than sixteen SSH profiles" {
+    const saved_count = g_ssh_profile_count;
+    var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], g_ssh_profiles[0..saved_count]);
+    defer {
+        g_ssh_profile_count = saved_count;
+        if (saved_count > 0) @memcpy(g_ssh_profiles[0..saved_count], saved_profiles[0..saved_count]);
+    }
+
+    g_ssh_profile_count = 0;
+    var stats = OpenSshImportStats{};
+    for (0..27) |idx| {
+        var candidate = openssh_config_import.Candidate{};
+        var name_buf: [32]u8 = undefined;
+        var host_buf: [32]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "lab-{d}", .{idx}) catch unreachable;
+        const host = std.fmt.bufPrint(&host_buf, "10.10.0.{d}", .{idx}) catch unreachable;
+        opensshCandidateSetForTest(&candidate, .name, name);
+        opensshCandidateSetForTest(&candidate, .host, host);
+        opensshCandidateSetForTest(&candidate, .user, "alice");
+        opensshCandidateSetForTest(&candidate, .port, "22");
+        mergeOpenSshCandidate(candidate, &stats);
+    }
+
+    try std.testing.expectEqual(@as(usize, 27), g_ssh_profile_count);
+    try std.testing.expectEqual(@as(usize, 27), stats.created);
+    try std.testing.expect(!stats.capped);
+}
+
+test "overlays: SSH delete picker supports multi-select batch delete" {
+    const saved_count = g_ssh_profile_count;
+    const saved_mode = g_ssh_list_mode;
+    const saved_filter_len = g_ssh_list_filter_len;
+    const saved_selected = g_ssh_list_selected;
+    var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], g_ssh_profiles[0..saved_count]);
+    defer {
+        g_ssh_profile_count = saved_count;
+        if (saved_count > 0) @memcpy(g_ssh_profiles[0..saved_count], saved_profiles[0..saved_count]);
+        g_ssh_list_mode = saved_mode;
+        g_ssh_list_filter_len = saved_filter_len;
+        g_ssh_list_selected = saved_selected;
+        clearSshDeleteSelection();
+    }
+
+    g_ssh_profile_count = 3;
+    g_ssh_profiles[0] = makeSshProfile("one", "10.0.0.1", "user", "22");
+    g_ssh_profiles[1] = makeSshProfile("two", "10.0.0.2", "user", "22");
+    g_ssh_profiles[2] = makeSshProfile("three", "10.0.0.3", "user", "22");
+    g_ssh_list_mode = .delete_select;
+    g_ssh_list_filter_len = 0;
+    g_ssh_list_selected = 0;
+    clearSshDeleteSelection();
+
+    try std.testing.expectEqual(@as(usize, 5), sshListRowCount());
+
+    handleSshListKey(.{ .key = .space });
+    g_ssh_list_selected = 1;
+    handleSshListKey(.{ .key = .space });
+    try std.testing.expectEqual(@as(usize, 2), sshDeleteSelectionCount());
+
+    g_ssh_list_selected = sshVisibleProfileCount();
+    handleSshListKey(.{ .key = .enter });
+
+    try std.testing.expectEqual(@as(usize, 1), g_ssh_profile_count);
+    try std.testing.expectEqualStrings("three", profileField(&g_ssh_profiles[0], .name));
+    try std.testing.expectEqual(@as(usize, 0), sshDeleteSelectionCount());
 }
 
 test "overlays: SSH manage list includes Load OpenSSH config action" {
