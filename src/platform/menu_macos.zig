@@ -117,7 +117,7 @@ fn buildDefaultMenu() void {
 
     // Edit.
     wispterm_macos_menu_begin_submenu("Edit");
-    wispterm_macos_menu_add_item("Copy", id(.copy), "c", AppMod | ModShift);
+    wispterm_macos_menu_add_item("Copy", id(.copy), "c", AppMod);
     wispterm_macos_menu_add_item("Paste", id(.paste), "v", AppMod);
     wispterm_macos_menu_add_item("Paste Image", id(.paste_image), "v", AppMod | ModShift);
     wispterm_macos_menu_end_submenu();
