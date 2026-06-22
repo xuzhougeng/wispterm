@@ -740,7 +740,7 @@ fn forEachToolSpec(
     const Filtered = struct {
         fn emitTool(c: Ctx, o: ToolSpecOpts, name: []const u8, description: []const u8, properties: []const u8) anyerror!void {
             if (o.toolset == .subagent and !subagentToolAllowed(name)) return;
-            if (first_party_tools.isDisabledName(o.disabled_first_party_tools, name)) return;
+            if (first_party_tools.isKnown(name) and first_party_tools.isDisabledName(o.disabled_first_party_tools, name)) return;
             try emit(c, name, description, properties);
         }
     };
@@ -805,7 +805,9 @@ const ToolNameCollectorForTesting = struct {
 pub fn collectBuiltinToolNamesForTesting(allocator: std.mem.Allocator, opts: ToolSpecOpts) ![]const []const u8 {
     var ctx = ToolNameCollectorForTesting{ .allocator = allocator };
     errdefer ctx.names.deinit(allocator);
-    try forEachToolSpec(*ToolNameCollectorForTesting, &ctx, opts, ToolNameCollectorForTesting.emit);
+    var builtin_opts = opts;
+    builtin_opts.dynamic_tools = &.{};
+    try forEachToolSpec(*ToolNameCollectorForTesting, &ctx, builtin_opts, ToolNameCollectorForTesting.emit);
     return ctx.names.toOwnedSlice(allocator);
 }
 
@@ -1726,6 +1728,9 @@ test "collectBuiltinToolNamesForTesting names all active first-party catalog too
     for (definitions) |definition| {
         try std.testing.expect(indexOfToolNameForTesting(names, definition.name) != null);
     }
+    for (names) |name| {
+        try std.testing.expect(first_party_tools.isKnown(name));
+    }
 }
 
 test "agent tool set includes pubmed" {
@@ -1771,6 +1776,44 @@ test "buildRequestJson advertises enabled binary tools" {
     defer a.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_docx_review\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"args\"") != null);
+}
+
+test "disabled first-party list does not hide dynamic binary tools" {
+    const a = std.testing.allocator;
+    const disabled = [_][]const u8{"agent_docx_review"};
+    const tools = [_]DynamicToolSpec{.{
+        .name = "agent_docx_review",
+        .description = "Use for DOCX tracked-change review.",
+    }};
+    const params = RequestParams{
+        .model = "m",
+        .system_prompt = "s",
+        .protocol = .chat_completions,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+        .dynamic_tools = tools[0..],
+        .disabled_first_party_tools = disabled[0..],
+    };
+    const json = try buildRequestJson(a, params, &.{}, true);
+    defer a.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_docx_review\"") != null);
+}
+
+test "collectBuiltinToolNamesForTesting excludes dynamic binary tools" {
+    const a = std.testing.allocator;
+    const tools = [_]DynamicToolSpec{.{
+        .name = "agent_docx_review",
+        .description = "Use for DOCX tracked-change review.",
+    }};
+    const names = try collectBuiltinToolNamesForTesting(a, .{ .include_memory = true, .dynamic_tools = tools[0..] });
+    defer freeCollectedToolNamesForTesting(a, names);
+
+    try std.testing.expect(indexOfToolNameForTesting(names, "agent_docx_review") == null);
+    for (names) |name| {
+        try std.testing.expect(first_party_tools.isKnown(name));
+    }
 }
 
 test "dynamic binary tools skip built-in tool name collisions" {
