@@ -679,6 +679,7 @@ comptime {
     _ = @import("config_watcher.zig");
     _ = @import("file_backend.zig");
     _ = @import("file_explorer.zig");
+    _ = @import("first_party_tools.zig");
     _ = @import("input.zig");
     _ = @import("input/clipboard.zig");
     _ = @import("clipboard_osc52.zig");

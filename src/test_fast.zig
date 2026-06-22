@@ -99,6 +99,7 @@ test {
     _ = @import("composer_detail_wrap.zig");
     _ = @import("web_search.zig");
     _ = @import("agent_prompt_answer.zig");
+    _ = @import("first_party_tools.zig");
     _ = @import("web_read.zig");
     _ = @import("web_read_cache.zig");
     _ = @import("pubmed.zig");
