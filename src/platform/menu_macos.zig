@@ -79,6 +79,17 @@ inline fn id(action: keybind.Action) i32 {
 }
 
 fn buildDefaultMenu() void {
+    // On macOS the in-app shortcuts use Cmd (⌘) where other platforms use Ctrl:
+    // `keybind.Set.defaults()` migrates every non-global, non-Tab Ctrl default to
+    // its Cmd equivalent. These menu key equivalents must mirror that migration —
+    // not just so the displayed shortcut is right, but because an NSMenu key
+    // equivalent is intercepted by AppKit before the terminal sees it. Leaving
+    // these on Ctrl made AppKit swallow Ctrl+V / Ctrl+Shift+V (literal-next and
+    // friends) as "Paste" / "Paste Image" instead of passing them to the shell.
+    // Tab switching (Ctrl+Tab / Ctrl+Shift+Tab) stays on Ctrl to match the
+    // keybinds (Cmd+Tab is the system app switcher).
+    const AppMod = ModCmd;
+
     wispterm_macos_menu_begin();
 
     // WispTerm (application) menu.
@@ -96,41 +107,42 @@ fn buildDefaultMenu() void {
 
     // File.
     wispterm_macos_menu_begin_submenu("File");
-    wispterm_macos_menu_add_item("New Tab", id(.new_session), "t", ModCtrl | ModShift);
-    wispterm_macos_menu_add_item("New Window", id(.new_window), "n", ModCtrl | ModShift);
-    wispterm_macos_menu_add_item("Split Right", id(.split_right), "+", ModCtrl | ModShift);
-    wispterm_macos_menu_add_item("Split Down", id(.split_down), "-", ModCtrl | ModShift);
+    wispterm_macos_menu_add_item("New Tab", id(.new_session), "t", AppMod | ModShift);
+    wispterm_macos_menu_add_item("New Window", id(.new_window), "n", AppMod | ModShift);
+    wispterm_macos_menu_add_item("Split Right", id(.split_right), "+", AppMod | ModShift);
+    wispterm_macos_menu_add_item("Split Down", id(.split_down), "-", AppMod | ModShift);
     wispterm_macos_menu_add_separator();
-    wispterm_macos_menu_add_item("Close Tab", id(.close_panel_or_tab), "w", ModCtrl | ModShift);
+    wispterm_macos_menu_add_item("Close Tab", id(.close_panel_or_tab), "w", AppMod | ModShift);
     wispterm_macos_menu_end_submenu();
 
     // Edit.
     wispterm_macos_menu_begin_submenu("Edit");
-    wispterm_macos_menu_add_item("Copy", id(.copy), "c", ModCtrl | ModShift);
-    wispterm_macos_menu_add_item("Paste", id(.paste), "v", ModCtrl);
-    wispterm_macos_menu_add_item("Paste Image", id(.paste_image), "v", ModCtrl | ModShift);
+    wispterm_macos_menu_add_item("Copy", id(.copy), "c", AppMod | ModShift);
+    wispterm_macos_menu_add_item("Paste", id(.paste), "v", AppMod);
+    wispterm_macos_menu_add_item("Paste Image", id(.paste_image), "v", AppMod | ModShift);
     wispterm_macos_menu_end_submenu();
 
     // View.
     wispterm_macos_menu_begin_submenu("View");
-    wispterm_macos_menu_add_item("Open Command Center", id(.toggle_command_palette), "p", ModCtrl | ModShift);
+    wispterm_macos_menu_add_item("Open Command Center", id(.toggle_command_palette), "p", AppMod | ModShift);
     wispterm_macos_menu_add_separator();
-    wispterm_macos_menu_add_item("Toggle Tab Sidebar", id(.toggle_sidebar), "b", ModCtrl | ModShift);
-    wispterm_macos_menu_add_item("Toggle Copilot", id(.toggle_ai_copilot), "a", ModCtrl | ModShift);
-    wispterm_macos_menu_add_item("Toggle File Explorer", id(.toggle_file_explorer), "e", ModCtrl | ModShift | ModOpt);
+    wispterm_macos_menu_add_item("Toggle Tab Sidebar", id(.toggle_sidebar), "b", AppMod | ModShift);
+    wispterm_macos_menu_add_item("Toggle Copilot", id(.toggle_ai_copilot), "a", AppMod | ModShift);
+    wispterm_macos_menu_add_item("Toggle File Explorer", id(.toggle_file_explorer), "e", AppMod | ModShift | ModOpt);
     wispterm_macos_menu_add_separator();
-    wispterm_macos_menu_add_item("Increase Font Size", id(.font_size_increase), "+", ModCtrl);
-    wispterm_macos_menu_add_item("Decrease Font Size", id(.font_size_decrease), "-", ModCtrl);
+    wispterm_macos_menu_add_item("Increase Font Size", id(.font_size_increase), "+", AppMod);
+    wispterm_macos_menu_add_item("Decrease Font Size", id(.font_size_decrease), "-", AppMod);
     wispterm_macos_menu_end_submenu();
 
     // Window.
     wispterm_macos_menu_begin_submenu("Window");
     wispterm_macos_menu_add_item("Toggle Maximize", id(.toggle_maximize), "\r", ModOpt);
     wispterm_macos_menu_add_separator();
+    // Tab switching keeps Ctrl on macOS (Cmd+Tab is the system app switcher).
     wispterm_macos_menu_add_item("Next Tab", id(.next_tab), "\t", ModCtrl);
     wispterm_macos_menu_add_item("Previous Tab", id(.previous_tab), "\t", ModCtrl | ModShift);
     wispterm_macos_menu_add_separator();
-    wispterm_macos_menu_add_item("Equalize Splits", id(.equalize_splits), "z", ModCtrl | ModShift);
+    wispterm_macos_menu_add_item("Equalize Splits", id(.equalize_splits), "z", AppMod | ModShift);
     wispterm_macos_menu_end_submenu();
 
     wispterm_macos_menu_finalize();

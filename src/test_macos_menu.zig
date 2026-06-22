@@ -64,6 +64,31 @@ fn findItemIndex(menu_index: i32, expected_title: []const u8) !i32 {
     return error.ItemNotFound;
 }
 
+const ItemLoc = struct { menu_idx: i32, item_idx: i32 };
+
+/// Locate a menu item by title across every top-level submenu.
+fn findItemAcrossMenus(title: []const u8) !ItemLoc {
+    const count = menu_macos.wispterm_macos_menu_top_level_count_for_test();
+    var i: i32 = 0;
+    while (i < count) : (i += 1) {
+        if (findItemIndex(i, title)) |item_idx| {
+            return .{ .menu_idx = i, .item_idx = item_idx };
+        } else |_| {}
+    }
+    return error.ItemNotFound;
+}
+
+/// Translate a keybind modifier set into the menu's modifier bitmask, so a test
+/// can compare the live NSMenu against the source-of-truth `keybind.Set`.
+fn menuMaskForMods(mods: keybind.Mods) u32 {
+    var mask: u32 = 0;
+    if (mods.win) mask |= menu_macos.ModCmd;
+    if (mods.shift) mask |= menu_macos.ModShift;
+    if (mods.alt) mask |= menu_macos.ModOpt;
+    if (mods.ctrl) mask |= menu_macos.ModCtrl;
+    return mask;
+}
+
 test "menu_macos: install publishes the main menu" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     installFreshMenu();
@@ -82,7 +107,7 @@ test "menu_macos: top-level menus include WispTerm/File/Edit/View/Window" {
     _ = try requireSubmenuTitled("Next Tab");
 }
 
-test "menu_macos: View > Open Command Center carries the toggle_command_palette action and ⌃⇧P" {
+test "menu_macos: View > Open Command Center carries the toggle_command_palette action and ⌘⇧P" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     installFreshMenu();
     const view_idx = try requireSubmenuTitled("Open Command Center");
@@ -95,12 +120,12 @@ test "menu_macos: View > Open Command Center carries the toggle_command_palette 
     try std.testing.expect(key_ptr != null);
     try std.testing.expectEqualStrings("p", std.mem.span(key_ptr.?));
     try std.testing.expectEqual(
-        menu_macos.ModCtrl | menu_macos.ModShift,
+        menu_macos.ModCmd | menu_macos.ModShift,
         menu_macos.wispterm_macos_menu_item_modifier_for_test(view_idx, item_idx),
     );
 }
 
-test "menu_macos: View > Toggle Tab Sidebar carries toggle_sidebar and ⌃⇧B" {
+test "menu_macos: View > Toggle Tab Sidebar carries toggle_sidebar and ⌘⇧B" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     installFreshMenu();
     const view_idx = try requireSubmenuTitled("Open Command Center");
@@ -112,7 +137,7 @@ test "menu_macos: View > Toggle Tab Sidebar carries toggle_sidebar and ⌃⇧B" 
     const key_ptr = menu_macos.wispterm_macos_menu_item_key_equivalent_for_test(view_idx, item_idx);
     try std.testing.expectEqualStrings("b", std.mem.span(key_ptr.?));
     try std.testing.expectEqual(
-        menu_macos.ModCtrl | menu_macos.ModShift,
+        menu_macos.ModCmd | menu_macos.ModShift,
         menu_macos.wispterm_macos_menu_item_modifier_for_test(view_idx, item_idx),
     );
 }
@@ -170,4 +195,39 @@ test "menu_macos: system items (About/Quit) are not routed through the action ca
     // The helper short-circuits on system tags (tag < 0); callback must stay
     // untouched.
     try std.testing.expectEqual(@as(i32, -100), g_last_action);
+}
+
+// Drift guard: the menu hardcodes its key equivalents, but the real bindings
+// live in keybind.Set.defaults(). When that set migrated macOS Ctrl→Cmd (commit
+// 82e7a60) the menu was left behind, so Edit ▸ Paste Image still showed ⌃⇧V
+// while the actual shortcut was ⌘⇧V — and AppKit hijacked Ctrl+V from the
+// terminal. This test pins every action item's modifiers to the keybind default
+// so the two can never silently diverge again. The Tab cases prove the menu
+// correctly keeps Ctrl where the keybinds do (Cmd+Tab is the system switcher).
+test "menu_macos: action item modifiers track keybind.Set.defaults (Ctrl→Cmd drift guard)" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    installFreshMenu();
+    const set = keybind.Set.defaults();
+
+    const cases = [_]struct { title: []const u8, action: keybind.Action }{
+        .{ .title = "New Tab", .action = .new_session },
+        .{ .title = "Close Tab", .action = .close_panel_or_tab },
+        .{ .title = "Copy", .action = .copy },
+        .{ .title = "Paste", .action = .paste },
+        .{ .title = "Paste Image", .action = .paste_image },
+        .{ .title = "Open Command Center", .action = .toggle_command_palette },
+        .{ .title = "Increase Font Size", .action = .font_size_increase },
+        .{ .title = "Equalize Splits", .action = .equalize_splits },
+        // Ctrl is intentionally retained for tab switching.
+        .{ .title = "Next Tab", .action = .next_tab },
+        .{ .title = "Previous Tab", .action = .previous_tab },
+    };
+    for (cases) |c| {
+        const loc = try findItemAcrossMenus(c.title);
+        const binding = set.firstForAction(c.action) orelse return error.MissingKeybind;
+        try std.testing.expectEqual(
+            menuMaskForMods(binding.trigger.mods),
+            menu_macos.wispterm_macos_menu_item_modifier_for_test(loc.menu_idx, loc.item_idx),
+        );
+    }
 }
