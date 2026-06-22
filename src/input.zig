@@ -2475,6 +2475,7 @@ fn logicalKeyFromCode(key_code: platform_input.KeyCode) input_key.Key {
         platform_input.key_tab => .tab,
         platform_input.key_enter => .enter,
         platform_input.key_escape => .escape,
+        platform_input.key_space => .space,
         platform_input.key_delete => .delete,
         platform_input.key_home => .home,
         platform_input.key_end => .end,

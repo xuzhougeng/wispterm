@@ -6,6 +6,7 @@ pub const Key = enum {
     tab,
     enter,
     escape,
+    space,
     delete,
     home,
     end,
