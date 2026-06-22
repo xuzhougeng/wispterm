@@ -475,6 +475,38 @@ test "AppWindow: skill center tool enabled update matches manifest path" {
     }
 }
 
+test "AppWindow: skill center tool manifest toggle preserves extra fields" {
+    const manifest_json =
+        \\{
+        \\  "kind": "binary_tool",
+        \\  "id": "sample_tool",
+        \\  "function_name": "sample_tool",
+        \\  "enabled": false,
+        \\  "executable": "bin/sample_tool",
+        \\  "source_path": "/tmp/sample_tool",
+        \\  "sha256": "abc123",
+        \\  "imported_at_ms": 1234,
+        \\  "description": "Sample tool",
+        \\  "custom_meta": {
+        \\    "owner": "qa"
+        \\  }
+        \\}
+    ;
+
+    const updated = try skillCenterManifestJsonWithEnabled(std.testing.allocator, manifest_json, true);
+    defer std.testing.allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"custom_meta\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"owner\"") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, updated, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    const enabled_value = parsed.value.object.get("enabled") orelse return error.ExpectedEnabledField;
+    try std.testing.expect(enabled_value == .bool);
+    try std.testing.expect(enabled_value.bool);
+}
+
 test "AppWindow: open AI chat tabs are persisted to agent history before session dump" {
     const allocator = std.testing.allocator;
 
@@ -2230,6 +2262,23 @@ fn skillCenterApplyToolEnabledByManifestPath(
     return false;
 }
 
+fn skillCenterManifestJsonWithEnabled(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    enabled: bool,
+) ![]u8 {
+    var manifest = try tool_registry.parseManifestJson(allocator, bytes);
+    defer manifest.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidToolManifest;
+
+    const entry = try parsed.value.object.getOrPutValue("enabled", std.json.Value{ .bool = enabled });
+    entry.value_ptr.* = std.json.Value{ .bool = enabled };
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
+}
+
 fn skillCenterSetStatusLocked(session: *skill_center.Session, text: []const u8) void {
     const next = session.allocator.dupe(u8, text) catch return;
     if (session.status.len > 0) session.allocator.free(session.status);
@@ -2287,16 +2336,7 @@ pub fn skillCenterToggleToolEnabled() bool {
     defer manifest.deinit(allocator);
 
     const new_enabled = !manifest.enabled;
-    const json = tool_registry.manifestToJson(allocator, .{
-        .id = manifest.id,
-        .function_name = manifest.function_name,
-        .enabled = new_enabled,
-        .executable = manifest.executable,
-        .source_path = manifest.source_path,
-        .sha256 = manifest.sha256,
-        .imported_at_ms = manifest.imported_at_ms,
-        .description = manifest.description,
-    }) catch {
+    const json = skillCenterManifestJsonWithEnabled(allocator, bytes, new_enabled) catch {
         session.mutex.lock();
         skillCenterSetStatusLocked(session, i18n.s().sc_tool_import_failed);
         session.mutex.unlock();
