@@ -266,6 +266,9 @@ pub fn activeCopilotSession(
     if (t.kind != .terminal) return null;
     if (t.copilot_session == null) {
         t.copilot_session = make() orelse return null;
+        // Wire incremental persistence: each completed turn now upserts this
+        // conversation into the agent-history store (same path as AI-chat tabs).
+        installAiChatHistoryHook(t.copilot_session.?);
     }
     return t.copilot_session;
 }
@@ -1466,11 +1469,20 @@ pub fn snapshotTab(arena: std.mem.Allocator, t: *const TabState) !session_persis
     // 3. Translate the optional zoomed handle to a pre-order leaf index.
     const zoomed_leaf: ?u32 = if (t.tree.zoomed) |z| computeFocusedLeafIndex(&t.tree, z) else null;
 
+    // Capture the active Copilot sidebar conversation (if worth persisting) so
+    // it can be restored in place. The conversation itself is in the store.
+    var copilot_sid: ?[]const u8 = null;
+    if (t.copilot_session) |cs| {
+        if (cs.shouldPersistCopilot()) copilot_sid = try arena.dupe(u8, cs.sessionId());
+    }
+
     return session_persist.TabSnap{
         .title_override = try snapshotFocusedTitleOverride(arena, t),
         .focused_leaf = focused_leaf,
         .zoomed_leaf = zoomed_leaf,
         .tree = tree,
+        .copilot_session_id = copilot_sid,
+        .copilot_visible = if (copilot_sid != null) t.copilot_visible else false,
     };
 }
 

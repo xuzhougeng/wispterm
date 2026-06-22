@@ -824,3 +824,16 @@ test "command center browser entries do not expose backend implementation names"
         try std.testing.expect(std.mem.indexOf(u8, entry.detail, "WebView2") == null);
     }
 }
+
+test "activeCopilotSession installs the history-change hook" {
+    const src = @embedFile("appwindow/tab.zig");
+    const anchor = "t.copilot_session = make() orelse return null;";
+    const idx = std.mem.indexOf(u8, src, anchor) orelse return error.AnchorMissing;
+    try std.testing.expect(std.mem.indexOf(u8, src[idx..], "installAiChatHistoryHook(") != null);
+}
+
+test "snapshotTab records copilot_session_id for terminal tabs" {
+    const src = @embedFile("appwindow/tab.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, ".copilot_session_id = ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "shouldPersistCopilot()") != null);
+}
