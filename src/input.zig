@@ -2616,6 +2616,7 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         .toggle_file_explorer => toggleFileExplorer(),
         .toggle_sidebar => toggleSidebar(),
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
+        .copilot_conversation_picker => AppWindow.openCopilotConversationPicker(),
         .close_panel_or_tab => closePanelOrTab(),
         .toggle_maximize => toggleMaximize(),
         .font_size => |delta| adjustFontSize(delta),

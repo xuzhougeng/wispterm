@@ -825,6 +825,13 @@ test "command center browser entries do not expose backend implementation names"
     }
 }
 
+test "copilot conversation picker has a keybind action and dispatch" {
+    const kb_src = @embedFile("keybind.zig");
+    try std.testing.expect(std.mem.indexOf(u8, kb_src, "copilot_conversation_picker") != null);
+    const input_src = @embedFile("input.zig");
+    try std.testing.expect(std.mem.indexOf(u8, input_src, ".copilot_conversation_picker =>") != null);
+}
+
 test "activeCopilotSession installs the history-change hook" {
     const src = @embedFile("appwindow/tab.zig");
     const anchor = "t.copilot_session = make() orelse return null;";
