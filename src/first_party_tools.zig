@@ -149,7 +149,11 @@ pub fn parseDisabledToolsJson(allocator: std.mem.Allocator, bytes: []const u8) !
         if (item != .string) continue;
         if (!isKnown(item.string)) continue;
         if (isDisabledName(list.items, item.string)) continue;
-        try list.append(allocator, try allocator.dupe(u8, item.string));
+        const owned = try allocator.dupe(u8, item.string);
+        list.append(allocator, owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
     }
 
     return .{ .names = try list.toOwnedSlice(allocator) };
@@ -161,13 +165,16 @@ pub fn loadDisabledToolsFromPath(allocator: std.mem.Allocator, path: []const u8)
         else => return err,
     };
     defer allocator.free(bytes);
-    return parseDisabledToolsJson(allocator, bytes) catch DisabledTools.empty();
+    return parseDisabledToolsJson(allocator, bytes) catch |err| switch (err) {
+        error.InvalidAgentToolsState, error.SyntaxError, error.UnexpectedEndOfInput => return DisabledTools.empty(),
+        else => return err,
+    };
 }
 
 pub fn loadDisabledTools(allocator: std.mem.Allocator) !DisabledTools {
-    const path = platform_dirs.pathInConfigDir(allocator, STATE_BASENAME) catch return DisabledTools.empty();
+    const path = try platform_dirs.pathInConfigDir(allocator, STATE_BASENAME);
     defer allocator.free(path);
-    return loadDisabledToolsFromPath(allocator, path) catch DisabledTools.empty();
+    return try loadDisabledToolsFromPath(allocator, path);
 }
 
 pub fn disabledToolsJson(allocator: std.mem.Allocator, disabled: DisabledTools) ![]u8 {
@@ -219,7 +226,7 @@ test "first_party_tools: active definitions include webread and the local comman
     defer freeDefinitions(a, defs);
 
     try std.testing.expect(isKnownActive(defs, "webread"));
-    try std.testing.expect(isKnown(platformLocalCommandNameForTest()));
+    try std.testing.expect(isKnownActive(defs, platformLocalCommandNameForTest()));
 }
 
 test "first_party_tools: disabled state json filters unknown and duplicate names" {
@@ -246,9 +253,65 @@ test "first_party_tools: malformed state falls back to empty when loaded from pa
     const path = try std.fs.path.join(a, &.{ root, "agent_tools.json" });
     defer a.free(path);
 
-    var disabled = loadDisabledToolsFromPath(a, path) catch DisabledTools.empty();
+    var disabled = try loadDisabledToolsFromPath(a, path);
     defer disabled.deinit(a);
     try std.testing.expectEqual(@as(usize, 0), disabled.names.len);
+}
+
+test "first_party_tools: oversized state file propagates an error" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const bytes = try a.alloc(u8, MAX_STATE_BYTES + 1);
+    defer a.free(bytes);
+    @memset(bytes, ' ');
+    try tmp.dir.writeFile(.{ .sub_path = "agent_tools.json", .data = bytes });
+
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+    const path = try std.fs.path.join(a, &.{ root, "agent_tools.json" });
+    defer a.free(path);
+
+    try std.testing.expectError(error.FileTooBig, loadDisabledToolsFromPath(a, path));
+}
+
+test "first_party_tools: load from path propagates parse allocation failure" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "agent_tools.json", .data = "{\"disabled\":[\"webread\"]}" });
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+    const path = try std.fs.path.join(a, &.{ root, "agent_tools.json" });
+    defer a.free(path);
+
+    var counting = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var counted = try loadDisabledToolsFromPath(counting.allocator(), path);
+    defer counted.deinit(counting.allocator());
+
+    var fail_index: usize = 0;
+    while (fail_index < counting.alloc_index) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        var disabled = loadDisabledToolsFromPath(failing.allocator(), path) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(failing.has_induced_failure);
+            continue;
+        };
+
+        try std.testing.expect(!failing.has_induced_failure);
+        disabled.deinit(failing.allocator());
+    }
+}
+
+test "first_party_tools: loadDisabledTools propagates config path allocation failure" {
+    platform_dirs.setTestConfigDirForCurrentThread("config-root");
+    defer platform_dirs.clearTestConfigDirForCurrentThread();
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, loadDisabledTools(failing.allocator()));
+    try std.testing.expect(failing.has_induced_failure);
 }
 
 test "first_party_tools: toggled state writes and reads atomically" {
