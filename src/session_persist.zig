@@ -77,6 +77,13 @@ pub const TabSnap = struct {
     // placeholder. Absent in older snapshots → null → ordinary terminal tab.
     ai_session_id: ?[]const u8 = null,
     ai_history: ?AiHistorySnap = null,
+    // Active Copilot sidebar conversation for a `.terminal` tab. The conversation
+    // lives in the agent-history store; this only points at it (mirrors
+    // `ai_session_id`). Null in older snapshots → no Copilot conversation.
+    copilot_session_id: ?[]const u8 = null,
+    // Whether the Copilot sidebar was open when snapshotted. False in older
+    // snapshots → sidebar starts collapsed (conversation still loaded).
+    copilot_visible: bool = false,
 };
 
 pub const Session = struct {
@@ -749,4 +756,31 @@ test "session_persist: corrupt file is renamed to .bak and loadSession returns n
         break :blk true;
     };
     try std.testing.expect(!orig_exists);
+}
+
+test "TabSnap copilot fields round-trip through JSON" {
+    const allocator = std.testing.allocator;
+    const snap = TabSnap{
+        .tree = .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
+        .copilot_session_id = "copilot-7",
+        .copilot_visible = true,
+    };
+    const json = try std.json.Stringify.valueAlloc(allocator, snap, .{});
+    defer allocator.free(json);
+
+    const parsed = try std.json.parseFromSlice(TabSnap, allocator, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("copilot-7", parsed.value.copilot_session_id.?);
+    try std.testing.expect(parsed.value.copilot_visible);
+}
+
+test "old TabSnap without copilot fields parses to null/false" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"tree":{"leaf":{"surface":{"local_shell":{}}}}}
+    ;
+    const parsed = try std.json.parseFromSlice(TabSnap, allocator, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.value.copilot_session_id);
+    try std.testing.expect(!parsed.value.copilot_visible);
 }
