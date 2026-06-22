@@ -335,6 +335,7 @@ const PendingHistoryChange = struct {
 const DeferredAction = union(enum) {
     none,
     resume_picker,
+    copilot_conversation_picker,
     model_switch_picker,
     export_markdown: MarkdownExportMode,
 };
@@ -354,6 +355,7 @@ fn fireDeferredAction(session: *Session, action: DeferredAction) void {
     switch (action) {
         .none => {},
         .resume_picker => if (g_session_resume_trigger) |t| t(),
+        .copilot_conversation_picker => if (g_copilot_picker_trigger) |t| t(),
         // Targets the session that submitted `/model` (copilot sidebar OR a tab),
         // not the active tab — they can differ.
         .model_switch_picker => if (g_model_switch_trigger) |t| t(session),
@@ -369,6 +371,7 @@ var g_default_working_dir_buf: [WORKING_DIR_MAX_BYTES]u8 = undefined;
 var g_default_working_dir_len: usize = 0;
 var g_session_id_counter = std.atomic.Value(u64).init(1);
 var g_session_resume_trigger: ?*const fn () void = null;
+var g_copilot_picker_trigger: ?*const fn () void = null;
 var g_markdown_export_trigger: ?*const fn (MarkdownExportMode) void = null;
 var g_model_switch_trigger: ?*const fn (*Session) void = null;
 threadlocal var g_dynamic_tool_specs: []ai_chat_protocol.DynamicToolSpec = &.{};
@@ -416,6 +419,12 @@ fn resolveSubagentProfileForRequest(allocator: std.mem.Allocator, agent_enabled:
 /// Fired AFTER the session mutex unlocks (the picker lives in the app layer).
 pub fn setSessionResumeTrigger(cb: ?*const fn () void) void {
     g_session_resume_trigger = cb;
+}
+
+/// Wire the callback that `/resume` fires in a Copilot sidebar session to open
+/// the Copilot conversation picker. Fired AFTER the session mutex unlocks.
+pub fn setCopilotPickerTrigger(cb: ?*const fn () void) void {
+    g_copilot_picker_trigger = cb;
 }
 
 /// Wire the callback that `/model` fires (after unlock) to either switch by the
@@ -2601,7 +2610,10 @@ pub const Session = struct {
                 self.applyCwdArgLocked(arg);
                 result.suppress_output = true;
             },
-            .resume_session => result.deferred = .resume_picker,
+            .resume_session => result.deferred = if (self.copilot)
+                .copilot_conversation_picker
+            else
+                .resume_picker,
             .export_markdown => result.deferred = .{
                 .export_markdown = if (std.mem.eql(u8, std.mem.trim(u8, arg, " \t\r\n"), "full")) .full else .clean,
             },
@@ -5326,6 +5338,34 @@ test "/export via submit fires the export trigger with parsed mode" {
     session.appendInputText("/export");
     session.submit();
     try std.testing.expectEqual(MarkdownExportMode.clean, test_export_mode.?);
+}
+
+test "/resume defers to copilot picker for copilot sessions, external resume otherwise" {
+    const allocator = std.testing.allocator;
+    const copilot = try Session.init(allocator, "Copilot", "https://x", "k", "m", "s", "disabled", "low", "true", "true");
+    defer copilot.deinit();
+    copilot.copilot = true;
+    {
+        copilot.mutex.lock();
+        defer copilot.mutex.unlock();
+        const r = copilot.runBuiltinCommandLocked(.resume_session, "");
+        try std.testing.expectEqual(
+            @as(std.meta.Tag(DeferredAction), .copilot_conversation_picker),
+            std.meta.activeTag(r.deferred),
+        );
+    }
+
+    const tabchat = try Session.init(allocator, "Chat", "https://x", "k", "m", "s", "disabled", "low", "true", "true");
+    defer tabchat.deinit();
+    {
+        tabchat.mutex.lock();
+        defer tabchat.mutex.unlock();
+        const r = tabchat.runBuiltinCommandLocked(.resume_session, "");
+        try std.testing.expectEqual(
+            @as(std.meta.Tag(DeferredAction), .resume_picker),
+            std.meta.activeTag(r.deferred),
+        );
+    }
 }
 
 test "ai chat dollar skill suggestions filter and enter completes with trailing space" {

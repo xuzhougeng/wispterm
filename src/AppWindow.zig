@@ -147,6 +147,12 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
             overlays.commandPaletteOpenAgentHistory();
         }
     }.cb);
+    // `/resume` in the Copilot sidebar opens the Copilot conversation picker.
+    ai_chat.setCopilotPickerTrigger(struct {
+        fn cb() void {
+            openCopilotConversationPicker();
+        }
+    }.cb);
     // `/export [full|clean]` writes the active AI Chat transcript as Markdown.
     ai_chat.setMarkdownExportTrigger(struct {
         fn cb(mode: ai_chat.MarkdownExportMode) void {
