@@ -757,9 +757,10 @@ test "input: skill center deploy and import keys ignore selected tool rows" {
     try std.testing.expect(!AppWindow.skillCenterOverlayActive());
 }
 
-test "input: skill center tool import shortcut sets placeholder status and requests a repaint" {
+test "input: skill center tool import shortcut is a no-op when no file is selected" {
     const allocator = std.testing.allocator;
     const previous_allocator = AppWindow.g_allocator;
+    const previous_open_file = AppWindow.g_skill_center_open_file_override;
     const previous_tabs = tab.g_tabs;
     const previous_count = tab.g_tab_count;
     const previous_active = active_tab_state.g_active_tab;
@@ -767,6 +768,7 @@ test "input: skill center tool import shortcut sets placeholder status and reque
     const previous_cells_valid = AppWindow.g_cells_valid;
     defer {
         AppWindow.g_allocator = previous_allocator;
+        AppWindow.g_skill_center_open_file_override = previous_open_file;
         tab.g_tabs = previous_tabs;
         tab.g_tab_count = previous_count;
         active_tab_state.g_active_tab = previous_active;
@@ -792,16 +794,21 @@ test "input: skill center tool import shortcut sets placeholder status and reque
     }
 
     const session = AppWindow.activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    AppWindow.g_skill_center_open_file_override = struct {
+        fn open(_: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return null;
+        }
+    }.open;
 
     AppWindow.g_force_rebuild = false;
     AppWindow.g_cells_valid = true;
     handleKey(.{ .key_code = 0x54, .ctrl = false, .shift = false, .alt = false, .super = false });
 
-    try std.testing.expect(AppWindow.g_force_rebuild);
-    try std.testing.expect(!AppWindow.g_cells_valid);
+    try std.testing.expect(!AppWindow.g_force_rebuild);
+    try std.testing.expect(AppWindow.g_cells_valid);
     session.mutex.lock();
     defer session.mutex.unlock();
-    try std.testing.expectEqualStrings(@import("i18n.zig").s().sc_tool_import_failed, session.status);
+    try std.testing.expectEqualStrings("", session.status);
 }
 
 test "input: skill center deploy and import keys are blocked while picker overlay is active" {
@@ -2896,20 +2903,35 @@ fn handleKey(ev: platform_input.KeyEvent) void {
     // d deploy, i import, g get-from-GitHub, r rescan. The URL-input overlay
     // captures text; the checklist captures space + 'a'.
     if (AppWindow.activeSkillCenter() != null) {
-        // SKILL.md preview overlay captures all keys: esc/space/⏎ close,
-        // arrows/PgUp/PgDn/Home/End scroll.
-        if (AppWindow.skillCenterTextPreviewActive()) {
-            switch (ev.key_code) {
-                platform_input.key_escape, platform_input.key_space, platform_input.key_enter => if (AppWindow.skillCenterPreviewClose()) markSkillCenterInputDirty(),
-                platform_input.key_up => if (AppWindow.skillCenterPreviewScroll(-1)) markSkillCenterInputDirty(),
-                platform_input.key_down => if (AppWindow.skillCenterPreviewScroll(1)) markSkillCenterInputDirty(),
-                platform_input.key_page_up => if (AppWindow.skillCenterPreviewScroll(-12)) markSkillCenterInputDirty(),
-                platform_input.key_page_down => if (AppWindow.skillCenterPreviewScroll(12)) markSkillCenterInputDirty(),
-                platform_input.key_home => if (AppWindow.skillCenterPreviewScroll(-1_000_000)) markSkillCenterInputDirty(),
-                platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
-                else => {},
-            }
-            return;
+        switch (AppWindow.skillCenterPreviewKind()) {
+            .text => {
+                switch (ev.key_code) {
+                    platform_input.key_escape, platform_input.key_space, platform_input.key_enter => if (AppWindow.skillCenterPreviewClose()) markSkillCenterInputDirty(),
+                    platform_input.key_up => if (AppWindow.skillCenterPreviewScroll(-1)) markSkillCenterInputDirty(),
+                    platform_input.key_down => if (AppWindow.skillCenterPreviewScroll(1)) markSkillCenterInputDirty(),
+                    platform_input.key_page_up => if (AppWindow.skillCenterPreviewScroll(-12)) markSkillCenterInputDirty(),
+                    platform_input.key_page_down => if (AppWindow.skillCenterPreviewScroll(12)) markSkillCenterInputDirty(),
+                    platform_input.key_home => if (AppWindow.skillCenterPreviewScroll(-1_000_000)) markSkillCenterInputDirty(),
+                    platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
+                    else => {},
+                }
+                return;
+            },
+            .tool_import => {
+                switch (ev.key_code) {
+                    platform_input.key_enter => if (AppWindow.skillCenterOverlaySelect()) markSkillCenterInputDirty(),
+                    platform_input.key_escape => if (AppWindow.skillCenterOverlayCancel()) markSkillCenterInputDirty(),
+                    platform_input.key_up => if (AppWindow.skillCenterPreviewScroll(-1)) markSkillCenterInputDirty(),
+                    platform_input.key_down => if (AppWindow.skillCenterPreviewScroll(1)) markSkillCenterInputDirty(),
+                    platform_input.key_page_up => if (AppWindow.skillCenterPreviewScroll(-12)) markSkillCenterInputDirty(),
+                    platform_input.key_page_down => if (AppWindow.skillCenterPreviewScroll(12)) markSkillCenterInputDirty(),
+                    platform_input.key_home => if (AppWindow.skillCenterPreviewScroll(-1_000_000)) markSkillCenterInputDirty(),
+                    platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
+                    else => {},
+                }
+                return;
+            },
+            .none => {},
         }
         const plain = !ev.ctrl and !ev.alt and !ev.super;
         const text_capture = AppWindow.skillCenterUrlInputActive();

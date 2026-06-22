@@ -122,6 +122,26 @@ pub fn installToolPackage(
     skill_md: []const u8,
     enabled: bool,
 ) ![]u8 {
+    return installToolPackageWithSource(
+        allocator,
+        tools_root,
+        source_binary_path,
+        source_binary_path,
+        function_name,
+        skill_md,
+        enabled,
+    );
+}
+
+pub fn installToolPackageWithSource(
+    allocator: std.mem.Allocator,
+    tools_root: []const u8,
+    source_binary_path: []const u8,
+    manifest_source_path: []const u8,
+    function_name: []const u8,
+    skill_md: []const u8,
+    enabled: bool,
+) ![]u8 {
     try validatePackageName(function_name);
     const basename = std.fs.path.basename(source_binary_path);
     try validatePackageName(basename);
@@ -161,7 +181,7 @@ pub fn installToolPackage(
         .function_name = function_name,
         .enabled = enabled,
         .executable = executable_rel,
-        .source_path = source_binary_path,
+        .source_path = manifest_source_path,
         .sha256 = sha256,
         .imported_at_ms = std.time.milliTimestamp(),
         .description = description,
@@ -414,7 +434,7 @@ fn pathExists(path: []const u8) bool {
     return true;
 }
 
-fn ensureDirAbsolute(path: []const u8) !void {
+pub fn ensureDirAbsolute(path: []const u8) !void {
     std.fs.makeDirAbsolute(path) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         error.FileNotFound => {
@@ -444,7 +464,7 @@ fn writeFileAbsolute(path: []const u8, data: []const u8) !void {
     try file.writeAll(data);
 }
 
-fn copyFilePreserveMode(src_path: []const u8, dst_path: []const u8) !void {
+pub fn copyFilePreserveMode(src_path: []const u8, dst_path: []const u8) !void {
     var src = try openFileAny(src_path);
     defer src.close();
     const src_mode = if (builtin.os.tag == .windows) std.fs.File.default_mode else (try src.stat()).mode & 0o7777;

@@ -65,7 +65,10 @@ const ssh_profile_store = @import("ssh_profile_store.zig");
 const skill_scan = @import("skill_scan.zig");
 const skill_local_fs = @import("skill_local_fs.zig");
 const skill_transfer_cmd = @import("skill_transfer_cmd.zig");
+const tool_import = @import("tool_import.zig");
 const tool_registry = @import("tool_registry.zig");
+const tool_skill_draft = @import("tool_skill_draft.zig");
+const ai_chat_request = @import("ai_chat_request.zig");
 const remote_file = @import("platform/remote_file.zig");
 const ssh_connection = @import("ssh_connection.zig");
 const skill_transfer = @import("skill_transfer.zig");
@@ -273,6 +276,8 @@ pub fn currentNativeHandleBits() ?usize {
     const window = g_window orelse return null;
     return window_backend.nativeHandleBits(window);
 }
+
+pub var g_skill_center_open_file_override: ?*const fn (std.mem.Allocator, platform_file_dialog.OpenRequest) ?[]u8 = null;
 
 /// Request this window to exit without showing the interactive close prompt.
 pub fn requestForceClose(self: *AppWindow) void {
@@ -1176,6 +1181,13 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
                 .scroll = tp.scroll,
                 .scroll_out = &tp.scroll,
             } },
+            .tool_import_preview => |*tp| .{ .text = .{
+                .title = tp.function_name,
+                .content = tp.skill_md,
+                .hint = "Enter import · Esc cancel · ↑/↓ scroll",
+                .scroll = tp.scroll,
+                .scroll_out = &tp.scroll,
+            } },
         };
         const view: skill_center_renderer.View = .{
             .skills_len = lib_len,
@@ -1755,6 +1767,7 @@ pub fn skillCenterMove(delta: isize) bool {
         .import_list => |*il| scMoveSel(&il.sel, il.names.len, delta),
         .install_pick => |*p| scMoveSel(&p.sel, p.entries.len, delta),
         .url_input => {},
+        .tool_import_preview => {},
         else => {
             const n = session.model.entryCount();
             scMoveSel(&session.model.sel_row, n, delta);
@@ -1774,11 +1787,20 @@ pub fn skillCenterOverlayActive() bool {
 
 pub fn skillCenterOverlayCancel() bool {
     const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    var staged_binary_path: ?[]u8 = null;
     session.mutex.lock();
-    defer session.mutex.unlock();
-    if (session.model.overlay == .none) return false;
+    if (session.model.overlay == .none) {
+        session.mutex.unlock();
+        return false;
+    }
+    if (session.model.overlay == .tool_import_preview) {
+        staged_binary_path = allocator.dupe(u8, session.model.overlay.tool_import_preview.staged_binary_path) catch null;
+    }
     session.model.clearOverlay();
-    markUiDirty();
+    session.mutex.unlock();
+    defer if (staged_binary_path) |path| allocator.free(path);
+    if (staged_binary_path) |path| skillCenterRemoveToolImportStage(path);
     return true;
 }
 
@@ -2443,11 +2465,338 @@ fn skillCenterSetStatusLocked(session: *skill_center.Session, text: []const u8) 
     session.status = next;
 }
 
+fn skillCenterOpenFileDialog(allocator: std.mem.Allocator, request: platform_file_dialog.OpenRequest) ?[]u8 {
+    if (g_skill_center_open_file_override) |open_fn| return open_fn(allocator, request);
+    return platform_file_dialog.openFile(allocator, request);
+}
+
+fn skillCenterImportErrorSummary(allocator: std.mem.Allocator, err: anyerror) []u8 {
+    return std.fmt.allocPrint(allocator, "Tool import failed: {}", .{err}) catch allocator.dupe(u8, "Tool import failed") catch return &.{};
+}
+
+fn skillCenterCloneToolImportPreview(
+    allocator: std.mem.Allocator,
+    preview: skill_center.ToolImportPreviewState,
+) !skill_center.ToolImportPreviewState {
+    var clone: skill_center.ToolImportPreviewState = .{
+        .tool_id = try allocator.dupe(u8, preview.tool_id),
+        .function_name = &.{},
+        .source_path = &.{},
+        .staged_binary_path = &.{},
+        .skill_md = &.{},
+        .doc_source = preview.doc_source,
+        .ai_review_required = preview.ai_review_required,
+        .scroll = preview.scroll,
+    };
+    errdefer clone.deinit(allocator);
+    clone.function_name = try allocator.dupe(u8, preview.function_name);
+    clone.source_path = try allocator.dupe(u8, preview.source_path);
+    clone.staged_binary_path = try allocator.dupe(u8, preview.staged_binary_path);
+    clone.skill_md = try allocator.dupe(u8, preview.skill_md);
+    return clone;
+}
+
+fn skillCenterToolImportStageRootFromBinaryPath(path: []const u8) ?[]const u8 {
+    const bin_dir = scPathParent(path) orelse return null;
+    if (!std.mem.eql(u8, scPathBase(bin_dir), "bin")) return null;
+    return scPathParent(bin_dir);
+}
+
+fn skillCenterRemoveToolImportStage(path: []const u8) void {
+    const root = skillCenterToolImportStageRootFromBinaryPath(path) orelse return;
+    std.fs.deleteTreeAbsolute(root) catch {};
+}
+
+fn skillCenterBinaryPlatformLabel(path: []const u8) []const u8 {
+    if (std.ascii.endsWithIgnoreCase(path, ".exe")) return "windows";
+    return "native";
+}
+
+fn skillCenterBinaryFileSize(path: []const u8) !u64 {
+    const file = if (std.fs.path.isAbsolute(path))
+        try std.fs.openFileAbsolute(path, .{})
+    else
+        try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    return (try file.stat()).size;
+}
+
+const TOOL_IMPORT_DRAFT_SYSTEM_PROMPT =
+    "You write concise, accurate WispTerm SKILL.md files for local executable tools. " ++
+    "Stay within the evidence provided and name uncertainty when needed.";
+
+const ToolImportDraftJob = struct {
+    profile: overlays.DefaultAiProfileSnapshot,
+    tool_id: []u8,
+    function_name: []u8,
+    source_path: []u8,
+    staged_binary_path: []u8,
+    prompt: []u8,
+    success: bool = false,
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
+        const job: *ToolImportDraftJob = @ptrCast(@alignCast(ctx));
+        const draft = ai_chat_request.runOneShotPrompt(
+            allocator,
+            .{
+                .base_url = job.profile.base_url,
+                .api_key = job.profile.api_key,
+                .model = job.profile.model,
+                .protocol = job.profile.protocol,
+                .thinking_enabled = job.profile.thinking_enabled,
+                .reasoning_effort = job.profile.reasoning_effort,
+                .max_tokens = job.profile.max_tokens,
+            },
+            TOOL_IMPORT_DRAFT_SYSTEM_PROMPT,
+            job.prompt,
+        ) catch return .failed;
+        defer allocator.free(draft);
+
+        const docs = tool_import.resolveDocs(allocator, .{
+            .tool_name = job.function_name,
+            .help_output = "",
+            .skill_output = "",
+            .sibling_skill = null,
+            .ai_draft = draft,
+        }) catch return .failed;
+        const tool_id = allocator.dupe(u8, job.tool_id) catch {
+            allocator.free(docs.skill_md);
+            return .failed;
+        };
+        const function_name = allocator.dupe(u8, job.function_name) catch {
+            allocator.free(tool_id);
+            allocator.free(docs.skill_md);
+            return .failed;
+        };
+        const source_path = allocator.dupe(u8, job.source_path) catch {
+            allocator.free(tool_id);
+            allocator.free(function_name);
+            allocator.free(docs.skill_md);
+            return .failed;
+        };
+        const staged_binary_path = allocator.dupe(u8, job.staged_binary_path) catch {
+            allocator.free(tool_id);
+            allocator.free(function_name);
+            allocator.free(source_path);
+            allocator.free(docs.skill_md);
+            return .failed;
+        };
+
+        job.success = true;
+        return .{ .tool_import_preview = .{
+            .tool_id = tool_id,
+            .function_name = function_name,
+            .source_path = source_path,
+            .staged_binary_path = staged_binary_path,
+            .skill_md = docs.skill_md,
+            .doc_source = docs.source,
+            .ai_review_required = true,
+        } };
+    }
+
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *ToolImportDraftJob = @ptrCast(@alignCast(ctx));
+        if (!job.success) skillCenterRemoveToolImportStage(job.staged_binary_path);
+        var profile = job.profile;
+        profile.deinit(allocator);
+        allocator.free(job.tool_id);
+        allocator.free(job.function_name);
+        allocator.free(job.source_path);
+        allocator.free(job.staged_binary_path);
+        allocator.free(job.prompt);
+        allocator.destroy(job);
+    }
+};
+
 pub fn skillCenterImportTool() bool {
     const session = activeSkillCenter() orelse return false;
-    session.mutex.lock();
-    skillCenterSetStatusLocked(session, i18n.s().sc_tool_import_failed);
-    session.mutex.unlock();
+    const allocator = g_allocator orelse return false;
+    const filters = [_]platform_file_dialog.Filter{.{ .name = "All Files", .pattern = "*.*" }};
+    const owner: platform_file_dialog.Owner = if (currentNativeHandleBits()) |handle_bits|
+        platform_file_dialog.windowOwner(handle_bits)
+    else
+        .{};
+    const source_path = skillCenterOpenFileDialog(allocator, .{
+        .owner = owner,
+        .title = "Import executable tool",
+        .filters = &filters,
+    }) orelse return false;
+    defer allocator.free(source_path);
+
+    const basename = std.fs.path.basename(source_path);
+    const function_name = tool_registry.sanitizeFunctionName(allocator, basename) catch return false;
+    defer allocator.free(function_name);
+    const tool_id = allocator.dupe(u8, function_name) catch return false;
+    defer allocator.free(tool_id);
+
+    const tools_root = platform_dirs.toolsDir(allocator) catch return false;
+    defer allocator.free(tools_root);
+    const staging_name = std.fmt.allocPrint(allocator, ".import-staging-{d}-{s}", .{ std.time.milliTimestamp(), function_name }) catch return false;
+    defer allocator.free(staging_name);
+    const staging_root = std.fs.path.join(allocator, &.{ tools_root, staging_name }) catch return false;
+    defer allocator.free(staging_root);
+    const staging_bin_dir = std.fs.path.join(allocator, &.{ staging_root, "bin" }) catch return false;
+    defer allocator.free(staging_bin_dir);
+    const staged_binary_path = std.fs.path.join(allocator, &.{ staging_bin_dir, basename }) catch return false;
+    defer allocator.free(staged_binary_path);
+    var keep_stage = false;
+    defer if (!keep_stage) skillCenterRemoveToolImportStage(staged_binary_path);
+    tool_import.ensureDirAbsolute(staging_bin_dir) catch return false;
+    tool_import.copyFilePreserveMode(source_path, staged_binary_path) catch {
+        skillCenterRemoveToolImportStage(staged_binary_path);
+        return false;
+    };
+
+    var probe = tool_import.probeBinary(allocator, source_path) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not inspect the executable.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer probe.deinit(allocator);
+    const sibling_skill = tool_import.readSiblingSkillMd(allocator, source_path);
+    defer if (sibling_skill) |skill_md| allocator.free(skill_md);
+
+    const docs = tool_import.resolveDocs(allocator, .{
+        .tool_name = function_name,
+        .help_output = probe.help,
+        .skill_output = probe.skill,
+        .sibling_skill = sibling_skill,
+        .ai_draft = null,
+    }) catch |err| switch (err) {
+        error.MissingToolDocumentation => null,
+        else => {
+            const summary = skillCenterImportErrorSummary(allocator, err);
+            defer if (summary.len > 0) allocator.free(summary);
+            session.mutex.lock();
+            skillCenterSetStatusLocked(session, if (summary.len > 0) summary else "Tool import failed");
+            session.mutex.unlock();
+            markUiDirty();
+            return true;
+        },
+    };
+    if (docs) |resolved| {
+        defer allocator.free(resolved.skill_md);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "");
+        var opened = true;
+        session.model.openToolImportPreview(.{
+            .tool_id = tool_id,
+            .function_name = function_name,
+            .source_path = source_path,
+            .staged_binary_path = staged_binary_path,
+            .skill_md = resolved.skill_md,
+            .doc_source = resolved.source,
+            .ai_review_required = false,
+        }) catch {
+            opened = false;
+        };
+        if (!opened) skillCenterSetStatusLocked(session, "Tool import failed: could not open the preview.");
+        session.mutex.unlock();
+        if (opened) keep_stage = true;
+        markUiDirty();
+        return true;
+    }
+
+    var profile = overlays.defaultAiProfileSnapshot(allocator) orelse {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Add an AI profile or provide SKILL.md next to the binary.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    var profile_owned = true;
+    defer if (profile_owned) profile.deinit(allocator);
+
+    const sha256 = tool_import.sha256FileHex(allocator, source_path) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not hash the executable.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(sha256);
+    const prompt = tool_skill_draft.buildDraftPrompt(allocator, .{
+        .tool_name = function_name,
+        .filename = basename,
+        .sha256 = sha256,
+        .file_size = skillCenterBinaryFileSize(source_path) catch 0,
+        .platform = skillCenterBinaryPlatformLabel(source_path),
+    }) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not build the documentation draft request.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    var prompt_owned = true;
+    defer if (prompt_owned) allocator.free(prompt);
+
+    const job = allocator.create(ToolImportDraftJob) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not start the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const job_tool_id = allocator.dupe(u8, tool_id) catch {
+        allocator.destroy(job);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const job_function_name = allocator.dupe(u8, function_name) catch {
+        allocator.free(job_tool_id);
+        allocator.destroy(job);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const job_source_path = allocator.dupe(u8, source_path) catch {
+        allocator.free(job_tool_id);
+        allocator.free(job_function_name);
+        allocator.destroy(job);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const job_staged_binary_path = allocator.dupe(u8, staged_binary_path) catch {
+        allocator.free(job_tool_id);
+        allocator.free(job_function_name);
+        allocator.free(job_source_path);
+        allocator.destroy(job);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    job.* = .{
+        .profile = profile,
+        .tool_id = job_tool_id,
+        .function_name = job_function_name,
+        .source_path = job_source_path,
+        .staged_binary_path = job_staged_binary_path,
+        .prompt = prompt,
+    };
+    profile_owned = false;
+    prompt_owned = false;
+    if (!session.startOp(.{ .ctx = job, .run = ToolImportDraftJob.run, .destroy = ToolImportDraftJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_loading)) {
+        ToolImportDraftJob.destroy(@ptrCast(job), allocator);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_toast_op_busy);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    }
+    keep_stage = true;
     markUiDirty();
     return true;
 }
@@ -2771,6 +3120,52 @@ pub fn skillCenterOverlaySelect() bool {
         skillCenterStartInstall(session, allocator);
         return true;
     }
+    var tool_preview_owned: ?skill_center.ToolImportPreviewState = null;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        if (session.model.overlay == .tool_import_preview) {
+            tool_preview_owned = skillCenterCloneToolImportPreview(allocator, session.model.overlay.tool_import_preview) catch return false;
+        }
+    }
+    if (tool_preview_owned) |*preview| {
+        defer preview.deinit(allocator);
+        const tools_root = platform_dirs.toolsDir(allocator) catch {
+            session.mutex.lock();
+            skillCenterSetStatusLocked(session, "Tool import failed: could not open the tools directory.");
+            session.mutex.unlock();
+            markUiDirty();
+            return true;
+        };
+        defer allocator.free(tools_root);
+        const installed = tool_import.installToolPackageWithSource(
+            allocator,
+            tools_root,
+            preview.staged_binary_path,
+            preview.source_path,
+            preview.function_name,
+            preview.skill_md,
+            false,
+        ) catch |err| {
+            const summary = skillCenterImportErrorSummary(allocator, err);
+            defer if (summary.len > 0) allocator.free(summary);
+            session.mutex.lock();
+            skillCenterSetStatusLocked(session, if (summary.len > 0) summary else "Tool import failed");
+            session.mutex.unlock();
+            markUiDirty();
+            return true;
+        };
+        defer allocator.free(installed);
+        skillCenterRemoveToolImportStage(preview.staged_binary_path);
+        session.mutex.lock();
+        session.model.clearOverlay();
+        skillCenterSetStatusLocked(session, "");
+        session.mutex.unlock();
+        startSkillCenterScan(allocator, session);
+        ai_chat.reloadDynamicToolSpecs(allocator);
+        markUiDirty();
+        return true;
+    }
     const Act = enum { none, deploy_picked, import_picked, import_item, confirm };
     var act: Act = .none;
     var target: ?skill_center.Target = null;
@@ -2826,6 +3221,7 @@ pub fn skillCenterOverlaySelect() bool {
             .url_input => {},
             .install_pick => {},
             .text_preview => {},
+            .tool_import_preview => {},
             .none, .busy => {},
         }
     }
@@ -2908,6 +3304,23 @@ pub fn skillCenterTextPreviewActive() bool {
     return session.model.isTextPreview();
 }
 
+pub const SkillCenterPreviewKind = enum {
+    none,
+    text,
+    tool_import,
+};
+
+pub fn skillCenterPreviewKind() SkillCenterPreviewKind {
+    const session = activeSkillCenter() orelse return .none;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    return switch (session.model.overlay) {
+        .text_preview => .text,
+        .tool_import_preview => .tool_import,
+        else => .none,
+    };
+}
+
 /// Scroll the open SKILL.md preview by `delta` wrapped lines (renderer clamps).
 pub fn skillCenterPreviewScroll(delta: isize) bool {
     const session = activeSkillCenter() orelse return false;
@@ -2948,6 +3361,7 @@ pub fn skillCenterSpacePreview() bool {
             .url_input => kind = .none,
             .install_pick => kind = .none,
             .text_preview => kind = .none, // input intercepts Space while previewing
+            .tool_import_preview => kind = .none,
         }
     }
     switch (kind) {
@@ -5361,6 +5775,14 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
         .preview => |*v| {
             session.mutex.lock();
             session.model.openTextPreview(v.title, v.content) catch {};
+            session.mutex.unlock();
+        },
+        .tool_import_preview => {
+            const moved = result;
+            result = .failed;
+            session.mutex.lock();
+            session.model.setOverlay(.{ .tool_import_preview = moved.tool_import_preview });
+            skillCenterSetStatusLocked(session, "");
             session.mutex.unlock();
         },
         .install_enumerate => {

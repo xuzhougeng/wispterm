@@ -7,6 +7,7 @@
 const std = @import("std");
 const scan = @import("skill_scan.zig");
 const install = @import("skill_install.zig");
+const tool_import = @import("tool_import.zig");
 
 /// Target software — a skills root under $HOME on the target machine. Both use
 /// the same SKILL.md directory format, so a library skill deploys to either.
@@ -328,6 +329,36 @@ pub const TextPreviewState = struct {
     }
 };
 
+pub const ToolImportPreviewState = struct {
+    tool_id: []u8,
+    function_name: []u8,
+    source_path: []u8,
+    staged_binary_path: []u8,
+    skill_md: []u8,
+    doc_source: tool_import.DocSource,
+    ai_review_required: bool,
+    scroll: usize = 0,
+
+    pub fn deinit(self: *ToolImportPreviewState, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_id);
+        allocator.free(self.function_name);
+        allocator.free(self.source_path);
+        allocator.free(self.staged_binary_path);
+        allocator.free(self.skill_md);
+        self.* = undefined;
+    }
+};
+
+pub const ToolImportPreviewInit = struct {
+    tool_id: []const u8,
+    function_name: []const u8,
+    source_path: []const u8,
+    staged_binary_path: []const u8,
+    skill_md: []const u8,
+    doc_source: tool_import.DocSource,
+    ai_review_required: bool,
+};
+
 pub const Overlay = union(enum) {
     none,
     picker: PickerState,
@@ -337,6 +368,7 @@ pub const Overlay = union(enum) {
     url_input: UrlInputState,
     install_pick: InstallPickState,
     text_preview: TextPreviewState,
+    tool_import_preview: ToolImportPreviewState,
 
     pub fn deinit(self: *Overlay, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -346,6 +378,7 @@ pub const Overlay = union(enum) {
             .confirm => |*c| c.deinit(allocator),
             .busy => |m| allocator.free(m),
             .text_preview => |*t| t.deinit(allocator),
+            .tool_import_preview => |*t| t.deinit(allocator),
             .url_input => |*u| u.deinit(allocator),
             .install_pick => |*p| p.deinit(allocator),
         }
@@ -446,6 +479,27 @@ pub const PanelModel = struct {
         self.setOverlay(.{ .text_preview = .{ .title = t, .content = c } });
     }
 
+    pub fn openToolImportPreview(self: *PanelModel, input: ToolImportPreviewInit) !void {
+        const tool_id = try self.allocator.dupe(u8, input.tool_id);
+        errdefer self.allocator.free(tool_id);
+        const function_name = try self.allocator.dupe(u8, input.function_name);
+        errdefer self.allocator.free(function_name);
+        const source_path = try self.allocator.dupe(u8, input.source_path);
+        errdefer self.allocator.free(source_path);
+        const staged_binary_path = try self.allocator.dupe(u8, input.staged_binary_path);
+        errdefer self.allocator.free(staged_binary_path);
+        const skill_md = try self.allocator.dupe(u8, input.skill_md);
+        self.setOverlay(.{ .tool_import_preview = .{
+            .tool_id = tool_id,
+            .function_name = function_name,
+            .source_path = source_path,
+            .staged_binary_path = staged_binary_path,
+            .skill_md = skill_md,
+            .doc_source = input.doc_source,
+            .ai_review_required = input.ai_review_required,
+        } });
+    }
+
     pub fn isTextPreview(self: *const PanelModel) bool {
         return self.overlay == .text_preview;
     }
@@ -455,6 +509,14 @@ pub const PanelModel = struct {
     pub fn scrollTextPreview(self: *PanelModel, delta: isize) void {
         switch (self.overlay) {
             .text_preview => |*tp| {
+                if (delta < 0) {
+                    const d: usize = @intCast(-delta);
+                    tp.scroll = if (tp.scroll > d) tp.scroll - d else 0;
+                } else {
+                    tp.scroll +|= @intCast(delta);
+                }
+            },
+            .tool_import_preview => |*tp| {
                 if (delta < 0) {
                     const d: usize = @intCast(-delta);
                     tp.scroll = if (tp.scroll > d) tp.scroll - d else 0;
@@ -498,6 +560,7 @@ pub const OpResult = union(enum) {
     install_enumerate: struct { repo: install.RepoRef, entries: []install.SkillEntry, truncated: bool },
     /// install-download finished: report counts via toast.
     install_done: struct { installed: usize, overwritten: usize, failed: usize },
+    tool_import_preview: ToolImportPreviewState,
     /// generic failure before work could run (e.g. lost connection).
     failed,
 
@@ -525,6 +588,7 @@ pub const OpResult = union(enum) {
                 install.freeEntries(allocator, v.entries);
             },
             .install_done => {},
+            .tool_import_preview => |*v| v.deinit(allocator),
             .failed => {},
         }
         self.* = .failed;
@@ -961,6 +1025,22 @@ test "skill_center: text preview overlay opens, scrolls, and frees" {
     m.clearOverlay();
     try std.testing.expect(!m.isTextPreview());
     m.scrollTextPreview(5);
+}
+
+test "skill_center: tool import preview overlay stores staged import" {
+    const a = std.testing.allocator;
+    var model = PanelModel.init(a);
+    defer model.deinit();
+    try model.openToolImportPreview(.{
+        .tool_id = "agent_docx_review",
+        .function_name = "agent_docx_review",
+        .source_path = "/tmp/agent_docx_review",
+        .staged_binary_path = "/tmp/stage/bin/agent_docx_review",
+        .skill_md = "---\nname: agent_docx_review\n---\nDocx.",
+        .doc_source = .skill_flag,
+        .ai_review_required = false,
+    });
+    try std.testing.expect(model.overlay == .tool_import_preview);
 }
 
 test "skill_center: Session.finishScan publishes then discards stale (no leak)" {
