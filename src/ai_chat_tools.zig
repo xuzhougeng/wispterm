@@ -276,6 +276,18 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
             null;
         return agent_memory.deleteMemory(ctx.allocator, ctx.settings.working_dir orelse "", name, tier_opt);
     }
+    if (findDynamicBinaryTool(ctx.settings.dynamic_binary_tools, call.name)) |tool| {
+        const args = parseArgs(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const argv_args = jsonStringArrayArg(ctx.allocator, args.value, "args") catch |err| switch (err) {
+            error.InvalidToolArguments => return ctx.allocator.dupe(u8, "Invalid tool arguments"),
+            else => return err,
+        };
+        defer freeStringArray(ctx.allocator, argv_args);
+        const cwd = jsonStringArg(args.value, "cwd") orelse ctx.settings.working_dir;
+        const timeout_ms = jsonIntArg(args.value, "timeout_ms") orelse ctx.settings.command_timeout_ms;
+        return dynamicBinaryTool(ctx, tool, argv_args, cwd, timeout_ms);
+    }
     return std.fmt.allocPrint(ctx.allocator, "Unknown tool: {s}", .{call.name});
 }
 
@@ -319,6 +331,39 @@ fn jsonBoolArg(root: std.json.Value, name: []const u8) ?bool {
         .bool => |b| b,
         else => null,
     };
+}
+
+fn findDynamicBinaryTool(tools: []const types.DynamicBinaryTool, name: []const u8) ?types.DynamicBinaryTool {
+    for (tools) |tool| {
+        if (std.mem.eql(u8, tool.function_name, name)) return tool;
+    }
+    return null;
+}
+
+fn jsonStringArrayArg(allocator: std.mem.Allocator, value: std.json.Value, key: []const u8) ![]const []const u8 {
+    if (value != .object) return error.InvalidToolArguments;
+    const array_value = value.object.get(key) orelse return allocator.alloc([]const u8, 0);
+    if (array_value != .array) return error.InvalidToolArguments;
+
+    var out = try allocator.alloc([]const u8, array_value.array.items.len);
+    var n: usize = 0;
+    errdefer {
+        for (out[0..n]) |item| allocator.free(item);
+        allocator.free(out);
+    }
+
+    for (array_value.array.items) |item| {
+        if (item != .string) return error.InvalidToolArguments;
+        out[n] = try allocator.dupe(u8, item.string);
+        n += 1;
+    }
+
+    return out;
+}
+
+fn freeStringArray(allocator: std.mem.Allocator, values: []const []const u8) void {
+    for (values) |value| allocator.free(value);
+    allocator.free(values);
 }
 
 /// Extract the `options` array of an ask_user call into `buf`. Each item needs a
@@ -806,6 +851,43 @@ fn localCommandExecTool(ctx: *const ToolContext, command: []const u8, cwd: ?[]co
     }
     const result = runShellCommand(ctx.allocator, command, effective_cwd, ctx.settings.output_limit, timeout_ms, ctx) catch |err| {
         return std.fmt.allocPrint(ctx.allocator, "{s} failed: {}", .{ platform_process.localCommandFailureLabel(), err });
+    };
+    defer ctx.allocator.free(result.stdout);
+    defer ctx.allocator.free(result.stderr);
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
+    if (result.timed_out) try out.appendSlice(ctx.allocator, "timed_out=true\n");
+    try out.print(ctx.allocator, "exit_code={d}\nstdout:\n{s}\nstderr:\n{s}", .{ result.exit_code, result.stdout, result.stderr });
+    return truncateOwned(ctx.allocator, ctx.settings, try out.toOwnedSlice(ctx.allocator));
+}
+
+fn dynamicBinaryTool(ctx: *ToolContext, tool: types.DynamicBinaryTool, args: []const []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
+    if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
+
+    var approval_text = std.ArrayListUnmanaged(u8).empty;
+    defer approval_text.deinit(ctx.allocator);
+    try approval_text.appendSlice(ctx.allocator, tool.function_name);
+    for (args) |arg| {
+        try approval_text.append(ctx.allocator, ' ');
+        try approval_text.appendSlice(ctx.allocator, arg);
+    }
+
+    switch (ctx.settings.permission) {
+        .confirm, .auto => {
+            if (!ctx.requestApproval(tool.function_name, approval_text.items, "Run installed binary tool")) {
+                return deniedResult(ctx.allocator, approval_text.items, "operator denied binary tool execution");
+            }
+        },
+        .full => {},
+    }
+
+    const argv = try ctx.allocator.alloc([]const u8, args.len + 1);
+    defer ctx.allocator.free(argv);
+    argv[0] = tool.executable_abs;
+    for (args, 0..) |arg, i| argv[i + 1] = arg;
+
+    const result = runArgv(ctx.allocator, argv, cwd, ctx.settings.output_limit, timeout_ms, ctx) catch |err| {
+        return std.fmt.allocPrint(ctx.allocator, "Binary tool {s} failed: {}", .{ tool.function_name, err });
     };
     defer ctx.allocator.free(result.stdout);
     defer ctx.allocator.free(result.stderr);
@@ -2651,6 +2733,17 @@ fn fakeCancelled(_: *anyopaque) bool {
     return false;
 }
 
+const FakeApprover = struct {
+    allowed: bool,
+    called: bool = false,
+
+    fn approve(ctx: *anyopaque, _: []const u8, _: []const u8, _: []const u8) bool {
+        const self: *FakeApprover = @ptrCast(@alignCast(ctx));
+        self.called = true;
+        return self.allowed;
+    }
+};
+
 const FakeAsker = struct {
     result: types.AskResult,
     captured_count: usize = 0,
@@ -2744,6 +2837,101 @@ test "isDangerousCommand flags destructive verbs without a Session" {
     _ = &ctx;
     try std.testing.expect(isDangerousCommand("rm -rf /tmp/x"));
     try std.testing.expect(!isDangerousCommand("ls -la"));
+}
+
+test "executeToolCall dispatches enabled binary tool by argv" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    const executable = if (builtin.os.tag == .windows) "cmd.exe" else "/bin/echo";
+    const arguments = if (builtin.os.tag == .windows)
+        "{\"args\":[\"/C\",\"echo\",\"hello\",\"world\"]}"
+    else
+        "{\"args\":[\"hello\",\"world\"]}";
+    const tools = [_]types.DynamicBinaryTool{.{
+        .function_name = "fake_tool",
+        .executable_abs = executable,
+        .description = "Echo test",
+    }};
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{
+            .permission = .full,
+            .working_dir = null,
+            .dynamic_binary_tools = tools[0..],
+        },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("1"),
+        .name = @constCast("fake_tool"),
+        .arguments = @constCast(arguments),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Unknown tool") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "world") != null);
+}
+
+test "executeToolCall asks before binary tool in auto mode" {
+    var asker = FakeApprover{ .allowed = false };
+    const tools = [_]types.DynamicBinaryTool{.{
+        .function_name = "fake_tool",
+        .executable_abs = "/bin/echo",
+        .description = "Echo",
+    }};
+    var ctx = ToolContext{
+        .allocator = std.testing.allocator,
+        .ctx = &asker,
+        .settings = .{
+            .permission = .auto,
+            .dynamic_binary_tools = tools[0..],
+        },
+        .tool_host = null,
+        .tool_snapshot = null,
+        .approve = FakeApprover.approve,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("1"),
+        .name = @constCast("fake_tool"),
+        .arguments = @constCast("{\"args\":[\"hi\"]}"),
+    });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(asker.called);
+    try std.testing.expect(std.mem.indexOf(u8, out, "denied") != null);
+}
+
+test "executeToolCall reports invalid dynamic binary tool args as a tool result" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    const tools = [_]types.DynamicBinaryTool{.{
+        .function_name = "fake_tool",
+        .executable_abs = "/bin/echo",
+        .description = "Echo test",
+    }};
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{
+            .permission = .full,
+            .dynamic_binary_tools = tools[0..],
+        },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("1"),
+        .name = @constCast("fake_tool"),
+        .arguments = @constCast("{\"args\":\"not-array\"}"),
+    });
+    defer a.free(out);
+    try std.testing.expectEqualStrings("Invalid tool arguments", out);
 }
 
 // ---------------------------------------------------------------------------

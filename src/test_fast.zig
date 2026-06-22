@@ -110,6 +110,7 @@ test {
     _ = @import("skill_transfer_cmd.zig");
     _ = @import("skill_transfer.zig");
     _ = @import("skill_diff.zig");
+    _ = @import("tool_skill_draft.zig");
     _ = @import("text_wrap.zig");
     _ = @import("ai_history_resume.zig");
     _ = @import("ai_history_session.zig");
@@ -147,6 +148,8 @@ test {
     _ = @import("ai_chat_title.zig");
     _ = @import("ai_model_switch.zig");
     _ = @import("command_registry.zig");
+    _ = @import("tool_registry.zig");
+    _ = @import("tool_import.zig");
     _ = @import("agent_detector.zig");
     _ = @import("claude_integration.zig");
     _ = @import("jupyter_detect.zig");

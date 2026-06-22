@@ -6,6 +6,7 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
+const ai_chat_protocol = @import("../ai_chat_protocol.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
@@ -3844,6 +3845,82 @@ pub fn makeCopilotSessionForDefaultProfile() ?*ai_chat.Session {
     session.max_tokens = max_tokens;
     session.copilot = true;
     return session;
+}
+
+pub const DefaultAiProfileSnapshot = struct {
+    base_url: []u8,
+    api_key: []u8,
+    model: []u8,
+    protocol: ai_chat.ApiProtocol,
+    thinking_enabled: bool,
+    reasoning_effort: []u8,
+    max_tokens: u32,
+
+    pub fn deinit(self: *DefaultAiProfileSnapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.base_url);
+        allocator.free(self.api_key);
+        allocator.free(self.model);
+        allocator.free(self.reasoning_effort);
+        self.* = undefined;
+    }
+};
+
+pub fn defaultAiProfileSnapshot(allocator: std.mem.Allocator) ?DefaultAiProfileSnapshot {
+    loadAiProfiles();
+    if (g_ai_profile_count == 0) return null;
+    const idx = defaultAiProfileIndex();
+    if (idx >= g_ai_profile_count) return null;
+    const profile = &g_ai_profiles[idx];
+    const base_url = aiProfileField(profile, .base_url);
+    const api_key = aiProfileField(profile, .api_key);
+    const model = aiProfileField(profile, .model);
+    const thinking = aiProfileField(profile, .thinking);
+    const reasoning_effort = aiProfileField(profile, .reasoning_effort);
+    const protocol = aiProfileField(profile, .protocol);
+    const max_tokens = std.fmt.parseInt(u32, std.mem.trim(u8, aiProfileField(profile, .max_tokens), " \t"), 10) catch 8192;
+    if (base_url.len == 0 or model.len == 0) return null;
+    if (!isHttpUrlish(base_url)) return null;
+
+    const base_url_copy = allocator.dupe(u8, base_url) catch return null;
+    const api_key_copy = allocator.dupe(u8, api_key) catch {
+        allocator.free(base_url_copy);
+        return null;
+    };
+    const model_copy = allocator.dupe(u8, model) catch {
+        allocator.free(base_url_copy);
+        allocator.free(api_key_copy);
+        return null;
+    };
+    const reasoning_copy = allocator.dupe(u8, reasoning_effort) catch {
+        allocator.free(base_url_copy);
+        allocator.free(api_key_copy);
+        allocator.free(model_copy);
+        return null;
+    };
+    return .{
+        .base_url = base_url_copy,
+        .api_key = api_key_copy,
+        .model = model_copy,
+        .protocol = defaultAiProfileSnapshotProtocol(base_url, protocol),
+        .thinking_enabled = !std.mem.eql(u8, thinking, "disabled"),
+        .reasoning_effort = reasoning_copy,
+        .max_tokens = max_tokens,
+    };
+}
+
+fn defaultAiProfileSnapshotProtocol(base_url: []const u8, protocol: []const u8) ai_chat.ApiProtocol {
+    var parsed = ai_chat.ApiProtocol.parse(protocol);
+    if (parsed == .chat_completions and ai_chat_protocol.isAnthropicBaseUrl(base_url)) {
+        parsed = .anthropic;
+    }
+    return parsed;
+}
+
+test "default AI profile snapshot normalizes Anthropic URL with default protocol" {
+    try std.testing.expectEqual(
+        ai_chat.ApiProtocol.anthropic,
+        defaultAiProfileSnapshotProtocol("https://api.anthropic.com", ""),
+    );
 }
 
 threadlocal var g_ai_default_name_buf: [256]u8 = undefined;

@@ -793,6 +793,9 @@ comptime {
     _ = @import("port_forwarding.zig");
     _ = @import("renderer/port_forwarding_renderer.zig");
     _ = @import("command_registry.zig");
+    _ = @import("tool_registry.zig");
+    _ = @import("tool_import.zig");
+    _ = @import("tool_skill_draft.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("ai_chat_scrollbar_model.zig");
     _ = @import("ssh_prompt.zig");

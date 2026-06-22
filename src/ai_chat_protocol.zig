@@ -211,6 +211,11 @@ pub const ApiUsage = struct {
     }
 };
 
+pub const DynamicToolSpec = struct {
+    name: []const u8,
+    description: []const u8,
+};
+
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------
@@ -225,6 +230,7 @@ pub const RequestParams = struct {
     max_tokens: u32 = 8192,
     memory_enabled: bool = false,
     toolset: Toolset = .full,
+    dynamic_tools: []const DynamicToolSpec = &.{},
 };
 
 pub fn buildRequestJson(allocator: std.mem.Allocator, params: RequestParams, messages: []const RequestMessage, include_tools: bool) ![]u8 {
@@ -393,7 +399,7 @@ fn buildChatCompletionsRequestJsonForMessages(
         try out.appendSlice(allocator, ",\"stream_options\":{\"include_usage\":true}");
     }
     if (include_tools) {
-        try appendToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset });
+        try appendToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools });
     }
     try out.append(allocator, '}');
 
@@ -456,7 +462,7 @@ fn buildResponsesRequestJsonForMessages(
     try out.appendSlice(allocator, ",\"stream\":");
     try out.appendSlice(allocator, if (params.stream) "true" else "false");
     if (include_tools) {
-        try appendResponseToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset });
+        try appendResponseToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools });
     }
     try out.append(allocator, '}');
 
@@ -482,7 +488,7 @@ fn buildAnthropicRequestJsonForMessages(
     try out.appendSlice(allocator, ",\"messages\":[");
     try appendAnthropicMessages(allocator, &out, messages);
     try out.append(allocator, ']');
-    if (include_tools) try appendAnthropicTools(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset });
+    if (include_tools) try appendAnthropicTools(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools });
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
 }
@@ -651,6 +657,7 @@ pub const Toolset = enum { full, subagent };
 pub const ToolSpecOpts = struct {
     include_memory: bool,
     toolset: Toolset = .full,
+    dynamic_tools: []const DynamicToolSpec = &.{},
 };
 
 /// Single source of truth for what a subagent may call. Every listed tool is
@@ -664,6 +671,52 @@ pub const subagent_allowed_tools = [_][]const u8{
 pub fn subagentToolAllowed(name: []const u8) bool {
     for (subagent_allowed_tools) |allowed| {
         if (std.mem.eql(u8, name, allowed)) return true;
+    }
+    return false;
+}
+
+pub fn builtinToolNameReserved(name: []const u8) bool {
+    const reserved = [_][]const u8{
+        "terminal_list",
+        "terminal_context",
+        "terminal_snapshot",
+        "terminal_select",
+        "shell_exec",
+        "powershell_exec",
+        "ssh_session_exec",
+        "wsl_session_exec",
+        "terminal_repl_exec",
+        "terminal_answer_prompt",
+        "ask_user",
+        "read_file",
+        "copy_file",
+        "write_file",
+        "edit_file",
+        "ssh_profile_save",
+        "ssh_profile_connect",
+        "tab_new",
+        "tab_close",
+        "skill_info",
+        "wispterm_docs",
+        "websearch",
+        "webread",
+        "pubmed",
+        "subagent",
+        "weixin_send_attachment",
+        "memory_save",
+        "memory_recall",
+        "memory_delete",
+    };
+    for (reserved) |reserved_name| {
+        if (std.mem.eql(u8, name, reserved_name)) return true;
+    }
+    return false;
+}
+
+fn dynamicToolNameSeenBefore(tools: []const DynamicToolSpec, index: usize) bool {
+    const name = tools[index].name;
+    for (tools[0..index]) |previous| {
+        if (std.mem.eql(u8, previous.name, name)) return true;
     }
     return false;
 }
@@ -718,6 +771,19 @@ fn forEachToolSpec(
         try Filtered.emitTool(ctx, opts, "memory_save", "Save a durable long-term memory so future sessions remember it. Use for stable user preferences, project conventions, and key decisions — not transient task details. tier=global for facts about the user/preferences; tier=project for facts about the current project/working directory.", "{\"tier\":{\"type\":\"string\",\"description\":\"global or project.\"},\"name\":{\"type\":\"string\",\"description\":\"Short stable slug handle (kebab-case). Reusing an existing name updates that memory.\"},\"description\":{\"type\":\"string\",\"description\":\"One-line summary shown in the resident index.\"},\"type\":{\"type\":\"string\",\"description\":\"Optional: user, feedback, project, or reference. Defaults to user.\"},\"body\":{\"type\":\"string\",\"description\":\"The full memory text.\"}}");
         try Filtered.emitTool(ctx, opts, "memory_recall", "Read the full text of a memory by its name, when its index line looks relevant to the current task.", "{\"name\":{\"type\":\"string\",\"description\":\"The memory name (slug) from the resident index.\"}}");
         try Filtered.emitTool(ctx, opts, "memory_delete", "Delete a memory that is wrong or obsolete.", "{\"name\":{\"type\":\"string\",\"description\":\"The memory name (slug) to delete.\"},\"tier\":{\"type\":\"string\",\"description\":\"Optional: global or project. Omit to search both.\"}}");
+    }
+    if (opts.toolset == .full) {
+        for (opts.dynamic_tools, 0..) |tool, i| {
+            if (builtinToolNameReserved(tool.name)) continue;
+            if (dynamicToolNameSeenBefore(opts.dynamic_tools, i)) continue;
+            try Filtered.emitTool(
+                ctx,
+                opts,
+                tool.name,
+                tool.description,
+                "{\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Command-line arguments to pass after the executable name.\"},\"cwd\":{\"type\":\"string\",\"description\":\"Optional working directory. Defaults to the AI Agent working directory.\"},\"timeout_ms\":{\"type\":\"integer\",\"description\":\"Optional timeout. Defaults to ai-agent-command-timeout-ms.\"}}",
+            );
+        }
     }
 }
 
@@ -1567,6 +1633,83 @@ test "buildRequestJson advertises memory tools only when enabled" {
     const off = try buildRequestJson(a, params_off, &.{}, true);
     defer a.free(off);
     try std.testing.expect(std.mem.indexOf(u8, off, "\"memory_save\"") == null);
+}
+
+test "buildRequestJson advertises enabled binary tools" {
+    const a = std.testing.allocator;
+    const tools = [_]DynamicToolSpec{.{
+        .name = "agent_docx_review",
+        .description = "Use for DOCX tracked-change review.",
+    }};
+    const params = RequestParams{
+        .model = "m",
+        .system_prompt = "s",
+        .protocol = .chat_completions,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+        .dynamic_tools = tools[0..],
+    };
+    const json = try buildRequestJson(a, params, &.{}, true);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_docx_review\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"args\"") != null);
+}
+
+test "dynamic binary tools skip built-in tool name collisions" {
+    const a = std.testing.allocator;
+    const tools = [_]DynamicToolSpec{
+        .{ .name = "terminal_list", .description = "Collision with a built-in tool." },
+        .{ .name = "agent_docx_review", .description = "Use for DOCX tracked-change review." },
+    };
+    const params = RequestParams{
+        .model = "m",
+        .system_prompt = "s",
+        .protocol = .chat_completions,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+        .dynamic_tools = tools[0..],
+    };
+    const json = try buildRequestJson(a, params, &.{}, true);
+    defer a.free(json);
+
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, json, "\"name\":\"terminal_list\""));
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_docx_review\"") != null);
+}
+
+test "dynamic binary tools skip duplicate dynamic tool names" {
+    const a = std.testing.allocator;
+    const tools = [_]DynamicToolSpec{
+        .{ .name = "agent_docx_review", .description = "First DOCX review tool." },
+        .{ .name = "agent_docx_review", .description = "Second DOCX review tool." },
+        .{ .name = "agent_pdf_review", .description = "PDF review tool." },
+    };
+    const params = RequestParams{
+        .model = "m",
+        .system_prompt = "s",
+        .protocol = .chat_completions,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+        .dynamic_tools = tools[0..],
+    };
+    const json = try buildRequestJson(a, params, &.{}, true);
+    defer a.free(json);
+
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, json, "\"name\":\"agent_docx_review\""));
+    try std.testing.expect(std.mem.indexOf(u8, json, "First DOCX review tool.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Second DOCX review tool.") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_pdf_review\"") != null);
+}
+
+test "subagent toolset excludes binary tools" {
+    const a = std.testing.allocator;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(a);
+    const tools = [_]DynamicToolSpec{.{ .name = "agent_docx_review", .description = "DOCX" }};
+    try appendToolSchemas(a, &out, .{ .include_memory = true, .toolset = .subagent, .dynamic_tools = tools[0..] });
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "agent_docx_review") == null);
 }
 
 // ---------------------------------------------------------------------------

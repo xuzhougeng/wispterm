@@ -7,6 +7,7 @@
 const std = @import("std");
 const scan = @import("skill_scan.zig");
 const install = @import("skill_install.zig");
+const tool_import = @import("tool_import.zig");
 
 /// Target software — a skills root under $HOME on the target machine. Both use
 /// the same SKILL.md directory format, so a library skill deploys to either.
@@ -70,6 +71,14 @@ pub const LibrarySkill = struct {
     name: []u8,
     rel_path: []u8, // relative to the library root, e.g. "<name>/SKILL.md"
     agg_hash: ?[]u8,
+    pub fn clone(self: LibrarySkill, allocator: std.mem.Allocator) !LibrarySkill {
+        const name = try allocator.dupe(u8, self.name);
+        errdefer allocator.free(name);
+        const rel_path = try allocator.dupe(u8, self.rel_path);
+        errdefer allocator.free(rel_path);
+        const agg_hash = if (self.agg_hash) |h| try allocator.dupe(u8, h) else null;
+        return .{ .name = name, .rel_path = rel_path, .agg_hash = agg_hash };
+    }
     pub fn deinit(self: *LibrarySkill, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.rel_path);
@@ -81,6 +90,84 @@ pub const LibrarySkill = struct {
 pub fn freeLibrary(allocator: std.mem.Allocator, lib: []LibrarySkill) void {
     for (lib) |*s| s.deinit(allocator);
     allocator.free(lib);
+}
+
+pub const ToolApproval = enum {
+    ask,
+};
+
+pub const ToolSkill = struct {
+    name: []u8,
+    executable_path: []u8,
+    skill_path: ?[]u8,
+    enabled: bool,
+    approval: ToolApproval = .ask,
+
+    pub fn clone(self: ToolSkill, allocator: std.mem.Allocator) !ToolSkill {
+        const name = try allocator.dupe(u8, self.name);
+        errdefer allocator.free(name);
+        const executable_path = try allocator.dupe(u8, self.executable_path);
+        errdefer allocator.free(executable_path);
+        const skill_path = if (self.skill_path) |p| try allocator.dupe(u8, p) else null;
+        return .{
+            .name = name,
+            .executable_path = executable_path,
+            .skill_path = skill_path,
+            .enabled = self.enabled,
+            .approval = self.approval,
+        };
+    }
+
+    pub fn deinit(self: *ToolSkill, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.executable_path);
+        if (self.skill_path) |p| allocator.free(p);
+        self.* = undefined;
+    }
+};
+
+pub const LibraryEntry = union(enum) {
+    prompt: LibrarySkill,
+    tool: ToolSkill,
+
+    pub fn deinit(self: *LibraryEntry, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .prompt => |*s| s.deinit(allocator),
+            .tool => |*t| t.deinit(allocator),
+        }
+        self.* = undefined;
+    }
+
+    pub fn clone(self: LibraryEntry, allocator: std.mem.Allocator) !LibraryEntry {
+        return switch (self) {
+            .prompt => |s| .{ .prompt = try s.clone(allocator) },
+            .tool => |t| .{ .tool = try t.clone(allocator) },
+        };
+    }
+
+    pub fn name(self: LibraryEntry) []const u8 {
+        return switch (self) {
+            .prompt => |s| s.name,
+            .tool => |t| t.name,
+        };
+    }
+};
+
+pub fn freeEntries(allocator: std.mem.Allocator, entries: []LibraryEntry) void {
+    for (entries) |*entry| entry.deinit(allocator);
+    allocator.free(entries);
+}
+
+pub fn entriesFromLibrary(allocator: std.mem.Allocator, lib: []LibrarySkill) ![]LibraryEntry {
+    const entries = allocator.alloc(LibraryEntry, lib.len) catch |err| {
+        freeLibrary(allocator, lib);
+        return err;
+    };
+    for (lib, 0..) |skill, i| {
+        entries[i] = .{ .prompt = skill };
+    }
+    allocator.free(lib); // strings moved into `entries`
+    return entries;
 }
 
 /// Convert owned scan rows (from `skill_scan.scanLocation`) into a LibrarySkill
@@ -242,6 +329,66 @@ pub const TextPreviewState = struct {
     }
 };
 
+pub const ToolImportConfirmState = struct {
+    tool_id: []u8,
+    function_name: []u8,
+    source_path: []u8,
+    staged_binary_path: []u8,
+    warning_text: []u8,
+    owns_staging_dir: bool = true,
+    scroll: usize = 0,
+
+    pub fn deinit(self: *ToolImportConfirmState, allocator: std.mem.Allocator) void {
+        if (self.owns_staging_dir) tool_import.cleanupStagedBinaryPath(self.staged_binary_path);
+        allocator.free(self.tool_id);
+        allocator.free(self.function_name);
+        allocator.free(self.source_path);
+        allocator.free(self.staged_binary_path);
+        allocator.free(self.warning_text);
+        self.* = undefined;
+    }
+};
+
+pub const ToolImportPreviewState = struct {
+    tool_id: []u8,
+    function_name: []u8,
+    source_path: []u8,
+    staged_binary_path: []u8,
+    skill_md: []u8,
+    doc_source: tool_import.DocSource,
+    ai_review_required: bool,
+    owns_staging_dir: bool = true,
+    scroll: usize = 0,
+
+    pub fn deinit(self: *ToolImportPreviewState, allocator: std.mem.Allocator) void {
+        if (self.owns_staging_dir) tool_import.cleanupStagedBinaryPath(self.staged_binary_path);
+        allocator.free(self.tool_id);
+        allocator.free(self.function_name);
+        allocator.free(self.source_path);
+        allocator.free(self.staged_binary_path);
+        allocator.free(self.skill_md);
+        self.* = undefined;
+    }
+};
+
+pub const ToolImportPreviewInit = struct {
+    tool_id: []const u8,
+    function_name: []const u8,
+    source_path: []const u8,
+    staged_binary_path: []const u8,
+    skill_md: []const u8,
+    doc_source: tool_import.DocSource,
+    ai_review_required: bool,
+};
+
+pub const ToolImportConfirmInit = struct {
+    tool_id: []const u8,
+    function_name: []const u8,
+    source_path: []const u8,
+    staged_binary_path: []const u8,
+    warning_text: []const u8,
+};
+
 pub const Overlay = union(enum) {
     none,
     picker: PickerState,
@@ -251,6 +398,8 @@ pub const Overlay = union(enum) {
     url_input: UrlInputState,
     install_pick: InstallPickState,
     text_preview: TextPreviewState,
+    tool_import_confirm: ToolImportConfirmState,
+    tool_import_preview: ToolImportPreviewState,
 
     pub fn deinit(self: *Overlay, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -260,6 +409,8 @@ pub const Overlay = union(enum) {
             .confirm => |*c| c.deinit(allocator),
             .busy => |m| allocator.free(m),
             .text_preview => |*t| t.deinit(allocator),
+            .tool_import_confirm => |*t| t.deinit(allocator),
+            .tool_import_preview => |*t| t.deinit(allocator),
             .url_input => |*u| u.deinit(allocator),
             .install_pick => |*p| p.deinit(allocator),
         }
@@ -270,7 +421,7 @@ pub const Overlay = union(enum) {
 /// Panel state: the library list, selection, and the active overlay.
 pub const PanelModel = struct {
     allocator: std.mem.Allocator,
-    library: ?[]LibrarySkill = null,
+    entries: ?[]LibraryEntry = null,
     sel_row: usize = 0,
     scroll: usize = 0,
     overlay: Overlay = .none,
@@ -281,20 +432,30 @@ pub const PanelModel = struct {
 
     /// Take ownership of a fresh library list; clamp selection.
     pub fn setLibrary(self: *PanelModel, lib: []LibrarySkill) void {
-        self.freeLibraryList();
-        self.library = lib;
+        const entries = entriesFromLibrary(self.allocator, lib) catch {
+            self.freeEntryList();
+            self.clampSelection();
+            return;
+        };
+        self.setEntries(entries);
+    }
+
+    /// Take ownership of a fresh mixed entry list; clamp selection.
+    pub fn setEntries(self: *PanelModel, entries: []LibraryEntry) void {
+        self.freeEntryList();
+        self.entries = entries;
         self.clampSelection();
     }
 
-    fn freeLibraryList(self: *PanelModel) void {
-        if (self.library) |l| {
-            freeLibrary(self.allocator, l);
-            self.library = null;
+    fn freeEntryList(self: *PanelModel) void {
+        if (self.entries) |entries| {
+            freeEntries(self.allocator, entries);
+            self.entries = null;
         }
     }
 
     fn clampSelection(self: *PanelModel) void {
-        const n = if (self.library) |l| l.len else 0;
+        const n = self.entryCount();
         if (n == 0) {
             self.sel_row = 0;
         } else if (self.sel_row >= n) {
@@ -302,11 +463,35 @@ pub const PanelModel = struct {
         }
     }
 
+    pub fn entryCount(self: *const PanelModel) usize {
+        return if (self.entries) |entries| entries.len else 0;
+    }
+
+    pub fn selectedEntry(self: *const PanelModel) ?LibraryEntry {
+        const entries = self.entries orelse return null;
+        if (self.sel_row >= entries.len) return null;
+        return entries[self.sel_row];
+    }
+
     /// Selected library skill, or null.
     pub fn selected(self: *const PanelModel) ?LibrarySkill {
-        const lib = self.library orelse return null;
-        if (self.sel_row >= lib.len) return null;
-        return lib[self.sel_row];
+        const entry = self.selectedEntry() orelse return null;
+        return switch (entry) {
+            .prompt => |skill| skill,
+            .tool => null,
+        };
+    }
+
+    pub fn toggleSelectedTool(self: *PanelModel) bool {
+        const entries = self.entries orelse return false;
+        if (self.sel_row >= entries.len) return false;
+        switch (entries[self.sel_row]) {
+            .prompt => return false,
+            .tool => |*tool| {
+                tool.enabled = !tool.enabled;
+                return true;
+            },
+        }
     }
 
     /// Replace the overlay (frees the previous one's owned data).
@@ -318,12 +503,59 @@ pub const PanelModel = struct {
         self.overlay.deinit(self.allocator);
     }
 
+    pub fn takeToolImportConfirm(self: *PanelModel) ?ToolImportConfirmState {
+        if (self.overlay != .tool_import_confirm) return null;
+        const confirm = self.overlay.tool_import_confirm;
+        self.overlay = .none;
+        return confirm;
+    }
+
     /// Open the scrollable SKILL.md preview overlay (owns copies of the strings).
     pub fn openTextPreview(self: *PanelModel, title: []const u8, content: []const u8) !void {
         const t = try self.allocator.dupe(u8, title);
         errdefer self.allocator.free(t);
         const c = try self.allocator.dupe(u8, content);
         self.setOverlay(.{ .text_preview = .{ .title = t, .content = c } });
+    }
+
+    pub fn openToolImportConfirm(self: *PanelModel, input: ToolImportConfirmInit) !void {
+        const tool_id = try self.allocator.dupe(u8, input.tool_id);
+        errdefer self.allocator.free(tool_id);
+        const function_name = try self.allocator.dupe(u8, input.function_name);
+        errdefer self.allocator.free(function_name);
+        const source_path = try self.allocator.dupe(u8, input.source_path);
+        errdefer self.allocator.free(source_path);
+        const staged_binary_path = try self.allocator.dupe(u8, input.staged_binary_path);
+        errdefer self.allocator.free(staged_binary_path);
+        const warning_text = try self.allocator.dupe(u8, input.warning_text);
+        self.setOverlay(.{ .tool_import_confirm = .{
+            .tool_id = tool_id,
+            .function_name = function_name,
+            .source_path = source_path,
+            .staged_binary_path = staged_binary_path,
+            .warning_text = warning_text,
+        } });
+    }
+
+    pub fn openToolImportPreview(self: *PanelModel, input: ToolImportPreviewInit) !void {
+        const tool_id = try self.allocator.dupe(u8, input.tool_id);
+        errdefer self.allocator.free(tool_id);
+        const function_name = try self.allocator.dupe(u8, input.function_name);
+        errdefer self.allocator.free(function_name);
+        const source_path = try self.allocator.dupe(u8, input.source_path);
+        errdefer self.allocator.free(source_path);
+        const staged_binary_path = try self.allocator.dupe(u8, input.staged_binary_path);
+        errdefer self.allocator.free(staged_binary_path);
+        const skill_md = try self.allocator.dupe(u8, input.skill_md);
+        self.setOverlay(.{ .tool_import_preview = .{
+            .tool_id = tool_id,
+            .function_name = function_name,
+            .source_path = source_path,
+            .staged_binary_path = staged_binary_path,
+            .skill_md = skill_md,
+            .doc_source = input.doc_source,
+            .ai_review_required = input.ai_review_required,
+        } });
     }
 
     pub fn isTextPreview(self: *const PanelModel) bool {
@@ -342,22 +574,38 @@ pub const PanelModel = struct {
                     tp.scroll +|= @intCast(delta);
                 }
             },
+            .tool_import_confirm => |*tp| {
+                if (delta < 0) {
+                    const d: usize = @intCast(-delta);
+                    tp.scroll = if (tp.scroll > d) tp.scroll - d else 0;
+                } else {
+                    tp.scroll +|= @intCast(delta);
+                }
+            },
+            .tool_import_preview => |*tp| {
+                if (delta < 0) {
+                    const d: usize = @intCast(-delta);
+                    tp.scroll = if (tp.scroll > d) tp.scroll - d else 0;
+                } else {
+                    tp.scroll +|= @intCast(delta);
+                }
+            },
             else => {},
         }
     }
 
     pub fn deinit(self: *PanelModel) void {
         self.overlay.deinit(self.allocator);
-        self.freeLibraryList();
+        self.freeEntryList();
         self.* = undefined;
     }
 };
 
 /// Owned unit of background scan work — scans the (local) library off the UI
-/// thread and returns an owned `[]LibrarySkill`. `destroy` frees `ctx`.
+/// thread and returns an owned `[]LibraryEntry`. `destroy` frees `ctx`.
 pub const ScanWork = struct {
     ctx: *anyopaque,
-    run: *const fn (*anyopaque, std.mem.Allocator) anyerror![]LibrarySkill,
+    run: *const fn (*anyopaque, std.mem.Allocator) anyerror![]LibraryEntry,
     destroy: *const fn (*anyopaque, std.mem.Allocator) void,
 };
 
@@ -378,6 +626,8 @@ pub const OpResult = union(enum) {
     install_enumerate: struct { repo: install.RepoRef, entries: []install.SkillEntry, truncated: bool },
     /// install-download finished: report counts via toast.
     install_done: struct { installed: usize, overwritten: usize, failed: usize },
+    tool_import_preview: ToolImportPreviewState,
+    tool_import_failed: []u8,
     /// generic failure before work could run (e.g. lost connection).
     failed,
 
@@ -405,6 +655,8 @@ pub const OpResult = union(enum) {
                 install.freeEntries(allocator, v.entries);
             },
             .install_done => {},
+            .tool_import_preview => |*v| v.deinit(allocator),
+            .tool_import_failed => |s| allocator.free(s),
             .failed => {},
         }
         self.* = .failed;
@@ -509,15 +761,15 @@ pub const Session = struct {
     }
 
     /// Publish a library scan result under the lock if current; else discard.
-    /// Always consumes ownership of `lib`. Worker-thread only.
-    pub fn finishScan(self: *Session, generation: u64, lib: []LibrarySkill) void {
+    /// Always consumes ownership of `entries`. Worker-thread only.
+    pub fn finishScan(self: *Session, generation: u64, entries: []LibraryEntry) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (!self.closing.load(.acquire) and generation == self.scan_generation) {
-            self.model.setLibrary(lib);
+            self.model.setEntries(entries);
             self.setStatusLocked("");
         } else {
-            freeLibrary(self.allocator, lib);
+            freeEntries(self.allocator, entries);
         }
     }
 
@@ -588,11 +840,11 @@ pub const Session = struct {
 
 fn scanThreadMain(session: *Session, work: ScanWork, generation: u64) void {
     defer work.destroy(work.ctx, session.allocator);
-    const lib = work.run(work.ctx, session.allocator) catch {
+    const entries = work.run(work.ctx, session.allocator) catch {
         session.publishScanFailure(generation);
         return;
     };
-    session.finishScan(generation, lib);
+    session.finishScan(generation, entries);
 }
 
 fn opThreadMain(session: *Session, work: OpWork) void {
@@ -647,10 +899,92 @@ test "skill_center: setLibrary clamps selection" {
     defer m.deinit();
     m.setLibrary(try ownedLib(a, &.{ "x", "y", "z" }));
     m.sel_row = 2;
-    try std.testing.expectEqual(@as(usize, 3), m.library.?.len);
+    try std.testing.expectEqual(@as(usize, 3), m.entryCount());
     m.setLibrary(try ownedLib(a, &.{"x"})); // shrink → clamp
     try std.testing.expectEqual(@as(usize, 0), m.sel_row);
     try std.testing.expectEqualStrings("x", m.selected().?.name);
+}
+
+test "skill_center: PanelModel holds mixed prompt and tool entries" {
+    const a = std.testing.allocator;
+    var entries = try a.alloc(LibraryEntry, 2);
+    entries[0] = .{ .prompt = .{
+        .name = try a.dupe(u8, "docs"),
+        .rel_path = try a.dupe(u8, "docs/SKILL.md"),
+        .agg_hash = try a.dupe(u8, "h"),
+    } };
+    entries[1] = .{ .tool = .{
+        .name = try a.dupe(u8, "docx_review"),
+        .executable_path = try a.dupe(u8, "/tmp/tools/docx_review/bin/docx-review"),
+        .skill_path = try a.dupe(u8, "/tmp/tools/docx_review/SKILL.md"),
+        .enabled = true,
+        .approval = .ask,
+    } };
+
+    var m = PanelModel.init(a);
+    defer m.deinit();
+    m.setEntries(entries);
+
+    try std.testing.expectEqual(@as(usize, 2), m.entryCount());
+    try std.testing.expectEqualStrings("docs", m.selectedEntry().?.name());
+    try std.testing.expectEqualStrings("docs", m.selected().?.name);
+    m.sel_row = 1;
+    try std.testing.expectEqualStrings("docx_review", m.selectedEntry().?.name());
+    try std.testing.expectEqual(@as(?LibrarySkill, null), m.selected());
+}
+
+test "skill_center: toggleSelectedTool flips only selected tool entries" {
+    const a = std.testing.allocator;
+    var entries = try a.alloc(LibraryEntry, 2);
+    entries[0] = .{ .prompt = .{
+        .name = try a.dupe(u8, "docs"),
+        .rel_path = try a.dupe(u8, "docs/SKILL.md"),
+        .agg_hash = null,
+    } };
+    entries[1] = .{ .tool = .{
+        .name = try a.dupe(u8, "docx_review"),
+        .executable_path = try a.dupe(u8, "/tmp/tools/docx_review/bin/docx-review"),
+        .skill_path = null,
+        .enabled = false,
+        .approval = .ask,
+    } };
+
+    var m = PanelModel.init(a);
+    defer m.deinit();
+    m.setEntries(entries);
+
+    try std.testing.expect(!m.toggleSelectedTool());
+    m.sel_row = 1;
+    try std.testing.expect(m.toggleSelectedTool());
+    try std.testing.expect(m.selectedEntry().?.tool.enabled);
+    try std.testing.expect(m.toggleSelectedTool());
+    try std.testing.expect(!m.selectedEntry().?.tool.enabled);
+}
+
+test "skill_center: setEntries and setLibrary clamp selection" {
+    const a = std.testing.allocator;
+    var m = PanelModel.init(a);
+    defer m.deinit();
+    m.setLibrary(try ownedLib(a, &.{ "a", "b", "c" }));
+    m.sel_row = 2;
+
+    var entries = try a.alloc(LibraryEntry, 1);
+    entries[0] = .{ .tool = .{
+        .name = try a.dupe(u8, "tool"),
+        .executable_path = try a.dupe(u8, "/tmp/tool"),
+        .skill_path = null,
+        .enabled = true,
+        .approval = .ask,
+    } };
+    m.setEntries(entries);
+    try std.testing.expectEqual(@as(usize, 0), m.sel_row);
+    try std.testing.expectEqualStrings("tool", m.selectedEntry().?.name());
+    try std.testing.expectEqual(@as(?LibrarySkill, null), m.selected());
+
+    m.setEntries(try a.alloc(LibraryEntry, 0));
+    try std.testing.expectEqual(@as(usize, 0), m.entryCount());
+    try std.testing.expectEqual(@as(?LibraryEntry, null), m.selectedEntry());
+    try std.testing.expectEqual(@as(?LibrarySkill, null), m.selected());
 }
 
 test "skill_center: overlay set/clear frees owned data (no leak)" {
@@ -761,19 +1095,159 @@ test "skill_center: text preview overlay opens, scrolls, and frees" {
     m.scrollTextPreview(5);
 }
 
+test "skill_center: tool import preview overlay stores staged import" {
+    const a = std.testing.allocator;
+    var model = PanelModel.init(a);
+    defer model.deinit();
+    try model.openToolImportPreview(.{
+        .tool_id = "agent_docx_review",
+        .function_name = "agent_docx_review",
+        .source_path = "/tmp/agent_docx_review",
+        .staged_binary_path = "/tmp/stage/bin/agent_docx_review",
+        .skill_md = "---\nname: agent_docx_review\n---\nDocx.",
+        .doc_source = .skill_flag,
+        .ai_review_required = false,
+    });
+    try std.testing.expect(model.overlay == .tool_import_preview);
+}
+
+test "skill_center: tool import confirm overlay stores staged import" {
+    const a = std.testing.allocator;
+    var model = PanelModel.init(a);
+    defer model.deinit();
+    try model.openToolImportConfirm(.{
+        .tool_id = "agent_docx_review",
+        .function_name = "agent_docx_review",
+        .source_path = "/tmp/agent_docx_review",
+        .staged_binary_path = "/tmp/stage/bin/agent_docx_review",
+        .warning_text = "WispTerm will inspect this executable.",
+    });
+    try std.testing.expect(model.overlay == .tool_import_confirm);
+}
+
+const ToolImportStagePaths = struct {
+    stage_root: []u8,
+    staged_binary_path: []u8,
+};
+
+fn createToolImportStageForTest(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, name: []const u8) !ToolImportStagePaths {
+    try tmp.dir.makePath("stage/bin");
+    const rel = try std.fmt.allocPrint(allocator, "stage/bin/{s}", .{name});
+    defer allocator.free(rel);
+    try tmp.dir.writeFile(.{ .sub_path = rel, .data = "staged-bytes" });
+    return .{
+        .stage_root = try tmp.dir.realpathAlloc(allocator, "stage"),
+        .staged_binary_path = try tmp.dir.realpathAlloc(allocator, rel),
+    };
+}
+
+test "skill_center: tool import preview clearOverlay removes staged dir" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const stage = try createToolImportStageForTest(a, &tmp, "agent_docx_review");
+    defer a.free(stage.stage_root);
+    defer a.free(stage.staged_binary_path);
+
+    var model = PanelModel.init(a);
+    defer model.deinit();
+    try model.openToolImportPreview(.{
+        .tool_id = "agent_docx_review",
+        .function_name = "agent_docx_review",
+        .source_path = "/tmp/original/agent_docx_review",
+        .staged_binary_path = stage.staged_binary_path,
+        .skill_md = "---\nname: agent_docx_review\n---\nDocx.",
+        .doc_source = .skill_flag,
+        .ai_review_required = false,
+    });
+    model.clearOverlay();
+    try std.testing.expectError(error.FileNotFound, std.fs.accessAbsolute(stage.stage_root, .{}));
+}
+
+test "skill_center: tool import confirm clearOverlay removes staged dir" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const stage = try createToolImportStageForTest(a, &tmp, "agent_docx_review");
+    defer a.free(stage.stage_root);
+    defer a.free(stage.staged_binary_path);
+
+    var model = PanelModel.init(a);
+    defer model.deinit();
+    try model.openToolImportConfirm(.{
+        .tool_id = "agent_docx_review",
+        .function_name = "agent_docx_review",
+        .source_path = "/tmp/original/agent_docx_review",
+        .staged_binary_path = stage.staged_binary_path,
+        .warning_text = "Inspect this executable.",
+    });
+    model.clearOverlay();
+    try std.testing.expectError(error.FileNotFound, std.fs.accessAbsolute(stage.stage_root, .{}));
+}
+
+test "skill_center: taking tool import confirm preserves staged dir for caller" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const stage = try createToolImportStageForTest(a, &tmp, "agent_docx_review");
+    defer a.free(stage.stage_root);
+    defer a.free(stage.staged_binary_path);
+
+    var model = PanelModel.init(a);
+    defer model.deinit();
+    try model.openToolImportConfirm(.{
+        .tool_id = "agent_docx_review",
+        .function_name = "agent_docx_review",
+        .source_path = "/tmp/original/agent_docx_review",
+        .staged_binary_path = stage.staged_binary_path,
+        .warning_text = "Inspect this executable.",
+    });
+
+    var confirm = model.takeToolImportConfirm() orelse return error.ExpectedToolImportConfirm;
+    try std.testing.expect(model.overlay == .none);
+    try std.fs.accessAbsolute(stage.stage_root, .{});
+
+    confirm.deinit(a);
+    try std.testing.expectError(error.FileNotFound, std.fs.accessAbsolute(stage.stage_root, .{}));
+}
+
+test "skill_center: tool import preview deinit removes staged dir" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const stage = try createToolImportStageForTest(a, &tmp, "agent_docx_review");
+    defer a.free(stage.stage_root);
+    defer a.free(stage.staged_binary_path);
+
+    {
+        var model = PanelModel.init(a);
+        defer model.deinit();
+        try model.openToolImportPreview(.{
+            .tool_id = "agent_docx_review",
+            .function_name = "agent_docx_review",
+            .source_path = "/tmp/original/agent_docx_review",
+            .staged_binary_path = stage.staged_binary_path,
+            .skill_md = "---\nname: agent_docx_review\n---\nDocx.",
+            .doc_source = .skill_flag,
+            .ai_review_required = false,
+        });
+    }
+    try std.testing.expectError(error.FileNotFound, std.fs.accessAbsolute(stage.stage_root, .{}));
+}
+
 test "skill_center: Session.finishScan publishes then discards stale (no leak)" {
     const a = std.testing.allocator;
     const session = try Session.create(a);
     defer session.destroy();
 
     session.scan_generation +%= 1;
-    session.finishScan(session.scan_generation, try ownedLib(a, &.{ "a", "b" }));
-    try std.testing.expect(session.model.library != null);
-    try std.testing.expectEqual(@as(usize, 2), session.model.library.?.len);
+    session.finishScan(session.scan_generation, try entriesFromLibrary(a, try ownedLib(a, &.{ "a", "b" })));
+    try std.testing.expect(session.model.entries != null);
+    try std.testing.expectEqual(@as(usize, 2), session.model.entryCount());
 
     session.scan_generation = 9;
-    session.finishScan(3, try ownedLib(a, &.{"stale"})); // discarded + freed
-    try std.testing.expectEqual(@as(usize, 2), session.model.library.?.len);
+    session.finishScan(3, try entriesFromLibrary(a, try ownedLib(a, &.{"stale"}))); // discarded + freed
+    try std.testing.expectEqual(@as(usize, 2), session.model.entryCount());
 }
 
 const OpTestCtx = struct {

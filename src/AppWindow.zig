@@ -29,6 +29,7 @@ const close_confirm = @import("close_confirm.zig");
 const font_backend = @import("platform/font_backend.zig");
 const platform_display = @import("platform/display.zig");
 const platform_dirs = @import("platform/dirs.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_file_dialog = @import("platform/file_dialog.zig");
 const platform_global_hotkey = @import("platform/global_hotkey.zig");
 const platform_menu = @import("platform/menu.zig");
@@ -64,6 +65,10 @@ const ssh_profile_store = @import("ssh_profile_store.zig");
 const skill_scan = @import("skill_scan.zig");
 const skill_local_fs = @import("skill_local_fs.zig");
 const skill_transfer_cmd = @import("skill_transfer_cmd.zig");
+const tool_import = @import("tool_import.zig");
+const tool_registry = @import("tool_registry.zig");
+const tool_skill_draft = @import("tool_skill_draft.zig");
+const ai_chat_request = @import("ai_chat_request.zig");
 const remote_file = @import("platform/remote_file.zig");
 const ssh_connection = @import("ssh_connection.zig");
 const skill_transfer = @import("skill_transfer.zig");
@@ -273,6 +278,8 @@ pub fn currentNativeHandleBits() ?usize {
     return window_backend.nativeHandleBits(window);
 }
 
+pub var g_skill_center_open_file_override: ?*const fn (std.mem.Allocator, platform_file_dialog.OpenRequest) ?[]u8 = null;
+
 /// Request this window to exit without showing the interactive close prompt.
 pub fn requestForceClose(self: *AppWindow) void {
     self.force_close_requested.store(true, .release);
@@ -431,6 +438,653 @@ test "AppWindow: AI history restore snapshot rebuilds an SSH source" {
         .ssh => |ssh| try std.testing.expectEqualStrings("buildbox", ssh.profile_name),
         else => return error.ExpectedSshTarget,
     }
+}
+
+test "AppWindow: skill center tool enabled update matches manifest path" {
+    var entries = [_]skill_center.LibraryEntry{
+        .{ .tool = .{
+            .name = @constCast("tool_a"),
+            .executable_path = @constCast("/tmp/tools/tool_a/bin/tool_a"),
+            .skill_path = @constCast("/tmp/tools/tool_a/SKILL.md"),
+            .enabled = false,
+            .approval = .ask,
+        } },
+        .{ .tool = .{
+            .name = @constCast("tool_b"),
+            .executable_path = @constCast("/tmp/tools/tool_b/bin/tool_b"),
+            .skill_path = @constCast("/tmp/tools/tool_b/SKILL.md"),
+            .enabled = false,
+            .approval = .ask,
+        } },
+    };
+
+    const manifest_b = switch (entries[1]) {
+        .tool => |tool| skillCenterToolManifestPath(std.testing.allocator, tool) orelse return error.ExpectedManifestPath,
+        .prompt => return error.ExpectedSkillCenterTool,
+    };
+    defer std.testing.allocator.free(manifest_b);
+
+    try std.testing.expect(skillCenterApplyToolEnabledByManifestPath(std.testing.allocator, entries[0..], manifest_b, true));
+    switch (entries[0]) {
+        .tool => |tool| try std.testing.expect(!tool.enabled),
+        .prompt => return error.ExpectedSkillCenterTool,
+    }
+    switch (entries[1]) {
+        .tool => |tool| try std.testing.expect(tool.enabled),
+        .prompt => return error.ExpectedSkillCenterTool,
+    }
+
+    try std.testing.expect(!skillCenterApplyToolEnabledByManifestPath(std.testing.allocator, entries[0..], "/tmp/tools/missing/manifest.json", false));
+    switch (entries[1]) {
+        .tool => |tool| try std.testing.expect(tool.enabled),
+        .prompt => return error.ExpectedSkillCenterTool,
+    }
+}
+
+test "AppWindow: skill center tool manifest toggle preserves extra fields" {
+    const manifest_json =
+        \\{
+        \\  "kind": "binary_tool",
+        \\  "id": "sample_tool",
+        \\  "function_name": "sample_tool",
+        \\  "enabled": false,
+        \\  "executable": "bin/sample_tool",
+        \\  "source_path": "/tmp/sample_tool",
+        \\  "sha256": "abc123",
+        \\  "imported_at_ms": 1234,
+        \\  "description": "Sample tool",
+        \\  "custom_meta": {
+        \\    "owner": "qa"
+        \\  }
+        \\}
+    ;
+
+    const updated = try skillCenterManifestJsonWithEnabled(std.testing.allocator, manifest_json, true);
+    defer std.testing.allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"custom_meta\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"owner\"") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, updated, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    const enabled_value = parsed.value.object.get("enabled") orelse return error.ExpectedEnabledField;
+    try std.testing.expect(enabled_value == .bool);
+    try std.testing.expect(enabled_value.bool);
+}
+
+test "AppWindow: skill center import picker allows empty library and blocks tool rows" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = g_force_rebuild;
+    const previous_cells_valid = g_cells_valid;
+    defer {
+        g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        g_force_rebuild = previous_force_rebuild;
+        g_cells_valid = previous_cells_valid;
+    }
+
+    g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    g_force_rebuild = false;
+    g_cells_valid = true;
+    try std.testing.expect(skillCenterImport());
+    try std.testing.expect(g_force_rebuild);
+    try std.testing.expect(!g_cells_valid);
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        switch (session.model.overlay) {
+            .picker => |picker| {
+                try std.testing.expectEqual(skill_center.Purpose.import_, picker.purpose);
+                try std.testing.expectEqualStrings("", picker.skill_name);
+            },
+            else => return error.ExpectedSkillCenterPicker,
+        }
+        session.model.clearOverlay();
+    }
+
+    const name = try allocator.dupe(u8, "fake_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const executable_path = try allocator.dupe(u8, "/tmp/tools/fake_tool/bin/fake_tool");
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const skill_path = try allocator.dupe(u8, "/tmp/tools/fake_tool/SKILL.md");
+    var skill_path_owned = true;
+    errdefer if (skill_path_owned) allocator.free(skill_path);
+    const entries = try allocator.alloc(skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = false,
+        .approval = .ask,
+    } };
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    skill_path_owned = false;
+    session.mutex.unlock();
+
+    g_force_rebuild = false;
+    g_cells_valid = true;
+    try std.testing.expect(!skillCenterOpenPicker(.import_));
+    try std.testing.expect(!g_force_rebuild);
+    try std.testing.expect(g_cells_valid);
+    try std.testing.expect(!skillCenterOverlayActive());
+}
+
+test "AppWindow: skill center tool toggle failure uses toggle status" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_force_rebuild = g_force_rebuild;
+    const previous_cells_valid = g_cells_valid;
+    defer {
+        g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        g_force_rebuild = previous_force_rebuild;
+        g_cells_valid = previous_cells_valid;
+    }
+
+    g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    const name = try allocator.dupe(u8, "bad_tool");
+    var name_owned = true;
+    errdefer if (name_owned) allocator.free(name);
+    const executable_path = try allocator.dupe(u8, "/tmp/tools/bad_tool/bad_tool");
+    var executable_path_owned = true;
+    errdefer if (executable_path_owned) allocator.free(executable_path);
+    const entries = try allocator.alloc(skill_center.LibraryEntry, 1);
+    var entries_owned = true;
+    errdefer if (entries_owned) allocator.free(entries);
+    entries[0] = .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = null,
+        .enabled = false,
+        .approval = .ask,
+    } };
+
+    session.mutex.lock();
+    session.model.setEntries(entries);
+    entries_owned = false;
+    name_owned = false;
+    executable_path_owned = false;
+    session.mutex.unlock();
+
+    try std.testing.expect(skillCenterToggleToolEnabled());
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqualStrings(i18n.s().sc_tool_toggle_failed, session.status);
+}
+
+test "AppWindow: failed tool import preserves preview overlay and sets status" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("tools/docx");
+    try tmp.dir.makePath("tools/.import-stage-docx/bin");
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "tools/.import-stage-docx/bin/docx", .data = "staged bytes" });
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "original bytes" });
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+
+    const staged_path = try tmp.dir.realpathAlloc(allocator, "tools/.import-stage-docx/bin/docx");
+    defer allocator.free(staged_path);
+    const stage_root = try tmp.dir.realpathAlloc(allocator, "tools/.import-stage-docx");
+    defer allocator.free(stage_root);
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+
+    g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    session.mutex.lock();
+    try session.model.openToolImportPreview(.{
+        .tool_id = "docx",
+        .function_name = "docx",
+        .source_path = source_path,
+        .staged_binary_path = staged_path,
+        .skill_md = "---\nname: docx\n---\nUse docs.\n",
+        .doc_source = .skill_flag,
+        .ai_review_required = false,
+    });
+    session.mutex.unlock();
+
+    try std.testing.expect(skillCenterOverlaySelect());
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(session.model.overlay == .tool_import_preview);
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "Tool import failed:") != null);
+    try std.testing.expectEqualStrings(staged_path, session.model.overlay.tool_import_preview.staged_binary_path);
+    try std.fs.accessAbsolute(stage_root, .{});
+}
+
+fn countMatchingToolDirs(tools_root: []const u8, prefix: []const u8) !usize {
+    var dir = try std.fs.openDirAbsolute(tools_root, .{ .iterate = true });
+    defer dir.close();
+    var it = dir.iterate();
+    var count: usize = 0;
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        if (std.mem.startsWith(u8, entry.name, prefix)) count += 1;
+    }
+    return count;
+}
+
+test "AppWindow: skill center tool import stages file behind explicit confirmation" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "plain bytes" });
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 1), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expectEqualStrings("", session.status);
+}
+
+test "AppWindow: skill center tool import confirmation opens preview for launchable binary" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    const script =
+        "#!/bin/sh\n" ++
+        "if [ \"$1\" = \"--skill\" ]; then\n" ++
+        "  printf '%s\\n' '---' 'name: docx_tool' 'description: Import docx files' '---' 'Use docx files.'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "if [ \"$1\" = \"--help\" ]; then\n" ++
+        "  printf 'docx tool help\\n'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "exit 0\n";
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx-tool", .data = script });
+    var file = try tmp.dir.openFile("source/docx-tool", .{});
+    defer file.close();
+    try file.chmod(0o755);
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx-tool");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 1), try countMatchingToolDirs(tools_root, ".import-staging-"));
+
+    try std.testing.expect(skillCenterOverlaySelect());
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(session.model.overlay == .tool_import_preview);
+    try std.testing.expectEqualStrings("", session.status);
+    const preview = session.model.overlay.tool_import_preview;
+    try std.testing.expectEqualStrings("docx_tool", preview.function_name);
+    try std.testing.expect(std.mem.indexOf(u8, preview.skill_md, "Use docx files.") != null);
+    try std.fs.accessAbsolute(preview.staged_binary_path, .{});
+}
+
+test "AppWindow: skill center tool import probe spawn failure aborts without fallback docs" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    try tmp.dir.writeFile(.{ .sub_path = "source/docx", .data = "plain bytes" });
+    try tmp.dir.writeFile(.{ .sub_path = "source/SKILL.md", .data = "---\nname: docx\n---\nSibling docs.\n" });
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/docx");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(skillCenterOverlayActive());
+    try std.testing.expect(skillCenterOverlaySelect());
+    try std.testing.expect(!skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, "docx"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "could not inspect the executable") != null);
+}
+
+test "AppWindow: skill center tool import rejects reserved built-in function names" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_open_file = g_skill_center_open_file_override;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        g_skill_center_open_file_override = previous_open_file;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        platform_dirs.clearTestConfigDirForCurrentThread();
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("source");
+    const script =
+        "#!/bin/sh\n" ++
+        "if [ \"$1\" = \"--skill\" ]; then\n" ++
+        "  printf '%s\\n' '---' 'name: read_file' 'description: Reserved' '---' 'Reserved tool.'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "if [ \"$1\" = \"--help\" ]; then\n" ++
+        "  printf 'reserved help\\n'\n" ++
+        "  exit 0\n" ++
+        "fi\n" ++
+        "exit 0\n";
+    try tmp.dir.writeFile(.{ .sub_path = "source/read-file", .data = script });
+    var file = try tmp.dir.openFile("source/read-file", .{});
+    defer file.close();
+    try file.chmod(0o755);
+    const source_path = try tmp.dir.realpathAlloc(allocator, "source/read-file");
+    defer allocator.free(source_path);
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    const tools_root = try platform_dirs.toolsDir(allocator);
+    defer allocator.free(tools_root);
+
+    g_allocator = allocator;
+    const open_file = struct {
+        var path: []const u8 = "";
+        fn open(a: std.mem.Allocator, _: platform_file_dialog.OpenRequest) ?[]u8 {
+            return a.dupe(u8, path) catch null;
+        }
+    };
+    open_file.path = source_path;
+    g_skill_center_open_file_override = open_file.open;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    try std.testing.expect(skillCenterImportTool());
+    try std.testing.expect(!skillCenterOverlayActive());
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, ".import-staging-"));
+    try std.testing.expectEqual(@as(usize, 0), try countMatchingToolDirs(tools_root, "read_file"));
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(std.mem.indexOf(u8, session.status, "reserved") != null);
+}
+
+test "AppWindow: tool import draft failure result keeps view and sets status" {
+    const allocator = std.testing.allocator;
+    const previous_allocator = g_allocator;
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    defer {
+        g_allocator = previous_allocator;
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+    }
+
+    g_allocator = allocator;
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tab_count = 0;
+    active_tab_state.g_active_tab = 0;
+    if (!tab.spawnSkillCenterTab(allocator)) return error.SkipZigTest;
+    defer {
+        while (tab.g_tab_count > 0) {
+            const idx = tab.g_tab_count - 1;
+            if (tab.g_tabs[idx]) |t| {
+                t.deinit(allocator);
+                allocator.destroy(t);
+                tab.g_tabs[idx] = null;
+            }
+            tab.g_tab_count -= 1;
+        }
+    }
+
+    const session = activeSkillCenter() orelse return error.ExpectedSkillCenterTab;
+    session.mutex.lock();
+    try session.model.openTextPreview("docx / SKILL.md", "preview");
+    session.op_pending = .{ .tool_import_failed = try allocator.dupe(u8, "Draft generation failed.") };
+    session.mutex.unlock();
+
+    pollSkillCenterOp(session);
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    try std.testing.expect(session.model.overlay == .text_preview);
+    try std.testing.expectEqualStrings("Draft generation failed.", session.status);
 }
 
 test "AppWindow: open AI chat tabs are persisted to agent history before session dump" {
@@ -913,7 +1567,7 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
         session.mutex.lock();
         defer session.mutex.unlock();
         const m = &session.model;
-        const lib_len = if (m.library) |l| l.len else 0;
+        const lib_len = m.entryCount();
         const overlay: skill_center_renderer.Overlay = switch (m.overlay) {
             .none, .busy => .none,
             .picker => |*p| .{ .list = .{
@@ -948,11 +1602,25 @@ fn renderSkillCenterFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_i
                 .scroll = tp.scroll,
                 .scroll_out = &tp.scroll,
             } },
+            .tool_import_confirm => |*tp| .{ .text = .{
+                .title = tp.function_name,
+                .content = tp.warning_text,
+                .hint = "Enter inspect/import preview · Esc cancel · ↑/↓ scroll",
+                .scroll = tp.scroll,
+                .scroll_out = &tp.scroll,
+            } },
+            .tool_import_preview => |*tp| .{ .text = .{
+                .title = tp.function_name,
+                .content = tp.skill_md,
+                .hint = "Enter import · Esc cancel · ↑/↓ scroll",
+                .scroll = tp.scroll,
+                .scroll_out = &tp.scroll,
+            } },
         };
         const view: skill_center_renderer.View = .{
             .skills_len = lib_len,
             .ctx = @ptrCast(m),
-            .nameAt = scNameAt,
+            .itemAt = scEntryItemAt,
             .sel_row = m.sel_row,
             .scroll = m.scroll,
             .title = i18n.s().sl_skill_center,
@@ -1069,11 +1737,21 @@ fn renderPortForwardingFrame(active_tab: *TabState, fb_width: c_int, fb_height: 
     );
 }
 
-/// Renderer accessor: library skill name at index i (read under the session lock).
-fn scNameAt(ctx: *anyopaque, i: usize) []const u8 {
+/// Renderer accessor: library entry metadata at index i (read under the session lock).
+fn scEntryItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
     const m: *const skill_center.PanelModel = @ptrCast(@alignCast(ctx));
-    const lib = m.library orelse return "";
-    return if (i < lib.len) lib[i].name else "";
+    const entries = m.entries orelse return .{ .label = "", .marker = "" };
+    if (i >= entries.len) return .{ .label = "", .marker = "" };
+    return switch (entries[i]) {
+        .prompt => |s| .{ .label = s.name, .marker = "", .kind = "skill" },
+        .tool => |t| .{
+            .label = t.name,
+            .marker = "",
+            .kind = "tool",
+            .enabled = if (t.enabled) "on" else "off",
+            .marker_color = if (t.enabled) .{ 0.3, 0.85, 0.45 } else .{ 0.85, 0.45, 0.35 },
+        },
+    };
 }
 fn scPickerItemAt(ctx: *anyopaque, i: usize) skill_center_renderer.ListItem {
     const p: *const skill_center.PickerState = @ptrCast(@alignCast(ctx));
@@ -1517,8 +2195,10 @@ pub fn skillCenterMove(delta: isize) bool {
         .import_list => |*il| scMoveSel(&il.sel, il.names.len, delta),
         .install_pick => |*p| scMoveSel(&p.sel, p.entries.len, delta),
         .url_input => {},
+        .tool_import_confirm => {},
+        .tool_import_preview => {},
         else => {
-            const n = if (session.model.library) |l| l.len else 0;
+            const n = session.model.entryCount();
             scMoveSel(&session.model.sel_row, n, delta);
         },
     }
@@ -1537,10 +2217,12 @@ pub fn skillCenterOverlayActive() bool {
 pub fn skillCenterOverlayCancel() bool {
     const session = activeSkillCenter() orelse return false;
     session.mutex.lock();
-    defer session.mutex.unlock();
-    if (session.model.overlay == .none) return false;
+    if (session.model.overlay == .none) {
+        session.mutex.unlock();
+        return false;
+    }
     session.model.clearOverlay();
-    markUiDirty();
+    session.mutex.unlock();
     return true;
 }
 
@@ -1989,13 +2671,18 @@ const SkillTransferCtx = struct {
 };
 
 /// Marker for a target skill vs the library (by name + hash).
-fn skillCenterMarkerFor(library: ?[]skill_center.LibrarySkill, name: []const u8, target_hash: ?[]const u8) skill_center.Marker {
-    const lib = library orelse return .new_;
-    for (lib) |s| {
-        if (std.mem.eql(u8, s.name, name)) {
-            const lh = s.agg_hash orelse return .differ;
-            const th = target_hash orelse return .differ;
-            return if (std.mem.eql(u8, lh, th)) .same else .differ;
+fn skillCenterMarkerFor(model: *const skill_center.PanelModel, name: []const u8, target_hash: ?[]const u8) skill_center.Marker {
+    const entries = model.entries orelse return .new_;
+    for (entries) |entry| {
+        switch (entry) {
+            .prompt => |s| {
+                if (std.mem.eql(u8, s.name, name)) {
+                    const lh = s.agg_hash orelse return .differ;
+                    const th = target_hash orelse return .differ;
+                    return if (std.mem.eql(u8, lh, th)) .same else .differ;
+                }
+            },
+            .tool => {},
         }
     }
     return .new_;
@@ -2011,7 +2698,7 @@ fn skillCenterMakeImportState(allocator: std.mem.Allocator, model: *const skill_
     var markers: std.ArrayListUnmanaged(skill_center.Marker) = .empty;
     errdefer markers.deinit(allocator);
     for (rows) |r| {
-        const marker = skillCenterMarkerFor(model.library, r.name, r.agg_hash);
+        const marker = skillCenterMarkerFor(model, r.name, r.agg_hash);
         const n = try allocator.dupe(u8, r.name);
         // Explicit cleanup: once `n` is in `names`, the function-level errdefer
         // owns it — a per-item errdefer here would double-free on a later error.
@@ -2097,11 +2784,20 @@ fn skillCenterOpenPicker(purpose: skill_center.Purpose) bool {
     const allocator = g_allocator orelse return false;
     session.mutex.lock();
     defer session.mutex.unlock();
-    var name: []const u8 = "";
-    if (purpose == .deploy) {
-        const sk = session.model.selected() orelse return true;
-        name = sk.name;
-    }
+    const name = switch (purpose) {
+        .deploy => blk: {
+            const sk = session.model.selected() orelse return false;
+            break :blk sk.name;
+        },
+        .import_ => blk: {
+            if (session.model.entryCount() == 0) break :blk "";
+            const entry = session.model.selectedEntry() orelse return false;
+            switch (entry) {
+                .prompt => break :blk "",
+                .tool => return false,
+            }
+        },
+    };
     const picker = skillCenterBuildPicker(allocator, purpose, name) catch return true;
     session.model.setOverlay(.{ .picker = picker });
     markUiDirty();
@@ -2113,6 +2809,543 @@ pub fn skillCenterDeploy() bool {
 }
 pub fn skillCenterImport() bool {
     return skillCenterOpenPicker(.import_);
+}
+
+fn scPathParent(path: []const u8) ?[]const u8 {
+    var i = path.len;
+    while (i > 0) {
+        i -= 1;
+        if (path[i] == '/' or path[i] == '\\') return path[0..i];
+    }
+    return null;
+}
+
+fn scPathBase(path: []const u8) []const u8 {
+    var i = path.len;
+    while (i > 0) {
+        i -= 1;
+        if (path[i] == '/' or path[i] == '\\') return path[i + 1 ..];
+    }
+    return path;
+}
+
+fn skillCenterToolManifestPath(allocator: std.mem.Allocator, tool: skill_center.ToolSkill) ?[]u8 {
+    if (tool.skill_path) |skill_path| {
+        if (std.mem.eql(u8, scPathBase(skill_path), "SKILL.md")) {
+            const tool_dir = scPathParent(skill_path) orelse return null;
+            return std.fs.path.join(allocator, &.{ tool_dir, "manifest.json" }) catch null;
+        }
+    }
+    const bin_dir = scPathParent(tool.executable_path) orelse return null;
+    if (!std.mem.eql(u8, scPathBase(bin_dir), "bin")) return null;
+    const tool_dir = scPathParent(bin_dir) orelse return null;
+    return std.fs.path.join(allocator, &.{ tool_dir, "manifest.json" }) catch null;
+}
+
+fn skillCenterApplyToolEnabledByManifestPath(
+    allocator: std.mem.Allocator,
+    entries: []skill_center.LibraryEntry,
+    manifest_path: []const u8,
+    enabled: bool,
+) bool {
+    for (entries) |*entry| {
+        switch (entry.*) {
+            .prompt => {},
+            .tool => |*tool| {
+                const path = skillCenterToolManifestPath(allocator, tool.*) orelse continue;
+                defer allocator.free(path);
+                if (std.mem.eql(u8, path, manifest_path)) {
+                    tool.enabled = enabled;
+                    return true;
+                }
+            },
+        }
+    }
+    return false;
+}
+
+fn skillCenterManifestJsonWithEnabled(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    enabled: bool,
+) ![]u8 {
+    var manifest = try tool_registry.parseManifestJson(allocator, bytes);
+    defer manifest.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidToolManifest;
+
+    const entry = try parsed.value.object.getOrPutValue("enabled", std.json.Value{ .bool = enabled });
+    entry.value_ptr.* = std.json.Value{ .bool = enabled };
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
+}
+
+fn skillCenterSetStatusLocked(session: *skill_center.Session, text: []const u8) void {
+    const next = session.allocator.dupe(u8, text) catch return;
+    if (session.status.len > 0) session.allocator.free(session.status);
+    session.status = next;
+}
+
+fn skillCenterOpenFileDialog(allocator: std.mem.Allocator, request: platform_file_dialog.OpenRequest) ?[]u8 {
+    if (g_skill_center_open_file_override) |open_fn| return open_fn(allocator, request);
+    return platform_file_dialog.openFile(allocator, request);
+}
+
+fn skillCenterImportErrorSummary(allocator: std.mem.Allocator, err: anyerror) []u8 {
+    switch (err) {
+        error.ProbeSpawnFailed => return allocator.dupe(u8, "Tool import failed: could not inspect the executable.") catch return &.{},
+        error.ReservedToolName => return allocator.dupe(u8, "Tool import failed: reserved built-in tool names cannot be imported.") catch return &.{},
+        else => {},
+    }
+    return std.fmt.allocPrint(allocator, "Tool import failed: {}", .{err}) catch allocator.dupe(u8, "Tool import failed") catch return &.{};
+}
+
+fn skillCenterCloneToolImportPreview(
+    allocator: std.mem.Allocator,
+    preview: skill_center.ToolImportPreviewState,
+) !skill_center.ToolImportPreviewState {
+    var clone: skill_center.ToolImportPreviewState = .{
+        .tool_id = try allocator.dupe(u8, preview.tool_id),
+        .function_name = &.{},
+        .source_path = &.{},
+        .staged_binary_path = &.{},
+        .skill_md = &.{},
+        .doc_source = preview.doc_source,
+        .ai_review_required = preview.ai_review_required,
+        .owns_staging_dir = false,
+        .scroll = preview.scroll,
+    };
+    errdefer clone.deinit(allocator);
+    clone.function_name = try allocator.dupe(u8, preview.function_name);
+    clone.source_path = try allocator.dupe(u8, preview.source_path);
+    clone.staged_binary_path = try allocator.dupe(u8, preview.staged_binary_path);
+    clone.skill_md = try allocator.dupe(u8, preview.skill_md);
+    return clone;
+}
+
+fn skillCenterBinaryPlatformLabel(path: []const u8) []const u8 {
+    if (std.ascii.endsWithIgnoreCase(path, ".exe")) return "windows";
+    return "native";
+}
+
+fn skillCenterBinaryFileSize(path: []const u8) !u64 {
+    const file = if (std.fs.path.isAbsolute(path))
+        try std.fs.openFileAbsolute(path, .{})
+    else
+        try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    return (try file.stat()).size;
+}
+
+fn skillCenterToolImportConfirmText(allocator: std.mem.Allocator, source_path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "WispTerm will run the selected executable with `--skill` and `--help` to inspect it before import.\n\n" ++
+            "Press Enter to continue to the import preview, or Esc to cancel and remove the staged copy.\n\n" ++
+            "Selected file:\n{s}\n",
+        .{source_path},
+    );
+}
+
+const TOOL_IMPORT_DRAFT_SYSTEM_PROMPT =
+    "You write concise, accurate WispTerm SKILL.md files for local executable tools. " ++
+    "Stay within the evidence provided and name uncertainty when needed.";
+
+const ToolImportDraftJob = struct {
+    profile: overlays.DefaultAiProfileSnapshot,
+    tool_id: []u8,
+    function_name: []u8,
+    source_path: []u8,
+    staged_binary_path: []u8,
+    prompt: []u8,
+    success: bool = false,
+
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) skill_center.OpResult {
+        const job: *ToolImportDraftJob = @ptrCast(@alignCast(ctx));
+        const draft = ai_chat_request.runOneShotPrompt(
+            allocator,
+            .{
+                .base_url = job.profile.base_url,
+                .api_key = job.profile.api_key,
+                .model = job.profile.model,
+                .protocol = job.profile.protocol,
+                .thinking_enabled = job.profile.thinking_enabled,
+                .reasoning_effort = job.profile.reasoning_effort,
+                .max_tokens = job.profile.max_tokens,
+            },
+            TOOL_IMPORT_DRAFT_SYSTEM_PROMPT,
+            job.prompt,
+        ) catch |err| {
+            return .{ .tool_import_failed = std.fmt.allocPrint(allocator, "Tool import failed: {}", .{err}) catch return .failed };
+        };
+        defer allocator.free(draft);
+
+        const docs = tool_import.resolveDocs(allocator, .{
+            .tool_name = job.function_name,
+            .help_output = "",
+            .skill_output = "",
+            .sibling_skill = null,
+            .ai_draft = draft,
+        }) catch |err| {
+            return .{ .tool_import_failed = std.fmt.allocPrint(allocator, "Tool import failed: {}", .{err}) catch return .failed };
+        };
+        const tool_id = allocator.dupe(u8, job.tool_id) catch {
+            allocator.free(docs.skill_md);
+            return .{ .tool_import_failed = allocator.dupe(u8, "Tool import failed: could not stage the generated preview.") catch return .failed };
+        };
+        const function_name = allocator.dupe(u8, job.function_name) catch {
+            allocator.free(tool_id);
+            allocator.free(docs.skill_md);
+            return .{ .tool_import_failed = allocator.dupe(u8, "Tool import failed: could not stage the generated preview.") catch return .failed };
+        };
+        const source_path = allocator.dupe(u8, job.source_path) catch {
+            allocator.free(tool_id);
+            allocator.free(function_name);
+            allocator.free(docs.skill_md);
+            return .{ .tool_import_failed = allocator.dupe(u8, "Tool import failed: could not stage the generated preview.") catch return .failed };
+        };
+        const staged_binary_path = allocator.dupe(u8, job.staged_binary_path) catch {
+            allocator.free(tool_id);
+            allocator.free(function_name);
+            allocator.free(source_path);
+            allocator.free(docs.skill_md);
+            return .{ .tool_import_failed = allocator.dupe(u8, "Tool import failed: could not stage the generated preview.") catch return .failed };
+        };
+
+        job.success = true;
+        return .{ .tool_import_preview = .{
+            .tool_id = tool_id,
+            .function_name = function_name,
+            .source_path = source_path,
+            .staged_binary_path = staged_binary_path,
+            .skill_md = docs.skill_md,
+            .doc_source = docs.source,
+            .ai_review_required = true,
+        } };
+    }
+
+    fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        const job: *ToolImportDraftJob = @ptrCast(@alignCast(ctx));
+        if (!job.success) tool_import.cleanupStagedBinaryPath(job.staged_binary_path);
+        var profile = job.profile;
+        profile.deinit(allocator);
+        allocator.free(job.tool_id);
+        allocator.free(job.function_name);
+        allocator.free(job.source_path);
+        allocator.free(job.staged_binary_path);
+        allocator.free(job.prompt);
+        allocator.destroy(job);
+    }
+};
+
+fn skillCenterContinueToolImport(
+    session: *skill_center.Session,
+    allocator: std.mem.Allocator,
+    confirm: *skill_center.ToolImportConfirmState,
+) bool {
+    var probe = tool_import.probeBinary(allocator, confirm.staged_binary_path) catch |err| {
+        const summary = skillCenterImportErrorSummary(allocator, err);
+        defer if (summary.len > 0) allocator.free(summary);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, if (summary.len > 0) summary else "Tool import failed");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer probe.deinit(allocator);
+    const sibling_skill = tool_import.readSiblingSkillMd(allocator, confirm.source_path);
+    defer if (sibling_skill) |skill_md| allocator.free(skill_md);
+
+    const docs = tool_import.resolveDocs(allocator, .{
+        .tool_name = confirm.function_name,
+        .help_output = probe.help,
+        .skill_output = probe.skill,
+        .sibling_skill = sibling_skill,
+        .ai_draft = null,
+    }) catch |err| switch (err) {
+        error.MissingToolDocumentation => null,
+        else => {
+            const summary = skillCenterImportErrorSummary(allocator, err);
+            defer if (summary.len > 0) allocator.free(summary);
+            session.mutex.lock();
+            skillCenterSetStatusLocked(session, if (summary.len > 0) summary else "Tool import failed");
+            session.mutex.unlock();
+            markUiDirty();
+            return true;
+        },
+    };
+    if (docs) |resolved| {
+        defer allocator.free(resolved.skill_md);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "");
+        var opened = true;
+        confirm.owns_staging_dir = false;
+        session.model.openToolImportPreview(.{
+            .tool_id = confirm.tool_id,
+            .function_name = confirm.function_name,
+            .source_path = confirm.source_path,
+            .staged_binary_path = confirm.staged_binary_path,
+            .skill_md = resolved.skill_md,
+            .doc_source = resolved.source,
+            .ai_review_required = false,
+        }) catch {
+            opened = false;
+            confirm.owns_staging_dir = true;
+        };
+        if (!opened) skillCenterSetStatusLocked(session, "Tool import failed: could not open the preview.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    }
+
+    var profile = overlays.defaultAiProfileSnapshot(allocator) orelse {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Add an AI profile or provide SKILL.md next to the binary.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    var profile_owned = true;
+    defer if (profile_owned) profile.deinit(allocator);
+
+    const basename = std.fs.path.basename(confirm.source_path);
+    const staged_sha256 = tool_import.sha256FileHex(allocator, confirm.staged_binary_path) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not hash the executable.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(staged_sha256);
+    const staged_size = skillCenterBinaryFileSize(confirm.staged_binary_path) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not inspect the staged executable.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const prompt = tool_skill_draft.buildDraftPrompt(allocator, .{
+        .tool_name = confirm.function_name,
+        .filename = basename,
+        .sha256 = staged_sha256,
+        .file_size = staged_size,
+        .platform = skillCenterBinaryPlatformLabel(confirm.source_path),
+    }) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not build the documentation draft request.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    var prompt_owned = true;
+    defer if (prompt_owned) allocator.free(prompt);
+
+    const job = allocator.create(ToolImportDraftJob) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not start the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const job_tool_id = allocator.dupe(u8, confirm.tool_id) catch {
+        allocator.destroy(job);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const job_function_name = allocator.dupe(u8, confirm.function_name) catch {
+        allocator.free(job_tool_id);
+        allocator.destroy(job);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const job_source_path = allocator.dupe(u8, confirm.source_path) catch {
+        allocator.free(job_tool_id);
+        allocator.free(job_function_name);
+        allocator.destroy(job);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const job_staged_binary_path = allocator.dupe(u8, confirm.staged_binary_path) catch {
+        allocator.free(job_tool_id);
+        allocator.free(job_function_name);
+        allocator.free(job_source_path);
+        allocator.destroy(job);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, "Tool import failed: could not prepare the documentation draft.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    job.* = .{
+        .profile = profile,
+        .tool_id = job_tool_id,
+        .function_name = job_function_name,
+        .source_path = job_source_path,
+        .staged_binary_path = job_staged_binary_path,
+        .prompt = prompt,
+    };
+    profile_owned = false;
+    prompt_owned = false;
+    if (!session.startOp(.{ .ctx = job, .run = ToolImportDraftJob.run, .destroy = ToolImportDraftJob.destroy }, window_backend.postWakeup, i18n.s().sc_busy_loading)) {
+        ToolImportDraftJob.destroy(@ptrCast(job), allocator);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_toast_op_busy);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    }
+    confirm.owns_staging_dir = false;
+    markUiDirty();
+    return true;
+}
+
+pub fn skillCenterImportTool() bool {
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    const filters = [_]platform_file_dialog.Filter{.{ .name = "All Files", .pattern = "*.*" }};
+    const owner: platform_file_dialog.Owner = if (currentNativeHandleBits()) |handle_bits|
+        platform_file_dialog.windowOwner(handle_bits)
+    else
+        .{};
+    const source_path = skillCenterOpenFileDialog(allocator, .{
+        .owner = owner,
+        .title = "Import executable tool",
+        .filters = &filters,
+    }) orelse return false;
+    defer allocator.free(source_path);
+
+    const basename = std.fs.path.basename(source_path);
+    const function_name = tool_registry.sanitizeFunctionName(allocator, basename) catch return false;
+    defer allocator.free(function_name);
+    tool_registry.validateImportedFunctionName(function_name) catch |err| {
+        const summary = skillCenterImportErrorSummary(allocator, err);
+        defer if (summary.len > 0) allocator.free(summary);
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, if (summary.len > 0) summary else "Tool import failed");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    const tool_id = allocator.dupe(u8, function_name) catch return false;
+    defer allocator.free(tool_id);
+
+    const tools_root = platform_dirs.toolsDir(allocator) catch return false;
+    defer allocator.free(tools_root);
+    const staging_name = std.fmt.allocPrint(allocator, ".import-staging-{d}-{s}", .{ std.time.milliTimestamp(), function_name }) catch return false;
+    defer allocator.free(staging_name);
+    const staging_root = std.fs.path.join(allocator, &.{ tools_root, staging_name }) catch return false;
+    defer allocator.free(staging_root);
+    const staging_bin_dir = std.fs.path.join(allocator, &.{ staging_root, "bin" }) catch return false;
+    defer allocator.free(staging_bin_dir);
+    const staged_binary_path = std.fs.path.join(allocator, &.{ staging_bin_dir, basename }) catch return false;
+    defer allocator.free(staged_binary_path);
+    var keep_stage = false;
+    defer if (!keep_stage) tool_import.cleanupStagedBinaryPath(staged_binary_path);
+    tool_import.ensureDirAbsolute(staging_bin_dir) catch return false;
+    tool_import.copyFilePreserveMode(source_path, staged_binary_path) catch {
+        tool_import.cleanupStagedBinaryPath(staged_binary_path);
+        return false;
+    };
+
+    const confirm_text = skillCenterToolImportConfirmText(allocator, source_path) catch return false;
+    defer allocator.free(confirm_text);
+    session.mutex.lock();
+    skillCenterSetStatusLocked(session, "");
+    session.model.openToolImportConfirm(.{
+        .tool_id = tool_id,
+        .function_name = function_name,
+        .source_path = source_path,
+        .staged_binary_path = staged_binary_path,
+        .warning_text = confirm_text,
+    }) catch {
+        skillCenterSetStatusLocked(session, "Tool import failed: could not open the warning.");
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    session.mutex.unlock();
+    keep_stage = true;
+    markUiDirty();
+    return true;
+}
+
+pub fn skillCenterToggleToolEnabled() bool {
+    const session = activeSkillCenter() orelse return false;
+    const allocator = g_allocator orelse return false;
+    var manifest_path: ?[]u8 = null;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        const entry = session.model.selectedEntry() orelse return false;
+        switch (entry) {
+            .prompt => return false,
+            .tool => |tool| {
+                manifest_path = skillCenterToolManifestPath(allocator, tool);
+            },
+        }
+    }
+    const path = manifest_path orelse {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_toggle_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(path);
+
+    const bytes = skill_local_fs.readFileAllocAbsolute(allocator, path, 64 * 1024) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_toggle_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(bytes);
+    var manifest = tool_registry.parseManifestJson(allocator, bytes) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_toggle_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer manifest.deinit(allocator);
+
+    const new_enabled = !manifest.enabled;
+    const json = skillCenterManifestJsonWithEnabled(allocator, bytes, new_enabled) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_toggle_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+    defer allocator.free(json);
+    platform_atomic_file.writeFileReplaceSafe(path, json) catch {
+        session.mutex.lock();
+        skillCenterSetStatusLocked(session, i18n.s().sc_tool_toggle_failed);
+        session.mutex.unlock();
+        markUiDirty();
+        return true;
+    };
+
+    ai_chat.reloadDynamicToolSpecs(allocator);
+    session.mutex.lock();
+    if (session.model.entries) |entries| {
+        _ = skillCenterApplyToolEnabledByManifestPath(allocator, entries, path, new_enabled);
+    }
+    skillCenterSetStatusLocked(session, if (new_enabled) i18n.s().sc_tool_enabled else i18n.s().sc_tool_disabled);
+    session.mutex.unlock();
+    markUiDirty();
+    return true;
 }
 
 /// Scan a chosen target and open the import list — off the UI thread.
@@ -2365,6 +3598,59 @@ pub fn skillCenterOverlaySelect() bool {
         skillCenterStartInstall(session, allocator);
         return true;
     }
+    var tool_confirm_owned: ?skill_center.ToolImportConfirmState = null;
+    var tool_preview_owned: ?skill_center.ToolImportPreviewState = null;
+    {
+        session.mutex.lock();
+        defer session.mutex.unlock();
+        if (session.model.overlay == .tool_import_confirm) {
+            tool_confirm_owned = session.model.takeToolImportConfirm() orelse return false;
+        }
+        if (session.model.overlay == .tool_import_preview) {
+            tool_preview_owned = skillCenterCloneToolImportPreview(allocator, session.model.overlay.tool_import_preview) catch return false;
+        }
+    }
+    if (tool_confirm_owned) |*confirm| {
+        defer confirm.deinit(allocator);
+        return skillCenterContinueToolImport(session, allocator, confirm);
+    }
+    if (tool_preview_owned) |*preview| {
+        defer preview.deinit(allocator);
+        const tools_root = platform_dirs.toolsDir(allocator) catch {
+            session.mutex.lock();
+            skillCenterSetStatusLocked(session, "Tool import failed: could not open the tools directory.");
+            session.mutex.unlock();
+            markUiDirty();
+            return true;
+        };
+        defer allocator.free(tools_root);
+        const installed = tool_import.installToolPackageWithSource(
+            allocator,
+            tools_root,
+            preview.staged_binary_path,
+            preview.source_path,
+            preview.function_name,
+            preview.skill_md,
+            false,
+        ) catch |err| {
+            const summary = skillCenterImportErrorSummary(allocator, err);
+            defer if (summary.len > 0) allocator.free(summary);
+            session.mutex.lock();
+            skillCenterSetStatusLocked(session, if (summary.len > 0) summary else "Tool import failed");
+            session.mutex.unlock();
+            markUiDirty();
+            return true;
+        };
+        defer allocator.free(installed);
+        session.mutex.lock();
+        session.model.clearOverlay();
+        skillCenterSetStatusLocked(session, "");
+        session.mutex.unlock();
+        startSkillCenterScan(allocator, session);
+        ai_chat.reloadDynamicToolSpecs(allocator);
+        markUiDirty();
+        return true;
+    }
     const Act = enum { none, deploy_picked, import_picked, import_item, confirm };
     var act: Act = .none;
     var target: ?skill_center.Target = null;
@@ -2381,10 +3667,15 @@ pub fn skillCenterOverlaySelect() bool {
                     target = p.targets[p.sel].clone(allocator) catch null;
                     if (p.purpose == .deploy) {
                         name_owned = allocator.dupe(u8, p.skill_name) catch null;
-                        if (session.model.library) |lib| {
-                            for (lib) |s| {
-                                if (std.mem.eql(u8, s.name, p.skill_name)) {
-                                    if (s.agg_hash) |h| src_hash_owned = allocator.dupe(u8, h) catch null;
+                        if (session.model.entries) |entries| {
+                            for (entries) |entry| {
+                                switch (entry) {
+                                    .prompt => |s| {
+                                        if (std.mem.eql(u8, s.name, p.skill_name)) {
+                                            if (s.agg_hash) |h| src_hash_owned = allocator.dupe(u8, h) catch null;
+                                        }
+                                    },
+                                    .tool => {},
                                 }
                             }
                         }
@@ -2415,6 +3706,8 @@ pub fn skillCenterOverlaySelect() bool {
             .url_input => {},
             .install_pick => {},
             .text_preview => {},
+            .tool_import_confirm => {},
+            .tool_import_preview => {},
             .none, .busy => {},
         }
     }
@@ -2455,25 +3748,31 @@ pub fn skillCenterRescan() bool {
 pub fn skillCenterPreviewSelected() bool {
     const session = activeSkillCenter() orelse return false;
     const allocator = g_allocator orelse return false;
-    var rel_owned: ?[]u8 = null;
+    var path_owned: ?[]u8 = null;
     var name_buf: [128]u8 = undefined;
     var name_len: usize = 0;
     {
         session.mutex.lock();
         defer session.mutex.unlock();
-        const sk = session.model.selected() orelse return true;
-        name_len = @min(sk.name.len, name_buf.len);
-        @memcpy(name_buf[0..name_len], sk.name[0..name_len]);
-        rel_owned = allocator.dupe(u8, sk.rel_path) catch null;
+        const entry = session.model.selectedEntry() orelse return true;
+        switch (entry) {
+            .prompt => |sk| {
+                name_len = @min(sk.name.len, name_buf.len);
+                @memcpy(name_buf[0..name_len], sk.name[0..name_len]);
+                const lib_dir = skillCenterLibraryDir(allocator) orelse return true;
+                defer allocator.free(lib_dir);
+                path_owned = std.fs.path.join(allocator, &.{ lib_dir, sk.rel_path }) catch null;
+            },
+            .tool => |tool| {
+                const skill_path = tool.skill_path orelse return true;
+                name_len = @min(tool.name.len, name_buf.len);
+                @memcpy(name_buf[0..name_len], tool.name[0..name_len]);
+                path_owned = allocator.dupe(u8, skill_path) catch null;
+            },
+        }
     }
-    const rp = rel_owned orelse return true;
-    defer allocator.free(rp);
-    const lib_dir = skillCenterLibraryDir(allocator) orelse return true;
-    defer allocator.free(lib_dir);
-    const abs = std.fs.path.join(allocator, &.{ lib_dir, rp }) catch return true;
+    const abs = path_owned orelse return true;
     defer allocator.free(abs);
-    // Read the library file directly (no shell): the library is always a local
-    // absolute path, and `cat` via localPosixExec is unavailable on Windows.
     const text = skill_local_fs.readFileAllocAbsolute(allocator, abs, 1024 * 1024) catch null;
     if (text) |t| {
         defer allocator.free(t);
@@ -2495,6 +3794,25 @@ pub fn skillCenterTextPreviewActive() bool {
     session.mutex.lock();
     defer session.mutex.unlock();
     return session.model.isTextPreview();
+}
+
+pub const SkillCenterPreviewKind = enum {
+    none,
+    text,
+    tool_import_confirm,
+    tool_import,
+};
+
+pub fn skillCenterPreviewKind() SkillCenterPreviewKind {
+    const session = activeSkillCenter() orelse return .none;
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    return switch (session.model.overlay) {
+        .text_preview => .text,
+        .tool_import_confirm => .tool_import_confirm,
+        .tool_import_preview => .tool_import,
+        else => .none,
+    };
 }
 
 /// Scroll the open SKILL.md preview by `delta` wrapped lines (renderer clamps).
@@ -2537,6 +3855,8 @@ pub fn skillCenterSpacePreview() bool {
             .url_input => kind = .none,
             .install_pick => kind = .none,
             .text_preview => kind = .none, // input intercepts Space while previewing
+            .tool_import_confirm => kind = .none,
+            .tool_import_preview => kind = .none,
         }
     }
     switch (kind) {
@@ -2883,21 +4203,75 @@ fn startAiHistoryScan(allocator: std.mem.Allocator, session: *ai_history_session
 const SkillLibraryScanJob = struct {
     root_expr: []u8, // owned shell expression for the library root (POSIX path)
     local_path: []u8, // owned raw absolute library root (native path)
+    tools_root: []const u8, // owned raw absolute installed binary tools root
 
-    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror![]skill_center.LibrarySkill {
+    fn run(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror![]skill_center.LibraryEntry {
         const job: *SkillLibraryScanJob = @ptrCast(@alignCast(ctx));
         const outcome = skillCenterScanOutcome(allocator, job.root_expr, job.local_path, null, false);
-        // Move the scanned rows into the library list (frees the rows slice).
-        return skill_center.libraryFromRows(allocator, outcome.rows);
+        const prompt_entries = if (outcome.reachable) entries: {
+            const prompt_lib = try skill_center.libraryFromRows(allocator, outcome.rows);
+            break :entries try skill_center.entriesFromLibrary(allocator, prompt_lib);
+        } else try allocator.alloc(skill_center.LibraryEntry, 0);
+        var prompt_entries_owned = true;
+        errdefer if (prompt_entries_owned) skill_center.freeEntries(allocator, prompt_entries);
+
+        const tools = try tool_registry.scanInstalledTools(allocator, job.tools_root);
+        defer tool_registry.freeInstalledTools(allocator, tools);
+
+        const entries = try allocator.alloc(skill_center.LibraryEntry, prompt_entries.len + tools.len);
+        var filled: usize = 0;
+        errdefer {
+            for (entries[0..filled]) |*entry| entry.deinit(allocator);
+            allocator.free(entries);
+        }
+
+        for (prompt_entries) |entry| {
+            entries[filled] = entry;
+            filled += 1;
+        }
+        allocator.free(prompt_entries);
+        prompt_entries_owned = false;
+
+        for (tools) |tool| {
+            entries[filled] = try skillCenterEntryFromInstalledTool(allocator, job.tools_root, tool);
+            filled += 1;
+        }
+
+        std.sort.insertion(skill_center.LibraryEntry, entries, {}, skillCenterEntryLessThan);
+        return entries;
     }
 
     fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
         const job: *SkillLibraryScanJob = @ptrCast(@alignCast(ctx));
         allocator.free(job.root_expr);
         allocator.free(job.local_path);
+        allocator.free(job.tools_root);
         allocator.destroy(job);
     }
 };
+
+fn skillCenterEntryLessThan(_: void, a: skill_center.LibraryEntry, b: skill_center.LibraryEntry) bool {
+    return std.mem.lessThan(u8, a.name(), b.name());
+}
+
+fn skillCenterEntryFromInstalledTool(
+    allocator: std.mem.Allocator,
+    tools_root: []const u8,
+    tool: tool_registry.InstalledTool,
+) !skill_center.LibraryEntry {
+    const name = try allocator.dupe(u8, tool.function_name);
+    errdefer allocator.free(name);
+    const executable_path = try allocator.dupe(u8, tool.executable_abs);
+    errdefer allocator.free(executable_path);
+    const skill_path = try std.fs.path.join(allocator, &.{ tools_root, tool.id, "SKILL.md" });
+    return .{ .tool = .{
+        .name = name,
+        .executable_path = executable_path,
+        .skill_path = skill_path,
+        .enabled = tool.enabled,
+        .approval = .ask,
+    } };
+}
 
 /// Background op: scan a target, return rows for the UI to build an import list.
 const SkillImportScanJob = struct {
@@ -3298,13 +4672,20 @@ fn startSkillCenterScan(allocator: std.mem.Allocator, session: *skill_center.Ses
         session.publishScanFailure(session.scan_generation);
         return;
     };
-    const job = allocator.create(SkillLibraryScanJob) catch {
+    const tools_root = platform_dirs.toolsDir(allocator) catch {
         allocator.free(root_expr);
         allocator.free(local_path);
         session.publishScanFailure(session.scan_generation);
         return;
     };
-    job.* = .{ .root_expr = root_expr, .local_path = local_path };
+    const job = allocator.create(SkillLibraryScanJob) catch {
+        allocator.free(root_expr);
+        allocator.free(local_path);
+        allocator.free(tools_root);
+        session.publishScanFailure(session.scan_generation);
+        return;
+    };
+    job.* = .{ .root_expr = root_expr, .local_path = local_path, .tools_root = tools_root };
     session.scanAsync(.{ .ctx = job, .run = SkillLibraryScanJob.run, .destroy = SkillLibraryScanJob.destroy });
 }
 
@@ -4889,6 +6270,19 @@ fn pollSkillCenterOp(session: *skill_center.Session) void {
         .preview => |*v| {
             session.mutex.lock();
             session.model.openTextPreview(v.title, v.content) catch {};
+            session.mutex.unlock();
+        },
+        .tool_import_preview => {
+            const moved = result;
+            result = .failed;
+            session.mutex.lock();
+            session.model.setOverlay(.{ .tool_import_preview = moved.tool_import_preview });
+            skillCenterSetStatusLocked(session, "");
+            session.mutex.unlock();
+        },
+        .tool_import_failed => |summary| {
+            session.mutex.lock();
+            skillCenterSetStatusLocked(session, summary);
             session.mutex.unlock();
         },
         .install_enumerate => {

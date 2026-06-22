@@ -188,6 +188,7 @@ ai-agent-output-limit       = 16384</code></pre>
           <div class="feature">
             <h3>Skill locations</h3>
             <p>WispTerm discovers <code>SKILL.md</code> files under the platform config directory (<code>%APPDATA%\wispterm</code> on Windows, <code>~/Library/Application Support/wispterm</code> on macOS) in <code>skills/</code> and <code>plugins/skills/</code>, plus the same two sub-paths next to the executable and in the current working directory.</p>
+            <p>Skill Center also manages local executable tools. Imported tools are stored under the WispTerm config directory, documented by <code>SKILL.md</code>, and only enabled tools are advertised to AI Agent sessions. A tool can provide <code>--skill</code>, ship a sibling <code>SKILL.md</code>, or let WispTerm draft one with the configured AI profile when no documentation exists.</p>
           </div>
           <div class="feature">
             <h3>Load a skill</h3>
