@@ -3372,7 +3372,21 @@ fn handleTerminalSelectionPress(ev: platform_input.MouseButtonEvent, xpos: f64, 
     }
 
     const cell_pos = mouseToSurfaceCell(clicked_surface, xpos, ypos);
-    switch (terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, primaryOpenMod(ev.ctrl, ev.super), ev.shift, ev.alt)) {
+    const open_mod = primaryOpenMod(ev.ctrl, ev.super);
+    const click_action = terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, open_mod, ev.shift, ev.alt);
+    // Only instrument the SSH download gesture (Ctrl/Cmd+Shift) so the log is not
+    // flooded by every terminal click. This shows whether a click the user
+    // intended as a download even routes to `download_ssh_file`, or falls back to
+    // pass-through because the surface carries no SSH connection metadata (#268).
+    if (open_mod and ev.shift and !ev.alt) {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "click" },
+            .{ .key = "launch", .value = @tagName(clicked_surface.launch_kind) },
+            .{ .key = "has_conn", .value = if (clicked_surface.ssh_connection != null) "true" else "false" },
+            .{ .key = "action", .value = @tagName(click_action) },
+        });
+    }
+    switch (click_action) {
         .download_ssh_file => {
             if (downloadTerminalFileAtCell(clicked_surface, cell_pos)) return;
         },
@@ -3916,17 +3930,47 @@ test "input: remote download path kind command shell-quotes paths" {
 }
 
 fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
-    if (surface.launch_kind != .ssh) return false;
-    const conn = surface.ssh_connection orelse return false;
+    if (surface.launch_kind != .ssh) {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "not-ssh" },
+            .{ .key = "launch", .value = @tagName(surface.launch_kind) },
+        });
+        return false;
+    }
+    const conn = surface.ssh_connection orelse {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "no-conn" },
+        });
+        return false;
+    };
     const allocator = AppWindow.g_allocator orelse return false;
 
-    const path = extractDownloadPathAtCell(allocator, surface, cell_pos) orelse return false;
+    const path = extractDownloadPathAtCell(allocator, surface, cell_pos) orelse {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "no-path" },
+        });
+        return false;
+    };
     defer allocator.free(path);
 
     var ls_prefix_buf: [256]u8 = undefined;
     const ls_prefix = lsPrefixForCell(surface, cell_pos, &ls_prefix_buf);
+    preview_diagnostics.debug("download", &.{
+        .{ .key = "stage", .value = "extract" },
+        .{ .key = "host", .value = conn.host() },
+        .{ .key = "path", .value = path },
+        .{ .key = "ls_prefix", .value = ls_prefix orelse "" },
+    });
 
     const resolved_path = resolveTerminalPreviewPath(allocator, surface, path, ls_prefix) catch |err| {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "resolve-failed" },
+            .{ .key = "path", .value = path },
+            .{ .key = "err", .value = @errorName(err) },
+        });
         if (err == error.CwdUnavailable) {
             file_explorer.setTransferStatusForKind(.download, .failed, "SSH cwd unknown");
             overlays.showSshCwdFallbackPrompt();
@@ -3938,23 +3982,52 @@ fn downloadTerminalFileAtCell(surface: *Surface, cell_pos: CellPos) bool {
     defer allocator.free(resolved_path);
 
     const name = basenameForPreview(resolved_path);
-    if (name.len == 0) return false;
-    const is_dir = remotePathIsDirectoryForDownload(allocator, &conn, resolved_path) orelse false;
+    if (name.len == 0) {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "no-name" },
+            .{ .key = "resolved", .value = resolved_path },
+        });
+        return false;
+    }
+    const dir_probe = remotePathIsDirectoryForDownload(allocator, &conn, resolved_path);
+    const is_dir = dir_probe orelse false;
+    preview_diagnostics.debug("download", &.{
+        .{ .key = "stage", .value = "probe" },
+        .{ .key = "resolved", .value = resolved_path },
+        // Distinguishes "probe ran and said file/dir" from "probe ssh helper
+        // failed" (null) — the latter points at the SSH metadata channel (#268).
+        .{ .key = "probe", .value = if (dir_probe == null) "failed" else if (is_dir) "dir" else "file" },
+    });
 
     var dl_buf: [260]u8 = undefined;
     const dl_path = getDownloadsFolder(&dl_buf);
     if (dl_path.len == 0) {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "no-downloads-folder" },
+        });
         file_explorer.setTransferStatusForKind(.download, .failed, "Download folder missing");
         return true;
     }
 
     var dst_buf: [512]u8 = undefined;
     const dst = platform_local_path.joinInto(dst_buf[0..], dl_path, name) orelse {
+        preview_diagnostics.debug("download", &.{
+            .{ .key = "stage", .value = "abort" },
+            .{ .key = "reason", .value = "dst-too-long" },
+        });
         file_explorer.setTransferStatusForKind(.download, .failed, "Path too long");
         return true;
     };
 
-    _ = file_explorer.downloadRemotePathToPath(resolved_path, dst, name, &conn, is_dir);
+    const dispatched = file_explorer.downloadRemotePathToPath(resolved_path, dst, name, &conn, is_dir);
+    preview_diagnostics.debug("download", &.{
+        .{ .key = "stage", .value = "dispatch" },
+        .{ .key = "resolved", .value = resolved_path },
+        .{ .key = "dst", .value = dst },
+        .{ .key = "dispatched", .value = if (dispatched) "true" else "false" },
+    });
     return true;
 }
 

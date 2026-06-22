@@ -81,6 +81,7 @@ pub const ui_pipeline = @import("renderer/ui_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
+const preview_diagnostics = @import("preview_diagnostics.zig");
 pub const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
@@ -6359,6 +6360,11 @@ test "agent surface callbacks reject a surface that is not registered as live" {
 fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surface.SshConnection {
     _ = ctx;
     if (surface_id.len == 0) return null;
+    // This runs on the agent request worker thread, but `g_tabs`/`g_tab_count`
+    // are thread-local to the UI thread. A worker-thread call therefore sees an
+    // empty tab list and resolves nothing — the root of copy_file's "connection
+    // is unavailable" (#268). Log the tab count actually visible here so a log
+    // capture distinguishes "empty thread-local view" from "surface_id mismatch".
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
@@ -6366,9 +6372,19 @@ fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surfac
         while (it.next()) |entry| {
             const sfc = entry.surface;
             if (!std.mem.eql(u8, sfc.remote_id[0..], surface_id)) continue;
+            preview_diagnostics.debug("agent-ssh-conn", &.{
+                .{ .key = "stage", .value = "match" },
+                .{ .key = "tabs", .value = if (tab.g_tab_count == 0) "0" else "n" },
+                .{ .key = "has_conn", .value = if (sfc.ssh_connection != null) "true" else "false" },
+            });
             return sfc.ssh_connection; // value copy (or null if not SSH)
         }
     }
+    preview_diagnostics.debug("agent-ssh-conn", &.{
+        .{ .key = "stage", .value = "no-match" },
+        // "0" here means the worker thread sees an empty thread-local tab list.
+        .{ .key = "tabs", .value = if (tab.g_tab_count == 0) "0" else "n" },
+    });
     return null;
 }
 
