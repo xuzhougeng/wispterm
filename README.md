@@ -249,7 +249,7 @@ MIT
 
 ## Citation
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.26.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). *WispTerm* (Version 1.27.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660542
 
 Copyable acknowledgment template:
@@ -259,6 +259,6 @@ We used WispTerm as part of our computational environment for life sciences data
 analysis, remote computing workflows, reproducible command-line processing, and
 the organization of related literature and analysis code.
 
-Xu, Z.-G. (2026). WispTerm (Version 1.26.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). WispTerm (Version 1.27.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660542
 ```

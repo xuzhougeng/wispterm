@@ -44,6 +44,14 @@
        submitting to Flathub; omitted here so the file validates without a stale URL. -->
 
   <releases>
+    <release version="1.27.0" date="2026-06-22">
+      <description>
+        <p>Fixes SSH-profile file transfers — Ctrl+Shift+Click download and the
+        agent copy_file tool — and SSH HTML/Jupyter preview tunnels with
+        ProxyJump. Adds Skill Center binary tools and an ask_user agent tool,
+        plus macOS keyboard and paste fixes.</p>
+      </description>
+    </release>
     <release version="1.26.0" date="2026-06-20">
       <description>
         <p>Fixes Copilot sidebar copy handling, adds preview diagnostics,
