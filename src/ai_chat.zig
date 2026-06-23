@@ -4174,6 +4174,41 @@ pub const Session = struct {
         };
     }
 
+    fn captureModelSwitchCheckpointLocked(self: *Session, from_model: []const u8) ?PendingHistoryChange {
+        const hook = self.history_on_change orelse return null;
+        var record = self.toHistoryRecordLocked(self.allocator) catch return null;
+        var record_owned = true;
+        defer if (record_owned) agent_history.freeOwnedRecord(self.allocator, &record);
+
+        const checkpoint_ms = std.time.milliTimestamp();
+        const checkpoint_counter = g_session_id_counter.fetchAdd(1, .monotonic);
+        const checkpoint_id = std.fmt.allocPrint(
+            self.allocator,
+            "{s}-model-switch-{d}-{d}",
+            .{ self.sessionId(), checkpoint_ms, checkpoint_counter },
+        ) catch return null;
+        self.allocator.free(record.session_id);
+        record.session_id = checkpoint_id;
+
+        const checkpoint_title = std.fmt.allocPrint(
+            self.allocator,
+            "{s} (checkpoint before switching from {s})",
+            .{ self.title(), from_model },
+        ) catch return null;
+        self.allocator.free(record.title);
+        record.title = checkpoint_title;
+        record.updated_at = checkpoint_ms;
+
+        record_owned = false;
+        return .{
+            .hook = hook,
+            .event = .{
+                .allocator = self.allocator,
+                .record = record,
+            },
+        };
+    }
+
     fn notifyHistoryChange(_: *Session, change: ?PendingHistoryChange) void {
         if (change) |pending| pending.hook(pending.event);
     }
@@ -4477,6 +4512,7 @@ pub fn applyProviderProfile(
     if (prior_summary) |t| t.join();
 
     var sreq: ?*SummaryRequest = null;
+    var checkpoint_change: ?PendingHistoryChange = null;
     session.mutex.lock();
     locked: {
         // Capture the OLD model name BEFORE swapping, for the summary card marker.
@@ -4484,6 +4520,22 @@ pub fn applyProviderProfile(
         const old_model_len = @min(session.model().len, old_model_buf.len);
         @memcpy(old_model_buf[0..old_model_len], session.model()[0..old_model_len]);
         const old_model = old_model_buf[0..old_model_len];
+
+        var has_summary_user = false;
+        var has_summary_assistant = false;
+        for (session.messages.items) |m| switch (m.role) {
+            .user => {
+                if (m.content.len > 0) has_summary_user = true;
+            },
+            .assistant => {
+                if (m.content.len > 0) has_summary_assistant = true;
+            },
+            .tool => {},
+        };
+        const should_summarize = has_summary_user and has_summary_assistant;
+        if (should_summarize) {
+            checkpoint_change = session.captureModelSwitchCheckpointLocked(old_model);
+        }
 
         session.copyBaseUrl(base_url);
         session.copyApiKey(api_key);
@@ -4494,25 +4546,35 @@ pub fn applyProviderProfile(
         session.max_tokens = max_tokens;
         session.vision_enabled = std.mem.eql(u8, vision_str, "on") or std.mem.eql(u8, vision_str, "enabled") or std.mem.eql(u8, vision_str, "true");
 
-        // Build the summary snapshot from the messages that exist now.
-        const boundary = session.messages.items.len;
-        const turns = session.allocator.alloc(ai_model_switch.TurnMessage, boundary) catch break :locked;
-        defer session.allocator.free(turns);
-        for (session.messages.items, 0..) |m, i| turns[i] = .{ .role = m.role, .content = m.content };
-        if (!ai_model_switch.shouldSummarize(turns)) {
+        if (!should_summarize) {
             session.setStatusLocked("Model switched");
             break :locked;
         }
-        sreq = buildSummaryRequestLocked(session, turns, boundary, old_model) catch break :locked;
+        if (checkpoint_change == null) {
+            session.setStatusLocked("Model switched — kept full history");
+            break :locked;
+        }
+        const boundary = session.messages.items.len;
+        const turns = session.allocator.alloc(ai_model_switch.TurnMessage, boundary) catch {
+            session.setStatusLocked("Model switched — full history saved. Use /resume to reopen it.");
+            break :locked;
+        };
+        defer session.allocator.free(turns);
+        for (session.messages.items, 0..) |m, i| turns[i] = .{ .role = m.role, .content = m.content };
+        sreq = buildSummaryRequestLocked(session, turns, boundary, old_model) catch {
+            session.setStatusLocked("Model switched — full history saved. Use /resume to reopen it.");
+            break :locked;
+        };
         session.setStatusLocked("Summarizing previous context…");
     }
     session.mutex.unlock();
+    session.notifyHistoryChange(checkpoint_change);
 
     const req = sreq orelse return;
     const thread = std.Thread.spawn(.{}, ai_chat_request.summaryThreadMain, .{req}) catch {
         req.deinit();
         session.mutex.lock();
-        session.setStatusLocked("Ready");
+        session.setStatusLocked("Model switched — full history saved. Use /resume to reopen it.");
         session.mutex.unlock();
         return;
     };
@@ -4617,7 +4679,7 @@ pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usiz
     session.messages.deinit(allocator);
     session.messages = new_list;
     session.scroll_px = 1_000_000;
-    session.setStatusLocked("Context summarized");
+    session.setStatusLocked("Context summarized. Use /resume to reopen the full pre-switch conversation.");
     history_change = session.captureHistoryChangeLocked();
 }
 
@@ -4627,7 +4689,7 @@ pub fn failSummaryResult(session: *Session) void {
     if (session.closing.load(.acquire)) return;
     session.mutex.lock();
     defer session.mutex.unlock();
-    session.setStatusLocked("Summary unavailable — kept full history");
+    session.setStatusLocked("Summary unavailable — kept full history. Use /resume to reopen the saved pre-switch conversation.");
 }
 
 /// Build a standalone, tool-free, non-streaming ChatRequest for title
@@ -5964,6 +6026,49 @@ test "ai_chat: replayable skill tool messages emit history snapshots" {
 
     capture.deinit();
     try std.testing.expect(capture.event == null);
+}
+
+test "ai_chat: model switch checkpoint emits separate resumable history record" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        "Switch Chat",
+        "https://api.example.com",
+        "secret",
+        "old-model",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    var capture = TestHistoryHookCapture{};
+    defer capture.deinit();
+    g_test_history_hook_capture = &capture;
+    defer g_test_history_hook_capture = null;
+    session.setHistoryChangeHook(testHistoryHookCaptureCallback);
+
+    session.mutex.lock();
+    try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "goal") });
+    try session.messages.append(allocator, .{ .role = .assistant, .content = try allocator.dupe(u8, "answer") });
+    const original_id = try allocator.dupe(u8, session.sessionId());
+    defer allocator.free(original_id);
+    const maybe_change = session.captureModelSwitchCheckpointLocked("old-model");
+    session.mutex.unlock();
+    const change = maybe_change orelse return error.ExpectedCheckpoint;
+    session.notifyHistoryChange(change);
+
+    try std.testing.expectEqual(@as(usize, 1), capture.calls);
+    try std.testing.expect(capture.event != null);
+    const record = capture.event.?.record;
+    try std.testing.expect(!std.mem.eql(u8, original_id, record.session_id));
+    try std.testing.expect(std.mem.indexOf(u8, record.title, "before switching from old-model") != null);
+    try std.testing.expectEqualStrings("old-model", record.model);
+    try std.testing.expectEqual(@as(usize, 2), record.messages.len);
+    try std.testing.expectEqualStrings("goal", record.messages[0].content);
+    try std.testing.expectEqualStrings("answer", record.messages[1].content);
 }
 
 test "ai_chat: setTitle emits history hook snapshot" {
@@ -8431,6 +8536,7 @@ test "applySummaryResult collapses pre-switch messages into one summary card" {
     try std.testing.expect(std.mem.indexOf(u8, session.messages.items[0].content, "SUMMARY") != null);
     try std.testing.expect(std.mem.indexOf(u8, session.messages.items[0].content, "glm-5.2") != null);
     try std.testing.expectEqualStrings("u2", session.messages.items[1].content);
+    try std.testing.expect(std.mem.indexOf(u8, session.status(), "/resume") != null);
 }
 
 test "applySummaryResult is a no-op when boundary exceeds message count" {
@@ -8440,6 +8546,22 @@ test "applySummaryResult is a no-op when boundary exceeds message count" {
     applySummaryResult(session, "S", 5, "X"); // stale boundary (e.g. after /clear)
     try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
     try std.testing.expectEqualStrings("only", session.messages.items[0].content);
+}
+
+test "failSummaryResult keeps raw history and points to resume" {
+    var session = try Session.initWithVision(std.testing.allocator, "T", "https://x", "k", "m", "chat_completions", "sp", "enabled", "low", "false", "false", "false");
+    defer session.deinit();
+    inline for (.{ "u1", "a1" }) |t| {
+        try session.messages.append(std.testing.allocator, .{
+            .role = .user,
+            .content = try std.testing.allocator.dupe(u8, t),
+        });
+    }
+    failSummaryResult(session);
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
+    try std.testing.expectEqualStrings("u1", session.messages.items[0].content);
+    try std.testing.expectEqualStrings("a1", session.messages.items[1].content);
+    try std.testing.expect(std.mem.indexOf(u8, session.status(), "/resume") != null);
 }
 
 const AskRunner = struct {
@@ -8582,8 +8704,16 @@ test "composer submit of free text answers a pending question as custom" {
 test "copilot flag survives toHistoryRecord -> initFromHistoryRecord round-trip" {
     const allocator = std.testing.allocator;
     const session = try Session.init(
-        allocator, "Copilot", "https://x", "k", "m",
-        "sys", "disabled", "low", "true", "true",
+        allocator,
+        "Copilot",
+        "https://x",
+        "k",
+        "m",
+        "sys",
+        "disabled",
+        "low",
+        "true",
+        "true",
     );
     defer session.deinit();
     session.copilot = true;
@@ -8600,8 +8730,16 @@ test "copilot flag survives toHistoryRecord -> initFromHistoryRecord round-trip"
 test "shouldPersistCopilot is false for empty session, true after a real message" {
     const allocator = std.testing.allocator;
     const session = try Session.init(
-        allocator, "Copilot", "https://x", "k", "m",
-        "sys", "disabled", "low", "true", "true",
+        allocator,
+        "Copilot",
+        "https://x",
+        "k",
+        "m",
+        "sys",
+        "disabled",
+        "low",
+        "true",
+        "true",
     );
     defer session.deinit();
     try std.testing.expect(!session.shouldPersistCopilot());

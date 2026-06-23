@@ -185,6 +185,7 @@ pub const ApiResult = struct {
     reasoning: ?[]u8 = null,
     tool_calls: ?[]ToolCall = null,
     usage: ?ApiUsage = null,
+    api_error: bool = false,
 
     pub fn deinit(self: ApiResult, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
@@ -913,7 +914,7 @@ pub fn parseApiErrorResult(allocator: std.mem.Allocator, root: std.json.Value) !
     if (root != .object) return null;
     if (root.object.get("error")) |err_value| {
         if (err_value == .null) return null;
-        return ApiResult{ .content = try formatApiError(allocator, root, err_value) };
+        return ApiResult{ .content = try formatApiError(allocator, root, err_value), .api_error = true };
     }
     return null;
 }
@@ -1456,6 +1457,7 @@ test "parseApiResponse surfaces an error object as content" {
     var result = try parseApiResponse(a, body, .chat_completions);
     defer result.deinit(a);
     try std.testing.expectEqualStrings("boom", result.content);
+    try std.testing.expect(result.api_error);
 }
 
 test "parseApiResponse surfaces an error string as content" {

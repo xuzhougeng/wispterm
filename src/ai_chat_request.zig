@@ -128,6 +128,10 @@ pub fn summaryThreadMain(sreq: *ai_chat.SummaryRequest) void {
     };
     defer result.deinit(allocator);
     if (session.closing.load(.acquire)) return;
+    if (result.api_error) {
+        ai_chat.failSummaryResult(session);
+        return;
+    }
 
     ai_chat.applySummaryResult(session, result.content, sreq.boundary, sreq.fromModel());
 }
@@ -579,8 +583,8 @@ fn runChatRequestForMessages(request: *const ChatRequest, messages: []const Requ
 
     if (result.status != .ok) {
         const trimmed = std.mem.trim(u8, resp_list.items, " \t\r\n");
-        if (trimmed.len > 0) return ApiResult{ .content = try allocator.dupe(u8, trimmed) };
-        return ApiResult{ .content = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(result.status)}) };
+        if (trimmed.len > 0) return ApiResult{ .content = try allocator.dupe(u8, trimmed), .api_error = true };
+        return ApiResult{ .content = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(result.status)}), .api_error = true };
     }
 
     return if (request.stream)
@@ -682,6 +686,7 @@ fn networkFailureResult(allocator: std.mem.Allocator, endpoint: []const u8, err:
             "HTTP request failed before response: {s} ({s})",
             .{ @errorName(err), endpoint },
         ),
+        .api_error = true,
     };
 }
 

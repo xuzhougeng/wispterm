@@ -132,7 +132,9 @@ The switch only affects the current session. It does not change your global
 default profile or overwrite the saved profile. WispTerm asks the new model to
 summarize the prior transcript in the background and shows that handoff as a
 collapsible **Conversation summary** card; if the summary fails, the full raw
-history stays available.
+history stays available. Before compacting, WispTerm also saves the original
+conversation as a separate history checkpoint, so you can type `/resume` and
+reopen the pre-switch conversation even if the summary request fails.
 
 ## How Do I Update WispTerm?
 
