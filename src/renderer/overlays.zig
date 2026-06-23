@@ -517,10 +517,15 @@ pub fn integrationPromptVisible() bool {
 
 fn copyIntegrationPrompt() void {
     if (AppWindow.input.copyTextToClipboard(agent_integration_prompt.promptText())) {
-        showStatusToast("Integration prompt copied");
+        integrationPromptCopySucceeded();
     } else {
         showStatusToast("Copy failed; select the prompt text manually");
     }
+}
+
+fn integrationPromptCopySucceeded() void {
+    showStatusToast("Integration prompt copied");
+    integrationPromptClose();
 }
 
 pub fn integrationPromptHandleKey(ev: input_key.KeyEvent) void {
@@ -6529,6 +6534,29 @@ test "overlays: integration prompt opens scrolls and closes" {
 
     integrationPromptHandleKey(.{ .key = .escape });
     try std.testing.expect(!integrationPromptVisible());
+}
+
+test "overlays: successful integration prompt copy closes modal and shows toast" {
+    const saved_visible = g_integration_prompt_visible;
+    const saved_toast_len = g_copy_toast_len;
+    const saved_toast_until = g_copy_toast_until_ms;
+    const saved_toast_buf = g_copy_toast_buf;
+    defer {
+        g_integration_prompt_visible = saved_visible;
+        g_copy_toast_len = saved_toast_len;
+        g_copy_toast_until_ms = saved_toast_until;
+        g_copy_toast_buf = saved_toast_buf;
+    }
+
+    g_integration_prompt_visible = true;
+    g_copy_toast_len = 0;
+    g_copy_toast_until_ms = 0;
+
+    integrationPromptCopySucceeded();
+
+    try std.testing.expect(!integrationPromptVisible());
+    try std.testing.expectEqualStrings("Integration prompt copied", g_copy_toast_buf[0..g_copy_toast_len]);
+    try std.testing.expect(g_copy_toast_until_ms > 0);
 }
 
 fn showVersionToast() void {
