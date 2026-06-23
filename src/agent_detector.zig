@@ -230,6 +230,9 @@ fn detectClaudeCode(title: []const u8, recent_output: []const u8) ?Detection {
         "failed",
     });
     const done_idx = lastAnyIgnoreCase(recent_output, &.{
+        "crunched for ",
+        "cooked for ",
+        "worked for ",
         "no changes to make",
         "completed successfully",
         "all set",
@@ -329,6 +332,11 @@ pub fn detect(title: []const u8, recent_output: []const u8) Detection {
         "/model to change",
     });
 
+    if (ready_idx) |idx| {
+        if (newerThan(idx, running_idx) and newerThan(idx, done_idx) and newerThan(idx, halted_idx) and newerThan(idx, failure_idx)) {
+            return .{ .app = .codex, .state = .needs_input, .confidence = 74 };
+        }
+    }
     if (halted_idx) |idx| {
         if (newerThan(idx, done_idx)) {
             return .{ .app = .codex, .state = .halted, .confidence = 96 };
@@ -355,11 +363,6 @@ pub fn detect(title: []const u8, recent_output: []const u8) Detection {
     }
     if (titleHasRunningMarker(title)) {
         return .{ .app = .codex, .state = .running, .confidence = 82 };
-    }
-    if (ready_idx) |idx| {
-        if (newerThan(idx, running_idx) and newerThan(idx, done_idx) and newerThan(idx, halted_idx) and newerThan(idx, failure_idx)) {
-            return .{ .app = .codex, .state = .needs_input, .confidence = 74 };
-        }
     }
 
     return .{ .app = .codex, .state = .none, .confidence = 45 };
@@ -464,6 +467,25 @@ test "agent detector recognizes Claude Code proceed prompt for bash approval" {
     try std.testing.expectEqualStrings("ask", detection.badge());
 }
 
+test "agent detector marks Claude Code crunched output as done" {
+    const output =
+        \\Hi! How can I help you today?
+        \\
+        \\Crunched for 3s
+    ;
+    const detection = detect("\xe2\x9c\xbb Claude Code", output);
+    try std.testing.expectEqual(App.claude_code, detection.app);
+    try std.testing.expectEqual(State.done, detection.state);
+    try std.testing.expectEqualStrings("done", detection.badge());
+}
+
+test "agent detector marks Claude Code cooked output as done" {
+    const detection = detect("\xe2\x9c\xbb Claude Code", "Cooked for 7s");
+    try std.testing.expectEqual(App.claude_code, detection.app);
+    try std.testing.expectEqual(State.done, detection.state);
+    try std.testing.expectEqualStrings("done", detection.badge());
+}
+
 test "agent detector recognizes Claude Code running title marker" {
     const detection = detect("\xe2\x9c\xbb Hiding advanced features", "Read 5 files, listed 5 directories, ran 1 shell command");
     try std.testing.expectEqual(App.claude_code, detection.app);
@@ -497,6 +519,25 @@ test "agent detector recognizes Codex ready screen" {
     const detection = detect("xzg", output);
     try std.testing.expectEqual(App.codex, detection.app);
     try std.testing.expectEqual(State.needs_input, detection.state);
+}
+
+test "agent detector lets newer Codex ready screen clear old running marker" {
+    const output =
+        \\Working (2s - esc to interrupt)
+        \\Worked for 2s
+        \\OpenAI Codex (v0.142.0)
+        \\
+        \\model:     gpt-5.5 xhigh   /model to change
+        \\directory: ~
+        \\
+        \\Tip: New Build faster with Codex.
+        \\
+        \\Hi. What would you like to work on?
+    ;
+    const detection = detect("xzg", output);
+    try std.testing.expectEqual(App.codex, detection.app);
+    try std.testing.expectEqual(State.needs_input, detection.state);
+    try std.testing.expectEqualStrings("!", detection.badge());
 }
 
 // ---------------------------------------------------------------------------
