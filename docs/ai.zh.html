@@ -196,7 +196,12 @@ ai-agent-output-limit       = 16384</code></pre>
           </div>
           <div class="feature">
             <h3>Slash Commands</h3>
-            <p><code>/model</code> 切换已保存 profile，<code>/skills</code> 列出已发现 Skills，<code>/commands</code> 列出本地 AI 命令，<code>/reload-skills</code> 让后续 Skill 调用从磁盘重新读取。</p>
+            <p><code>/commands</code> 会列出当前命令集合。常用命令包括：用 <code>/model</code> 切换 profile，用 <code>/cwd</code> 设置本次对话工作目录，用 <code>/permission</code> 切换 Agent 审批模式，用 <code>/export</code> 导出 Markdown，用 <code>/distill</code> 沉淀可复用 Skill，以及用 <code>/remember</code> / <code>/memory</code> / <code>/forget</code> 管理长期记忆。</p>
+            <p><code>/loop</code> 可以按固定间隔重复发送 prompt，<code>/watch</code> 可以按每日时间或一次性时间发送 prompt。<code>/clear</code>、<code>/rewind</code>、<code>/resume</code>、<code>/skills</code>、<code>/reload-skills</code> 和 <code>/reload-commands</code> 用于管理对话生命周期与本地命令刷新。</p>
+          </div>
+          <div class="feature">
+            <h3>查询快捷命令</h3>
+            <p>在输入框中使用 <code>$websearch &lt;query&gt;</code>、<code>$webread &lt;url | file path&gt;</code> 或 <code>$pubmed &lt;query&gt;</code>，可以不发起普通 AI 回合，直接执行只读查询并把结果写入对话。<code>$websearch</code> 使用配置中的 <code>jina-api-key</code>；<code>$webread</code> 可匿名读取；<code>$pubmed</code> 匿名使用 NCBI PubMed。</p>
           </div>
           <div class="feature">
             <h3>命令面板入口</h3>

@@ -196,7 +196,12 @@ ai-agent-output-limit       = 16384</code></pre>
           </div>
           <div class="feature">
             <h3>Slash commands</h3>
-            <p><code>/model</code> switches saved profiles, <code>/skills</code> lists discovered skills, <code>/commands</code> lists local AI commands, and <code>/reload-skills</code> refreshes future skill calls from disk.</p>
+            <p><code>/commands</code> lists the current command set. Common commands include <code>/model</code> for profile switching, <code>/cwd</code> for the conversation working directory, <code>/permission</code> for agent approval mode, <code>/export</code> for Markdown, <code>/distill</code> for reusable skills, and <code>/remember</code> / <code>/memory</code> / <code>/forget</code> for long-term memory.</p>
+            <p><code>/loop</code> repeats a prompt on an interval and <code>/watch</code> schedules daily or one-shot prompts. <code>/clear</code>, <code>/rewind</code>, <code>/resume</code>, <code>/skills</code>, <code>/reload-skills</code>, and <code>/reload-commands</code> cover conversation lifecycle and local command refresh.</p>
+          </div>
+          <div class="feature">
+            <h3>Lookup shortcuts</h3>
+            <p>Type <code>$websearch &lt;query&gt;</code>, <code>$webread &lt;url | file path&gt;</code>, or <code>$pubmed &lt;query&gt;</code> to run a read-only lookup from the composer without starting a normal AI turn. <code>$websearch</code> uses the configured <code>jina-api-key</code>; <code>$webread</code> can read anonymously; <code>$pubmed</code> uses NCBI PubMed anonymously.</p>
           </div>
           <div class="feature">
             <h3>Command center paths</h3>

@@ -187,7 +187,13 @@ Local slash commands (handled in the panel, without calling the model):
 - `/reload-skills` confirms that future skill calls will read from disk again.
 - `/reload-commands` rescans the custom `commands/` directory.
 - `/clear` clears the current conversation context (keeps the tab and profile).
+- `/rewind` opens a picker for an earlier user prompt so you can edit and
+  continue from that point.
 - `/resume` opens the saved-conversation history picker.
+- `/cwd` shows the effective working directory for the conversation.
+  `/cwd <path>` sets a per-conversation directory override after resolving it
+  to an existing absolute directory. `/cwd reset`, `/cwd default`, and
+  `/cwd clear` remove the override and return to the default.
 - `/model` opens the saved-profile picker; `/model <name>` switches directly.
   `/模型` is the Chinese alias.
 - `/permission` shows the agent tool permission; `/permission ask`,
@@ -198,8 +204,38 @@ Local slash commands (handled in the panel, without calling the model):
   `ask`.
 - `/export` writes the conversation to Markdown (clean by default; `/export full`
   includes reasoning, tool details, and usage).
+- `/loop <interval> <count> <prompt>` repeats a prompt after each fixed
+  interval, then stops after `count` successful sends. The interval is an
+  integer plus `s`, `m`, `h`, or `d`, for example `/loop 30m 8 check CI`.
+  `/loop` lists this session's loop tasks, `/loop all` lists all loop tasks from
+  Copilot, and `/loop stop <id>` or `/loop stop all` cancels tasks.
+- `/watch <HH:MM> <prompt>` sends a prompt every day at that local time.
+  `/watch <YYYY-MM-DD HH:MM> <prompt>` sends a one-shot prompt at that local
+  time. `/watch` lists this session's watch tasks, `/watch all` lists all watch
+  tasks from Copilot, and `/watch stop <id>` or `/watch stop all` cancels
+  tasks.
+- `/remember <fact>` saves a long-term memory in the project tier when a
+  working directory is set, otherwise in the global tier. `/记住` is the Chinese
+  alias.
+- `/memory` lists remembered facts. `/记忆` is the Chinese alias.
+- `/forget <name>` deletes a remembered fact by name. `/忘记` is the Chinese
+  alias.
 - `/distill [topic]` or `/沉淀 [主题]` previews a reusable local skill distilled
   from the current conversation.
+
+Reserved `$` lookup commands run in the panel and append a local tool message
+without submitting a normal AI turn:
+
+- `$websearch <query>` searches the web through Jina Search. It requires
+  `jina-api-key` in the WispTerm config.
+- `$webread <url | file path>` reads a web page or local file into Markdown
+  through Jina Reader. It uses `jina-api-key` when set, but anonymous reads are
+  allowed. Local-file conversions are cached by content under `.webread_cache`.
+- `$pubmed <query>` searches NCBI PubMed and returns article metadata and
+  abstracts. It does not require an API key.
+
+The agent can also call the `websearch`, `webread`, and `pubmed` tools on its
+own when those first-party tools are enabled in Skill Center.
 
 ## Skill Distillation
 
