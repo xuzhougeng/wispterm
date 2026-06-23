@@ -1349,9 +1349,19 @@ fn commandPaletteHistoryHitTestIndex(xpos: f64, ypos: f64, window_width: f32, wi
     const row: usize = @intFromFloat(@floor(row_f));
     if (row >= layout.rendered_rows) return null;
 
-    const item_idx = commandPaletteFirstVisibleIndex(layout.rendered_rows) + row;
-    if (item_idx >= g_command_palette_history_rows.len) return null;
-    return item_idx;
+    var view = buildHistoryView() orelse return null;
+    defer view.deinit(AppWindow.g_allocator.?);
+    const selectable = view.rowCount();
+    if (selectable == 0) return null;
+    const selected_ord = @min(g_command_palette_history_selected, selectable - 1);
+    const focus_item = historySelectedItemIndex(view, selected_ord);
+    const first_item = historyWindowStart(view.items.len, layout.rendered_rows, focus_item);
+    const item_idx = first_item + row;
+    if (item_idx >= view.items.len) return null;
+    return switch (view.items[item_idx]) {
+        .header => null, // clicking a group header is a no-op
+        .row => |ord| view.filtered[ord], // raw index into g_command_palette_history_rows
+    };
 }
 
 fn commandPaletteActivateSelectedAgentHistory() bool {
