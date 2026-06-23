@@ -23,6 +23,7 @@ const ssh_prompt = @import("../ssh_prompt.zig");
 const ssh_connection = @import("../ssh_connection.zig");
 const app_metadata = @import("../app_metadata.zig");
 const command_center_state = @import("../command_center_state.zig");
+const command_palette_history_view = @import("../command_palette_history_view.zig");
 const command_palette_model = @import("../command_palette_model.zig");
 const agent_history = @import("../agent_history.zig");
 const platform_dirs = @import("../platform/dirs.zig");
@@ -227,6 +228,7 @@ threadlocal var g_command_palette_filter: [COMMAND_PALETTE_FILTER_MAX]u8 = undef
 threadlocal var g_command_palette_filter_len: usize = 0;
 threadlocal var g_command_palette_mode: CommandPaletteMode = .commands;
 threadlocal var g_command_palette_history_selected: usize = 0;
+threadlocal var g_command_palette_history_source: command_palette_history_view.SourceFilter = .all;
 
 const CommandPaletteLayout = struct {
     box_x: f32,
@@ -323,6 +325,12 @@ pub fn commandPaletteMoveAgentHistory(delta: i32) void {
     commandPaletteSyncAgentHistoryRows();
     var state = commandCenterStateSnapshot();
     state.commandPaletteMoveAgentHistory(delta, g_command_palette_history_rows.len);
+    commandCenterStateCommit(state);
+}
+
+pub fn commandPaletteCycleHistorySource() void {
+    var state = commandCenterStateSnapshot();
+    state.commandPaletteCycleHistorySource();
     commandCenterStateCommit(state);
 }
 
@@ -2184,6 +2192,7 @@ fn commandCenterStateSnapshot() command_center_state.State {
         .command_palette_filter_len = g_command_palette_filter_len,
         .command_palette_mode = g_command_palette_mode,
         .command_palette_history_selected = g_command_palette_history_selected,
+        .command_palette_history_source = g_command_palette_history_source,
         .startup_shortcuts_visible = startup_shortcuts.g_startup_shortcuts_visible,
         .session_launcher_visible = g_session_launcher_visible,
         .session_launcher_selected = g_session_launcher_selected,
@@ -2211,6 +2220,7 @@ fn commandCenterStateApply(state: command_center_state.State) void {
     g_command_palette_filter_len = state.command_palette_filter_len;
     g_command_palette_mode = state.command_palette_mode;
     g_command_palette_history_selected = state.command_palette_history_selected;
+    g_command_palette_history_source = state.command_palette_history_source;
     startup_shortcuts.g_startup_shortcuts_visible = state.startup_shortcuts_visible;
     g_session_launcher_visible = state.session_launcher_visible;
     g_session_launcher_selected = state.session_launcher_selected;

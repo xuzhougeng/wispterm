@@ -1,6 +1,7 @@
 const app_metadata = @import("app_metadata.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const std = @import("std");
+const command_palette_history_view = @import("command_palette_history_view.zig");
 
 pub const CommandAction = enum {
     new_tab,
@@ -134,6 +135,7 @@ pub const State = struct {
     command_palette_filter_len: usize = 0,
     command_palette_mode: CommandPaletteMode = .commands,
     command_palette_history_selected: usize = 0,
+    command_palette_history_source: command_palette_history_view.SourceFilter = .all,
     startup_shortcuts_visible: bool = false,
     session_launcher_visible: bool = false,
     session_launcher_selected: usize = 0,
@@ -190,10 +192,22 @@ pub const State = struct {
         self.ai_list_visible = false;
         self.ai_form_visible = false;
         self.ai_history_source_visible = false;
+        self.command_palette_history_source = .all;
+        self.command_palette_history_selected = 0;
+        self.command_palette_filter_len = 0;
     }
 
     pub fn commandPaletteLeaveAgentHistory(self: *State) void {
         self.commandPaletteSetMode(.commands);
+    }
+
+    pub fn commandPaletteCycleHistorySource(self: *State) void {
+        self.command_palette_history_source = switch (self.command_palette_history_source) {
+            .all => .sidebar,
+            .sidebar => .tab,
+            .tab => .all,
+        };
+        self.command_palette_history_selected = 0;
     }
 
     pub fn commandPaletteShouldRefreshAgentHistory(self: *const State, loaded_revision: u64, latest_revision: u64) bool {
@@ -537,4 +551,23 @@ test "clicking an agent history row updates selection and returns that row" {
 
     try std.testing.expectEqual(@as(?usize, 2), state.commandPaletteActivateHistoryRow(2, 3));
     try std.testing.expectEqual(@as(?usize, 2), state.commandPaletteSelectedAgentHistoryIndex(3));
+}
+
+test "command palette: history source cycles and resets on open" {
+    var state = State{};
+    state.commandPaletteOpenAgentHistory();
+    try std.testing.expectEqual(command_palette_history_view.SourceFilter.all, state.command_palette_history_source);
+    state.commandPaletteCycleHistorySource();
+    try std.testing.expectEqual(command_palette_history_view.SourceFilter.sidebar, state.command_palette_history_source);
+    state.commandPaletteCycleHistorySource();
+    try std.testing.expectEqual(command_palette_history_view.SourceFilter.tab, state.command_palette_history_source);
+    state.commandPaletteCycleHistorySource();
+    try std.testing.expectEqual(command_palette_history_view.SourceFilter.all, state.command_palette_history_source);
+    state.command_palette_history_source = .tab;
+    state.command_palette_history_selected = 5;
+    state.command_palette_filter_len = 3;
+    state.commandPaletteOpenAgentHistory();
+    try std.testing.expectEqual(command_palette_history_view.SourceFilter.all, state.command_palette_history_source);
+    try std.testing.expectEqual(@as(usize, 0), state.command_palette_history_selected);
+    try std.testing.expectEqual(@as(usize, 0), state.command_palette_filter_len);
 }
