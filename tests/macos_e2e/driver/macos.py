@@ -107,6 +107,10 @@ class MacDriver:
     def primary_pane(self) -> str:
         return primary_pane_id(self.ctl.panes())
 
+    def ui_state(self) -> dict:
+        # Overlay semantic state (active overlay, command-palette selection/filter).
+        return self.ctl.ui_state()
+
     # ---- real input ----
     def key(self, key_name: str, *mods: str) -> None:
         for m in mods:

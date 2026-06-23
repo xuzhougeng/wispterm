@@ -85,6 +85,7 @@ test {
     _ = @import("ctl/control.zig");
     _ = @import("ctl/server.zig");
     _ = @import("ctl/client.zig");
+    _ = @import("ctl/ui_state.zig");
     _ = @import("png_dimensions.zig");
     _ = @import("pdf_preview.zig");
     _ = @import("preview_gallery.zig");

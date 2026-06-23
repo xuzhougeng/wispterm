@@ -27,6 +27,11 @@ class Ctl:
     def panes(self) -> dict:
         return json.loads(self._run(["panes"]))
 
+    def ui_state(self) -> dict:
+        # Overlay semantic layer (active overlay, command-palette selection/filter,
+        # session launcher, settings) — complements `panes` (topology).
+        return json.loads(self._run(["ui-state"]))
+
     def get_text(self, pane: str, recent=None) -> str:
         args = ["get-text", "-t", pane]
         if recent is not None:

@@ -23,6 +23,7 @@ const ssh_prompt = @import("../ssh_prompt.zig");
 const ssh_connection = @import("../ssh_connection.zig");
 const app_metadata = @import("../app_metadata.zig");
 const command_center_state = @import("../command_center_state.zig");
+const ctl_ui_state = @import("../ctl/ui_state.zig");
 const command_palette_history_view = @import("../command_palette_history_view.zig");
 const command_palette_model = @import("../command_palette_model.zig");
 const agent_history = @import("../agent_history.zig");
@@ -2303,6 +2304,43 @@ const SSH_PROMPT_SCAN_MAX_COLS: usize = 4096;
 
 pub fn sessionLauncherVisible() bool {
     return commandCenterStateSnapshot().sessionLauncherVisible();
+}
+
+/// Serialize the overlay layer (which modal is up, selection, filter) for the
+/// wisptermctl `ui-state` command. Reads threadlocal command-center globals, so
+/// it must run on the UI thread — AppWindow's render-tick publisher calls it and
+/// hands the JSON to the ctl server thread. Complements `panes` (topology).
+pub fn buildUiStateJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
+    const st = commandCenterStateSnapshot();
+    const history_mode = st.commandPaletteIsHistoryMode();
+    // commandPaletteVisibleCount() rebuilds the filtered-results scratch, so only
+    // pay for it when the palette is showing the command list.
+    const visible_count: usize = if (st.command_palette_visible and !history_mode)
+        commandPaletteVisibleCount()
+    else
+        0;
+    try ctl_ui_state.writeJson(allocator, out, .{
+        .command_palette_visible = st.command_palette_visible,
+        .command_palette_mode = if (history_mode) .history else .commands,
+        .command_palette_selected = st.command_palette_selected,
+        .command_palette_visible_count = visible_count,
+        .command_palette_filter = commandPaletteFilter(),
+        .history_selected = st.command_palette_history_selected,
+        .history_source = switch (st.command_palette_history_source) {
+            .all => .all,
+            .sidebar => .sidebar,
+            .tab => .tab,
+        },
+        .session_launcher_visible = st.session_launcher_visible,
+        .session_launcher_selected = st.session_launcher_selected,
+        .settings_visible = st.settings_visible,
+        .ai_form_visible = st.ai_form_visible,
+        .ssh_form_visible = st.ssh_form_visible,
+        .ai_list_visible = st.ai_list_visible,
+        .ssh_list_visible = st.ssh_list_visible,
+        .ai_history_source_visible = st.ai_history_source_visible,
+        .startup_shortcuts_visible = st.startup_shortcuts_visible,
+    });
 }
 
 fn commandCenterStateSnapshot() command_center_state.State {

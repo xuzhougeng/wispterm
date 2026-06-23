@@ -8,6 +8,7 @@ pub const Action = union(enum) {
     get_text: struct { id: []const u8, recent: ?u32 },
     send_text: struct { id: []const u8, data: []const u8 }, // data still escaped
     wait_for: struct { id: []const u8, pattern: []const u8, timeout_ms: u32 },
+    ui_state,
     help,
 };
 
@@ -68,6 +69,7 @@ pub fn parseArgs(args: []const []const u8) !Action {
     const cmd = args[0];
     if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "--help")) return .help;
     if (std.mem.eql(u8, cmd, "panes")) return .panes;
+    if (std.mem.eql(u8, cmd, "ui-state")) return .ui_state;
     if (std.mem.eql(u8, cmd, "get-text")) {
         const id = (try flagValue(args, "-t")) orelse return error.MissingTarget;
         const recent = if (try flagValue(args, "--recent")) |r| try std.fmt.parseInt(u32, r, 10) else null;
@@ -176,6 +178,10 @@ test "parseArgs covers every command and required-flag errors" {
     try t.expectEqual(Action.help, try parseArgs(&.{"--help"}));
     // Unknown command is an error (non-zero exit), not silent help.
     try t.expectError(error.UnknownCommand, parseArgs(&.{"bogus"}));
+}
+
+test "parseArgs maps ui-state to its no-arg action" {
+    try t.expectEqual(Action.ui_state, try parseArgs(&.{"ui-state"}));
 }
 
 test "parseArgs: large --timeout does not overflow u32 (clamps)" {

@@ -7937,6 +7937,13 @@ var g_ctl_panes_json: []u8 = &.{}; // page_allocator-owned latest panes JSON
 // sync). The timestamp must be touched atomically to avoid a data race.
 var g_ctl_panes_last_ms = std.atomic.Value(i64).init(0);
 
+// Overlay semantic state for `ui-state`, published the same way as panes: the UI
+// thread serializes the threadlocal command-center globals on the render tick,
+// the ctl server thread only ever reads this buffer under the mutex.
+var g_ctl_ui_state_mutex: std.Thread.Mutex = .{};
+var g_ctl_ui_state_json: []u8 = &.{}; // page_allocator-owned latest ui-state JSON
+var g_ctl_ui_state_last_ms = std.atomic.Value(i64).init(0);
+
 const ctl_default_rows: u32 = 1000;
 
 pub fn enableAgentControl() void {
@@ -7972,10 +7979,19 @@ fn ctlSendText(ctx: *anyopaque, id: []const u8, data: []const u8) bool {
     return true;
 }
 
+fn ctlUiState(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
+    _ = ctx;
+    g_ctl_ui_state_mutex.lock();
+    defer g_ctl_ui_state_mutex.unlock();
+    if (g_ctl_ui_state_json.len == 0) return null;
+    return try allocator.dupe(u8, g_ctl_ui_state_json);
+}
+
 const ctl_vtable = ctl_control.Control.VTable{
     .list_panes = ctlListPanes,
     .get_text = ctlGetText,
     .send_text = ctlSendText,
+    .ui_state = ctlUiState,
 };
 
 /// The Control the agent-control server drives. Backed by process-global state,
@@ -8008,6 +8024,32 @@ fn syncCtlPanes(allocator: std.mem.Allocator) void {
     defer g_ctl_panes_mutex.unlock();
     if (g_ctl_panes_json.len != 0) std.heap.page_allocator.free(g_ctl_panes_json);
     g_ctl_panes_json = owned;
+}
+
+fn clearCtlUiStateCache() void {
+    g_ctl_ui_state_mutex.lock();
+    defer g_ctl_ui_state_mutex.unlock();
+    if (g_ctl_ui_state_json.len != 0) std.heap.page_allocator.free(g_ctl_ui_state_json);
+    g_ctl_ui_state_json = &.{};
+}
+
+/// UI-thread: publish a fresh overlay ui-state JSON snapshot (throttled). Called
+/// from the render loop next to syncCtlPanes. No-op unless ctl is enabled.
+fn syncCtlUiState(allocator: std.mem.Allocator) void {
+    if (!g_agent_control_enabled.load(.acquire)) return;
+    const now = std.time.milliTimestamp();
+    if (now - g_ctl_ui_state_last_ms.load(.monotonic) < 200) return;
+    g_ctl_ui_state_last_ms.store(now, .monotonic);
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+    overlays.buildUiStateJson(allocator, &out) catch return;
+
+    const owned = std.heap.page_allocator.dupe(u8, out.items) catch return;
+    g_ctl_ui_state_mutex.lock();
+    defer g_ctl_ui_state_mutex.unlock();
+    if (g_ctl_ui_state_json.len != 0) std.heap.page_allocator.free(g_ctl_ui_state_json);
+    g_ctl_ui_state_json = owned;
 }
 
 test "ctl surface callbacks reject an unregistered id without dereferencing" {
@@ -9987,6 +10029,7 @@ fn runMainLoop(self: *AppWindow) !void {
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
             syncRemoteLayout(allocator);
             syncCtlPanes(allocator);
+            syncCtlUiState(allocator);
             syncImeCaretPosition(win, split_count);
             if (active_tab.kind != .ai_chat and active_tab.kind != .ai_history and active_tab.kind != .skill_center and active_tab.kind != .port_forwarding and synchronizedOutputPendingForVisibleSplits(split_count)) {
                 // Block instead of spinning at ~1kHz: the IO thread posts a
@@ -10315,6 +10358,7 @@ fn runMainLoop(self: *AppWindow) !void {
     weixin_qr_panel.deinit();
     clearWeixinTranscriptCache();
     clearCtlPanesCache();
+    clearCtlUiStateCache();
     markdown_preview_renderer.deinit();
     browser_panel.deinit();
 

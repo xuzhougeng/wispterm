@@ -45,6 +45,7 @@ pub fn main() !void {
 
     switch (action) {
         .panes => try runOnce(allocator, info, .{ .token = info.token, .cmd = .panes }, .raw),
+        .ui_state => try runOnce(allocator, info, .{ .token = info.token, .cmd = .ui_state }, .raw),
         .get_text => |g| try runOnce(allocator, info, .{ .token = info.token, .cmd = .get_text, .id = g.id, .recent = g.recent }, .text),
         .send_text => |s| {
             const data = try client.decodeEscapes(allocator, s.data);
@@ -159,6 +160,9 @@ const USAGE =
         \\Usage:
         \\  wisptermctl panes
         \\      List tabs/panes as JSON (id, title, cwd, cols/rows, cursor, focus, geometry).
+        \\  wisptermctl ui-state
+        \\      Print overlay UI state as JSON (active overlay, command-palette
+        \\      selection/filter/mode, session launcher, settings visibility).
         \\  wisptermctl get-text -t <surface-id> [--recent N]
         \\      Print a surface's terminal text. --recent N prepends N scrollback rows.
         \\  wisptermctl send-text -t <surface-id> "<text>"
