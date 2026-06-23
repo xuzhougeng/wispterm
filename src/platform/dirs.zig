@@ -212,6 +212,18 @@ pub fn agentHistoryPathFromEnvForOs(
     return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "agent-history.json");
 }
 
+pub fn agentHistoryDir(allocator: std.mem.Allocator) ![]const u8 {
+    return pathInConfigDir(allocator, "agent-history");
+}
+
+pub fn agentHistoryDirFromEnvForOs(
+    allocator: std.mem.Allocator,
+    os_tag: std.Target.Os.Tag,
+    env: Env,
+) ![]const u8 {
+    return pathInConfigDirFromEnvForOs(allocator, os_tag, env, "agent-history");
+}
+
 pub fn aiHistoryCachePath(allocator: std.mem.Allocator) ![]const u8 {
     return pathInConfigDir(allocator, "ai_history_cache.json");
 }
@@ -710,4 +722,11 @@ test "platform dirs resolve home directory per OS" {
     try std.testing.expectEqualStrings("/home/alice", linux);
 
     try std.testing.expectError(error.NoHomeDir, homeDirFromEnvForOs(allocator, .linux, .{}));
+}
+
+test "agentHistoryDir resolves under config dir (macos)" {
+    const a = std.testing.allocator;
+    const p = try agentHistoryDirFromEnvForOs(a, .macos, .{ .home = "/Users/x" });
+    defer a.free(p);
+    try std.testing.expectEqualStrings("/Users/x/Library/Application Support/wispterm/agent-history", p);
 }
