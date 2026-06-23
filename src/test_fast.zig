@@ -52,6 +52,7 @@ test {
     _ = @import("close_confirm.zig");
     _ = @import("command_palette_model.zig");
     _ = @import("command_center_state.zig");
+    _ = @import("command_palette_history_view.zig");
     _ = @import("platform/window_state_codec.zig");
     _ = @import("platform/dxgi_core.zig");
     _ = @import("platform/console_host_policy.zig");
