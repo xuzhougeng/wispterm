@@ -1351,7 +1351,11 @@ fn terminalAnswerPromptTool(ctx: *ToolContext, surface_id: ?[]const u8, answer: 
         return ctx.allocator.dupe(u8, "Failed to read terminal snapshot.");
     defer ctx.allocator.free(screen);
 
-    const detection = agent_detector.detect(surface.title, screen);
+    const detection: agent_detector.Detection = .{
+        .app = surface.agent_app,
+        .state = surface.agent_state,
+        .confidence = surface.agent_confidence,
+    };
     if (detection.app == .none or (detection.state != .waiting_approval and detection.state != .needs_input)) {
         const out = try std.fmt.allocPrint(
             ctx.allocator,

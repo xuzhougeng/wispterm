@@ -37,6 +37,7 @@ const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
 const ai_model_switch = @import("../ai_model_switch.zig");
 const claude_integration = @import("../claude_integration.zig");
+const codex_integration = @import("../codex_integration.zig");
 const platform_atomic_file = @import("../platform/atomic_file.zig");
 const agent_detector = @import("../agent_detector.zig");
 
@@ -604,6 +605,8 @@ fn executeCommand(action: CommandAction) void {
         .show_whats_new => showWhatsNew(),
         .install_claude_code_integration => installClaudeCodeIntegration(),
         .remove_claude_code_integration => removeClaudeCodeIntegration(),
+        .install_codex_integration => installCodexIntegration(),
+        .remove_codex_integration => removeCodexIntegration(),
         .open_skill_center => {
             _ = AppWindow.spawnSkillCenterTab();
         },
@@ -7181,6 +7184,16 @@ fn removeClaudeCodeIntegration() void {
     applyClaudeIntegration(allocator, false);
 }
 
+fn installCodexIntegration() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    applyCodexIntegration(allocator, true);
+}
+
+fn removeCodexIntegration() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    applyCodexIntegration(allocator, false);
+}
+
 fn applyClaudeIntegration(allocator: std.mem.Allocator, comptime do_install: bool) void {
     // Resolve the Claude Code settings file path via platform_dirs.
     const settings_path = platform_dirs.agentHookSettingsPath(allocator) catch |err| {
@@ -7235,6 +7248,58 @@ fn applyClaudeIntegration(allocator: std.mem.Allocator, comptime do_install: boo
         showStatusToast("Claude Code agent integration installed");
     } else {
         showStatusToast("Claude Code agent integration removed");
+    }
+}
+
+fn applyCodexIntegration(allocator: std.mem.Allocator, comptime do_install: bool) void {
+    const settings_path = platform_dirs.openaiCodexHookSettingsPath(allocator) catch |err| {
+        std.log.warn("codex integration: cannot resolve hooks path: {}", .{err});
+        showStatusToast("Codex integration: cannot resolve home directory");
+        return;
+    };
+    defer allocator.free(settings_path);
+
+    const existing = std.fs.cwd().readFileAlloc(allocator, settings_path, 16 * 1024 * 1024) catch |err| switch (err) {
+        error.FileNotFound => allocator.dupe(u8, "") catch {
+            showStatusToast("Codex integration: out of memory");
+            return;
+        },
+        else => {
+            std.log.warn("codex integration: read {s}: {}", .{ settings_path, err });
+            showStatusToast("Codex integration: failed to read hooks.json");
+            return;
+        },
+    };
+    defer allocator.free(existing);
+
+    const new_content = if (do_install)
+        codex_integration.install(allocator, existing)
+    else
+        codex_integration.uninstall(allocator, existing);
+    const result = new_content catch |err| {
+        std.log.warn("codex integration: transform failed: {}", .{err});
+        showStatusToast("Codex integration: hooks.json parse error");
+        return;
+    };
+    defer allocator.free(result);
+
+    const settings_dir = std.fs.path.dirname(settings_path) orelse settings_path;
+    std.fs.cwd().makePath(settings_dir) catch |err| {
+        std.log.warn("codex integration: makePath {s}: {}", .{ settings_dir, err });
+        showStatusToast("Codex integration: cannot create hooks directory");
+        return;
+    };
+
+    platform_atomic_file.writeFileReplaceSafe(settings_path, result) catch |err| {
+        std.log.warn("codex integration: write {s}: {}", .{ settings_path, err });
+        showStatusToast("Codex integration: failed to write hooks.json");
+        return;
+    };
+
+    if (do_install) {
+        showStatusToast("Codex agent integration installed");
+    } else {
+        showStatusToast("Codex agent integration removed");
     }
 }
 

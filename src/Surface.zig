@@ -19,7 +19,6 @@ const Renderer = @import("renderer/Renderer.zig");
 const remote = @import("remote_client.zig");
 const threading = @import("threading.zig");
 const agent_detector = @import("agent_detector.zig");
-const agent_detect_throttle = @import("agent_detect_throttle.zig");
 const window_backend = @import("platform/window_backend.zig");
 const sync_output = @import("sync_output.zig");
 const notification = @import("notification.zig");
@@ -320,8 +319,7 @@ wispterm_agent_osc_buf: [WISPTERM_AGENT_OSC_MAX]u8 = undefined,
 wispterm_agent_osc_buf_len: usize = 0,
 
 /// True once this surface has received an authoritative OSC 7748 agent-state
-/// marker. While true, the heuristic `refreshAgentDetection` is skipped (the
-/// hook signal is ground truth). Reset is handled elsewhere (B3, on command change).
+/// marker. Reset when the foreground command is no longer a known agent.
 agent_osc_active: bool = false,
 
 // Raw CWD path from OSC 7 (Unix-style, e.g., "/home/user/dir")
@@ -332,14 +330,9 @@ cwd_path_len: usize = 0,
 initial_cwd_path: [512]u8 = undefined,
 initial_cwd_path_len: usize = 0,
 
-// Lightweight app/agent detection state. Updated by the PTY reader from recent
-// output and OSC title changes, then read by chrome/remote/AI tooling.
+// Lightweight app/agent state. State transitions come from OSC 7748 hook
+// markers; app identity may also be seeded from the foreground command.
 agent_detection: agent_detector.Detection = .{},
-agent_recent_output: [4096]u8 = undefined,
-agent_recent_output_len: usize = 0,
-// Throttles the (substring-scan heavy) agent detection during output floods.
-// Mutated only under render_state.mutex; pendingPeek is the lock-free UI probe.
-agent_throttle: agent_detect_throttle.Throttle = .{},
 
 // ============================================================================
 // VT stream
@@ -487,8 +480,6 @@ fn finishInit(
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.agent_detection = .{};
-    surface.agent_recent_output_len = 0;
-    surface.agent_throttle = .{};
     surface.captureInitialCwd(cwd);
 
     // Init bell state
@@ -825,53 +816,6 @@ pub fn setTitleOverride(self: *Surface, title: []const u8) void {
     const len = @min(title.len, self.title_override.len);
     @memcpy(self.title_override[0..len], title[0..len]);
     self.title_override_len = len;
-    self.refreshAgentDetection();
-}
-
-pub fn noteAgentOutput(self: *Surface, data: []const u8) void {
-    self.noteAgentOutputAt(data, std.time.milliTimestamp());
-}
-
-/// Record recent PTY output for agent detection. The ring buffer always
-/// updates, but the detection scan itself is throttled (it runs dozens of
-/// substring searches over the ring); skipped scans are caught up by
-/// `flushAgentDetection` from the UI thread. Caller holds render_state.mutex.
-pub fn noteAgentOutputAt(self: *Surface, data: []const u8, now_ms: i64) void {
-    if (data.len == 0) return;
-
-    if (data.len >= self.agent_recent_output.len) {
-        const start = data.len - self.agent_recent_output.len;
-        @memcpy(self.agent_recent_output[0..], data[start..]);
-        self.agent_recent_output_len = self.agent_recent_output.len;
-    } else {
-        const keep_existing = @min(self.agent_recent_output_len, self.agent_recent_output.len - data.len);
-        if (keep_existing > 0 and keep_existing < self.agent_recent_output_len) {
-            const start = self.agent_recent_output_len - keep_existing;
-            std.mem.copyForwards(u8, self.agent_recent_output[0..keep_existing], self.agent_recent_output[start..self.agent_recent_output_len]);
-        }
-        @memcpy(self.agent_recent_output[keep_existing .. keep_existing + data.len], data);
-        self.agent_recent_output_len = keep_existing + data.len;
-    }
-
-    if (self.agent_throttle.noteOutput(now_ms)) self.refreshAgentDetection();
-}
-
-/// Run a deferred agent detection if one is due (trailing edge of an output
-/// burst, e.g. an approval prompt arriving as the last chunk). Returns whether
-/// a detection ran. Caller holds render_state.mutex.
-pub fn flushAgentDetection(self: *Surface, now_ms: i64) bool {
-    if (!self.agent_throttle.flush(now_ms)) return false;
-    self.refreshAgentDetection();
-    return true;
-}
-
-fn refreshAgentDetection(self: *Surface) void {
-    // OSC 7748 marker is authoritative; don't let the heuristic clobber it.
-    if (self.agent_osc_active) return;
-    self.agent_detection = agent_detector.detect(
-        self.getTitle(),
-        self.agent_recent_output[0..self.agent_recent_output_len],
-    );
 }
 
 /// Set the working directory used for path resolution. Used by the tmux
@@ -1441,8 +1385,6 @@ fn updateTitle(self: *Surface, title: []const u8, osc_num: u8) void {
         @memcpy(self.window_title[0..friendly_len], friendly[0..friendly_len]);
         self.window_title_len = friendly_len;
     }
-
-    self.refreshAgentDetection();
 }
 
 test "Surface exposes init and initVirtual (forces analysis of the shared finishInit refactor)" {

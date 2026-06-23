@@ -70,290 +70,26 @@ pub const Detection = struct {
     }
 };
 
-fn lowerAscii(ch: u8) u8 {
-    return if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-
-    var start: usize = 0;
-    while (start + needle.len <= haystack.len) : (start += 1) {
-        var matched = true;
-        for (needle, 0..) |needle_ch, i| {
-            if (lowerAscii(haystack[start + i]) != lowerAscii(needle_ch)) {
-                matched = false;
-                break;
-            }
-        }
-        if (matched) return true;
-    }
-    return false;
-}
-
-fn containsAnyIgnoreCase(haystack: []const u8, needles: []const []const u8) bool {
-    for (needles) |needle| {
-        if (containsIgnoreCase(haystack, needle)) return true;
-    }
-    return false;
-}
-
-fn lastIndexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
-    if (needle.len == 0) return haystack.len;
-    if (needle.len > haystack.len) return null;
-
-    var start = haystack.len - needle.len;
-    while (true) {
-        var matched = true;
-        for (needle, 0..) |needle_ch, i| {
-            if (lowerAscii(haystack[start + i]) != lowerAscii(needle_ch)) {
-                matched = false;
-                break;
-            }
-        }
-        if (matched) return start;
-        if (start == 0) return null;
-        start -= 1;
-    }
-}
-
-fn lastAnyIgnoreCase(haystack: []const u8, needles: []const []const u8) ?usize {
-    var latest: ?usize = null;
-    for (needles) |needle| {
-        if (lastIndexOfIgnoreCase(haystack, needle)) |idx| {
-            if (latest == null or idx > latest.?) latest = idx;
-        }
-    }
-    return latest;
-}
-
-fn newerThan(idx: usize, other: ?usize) bool {
-    return other == null or idx > other.?;
-}
-
-fn titleHasAttentionMarker(title: []const u8) bool {
-    return containsIgnoreCase(title, "[ ! ]") or
-        containsIgnoreCase(title, "[!]") or
-        containsIgnoreCase(title, " ! ");
-}
-
-fn titleHasRunningMarker(title: []const u8) bool {
-    return containsIgnoreCase(title, "[ * ]") or
-        containsIgnoreCase(title, "[*]");
-}
-
-fn titleHasClaudeStatusMarker(title: []const u8) bool {
-    return containsAnyIgnoreCase(title, &.{
-        "\xe2\x9c\xbb", // U+273B
-        "\xe2\x9c\xa2", // U+2722
-        "\xe2\x9c\xbd", // U+273D
-    });
-}
-
-fn detectClaudeCode(title: []const u8, recent_output: []const u8) ?Detection {
-    const claude_seen = containsAnyIgnoreCase(title, &.{
-        "claude",
-        "claude code",
-        "claude-code",
-    }) or titleHasClaudeStatusMarker(title) or
-        containsAnyIgnoreCase(recent_output, &.{
-            "claude code",
-            "claude.ai/code/session",
-            "do you want to make this edit",
-            "do you want to make this change",
-            "do you want to run this command",
-            "yes, allow all edits during this session",
-            "yes, allow all tools during this session",
-        });
-    if (!claude_seen) return null;
-
-    const approval_idx = lastAnyIgnoreCase(recent_output, &.{
-        "do you want to make this edit",
-        "do you want to make this change",
-        "do you want to create",
-        "do you want to run this command",
-        "do you want to proceed",
-        "yes, allow all edits during this session",
-        "yes, allow all tools during this session",
-        "yes, allow all commands during this session",
-    });
-    const running_idx = lastAnyIgnoreCase(recent_output, &.{
-        "thinking",
-        "Update(",
-        "Edit(",
-        "MultiEdit(",
-        "Write(",
-        "Bash(",
-        "Read(",
-        "Grep(",
-        "Glob(",
-        "Task(",
-        "TodoWrite(",
-        "WebFetch(",
-    });
-    const halted_idx = lastAnyIgnoreCase(recent_output, &.{
-        "interrupted by user",
-        "operation cancelled",
-        "operation canceled",
-        "aborted",
-    });
-    const failure_idx = lastAnyIgnoreCase(recent_output, &.{
-        "permission denied",
-        "command failed",
-        "error:",
-        "failed",
-    });
-    const done_idx = lastAnyIgnoreCase(recent_output, &.{
-        "no changes to make",
-        "completed successfully",
-        "all set",
-    });
-
-    if (approval_idx) |idx| {
-        if (newerThan(idx, running_idx) and newerThan(idx, halted_idx) and newerThan(idx, failure_idx) and newerThan(idx, done_idx)) {
-            return .{ .app = .claude_code, .state = .waiting_approval, .confidence = 90 };
-        }
-    }
-    if (halted_idx) |idx| {
-        if (newerThan(idx, done_idx) and newerThan(idx, running_idx)) {
-            return .{ .app = .claude_code, .state = .halted, .confidence = 92 };
-        }
-    }
-    if (failure_idx) |idx| {
-        if (newerThan(idx, done_idx) and newerThan(idx, running_idx) and newerThan(idx, halted_idx)) {
-            return .{ .app = .claude_code, .state = .failed, .confidence = 76 };
-        }
-    }
-    if (done_idx) |idx| {
-        if (newerThan(idx, running_idx) and newerThan(idx, halted_idx) and newerThan(idx, failure_idx)) {
-            return .{ .app = .claude_code, .state = .done, .confidence = 76 };
-        }
-    }
-    if (titleHasAttentionMarker(title)) {
-        return .{ .app = .claude_code, .state = .needs_input, .confidence = 72 };
-    }
-    if (running_idx) |idx| {
-        if (newerThan(idx, done_idx) and newerThan(idx, halted_idx)) {
-            return .{ .app = .claude_code, .state = .running, .confidence = 82 };
-        }
-    }
-    if (titleHasRunningMarker(title) or titleHasClaudeStatusMarker(title)) {
-        return .{ .app = .claude_code, .state = .running, .confidence = 82 };
-    }
-
-    return .{ .app = .claude_code, .state = .none, .confidence = 45 };
-}
-
 pub fn detect(title: []const u8, recent_output: []const u8) Detection {
-    if (detectClaudeCode(title, recent_output)) |detection| return detection;
-
-    const codex_seen = containsAnyIgnoreCase(title, &.{ "codex", "[ ! ]", "[!]", "[ * ]", "[*]" }) or
-        containsAnyIgnoreCase(recent_output, &.{
-            "codex",
-            "execution halted",
-            "esc to interrupt",
-            "transcript)",
-            "background terminal",
-            "approved codex",
-            "would you like to make the following edits",
-            "press enter to confirm or esc to cancel",
-            "retry without sandbox",
-        });
-    if (!codex_seen) return .{};
-
-    const approval_idx = lastAnyIgnoreCase(recent_output, &.{
-        "do you want codex",
-        "approve codex",
-        "approval required",
-        "would you like to make the following edits",
-        "press enter to confirm or esc to cancel",
-        "yes, proceed",
-        "don't ask again",
-        "retry without sandbox",
-    });
-    const approved_idx = lastAnyIgnoreCase(recent_output, &.{
-        "you approved codex",
-        "you approved",
-    });
-    const active_approval = if (approval_idx) |prompt_idx|
-        approved_idx == null or prompt_idx > approved_idx.?
-    else
-        false;
-
-    if (active_approval) {
-        return .{ .app = .codex, .state = .waiting_approval, .confidence = 90 };
-    }
-
-    const halted_idx = lastAnyIgnoreCase(recent_output, &.{
-        "execution halted",
-    });
-    const done_idx = lastAnyIgnoreCase(recent_output, &.{
-        "worked for ",
-    });
-    const running_idx = lastAnyIgnoreCase(recent_output, &.{
-        "working (",
-        "esc to interrupt",
-        "waited for background terminal",
-    });
-    const failure_idx = lastAnyIgnoreCase(recent_output, &.{ "permission denied", "command failed" });
-    const ready_idx = lastAnyIgnoreCase(recent_output, &.{
-        "openai codex",
-        "model:",
-        "directory:",
-        "/model to change",
-    });
-
-    if (halted_idx) |idx| {
-        if (newerThan(idx, done_idx)) {
-            return .{ .app = .codex, .state = .halted, .confidence = 96 };
-        }
-    }
-    if (failure_idx) |idx| {
-        const is_after_approval = approved_idx == null or idx > approved_idx.?;
-        if (is_after_approval and newerThan(idx, done_idx) and newerThan(idx, running_idx) and newerThan(idx, halted_idx)) {
-            return .{ .app = .codex, .state = .failed, .confidence = 78 };
-        }
-    }
-    if (done_idx) |idx| {
-        if (newerThan(idx, running_idx) and newerThan(idx, halted_idx) and newerThan(idx, failure_idx)) {
-            return .{ .app = .codex, .state = .done, .confidence = 82 };
-        }
-    }
-    if (titleHasAttentionMarker(title)) {
-        return .{ .app = .codex, .state = .needs_input, .confidence = 72 };
-    }
-    if (running_idx) |idx| {
-        if (newerThan(idx, done_idx) and newerThan(idx, halted_idx)) {
-            return .{ .app = .codex, .state = .running, .confidence = 82 };
-        }
-    }
-    if (titleHasRunningMarker(title)) {
-        return .{ .app = .codex, .state = .running, .confidence = 82 };
-    }
-    if (ready_idx) |idx| {
-        if (newerThan(idx, running_idx) and newerThan(idx, done_idx) and newerThan(idx, halted_idx) and newerThan(idx, failure_idx)) {
-            return .{ .app = .codex, .state = .needs_input, .confidence = 74 };
-        }
-    }
-
-    return .{ .app = .codex, .state = .none, .confidence = 45 };
+    _ = title;
+    _ = recent_output;
+    return .{};
 }
 
-test "agent detector recognizes Codex halted output" {
+test "agent detector ignores legacy Codex halted PTY output" {
     const detection = detect("[ ! ]", "Execution halted\nWorking (3m 11s - esc to interrupt)");
-    try std.testing.expectEqual(App.codex, detection.app);
-    try std.testing.expectEqual(State.halted, detection.state);
-    try std.testing.expect(detection.visible());
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
+    try std.testing.expect(!detection.visible());
 }
 
-test "agent detector recognizes Codex running output" {
+test "agent detector ignores legacy Codex running PTY output" {
     const detection = detect("codex", "Working (12s - esc to interrupt)");
-    try std.testing.expectEqual(App.codex, detection.app);
-    try std.testing.expectEqual(State.running, detection.state);
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
-test "agent detector treats Codex sandbox retry prompt as approval" {
+test "agent detector ignores legacy Codex approval PTY output" {
     const output =
         \\Would you like to make the following edits?
         \\
@@ -366,12 +102,11 @@ test "agent detector treats Codex sandbox retry prompt as approval" {
         \\Press enter to confirm or esc to cancel
     ;
     const detection = detect("[ ! ]", output);
-    try std.testing.expectEqual(App.codex, detection.app);
-    try std.testing.expectEqual(State.waiting_approval, detection.state);
-    try std.testing.expectEqualStrings("ask", detection.badge());
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
-test "agent detector ignores stale approval prompt after Codex approval" {
+test "agent detector ignores stale legacy Codex approval PTY output" {
     const output =
         \\Would you like to make the following edits?
         \\Reason: command failed; retry without sandbox?
@@ -380,11 +115,11 @@ test "agent detector ignores stale approval prompt after Codex approval" {
         \\Working (3s - esc to interrupt)
     ;
     const detection = detect("codex", output);
-    try std.testing.expectEqual(App.codex, detection.app);
-    try std.testing.expectEqual(State.running, detection.state);
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
-test "agent detector marks Codex completion after running output as done" {
+test "agent detector ignores legacy Codex completion PTY output" {
     const output =
         \\Working (12s - esc to interrupt)
         \\You approved codex to run zsh this time
@@ -393,22 +128,21 @@ test "agent detector marks Codex completion after running output as done" {
         \\› use /skills to list available skills
     ;
     const detection = detect("codex", output);
-    try std.testing.expectEqual(App.codex, detection.app);
-    try std.testing.expectEqual(State.done, detection.state);
-    try std.testing.expectEqualStrings("done", detection.badge());
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
-test "agent detector prefers newer running marker after old completion" {
+test "agent detector ignores legacy Codex completion and running PTY output" {
     const output =
         \\Worked for 2m 14s
         \\Working (3s - esc to interrupt)
     ;
     const detection = detect("codex", output);
-    try std.testing.expectEqual(App.codex, detection.app);
-    try std.testing.expectEqual(State.running, detection.state);
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
-test "agent detector recognizes Claude Code approval prompt" {
+test "agent detector ignores legacy Claude Code approval PTY output" {
     const output =
         \\Claude Code v2.1.140
         \\Update(tools/clashmate/index.html)
@@ -418,26 +152,25 @@ test "agent detector recognizes Claude Code approval prompt" {
         \\  3. No
     ;
     const detection = detect("Claude Code v2.1.140", output);
-    try std.testing.expectEqual(App.claude_code, detection.app);
-    try std.testing.expectEqual(State.waiting_approval, detection.state);
-    try std.testing.expectEqualStrings("ask", detection.badge());
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
-test "agent detector recognizes Claude Code running title marker" {
+test "agent detector ignores legacy Claude Code title marker" {
     const detection = detect("\xe2\x9c\xbb Hiding advanced features", "Read 5 files, listed 5 directories, ran 1 shell command");
-    try std.testing.expectEqual(App.claude_code, detection.app);
-    try std.testing.expectEqual(State.running, detection.state);
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
-test "agent detector ignores stale Claude Code approval after newer tool output" {
+test "agent detector ignores stale legacy Claude Code approval PTY output" {
     const output =
         \\Do you want to make this edit to index.html?
         \\  1. Yes
         \\Update(tools/clashmate/index.html)
     ;
     const detection = detect("Claude Code", output);
-    try std.testing.expectEqual(App.claude_code, detection.app);
-    try std.testing.expectEqual(State.running, detection.state);
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
 test "agent detector ignores normal shell output" {
@@ -447,15 +180,15 @@ test "agent detector ignores normal shell output" {
     try std.testing.expect(!detection.visible());
 }
 
-test "agent detector recognizes Codex ready screen" {
+test "agent detector ignores legacy Codex ready screen" {
     const output =
         \\OpenAI Codex (v0.135.0)
         \\model:     gpt-5.5 xhigh   /model to change
         \\directory: ~
     ;
     const detection = detect("xzg", output);
-    try std.testing.expectEqual(App.codex, detection.app);
-    try std.testing.expectEqual(State.needs_input, detection.state);
+    try std.testing.expectEqual(App.none, detection.app);
+    try std.testing.expectEqual(State.none, detection.state);
 }
 
 // ---------------------------------------------------------------------------

@@ -170,7 +170,6 @@ fn processOutput(surface: *Surface, data: []const u8) void {
     surface.resetOscBatch();
     surface.feedVtWithWispTermImageFallback(data);
     surface.scanForOscTitle(data);
-    surface.noteAgentOutput(data);
     // One wakeup per UI consume cycle is enough — the render loop drains all
     // pending output on a single frame; per-chunk posts only flood the
     // platform event queue during output bursts.

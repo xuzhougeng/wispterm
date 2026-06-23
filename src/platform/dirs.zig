@@ -301,6 +301,35 @@ pub fn agentHookSettingsPathFromEnv(allocator: std.mem.Allocator, env: Env) ![]c
     return error.NoHomePath;
 }
 
+/// Path to the Codex hooks file (`~/.codex/hooks.json`).
+/// Returns `error.NoHomePath` when neither HOME nor USERPROFILE is set.
+pub fn codexHookSettingsPath(allocator: std.mem.Allocator) ![]const u8 {
+    const userprofile = envVarOwned(allocator, "USERPROFILE");
+    defer if (userprofile) |value| allocator.free(value);
+    const home = envVarOwned(allocator, "HOME");
+    defer if (home) |value| allocator.free(value);
+
+    return codexHookSettingsPathFromEnv(allocator, .{
+        .userprofile = userprofile,
+        .home = home,
+    });
+}
+
+pub fn openaiCodexHookSettingsPath(allocator: std.mem.Allocator) ![]const u8 {
+    return codexHookSettingsPath(allocator);
+}
+
+pub fn codexHookSettingsPathFromEnv(allocator: std.mem.Allocator, env: Env) ![]const u8 {
+    const dot_codex = ".codex";
+    if (nonEmpty(env.home)) |home| {
+        return std.fs.path.join(allocator, &.{ home, dot_codex, "hooks.json" });
+    }
+    if (nonEmpty(env.userprofile)) |userprofile| {
+        return std.fs.path.join(allocator, &.{ userprofile, dot_codex, "hooks.json" });
+    }
+    return error.NoHomePath;
+}
+
 pub fn downloadsDir(allocator: std.mem.Allocator) ![]const u8 {
     const userprofile = envVarOwned(allocator, "USERPROFILE");
     defer if (userprofile) |value| allocator.free(value);
@@ -623,6 +652,24 @@ test "platform dirs resolve downloads directory per OS" {
     const expected = try std.fs.path.join(allocator, &.{ "C:/Users/alice", "Downloads" });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, downloads);
+}
+
+test "platform dirs resolve external agent hook settings paths" {
+    const allocator = std.testing.allocator;
+
+    const claude = try agentHookSettingsPathFromEnv(allocator, .{ .home = "/home/alice" });
+    defer allocator.free(claude);
+    const expected_claude = try std.fs.path.join(allocator, &.{ "/home/alice", ".claude", "settings.json" });
+    defer allocator.free(expected_claude);
+    try std.testing.expectEqualStrings(expected_claude, claude);
+
+    const codex = try codexHookSettingsPathFromEnv(allocator, .{ .home = "/home/alice" });
+    defer allocator.free(codex);
+    const expected_codex = try std.fs.path.join(allocator, &.{ "/home/alice", ".codex", "hooks.json" });
+    defer allocator.free(expected_codex);
+    try std.testing.expectEqualStrings(expected_codex, codex);
+
+    try std.testing.expectError(error.NoHomePath, codexHookSettingsPathFromEnv(allocator, .{}));
 }
 
 test "platform dirs resolve openssh config path per OS" {

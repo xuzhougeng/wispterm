@@ -696,7 +696,6 @@ comptime {
     _ = @import("renderer/cell_update_unit.zig");
     _ = @import("renderer/ui_batch.zig");
     _ = @import("input/underline_span.zig");
-    _ = @import("agent_detect_throttle.zig");
     _ = @import("surface_output_unit.zig");
     _ = @import("link_open.zig");
     _ = @import("markdown_preview.zig");

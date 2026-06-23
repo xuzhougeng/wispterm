@@ -48,7 +48,6 @@ test {
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("renderer/overlays/whats_new_model.zig");
-    _ = @import("agent_detect_throttle.zig");
     _ = @import("renderer/ui_batch.zig");
     _ = @import("close_confirm.zig");
     _ = @import("command_palette_model.zig");
@@ -165,6 +164,7 @@ test {
     _ = @import("tool_import.zig");
     _ = @import("agent_detector.zig");
     _ = @import("claude_integration.zig");
+    _ = @import("codex_integration.zig");
     _ = @import("jupyter_detect.zig");
     _ = @import("jupyter_picker.zig");
     _ = @import("copilot_picker.zig");
