@@ -18,6 +18,7 @@ pub const MetaStore = struct {
         const sessions = try self.sessionsDirPath(allocator);
         defer allocator.free(sessions);
         try std.fs.cwd().makePath(sessions);
+        if (try self.loadIndexFromDisk()) return self;
         return self;
     }
 
@@ -109,6 +110,58 @@ pub const MetaStore = struct {
         defer allocator.free(bytes);
         return try agent_history.recordFromJson(allocator, bytes);
     }
+
+    fn writeSessionFile(self: *const MetaStore, record: agent_history.SessionRecord) !void {
+        const json = try agent_history.recordToJson(self.allocator, record);
+        defer self.allocator.free(json);
+        const path = try self.sessionFilePath(self.allocator, record.session_id);
+        defer self.allocator.free(path);
+        try agent_history.saveJsonToPath(path, json);
+    }
+
+    fn writeIndex(self: *MetaStore) !void {
+        const json = try agent_history.dumpIndex(self.allocator, .{
+            .version = agent_history.INDEX_VERSION,
+            .entries = self.entries.items,
+        });
+        defer self.allocator.free(json);
+        const path = try self.indexPath(self.allocator);
+        defer self.allocator.free(path);
+        try agent_history.saveJsonToPath(path, json);
+    }
+
+    pub fn flush(self: *MetaStore) !void {
+        if (!self.index_dirty and self.pending.items.len == 0) return;
+        for (self.pending.items) |record| {
+            try self.writeSessionFile(record);
+        }
+        for (self.pending.items) |*r| agent_history.freeOwnedRecord(self.allocator, r);
+        self.pending.clearRetainingCapacity();
+        try self.writeIndex();
+        self.index_dirty = false;
+    }
+
+    fn loadIndexFromDisk(self: *MetaStore) !bool {
+        const path = try self.indexPath(self.allocator);
+        defer self.allocator.free(path);
+        const bytes = std.fs.cwd().readFileAlloc(self.allocator, path, MAX_INDEX_BYTES) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return false,
+        };
+        defer self.allocator.free(bytes);
+        var parsed = agent_history.parseIndex(self.allocator, bytes) catch return false;
+        defer parsed.deinit();
+        if (parsed.value.version != agent_history.INDEX_VERSION) return false;
+        for (parsed.value.entries) |e| {
+            const cloned = try agent_history.cloneIndexEntry(self.allocator, e);
+            self.entries.append(self.allocator, cloned) catch |err| {
+                var owned = cloned;
+                agent_history.freeOwnedIndexEntry(self.allocator, &owned);
+                return err;
+            };
+        }
+        return true;
+    }
 };
 
 test "MetaStore: open empty dir yields no rows" {
@@ -146,4 +199,32 @@ test "MetaStore: upsert is visible via rows and clone before flush (pending)" {
     defer agent_history.freeOwnedRecord(allocator, &rec);
     try std.testing.expectEqualStrings("hi", rec.messages[0].content);
     try std.testing.expect((try store.cloneRecordBySessionId(allocator, "nope")) == null);
+}
+
+test "MetaStore: flush writes files and index, reopen reads cold from disk" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    {
+        var store = try MetaStore.open(allocator, root);
+        defer store.deinit();
+        try store.upsertRecord(.{
+            .session_id = "s1", .title = "T", .base_url = "https://api.example.com", .api_key = "k", .model = "m",
+            .system_prompt = "sys", .thinking_enabled = false, .reasoning_effort = "low", .stream = true,
+            .agent_enabled = true, .created_at = 1, .updated_at = 2,
+            .messages = &[_]agent_history.MessageRecord{.{ .role = .user, .content = "hi" }},
+        });
+        try store.flush();
+        try std.testing.expectEqual(@as(usize, 0), store.pending.items.len);
+    }
+    var store2 = try MetaStore.open(allocator, root);
+    defer store2.deinit();
+    const rows = try store2.buildRows(allocator);
+    defer agent_history.freeRows(allocator, rows);
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    var rec = (try store2.cloneRecordBySessionId(allocator, "s1")) orelse return error.Missing;
+    defer agent_history.freeOwnedRecord(allocator, &rec);
+    try std.testing.expectEqualStrings("hi", rec.messages[0].content);
 }
