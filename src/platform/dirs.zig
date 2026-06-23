@@ -276,31 +276,6 @@ pub fn pluginSkillsDirFromEnvForOs(
     return std.fs.path.join(allocator, &.{ dir, "plugins", "skills" });
 }
 
-/// Path to the Claude Code hook settings file (`~/.claude/settings.json`).
-/// Returns `error.NoHomePath` when neither HOME nor USERPROFILE is set.
-pub fn agentHookSettingsPath(allocator: std.mem.Allocator) ![]const u8 {
-    const userprofile = envVarOwned(allocator, "USERPROFILE");
-    defer if (userprofile) |value| allocator.free(value);
-    const home = envVarOwned(allocator, "HOME");
-    defer if (home) |value| allocator.free(value);
-
-    return agentHookSettingsPathFromEnv(allocator, .{
-        .userprofile = userprofile,
-        .home = home,
-    });
-}
-
-pub fn agentHookSettingsPathFromEnv(allocator: std.mem.Allocator, env: Env) ![]const u8 {
-    const dot_claude = ".claude";
-    if (nonEmpty(env.home)) |home| {
-        return std.fs.path.join(allocator, &.{ home, dot_claude, "settings.json" });
-    }
-    if (nonEmpty(env.userprofile)) |userprofile| {
-        return std.fs.path.join(allocator, &.{ userprofile, dot_claude, "settings.json" });
-    }
-    return error.NoHomePath;
-}
-
 pub fn downloadsDir(allocator: std.mem.Allocator) ![]const u8 {
     const userprofile = envVarOwned(allocator, "USERPROFILE");
     defer if (userprofile) |value| allocator.free(value);

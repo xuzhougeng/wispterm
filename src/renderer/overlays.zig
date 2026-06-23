@@ -36,9 +36,7 @@ const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
 const ai_model_switch = @import("../ai_model_switch.zig");
-const claude_integration = @import("../claude_integration.zig");
-const platform_atomic_file = @import("../platform/atomic_file.zig");
-const agent_detector = @import("../agent_detector.zig");
+const agent_integration_prompt = @import("../agent_integration_prompt.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");
 
@@ -135,6 +133,8 @@ const md = @import("../markdown_text.zig");
 const whats_new_model = @import("overlays/whats_new_model.zig");
 threadlocal var g_whats_new_visible: bool = false;
 threadlocal var g_whats_new_scroll: i64 = 0;
+threadlocal var g_integration_prompt_visible: bool = false;
+threadlocal var g_integration_prompt_scroll: i64 = 0;
 threadlocal var g_update_prompt_until_ms: i64 = 0;
 threadlocal var g_update_prompt_buf: [128]u8 = undefined;
 threadlocal var g_update_prompt_len: usize = 0;
@@ -502,6 +502,63 @@ pub fn restoreDefaultsConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, 
     return pointInTopRect(xpos, ypos, layout.panel_x, layout.panel_top_px, layout.panel_w, layout.panel_h);
 }
 
+pub fn integrationPromptOpen() void {
+    g_integration_prompt_scroll = 0;
+    g_integration_prompt_visible = true;
+}
+
+pub fn integrationPromptClose() void {
+    g_integration_prompt_visible = false;
+}
+
+pub fn integrationPromptVisible() bool {
+    return g_integration_prompt_visible;
+}
+
+fn copyIntegrationPrompt() void {
+    if (AppWindow.input.copyTextToClipboard(agent_integration_prompt.promptText())) {
+        showStatusToast("Integration prompt copied");
+    } else {
+        showStatusToast("Copy failed; select the prompt text manually");
+    }
+}
+
+pub fn integrationPromptHandleKey(ev: input_key.KeyEvent) void {
+    if (!g_integration_prompt_visible) return;
+    switch (ev.key) {
+        .escape => integrationPromptClose(),
+        .enter => copyIntegrationPrompt(),
+        .page_up => g_integration_prompt_scroll -= 8,
+        .page_down => g_integration_prompt_scroll += 8,
+        .arrow_up => g_integration_prompt_scroll -= 1,
+        .arrow_down => g_integration_prompt_scroll += 1,
+        .home => g_integration_prompt_scroll = 0,
+        .end => g_integration_prompt_scroll = std.math.maxInt(i32),
+        else => {},
+    }
+}
+
+pub fn integrationPromptHandleScroll(delta_y: f64) void {
+    if (!g_integration_prompt_visible) return;
+    g_integration_prompt_scroll += if (delta_y > 0) @as(i64, -3) else 3;
+}
+
+pub fn integrationPromptExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
+    if (!g_integration_prompt_visible) return false;
+    const layout = integrationPromptLayout(window_width, window_height);
+    if (pointInTopRect(xpos, ypos, layout.close_x, layout.close_top_px, layout.close_w, layout.close_h)) {
+        copyIntegrationPrompt();
+        return true;
+    }
+    if (pointInTopRect(xpos, ypos, layout.cancel_x, layout.cancel_top_px, layout.cancel_w, layout.cancel_h)) {
+        integrationPromptClose();
+        return true;
+    }
+    if (pointInTopRect(xpos, ypos, layout.panel_x, layout.panel_top_px, layout.panel_w, layout.panel_h)) return true;
+    integrationPromptClose();
+    return true;
+}
+
 pub fn transferCancelConfirmOpen() void {
     g_transfer_cancel_confirm_visible = true;
 }
@@ -602,8 +659,7 @@ fn executeCommand(action: CommandAction) void {
         },
         .open_latest_release => openLatestRelease(),
         .show_whats_new => showWhatsNew(),
-        .install_claude_code_integration => installClaudeCodeIntegration(),
-        .remove_claude_code_integration => removeClaudeCodeIntegration(),
+        .show_integration_prompt => integrationPromptOpen(),
         .open_skill_center => {
             _ = AppWindow.spawnSkillCenterTab();
         },
@@ -1313,6 +1369,40 @@ fn windowCloseConfirmLayout(window_width: f32, window_height: f32) WindowCloseCo
         .cancel_x = cancel_x,
         .cancel_top_px = button_top_px,
         .cancel_w = cancel_w,
+        .cancel_h = button_h,
+    };
+}
+
+const INTEGRATION_PROMPT_COPY_LABEL = "Copy Prompt";
+const INTEGRATION_PROMPT_CLOSE_LABEL = "Close";
+
+fn integrationPromptLayout(window_width: f32, window_height: f32) WindowCloseConfirmLayout {
+    const panel_w = @round(@min(@max(360.0, window_width - 96.0), 960.0));
+    const desired_h = @min(@max(360.0, window_height - 96.0), 560.0);
+    const panel_h = @round(@min(desired_h, @max(220.0, window_height - 48.0)));
+    const panel_x = @round(@max(24.0, (window_width - panel_w) / 2.0));
+    const panel_top_px = @round(@max(24.0, (window_height - panel_h) / 2.0));
+
+    const button_h = @round(@max(38.0, overlayTextHeight() + 16.0));
+    const copy_w = @round(@max(154.0, measureTitlebarText(INTEGRATION_PROMPT_COPY_LABEL) + 44.0));
+    const close_w = @round(@max(130.0, measureTitlebarText(INTEGRATION_PROMPT_CLOSE_LABEL) + 42.0));
+    const gap: f32 = 12.0;
+    const button_top_px = panel_top_px + panel_h - 30.0 - button_h;
+    const cancel_x = panel_x + panel_w - 32.0 - close_w;
+    const close_x = cancel_x - gap - copy_w;
+
+    return .{
+        .panel_x = panel_x,
+        .panel_top_px = panel_top_px,
+        .panel_w = panel_w,
+        .panel_h = panel_h,
+        .close_x = close_x,
+        .close_top_px = button_top_px,
+        .close_w = copy_w,
+        .close_h = button_h,
+        .cancel_x = cancel_x,
+        .cancel_top_px = button_top_px,
+        .cancel_w = close_w,
         .cancel_h = button_h,
     };
 }
@@ -6352,6 +6442,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     const saved_palette = g_command_palette_visible;
     const saved_settings = g_settings_visible;
     const saved_whats_new = g_whats_new_visible;
+    const saved_integration_prompt = g_integration_prompt_visible;
     const saved_close = g_window_close_confirm_visible;
     const saved_restore = g_restore_defaults_confirm_visible;
     const saved_transfer = g_transfer_cancel_confirm_visible;
@@ -6365,6 +6456,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
         g_command_palette_visible = saved_palette;
         g_settings_visible = saved_settings;
         g_whats_new_visible = saved_whats_new;
+        g_integration_prompt_visible = saved_integration_prompt;
         g_window_close_confirm_visible = saved_close;
         g_restore_defaults_confirm_visible = saved_restore;
         g_transfer_cancel_confirm_visible = saved_transfer;
@@ -6380,6 +6472,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     g_command_palette_visible = false;
     g_settings_visible = false;
     g_whats_new_visible = false;
+    g_integration_prompt_visible = false;
     g_window_close_confirm_visible = false;
     g_restore_defaults_confirm_visible = false;
     g_transfer_cancel_confirm_visible = false;
@@ -6404,6 +6497,10 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     try std.testing.expect(anyBlockingOverlayVisible());
     g_whats_new_visible = false;
 
+    g_integration_prompt_visible = true;
+    try std.testing.expect(anyBlockingOverlayVisible());
+    g_integration_prompt_visible = false;
+
     g_window_close_confirm_visible = true;
     try std.testing.expect(anyBlockingOverlayVisible());
     g_window_close_confirm_visible = false;
@@ -6413,6 +6510,25 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     g_session_launcher_visible = false;
 
     try std.testing.expect(!anyBlockingOverlayVisible());
+}
+
+test "overlays: integration prompt opens scrolls and closes" {
+    const saved_visible = g_integration_prompt_visible;
+    const saved_scroll = g_integration_prompt_scroll;
+    defer {
+        g_integration_prompt_visible = saved_visible;
+        g_integration_prompt_scroll = saved_scroll;
+    }
+
+    integrationPromptOpen();
+    try std.testing.expect(integrationPromptVisible());
+    try std.testing.expectEqual(@as(i64, 0), g_integration_prompt_scroll);
+
+    integrationPromptHandleKey(.{ .key = .page_down });
+    try std.testing.expect(g_integration_prompt_scroll > 0);
+
+    integrationPromptHandleKey(.{ .key = .escape });
+    try std.testing.expect(!integrationPromptVisible());
 }
 
 fn showVersionToast() void {
@@ -6613,6 +6729,115 @@ pub fn renderRestoreDefaultsConfirm(window_width: f32, window_height: f32) void 
     renderTitlebarTextStrong(cancel_label, layout.cancel_x + (layout.cancel_w - measureTitlebarText(cancel_label)) / 2, rowTextY(cancel_y, layout.cancel_h), body);
 }
 
+fn integrationPromptLineCount(text: []const u8) usize {
+    if (text.len == 0) return 0;
+    var lines: usize = 1;
+    for (text) |ch| {
+        if (ch == '\n') lines += 1;
+    }
+    return lines;
+}
+
+fn integrationPromptClampedScroll(total_lines: usize, visible_rows: usize) usize {
+    if (total_lines <= visible_rows) return 0;
+    if (g_integration_prompt_scroll <= 0) return 0;
+    const max_scroll = total_lines - visible_rows;
+    const requested: usize = @intCast(g_integration_prompt_scroll);
+    return @min(requested, max_scroll);
+}
+
+pub fn renderIntegrationPrompt(window_width: f32, window_height: f32) void {
+    if (!g_integration_prompt_visible) return;
+
+    const layout = integrationPromptLayout(window_width, window_height);
+    const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
+    const copy_y = @round(window_height - layout.close_top_px - layout.close_h);
+    const close_y = @round(window_height - layout.cancel_top_px - layout.cancel_h);
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const panel = mixColor(bg, fg, 0.050);
+    const panel_top = mixColor(bg, fg, 0.073);
+    const prompt_box = mixColor(bg, fg, 0.032);
+    const panel_border = mixColor(bg, fg, 0.24);
+    const quiet_border = mixColor(bg, fg, 0.15);
+    const muted = mixColor(bg, fg, 0.56);
+    const body = mixColor(bg, fg, 0.80);
+    const accent_soft = mixColor(bg, accent, 0.20);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.46);
+    renderRoundedQuadAlpha(layout.panel_x + 10, panel_y - 10, layout.panel_w, layout.panel_h, 13, .{ 0.0, 0.0, 0.0 }, 0.26);
+    renderRoundedQuadAlpha(layout.panel_x - 1, panel_y - 1, layout.panel_w + 2, layout.panel_h + 2, 13, panel_border, 0.42);
+    renderRoundedQuadAlpha(layout.panel_x, panel_y, layout.panel_w, layout.panel_h, 12, panel, 0.99);
+    renderRoundedQuadAlpha(layout.panel_x + 1, panel_y + layout.panel_h - 82, layout.panel_w - 2, 81, 12, panel_top, 0.78);
+    ui_pipeline.fillQuadAlpha(layout.panel_x + 1, panel_y + layout.panel_h - 82, layout.panel_w - 2, 1, quiet_border, 0.40);
+    renderRoundedQuadAlpha(layout.panel_x, panel_y, 5, layout.panel_h, 12, accent, 0.84);
+
+    const pad: f32 = 34;
+    const icon_size: f32 = 34;
+    const icon_x = layout.panel_x + pad;
+    const title_y = @round(panel_y + layout.panel_h - 54);
+    const icon_y = @round(title_y - (icon_size - overlayTextHeight()) / 2.0 - 2.0);
+    renderRoundedQuadAlpha(icon_x, icon_y, icon_size, icon_size, 17, accent, 0.18);
+    renderRoundedQuadAlpha(icon_x + 5, icon_y + 5, icon_size - 10, icon_size - 10, 12, accent, 0.88);
+    renderTitlebarTextStrong(">", icon_x + (icon_size - measureTitlebarText(">")) / 2, rowTextY(icon_y, icon_size), mixColor(fg, accent, 0.12));
+
+    const text_x = icon_x + icon_size + 18;
+    const text_right = layout.panel_x + layout.panel_w - pad;
+    renderTitlebarTextStrongLimited("Install Integration", text_x, title_y, fg, text_right - text_x);
+    const subtitle_y = title_y - overlayTextHeight() - 14;
+    renderTitlebarTextLimited("Copy this prompt into Codex, Claude Code, or another agent.", text_x, subtitle_y, body, text_right - text_x);
+
+    const footer_y = copy_y + layout.close_h + 20;
+    ui_pipeline.fillQuadAlpha(layout.panel_x + 5, footer_y, layout.panel_w - 5, 1, quiet_border, 0.46);
+
+    const prompt_x = layout.panel_x + pad;
+    const prompt_y = footer_y + 18;
+    const prompt_w = layout.panel_w - pad * 2;
+    const prompt_top = subtitle_y - 22;
+    const prompt_h = @max(72.0, prompt_top - prompt_y);
+    renderRoundedQuadAlpha(prompt_x - 1, prompt_y - 1, prompt_w + 2, prompt_h + 2, 8, quiet_border, 0.55);
+    renderRoundedQuadAlpha(prompt_x, prompt_y, prompt_w, prompt_h, 7, prompt_box, 0.96);
+
+    const prompt = agent_integration_prompt.promptText();
+    const line_h = @round(@max(22.0, overlayTextHeight() + 6.0));
+    const available_h = @max(line_h, prompt_h - 18.0);
+    const visible_rows: usize = @intFromFloat(@max(1.0, @floor(available_h / line_h)));
+    const total_lines = integrationPromptLineCount(prompt);
+    const scroll = integrationPromptClampedScroll(total_lines, visible_rows);
+    g_integration_prompt_scroll = @intCast(scroll);
+
+    var drawn: usize = 0;
+    var line_index: usize = 0;
+    var it = std.mem.splitScalar(u8, prompt, '\n');
+    while (it.next()) |line| {
+        if (line_index >= scroll and drawn < visible_rows) {
+            const row_y = prompt_y + prompt_h - 9.0 - line_h * @as(f32, @floatFromInt(drawn + 1));
+            if (row_y < prompt_y + 6.0) break;
+            renderTitlebarTextLimited(line, prompt_x + 12, rowTextY(row_y, line_h), body, prompt_w - 24);
+            drawn += 1;
+        }
+        line_index += 1;
+        if (drawn >= visible_rows) break;
+    }
+
+    if (total_lines > visible_rows) {
+        var info_buf: [64]u8 = undefined;
+        const info = std.fmt.bufPrint(&info_buf, "{d}/{d}", .{ scroll + 1, total_lines }) catch "";
+        const info_w = measureTitlebarText(info);
+        renderTitlebarTextLimited(info, prompt_x + prompt_w - info_w - 12, prompt_y + 8, muted, info_w + 4);
+    }
+
+    renderRoundedQuadAlpha(layout.close_x - 1, copy_y - 1, layout.close_w + 2, layout.close_h + 2, 8, mixColor(accent, fg, 0.20), 0.80);
+    renderRoundedQuadAlpha(layout.close_x, copy_y, layout.close_w, layout.close_h, 7, accent_soft, 0.96);
+    renderTitlebarTextStrong(INTEGRATION_PROMPT_COPY_LABEL, layout.close_x + (layout.close_w - measureTitlebarText(INTEGRATION_PROMPT_COPY_LABEL)) / 2, rowTextY(copy_y, layout.close_h), mixColor(fg, accent, 0.18));
+
+    renderRoundedQuadAlpha(layout.cancel_x - 1, close_y - 1, layout.cancel_w + 2, layout.cancel_h + 2, 8, quiet_border, 0.76);
+    renderRoundedQuadAlpha(layout.cancel_x, close_y, layout.cancel_w, layout.cancel_h, 7, mixColor(bg, fg, 0.10), 0.96);
+    renderTitlebarTextStrong(INTEGRATION_PROMPT_CLOSE_LABEL, layout.cancel_x + (layout.cancel_w - measureTitlebarText(INTEGRATION_PROMPT_CLOSE_LABEL)) / 2, rowTextY(close_y, layout.cancel_h), body);
+}
+
 pub fn renderTransferCancelConfirm(window_width: f32, window_height: f32) void {
     if (!g_transfer_cancel_confirm_visible) return;
 
@@ -6791,6 +7016,7 @@ pub fn anyBlockingOverlayVisible() bool {
         settingsPageVisible() or
         sessionLauncherVisible() or
         whatsNewVisible() or
+        integrationPromptVisible() or
         windowCloseConfirmVisible() or
         restoreDefaultsConfirmVisible() or
         transferCancelConfirmVisible();
@@ -7165,77 +7391,6 @@ pub fn openLatestRelease() void {
     var url_buf: [256]u8 = undefined;
     const url = latestReleaseUrl(&url_buf);
     _ = platform_open_url.open(allocator, .{ .url = url });
-}
-
-/// Read the Claude Code hook settings file (empty string if absent), call
-/// claude_integration.install, write atomically, show a toast.
-fn installClaudeCodeIntegration() void {
-    const allocator = AppWindow.g_allocator orelse return;
-    applyClaudeIntegration(allocator, true);
-}
-
-/// Read the Claude Code hook settings file (empty string if absent), call
-/// claude_integration.uninstall, write atomically, show a toast.
-fn removeClaudeCodeIntegration() void {
-    const allocator = AppWindow.g_allocator orelse return;
-    applyClaudeIntegration(allocator, false);
-}
-
-fn applyClaudeIntegration(allocator: std.mem.Allocator, comptime do_install: bool) void {
-    // Resolve the Claude Code settings file path via platform_dirs.
-    const settings_path = platform_dirs.agentHookSettingsPath(allocator) catch |err| {
-        std.log.warn("claude integration: cannot resolve settings path: {}", .{err});
-        showStatusToast("Claude Code integration: cannot resolve home directory");
-        return;
-    };
-    defer allocator.free(settings_path);
-
-    // Read existing content; treat missing file as "".
-    const existing = std.fs.cwd().readFileAlloc(allocator, settings_path, 16 * 1024 * 1024) catch |err| switch (err) {
-        error.FileNotFound => allocator.dupe(u8, "") catch {
-            showStatusToast("Claude Code integration: out of memory");
-            return;
-        },
-        else => {
-            std.log.warn("claude integration: read {s}: {}", .{ settings_path, err });
-            showStatusToast("Claude Code integration: failed to read settings.json");
-            return;
-        },
-    };
-    defer allocator.free(existing);
-
-    // Apply install or uninstall (pure, no IO).
-    const new_content = if (do_install)
-        claude_integration.install(allocator, existing)
-    else
-        claude_integration.uninstall(allocator, existing);
-    const result = new_content catch |err| {
-        std.log.warn("claude integration: transform failed: {}", .{err});
-        showStatusToast("Claude Code integration: settings.json parse error");
-        return;
-    };
-    defer allocator.free(result);
-
-    // Ensure the settings directory exists.
-    const settings_dir = std.fs.path.dirname(settings_path) orelse settings_path;
-    std.fs.cwd().makePath(settings_dir) catch |err| {
-        std.log.warn("claude integration: makePath {s}: {}", .{ settings_dir, err });
-        showStatusToast("Claude Code integration: cannot create settings directory");
-        return;
-    };
-
-    // Write atomically (temp file + rename via platform helper).
-    platform_atomic_file.writeFileReplaceSafe(settings_path, result) catch |err| {
-        std.log.warn("claude integration: write {s}: {}", .{ settings_path, err });
-        showStatusToast("Claude Code integration: failed to write settings.json");
-        return;
-    };
-
-    if (do_install) {
-        showStatusToast("Claude Code agent integration installed");
-    } else {
-        showStatusToast("Claude Code agent integration removed");
-    }
 }
 
 fn openStoredPromptUrl() void {

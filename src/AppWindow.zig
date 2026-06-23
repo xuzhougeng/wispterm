@@ -6607,6 +6607,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderRestoreDefaultsConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
+    overlays.renderIntegrationPrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
 
     render_diagnostics.log(
@@ -10284,6 +10285,7 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderUpdatePrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWindowCloseConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderRestoreDefaultsConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
+        overlays.renderIntegrationPrompt(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderWhatsNew(@floatFromInt(fb_width), @floatFromInt(fb_height));
         renderImePreedit(win, fb_width, fb_height);
 

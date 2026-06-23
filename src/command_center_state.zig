@@ -42,8 +42,7 @@ pub const CommandAction = enum {
     download_update,
     open_latest_release,
     show_whats_new,
-    install_claude_code_integration,
-    remove_claude_code_integration,
+    show_integration_prompt,
     open_skill_center,
     open_port_forwarding,
     split_preview,
@@ -97,11 +96,24 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Download Update", .detail = "Download the latest update to your Downloads folder", .shortcut = "", .action = .download_update },
     .{ .title = "Open Latest Release", .detail = "Open the latest WispTerm GitHub Release", .shortcut = "", .action = .open_latest_release },
     .{ .title = "What's New", .detail = "Show what changed in this version of WispTerm", .shortcut = app_metadata.version, .action = .show_whats_new },
-    .{ .title = "Install Claude Code Integration", .detail = "Add WispTerm agent hooks to ~/.claude/settings.json", .shortcut = "", .action = .install_claude_code_integration },
-    .{ .title = "Remove Claude Code Integration", .detail = "Remove WispTerm agent hooks from ~/.claude/settings.json", .shortcut = "", .action = .remove_claude_code_integration },
+    .{ .title = "Install Integration", .detail = "Show the prompt for Codex, Claude Code, or another agent to generate its own WispTerm hook", .shortcut = "", .action = .show_integration_prompt },
     .{ .title = "Port Forwarding", .detail = "Manage SSH port forwarding rules", .shortcut = "", .action = .open_port_forwarding },
     .{ .title = "Split Preview", .detail = "Open a preview panel on the right", .shortcut = "", .action = .split_preview },
 };
+
+test "command center exposes generic integration prompt action only" {
+    var found_generic = false;
+    for (command_entries) |entry| {
+        try std.testing.expect(!std.mem.eql(u8, entry.title, "Install Claude Code Integration"));
+        try std.testing.expect(!std.mem.eql(u8, entry.title, "Remove Claude Code Integration"));
+        if (std.mem.eql(u8, entry.title, "Install Integration")) {
+            found_generic = true;
+            try std.testing.expectEqual(CommandAction.show_integration_prompt, entry.action);
+            try std.testing.expect(std.mem.indexOf(u8, entry.detail, "prompt") != null);
+        }
+    }
+    try std.testing.expect(found_generic);
+}
 
 pub const CommandPaletteMode = enum {
     commands,
