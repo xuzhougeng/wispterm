@@ -169,7 +169,9 @@ pub fn openForSurface(allocator: std.mem.Allocator, surface: *Surface, path: []c
         .{ .key = "resolved", .value = resolved },
         .{ .key = "root", .value = root },
     });
-    const port = ensureServerForSurface(allocator, surface, root) catch |err| return .{ .err = err };
+    const file_name = basename(resolved);
+    if (file_name.len == 0) return .{ .err = error.PathTooLong };
+    const port = ensureServerForSurface(allocator, surface, root, file_name) catch |err| return .{ .err = err };
     var url = localUrlForPath(allocator, port, resolved) catch |err| return .{ .err = err };
     preview_diagnostics.debug("html-server", &.{
         .{ .key = "stage", .value = "local-url" },
@@ -202,11 +204,11 @@ pub fn commandForKindForTest(allocator: std.mem.Allocator, kind: model.ServerKin
     return serverCommandForKindAlloc(allocator, kind, port);
 }
 
-fn ensureServerForSurface(allocator: std.mem.Allocator, surface: *Surface, root: []const u8) Error!u16 {
+fn ensureServerForSurface(allocator: std.mem.Allocator, surface: *Surface, root: []const u8, file_name: []const u8) Error!u16 {
     if (root.len == 0 or root.len > MAX_ROOT_BYTES) return error.PathTooLong;
 
     pruneExitedServers();
-    if (findReusableServerSlot(allocator, surface, root)) |server_slot| {
+    if (findReusableServerSlot(allocator, surface, root, file_name)) |server_slot| {
         const port = g_servers[server_slot].?.port;
         var port_buf: [16]u8 = undefined;
         const port_s = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch "";
@@ -232,7 +234,7 @@ fn ensureServerForSurface(allocator: std.mem.Allocator, surface: *Surface, root:
             .{ .key = "root", .value = root },
             .{ .key = "port", .value = port_s },
         });
-        const started = spawnReadyServerForSurface(allocator, surface, root, port) catch |err| {
+        const started = spawnReadyServerForSurface(allocator, surface, root, file_name, port) catch |err| {
             preview_diagnostics.debug("html-server", &.{
                 .{ .key = "stage", .value = "spawn-attempt-failed" },
                 .{ .key = "launch", .value = @tagName(surface.launch_kind) },
@@ -267,15 +269,15 @@ const StartedServer = struct {
     kind: model.ServerKind,
 };
 
-fn spawnReadyServerForSurface(allocator: std.mem.Allocator, surface: *Surface, root: []const u8, port: u16) Error!StartedServer {
+fn spawnReadyServerForSurface(allocator: std.mem.Allocator, surface: *Surface, root: []const u8, file_name: []const u8, port: u16) Error!StartedServer {
     return switch (surface.launch_kind) {
         .local => spawnReadyLocal(allocator, root, port),
         .wsl => spawnReadyWsl(allocator, root, port),
-        .ssh => spawnReadySsh(allocator, surface, root, port),
+        .ssh => spawnReadySsh(allocator, surface, root, file_name, port),
     };
 }
 
-fn findReusableServerSlot(allocator: std.mem.Allocator, surface: *Surface, root: []const u8) ?usize {
+fn findReusableServerSlot(allocator: std.mem.Allocator, surface: *Surface, root: []const u8, file_name: []const u8) ?usize {
     for (&g_servers, 0..) |*slot, i| {
         const server = if (slot.*) |*server| server else continue;
         if (!server.matches(surface, root)) continue;
@@ -283,7 +285,7 @@ fn findReusableServerSlot(allocator: std.mem.Allocator, surface: *Surface, root:
             stopServer(slot);
             continue;
         }
-        if (!serverReachable(allocator, surface, server)) {
+        if (!serverReachable(allocator, surface, server, file_name)) {
             stopServer(slot);
             continue;
         }
@@ -292,12 +294,12 @@ fn findReusableServerSlot(allocator: std.mem.Allocator, surface: *Surface, root:
     return null;
 }
 
-fn serverReachable(allocator: std.mem.Allocator, surface: *Surface, server: *Server) bool {
+fn serverReachable(allocator: std.mem.Allocator, surface: *Surface, server: *Server, file_name: []const u8) bool {
     return switch (server.launch_kind) {
         .local, .wsl => canConnectToLocalPort(allocator, "127.0.0.1", server.port),
         .ssh => blk: {
             const conn = surface.ssh_connection orelse break :blk false;
-            break :blk remotePortReadyOnce(allocator, &conn, server.kind, server.port);
+            break :blk remotePortReadyOnce(allocator, &conn, server.kind, server.port, file_name);
         },
     };
 }
@@ -341,7 +343,7 @@ fn spawnReadyWsl(allocator: std.mem.Allocator, root: []const u8, port: u16) Erro
     return error.ServerNotReady;
 }
 
-fn spawnReadySsh(allocator: std.mem.Allocator, surface: *Surface, root: []const u8, port: u16) Error!StartedServer {
+fn spawnReadySsh(allocator: std.mem.Allocator, surface: *Surface, root: []const u8, file_name: []const u8, port: u16) Error!StartedServer {
     const conn = surface.ssh_connection orelse return error.ServerUnavailable;
     const kind = probeSsh(allocator, &conn) orelse {
         preview_diagnostics.debug("html-server", &.{
@@ -354,7 +356,7 @@ fn spawnReadySsh(allocator: std.mem.Allocator, surface: *Surface, root: []const 
         return error.ServerUnavailable;
     };
     var child = try spawnSsh(allocator, &conn, root, kind, port);
-    if (waitForRemotePortReady(allocator, &conn, kind, port, &child)) return .{ .child = child, .kind = kind };
+    if (waitForRemotePortReady(allocator, &conn, kind, port, file_name, &child)) return .{ .child = child, .kind = kind };
     stopChild(&child);
     return error.ServerNotReady;
 }
@@ -652,44 +654,52 @@ fn waitForLocalPortReady(allocator: std.mem.Allocator, port: u16, child: *std.pr
     return false;
 }
 
-fn waitForRemotePortReady(allocator: std.mem.Allocator, conn: *const Surface.SshConnection, kind: model.ServerKind, port: u16, child: *std.process.Child) bool {
+fn waitForRemotePortReady(allocator: std.mem.Allocator, conn: *const Surface.SshConnection, kind: model.ServerKind, port: u16, file_name: []const u8, child: *std.process.Child) bool {
     const deadline = std.time.milliTimestamp() + READY_TIMEOUT_MS;
     while (std.time.milliTimestamp() < deadline) {
-        if (remotePortReadyOnce(allocator, conn, kind, port)) return true;
+        if (remotePortReadyOnce(allocator, conn, kind, port, file_name)) return true;
         if (childHasExited(child)) return false;
         std.Thread.sleep(READY_POLL_NS);
     }
     return false;
 }
 
-fn remotePortReadyOnce(allocator: std.mem.Allocator, conn: *const Surface.SshConnection, kind: model.ServerKind, port: u16) bool {
-    const command = remoteReadyCommandAlloc(allocator, kind, port) catch return false;
+fn remotePortReadyOnce(allocator: std.mem.Allocator, conn: *const Surface.SshConnection, kind: model.ServerKind, port: u16, file_name: []const u8) bool {
+    const command = remoteReadyCommandAlloc(allocator, kind, port, file_name) catch return false;
     defer allocator.free(command);
     var child = spawnSshCommand(allocator, conn, command, .Ignore, .Ignore) orelse return false;
     const term = child.wait() catch return false;
     return termOk(term);
 }
 
-fn remoteReadyCommandAlloc(allocator: std.mem.Allocator, kind: model.ServerKind, port: u16) ![]u8 {
+fn remoteReadyCommandAlloc(allocator: std.mem.Allocator, kind: model.ServerKind, port: u16, file_name: []const u8) ![]u8 {
     return switch (kind) {
-        .python3 => pythonReadyCommandAlloc(allocator, "python3", port),
-        .py_launcher_python3 => pythonReadyCommandAlloc(allocator, "py -3", port),
-        .python3_via_python => pythonReadyCommandAlloc(allocator, "python", port),
-        .python2 => pythonReadyCommandAlloc(allocator, "python2", port),
-        .python2_via_python => pythonReadyCommandAlloc(allocator, "python", port),
-        .node_inline, .npx_http_server => std.fmt.allocPrint(
-            allocator,
-            "node -e \"var n=require('net').connect({d},'127.0.0.1');n.on('connect',function(){{process.exit(0)}});n.on('error',function(){{process.exit(1)}});setTimeout(function(){{process.exit(1)}},1000);\"",
-            .{port},
-        ),
+        .python3 => pythonReadyCommandAlloc(allocator, "python3", port, file_name),
+        .py_launcher_python3 => pythonReadyCommandAlloc(allocator, "py -3", port, file_name),
+        .python3_via_python => pythonReadyCommandAlloc(allocator, "python", port, file_name),
+        .python2 => pythonReadyCommandAlloc(allocator, "python2", port, file_name),
+        .python2_via_python => pythonReadyCommandAlloc(allocator, "python", port, file_name),
+        .node_inline, .npx_http_server => nodeReadyCommandAlloc(allocator, port, file_name),
     };
 }
 
-fn pythonReadyCommandAlloc(allocator: std.mem.Allocator, executable: []const u8, port: u16) ![]u8 {
+fn pythonReadyCommandAlloc(allocator: std.mem.Allocator, executable: []const u8, port: u16, file_name: []const u8) ![]u8 {
+    const encoded = try model.percentEncodeSegment(allocator, file_name);
+    defer allocator.free(encoded);
     return std.fmt.allocPrint(
         allocator,
-        "{s} - <<'PY'\nimport socket\ns=socket.socket()\ns.settimeout(1)\ns.connect(('127.0.0.1', {d}))\ns.close()\nPY",
-        .{ executable, port },
+        "{s} - <<'PY'\nimport socket, sys\ntry:\n    s=socket.socket()\n    s.settimeout(1)\n    s.connect(('127.0.0.1', {d}))\n    s.sendall(b'GET /{s} HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n')\n    data=b''\n    while len(data) < 512:\n        chunk=s.recv(512-len(data))\n        if not chunk:\n            break\n        data += chunk\n    s.close()\n    status=data.split(b'\\r\\n',1)[0].split(b'\\n',1)[0]\n    sys.exit(0 if status.startswith(b'HTTP/') and b' 200 ' in status else 1)\nexcept Exception:\n    sys.exit(1)\nPY",
+        .{ executable, port, encoded },
+    );
+}
+
+fn nodeReadyCommandAlloc(allocator: std.mem.Allocator, port: u16, file_name: []const u8) ![]u8 {
+    const encoded = try model.percentEncodeSegment(allocator, file_name);
+    defer allocator.free(encoded);
+    return std.fmt.allocPrint(
+        allocator,
+        "node -e \"var http=require('http');var req=http.get({{host:'127.0.0.1',port:{d},path:'/{s}',timeout:1000}},function(res){{process.exit(res.statusCode===200?0:1)}});req.on('timeout',function(){{req.destroy();process.exit(1)}});req.on('error',function(){{process.exit(1)}});\"",
+        .{ port, encoded },
     );
 }
 
@@ -891,4 +901,20 @@ test "html_server: command builder emits python and node server commands" {
     defer std.testing.allocator.free(node);
     try std.testing.expect(std.mem.indexOf(u8, node, "node -e") != null);
     try std.testing.expect(std.mem.indexOf(u8, node, "49154") != null);
+}
+
+test "html_server: remote ready probe verifies an HTTP response" {
+    const command = try remoteReadyCommandAlloc(std.testing.allocator, .python3, 49152, "report.html");
+    defer std.testing.allocator.free(command);
+
+    try std.testing.expect(std.mem.indexOf(u8, command, "GET /report.html HTTP/1.0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, command, "status.startswith(b'HTTP/')") != null);
+    try std.testing.expect(std.mem.indexOf(u8, command, "b' 200 ' in status") != null);
+}
+
+test "html_server: remote ready probe percent-encodes requested html path" {
+    const command = try remoteReadyCommandAlloc(std.testing.allocator, .python3, 49152, "a b#c.html");
+    defer std.testing.allocator.free(command);
+
+    try std.testing.expect(std.mem.indexOf(u8, command, "GET /a%20b%23c.html HTTP/1.0") != null);
 }
