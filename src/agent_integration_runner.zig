@@ -292,6 +292,10 @@ fn appendPosixClaudeInstall(allocator: std.mem.Allocator, out: *std.ArrayListUnm
         \\        group["matcher"] = matcher
         \\    arr.append(group)
         \\add("SessionStart", "bash " + shlex.quote(hook_path) + " session", matcher="*", timeout=10, needle="wispterm-agent-session")
+        \\add("UserPromptSubmit", "bash " + shlex.quote(hook_path) + " state running", needle="state running")
+        \\add("PreToolUse", "bash " + shlex.quote(hook_path) + " state running", matcher="*", needle="state running")
+        \\add("Notification", "bash " + shlex.quote(hook_path) + " state waiting_approval", needle="state waiting_approval")
+        \\add("Stop", "bash " + shlex.quote(hook_path) + " state done", needle="state done")
         \\add("Stop", notify)
         \\add("Notification", notify)
         \\with open(path, "w", encoding="utf-8") as f:
@@ -376,6 +380,25 @@ fn appendPosixCodexInstall(allocator: std.mem.Allocator, out: *std.ArrayListUnma
         \\PY
         \\
     );
+}
+
+test "POSIX Claude installer writes lifecycle state hooks" {
+    const script = try buildPosixInstaller(std.testing.allocator, .claude);
+    defer std.testing.allocator.free(script);
+
+    try std.testing.expect(std.mem.indexOf(u8, script, "state running") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "state waiting_approval") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "state done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "add(\"SessionStart\", \"bash \" + shlex.quote(hook_path) + \" session\"") != null);
+}
+
+test "POSIX Codex installer routes SessionStart to session hook, not notifier" {
+    const script = try buildPosixInstaller(std.testing.allocator, .codex);
+    defer std.testing.allocator.free(script);
+
+    try std.testing.expect(std.mem.indexOf(u8, script, "python3 - \"$codex_hooks\" \"$codex_hook\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "python3 - \"$codex_hooks\" \"$notify\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "\"command\": \"bash \" + shlex.quote(hook_path) + \" session\"") != null);
 }
 
 fn scriptCommand(allocator: std.mem.Allocator, script: []const u8) ![]u8 {

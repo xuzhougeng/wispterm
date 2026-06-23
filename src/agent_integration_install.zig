@@ -50,6 +50,19 @@ pub fn buildClaudeSettings(allocator: std.mem.Allocator, existing: []const u8, o
         .timeout = 10,
         .dedupe_needle = "wispterm-agent-session",
     });
+    try ensureCommandHook(aa, hooks_obj, "UserPromptSubmit", try stateHookCommand(aa, opts.command_style, opts.session_hook_path, "running"), .{
+        .dedupe_needle = "state running",
+    });
+    try ensureCommandHook(aa, hooks_obj, "PreToolUse", try stateHookCommand(aa, opts.command_style, opts.session_hook_path, "running"), .{
+        .matcher = "*",
+        .dedupe_needle = "state running",
+    });
+    try ensureCommandHook(aa, hooks_obj, "Notification", try stateHookCommand(aa, opts.command_style, opts.session_hook_path, "waiting_approval"), .{
+        .dedupe_needle = "state waiting_approval",
+    });
+    try ensureCommandHook(aa, hooks_obj, "Stop", try stateHookCommand(aa, opts.command_style, opts.session_hook_path, "done"), .{
+        .dedupe_needle = "state done",
+    });
     try ensureCommandHook(aa, hooks_obj, "Stop", opts.notifier_command, .{
         .dedupe_needle = opts.notifier_command,
     });
@@ -160,6 +173,16 @@ fn hookCommand(allocator: std.mem.Allocator, style: CommandStyle, path: []const 
             break :blk try std.fmt.allocPrint(allocator, "bash {s} session", .{quoted});
         },
         .windows => try std.fmt.allocPrint(allocator, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{s}\" session", .{path}),
+    };
+}
+
+fn stateHookCommand(allocator: std.mem.Allocator, style: CommandStyle, path: []const u8, state: []const u8) ![]u8 {
+    return switch (style) {
+        .posix => blk: {
+            const quoted = try shellQuote(allocator, path);
+            break :blk try std.fmt.allocPrint(allocator, "bash {s} state {s}", .{ quoted, state });
+        },
+        .windows => try std.fmt.allocPrint(allocator, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{s}\" state {s}", .{ path, state }),
     };
 }
 
@@ -294,7 +317,7 @@ fn isTomlKey(line: []const u8, key: []const u8) bool {
     return std.mem.eql(u8, actual, key);
 }
 
-test "Claude settings install SessionStart identity and notification hooks" {
+test "Claude settings install SessionStart identity, state, and notification hooks" {
     const out = try buildClaudeSettings(std.testing.allocator, "", .{
         .session_hook_path = "/home/me/.claude/hooks/wispterm-agent-session.sh",
         .notifier_command = "/home/me/.config/wispterm/wispterm-notify.sh",
@@ -308,8 +331,11 @@ test "Claude settings install SessionStart identity and notification hooks" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"Stop\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"Notification\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "/home/me/.config/wispterm/wispterm-notify.sh") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "state=running") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "state=done") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"UserPromptSubmit\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"PreToolUse\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "bash '/home/me/.claude/hooks/wispterm-agent-session.sh' state running") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "bash '/home/me/.claude/hooks/wispterm-agent-session.sh' state waiting_approval") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "bash '/home/me/.claude/hooks/wispterm-agent-session.sh' state done") != null);
 }
 
 test "Claude settings merge is idempotent and preserves user hooks" {
@@ -328,7 +354,8 @@ test "Claude settings merge is idempotent and preserves user hooks" {
     defer std.testing.allocator.free(twice);
 
     try std.testing.expect(std.mem.indexOf(u8, twice, "keep-me") != null);
-    try std.testing.expectEqual(count(twice, "wispterm-agent-session.sh"), @as(usize, 1));
+    try std.testing.expectEqual(count(once, "wispterm-agent-session.sh"), count(twice, "wispterm-agent-session.sh"));
+    try std.testing.expectEqual(@as(usize, 5), count(twice, "wispterm-agent-session.sh"));
     try std.testing.expectEqual(count(twice, "wispterm-notify.sh"), @as(usize, 2));
 }
 
@@ -341,6 +368,7 @@ test "Codex hooks install SessionStart identity hook" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"SessionStart\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "bash '/home/me/.codex/wispterm-agent-session.sh' session") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"timeout\": 10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "wispterm-notify.sh") == null);
 }
 
 test "Codex config enables hooks and prepends top-level notify" {

@@ -66,6 +66,15 @@ fn posixSessionHook(comptime app: []const u8, comptime claude: bool) []const u8 
         ++ "export WISPTERM_AGENT_APP=" ++ app ++ "\n" ++
         \\
         \\action="${1:-}"
+        \\if [ "$action" = "state" ]; then
+        \\  state="${2:-}"
+        \\  case "$state" in
+        \\    running|waiting_approval|needs_input|halted|failed|done) ;;
+        \\    *) exit 0 ;;
+        \\  esac
+        \\  printf '\033]7748;wispterm-agent;state=%s;app=%s\007' "$state" "$WISPTERM_AGENT_APP" > /dev/tty 2>/dev/null || true
+        \\  exit 0
+        \\fi
         \\[ "$action" = "session" ] || exit 0
         \\tmp="$(mktemp "${TMPDIR:-/tmp}/wispterm-agent-hook.XXXXXX")" || exit 0
         \\trap 'rm -f "$tmp"' EXIT HUP INT TERM
@@ -82,7 +91,7 @@ fn posixSessionHook(comptime app: []const u8, comptime claude: bool) []const u8 
         \\except Exception:
         \\    event = {}
         \\hook_event = str(event.get("hook_event_name") or "")
-        ++ filter ++
+        ++ "\n" ++ filter ++
         \\sid = event.get("session_id")
         \\if not isinstance(sid, str) or not sid:
         \\    raise SystemExit(0)
@@ -157,6 +166,14 @@ fn windowsSessionHook(comptime app: []const u8, comptime claude: bool) []const u
         \\
         ++ "$app = \"" ++ app ++ "\"\n" ++
         \\
+        \\function WriteMarker($msg) { $bytes=[Text.Encoding]::UTF8.GetBytes($msg); try { $s=[IO.File]::OpenWrite("CONOUT$"); try { $s.Write($bytes,0,$bytes.Length) } finally { $s.Dispose() } } catch {} }
+        \\if ($Action -eq "state") {
+        \\  $state = if ($args.Count -gt 0) { [string]$args[0] } else { "" }
+        \\  if (@("running","waiting_approval","needs_input","halted","failed","done") -notcontains $state) { exit 0 }
+        \\  $esc=[char]27; $bel=[char]7
+        \\  WriteMarker "$esc]7748;wispterm-agent;state=$state;app=$app$bel"
+        \\  exit 0
+        \\}
         \\if ($Action -ne "session") { exit 0 }
         \\try { $payload = [Console]::In.ReadToEnd() } catch { $payload = "" }
         \\try { $event = $payload | ConvertFrom-Json -ErrorAction Stop } catch { $event = $null }
@@ -173,8 +190,7 @@ fn windowsSessionHook(comptime app: []const u8, comptime claude: bool) []const u
         \\$data = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)).TrimEnd("=").Replace("+","-").Replace("/","_")
         \\$esc=[char]27; $bel=[char]7
         \\$msg="$esc]7748;wispterm-agent;event=session;app=$app;data=$data$bel"
-        \\$bytes=[Text.Encoding]::UTF8.GetBytes($msg)
-        \\try { $s=[IO.File]::OpenWrite("CONOUT$"); try { $s.Write($bytes,0,$bytes.Length) } finally { $s.Dispose() } } catch {}
+        \\WriteMarker $msg
         \\exit 0
         \\
     ;
@@ -185,6 +201,7 @@ test "POSIX session hook assets embed app labels through environment lines" {
     try std.testing.expect(std.mem.indexOf(u8, posix_claude_session_hook, "export WISPTERM_AGENT_APP=claude_code") != null);
     try std.testing.expect(std.mem.indexOf(u8, posix_codex_session_hook, "export WISPTERM_AGENT_APP=codex") != null);
     try std.testing.expect(std.mem.indexOf(u8, posix_claude_session_hook, "app = \"\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, posix_claude_session_hook, "state=%s;app=%s") != null);
 }
 
 test "Windows session hook assets embed app labels as PowerShell variables" {
@@ -192,4 +209,99 @@ test "Windows session hook assets embed app labels as PowerShell variables" {
     try std.testing.expect(std.mem.indexOf(u8, windows_claude_session_hook, "$app = \"claude_code\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, windows_codex_session_hook, "$app = \"codex\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, windows_codex_session_hook, "app=\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, windows_claude_session_hook, "state=$state;app=$app") != null);
+}
+
+test "POSIX Claude session hook accepts SessionStart JSON without hook error" {
+    const std = @import("std");
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const python_probe = std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &.{ "python3", "--version" },
+    }) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(python_probe.stdout);
+    defer std.testing.allocator.free(python_probe.stderr);
+    if (python_probe.term != .Exited or python_probe.term.Exited != 0) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var file = try tmp.dir.createFile("wispterm-agent-session.sh", .{});
+        defer file.close();
+        try file.writeAll(posix_claude_session_hook);
+        try file.chmod(0o755);
+    }
+
+    var child = std.process.Child.init(&.{ "sh", "wispterm-agent-session.sh", "session" }, std.testing.allocator);
+    child.cwd_dir = tmp.dir;
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    try child.spawn();
+    try child.stdin.?.writeAll(
+        \\{"hook_event_name":"SessionStart","session_id":"sess-123","transcript_path":"/tmp/claude.jsonl","source":"startup"}
+    );
+    child.stdin.?.close();
+    child.stdin = null;
+    var stdout: std.ArrayList(u8) = .empty;
+    var stderr: std.ArrayList(u8) = .empty;
+    defer stdout.deinit(std.testing.allocator);
+    defer stderr.deinit(std.testing.allocator);
+    try child.collectOutput(std.testing.allocator, &stdout, &stderr, 64 * 1024);
+    const term = try child.wait();
+
+    if (term != .Exited or term.Exited != 0) {
+        std.debug.print("session hook stderr:\n{s}\n", .{stderr.items});
+    }
+    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
+}
+
+test "POSIX Codex session hook accepts SessionStart JSON without hook error" {
+    const std = @import("std");
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const python_probe = std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &.{ "python3", "--version" },
+    }) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(python_probe.stdout);
+    defer std.testing.allocator.free(python_probe.stderr);
+    if (python_probe.term != .Exited or python_probe.term.Exited != 0) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var file = try tmp.dir.createFile("wispterm-agent-session.sh", .{});
+        defer file.close();
+        try file.writeAll(posix_codex_session_hook);
+        try file.chmod(0o755);
+    }
+
+    var child = std.process.Child.init(&.{ "sh", "wispterm-agent-session.sh", "session" }, std.testing.allocator);
+    child.cwd_dir = tmp.dir;
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    try child.spawn();
+    try child.stdin.?.writeAll(
+        \\{"hook_event_name":"SessionStart","session_id":"codex-123","transcript_path":"/tmp/codex.jsonl","source":"startup"}
+    );
+    child.stdin.?.close();
+    child.stdin = null;
+    var stdout: std.ArrayList(u8) = .empty;
+    var stderr: std.ArrayList(u8) = .empty;
+    defer stdout.deinit(std.testing.allocator);
+    defer stderr.deinit(std.testing.allocator);
+    try child.collectOutput(std.testing.allocator, &stdout, &stderr, 64 * 1024);
+    const term = try child.wait();
+
+    if (term != .Exited or term.Exited != 0) {
+        std.debug.print("codex session hook stderr:\n{s}\n", .{stderr.items});
+    }
+    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
 }

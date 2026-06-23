@@ -448,6 +448,22 @@ test "agent detector recognizes Claude Code approval prompt" {
     try std.testing.expectEqualStrings("ask", detection.badge());
 }
 
+test "agent detector recognizes Claude Code proceed prompt for bash approval" {
+    const output =
+        \\Bash command
+        \\du -sh /home/data/xzg/.claude/projects/-home-data-xzg/memory/ 2>&1
+        \\find with '-exec' executes commands or modifies files - cannot be auto-allowed by a Bash(find:*) prefix rule
+        \\
+        \\Do you want to proceed?
+        \\> 1. Yes
+        \\  2. No
+    ;
+    const detection = detect("Claude Code v2.1.144", output);
+    try std.testing.expectEqual(App.claude_code, detection.app);
+    try std.testing.expectEqual(State.waiting_approval, detection.state);
+    try std.testing.expectEqualStrings("ask", detection.badge());
+}
+
 test "agent detector recognizes Claude Code running title marker" {
     const detection = detect("\xe2\x9c\xbb Hiding advanced features", "Read 5 files, listed 5 directories, ran 1 shell command");
     try std.testing.expectEqual(App.claude_code, detection.app);
