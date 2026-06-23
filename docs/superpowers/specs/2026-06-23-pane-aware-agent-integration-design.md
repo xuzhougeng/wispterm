@@ -26,9 +26,9 @@ WispTerm already has most of the required building blocks:
 - Skill Center already routes work across local POSIX, WSL, and SSH profile
   targets (`SkillLocExec`, `SkillTransferCtx`, `wslSkillTransfer`) without
   pasting commands into the foreground terminal.
-- `claude_integration.zig` can idempotently merge/remove the older WispTerm
-  Claude Code lifecycle state hooks. The new installer should migrate away from
-  those state hooks rather than extend them.
+- `claude_integration.zig` currently contains the unpublished Claude Code
+  lifecycle state hook implementation. The new installer can replace that
+  behavior directly because it has not shipped.
 - `agent_detector.parseMarker()` currently accepts only OSC 7748 markers with a
   recognized `state=` field. Session identity markers need an explicit parser
   extension.
@@ -291,21 +291,6 @@ Rules:
 Codex agent state continues to use WispTerm's existing heuristic detection in
 this increment. `hooks.json` is used for session identity, not lifecycle state.
 
-### Legacy WispTerm hook migration
-
-Existing WispTerm-managed lifecycle state hooks should be removed during
-installation before the new SessionStart hook is added:
-
-- Claude Code: remove WispTerm commands in `UserPromptSubmit`, `PreToolUse`,
-  `Notification`, and `Stop` that emit OSC 7748 `state=...`. Preserve any
-  notification commands and all user-owned commands.
-- Codex: remove any WispTerm-managed lifecycle entries from `hooks.json` if a
-  previous build or manual install created them. Preserve user-owned hooks.
-
-This migration is intentionally one-way for this feature: after install,
-Claude/Codex lifecycle state is heuristic-driven and session identity is
-hook-driven.
-
 ## Architecture
 
 Create a pane-aware install layer in `src/agent_integration_install.zig`. It
@@ -314,8 +299,6 @@ should be split into pure config transforms and impure target execution:
 - **Pure transforms**
   - Build or merge Claude Code `settings.json` for the SessionStart identity
     hook and notification hooks.
-  - Remove WispTerm-managed legacy lifecycle state hooks while preserving user
-    hooks.
   - Build or merge Codex `hooks.json` for the SessionStart identity hook.
   - Build or merge Codex `config.toml` top-level `[features] hooks = true`,
     remove top-level deprecated `codex_hooks`, and add top-level `notify`
@@ -412,7 +395,6 @@ Installer results should distinguish:
 - `partial`
 - `conflict_existing_codex_notify`
 - `identity_installed_notify_conflict`
-- `legacy_state_hooks_migrated`
 - `target_unavailable`
 - `auth_or_transport_failed`
 - `parse_error`
@@ -447,8 +429,6 @@ other Codex hooks may rely on it.
 Fast tests:
 
 - Claude `settings.json` merge preserves unrelated hooks and is idempotent.
-- Claude merge removes WispTerm-managed legacy OSC 7748 lifecycle state hooks
-  while preserving WispTerm notification hooks and user hooks.
 - Codex `hooks.json` merge adds one WispTerm `SessionStart` hook and is
   idempotent.
 - Codex config merge ensures top-level `[features] hooks = true`.
@@ -480,9 +460,6 @@ Manual verification:
 - SSH saved profile: install from an SSH pane and verify remote files changed;
   confirm no password is printed.
 - Existing Codex `notify`: verify the command reports conflict and preserves it.
-- Existing legacy WispTerm Claude state hooks: install again and verify they are
-  removed while user hooks remain.
-
 ## Open implementation notes
 
 - The current checkout exposes `Install Claude Code Integration` in
