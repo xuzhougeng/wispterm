@@ -8,7 +8,7 @@ Extend as new shortcut tests need more keys.
 _KEYCODES = {
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7,
     "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15,
-    "t": 17, "n": 45,
+    "t": 17, "n": 45, "p": 35,
     "return": 36, "tab": 48, "space": 49, "delete": 51, "escape": 53,
     "left": 123, "right": 124, "down": 125, "up": 126,
     "f1": 122, "f2": 120, "f3": 99, "f4": 118,
