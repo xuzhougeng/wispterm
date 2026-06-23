@@ -44,9 +44,12 @@ test "ctl server answers a real loopback request and stops cleanly" {
         fn send_text(_: *anyopaque, _: []const u8, _: []const u8) bool {
             return false;
         }
+        fn ui_state(_: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
+            return try a.dupe(u8, "{\"activeOverlay\":\"none\"}");
+        }
         var dummy: u8 = 0;
         fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state } };
         }
     };
 
@@ -74,6 +77,16 @@ test "ctl server answers a real loopback request and stops cleanly" {
     try std.testing.expect(std.mem.indexOf(u8, buf[0..total], "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf[0..total], "activeTab") != null);
 
+    // ui-state round-trips over the same socket protocol as panes.
+    var s_ui = try std.net.tcpConnectToAddress(addr);
+    defer s_ui.close();
+    const ui_line = try protocol.encodeRequest(std.testing.allocator, .{ .token = "tok", .cmd = .ui_state });
+    defer std.testing.allocator.free(ui_line);
+    try s_ui.writeAll(ui_line);
+    var ui_buf: [256]u8 = undefined;
+    const ui_n = try s_ui.read(&ui_buf);
+    try std.testing.expect(std.mem.indexOf(u8, ui_buf[0..ui_n], "activeOverlay") != null);
+
     // A bad token is rejected over the wire too.
     var s2 = try std.net.tcpConnectToAddress(addr);
     defer s2.close();
@@ -99,9 +112,12 @@ test "ctl server shutdown does not hang on a stalled (newline-less) connection" 
         fn send_text(_: *anyopaque, _: []const u8, _: []const u8) bool {
             return false;
         }
+        fn ui_state(_: *anyopaque, _: std.mem.Allocator) anyerror!?[]u8 {
+            return null;
+        }
         var dummy: u8 = 0;
         fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state } };
         }
     };
 

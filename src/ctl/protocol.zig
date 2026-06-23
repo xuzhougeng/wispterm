@@ -4,13 +4,14 @@
 //! '\n'-terminated.
 const std = @import("std");
 
-pub const Cmd = enum { panes, get_text, send_text };
+pub const Cmd = enum { panes, get_text, send_text, ui_state };
 
 pub fn cmdToStr(c: Cmd) []const u8 {
     return switch (c) {
         .panes => "panes",
         .get_text => "get-text",
         .send_text => "send-text",
+        .ui_state => "ui-state",
     };
 }
 
@@ -18,6 +19,7 @@ pub fn cmdFromStr(s: []const u8) ?Cmd {
     if (std.mem.eql(u8, s, "panes")) return .panes;
     if (std.mem.eql(u8, s, "get-text")) return .get_text;
     if (std.mem.eql(u8, s, "send-text")) return .send_text;
+    if (std.mem.eql(u8, s, "ui-state")) return .ui_state;
     return null;
 }
 
@@ -195,6 +197,16 @@ test "parseRequest clamps an out-of-u32 recent instead of panicking" {
     var pr = try parseRequest(t.allocator, "{\"token\":\"x\",\"cmd\":\"get-text\",\"id\":\"s\",\"recent\":5000000000}");
     defer pr.deinit();
     try t.expectEqual(@as(?u32, std.math.maxInt(u32)), pr.value.recent);
+}
+
+test "ui-state command round-trips through cmd<->str and encode/parse" {
+    try t.expectEqual(Cmd.ui_state, cmdFromStr("ui-state").?);
+    try t.expectEqualStrings("ui-state", cmdToStr(.ui_state));
+    const line = try encodeRequest(t.allocator, .{ .token = "tok", .cmd = .ui_state });
+    defer t.allocator.free(line);
+    var pr = try parseRequest(t.allocator, line);
+    defer pr.deinit();
+    try t.expectEqual(Cmd.ui_state, pr.value.cmd);
 }
 
 test "parseRequest rejects unknown command and non-object" {

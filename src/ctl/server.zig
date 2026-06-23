@@ -120,6 +120,12 @@ pub const Server = struct {
                 defer self.allocator.free(json);
                 return protocol.encodeOkRawJson(self.allocator, json);
             },
+            .ui_state => {
+                const json = (try self.control.uiState(self.allocator)) orelse
+                    return protocol.encodeError(self.allocator, "ui-state not available");
+                defer self.allocator.free(json);
+                return protocol.encodeOkRawJson(self.allocator, json);
+            },
             .get_text => {
                 if (req.id.len == 0) return protocol.encodeError(self.allocator, "missing id");
                 const text = (try self.control.getText(self.allocator, req.id, req.recent)) orelse
@@ -166,9 +172,15 @@ const t = std.testing;
 
 const FakeControl = struct {
     sent: std.ArrayListUnmanaged(u8) = .empty,
+    ui_published: bool = true,
     fn list_panes(ctx: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
         _ = ctx;
         return try a.dupe(u8, "{\"tabs\":[]}");
+    }
+    fn ui_state(ctx: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
+        const self: *FakeControl = @ptrCast(@alignCast(ctx));
+        if (!self.ui_published) return null;
+        return try a.dupe(u8, "{\"activeOverlay\":\"command_palette\"}");
     }
     fn get_text(ctx: *anyopaque, a: std.mem.Allocator, id: []const u8, _: ?u32) anyerror!?[]u8 {
         _ = ctx;
@@ -182,7 +194,7 @@ const FakeControl = struct {
         return true;
     }
     fn iface(self: *FakeControl) control_mod.Control {
-        return .{ .ctx = self, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text } };
+        return .{ .ctx = self, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state } };
     }
 };
 
@@ -238,6 +250,29 @@ test "dispatch panes / get-text / send-text happy + missing paths" {
     defer t.allocator.free(sr);
     try t.expect(std.mem.indexOf(u8, sr, "\"ok\":true") != null);
     try t.expectEqualStrings("echo hi\n", fc.sent.items);
+}
+
+test "dispatch ui-state returns the published overlay JSON" {
+    var fc = FakeControl{};
+    defer fc.sent.deinit(t.allocator);
+    var srv = fakeServer(&fc);
+    const u = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .ui_state });
+    defer t.allocator.free(u);
+    const ur = try srv.dispatch(u);
+    defer t.allocator.free(ur);
+    try t.expect(std.mem.indexOf(u8, ur, "\"ok\":true") != null);
+    try t.expect(std.mem.indexOf(u8, ur, "activeOverlay") != null);
+}
+
+test "dispatch ui-state reports unavailable when nothing is published" {
+    var fc = FakeControl{ .ui_published = false };
+    defer fc.sent.deinit(t.allocator);
+    var srv = fakeServer(&fc);
+    const u = try protocol.encodeRequest(t.allocator, .{ .token = "secret", .cmd = .ui_state });
+    defer t.allocator.free(u);
+    const ur = try srv.dispatch(u);
+    defer t.allocator.free(ur);
+    try t.expect(std.mem.indexOf(u8, ur, "ui-state not available") != null);
 }
 
 test "dispatch surfaces a malformed line as an error reply" {
