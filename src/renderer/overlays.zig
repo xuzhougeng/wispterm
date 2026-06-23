@@ -553,7 +553,6 @@ fn executeCommand(action: CommandAction) void {
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
         .manage_ai_profiles => openAiListFromCommandPalette(),
         .select_agent_history => commandPaletteOpenAgentHistory(),
-        .load_copilot_conversation => AppWindow.openCopilotConversationPicker(),
         .split_right => AppWindow.splitFocused(.right),
         .split_down => AppWindow.splitFocused(.down),
         .split_left => AppWindow.splitFocused(.left),
