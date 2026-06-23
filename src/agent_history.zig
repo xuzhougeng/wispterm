@@ -458,6 +458,19 @@ pub fn buildSearchPreview(allocator: std.mem.Allocator, record: SessionRecord) !
     return buf.toOwnedSlice(allocator);
 }
 
+pub fn recordToJson(allocator: std.mem.Allocator, record: SessionRecord) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, record, .{});
+}
+
+pub fn recordFromJson(allocator: std.mem.Allocator, bytes: []const u8) !SessionRecord {
+    var parsed = try std.json.parseFromSlice(SessionRecord, allocator, bytes, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    return cloneRecord(allocator, parsed.value);
+}
+
 pub fn recordToIndexEntry(allocator: std.mem.Allocator, record: SessionRecord) !IndexEntry {
     const session_id = try allocator.dupe(u8, record.session_id);
     errdefer allocator.free(session_id);
@@ -1200,6 +1213,27 @@ test "agent_history: recordToIndexEntry derives bounded lowercase preview" {
     try std.testing.expect(std.unicode.utf8ValidateSlice(entry.search_preview));
     try std.testing.expect(std.mem.indexOf(u8, entry.search_preview, "hello world") != null);
     try std.testing.expect(std.mem.indexOf(u8, entry.search_preview, "first question") != null);
+}
+
+test "agent_history: single record JSON round-trips" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+    try store.upsertRecord(.{
+        .session_id = "s1", .title = "Title", .base_url = "https://api.example.com",
+        .api_key = "k", .model = "m1", .system_prompt = "sys", .thinking_enabled = true,
+        .reasoning_effort = "high", .stream = false, .agent_enabled = true, .copilot = true,
+        .created_at = 7, .updated_at = 9,
+        .messages = &[_]MessageRecord{ .{ .role = .user, .content = "hi" }, .{ .role = .assistant, .content = "yo" } },
+    });
+    const json = try recordToJson(allocator, store.records.items[0]);
+    defer allocator.free(json);
+    var rec = try recordFromJson(allocator, json);
+    defer freeOwnedRecord(allocator, &rec);
+    try std.testing.expectEqualStrings("s1", rec.session_id);
+    try std.testing.expect(rec.copilot);
+    try std.testing.expectEqual(@as(usize, 2), rec.messages.len);
+    try std.testing.expectEqualStrings("yo", rec.messages[1].content);
 }
 
 fn expectLenientParseOutOfMemory(json: []const u8) !void {
