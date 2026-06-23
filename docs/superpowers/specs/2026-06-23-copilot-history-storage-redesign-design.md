@@ -40,11 +40,11 @@
 | 列表（侧栏） | `file_explorer.zig:332` `syncAgentHistoryRows` → `buildRows` | 从内存全量构造 Row | 从索引构造 Row（不读正文） |
 | 列表（命令面板） | `AppWindow.zig:5985` `snapshotAgentHistoryRowsForCommandPalette` → `buildRows` | 同上 | 同上 |
 | 列表（Copilot picker） | `agent_history buildCopilotRows`（经 overlays） | 从内存筛 copilot | 从索引筛 copilot |
-| 写入（AI 历史变更） | `AppWindow.zig:5615` `saveAiHistoryChangeEvent` → `upsertRecord` | upsert 内存 + 标整库 dirty | upsert：立即原子写该会话文件 + 更新内存 entry + 标索引脏 |
+| 写入（AI 历史变更） | `AppWindow.zig:5615` `saveAiHistoryChangeEvent` → `upsertRecord` | upsert 内存 + 标整库 dirty | upsert：更新内存 entry + 暂存「待写记录」+ `markDirty`（去抖，**不立即写盘**） |
 | 写入（关闭前持久化打开的标签） | `AppWindow.zig:5642` `persistOpenAiChatTabsToHistoryStore` → `upsertRecord` | 同上 | 同上 |
-| 恢复 | `AppWindow.zig:1199 / 1273` `cloneRecordBySessionId` | 从内存克隆完整记录 | **读该会话文件**返回完整记录 |
-| 删除 | `AppWindow.zig:5972` `deleteAiChatHistorySessionId` → `deleteBySessionId` | 内存删除 + 标 dirty | 内存索引删除 + 删该会话文件 + 标索引脏 |
-| 落盘 | `AppWindow.zig:5659` `flushAgentHistoryStoreIfDirty` → `saveDefault` | 整库重写 | 仅在索引脏时重写 `index.json`（会话文件已在 upsert 时落盘） |
+| 恢复 | `AppWindow.zig:1199 / 1273` `cloneRecordBySessionId` | 从内存克隆完整记录 | 先查内存暂存，未命中则**读该会话文件**返回完整记录 |
+| 删除 | `AppWindow.zig:5972` `deleteAiChatHistorySessionId` → `deleteBySessionId` | 内存删除 + 标 dirty | 内存索引删除 + 删该会话文件 + 移除暂存 + 标脏 |
+| 落盘 | `AppWindow.zig:5659` `flushAgentHistoryStoreIfDirty` → `saveDefault` | 整库重写 | 节流 flush：写所有「待写」会话文件 + 重写 `index.json`，清空暂存 |
 
 `session_id` 形如 `session-{毫秒}-{计数}`（[ai_chat.zig:4183](../../../src/ai_chat.zig#L4183)），纯 ASCII、可直接作文件名（非法字符做净化兜底，见下）。
 
@@ -104,25 +104,27 @@ pub const IndexFile = struct {
 ```zig
 pub const MetaStore = struct {
     allocator,
-    dir: []const u8,                 // <config>/agent-history
-    entries: std.ArrayListUnmanaged(IndexEntry),
-    index_dirty: bool,               // index.json 待重写（会话文件在 upsert 时已落盘）
+    dir: []const u8,                                  // <config>/agent-history
+    entries: std.ArrayListUnmanaged(IndexEntry),      // 全部会话元数据（常驻）
+    pending: std.StringHashMapUnmanaged(SessionRecord),// 改动未落盘的完整记录（去抖期间暂存）
+    index_dirty: bool,                                // index.json 需重写
 
     pub fn open(allocator, dir) !MetaStore;          // 载入/重建索引（不读正文）
     pub fn buildRows(self, allocator) ![]Row;        // 从 entries 投影，已按 updated_at 倒序
     pub fn buildCopilotRows(self, allocator) ![]Row; // 仅 copilot==true
-    pub fn getRecord(self, allocator, id) !?SessionRecord; // 懒读 sessions/<id>.json
-    pub fn upsertRecord(self, input) !void;          // 立即原子写会话文件 + 更新内存 entry + index_dirty=true
-    pub fn deleteBySessionId(self, id) bool;         // 删文件 + 删 entry + index_dirty=true
-    pub fn flush(self) !void;                        // 若 index_dirty 则重写 index.json
+    // 完整记录：先查 pending，未命中则懒读 sessions/<id>.json（保留旧方法名以少改调用点）
+    pub fn cloneRecordBySessionId(self, allocator, id) !?SessionRecord;
+    pub fn upsertRecord(self, input) !void;          // 更新 entry + 存入 pending + index_dirty=true（不写盘）
+    pub fn deleteBySessionId(self, id) bool;         // 删文件 + 删 entry + 移除 pending + index_dirty=true
+    pub fn flush(self) !void;                         // 写所有 pending 会话文件 + 重写 index.json + 清空 pending
     pub fn deinit(self) void;
 };
 ```
 
-- `cloneRecordBySessionId` 调用点改为 `getRecord`（懒读文件）。其余调用点签名几乎不变。
-- `upsertRecord` 立即把完整 `SessionRecord` 原子写入 `sessions/<id>.json`，并刷新内存里对应 `IndexEntry`、置 `index_dirty`。正文不在内存久留，仅 `IndexEntry` 常驻。
+- 生产调用点签名基本不变：`cloneRecordBySessionId` 保留同名（内部先查 `pending` 再读盘）；`buildRows`/`buildCopilotRows`/`upsertRecord`/`deleteBySessionId`/`deinit` 同名同义。新增 `dir` 参数仅出现在 `open`。
+- `upsertRecord` 把完整 `SessionRecord` 克隆进 `pending` 并刷新对应 `IndexEntry`、置 `index_dirty`、`markDirty`；**不立即写盘**。只有「改动未落盘」的少量记录短暂常驻，flush 后清空，冷会话始终懒加载。
 
-> 决策记录：`upsertRecord` 立即落该会话文件（原子写），`flush` 仅按需重写索引。理由：单会话文件小、写入频率低，需被 flush_scheduler 节流的是「索引重写」而非「正文」；正文不在内存久留，符合懒加载初衷，崩溃面也最小。
+> 决策记录：写盘走 flush_scheduler 去抖（沿用现有 350ms 防抖），`upsertRecord` 仅更新内存并暂存。理由：AI 流式回复会高频触发 upsert，若每次立即整写会话文件则一次回复内 O(n²) 写盘；去抖把多次变更合并为一次落盘。代价是改动记录在 flush 前短暂驻留内存——量小且 flush 后释放，仍符合懒加载初衷。
 
 ## 迁移（旧单文件 → 新布局）
 
@@ -148,11 +150,11 @@ pub const MetaStore = struct {
 
 ## 并发与落盘
 
-- 沿用 `g_agent_history_mutex` 保护 `MetaStore`，以及 `flush_scheduler.FlushScheduler`（`markDirty`/`shouldFlush`/`beginFlush`/`deferFlush`/`failFlush`/`reset`）。
-- `upsertRecord`：持锁内原子写会话文件 + 更新内存 entry + `index_dirty = true` + `markAgentHistoryDirtyLocked()`（驱动索引 flush 节流）。
-- `deleteBySessionId`：持锁内删文件 + 删 entry + `index_dirty = true` + 标脏。
-- `flushAgentHistoryStoreIfDirty`：仅当 `index_dirty` 时重写 `index.json`（会话文件已在 upsert 时落盘）。`failFlush`/`deferFlush` 语义不变。
-- 关闭路径 `deinitGlobalAgentHistoryStore` 仍 `force` flush 一次，确保索引落盘。
+- 沿用 `g_agent_history_mutex` 保护 `MetaStore`，以及 `flush_scheduler.FlushScheduler`（`markDirty`/`shouldFlush`/`beginFlush`/`deferFlush`/`failFlush`/`reset`，350ms 去抖）。
+- `upsertRecord`：持锁内更新内存 entry + 克隆进 `pending` + `markAgentHistoryDirtyLocked()`（标脏并驱动去抖），**不写盘**。
+- `deleteBySessionId`：持锁内删会话文件 + 删 entry + 移除 `pending` 项 + 标脏。
+- `flushAgentHistoryStoreIfDirty`：沿用现有「持锁判定 `shouldFlush`」门控；判定通过后在锁内调 `MetaStore.flush()`（逐个原子写 `pending` 会话文件 + 原子写 `index.json`），成功 `beginFlush`、失败 `failFlush`。flush 经 350ms 去抖且只写少量脏文件，锁内写盘耗时可忽略，换取实现简单与 pending 所有权清晰（无需在「移出 pending 后写失败」时回填）。
+- 关闭路径 `deinitGlobalAgentHistoryStore` 仍 `force` flush 一次，确保 pending 与索引全部落盘。
 
 ## 容错与可重建
 
