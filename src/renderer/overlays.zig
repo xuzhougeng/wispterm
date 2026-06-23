@@ -554,7 +554,6 @@ fn executeCommand(action: CommandAction) void {
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
         .manage_ai_profiles => openAiListFromCommandPalette(),
         .select_agent_history => commandPaletteOpenAgentHistory(),
-        .load_copilot_conversation => AppWindow.openCopilotConversationPicker(),
         .split_right => AppWindow.splitFocused(.right),
         .split_down => AppWindow.splitFocused(.down),
         .split_left => AppWindow.splitFocused(.left),
@@ -1245,6 +1244,16 @@ fn commandPaletteActivateAgentHistoryRow(row_idx: usize) bool {
 fn commandPaletteActivateAgentHistoryIndex(row_idx: usize) bool {
     if (!commandPaletteIsHistoryMode()) return false;
     if (row_idx >= g_command_palette_history_rows.len) return false;
+
+    // Sidebar-origin conversations restore into the active tab's Copilot
+    // sidebar; tab conversations reopen as a full AI-chat tab. The sidebar
+    // branch runs before the palette closes, so the row pointer stays valid.
+    if (g_command_palette_history_rows[row_idx].copilot) {
+        AppWindow.loadCopilotConversationById(g_command_palette_history_rows[row_idx].session_id);
+        commandPaletteClose();
+        return true;
+    }
+
     if (AppWindow.reopenAiChatTabFromHistorySessionId(g_command_palette_history_rows[row_idx].session_id)) {
         commandPaletteClose();
         return true;
@@ -1780,9 +1789,12 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                 const text_y = rowTextY(row_y, layout.row_h);
                 const title_x = @round(layout.box_x + pad_x + 2);
                 const meta_right = layout.box_x + layout.box_w - pad_x;
-                if (row.model.len > 0) {
-                    const meta_w = measureTitlebarText(row.model);
-                    renderTitlebarText(row.model, meta_right - meta_w, text_y, meta_color);
+                // Sidebar-origin conversations show a "Sidebar" tag where tab
+                // conversations show their model name.
+                const right_label = if (row.copilot) i18n.s().cmd_palette_sidebar_tag else row.model;
+                if (right_label.len > 0) {
+                    const meta_w = measureTitlebarText(right_label);
+                    renderTitlebarText(right_label, meta_right - meta_w, text_y, meta_color);
                     renderTitlebarTextLimited(row.title, title_x, text_y, row_title_color, (meta_right - meta_w) - title_x - 18);
                 } else {
                     renderTitlebarTextLimited(row.title, title_x, text_y, row_title_color, meta_right - title_x);
