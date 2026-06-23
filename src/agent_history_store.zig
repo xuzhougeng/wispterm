@@ -19,6 +19,12 @@ pub const MetaStore = struct {
         defer allocator.free(sessions);
         try std.fs.cwd().makePath(sessions);
         if (try self.loadIndexFromDisk()) return self;
+
+        try self.rebuildIndexFromSessions();
+        if (self.entries.items.len > 0) {
+            self.index_dirty = true;
+            try self.flush();
+        }
         return self;
     }
 
@@ -178,6 +184,31 @@ pub const MetaStore = struct {
         self.index_dirty = true;
         return true;
     }
+
+    fn rebuildIndexFromSessions(self: *MetaStore) !void {
+        const sessions = try self.sessionsDirPath(self.allocator);
+        defer self.allocator.free(sessions);
+        var dir = std.fs.cwd().openDir(sessions, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return err,
+        };
+        defer dir.close();
+        var it = dir.iterate();
+        while (try it.next()) |ent| {
+            if (ent.kind != .file) continue;
+            if (!std.mem.endsWith(u8, ent.name, ".json")) continue;
+            const bytes = dir.readFileAlloc(self.allocator, ent.name, agent_history.MAX_SESSION_BYTES) catch continue;
+            defer self.allocator.free(bytes);
+            var rec = agent_history.recordFromJson(self.allocator, bytes) catch continue;
+            defer agent_history.freeOwnedRecord(self.allocator, &rec);
+            const entry = try agent_history.recordToIndexEntry(self.allocator, rec);
+            self.entries.append(self.allocator, entry) catch |err| {
+                var owned = entry;
+                agent_history.freeOwnedIndexEntry(self.allocator, &owned);
+                return err;
+            };
+        }
+    }
 };
 
 test "MetaStore: open empty dir yields no rows" {
@@ -269,4 +300,32 @@ test "MetaStore: delete removes entry, pending and on-disk file" {
     var reopened = try MetaStore.open(allocator, root);
     defer reopened.deinit();
     try std.testing.expect((try reopened.cloneRecordBySessionId(allocator, "s1")) == null);
+}
+
+test "MetaStore: rebuilds index from session files when index missing/corrupt; skips bad files" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    {
+        var store = try MetaStore.open(allocator, root);
+        defer store.deinit();
+        inline for (.{ "s1", "s2" }) |sid| {
+            try store.upsertRecord(.{
+                .session_id = sid, .title = "T", .base_url = "u", .api_key = "k", .model = "m",
+                .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
+                .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+                .messages = &[_]agent_history.MessageRecord{},
+            });
+        }
+        try store.flush();
+    }
+    try tmp.dir.deleteFile("index.json");
+    try tmp.dir.writeFile(.{ .sub_path = "sessions/broken.json", .data = "{ not json" });
+    var rebuilt = try MetaStore.open(allocator, root);
+    defer rebuilt.deinit();
+    const rows = try rebuilt.buildRows(allocator);
+    defer agent_history.freeRows(allocator, rows);
+    try std.testing.expectEqual(@as(usize, 2), rows.len);
 }
