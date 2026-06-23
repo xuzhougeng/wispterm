@@ -434,6 +434,51 @@ fn isSafeFileChar(c: u8) bool {
         c == '.' or c == '_' or c == '-';
 }
 
+pub const SEARCH_PREVIEW_MAX = 200;
+
+fn lowerAsciiByte(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
+
+pub fn buildSearchPreview(allocator: std.mem.Allocator, record: SessionRecord) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    for (record.title) |c| try buf.append(allocator, lowerAsciiByte(c));
+    for (record.messages) |m| {
+        if (buf.items.len >= SEARCH_PREVIEW_MAX) break;
+        try buf.append(allocator, ' ');
+        for (m.content) |c| {
+            if (buf.items.len >= SEARCH_PREVIEW_MAX) break;
+            try buf.append(allocator, lowerAsciiByte(c));
+        }
+    }
+    var n = @min(buf.items.len, SEARCH_PREVIEW_MAX);
+    while (n > 0 and !std.unicode.utf8ValidateSlice(buf.items[0..n])) n -= 1;
+    buf.shrinkRetainingCapacity(n);
+    return buf.toOwnedSlice(allocator);
+}
+
+pub fn recordToIndexEntry(allocator: std.mem.Allocator, record: SessionRecord) !IndexEntry {
+    const session_id = try allocator.dupe(u8, record.session_id);
+    errdefer allocator.free(session_id);
+    const title = try allocator.dupe(u8, record.title);
+    errdefer allocator.free(title);
+    const model = try allocator.dupe(u8, record.model);
+    errdefer allocator.free(model);
+    const search_preview = try buildSearchPreview(allocator, record);
+    errdefer allocator.free(search_preview);
+    return .{
+        .session_id = session_id,
+        .title = title,
+        .model = model,
+        .created_at = record.created_at,
+        .updated_at = record.updated_at,
+        .copilot = record.copilot,
+        .message_count = @intCast(record.messages.len),
+        .search_preview = search_preview,
+    };
+}
+
 pub fn sanitizeSessionFileName(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
     var all_safe = session_id.len > 0;
     for (session_id) |c| {
@@ -1136,6 +1181,25 @@ test "agent_history: sanitizeSessionFileName keeps safe ids and hashes unsafe on
     try std.testing.expect(std.mem.endsWith(u8, unsafe1, ".json"));
     try std.testing.expect(std.mem.indexOfScalar(u8, unsafe1, '/') == null);
     try std.testing.expectEqualStrings(unsafe1, unsafe2);
+}
+
+test "agent_history: recordToIndexEntry derives bounded lowercase preview" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+    try store.upsertRecord(.{
+        .session_id = "s1", .title = "Hello World", .base_url = "https://api.example.com",
+        .api_key = "k", .model = "m1", .system_prompt = "sys", .thinking_enabled = false,
+        .reasoning_effort = "low", .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+        .messages = &[_]MessageRecord{.{ .role = .user, .content = "First Question" }},
+    });
+    var entry = try recordToIndexEntry(allocator, store.records.items[0]);
+    defer freeOwnedIndexEntry(allocator, &entry);
+    try std.testing.expectEqual(@as(u32, 1), entry.message_count);
+    try std.testing.expect(entry.search_preview.len <= SEARCH_PREVIEW_MAX);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(entry.search_preview));
+    try std.testing.expect(std.mem.indexOf(u8, entry.search_preview, "hello world") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry.search_preview, "first question") != null);
 }
 
 fn expectLenientParseOutOfMemory(json: []const u8) !void {
