@@ -21,14 +21,17 @@ pub const MetaStore = struct {
         try std.fs.cwd().makePath(sessions);
         if (try self.loadIndexFromDisk()) return self;
 
+        // Complete (or start) migration before trusting on-disk session files: a
+        // crash mid-migration can leave a partial sessions/ dir with the legacy
+        // file still present, and rebuilding from those partial files would
+        // silently drop the un-migrated records. migrateLegacy is idempotent.
+        if (try self.migrateLegacy()) return self;
+
         try self.rebuildIndexFromSessions();
         if (self.entries.items.len > 0) {
             self.index_dirty = true;
             try self.flush();
-            return self;
         }
-
-        _ = try self.migrateLegacy();
         return self;
     }
 
@@ -361,6 +364,63 @@ test "MetaStore: rebuilds index from session files when index missing/corrupt; s
     const rows = try rebuilt.buildRows(allocator);
     defer agent_history.freeRows(allocator, rows);
     try std.testing.expectEqual(@as(usize, 2), rows.len);
+}
+
+test "MetaStore: completes an interrupted migration when legacy file still present" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    platform_dirs.setTestConfigDirForCurrentThread(root);
+    defer platform_dirs.clearTestConfigDirForCurrentThread();
+
+    // Legacy file with three records.
+    {
+        var legacy = agent_history.Store.init(allocator);
+        defer legacy.deinit();
+        inline for (.{ "old-1", "old-2", "old-3" }) |sid| {
+            try legacy.upsertRecord(.{
+                .session_id = sid, .title = "T", .base_url = "u", .api_key = "k", .model = "m",
+                .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
+                .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+                .messages = &[_]agent_history.MessageRecord{},
+            });
+        }
+        try legacy.saveDefault();
+    }
+
+    // Simulate a crashed migration: a partial sessions/ dir (only old-1 written),
+    // NO index.json, legacy file still present.
+    try tmp.dir.makePath("agent-history/sessions");
+    {
+        var one = agent_history.Store.init(allocator);
+        defer one.deinit();
+        try one.upsertRecord(.{
+            .session_id = "old-1", .title = "T", .base_url = "u", .api_key = "k", .model = "m",
+            .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
+            .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+            .messages = &[_]agent_history.MessageRecord{},
+        });
+        const json = try agent_history.recordToJson(allocator, one.records.items[0]);
+        defer allocator.free(json);
+        try tmp.dir.writeFile(.{ .sub_path = "agent-history/sessions/old-1.json", .data = json });
+    }
+
+    const dir = try platform_dirs.agentHistoryDir(allocator);
+    defer allocator.free(dir);
+    var store = try MetaStore.open(allocator, dir);
+    defer store.deinit();
+    const rows = try store.buildRows(allocator);
+    defer agent_history.freeRows(allocator, rows);
+    // Migration must complete: all THREE records present (not just the partial old-1).
+    try std.testing.expectEqual(@as(usize, 3), rows.len);
+
+    // Legacy file renamed to .bak (migration finished).
+    const legacy_path = try agent_history.defaultPath(allocator);
+    defer allocator.free(legacy_path);
+    const legacy_exists = if (std.fs.cwd().access(legacy_path, .{})) |_| true else |_| false;
+    try std.testing.expect(!legacy_exists);
 }
 
 test "MetaStore: migrates legacy single file to dir layout, idempotently, keeps .bak" {
