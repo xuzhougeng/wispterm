@@ -3,6 +3,7 @@ const platform_dirs = @import("platform/dirs.zig");
 const log = std.log.scoped(.agent_history);
 
 const MAX_HISTORY_BYTES = 8 * 1024 * 1024;
+pub const MAX_SESSION_BYTES = 32 * 1024 * 1024;
 const DEFAULT_PROTOCOL = "chat_completions";
 
 pub const MessageRole = enum {
@@ -47,6 +48,24 @@ pub const Row = struct {
     model: []const u8,
     updated_at: i64,
     copilot: bool = false,
+};
+
+pub const INDEX_VERSION: u32 = 1;
+
+pub const IndexEntry = struct {
+    session_id: []const u8,
+    title: []const u8,
+    model: []const u8,
+    created_at: i64,
+    updated_at: i64,
+    copilot: bool = false,
+    message_count: u32 = 0,
+    search_preview: []const u8 = "",
+};
+
+pub const IndexFile = struct {
+    version: u32 = INDEX_VERSION,
+    entries: []IndexEntry = &.{},
 };
 
 const PersistedStore = struct {
@@ -366,6 +385,46 @@ pub fn freeOwnedMessage(allocator: std.mem.Allocator, message: *MessageRecord) v
 pub fn freeRows(allocator: std.mem.Allocator, rows: []Row) void {
     for (rows) |*row| freeOwnedRow(allocator, row);
     allocator.free(rows);
+}
+
+pub fn dumpIndex(allocator: std.mem.Allocator, index: IndexFile) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, index, .{});
+}
+
+pub fn parseIndex(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(IndexFile) {
+    return std.json.parseFromSlice(IndexFile, allocator, bytes, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+}
+
+pub fn cloneIndexEntry(allocator: std.mem.Allocator, input: IndexEntry) !IndexEntry {
+    const session_id = try allocator.dupe(u8, input.session_id);
+    errdefer allocator.free(session_id);
+    const title = try allocator.dupe(u8, input.title);
+    errdefer allocator.free(title);
+    const model = try allocator.dupe(u8, input.model);
+    errdefer allocator.free(model);
+    const search_preview = try allocator.dupe(u8, input.search_preview);
+    errdefer allocator.free(search_preview);
+    return .{
+        .session_id = session_id,
+        .title = title,
+        .model = model,
+        .created_at = input.created_at,
+        .updated_at = input.updated_at,
+        .copilot = input.copilot,
+        .message_count = input.message_count,
+        .search_preview = search_preview,
+    };
+}
+
+pub fn freeOwnedIndexEntry(allocator: std.mem.Allocator, entry: *IndexEntry) void {
+    allocator.free(entry.session_id);
+    allocator.free(entry.title);
+    allocator.free(entry.model);
+    allocator.free(entry.search_preview);
+    entry.* = undefined;
 }
 
 fn dupeOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
@@ -1019,6 +1078,23 @@ test "agent_history: old record without copilot field defaults to false" {
     defer store.deinit();
     try std.testing.expectEqual(@as(usize, 1), store.records.items.len);
     try std.testing.expect(!store.records.items[0].copilot);
+}
+
+test "agent_history: index file round-trips" {
+    const allocator = std.testing.allocator;
+    var entries = [_]IndexEntry{
+        .{ .session_id = "s1", .title = "T1", .model = "m1", .created_at = 1, .updated_at = 2, .copilot = false, .message_count = 3, .search_preview = "t1 hello" },
+        .{ .session_id = "s2", .title = "T2", .model = "m2", .created_at = 5, .updated_at = 6, .copilot = true, .message_count = 0, .search_preview = "" },
+    };
+    const json = try dumpIndex(allocator, .{ .version = INDEX_VERSION, .entries = &entries });
+    defer allocator.free(json);
+    var parsed = try parseIndex(allocator, json);
+    defer parsed.deinit();
+    try std.testing.expectEqual(INDEX_VERSION, parsed.value.version);
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.entries.len);
+    try std.testing.expectEqualStrings("s2", parsed.value.entries[1].session_id);
+    try std.testing.expect(parsed.value.entries[1].copilot);
+    try std.testing.expectEqual(@as(u32, 3), parsed.value.entries[0].message_count);
 }
 
 fn expectLenientParseOutOfMemory(json: []const u8) !void {
