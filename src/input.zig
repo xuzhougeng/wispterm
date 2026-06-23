@@ -1391,6 +1391,110 @@ test "input: terminal viewport mouse wheel scroll requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: file explorer mouse wheel scroll requests a repaint" {
+    // Regression: scrolling the file explorer sidebar (Ctrl+Shift+Alt+E) only
+    // mutated the scroll offset without requesting a frame, so the panel did not
+    // redraw until the next cursor-blink tick (~600ms) — visibly stuttery scroll.
+    // The wheel handler must set g_force_rebuild so the new position is drawn now.
+    const previous_visible = file_explorer.g_visible;
+    const previous_owner = file_explorer.g_owner_tab;
+    const previous_mode = file_explorer.g_panel_mode;
+    const previous_entry_count = file_explorer.g_entry_count;
+    const previous_visible_height = file_explorer.g_visible_height;
+    const previous_scroll = file_explorer.g_scroll_offset;
+    const previous_row_height = file_explorer.g_row_height;
+    const previous_panel_width = file_explorer.g_width;
+    const previous_sidebar = tab.g_sidebar_visible;
+    const previous_browser_visible = browser_panel.g_visible;
+    const previous_whats_new_visible = overlays.whatsNewVisible();
+    defer {
+        file_explorer.g_visible = previous_visible;
+        file_explorer.g_owner_tab = previous_owner;
+        file_explorer.g_panel_mode = previous_mode;
+        file_explorer.g_entry_count = previous_entry_count;
+        file_explorer.g_visible_height = previous_visible_height;
+        file_explorer.g_scroll_offset = previous_scroll;
+        file_explorer.g_row_height = previous_row_height;
+        file_explorer.g_width = previous_panel_width;
+        tab.g_sidebar_visible = previous_sidebar;
+        browser_panel.g_visible = previous_browser_visible;
+        if (previous_whats_new_visible) overlays.showWhatsNew() else overlays.hideWhatsNew();
+    }
+
+    tab.g_sidebar_visible = false;
+    browser_panel.g_visible = false;
+    overlays.hideWhatsNew();
+
+    // Make the explorer visible for the active tab with a scrollable list.
+    file_explorer.g_visible = true;
+    file_explorer.g_owner_tab = active_tab_state.g_active_tab;
+    file_explorer.g_panel_mode = .files;
+    file_explorer.g_width = 240;
+    file_explorer.g_row_height = 20;
+    file_explorer.g_visible_height = 100;
+    file_explorer.g_entry_count = 100; // total 2000px >> visible 100px → scrollable
+    file_explorer.g_scroll_offset = 0;
+
+    AppWindow.g_force_rebuild = false;
+    AppWindow.g_cells_valid = true;
+
+    // Wheel "down" inside the panel (negative delta scrolls toward the bottom).
+    handleMouseWheel(.{ .delta = -120, .xpos = 20, .ypos = 200 });
+
+    // The fix: a frame is requested for the new scroll position.
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    // The offset actually advanced, proving we took the explorer branch (the
+    // terminal fallback would also set g_force_rebuild, so assert the side effect
+    // unique to this branch).
+    try std.testing.expect(file_explorer.g_scroll_offset > 0);
+    // The explorer draws above the terminal cell grid, so scrolling it must not
+    // invalidate the cells — that would force an unnecessary grid rebuild.
+    try std.testing.expect(AppWindow.g_cells_valid);
+}
+
+test "input: file explorer keyboard navigation requests a repaint" {
+    // Same regression as the wheel path: arrow-key navigation in the focused
+    // explorer moved the selection without requesting a frame, so the highlight
+    // did not update until the next cursor-blink tick (~600ms).
+    const previous_visible = file_explorer.g_visible;
+    const previous_owner = file_explorer.g_owner_tab;
+    const previous_focused = file_explorer.g_focused;
+    const previous_mode = file_explorer.g_panel_mode;
+    const previous_op_mode = file_explorer.g_op_mode;
+    const previous_entry_count = file_explorer.g_entry_count;
+    const previous_selected = file_explorer.g_selected;
+    const previous_whats_new_visible = overlays.whatsNewVisible();
+    defer {
+        file_explorer.g_visible = previous_visible;
+        file_explorer.g_owner_tab = previous_owner;
+        file_explorer.g_focused = previous_focused;
+        file_explorer.g_panel_mode = previous_mode;
+        file_explorer.g_op_mode = previous_op_mode;
+        file_explorer.g_entry_count = previous_entry_count;
+        file_explorer.g_selected = previous_selected;
+        if (previous_whats_new_visible) overlays.showWhatsNew() else overlays.hideWhatsNew();
+    }
+
+    overlays.hideWhatsNew();
+    file_explorer.g_visible = true;
+    file_explorer.g_owner_tab = active_tab_state.g_active_tab;
+    file_explorer.g_focused = true;
+    file_explorer.g_panel_mode = .files;
+    file_explorer.g_op_mode = .none;
+    file_explorer.g_entry_count = 10;
+    file_explorer.g_selected = 0;
+
+    AppWindow.g_force_rebuild = false;
+
+    // Bare Down arrow advances the selection (no modifier → not a keybind).
+    handleKey(.{ .key_code = platform_input.key_down, .ctrl = false, .shift = false, .alt = false, .super = false });
+
+    // The fix: a frame is requested so the moved highlight is drawn now.
+    try std.testing.expect(AppWindow.g_force_rebuild);
+    // Selection advanced, proving the explorer key branch consumed the event.
+    try std.testing.expectEqual(@as(?usize, 1), file_explorer.g_selected);
+}
+
 test "input: port forwarding form left/right arrows toggle Direction and request a repaint" {
     const allocator = std.testing.allocator;
     AppWindow.setSshHostsContentForTest("");
@@ -2916,7 +3020,12 @@ fn handleKey(ev: platform_input.KeyEvent) void {
     }
     // File explorer key handling (when focused and in operation mode)
     if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab()) {
-        if (handleFileExplorerKey(ev)) return;
+        if (handleFileExplorerKey(ev)) {
+            // Navigation/edits change what the panel draws; request a frame so it
+            // updates immediately (same rationale as the wheel-scroll path).
+            AppWindow.g_force_rebuild = true;
+            return;
+        }
     }
     // When tab rename is active, handle special keys
     if (tab.g_tab_rename_active) {
@@ -6651,6 +6760,11 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         if (ev.xpos >= panel_x and ev.xpos < panel_right) {
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * file_explorer.rowHeight() * 3 / 120.0;
             file_explorer.scrollBy(delta);
+            // Request a frame so the new offset is drawn now; otherwise the panel
+            // only redraws on the next cursor-blink tick (~600ms) → stuttery scroll.
+            // The explorer draws above the terminal cell grid, so leave
+            // g_cells_valid untouched — no need to rebuild the cells underneath.
+            AppWindow.g_force_rebuild = true;
             return;
         }
     }

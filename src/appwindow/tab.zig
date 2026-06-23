@@ -2129,7 +2129,6 @@ test "tab: restored title override applies to focused surface" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     var tree = try SplitTree.init(allocator, &surface);
     defer tree.deinit();
@@ -2621,7 +2620,6 @@ test "tab: splitIntoPreview adds a preview leaf and grows the tree by 2 nodes" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2706,7 +2704,6 @@ test "tab: focusPreviewPane selects the just-opened preview leaf" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2776,7 +2773,6 @@ test "tab: closeFocusedSplit closes a focused preview and refocuses the terminal
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2835,7 +2831,6 @@ test "tab: closeFocusedSplit on the last terminal focuses a preview leaf, not a 
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2895,7 +2890,6 @@ test "tab: previewForReuse matches preview panes by kind" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -2975,7 +2969,6 @@ test "tab: previewForReuse prefers the focused same-kind preview" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -3039,7 +3032,6 @@ test "tab: splitIntoPreviewStacked stacks below the existing preview column" {
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{
@@ -3117,7 +3109,6 @@ test "tab: splitIntoPreviewStacked remaps focus when the split target is focused
     surface.cwd_path_len = 0;
     surface.initial_cwd_path_len = 0;
     surface.title_override_len = 0;
-    surface.agent_recent_output_len = 0;
 
     const t = try gpa.create(TabState);
     t.* = .{

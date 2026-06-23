@@ -8710,31 +8710,6 @@ fn recordFrameLatencyIfInputDriven() void {
     g_frame_latency.resetWindow();
 }
 
-/// Run deferred agent detections (throttled on the IO thread during output
-/// floods, see Surface.agent_throttle) so detection converges once output
-/// stops — e.g. an approval prompt arriving as the last chunk of a burst.
-/// Repaints only when the detection result actually changed.
-fn flushAgentDetectionSweep() void {
-    const now = std.time.milliTimestamp();
-    for (0..tab.g_tab_count) |ti| {
-        if (tab.g_tabs[ti]) |tb| {
-            var it = tb.tree.surfaces();
-            while (it.next()) |entry| {
-                const surface = entry.surface;
-                if (!surface.agent_throttle.pendingPeek()) continue;
-                const before = surface.agent_detection;
-                surface.render_state.mutex.lock();
-                const ran = surface.flushAgentDetection(now);
-                surface.render_state.mutex.unlock();
-                if (ran and !std.meta.eql(before, surface.agent_detection)) {
-                    g_force_rebuild = true;
-                    g_cells_valid = false;
-                }
-            }
-        }
-    }
-}
-
 /// Whether any surface in `tb` has unconsumed PTY output. Pure over the tab so
 /// the active-tab-only render gate is unit-testable.
 fn anyTabSurfaceDirty(tb: *const tab.TabState) bool {
@@ -9920,8 +9895,6 @@ fn runMainLoop(self: *AppWindow) !void {
         rememberWindowedPosition(win);
         // Fire any due /loop or /watch tasks (UI thread: tab.g_tabs is populated).
         ai_loop_store.tick(std.time.milliTimestamp());
-        // Catch up agent detections deferred by the IO-thread throttle.
-        flushAgentDetectionSweep();
 
         // Handle bells, notifications, and OSC 52 clipboard writes staged by
         // the IO threads. This runs before the render gate: background-tab

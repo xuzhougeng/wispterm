@@ -48,7 +48,6 @@ test {
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("renderer/overlays/whats_new_model.zig");
-    _ = @import("agent_detect_throttle.zig");
     _ = @import("renderer/ui_batch.zig");
     _ = @import("close_confirm.zig");
     _ = @import("command_palette_model.zig");

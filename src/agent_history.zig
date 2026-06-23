@@ -46,6 +46,7 @@ pub const Row = struct {
     title: []const u8,
     model: []const u8,
     updated_at: i64,
+    copilot: bool = false,
 };
 
 const PersistedStore = struct {
@@ -110,6 +111,7 @@ pub const Store = struct {
                 .title = record.title,
                 .model = record.model,
                 .updated_at = record.updated_at,
+                .copilot = record.copilot,
             });
             initialized += 1;
         }
@@ -132,6 +134,7 @@ pub const Store = struct {
                 .title = record.title,
                 .model = record.model,
                 .updated_at = record.updated_at,
+                .copilot = record.copilot,
             });
             try list.append(allocator, row);
         }
@@ -383,6 +386,7 @@ fn cloneRow(allocator: std.mem.Allocator, input: anytype) !Row {
         .title = title,
         .model = model,
         .updated_at = input.updated_at,
+        .copilot = if (@hasField(@TypeOf(input), "copilot")) input.copilot else false,
     };
 }
 
@@ -697,6 +701,30 @@ test "agent_history: buildCopilotRows lists only copilot records, newest first" 
     try std.testing.expectEqual(@as(usize, 2), rows.len);
     try std.testing.expectEqualStrings("b", rows[0].session_id); // newest (20) first
     try std.testing.expectEqualStrings("a", rows[1].session_id);
+}
+
+test "agent_history: buildRows carries the copilot sidebar flag per record" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+    const base = SessionRecord{
+        .session_id = "", .title = "", .base_url = "u", .api_key = "k", .model = "m",
+        .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
+        .stream = true, .agent_enabled = true, .created_at = 0, .updated_at = 0,
+        .messages = &[_]MessageRecord{},
+    };
+    var sidebar = base; sidebar.session_id = "s"; sidebar.updated_at = 20; sidebar.copilot = true;
+    var tabrec = base; tabrec.session_id = "t"; tabrec.updated_at = 10; tabrec.copilot = false;
+    try store.upsertRecord(sidebar);
+    try store.upsertRecord(tabrec);
+
+    const rows = try store.buildRows(allocator);
+    defer freeRows(allocator, rows);
+    try std.testing.expectEqual(@as(usize, 2), rows.len);
+    try std.testing.expectEqualStrings("s", rows[0].session_id); // newest (20) first
+    try std.testing.expect(rows[0].copilot);
+    try std.testing.expectEqualStrings("t", rows[1].session_id);
+    try std.testing.expect(!rows[1].copilot);
 }
 
 test "agent_history: missing vision_enabled defaults to false" {
