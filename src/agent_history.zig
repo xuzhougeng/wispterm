@@ -2,7 +2,6 @@ const std = @import("std");
 const platform_dirs = @import("platform/dirs.zig");
 const log = std.log.scoped(.agent_history);
 
-const MAX_HISTORY_BYTES = 8 * 1024 * 1024;
 pub const MAX_SESSION_BYTES = 32 * 1024 * 1024;
 const DEFAULT_PROTOCOL = "chat_completions";
 
@@ -299,25 +298,6 @@ pub fn cloneRecord(allocator: std.mem.Allocator, input: anytype) !SessionRecord 
         .updated_at = input.updated_at,
         .messages = messages,
     };
-}
-
-pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !Store {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, path, MAX_HISTORY_BYTES) catch |err| switch (err) {
-        error.FileNotFound => return Store.init(allocator),
-        else => {
-            log.warn("failed to read {s}: {}", .{ path, err });
-            return err;
-        },
-    };
-    defer allocator.free(bytes);
-
-    return Store.fromJsonStringLenient(allocator, bytes);
-}
-
-pub fn loadDefault(allocator: std.mem.Allocator) !Store {
-    const path = try defaultPath(allocator);
-    defer allocator.free(path);
-    return loadFromPath(allocator, path);
 }
 
 pub fn freeOwnedRecord(allocator: std.mem.Allocator, record: *SessionRecord) void {
