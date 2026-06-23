@@ -37,6 +37,7 @@ const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
 const ai_model_switch = @import("../ai_model_switch.zig");
 const claude_integration = @import("../claude_integration.zig");
+const agent_integration_runner = @import("../agent_integration_runner.zig");
 const platform_atomic_file = @import("../platform/atomic_file.zig");
 const agent_detector = @import("../agent_detector.zig");
 
@@ -603,6 +604,7 @@ fn executeCommand(action: CommandAction) void {
         .open_latest_release => openLatestRelease(),
         .show_whats_new => showWhatsNew(),
         .install_claude_code_integration => installClaudeCodeIntegration(),
+        .install_codex_integration => installCodexIntegration(),
         .remove_claude_code_integration => removeClaudeCodeIntegration(),
         .open_skill_center => {
             _ = AppWindow.spawnSkillCenterTab();
@@ -7167,11 +7169,48 @@ pub fn openLatestRelease() void {
     _ = platform_open_url.open(allocator, .{ .url = url });
 }
 
-/// Read the Claude Code hook settings file (empty string if absent), call
-/// claude_integration.install, write atomically, show a toast.
+/// Install WispTerm's Claude Code integration bundle on the focused pane's
+/// machine: local, WSL, or SSH.
 fn installClaudeCodeIntegration() void {
     const allocator = AppWindow.g_allocator orelse return;
-    applyClaudeIntegration(allocator, true);
+    installAgentIntegration(allocator, agent_integration_runner.installClaude, "Claude Code");
+}
+
+fn installCodexIntegration() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    installAgentIntegration(allocator, agent_integration_runner.installCodex, "Codex");
+}
+
+fn installAgentIntegration(
+    allocator: std.mem.Allocator,
+    install_fn: *const fn (std.mem.Allocator, agent_integration_runner.Target) agent_integration_runner.Result,
+    agent_name: []const u8,
+) void {
+    const surface = AppWindow.activeSurface() orelse {
+        showStatusToast("Integration install: no focused terminal");
+        return;
+    };
+    const target = agent_integration_runner.targetFromSurface(surface) orelse {
+        showStatusToast("Integration install: target unavailable");
+        return;
+    };
+    const result = install_fn(allocator, target);
+    const target_label = result.targetLabel();
+    switch (result.outcome) {
+        .installed => {
+            const msg = std.fmt.allocPrint(allocator, "{s} integration installed on {s}", .{ agent_name, target_label }) catch {
+                showStatusToast("Integration installed");
+                return;
+            };
+            defer allocator.free(msg);
+            showStatusToast(msg);
+        },
+        .conflict_existing_codex_notify => showStatusToast("Codex integration conflict: existing notify left untouched"),
+        .target_unavailable => showStatusToast("Integration install: target unavailable"),
+        .transport_failed => showStatusToast("Integration install: SSH/WSL command failed"),
+        .parse_error => showStatusToast("Integration install: config parse error"),
+        .write_failed => showStatusToast("Integration install: failed to write config"),
+    }
 }
 
 /// Read the Claude Code hook settings file (empty string if absent), call

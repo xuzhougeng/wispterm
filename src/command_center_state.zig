@@ -43,6 +43,7 @@ pub const CommandAction = enum {
     open_latest_release,
     show_whats_new,
     install_claude_code_integration,
+    install_codex_integration,
     remove_claude_code_integration,
     open_skill_center,
     open_port_forwarding,
@@ -98,6 +99,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Open Latest Release", .detail = "Open the latest WispTerm GitHub Release", .shortcut = "", .action = .open_latest_release },
     .{ .title = "What's New", .detail = "Show what changed in this version of WispTerm", .shortcut = app_metadata.version, .action = .show_whats_new },
     .{ .title = "Install Claude Code Integration", .detail = "Add WispTerm agent hooks to ~/.claude/settings.json", .shortcut = "", .action = .install_claude_code_integration },
+    .{ .title = "Install Codex Integration", .detail = "Add WispTerm Codex hooks to ~/.codex", .shortcut = "", .action = .install_codex_integration },
     .{ .title = "Remove Claude Code Integration", .detail = "Remove WispTerm agent hooks from ~/.claude/settings.json", .shortcut = "", .action = .remove_claude_code_integration },
     .{ .title = "Port Forwarding", .detail = "Manage SSH port forwarding rules", .shortcut = "", .action = .open_port_forwarding },
     .{ .title = "Split Preview", .detail = "Open a preview panel on the right", .shortcut = "", .action = .split_preview },
@@ -330,6 +332,10 @@ test "command center includes Skill Center action" {
         }
     }
     return error.MissingSkillCenterCommand;
+}
+
+test "command center includes Codex integration install action" {
+    try std.testing.expectEqual(CommandAction.install_codex_integration, findCommandAction("Install Codex Integration"));
 }
 
 test "Skill Center is on the default first command center page" {

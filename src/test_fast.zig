@@ -164,6 +164,8 @@ test {
     _ = @import("tool_registry.zig");
     _ = @import("tool_import.zig");
     _ = @import("agent_detector.zig");
+    _ = @import("agent_integration_assets.zig");
+    _ = @import("agent_integration_install.zig");
     _ = @import("claude_integration.zig");
     _ = @import("jupyter_detect.zig");
     _ = @import("jupyter_picker.zig");

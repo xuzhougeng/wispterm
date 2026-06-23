@@ -70,6 +70,31 @@ pub const Detection = struct {
     }
 };
 
+pub const SessionText = struct {
+    buf: [512]u8 = undefined,
+    len: usize = 0,
+
+    pub fn set(self: *SessionText, value: []const u8) !void {
+        if (value.len > self.buf.len) return error.SessionFieldTooLong;
+        for (value) |ch| {
+            if (ch < 0x20 or ch == 0x7f) return error.SessionFieldContainsControl;
+        }
+        @memcpy(self.buf[0..value.len], value);
+        self.len = value.len;
+    }
+
+    pub fn slice(self: *const SessionText) []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+pub const SessionMarker = struct {
+    app: App = .none,
+    session_id: SessionText = .{},
+    session_path: SessionText = .{},
+    session_start_source: SessionText = .{},
+};
+
 fn lowerAscii(ch: u8) u8 {
     return if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
 }
@@ -520,6 +545,67 @@ pub fn parseMarker(payload: []const u8) ?Detection {
     return .{ .app = app, .state = state, .confidence = 100 };
 }
 
+/// Parse metadata-only OSC 7748 session marker:
+/// `wispterm-agent;event=session;app=claude_code;data=<base64url-json>`.
+/// Returns null for state markers or malformed metadata. This is intentionally
+/// not an authoritative Detection and must not suppress heuristic detection.
+pub fn parseSessionMarker(allocator: std.mem.Allocator, payload: []const u8) !?SessionMarker {
+    var it = std.mem.splitScalar(u8, payload, ';');
+    const first = it.next() orelse return null;
+    if (!std.mem.eql(u8, std.mem.trim(u8, first, " "), TAG)) return null;
+
+    var event_session = false;
+    var app: App = .none;
+    var data: ?[]const u8 = null;
+    while (it.next()) |field| {
+        const f = std.mem.trim(u8, field, " ");
+        if (std.mem.eql(u8, f, "event=session")) {
+            event_session = true;
+        } else if (std.mem.startsWith(u8, f, "app=")) {
+            if (appFromLabel(f["app=".len..])) |a| app = a;
+        } else if (std.mem.startsWith(u8, f, "data=")) {
+            data = f["data=".len..];
+        } else if (std.mem.startsWith(u8, f, "state=")) {
+            return null;
+        }
+    }
+
+    if (!event_session or app == .none) return null;
+    const encoded = data orelse return null;
+
+    const decoder = std.base64.url_safe_no_pad.Decoder;
+    const decoded_len = decoder.calcSizeForSlice(encoded) catch return null;
+    if (decoded_len == 0 or decoded_len > 4096) return null;
+    const decoded = try allocator.alloc(u8, decoded_len);
+    defer allocator.free(decoded);
+    decoder.decode(decoded, encoded) catch return null;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, decoded, .{
+        .allocate = .alloc_always,
+    }) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+
+    const sid_val = parsed.value.object.get("session_id") orelse return null;
+    if (sid_val != .string or sid_val.string.len == 0) return null;
+
+    var marker: SessionMarker = .{ .app = app };
+    marker.session_id.set(sid_val.string) catch return null;
+
+    if (parsed.value.object.get("session_path")) |path_val| {
+        if (path_val == .string and path_val.string.len > 0) {
+            marker.session_path.set(path_val.string) catch return null;
+        }
+    }
+    if (parsed.value.object.get("session_start_source")) |source_val| {
+        if (source_val == .string and source_val.string.len > 0) {
+            marker.session_start_source.set(source_val.string) catch return null;
+        }
+    }
+
+    return marker;
+}
+
 /// Aggregate pane states into one tab-level indicator by attention priority.
 /// Empty -> .none.
 pub fn aggregate(states: []const State) State {
@@ -558,6 +644,24 @@ test "parseMarker rejects wrong tag / missing or unknown state" {
     try std.testing.expect(parseMarker("other;state=running") == null);
     try std.testing.expect(parseMarker("wispterm-agent;app=claude_code") == null);
     try std.testing.expect(parseMarker("wispterm-agent;state=bogus") == null);
+}
+
+test "parseSessionMarker decodes metadata-only OSC 7748 session markers" {
+    const payload =
+        "wispterm-agent;event=session;app=claude_code;data=eyJzZXNzaW9uX2lkIjoiY2xhdWRlLTEyMyIsInNlc3Npb25fcGF0aCI6Ii9ob21lL21lLy5jbGF1ZGUvcHJvamVjdHMveC5qc29ubCIsInNlc3Npb25fc3RhcnRfc291cmNlIjoic3RhcnR1cCJ9";
+    const marker = try parseSessionMarker(std.testing.allocator, payload);
+    try std.testing.expect(marker != null);
+    try std.testing.expectEqual(App.claude_code, marker.?.app);
+    try std.testing.expectEqualStrings("claude-123", marker.?.session_id.slice());
+    try std.testing.expectEqualStrings("/home/me/.claude/projects/x.jsonl", marker.?.session_path.slice());
+    try std.testing.expectEqualStrings("startup", marker.?.session_start_source.slice());
+}
+
+test "parseSessionMarker rejects state markers and unsafe metadata" {
+    try std.testing.expect(try parseSessionMarker(std.testing.allocator, "wispterm-agent;state=running;app=claude_code") == null);
+    try std.testing.expect(try parseSessionMarker(std.testing.allocator, "wispterm-agent;event=session;app=codex;data=not-base64") == null);
+    const control_json = "eyJzZXNzaW9uX2lkIjoiYVx1MDAwN2IifQ";
+    try std.testing.expect(try parseSessionMarker(std.testing.allocator, std.fmt.comptimePrint("wispterm-agent;event=session;app=codex;data={s}", .{control_json})) == null);
 }
 
 test "appFromCommand maps known agents" {

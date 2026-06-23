@@ -84,8 +84,9 @@ const WISPTERM_IMAGE_OSC_MAX = 16 * 1024;
 /// OSC number prefix shared by image (7747) and agent (7748): the bytes "774".
 const WISPTERM_PRIVATE_OSC_SHARED = "774";
 /// Maximum agent marker payload size (bytes after "7748;"); sequences longer
-/// than this are silently discarded via the overflow states.
-const WISPTERM_AGENT_OSC_MAX = 256;
+/// than this are silently discarded via the overflow states. Session markers
+/// carry base64url JSON metadata, so they need more room than state markers.
+const WISPTERM_AGENT_OSC_MAX = 6144;
 
 /// Coarse launch environment for terminal-side integrations such as path paste.
 pub const LaunchKind = platform_pty_command.LaunchKind;
@@ -335,6 +336,7 @@ initial_cwd_path_len: usize = 0,
 // Lightweight app/agent detection state. Updated by the PTY reader from recent
 // output and OSC title changes, then read by chrome/remote/AI tooling.
 agent_detection: agent_detector.Detection = .{},
+agent_session: agent_detector.SessionMarker = .{},
 agent_recent_output: [4096]u8 = undefined,
 agent_recent_output_len: usize = 0,
 // Throttles the (substring-scan heavy) agent detection during output floods.
@@ -1295,16 +1297,20 @@ fn replayNonImageOscPrefix(self: *Surface) void {
     }
 }
 
-/// Called when a complete OSC 7748 agent-state marker has been received.
+/// Called when a complete OSC 7748 agent marker has been received.
 /// The payload (bytes after "7748;") is in wispterm_agent_osc_buf[0..len].
-/// If parseMarker succeeds, the Detection is applied and the heuristic is
-/// suppressed. The marker is consumed (not forwarded to the VT).
+/// State markers are authoritative and suppress heuristic detection. Session
+/// markers only update metadata and leave heuristic detection active.
 fn handleWispTermAgentOsc(self: *Surface) void {
     const payload = self.wispterm_agent_osc_buf[0..self.wispterm_agent_osc_buf_len];
     self.wispterm_agent_osc_buf_len = 0;
     if (agent_detector.parseMarker(payload)) |det| {
         self.agent_detection = det;
         self.agent_osc_active = true;
+        return;
+    }
+    if (agent_detector.parseSessionMarker(self.allocator, payload) catch null) |marker| {
+        self.agent_session = marker;
     }
 }
 
