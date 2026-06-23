@@ -2,7 +2,7 @@ const std = @import("std");
 const platform_dirs = @import("platform/dirs.zig");
 const log = std.log.scoped(.agent_history);
 
-const MAX_HISTORY_BYTES = 8 * 1024 * 1024;
+pub const MAX_SESSION_BYTES = 32 * 1024 * 1024;
 const DEFAULT_PROTOCOL = "chat_completions";
 
 pub const MessageRole = enum {
@@ -47,6 +47,24 @@ pub const Row = struct {
     model: []const u8,
     updated_at: i64,
     copilot: bool = false,
+};
+
+pub const INDEX_VERSION: u32 = 1;
+
+pub const IndexEntry = struct {
+    session_id: []const u8,
+    title: []const u8,
+    model: []const u8,
+    created_at: i64,
+    updated_at: i64,
+    copilot: bool = false,
+    message_count: u32 = 0,
+    search_preview: []const u8 = "",
+};
+
+pub const IndexFile = struct {
+    version: u32 = INDEX_VERSION,
+    entries: []IndexEntry = &.{},
 };
 
 const PersistedStore = struct {
@@ -282,25 +300,6 @@ pub fn cloneRecord(allocator: std.mem.Allocator, input: anytype) !SessionRecord 
     };
 }
 
-pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !Store {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, path, MAX_HISTORY_BYTES) catch |err| switch (err) {
-        error.FileNotFound => return Store.init(allocator),
-        else => {
-            log.warn("failed to read {s}: {}", .{ path, err });
-            return err;
-        },
-    };
-    defer allocator.free(bytes);
-
-    return Store.fromJsonStringLenient(allocator, bytes);
-}
-
-pub fn loadDefault(allocator: std.mem.Allocator) !Store {
-    const path = try defaultPath(allocator);
-    defer allocator.free(path);
-    return loadFromPath(allocator, path);
-}
-
 pub fn freeOwnedRecord(allocator: std.mem.Allocator, record: *SessionRecord) void {
     allocator.free(record.session_id);
     allocator.free(record.title);
@@ -366,6 +365,181 @@ pub fn freeOwnedMessage(allocator: std.mem.Allocator, message: *MessageRecord) v
 pub fn freeRows(allocator: std.mem.Allocator, rows: []Row) void {
     for (rows) |*row| freeOwnedRow(allocator, row);
     allocator.free(rows);
+}
+
+pub fn dumpIndex(allocator: std.mem.Allocator, index: IndexFile) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, index, .{});
+}
+
+pub fn parseIndex(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(IndexFile) {
+    return std.json.parseFromSlice(IndexFile, allocator, bytes, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+}
+
+pub fn cloneIndexEntry(allocator: std.mem.Allocator, input: IndexEntry) !IndexEntry {
+    const session_id = try allocator.dupe(u8, input.session_id);
+    errdefer allocator.free(session_id);
+    const title = try allocator.dupe(u8, input.title);
+    errdefer allocator.free(title);
+    const model = try allocator.dupe(u8, input.model);
+    errdefer allocator.free(model);
+    const search_preview = try allocator.dupe(u8, input.search_preview);
+    errdefer allocator.free(search_preview);
+    return .{
+        .session_id = session_id,
+        .title = title,
+        .model = model,
+        .created_at = input.created_at,
+        .updated_at = input.updated_at,
+        .copilot = input.copilot,
+        .message_count = input.message_count,
+        .search_preview = search_preview,
+    };
+}
+
+pub fn freeOwnedIndexEntry(allocator: std.mem.Allocator, entry: *IndexEntry) void {
+    allocator.free(entry.session_id);
+    allocator.free(entry.title);
+    allocator.free(entry.model);
+    allocator.free(entry.search_preview);
+    entry.* = undefined;
+}
+
+fn isSafeFileChar(c: u8) bool {
+    return (c >= 'A' and c <= 'Z') or
+        (c >= 'a' and c <= 'z') or
+        (c >= '0' and c <= '9') or
+        c == '.' or c == '_' or c == '-';
+}
+
+pub const SEARCH_PREVIEW_MAX = 200;
+
+fn lowerAsciiByte(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
+
+pub fn buildSearchPreview(allocator: std.mem.Allocator, record: SessionRecord) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    for (record.title) |c| try buf.append(allocator, lowerAsciiByte(c));
+    for (record.messages) |m| {
+        if (buf.items.len >= SEARCH_PREVIEW_MAX) break;
+        try buf.append(allocator, ' ');
+        for (m.content) |c| {
+            if (buf.items.len >= SEARCH_PREVIEW_MAX) break;
+            try buf.append(allocator, lowerAsciiByte(c));
+        }
+    }
+    var n = @min(buf.items.len, SEARCH_PREVIEW_MAX);
+    while (n > 0 and !std.unicode.utf8ValidateSlice(buf.items[0..n])) n -= 1;
+    buf.shrinkRetainingCapacity(n);
+    return buf.toOwnedSlice(allocator);
+}
+
+pub fn buildRowsFromEntries(allocator: std.mem.Allocator, entries: []const IndexEntry) ![]Row {
+    const rows = try allocator.alloc(Row, entries.len);
+    var initialized: usize = 0;
+    errdefer {
+        while (initialized > 0) {
+            initialized -= 1;
+            freeOwnedRow(allocator, &rows[initialized]);
+        }
+        allocator.free(rows);
+    }
+    for (entries, 0..) |e, i| {
+        rows[i] = try cloneRow(allocator, .{
+            .session_id = e.session_id,
+            .title = e.title,
+            .model = e.model,
+            .updated_at = e.updated_at,
+            .copilot = e.copilot,
+        });
+        initialized += 1;
+    }
+    sortRows(rows);
+    return rows;
+}
+
+pub fn buildCopilotRowsFromEntries(allocator: std.mem.Allocator, entries: []const IndexEntry) ![]Row {
+    var list: std.ArrayListUnmanaged(Row) = .empty;
+    errdefer {
+        for (list.items) |*r| freeOwnedRow(allocator, r);
+        list.deinit(allocator);
+    }
+    for (entries) |e| {
+        if (!e.copilot) continue;
+        const row = try cloneRow(allocator, .{
+            .session_id = e.session_id,
+            .title = e.title,
+            .model = e.model,
+            .updated_at = e.updated_at,
+            .copilot = e.copilot,
+        });
+        list.append(allocator, row) catch |err| {
+            var owned = row;
+            freeOwnedRow(allocator, &owned);
+            return err;
+        };
+    }
+    const rows = try list.toOwnedSlice(allocator);
+    sortRows(rows);
+    return rows;
+}
+
+pub fn recordToJson(allocator: std.mem.Allocator, record: SessionRecord) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, record, .{});
+}
+
+pub fn recordFromJson(allocator: std.mem.Allocator, bytes: []const u8) !SessionRecord {
+    var parsed = try std.json.parseFromSlice(SessionRecord, allocator, bytes, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    return cloneRecord(allocator, parsed.value);
+}
+
+pub fn recordToIndexEntry(allocator: std.mem.Allocator, record: SessionRecord) !IndexEntry {
+    const session_id = try allocator.dupe(u8, record.session_id);
+    errdefer allocator.free(session_id);
+    const title = try allocator.dupe(u8, record.title);
+    errdefer allocator.free(title);
+    const model = try allocator.dupe(u8, record.model);
+    errdefer allocator.free(model);
+    const search_preview = try buildSearchPreview(allocator, record);
+    errdefer allocator.free(search_preview);
+    return .{
+        .session_id = session_id,
+        .title = title,
+        .model = model,
+        .created_at = record.created_at,
+        .updated_at = record.updated_at,
+        .copilot = record.copilot,
+        .message_count = @intCast(record.messages.len),
+        .search_preview = search_preview,
+    };
+}
+
+pub fn sanitizeSessionFileName(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
+    var all_safe = session_id.len > 0;
+    for (session_id) |c| {
+        if (!isSafeFileChar(c)) {
+            all_safe = false;
+            break;
+        }
+    }
+    if (all_safe) {
+        return std.fmt.allocPrint(allocator, "{s}.json", .{session_id});
+    }
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(allocator);
+    for (session_id) |c| {
+        try buf.append(allocator, if (isSafeFileChar(c)) c else '_');
+    }
+    const h = std.hash.Wyhash.hash(0, session_id);
+    return std.fmt.allocPrint(allocator, "{s}-{x}.json", .{ buf.items, h });
 }
 
 fn dupeOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
@@ -1019,6 +1193,95 @@ test "agent_history: old record without copilot field defaults to false" {
     defer store.deinit();
     try std.testing.expectEqual(@as(usize, 1), store.records.items.len);
     try std.testing.expect(!store.records.items[0].copilot);
+}
+
+test "agent_history: index file round-trips" {
+    const allocator = std.testing.allocator;
+    var entries = [_]IndexEntry{
+        .{ .session_id = "s1", .title = "T1", .model = "m1", .created_at = 1, .updated_at = 2, .copilot = false, .message_count = 3, .search_preview = "t1 hello" },
+        .{ .session_id = "s2", .title = "T2", .model = "m2", .created_at = 5, .updated_at = 6, .copilot = true, .message_count = 0, .search_preview = "" },
+    };
+    const json = try dumpIndex(allocator, .{ .version = INDEX_VERSION, .entries = &entries });
+    defer allocator.free(json);
+    var parsed = try parseIndex(allocator, json);
+    defer parsed.deinit();
+    try std.testing.expectEqual(INDEX_VERSION, parsed.value.version);
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.entries.len);
+    try std.testing.expectEqualStrings("s2", parsed.value.entries[1].session_id);
+    try std.testing.expect(parsed.value.entries[1].copilot);
+    try std.testing.expectEqual(@as(u32, 3), parsed.value.entries[0].message_count);
+}
+
+test "agent_history: sanitizeSessionFileName keeps safe ids and hashes unsafe ones" {
+    const allocator = std.testing.allocator;
+    const safe = try sanitizeSessionFileName(allocator, "session-1719000000000-3");
+    defer allocator.free(safe);
+    try std.testing.expectEqualStrings("session-1719000000000-3.json", safe);
+    const unsafe1 = try sanitizeSessionFileName(allocator, "会話/x");
+    defer allocator.free(unsafe1);
+    const unsafe2 = try sanitizeSessionFileName(allocator, "会話/x");
+    defer allocator.free(unsafe2);
+    try std.testing.expect(std.mem.endsWith(u8, unsafe1, ".json"));
+    try std.testing.expect(std.mem.indexOfScalar(u8, unsafe1, '/') == null);
+    try std.testing.expectEqualStrings(unsafe1, unsafe2);
+}
+
+test "agent_history: recordToIndexEntry derives bounded lowercase preview" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+    try store.upsertRecord(.{
+        .session_id = "s1", .title = "Hello World", .base_url = "https://api.example.com",
+        .api_key = "k", .model = "m1", .system_prompt = "sys", .thinking_enabled = false,
+        .reasoning_effort = "low", .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+        .messages = &[_]MessageRecord{.{ .role = .user, .content = "First Question" }},
+    });
+    var entry = try recordToIndexEntry(allocator, store.records.items[0]);
+    defer freeOwnedIndexEntry(allocator, &entry);
+    try std.testing.expectEqual(@as(u32, 1), entry.message_count);
+    try std.testing.expect(entry.search_preview.len <= SEARCH_PREVIEW_MAX);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(entry.search_preview));
+    try std.testing.expect(std.mem.indexOf(u8, entry.search_preview, "hello world") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry.search_preview, "first question") != null);
+}
+
+test "agent_history: single record JSON round-trips" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+    try store.upsertRecord(.{
+        .session_id = "s1", .title = "Title", .base_url = "https://api.example.com",
+        .api_key = "k", .model = "m1", .system_prompt = "sys", .thinking_enabled = true,
+        .reasoning_effort = "high", .stream = false, .agent_enabled = true, .copilot = true,
+        .created_at = 7, .updated_at = 9,
+        .messages = &[_]MessageRecord{ .{ .role = .user, .content = "hi" }, .{ .role = .assistant, .content = "yo" } },
+    });
+    const json = try recordToJson(allocator, store.records.items[0]);
+    defer allocator.free(json);
+    var rec = try recordFromJson(allocator, json);
+    defer freeOwnedRecord(allocator, &rec);
+    try std.testing.expectEqualStrings("s1", rec.session_id);
+    try std.testing.expect(rec.copilot);
+    try std.testing.expectEqual(@as(usize, 2), rec.messages.len);
+    try std.testing.expectEqualStrings("yo", rec.messages[1].content);
+}
+
+test "agent_history: buildRowsFromEntries sorts desc and filters copilot" {
+    const allocator = std.testing.allocator;
+    var entries = [_]IndexEntry{
+        .{ .session_id = "a", .title = "A", .model = "m", .created_at = 1, .updated_at = 1, .copilot = false },
+        .{ .session_id = "b", .title = "B", .model = "m", .created_at = 2, .updated_at = 3, .copilot = true },
+        .{ .session_id = "c", .title = "C", .model = "m", .created_at = 2, .updated_at = 2, .copilot = false },
+    };
+    const rows = try buildRowsFromEntries(allocator, &entries);
+    defer freeRows(allocator, rows);
+    try std.testing.expectEqual(@as(usize, 3), rows.len);
+    try std.testing.expectEqualStrings("b", rows[0].session_id);
+    try std.testing.expectEqualStrings("c", rows[1].session_id);
+    const co = try buildCopilotRowsFromEntries(allocator, &entries);
+    defer freeRows(allocator, co);
+    try std.testing.expectEqual(@as(usize, 1), co.len);
+    try std.testing.expectEqualStrings("b", co[0].session_id);
 }
 
 fn expectLenientParseOutOfMemory(json: []const u8) !void {

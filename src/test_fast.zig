@@ -135,6 +135,7 @@ test {
     _ = @import("ime_caret.zig");
     _ = @import("sync_output.zig");
     _ = @import("agent_history.zig");
+    _ = @import("agent_history_store.zig");
     _ = @import("render_diagnostics.zig");
     _ = @import("diag_log.zig");
     _ = @import("notification.zig");

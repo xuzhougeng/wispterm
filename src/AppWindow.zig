@@ -25,6 +25,7 @@ const memory_debug = @import("memory_debug.zig");
 const surface_registry = @import("surface_registry.zig");
 const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
+const agent_history_store = @import("agent_history_store.zig");
 const close_confirm = @import("close_confirm.zig");
 const font_backend = @import("platform/font_backend.zig");
 const platform_display = @import("platform/display.zig");
@@ -1158,7 +1159,11 @@ test "AppWindow: open AI chat tabs are persisted to agent history before session
     tab.g_tab_count = 0;
     active_tab_state.g_active_tab = 0;
 
-    var store = agent_history.Store.init(allocator);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const hist_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(hist_root);
+    var store = try agent_history_store.MetaStore.open(allocator, hist_root);
     defer store.deinit();
     g_agent_history = &store;
 
@@ -1221,7 +1226,11 @@ test "AppWindow: terminal tab copilot sessions are persisted to agent history be
     tab.g_tab_count = 0;
     active_tab_state.g_active_tab = 0;
 
-    var store = agent_history.Store.init(allocator);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const hist_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(hist_root);
+    var store = try agent_history_store.MetaStore.open(allocator, hist_root);
     defer store.deinit();
     g_agent_history = &store;
 
@@ -1329,7 +1338,11 @@ test "AppWindow: copilot restore hook rehydrates a copilot session by id" {
         g_allocator = previous_alloc;
     }
 
-    var store = agent_history.Store.init(allocator);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const hist_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(hist_root);
+    var store = try agent_history_store.MetaStore.open(allocator, hist_root);
     defer store.deinit();
     g_agent_history = &store;
     g_allocator = allocator;
@@ -1365,7 +1378,7 @@ test "AppWindow: copilot restore hook rehydrates a copilot session by id" {
 // App pointer for requestNewWindow
 pub threadlocal var g_app: ?*App = null;
 var g_agent_history_mutex: std.Thread.Mutex = .{};
-pub var g_agent_history: ?*agent_history.Store = null;
+pub var g_agent_history: ?*agent_history_store.MetaStore = null;
 var g_flush_scheduler: flush_scheduler.FlushScheduler = .{};
 var g_agent_history_revision: u64 = 0;
 
@@ -5567,9 +5580,11 @@ fn ensureGlobalAgentHistoryStore(allocator: std.mem.Allocator) !void {
 
     if (g_agent_history != null) return;
 
-    const store = try allocator.create(agent_history.Store);
+    const store = try allocator.create(agent_history_store.MetaStore);
     errdefer allocator.destroy(store);
-    store.* = try agent_history.loadDefault(allocator);
+    const dir = try platform_dirs.agentHistoryDir(allocator);
+    defer allocator.free(dir);
+    store.* = try agent_history_store.MetaStore.open(allocator, dir);
     g_agent_history = store;
     g_flush_scheduler.reset();
     g_agent_history_revision = 0;
@@ -5658,51 +5673,17 @@ fn markAgentHistoryDirtyLocked() void {
 
 fn flushAgentHistoryStoreIfDirty(force: bool) void {
     const now = std.time.milliTimestamp();
-    var json: ?[]u8 = null;
-    var path: ?[]const u8 = null;
-    var snapshot_allocator: ?std.mem.Allocator = null;
-
     g_agent_history_mutex.lock();
-    if (!g_flush_scheduler.shouldFlush(force, now)) {
-        g_agent_history_mutex.unlock();
-        return;
-    }
+    defer g_agent_history_mutex.unlock();
 
-    const store = g_agent_history orelse {
-        g_agent_history_mutex.unlock();
-        return;
-    };
-    snapshot_allocator = store.allocator;
-    json = store.toJsonString(store.allocator) catch |err| {
-        log.warn("failed to snapshot agent history store for flush: {}", .{err});
-        g_flush_scheduler.deferFlush(now);
-        g_agent_history_mutex.unlock();
-        return;
-    };
-    path = agent_history.defaultPath(store.allocator) catch |err| {
-        log.warn("failed to resolve agent history path for flush: {}", .{err});
-        store.allocator.free(json.?);
-        g_flush_scheduler.deferFlush(now);
-        g_agent_history_mutex.unlock();
+    if (!g_flush_scheduler.shouldFlush(force, now)) return;
+    const store = g_agent_history orelse return;
+    store.flush() catch |err| {
+        log.warn("failed to flush agent history store: {}", .{err});
+        g_flush_scheduler.failFlush(std.time.milliTimestamp());
         return;
     };
     g_flush_scheduler.beginFlush();
-    g_agent_history_mutex.unlock();
-
-    agent_history.saveJsonToPath(path.?, json.?) catch |err| {
-        log.warn("failed to flush agent history store: {}", .{err});
-        g_agent_history_mutex.lock();
-        g_flush_scheduler.failFlush(std.time.milliTimestamp());
-        snapshot_allocator.?.free(path.?);
-        snapshot_allocator.?.free(json.?);
-        g_agent_history_mutex.unlock();
-        return;
-    };
-
-    g_agent_history_mutex.lock();
-    snapshot_allocator.?.free(path.?);
-    snapshot_allocator.?.free(json.?);
-    g_agent_history_mutex.unlock();
 }
 
 fn spawnTabWithCwd(allocator: std.mem.Allocator, cwd: platform_pty_command.Cwd) bool {

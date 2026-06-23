@@ -317,7 +317,7 @@ pub fn syncPanelForTerminalTarget(target: TerminalPanelTarget, force: bool) void
     }
 }
 
-pub fn syncAgentHistoryRows(store: *const agent_history.Store) void {
+pub fn syncAgentHistoryRows(store: anytype) void {
     const allocator = std.heap.page_allocator;
     const selected_index_copy = g_history_selected;
     const selected_session_id_copy = if (g_history_selected) |selected|
