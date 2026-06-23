@@ -38,6 +38,7 @@ const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
 const ai_model_switch = @import("../ai_model_switch.zig");
 const agent_integration_prompt = @import("../agent_integration_prompt.zig");
+const ai_history_time = @import("../ai_history_time.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");
 
@@ -323,8 +324,15 @@ pub fn commandPaletteAgentHistoryVisible() bool {
 
 pub fn commandPaletteMoveAgentHistory(delta: i32) void {
     commandPaletteSyncAgentHistoryRows();
+    var view = buildHistoryView() orelse {
+        var state0 = commandCenterStateSnapshot();
+        state0.commandPaletteMoveAgentHistory(delta, g_command_palette_history_rows.len);
+        commandCenterStateCommit(state0);
+        return;
+    };
+    defer view.deinit(AppWindow.g_allocator.?);
     var state = commandCenterStateSnapshot();
-    state.commandPaletteMoveAgentHistory(delta, g_command_palette_history_rows.len);
+    state.commandPaletteMoveAgentHistory(delta, view.rowCount());
     commandCenterStateCommit(state);
 }
 
@@ -337,9 +345,12 @@ pub fn commandPaletteCycleHistorySource() void {
 pub fn commandPaletteDeleteSelectedAgentHistory() bool {
     if (!commandPaletteIsHistoryMode()) return false;
     commandPaletteSyncAgentHistoryRows();
+    var view = buildHistoryView() orelse return false;
+    defer view.deinit(AppWindow.g_allocator.?);
     const state = commandCenterStateSnapshot();
-    const row_idx = state.commandPaletteSelectedAgentHistoryIndex(g_command_palette_history_rows.len) orelse return false;
-    return commandPaletteDeleteAgentHistoryIndex(row_idx);
+    const ord = state.commandPaletteSelectedAgentHistoryIndex(view.rowCount()) orelse return false;
+    const orig = view.filtered[ord];
+    return commandPaletteDeleteAgentHistoryIndex(orig);
 }
 
 pub fn commandPaletteLeaveAgentHistory() void {
@@ -1126,6 +1137,22 @@ fn commandPaletteSyncAgentHistoryRows() void {
     commandPaletteRefreshAgentHistoryRows();
 }
 
+/// Build the current filtered/grouped view from the loaded history rows + live
+/// filter/source. Caller owns the View and must `deinit` it. Null on no allocator.
+fn buildHistoryView() ?command_palette_history_view.View {
+    const allocator = AppWindow.g_allocator orelse return null;
+    const now_ms = std.time.milliTimestamp();
+    const tz = ai_history_time.localOffsetSeconds();
+    return command_palette_history_view.build(
+        allocator,
+        g_command_palette_history_rows,
+        commandPaletteFilter(),
+        g_command_palette_history_source,
+        now_ms,
+        tz,
+    ) catch null;
+}
+
 fn applyEmbeddedThemeFromPalette(theme_index: usize) void {
     const allocator = AppWindow.g_allocator orelse return;
     if (theme_index >= themes_embed.entries.len) return;
@@ -1293,9 +1320,12 @@ fn commandPaletteHistoryHitTestIndex(xpos: f64, ypos: f64, window_width: f32, wi
 fn commandPaletteActivateSelectedAgentHistory() bool {
     if (!commandPaletteIsHistoryMode()) return false;
     commandPaletteSyncAgentHistoryRows();
+    var view = buildHistoryView() orelse return false;
+    defer view.deinit(AppWindow.g_allocator.?);
     const state = commandCenterStateSnapshot();
-    const row_idx = state.commandPaletteActivateSelected(g_command_palette_history_rows.len) orelse return false;
-    return commandPaletteActivateAgentHistoryIndex(row_idx);
+    const ord = state.commandPaletteActivateSelected(view.rowCount()) orelse return false;
+    const orig = view.filtered[ord];
+    return commandPaletteActivateAgentHistoryIndex(orig);
 }
 
 fn commandPaletteActivateAgentHistoryRow(row_idx: usize) bool {
