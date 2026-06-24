@@ -346,6 +346,28 @@ test "input: command palette text filtering requests a repaint" {
     try std.testing.expect(!AppWindow.g_cells_valid);
 }
 
+test "input: command palette dispatchChar returns repaint effect for text filtering" {
+    defer overlays.commandPaletteClose();
+    overlays.commandPaletteOpen();
+
+    const effect = dispatchChar(.{ .codepoint = 'a' });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
+test "input: command palette dispatchChar consumes ctrl text without repaint" {
+    defer overlays.commandPaletteClose();
+    overlays.commandPaletteOpen();
+
+    const effect = dispatchChar(.{ .codepoint = 'a', .ctrl = true, .alt = false });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(!effect.needs_rebuild);
+    try std.testing.expect(!effect.cells_invalid);
+}
+
 test "input: session launcher arrow navigation requests a repaint" {
     const previous_keybinds = AppWindow.g_keybinds;
     defer AppWindow.g_keybinds = previous_keybinds;
@@ -2548,6 +2570,10 @@ fn processSizeChange(win: anytype) void {
 }
 
 fn handleChar(ev: platform_input.CharEvent) void {
+    AppWindow.applyUiEffect(dispatchChar(ev));
+}
+
+fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
     overlays.startupShortcutsDismiss();
     if (overlays.sessionLauncherVisible()) {
         if (!ev.ctrl and !ev.alt) {
@@ -2555,35 +2581,32 @@ fn handleChar(ev: platform_input.CharEvent) void {
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
         }
-        return;
+        return .none;
     }
     if (overlays.commandPaletteVisible()) {
-        if (!ev.ctrl and !ev.alt) {
-            overlays.commandPaletteInsertChar(ev.codepoint);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
-        }
-        return;
+        const effect = command_palette_input.charEffect(ev);
+        if (effect.needs_rebuild) overlays.commandPaletteInsertChar(ev.codepoint);
+        return effect;
     }
-    if (weixinQrPanelConsumesChar()) return;
+    if (weixinQrPanelConsumesChar()) return .none;
     if (browser_panel.urlBarFocused()) {
         if (!ev.ctrl and !ev.alt) {
             browser_panel.insertUrlBarChar(ev.codepoint);
             markBrowserUrlBarDirty();
         }
-        return;
+        return .none;
     }
     // File explorer inline editing
     if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab() and file_explorer.g_op_mode != .none and file_explorer.g_op_mode != .confirm_delete) {
         if (!ev.ctrl and !ev.alt) file_explorer.inputChar(ev.codepoint);
-        return;
+        return .none;
     }
     // When tab rename is active, route chars to the rename buffer
     if (tab.g_tab_rename_active) {
         AppWindow.g_cursor_blink_visible = true;
         AppWindow.g_last_blink_time = std.time.milliTimestamp();
         tab.handleRenameChar(ev.codepoint);
-        return;
+        return .none;
     }
     if (AppWindow.activeAiChat()) |chat| {
         if (!ev.ctrl and !ev.alt) {
@@ -2592,7 +2615,7 @@ fn handleChar(ev: platform_input.CharEvent) void {
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
         }
-        return;
+        return .none;
     }
     if (AppWindow.activeAiHistory() != null) {
         // aiHistoryInsertCodepoint only consumes the codepoint while the Search box
@@ -2601,29 +2624,29 @@ fn handleChar(ev: platform_input.CharEvent) void {
         if (!ev.ctrl and !ev.alt and !ev.super) {
             _ = AppWindow.aiHistoryInsertCodepoint(ev.codepoint);
         }
-        return;
+        return .none;
     }
     if (AppWindow.activeSkillCenter() != null) {
         if (g_skill_center_suppress_command_char) |codepoint| {
             const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
             g_skill_center_suppress_command_char = null;
-            if (suppress) return;
+            if (suppress) return .none;
         }
         if (!ev.ctrl and !ev.alt and !ev.super) {
             if (AppWindow.skillCenterUrlInsertChar(ev.codepoint)) markSkillCenterInputDirty(); // no-op unless url_input active
         }
-        return;
+        return .none;
     }
     if (AppWindow.activePortForwarding() != null) {
         if (g_port_forwarding_suppress_command_char) |codepoint| {
             const suppress = !ev.ctrl and !ev.alt and !ev.super and ev.codepoint == codepoint;
             g_port_forwarding_suppress_command_char = null;
-            if (suppress) return;
+            if (suppress) return .none;
         }
         if (!ev.ctrl and !ev.alt and !ev.super) {
             _ = AppWindow.portForwardingInsertChar(ev.codepoint);
         }
-        return;
+        return .none;
     }
     // AI copilot sidebar (terminal tabs): when the copilot owns focus, route
     // text input to its composer. `activeCopilotSessionForInput` is non-null
@@ -2636,7 +2659,7 @@ fn handleChar(ev: platform_input.CharEvent) void {
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
             }
-            return;
+            return .none;
         }
     }
     // A focused raster (image/PDF) preview consumes +/=/- as zoom in/out. Only
@@ -2655,22 +2678,22 @@ fn handleChar(ev: platform_input.CharEvent) void {
                 AppWindow.g_cells_valid = false;
             }
             switch (ev.codepoint) {
-                '+', '=', '-', '_' => return,
+                '+', '=', '-', '_' => return .none,
                 else => {},
             }
         }
     }
-    if (!AppWindow.isActiveTabTerminal()) return;
+    if (!AppWindow.isActiveTabTerminal()) return .none;
     // Skip chars when Alt is held without Ctrl — those are part of Alt+key
     // combos (e.g. Shift+Alt+4) and shouldn't produce text input.
     // However, AltGr on international keyboards reports as Ctrl+Alt, so
     // we must allow chars when both Ctrl and Alt are held (AltGr chars).
     // This matches Ghostty's consumed_mods / effectiveMods approach.
-    if (ev.alt and !ev.ctrl) return;
+    if (ev.alt and !ev.ctrl) return .none;
     // Cmd / Super shortcuts (macOS Cmd+C, Win key on other platforms) are
     // commands, not text input — never inject them into the PTY.
-    if (ev.super) return;
-    const surface = AppWindow.activeSurface() orelse return;
+    if (ev.super) return .none;
+    const surface = AppWindow.activeSurface() orelse return .none;
     AppWindow.resetCursorBlink();
     {
         surface.render_state.mutex.lock();
@@ -2678,8 +2701,9 @@ fn handleChar(ev: platform_input.CharEvent) void {
         surface.terminal.scrollViewport(.bottom);
     }
     var buf: [4]u8 = undefined;
-    const len = std.unicode.utf8Encode(ev.codepoint, &buf) catch return;
+    const len = std.unicode.utf8Encode(ev.codepoint, &buf) catch return .none;
     writeToPty(surface, buf[0..len]);
+    return .none;
 }
 
 const KeybindPhase = command_dispatch.Phase;
