@@ -811,7 +811,7 @@ comptime {
 }
 
 test "app version metadata is exposed for CLI and command center" {
-    const expected_version = "1.28.0";
+    const expected_version = "1.29.0";
     try std.testing.expectEqualStrings("WispTerm", app_metadata.name);
     try std.testing.expectEqualStrings(expected_version, app_metadata.version);
     try std.testing.expect(std.mem.indexOf(u8, app_metadata.release_notes, "# WispTerm v" ++ expected_version) != null);

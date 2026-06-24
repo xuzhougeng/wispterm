@@ -53,7 +53,7 @@
 
 ## 版本
 
-桌面应用版本来自仓库根目录的 `build.zig.zon`（当前为 `1.28.0`），也是
+桌面应用版本来自仓库根目录的 `build.zig.zon`（当前为 `1.29.0`），也是
 `wispterm --version`、release notes、桌面发布包和命令中心 `Version` 条目使用的版本。
 
 `remote/` 下的 WispTerm Remote 网页控制台/中继有独立的 npm/web 版本（当前为
@@ -262,7 +262,7 @@ MIT
 
 ## 引用
 
-Xu, Z.-G. (2026). *WispTerm* (Version 1.28.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). *WispTerm* (Version 1.29.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660542
 
 可直接复制的致谢模板：
@@ -271,6 +271,6 @@ https://doi.org/10.5281/zenodo.20660542
 我们在生命科学数据分析中使用 WispTerm 作为计算环境的一部分，用于远程计算流程、
 可重复的命令行处理，以及相关文献与分析代码的整理。
 
-Xu, Z.-G. (2026). WispTerm (Version 1.28.0) [Computer software]. Zenodo.
+Xu, Z.-G. (2026). WispTerm (Version 1.29.0) [Computer software]. Zenodo.
 https://doi.org/10.5281/zenodo.20660542
 ```
