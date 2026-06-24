@@ -97,6 +97,8 @@ const render_gate = @import("appwindow/render_gate.zig");
 const frame_latency = @import("appwindow/frame_latency.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 const resize_throttle = @import("appwindow/resize_throttle.zig");
+const ui_effect = @import("appwindow/ui_effect.zig");
+pub const UiEffect = ui_effect.UiEffect;
 pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
@@ -565,6 +567,40 @@ test "AppWindow: skill center tool manifest toggle preserves extra fields" {
     const enabled_value = parsed.value.object.get("enabled") orelse return error.ExpectedEnabledField;
     try std.testing.expect(enabled_value == .bool);
     try std.testing.expect(enabled_value.bool);
+}
+
+test "AppWindow: applyUiEffect maps repaint to dirty globals" {
+    const previous_force_rebuild = g_force_rebuild;
+    const previous_cells_valid = g_cells_valid;
+    defer {
+        g_force_rebuild = previous_force_rebuild;
+        g_cells_valid = previous_cells_valid;
+    }
+
+    g_force_rebuild = false;
+    g_cells_valid = true;
+
+    applyUiEffect(UiEffect.repaint);
+
+    try std.testing.expect(g_force_rebuild);
+    try std.testing.expect(!g_cells_valid);
+}
+
+test "AppWindow: applyUiEffect none leaves dirty globals unchanged" {
+    const previous_force_rebuild = g_force_rebuild;
+    const previous_cells_valid = g_cells_valid;
+    defer {
+        g_force_rebuild = previous_force_rebuild;
+        g_cells_valid = previous_cells_valid;
+    }
+
+    g_force_rebuild = false;
+    g_cells_valid = true;
+
+    applyUiEffect(UiEffect.none);
+
+    try std.testing.expect(!g_force_rebuild);
+    try std.testing.expect(g_cells_valid);
 }
 
 test "AppWindow: skill center import picker allows empty library and blocks tool rows" {
@@ -5116,8 +5152,13 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
 }
 
 fn markUiDirty() void {
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    applyUiEffect(.repaint);
+}
+
+pub fn applyUiEffect(effect: UiEffect) void {
+    if (effect.needs_rebuild) g_force_rebuild = true;
+    if (effect.cells_invalid) g_cells_valid = false;
+    if (effect.wake_backend) window_backend.postWakeup();
 }
 
 /// Tick all preview panes across every tab. Returns true if any pane
