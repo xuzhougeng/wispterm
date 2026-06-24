@@ -33,7 +33,7 @@ permissions:
 jobs:
   build-macos-x86_64:
     name: Build macOS (x86_64)
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     # Manual dispatch always runs. The automatic (workflow_run) path runs only
     # when the upstream aarch64 release finished successfully for a tag push.
     if: >-
