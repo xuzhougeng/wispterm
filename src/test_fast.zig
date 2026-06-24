@@ -34,6 +34,7 @@ test "remote file ssh helpers include short keepalive options" {
 test {
     _ = @import("input/command_dispatch.zig");
     _ = @import("input/command_palette_effect_guard.zig");
+    _ = @import("input/overlay_effect_guard.zig");
     _ = @import("input/click_tracker.zig");
     _ = @import("input/hit_test.zig");
     _ = @import("input/mouse_wheel_scroll.zig");
@@ -51,6 +52,7 @@ test {
     _ = @import("renderer/overlays/toasts.zig");
     _ = @import("renderer/overlays/confirm_modals.zig");
     _ = @import("renderer/overlays/state.zig");
+    _ = @import("renderer/overlays/state_guard.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("renderer/overlays/whats_new_model.zig");
