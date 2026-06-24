@@ -41,6 +41,7 @@ const platform_wsl = @import("platform/wsl.zig");
 const window_backend = @import("platform/window_backend.zig");
 const input_key = @import("input/key.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
+const input_effects = @import("input/effects.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 const command_palette_input = @import("renderer/overlays/command_palette_input.zig");
 const Config = @import("config.zig");
@@ -1973,14 +1974,24 @@ fn syncPanelGridFromWindowSize(width: i32, height: i32) void {
     syncGridFromWindowSizeWithUrgency(width, height, panelToggleResizeUrgency());
 }
 
+fn applyInputEffect(effect: ui_effect.UiEffect) void {
+    AppWindow.applyUiEffect(effect);
+}
+
+fn requestInputRepaint() void {
+    applyInputEffect(input_effects.repaint());
+}
+
+fn requestInputRebuild() void {
+    applyInputEffect(input_effects.rebuildOnly());
+}
+
 fn markBrowserUrlBarDirty() void {
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn markSkillCenterInputDirty() void {
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn blurBrowserUrlBarIfFocused() void {
@@ -2618,7 +2629,7 @@ fn processSizeChange(win: anytype) void {
 }
 
 fn handleChar(ev: platform_input.CharEvent) void {
-    AppWindow.applyUiEffect(dispatchChar(ev));
+    applyInputEffect(dispatchChar(ev));
 }
 
 fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
@@ -3003,7 +3014,7 @@ fn applyCommandPaletteAction(action: command_palette_input.Action, history_visib
 }
 
 fn handleKey(ev: platform_input.KeyEvent) void {
-    AppWindow.applyUiEffect(dispatchKey(ev));
+    applyInputEffect(dispatchKey(ev));
 }
 
 fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
