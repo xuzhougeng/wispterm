@@ -1,6 +1,7 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
 const Surface = @import("Surface.zig");
+const termio = @import("termio.zig");
 
 test "kitty graphics APC transmit and display creates image placement" {
     const allocator = std.testing.allocator;
@@ -75,6 +76,12 @@ test "wispterm image OSC fallback translates to kitty graphics APC" {
     surface.wispterm_image_osc_state = .ground;
     surface.wispterm_image_osc_buf = .empty;
     defer surface.wispterm_image_osc_buf.deinit(allocator);
+
+    // The terminal now answers queries/transmissions back to the PTY (issue
+    // #302), and a kitty graphics transmit emits an "OK" reply, so the surface
+    // needs a real mailbox to receive it instead of writing through garbage.
+    surface.mailbox = try termio.Mailbox.init();
+    defer surface.mailbox.deinit();
 
     surface.vt_stream = Surface.VtStream.initAlloc(
         surface.terminal.screens.active.alloc,

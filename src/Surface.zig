@@ -107,10 +107,27 @@ pub const VtHandler = struct {
     surface: *Surface,
 
     pub fn init(terminal: *ghostty_vt.Terminal, surface: *Surface) VtHandler {
+        var inner = terminal.vtHandler();
+        // Answer terminal query sequences by writing the reply back to the PTY.
+        // This notably includes the Kitty keyboard protocol query (`CSI ? u`):
+        // full-screen TUIs (Claude Code, Codex, …) probe for protocol support
+        // and, without a reply, conclude it is unsupported and never enable it —
+        // leaving Shift+Enter indistinguishable from Enter. See issue #302.
+        inner.effects.write_pty = &writePtyResponse;
         return .{
-            .inner = terminal.vtHandler(),
+            .inner = inner,
             .surface = surface,
         };
+    }
+
+    /// Forward a terminal-generated response (Kitty keyboard query, DSR, mode
+    /// reports, …) to the PTY. Invoked on the IO reader thread while parsing
+    /// output; `queuePtyWrite` copies the bytes and hands them to the IO writer
+    /// thread, so this is safe from here. The owning Surface is recovered from
+    /// the handler's terminal pointer, which aliases `&surface.terminal`.
+    fn writePtyResponse(handler: *InnerHandler, data: [:0]const u8) void {
+        const surface: *Surface = @fieldParentPtr("terminal", handler.terminal);
+        surface.queuePtyWrite(data);
     }
 
     pub fn deinit(self: *VtHandler) void {
@@ -1398,4 +1415,49 @@ test "Surface exposes init and initVirtual (forces analysis of the shared finish
     // allocator, cols, rows, pty, scrollback_limit, cursor_style, cursor_blink
     try std.testing.expectEqual(@as(usize, 7), info.params.len);
     try std.testing.expect(info.params[3].type.? == Pty);
+}
+
+// Build just enough of a Surface to drive the VT stream and capture the bytes
+// the terminal writes back to the PTY (no real PTY or IO threads).
+fn vtResponseHarness(surface: *Surface) !void {
+    surface.allocator = std.testing.allocator;
+    surface.terminal = try ghostty_vt.Terminal.init(std.testing.allocator, .{
+        .cols = 80,
+        .rows = 24,
+    });
+    surface.mailbox = try termio.Mailbox.init();
+    surface.vt_stream = surface.initVtStream();
+}
+
+fn vtResponseHarnessDeinit(surface: *Surface) void {
+    surface.vt_stream.deinit();
+    surface.mailbox.deinit();
+    surface.terminal.deinit(std.testing.allocator);
+}
+
+fn expectPtyResponse(surface: *Surface, expected: []const u8) !void {
+    // The popped message owns the bytes; assert while it is still in scope so
+    // the slice into write_small.data stays valid.
+    const msg = surface.mailbox.pop() orelse return error.NoPtyResponse;
+    switch (msg) {
+        .write_small => |*w| try std.testing.expectEqualStrings(expected, w.data[0..w.len]),
+        else => return error.UnexpectedMessage,
+    }
+}
+
+test "kitty keyboard query is answered back to the PTY (issue #302)" {
+    var surface: Surface = undefined;
+    try vtResponseHarness(&surface);
+    defer vtResponseHarnessDeinit(&surface);
+
+    // crossterm/Claude Code probe support with `CSI ? u`. With no flags pushed
+    // yet the terminal must report 0 so the app knows the protocol exists.
+    surface.vt_stream.nextSlice("\x1b[?u");
+    try expectPtyResponse(&surface, "\x1b[?0u");
+
+    // After the app pushes the disambiguate flag, the query reflects it — this
+    // is the round-trip that makes the app actually turn the protocol on.
+    surface.vt_stream.nextSlice("\x1b[>1u");
+    surface.vt_stream.nextSlice("\x1b[?u");
+    try expectPtyResponse(&surface, "\x1b[?1u");
 }

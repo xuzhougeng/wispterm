@@ -2877,6 +2877,28 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
     return true;
 }
 
+/// Encode a special terminal key (Enter/Backspace/Tab) honoring the Kitty
+/// keyboard protocol when the foreground app enabled it, otherwise returning
+/// the supplied legacy bytes. This is what lets Shift+Enter reach Claude
+/// Code/Codex as a distinct "insert newline" sequence (issue #302).
+fn terminalSpecialKeySeq(
+    surface: *Surface,
+    ev: platform_input.KeyEvent,
+    key: anytype,
+    buf: []u8,
+    legacy: []const u8,
+) []const u8 {
+    const ghostty_vt = @import("ghostty-vt");
+    const opts = ghostty_vt.input.KeyEncodeOptions.fromTerminal(&surface.terminal);
+    const mods: ghostty_vt.input.KeyMods = .{
+        .shift = ev.shift,
+        .ctrl = ev.ctrl,
+        .alt = ev.alt,
+        .super = ev.super,
+    };
+    return input_shortcuts.kittyKeyEncode(opts, key, mods, buf) orelse legacy;
+}
+
 fn handleKey(ev: platform_input.KeyEvent) void {
     overlays.startupShortcutsDismiss();
     const key_event = logicalKeyEvent(ev);
@@ -3453,10 +3475,14 @@ fn handleKey(ev: platform_input.KeyEvent) void {
     // not for modifier-only keys or key combos that don't produce PTY output.
     var wrote_to_pty = false;
 
+    // Scratch buffer for Kitty keyboard protocol key encoding. Only used by the
+    // Enter/Backspace/Tab arms below; harmless otherwise.
+    var kitty_buf: [128]u8 = undefined;
+
     const seq: ?[]const u8 = switch (ev.key_code) {
-        platform_input.key_enter => "\r",
-        platform_input.key_backspace => "\x7f",
-        platform_input.key_tab => if (ev.shift) "\x1b[Z" else "\t",
+        platform_input.key_enter => terminalSpecialKeySeq(surface, ev, .enter, &kitty_buf, "\r"),
+        platform_input.key_backspace => terminalSpecialKeySeq(surface, ev, .backspace, &kitty_buf, "\x7f"),
+        platform_input.key_tab => terminalSpecialKeySeq(surface, ev, .tab, &kitty_buf, if (ev.shift) "\x1b[Z" else "\t"),
         platform_input.key_escape => "\x1b",
         platform_input.key_up, platform_input.key_down, platform_input.key_right, platform_input.key_left => input_shortcuts.terminalArrowSequence(key_event, surface.terminal.modes.get(.cursor_keys)),
         platform_input.key_home => "\x1b[H",
