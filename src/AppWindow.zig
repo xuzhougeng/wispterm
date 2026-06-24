@@ -45,6 +45,7 @@ const session_persist = @import("session_persist.zig");
 const quick_terminal = @import("quick_terminal.zig");
 const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
+const appwindow_state = @import("appwindow/state.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
 const hit_test = @import("input/hit_test.zig");
@@ -1478,9 +1479,15 @@ threadlocal var g_quake_hotkey_registered: bool = false;
 pub threadlocal var g_keybinds: keybind.Set = keybind.Set.defaults();
 threadlocal var g_debug_memory: bool = false;
 threadlocal var g_debug_memory_last_ms: i64 = 0;
-threadlocal var g_remote_layout_last_ms: i64 = 0;
-threadlocal var g_remote_ai_sinks: [tab.MAX_TABS]RemoteAiInputSink = undefined;
-threadlocal var g_last_transfer_notification_seq: u64 = 0;
+threadlocal var g_appwindow_state: appwindow_state.State = .{};
+
+fn windowState() *appwindow_state.WindowState {
+    return &g_appwindow_state.window;
+}
+
+fn remoteState() *appwindow_state.RemoteState {
+    return &g_appwindow_state.remote;
+}
 
 // Global theme (set at startup via config)
 pub threadlocal var g_theme: Theme = Theme.default();
@@ -1536,6 +1543,9 @@ fn synchronizedOutputPendingForVisibleSplits(split_count: usize) bool {
 }
 
 pub const MAX_TABS = tab.MAX_TABS;
+comptime {
+    std.debug.assert(@import("appwindow/remote_state.zig").MAX_REMOTE_AI_SINKS == tab.MAX_TABS);
+}
 
 const AgentSshConnectRequest = struct {
     allocator: std.mem.Allocator,
@@ -1566,11 +1576,6 @@ const AgentTabCloseRequest = struct {
     title: ?[]const u8,
     result: ?ai_chat.ToolClosedTab = null,
     err: ?anyerror = null,
-};
-
-const RemoteAiInputSink = struct {
-    native_handle: window_backend.NativeHandle,
-    tab_index: usize,
 };
 
 const RemoteAiInputRequest = struct {
@@ -6787,8 +6792,7 @@ pub fn reloadConfigImmediate(allocator: std.mem.Allocator) void {
 
 fn syncTransferToastFromFileExplorer() void {
     const notification = file_explorer.latestTransferNotification() orelse return;
-    if (notification.seq == g_last_transfer_notification_seq) return;
-    g_last_transfer_notification_seq = notification.seq;
+    if (!remoteState().acceptTransferNotification(notification.seq)) return;
     overlays.showTransferToast(notification.kind, notification.status, notification.message);
     g_force_rebuild = true;
     g_cells_valid = false;
@@ -7123,8 +7127,7 @@ fn syncRemoteLayout(allocator: std.mem.Allocator) void {
     const client = app.remote_client orelse return;
 
     const now = std.time.milliTimestamp();
-    if (now - g_remote_layout_last_ms < 250) return;
-    g_remote_layout_last_ms = now;
+    if (!remoteState().shouldSendLayout(now, 250)) return;
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
@@ -7355,17 +7358,14 @@ fn registerRemoteAiInputSink(tab_index: usize) void {
     const app = g_app orelse return;
     const client = app.remote_client orelse return;
     const window = g_window orelse return;
-    if (tab_index >= g_remote_ai_sinks.len) return;
 
-    g_remote_ai_sinks[tab_index] = .{
-        .native_handle = window_backend.nativeHandle(window),
-        .tab_index = tab_index,
-    };
-    client.registerSurface(remoteAiSurfaceId(tab_index), &g_remote_ai_sinks[tab_index], remoteAiWrite);
+    const sink = remoteState().recordAiSink(tab_index, window_backend.nativeHandleBits(window)) orelse return;
+    client.registerSurface(remoteAiSurfaceId(tab_index), sink, remoteAiWrite);
 }
 
 fn remoteAiWrite(ctx: *anyopaque, data: []const u8) void {
-    const sink: *RemoteAiInputSink = @ptrCast(@alignCast(ctx));
+    const sink: *appwindow_state.RemoteAiInputSink = @ptrCast(@alignCast(ctx));
+    const native_handle = window_backend.nativeHandleFromBits(sink.native_handle_bits) orelse return;
     const request = std.heap.page_allocator.create(RemoteAiInputRequest) catch return;
     request.* = .{
         .tab_index = sink.tab_index,
@@ -7375,7 +7375,7 @@ fn remoteAiWrite(ctx: *anyopaque, data: []const u8) void {
         },
     };
 
-    const ok = thread_message.postPointer(sink.native_handle, .remote_ai_input, @intFromPtr(request));
+    const ok = thread_message.postPointer(native_handle, .remote_ai_input, @intFromPtr(request));
     if (!ok) {
         std.heap.page_allocator.free(request.data);
         std.heap.page_allocator.destroy(request);
@@ -7514,7 +7514,7 @@ fn handleRemoteAiAgentOpenRequest(request: *RemoteAiAgentOpenRequest) void {
     client.sendAiAgentOpenResult(request.request_id, status);
 
     if (status == .opened) {
-        g_remote_layout_last_ms = 0;
+        remoteState().forceNextLayout();
         if (g_allocator) |alloc| syncRemoteLayout(alloc);
     }
 }
