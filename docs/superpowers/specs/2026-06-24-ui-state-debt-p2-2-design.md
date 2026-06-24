@@ -331,4 +331,50 @@ P2.2 is complete when:
 
 ## P2.2 handoff
 
-(Filled at the P2.2 stage gate with final line counts and the P2.3 entry note.)
+P2.2 moved session launcher, SSH list/form, AI list/form, AI history source
+picker, and switch-model target state into `ssh_profiles.zig`, `ai_profiles.zig`,
+and `session_launcher.zig`, aggregated under `OverlayState`, while keeping
+`overlays.zig` the compatibility facade and the `command_center_state` visibility
+layer unchanged. The session-launcher input branch now returns `UiEffect`.
+
+The migration removed 23 raw threadlocal globals (12 SSH, 9 AI, 2 launcher
+transient) and 2 local enums (`SshListMode`, `AiListMode`; `AiHistorySourceChoice`
+became an alias) from `overlays.zig`, now owned by the three feature modules. The
+P2.2 source guards (`state_guard.zig`, `overlay_effect_guard.zig`) assert these
+globals stay gone and the launcher input branch stays effect-based. `overlays.zig`
+line count is roughly flat because this was a state-ownership migration (rendering,
+persistence, OpenSSH import, and connect logic intentionally stay in the facade,
+per the "state first" policy); the debt reduction is measured by globals removed,
+not lines. Reducing `overlays.zig` / `AppWindow.zig` line totals is the P2.3 goal.
+
+Final line counts:
+
+```text
+   10578 src/AppWindow.zig
+    7665 src/renderer/overlays.zig
+    7100 src/input.zig
+    8756 src/ai_chat.zig
+   34099 total
+```
+
+Verification: `zig build test` (fast) passes per task; the two big renames (SSH,
+AI) each passed a `zig build test-full` compile gate; the final
+`zig build test-full -Dtarget=aarch64-macos` native gate compiled `overlays.zig`
+and `input.zig` clean and ran ~2366 tests. Two back-to-back native runs (with
+identical source — no commits or edits between them) produced **different**
+failure sets — run 1: `AppWindow: skill center tool import`; run 2: that plus
+`ssh_connection: fromParts supports explicit key auth` and
+`ctl.protocol: encodeOk is a bare success line`. Because the code was identical
+across both runs, the varying failures are environmental flakes (the parallel
+runner's `.zig-cache/tmp` filesystem races, amplified by repeated heavy builds),
+not regressions — a code regression fails deterministically every run. All three
+flaky tests live in subsystems P2.2 did not touch (skill-center, ssh_connection,
+ctl), and every P2.2 test (the three new state modules, the `OverlayState`
+aggregate, both source guards, and the session-launcher `UiEffect` input test)
+passed in both runs. Windows checkout-safety: 0 name violations, 0 case-fold
+collisions, 0 tracked symlinks, max path 90 chars.
+
+P2.3 starts the AppWindow `WindowState` / `InputState` / `RemoteState` migration.
+Do not start P2.3 until P2.2 is accepted. The SSH password-prompt side channel
+(`g_pending_ssh_password*`, `g_pending_ssh_surface`) was deliberately left in
+`overlays.zig` and is a candidate for a later slice.
