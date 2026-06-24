@@ -16,6 +16,15 @@ This plan implements P1 only. It does not try to reduce `AppWindow.zig` below
 4000 lines yet. P2 should be planned after this lands, because P2 depends on
 the `UiEffect` seam and the command-palette split pattern established here.
 
+## Verification Adjustment
+
+`zig build test-full` is currently very slow because it rebuilds the full
+Windows-target app test binary. During P1 execution, use `zig build test` for
+leaf/model tasks and code review for AppWindow/input integration tasks. Treat
+`zig build test-full` as the final P1 gate, or run it only when a specific
+integration risk justifies the time. This preserves the pre-merge gate while
+keeping the task loop fast enough to make progress.
+
 Ghostty reference: Ghostty's `Surface` owns per-surface input/renderer state and
 uses explicit input outcomes such as `InputEffect`. WispTerm's P1 mirrors that
 direction by making input handlers return `UiEffect` instead of requiring each
