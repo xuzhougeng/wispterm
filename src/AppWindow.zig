@@ -16,8 +16,6 @@ const renderer = @import("renderer.zig");
 const window_backend = @import("platform/window_backend.zig");
 const App = @import("App.zig");
 const Renderer = @import("renderer/Renderer.zig");
-const remote = @import("remote_client.zig");
-const remote_snapshot = @import("remote_snapshot.zig");
 const weixin_control = @import("weixin/control.zig");
 const weixin_types = @import("weixin/types.zig");
 const ctl_control = @import("ctl/control.zig");
@@ -97,6 +95,7 @@ const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 const resize_throttle = @import("appwindow/resize_throttle.zig");
 const surface_snapshots = @import("appwindow/surface_snapshots.zig");
 const control_api = @import("appwindow/control_api.zig");
+const remote_sync = @import("appwindow/remote_sync.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 pub const UiEffect = ui_effect.UiEffect;
 pub const fbo = @import("renderer/fbo.zig");
@@ -1575,15 +1574,6 @@ const AgentTabCloseRequest = struct {
     title: ?[]const u8,
     result: ?ai_chat.ToolClosedTab = null,
     err: ?anyerror = null,
-};
-
-const RemoteAiInputRequest = struct {
-    tab_index: usize,
-    data: []u8,
-};
-
-const RemoteAiAgentOpenRequest = struct {
-    request_id: []const u8,
 };
 
 // ============================================================================
@@ -6509,7 +6499,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
             defer perf.end();
             break :blk computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
         };
-        if (g_allocator) |alloc| syncRemoteLayout(alloc);
+        if (g_allocator) |alloc| remote_sync.syncLayout(remoteSyncHost(), alloc);
 
         // A lone PREVIEW pane has no terminal surface and must take the generic
         // split path below so it still paints (preview-only tabs are legal).
@@ -7120,290 +7110,27 @@ fn maybePrintMemoryDebug(now: i64) void {
     }
 }
 
-fn syncRemoteLayout(allocator: std.mem.Allocator) void {
-    const app = g_app orelse return;
-    const client = app.remote_client orelse return;
-
-    const now = std.time.milliTimestamp();
-    if (!remoteState().shouldSendLayout(now, 250)) return;
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-
-    buildRemoteLayoutJson(allocator, &out) catch return;
-    client.sendLayout(out.items);
-}
-
-fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
-    try out.appendSlice(allocator, "{\"type\":\"layout\",\"activeTab\":");
-    try out.print(allocator, "{d}", .{active_tab_state.g_active_tab});
-    try out.appendSlice(allocator, ",\"tabs\":[");
-
-    var wrote_tab = false;
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (wrote_tab) try out.append(allocator, ',');
-        wrote_tab = true;
-
-        if (tab_state.kind == .ai_chat) {
-            try appendRemoteAiChatTabJson(allocator, out, tab_state, tab_index);
-            continue;
-        }
-        if (tab_state.kind == .ai_history) {
-            try appendRemoteAiHistoryTabJson(allocator, out, tab_state, tab_index);
-            continue;
-        }
-
-        try out.appendSlice(allocator, "{\"index\":");
-        try out.print(allocator, "{d}", .{tab_index});
-        try out.appendSlice(allocator, ",\"title\":\"");
-        try remote.appendJsonString(out, allocator, tab_state.getTitle());
-        try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
-        var focused_surface: ?*Surface = null;
-        if (tab_state.focusedSurface()) |focused| {
-            focused_surface = focused;
-            try remote.appendJsonString(out, allocator, focused.remote_id[0..]);
-        }
-        try out.append(allocator, '"');
-        try surface_snapshots.appendAgentDetectionJson(allocator, out, focused_surface);
-        try out.appendSlice(allocator, ",\"surfaces\":[");
-
-        var spatial = tab_state.tree.spatial(allocator) catch null;
-        defer if (spatial) |*sp| sp.deinit(allocator);
-
-        var wrote_surface = false;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            if (wrote_surface) try out.append(allocator, ',');
-            wrote_surface = true;
-
-            try out.appendSlice(allocator, "{\"id\":\"");
-            try remote.appendJsonString(out, allocator, entry.surface.remote_id[0..]);
-            try out.appendSlice(allocator, "\",\"title\":\"");
-            try remote.appendJsonString(out, allocator, entry.surface.getTitle());
-            try out.appendSlice(allocator, "\",\"focused\":");
-            try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
-            try surface_snapshots.appendAgentDetectionJson(allocator, out, entry.surface);
-            try out.appendSlice(allocator, ",\"cols\":");
-            try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
-            try out.appendSlice(allocator, ",\"rows\":");
-            try out.print(allocator, "{d}", .{entry.surface.size.grid.rows});
-            var cursor_x: usize = 0;
-            var cursor_y: usize = 0;
-            {
-                entry.surface.render_state.mutex.lock();
-                defer entry.surface.render_state.mutex.unlock();
-                cursor_x = entry.surface.terminal.screens.active.cursor.x;
-                cursor_y = entry.surface.terminal.screens.active.cursor.y;
-            }
-            try out.appendSlice(allocator, ",\"cursorX\":");
-            try out.print(allocator, "{d}", .{cursor_x});
-            try out.appendSlice(allocator, ",\"cursorY\":");
-            try out.print(allocator, "{d}", .{cursor_y});
-            try out.appendSlice(allocator, ",\"snapshot\":\"");
-            const snapshot = surface_snapshots.buildRemoteSurfaceSnapshot(allocator, entry.surface, remote_snapshot.default_max_history_rows) catch null;
-            defer if (snapshot) |text| allocator.free(text);
-            if (snapshot) |text| try remote.appendJsonString(out, allocator, text);
-            try out.append(allocator, '"');
-
-            if (spatial) |sp| {
-                const slot = sp.slots[entry.handle.idx()];
-                try out.appendSlice(allocator, ",\"x\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.x))});
-                try out.appendSlice(allocator, ",\"y\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.y))});
-                try out.appendSlice(allocator, ",\"w\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.width))});
-                try out.appendSlice(allocator, ",\"h\":");
-                try out.print(allocator, "{d:.5}", .{@as(f64, @floatCast(slot.height))});
-            } else {
-                try out.appendSlice(allocator, ",\"x\":0,\"y\":0,\"w\":1,\"h\":1");
-            }
-
-            try out.append(allocator, '}');
-        }
-
-        try out.appendSlice(allocator, "]}");
-    }
-
-    try out.appendSlice(allocator, "]}");
-}
-
-fn remoteAiSurfaceId(tab_index: usize) [16]u8 {
-    var id: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&id, "aichat{d:0>10}", .{tab_index}) catch unreachable;
-    return id;
-}
-
-fn remoteAiHistorySurfaceId(tab_index: usize) [16]u8 {
-    var id: [16]u8 = undefined;
-    _ = std.fmt.bufPrint(&id, "aihist{d:0>10}", .{tab_index}) catch unreachable;
-    return id;
-}
-
-fn registerRemoteAiInputSink(tab_index: usize) void {
-    const app = g_app orelse return;
-    const client = app.remote_client orelse return;
-    const window = g_window orelse return;
-
-    const sink = remoteState().recordAiSink(tab_index, window_backend.nativeHandleBits(window)) orelse return;
-    client.registerSurface(remoteAiSurfaceId(tab_index), sink, remoteAiWrite);
-}
-
-fn remoteAiWrite(ctx: *anyopaque, data: []const u8) void {
-    const sink: *appwindow_state.RemoteAiInputSink = @ptrCast(@alignCast(ctx));
-    const native_handle = window_backend.nativeHandleFromBits(sink.native_handle_bits) orelse return;
-    const request = std.heap.page_allocator.create(RemoteAiInputRequest) catch return;
-    request.* = .{
-        .tab_index = sink.tab_index,
-        .data = std.heap.page_allocator.dupe(u8, data) catch {
-            std.heap.page_allocator.destroy(request);
-            return;
-        },
-    };
-
-    const ok = thread_message.postPointer(native_handle, .remote_ai_input, @intFromPtr(request));
-    if (!ok) {
-        std.heap.page_allocator.free(request.data);
-        std.heap.page_allocator.destroy(request);
-    }
-}
-
-fn remoteAiAgentOpen(ctx: *anyopaque, request_id: []const u8) void {
-    const app: *App = @ptrCast(@alignCast(ctx));
-    const client = app.remote_client orelse return;
-
-    const owned_request_id = std.heap.page_allocator.dupe(u8, request_id) catch {
-        client.sendAiAgentOpenResult(request_id, .failed);
-        return;
-    };
-    defer std.heap.page_allocator.free(owned_request_id);
-
-    var native_handle: ?window_backend.NativeHandle = null;
-    {
-        app.mutex.lock();
-        defer app.mutex.unlock();
-        for (app.windows.items) |window| {
-            if (window.getNativeHandle()) |candidate| {
-                native_handle = candidate;
-                break;
-            }
-        }
-    }
-
-    const target = native_handle orelse {
-        if (app.remote_client) |current_client| {
-            current_client.sendAiAgentOpenResult(owned_request_id, .failed);
-        }
-        return;
-    };
-
-    var request = RemoteAiAgentOpenRequest{ .request_id = owned_request_id };
-    const result = thread_message.sendPointer(target, .remote_open_ai_agent, @intFromPtr(&request));
-    if (result == 0) {
-        if (app.remote_client) |current_client| {
-            current_client.sendAiAgentOpenResult(owned_request_id, .failed);
-        }
-    }
-}
-
-fn appendRemoteAiChatTabJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    tab_state: *tab.TabState,
-    tab_index: usize,
-) !void {
-    registerRemoteAiInputSink(tab_index);
-    const surface_id = remoteAiSurfaceId(tab_index);
-    const title_text = tab_state.getTitle();
-
-    try out.appendSlice(allocator, "{\"index\":");
-    try out.print(allocator, "{d}", .{tab_index});
-    try out.appendSlice(allocator, ",\"title\":\"");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
-    try remote.appendJsonString(out, allocator, surface_id[0..]);
-    try out.append(allocator, '"');
-    try surface_snapshots.appendAgentDetectionJson(allocator, out, null);
-    try out.appendSlice(allocator, ",\"surfaces\":[{\"id\":\"");
-    try remote.appendJsonString(out, allocator, surface_id[0..]);
-    try out.appendSlice(allocator, "\",\"title\":\"");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"focused\":true");
-    try surface_snapshots.appendAgentDetectionJson(allocator, out, null);
-    try out.appendSlice(allocator, ",\"kind\":\"ai_chat\",\"readOnly\":false,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"");
-    var request_state: ai_chat.Session.RequestState = .{ .inflight = false, .stopping = false };
-    if (tab_state.ai_chat_session) |session| {
-        request_state = session.requestState();
-        const snapshot = session.allocRemoteSnapshot(allocator) catch null;
-        defer if (snapshot) |text| allocator.free(text);
-        if (snapshot) |text| try remote.appendJsonString(out, allocator, text);
-    }
-    try out.appendSlice(allocator, "\",\"requestInflight\":");
-    try out.appendSlice(allocator, if (request_state.inflight) "true" else "false");
-    try out.appendSlice(allocator, ",\"requestStopping\":");
-    try out.appendSlice(allocator, if (request_state.stopping) "true" else "false");
-    try out.appendSlice(allocator, ",\"x\":0,\"y\":0,\"w\":1,\"h\":1}]}");
-}
-
-fn appendRemoteAiHistoryTabJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    tab_state: *tab.TabState,
-    tab_index: usize,
-) !void {
-    const surface_id = remoteAiHistorySurfaceId(tab_index);
-    const title_text = tab_state.getTitle();
-
-    try out.appendSlice(allocator, "{\"index\":");
-    try out.print(allocator, "{d}", .{tab_index});
-    try out.appendSlice(allocator, ",\"title\":\"");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
-    try remote.appendJsonString(out, allocator, surface_id[0..]);
-    try out.append(allocator, '"');
-    try surface_snapshots.appendAgentDetectionJson(allocator, out, null);
-    try out.appendSlice(allocator, ",\"surfaces\":[{\"id\":\"");
-    try remote.appendJsonString(out, allocator, surface_id[0..]);
-    try out.appendSlice(allocator, "\",\"title\":\"");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"focused\":true");
-    try surface_snapshots.appendAgentDetectionJson(allocator, out, null);
-    // AI History is read-only in remote layouts. Keep it terminal-style so the
-    // remote client does not show AI Chat composer/input affordances.
-    try out.appendSlice(allocator, ",\"kind\":\"terminal\",\"readOnly\":true,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"Sessions\\n");
-    try remote.appendJsonString(out, allocator, title_text);
-    try out.appendSlice(allocator, "\",\"x\":0,\"y\":0,\"w\":1,\"h\":1}]}");
-}
-
-fn handleRemoteAiInputRequest(request: *RemoteAiInputRequest) void {
-    defer {
-        std.heap.page_allocator.free(request.data);
-        std.heap.page_allocator.destroy(request);
-    }
-    if (request.tab_index >= tab.g_tab_count) return;
-    const tab_state = tab.g_tabs[request.tab_index] orelse return;
-    if (tab_state.kind != .ai_chat) return;
-    const session = tab_state.ai_chat_session orelse return;
-    session.applyRemoteInput(request.data);
+fn markRemoteSyncUiDirty() void {
     g_force_rebuild = true;
 }
 
-fn handleRemoteAiAgentOpenRequest(request: *RemoteAiAgentOpenRequest) void {
-    const app = g_app orelse return;
-    const client = app.remote_client orelse return;
-
-    const status: remote.AiAgentOpenStatus = switch (overlays.openDefaultAgentSessionForRemote()) {
+fn openDefaultAiAgentForRemoteSync() remote_sync.AiAgentOpenStatus {
+    return switch (overlays.openDefaultAgentSessionForRemote()) {
         .opened => .opened,
         .no_profile => .no_profile,
         .failed => .failed,
     };
-    client.sendAiAgentOpenResult(request.request_id, status);
+}
 
-    if (status == .opened) {
-        remoteState().forceNextLayout();
-        if (g_allocator) |alloc| syncRemoteLayout(alloc);
-    }
+fn remoteSyncHost() remote_sync.Host {
+    return .{
+        .app = g_app,
+        .window = g_window,
+        .state = &g_appwindow_state,
+        .allocator = g_allocator,
+        .markUiDirty = markRemoteSyncUiDirty,
+        .openDefaultAiAgentForRemote = openDefaultAiAgentForRemoteSync,
+    };
 }
 
 // ============================================================================
@@ -7535,7 +7262,7 @@ fn handleWeixinControlRequest(req: *WeixinRequest) void {
     switch (req.op) {
         .find_ai => {
             if (weixinActiveAiTabIndex()) |idx| {
-                req.out_surface_id = remoteAiSurfaceId(idx);
+                req.out_surface_id = remote_sync.remoteAiSurfaceId(idx);
                 req.found = true;
             }
         },
@@ -8274,8 +8001,8 @@ fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordP
         .agent_ssh_save => handleAgentSshSaveRequest(@ptrFromInt(decoded.ptr)),
         .agent_tab_new => handleAgentTabNewRequest(@ptrFromInt(decoded.ptr)),
         .agent_tab_close => handleAgentTabCloseRequest(@ptrFromInt(decoded.ptr)),
-        .remote_ai_input => handleRemoteAiInputRequest(@ptrFromInt(decoded.ptr)),
-        .remote_open_ai_agent => handleRemoteAiAgentOpenRequest(@ptrFromInt(decoded.ptr)),
+        .remote_ai_input => remote_sync.handleAiInputRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
+        .remote_open_ai_agent => remote_sync.handleAiAgentOpenRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
         .weixin_control => handleWeixinControlRequest(@ptrFromInt(decoded.ptr)),
     }
     return 1;
@@ -8297,7 +8024,7 @@ fn installAgentToolHost(self: *AppWindow) void {
 
 fn installRemoteControlHandlers(self: *AppWindow) void {
     if (self.app.remote_client) |client| {
-        client.registerAiAgentOpener(self.app, remoteAiAgentOpen);
+        client.registerAiAgentOpener(self.app, remote_sync.openAiAgent);
     }
 }
 
@@ -9671,7 +9398,7 @@ fn runMainLoop(self: *AppWindow) !void {
             const content_w: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w - padding * 2);
             const content_h: i32 = @intFromFloat(@as(f32, @floatFromInt(fb_height)) - top_padding - padding);
             const split_count = computeSplitLayout(active_tab, content_x, content_y, content_w, content_h, font.cell_width, font.cell_height);
-            syncRemoteLayout(allocator);
+            remote_sync.syncLayout(remoteSyncHost(), allocator);
             control_api.syncPanes(allocator);
             control_api.syncUiState(allocator);
             syncImeCaretPosition(win, split_count);
@@ -10112,44 +9839,6 @@ test "appwindow: render gate ignores background-tab surface dirty" {
 test "appwindow: ai history content width accounts for right panels" {
     try std.testing.expectEqual(@as(f32, 700), aiHistoryContentWidth(1000, 200, 100));
     try std.testing.expectEqual(@as(f32, 0), aiHistoryContentWidth(250, 200, 100));
-}
-
-test "appwindow: remote layout serializes ai_history as non-terminal surface" {
-    const allocator = std.testing.allocator;
-    for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
-    tab.g_tab_count = 0;
-    active_tab_state.g_active_tab = 0;
-    defer {
-        for (0..tab.MAX_TABS) |idx| tab.g_tabs[idx] = null;
-        tab.g_tab_count = 0;
-        active_tab_state.g_active_tab = 0;
-    }
-
-    var session = @import("ai_history_session.zig").Session.init(allocator, .{
-        .id = "local-history",
-        .name = "Local History",
-        .target = .local,
-    });
-    defer session.deinit();
-    var tab_state = tab.TabState{
-        .kind = .ai_history,
-        .tree = .empty,
-        .focused = .root,
-        .ai_chat_session = null,
-        .ai_history_session = &session,
-        .copilot_session = null,
-    };
-    tab.g_tabs[0] = &tab_state;
-    tab.g_tab_count = 1;
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-    try buildRemoteLayoutJson(allocator, &out);
-
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"kind\":\"terminal\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"kind\":\"ai_chat\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"readOnly\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"surfaces\":[]") == null);
 }
 
 test "appwindow: localExplorerLiveCwd resolves the surface live cwd" {
