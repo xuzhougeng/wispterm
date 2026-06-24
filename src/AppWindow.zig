@@ -23,7 +23,6 @@ const weixin_types = @import("weixin/types.zig");
 const ctl_control = @import("ctl/control.zig");
 const memory_debug = @import("memory_debug.zig");
 const surface_registry = @import("surface_registry.zig");
-const agent_detector = @import("agent_detector.zig");
 const agent_history = @import("agent_history.zig");
 const agent_history_store = @import("agent_history_store.zig");
 const close_confirm = @import("close_confirm.zig");
@@ -90,7 +89,6 @@ pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
 const copilot_picker = @import("copilot_picker.zig");
-const preview_diagnostics = @import("preview_diagnostics.zig");
 pub const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
@@ -98,6 +96,7 @@ const render_gate = @import("appwindow/render_gate.zig");
 const frame_latency = @import("appwindow/frame_latency.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 const resize_throttle = @import("appwindow/resize_throttle.zig");
+const surface_snapshots = @import("appwindow/surface_snapshots.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 pub const UiEffect = ui_effect.UiEffect;
 pub const fbo = @import("renderer/fbo.zig");
@@ -5312,8 +5311,9 @@ fn makeCopilotSession() ?*ai_chat.Session {
 
 fn ensureActiveCopilotSession() ?*ai_chat.Session {
     const session = tab.activeCopilotSession(makeCopilotSession) orelse return null;
-    if (g_agent_context_surface_id_len > 0) {
-        session.setBoundSurface(g_agent_context_surface_id[0..g_agent_context_surface_id_len]);
+    const context_surface_id = surface_snapshots.agentContextSurfaceId();
+    if (context_surface_id.len > 0) {
+        session.setBoundSurface(context_surface_id);
     }
     return session;
 }
@@ -5579,8 +5579,7 @@ fn syncActiveSurfaceCaches() void {
     const surface = activeSurface();
     cell_renderer.g_current_render_surface = surface;
     if (surface) |s| {
-        @memcpy(g_agent_context_surface_id[0..], s.remote_id[0..]);
-        g_agent_context_surface_id_len = s.remote_id.len;
+        surface_snapshots.setAgentContextSurface(s);
         if (tab.activeTab()) |t| {
             if (t.kind == .terminal) {
                 if (t.copilot_session) |session| session.setBoundSurface(s.remote_id[0..]);
@@ -6351,8 +6350,6 @@ const ConfigWatcher = @import("config_watcher.zig");
 
 /// Focus follows mouse - when true, moving mouse into a split pane focuses it
 pub threadlocal var g_focus_follows_mouse: bool = false;
-threadlocal var g_agent_context_surface_id: [16]u8 = undefined;
-threadlocal var g_agent_context_surface_id_len: usize = 0;
 pub threadlocal var g_copy_on_select: bool = false;
 pub threadlocal var g_copilot_hint: bool = true;
 threadlocal var g_copilot_shimmer_checked: bool = false;
@@ -7137,22 +7134,6 @@ fn syncRemoteLayout(allocator: std.mem.Allocator) void {
     client.sendLayout(out.items);
 }
 
-fn appendAgentDetectionJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    surface: ?*const Surface,
-) !void {
-    const detection: agent_detector.Detection = if (surface) |s| s.agent_detection else .{};
-    try out.appendSlice(allocator, ",\"agentApp\":\"");
-    try remote.appendJsonString(out, allocator, detection.appLabel());
-    try out.appendSlice(allocator, "\",\"agentState\":\"");
-    try remote.appendJsonString(out, allocator, detection.stateLabel());
-    try out.appendSlice(allocator, "\",\"agentBadge\":\"");
-    try remote.appendJsonString(out, allocator, detection.badge());
-    try out.appendSlice(allocator, "\",\"agentConfidence\":");
-    try out.print(allocator, "{d}", .{detection.confidence});
-}
-
 fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
     try out.appendSlice(allocator, "{\"type\":\"layout\",\"activeTab\":");
     try out.print(allocator, "{d}", .{active_tab_state.g_active_tab});
@@ -7184,7 +7165,7 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
             try remote.appendJsonString(out, allocator, focused.remote_id[0..]);
         }
         try out.append(allocator, '"');
-        try appendAgentDetectionJson(allocator, out, focused_surface);
+        try surface_snapshots.appendAgentDetectionJson(allocator, out, focused_surface);
         try out.appendSlice(allocator, ",\"surfaces\":[");
 
         var spatial = tab_state.tree.spatial(allocator) catch null;
@@ -7202,7 +7183,7 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
             try remote.appendJsonString(out, allocator, entry.surface.getTitle());
             try out.appendSlice(allocator, "\",\"focused\":");
             try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
-            try appendAgentDetectionJson(allocator, out, entry.surface);
+            try surface_snapshots.appendAgentDetectionJson(allocator, out, entry.surface);
             try out.appendSlice(allocator, ",\"cols\":");
             try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
             try out.appendSlice(allocator, ",\"rows\":");
@@ -7220,7 +7201,7 @@ fn buildRemoteLayoutJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
             try out.appendSlice(allocator, ",\"cursorY\":");
             try out.print(allocator, "{d}", .{cursor_y});
             try out.appendSlice(allocator, ",\"snapshot\":\"");
-            const snapshot = buildRemoteSurfaceSnapshot(allocator, entry.surface, remote_snapshot.default_max_history_rows) catch null;
+            const snapshot = surface_snapshots.buildRemoteSurfaceSnapshot(allocator, entry.surface, remote_snapshot.default_max_history_rows) catch null;
             defer if (snapshot) |text| allocator.free(text);
             if (snapshot) |text| try remote.appendJsonString(out, allocator, text);
             try out.append(allocator, '"');
@@ -7299,7 +7280,7 @@ fn buildCtlPanesJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(
             try remote.appendJsonString(out, allocator, entry.surface.getTitle());
             try out.appendSlice(allocator, "\",\"focused\":");
             try out.appendSlice(allocator, if (entry.handle == tab_state.focused) "true" else "false");
-            try appendAgentDetectionJson(allocator, out, entry.surface);
+            try surface_snapshots.appendAgentDetectionJson(allocator, out, entry.surface);
             try out.appendSlice(allocator, ",\"cols\":");
             try out.print(allocator, "{d}", .{entry.surface.size.grid.cols});
             try out.appendSlice(allocator, ",\"rows\":");
@@ -7438,13 +7419,13 @@ fn appendRemoteAiChatTabJson(
     try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
     try remote.appendJsonString(out, allocator, surface_id[0..]);
     try out.append(allocator, '"');
-    try appendAgentDetectionJson(allocator, out, null);
+    try surface_snapshots.appendAgentDetectionJson(allocator, out, null);
     try out.appendSlice(allocator, ",\"surfaces\":[{\"id\":\"");
     try remote.appendJsonString(out, allocator, surface_id[0..]);
     try out.appendSlice(allocator, "\",\"title\":\"");
     try remote.appendJsonString(out, allocator, title_text);
     try out.appendSlice(allocator, "\",\"focused\":true");
-    try appendAgentDetectionJson(allocator, out, null);
+    try surface_snapshots.appendAgentDetectionJson(allocator, out, null);
     try out.appendSlice(allocator, ",\"kind\":\"ai_chat\",\"readOnly\":false,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"");
     var request_state: ai_chat.Session.RequestState = .{ .inflight = false, .stopping = false };
     if (tab_state.ai_chat_session) |session| {
@@ -7476,13 +7457,13 @@ fn appendRemoteAiHistoryTabJson(
     try out.appendSlice(allocator, "\",\"focusedSurfaceId\":\"");
     try remote.appendJsonString(out, allocator, surface_id[0..]);
     try out.append(allocator, '"');
-    try appendAgentDetectionJson(allocator, out, null);
+    try surface_snapshots.appendAgentDetectionJson(allocator, out, null);
     try out.appendSlice(allocator, ",\"surfaces\":[{\"id\":\"");
     try remote.appendJsonString(out, allocator, surface_id[0..]);
     try out.appendSlice(allocator, "\",\"title\":\"");
     try remote.appendJsonString(out, allocator, title_text);
     try out.appendSlice(allocator, "\",\"focused\":true");
-    try appendAgentDetectionJson(allocator, out, null);
+    try surface_snapshots.appendAgentDetectionJson(allocator, out, null);
     // AI History is read-only in remote layouts. Keep it terminal-style so the
     // remote client does not show AI Chat composer/input affordances.
     try out.appendSlice(allocator, ",\"kind\":\"terminal\",\"readOnly\":true,\"cols\":120,\"rows\":30,\"cursorX\":0,\"cursorY\":0,\"snapshot\":\"Sessions\\n");
@@ -8025,7 +8006,7 @@ fn ctlGetText(ctx: *anyopaque, allocator: std.mem.Allocator, id: []const u8, rec
     const surface: *Surface = @ptrCast(@alignCast(ptr));
     const want: usize = if (recent) |r| r else ctl_default_rows;
     const rows = @min(want, remote_snapshot.default_max_history_rows);
-    return try buildRemoteSurfaceSnapshot(allocator, surface, rows);
+    return try surface_snapshots.buildRemoteSurfaceSnapshot(allocator, surface, rows);
 }
 
 fn ctlSendText(ctx: *anyopaque, id: []const u8, data: []const u8) bool {
@@ -8115,171 +8096,8 @@ test "ctl surface callbacks reject an unregistered id without dereferencing" {
     try std.testing.expect(!ctlSendText(&g_ctl_ctx, "missing", "x"));
 }
 
-fn buildRemoteSurfaceSnapshot(allocator: std.mem.Allocator, surface: *Surface, max_history_rows: usize) ![]u8 {
-    surface.render_state.mutex.lock();
-    defer surface.render_state.mutex.unlock();
-    return remote_snapshot.allocTerminalSnapshot(
-        allocator,
-        &surface.terminal,
-        max_history_rows,
-    );
-}
-
 pub fn activeSurfaceSnapshot(allocator: std.mem.Allocator) ?[]u8 {
-    const surface = activeSurface() orelse return null;
-    // Jupyter-URL detection / web-remote mirror want the full scrollback, not the
-    // smaller agent budget.
-    return buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.default_max_history_rows) catch null;
-}
-
-const AgentSurfaceLocation = struct {
-    tab_index: usize,
-    focused: bool,
-};
-
-fn findAgentSurfaceLocation(surface: *const Surface) ?AgentSurfaceLocation {
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            if (entry.surface == surface) {
-                return .{
-                    .tab_index = tab_index,
-                    .focused = tab_index == active_tab_state.g_active_tab and entry.handle == tab_state.focused,
-                };
-            }
-        }
-    }
-    return null;
-}
-
-fn makeAgentToolSurface(
-    allocator: std.mem.Allocator,
-    surface: *Surface,
-    tab_index: usize,
-    focused: bool,
-) anyerror!ai_chat.ToolSurface {
-    const snapshot = buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows) catch try allocator.dupe(u8, "");
-    const ssh_conn = if (surface.launch_kind == .ssh) surface.ssh_connection else null;
-    return ai_chat.ToolSurface.initOwned(
-        allocator,
-        surface.remote_id[0..],
-        surface.getTitle(),
-        surface.getCwd() orelse surface.getInitialCwd() orelse "",
-        snapshot,
-        .{
-            .tab_index = tab_index,
-            .focused = focused,
-            .is_ssh = surface.launch_kind == .ssh,
-            .is_wsl = surface.launch_kind == .wsl,
-            .ssh_connection = ssh_conn,
-            .agent_app = surface.agent_detection.app,
-            .agent_state = surface.agent_detection.state,
-            .agent_confidence = surface.agent_detection.confidence,
-            .ptr = @ptrCast(surface),
-        },
-    );
-}
-
-fn collectAgentToolSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!ai_chat.ToolSnapshot {
-    _ = ctx;
-    var surfaces: std.ArrayListUnmanaged(ai_chat.ToolSurface) = .empty;
-    errdefer {
-        for (surfaces.items) |surface| surface.deinit(allocator);
-        surfaces.deinit(allocator);
-    }
-
-    var active_tab = active_tab_state.g_active_tab;
-    const context_surface_id = g_agent_context_surface_id[0..g_agent_context_surface_id_len];
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            const is_context = context_surface_id.len > 0 and std.mem.eql(u8, entry.surface.remote_id[0..], context_surface_id);
-            if (is_context) active_tab = tab_index;
-            const tool_surface = try makeAgentToolSurface(
-                allocator,
-                entry.surface,
-                tab_index,
-                is_context,
-            );
-            errdefer tool_surface.deinit(allocator);
-            try surfaces.append(allocator, tool_surface);
-        }
-    }
-
-    return .{
-        .surfaces = try surfaces.toOwnedSlice(allocator),
-        .active_tab = active_tab,
-    };
-}
-
-fn agentSurfaceSnapshot(ctx: *anyopaque, allocator: std.mem.Allocator, surface_id: []const u8, surface_ptr: *anyopaque) anyerror![]u8 {
-    _ = ctx;
-    // Runs on the agent request worker with a pointer captured at request
-    // start; the UI thread may have freed the surface since. The registry
-    // guard blocks Surface.deinit for the duration of the snapshot. Matching
-    // the captured id prevents a reused pointer from targeting a new surface.
-    if (!surface_registry.acquire(surface_ptr, surface_id)) return error.SurfaceClosed;
-    defer surface_registry.release();
-    const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
-    return buildRemoteSurfaceSnapshot(allocator, surface, remote_snapshot.agent_max_history_rows);
-}
-
-fn agentWriteSurface(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *anyopaque, data: []const u8) bool {
-    _ = ctx;
-    // Same worker-thread hazard as agentSurfaceSnapshot.
-    if (!surface_registry.acquire(surface_ptr, surface_id)) return false;
-    defer surface_registry.release();
-    const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
-    surface.queuePtyWrite(data);
-    return true;
-}
-
-test "agent surface callbacks reject a surface that is not registered as live" {
-    // The agent request worker holds ToolSurface.ptr across an entire request
-    // while the UI thread may free the surface at any time (close tab/split).
-    // Both callbacks must refuse an unregistered pointer before touching any
-    // Surface field. The stand-in below is zeroed, never-registered memory; if
-    // a callback dereferences it the test crashes instead of erroring.
-    var dummy_buf: [@sizeOf(Surface)]u8 align(@alignOf(Surface)) = @splat(0);
-    const ptr: *anyopaque = @ptrCast(&dummy_buf);
-
-    try std.testing.expectError(error.SurfaceClosed, agentSurfaceSnapshot(ptr, std.testing.allocator, "missing", ptr));
-    try std.testing.expect(!agentWriteSurface(ptr, "missing", ptr, "x"));
-}
-
-fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surface.SshConnection {
-    _ = ctx;
-    if (surface_id.len == 0) return null;
-    // This runs on the agent request worker thread, but `g_tabs`/`g_tab_count`
-    // are thread-local to the UI thread. A worker-thread call therefore sees an
-    // empty tab list and resolves nothing — the root of copy_file's "connection
-    // is unavailable" (#268). Log the tab count actually visible here so a log
-    // capture distinguishes "empty thread-local view" from "surface_id mismatch".
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            const sfc = entry.surface;
-            if (!std.mem.eql(u8, sfc.remote_id[0..], surface_id)) continue;
-            preview_diagnostics.debug("agent-ssh-conn", &.{
-                .{ .key = "stage", .value = "match" },
-                .{ .key = "tabs", .value = if (tab.g_tab_count == 0) "0" else "n" },
-                .{ .key = "has_conn", .value = if (sfc.ssh_connection != null) "true" else "false" },
-            });
-            return sfc.ssh_connection; // value copy (or null if not SSH)
-        }
-    }
-    preview_diagnostics.debug("agent-ssh-conn", &.{
-        .{ .key = "stage", .value = "no-match" },
-        // "0" here means the worker thread sees an empty thread-local tab list.
-        .{ .key = "tabs", .value = if (tab.g_tab_count == 0) "0" else "n" },
-    });
-    return null;
+    return surface_snapshots.activeSurfaceSnapshot(allocator);
 }
 
 fn postAgentTabNew(native_handle: window_backend.NativeHandle, request: *AgentTabNewRequest) void {
@@ -8422,11 +8240,11 @@ fn handleAgentTabNewRequest(request: *AgentTabNewRequest) void {
         return;
     };
 
-    const location = findAgentSurfaceLocation(new_surface) orelse {
+    const location = surface_snapshots.findAgentSurfaceLocation(new_surface) orelse {
         request.err = error.SpawnFailed;
         return;
     };
-    request.result = makeAgentToolSurface(
+    request.result = surface_snapshots.makeAgentToolSurface(
         request.allocator,
         new_surface,
         location.tab_index,
@@ -8521,11 +8339,11 @@ fn handleAgentTabCloseRequest(request: *AgentTabCloseRequest) void {
 fn handleAgentSshConnectRequest(request: *AgentSshConnectRequest) void {
     switch (overlays.agentConnectSshProfile(request.profile_name)) {
         .connected => |surface| {
-            const location = findAgentSurfaceLocation(surface) orelse {
+            const location = surface_snapshots.findAgentSurfaceLocation(surface) orelse {
                 request.err = error.ConnectFailed;
                 return;
             };
-            request.result = makeAgentToolSurface(
+            request.result = surface_snapshots.makeAgentToolSurface(
                 request.allocator,
                 surface,
                 location.tab_index,
@@ -8691,14 +8509,14 @@ fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordP
 fn installAgentToolHost(self: *AppWindow) void {
     ai_chat.setToolHost(.{
         .ctx = @ptrCast(self),
-        .collectSnapshot = collectAgentToolSnapshot,
-        .surfaceSnapshot = agentSurfaceSnapshot,
-        .writeSurface = agentWriteSurface,
+        .collectSnapshot = surface_snapshots.collectAgentToolSnapshot,
+        .surfaceSnapshot = surface_snapshots.agentSurfaceSnapshot,
+        .writeSurface = surface_snapshots.agentWriteSurface,
         .spawnTab = agentSpawnTab,
         .closeTab = agentCloseTab,
         .saveSshProfile = agentSaveSshProfile,
         .connectSshProfile = agentConnectSshProfile,
-        .sshConnectionForSurface = agentSshConnectionForSurface,
+        .sshConnectionForSurface = surface_snapshots.agentSshConnectionForSurface,
     });
 }
 
