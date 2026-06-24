@@ -35,8 +35,12 @@ def _accessibility_trusted() -> bool:
         return False
 
 
-@pytest.fixture(scope="session")
-def app():
+def require_macos_gui():
+    """Skip the calling test unless this host can drive a real WispTerm.app via
+    synthetic input: macOS + importable PyObjC + a built app/ctl bundle + granted
+    Accessibility permission. Fixtures that build their own MacDriver (instead of
+    using the `app` fixture) must call this so they skip — rather than fail — when
+    those preconditions are absent."""
     if sys.platform != "darwin":
         pytest.skip("macOS-only E2E harness")
     if not _pyobjc_available():
@@ -54,6 +58,11 @@ def app():
             "Accessibility permission required: grant the terminal running pytest under "
             "System Settings → Privacy & Security → Accessibility, then retry."
         )
+
+
+@pytest.fixture(scope="session")
+def app():
+    require_macos_gui()
 
     from tests.macos_e2e.driver.macos import MacDriver
     driver = MacDriver(app_bundle=APP_BUNDLE, ctl_binary=CTL_BINARY)
