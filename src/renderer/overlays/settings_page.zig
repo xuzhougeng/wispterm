@@ -30,6 +30,7 @@ pub const State = struct {
     visible: bool = false,
     focus: usize = SETTINGS_THEME_ROW,
     cfg_dirty: bool = true,
+    cfg_loaded: bool = false,
     cfg_cache: Config = .{},
 
     pub fn open(self: *State) void {
@@ -40,16 +41,19 @@ pub const State = struct {
 
     pub fn close(self: *State, allocator: ?std.mem.Allocator) void {
         self.visible = false;
-        if (!self.cfg_dirty) {
-            if (allocator) |alloc| self.cfg_cache.deinit(alloc);
-            self.cfg_cache = .{};
-            self.cfg_dirty = true;
+        if (self.cfg_loaded) {
+            const alloc = allocator orelse return;
+            self.cfg_cache.deinit(alloc);
+            self.cfg_loaded = false;
         }
+        self.cfg_cache = .{};
+        self.cfg_dirty = true;
     }
 
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
-        if (!self.cfg_dirty) self.cfg_cache.deinit(allocator);
+        if (self.cfg_loaded) self.cfg_cache.deinit(allocator);
         self.cfg_cache = .{};
+        self.cfg_loaded = false;
         self.cfg_dirty = true;
         self.visible = false;
     }
@@ -60,8 +64,16 @@ pub const State = struct {
 
     pub fn cfg(self: *State, allocator: std.mem.Allocator) *Config {
         if (self.cfg_dirty) {
-            self.cfg_cache.deinit(allocator);
-            self.cfg_cache = Config.load(allocator) catch Config{};
+            if (self.cfg_loaded) {
+                self.cfg_cache.deinit(allocator);
+                self.cfg_loaded = false;
+            }
+            self.cfg_cache = .{};
+            self.cfg_cache = Config.load(allocator) catch {
+                self.cfg_dirty = false;
+                return &self.cfg_cache;
+            };
+            self.cfg_loaded = true;
             self.cfg_dirty = false;
         }
         return &self.cfg_cache;
@@ -170,4 +182,28 @@ test "settings page first visible row keeps focus in short view" {
 
     try std.testing.expect(scroll <= state.focus);
     try std.testing.expect(state.focus < scroll + 3);
+}
+
+test "settings page deinit frees loaded cache after reload invalidation" {
+    var state = State{};
+
+    _ = state.cfg(std.testing.allocator);
+    state.reloadConfig();
+    state.deinit(std.testing.allocator);
+}
+
+test "settings page close frees loaded cache after reload invalidation" {
+    var state = State{ .visible = true };
+
+    _ = state.cfg(std.testing.allocator);
+    state.reloadConfig();
+    state.close(std.testing.allocator);
+}
+
+test "settings page null close leaves loaded cache for later deinit" {
+    var state = State{ .visible = true };
+
+    _ = state.cfg(std.testing.allocator);
+    state.close(null);
+    state.deinit(std.testing.allocator);
 }
