@@ -44,8 +44,7 @@ pub const TransferToast = struct {
         now_ms: i64,
         duration_ms: i64,
     ) void {
-        const msg = transfer_toast_model.formatTransferToast(&self.buf, kind, status, message) catch return;
-        self.len = msg.len;
+        self.len = formatTransferToastTruncated(&self.buf, kind, status, message);
         self.status = status;
         self.sticky = status == .in_progress;
         self.clickable = kind == .download and status == .in_progress;
@@ -115,6 +114,27 @@ fn copyTruncated(dst: []u8, src: []const u8) usize {
     return len;
 }
 
+fn formatTransferToastTruncated(
+    dst: []u8,
+    kind: file_explorer.TransferKind,
+    status: file_explorer.TransferStatus,
+    message: []const u8,
+) usize {
+    var len: usize = 0;
+    appendTruncated(dst, &len, transfer_toast_model.transferToastVerb(kind, status));
+    appendTruncated(dst, &len, ": ");
+    appendTruncated(dst, &len, message);
+    return len;
+}
+
+fn appendTruncated(dst: []u8, len: *usize, src: []const u8) void {
+    const remaining = dst.len - len.*;
+    const n = @min(remaining, src.len);
+    if (n == 0) return;
+    @memcpy(dst[len.*..][0..n], src[0..n]);
+    len.* += n;
+}
+
 test "toast state stores status text until expiration" {
     var toast: TextToast = .{};
 
@@ -135,6 +155,23 @@ test "transfer toast state tracks sticky clickable download progress" {
     try std.testing.expect(toast.clickable);
     try std.testing.expectEqual(file_explorer.TransferStatus.in_progress, toast.status);
     try std.testing.expect(std.mem.endsWith(u8, toast.text().?, "remote.txt"));
+}
+
+test "transfer toast long messages replace stale progress state" {
+    var toast: TransferToast = .{};
+    const old_name = "old-download.txt";
+    const long_message = "new-failed-transfer-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    toast.show(.download, .in_progress, old_name, 2000, TRANSFER_TOAST_DURATION_MS);
+    toast.show(.download, .failed, long_message, 3000, TRANSFER_TOAST_DURATION_MS);
+
+    try std.testing.expectEqual(file_explorer.TransferStatus.failed, toast.status);
+    try std.testing.expect(!toast.sticky);
+    try std.testing.expect(!toast.clickable);
+
+    const text = toast.text().?;
+    try std.testing.expect(std.mem.startsWith(u8, text, "Download failed: new-failed-transfer-"));
+    try std.testing.expect(std.mem.indexOf(u8, text, old_name) == null);
 }
 
 test "update prompt state stores URL only when provided" {
