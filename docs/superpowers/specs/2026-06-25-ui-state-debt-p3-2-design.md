@@ -1,6 +1,6 @@
 # UI State Debt P3.2 - Input Host and Effect Boundary Design
 
-Status: Draft for user review
+Status: Approved for implementation
 
 ## Context
 
