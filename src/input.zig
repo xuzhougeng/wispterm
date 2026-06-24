@@ -41,6 +41,8 @@ const platform_wsl = @import("platform/wsl.zig");
 const window_backend = @import("platform/window_backend.zig");
 const input_key = @import("input/key.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
+const ui_effect = @import("appwindow/ui_effect.zig");
+const command_palette_input = @import("renderer/overlays/command_palette_input.zig");
 const Config = @import("config.zig");
 const Surface = @import("Surface.zig");
 const SplitTree = @import("split_tree.zig");
@@ -293,6 +295,42 @@ test "input: command palette arrow navigation requests a repaint" {
 
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
+}
+
+test "input: command palette dispatchKey returns repaint effect" {
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.commandPaletteClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.commandPaletteOpen();
+
+    const effect = dispatchKey(arrow_down_event);
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
+test "input: command palette dispatchKey preserves repaint for unmapped palette keys" {
+    const previous_keybinds = AppWindow.g_keybinds;
+    defer AppWindow.g_keybinds = previous_keybinds;
+    defer overlays.commandPaletteClose();
+
+    AppWindow.g_keybinds = keybind.Set.defaults();
+    overlays.commandPaletteOpen();
+
+    const effect = dispatchKey(.{
+        .key_code = 0x5A,
+        .ctrl = false,
+        .shift = false,
+        .alt = false,
+        .super = false,
+    });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
 }
 
 test "input: command palette text filtering requests a repaint" {
@@ -2877,26 +2915,45 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
     return true;
 }
 
+fn applyCommandPaletteAction(action: command_palette_input.Action, history_visible: bool) void {
+    switch (action) {
+        .noop => {},
+        .close => overlays.commandPaletteClose(),
+        .leave_history => overlays.commandPaletteLeaveAgentHistory(),
+        .move_up => if (history_visible) overlays.commandPaletteMoveAgentHistory(-1) else overlays.commandPaletteMove(-1),
+        .move_down => if (history_visible) overlays.commandPaletteMoveAgentHistory(1) else overlays.commandPaletteMove(1),
+        .execute => overlays.commandPaletteExecuteSelected(),
+        .backspace => overlays.commandPaletteBackspace(),
+        .clear_filter => overlays.commandPaletteClearFilter(),
+        .delete_history => _ = overlays.commandPaletteDeleteSelectedAgentHistory(),
+        .cycle_history_source => overlays.commandPaletteCycleHistorySource(),
+    }
+}
+
 fn handleKey(ev: platform_input.KeyEvent) void {
+    AppWindow.applyUiEffect(dispatchKey(ev));
+}
+
+fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     overlays.startupShortcutsDismiss();
     const key_event = logicalKeyEvent(ev);
     if (overlays.whatsNewVisible()) {
         overlays.whatsNewHandleKey(key_event);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     if (overlays.integrationPromptVisible()) {
         overlays.integrationPromptHandleKey(key_event);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     if (overlays.windowCloseConfirmVisible()) {
         overlays.windowCloseConfirmHandleKey(key_event);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     if (overlays.transferCancelConfirmVisible()) {
         switch (overlays.transferCancelConfirmHandleKey(key_event)) {
@@ -2905,7 +2962,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         }
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     const action = configuredAction(ev);
     const is_close_shortcut = actionIs(action, .close_panel_or_tab);
@@ -2916,42 +2973,21 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
             }
-            return;
+            return .none;
         }
         overlays.sessionLauncherHandleKey(key_event);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     if (action) |app_action| {
-        if (handleConfiguredKeybindAction(app_action, .early)) return;
+        if (handleConfiguredKeybindAction(app_action, .early)) return .none;
     }
     if (overlays.commandPaletteVisible()) {
-        if (overlays.commandPaletteAgentHistoryVisible()) {
-            switch (ev.key_code) {
-                platform_input.key_escape => overlays.commandPaletteLeaveAgentHistory(),
-                platform_input.key_up => overlays.commandPaletteMoveAgentHistory(-1),
-                platform_input.key_down => overlays.commandPaletteMoveAgentHistory(1),
-                platform_input.key_enter => overlays.commandPaletteExecuteSelected(),
-                platform_input.key_delete => _ = overlays.commandPaletteDeleteSelectedAgentHistory(),
-                platform_input.key_backspace => overlays.commandPaletteBackspace(),
-                platform_input.key_tab => overlays.commandPaletteCycleHistorySource(),
-                else => {},
-            }
-        } else {
-            switch (ev.key_code) {
-                platform_input.key_escape => overlays.commandPaletteClose(),
-                platform_input.key_up => overlays.commandPaletteMove(-1),
-                platform_input.key_down => overlays.commandPaletteMove(1),
-                platform_input.key_enter => overlays.commandPaletteExecuteSelected(),
-                platform_input.key_backspace => overlays.commandPaletteBackspace(),
-                platform_input.key_delete => overlays.commandPaletteClearFilter(),
-                else => {},
-            }
-        }
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return;
+        const history_visible = overlays.commandPaletteAgentHistoryVisible();
+        const palette_action = command_palette_input.keyAction(ev, history_visible);
+        applyCommandPaletteAction(palette_action, history_visible);
+        return command_palette_input.effectForAction(palette_action);
     }
     if (copilot_picker.isVisible()) {
         switch (ev.key_code) {
@@ -2976,7 +3012,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         }
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     if (jupyter_picker.isVisible()) {
         switch (ev.key_code) {
@@ -2998,19 +3034,19 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         }
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     if (overlays.restoreDefaultsConfirmVisible()) {
         overlays.restoreDefaultsConfirmHandleKey(key_event);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     if (overlays.settingsPageVisible()) {
         overlays.settingsPageHandleKey(key_event);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
-        return;
+        return .none;
     }
     if (AppWindow.weixin_qr_panel.visible()) {
         switch (ev.key_code) {
@@ -3018,7 +3054,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             platform_input.key_enter => if (AppWindow.weixin_qr_panel.status() == .expired) overlays.weixinQrPanelHandleAction(.retry),
             else => {},
         }
-        return;
+        return .none;
     }
     // File explorer key handling (when focused and in operation mode)
     if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab()) {
@@ -3026,7 +3062,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             // Navigation/edits change what the panel draws; request a frame so it
             // updates immediately (same rationale as the wheel-scroll path).
             AppWindow.g_force_rebuild = true;
-            return;
+            return .none;
         }
     }
     // When tab rename is active, handle special keys
@@ -3034,18 +3070,18 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         AppWindow.g_cursor_blink_visible = true;
         AppWindow.g_last_blink_time = std.time.milliTimestamp();
         tab.handleRenameKey(key_event);
-        return;
+        return .none;
     }
     if (browser_panel.urlBarFocused()) {
         handleBrowserUrlBarKey(ev);
-        return;
+        return .none;
     }
     if (browser_panel.isVisibleForActiveTab() and !browser_panel.urlBarFocused() and !jupyter_picker.isVisible() and !copilot_picker.isVisible()) {
         if (ev.key_code == platform_input.key_escape) {
             closeBrowserPanel();
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
-            return;
+            return .none;
         }
     }
     if (AppWindow.activeAiChat()) |chat| {
@@ -3055,15 +3091,15 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             chat.selectAll();
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
-            return;
+            return .none;
         }
         if (mod and !ev.alt and ev.key_code == 0x43) { // copy
             copyAiChatToClipboard(chat);
-            return;
+            return .none;
         }
         if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
             copyAiChatCutToClipboard(chat);
-            return;
+            return .none;
         }
     }
     // AI copilot sidebar editing-mod keys (select-all / copy / cut), mirroring
@@ -3075,20 +3111,20 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 chat.selectAll();
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
-                return;
+                return .none;
             }
             if (mod and !ev.alt and ev.key_code == 0x43) { // copy
                 copyAiChatToClipboard(chat);
-                return;
+                return .none;
             }
             if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
                 copyAiChatCutToClipboard(chat);
-                return;
+                return .none;
             }
         }
     }
     if (action) |app_action| {
-        if (handleConfiguredKeybindAction(app_action, .late)) return;
+        if (handleConfiguredKeybindAction(app_action, .late)) return .none;
     }
 
     if (AppWindow.activeAiChat()) |chat| {
@@ -3097,7 +3133,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             chat.handleKeyWithWrapCols(key_event, aiChatInputWrapCols());
             AppWindow.g_force_rebuild = true;
             AppWindow.g_cells_valid = false;
-            return;
+            return .none;
         }
     }
 
@@ -3110,55 +3146,55 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         switch (ev.key_code) {
             platform_input.key_backspace => {
                 if (search_focused) _ = AppWindow.aiHistoryBackspaceFilter();
-                return;
+                return .none;
             },
             platform_input.key_up => {
                 _ = AppWindow.aiHistoryNav(-1);
-                return;
+                return .none;
             },
             platform_input.key_down => {
                 _ = AppWindow.aiHistoryNav(1);
-                return;
+                return .none;
             },
             platform_input.key_left => {
                 _ = AppWindow.aiHistoryFocusMove(-1);
-                return;
+                return .none;
             },
             platform_input.key_right => {
                 _ = AppWindow.aiHistoryFocusMove(1);
-                return;
+                return .none;
             },
             platform_input.key_enter => {
                 _ = AppWindow.aiHistoryLoadSelectedTranscript();
-                return;
+                return .none;
             },
             platform_input.key_page_up => {
                 _ = AppWindow.aiHistoryScrollTranscript(-8);
-                return;
+                return .none;
             },
             platform_input.key_page_down => {
                 _ = AppWindow.aiHistoryScrollTranscript(8);
-                return;
+                return .none;
             },
             platform_input.key_home => {
                 _ = AppWindow.aiHistoryScrollTranscript(-(1 << 30));
-                return;
+                return .none;
             },
             platform_input.key_end => {
                 _ = AppWindow.aiHistoryScrollTranscript(1 << 30);
-                return;
+                return .none;
             },
             0x20 => if (plain and !search_focused) {
                 _ = AppWindow.aiHistoryPreviewSelectedTranscript();
-                return;
+                return .none;
             },
             0x52 => if (plain and !ev.shift and !search_focused) {
                 _ = AppWindow.aiHistoryScanLocalNow();
-                return;
+                return .none;
             },
             else => {},
         }
-        return;
+        return .none;
     }
 
     if (AppWindow.activePortForwarding() != null) {
@@ -3173,7 +3209,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 } else if (!overlay_active) {
                     _ = AppWindow.portForwardingMove(-1);
                 }
-                return;
+                return .none;
             },
             platform_input.key_down => {
                 if (form_active) {
@@ -3181,31 +3217,31 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 } else if (!overlay_active) {
                     _ = AppWindow.portForwardingMove(1);
                 }
-                return;
+                return .none;
             },
             platform_input.key_left => {
                 if (form_active) _ = AppWindow.portForwardingFormAdjust(-1);
-                return;
+                return .none;
             },
             platform_input.key_right => {
                 if (form_active) _ = AppWindow.portForwardingFormAdjust(1);
-                return;
+                return .none;
             },
             platform_input.key_tab => {
                 if (form_active) _ = AppWindow.portForwardingFormMove(1);
-                return;
+                return .none;
             },
             platform_input.key_enter => {
                 if (overlay_active) _ = AppWindow.portForwardingConfirmOrApply();
-                return;
+                return .none;
             },
             platform_input.key_escape => {
                 _ = AppWindow.portForwardingCancelOrClose();
-                return;
+                return .none;
             },
             platform_input.key_backspace => {
                 if (form_active) _ = AppWindow.portForwardingBackspace();
-                return;
+                return .none;
             },
             platform_input.key_space => if (plain and !ev.shift) {
                 if (form_active) {
@@ -3213,35 +3249,35 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 } else if (!overlay_active) {
                     _ = AppWindow.portForwardingToggleSelected();
                 }
-                return;
+                return .none;
             },
             0x4E => if (plain and !ev.shift) {
                 if (!overlay_active and AppWindow.portForwardingOpenNew()) {
                     g_port_forwarding_suppress_command_char = 'n';
                 }
-                return;
+                return .none;
             },
             0x45 => if (plain and !ev.shift) {
                 if (!overlay_active and AppWindow.portForwardingOpenEdit()) {
                     g_port_forwarding_suppress_command_char = 'e';
                 }
-                return;
+                return .none;
             },
             0x44 => if (plain and !ev.shift) {
                 if (!overlay_active) _ = AppWindow.portForwardingOpenDeleteConfirm();
-                return;
+                return .none;
             },
             0x52 => if (plain and !ev.shift) {
                 if (!overlay_active) _ = AppWindow.portForwardingRestartSelected();
-                return;
+                return .none;
             },
             0x41 => if (plain and !ev.shift) {
                 if (!overlay_active) _ = AppWindow.portForwardingToggleAutoStart();
-                return;
+                return .none;
             },
             else => {},
         }
-        return;
+        return .none;
     }
 
     // Skill Center: ↑/↓ move, space preview/toggle, ⏎ confirm, esc cancel,
@@ -3260,7 +3296,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                     platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
                     else => {},
                 }
-                return;
+                return .none;
             },
             .tool_import_confirm => {
                 switch (ev.key_code) {
@@ -3274,7 +3310,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                     platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
                     else => {},
                 }
-                return;
+                return .none;
             },
             .tool_import => {
                 switch (ev.key_code) {
@@ -3288,7 +3324,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                     platform_input.key_end => if (AppWindow.skillCenterPreviewScroll(1_000_000)) markSkillCenterInputDirty(),
                     else => {},
                 }
-                return;
+                return .none;
             },
             .none => {},
         }
@@ -3299,16 +3335,16 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         // Ctrl/Cmd+V paste into the URL field.
         if (text_capture and (ev.ctrl or ev.super) and ev.key_code == 0x56) { // 'V'
             if (AppWindow.skillCenterUrlPaste()) markSkillCenterInputDirty();
-            return;
+            return .none;
         }
         switch (ev.key_code) {
             platform_input.key_up => {
                 if (AppWindow.skillCenterMove(-1)) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             platform_input.key_down => {
                 if (AppWindow.skillCenterMove(1)) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             platform_input.key_enter => {
                 if (overlay_active) {
@@ -3316,37 +3352,37 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 } else {
                     if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
                 }
-                return;
+                return .none;
             },
             platform_input.key_escape => {
                 if (AppWindow.skillCenterOverlayCancel()) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             platform_input.key_backspace => {
                 if (text_capture) {
                     if (AppWindow.skillCenterUrlBackspace()) markSkillCenterInputDirty();
-                    return;
+                    return .none;
                 }
             },
             0x52 => if (plain and !ev.shift and !text_capture) { // 'R'
                 if (AppWindow.skillCenterRescan()) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             0x44 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'D'
                 if (AppWindow.skillCenterDeploy()) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             0x49 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'I'
                 if (AppWindow.skillCenterImport()) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             0x54 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'T'
                 if (AppWindow.skillCenterImportTool()) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             0x45 => if (plain and !ev.shift and !text_capture and !picking and !overlay_active) { // 'E'
                 if (AppWindow.skillCenterToggleToolEnabled()) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             0x47 => if (plain and !ev.shift and !text_capture and !picking) { // 'G'
                 if (AppWindow.skillCenterOpenUrlInput()) markSkillCenterInputDirty();
@@ -3354,19 +3390,19 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 // key-down; suppress it so it doesn't land in the now-active
                 // URL field. (Only 'G' opens a text field, so only it suppresses.)
                 g_skill_center_suppress_command_char = 'g';
-                return;
+                return .none;
             },
             0x41 => if (plain and !ev.shift and picking) { // 'A' select-all
                 if (AppWindow.skillCenterPickSelectAll()) markSkillCenterInputDirty();
-                return;
+                return .none;
             },
             platform_input.key_space => if (plain and !ev.shift and !text_capture) {
                 if (AppWindow.skillCenterSpacePreview()) markSkillCenterInputDirty(); // toggles when picking
-                return;
+                return .none;
             },
             else => {},
         }
-        return;
+        return .none;
     }
 
     // AI copilot sidebar (terminal tabs): route editing/navigation keys to the
@@ -3389,14 +3425,14 @@ fn handleKey(ev: platform_input.KeyEvent) void {
                 }
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
-                return;
+                return .none;
             }
             if (isAiChatKey(ev)) {
                 AppWindow.resetCursorBlink();
                 chat.handleKeyWithWrapCols(key_event, aiCopilotInputWrapCols());
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
-                return;
+                return .none;
             }
         }
     }
@@ -3438,15 +3474,15 @@ fn handleKey(ev: platform_input.KeyEvent) void {
             if (consumed) {
                 AppWindow.g_force_rebuild = true;
                 AppWindow.g_cells_valid = false;
-                return;
+                return .none;
             }
         }
     }
 
     // Don't send input to PTY if active tab isn't the terminal
-    if (!AppWindow.isActiveTabTerminal()) return;
+    if (!AppWindow.isActiveTabTerminal()) return .none;
 
-    const surface = AppWindow.activeSurface() orelse return;
+    const surface = AppWindow.activeSurface() orelse return .none;
 
     // Track whether this keypress actually sends data to the PTY.
     // Like Ghostty, we only scroll-to-bottom when input is actually generated,
@@ -3512,6 +3548,7 @@ fn handleKey(ev: platform_input.KeyEvent) void {
         surface.terminal.scrollViewport(.bottom);
         surface.render_state.mutex.unlock();
     }
+    return .none;
 }
 
 fn isModifierKey(key_code: platform_input.KeyCode) bool {
