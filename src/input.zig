@@ -333,6 +333,23 @@ test "input: command palette dispatchKey preserves repaint for unmapped palette 
     try std.testing.expect(effect.cells_invalid);
 }
 
+test "input: window close confirm dispatchKey returns repaint effect" {
+    defer overlays.windowCloseConfirmClose();
+    overlays.closeConfirmOpen(.window, .window_generic);
+
+    const effect = dispatchKey(.{
+        .key_code = platform_input.key_escape,
+        .ctrl = false,
+        .shift = false,
+        .alt = false,
+        .super = false,
+    });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+}
+
 test "input: command palette text filtering requests a repaint" {
     defer overlays.commandPaletteClose();
     overlays.commandPaletteOpen();
@@ -2989,19 +3006,15 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         return .none;
     }
     if (overlays.windowCloseConfirmVisible()) {
-        overlays.windowCloseConfirmHandleKey(key_event);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return .none;
+        return overlays.windowCloseConfirmHandleKey(key_event);
     }
     if (overlays.transferCancelConfirmVisible()) {
-        switch (overlays.transferCancelConfirmHandleKey(key_event)) {
+        const result = overlays.transferCancelConfirmHandleKeyEffect(key_event);
+        switch (result.action) {
             .interrupt => _ = file_explorer.cancelActiveTransfer(),
             .keep, .none => {},
         }
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return .none;
+        return result.effect;
     }
     const action = configuredAction(ev);
     const is_close_shortcut = actionIs(action, .close_panel_or_tab);
@@ -3076,10 +3089,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         return .none;
     }
     if (overlays.restoreDefaultsConfirmVisible()) {
-        overlays.restoreDefaultsConfirmHandleKey(key_event);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
-        return .none;
+        return overlays.restoreDefaultsConfirmHandleKey(key_event);
     }
     if (overlays.settingsPageVisible()) {
         return overlays.settingsPageHandleKey(key_event);

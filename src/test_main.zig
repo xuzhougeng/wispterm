@@ -776,6 +776,7 @@ comptime {
     _ = @import("renderer/overlay_keys.zig");
     _ = @import("close_confirm.zig");
     _ = @import("renderer/overlays.zig");
+    _ = @import("renderer/overlays/confirm_modals.zig");
     _ = @import("renderer/overlays/command_palette_input.zig");
     _ = @import("renderer/overlays/settings_page.zig");
     _ = @import("renderer/overlays/state.zig");

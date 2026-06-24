@@ -34,6 +34,7 @@ const update_check = @import("../update_check.zig");
 const keybind = @import("../keybind.zig");
 const overlay_keys = @import("overlay_keys.zig");
 const overlay_state = @import("overlays/state.zig");
+const confirm_modals = @import("overlays/confirm_modals.zig");
 const settings_page = @import("overlays/settings_page.zig");
 const toasts = @import("overlays/toasts.zig");
 const close_confirm = @import("../close_confirm.zig");
@@ -96,6 +97,10 @@ fn toastState() *toasts.State {
     return &g_overlay_state.toasts;
 }
 
+fn confirmState() *confirm_modals.State {
+    return &g_overlay_state.confirms;
+}
+
 // ============================================================================
 // Split divider rendering
 // ============================================================================
@@ -123,7 +128,6 @@ threadlocal var g_remote_key_copied_until_ms: i64 = 0;
 threadlocal var g_remote_key_dismissed_digest: ?[32]u8 = null;
 
 pub const TransferCancelConfirmAction = overlay_keys.TransferCancelConfirmAction;
-threadlocal var g_transfer_cancel_confirm_visible: bool = false;
 
 const SSH_CWD_HELP_URL = "https://github.com/xuzhougeng/wispterm#ssh-current-directory-for-downloads-and-uploads";
 const update_prompt_model = @import("overlays/update_prompt_model.zig");
@@ -138,13 +142,7 @@ threadlocal var g_update_prompt_rect: ?DebugLineRect = null;
 
 threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
-pub const CloseConfirmVariant = enum { running_program, window_generic, terminal_split };
-threadlocal var g_window_close_confirm_visible: bool = false;
-threadlocal var g_close_confirm_pending: close_confirm.PendingClose = .window;
-threadlocal var g_close_confirm_variant: CloseConfirmVariant = .window_generic;
-
-// "Restore default settings" confirmation, shown on top of the settings page.
-threadlocal var g_restore_defaults_confirm_visible: bool = false;
+pub const CloseConfirmVariant = confirm_modals.CloseConfirmVariant;
 
 const WindowCloseConfirmLayout = struct {
     panel_x: f32,
@@ -419,42 +417,37 @@ pub fn commandPaletteContainsPoint(xpos: f64, ypos: f64, window_width: f32, wind
 }
 
 pub fn closeConfirmOpen(action: close_confirm.PendingClose, variant: CloseConfirmVariant) void {
-    g_close_confirm_pending = action;
-    g_close_confirm_variant = variant;
-    g_window_close_confirm_visible = true;
+    confirmState().openCloseConfirm(action, variant);
 }
 
 pub fn windowCloseConfirmClose() void {
-    g_window_close_confirm_visible = false;
+    confirmState().closeWindowConfirm();
 }
 
-fn closeConfirmConfirm() void {
-    g_window_close_confirm_visible = false;
-    switch (g_close_confirm_pending) {
-        .window => AppWindow.g_should_close = true,
-        .focused_split => AppWindow.closeFocusedSplit(),
-        .tab => |idx| AppWindow.closeTab(idx),
+fn executeCloseKeyAction(action: confirm_modals.CloseKeyAction) void {
+    switch (action) {
+        .none => {},
+        .close_window => AppWindow.g_should_close = true,
+        .close_focused_split => AppWindow.closeFocusedSplit(),
+        .close_tab => |idx| AppWindow.closeTab(idx),
     }
 }
 
 pub fn windowCloseConfirmVisible() bool {
-    return g_window_close_confirm_visible;
+    return confirmState().window_close_visible;
 }
 
-pub fn windowCloseConfirmHandleKey(ev: input_key.KeyEvent) void {
-    if (!g_window_close_confirm_visible) return;
-    switch (close_confirm.keyOutcome(ev)) {
-        .confirm => closeConfirmConfirm(),
-        .cancel => windowCloseConfirmClose(),
-        .none => {},
-    }
+pub fn windowCloseConfirmHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
+    if (!windowCloseConfirmVisible()) return .none;
+    executeCloseKeyAction(confirmState().handleWindowCloseKey(ev));
+    return .repaint;
 }
 
 pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
-    if (!g_window_close_confirm_visible) return false;
+    if (!windowCloseConfirmVisible()) return false;
     const layout = windowCloseConfirmLayout(window_width, window_height);
     if (pointInTopRect(xpos, ypos, layout.close_x, layout.close_top_px, layout.close_w, layout.close_h)) {
-        closeConfirmConfirm();
+        executeCloseKeyAction(confirmState().confirmClose());
         return true;
     }
     if (pointInTopRect(xpos, ypos, layout.cancel_x, layout.cancel_top_px, layout.cancel_w, layout.cancel_h)) {
@@ -465,15 +458,15 @@ pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, wind
 }
 
 pub fn restoreDefaultsConfirmOpen() void {
-    g_restore_defaults_confirm_visible = true;
+    confirmState().openRestoreDefaults();
 }
 
 pub fn restoreDefaultsConfirmClose() void {
-    g_restore_defaults_confirm_visible = false;
+    confirmState().closeRestoreDefaults();
 }
 
 pub fn restoreDefaultsConfirmVisible() bool {
-    return g_restore_defaults_confirm_visible;
+    return confirmState().restore_defaults_visible;
 }
 
 /// Reset the settings-page keys to their defaults, then refresh the live config
@@ -488,20 +481,20 @@ fn restoreDefaultsConfirmApply() void {
     restoreDefaultsConfirmClose();
 }
 
-pub fn restoreDefaultsConfirmHandleKey(ev: input_key.KeyEvent) void {
-    if (!g_restore_defaults_confirm_visible) return;
-    switch (ev.key) {
-        .enter => restoreDefaultsConfirmApply(),
-        .escape => restoreDefaultsConfirmClose(),
-        else => {},
+pub fn restoreDefaultsConfirmHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
+    if (!restoreDefaultsConfirmVisible()) return .none;
+    switch (confirmState().handleRestoreDefaultsKey(ev)) {
+        .apply => restoreDefaultsConfirmApply(),
+        .cancel, .none => {},
     }
+    return .repaint;
 }
 
 /// Mouse handling for the restore-defaults dialog. Returns true when the click
 /// was consumed (a button or anywhere inside the panel), mirroring
 /// windowCloseConfirmExecuteAt so clicks never fall through to the settings page.
 pub fn restoreDefaultsConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
-    if (!g_restore_defaults_confirm_visible) return false;
+    if (!restoreDefaultsConfirmVisible()) return false;
     const layout = windowCloseConfirmLayout(window_width, window_height);
     if (pointInTopRect(xpos, ypos, layout.close_x, layout.close_top_px, layout.close_w, layout.close_h)) {
         restoreDefaultsConfirmApply();
@@ -577,26 +570,34 @@ pub fn integrationPromptExecuteAt(xpos: f64, ypos: f64, window_width: f32, windo
 }
 
 pub fn transferCancelConfirmOpen() void {
-    g_transfer_cancel_confirm_visible = true;
+    confirmState().openTransferCancel();
 }
 
 pub fn transferCancelConfirmClose() void {
-    g_transfer_cancel_confirm_visible = false;
+    confirmState().closeTransferCancel();
 }
 
 pub fn transferCancelConfirmVisible() bool {
-    return g_transfer_cancel_confirm_visible;
+    return confirmState().transfer_cancel_visible;
+}
+
+pub const TransferCancelKeyResult = struct {
+    action: TransferCancelConfirmAction = .none,
+    effect: AppWindow.UiEffect = .none,
+};
+
+pub fn transferCancelConfirmHandleKeyEffect(ev: input_key.KeyEvent) TransferCancelKeyResult {
+    if (!transferCancelConfirmVisible()) return .{};
+    const action = confirmState().handleTransferCancelKey(ev);
+    return .{ .action = action, .effect = .repaint };
 }
 
 pub fn transferCancelConfirmHandleKey(ev: input_key.KeyEvent) TransferCancelConfirmAction {
-    if (!g_transfer_cancel_confirm_visible) return .none;
-    const action = overlay_keys.transferCancelConfirmAction(ev);
-    if (action != .none) transferCancelConfirmClose();
-    return action;
+    return transferCancelConfirmHandleKeyEffect(ev).action;
 }
 
 pub fn transferCancelConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) TransferCancelConfirmAction {
-    if (!g_transfer_cancel_confirm_visible) return .none;
+    if (!transferCancelConfirmVisible()) return .none;
     const layout = transferCancelConfirmLayout(window_width, window_height);
     if (pointInTopRect(xpos, ypos, layout.interrupt_x, layout.interrupt_top_px, layout.interrupt_w, layout.interrupt_h)) {
         transferCancelConfirmClose();
@@ -6399,6 +6400,14 @@ test "overlays: transfer interruption prompt returns explicit actions" {
     );
 }
 
+test "overlays: restore defaults confirm state is owned by OverlayState" {
+    restoreDefaultsConfirmOpen();
+    defer restoreDefaultsConfirmClose();
+
+    try std.testing.expect(g_overlay_state.confirms.restore_defaults_visible);
+    try std.testing.expect(restoreDefaultsConfirmVisible());
+}
+
 test "overlays: stored prompt URL does not affect latest release command URL" {
     const saved = g_overlay_state.toasts.update;
     defer g_overlay_state.toasts.update = saved;
@@ -6605,9 +6614,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     const saved_settings_visible = settingsState().visible;
     const saved_whats_new = g_whats_new_visible;
     const saved_integration_prompt = g_integration_prompt_visible;
-    const saved_close = g_window_close_confirm_visible;
-    const saved_restore = g_restore_defaults_confirm_visible;
-    const saved_transfer = g_transfer_cancel_confirm_visible;
+    const saved_confirms = g_overlay_state.confirms;
     const saved_session = g_session_launcher_visible;
     const saved_ssh_list = g_ssh_list_visible;
     const saved_ssh_form = g_ssh_form_visible;
@@ -6619,9 +6626,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
         settingsState().visible = saved_settings_visible;
         g_whats_new_visible = saved_whats_new;
         g_integration_prompt_visible = saved_integration_prompt;
-        g_window_close_confirm_visible = saved_close;
-        g_restore_defaults_confirm_visible = saved_restore;
-        g_transfer_cancel_confirm_visible = saved_transfer;
+        g_overlay_state.confirms = saved_confirms;
         g_session_launcher_visible = saved_session;
         g_ssh_list_visible = saved_ssh_list;
         g_ssh_form_visible = saved_ssh_form;
@@ -6635,9 +6640,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     settingsState().visible = false;
     g_whats_new_visible = false;
     g_integration_prompt_visible = false;
-    g_window_close_confirm_visible = false;
-    g_restore_defaults_confirm_visible = false;
-    g_transfer_cancel_confirm_visible = false;
+    g_overlay_state.confirms = .{};
     g_session_launcher_visible = false;
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
@@ -6663,9 +6666,9 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     try std.testing.expect(anyBlockingOverlayVisible());
     g_integration_prompt_visible = false;
 
-    g_window_close_confirm_visible = true;
+    closeConfirmOpen(.window, .window_generic);
     try std.testing.expect(anyBlockingOverlayVisible());
-    g_window_close_confirm_visible = false;
+    windowCloseConfirmClose();
 
     g_session_launcher_visible = true;
     try std.testing.expect(anyBlockingOverlayVisible());
@@ -6770,7 +6773,7 @@ pub fn showCloseShortcutConfirm(duration_ms: i64) void {
 }
 
 pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
-    if (!g_window_close_confirm_visible) return;
+    if (!windowCloseConfirmVisible()) return;
 
     const layout = windowCloseConfirmLayout(window_width, window_height);
     const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
@@ -6809,12 +6812,13 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
 
     const text_x = icon_x + icon_size + 18;
     const text_right = layout.panel_x + layout.panel_w - pad;
-    const title_text = switch (g_close_confirm_variant) {
+    const close_variant = confirmState().close_variant;
+    const title_text = switch (close_variant) {
         .running_program => "A program is still running",
         .window_generic => "Close WispTerm?",
         .terminal_split => "Close this terminal?",
     };
-    const body_text = switch (g_close_confirm_variant) {
+    const body_text = switch (close_variant) {
         .running_program => "Closing now will end it.",
         .window_generic => "Running panels in this window will be terminated.",
         .terminal_split => "This terminal pane will be closed.",
@@ -6843,7 +6847,7 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
 }
 
 pub fn renderRestoreDefaultsConfirm(window_width: f32, window_height: f32) void {
-    if (!g_restore_defaults_confirm_visible) return;
+    if (!restoreDefaultsConfirmVisible()) return;
 
     // Reuses the window-close panel/button geometry; close_* is the Restore
     // button, cancel_* is Cancel.
@@ -7013,7 +7017,7 @@ pub fn renderIntegrationPrompt(window_width: f32, window_height: f32) void {
 }
 
 pub fn renderTransferCancelConfirm(window_width: f32, window_height: f32) void {
-    if (!g_transfer_cancel_confirm_visible) return;
+    if (!transferCancelConfirmVisible()) return;
 
     const layout = transferCancelConfirmLayout(window_width, window_height);
     const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
