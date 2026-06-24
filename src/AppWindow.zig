@@ -603,6 +603,17 @@ test "AppWindow: applyUiEffect none leaves dirty globals unchanged" {
     try std.testing.expect(g_cells_valid);
 }
 
+test "AppWindow: applyUiEffect documents UI-thread-only dirty flags" {
+    const source = @embedFile("AppWindow.zig");
+    const fn_needle = "pub fn applyUi" ++ "Effect(effect: UiEffect) void";
+    const fn_pos = std.mem.indexOf(u8, source, fn_needle) orelse return error.MissingApplyUiEffect;
+    const prefix_start = if (fn_pos > 400) fn_pos - 400 else 0;
+    const prefix = source[prefix_start..fn_pos];
+
+    try std.testing.expect(std.mem.indexOf(u8, prefix, "UI thread") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prefix, "threadlocal") != null);
+}
+
 test "AppWindow: skill center import picker allows empty library and blocks tool rows" {
     const allocator = std.testing.allocator;
     const previous_allocator = g_allocator;
@@ -5155,6 +5166,11 @@ fn markUiDirty() void {
     applyUiEffect(.repaint);
 }
 
+/// Apply a UI-thread effect to AppWindow's legacy dirty flags.
+///
+/// This must run on the UI thread: the dirty flags are threadlocal, so worker
+/// threads must queue work back to the UI thread and use `window_backend.postWakeup()`
+/// rather than calling this helper directly.
 pub fn applyUiEffect(effect: UiEffect) void {
     if (effect.needs_rebuild) g_force_rebuild = true;
     if (effect.cells_invalid) g_cells_valid = false;
