@@ -4952,6 +4952,8 @@ fn remoteSyncHost() remote_sync.Host {
     };
 }
 
+// Allowed P3.1 shim: this callback owns App-window lookup under App.mutex and
+// keeps remote_sync.zig decoupled from App.zig while forwarding to the UI thread.
 fn openRemoteAiAgentForClient(ctx: *anyopaque, request_id: []const u8) void {
     const app: *App = @ptrCast(@alignCast(ctx));
     const client = app.remote_client orelse return;

@@ -206,13 +206,13 @@ surfaces.
 Final measured line counts:
 
 ```text
-   7089 src/AppWindow.zig
+   7091 src/AppWindow.zig
       5 src/appwindow/active_tab.zig
     333 src/appwindow/agent_requests.zig
     267 src/appwindow/control_api.zig
     105 src/appwindow/flush_scheduler.zig
     131 src/appwindow/frame_latency.zig
-     59 src/appwindow/p3_1_guard.zig
+    193 src/appwindow/p3_1_guard.zig
      73 src/appwindow/remote_state.zig
     390 src/appwindow/remote_sync.zig
     127 src/appwindow/render_gate.zig
@@ -233,7 +233,7 @@ Final measured line counts:
      85 src/appwindow/window_state.zig
    7665 src/renderer/overlays.zig
    7101 src/input.zig
-  32058 total
+  32194 total
 ```
 
 Final verification:
@@ -242,9 +242,17 @@ Final verification:
   `src/test_fast.zig`. The guard embeds `src/AppWindow.zig` and fails if P3.1
   bridge/request or P3.1b Skill Center implementation symbols return to
   AppWindow.
+- Explicit allowed shim: `openRemoteAiAgentForClient` remains in AppWindow
+  because it owns `App.windows` lookup under `App.mutex` and keeps
+  `remote_sync.zig` decoupled from `App.zig`; it only forwards the request to
+  the extracted remote handler on the UI thread.
 - Guard red check: `zig build test` failed before cleanup on
   `fn remoteAiAgentOpen` and `fn skillCenterToolManifestPath`, proving the
   guard caught boundary violations.
+- Review-fix guard red check: a temporary marker for
+  `fn openRemoteAiAgentForClient` failed `zig build test`, proving the expanded
+  guard still trips on AppWindow bodies before that marker was removed as an
+  explicit allowed shim.
 - Fast gate: `zig build test` passed after cleanup.
 - Windows checkout safety: checked 1553 paths including the new guard file;
   name violations 0, case-fold collisions 0, symlinks 0, max path length 90.
