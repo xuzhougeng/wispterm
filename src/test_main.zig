@@ -663,6 +663,9 @@ comptime {
     _ = @import("surface_registry.zig");
     _ = @import("png_dimensions.zig");
     _ = @import("appwindow/flush_scheduler.zig");
+    _ = @import("appwindow/window_state.zig");
+    _ = @import("appwindow/remote_state.zig");
+    _ = @import("appwindow/state.zig");
     _ = @import("appwindow/split_layout.zig");
     _ = @import("appwindow/tab.zig");
     _ = @import("appwindow/thread_message.zig");
@@ -776,6 +779,14 @@ comptime {
     _ = @import("renderer/overlay_keys.zig");
     _ = @import("close_confirm.zig");
     _ = @import("renderer/overlays.zig");
+    _ = @import("renderer/overlays/confirm_modals.zig");
+    _ = @import("renderer/overlays/command_palette_input.zig");
+    _ = @import("renderer/overlays/settings_page.zig");
+    _ = @import("renderer/overlays/ssh_profiles.zig");
+    _ = @import("renderer/overlays/ai_profiles.zig");
+    _ = @import("renderer/overlays/session_launcher.zig");
+    _ = @import("renderer/overlays/state.zig");
+    _ = @import("renderer/overlays/toasts.zig");
     _ = @import("selection_unit.zig");
     _ = @import("session_persist.zig");
     _ = @import("agent_memory.zig");

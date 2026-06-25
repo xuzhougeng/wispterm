@@ -33,6 +33,13 @@ const platform_pty_command = @import("../platform/pty_command.zig");
 const update_check = @import("../update_check.zig");
 const keybind = @import("../keybind.zig");
 const overlay_keys = @import("overlay_keys.zig");
+const overlay_state = @import("overlays/state.zig");
+const confirm_modals = @import("overlays/confirm_modals.zig");
+const settings_page = @import("overlays/settings_page.zig");
+const toasts = @import("overlays/toasts.zig");
+const ssh_profiles = @import("overlays/ssh_profiles.zig");
+const ai_profiles = @import("overlays/ai_profiles.zig");
+const session_launcher = @import("overlays/session_launcher.zig");
 const close_confirm = @import("../close_confirm.zig");
 const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
@@ -83,6 +90,41 @@ pub const copilotEdgeHandleSetTarget = copilot_edge_handle.setProximityTarget;
 pub const copilotEdgeHandleSetHovered = copilot_edge_handle.setHovered;
 pub const copilotEdgeHandleStartShimmer = copilot_edge_handle.startShimmer;
 
+threadlocal var g_overlay_state: overlay_state.OverlayState = .{};
+
+fn settingsState() *settings_page.State {
+    return &g_overlay_state.settings;
+}
+
+fn toastState() *toasts.State {
+    return &g_overlay_state.toasts;
+}
+
+fn confirmState() *confirm_modals.State {
+    return &g_overlay_state.confirms;
+}
+
+fn sshState() *ssh_profiles.State {
+    return &g_overlay_state.ssh;
+}
+
+fn aiState() *ai_profiles.State {
+    return &g_overlay_state.ai;
+}
+
+fn launcherState() *session_launcher.State {
+    return &g_overlay_state.session;
+}
+
+fn switchModelTarget() ?*AppWindow.ai_chat.Session {
+    const ptr = launcherState().switch_model_target orelse return null;
+    return @ptrCast(@alignCast(ptr));
+}
+
+fn setSwitchModelTarget(session: ?*AppWindow.ai_chat.Session) void {
+    launcherState().switch_model_target = @ptrCast(session);
+}
+
 // ============================================================================
 // Split divider rendering
 // ============================================================================
@@ -109,26 +151,8 @@ threadlocal var g_remote_key_copied_until_ms: i64 = 0;
 // Stored as a digest so fixed keys can be shorter or longer than 32 bytes.
 threadlocal var g_remote_key_dismissed_digest: ?[32]u8 = null;
 
-// Selection copy toast — flashes "Copied" briefly after right-click /
-// Ctrl+Shift+C so the user can see that the clipboard write succeeded.
-const COPY_TOAST_DURATION_MS: i64 = 1500;
-threadlocal var g_copy_toast_until_ms: i64 = 0;
-threadlocal var g_copy_toast_buf: [64]u8 = undefined;
-threadlocal var g_copy_toast_len: usize = 0;
-
-const TRANSFER_TOAST_DURATION_MS: i64 = 2500;
-threadlocal var g_transfer_toast_until_ms: i64 = 0;
-threadlocal var g_transfer_toast_sticky: bool = false;
-threadlocal var g_transfer_toast_status: AppWindow.file_explorer.TransferStatus = .idle;
-threadlocal var g_transfer_toast_clickable: bool = false;
-threadlocal var g_transfer_toast_buf: [160]u8 = undefined;
-threadlocal var g_transfer_toast_len: usize = 0;
-
 pub const TransferCancelConfirmAction = overlay_keys.TransferCancelConfirmAction;
-threadlocal var g_transfer_cancel_confirm_visible: bool = false;
 
-const UPDATE_PROMPT_DURATION_MS: i64 = 10000;
-const UPDATE_STATUS_DURATION_MS: i64 = 2500;
 const SSH_CWD_HELP_URL = "https://github.com/xuzhougeng/wispterm#ssh-current-directory-for-downloads-and-uploads";
 const update_prompt_model = @import("overlays/update_prompt_model.zig");
 const UpdatePromptAction = update_prompt_model.UpdatePromptAction;
@@ -138,24 +162,11 @@ threadlocal var g_whats_new_visible: bool = false;
 threadlocal var g_whats_new_scroll: i64 = 0;
 threadlocal var g_integration_prompt_visible: bool = false;
 threadlocal var g_integration_prompt_scroll: i64 = 0;
-threadlocal var g_update_prompt_until_ms: i64 = 0;
-threadlocal var g_update_prompt_buf: [128]u8 = undefined;
-threadlocal var g_update_prompt_len: usize = 0;
-threadlocal var g_update_prompt_url_buf: [256]u8 = undefined;
-threadlocal var g_update_prompt_url_len: usize = 0;
-threadlocal var g_update_prompt_clickable: bool = false;
-threadlocal var g_update_prompt_action: UpdatePromptAction = .none;
 threadlocal var g_update_prompt_rect: ?DebugLineRect = null;
 
 threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
-pub const CloseConfirmVariant = enum { running_program, window_generic, terminal_split };
-threadlocal var g_window_close_confirm_visible: bool = false;
-threadlocal var g_close_confirm_pending: close_confirm.PendingClose = .window;
-threadlocal var g_close_confirm_variant: CloseConfirmVariant = .window_generic;
-
-// "Restore default settings" confirmation, shown on top of the settings page.
-threadlocal var g_restore_defaults_confirm_visible: bool = false;
+pub const CloseConfirmVariant = confirm_modals.CloseConfirmVariant;
 
 const WindowCloseConfirmLayout = struct {
     panel_x: f32,
@@ -430,42 +441,37 @@ pub fn commandPaletteContainsPoint(xpos: f64, ypos: f64, window_width: f32, wind
 }
 
 pub fn closeConfirmOpen(action: close_confirm.PendingClose, variant: CloseConfirmVariant) void {
-    g_close_confirm_pending = action;
-    g_close_confirm_variant = variant;
-    g_window_close_confirm_visible = true;
+    confirmState().openCloseConfirm(action, variant);
 }
 
 pub fn windowCloseConfirmClose() void {
-    g_window_close_confirm_visible = false;
+    confirmState().closeWindowConfirm();
 }
 
-fn closeConfirmConfirm() void {
-    g_window_close_confirm_visible = false;
-    switch (g_close_confirm_pending) {
-        .window => AppWindow.g_should_close = true,
-        .focused_split => AppWindow.closeFocusedSplit(),
-        .tab => |idx| AppWindow.closeTab(idx),
+fn executeCloseKeyAction(action: confirm_modals.CloseKeyAction) void {
+    switch (action) {
+        .none => {},
+        .close_window => AppWindow.g_should_close = true,
+        .close_focused_split => AppWindow.closeFocusedSplit(),
+        .close_tab => |idx| AppWindow.closeTab(idx),
     }
 }
 
 pub fn windowCloseConfirmVisible() bool {
-    return g_window_close_confirm_visible;
+    return confirmState().window_close_visible;
 }
 
-pub fn windowCloseConfirmHandleKey(ev: input_key.KeyEvent) void {
-    if (!g_window_close_confirm_visible) return;
-    switch (close_confirm.keyOutcome(ev)) {
-        .confirm => closeConfirmConfirm(),
-        .cancel => windowCloseConfirmClose(),
-        .none => {},
-    }
+pub fn windowCloseConfirmHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
+    if (!windowCloseConfirmVisible()) return .none;
+    executeCloseKeyAction(confirmState().handleWindowCloseKey(ev));
+    return .repaint;
 }
 
 pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
-    if (!g_window_close_confirm_visible) return false;
+    if (!windowCloseConfirmVisible()) return false;
     const layout = windowCloseConfirmLayout(window_width, window_height);
     if (pointInTopRect(xpos, ypos, layout.close_x, layout.close_top_px, layout.close_w, layout.close_h)) {
-        closeConfirmConfirm();
+        executeCloseKeyAction(confirmState().confirmClose());
         return true;
     }
     if (pointInTopRect(xpos, ypos, layout.cancel_x, layout.cancel_top_px, layout.cancel_w, layout.cancel_h)) {
@@ -476,15 +482,15 @@ pub fn windowCloseConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, wind
 }
 
 pub fn restoreDefaultsConfirmOpen() void {
-    g_restore_defaults_confirm_visible = true;
+    confirmState().openRestoreDefaults();
 }
 
 pub fn restoreDefaultsConfirmClose() void {
-    g_restore_defaults_confirm_visible = false;
+    confirmState().closeRestoreDefaults();
 }
 
 pub fn restoreDefaultsConfirmVisible() bool {
-    return g_restore_defaults_confirm_visible;
+    return confirmState().restore_defaults_visible;
 }
 
 /// Reset the settings-page keys to their defaults, then refresh the live config
@@ -499,20 +505,20 @@ fn restoreDefaultsConfirmApply() void {
     restoreDefaultsConfirmClose();
 }
 
-pub fn restoreDefaultsConfirmHandleKey(ev: input_key.KeyEvent) void {
-    if (!g_restore_defaults_confirm_visible) return;
-    switch (ev.key) {
-        .enter => restoreDefaultsConfirmApply(),
-        .escape => restoreDefaultsConfirmClose(),
-        else => {},
+pub fn restoreDefaultsConfirmHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
+    if (!restoreDefaultsConfirmVisible()) return .none;
+    switch (confirmState().handleRestoreDefaultsKey(ev)) {
+        .apply => restoreDefaultsConfirmApply(),
+        .cancel, .none => {},
     }
+    return .repaint;
 }
 
 /// Mouse handling for the restore-defaults dialog. Returns true when the click
 /// was consumed (a button or anywhere inside the panel), mirroring
 /// windowCloseConfirmExecuteAt so clicks never fall through to the settings page.
 pub fn restoreDefaultsConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
-    if (!g_restore_defaults_confirm_visible) return false;
+    if (!restoreDefaultsConfirmVisible()) return false;
     const layout = windowCloseConfirmLayout(window_width, window_height);
     if (pointInTopRect(xpos, ypos, layout.close_x, layout.close_top_px, layout.close_w, layout.close_h)) {
         restoreDefaultsConfirmApply();
@@ -588,26 +594,34 @@ pub fn integrationPromptExecuteAt(xpos: f64, ypos: f64, window_width: f32, windo
 }
 
 pub fn transferCancelConfirmOpen() void {
-    g_transfer_cancel_confirm_visible = true;
+    confirmState().openTransferCancel();
 }
 
 pub fn transferCancelConfirmClose() void {
-    g_transfer_cancel_confirm_visible = false;
+    confirmState().closeTransferCancel();
 }
 
 pub fn transferCancelConfirmVisible() bool {
-    return g_transfer_cancel_confirm_visible;
+    return confirmState().transfer_cancel_visible;
+}
+
+pub const TransferCancelKeyResult = struct {
+    action: TransferCancelConfirmAction = .none,
+    effect: AppWindow.UiEffect = .none,
+};
+
+pub fn transferCancelConfirmHandleKeyEffect(ev: input_key.KeyEvent) TransferCancelKeyResult {
+    if (!transferCancelConfirmVisible()) return .{};
+    const action = confirmState().handleTransferCancelKey(ev);
+    return .{ .action = action, .effect = .repaint };
 }
 
 pub fn transferCancelConfirmHandleKey(ev: input_key.KeyEvent) TransferCancelConfirmAction {
-    if (!g_transfer_cancel_confirm_visible) return .none;
-    const action = overlay_keys.transferCancelConfirmAction(ev);
-    if (action != .none) transferCancelConfirmClose();
-    return action;
+    return transferCancelConfirmHandleKeyEffect(ev).action;
 }
 
 pub fn transferCancelConfirmExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_height: f32) TransferCancelConfirmAction {
-    if (!g_transfer_cancel_confirm_visible) return .none;
+    if (!transferCancelConfirmVisible()) return .none;
     const layout = transferCancelConfirmLayout(window_width, window_height);
     if (pointInTopRect(xpos, ypos, layout.interrupt_x, layout.interrupt_top_px, layout.interrupt_w, layout.interrupt_h)) {
         transferCancelConfirmClose();
@@ -963,35 +977,35 @@ test "command palette includes tmux profile actions for SSH profile search" {
     if (previous_filter_len > 0) @memcpy(previous_filter[0..previous_filter_len], g_command_palette_filter[0..previous_filter_len]);
     const previous_selected = g_command_palette_selected;
     const previous_scratch_len = g_palette_scratch_len;
-    const previous_ssh_loaded = g_ssh_profiles_loaded;
-    const previous_ssh_count = g_ssh_profile_count;
+    const previous_ssh_loaded = sshState().profiles_loaded;
+    const previous_ssh_count = sshState().profile_count;
     var previous_ssh_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
-    if (previous_ssh_count > 0) @memcpy(previous_ssh_profiles[0..previous_ssh_count], g_ssh_profiles[0..previous_ssh_count]);
-    const previous_ai_loaded = g_ai_profiles_loaded;
-    const previous_ai_count = g_ai_profile_count;
+    if (previous_ssh_count > 0) @memcpy(previous_ssh_profiles[0..previous_ssh_count], sshState().profiles[0..previous_ssh_count]);
+    const previous_ai_loaded = aiState().profiles_loaded;
+    const previous_ai_count = aiState().profile_count;
     var previous_ai_profiles: [AI_PROFILE_MAX]AiProfile = undefined;
-    if (previous_ai_count > 0) @memcpy(previous_ai_profiles[0..previous_ai_count], g_ai_profiles[0..previous_ai_count]);
+    if (previous_ai_count > 0) @memcpy(previous_ai_profiles[0..previous_ai_count], aiState().profiles[0..previous_ai_count]);
     defer {
         g_command_palette_mode = previous_mode;
         g_command_palette_filter_len = previous_filter_len;
         if (previous_filter_len > 0) @memcpy(g_command_palette_filter[0..previous_filter_len], previous_filter[0..previous_filter_len]);
         g_command_palette_selected = previous_selected;
         g_palette_scratch_len = previous_scratch_len;
-        g_ssh_profiles_loaded = previous_ssh_loaded;
-        g_ssh_profile_count = previous_ssh_count;
-        if (previous_ssh_count > 0) @memcpy(g_ssh_profiles[0..previous_ssh_count], previous_ssh_profiles[0..previous_ssh_count]);
-        g_ai_profiles_loaded = previous_ai_loaded;
-        g_ai_profile_count = previous_ai_count;
-        if (previous_ai_count > 0) @memcpy(g_ai_profiles[0..previous_ai_count], previous_ai_profiles[0..previous_ai_count]);
+        sshState().profiles_loaded = previous_ssh_loaded;
+        sshState().profile_count = previous_ssh_count;
+        if (previous_ssh_count > 0) @memcpy(sshState().profiles[0..previous_ssh_count], previous_ssh_profiles[0..previous_ssh_count]);
+        aiState().profiles_loaded = previous_ai_loaded;
+        aiState().profile_count = previous_ai_count;
+        if (previous_ai_count > 0) @memcpy(aiState().profiles[0..previous_ai_count], previous_ai_profiles[0..previous_ai_count]);
     }
 
     g_command_palette_mode = .commands;
-    g_ssh_profiles_loaded = true;
-    g_ssh_profile_count = 2;
-    g_ssh_profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
-    g_ssh_profiles[1] = makeSshProfile("GPU", "10.0.0.2", "user", "22");
-    g_ai_profiles_loaded = true;
-    g_ai_profile_count = 0;
+    sshState().profiles_loaded = true;
+    sshState().profile_count = 2;
+    sshState().profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
+    sshState().profiles[1] = makeSshProfile("GPU", "10.0.0.2", "user", "22");
+    aiState().profiles_loaded = true;
+    aiState().profile_count = 0;
 
     setCommandPaletteFilterForTest("CPU");
     rebuildPaletteScratch();
@@ -1065,9 +1079,9 @@ fn rebuildPaletteScratch() void {
         g_palette_scratch_len += 1;
     }
     loadSshProfiles();
-    for (0..g_ssh_profile_count) |profile_idx| {
+    for (0..sshState().profile_count) |profile_idx| {
         if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
-        const profile = &g_ssh_profiles[profile_idx];
+        const profile = &sshState().profiles[profile_idx];
         const name = profileField(profile, .name);
         if (command_palette_model.sshProfileNameMatchesFilter(name, filter)) {
             g_palette_scratch[g_palette_scratch_len] = .{ .ssh_profile = profile_idx };
@@ -1080,9 +1094,9 @@ fn rebuildPaletteScratch() void {
         }
     }
     loadAiProfiles();
-    for (0..g_ai_profile_count) |ai_idx| {
+    for (0..aiState().profile_count) |ai_idx| {
         if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
-        const profile = &g_ai_profiles[ai_idx];
+        const profile = &aiState().profiles[ai_idx];
         if (!command_palette_model.aiProfileLabelMatchesFilter(aiProfileField(profile, .name), filter)) continue;
         g_palette_scratch[g_palette_scratch_len] = .{ .ai_profile = ai_idx };
         g_palette_scratch_len += 1;
@@ -2056,8 +2070,8 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                         renderTitlebarTextLimited(i18n.commandTitle(entry.action) orelse entry.title, title_x, text_y, row_title_color, shortcut_left - title_x - 18);
                     },
                     .ssh_profile => |profile_idx| {
-                        if (profile_idx >= g_ssh_profile_count) continue;
-                        const profile = &g_ssh_profiles[profile_idx];
+                        if (profile_idx >= sshState().profile_count) continue;
+                        const profile = &sshState().profiles[profile_idx];
                         var title_buf: [SSH_FIELD_MAX + 5]u8 = undefined;
                         const ssh_title = std.fmt.bufPrint(title_buf[0..], "SSH: {s}", .{profileField(profile, .name)}) catch "SSH";
                         var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
@@ -2069,8 +2083,8 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                         renderTitlebarTextLimited(ssh_title, title_x, text_y, row_title_color, @max(1.0, target_left - title_x - 18));
                     },
                     .tmux_profile => |profile_idx| {
-                        if (profile_idx >= g_ssh_profile_count) continue;
-                        const profile = &g_ssh_profiles[profile_idx];
+                        if (profile_idx >= sshState().profile_count) continue;
+                        const profile = &sshState().profiles[profile_idx];
                         var title_buf: [SSH_FIELD_MAX + 6]u8 = undefined;
                         const tmux_title = std.fmt.bufPrint(title_buf[0..], "tmux: {s}", .{profileField(profile, .name)}) catch "tmux";
                         var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
@@ -2082,8 +2096,8 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                         renderTitlebarTextLimited(tmux_title, title_x, text_y, row_title_color, @max(1.0, target_left - title_x - 18));
                     },
                     .ai_profile => |profile_idx| {
-                        if (profile_idx >= g_ai_profile_count) continue;
-                        const profile = &g_ai_profiles[profile_idx];
+                        if (profile_idx >= aiState().profile_count) continue;
+                        const profile = &aiState().profiles[profile_idx];
                         var title_buf: [AI_FIELD_MAX + 8]u8 = undefined;
                         const ai_title = std.fmt.bufPrint(title_buf[0..], "AI: {s}", .{aiProfileField(profile, .name)}) catch "AI";
                         var tag_buf: [24]u8 = undefined;
@@ -2151,15 +2165,15 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
 
 const profile_codec = @import("overlays/profile_codec.zig");
 const openssh_config_import = @import("../openssh_config_import.zig");
-const SSH_FIELD_COUNT = profile_codec.SSH_FIELD_COUNT;
-const SSH_FIELD_MAX = profile_codec.SSH_FIELD_MAX;
-const SSH_PROFILE_MAX = 128;
-const SSH_PROFILE_NONE = std.math.maxInt(usize);
+const SSH_FIELD_COUNT = ssh_profiles.SSH_FIELD_COUNT;
+const SSH_FIELD_MAX = ssh_profiles.SSH_FIELD_MAX;
+const SSH_PROFILE_MAX = ssh_profiles.SSH_PROFILE_MAX;
+const SSH_PROFILE_NONE = ssh_profiles.SSH_PROFILE_NONE;
 const SSH_LIST_MAX_VISIBLE_ROWS = 5;
-const AI_FIELD_COUNT = profile_codec.AI_FIELD_COUNT;
-const AI_FIELD_MAX = profile_codec.AI_FIELD_MAX;
-const AI_PROFILE_MAX = 16;
-const AI_PROFILE_NONE = std.math.maxInt(usize);
+const AI_FIELD_COUNT = ai_profiles.AI_FIELD_COUNT;
+const AI_FIELD_MAX = ai_profiles.AI_FIELD_MAX;
+const AI_PROFILE_MAX = ai_profiles.AI_PROFILE_MAX;
+const AI_PROFILE_NONE = ai_profiles.AI_PROFILE_NONE;
 const SshField = profile_codec.SshField;
 const AiField = profile_codec.AiField;
 
@@ -2189,22 +2203,11 @@ const SessionAction = enum {
     cancel,
 };
 
-const SshListMode = enum {
-    manage,
-    edit_select,
-    delete_select,
-    ai_history_select,
-    tmux_connect,
-};
+const SshListMode = ssh_profiles.SshListMode;
 
-const AiListMode = enum {
-    manage,
-    edit_select,
-    delete_select,
-    switch_model,
-};
+const AiListMode = ai_profiles.AiListMode;
 
-const AiHistorySourceChoice = enum { local, wsl, ssh };
+const AiHistorySourceChoice = session_launcher.AiHistorySourceChoice;
 
 const SshProfile = profile_codec.SshProfile;
 pub const AgentSshConnectResult = union(enum) {
@@ -2245,32 +2248,14 @@ threadlocal var g_ssh_list_visible: bool = false;
 threadlocal var g_ssh_form_visible: bool = false;
 threadlocal var g_ai_list_visible: bool = false;
 threadlocal var g_ai_form_visible: bool = false;
-/// Live session bound to a `.switch_model` picker; set when the picker opens,
-/// cleared when a row is chosen or the picker closes.
-threadlocal var g_switch_model_target: ?*AppWindow.ai_chat.Session = null;
 threadlocal var g_ai_history_source_visible: bool = false;
-threadlocal var g_ai_history_source_selected: usize = 0;
-threadlocal var g_ssh_focus: usize = @intFromEnum(SshField.name);
-threadlocal var g_ssh_bufs: [SSH_FIELD_COUNT][SSH_FIELD_MAX]u8 = undefined;
-threadlocal var g_ssh_lens: [SSH_FIELD_COUNT]usize = .{0} ** SSH_FIELD_COUNT;
-threadlocal var g_ssh_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
-threadlocal var g_ssh_profile_count: usize = 0;
-threadlocal var g_ssh_profiles_loaded: bool = false;
-threadlocal var g_ssh_list_selected: usize = 0;
-threadlocal var g_ssh_list_mode: SshListMode = .manage;
-threadlocal var g_ssh_list_filter_buf: [SSH_FIELD_MAX]u8 = undefined;
-threadlocal var g_ssh_list_filter_len: usize = 0;
-threadlocal var g_ssh_delete_selected: [SSH_PROFILE_MAX]bool = .{false} ** SSH_PROFILE_MAX;
-threadlocal var g_ssh_edit_index: usize = SSH_PROFILE_NONE;
-threadlocal var g_ai_focus: usize = @intFromEnum(AiField.name);
-threadlocal var g_ai_bufs: [AI_FIELD_COUNT][AI_FIELD_MAX]u8 = undefined;
-threadlocal var g_ai_lens: [AI_FIELD_COUNT]usize = .{0} ** AI_FIELD_COUNT;
-threadlocal var g_ai_profiles: [AI_PROFILE_MAX]AiProfile = undefined;
-threadlocal var g_ai_profile_count: usize = 0;
-threadlocal var g_ai_profiles_loaded: bool = false;
-threadlocal var g_ai_list_selected: usize = 0;
-threadlocal var g_ai_list_mode: AiListMode = .manage;
-threadlocal var g_ai_edit_index: usize = AI_PROFILE_NONE;
+// Launcher transient state (AI history source selection + switch-model target)
+// now lives in `g_overlay_state.session` (session_launcher.State), reached
+// through `launcherState()` / `switchModelTarget()` / `setSwitchModelTarget()`.
+// SSH list/form state now lives in `g_overlay_state.ssh` (ssh_profiles.State),
+// reached through `sshState()`.
+// AI list/form state now lives in `g_overlay_state.ai` (ai_profiles.State),
+// reached through `aiState()`.
 
 pub const RemoteAgentOpenResult = enum {
     opened,
@@ -2360,7 +2345,7 @@ fn commandCenterStateSnapshot() command_center_state.State {
         .ai_list_visible = g_ai_list_visible,
         .ai_form_visible = g_ai_form_visible,
         .ai_history_source_visible = g_ai_history_source_visible,
-        .settings_visible = g_settings_visible,
+        .settings_visible = settingsState().visible,
     };
 }
 
@@ -2388,7 +2373,7 @@ fn commandCenterStateApply(state: command_center_state.State) void {
     g_ai_list_visible = state.ai_list_visible;
     g_ai_form_visible = state.ai_form_visible;
     g_ai_history_source_visible = state.ai_history_source_visible;
-    g_settings_visible = state.settings_visible;
+    settingsState().visible = state.settings_visible;
 }
 
 pub fn sessionLauncherOpen() void {
@@ -2406,9 +2391,9 @@ pub fn sessionLauncherOpenFromCommandPalette() void {
 }
 
 fn resetSessionLauncherTransientModes() void {
-    g_ssh_list_mode = .manage;
-    g_ai_list_mode = .manage;
-    g_ai_history_source_selected = 0;
+    sshState().list_mode = .manage;
+    aiState().list_mode = .manage;
+    launcherState().ai_history_source_selected = 0;
 }
 
 pub fn sessionLauncherClose() void {
@@ -2453,16 +2438,16 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
     }
     if (g_ssh_form_visible) {
         if (codepoint > 0x7f) return;
-        if (g_ssh_focus >= SSH_FIELD_COUNT) return;
-        const field = g_ssh_focus;
-        if (g_ssh_lens[field] >= SSH_FIELD_MAX) return;
-        g_ssh_bufs[field][g_ssh_lens[field]] = @intCast(codepoint);
-        g_ssh_lens[field] += 1;
+        if (sshState().focus >= SSH_FIELD_COUNT) return;
+        const field = sshState().focus;
+        if (sshState().lens[field] >= SSH_FIELD_MAX) return;
+        sshState().bufs[field][sshState().lens[field]] = @intCast(codepoint);
+        sshState().lens[field] += 1;
         return;
     }
     if (g_ai_form_visible) {
-        if (g_ai_focus >= AI_FIELD_COUNT) return;
-        appendAiFormCodepoint(g_ai_focus, codepoint);
+        if (aiState().focus >= AI_FIELD_COUNT) return;
+        appendAiFormCodepoint(aiState().focus, codepoint);
     }
 }
 
@@ -2472,13 +2457,13 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
         return true;
     }
     if (g_ai_form_visible) {
-        if (g_ai_focus >= AI_FIELD_COUNT) return false;
-        appendAiFormText(g_ai_focus, text);
+        if (aiState().focus >= AI_FIELD_COUNT) return false;
+        appendAiFormText(aiState().focus, text);
         return true;
     }
     if (g_ssh_form_visible) {
-        if (g_ssh_focus >= SSH_FIELD_COUNT) return false;
-        appendSshFormText(g_ssh_focus, text);
+        if (sshState().focus >= SSH_FIELD_COUNT) return false;
+        appendSshFormText(sshState().focus, text);
         return true;
     }
     return false;
@@ -2508,9 +2493,9 @@ fn aiHistorySourceChoiceForRow(row: usize) ?AiHistorySourceChoice {
 fn handleAiHistorySourceKey(ev: input_key.KeyEvent) void {
     const row_count = aiHistorySourceRowCount();
     switch (ev.key) {
-        .arrow_down, .tab => g_ai_history_source_selected = (g_ai_history_source_selected + 1) % row_count,
-        .arrow_up => g_ai_history_source_selected = if (g_ai_history_source_selected == 0) row_count - 1 else g_ai_history_source_selected - 1,
-        .enter => runAiHistorySourceRow(g_ai_history_source_selected),
+        .arrow_down, .tab => launcherState().historySourceNext(row_count),
+        .arrow_up => launcherState().historySourcePrev(row_count),
+        .enter => runAiHistorySourceRow(launcherState().ai_history_source_selected),
         .key_l => runAiHistorySourceRow(0),
         .key_w => {
             if (platform_pty_command.sessionLauncherWslRow() != null) runAiHistorySourceRow(1);
@@ -2520,13 +2505,18 @@ fn handleAiHistorySourceKey(ev: input_key.KeyEvent) void {
     }
 }
 
-pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
+pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
+    sessionLauncherHandleKeyImpl(ev);
+    return .repaint;
+}
+
+fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
     if (ev.key == .escape) {
-        if (g_ssh_list_visible and g_ssh_list_filter_len > 0) {
+        if (g_ssh_list_visible and sshState().list_filter_len > 0) {
             clearSshListFilter();
             return;
         }
-        if (g_ssh_list_visible and g_ssh_list_mode == .ai_history_select) {
+        if (g_ssh_list_visible and sshState().list_mode == .ai_history_select) {
             openAiHistorySourcePicker();
             return;
         }
@@ -2580,18 +2570,18 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
 
     if (g_ai_form_visible) {
         switch (ev.key) {
-            .tab, .arrow_down => g_ai_focus = (g_ai_focus + 1) % (AI_FIELD_COUNT + 3),
-            .arrow_up => g_ai_focus = if (g_ai_focus == 0) AI_FIELD_COUNT + 2 else g_ai_focus - 1,
+            .tab, .arrow_down => aiState().focusNextRow(),
+            .arrow_up => aiState().focusPrevRow(),
             .arrow_right => {
-                if (g_ai_focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(true);
-                if (g_ai_focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
+                if (aiState().focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(true);
+                if (aiState().focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
             },
             .arrow_left => {
-                if (g_ai_focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(false);
-                if (g_ai_focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
+                if (aiState().focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(false);
+                if (aiState().focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
             },
             .backspace => {
-                if (g_ai_focus < AI_FIELD_COUNT) backspaceAiFormField(g_ai_focus);
+                if (aiState().focus < AI_FIELD_COUNT) backspaceAiFormField(aiState().focus);
             },
             .enter => runAiFormFocusAction(),
             else => {},
@@ -2600,10 +2590,10 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) void {
     }
 
     switch (ev.key) {
-        .tab, .arrow_down => g_ssh_focus = (g_ssh_focus + 1) % (SSH_FIELD_COUNT + 3),
-        .arrow_up => g_ssh_focus = if (g_ssh_focus == 0) SSH_FIELD_COUNT + 2 else g_ssh_focus - 1,
+        .tab, .arrow_down => sshState().focusNextRow(),
+        .arrow_up => sshState().focusPrevRow(),
         .backspace => {
-            if (g_ssh_focus < SSH_FIELD_COUNT and g_ssh_lens[g_ssh_focus] > 0) g_ssh_lens[g_ssh_focus] -= 1;
+            if (sshState().focus < SSH_FIELD_COUNT and sshState().lens[sshState().focus] > 0) sshState().lens[sshState().focus] -= 1;
         },
         .enter => runSshFormFocusAction(),
         else => {},
@@ -2650,12 +2640,12 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
         .ai_history_local => openLocalAiHistorySession(),
         .ai_history_wsl => openWslAiHistorySession(),
         .ai_history_ssh => openAiHistorySshPicker(),
-        .connect_selected => runSshListRow(g_ssh_list_selected),
+        .connect_selected => runSshListRow(sshState().list_selected),
         .load_openssh_config => loadOpenSshConfigDefault(),
         .new_ssh => openSshFormNew(),
         .edit_selected => openSshEditPicker(),
         .delete_selected => openSshDeletePicker(),
-        .connect_ai_selected => runAiListRow(g_ai_list_selected),
+        .connect_ai_selected => runAiListRow(aiState().list_selected),
         .new_ai => openAiFormNew(),
         .edit_ai_selected => openAiEditPicker(),
         .delete_ai_selected => openAiDeletePicker(),
@@ -2687,7 +2677,7 @@ fn openAiHistorySourcePicker() void {
     g_ai_list_visible = false;
     g_ai_form_visible = false;
     g_ai_history_source_visible = true;
-    g_ai_history_source_selected = 0;
+    launcherState().ai_history_source_selected = 0;
 }
 
 fn openLocalAiHistorySession() void {
@@ -2714,8 +2704,8 @@ fn openAiHistorySshPicker() void {
 }
 
 fn openSshAiHistorySession(profile_idx: usize) void {
-    if (profile_idx >= g_ssh_profile_count) return;
-    const profile = &g_ssh_profiles[profile_idx];
+    if (profile_idx >= sshState().profile_count) return;
+    const profile = &sshState().profiles[profile_idx];
     const name = profileField(profile, .name);
     sessionLauncherClose();
     _ = AppWindow.spawnAiHistoryTab(.{
@@ -2764,7 +2754,7 @@ fn openSshList() void {
     g_ai_history_source_visible = false;
     g_ssh_list_visible = true;
     g_ssh_form_visible = false;
-    g_ssh_list_mode = .manage;
+    sshState().list_mode = .manage;
     clearSshDeleteSelection();
     clearSshListFilter();
     clampSshListSelection();
@@ -2779,12 +2769,12 @@ fn openSshDeletePicker() void {
 }
 
 fn openSshProfilePicker(mode: SshListMode) void {
-    if (g_ssh_profile_count == 0 and mode != .ai_history_select and mode != .tmux_connect) return;
+    if (sshState().profile_count == 0 and mode != .ai_history_select and mode != .tmux_connect) return;
     g_session_launcher_visible = false;
     g_ai_history_source_visible = false;
     g_ssh_list_visible = true;
     g_ssh_form_visible = false;
-    g_ssh_list_mode = mode;
+    sshState().list_mode = mode;
     if (mode == .delete_select) clearSshDeleteSelection();
     clearSshListFilter();
     clampSshListSelection();
@@ -2792,18 +2782,18 @@ fn openSshProfilePicker(mode: SshListMode) void {
 
 fn openSshFormNew() void {
     clearSshForm();
-    g_ssh_edit_index = SSH_PROFILE_NONE;
+    sshState().edit_index = SSH_PROFILE_NONE;
     openSshForm();
 }
 
 fn openSshFormEdit(index: usize) void {
-    if (index >= g_ssh_profile_count) return;
+    if (index >= sshState().profile_count) return;
     clearSshForm();
     for (0..SSH_FIELD_COUNT) |i| {
-        g_ssh_lens[i] = @min(g_ssh_profiles[index].lens[i], SSH_FIELD_MAX);
-        @memcpy(g_ssh_bufs[i][0..g_ssh_lens[i]], g_ssh_profiles[index].fields[i][0..g_ssh_lens[i]]);
+        sshState().lens[i] = @min(sshState().profiles[index].lens[i], SSH_FIELD_MAX);
+        @memcpy(sshState().bufs[i][0..sshState().lens[i]], sshState().profiles[index].fields[i][0..sshState().lens[i]]);
     }
-    g_ssh_edit_index = index;
+    sshState().edit_index = index;
     openSshForm();
 }
 
@@ -2812,31 +2802,31 @@ fn openSshForm() void {
     g_session_launcher_visible = false;
     g_ai_history_source_visible = false;
     g_ssh_form_visible = true;
-    g_ssh_focus = @intFromEnum(SshField.name);
-    if (g_ssh_lens[@intFromEnum(SshField.port)] == 0) {
-        g_ssh_bufs[@intFromEnum(SshField.port)][0] = '2';
-        g_ssh_bufs[@intFromEnum(SshField.port)][1] = '2';
-        g_ssh_lens[@intFromEnum(SshField.port)] = 2;
+    sshState().focus = @intFromEnum(SshField.name);
+    if (sshState().lens[@intFromEnum(SshField.port)] == 0) {
+        sshState().bufs[@intFromEnum(SshField.port)][0] = '2';
+        sshState().bufs[@intFromEnum(SshField.port)][1] = '2';
+        sshState().lens[@intFromEnum(SshField.port)] = 2;
     }
 }
 
 fn clearSshForm() void {
-    g_ssh_lens = .{0} ** SSH_FIELD_COUNT;
-    g_ssh_bufs[@intFromEnum(SshField.port)][0] = '2';
-    g_ssh_bufs[@intFromEnum(SshField.port)][1] = '2';
-    g_ssh_lens[@intFromEnum(SshField.port)] = 2;
+    sshState().lens = .{0} ** SSH_FIELD_COUNT;
+    sshState().bufs[@intFromEnum(SshField.port)][0] = '2';
+    sshState().bufs[@intFromEnum(SshField.port)][1] = '2';
+    sshState().lens[@intFromEnum(SshField.port)] = 2;
     appendSshFormText(@intFromEnum(SshField.auth_method), profile_codec.defaultSshFormAuthMethod());
 }
 
 fn handleSshListKey(ev: input_key.KeyEvent) void {
     const row_count = sshListRowCount();
     switch (ev.key) {
-        .arrow_down, .tab => g_ssh_list_selected = (g_ssh_list_selected + 1) % row_count,
-        .arrow_up => g_ssh_list_selected = if (g_ssh_list_selected == 0) row_count - 1 else g_ssh_list_selected - 1,
-        .enter => runSshListRow(g_ssh_list_selected),
+        .arrow_down, .tab => sshState().list_selected = (sshState().list_selected + 1) % row_count,
+        .arrow_up => sshState().list_selected = if (sshState().list_selected == 0) row_count - 1 else sshState().list_selected - 1,
+        .enter => runSshListRow(sshState().list_selected),
         .space => {
-            if (g_ssh_list_mode == .delete_select) {
-                _ = toggleSshDeleteSelectionAtVisibleRow(g_ssh_list_selected);
+            if (sshState().list_mode == .delete_select) {
+                _ = toggleSshDeleteSelectionAtVisibleRow(sshState().list_selected);
             }
         },
         .backspace => backspaceSshListFilter(),
@@ -2845,7 +2835,7 @@ fn handleSshListKey(ev: input_key.KeyEvent) void {
 }
 
 fn sshListRowCount() usize {
-    return switch (g_ssh_list_mode) {
+    return switch (sshState().list_mode) {
         .manage => sshVisibleProfileCount() + 5,
         .delete_select => sshVisibleProfileCount() + 2,
         .edit_select, .ai_history_select, .tmux_connect => sshVisibleProfileCount() + 1,
@@ -2873,34 +2863,34 @@ fn sshManageActionForRow(row: usize, visible_profile_count: usize) SshManageActi
 }
 
 fn sshListFilter() []const u8 {
-    return g_ssh_list_filter_buf[0..g_ssh_list_filter_len];
+    return sshState().listFilter();
 }
 
 fn clearSshListFilter() void {
-    g_ssh_list_filter_len = 0;
+    sshState().clearListFilter();
     resetSshListSelection();
 }
 
 fn backspaceSshListFilter() void {
-    if (g_ssh_list_filter_len == 0) return;
-    g_ssh_list_filter_len -= 1;
+    if (sshState().list_filter_len == 0) return;
+    sshState().list_filter_len -= 1;
     resetSshListSelection();
 }
 
 fn appendSshListFilterCodepoint(codepoint: u21) void {
     if (codepoint > 0x7f) return;
-    if (g_ssh_list_filter_len >= g_ssh_list_filter_buf.len) return;
-    g_ssh_list_filter_buf[g_ssh_list_filter_len] = @intCast(codepoint);
-    g_ssh_list_filter_len += 1;
+    if (sshState().list_filter_len >= sshState().list_filter_buf.len) return;
+    sshState().list_filter_buf[sshState().list_filter_len] = @intCast(codepoint);
+    sshState().list_filter_len += 1;
     resetSshListSelection();
 }
 
 fn appendSshListFilterText(text: []const u8) void {
     for (text) |ch| {
         if (ch < 0x20 or ch == 0x7f) continue;
-        if (g_ssh_list_filter_len >= g_ssh_list_filter_buf.len) break;
-        g_ssh_list_filter_buf[g_ssh_list_filter_len] = ch;
-        g_ssh_list_filter_len += 1;
+        if (sshState().list_filter_len >= sshState().list_filter_buf.len) break;
+        sshState().list_filter_buf[sshState().list_filter_len] = ch;
+        sshState().list_filter_len += 1;
     }
     resetSshListSelection();
 }
@@ -2919,16 +2909,16 @@ fn sshProfileMatchesFilter(profile: *const SshProfile) bool {
 
 fn sshVisibleProfileCount() usize {
     var count: usize = 0;
-    for (0..g_ssh_profile_count) |idx| {
-        if (sshProfileMatchesFilter(&g_ssh_profiles[idx])) count += 1;
+    for (0..sshState().profile_count) |idx| {
+        if (sshProfileMatchesFilter(&sshState().profiles[idx])) count += 1;
     }
     return count;
 }
 
 fn sshVisibleProfileIndexAt(visible_row: usize) ?usize {
     var count: usize = 0;
-    for (0..g_ssh_profile_count) |idx| {
-        if (!sshProfileMatchesFilter(&g_ssh_profiles[idx])) continue;
+    for (0..sshState().profile_count) |idx| {
+        if (!sshProfileMatchesFilter(&sshState().profiles[idx])) continue;
         if (count == visible_row) return idx;
         count += 1;
     }
@@ -2938,51 +2928,51 @@ fn sshVisibleProfileIndexAt(visible_row: usize) ?usize {
 fn clampSshListSelection() void {
     const row_count = sshListRowCount();
     if (row_count == 0) {
-        g_ssh_list_selected = 0;
+        sshState().list_selected = 0;
         return;
     }
-    g_ssh_list_selected = @min(g_ssh_list_selected, row_count - 1);
+    sshState().list_selected = @min(sshState().list_selected, row_count - 1);
 }
 
 fn resetSshListSelection() void {
-    g_ssh_list_selected = 0;
+    sshState().list_selected = 0;
     clampSshListSelection();
 }
 
 fn clearSshDeleteSelection() void {
-    @memset(g_ssh_delete_selected[0..], false);
+    @memset(sshState().delete_selected[0..], false);
 }
 
 fn sshDeleteSelectionCount() usize {
     var count: usize = 0;
-    for (0..g_ssh_profile_count) |idx| {
-        if (g_ssh_delete_selected[idx]) count += 1;
+    for (0..sshState().profile_count) |idx| {
+        if (sshState().delete_selected[idx]) count += 1;
     }
     return count;
 }
 
 fn toggleSshDeleteSelectionAtVisibleRow(row: usize) bool {
     const profile_idx = sshVisibleProfileIndexAt(row) orelse return false;
-    if (profile_idx >= g_ssh_profile_count) return false;
-    g_ssh_delete_selected[profile_idx] = !g_ssh_delete_selected[profile_idx];
+    if (profile_idx >= sshState().profile_count) return false;
+    sshState().delete_selected[profile_idx] = !sshState().delete_selected[profile_idx];
     return true;
 }
 
 fn deleteSelectedSshProfiles() usize {
     var write_idx: usize = 0;
     var deleted: usize = 0;
-    for (0..g_ssh_profile_count) |read_idx| {
-        if (g_ssh_delete_selected[read_idx]) {
+    for (0..sshState().profile_count) |read_idx| {
+        if (sshState().delete_selected[read_idx]) {
             deleted += 1;
             continue;
         }
         if (write_idx != read_idx) {
-            g_ssh_profiles[write_idx] = g_ssh_profiles[read_idx];
+            sshState().profiles[write_idx] = sshState().profiles[read_idx];
         }
         write_idx += 1;
     }
     if (deleted == 0) return 0;
-    g_ssh_profile_count = write_idx;
+    sshState().profile_count = write_idx;
     clearSshDeleteSelection();
     clampSshListSelection();
     if (AppWindow.g_allocator) |allocator| saveSshProfiles(allocator);
@@ -2991,7 +2981,7 @@ fn deleteSelectedSshProfiles() usize {
 
 fn sshField(field: SshField) []const u8 {
     const idx: usize = @intFromEnum(field);
-    return g_ssh_bufs[idx][0..g_ssh_lens[idx]];
+    return sshState().bufs[idx][0..sshState().lens[idx]];
 }
 
 const profileField = profile_codec.profileField;
@@ -3061,11 +3051,11 @@ fn findLoadedSshProfileIndex(identifier_raw: []const u8) ?usize {
     const identifier = std.mem.trim(u8, identifier_raw, " \t\r\n");
     if (identifier.len == 0) return null;
 
-    for (0..g_ssh_profile_count) |idx| {
-        if (std.ascii.eqlIgnoreCase(identifier, profileField(&g_ssh_profiles[idx], .name))) return idx;
+    for (0..sshState().profile_count) |idx| {
+        if (std.ascii.eqlIgnoreCase(identifier, profileField(&sshState().profiles[idx], .name))) return idx;
     }
-    for (0..g_ssh_profile_count) |idx| {
-        if (std.ascii.eqlIgnoreCase(identifier, profileField(&g_ssh_profiles[idx], .ip))) return idx;
+    for (0..sshState().profile_count) |idx| {
+        if (std.ascii.eqlIgnoreCase(identifier, profileField(&sshState().profiles[idx], .ip))) return idx;
     }
     return null;
 }
@@ -3084,8 +3074,8 @@ pub fn aiHistoryConnectSshProfile(identifier: []const u8, remote_command: []cons
 
 pub fn aiHistorySshConnection(identifier: []const u8) ?ssh_connection.SshConnection {
     const idx = findSshProfileIndex(identifier) orelse return null;
-    if (idx >= g_ssh_profile_count) return null;
-    return sshConnectionFromProfile(&g_ssh_profiles[idx]);
+    if (idx >= sshState().profile_count) return null;
+    return sshConnectionFromProfile(&sshState().profiles[idx]);
 }
 
 /// Enumerate the saved SSH profile names (UI thread; loads the threadlocal
@@ -3099,8 +3089,8 @@ pub fn sshProfileNames(allocator: std.mem.Allocator) ![][]u8 {
         for (out.items) |n| allocator.free(n);
         out.deinit(allocator);
     }
-    for (0..g_ssh_profile_count) |idx| {
-        const name = profileField(&g_ssh_profiles[idx], .name);
+    for (0..sshState().profile_count) |idx| {
+        const name = profileField(&sshState().profiles[idx], .name);
         if (name.len == 0) continue;
         try out.append(allocator, try allocator.dupe(u8, name));
     }
@@ -3140,18 +3130,18 @@ fn mergeOpenSshCandidate(candidate: openssh_config_import.Candidate, stats: *Ope
     const found_idx = findLoadedSshProfileIndex(name) orelse findLoadedSshProfileIndex(host);
     var created_new = false;
     const idx = found_idx orelse blk: {
-        if (g_ssh_profile_count >= SSH_PROFILE_MAX) {
+        if (sshState().profile_count >= SSH_PROFILE_MAX) {
             stats.capped = true;
             return;
         }
-        const next = g_ssh_profile_count;
-        g_ssh_profile_count += 1;
-        g_ssh_profiles[next] = .{};
+        const next = sshState().profile_count;
+        sshState().profile_count += 1;
+        sshState().profiles[next] = .{};
         created_new = true;
         break :blk next;
     };
 
-    if (idx >= g_ssh_profile_count) {
+    if (idx >= sshState().profile_count) {
         stats.skipped += 1;
         return;
     }
@@ -3161,7 +3151,7 @@ fn mergeOpenSshCandidate(candidate: openssh_config_import.Candidate, stats: *Ope
     } else {
         stats.updated += 1;
     }
-    const profile = &g_ssh_profiles[idx];
+    const profile = &sshState().profiles[idx];
     copySshProfileField(profile, .name, name);
     copySshProfileField(profile, .ip, host);
     copySshProfileField(profile, .user, user);
@@ -3219,14 +3209,14 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
     const found_idx = findSshProfileIndex(lookup) orelse findSshProfileIndex(host);
     const updated_existing = found_idx != null;
     const idx = found_idx orelse blk: {
-        if (g_ssh_profile_count >= SSH_PROFILE_MAX) return error.ProfileLimit;
-        const next = g_ssh_profile_count;
-        g_ssh_profile_count += 1;
-        g_ssh_profiles[next] = .{};
+        if (sshState().profile_count >= SSH_PROFILE_MAX) return error.ProfileLimit;
+        const next = sshState().profile_count;
+        sshState().profile_count += 1;
+        sshState().profiles[next] = .{};
         break :blk next;
     };
 
-    const profile = &g_ssh_profiles[idx];
+    const profile = &sshState().profiles[idx];
     const auth_method = if (auth_method_raw.len > 0)
         (parseSshAuthMethod(auth_method_raw) orelse return error.InvalidProfile)
     else if (args.password.len > 0)
@@ -3297,7 +3287,7 @@ pub fn agentSaveSshProfile(allocator: std.mem.Allocator, args: AppWindow.ai_chat
 
 fn runSshListRow(row: usize) void {
     const visible_profile_count = sshVisibleProfileCount();
-    switch (g_ssh_list_mode) {
+    switch (sshState().list_mode) {
         .manage => {
             switch (sshManageActionForRow(row, visible_profile_count)) {
                 .profile => {
@@ -3354,13 +3344,13 @@ fn runSshListRow(row: usize) void {
 }
 
 fn deleteSshProfile(idx: usize) void {
-    if (g_ssh_profile_count == 0) return;
-    if (idx >= g_ssh_profile_count) return;
+    if (sshState().profile_count == 0) return;
+    if (idx >= sshState().profile_count) return;
     var i = idx;
-    while (i + 1 < g_ssh_profile_count) : (i += 1) {
-        g_ssh_profiles[i] = g_ssh_profiles[i + 1];
+    while (i + 1 < sshState().profile_count) : (i += 1) {
+        sshState().profiles[i] = sshState().profiles[i + 1];
     }
-    g_ssh_profile_count -= 1;
+    sshState().profile_count -= 1;
     clearSshDeleteSelection();
     clampSshListSelection();
     if (AppWindow.g_allocator) |allocator| saveSshProfiles(allocator);
@@ -3377,11 +3367,11 @@ fn saveSshFormOnly() void {
 }
 
 fn runSshFormFocusAction() void {
-    if (g_ssh_focus < SSH_FIELD_COUNT) {
-        g_ssh_focus = (g_ssh_focus + 1) % (SSH_FIELD_COUNT + 3);
+    if (sshState().focus < SSH_FIELD_COUNT) {
+        sshState().focusNextRow();
         return;
     }
-    switch (g_ssh_focus - SSH_FIELD_COUNT) {
+    switch (sshState().focus - SSH_FIELD_COUNT) {
         0 => connectSshFromForm(),
         1 => saveSshFormOnly(),
         else => openSshList(),
@@ -3401,31 +3391,31 @@ fn saveSshFormProfile() ?usize {
     if (auth_method == .password and sshField(.password).len == 0) return null;
     if (auth_method == .key and !isIdentityFileSafe(sshField(.identity_file))) return null;
 
-    const idx = if (g_ssh_edit_index != SSH_PROFILE_NONE)
-        g_ssh_edit_index
+    const idx = if (sshState().edit_index != SSH_PROFILE_NONE)
+        sshState().edit_index
     else blk: {
-        if (g_ssh_profile_count >= SSH_PROFILE_MAX) return null;
-        const next = g_ssh_profile_count;
-        g_ssh_profile_count += 1;
+        if (sshState().profile_count >= SSH_PROFILE_MAX) return null;
+        const next = sshState().profile_count;
+        sshState().profile_count += 1;
         break :blk next;
     };
 
     for (0..SSH_FIELD_COUNT) |i| {
-        g_ssh_profiles[idx].lens[i] = g_ssh_lens[i];
-        @memcpy(g_ssh_profiles[idx].fields[i][0..g_ssh_lens[i]], g_ssh_bufs[i][0..g_ssh_lens[i]]);
+        sshState().profiles[idx].lens[i] = sshState().lens[i];
+        @memcpy(sshState().profiles[idx].fields[i][0..sshState().lens[i]], sshState().bufs[i][0..sshState().lens[i]]);
     }
-    copySshProfileField(&g_ssh_profiles[idx], .auth_method, auth_method.fieldValue());
-    if (auth_method != .password) copySshProfileField(&g_ssh_profiles[idx], .password, "");
-    if (auth_method != .key) copySshProfileField(&g_ssh_profiles[idx], .identity_file, "");
-    if (g_ssh_profiles[idx].lens[@intFromEnum(SshField.name)] == 0) {
+    copySshProfileField(&sshState().profiles[idx], .auth_method, auth_method.fieldValue());
+    if (auth_method != .password) copySshProfileField(&sshState().profiles[idx], .password, "");
+    if (auth_method != .key) copySshProfileField(&sshState().profiles[idx], .identity_file, "");
+    if (sshState().profiles[idx].lens[@intFromEnum(SshField.name)] == 0) {
         const host = sshField(.ip);
         const len = @min(host.len, SSH_FIELD_MAX);
-        @memcpy(g_ssh_profiles[idx].fields[@intFromEnum(SshField.name)][0..len], host[0..len]);
-        g_ssh_profiles[idx].lens[@intFromEnum(SshField.name)] = len;
+        @memcpy(sshState().profiles[idx].fields[@intFromEnum(SshField.name)][0..len], host[0..len]);
+        sshState().profiles[idx].lens[@intFromEnum(SshField.name)] = len;
     }
 
     saveSshProfiles(allocator);
-    g_ssh_edit_index = idx;
+    sshState().edit_index = idx;
     return idx;
 }
 
@@ -3460,8 +3450,8 @@ fn openTmuxSshPicker() void {
 /// Connect the profile at `idx` in tmux control mode: `ssh … tmux -CC new -A -s
 /// wispterm-<profile>`. No surface is spawned — the controller owns the tabs.
 fn connectSshProfileTmux(idx: usize) void {
-    if (idx >= g_ssh_profile_count) return;
-    const profile = &g_ssh_profiles[idx];
+    if (idx >= sshState().profile_count) return;
+    const profile = &sshState().profiles[idx];
     const name = profileField(profile, .name);
     const conn = sshConnectionFromProfile(profile) orelse return;
 
@@ -3491,8 +3481,8 @@ fn connectSshProfileTmux(idx: usize) void {
 pub fn connectProfileByNameTmux(name: []const u8) bool {
     loadSshProfiles();
     var idx: usize = 0;
-    while (idx < g_ssh_profile_count) : (idx += 1) {
-        if (std.mem.eql(u8, profileField(&g_ssh_profiles[idx], .name), name)) {
+    while (idx < sshState().profile_count) : (idx += 1) {
+        if (std.mem.eql(u8, profileField(&sshState().profiles[idx], .name), name)) {
             connectSshProfileTmux(idx);
             return true;
         }
@@ -3505,8 +3495,8 @@ pub fn connectProfileByNameTmux(name: []const u8) bool {
 pub fn connectProfileByName(name: []const u8) bool {
     loadSshProfiles();
     var idx: usize = 0;
-    while (idx < g_ssh_profile_count) : (idx += 1) {
-        if (std.mem.eql(u8, profileField(&g_ssh_profiles[idx], .name), name)) {
+    while (idx < sshState().profile_count) : (idx += 1) {
+        if (std.mem.eql(u8, profileField(&sshState().profiles[idx], .name), name)) {
             connectSshProfile(idx);
             return true;
         }
@@ -3519,8 +3509,8 @@ fn connectSshProfileReturningSurface(idx: usize) ?*Surface {
 }
 
 fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []const u8) ?*Surface {
-    if (idx >= g_ssh_profile_count) return null;
-    const profile = &g_ssh_profiles[idx];
+    if (idx >= sshState().profile_count) return null;
+    const profile = &sshState().profiles[idx];
     const server_name = profileField(profile, .name);
     const conn = sshConnectionFromProfile(profile) orelse return null;
 
@@ -3686,13 +3676,13 @@ fn openAiList() void {
     g_ai_history_source_visible = false;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
-    g_ai_list_mode = .manage;
-    g_ai_list_selected = @min(g_ai_list_selected, aiListRowCount() - 1);
+    aiState().list_mode = .manage;
+    aiState().list_selected = @min(aiState().list_selected, aiListRowCount() - 1);
 }
 
 fn openDefaultAiSession() void {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) {
+    if (aiState().profile_count == 0) {
         openAiFormNew();
         return;
     }
@@ -3701,7 +3691,7 @@ fn openDefaultAiSession() void {
 
 fn openDefaultAgentSessionFromCommandCenter() void {
     loadAiProfiles();
-    switch (command_center_state.resolveNewAgentLaunch(g_ai_profile_count != 0)) {
+    switch (command_center_state.resolveNewAgentLaunch(aiState().profile_count != 0)) {
         .open_form => openAiFormNewFromCommandPalette(),
         .connect_default_profile_as_agent => connectAiProfileWithAgentOverride(defaultAiProfileIndex(), "true"),
     }
@@ -3709,12 +3699,12 @@ fn openDefaultAgentSessionFromCommandCenter() void {
 
 pub fn hasAiProfiles() bool {
     loadAiProfiles();
-    return g_ai_profile_count > 0;
+    return aiState().profile_count > 0;
 }
 
 pub fn openDefaultAgentSessionForStartup() DefaultAgentOpenResult {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) {
+    if (aiState().profile_count == 0) {
         openAiFormNew();
         return .form_opened;
     }
@@ -3723,31 +3713,31 @@ pub fn openDefaultAgentSessionForStartup() DefaultAgentOpenResult {
 
 pub fn openDefaultAgentSessionForRemote() RemoteAgentOpenResult {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return .no_profile;
+    if (aiState().profile_count == 0) return .no_profile;
     return if (spawnAiProfileWithAgentOverride(defaultAiProfileIndex(), "true")) .opened else .failed;
 }
 
 pub fn openAgentSessionForRemoteProfile(profile_name: []const u8) NamedAgentOpenResult {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return .no_profile;
+    if (aiState().profile_count == 0) return .no_profile;
     const idx = blk: {
         const name = std.mem.trim(u8, profile_name, " \t\r\n");
         if (name.len == 0) break :blk defaultAiProfileIndex();
         var names: [AI_PROFILE_MAX][]const u8 = undefined;
-        for (0..g_ai_profile_count) |i| names[i] = aiProfileField(&g_ai_profiles[i], .name);
-        break :blk ai_model_switch.matchProfileByName(names[0..g_ai_profile_count], name) orelse return .unknown_profile;
+        for (0..aiState().profile_count) |i| names[i] = aiProfileField(&aiState().profiles[i], .name);
+        break :blk ai_model_switch.matchProfileByName(names[0..aiState().profile_count], name) orelse return .unknown_profile;
     };
     return if (spawnAiProfileWithAgentOverride(idx, "true")) .opened else .failed;
 }
 
 pub fn aiModelProfileList(allocator: std.mem.Allocator) ![]u8 {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return allocator.dupe(u8, "");
+    if (aiState().profile_count == 0) return allocator.dupe(u8, "");
     const default_idx = defaultAiProfileIndex();
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
-    for (0..g_ai_profile_count) |idx| {
-        const profile = &g_ai_profiles[idx];
+    for (0..aiState().profile_count) |idx| {
+        const profile = &aiState().profiles[idx];
         const name = aiProfileField(profile, .name);
         const model = aiProfileField(profile, .model);
         try out.print(allocator, "- {s}", .{name});
@@ -3769,30 +3759,30 @@ fn openAiDeletePicker() void {
 }
 
 fn openAiProfilePicker(mode: AiListMode) void {
-    if (g_ai_profile_count == 0) return;
+    if (aiState().profile_count == 0) return;
     g_session_launcher_visible = false;
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
-    g_ai_list_mode = mode;
-    g_ai_list_selected = if (g_ai_list_selected < g_ai_profile_count) g_ai_list_selected else 0;
+    aiState().list_mode = mode;
+    aiState().list_selected = if (aiState().list_selected < aiState().profile_count) aiState().list_selected else 0;
 }
 
 fn openAiFormNew() void {
     clearAiForm();
-    g_ai_edit_index = AI_PROFILE_NONE;
+    aiState().edit_index = AI_PROFILE_NONE;
     openAiForm();
 }
 
 fn openAiFormEdit(index: usize) void {
-    if (index >= g_ai_profile_count) return;
+    if (index >= aiState().profile_count) return;
     clearAiForm();
     for (0..AI_FIELD_COUNT) |i| {
-        g_ai_lens[i] = @min(g_ai_profiles[index].lens[i], AI_FIELD_MAX);
-        @memcpy(g_ai_bufs[i][0..g_ai_lens[i]], g_ai_profiles[index].fields[i][0..g_ai_lens[i]]);
+        aiState().lens[i] = @min(aiState().profiles[index].lens[i], AI_FIELD_MAX);
+        @memcpy(aiState().bufs[i][0..aiState().lens[i]], aiState().profiles[index].fields[i][0..aiState().lens[i]]);
     }
-    g_ai_edit_index = index;
+    aiState().edit_index = index;
     openAiForm();
 }
 
@@ -3805,7 +3795,7 @@ pub fn openAiConfigForSession(session: *AppWindow.ai_chat.Session) void {
 
     if (profile_idx) |idx| {
         openAiFormEdit(idx);
-        g_ai_focus = @intFromEnum(AiField.api_key);
+        aiState().focus = @intFromEnum(AiField.api_key);
         return;
     }
 
@@ -3828,22 +3818,22 @@ pub fn openAiConfigForSession(session: *AppWindow.ai_chat.Session) void {
     } else |_| {}
     session.mutex.unlock();
 
-    g_ai_edit_index = AI_PROFILE_NONE;
+    aiState().edit_index = AI_PROFILE_NONE;
     openAiForm();
-    g_ai_focus = @intFromEnum(AiField.api_key);
+    aiState().focus = @intFromEnum(AiField.api_key);
 }
 
 fn findAiProfileForSession(name: []const u8, base_url: []const u8, model: []const u8) ?usize {
     if (name.len > 0) {
-        for (0..g_ai_profile_count) |idx| {
-            if (std.mem.eql(u8, aiProfileField(&g_ai_profiles[idx], .name), name)) return idx;
+        for (0..aiState().profile_count) |idx| {
+            if (std.mem.eql(u8, aiProfileField(&aiState().profiles[idx], .name), name)) return idx;
         }
     }
 
     if (base_url.len > 0 and model.len > 0) {
-        for (0..g_ai_profile_count) |idx| {
-            if (std.mem.eql(u8, aiProfileField(&g_ai_profiles[idx], .base_url), base_url) and
-                std.mem.eql(u8, aiProfileField(&g_ai_profiles[idx], .model), model))
+        for (0..aiState().profile_count) |idx| {
+            if (std.mem.eql(u8, aiProfileField(&aiState().profiles[idx], .base_url), base_url) and
+                std.mem.eql(u8, aiProfileField(&aiState().profiles[idx], .model), model))
             {
                 return idx;
             }
@@ -3858,22 +3848,22 @@ fn openAiForm() void {
     g_ssh_form_visible = false;
     g_ai_list_visible = false;
     g_session_launcher_visible = false;
-    g_settings_visible = false;
+    settingsState().visible = false;
     g_ai_form_visible = true;
-    g_ai_focus = @intFromEnum(AiField.name);
+    aiState().focus = @intFromEnum(AiField.name);
 }
 
 fn setAiDefault(field: AiField, value: []const u8) void {
     const idx: usize = @intFromEnum(field);
     const len = @min(value.len, AI_FIELD_MAX);
-    @memcpy(g_ai_bufs[idx][0..len], value[0..len]);
-    g_ai_lens[idx] = len;
+    @memcpy(aiState().bufs[idx][0..len], value[0..len]);
+    aiState().lens[idx] = len;
 }
 
 const setProfileDefault = profile_codec.setProfileDefault;
 
 fn clearAiForm() void {
-    g_ai_lens = .{0} ** AI_FIELD_COUNT;
+    aiState().lens = .{0} ** AI_FIELD_COUNT;
     setAiDefault(.name, AppWindow.ai_chat.DEFAULT_NAME);
     setAiDefault(.base_url, AppWindow.ai_chat.DEFAULT_BASE_URL);
     setAiDefault(.model, AppWindow.ai_chat.DEFAULT_MODEL);
@@ -3894,9 +3884,9 @@ fn appendAiFormCodepoint(field: usize, codepoint: u21) void {
     if (field == @intFromEnum(AiField.vision)) return;
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
-    if (g_ai_lens[field] + len > AI_FIELD_MAX) return;
-    @memcpy(g_ai_bufs[field][g_ai_lens[field]..][0..len], buf[0..len]);
-    g_ai_lens[field] += len;
+    if (aiState().lens[field] + len > AI_FIELD_MAX) return;
+    @memcpy(aiState().bufs[field][aiState().lens[field]..][0..len], buf[0..len]);
+    aiState().lens[field] += len;
 }
 
 fn appendAiFormText(field: usize, text: []const u8) void {
@@ -3923,20 +3913,20 @@ fn appendSshFormText(field: usize, text: []const u8) void {
     if (field >= SSH_FIELD_COUNT) return;
     for (text) |ch| {
         if (ch < 0x20 or ch >= 0x7f) continue;
-        if (g_ssh_lens[field] >= SSH_FIELD_MAX) return;
-        g_ssh_bufs[field][g_ssh_lens[field]] = ch;
-        g_ssh_lens[field] += 1;
+        if (sshState().lens[field] >= SSH_FIELD_MAX) return;
+        sshState().bufs[field][sshState().lens[field]] = ch;
+        sshState().lens[field] += 1;
     }
 }
 
 fn backspaceAiFormField(field: usize) void {
-    if (field >= AI_FIELD_COUNT or g_ai_lens[field] == 0) return;
+    if (field >= AI_FIELD_COUNT or aiState().lens[field] == 0) return;
     // Protocol and Vision are toggle fields; they are not text-editable.
     if (field == @intFromEnum(AiField.protocol)) return;
     if (field == @intFromEnum(AiField.vision)) return;
-    g_ai_lens[field] -= 1;
-    while (g_ai_lens[field] > 0 and (g_ai_bufs[field][g_ai_lens[field]] & 0xC0) == 0x80) {
-        g_ai_lens[field] -= 1;
+    aiState().lens[field] -= 1;
+    while (aiState().lens[field] > 0 and (aiState().bufs[field][aiState().lens[field]] & 0xC0) == 0x80) {
+        aiState().lens[field] -= 1;
     }
 }
 
@@ -3945,7 +3935,7 @@ fn backspaceAiFormField(field: usize) void {
 /// so users toggle with ←/→ instead of typing an arbitrary string.
 fn cycleAiFormProtocol(forward: bool) void {
     const idx = @intFromEnum(AiField.protocol);
-    const current = AppWindow.ai_chat.ApiProtocol.parse(g_ai_bufs[idx][0..g_ai_lens[idx]]);
+    const current = AppWindow.ai_chat.ApiProtocol.parse(aiState().bufs[idx][0..aiState().lens[idx]]);
     setAiDefault(.protocol, current.cycle(forward).name());
 }
 
@@ -3978,35 +3968,35 @@ fn aiVisionDisplay() []const u8 {
 fn handleAiListKey(ev: input_key.KeyEvent) void {
     const row_count = aiListRowCount();
     switch (ev.key) {
-        .arrow_down, .tab => g_ai_list_selected = (g_ai_list_selected + 1) % row_count,
-        .arrow_up => g_ai_list_selected = if (g_ai_list_selected == 0) row_count - 1 else g_ai_list_selected - 1,
-        .enter => runAiListRow(g_ai_list_selected),
+        .arrow_down, .tab => aiState().list_selected = (aiState().list_selected + 1) % row_count,
+        .arrow_up => aiState().list_selected = if (aiState().list_selected == 0) row_count - 1 else aiState().list_selected - 1,
+        .enter => runAiListRow(aiState().list_selected),
         else => {},
     }
 }
 
 fn aiListRowCount() usize {
-    return switch (g_ai_list_mode) {
-        .manage => g_ai_profile_count + 4,
-        .edit_select, .delete_select, .switch_model => g_ai_profile_count + 1,
+    return switch (aiState().list_mode) {
+        .manage => aiState().profile_count + 4,
+        .edit_select, .delete_select, .switch_model => aiState().profile_count + 1,
     };
 }
 
 fn aiField(field: AiField) []const u8 {
     const idx: usize = @intFromEnum(field);
-    return g_ai_bufs[idx][0..g_ai_lens[idx]];
+    return aiState().bufs[idx][0..aiState().lens[idx]];
 }
 
 const aiProfileField = profile_codec.aiProfileField;
 
 fn runAiListRow(row: usize) void {
-    switch (g_ai_list_mode) {
+    switch (aiState().list_mode) {
         .manage => {
-            if (row < g_ai_profile_count) {
+            if (row < aiState().profile_count) {
                 connectAiProfile(row);
                 return;
             }
-            const action_row = row - g_ai_profile_count;
+            const action_row = row - aiState().profile_count;
             switch (action_row) {
                 0 => openAiFormNew(),
                 1 => openAiEditPicker(),
@@ -4015,14 +4005,14 @@ fn runAiListRow(row: usize) void {
             }
         },
         .edit_select => {
-            if (row < g_ai_profile_count) {
+            if (row < aiState().profile_count) {
                 openAiFormEdit(row);
             } else {
                 openAiList();
             }
         },
         .delete_select => {
-            if (row < g_ai_profile_count) {
+            if (row < aiState().profile_count) {
                 deleteAiProfile(row);
                 openAiList();
             } else {
@@ -4030,25 +4020,25 @@ fn runAiListRow(row: usize) void {
             }
         },
         .switch_model => {
-            if (row < g_ai_profile_count) {
-                if (g_switch_model_target) |session| _ = applyProfileToSession(session, row);
+            if (row < aiState().profile_count) {
+                if (switchModelTarget()) |session| _ = applyProfileToSession(session, row);
             }
-            g_switch_model_target = null;
+            launcherState().clearSwitchTarget();
             sessionLauncherClose();
         },
     }
 }
 
 fn deleteAiProfile(idx: usize) void {
-    if (g_ai_profile_count == 0) return;
-    if (idx >= g_ai_profile_count) return;
-    const deleted_is_default = std.mem.eql(u8, aiProfileField(&g_ai_profiles[idx], .name), aiDefaultProfileName());
+    if (aiState().profile_count == 0) return;
+    if (idx >= aiState().profile_count) return;
+    const deleted_is_default = std.mem.eql(u8, aiProfileField(&aiState().profiles[idx], .name), aiDefaultProfileName());
     var i = idx;
-    while (i + 1 < g_ai_profile_count) : (i += 1) {
-        g_ai_profiles[i] = g_ai_profiles[i + 1];
+    while (i + 1 < aiState().profile_count) : (i += 1) {
+        aiState().profiles[i] = aiState().profiles[i + 1];
     }
-    g_ai_profile_count -= 1;
-    g_ai_list_selected = @min(g_ai_list_selected, aiListRowCount() - 1);
+    aiState().profile_count -= 1;
+    aiState().list_selected = @min(aiState().list_selected, aiListRowCount() - 1);
     if (deleted_is_default) {
         if (AppWindow.g_allocator) |allocator| Config.removeConfigKeys(allocator, &.{"ai-default-profile"}) catch {};
         invalidateAiDefaultName();
@@ -4071,11 +4061,11 @@ fn cancelAiFormOrLauncher() void {
 }
 
 fn runAiFormFocusAction() void {
-    if (g_ai_focus < AI_FIELD_COUNT) {
-        g_ai_focus = (g_ai_focus + 1) % (AI_FIELD_COUNT + 3);
+    if (aiState().focus < AI_FIELD_COUNT) {
+        aiState().focusNextRow();
         return;
     }
-    switch (g_ai_focus - AI_FIELD_COUNT) {
+    switch (aiState().focus - AI_FIELD_COUNT) {
         0 => connectAiFromForm(),
         1 => saveAiFormOnly(),
         else => cancelAiFormOrLauncher(),
@@ -4089,13 +4079,13 @@ fn saveAiFormProfile() ?usize {
     if (base_url.len == 0 or model.len == 0) return null;
     if (!isHttpUrlish(base_url)) return null;
 
-    const editing_existing = g_ai_edit_index != AI_PROFILE_NONE;
+    const editing_existing = aiState().edit_index != AI_PROFILE_NONE;
     const idx = if (editing_existing)
-        g_ai_edit_index
+        aiState().edit_index
     else blk: {
-        if (g_ai_profile_count >= AI_PROFILE_MAX) return null;
-        const next = g_ai_profile_count;
-        g_ai_profile_count += 1;
+        if (aiState().profile_count >= AI_PROFILE_MAX) return null;
+        const next = aiState().profile_count;
+        aiState().profile_count += 1;
         break :blk next;
     };
 
@@ -4105,24 +4095,24 @@ fn saveAiFormProfile() ?usize {
     var old_name_buf: [256]u8 = undefined;
     var old_name_len: usize = 0;
     if (editing_existing) {
-        const old_name = aiProfileField(&g_ai_profiles[idx], .name);
+        const old_name = aiProfileField(&aiState().profiles[idx], .name);
         old_name_len = @min(old_name.len, old_name_buf.len);
         @memcpy(old_name_buf[0..old_name_len], old_name[0..old_name_len]);
     }
 
     for (0..AI_FIELD_COUNT) |i| {
-        g_ai_profiles[idx].lens[i] = g_ai_lens[i];
-        @memcpy(g_ai_profiles[idx].fields[i][0..g_ai_lens[i]], g_ai_bufs[i][0..g_ai_lens[i]]);
+        aiState().profiles[idx].lens[i] = aiState().lens[i];
+        @memcpy(aiState().profiles[idx].fields[i][0..aiState().lens[i]], aiState().bufs[i][0..aiState().lens[i]]);
     }
-    if (g_ai_profiles[idx].lens[@intFromEnum(AiField.name)] == 0) {
+    if (aiState().profiles[idx].lens[@intFromEnum(AiField.name)] == 0) {
         const len = @min(model.len, AI_FIELD_MAX);
-        @memcpy(g_ai_profiles[idx].fields[@intFromEnum(AiField.name)][0..len], model[0..len]);
-        g_ai_profiles[idx].lens[@intFromEnum(AiField.name)] = len;
+        @memcpy(aiState().profiles[idx].fields[@intFromEnum(AiField.name)][0..len], model[0..len]);
+        aiState().profiles[idx].lens[@intFromEnum(AiField.name)] = len;
     }
 
     if (editing_existing and old_name_len > 0) {
         const old_name = old_name_buf[0..old_name_len];
-        const new_name = aiProfileField(&g_ai_profiles[idx], .name);
+        const new_name = aiProfileField(&aiState().profiles[idx], .name);
         if (!std.mem.eql(u8, old_name, new_name) and std.mem.eql(u8, old_name, aiDefaultProfileName())) {
             Config.setConfigValue(allocator, "ai-default-profile", new_name) catch {};
             invalidateAiDefaultName();
@@ -4130,7 +4120,7 @@ fn saveAiFormProfile() ?usize {
     }
 
     saveAiProfiles(allocator);
-    g_ai_edit_index = idx;
+    aiState().edit_index = idx;
     return idx;
 }
 
@@ -4143,8 +4133,8 @@ fn connectAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) vo
 }
 
 fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool {
-    if (idx >= g_ai_profile_count) return false;
-    const profile = &g_ai_profiles[idx];
+    if (idx >= aiState().profile_count) return false;
+    const profile = &aiState().profiles[idx];
     const name = aiProfileField(profile, .name);
     const base_url = aiProfileField(profile, .base_url);
     const api_key = aiProfileField(profile, .api_key);
@@ -4167,8 +4157,8 @@ fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool
 /// Apply profile `idx` to the given live session in place (provider/model only)
 /// and kick off the background summary. Returns false on an invalid profile.
 fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
-    if (idx >= g_ai_profile_count) return false;
-    const profile = &g_ai_profiles[idx];
+    if (idx >= aiState().profile_count) return false;
+    const profile = &aiState().profiles[idx];
     const base_url = aiProfileField(profile, .base_url);
     const api_key = aiProfileField(profile, .api_key);
     const model = aiProfileField(profile, .model);
@@ -4187,26 +4177,26 @@ fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
 
 pub fn switchSessionModelByProfileName(session: *AppWindow.ai_chat.Session, profile_name: []const u8) ModelProfileSwitchResult {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return .no_profile;
+    if (aiState().profile_count == 0) return .no_profile;
     var names: [AI_PROFILE_MAX][]const u8 = undefined;
-    for (0..g_ai_profile_count) |i| names[i] = aiProfileField(&g_ai_profiles[i], .name);
-    const idx = ai_model_switch.matchProfileByName(names[0..g_ai_profile_count], profile_name) orelse return .unknown_profile;
+    for (0..aiState().profile_count) |i| names[i] = aiProfileField(&aiState().profiles[i], .name);
+    const idx = ai_model_switch.matchProfileByName(names[0..aiState().profile_count], profile_name) orelse return .unknown_profile;
     return if (applyProfileToSession(session, idx)) .switched else .failed;
 }
 
 /// Open the profile picker in switch-model mode, bound to `session`.
 pub fn openSwitchModelPicker(session: *AppWindow.ai_chat.Session) void {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) {
+    if (aiState().profile_count == 0) {
         session.appendLocalToolMessage(i18n.s().ai_model_no_profiles);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
         return;
     }
-    g_switch_model_target = session;
+    setSwitchModelTarget(session);
     openAiList(); // sets visibility flags + mode .manage
-    g_ai_list_mode = .switch_model;
-    g_ai_list_selected = @min(g_ai_list_selected, aiListRowCount() - 1);
+    aiState().list_mode = .switch_model;
+    aiState().list_selected = @min(aiState().list_selected, aiListRowCount() - 1);
 }
 
 /// `/model <name>`: match by name and apply directly; on no match, note the
@@ -4226,10 +4216,10 @@ pub fn switchModelByName(session: *AppWindow.ai_chat.Session, name: []const u8) 
 /// Session with copilot mode + the copilot system prompt, instead of a tab.
 pub fn makeCopilotSessionForDefaultProfile() ?*ai_chat.Session {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return null;
+    if (aiState().profile_count == 0) return null;
     const idx = defaultAiProfileIndex();
-    if (idx >= g_ai_profile_count) return null;
-    const profile = &g_ai_profiles[idx];
+    if (idx >= aiState().profile_count) return null;
+    const profile = &aiState().profiles[idx];
     const base_url = aiProfileField(profile, .base_url);
     const api_key = aiProfileField(profile, .api_key);
     const model = aiProfileField(profile, .model);
@@ -4281,10 +4271,10 @@ pub const DefaultAiProfileSnapshot = struct {
 
 pub fn defaultAiProfileSnapshot(allocator: std.mem.Allocator) ?DefaultAiProfileSnapshot {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return null;
+    if (aiState().profile_count == 0) return null;
     const idx = defaultAiProfileIndex();
-    if (idx >= g_ai_profile_count) return null;
-    const profile = &g_ai_profiles[idx];
+    if (idx >= aiState().profile_count) return null;
+    const profile = &aiState().profiles[idx];
     const base_url = aiProfileField(profile, .base_url);
     const api_key = aiProfileField(profile, .api_key);
     const model = aiProfileField(profile, .model);
@@ -4381,14 +4371,14 @@ pub fn resolveSubagentProfileOverride(allocator: std.mem.Allocator) ?ai_chat.Sub
     if (name.len == 0) return null;
     loadAiProfiles();
     var found: ?usize = null;
-    for (0..g_ai_profile_count) |i| {
-        if (std.mem.eql(u8, aiProfileField(&g_ai_profiles[i], .name), name)) {
+    for (0..aiState().profile_count) |i| {
+        if (std.mem.eql(u8, aiProfileField(&aiState().profiles[i], .name), name)) {
             found = i;
             break;
         }
     }
     const idx = found orelse return null;
-    const profile = &g_ai_profiles[idx];
+    const profile = &aiState().profiles[idx];
     const base_url = aiProfileField(profile, .base_url);
     const model = aiProfileField(profile, .model);
     if (base_url.len == 0 or model.len == 0) return null;
@@ -4425,21 +4415,21 @@ pub fn resolveSubagentProfileOverride(allocator: std.mem.Allocator) ?ai_chat.Sub
 /// to the first profile. Returns 0 when no profiles exist (callers guard).
 fn defaultAiProfileIndex() usize {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return 0;
+    if (aiState().profile_count == 0) return 0;
     var names: [AI_PROFILE_MAX][]const u8 = undefined;
-    for (0..g_ai_profile_count) |i| {
-        names[i] = aiProfileField(&g_ai_profiles[i], .name);
+    for (0..aiState().profile_count) |i| {
+        names[i] = aiProfileField(&aiState().profiles[i], .name);
     }
-    return command_palette_model.resolveDefaultIndex(names[0..g_ai_profile_count], aiDefaultProfileName());
+    return command_palette_model.resolveDefaultIndex(names[0..aiState().profile_count], aiDefaultProfileName());
 }
 
 /// Name of the profile `delta` positions from the current default, wrapping in
 /// both directions (+1 for next, -1 for previous). Empty when no profiles exist.
 fn cycledDefaultAiProfileName(delta: i64) []const u8 {
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return "";
-    const idx = command_palette_model.cycleIndex(defaultAiProfileIndex(), g_ai_profile_count, delta);
-    return aiProfileField(&g_ai_profiles[idx], .name);
+    if (aiState().profile_count == 0) return "";
+    const idx = command_palette_model.cycleIndex(defaultAiProfileIndex(), aiState().profile_count, delta);
+    return aiProfileField(&aiState().profiles[idx], .name);
 }
 
 /// Persist the default AI profile `delta` positions from the current one
@@ -4447,7 +4437,7 @@ fn cycledDefaultAiProfileName(delta: i64) []const u8 {
 fn cycleDefaultAiProfile(delta: i64) void {
     const allocator = AppWindow.g_allocator orelse return;
     loadAiProfiles();
-    if (g_ai_profile_count == 0) return;
+    if (aiState().profile_count == 0) return;
     const next_name = cycledDefaultAiProfileName(delta);
     Config.setConfigValue(allocator, "ai-default-profile", next_name) catch {};
     invalidateAiDefaultName();
@@ -4462,9 +4452,9 @@ fn aiProfilesPath(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn loadAiProfiles() void {
-    if (g_ai_profiles_loaded) return;
-    g_ai_profiles_loaded = true;
-    g_ai_profile_count = 0;
+    if (aiState().profiles_loaded) return;
+    aiState().profiles_loaded = true;
+    aiState().profile_count = 0;
     const allocator = AppWindow.g_allocator orelse return;
     const path = aiProfilesPath(allocator) catch return;
     defer allocator.free(path);
@@ -4473,12 +4463,12 @@ fn loadAiProfiles() void {
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line_raw| {
-        if (g_ai_profile_count >= AI_PROFILE_MAX) break;
+        if (aiState().profile_count >= AI_PROFILE_MAX) break;
         const line = std.mem.trimRight(u8, line_raw, "\r");
         if (line.len == 0 or line[0] == '#') continue;
         const profile = decodeAiProfileLine(line) orelse continue;
-        g_ai_profiles[g_ai_profile_count] = profile;
-        g_ai_profile_count += 1;
+        aiState().profiles[aiState().profile_count] = profile;
+        aiState().profile_count += 1;
     }
 }
 
@@ -4500,7 +4490,7 @@ fn saveAiProfiles(allocator: std.mem.Allocator) void {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
     out.appendSlice(allocator, "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens, vision.\n") catch return;
-    for (g_ai_profiles[0..g_ai_profile_count]) |profile| {
+    for (aiState().profiles[0..aiState().profile_count]) |profile| {
         for (0..AI_FIELD_COUNT) |i| {
             if (i > 0) out.append(allocator, '\t') catch return;
             appendHexField(allocator, &out, profile.fields[i][0..profile.lens[i]]) catch return;
@@ -4518,9 +4508,9 @@ fn sshProfilesPath(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn loadSshProfiles() void {
-    if (g_ssh_profiles_loaded) return;
-    g_ssh_profiles_loaded = true;
-    g_ssh_profile_count = 0;
+    if (sshState().profiles_loaded) return;
+    sshState().profiles_loaded = true;
+    sshState().profile_count = 0;
     const allocator = AppWindow.g_allocator orelse return;
     const path = sshProfilesPath(allocator) catch return;
     defer allocator.free(path);
@@ -4529,12 +4519,12 @@ fn loadSshProfiles() void {
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line_raw| {
-        if (g_ssh_profile_count >= SSH_PROFILE_MAX) break;
+        if (sshState().profile_count >= SSH_PROFILE_MAX) break;
         const line = std.mem.trimRight(u8, line_raw, "\r");
         if (line.len == 0 or line[0] == '#') continue;
         const profile = decodeSshProfileLine(line) orelse continue;
-        g_ssh_profiles[g_ssh_profile_count] = profile;
-        g_ssh_profile_count += 1;
+        sshState().profiles[sshState().profile_count] = profile;
+        sshState().profile_count += 1;
     }
 }
 
@@ -4554,7 +4544,7 @@ fn saveSshProfilesChecked(allocator: std.mem.Allocator) bool {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(allocator);
     out.appendSlice(allocator, "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump, auth_method, identity_file.\n") catch return false;
-    for (g_ssh_profiles[0..g_ssh_profile_count]) |profile| {
+    for (sshState().profiles[0..sshState().profile_count]) |profile| {
         for (0..SSH_FIELD_COUNT) |i| {
             if (i > 0) out.append(allocator, '\t') catch return false;
             appendHexField(allocator, &out, profile.fields[i][0..profile.lens[i]]) catch return false;
@@ -4630,7 +4620,7 @@ fn sessionLauncherTitle() []const u8 {
         return i18n.s().sl_ai_agent;
     }
     if (g_ai_list_visible) {
-        return switch (g_ai_list_mode) {
+        return switch (aiState().list_mode) {
             .manage => i18n.s().sl_llm_providers,
             .edit_select => i18n.s().sl_edit_llm_provider,
             .delete_select => i18n.s().sl_delete_llm_provider,
@@ -4639,7 +4629,7 @@ fn sessionLauncherTitle() []const u8 {
     }
     if (g_ssh_form_visible) return i18n.s().sl_ssh_server;
     if (g_ssh_list_visible) {
-        return switch (g_ssh_list_mode) {
+        return switch (sshState().list_mode) {
             .manage => i18n.s().sl_ssh_servers,
             .edit_select => i18n.s().sl_edit_ssh_server,
             .delete_select => i18n.s().sl_delete_ssh_server,
@@ -4656,7 +4646,7 @@ fn sessionLauncherHint() []const u8 {
         return i18n.s().sl_hint_ai_form;
     }
     if (g_ai_list_visible) {
-        return switch (g_ai_list_mode) {
+        return switch (aiState().list_mode) {
             .manage => i18n.s().sl_hint_ai_manage,
             .edit_select => i18n.s().sl_hint_choose_profile_edit,
             .delete_select => i18n.s().sl_hint_choose_profile_delete,
@@ -4665,8 +4655,8 @@ fn sessionLauncherHint() []const u8 {
     }
     if (g_ssh_form_visible) return i18n.s().sl_hint_ssh_form;
     if (g_ssh_list_visible) {
-        const has_filter = g_ssh_list_filter_len > 0;
-        return switch (g_ssh_list_mode) {
+        const has_filter = sshState().list_filter_len > 0;
+        return switch (sshState().list_mode) {
             .manage => if (has_filter) i18n.s().sl_hint_ssh_filter_edits else i18n.s().sl_hint_ssh_filter_manage,
             .edit_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_edit else i18n.s().sl_hint_choose_server_edit,
             .delete_select => if (has_filter) i18n.s().sl_hint_ssh_filter_choose_delete else i18n.s().sl_hint_choose_server_delete,
@@ -4720,9 +4710,9 @@ fn sessionDesiredBoxWidth() f32 {
 
     if (g_ai_list_visible) {
         var row: usize = 0;
-        while (row < g_ai_profile_count) : (row += 1) {
+        while (row < aiState().profile_count) : (row += 1) {
             var detail_buf: [AI_FIELD_MAX]u8 = undefined;
-            const profile = &g_ai_profiles[row];
+            const profile = &aiState().profiles[row];
             const model = aiProfileField(profile, .model);
             const base_url = aiProfileField(profile, .base_url);
             const detail = if (model.len > 0)
@@ -4731,11 +4721,11 @@ fn sessionDesiredBoxWidth() f32 {
                 std.fmt.bufPrint(&detail_buf, "{s}", .{base_url}) catch "";
             desired = @max(desired, sessionTwoColumnWidth(aiProfileField(profile, .name), detail));
         }
-        switch (g_ai_list_mode) {
+        switch (aiState().list_mode) {
             .manage => {
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_new_llm_provider, i18n.s().sl_v_add));
-                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
-                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_llm_provider, if (aiState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_llm_provider, if (aiState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
                 desired = @max(desired, sessionTwoColumnWidth(sessionLauncherCancelLabel(), "Esc"));
             },
             .edit_select, .delete_select, .switch_model => {
@@ -4747,9 +4737,9 @@ fn sessionDesiredBoxWidth() f32 {
 
     if (g_ssh_list_visible) {
         var profile_idx: usize = 0;
-        while (profile_idx < g_ssh_profile_count) : (profile_idx += 1) {
+        while (profile_idx < sshState().profile_count) : (profile_idx += 1) {
             var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
-            const profile = &g_ssh_profiles[profile_idx];
+            const profile = &sshState().profiles[profile_idx];
             if (!sshProfileMatchesFilter(profile)) continue;
             const host = profileField(profile, .ip);
             const user = profileField(profile, .user);
@@ -4760,16 +4750,16 @@ fn sessionDesiredBoxWidth() f32 {
                 std.fmt.bufPrint(&target_buf, "{s}@{s}", .{ user, host }) catch "";
             desired = @max(desired, sessionTwoColumnWidth(profileField(profile, .name), target));
         }
-        switch (g_ssh_list_mode) {
+        switch (sshState().list_mode) {
             .manage => {
                 desired = @max(desired, sessionTwoColumnWidth("Load OpenSSH config", "~/.ssh/config"));
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_new_ssh_server, i18n.s().sl_v_add));
-                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server));
-                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_ssh_server, if (sshState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_ssh_server, if (sshState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server));
                 desired = @max(desired, sessionTwoColumnWidth(sessionLauncherCancelLabel(), "Esc"));
             },
             .edit_select, .delete_select => {
-                if (g_ssh_list_mode == .delete_select) {
+                if (sshState().list_mode == .delete_select) {
                     desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_selected_ssh_servers, i18n.s().sl_v_choose));
                 }
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_back, i18n.s().sl_v_manage));
@@ -4823,15 +4813,15 @@ fn sessionActiveRowCount() usize {
 /// Selected/focused row of the currently active session-launcher mode.
 fn sessionActiveSelection() usize {
     return if (g_ai_form_visible)
-        g_ai_focus
+        aiState().focus
     else if (g_ai_list_visible)
-        g_ai_list_selected
+        aiState().list_selected
     else if (g_ai_history_source_visible)
-        g_ai_history_source_selected
+        launcherState().ai_history_source_selected
     else if (g_ssh_form_visible)
-        g_ssh_focus
+        sshState().focus
     else if (g_ssh_list_visible)
-        g_ssh_list_selected
+        sshState().list_selected
     else
         g_session_launcher_selected;
 }
@@ -4839,15 +4829,15 @@ fn sessionActiveSelection() usize {
 /// Mutable pointer to the active mode's selection (for the mouse wheel).
 fn sessionActiveSelectionPtr() *usize {
     return if (g_ai_form_visible)
-        &g_ai_focus
+        &aiState().focus
     else if (g_ai_list_visible)
-        &g_ai_list_selected
+        &aiState().list_selected
     else if (g_ai_history_source_visible)
-        &g_ai_history_source_selected
+        &launcherState().ai_history_source_selected
     else if (g_ssh_form_visible)
-        &g_ssh_focus
+        &sshState().focus
     else if (g_ssh_list_visible)
-        &g_ssh_list_selected
+        &sshState().list_selected
     else
         &g_session_launcher_selected;
 }
@@ -4915,7 +4905,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
 
     if (g_ai_history_source_visible) {
         if (row >= aiHistorySourceRowCount()) return null;
-        g_ai_history_source_selected = row;
+        launcherState().ai_history_source_selected = row;
         return switch (aiHistorySourceChoiceForRow(row) orelse return .cancel) {
             .local => .ai_history_local,
             .wsl => .ai_history_wsl,
@@ -4925,9 +4915,9 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
 
     if (g_ssh_list_visible) {
         if (row >= sshListRowCount()) return null;
-        g_ssh_list_selected = row;
+        sshState().list_selected = row;
         if (row < sshVisibleProfileCount()) return .connect_selected;
-        if (g_ssh_list_mode != .manage) return .connect_selected;
+        if (sshState().list_mode != .manage) return .connect_selected;
         return switch (sshManageActionForRow(row, sshVisibleProfileCount())) {
             .profile => .connect_selected,
             .load_openssh_config => .load_openssh_config,
@@ -4940,10 +4930,10 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
 
     if (g_ai_list_visible) {
         if (row >= aiListRowCount()) return null;
-        g_ai_list_selected = row;
-        if (row < g_ai_profile_count) return .connect_ai_selected;
-        if (g_ai_list_mode != .manage) return .connect_ai_selected;
-        return switch (row - g_ai_profile_count) {
+        aiState().list_selected = row;
+        if (row < aiState().profile_count) return .connect_ai_selected;
+        if (aiState().list_mode != .manage) return .connect_ai_selected;
+        return switch (row - aiState().profile_count) {
             0 => .new_ai,
             1 => .edit_ai_selected,
             2 => .delete_ai_selected,
@@ -4967,10 +4957,10 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
 
     if (g_ai_form_visible) {
         if (row < AI_FIELD_COUNT) {
-            g_ai_focus = row;
+            aiState().focus = row;
             return null;
         }
-        g_ai_focus = row;
+        aiState().focus = row;
         return switch (row) {
             AI_FIELD_COUNT => .connect_ai,
             AI_FIELD_COUNT + 1 => .save_ai,
@@ -4980,10 +4970,10 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     }
 
     if (row < SSH_FIELD_COUNT) {
-        g_ssh_focus = row;
+        sshState().focus = row;
         return null;
     }
-    g_ssh_focus = row;
+    sshState().focus = row;
     return switch (row) {
         SSH_FIELD_COUNT => .connect,
         SSH_FIELD_COUNT + 1 => .save,
@@ -5025,11 +5015,11 @@ fn renderSessionRow(layout: SessionLayout, window_height: f32, row: usize, left:
 }
 
 fn renderSessionField(layout: SessionLayout, window_height: f32, row: usize, label: []const u8, value: []const u8, masked: bool) void {
-    renderSessionFieldValue(layout, window_height, row, label, value, masked, g_ssh_focus == row);
+    renderSessionFieldValue(layout, window_height, row, label, value, masked, sshState().focus == row);
 }
 
 fn renderAiSessionField(layout: SessionLayout, window_height: f32, row: usize, label: []const u8, value: []const u8, masked: bool) void {
-    renderSessionFieldValue(layout, window_height, row, label, value, masked, g_ai_focus == row);
+    renderSessionFieldValue(layout, window_height, row, label, value, masked, aiState().focus == row);
 }
 
 fn renderSessionFieldValue(layout: SessionLayout, window_height: f32, row: usize, label: []const u8, value: []const u8, masked: bool, selected: bool) void {
@@ -5049,7 +5039,7 @@ fn renderSshProfileRow(layout: SessionLayout, window_height: f32, row: usize, pr
 }
 
 fn renderSshListProfileRow(layout: SessionLayout, window_height: f32, row: usize, profile_idx: usize, profile: *const SshProfile, selected: bool) void {
-    if (g_ssh_list_mode != .delete_select) {
+    if (sshState().list_mode != .delete_select) {
         renderSshProfileRow(layout, window_height, row, profile, selected);
         return;
     }
@@ -5057,7 +5047,7 @@ fn renderSshListProfileRow(layout: SessionLayout, window_height: f32, row: usize
     var target_buf: [SSH_FIELD_MAX * 2]u8 = undefined;
     const target = sshProfileTarget(profile, target_buf[0..]);
     var label_buf: [SSH_FIELD_MAX + 4]u8 = undefined;
-    const mark = if (profile_idx < g_ssh_delete_selected.len and g_ssh_delete_selected[profile_idx]) "[x]" else "[ ]";
+    const mark = if (profile_idx < sshState().delete_selected.len and sshState().delete_selected[profile_idx]) "[x]" else "[ ]";
     const label = std.fmt.bufPrint(label_buf[0..], "{s} {s}", .{ mark, profileField(profile, .name) }) catch profileField(profile, .name);
     renderSessionRow(layout, window_height, row, label, target, selected);
 }
@@ -5094,7 +5084,7 @@ fn aiProfileModeLabel(profile: *const AiProfile) []const u8 {
 
 fn defaultAiModeLabel() []const u8 {
     loadAiProfiles();
-    if (g_ai_profile_count > 0) return aiProfileModeLabel(&g_ai_profiles[defaultAiProfileIndex()]);
+    if (aiState().profile_count > 0) return aiProfileModeLabel(&aiState().profiles[defaultAiProfileIndex()]);
     return aiModeText(AppWindow.ai_chat.DEFAULT_AGENT);
 }
 
@@ -5162,34 +5152,34 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     if (!g_ssh_form_visible and !g_ai_form_visible) {
         if (g_ai_history_source_visible) {
             var row: usize = 0;
-            renderSessionRow(layout, window_height, row, "Local", "This computer", g_ai_history_source_selected == row);
+            renderSessionRow(layout, window_height, row, "Local", "This computer", launcherState().ai_history_source_selected == row);
             row += 1;
             if (platform_pty_command.sessionLauncherWslRow() != null) {
-                renderSessionRow(layout, window_height, row, "WSL", "Default distro", g_ai_history_source_selected == row);
+                renderSessionRow(layout, window_height, row, "WSL", "Default distro", launcherState().ai_history_source_selected == row);
                 row += 1;
             }
-            renderSessionRow(layout, window_height, row, "SSH Profile...", "Choose server", g_ai_history_source_selected == row);
+            renderSessionRow(layout, window_height, row, "SSH Profile...", "Choose server", launcherState().ai_history_source_selected == row);
             row += 1;
-            renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", g_ai_history_source_selected == row);
+            renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", launcherState().ai_history_source_selected == row);
             return;
         }
         if (g_ai_list_visible) {
             var row: usize = 0;
-            while (row < g_ai_profile_count) : (row += 1) {
-                renderAiProfileRow(layout, window_height, row, &g_ai_profiles[row], g_ai_list_selected == row);
+            while (row < aiState().profile_count) : (row += 1) {
+                renderAiProfileRow(layout, window_height, row, &aiState().profiles[row], aiState().list_selected == row);
             }
-            switch (g_ai_list_mode) {
+            switch (aiState().list_mode) {
                 .manage => {
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_new_llm_provider, i18n.s().sl_v_add, g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_new_llm_provider, i18n.s().sl_v_add, aiState().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_edit_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_edit_llm_provider, if (aiState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, aiState().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_delete_llm_provider, if (g_ai_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_delete_llm_provider, if (aiState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, aiState().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", aiState().list_selected == row);
                 },
                 .edit_select, .delete_select, .switch_model => {
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, g_ai_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, aiState().list_selected == row);
                 },
             }
             return;
@@ -5197,42 +5187,42 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         if (g_ssh_list_visible) {
             var row: usize = 0;
             var profile_idx: usize = 0;
-            while (profile_idx < g_ssh_profile_count) : (profile_idx += 1) {
-                const profile = &g_ssh_profiles[profile_idx];
+            while (profile_idx < sshState().profile_count) : (profile_idx += 1) {
+                const profile = &sshState().profiles[profile_idx];
                 if (!sshProfileMatchesFilter(profile)) continue;
-                renderSshListProfileRow(layout, window_height, row, profile_idx, profile, g_ssh_list_selected == row);
+                renderSshListProfileRow(layout, window_height, row, profile_idx, profile, sshState().list_selected == row);
                 row += 1;
             }
-            switch (g_ssh_list_mode) {
+            switch (sshState().list_mode) {
                 .manage => {
-                    renderSessionRow(layout, window_height, row, "Load OpenSSH config", "~/.ssh/config", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, "Load OpenSSH config", "~/.ssh/config", sshState().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_new_ssh_server, i18n.s().sl_v_add, g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_new_ssh_server, i18n.s().sl_v_add, sshState().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_edit_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server, g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_edit_ssh_server, if (sshState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server, sshState().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_delete_ssh_server, if (g_ssh_profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server, g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_delete_ssh_server, if (sshState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_server, sshState().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", sshState().list_selected == row);
                 },
                 .edit_select, .delete_select => {
-                    if (g_ssh_list_mode == .delete_select) {
+                    if (sshState().list_mode == .delete_select) {
                         var count_buf: [32]u8 = undefined;
                         const selected_count = sshDeleteSelectionCount();
                         const detail = if (selected_count == 0)
                             i18n.s().sl_v_no_server
                         else
                             std.fmt.bufPrint(count_buf[0..], "{d} selected", .{selected_count}) catch i18n.s().sl_v_choose;
-                        renderSessionRow(layout, window_height, row, i18n.s().sl_delete_selected_ssh_servers, detail, g_ssh_list_selected == row);
+                        renderSessionRow(layout, window_height, row, i18n.s().sl_delete_selected_ssh_servers, detail, sshState().list_selected == row);
                         row += 1;
                     }
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, sshState().list_selected == row);
                 },
                 .ai_history_select => {
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_sessions, g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_sessions, sshState().list_selected == row);
                 },
                 .tmux_connect => {
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, "tmux", g_ssh_list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, "tmux", sshState().list_selected == row);
                 },
             }
             return;
@@ -5267,9 +5257,9 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), i18n.s().sl_ai_protocol, aiProtocolDisplay(), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.max_tokens), i18n.s().sl_ai_max_tokens, aiField(.max_tokens), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.vision), i18n.s().sl_ai_vision, aiVisionDisplay(), false);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT, i18n.s().sl_save_open, i18n.s().sl_v_agent, g_ai_focus == AI_FIELD_COUNT);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, g_ai_focus == AI_FIELD_COUNT + 1);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", g_ai_focus == AI_FIELD_COUNT + 2);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT, i18n.s().sl_save_open, i18n.s().sl_v_agent, aiState().focus == AI_FIELD_COUNT);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, aiState().focus == AI_FIELD_COUNT + 1);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", aiState().focus == AI_FIELD_COUNT + 2);
         return;
     }
 
@@ -5281,9 +5271,9 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), i18n.s().sl_ssh_jump_host, sshField(.proxy_jump), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.auth_method), i18n.s().sl_ssh_auth_method, sshField(.auth_method), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.identity_file), i18n.s().sl_ssh_identity_file, sshField(.identity_file), false);
-    renderSessionRow(layout, window_height, SSH_FIELD_COUNT, i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail(), g_ssh_focus == SSH_FIELD_COUNT);
-    renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, g_ssh_focus == SSH_FIELD_COUNT + 1);
-    renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", g_ssh_focus == SSH_FIELD_COUNT + 2);
+    renderSessionRow(layout, window_height, SSH_FIELD_COUNT, i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail(), sshState().focus == SSH_FIELD_COUNT);
+    renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, sshState().focus == SSH_FIELD_COUNT + 1);
+    renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", sshState().focus == SSH_FIELD_COUNT + 2);
 }
 
 // ============================================================================
@@ -5304,28 +5294,10 @@ const SETTINGS_THEME_PRESETS = [_]ThemePreset{
     .{ .label = "Xcode Light", .theme = "Xcode Light", .detail = "Bright native" },
 };
 
-const SETTINGS_THEME_ROW = 1;
-const SETTINGS_CONTROL_ROW_START = SETTINGS_THEME_ROW + 1;
-const SETTINGS_ROW_COUNT = SETTINGS_CONTROL_ROW_START + 12;
-
-const SettingsAction = enum {
-    font_size_minus,
-    font_size_plus,
-    cycle_theme,
-    cycle_cursor_style,
-    toggle_cursor_blink,
-    toggle_focus_follows_mouse,
-    cycle_shell,
-    cycle_default_ai_profile,
-    cycle_default_ai_profile_prev,
-    toggle_weixin_direct,
-    cycle_language,
-    toggle_restore_tabs,
-    toggle_distill_suggest,
-    open_raw_config,
-    restore_defaults,
-    close,
-};
+const SettingsAction = settings_page.Action;
+const SETTINGS_THEME_ROW = settings_page.SETTINGS_THEME_ROW;
+const SETTINGS_CONTROL_ROW_START = settings_page.SETTINGS_CONTROL_ROW_START;
+const SETTINGS_ROW_COUNT = settings_page.SETTINGS_ROW_COUNT;
 
 const SettingsLayout = struct {
     box_x: f32,
@@ -5342,57 +5314,34 @@ const SettingsLayout = struct {
     scroll: usize,
 };
 
-pub threadlocal var g_settings_visible: bool = false;
-threadlocal var g_settings_focus: usize = SETTINGS_THEME_ROW;
-threadlocal var g_settings_cfg_dirty: bool = true;
-threadlocal var g_settings_cfg_cache: Config = .{};
-
 pub fn settingsPageVisible() bool {
-    return g_settings_visible;
+    return settingsState().visible;
 }
 
 pub fn settingsPageOpen() void {
     var state = commandCenterStateSnapshot();
     state.settingsPageOpen();
     commandCenterStateCommit(state);
-    g_settings_focus = SETTINGS_THEME_ROW;
-    g_ai_list_mode = .manage;
-    g_settings_cfg_dirty = true;
+    settingsState().open();
+    aiState().list_mode = .manage;
 }
 
 fn settingsPageReloadCfg() void {
-    g_settings_cfg_dirty = true;
+    settingsState().reloadConfig();
 }
 
 fn settingsCfg(allocator: std.mem.Allocator) *Config {
-    if (g_settings_cfg_dirty) {
-        g_settings_cfg_cache.deinit(allocator);
-        g_settings_cfg_cache = Config.load(allocator) catch Config{};
-        g_settings_cfg_dirty = false;
-    }
-    return &g_settings_cfg_cache;
+    return settingsState().cfg(allocator);
 }
 
 pub fn settingsPageClose() void {
-    g_settings_visible = false;
-    if (g_settings_cfg_dirty == false) {
-        const allocator = AppWindow.g_allocator orelse return;
-        g_settings_cfg_cache.deinit(allocator);
-        g_settings_cfg_cache = .{};
-        g_settings_cfg_dirty = true;
-    }
+    settingsState().close(AppWindow.g_allocator);
 }
 
-pub fn settingsPageHandleKey(ev: input_key.KeyEvent) void {
-    switch (ev.key) {
-        .escape => settingsPageClose(),
-        .arrow_down, .tab => g_settings_focus = (g_settings_focus + 1) % SETTINGS_ROW_COUNT,
-        .arrow_up => g_settings_focus = if (g_settings_focus == 0) SETTINGS_ROW_COUNT - 1 else g_settings_focus - 1,
-        .arrow_left => runSettingsFocusLeft(),
-        .arrow_right => runSettingsFocusRight(),
-        .enter => runSettingsFocusPrimary(),
-        else => {},
-    }
+pub fn settingsPageHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
+    if (!settingsPageVisible()) return .none;
+    if (settingsState().handleKey(ev)) |action| executeSettingsAction(action);
+    return .repaint;
 }
 
 pub fn settingsPageContainsPoint(xpos: f64, ypos: f64, window_width: f32, window_height: f32, top_offset: f32) bool {
@@ -5422,10 +5371,7 @@ fn settingsRowCapacity(content_height: f32, base_h: f32, row_h: f32) usize {
 /// First row to render so the focused row stays visible (scroll offset).
 /// Mirrors commandPaletteFirstVisibleIndex().
 fn settingsFirstVisibleRow(visible_rows: usize) usize {
-    if (visible_rows == 0 or SETTINGS_ROW_COUNT <= visible_rows) return 0;
-    const focus = @min(g_settings_focus, SETTINGS_ROW_COUNT - 1);
-    if (focus < visible_rows) return 0;
-    return @min(focus - visible_rows + 1, SETTINGS_ROW_COUNT - visible_rows);
+    return settingsState().firstVisibleRow(visible_rows);
 }
 
 fn settingsLayout(window_width: f32, window_height: f32, top_offset: f32) SettingsLayout {
@@ -5470,7 +5416,7 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
     if (visible_index >= layout.visible_rows) return null;
     const row = visible_index + layout.scroll;
     if (row >= SETTINGS_ROW_COUNT) return null;
-    g_settings_focus = row;
+    settingsState().focus = row;
 
     if (row == 0) {
         const plus_x = layout.box_x + layout.box_w - 70;
@@ -5502,6 +5448,11 @@ fn settingsHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, 
 }
 
 fn executeSettingsAction(action: SettingsAction) void {
+    if (action == .close) {
+        settingsPageClose();
+        return;
+    }
+
     const allocator = AppWindow.g_allocator orelse return;
     var cfg = Config.load(allocator) catch Config{};
     defer cfg.deinit(allocator);
@@ -5516,6 +5467,7 @@ fn executeSettingsAction(action: SettingsAction) void {
             writeConfigInt("font-size", next);
         },
         .cycle_theme => cycleThemePreset(1),
+        .cycle_theme_prev => cycleThemePreset(-1),
         .cycle_cursor_style => Config.setConfigValue(allocator, "cursor-style", nextCursorStyle(cfg.@"cursor-style")) catch {},
         .toggle_cursor_blink => Config.setConfigValue(allocator, "cursor-style-blink", if (cfg.@"cursor-style-blink") "false" else "true") catch {},
         .toggle_focus_follows_mouse => Config.setConfigValue(allocator, "focus-follows-mouse", if (cfg.@"focus-follows-mouse") "false" else "true") catch {},
@@ -5537,7 +5489,7 @@ fn executeSettingsAction(action: SettingsAction) void {
     // cycle_theme already applies via cycleThemePreset; the excluded actions open
     // an editor/confirm dialog or close the page and write nothing to apply.
     switch (action) {
-        .cycle_theme, .open_raw_config, .restore_defaults, .close => {},
+        .cycle_theme, .cycle_theme_prev, .open_raw_config, .restore_defaults, .close => {},
         else => AppWindow.reloadConfigImmediate(allocator),
     }
 }
@@ -5547,43 +5499,6 @@ fn writeConfigInt(key: []const u8, value: u32) void {
     var buf: [32]u8 = undefined;
     const value_text = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
     Config.setConfigValue(allocator, key, value_text) catch {};
-}
-
-fn runSettingsFocusPrimary() void {
-    switch (g_settings_focus) {
-        0 => executeSettingsAction(.font_size_plus),
-        SETTINGS_THEME_ROW => cycleThemePreset(1),
-        SETTINGS_CONTROL_ROW_START + 0 => executeSettingsAction(.cycle_cursor_style),
-        SETTINGS_CONTROL_ROW_START + 1 => executeSettingsAction(.toggle_cursor_blink),
-        SETTINGS_CONTROL_ROW_START + 2 => executeSettingsAction(.toggle_focus_follows_mouse),
-        SETTINGS_CONTROL_ROW_START + 3 => executeSettingsAction(.cycle_shell),
-        SETTINGS_CONTROL_ROW_START + 4 => executeSettingsAction(.cycle_default_ai_profile),
-        SETTINGS_CONTROL_ROW_START + 5 => executeSettingsAction(.toggle_weixin_direct),
-        SETTINGS_CONTROL_ROW_START + 6 => executeSettingsAction(.cycle_language),
-        SETTINGS_CONTROL_ROW_START + 7 => executeSettingsAction(.toggle_restore_tabs),
-        SETTINGS_CONTROL_ROW_START + 8 => executeSettingsAction(.toggle_distill_suggest),
-        SETTINGS_CONTROL_ROW_START + 9 => executeSettingsAction(.open_raw_config),
-        SETTINGS_CONTROL_ROW_START + 10 => executeSettingsAction(.restore_defaults),
-        SETTINGS_CONTROL_ROW_START + 11 => executeSettingsAction(.close),
-        else => {},
-    }
-}
-
-fn runSettingsFocusLeft() void {
-    switch (g_settings_focus) {
-        0 => executeSettingsAction(.font_size_minus),
-        SETTINGS_THEME_ROW => cycleThemePreset(-1),
-        SETTINGS_CONTROL_ROW_START + 4 => executeSettingsAction(.cycle_default_ai_profile_prev),
-        else => {},
-    }
-}
-
-fn runSettingsFocusRight() void {
-    switch (g_settings_focus) {
-        0 => executeSettingsAction(.font_size_plus),
-        SETTINGS_THEME_ROW => cycleThemePreset(1),
-        else => runSettingsFocusPrimary(),
-    }
 }
 
 const THEME_RESET_KEYS = [_][]const u8{
@@ -5737,8 +5652,9 @@ fn renderSettingsRow(layout: SettingsLayout, window_height: f32, row: usize, tit
 }
 
 pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32) void {
-    if (!g_settings_visible) return;
+    if (!settingsPageVisible()) return;
     const allocator = AppWindow.g_allocator orelse return;
+    const focus = settingsState().focus;
 
     const cfg = settingsCfg(allocator);
 
@@ -5764,33 +5680,33 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
 
     var font_buf: [24]u8 = undefined;
     const font_value = std.fmt.bufPrint(&font_buf, "-  {d}  +", .{cfg.@"font-size"}) catch "";
-    renderSettingsRow(layout, window_height, 0, i18n.s().settings_font_size, font_value, "", true, g_settings_focus == 0);
+    renderSettingsRow(layout, window_height, 0, i18n.s().settings_font_size, font_value, "", true, focus == 0);
 
     var theme_buf: [96]u8 = undefined;
     const theme_value = std.fmt.bufPrint(&theme_buf, "< {s} >", .{currentThemePresetLabel(cfg)}) catch currentThemePresetLabel(cfg);
-    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, i18n.s().settings_theme, theme_value, "", true, g_settings_focus == SETTINGS_THEME_ROW);
+    renderSettingsRow(layout, window_height, SETTINGS_THEME_ROW, i18n.s().settings_theme, theme_value, "", true, focus == SETTINGS_THEME_ROW);
 
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, i18n.s().settings_cursor_style, cursorStyleText(cfg.@"cursor-style"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 0);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, i18n.s().settings_cursor_blink, boolText(cfg.@"cursor-style-blink"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 1);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, i18n.s().settings_focus_follows_mouse, boolText(cfg.@"focus-follows-mouse"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 2);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, i18n.s().settings_shell, cfg.shell, "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 3);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 0, i18n.s().settings_cursor_style, cursorStyleText(cfg.@"cursor-style"), "", true, focus == SETTINGS_CONTROL_ROW_START + 0);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 1, i18n.s().settings_cursor_blink, boolText(cfg.@"cursor-style-blink"), "", true, focus == SETTINGS_CONTROL_ROW_START + 1);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, i18n.s().settings_focus_follows_mouse, boolText(cfg.@"focus-follows-mouse"), "", true, focus == SETTINGS_CONTROL_ROW_START + 2);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, i18n.s().settings_shell, cfg.shell, "", true, focus == SETTINGS_CONTROL_ROW_START + 3);
     loadAiProfiles();
-    const ai_default_value = if (g_ai_profile_count > 0)
-        aiProfileField(&g_ai_profiles[defaultAiProfileIndex()], .name)
+    const ai_default_value = if (aiState().profile_count > 0)
+        aiProfileField(&aiState().profiles[defaultAiProfileIndex()], .name)
     else
         i18n.s().settings_value_none;
-    const ai_default_hint = if (g_ai_profile_count > 0)
-        aiProfileModeLabel(&g_ai_profiles[defaultAiProfileIndex()])
+    const ai_default_hint = if (aiState().profile_count > 0)
+        aiProfileModeLabel(&aiState().profiles[defaultAiProfileIndex()])
     else
         i18n.s().settings_hint_add_profiles;
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, i18n.s().settings_default_ai, ai_default_value, ai_default_hint, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 4);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, i18n.s().settings_weixin_direct, boolText(cfg.@"weixin-direct-enabled"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 5);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 6);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_restore_tabs, boolText(cfg.@"restore-tabs-on-startup"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 7);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_distill_suggest, boolText(cfg.@"ai-distill-suggest"), "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 8);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 9);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10, i18n.s().settings_restore_defaults, "Enter", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 10);
-    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 11, i18n.s().settings_close, "Esc", "", true, g_settings_focus == SETTINGS_CONTROL_ROW_START + 11);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, i18n.s().settings_default_ai, ai_default_value, ai_default_hint, true, focus == SETTINGS_CONTROL_ROW_START + 4);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 5, i18n.s().settings_weixin_direct, boolText(cfg.@"weixin-direct-enabled"), "", true, focus == SETTINGS_CONTROL_ROW_START + 5);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 6, i18n.s().settings_language, languageSettingText(cfg.language), i18n.s().settings_hint_restart, true, focus == SETTINGS_CONTROL_ROW_START + 6);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 7, i18n.s().settings_restore_tabs, boolText(cfg.@"restore-tabs-on-startup"), "", true, focus == SETTINGS_CONTROL_ROW_START + 7);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 8, i18n.s().settings_distill_suggest, boolText(cfg.@"ai-distill-suggest"), "", true, focus == SETTINGS_CONTROL_ROW_START + 8);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 9, i18n.s().settings_raw_config, i18n.s().settings_value_open, i18n.s().settings_hint_advanced_editor, true, focus == SETTINGS_CONTROL_ROW_START + 9);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 10, i18n.s().settings_restore_defaults, "Enter", "", true, focus == SETTINGS_CONTROL_ROW_START + 10);
+    renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 11, i18n.s().settings_close, "Esc", "", true, focus == SETTINGS_CONTROL_ROW_START + 11);
 
     // Scrollbar indicator when not all rows fit (short windows). The list is
     // scrolled via keyboard/click focus-follow and the mouse wheel.
@@ -5817,12 +5733,7 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
 /// focused row (which the view follows), matching the keyboard navigation model.
 /// Positive delta scrolls toward the top, mirroring whatsNewHandleScroll().
 pub fn settingsPageHandleScroll(delta_y: f64) void {
-    if (!g_settings_visible) return;
-    if (delta_y > 0) {
-        if (g_settings_focus > 0) g_settings_focus -= 1;
-    } else if (delta_y < 0) {
-        if (g_settings_focus + 1 < SETTINGS_ROW_COUNT) g_settings_focus += 1;
-    }
+    settingsState().handleScroll(delta_y);
 }
 
 // ============================================================================
@@ -6085,37 +5996,23 @@ pub fn remoteKeyCopiedFlash() void {
 }
 
 pub fn showCopyToast(byte_count: usize) void {
-    const msg = std.fmt.bufPrint(&g_copy_toast_buf, "{s}{d}{s}", .{ i18n.s().toast_copied_prefix, byte_count, i18n.s().toast_copied_bytes_suffix }) catch return;
-    g_copy_toast_len = msg.len;
-    g_copy_toast_until_ms = std.time.milliTimestamp() + COPY_TOAST_DURATION_MS;
+    var msg_buf: [64]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "{s}{d}{s}", .{ i18n.s().toast_copied_prefix, byte_count, i18n.s().toast_copied_bytes_suffix }) catch return;
+    toastState().copy.show(msg, std.time.milliTimestamp(), toasts.COPY_TOAST_DURATION_MS);
 }
 
 pub fn showStatusToast(message: []const u8) void {
-    const len = @min(message.len, g_copy_toast_buf.len);
-    @memcpy(g_copy_toast_buf[0..len], message[0..len]);
-    g_copy_toast_len = len;
-    g_copy_toast_until_ms = std.time.milliTimestamp() + COPY_TOAST_DURATION_MS;
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    toastState().copy.show(message, std.time.milliTimestamp(), toasts.COPY_TOAST_DURATION_MS);
+    AppWindow.applyUiEffect(.repaint);
 }
-
-const transferToastVerb = transfer_toast_model.transferToastVerb;
-
-const transfer_toast_model = @import("overlays/transfer_toast_model.zig");
-const formatTransferToast = transfer_toast_model.formatTransferToast;
 
 pub fn showTransferToast(
     kind: AppWindow.file_explorer.TransferKind,
     status: AppWindow.file_explorer.TransferStatus,
     message: []const u8,
 ) void {
-    const msg = formatTransferToast(&g_transfer_toast_buf, kind, status, message) catch return;
-    g_transfer_toast_len = msg.len;
-    g_transfer_toast_status = status;
-    g_transfer_toast_sticky = status == .in_progress;
-    g_transfer_toast_clickable = kind == .download and status == .in_progress;
+    toastState().transfer.show(kind, status, message, std.time.milliTimestamp(), toasts.TRANSFER_TOAST_DURATION_MS);
     if (status != .in_progress) transferCancelConfirmClose();
-    g_transfer_toast_until_ms = std.time.milliTimestamp() + TRANSFER_TOAST_DURATION_MS;
 }
 
 test "overlays: command center Settings command opens settings page" {
@@ -6127,6 +6024,81 @@ test "overlays: command center Settings command opens settings page" {
 
     try std.testing.expect(settingsPageVisible());
     try std.testing.expect(!commandPaletteVisible());
+}
+
+test "overlays: settings page state is owned by OverlayState" {
+    settingsPageOpen();
+    defer settingsPageClose();
+
+    try std.testing.expect(g_overlay_state.settings.visible);
+    try std.testing.expect(settingsPageVisible());
+}
+
+test "overlays: status toast state is owned by OverlayState" {
+    const saved = g_overlay_state.toasts.copy;
+    defer g_overlay_state.toasts.copy = saved;
+
+    showStatusToast("hello");
+
+    try std.testing.expectEqualStrings("hello", g_overlay_state.toasts.copy.text().?);
+}
+
+test "overlays: transfer toast state is owned by OverlayState" {
+    const saved = g_overlay_state.toasts.transfer;
+    defer g_overlay_state.toasts.transfer = saved;
+
+    showTransferToast(.download, .in_progress, "file.txt");
+
+    try std.testing.expect(g_overlay_state.toasts.transfer.sticky);
+    try std.testing.expect(g_overlay_state.toasts.transfer.clickable);
+}
+
+test "overlays: sticky transfer toast does not keep render gate active forever" {
+    const saved_copy = g_overlay_state.toasts.copy;
+    const saved_transfer = g_overlay_state.toasts.transfer;
+    const saved_update = g_overlay_state.toasts.update;
+    const saved_close_shortcut = g_close_shortcut_confirm_until_ms;
+    const saved_remote_key_copied = g_remote_key_copied_until_ms;
+    const saved_resize = resize.g_split_resize_overlay_until;
+    const saved_debug_fps = g_debug_fps;
+    defer {
+        g_overlay_state.toasts.copy = saved_copy;
+        g_overlay_state.toasts.transfer = saved_transfer;
+        g_overlay_state.toasts.update = saved_update;
+        g_close_shortcut_confirm_until_ms = saved_close_shortcut;
+        g_remote_key_copied_until_ms = saved_remote_key_copied;
+        resize.g_split_resize_overlay_until = saved_resize;
+        g_debug_fps = saved_debug_fps;
+    }
+
+    g_overlay_state.toasts.copy = .{};
+    g_overlay_state.toasts.update = .{};
+    g_close_shortcut_confirm_until_ms = 0;
+    g_remote_key_copied_until_ms = 0;
+    resize.g_split_resize_overlay_until = 0;
+    g_debug_fps = false;
+
+    showTransferToast(.download, .in_progress, "file.txt");
+
+    const after_deadline = g_overlay_state.toasts.transfer.until_ms + 1;
+    try std.testing.expect(g_overlay_state.toasts.transfer.active(after_deadline));
+    try std.testing.expect(!anyOverlayActive(after_deadline));
+}
+
+test "overlays: settings page escape closes without allocator" {
+    const previous_allocator = AppWindow.g_allocator;
+    defer settingsPageClose();
+    defer AppWindow.g_allocator = previous_allocator;
+
+    AppWindow.g_allocator = null;
+    settingsPageOpen();
+
+    const effect = settingsPageHandleKey(.{ .key = .escape });
+
+    try std.testing.expect(effect.consumed);
+    try std.testing.expect(effect.needs_rebuild);
+    try std.testing.expect(effect.cells_invalid);
+    try std.testing.expect(!settingsPageVisible());
 }
 
 test "macOS UI smoke: command center opens settings and settings writes config" {
@@ -6170,8 +6142,8 @@ test "macOS UI smoke: command center opens settings and settings writes config" 
     try std.testing.expect(!commandPaletteVisible());
     try std.testing.expect(settingsPageVisible());
 
-    settingsPageHandleKey(.{ .key = .arrow_up });
-    settingsPageHandleKey(.{ .key = .arrow_right });
+    _ = settingsPageHandleKey(.{ .key = .arrow_up });
+    _ = settingsPageHandleKey(.{ .key = .arrow_right });
 
     const config_path = try std.fs.path.join(allocator, &.{ config_dir, "config" });
     defer allocator.free(config_path);
@@ -6237,20 +6209,20 @@ test "overlays: settings page caps visible rows and scrolls to keep focus visibl
     try std.testing.expect(short_rows >= 1);
     try std.testing.expect(short_rows < SETTINGS_ROW_COUNT);
 
-    const saved_focus = g_settings_focus;
-    defer g_settings_focus = saved_focus;
+    const saved_focus = settingsState().focus;
+    defer settingsState().focus = saved_focus;
 
     // Focus near the top keeps the list pinned to the top.
-    g_settings_focus = 0;
+    settingsState().focus = 0;
     try std.testing.expectEqual(@as(usize, 0), settingsFirstVisibleRow(short_rows));
 
     // Focusing the last row (the close action that was clipped in the report)
     // scrolls just far enough to reveal it as the bottom visible row.
-    g_settings_focus = SETTINGS_ROW_COUNT - 1;
+    settingsState().focus = SETTINGS_ROW_COUNT - 1;
     const scroll = settingsFirstVisibleRow(short_rows);
     try std.testing.expectEqual(SETTINGS_ROW_COUNT - short_rows, scroll);
-    try std.testing.expect(g_settings_focus >= scroll);
-    try std.testing.expect(g_settings_focus < scroll + short_rows);
+    try std.testing.expect(settingsState().focus >= scroll);
+    try std.testing.expect(settingsState().focus < scroll + short_rows);
 }
 
 test "overlays: command center mouse wheel moves selection without wrapping" {
@@ -6310,34 +6282,34 @@ test "overlays: session launcher caps rows and scrolls to keep selection visible
 test "overlays: SSH list caps visible rows to five when many profiles exist" {
     const saved_ssh_list = g_ssh_list_visible;
     const saved_session = g_session_launcher_visible;
-    const saved_count = g_ssh_profile_count;
-    const saved_mode = g_ssh_list_mode;
-    const saved_selected = g_ssh_list_selected;
-    const saved_filter_len = g_ssh_list_filter_len;
+    const saved_count = sshState().profile_count;
+    const saved_mode = sshState().list_mode;
+    const saved_selected = sshState().list_selected;
+    const saved_filter_len = sshState().list_filter_len;
     var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
-    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], g_ssh_profiles[0..saved_count]);
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], sshState().profiles[0..saved_count]);
     defer {
         g_ssh_list_visible = saved_ssh_list;
         g_session_launcher_visible = saved_session;
-        g_ssh_profile_count = saved_count;
-        if (saved_count > 0) @memcpy(g_ssh_profiles[0..saved_count], saved_profiles[0..saved_count]);
-        g_ssh_list_mode = saved_mode;
-        g_ssh_list_selected = saved_selected;
-        g_ssh_list_filter_len = saved_filter_len;
+        sshState().profile_count = saved_count;
+        if (saved_count > 0) @memcpy(sshState().profiles[0..saved_count], saved_profiles[0..saved_count]);
+        sshState().list_mode = saved_mode;
+        sshState().list_selected = saved_selected;
+        sshState().list_filter_len = saved_filter_len;
     }
 
     g_ssh_list_visible = true;
     g_session_launcher_visible = false;
-    g_ssh_list_mode = .manage;
-    g_ssh_list_selected = 0;
-    g_ssh_list_filter_len = 0;
-    g_ssh_profile_count = 12;
-    for (0..g_ssh_profile_count) |idx| {
+    sshState().list_mode = .manage;
+    sshState().list_selected = 0;
+    sshState().list_filter_len = 0;
+    sshState().profile_count = 12;
+    for (0..sshState().profile_count) |idx| {
         var name_buf: [16]u8 = undefined;
         var host_buf: [32]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buf, "host-{d}", .{idx}) catch unreachable;
         const host = std.fmt.bufPrint(&host_buf, "10.0.0.{d}", .{idx}) catch unreachable;
-        g_ssh_profiles[idx] = makeSshProfile(name, host, "user", "22");
+        sshState().profiles[idx] = makeSshProfile(name, host, "user", "22");
     }
 
     const layout = sessionLayout(900, 2000, 0);
@@ -6391,6 +6363,9 @@ test "overlays: short-window overlay boxes stay within the window" {
 }
 
 test "overlays: active download toast can be clicked for interruption" {
+    const saved = g_overlay_state.toasts.transfer;
+    defer g_overlay_state.toasts.transfer = saved;
+
     showTransferToast(.download, .in_progress, "file.txt - 1.5 MB/s");
     try std.testing.expect(transferToastHitTestForTest(780, 534, 800, 600));
 
@@ -6425,7 +6400,18 @@ test "overlays: transfer interruption prompt returns explicit actions" {
     );
 }
 
+test "overlays: restore defaults confirm state is owned by OverlayState" {
+    restoreDefaultsConfirmOpen();
+    defer restoreDefaultsConfirmClose();
+
+    try std.testing.expect(g_overlay_state.confirms.restore_defaults_visible);
+    try std.testing.expect(restoreDefaultsConfirmVisible());
+}
+
 test "overlays: stored prompt URL does not affect latest release command URL" {
+    const saved = g_overlay_state.toasts.update;
+    defer g_overlay_state.toasts.update = saved;
+
     showSshCwdFallbackPrompt();
 
     var latest_buf: [256]u8 = undefined;
@@ -6435,13 +6421,13 @@ test "overlays: stored prompt URL does not affect latest release command URL" {
 }
 
 test "overlays: SSH list filter matches server name prefixes case-insensitively" {
-    g_ssh_profile_count = 3;
-    g_ssh_profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
-    g_ssh_profiles[1] = makeSshProfile("GX15041", "10.0.0.2", "user", "22");
-    g_ssh_profiles[2] = makeSshProfile("gxy", "10.0.0.3", "user", "22");
-    g_ssh_list_mode = .manage;
-    g_ssh_list_selected = 0;
-    g_ssh_list_filter_len = 0;
+    sshState().profile_count = 3;
+    sshState().profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
+    sshState().profiles[1] = makeSshProfile("GX15041", "10.0.0.2", "user", "22");
+    sshState().profiles[2] = makeSshProfile("gxy", "10.0.0.3", "user", "22");
+    sshState().list_mode = .manage;
+    sshState().list_selected = 0;
+    sshState().list_filter_len = 0;
 
     appendSshListFilterText("g");
     try std.testing.expectEqual(@as(usize, 2), sshVisibleProfileCount());
@@ -6455,26 +6441,26 @@ test "overlays: SSH list filter matches server name prefixes case-insensitively"
 }
 
 test "overlays: SSH list filter matches server target fields" {
-    const saved_count = g_ssh_profile_count;
-    const saved_mode = g_ssh_list_mode;
-    const saved_filter_len = g_ssh_list_filter_len;
-    const saved_selected = g_ssh_list_selected;
+    const saved_count = sshState().profile_count;
+    const saved_mode = sshState().list_mode;
+    const saved_filter_len = sshState().list_filter_len;
+    const saved_selected = sshState().list_selected;
     var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
-    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], g_ssh_profiles[0..saved_count]);
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], sshState().profiles[0..saved_count]);
     defer {
-        g_ssh_profile_count = saved_count;
-        if (saved_count > 0) @memcpy(g_ssh_profiles[0..saved_count], saved_profiles[0..saved_count]);
-        g_ssh_list_mode = saved_mode;
-        g_ssh_list_filter_len = saved_filter_len;
-        g_ssh_list_selected = saved_selected;
+        sshState().profile_count = saved_count;
+        if (saved_count > 0) @memcpy(sshState().profiles[0..saved_count], saved_profiles[0..saved_count]);
+        sshState().list_mode = saved_mode;
+        sshState().list_filter_len = saved_filter_len;
+        sshState().list_selected = saved_selected;
     }
 
-    g_ssh_profile_count = 2;
-    g_ssh_profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "alice", "22");
-    g_ssh_profiles[1] = makeSshProfile("GPU", "gpu.example", "builder", "2202");
-    g_ssh_list_mode = .manage;
-    g_ssh_list_selected = 0;
-    g_ssh_list_filter_len = 0;
+    sshState().profile_count = 2;
+    sshState().profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "alice", "22");
+    sshState().profiles[1] = makeSshProfile("GPU", "gpu.example", "builder", "2202");
+    sshState().list_mode = .manage;
+    sshState().list_selected = 0;
+    sshState().list_filter_len = 0;
 
     appendSshListFilterText("2202");
     try std.testing.expectEqual(@as(usize, 1), sshVisibleProfileCount());
@@ -6482,15 +6468,15 @@ test "overlays: SSH list filter matches server target fields" {
 }
 
 test "overlays: OpenSSH import keeps more than sixteen SSH profiles" {
-    const saved_count = g_ssh_profile_count;
+    const saved_count = sshState().profile_count;
     var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
-    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], g_ssh_profiles[0..saved_count]);
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], sshState().profiles[0..saved_count]);
     defer {
-        g_ssh_profile_count = saved_count;
-        if (saved_count > 0) @memcpy(g_ssh_profiles[0..saved_count], saved_profiles[0..saved_count]);
+        sshState().profile_count = saved_count;
+        if (saved_count > 0) @memcpy(sshState().profiles[0..saved_count], saved_profiles[0..saved_count]);
     }
 
-    g_ssh_profile_count = 0;
+    sshState().profile_count = 0;
     var stats = OpenSshImportStats{};
     for (0..27) |idx| {
         var candidate = openssh_config_import.Candidate{};
@@ -6505,87 +6491,87 @@ test "overlays: OpenSSH import keeps more than sixteen SSH profiles" {
         mergeOpenSshCandidate(candidate, &stats);
     }
 
-    try std.testing.expectEqual(@as(usize, 27), g_ssh_profile_count);
+    try std.testing.expectEqual(@as(usize, 27), sshState().profile_count);
     try std.testing.expectEqual(@as(usize, 27), stats.created);
     try std.testing.expect(!stats.capped);
 }
 
 test "overlays: SSH delete picker supports multi-select batch delete" {
-    const saved_count = g_ssh_profile_count;
-    const saved_mode = g_ssh_list_mode;
-    const saved_filter_len = g_ssh_list_filter_len;
-    const saved_selected = g_ssh_list_selected;
+    const saved_count = sshState().profile_count;
+    const saved_mode = sshState().list_mode;
+    const saved_filter_len = sshState().list_filter_len;
+    const saved_selected = sshState().list_selected;
     var saved_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
-    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], g_ssh_profiles[0..saved_count]);
+    if (saved_count > 0) @memcpy(saved_profiles[0..saved_count], sshState().profiles[0..saved_count]);
     defer {
-        g_ssh_profile_count = saved_count;
-        if (saved_count > 0) @memcpy(g_ssh_profiles[0..saved_count], saved_profiles[0..saved_count]);
-        g_ssh_list_mode = saved_mode;
-        g_ssh_list_filter_len = saved_filter_len;
-        g_ssh_list_selected = saved_selected;
+        sshState().profile_count = saved_count;
+        if (saved_count > 0) @memcpy(sshState().profiles[0..saved_count], saved_profiles[0..saved_count]);
+        sshState().list_mode = saved_mode;
+        sshState().list_filter_len = saved_filter_len;
+        sshState().list_selected = saved_selected;
         clearSshDeleteSelection();
     }
 
-    g_ssh_profile_count = 3;
-    g_ssh_profiles[0] = makeSshProfile("one", "10.0.0.1", "user", "22");
-    g_ssh_profiles[1] = makeSshProfile("two", "10.0.0.2", "user", "22");
-    g_ssh_profiles[2] = makeSshProfile("three", "10.0.0.3", "user", "22");
-    g_ssh_list_mode = .delete_select;
-    g_ssh_list_filter_len = 0;
-    g_ssh_list_selected = 0;
+    sshState().profile_count = 3;
+    sshState().profiles[0] = makeSshProfile("one", "10.0.0.1", "user", "22");
+    sshState().profiles[1] = makeSshProfile("two", "10.0.0.2", "user", "22");
+    sshState().profiles[2] = makeSshProfile("three", "10.0.0.3", "user", "22");
+    sshState().list_mode = .delete_select;
+    sshState().list_filter_len = 0;
+    sshState().list_selected = 0;
     clearSshDeleteSelection();
 
     try std.testing.expectEqual(@as(usize, 5), sshListRowCount());
 
     handleSshListKey(.{ .key = .space });
-    g_ssh_list_selected = 1;
+    sshState().list_selected = 1;
     handleSshListKey(.{ .key = .space });
     try std.testing.expectEqual(@as(usize, 2), sshDeleteSelectionCount());
 
-    g_ssh_list_selected = sshVisibleProfileCount();
+    sshState().list_selected = sshVisibleProfileCount();
     handleSshListKey(.{ .key = .enter });
 
-    try std.testing.expectEqual(@as(usize, 1), g_ssh_profile_count);
-    try std.testing.expectEqualStrings("three", profileField(&g_ssh_profiles[0], .name));
+    try std.testing.expectEqual(@as(usize, 1), sshState().profile_count);
+    try std.testing.expectEqualStrings("three", profileField(&sshState().profiles[0], .name));
     try std.testing.expectEqual(@as(usize, 0), sshDeleteSelectionCount());
 }
 
 test "overlays: SSH manage list includes Load OpenSSH config action" {
-    const saved_count = g_ssh_profile_count;
-    const saved_mode = g_ssh_list_mode;
-    const saved_filter_len = g_ssh_list_filter_len;
-    const saved_selected = g_ssh_list_selected;
+    const saved_count = sshState().profile_count;
+    const saved_mode = sshState().list_mode;
+    const saved_filter_len = sshState().list_filter_len;
+    const saved_selected = sshState().list_selected;
     defer {
-        g_ssh_profile_count = saved_count;
-        g_ssh_list_mode = saved_mode;
-        g_ssh_list_filter_len = saved_filter_len;
-        g_ssh_list_selected = saved_selected;
+        sshState().profile_count = saved_count;
+        sshState().list_mode = saved_mode;
+        sshState().list_filter_len = saved_filter_len;
+        sshState().list_selected = saved_selected;
     }
 
-    g_ssh_profile_count = 0;
-    g_ssh_list_mode = .manage;
-    g_ssh_list_filter_len = 0;
-    g_ssh_list_selected = 0;
+    sshState().profile_count = 0;
+    sshState().list_mode = .manage;
+    sshState().list_filter_len = 0;
+    sshState().list_selected = 0;
     try std.testing.expectEqual(@as(usize, 5), sshListRowCount());
     try std.testing.expectEqual(SshManageAction.load_openssh_config, sshManageActionForRow(0, sshVisibleProfileCount()));
     try std.testing.expectEqual(SshManageAction.new_ssh, sshManageActionForRow(1, sshVisibleProfileCount()));
 
-    g_ssh_profile_count = 1;
-    g_ssh_profiles[0] = makeSshProfile("GPU", "10.0.0.1", "user", "22");
+    sshState().profile_count = 1;
+    sshState().profiles[0] = makeSshProfile("GPU", "10.0.0.1", "user", "22");
     try std.testing.expectEqual(@as(usize, 6), sshListRowCount());
     try std.testing.expectEqual(SshManageAction.profile, sshManageActionForRow(0, sshVisibleProfileCount()));
     try std.testing.expectEqual(SshManageAction.load_openssh_config, sshManageActionForRow(1, sshVisibleProfileCount()));
 }
 
 test "overlays: OpenSSH import merge preserves existing password" {
-    const saved_count = g_ssh_profile_count;
+    const saved_count = sshState().profile_count;
     defer {
-        g_ssh_profile_count = saved_count;
+        sshState().profile_count = saved_count;
     }
 
-    g_ssh_profile_count = 1;
-    g_ssh_profiles[0] = makeSshProfile("lab", "old.example", "olduser", "22");
-    copySshProfileField(&g_ssh_profiles[0], .password, "secret");
+    sshState().profile_count = 1;
+    sshState().profiles[0] = makeSshProfile("lab", "old.example", "olduser", "22");
+    copySshProfileField(&sshState().profiles[0], .password, "secret");
 
     var candidate = openssh_config_import.Candidate{};
     opensshCandidateSetForTest(&candidate, .name, "lab");
@@ -6598,20 +6584,20 @@ test "overlays: OpenSSH import merge preserves existing password" {
     mergeOpenSshCandidate(candidate, &stats);
 
     try std.testing.expectEqual(@as(usize, 1), stats.updated);
-    try std.testing.expectEqualStrings("new.example", profileField(&g_ssh_profiles[0], .ip));
-    try std.testing.expectEqualStrings("alice", profileField(&g_ssh_profiles[0], .user));
-    try std.testing.expectEqualStrings("2222", profileField(&g_ssh_profiles[0], .port));
-    try std.testing.expectEqualStrings("jump.example", profileField(&g_ssh_profiles[0], .proxy_jump));
-    try std.testing.expectEqualStrings("secret", profileField(&g_ssh_profiles[0], .password));
+    try std.testing.expectEqualStrings("new.example", profileField(&sshState().profiles[0], .ip));
+    try std.testing.expectEqualStrings("alice", profileField(&sshState().profiles[0], .user));
+    try std.testing.expectEqualStrings("2222", profileField(&sshState().profiles[0], .port));
+    try std.testing.expectEqualStrings("jump.example", profileField(&sshState().profiles[0], .proxy_jump));
+    try std.testing.expectEqualStrings("secret", profileField(&sshState().profiles[0], .password));
 }
 
 test "overlays: SSH list filter backspace restores matching rows" {
-    g_ssh_profile_count = 2;
-    g_ssh_profiles[0] = makeSshProfile("GPU", "10.0.0.1", "user", "22");
-    g_ssh_profiles[1] = makeSshProfile("CPU", "10.0.0.2", "user", "22");
-    g_ssh_list_mode = .edit_select;
-    g_ssh_list_selected = 0;
-    g_ssh_list_filter_len = 0;
+    sshState().profile_count = 2;
+    sshState().profiles[0] = makeSshProfile("GPU", "10.0.0.1", "user", "22");
+    sshState().profiles[1] = makeSshProfile("CPU", "10.0.0.2", "user", "22");
+    sshState().list_mode = .edit_select;
+    sshState().list_selected = 0;
+    sshState().list_filter_len = 0;
 
     appendSshListFilterText("gpux");
     try std.testing.expectEqual(@as(usize, 0), sshVisibleProfileCount());
@@ -6625,12 +6611,10 @@ test "overlays: SSH list filter backspace restores matching rows" {
 
 test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     const saved_palette = g_command_palette_visible;
-    const saved_settings = g_settings_visible;
+    const saved_settings_visible = settingsState().visible;
     const saved_whats_new = g_whats_new_visible;
     const saved_integration_prompt = g_integration_prompt_visible;
-    const saved_close = g_window_close_confirm_visible;
-    const saved_restore = g_restore_defaults_confirm_visible;
-    const saved_transfer = g_transfer_cancel_confirm_visible;
+    const saved_confirms = g_overlay_state.confirms;
     const saved_session = g_session_launcher_visible;
     const saved_ssh_list = g_ssh_list_visible;
     const saved_ssh_form = g_ssh_form_visible;
@@ -6639,12 +6623,10 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     const saved_ai_history = g_ai_history_source_visible;
     defer {
         g_command_palette_visible = saved_palette;
-        g_settings_visible = saved_settings;
+        settingsState().visible = saved_settings_visible;
         g_whats_new_visible = saved_whats_new;
         g_integration_prompt_visible = saved_integration_prompt;
-        g_window_close_confirm_visible = saved_close;
-        g_restore_defaults_confirm_visible = saved_restore;
-        g_transfer_cancel_confirm_visible = saved_transfer;
+        g_overlay_state.confirms = saved_confirms;
         g_session_launcher_visible = saved_session;
         g_ssh_list_visible = saved_ssh_list;
         g_ssh_form_visible = saved_ssh_form;
@@ -6655,12 +6637,10 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
 
     // Clear every blocking flag → nothing should report blocking.
     g_command_palette_visible = false;
-    g_settings_visible = false;
+    settingsState().visible = false;
     g_whats_new_visible = false;
     g_integration_prompt_visible = false;
-    g_window_close_confirm_visible = false;
-    g_restore_defaults_confirm_visible = false;
-    g_transfer_cancel_confirm_visible = false;
+    g_overlay_state.confirms = .{};
     g_session_launcher_visible = false;
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
@@ -6674,9 +6654,9 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     try std.testing.expect(anyBlockingOverlayVisible());
     g_command_palette_visible = false;
 
-    g_settings_visible = true;
+    settingsState().visible = true;
     try std.testing.expect(anyBlockingOverlayVisible());
-    g_settings_visible = false;
+    settingsState().visible = false;
 
     g_whats_new_visible = true;
     try std.testing.expect(anyBlockingOverlayVisible());
@@ -6686,9 +6666,9 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     try std.testing.expect(anyBlockingOverlayVisible());
     g_integration_prompt_visible = false;
 
-    g_window_close_confirm_visible = true;
+    closeConfirmOpen(.window, .window_generic);
     try std.testing.expect(anyBlockingOverlayVisible());
-    g_window_close_confirm_visible = false;
+    windowCloseConfirmClose();
 
     g_session_launcher_visible = true;
     try std.testing.expect(anyBlockingOverlayVisible());
@@ -6718,31 +6698,26 @@ test "overlays: integration prompt opens scrolls and closes" {
 
 test "overlays: successful integration prompt copy closes modal and shows toast" {
     const saved_visible = g_integration_prompt_visible;
-    const saved_toast_len = g_copy_toast_len;
-    const saved_toast_until = g_copy_toast_until_ms;
-    const saved_toast_buf = g_copy_toast_buf;
+    const saved_toast = g_overlay_state.toasts.copy;
     defer {
         g_integration_prompt_visible = saved_visible;
-        g_copy_toast_len = saved_toast_len;
-        g_copy_toast_until_ms = saved_toast_until;
-        g_copy_toast_buf = saved_toast_buf;
+        g_overlay_state.toasts.copy = saved_toast;
     }
 
     g_integration_prompt_visible = true;
-    g_copy_toast_len = 0;
-    g_copy_toast_until_ms = 0;
+    g_overlay_state.toasts.copy = .{};
 
     integrationPromptCopySucceeded();
 
     try std.testing.expect(!integrationPromptVisible());
-    try std.testing.expectEqualStrings("Integration prompt copied", g_copy_toast_buf[0..g_copy_toast_len]);
-    try std.testing.expect(g_copy_toast_until_ms > 0);
+    try std.testing.expectEqualStrings("Integration prompt copied", g_overlay_state.toasts.copy.text().?);
+    try std.testing.expect(g_overlay_state.toasts.copy.until_ms > 0);
 }
 
 fn showVersionToast() void {
-    const msg = app_metadata.versionLine(&g_copy_toast_buf) catch return;
-    g_copy_toast_len = msg.len;
-    g_copy_toast_until_ms = std.time.milliTimestamp() + COPY_TOAST_DURATION_MS;
+    var msg_buf: [64]u8 = undefined;
+    const msg = app_metadata.versionLine(&msg_buf) catch return;
+    toastState().copy.show(msg, std.time.milliTimestamp(), toasts.COPY_TOAST_DURATION_MS);
 }
 
 pub fn showUpdateCheckingToast() void {
@@ -6750,15 +6725,14 @@ pub fn showUpdateCheckingToast() void {
 }
 
 pub fn showSshCwdFallbackPrompt() void {
-    const msg = std.fmt.bufPrint(&g_update_prompt_buf, "SSH cwd unknown; click for setup", .{}) catch return;
-    g_update_prompt_len = msg.len;
-
-    const url_len = @min(g_update_prompt_url_buf.len, SSH_CWD_HELP_URL.len);
-    @memcpy(g_update_prompt_url_buf[0..url_len], SSH_CWD_HELP_URL[0..url_len]);
-    g_update_prompt_url_len = url_len;
-    g_update_prompt_clickable = true;
-    g_update_prompt_action = .open_release;
-    g_update_prompt_until_ms = std.time.milliTimestamp() + UPDATE_PROMPT_DURATION_MS;
+    toastState().update.show(
+        "SSH cwd unknown; click for setup",
+        SSH_CWD_HELP_URL,
+        true,
+        .open_release,
+        std.time.milliTimestamp(),
+        toasts.UPDATE_PROMPT_DURATION_MS,
+    );
 }
 
 pub fn showUpdateCheckResult(result: update_check.CheckResult) void {
@@ -6776,27 +6750,22 @@ fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction
         .open_release => "  click to open",
         .none => "",
     };
-    const msg = std.fmt.bufPrint(&g_update_prompt_buf, "{s}{s}", .{ status, suffix }) catch return;
-
-    g_update_prompt_len = msg.len;
-    g_update_prompt_url_len = 0;
-    if (action == .open_release and result.release_url.len > 0) {
-        const url_len = @min(g_update_prompt_url_buf.len, result.release_url.len);
-        @memcpy(g_update_prompt_url_buf[0..url_len], result.release_url[0..url_len]);
-        g_update_prompt_url_len = url_len;
-    }
-    g_update_prompt_clickable = action != .none;
-    g_update_prompt_action = action;
-    g_update_prompt_until_ms = std.time.milliTimestamp() + if (action != .none) UPDATE_PROMPT_DURATION_MS else UPDATE_STATUS_DURATION_MS;
+    var msg_buf: [128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "{s}{s}", .{ status, suffix }) catch return;
+    const url: []const u8 = if (action == .open_release and result.release_url.len > 0) result.release_url else "";
+    const duration = if (action != .none) toasts.UPDATE_PROMPT_DURATION_MS else toasts.UPDATE_STATUS_DURATION_MS;
+    toastState().update.show(msg, url, action != .none, action, std.time.milliTimestamp(), duration);
 }
 
 fn showUpdateDownloadUnavailableToast() void {
-    const msg = std.fmt.bufPrint(&g_update_prompt_buf, "No update ready; run Check for Updates", .{}) catch return;
-    g_update_prompt_len = msg.len;
-    g_update_prompt_url_len = 0;
-    g_update_prompt_clickable = false;
-    g_update_prompt_action = .none;
-    g_update_prompt_until_ms = std.time.milliTimestamp() + UPDATE_STATUS_DURATION_MS;
+    toastState().update.show(
+        "No update ready; run Check for Updates",
+        "",
+        false,
+        .none,
+        std.time.milliTimestamp(),
+        toasts.UPDATE_STATUS_DURATION_MS,
+    );
 }
 
 pub fn showCloseShortcutConfirm(duration_ms: i64) void {
@@ -6804,7 +6773,7 @@ pub fn showCloseShortcutConfirm(duration_ms: i64) void {
 }
 
 pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
-    if (!g_window_close_confirm_visible) return;
+    if (!windowCloseConfirmVisible()) return;
 
     const layout = windowCloseConfirmLayout(window_width, window_height);
     const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
@@ -6843,12 +6812,13 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
 
     const text_x = icon_x + icon_size + 18;
     const text_right = layout.panel_x + layout.panel_w - pad;
-    const title_text = switch (g_close_confirm_variant) {
+    const close_variant = confirmState().close_variant;
+    const title_text = switch (close_variant) {
         .running_program => "A program is still running",
         .window_generic => "Close WispTerm?",
         .terminal_split => "Close this terminal?",
     };
-    const body_text = switch (g_close_confirm_variant) {
+    const body_text = switch (close_variant) {
         .running_program => "Closing now will end it.",
         .window_generic => "Running panels in this window will be terminated.",
         .terminal_split => "This terminal pane will be closed.",
@@ -6877,7 +6847,7 @@ pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
 }
 
 pub fn renderRestoreDefaultsConfirm(window_width: f32, window_height: f32) void {
-    if (!g_restore_defaults_confirm_visible) return;
+    if (!restoreDefaultsConfirmVisible()) return;
 
     // Reuses the window-close panel/button geometry; close_* is the Restore
     // button, cancel_* is Cancel.
@@ -7047,7 +7017,7 @@ pub fn renderIntegrationPrompt(window_width: f32, window_height: f32) void {
 }
 
 pub fn renderTransferCancelConfirm(window_width: f32, window_height: f32) void {
-    if (!g_transfer_cancel_confirm_visible) return;
+    if (!transferCancelConfirmVisible()) return;
 
     const layout = transferCancelConfirmLayout(window_width, window_height);
     const panel_y = @round(window_height - layout.panel_top_px - layout.panel_h);
@@ -7117,10 +7087,10 @@ pub fn renderCloseShortcutConfirm(window_width: f32, window_height: f32) void {
 pub fn renderCopyToast(window_width: f32, window_height: f32) void {
     _ = window_height;
     const now = std.time.milliTimestamp();
-    if (now >= g_copy_toast_until_ms) return;
-    if (g_copy_toast_len == 0) return;
+    const toast = &toastState().copy;
+    if (!toast.active(now)) return;
+    const text = toast.text() orelse return;
 
-    const text = g_copy_toast_buf[0..g_copy_toast_len];
     const pad_h: f32 = 14;
     const pad_v: f32 = 6;
     const line_h = font.g_titlebar_cell_height + pad_v * 2;
@@ -7151,11 +7121,12 @@ fn transferToastLayout(window_width: f32, text: []const u8) DebugLineRect {
 }
 
 pub fn transferToastHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32) bool {
-    if (!g_transfer_toast_clickable) return false;
-    if (g_transfer_toast_len == 0) return false;
-    if (std.time.milliTimestamp() >= g_transfer_toast_until_ms and !g_transfer_toast_sticky) return false;
+    const toast = &toastState().transfer;
+    if (!toast.clickable) return false;
+    if (!toast.active(std.time.milliTimestamp())) return false;
+    const text = toast.text() orelse return false;
 
-    const rect = transferToastLayout(window_width, g_transfer_toast_buf[0..g_transfer_toast_len]);
+    const rect = transferToastLayout(window_width, text);
     const x: f32 = @floatCast(xpos);
     const y_from_bottom = window_height - @as(f32, @floatCast(ypos));
     return x >= rect.x and x <= rect.x + rect.w and
@@ -7169,15 +7140,15 @@ fn transferToastHitTestForTest(xpos: f64, ypos: f64, window_width: f32, window_h
 pub fn renderTransferToast(window_width: f32, window_height: f32) void {
     _ = window_height;
     const now = std.time.milliTimestamp();
-    if (!g_transfer_toast_sticky and now >= g_transfer_toast_until_ms) return;
-    if (g_transfer_toast_len == 0) return;
+    const toast = &toastState().transfer;
+    if (!toast.active(now)) return;
+    const text = toast.text() orelse return;
 
-    const text = g_transfer_toast_buf[0..g_transfer_toast_len];
     const pad_h: f32 = 14;
     const pad_v: f32 = 6;
     const layout = transferToastLayout(window_width, text);
 
-    const accent = switch (g_transfer_toast_status) {
+    const accent = switch (toast.status) {
         .in_progress => AppWindow.g_theme.cursor_color,
         .success => .{ 0.24, 1.0, 0.44 },
         .failed => .{ 1.0, 0.30, 0.28 },
@@ -7187,7 +7158,7 @@ pub fn renderTransferToast(window_width: f32, window_height: f32) void {
     const bg = mixColor(AppWindow.g_theme.background, accent, 0.16);
     ui_pipeline.fillQuadAlpha(layout.x, layout.y, layout.w, layout.h, bg, 0.96);
     ui_pipeline.fillQuadAlpha(layout.x, layout.y, 3, layout.h, accent, 0.88);
-    if (g_transfer_toast_clickable) {
+    if (toast.clickable) {
         ui_pipeline.fillQuadAlpha(layout.x, layout.y + layout.h - 2, layout.w, 2, accent, 0.64);
     }
 
@@ -7236,9 +7207,10 @@ pub fn anyBlockingOverlayVisible() bool {
 /// 打开/输入/关闭时已有 g_force_rebuild 触发一帧。`now` = std.time.milliTimestamp()。
 pub fn anyOverlayActive(now: i64) bool {
     // 时间动画：到期前每帧需持续渲染
-    if (now < g_copy_toast_until_ms) return true;
-    if (now < g_transfer_toast_until_ms) return true;
-    if (now < g_update_prompt_until_ms) return true;
+    const toast_state = toastState();
+    if (toast_state.copy.active(now)) return true;
+    if (toast_state.transfer.text() != null and now < toast_state.transfer.until_ms) return true;
+    if (toast_state.update.active(now)) return true;
     if (now < g_close_shortcut_confirm_until_ms) return true;
     if (now < g_remote_key_copied_until_ms) return true;
     if (now < resize.g_split_resize_overlay_until) return true;
@@ -7537,10 +7509,10 @@ pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
     g_update_prompt_rect = null;
 
     const now = std.time.milliTimestamp();
-    if (now >= g_update_prompt_until_ms) return;
-    if (g_update_prompt_len == 0) return;
+    const prompt = &toastState().update;
+    if (!prompt.active(now)) return;
+    const text = prompt.text() orelse return;
 
-    const text = g_update_prompt_buf[0..g_update_prompt_len];
     const pad_h: f32 = 14;
     const pad_v: f32 = 6;
     const line_h = font.g_titlebar_cell_height + pad_v * 2;
@@ -7554,10 +7526,10 @@ pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
     const bg_x = @max(12, (window_width - bg_w) / 2);
     const bg_y: f32 = 92;
 
-    const bg_color: [3]f32 = if (g_update_prompt_clickable) .{ 0.18, 0.14, 0.06 } else .{ 0.08, 0.13, 0.16 };
-    const text_color: [3]f32 = if (g_update_prompt_clickable) .{ 1.0, 0.82, 0.38 } else .{ 0.55, 0.85, 0.95 };
+    const bg_color: [3]f32 = if (prompt.clickable) .{ 0.18, 0.14, 0.06 } else .{ 0.08, 0.13, 0.16 };
+    const text_color: [3]f32 = if (prompt.clickable) .{ 1.0, 0.82, 0.38 } else .{ 0.55, 0.85, 0.95 };
     ui_pipeline.fillQuad(bg_x, bg_y, bg_w, line_h, bg_color);
-    if (g_update_prompt_clickable) {
+    if (prompt.clickable) {
         ui_pipeline.fillQuad(bg_x, bg_y + line_h - 2, bg_w, 2, .{ 0.86, 0.48, 0.20 });
         g_update_prompt_rect = .{ .x = bg_x, .y = bg_y, .w = bg_w, .h = line_h };
     }
@@ -7571,8 +7543,8 @@ pub fn renderUpdatePrompt(window_width: f32, window_height: f32) void {
 }
 
 pub fn updatePromptHitTest(xpos: f64, ypos: f64, window_height: f32) bool {
-    if (!g_update_prompt_clickable) return false;
-    if (std.time.milliTimestamp() >= g_update_prompt_until_ms) return false;
+    const prompt = &toastState().update;
+    if (!prompt.clickable or !prompt.active(std.time.milliTimestamp())) return false;
     const rect = g_update_prompt_rect orelse return false;
     const x: f32 = @floatCast(xpos);
     const y_from_bottom = window_height - @as(f32, @floatCast(ypos));
@@ -7588,10 +7560,8 @@ fn latestReleaseUrl(out: *[256]u8) []const u8 {
 }
 
 fn storedPromptUrl(out: *[256]u8) []const u8 {
-    return if (g_update_prompt_url_len > 0)
-        g_update_prompt_url_buf[0..g_update_prompt_url_len]
-    else
-        latestReleaseUrl(out);
+    if (toastState().update.url()) |url| return url;
+    return latestReleaseUrl(out);
 }
 
 pub fn openLatestRelease() void {
@@ -7609,7 +7579,7 @@ fn openStoredPromptUrl() void {
 }
 
 pub fn activateUpdatePrompt() void {
-    switch (g_update_prompt_action) {
+    switch (toastState().update.action) {
         .download_update => {
             if (AppWindow.g_app) |app| {
                 if (app.hasDownloadableUpdate()) {

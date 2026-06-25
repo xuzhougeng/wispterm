@@ -33,6 +33,10 @@ test "remote file ssh helpers include short keepalive options" {
 
 test {
     _ = @import("input/command_dispatch.zig");
+    _ = @import("input/effects.zig");
+    _ = @import("input/dirty_guard.zig");
+    _ = @import("input/command_palette_effect_guard.zig");
+    _ = @import("input/overlay_effect_guard.zig");
     _ = @import("input/click_tracker.zig");
     _ = @import("input/hit_test.zig");
     _ = @import("input/mouse_wheel_scroll.zig");
@@ -45,6 +49,15 @@ test {
     _ = @import("input/file_drop_path.zig");
     _ = @import("input/sdl_keymap.zig");
     _ = @import("renderer/overlays/profile_codec.zig");
+    _ = @import("renderer/overlays/command_palette_input.zig");
+    _ = @import("renderer/overlays/settings_page.zig");
+    _ = @import("renderer/overlays/toasts.zig");
+    _ = @import("renderer/overlays/confirm_modals.zig");
+    _ = @import("renderer/overlays/ssh_profiles.zig");
+    _ = @import("renderer/overlays/ai_profiles.zig");
+    _ = @import("renderer/overlays/session_launcher.zig");
+    _ = @import("renderer/overlays/state.zig");
+    _ = @import("renderer/overlays/state_guard.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("renderer/overlays/whats_new_model.zig");
@@ -78,6 +91,12 @@ test {
     _ = @import("appwindow/active_tab.zig");
     _ = @import("appwindow/frame_latency.zig");
     _ = @import("appwindow/render_gate.zig");
+    _ = @import("appwindow/ui_effect.zig");
+    _ = @import("appwindow/window_state.zig");
+    _ = @import("appwindow/remote_state.zig");
+    _ = @import("appwindow/state.zig");
+    _ = @import("appwindow/state_guard.zig");
+    _ = @import("appwindow/p3_1_guard.zig");
     _ = @import("scp.zig");
     _ = @import("surface_registry.zig");
     _ = @import("ctl/protocol.zig");
