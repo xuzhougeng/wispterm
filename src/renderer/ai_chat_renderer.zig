@@ -348,7 +348,7 @@ pub fn render(
     const viewport_bottom_top_px = window_height - transcript_bottom;
 
     var content_h: f32 = 0;
-    for (session.messages.items) |msg| {
+    for (session.messages.items()) |msg| {
         content_h += messageBlockHeight(msg, content_w);
         if (msg.reasoning) |reasoning| {
             if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
@@ -368,7 +368,7 @@ pub fn render(
     const transcript_selected = session.transcript_select_all;
     var cursor_top = transcript_top + gravity_offset - session.scroll_px;
 
-    for (session.messages.items, 0..) |msg, message_index| {
+    for (session.messages.items(), 0..) |msg, message_index| {
         const block_h = messageBlockHeight(msg, content_w);
         if (rendersAsCard(msg)) {
             if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
@@ -470,7 +470,7 @@ pub fn interactionHitTest(
     }
 
     var content_h: f32 = 0;
-    for (session.messages.items) |msg| {
+    for (session.messages.items()) |msg| {
         content_h += messageBlockHeight(msg, content_w);
         if (msg.reasoning) |reasoning| {
             if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
@@ -485,7 +485,7 @@ pub fn interactionHitTest(
     const gravity_offset = @max(0.0, transcript_h - content_h);
     var cursor_top = transcript_top + gravity_offset - scroll_px;
 
-    for (session.messages.items, 0..) |msg, message_index| {
+    for (session.messages.items(), 0..) |msg, message_index| {
         const block_h = messageBlockHeight(msg, content_w);
         if (rendersAsCard(msg)) {
             if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
@@ -549,7 +549,7 @@ pub fn transcriptTextHitTest(
     const content_x = x + LINE_PAD_X;
 
     var content_h: f32 = 0;
-    for (session.messages.items) |msg| {
+    for (session.messages.items()) |msg| {
         content_h += messageBlockHeight(msg, content_w);
         if (msg.reasoning) |reasoning| {
             if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
@@ -566,7 +566,7 @@ pub fn transcriptTextHitTest(
     const py: f32 = @floatCast(ypos);
     var cursor_top = transcript_top + gravity_offset - scroll_px;
 
-    for (session.messages.items, 0..) |msg, message_index| {
+    for (session.messages.items(), 0..) |msg, message_index| {
         const block_h = messageBlockHeight(msg, content_w);
         if (msg.role == .assistant and sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
             const bubble = bubbleGeometry(msg.role, content_x, content_w);
@@ -821,7 +821,7 @@ fn transcriptLayoutLocked(
     const content_w = w - LINE_PAD_X * 2;
 
     var content_h: f32 = 0;
-    for (session.messages.items) |msg| {
+    for (session.messages.items()) |msg| {
         content_h += messageBlockHeight(msg, content_w);
         if (msg.reasoning) |reasoning| {
             if (reasoning.len > 0) content_h += reasoningCardHeight(msg, content_w);
@@ -1318,7 +1318,7 @@ fn firstLine(text: []const u8) []const u8 {
 
 fn renderRewindPicker(session: *ai_chat.Session, layout: InputLayout) void {
     var total: usize = 0;
-    for (session.messages.items) |msg| {
+    for (session.messages.items()) |msg| {
         if (msg.role == .user) total += 1;
     }
     if (total == 0) return;
@@ -1371,7 +1371,7 @@ fn renderRewindPicker(session: *ai_chat.Session, layout: InputLayout) void {
     );
 
     var ord: usize = 0; // 用户消息序号（0 = 最早）
-    for (session.messages.items) |msg| {
+    for (session.messages.items()) |msg| {
         if (msg.role != .user) continue;
         const this_ord = ord;
         ord += 1;

@@ -105,7 +105,7 @@ pub const Message = struct {
     reasoning_collapsed: bool = true,
     reasoning_auto_expand: bool = false,
 
-    fn deinit(self: Message, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: Message, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
         if (self.model_context) |ctx| allocator.free(ctx);
         if (self.reasoning) |reasoning| allocator.free(reasoning);

@@ -1242,7 +1242,7 @@ test "subagent loop rejects disallowed tools, returns the final report, accumula
     defer env.session.mutex.unlock();
     var saw_running = false;
     var saw_done = false;
-    for (env.session.messages.items) |msg| {
+    for (env.session.messages.items()) |msg| {
         if (msg.role != .tool) continue;
         if (std.mem.indexOf(u8, msg.content, "subagent: running write_file") != null) saw_running = true;
         if (std.mem.indexOf(u8, msg.content, "subagent: done (2 rounds, 15 tokens)") != null) saw_done = true;
