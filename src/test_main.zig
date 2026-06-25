@@ -5,6 +5,8 @@ const build_options = @import("build_options");
 const std = @import("std");
 const app_metadata = @import("app_metadata.zig");
 const command_center_state = @import("command_center_state.zig");
+const keybind = @import("keybind.zig");
+const command_dispatch = @import("input/command_dispatch.zig");
 
 comptime {
     @setEvalBranchQuota(8_000_000);
@@ -825,11 +827,45 @@ test "command center browser entries do not expose backend implementation names"
     }
 }
 
-test "copilot conversation picker has a keybind action and dispatch" {
-    const kb_src = @embedFile("keybind.zig");
-    try std.testing.expect(std.mem.indexOf(u8, kb_src, "copilot_conversation_picker") != null);
-    const input_src = @embedFile("input.zig");
-    try std.testing.expect(std.mem.indexOf(u8, input_src, ".copilot_conversation_picker =>") != null);
+// Behavior tests (converted from source-string greps): instead of asserting the
+// keybind action *name* appears in keybind.zig and that input.zig contains a
+// `.copilot_conversation_picker =>` dispatch arm, call the real catalog/seam
+// functions and assert what they actually do at runtime. This proves the action
+// is a real, parseable, default-bound keybind and that the extracted dispatch
+// resolver wires it to the copilot picker command — the same facts the greps
+// encoded, but checked through behavior rather than text. The same assertions
+// also live in src/input/command_dispatch.zig so they run in the fast suite
+// (`zig build test`); these copies keep coverage in the full `test-full` binary.
+test "copilot conversation picker is a real, default-bound keybind action" {
+    // The action name resolves to the enum value (the action exists in the catalog).
+    try std.testing.expectEqual(
+        keybind.Action.copilot_conversation_picker,
+        keybind.Action.parse("copilot_conversation_picker").?,
+    );
+
+    // A default keybind binds something to it (so the picker is reachable out of the box).
+    var bound = false;
+    for (keybind.default_bindings) |binding| {
+        if (binding.action == .copilot_conversation_picker) {
+            bound = true;
+            break;
+        }
+    }
+    try std.testing.expect(bound);
+}
+
+test "copilot conversation picker action dispatches to the picker command" {
+    // The extracted dispatch resolver maps the action to the copilot picker
+    // command in the early phase (this replaces grepping input.zig for the arm).
+    try std.testing.expectEqual(
+        command_dispatch.Command.copilot_conversation_picker,
+        command_dispatch.resolve(.copilot_conversation_picker, .early).?,
+    );
+    // It only fires in the early phase, mirroring the real key-routing order.
+    try std.testing.expectEqual(
+        @as(?command_dispatch.Command, null),
+        command_dispatch.resolve(.copilot_conversation_picker, .late),
+    );
 }
 
 test "activeCopilotSession installs the history-change hook" {

@@ -167,3 +167,37 @@ test "focus_panel actions resolve to a 1-based focus_panel command (late phase o
     // Regression: the shared `else` arm still resolves switch_tab.
     try std.testing.expectEqual(Command{ .switch_tab = 0 }, resolve(.switch_tab_1, .late).?);
 }
+
+// Behavior test (converted from a source-string grep in test_main.zig that
+// asserted input.zig contained a `.copilot_conversation_picker =>` dispatch
+// arm). The dispatch lives here now; assert the real resolver wiring instead of
+// grepping for the arm text.
+test "copilot_conversation_picker resolves to the picker command in the early phase" {
+    try std.testing.expectEqual(
+        Command.copilot_conversation_picker,
+        resolve(.copilot_conversation_picker, .early).?,
+    );
+    // It is an early-phase command, matching the real key-routing order.
+    try std.testing.expectEqual(@as(?Command, null), resolve(.copilot_conversation_picker, .late));
+}
+
+// Behavior test (converted from a source-string grep that asserted keybind.zig
+// contained the literal "copilot_conversation_picker"). Call the keybind catalog
+// directly: the action name must parse to the enum value AND a default binding
+// must exist, so the copilot picker is reachable out of the box. `keybind` is
+// already imported by this module, so this runs in the fast test suite.
+test "copilot_conversation_picker is a real, default-bound keybind action" {
+    try std.testing.expectEqual(
+        keybind.Action.copilot_conversation_picker,
+        keybind.Action.parse("copilot_conversation_picker").?,
+    );
+
+    var bound = false;
+    for (keybind.default_bindings) |binding| {
+        if (binding.action == .copilot_conversation_picker) {
+            bound = true;
+            break;
+        }
+    }
+    try std.testing.expect(bound);
+}
