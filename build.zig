@@ -713,6 +713,29 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(&b.addRunArtifact(fast_tests).step);
 
+    // The fast suite carries the architecture guards (src/source_guards/* plus
+    // the existing input/overlay guards), so make the pre-merge gate a superset
+    // of the fast loop instead of silently skipping them. Previously test-full
+    // did not run the fast tests at all.
+    test_full_step.dependOn(test_step);
+
+    // Standalone file-size backstop: `zig build check-sizes`. The fast suite
+    // also exercises it; this is the quick, dependency-free command. Runs from
+    // the repo root so the test can walk src/.
+    const check_sizes_mod = b.createModule(.{
+        .root_source_file = b.path("src/source_guards/file_size_guard.zig"),
+        .target = b.resolveTargetQuery(.{}),
+        .optimize = optimize,
+    });
+    const check_sizes_tests = b.addTest(.{
+        .name = "wispterm-check-sizes",
+        .root_module = check_sizes_mod,
+    });
+    const run_check_sizes = b.addRunArtifact(check_sizes_tests);
+    run_check_sizes.setCwd(b.path("."));
+    const check_sizes_step = b.step("check-sizes", "Fail if any src/*.zig crosses the file-size backstop");
+    check_sizes_step.dependOn(&run_check_sizes.step);
+
     // Posix-native libc-linked tests: file I/O, libc (localtime), fork, plus the
     // socketpair virtual-PTY and tmux pane I/O bridge tests. Runs on any
     // non-Windows host. Added to test-full so the store tests (ai_loop_store)

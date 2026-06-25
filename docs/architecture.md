@@ -27,6 +27,10 @@ an experimental Linux host.
    platform runtime.
    - `src/AppWindow.zig` — window-level tabs, splits, and the render/input
      routing that drives surfaces. Platform-neutral; calls the host interface.
+     Its orchestration is being decomposed into `src/appwindow/*` (aggregated
+     state structs, the `UiEffect` invalidation boundary, and feature bridges) —
+     see the structural-debt governance in
+     [docs/decoupling-guide.md §8](decoupling-guide.md#8-structural-debt-governance-axis-b-in-practice).
    - `src/platform/window_backend.zig` — **the host interface** (see below).
    - `src/apprt/win32.zig` — the concrete Win32 host runtime behind the
      `window_backend` facade. The macOS host uses AppKit, and the experimental
@@ -109,6 +113,33 @@ comptime guards, so a violation fails the build or `zig build test`:
 Scope note: these platform-leakage checks apply to the desktop app, build, and
 shared Zig code. The `remote/` web console and packaged `plugins/` content are
 out of scope.
+
+## Internal-architecture invariants
+
+Beyond the platform seam, a second set of invariants keeps the core itself
+maintainable. **Cohesion and coupling — not file length — are the criteria**: a
+file should own one coherent responsibility with explicit state ownership. Large
+files are acceptable when they stay cohesive (Ghostty ships 10k–15k-line core
+files that do); the smell is tangled responsibility, not size. These are
+enforced by source-scan ratchet tests in `src/source_guards/` that freeze
+today's structural debt so it can only **shrink**:
+
+- **`file_size_guard`** — no `src/**/*.zig` over 10,000 lines (a runaway
+  backstop; also `zig build check-sizes`).
+- **`global_state_guard`** — the top-level `g_*` / `threadlocal` count in
+  `AppWindow.zig` / `input.zig` / `renderer/overlays.zig` / `ai_chat.zig` may
+  only shrink; new state belongs in an explicit state struct.
+- **`import_hub_guard`** — `AppWindow.zig`'s `pub const X = @import(...)`
+  re-export count may only shrink; import the real module directly, not via
+  `AppWindow.X`.
+- **`side_effect_guard`** — direct `g_force_rebuild` / `g_cells_valid` writes in
+  those files may only shrink; route UI invalidation through the `UiEffect`
+  boundary (`AppWindow.applyUiEffect`).
+
+Because `test-full` is a superset of `test`, these gate the pre-merge build. The
+cohesion criterion, the remediation roadmap, and the layer model live in
+[docs/decoupling-guide.md §8](decoupling-guide.md#8-structural-debt-governance-axis-b-in-practice);
+the contributor-facing summary is in [`AGENTS.md`](../AGENTS.md).
 
 ## Implementing a new host
 

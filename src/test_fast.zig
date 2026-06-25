@@ -58,6 +58,13 @@ test {
     _ = @import("renderer/overlays/session_launcher.zig");
     _ = @import("renderer/overlays/state.zig");
     _ = @import("renderer/overlays/state_guard.zig");
+    // Cross-cutting architecture ratchets (file size + global-state / import-hub /
+    // side-effect freezes). See docs/decoupling-guide.md.
+    _ = @import("source_guards/scan.zig");
+    _ = @import("source_guards/file_size_guard.zig");
+    _ = @import("source_guards/global_state_guard.zig");
+    _ = @import("source_guards/import_hub_guard.zig");
+    _ = @import("source_guards/side_effect_guard.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
     _ = @import("renderer/overlays/whats_new_model.zig");
