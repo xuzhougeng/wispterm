@@ -2502,8 +2502,7 @@ fn updatePanelSwapDrag(x: i32, y: i32) bool {
     const target: ?SplitTree.Node.Handle = if (hovered) |h| (if (h == source) null else h) else null;
     if (target != g_panel_swap_target) {
         g_panel_swap_target = target;
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
     platform_cursor.set(.size_all);
     return true;
@@ -3753,8 +3752,7 @@ fn applySidebarWidthFromMouse(xpos: f64) void {
     if (!titlebar.setSidebarWidth(@floatCast(xpos), @floatFromInt(size.width))) return;
     syncGridFromWindow(win);
     syncSidebarWidthToBackend(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn hitTestFileExplorer(xpos: f64, ypos: f64) bool {
@@ -3845,8 +3843,7 @@ fn toggleBrowserDisplayMode() void {
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
@@ -3890,8 +3887,7 @@ fn applyBrowserWidthFromMouse(xpos: f64) void {
     const available_width: f32 = @as(f32, @floatFromInt(size.width)) - AppWindow.leftPanelsWidth() - AppWindow.browserPanelRightOffset();
     if (!browser_panel.setWidth(@floatCast(new_width), available_width)) return;
     syncGridFromWindow(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 // AI copilot panel resize grip. The copilot is right-docked (right_offset 0)
@@ -3954,8 +3950,7 @@ fn applyAiCopilotWidthFromMouse(xpos: f64) void {
     const available_width: f32 = @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth();
     if (!ai_sidebar.setWidth(@floatCast(new_width), available_width)) return;
     syncGridFromWindow(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn hitTestFileExplorerResizeHandle(xpos: f64, ypos: f64) bool {
@@ -3974,8 +3969,7 @@ fn applyExplorerWidthFromMouse(xpos: f64) void {
     const new_width = xpos - panel_x;
     if (!file_explorer.setWidth(@floatCast(new_width), @floatFromInt(size.width))) return;
     syncGridFromWindow(win);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
@@ -4208,14 +4202,14 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
         file_explorer.g_selected = row_idx;
         if (!file_explorer.g_entries[row_idx].is_dir and ((primaryOpenMod(ctrl, super) and !shift and !alt) or click_count == 2)) {
             if (openFileExplorerPreview(row_idx)) {
-                AppWindow.g_force_rebuild = true;
+                requestInputRebuild();
                 return;
             }
         }
         if (file_explorer.g_entries[row_idx].is_dir) {
             file_explorer.toggleExpand(row_idx);
         }
-        AppWindow.g_force_rebuild = true;
+        requestInputRebuild();
     }
 }
 
@@ -4240,7 +4234,7 @@ fn handleAgentHistoryPress(xpos: f64, ypos: f64) void {
         activateSelectedAgentHistoryRow();
         return;
     }
-    AppWindow.g_force_rebuild = true;
+    requestInputRebuild();
 }
 
 fn activateSelectedAgentHistoryRow() void {
@@ -4390,8 +4384,7 @@ const TerminalTokenGrid = struct {
 
 fn markSelectionChanged() void {
     g_selection_changed_for_copy = true;
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 fn nextLeftClickCount(xpos: f64, ypos: f64) u8 {
@@ -4652,7 +4645,7 @@ fn extractUrlAtCell(allocator: std.mem.Allocator, surface: *Surface, cell_pos: C
 fn markUrlUnderlineDirty(surface: ?*Surface) void {
     const s = surface orelse return;
     s.surface_renderer.markDirty();
-    AppWindow.g_force_rebuild = true;
+    requestInputRebuild();
 }
 
 fn setUrlUnderline(surface: *Surface, start_row_abs: usize, end_row_abs: usize, start_col: usize, end_col: usize) void {
@@ -4765,8 +4758,7 @@ fn openUrl(surface: *Surface, url: []const u8) bool {
             if (AppWindow.g_window) |win| {
                 syncPanelGridFromWindow(win);
             }
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
             return true;
         },
         .system_browser => {
@@ -4819,8 +4811,7 @@ fn openHtmlPanelForCell(surface: *Surface, cell_pos: CellPos) bool {
             const parent = AppWindow.currentNativeHandle();
             browser_panel.open(parent, url);
             if (AppWindow.g_window) |win| syncPanelGridFromWindow(win);
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
             return true;
         },
         .err => |err| {
@@ -4897,8 +4888,7 @@ fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []cons
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
     return true;
 }
 
@@ -4936,8 +4926,7 @@ fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const 
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
     }
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
     return true;
 }
 
@@ -6224,8 +6213,7 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
         g_ai_input_scroll_drag_offset,
     )) |drag| {
         _ = chat.setInputScrollRow(drag.row, drag.max_cols, drag.visible_rows);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
 }
 
@@ -6242,8 +6230,7 @@ fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) v
         g_ai_transcript_scroll_drag_offset,
     )) |px| {
         chat.scrollToPx(px);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
 }
 
@@ -6260,8 +6247,7 @@ fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, 
         geometry.chat_w,
     )) |hit| {
         chat.updateTranscriptSelection(hit.message_index, hit.byte_offset);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
 }
 
@@ -7025,8 +7011,7 @@ fn toggleAiAgentPermission() void {
     };
     Config.setConfigValue(allocator, "ai-agent-permission", next) catch return;
     AppWindow.reloadConfigImmediate(allocator);
-    AppWindow.g_force_rebuild = true;
-    AppWindow.g_cells_valid = false;
+    requestInputRepaint();
 }
 
 // --- Maximize toggle (native window) ---
