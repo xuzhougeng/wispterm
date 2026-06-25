@@ -41,6 +41,7 @@ const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ai_profiles = @import("overlays/ai_profiles.zig");
 const session_launcher = @import("overlays/session_launcher.zig");
 const close_confirm = @import("../close_confirm.zig");
+const close_confirm_state = @import("../input/close_confirm.zig");
 const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
@@ -163,8 +164,6 @@ threadlocal var g_whats_new_scroll: i64 = 0;
 threadlocal var g_integration_prompt_visible: bool = false;
 threadlocal var g_integration_prompt_scroll: i64 = 0;
 threadlocal var g_update_prompt_rect: ?DebugLineRect = null;
-
-threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
 pub const CloseConfirmVariant = confirm_modals.CloseConfirmVariant;
 
@@ -6057,7 +6056,7 @@ test "overlays: sticky transfer toast does not keep render gate active forever" 
     const saved_copy = g_overlay_state.toasts.copy;
     const saved_transfer = g_overlay_state.toasts.transfer;
     const saved_update = g_overlay_state.toasts.update;
-    const saved_close_shortcut = g_close_shortcut_confirm_until_ms;
+    const saved_close_shortcut = close_confirm_state.deadline();
     const saved_remote_key_copied = g_remote_key_copied_until_ms;
     const saved_resize = resize.g_split_resize_overlay_until;
     const saved_debug_fps = g_debug_fps;
@@ -6065,7 +6064,7 @@ test "overlays: sticky transfer toast does not keep render gate active forever" 
         g_overlay_state.toasts.copy = saved_copy;
         g_overlay_state.toasts.transfer = saved_transfer;
         g_overlay_state.toasts.update = saved_update;
-        g_close_shortcut_confirm_until_ms = saved_close_shortcut;
+        close_confirm_state.setDeadline(saved_close_shortcut);
         g_remote_key_copied_until_ms = saved_remote_key_copied;
         resize.g_split_resize_overlay_until = saved_resize;
         g_debug_fps = saved_debug_fps;
@@ -6073,7 +6072,7 @@ test "overlays: sticky transfer toast does not keep render gate active forever" 
 
     g_overlay_state.toasts.copy = .{};
     g_overlay_state.toasts.update = .{};
-    g_close_shortcut_confirm_until_ms = 0;
+    close_confirm_state.clear();
     g_remote_key_copied_until_ms = 0;
     resize.g_split_resize_overlay_until = 0;
     g_debug_fps = false;
@@ -6769,7 +6768,7 @@ fn showUpdateDownloadUnavailableToast() void {
 }
 
 pub fn showCloseShortcutConfirm(duration_ms: i64) void {
-    g_close_shortcut_confirm_until_ms = std.time.milliTimestamp() + duration_ms;
+    close_confirm_state.show(std.time.milliTimestamp(), duration_ms);
 }
 
 pub fn renderWindowCloseConfirm(window_width: f32, window_height: f32) void {
@@ -7064,7 +7063,7 @@ pub fn renderTransferCancelConfirm(window_width: f32, window_height: f32) void {
 
 pub fn renderCloseShortcutConfirm(window_width: f32, window_height: f32) void {
     _ = window_height;
-    if (std.time.milliTimestamp() >= g_close_shortcut_confirm_until_ms) return;
+    if (!close_confirm_state.isActive(std.time.milliTimestamp())) return;
 
     var shortcut_buf: [64]u8 = undefined;
     const shortcut = keybind.formatActionShortcut(&AppWindow.g_keybinds, .close_panel_or_tab, &shortcut_buf) orelse "close shortcut";
@@ -7211,7 +7210,7 @@ pub fn anyOverlayActive(now: i64) bool {
     if (toast_state.copy.active(now)) return true;
     if (toast_state.transfer.text() != null and now < toast_state.transfer.until_ms) return true;
     if (toast_state.update.active(now)) return true;
-    if (now < g_close_shortcut_confirm_until_ms) return true;
+    if (close_confirm_state.isActive(now)) return true;
     if (now < g_remote_key_copied_until_ms) return true;
     if (now < resize.g_split_resize_overlay_until) return true;
 

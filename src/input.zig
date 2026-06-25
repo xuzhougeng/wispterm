@@ -63,6 +63,7 @@ const underline_span = @import("input/underline_span.zig");
 const mouse_report = @import("input/mouse_report.zig");
 const mouse_wheel_scroll = @import("input/mouse_wheel_scroll.zig");
 const close_confirm = @import("close_confirm.zig");
+const close_confirm_state = @import("input/close_confirm.zig");
 const jupyter_picker = @import("jupyter_picker.zig");
 const copilot_picker = @import("copilot_picker.zig");
 const jupyter_detect = @import("jupyter_detect.zig");
@@ -1897,7 +1898,6 @@ threadlocal var g_sidebar_tab_drag_active: bool = false;
 threadlocal var plus_btn_pressed: bool = false;
 threadlocal var fullscreen_restore_state: window_backend.FullscreenRestoreState = .{};
 const CLOSE_SHORTCUT_CONFIRM_MS: i64 = 5000;
-threadlocal var g_close_shortcut_confirm_until_ms: i64 = 0;
 
 fn titlebarHeight() f64 {
     return @floatCast(AppWindow.currentTitlebarHeight());
@@ -2135,7 +2135,7 @@ fn finishOpenJupyter() void {
 }
 
 fn closeBrowserPanel() void {
-    g_close_shortcut_confirm_until_ms = 0;
+    close_confirm_state.clear();
     browser_panel.close();
     if (AppWindow.g_window) |win| {
         syncPanelGridFromWindow(win);
@@ -2171,28 +2171,28 @@ pub fn closePanelOrTab() void {
     })) {
         .close_browser => closeBrowserPanel(),
         .confirm_running_program => {
-            g_close_shortcut_confirm_until_ms = 0;
+            close_confirm_state.clear();
             overlays.closeConfirmOpen(.focused_split, .running_program);
             requestInputRepaint();
         },
         .window_press_again => {
             const now = std.time.milliTimestamp();
-            if (now < g_close_shortcut_confirm_until_ms) {
-                g_close_shortcut_confirm_until_ms = 0;
+            if (close_confirm_state.isActive(now)) {
+                close_confirm_state.clear();
                 AppWindow.closeFocusedSplit();
                 return;
             }
-            g_close_shortcut_confirm_until_ms = now + CLOSE_SHORTCUT_CONFIRM_MS;
+            close_confirm_state.show(now, CLOSE_SHORTCUT_CONFIRM_MS);
             overlays.showCloseShortcutConfirm(CLOSE_SHORTCUT_CONFIRM_MS);
             requestInputRepaint();
         },
         .confirm_terminal => {
-            g_close_shortcut_confirm_until_ms = 0;
+            close_confirm_state.clear();
             overlays.closeConfirmOpen(.focused_split, .terminal_split);
             requestInputRepaint();
         },
         .close_now => {
-            g_close_shortcut_confirm_until_ms = 0;
+            close_confirm_state.clear();
             AppWindow.closeFocusedSplit();
         },
     }
@@ -3035,7 +3035,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
     }
     const action = configuredAction(ev);
     const is_close_shortcut = actionIs(action, .close_panel_or_tab);
-    if (!is_close_shortcut and !isModifierKey(ev.key_code)) g_close_shortcut_confirm_until_ms = 0;
+    if (!is_close_shortcut and !isModifierKey(ev.key_code)) close_confirm_state.clear();
     if (overlays.sessionLauncherVisible()) {
         if (actionIs(action, .paste)) {
             return if (pasteClipboardIntoSessionLauncher()) .repaint else .none;
@@ -5246,7 +5246,7 @@ fn openInEditorAtRightClick(ev: platform_input.MouseButtonEvent) bool {
 }
 
 fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
-    if (ev.action == .press) g_close_shortcut_confirm_until_ms = 0;
+    if (ev.action == .press) close_confirm_state.clear();
     if (overlays.whatsNewVisible()) {
         if (ev.button == .left and ev.action == .press) {
             const win = AppWindow.g_window orelse return;
