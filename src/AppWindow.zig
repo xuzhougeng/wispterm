@@ -104,7 +104,6 @@ pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
 pub const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
-pub const markdown_preview_panel = @import("markdown_preview_panel.zig");
 pub const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
 pub const weixin_qr_panel = @import("weixin/qr_panel.zig");
 pub const weixin_qr_renderer = @import("renderer/weixin_qr_renderer.zig");

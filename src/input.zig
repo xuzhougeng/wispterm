@@ -16,7 +16,6 @@ const split_layout = AppWindow.split_layout;
 const file_explorer = AppWindow.file_explorer;
 const file_backend = @import("file_backend.zig");
 const markdown_preview = @import("markdown_preview.zig");
-const markdown_preview_panel = AppWindow.markdown_preview_panel;
 const preview_gallery = @import("preview_gallery.zig");
 const preview_token = @import("preview_token.zig");
 const browser_panel = AppWindow.browser_panel;
@@ -4890,7 +4889,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     setUrlUnderline(surface, vp_off + token.start_row, vp_off + token.end_row, token.start_col, token.end_col);
 }
 
-fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind, move_focus: bool) bool {
+fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: PreviewPane.PreviewSourceKind, move_focus: bool) bool {
     const perf = ui_perf.begin("input.open_preview_async");
     defer perf.end();
 
@@ -4940,7 +4939,7 @@ fn findPreviewGalleryNeighbor(allocator: std.mem.Allocator, p: *const PreviewPan
     };
 }
 
-fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind, move_focus: bool) bool {
+fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: PreviewPane.PreviewSourceKind, move_focus: bool) bool {
     const perf = ui_perf.begin("input.open_preview_new");
     defer perf.end();
 
@@ -4956,7 +4955,7 @@ fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const 
     return true;
 }
 
-fn fileExplorerPreviewSourceKind() ?markdown_preview_panel.PreviewSourceKind {
+fn fileExplorerPreviewSourceKind() ?PreviewPane.PreviewSourceKind {
     return switch (file_explorer.g_mode) {
         .local => .local,
         .wsl => .wsl,
@@ -4964,7 +4963,7 @@ fn fileExplorerPreviewSourceKind() ?markdown_preview_panel.PreviewSourceKind {
     };
 }
 
-fn terminalPreviewSourceKind(surface: *Surface) ?markdown_preview_panel.PreviewSourceKind {
+fn terminalPreviewSourceKind(surface: *Surface) ?PreviewPane.PreviewSourceKind {
     return switch (surface.launch_kind) {
         .local => .local,
         .wsl => .wsl,
@@ -5071,7 +5070,7 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bo
     return true;
 }
 
-fn previewSourceKindName(kind: markdown_preview_panel.PreviewSourceKind) []const u8 {
+fn previewSourceKindName(kind: PreviewPane.PreviewSourceKind) []const u8 {
     return switch (kind) {
         .local => "local",
         .wsl => "wsl",

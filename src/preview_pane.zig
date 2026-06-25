@@ -1,7 +1,7 @@
 //! A file/markdown/image preview as a split-tree leaf. Refcounted because
 //! SplitTree is immutable: every edit clones the tree and refs each leaf so
 //! versions share payloads. State here was previously the threadlocal globals
-//! in markdown_preview_panel.zig.
+//! in preview panes.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const markdown_preview = @import("markdown_preview.zig");
