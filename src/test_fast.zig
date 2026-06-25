@@ -64,6 +64,7 @@ test {
     _ = @import("source_guards/file_size_guard.zig");
     _ = @import("source_guards/global_state_guard.zig");
     _ = @import("source_guards/import_hub_guard.zig");
+    _ = @import("source_guards/platform_boundary_guard.zig");
     _ = @import("source_guards/side_effect_guard.zig");
     _ = @import("renderer/overlays/transfer_toast_model.zig");
     _ = @import("renderer/overlays/update_prompt_model.zig");
