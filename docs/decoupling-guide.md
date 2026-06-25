@@ -373,6 +373,19 @@ The smell is entanglement: presentation mixed with business mutation, input
 dispatch mixed with rendering, global mutable state scattered across facades, a
 file becoming the import hub for unrelated features.
 
+The sharpest case of that entanglement is the **integration layer owning feature
+state**. `AppWindow.zig`, `input.zig`, and `renderer/overlays.zig` are an
+integration layer: they *coordinate* features (module assembly + render/input
+routing, event dispatch, overlay facade/registry) and are **not** terminal
+"core". The **feature domains** are the modules that own their own state and
+behavior — `ai_chat*`, `weixin/*`, the `skill_*` modules, `file_explorer.zig`,
+the `tmux_*` controllers, and the `remote_*` client/sync code. Today the
+integration layer holds feature `g_*` globals, re-exports unrelated feature
+modules, and reaches into feature internals; that is exactly what the §8.2
+ratchets freeze and shrink. Treat each ratchet step as moving one responsibility
+back to the domain that owns it. The architecture-doc summary of this split is
+[architecture.md § Integration layer vs feature domains](architecture.md#integration-layer-vs-feature-domains).
+
 Two numeric signals sit on top of that judgment, neither of which is the goal:
 
 - **> 5,000 lines** — a soft signal to review responsibility, dependency
@@ -513,3 +526,14 @@ The reverse edges worth locking first (the layered-dependency guard in §8.2):
 `renderer/overlays/*` must not import `AppWindow.zig` (only narrow types such as
 `appwindow/ui_effect.zig`); `input/*` must not import a concrete renderer module;
 `ai_chat.zig` must not hold a set of UI-trigger callbacks directly.
+
+Restated as rules for new code, against the integration-layer/feature-domain
+split above: **feature domains must not depend on `AppWindow`** — they expose a
+query/action API and receive context explicitly rather than reaching back
+through the window; **`input/*` only dispatches** — it decides who handles an
+event and returns a `UiEffect`, and must not read a feature's internal `g_*`
+state to do so; **overlays receive capabilities through an injected
+Host/Context**, not by importing `AppWindow.zig`. Prefer explicit context
+structs, feature-owned query/action APIs, and `UiEffect` returns over scattered
+globals — and each time you touch a monolith, lower the matching §8.2 ratchet so
+the boundary converges instead of being re-frozen in place.

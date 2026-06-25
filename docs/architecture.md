@@ -27,9 +27,11 @@ an experimental Linux host.
    platform runtime.
    - `src/AppWindow.zig` — window-level tabs, splits, and the render/input
      routing that drives surfaces. Platform-neutral; calls the host interface.
-     Its orchestration is being decomposed into `src/appwindow/*` (aggregated
-     state structs, the `UiEffect` invalidation boundary, and feature bridges) —
-     see the structural-debt governance in
+     It is an **integration layer** (see below), not terminal core: it
+     coordinates features but must not own their state. Its orchestration is
+     being decomposed into `src/appwindow/*` (aggregated state structs, the
+     `UiEffect` invalidation boundary, and feature bridges) — see the
+     structural-debt governance in
      [docs/decoupling-guide.md §8](decoupling-guide.md#8-structural-debt-governance-axis-b-in-practice).
    - `src/platform/window_backend.zig` — **the host interface** (see below).
    - `src/apprt/win32.zig` — the concrete Win32 host runtime behind the
@@ -140,6 +142,45 @@ Because `test-full` is a superset of `test`, these gate the pre-merge build. The
 cohesion criterion, the remediation roadmap, and the layer model live in
 [docs/decoupling-guide.md §8](decoupling-guide.md#8-structural-debt-governance-axis-b-in-practice);
 the contributor-facing summary is in [`AGENTS.md`](../AGENTS.md).
+
+## Integration layer vs feature domains
+
+A second boundary cuts *across* the core, orthogonal to the platform seam: the
+distinction between the **integration layer** that coordinates features and the
+**feature domains** that own them. The four monoliths above sit on the wrong
+side of it today, which is why they carry the ratchets.
+
+- **Integration layer** — `src/AppWindow.zig`, `src/input.zig`, and
+  `src/renderer/overlays.zig`. These *coordinate*: AppWindow assembles modules
+  and routes render/input, `input.zig` dispatches keyboard/mouse events to
+  whoever should handle them, and `overlays.zig` is the overlay facade/registry.
+  They are **not** the terminal "core" and must **not own feature state**. When
+  they hold a feature's `g_*` globals or reach into a feature's internals, that
+  is the entanglement the ratchets are freezing — not a property of being a host.
+
+- **Feature domains** — each owns its own state, query/action API, and tests:
+  `ai_chat*` (agent/session/tools/streaming), `weixin/*`, the `skill_*` modules,
+  `file_explorer.zig`, the `tmux_*` controllers, and the `remote_*` client/sync
+  code. A domain is responsible for its own behavior; the integration layer only
+  wires it in and asks it to do things.
+
+Guidance for new code (these keep the boundary from re-tangling):
+
+- **Feature domains should not depend on `AppWindow`.** They expose their own
+  API and receive what they need explicitly; they do not reach back through the
+  window for context.
+- **`input.zig` only dispatches.** It decides *who* handles an event and returns
+  a `UiEffect`; it must not read a feature's internal `g_*` state to make that
+  decision.
+- **Overlays get capabilities through a Host/Context**, not by importing
+  `AppWindow.zig` (only narrow types such as `appwindow/ui_effect.zig`).
+- Prefer **explicit context structs**, **feature-owned query/action APIs**, and
+  **`UiEffect` returns** over scattered globals and direct dirty writes.
+- **Each time you touch a monolith, lower the matching source-guard ratchet**
+  (`global_state_guard` / `import_hub_guard` / `side_effect_guard`) — moving one
+  case to the right pattern is how the boundary actually converges. The layer
+  model that names these reverse edges is
+  [docs/decoupling-guide.md §8.5](decoupling-guide.md#85-the-layer-model).
 
 ## Implementing a new host
 

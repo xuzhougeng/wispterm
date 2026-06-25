@@ -18,6 +18,12 @@ A file may be large when it owns one coherent domain object and exposes a clear 
 
 The goal is not small files but code that can be **understood, tested, and changed locally**. Large-but-cohesive is fine; large-but-tangled must be split. New features should prefer focused modules over growing existing hub files. New UI state must live in an explicit state struct or a feature-owned module — never as another top-level `g_*` / `threadlocal` field in `AppWindow.zig`, `input.zig`, or `renderer/overlays.zig`.
 
+### Integration layer vs feature domains
+
+`AppWindow.zig`, `input.zig`, and `renderer/overlays.zig` are an **integration layer**, not terminal "core". They *coordinate* features — AppWindow assembles modules and routes render/input, `input.zig` dispatches events, `overlays.zig` is the overlay facade/registry — but they must **not own feature state**. The **feature domains** own their own state, query/action APIs, and tests: `ai_chat*`, `weixin/*`, the `skill_*` modules, `file_explorer.zig`, the `tmux_*` controllers, and the `remote_*` client/sync code.
+
+When writing new code: feature domains should not depend on `AppWindow` (expose an API, receive context explicitly); `input.zig` only dispatches and returns a `UiEffect` — it must not read a feature's internal `g_*` state; overlays get capabilities through a Host/Context, not by importing `AppWindow.zig`. Prefer explicit context structs, feature-owned query/action APIs, and `UiEffect` returns. **Each time you touch one of these monoliths, lower the matching source-guard ratchet** — that is how the boundary converges. The full layer model and per-edge rules are in [docs/architecture.md](docs/architecture.md#integration-layer-vs-feature-domains) and [docs/decoupling-guide.md §8.5](docs/decoupling-guide.md#85-the-layer-model).
+
 ### Boundary guards (`src/source_guards/`)
 
 Structural debt is frozen mechanically by source-scanning ratchet tests (the same `@embedFile`-scan idiom as `input/dirty_guard.zig`). They run in `zig build test` and, because `test-full` is now a superset of `test`, in the pre-merge gate too. Each freezes a count at today's value; the count may only **shrink**. To add a case you must first remove one elsewhere — or, better, use the pattern the guard points you to.
