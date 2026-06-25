@@ -17,6 +17,14 @@ pub fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
     return count;
 }
 
+/// Return true when `haystack` contains at least one forbidden marker.
+pub fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (std.mem.indexOf(u8, haystack, needle) != null) return true;
+    }
+    return false;
+}
+
 /// Count source lines that begin (with no leading indentation) with any of
 /// `prefixes`. Indented lines never match, so this only sees top-level decls.
 pub fn countTopLevelDecls(source: []const u8, prefixes: []const []const u8) usize {
@@ -51,6 +59,12 @@ test "countOccurrences counts non-overlapping needles" {
     try std.testing.expectEqual(@as(usize, 2), countOccurrences("aaaa", "aa"));
     try std.testing.expectEqual(@as(usize, 0), countOccurrences("abc", "x"));
     try std.testing.expectEqual(@as(usize, 0), countOccurrences("abc", ""));
+}
+
+test "containsAny reports whether any needle is present" {
+    const needles = [_][]const u8{ "ConPTY", "ReadFile", "CancelIoEx" };
+    try std.testing.expect(containsAny("shared code mentions ReadFile", &needles));
+    try std.testing.expect(!containsAny("shared code is platform-neutral", &needles));
 }
 
 test "countTopLevelDecls matches only unindented prefix lines" {
