@@ -100,6 +100,7 @@ const weixin_bridge = @import("appwindow/weixin_bridge.zig");
 const agent_requests = @import("appwindow/agent_requests.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 pub const UiEffect = ui_effect.UiEffect;
+const ui_context = @import("ui/context.zig");
 pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
@@ -2984,6 +2985,55 @@ pub fn applyUiEffect(effect: UiEffect) void {
     if (effect.needs_rebuild) g_force_rebuild = true;
     if (effect.cells_invalid) g_cells_valid = false;
     if (effect.wake_backend) window_backend.postWakeup();
+}
+
+// --- UiContext dependency-injection seam -----------------------------------
+//
+// These thin wrappers exist so `uiContext()` can hand out fn-pointers with
+// stable signatures. They route to the existing UI-thread plumbing
+// (`applyUiEffect`, `g_force_rebuild`, `overlays.showStatusToast`) so behavior
+// is preserved exactly; the seam just gives call sites a way to depend on a
+// small capability set instead of the AppWindow globals directly.
+
+fn uiCtxRequestRepaint() void {
+    markUiDirty();
+}
+
+fn uiCtxRequestRebuild() void {
+    // Land the rebuild through the effect boundary rather than poking
+    // g_force_rebuild directly, matching the side-effect ratchet.
+    applyUiEffect(.{ .needs_rebuild = true });
+}
+
+fn uiCtxShowToast(msg: []const u8) void {
+    overlays.showStatusToast(msg);
+}
+
+/// Construct a `UiContext` wired to this window's existing capabilities.
+///
+/// First dependency-injection seam: a path away from the AppWindow service
+/// locator. The fn-pointers wrap existing UI-thread plumbing, so callers get
+/// the same behavior they would by calling those functions directly.
+pub fn uiContext() ui_context.UiContext {
+    return .{
+        .allocator = g_allocator orelse std.heap.page_allocator,
+        .requestRepaint = uiCtxRequestRepaint,
+        .requestRebuild = uiCtxRequestRebuild,
+        .showToast = uiCtxShowToast,
+    };
+}
+
+test "AppWindow: uiContext constructs and exposes wired capabilities" {
+    const ctx = uiContext();
+    // The constructed seam must expose the exact wrapper fns, so callers route
+    // through the existing UI-thread plumbing (applyUiEffect / showStatusToast).
+    try std.testing.expect(ctx.requestRepaint == uiCtxRequestRepaint);
+    try std.testing.expect(ctx.requestRebuild == uiCtxRequestRebuild);
+    try std.testing.expect(ctx.showToast == uiCtxShowToast);
+
+    // A constructed allocator must always be present (fallback when g_allocator
+    // is unset), so callers can allocate without a null check.
+    try std.testing.expect(@TypeOf(ctx.allocator) == std.mem.Allocator);
 }
 
 /// Tick all preview panes across every tab. Returns true if any pane
