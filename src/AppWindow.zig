@@ -208,8 +208,6 @@ pub fn init(allocator: std.mem.Allocator, app: *App) !AppWindow {
     g_copilot_hint = app.copilot_hint;
     g_right_click_action = app.right_click_action;
     input.g_url_open_mode = app.url_open_mode;
-    g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
-    tab.g_ssh_legacy_algorithms = app.ssh_legacy_algorithms;
     g_weixin_notify_forward = app.weixin_notify_forward;
     overlays.g_split_divider_color = app.split_divider_color;
 
@@ -4159,11 +4157,14 @@ pub threadlocal var g_copy_on_select: bool = false;
 pub threadlocal var g_copilot_hint: bool = true;
 threadlocal var g_copilot_shimmer_checked: bool = false;
 pub threadlocal var g_right_click_action: Config.RightClickAction = .copy;
-pub threadlocal var g_ssh_legacy_algorithms: bool = false;
 pub threadlocal var g_desktop_notifications: bool = true;
 pub threadlocal var g_confirm_close_running_program: bool = true;
 pub threadlocal var g_weixin_notify_forward: bool = false;
 threadlocal var g_notif_auth_requested: bool = false;
+
+pub fn sshLegacyAlgorithms() bool {
+    return if (g_app) |app| app.ssh_legacy_algorithms else false;
+}
 
 /// Update cursor blink state based on time (call once per frame)
 fn updateCursorBlink() void {
@@ -4644,11 +4645,9 @@ fn applyReloadedConfig(allocator: std.mem.Allocator, cfg: *const Config) void {
     g_copilot_hint = cfg.@"copilot-hint";
     g_right_click_action = cfg.@"right-click-action";
     input.g_url_open_mode = cfg.@"url-open-mode";
-    g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     g_desktop_notifications = cfg.@"desktop-notifications";
     g_confirm_close_running_program = cfg.@"confirm-close-running-program";
     g_weixin_notify_forward = cfg.@"weixin-notify-forward";
-    tab.g_ssh_legacy_algorithms = cfg.@"ssh-legacy-algorithms";
     overlays.g_split_divider_color = cfg.@"split-divider-color";
 
     // --- Background image ---
@@ -6355,6 +6354,7 @@ fn runMainLoop(self: *AppWindow) !void {
             term_rows,
             g_cursor_style,
             g_cursor_blink,
+            sshLegacyAlgorithms(),
         );
 
         switch (startup_tabs.initialTabPlan(.{

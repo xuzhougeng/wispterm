@@ -3038,7 +3038,7 @@ fn sshConnectionFromProfile(profile: *const SshProfile) ?ssh_connection.SshConne
         .auth_method = auth_method,
         .identity_file = identity_file,
     });
-    conn.legacy_algorithms = AppWindow.g_ssh_legacy_algorithms;
+    conn.legacy_algorithms = AppWindow.sshLegacyAlgorithms();
     return conn;
 }
 
@@ -3468,7 +3468,7 @@ fn connectSshProfileTmux(idx: usize) void {
         .auth_method = conn.auth_method,
         .identity_file = conn.identityFile(),
         .password_auth = conn.password_auth,
-        .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
+        .legacy_algorithms = AppWindow.sshLegacyAlgorithms(),
         .proxy_jump = conn.proxyJump(),
         .remote_command = remote,
     }) orelse return;
@@ -3522,7 +3522,7 @@ fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []co
         .auth_method = conn.auth_method,
         .identity_file = conn.identityFile(),
         .password_auth = conn.password_auth,
-        .legacy_algorithms = AppWindow.g_ssh_legacy_algorithms,
+        .legacy_algorithms = AppWindow.sshLegacyAlgorithms(),
         .proxy_jump = conn.proxyJump(),
         .remote_command = remote_command,
     }) orelse return null;
