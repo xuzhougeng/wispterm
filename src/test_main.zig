@@ -644,6 +644,7 @@ comptime {
     _ = @import("renderer/ai_history_renderer.zig");
     _ = @import("agent_detector.zig");
     _ = @import("Surface.zig");
+    _ = @import("termio/Mailbox.zig");
     _ = @import("agent_prompt_answer.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
