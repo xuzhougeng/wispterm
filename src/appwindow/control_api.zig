@@ -142,13 +142,6 @@ pub fn syncUiState(allocator: std.mem.Allocator) void {
     g_ctl_ui_state_json = owned;
 }
 
-pub fn buildPanesJson(allocator: std.mem.Allocator) ![]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try appendPanesJson(allocator, &out);
-    return out.toOwnedSlice(allocator);
-}
-
 /// Lightweight panes listing for the agent-control API. Mirrors
 /// buildRemoteLayoutJson's terminal branch but omits the heavy per-surface
 /// scrollback snapshot (that is get-text's job) and adds the surface cwd.
@@ -254,10 +247,11 @@ test "control api panes json includes empty tab topology" {
     active_tab_state.g_active_tab = 0;
     tab.g_tab_count = 0;
 
-    const json = try buildPanesJson(std.testing.allocator);
-    defer std.testing.allocator.free(json);
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try appendPanesJson(std.testing.allocator, &out);
 
-    try std.testing.expectEqualStrings("{\"activeTab\":0,\"tabs\":[]}", json);
+    try std.testing.expectEqualStrings("{\"activeTab\":0,\"tabs\":[]}", out.items);
 }
 
 test "ctl surface callbacks reject an unregistered id without dereferencing" {

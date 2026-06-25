@@ -719,17 +719,6 @@ pub const ResizePolicy = enum {
 /// on the IO thread via queueIo() with 25ms coalescing.
 ///
 /// Returns true if the grid dimensions changed (resize was queued).
-pub fn setScreenSize(
-    self: *Surface,
-    screen_width: u32,
-    screen_height: u32,
-    cell_width: f32,
-    cell_height: f32,
-    explicit_padding: renderer.size.Padding,
-) bool {
-    return self.setScreenSizeWithPolicy(screen_width, screen_height, cell_width, cell_height, explicit_padding, .coalesced);
-}
-
 pub fn setScreenSizeWithPolicy(
     self: *Surface,
     screen_width: u32,

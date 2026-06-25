@@ -220,10 +220,6 @@ pub fn evaluateReleaseForPackage(current_version: []const u8, release: ReleaseIn
     };
 }
 
-pub fn evaluateRelease(current_version: []const u8, release: ReleaseInfo) CheckResult {
-    return evaluateReleaseForPackage(current_version, release, .{ .platform = .unsupported });
-}
-
 pub fn formatStatusMessage(buf: []u8, result: CheckResult) ![]const u8 {
     return switch (result.state) {
         .idle => std.fmt.bufPrint(buf, "", .{}),
@@ -264,19 +260,6 @@ fn copyExact(buf: []u8, value: []const u8) ?[]const u8 {
     if (buf.len < value.len) return null;
     @memcpy(buf[0..value.len], value);
     return buf[0..value.len];
-}
-
-pub fn fetchLatestRelease(
-    allocator: std.mem.Allocator,
-    current_version: []const u8,
-    buffers: CheckResultBuffers,
-) CheckResult {
-    return fetchLatestReleaseForPackage(
-        allocator,
-        current_version,
-        .{ .platform = .unsupported },
-        buffers,
-    );
 }
 
 pub fn fetchLatestReleaseForPackage(

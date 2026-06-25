@@ -166,8 +166,6 @@ pub fn scrollBy(self: *PreviewPane, delta: f32) void {
     self.scroll_offset = @max(0, @min(self.max_scroll, self.scroll_offset + delta));
 }
 
-pub fn isContentTruncated(self: *const PreviewPane) bool { return self.content_truncated; }
-
 pub fn zoomImageBySteps(self: *PreviewPane, steps: usize, zoom_in: bool) bool {
     if (!self.kind.isRaster()) return false;
     var next = self.image_zoom;
@@ -735,12 +733,12 @@ test "PreviewPane: truncated text read is ready and flags content as truncated" 
     try std.testing.expect(p.beginAsyncLoadWith(.text, "big.log", "big.log", .local, fakeTruncatedReadOk));
     drainJobs(p);
     try std.testing.expectEqual(LoadStatus.ready, p.load_status);
-    try std.testing.expect(p.isContentTruncated());
+    try std.testing.expect(p.content_truncated);
     try std.testing.expectEqualStrings("line1\nline2\n", p.sourceText());
 
     // Loading new content clears the truncated flag.
     p.open(.markdown, "b.md", "b.md", "# hi");
-    try std.testing.expect(!p.isContentTruncated());
+    try std.testing.expect(!p.content_truncated);
 }
 
 test "PreviewPane: scrollBy clamps to the renderer-reported max_scroll" {

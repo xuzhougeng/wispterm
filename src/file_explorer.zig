@@ -512,45 +512,6 @@ fn copyRootPathOnly(path: []const u8) void {
     g_root_path_len = len;
 }
 
-/// Enter remote mode with the given SSH connection.
-pub fn enterRemoteMode(conn: *const ssh_connection.SshConnection, remote_cwd: []const u8) void {
-    g_async_context_id +%= 1;
-    g_mode = .remote;
-    g_ssh_conn = conn.*;
-    g_has_ssh_conn = true;
-    if (remote_cwd.len > 0) {
-        setRoot(remote_cwd);
-    } else {
-        g_root_path_len = 0;
-        rescanRemote();
-    }
-}
-
-/// Switch back to local mode.
-pub fn enterLocalMode() void {
-    g_async_context_id +%= 1;
-    g_pending_async_list = null;
-    g_loading = false;
-    g_mode = .local;
-    g_has_ssh_conn = false;
-    g_entry_count = 0;
-    g_root_path_len = 0;
-}
-
-/// Enter WSL mode. Paths are Linux-style and listed via the platform backend.
-pub fn enterWslMode(wsl_cwd: []const u8) void {
-    g_async_context_id +%= 1;
-    g_pending_async_list = null;
-    g_loading = false;
-    g_mode = .wsl;
-    g_has_ssh_conn = false;
-    if (wsl_cwd.len > 0) {
-        setRoot(wsl_cwd);
-    } else {
-        setRoot("~");
-    }
-}
-
 pub fn setRoot(path: []const u8) void {
     g_async_context_id +%= 1;
     const len = @min(path.len, g_root_path.len);
@@ -1695,17 +1656,6 @@ pub fn uploadFolder(local_path: []const u8) void {
     _ = startTransferJob(.upload, &g_ssh_conn, local_path, dst, name, scp.transferDirWithControl);
 }
 
-pub fn uploadLocalFileToRemoteSpec(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection) bool {
-    return uploadLocalPathToRemoteSpecWithTransferFns(
-        local_path,
-        dst_spec,
-        display_name,
-        conn,
-        scp.transferWithControl,
-        scp.transferDirWithControl,
-    );
-}
-
 fn uploadLocalFileToRemoteSpecWithTransfer(local_path: []const u8, dst_spec: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection, transfer_fn: TransferFn) bool {
     return startTransferJob(.upload, conn, local_path, dst_spec, display_name, transfer_fn);
 }
@@ -1740,10 +1690,6 @@ pub fn uploadLocalFileToRemoteSpecWithCompletion(
     completion: TransferCompletion,
 ) bool {
     return startTransferJobWithCompletion(.upload, conn, local_path, dst_spec, display_name, pickUploadTransferFn(local_path), completion);
-}
-
-pub fn downloadRemoteFileToPath(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection) bool {
-    return downloadRemotePathToPath(remote_path, local_path, display_name, conn, false);
 }
 
 pub fn downloadRemotePathToPath(remote_path: []const u8, local_path: []const u8, display_name: []const u8, conn: *const ssh_connection.SshConnection, is_dir: bool) bool {

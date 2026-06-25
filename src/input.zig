@@ -572,7 +572,6 @@ test "input: skill center tool toggle requests a repaint" {
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = false,
-        .approval = .ask,
     } };
     session.mutex.lock();
     session.model.setEntries(entries);
@@ -763,7 +762,6 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = true,
-        .approval = .ask,
     } };
 
     const picker_labels = try allocator.alloc([]u8, 1);
@@ -924,7 +922,6 @@ test "input: skill center deploy and import keys ignore selected tool rows" {
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = false,
-        .approval = .ask,
     } };
 
     session.mutex.lock();
@@ -1319,7 +1316,6 @@ test "input: skill center main actions are blocked while import list overlay is 
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = true,
-        .approval = .ask,
     } };
 
     var import_target = try AppWindow.skill_center.Target.dupe(allocator, "local", "Local", .claude, true);
@@ -2270,13 +2266,6 @@ pub fn copyRemoteSessionKeyToClipboard() bool {
 // ============================================================================
 // Shared helpers (used by input + cell_renderer)
 // ============================================================================
-
-/// Get the viewport's absolute row offset into the scrollback.
-/// Row 0 on screen corresponds to absolute row `viewportOffset()`.
-pub fn viewportOffset() usize {
-    const surface = AppWindow.activeSurface() orelse return 0;
-    return viewportOffsetForSurface(surface);
-}
 
 pub const ScrollbarState = struct {
     total: usize,
@@ -4564,7 +4553,7 @@ fn handleTerminalSelectionPress(ev: platform_input.MouseButtonEvent, xpos: f64, 
 
     const cell_pos = mouseToSurfaceCell(clicked_surface, xpos, ypos);
     const open_mod = primaryOpenMod(ev.ctrl, ev.super);
-    const click_action = terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, open_mod, ev.shift, ev.alt);
+    const click_action = terminalPathClickAction(clicked_surface.launch_kind, open_mod, ev.shift, ev.alt);
     // Only instrument the SSH download gesture (Ctrl/Cmd+Shift) so the log is not
     // flooded by every terminal click. This shows whether a download gesture
     // routed to `download_ssh_file` and whether the surface had SSH metadata.
@@ -4878,7 +4867,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     const allocator = AppWindow.g_allocator orelse return;
     const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
 
-    const action = terminalPathClickAction(surface.launch_kind, surface.ssh_connection != null, primaryOpenMod(ctrl, super), shift, alt);
+    const action = terminalPathClickAction(surface.launch_kind, primaryOpenMod(ctrl, super), shift, alt);
     const token = extractInteractiveUnderlineRangeAtCell(allocator, surface, cell_pos, action) orelse {
         clearUrlUnderline();
         return;

@@ -287,26 +287,6 @@ pub fn freeInstalledTools(allocator: std.mem.Allocator, tools: []InstalledTool) 
     allocator.free(tools);
 }
 
-pub fn enabledSnapshot(allocator: std.mem.Allocator, tools: []const InstalledTool) ![]InstalledTool {
-    var list: std.ArrayListUnmanaged(InstalledTool) = .empty;
-    errdefer freeInstalledToolsBuilder(allocator, &list);
-
-    for (tools) |tool| {
-        if (!tool.enabled) continue;
-        const copy = try copyInstalledTool(allocator, tool);
-        list.append(allocator, copy) catch |err| {
-            copy.deinit(allocator);
-            return err;
-        };
-    }
-
-    return list.toOwnedSlice(allocator);
-}
-
-pub fn freeEnabledSnapshot(allocator: std.mem.Allocator, tools: []InstalledTool) void {
-    freeInstalledTools(allocator, tools);
-}
-
 pub fn dynamicSpecsFromInstalled(allocator: std.mem.Allocator, tools: []const InstalledTool) ![]ai_chat_protocol.DynamicToolSpec {
     var list: std.ArrayListUnmanaged(ai_chat_protocol.DynamicToolSpec) = .empty;
     errdefer {
@@ -451,28 +431,6 @@ fn hasWindowsDrivePrefix(path: []const u8) bool {
     return path.len >= 2 and std.ascii.isAlphabetic(path[0]) and path[1] == ':';
 }
 
-fn copyInstalledTool(allocator: std.mem.Allocator, tool: InstalledTool) !InstalledTool {
-    const id = try allocator.dupe(u8, tool.id);
-    errdefer allocator.free(id);
-    const function_name = try allocator.dupe(u8, tool.function_name);
-    errdefer allocator.free(function_name);
-    const executable_abs = try allocator.dupe(u8, tool.executable_abs);
-    errdefer allocator.free(executable_abs);
-    const skill_md = try allocator.dupe(u8, tool.skill_md);
-    errdefer allocator.free(skill_md);
-    const description = try allocator.dupe(u8, tool.description);
-    errdefer allocator.free(description);
-
-    return .{
-        .id = id,
-        .function_name = function_name,
-        .enabled = tool.enabled,
-        .executable_abs = executable_abs,
-        .skill_md = skill_md,
-        .description = description,
-    };
-}
-
 fn freeInstalledToolsBuilder(allocator: std.mem.Allocator, list: *std.ArrayListUnmanaged(InstalledTool)) void {
     for (list.items) |*tool| tool.deinit(allocator);
     list.deinit(allocator);
@@ -611,33 +569,6 @@ test "tool_registry: scanInstalledTools propagates OutOfMemory from tool reads" 
     var failing_allocator = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
     try std.testing.expectError(error.OutOfMemory, scanInstalledTools(failing_allocator.allocator(), tools_root));
     try std.testing.expect(failing_allocator.has_induced_failure);
-}
-
-test "tool_registry: enabledToolSchemas skips disabled tools" {
-    const a = std.testing.allocator;
-    const enabled = InstalledTool{
-        .id = try a.dupe(u8, "docx"),
-        .function_name = try a.dupe(u8, "docx"),
-        .enabled = true,
-        .executable_abs = try a.dupe(u8, "/tmp/tools/docx/bin/docx"),
-        .skill_md = try a.dupe(u8, "---\nname: docx\n---\nUse for DOCX review."),
-        .description = try a.dupe(u8, "DOCX review"),
-    };
-    defer enabled.deinit(a);
-    const disabled = InstalledTool{
-        .id = try a.dupe(u8, "off"),
-        .function_name = try a.dupe(u8, "off"),
-        .enabled = false,
-        .executable_abs = try a.dupe(u8, "/tmp/tools/off/bin/off"),
-        .skill_md = try a.dupe(u8, "---\nname: off\n---\nOff."),
-        .description = try a.dupe(u8, "Off"),
-    };
-    defer disabled.deinit(a);
-    const list = [_]InstalledTool{ enabled, disabled };
-    const snapshot = try enabledSnapshot(a, list[0..]);
-    defer freeEnabledSnapshot(a, snapshot);
-    try std.testing.expectEqual(@as(usize, 1), snapshot.len);
-    try std.testing.expectEqualStrings("docx", snapshot[0].function_name);
 }
 
 test "tool_registry: dynamic snapshots include specs and runtime paths for enabled tools" {

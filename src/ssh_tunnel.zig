@@ -420,14 +420,6 @@ fn isLocalPortAvailable(port: u16) bool {
     return true;
 }
 
-fn reserveLocalPort() ?u16 {
-    const address = std.net.Address.parseIp4("127.0.0.1", 0) catch return null;
-    var server = address.listen(.{}) catch return null;
-    const port = server.listen_address.getPort();
-    server.deinit();
-    return if (port == 0) null else port;
-}
-
 fn sshDestination(buf: *[MAX_SSH_DEST_BYTES]u8, conn: *const ssh_connection.SshConnection) ?[]const u8 {
     const user = conn.user();
     const host = conn.host();
@@ -497,18 +489,24 @@ test "ssh_tunnel cache key distinguishes proxy jump" {
 }
 
 test "reservePreferredLocalPort returns the preferred port when it is free" {
-    const preferred = reserveLocalPort() orelse return error.SkipZigTest;
+    const address = std.net.Address.parseIp4("127.0.0.1", 0) catch return error.SkipZigTest;
+    var server = address.listen(.{}) catch return error.SkipZigTest;
+    const preferred = server.listen_address.getPort();
+    server.deinit();
+    if (preferred == 0) return error.SkipZigTest;
+
     const selected = reservePreferredLocalPort(preferred) orelse return error.SkipZigTest;
     try std.testing.expectEqual(preferred, selected);
 }
 
 test "reservePreferredLocalPort skips an occupied preferred port" {
-    const preferred = reserveLocalPort() orelse return error.SkipZigTest;
-    if (preferred == std.math.maxInt(u16)) return error.SkipZigTest;
-
-    const address = std.net.Address.parseIp4("127.0.0.1", preferred) catch return error.SkipZigTest;
+    const address = std.net.Address.parseIp4("127.0.0.1", 0) catch return error.SkipZigTest;
     var server = address.listen(.{}) catch return error.SkipZigTest;
     defer server.deinit();
+
+    const preferred = server.listen_address.getPort();
+    if (preferred == 0) return error.SkipZigTest;
+    if (preferred == std.math.maxInt(u16)) return error.SkipZigTest;
 
     const selected = reservePreferredLocalPort(preferred) orelse return error.SkipZigTest;
     try std.testing.expect(selected > preferred);

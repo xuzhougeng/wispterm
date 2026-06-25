@@ -11,11 +11,8 @@ const max_cache_file_bytes: usize = 64 * 1024 * 1024;
 pub fn sha256Hex(bytes: []const u8, out: *[64]u8) []const u8 {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-    const hex = "0123456789abcdef";
-    for (digest, 0..) |b, i| {
-        out[i * 2] = hex[b >> 4];
-        out[i * 2 + 1] = hex[b & 0x0f];
-    }
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    @memcpy(out, &hex);
     return out[0..64];
 }
 
