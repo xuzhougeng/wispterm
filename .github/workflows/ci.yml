@@ -29,6 +29,17 @@ jobs:
       - name: Format check
         run: zig fmt --check build.zig src
 
+      - name: Fetch dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            zig build test --fetch && exit 0
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((15 * attempt))
+            fi
+          done
+          exit 1
+
       - name: Fast tests
         run: zig build test
 
@@ -43,6 +54,17 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+
+      - name: Fetch dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            zig build test-full -Dtarget=native --fetch && exit 0
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((15 * attempt))
+            fi
+          done
+          exit 1
 
       - name: Full tests
         run: zig build test-full -Dtarget=native
@@ -80,6 +102,20 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+
+      - name: Fetch dependencies
+        shell: pwsh
+        run: |
+          foreach ($attempt in 1..5) {
+            zig build test --fetch
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+            if ($attempt -lt 5) {
+              Start-Sleep -Seconds (15 * $attempt)
+            }
+          }
+          exit 1
 
       - name: Fast tests only
         run: zig build test
