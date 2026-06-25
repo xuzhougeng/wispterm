@@ -90,6 +90,7 @@ const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
 const render_gate = @import("appwindow/render_gate.zig");
+const frame_scheduler = @import("appwindow/frame_scheduler.zig");
 const frame_latency = @import("appwindow/frame_latency.zig");
 const flush_scheduler = @import("appwindow/flush_scheduler.zig");
 const resize_throttle = @import("appwindow/resize_throttle.zig");
@@ -6625,14 +6626,18 @@ fn runMainLoop(self: *AppWindow) !void {
         else
             .unfocused_visible;
 
-        const blink_enabled = g_cursor_blink and vis == .focused;
-        const blink_due = blink_enabled and
-            (gate_now - g_gate_last_blink_render >= CURSOR_BLINK_INTERVAL_MS);
+        const blink = frame_scheduler.decideBlink(.{
+            .cursor_blink_enabled = g_cursor_blink,
+            .focused = vis == .focused,
+            .now_ms = gate_now,
+            .last_blink_render_ms = g_gate_last_blink_render,
+            .interval_ms = CURSOR_BLINK_INTERVAL_MS,
+        });
 
         const signals = render_gate.RenderSignals{
             .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate,
             .any_surface_dirty = anyVisibleSurfaceDirty(),
-            .cursor_blink_due = blink_due,
+            .cursor_blink_due = blink.due,
             .ai_streaming = aiStreamingActive(),
             .overlay_active = overlays.anyOverlayActive(gate_now),
             .atlas_sync_pending = font.atlasSyncPending(),
@@ -6640,19 +6645,15 @@ fn runMainLoop(self: *AppWindow) !void {
 
         const needs_render = render_gate.frameNeedsRender(signals);
         if (!needs_render) {
-            const ms_until_blink = if (blink_enabled)
-                CURSOR_BLINK_INTERVAL_MS - (gate_now - g_gate_last_blink_render)
-            else
-                CURSOR_BLINK_INTERVAL_MS;
             const timeout_ms = render_gate.computeBlockTimeoutMs(.{
                 .visibility = vis,
-                .cursor_blink_enabled = blink_enabled,
-                .ms_until_next_blink = ms_until_blink,
+                .cursor_blink_enabled = blink.enabled,
+                .ms_until_next_blink = blink.ms_until_next,
             });
             window_backend.pumpAppEvents(@as(f64, @floatFromInt(timeout_ms)) / 1000.0);
             continue;
         }
-        if (blink_due) g_gate_last_blink_render = gate_now;
+        if (blink.due) g_gate_last_blink_render = gate_now;
 
         gpu.gl_init.g_draw_call_count = 0;
         overlays.updateFps();
