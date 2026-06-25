@@ -176,3 +176,13 @@ Final gate:
 ## Recommended Next Step
 
 Write a P3.2 implementation plan limited to the input host/effect seam. The first implementation task should create the host/effect boundary and guard, then convert a narrow keyboard/overlay slice before touching mouse-heavy paths.
+
+## P3.2 Implementation Results
+
+- `src/input.zig`: 7067 lines after P3.2.
+- `src/input/effects.zig`: 70 lines.
+- `src/input/dirty_guard.zig`: 35 lines.
+- `src/input.zig` direct `AppWindow.` references: 823.
+- `dispatchChar` and `dispatchKey` no longer contain direct `AppWindow.g_force_rebuild = true` or `AppWindow.g_cells_valid = false` writes.
+- Remaining direct dirty-flag writes are intentionally deferred to mouse-heavy and selection/panel pointer paths for P3.3.
+- No keyboard shortcut behavior or user-visible shortcut text changed.
