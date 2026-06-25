@@ -1,4 +1,5 @@
 const std = @import("std");
+const text_search = @import("text_search.zig");
 
 pub const ProviderId = enum {
     codex,
@@ -144,28 +145,11 @@ pub fn lessRecent(_: void, lhs: SessionMeta, rhs: SessionMeta) bool {
 
 pub fn metadataMatches(meta: SessionMeta, query: []const u8) bool {
     if (query.len == 0) return true;
-    return containsIgnoreCase(meta.title, query) or
-        containsIgnoreCase(meta.summary, query) or
-        containsIgnoreCase(meta.project_dir, query) or
-        containsIgnoreCase(meta.session_id, query) or
-        containsIgnoreCase(meta.source_path, query);
-}
-
-fn containsIgnoreCase(haystack: []const u8, query: []const u8) bool {
-    if (query.len == 0) return true;
-    if (query.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + query.len <= haystack.len) : (i += 1) {
-        var matched = true;
-        for (query, 0..) |qch, j| {
-            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(qch)) {
-                matched = false;
-                break;
-            }
-        }
-        if (matched) return true;
-    }
-    return false;
+    return text_search.containsIgnoreCase(meta.title, query) or
+        text_search.containsIgnoreCase(meta.summary, query) or
+        text_search.containsIgnoreCase(meta.project_dir, query) or
+        text_search.containsIgnoreCase(meta.session_id, query) or
+        text_search.containsIgnoreCase(meta.source_path, query);
 }
 
 test "ai_history_types: provider labels are stable" {
