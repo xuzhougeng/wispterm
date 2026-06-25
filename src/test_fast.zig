@@ -153,6 +153,7 @@ test {
     _ = @import("ai_history_resume.zig");
     _ = @import("ai_history_session.zig");
     _ = @import("browser_url.zig");
+    _ = @import("text_search.zig");
     _ = @import("ssh_prompt.zig");
     _ = @import("selection_unit.zig");
     _ = @import("scrollbar_model.zig");

@@ -10,6 +10,7 @@ const window_backend = @import("platform/window_backend.zig");
 const ui_perf = @import("ui_perf.zig");
 const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
+const text_search = @import("text_search.zig");
 
 pub const DEFAULT_WIDTH: f32 = 720;
 pub const MIN_WIDTH: f32 = 360;
@@ -526,16 +527,11 @@ fn normalizeUrlInput(allocator: std.mem.Allocator, input: []const u8) ?[]u8 {
 }
 
 fn defaultsToHttp(input: []const u8) bool {
-    return startsWithIgnoreCase(input, "localhost") or
-        startsWithIgnoreCase(input, "127.") or
-        startsWithIgnoreCase(input, "0.0.0.0") or
-        startsWithIgnoreCase(input, "[::1]") or
+    return text_search.startsWithIgnoreCase(input, "localhost") or
+        text_search.startsWithIgnoreCase(input, "127.") or
+        text_search.startsWithIgnoreCase(input, "0.0.0.0") or
+        text_search.startsWithIgnoreCase(input, "[::1]") or
         std.mem.indexOfScalar(u8, input, ':') != null;
-}
-
-fn startsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
-    if (text.len < prefix.len) return false;
-    return std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
 }
 
 fn copyBounded(dest: []u8, text: []const u8) usize {
