@@ -1,8 +1,8 @@
 //! Pure logic for installing skills from a GitHub URL: parse a github.com
-//! tree/blob/repo URL into owner/repo/ref/subpath, build the Git Trees + raw
-//! download URLs, and enumerate the SKILL.md-rooted skill directories found in
-//! a Trees API response. No network or disk I/O lives here — the AppWindow
-//! jobs do the HTTP + file writes.
+//! tree/blob/repo URL into owner/repo/ref/subpath, build the Git Trees and
+//! Contents API download URLs, and enumerate the SKILL.md-rooted skill
+//! directories found in a Trees API response. No network or disk I/O lives here
+//! — the AppWindow jobs do the HTTP + file writes.
 const std = @import("std");
 
 pub const ParseError = error{ NotGithubUrl, MissingRepo };
@@ -112,11 +112,6 @@ pub fn repoApiUrl(a: std.mem.Allocator, owner: []const u8, repo: []const u8) ![]
     return std.fmt.allocPrint(a, "https://api.github.com/repos/{s}/{s}", .{ owner, repo });
 }
 
-/// `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`
-pub fn rawUrl(a: std.mem.Allocator, owner: []const u8, repo: []const u8, ref: []const u8, path: []const u8) ![]u8 {
-    return std.fmt.allocPrint(a, "https://raw.githubusercontent.com/{s}/{s}/{s}/{s}", .{ owner, repo, ref, path });
-}
-
 /// `https://api.github.com/repos/<owner>/<repo>/contents/<path>?ref=<ref>` — the
 /// GitHub Contents API. Fetched with `Accept: application/vnd.github.raw` it
 /// returns the file's raw bytes from the **api.github.com** host, which is far
@@ -194,9 +189,6 @@ test "skill_install: URL builders produce exact strings" {
     const rp = try repoApiUrl(a, "o", "r");
     defer a.free(rp);
     try std.testing.expectEqualStrings("https://api.github.com/repos/o/r", rp);
-    const raw = try rawUrl(a, "o", "r", "main", "skills/foo/SKILL.md");
-    defer a.free(raw);
-    try std.testing.expectEqualStrings("https://raw.githubusercontent.com/o/r/main/skills/foo/SKILL.md", raw);
     const c = try contentsApiUrl(a, "o", "r", "skills/foo/SKILL.md", "main");
     defer a.free(c);
     try std.testing.expectEqualStrings("https://api.github.com/repos/o/r/contents/skills/foo/SKILL.md?ref=main", c);

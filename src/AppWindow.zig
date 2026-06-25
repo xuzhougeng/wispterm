@@ -841,7 +841,10 @@ test "AppWindow: failed tool import preserves preview overlay and sets status" {
 }
 
 fn countMatchingToolDirs(tools_root: []const u8, prefix: []const u8) !usize {
-    var dir = try std.fs.openDirAbsolute(tools_root, .{ .iterate = true });
+    var dir = std.fs.openDirAbsolute(tools_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => return err,
+    };
     defer dir.close();
     var it = dir.iterate();
     var count: usize = 0;

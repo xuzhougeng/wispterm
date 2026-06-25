@@ -794,8 +794,6 @@ comptime {
     _ = @import("skill_scan.zig");
     _ = @import("skill_install.zig");
     _ = @import("skill_local_fs.zig");
-    _ = @import("skill_inventory.zig");
-    _ = @import("skill_inventory_cache.zig");
     _ = @import("skill_center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
     _ = @import("port_forward_rule.zig");

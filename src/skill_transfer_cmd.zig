@@ -3,21 +3,6 @@
 //! quoting/path logic is unit-testable in isolation.
 const std = @import("std");
 
-/// Split a scan rel_path into the tar root and the item under it.
-/// - skill_md:  ".claude/skills/<name>/SKILL.md" -> root ".claude/skills", item "<name>"
-/// - prompt_md: ".codex/prompts/<name>.md"       -> root ".codex/prompts", item "<name>.md"
-pub const SkillPath = struct { root_rel: []const u8, item: []const u8 };
-
-pub fn splitSkillPath(rel_path: []const u8) ?SkillPath {
-    if (std.mem.endsWith(u8, rel_path, "/SKILL.md")) {
-        const dir = rel_path[0 .. rel_path.len - "/SKILL.md".len]; // ".../<name>"
-        const slash = std.mem.lastIndexOfScalar(u8, dir, '/') orelse return null;
-        return .{ .root_rel = dir[0..slash], .item = dir[slash + 1 ..] };
-    }
-    const slash = std.mem.lastIndexOfScalar(u8, rel_path, '/') orelse return null;
-    return .{ .root_rel = rel_path[0..slash], .item = rel_path[slash + 1 ..] };
-}
-
 pub fn appendQuoted(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) !void {
     try buf.append(allocator, '\'');
     for (s) |c| {
@@ -156,11 +141,6 @@ test "skill_transfer_cmd: absRootExpr + tarExtractCmd for the local library" {
     try std.testing.expect(std.mem.indexOf(u8, c, "D='/cfg/skills'") != null);
     try std.testing.expect(std.mem.indexOf(u8, c, "tar -xzf '/tmp/x.tgz' -C \"$S\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, c, "mv \"$S\"/'pdf' \"$D\"/'pdf'") != null);
-}
-
-test "skill_transfer_cmd: splitSkillPath still derives a name" {
-    const sp = splitSkillPath(".claude/skills/roundtable/SKILL.md").?;
-    try std.testing.expectEqualStrings("roundtable", sp.item);
 }
 
 test "skill_transfer_cmd: catSkillMdCmd reads SKILL.md under a $HOME root" {
