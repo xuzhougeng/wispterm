@@ -6290,7 +6290,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     // Left-drag pans a ready image/PDF preview (the renderer clamps the pan to
     // the raster content's overflow each frame).
     if (g_preview_image_drag.active()) {
-        if (g_preview_image_drag.move(xpos, ypos)) AppWindow.g_force_rebuild = true;
+        if (g_preview_image_drag.move(xpos, ypos)) requestInputRebuild();
         platform_cursor.set(.size_all);
         return;
     }
@@ -6321,11 +6321,11 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
             ) != null;
             if (over != AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
                 AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = over;
-                AppWindow.g_force_rebuild = true;
+                requestInputRebuild();
             }
         } else if (AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
             AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = false;
-            AppWindow.g_force_rebuild = true;
+            requestInputRebuild();
         }
     }
     if (updateSidebarTabDrag(xpos, ypos)) return;
@@ -6374,8 +6374,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
             active_tab.tree.resizeInPlace(handle, new_ratio);
 
             // Force layout recalculation and redraw
-            AppWindow.g_force_rebuild = true;
-            AppWindow.g_cells_valid = false;
+            requestInputRepaint();
         }
         return;
     }
@@ -6444,7 +6443,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
                     overlays.copilotEdgeHandleSetHovered(handle_hovered);
                     // Only repaint while the handle is actually near/visible — avoids a
                     // full rebuild on every mouse move across the terminal when it is hidden.
-                    if (tgt > 0 or handle_hovered) AppWindow.g_force_rebuild = true;
+                    if (tgt > 0 or handle_hovered) requestInputRebuild();
                     if (handle_hovered) {
                         platform_cursor.set(.arrow);
                         return;
@@ -6515,8 +6514,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     const new_close_hover = if (!g_selecting) split_layout.previewCloseButtonAtPoint(ev.x, ev.y) else null;
     if (new_close_hover != g_preview_close_hover) {
         g_preview_close_hover = new_close_hover;
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
     }
 
     // Normal selection handling
