@@ -12,7 +12,7 @@ const scan = @import("scan.zig");
 const app_window = @embedFile("../AppWindow.zig");
 
 /// Frozen at the current count; the ratchet may only ratchet DOWN.
-const reexport_ceiling: usize = 29;
+const reexport_ceiling: usize = 18;
 
 fn reexportCount(source: []const u8) usize {
     return scan.countTopLevelLinesContaining(source, "pub const ", "= @import(");
