@@ -38,6 +38,8 @@ const platform_input = @import("platform/input_events.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_wsl = @import("platform/wsl.zig");
 const window_backend = @import("platform/window_backend.zig");
+const window_metrics = @import("ui/window_metrics.zig");
+const WindowMetrics = window_metrics.WindowMetrics;
 const input_key = @import("input/key.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
 const input_effects = @import("input/effects.zig");
@@ -1903,6 +1905,20 @@ fn titlebarHeight() f64 {
     return @floatCast(AppWindow.currentTitlebarHeight());
 }
 
+/// Snapshot the window geometry that hit-testing reads repeatedly
+/// (framebuffer size + titlebar height + sidebar width) in one place, so panel
+/// hit-tests consume a single computed struct instead of recomputing each value
+/// inline. Reads the exact same sources as the inline call sites it replaces.
+fn windowMetrics(win: *window_backend.Window) WindowMetrics {
+    const fb = window_backend.framebufferSize(win);
+    return WindowMetrics.init(
+        fb.width,
+        fb.height,
+        titlebarHeight(),
+        @floatCast(titlebar.sidebarWidth()),
+    );
+}
+
 fn syncGridFromWindowSize(width: i32, height: i32) void {
     if (width <= 0 or height <= 0) return;
     const render_padding: f32 = 10;
@@ -2799,24 +2815,24 @@ fn aiTranscriptPanelGeometryForBounds(window_width: i32, window_height: i32, bou
 
 fn aiTranscriptPanelGeometry(panel: AiTranscriptPanel) ?AiTranscriptPanelGeometry {
     const win = AppWindow.g_window orelse return null;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     return switch (panel) {
         .active_chat => .{
-            .window_width = @floatFromInt(fb.width),
-            .window_height = @floatFromInt(fb.height),
+            .window_width = @floatFromInt(metrics.framebuffer_width),
+            .window_height = @floatFromInt(metrics.framebuffer_height),
             .chat_x = AppWindow.leftPanelsWidth(),
-            .chat_w = @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
+            .chat_w = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(metrics.framebuffer_width),
         },
         .copilot_sidebar => blk: {
             if (!AppWindow.aiCopilotVisible()) return null;
             const bounds = ai_sidebar.boundsForWindow(
-                @intCast(fb.width),
-                @intCast(fb.height),
-                @floatCast(titlebarHeight()),
+                @intCast(metrics.framebuffer_width),
+                @intCast(metrics.framebuffer_height),
+                @floatCast(metrics.titlebar_h),
                 AppWindow.leftPanelsWidth(),
                 0,
             );
-            break :blk aiTranscriptPanelGeometryForBounds(@intCast(fb.width), @intCast(fb.height), bounds);
+            break :blk aiTranscriptPanelGeometryForBounds(@intCast(metrics.framebuffer_width), @intCast(metrics.framebuffer_height), bounds);
         },
     };
 }
@@ -3866,11 +3882,11 @@ fn toggleBrowserDisplayMode() void {
 fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
     if (!AppWindow.aiCopilotVisible()) return null;
     const win = AppWindow.g_window orelse return null;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
+        @intCast(metrics.framebuffer_width),
+        @intCast(metrics.framebuffer_height),
+        @floatCast(metrics.titlebar_h),
         AppWindow.leftPanelsWidth(),
         0,
     );
@@ -3915,11 +3931,11 @@ fn hitTestAiCopilotResizeHandle(xpos: f64, ypos: f64) bool {
     if (!AppWindow.aiCopilotVisible()) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     const bounds = ai_sidebar.boundsForWindow(
-        @intCast(fb.width),
-        @intCast(fb.height),
-        @floatCast(titlebarHeight()),
+        @intCast(metrics.framebuffer_width),
+        @intCast(metrics.framebuffer_height),
+        @floatCast(metrics.titlebar_h),
         AppWindow.leftPanelsWidth(),
         0,
     );
@@ -3942,16 +3958,16 @@ fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
     )) return false;
     if (ypos < titlebarHeight()) return false;
     const win = AppWindow.g_window orelse return false;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     const rect = ai_sidebar.closedHandleRect(
-        @floatFromInt(fb.width),
-        @floatFromInt(fb.height),
-        @floatCast(titlebarHeight()),
+        @floatFromInt(metrics.framebuffer_width),
+        @floatFromInt(metrics.framebuffer_height),
+        @floatCast(metrics.titlebar_h),
         AppWindow.leftPanelsWidth(),
     );
     if (!rect.eligible) return false;
     const hit_w: f64 = @max(@as(f64, @floatCast(rect.w)), 12);
-    const right: f64 = @floatFromInt(fb.width);
+    const right: f64 = @floatFromInt(metrics.framebuffer_width);
     const top: f64 = @floatCast(rect.y);
     const bottom: f64 = @floatCast(rect.y + rect.h);
     return xpos >= right - hit_w and ypos >= top and ypos <= bottom;
@@ -3959,12 +3975,12 @@ fn hitTestCopilotEdgeHandle(xpos: f64, ypos: f64) bool {
 
 fn applyAiCopilotWidthFromMouse(xpos: f64) void {
     const win = AppWindow.g_window orelse return;
-    const fb = window_backend.framebufferSize(win);
+    const metrics = windowMetrics(win);
     // Right-docked at the far right edge (right_offset 0): width grows as the
     // mouse moves left, same as the browser's right-edge math.
-    const right_edge = @as(f64, @floatFromInt(fb.width));
+    const right_edge = @as(f64, @floatFromInt(metrics.framebuffer_width));
     const new_width = right_edge - xpos;
-    const available_width: f32 = @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth();
+    const available_width: f32 = @as(f32, @floatFromInt(metrics.framebuffer_width)) - AppWindow.leftPanelsWidth();
     if (!ai_sidebar.setWidth(@floatCast(new_width), available_width)) return;
     syncGridFromWindow(win);
     requestInputRepaint();

@@ -49,6 +49,7 @@ test {
     _ = @import("input/file_drop_path.zig");
     _ = @import("input/sdl_keymap.zig");
     _ = @import("input/close_confirm.zig");
+    _ = @import("ui/window_metrics.zig");
     _ = @import("renderer/overlays/profile_codec.zig");
     _ = @import("renderer/overlays/command_palette_input.zig");
     _ = @import("renderer/overlays/settings_page.zig");
