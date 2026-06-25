@@ -32,16 +32,6 @@ pub const CategoryCounts = struct {
     subagent: usize = 0,
 };
 
-pub fn categoryMatches(category: CategoryFilter, provider: ProviderId) bool {
-    return switch (category) {
-        .all => true,
-        .codex => provider == .codex,
-        .claude => provider == .claude,
-        .reasonix => provider == .reasonix,
-        .subagent => false,
-    };
-}
-
 pub fn isSubagentSession(meta: SessionMeta) bool {
     const title = std.mem.trimLeft(u8, meta.title, " \t\r\n");
     return std.mem.startsWith(u8, title, "You are");
@@ -234,15 +224,37 @@ test "ai_history_types: recent sort is descending with session id tie break" {
     try std.testing.expectEqualStrings("b", rows[2].session_id);
 }
 
-test "ai_history_types: categoryMatches respects provider" {
-    try std.testing.expect(categoryMatches(.all, .codex));
-    try std.testing.expect(categoryMatches(.all, .claude));
-    try std.testing.expect(categoryMatches(.codex, .codex));
-    try std.testing.expect(!categoryMatches(.codex, .claude));
-    try std.testing.expect(categoryMatches(.claude, .claude));
-    try std.testing.expect(!categoryMatches(.claude, .codex));
-    try std.testing.expect(categoryMatches(.reasonix, .reasonix));
-    try std.testing.expect(!categoryMatches(.reasonix, .codex));
+test "ai_history_types: categoryMatchesMeta respects provider" {
+    const codex: SessionMeta = .{
+        .provider = .codex,
+        .session_id = "codex",
+        .title = "Codex task",
+        .source_path = "codex.jsonl",
+        .resume_kind = .codex_resume,
+    };
+    const claude: SessionMeta = .{
+        .provider = .claude,
+        .session_id = "claude",
+        .title = "Claude task",
+        .source_path = "claude.jsonl",
+        .resume_kind = .claude_resume,
+    };
+    const reasonix: SessionMeta = .{
+        .provider = .reasonix,
+        .session_id = "reasonix",
+        .title = "Reasonix task",
+        .source_path = "reasonix.jsonl",
+        .resume_kind = .reasonix_resume,
+    };
+
+    try std.testing.expect(categoryMatchesMeta(.all, codex));
+    try std.testing.expect(categoryMatchesMeta(.all, claude));
+    try std.testing.expect(categoryMatchesMeta(.codex, codex));
+    try std.testing.expect(!categoryMatchesMeta(.codex, claude));
+    try std.testing.expect(categoryMatchesMeta(.claude, claude));
+    try std.testing.expect(!categoryMatchesMeta(.claude, codex));
+    try std.testing.expect(categoryMatchesMeta(.reasonix, reasonix));
+    try std.testing.expect(!categoryMatchesMeta(.reasonix, codex));
 }
 
 test "ai_history_types: You are titles are classified as subagent metadata" {

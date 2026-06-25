@@ -132,10 +132,6 @@ pub fn parsePort(text: []const u8) ?u16 {
     return @intCast(value);
 }
 
-pub fn freeRules(allocator: std.mem.Allocator, rules: []Rule) void {
-    allocator.free(rules);
-}
-
 pub fn encodeRules(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), rules: []const Rule) !void {
     try out.appendSlice(allocator, "# WispTerm port forwarding rules. Fields are hex encoded: name, profile, direction, local_host, local_port, remote_host, remote_port, enabled, auto_start.\n");
     for (rules) |rule| {
@@ -160,21 +156,6 @@ pub fn encodeRules(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8
         try appendHexField(allocator, out, if (rule.auto_start) "true" else "false");
         try out.append(allocator, '\n');
     }
-}
-
-pub fn decodeRules(allocator: std.mem.Allocator, content: []const u8) ![]Rule {
-    var rules: std.ArrayListUnmanaged(Rule) = .empty;
-    errdefer rules.deinit(allocator);
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line_raw| {
-        const line = std.mem.trimRight(u8, line_raw, "\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (decodeRuleLine(line)) |rule| {
-            try rules.append(allocator, rule);
-        }
-    }
-    return rules.toOwnedSlice(allocator);
 }
 
 pub fn decodeRuleLine(line: []const u8) ?Rule {
@@ -304,7 +285,7 @@ test "port_forward_rule: forward specs match ssh -L and -R semantics" {
     try std.testing.expectEqualStrings("-L", rule.direction.flag());
 }
 
-test "port_forward_rule: storage round trips two rules" {
+test "port_forward_rule: storage encodes two rules" {
     var rules = [_]Rule{
         defaultReverseProxy("devbox"),
         defaultReverseProxy("lab"),
@@ -319,15 +300,10 @@ test "port_forward_rule: storage round trips two rules" {
     defer out.deinit(std.testing.allocator);
     try encodeRules(std.testing.allocator, &out, rules[0..]);
 
-    var decoded = try decodeRules(std.testing.allocator, out.items);
-    defer freeRules(std.testing.allocator, decoded);
-
-    try std.testing.expectEqual(@as(usize, 2), decoded.len);
-    try std.testing.expectEqual(Direction.reverse, decoded[0].direction);
-    try std.testing.expectEqualStrings("devbox", decoded[0].profileName());
-    try std.testing.expectEqual(Direction.local, decoded[1].direction);
-    try std.testing.expectEqualStrings("Jupyter", decoded[1].name());
-    try std.testing.expect(!decoded[1].auto_start);
+    try std.testing.expect(std.mem.startsWith(u8, out.items, "# WispTerm port forwarding rules."));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "646576626F78") != null); // devbox
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "4A757079746572") != null); // Jupyter
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "66616C7365") != null); // false
 }
 
 test "port_forward_rule: decoder rejects extra fields" {

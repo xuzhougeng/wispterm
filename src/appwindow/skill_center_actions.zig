@@ -1888,7 +1888,6 @@ fn skillCenterEntryFromInstalledTool(
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = tool.enabled,
-        .approval = .ask,
     } };
 }
 

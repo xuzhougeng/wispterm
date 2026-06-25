@@ -10,30 +10,9 @@ pub const ServerKind = enum {
     npx_http_server,
 };
 
-pub const Probe = struct {
-    python3: bool = false,
-    py_launcher_python3: bool = false,
-    python_is_python3: bool = false,
-    python_is_python2: bool = false,
-    python2: bool = false,
-    node: bool = false,
-    npx_http_server: bool = false,
-};
-
 pub fn isHtmlPath(path: []const u8) bool {
     if (std.mem.startsWith(u8, path, "http://") or std.mem.startsWith(u8, path, "https://")) return false;
     return endsWithIgnoreCase(path, ".html") or endsWithIgnoreCase(path, ".htm");
-}
-
-pub fn chooseServerKind(probe: Probe) ?ServerKind {
-    if (probe.python3) return .python3;
-    if (probe.py_launcher_python3) return .py_launcher_python3;
-    if (probe.python_is_python3) return .python3_via_python;
-    if (probe.python2) return .python2;
-    if (probe.python_is_python2) return .python2_via_python;
-    if (probe.node) return .node_inline;
-    if (probe.npx_http_server) return .npx_http_server;
-    return null;
 }
 
 pub fn percentEncodeSegment(allocator: std.mem.Allocator, segment: []const u8) ![]u8 {
@@ -77,17 +56,6 @@ test "html_server_model: detects html path suffixes only" {
     try std.testing.expect(!isHtmlPath("README.md"));
     try std.testing.expect(!isHtmlPath("html"));
     try std.testing.expect(!isHtmlPath("https://example.com/index.html"));
-}
-
-test "html_server_model: server candidate ordering prefers target python before node" {
-    try std.testing.expectEqual(ServerKind.python3, chooseServerKind(.{ .python3 = true, .node = true }).?);
-    try std.testing.expectEqual(ServerKind.py_launcher_python3, chooseServerKind(.{ .py_launcher_python3 = true, .node = true }).?);
-    try std.testing.expectEqual(ServerKind.python3_via_python, chooseServerKind(.{ .python_is_python3 = true, .python2 = true }).?);
-    try std.testing.expectEqual(ServerKind.python2, chooseServerKind(.{ .python2 = true, .node = true }).?);
-    try std.testing.expectEqual(ServerKind.python2_via_python, chooseServerKind(.{ .python_is_python2 = true, .node = true }).?);
-    try std.testing.expectEqual(ServerKind.node_inline, chooseServerKind(.{ .node = true, .npx_http_server = true }).?);
-    try std.testing.expectEqual(ServerKind.npx_http_server, chooseServerKind(.{ .npx_http_server = true }).?);
-    try std.testing.expectEqual(@as(?ServerKind, null), chooseServerKind(.{}));
 }
 
 test "html_server_model: percent-encodes path segment for URL" {

@@ -85,10 +85,6 @@ pub const DisabledTools = struct {
     }
 };
 
-pub fn platformLocalCommandNameForTest() []const u8 {
-    return platform_process.localCommandToolName();
-}
-
 pub fn activeDefinitions(allocator: std.mem.Allocator) ![]Definition {
     var list: std.ArrayListUnmanaged(Definition) = .empty;
     errdefer list.deinit(allocator);
@@ -124,10 +120,6 @@ pub fn isKnown(name: []const u8) bool {
     return catalogDisableable(name) != null;
 }
 
-pub fn isDisableable(name: []const u8) bool {
-    return catalogDisableable(name) orelse false;
-}
-
 fn catalogDisableable(name: []const u8) ?bool {
     if (std.mem.eql(u8, name, platform_process.localCommandToolName())) return true;
     if (platform_pty_command.wslSessionToolsEnabled() and std.mem.eql(u8, name, platform_pty_command.wslSessionToolName())) return true;
@@ -141,7 +133,7 @@ fn definitionDisableable(definitions: []const Definition, name: []const u8) ?boo
     return null;
 }
 
-pub fn isKnownActive(defs: []const Definition, name: []const u8) bool {
+fn catalogContains(defs: []const Definition, name: []const u8) bool {
     for (defs) |definition| {
         if (std.mem.eql(u8, definition.name, name)) return true;
     }
@@ -268,11 +260,12 @@ test "first_party_tools: active definitions include webread and the local comman
     const a = std.testing.allocator;
     const defs = try activeDefinitions(a);
     defer freeDefinitions(a, defs);
+    const local_name = platform_process.localCommandToolName();
 
-    try std.testing.expect(isKnownActive(defs, "webread"));
-    try std.testing.expect(isKnownActive(defs, platformLocalCommandNameForTest()));
-    try std.testing.expect(isDisableable("webread"));
-    try std.testing.expect(isDisableable(platformLocalCommandNameForTest()));
+    try std.testing.expect(catalogContains(defs, "webread"));
+    try std.testing.expect(catalogContains(defs, local_name));
+    try std.testing.expectEqual(@as(?bool, true), catalogDisableable("webread"));
+    try std.testing.expectEqual(@as(?bool, true), catalogDisableable(local_name));
 }
 
 test "first_party_tools: disabled state json filters unknown and duplicate names" {

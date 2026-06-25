@@ -92,16 +92,11 @@ pub fn freeLibrary(allocator: std.mem.Allocator, lib: []LibrarySkill) void {
     allocator.free(lib);
 }
 
-pub const ToolApproval = enum {
-    ask,
-};
-
 pub const ToolSkill = struct {
     name: []u8,
     executable_path: []u8,
     skill_path: ?[]u8,
     enabled: bool,
-    approval: ToolApproval = .ask,
 
     pub fn clone(self: ToolSkill, allocator: std.mem.Allocator) !ToolSkill {
         const name = try allocator.dupe(u8, self.name);
@@ -114,7 +109,6 @@ pub const ToolSkill = struct {
             .executable_path = executable_path,
             .skill_path = skill_path,
             .enabled = self.enabled,
-            .approval = self.approval,
         };
     }
 
@@ -949,7 +943,6 @@ test "skill_center: PanelModel holds mixed prompt and tool entries" {
         .executable_path = try a.dupe(u8, "/tmp/tools/docx_review/bin/docx-review"),
         .skill_path = try a.dupe(u8, "/tmp/tools/docx_review/SKILL.md"),
         .enabled = true,
-        .approval = .ask,
     } };
 
     var m = PanelModel.init(a);
@@ -998,7 +991,6 @@ test "skill_center: toggleSelectedTool flips only selected tool entries" {
         .executable_path = try a.dupe(u8, "/tmp/tools/docx_review/bin/docx-review"),
         .skill_path = null,
         .enabled = false,
-        .approval = .ask,
     } };
 
     var m = PanelModel.init(a);
@@ -1026,7 +1018,6 @@ test "skill_center: setEntries and setLibrary clamp selection" {
         .executable_path = try a.dupe(u8, "/tmp/tool"),
         .skill_path = null,
         .enabled = true,
-        .approval = .ask,
     } };
     m.setEntries(entries);
     try std.testing.expectEqual(@as(usize, 0), m.sel_row);

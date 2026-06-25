@@ -301,49 +301,58 @@ pub fn historyRowsNeedCleanup(previous: State, next: State) bool {
         (!next.command_palette_visible or next.command_palette_mode != .agent_history);
 }
 
-pub fn findCommandAction(title: []const u8) ?CommandAction {
-    for (command_entries) |entry| {
-        if (std.mem.eql(u8, entry.title, title)) return entry.action;
-    }
-    return null;
-}
-
 pub fn resolveNewAgentLaunch(has_profiles: bool) NewAgentLaunchAction {
     return if (has_profiles) .connect_default_profile_as_agent else .open_form;
 }
 
+fn expectCommandEntry(title: []const u8, action: CommandAction) !void {
+    for (command_entries) |entry| {
+        if (std.mem.eql(u8, entry.title, title)) {
+            try std.testing.expectEqual(action, entry.action);
+            return;
+        }
+    }
+    return error.CommandEntryNotFound;
+}
+
+fn expectNoCommandEntry(title: []const u8) !void {
+    for (command_entries) |entry| {
+        if (std.mem.eql(u8, entry.title, title)) return error.UnexpectedCommandEntry;
+    }
+}
+
 test "command center includes New Copilot action" {
-    try std.testing.expectEqual(CommandAction.new_agent, findCommandAction("New Copilot"));
+    try expectCommandEntry("New Copilot", .new_agent);
 }
 
 test "command center exposes Toggle Copilot" {
-    try std.testing.expectEqual(CommandAction.toggle_ai_copilot, findCommandAction("Toggle Copilot"));
+    try expectCommandEntry("Toggle Copilot", .toggle_ai_copilot);
 }
 
 test "command center includes Manage AI Profiles action" {
-    try std.testing.expectEqual(CommandAction.manage_ai_profiles, findCommandAction("Manage AI Profiles"));
+    try expectCommandEntry("Manage AI Profiles", .manage_ai_profiles);
 }
 
 test "command center includes Copilot History action" {
-    try std.testing.expectEqual(CommandAction.select_agent_history, findCommandAction("Copilot History"));
+    try expectCommandEntry("Copilot History", .select_agent_history);
 }
 
 test "command catalog no longer has a Load Copilot Conversation entry" {
-    try std.testing.expectEqual(@as(?CommandAction, null), findCommandAction("Load Copilot Conversation"));
+    try expectNoCommandEntry("Load Copilot Conversation");
 }
 
 test "command center includes update check actions" {
-    try std.testing.expectEqual(CommandAction.check_for_updates, findCommandAction("Check for Updates"));
-    try std.testing.expectEqual(CommandAction.download_update, findCommandAction("Download Update"));
-    try std.testing.expectEqual(CommandAction.open_latest_release, findCommandAction("Open Latest Release"));
+    try expectCommandEntry("Check for Updates", .check_for_updates);
+    try expectCommandEntry("Download Update", .download_update);
+    try expectCommandEntry("Open Latest Release", .open_latest_release);
 }
 
-test "findCommandAction resolves What's New" {
-    try std.testing.expectEqual(CommandAction.show_whats_new, findCommandAction("What's New"));
+test "command center includes What's New action" {
+    try expectCommandEntry("What's New", .show_whats_new);
 }
 
 test "command center includes Skill Center action" {
-    try std.testing.expectEqual(CommandAction.open_skill_center, findCommandAction("Skill Center"));
+    try expectCommandEntry("Skill Center", .open_skill_center);
     for (command_entries) |entry| {
         if (entry.action == .open_skill_center) {
             try std.testing.expect(std.mem.indexOf(u8, entry.detail, "tools") != null or std.mem.indexOf(u8, entry.detail, "Tools") != null);
@@ -365,15 +374,15 @@ test "Skill Center is on the default first command center page" {
 }
 
 test "command center includes Port Forwarding action" {
-    try std.testing.expectEqual(CommandAction.open_port_forwarding, findCommandAction("Port Forwarding"));
+    try expectCommandEntry("Port Forwarding", .open_port_forwarding);
 }
 
-test "findCommandAction resolves Open Jupyter" {
-    try std.testing.expectEqual(CommandAction.open_jupyter_panel, findCommandAction("Open Jupyter"));
+test "command center includes Open Jupyter action" {
+    try expectCommandEntry("Open Jupyter", .open_jupyter_panel);
 }
 
-test "findCommandAction resolves Load OpenSSH Config" {
-    try std.testing.expectEqual(CommandAction.load_openssh_config, findCommandAction("Load OpenSSH Config"));
+test "command center includes Load OpenSSH Config action" {
+    try expectCommandEntry("Load OpenSSH Config", .load_openssh_config);
 }
 
 test "Load OpenSSH Config is not on the default first command center page" {
@@ -388,16 +397,16 @@ test "Load OpenSSH Config is not on the default first command center page" {
 }
 
 test "command center includes Copilot Markdown export actions" {
-    try std.testing.expectEqual(CommandAction.export_ai_chat_markdown, findCommandAction("Export Copilot Markdown"));
-    try std.testing.expectEqual(CommandAction.export_ai_chat_markdown_clean, findCommandAction("Export Copilot Markdown Clean"));
+    try expectCommandEntry("Export Copilot Markdown", .export_ai_chat_markdown);
+    try expectCommandEntry("Export Copilot Markdown Clean", .export_ai_chat_markdown_clean);
 }
 
 test "command center includes WeChat direct actions" {
-    try std.testing.expectEqual(CommandAction.connect_wechat, findCommandAction("Connect WeChat"));
-    try std.testing.expectEqual(CommandAction.start_wechat, findCommandAction("WeChat: Start"));
-    try std.testing.expectEqual(CommandAction.stop_wechat, findCommandAction("WeChat: Stop"));
-    try std.testing.expectEqual(CommandAction.wechat_status, findCommandAction("WeChat: Status"));
-    try std.testing.expectEqual(CommandAction.unbind_wechat, findCommandAction("WeChat: Unbind"));
+    try expectCommandEntry("Connect WeChat", .connect_wechat);
+    try expectCommandEntry("WeChat: Start", .start_wechat);
+    try expectCommandEntry("WeChat: Stop", .stop_wechat);
+    try expectCommandEntry("WeChat: Status", .wechat_status);
+    try expectCommandEntry("WeChat: Unbind", .unbind_wechat);
 }
 
 test "command center browser text is backend neutral" {
