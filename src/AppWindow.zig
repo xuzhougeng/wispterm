@@ -104,7 +104,6 @@ pub const fbo = @import("renderer/fbo.zig");
 pub const background_image = @import("renderer/background_image.zig");
 pub const file_explorer = @import("file_explorer.zig");
 pub const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
-pub const markdown_preview_panel = @import("markdown_preview_panel.zig");
 pub const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
 pub const weixin_qr_panel = @import("weixin/qr_panel.zig");
 pub const weixin_qr_renderer = @import("renderer/weixin_qr_renderer.zig");
@@ -460,14 +459,12 @@ test "AppWindow: skill center tool enabled update matches manifest path" {
             .executable_path = @constCast("/tmp/tools/tool_a/bin/tool_a"),
             .skill_path = @constCast("/tmp/tools/tool_a/SKILL.md"),
             .enabled = false,
-            .approval = .ask,
         } },
         .{ .tool = .{
             .name = @constCast("tool_b"),
             .executable_path = @constCast("/tmp/tools/tool_b/bin/tool_b"),
             .skill_path = @constCast("/tmp/tools/tool_b/SKILL.md"),
             .enabled = false,
-            .approval = .ask,
         } },
     };
 
@@ -513,7 +510,6 @@ test "AppWindow: skill center first-party enabled update matches name only" {
             .executable_path = @constCast("/tmp/tools/webread/bin/webread"),
             .skill_path = @constCast("/tmp/tools/webread/SKILL.md"),
             .enabled = false,
-            .approval = .ask,
         } },
     };
 
@@ -685,7 +681,6 @@ test "AppWindow: skill center import picker allows empty library and blocks tool
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = false,
-        .approval = .ask,
     } };
 
     session.mutex.lock();
@@ -753,7 +748,6 @@ test "AppWindow: skill center tool toggle failure uses toggle status" {
         .executable_path = executable_path,
         .skill_path = null,
         .enabled = false,
-        .approval = .ask,
     } };
 
     session.mutex.lock();
@@ -841,7 +835,10 @@ test "AppWindow: failed tool import preserves preview overlay and sets status" {
 }
 
 fn countMatchingToolDirs(tools_root: []const u8, prefix: []const u8) !usize {
-    var dir = try std.fs.openDirAbsolute(tools_root, .{ .iterate = true });
+    var dir = std.fs.openDirAbsolute(tools_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => return err,
+    };
     defer dir.close();
     var it = dir.iterate();
     var count: usize = 0;
@@ -6261,7 +6258,7 @@ fn runMainLoop(self: *AppWindow) !void {
     // - So total subtracted from fb_height: 54 + 20 = 74
     //   Wait, let me recalculate...
     //   Actually: content_h = fb_height - (10+34) - 10 = fb_height - 54
-    //   Then setScreenSize: avail_h = content_h - 20 = fb_height - 74
+    //   Then setScreenSizeWithPolicy: avail_h = content_h - 20 = fb_height - 74
     //
     // Actually there might be edge extension for top/bottom too. Let me just match exactly:
     // For a full-window single split (at all edges):
@@ -6271,7 +6268,7 @@ fn runMainLoop(self: *AppWindow) !void {
     //
     // Looking at the code: only left/right edges get extension, not top/bottom.
     // So:
-    //   setScreenSize(pw=fb_width, ph=fb_height-54, explicit_padding)
+    //   setScreenSizeWithPolicy(pw=fb_width, ph=fb_height-54, explicit_padding)
     //   avail_w = fb_width - 10 - 22 = fb_width - 32
     //   avail_h = (fb_height - 54) - 10 - 10 = fb_height - 74
     const titlebar_height = currentTitlebarHeight();

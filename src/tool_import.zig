@@ -113,27 +113,6 @@ pub fn sha256FileHex(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return hex;
 }
 
-/// Install a binary tool package and return the installed directory path as an
-/// owned string. The caller owns the returned path and must free it.
-pub fn installToolPackage(
-    allocator: std.mem.Allocator,
-    tools_root: []const u8,
-    source_binary_path: []const u8,
-    function_name: []const u8,
-    skill_md: []const u8,
-    enabled: bool,
-) ![]u8 {
-    return installToolPackageWithSource(
-        allocator,
-        tools_root,
-        source_binary_path,
-        source_binary_path,
-        function_name,
-        skill_md,
-        enabled,
-    );
-}
-
 pub fn installToolPackageWithSource(
     allocator: std.mem.Allocator,
     tools_root: []const u8,
@@ -617,9 +596,10 @@ test "tool_import: installToolPackage stages package with manifest and binary" {
     const tools_root = try tmp.dir.realpathAlloc(a, "tools");
     defer a.free(tools_root);
 
-    const installed = try installToolPackage(
+    const installed = try installToolPackageWithSource(
         a,
         tools_root,
+        source_path,
         source_path,
         "docx",
         "---\nname: docx\ndescription: DOCX helper\n---\nUse docs.\n",
@@ -648,9 +628,10 @@ test "tool_import: installToolPackage stages package with manifest and binary" {
     try std.testing.expectEqualStrings("bin/docx", manifest.executable);
     try std.testing.expectEqualStrings(source_path, manifest.source_path);
 
-    try std.testing.expectError(error.ToolAlreadyExists, installToolPackage(
+    try std.testing.expectError(error.ToolAlreadyExists, installToolPackageWithSource(
         a,
         tools_root,
+        source_path,
         source_path,
         "docx",
         "---\nname: docx\n---\nUse docs.\n",
@@ -798,9 +779,10 @@ test "tool_import: installToolPackage rejects reserved built-in function names" 
     const tools_root = try tmp.dir.realpathAlloc(a, "tools");
     defer a.free(tools_root);
 
-    try std.testing.expectError(error.ReservedToolName, installToolPackage(
+    try std.testing.expectError(error.ReservedToolName, installToolPackageWithSource(
         a,
         tools_root,
+        source_path,
         source_path,
         "read_file",
         "---\nname: read_file\n---\nReserved.\n",
@@ -827,9 +809,10 @@ test "tool_import: installToolPackage preserves executable bits through restrict
 
     const old_umask = setProcessUmask(0o077);
     defer _ = setProcessUmask(old_umask);
-    const installed = try installToolPackage(
+    const installed = try installToolPackageWithSource(
         a,
         tools_root,
+        source_path,
         source_path,
         "runme",
         "---\nname: runme\n---\nUse runme.\n",

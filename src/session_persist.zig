@@ -158,48 +158,6 @@ pub fn countLeaves(node: *const NodeSnap) u32 {
     };
 }
 
-/// Return a pointer to the Nth leaf in pre-order, or null if out of range.
-pub fn leafByIndex(root: *const NodeSnap, target: u32) ?*const NodeSnap {
-    var idx: u32 = 0;
-    return walk(root, target, &idx);
-}
-
-fn walk(node: *const NodeSnap, target: u32, idx: *u32) ?*const NodeSnap {
-    return switch (node.*) {
-        .leaf => blk: {
-            if (idx.* == target) break :blk node;
-            idx.* += 1;
-            break :blk null;
-        },
-        .split => |sp| blk: {
-            if (walk(sp.left, target, idx)) |found| break :blk found;
-            if (walk(sp.right, target, idx)) |found| break :blk found;
-            break :blk null;
-        },
-    };
-}
-
-/// Return the pre-order leaf index of the given leaf node, or null if not in tree.
-pub fn indexOfLeaf(root: *const NodeSnap, target: *const NodeSnap) ?u32 {
-    var idx: u32 = 0;
-    return findIndex(root, target, &idx);
-}
-
-fn findIndex(node: *const NodeSnap, target: *const NodeSnap, idx: *u32) ?u32 {
-    return switch (node.*) {
-        .leaf => blk: {
-            if (node == target) break :blk idx.*;
-            idx.* += 1;
-            break :blk null;
-        },
-        .split => |sp| blk: {
-            if (findIndex(sp.left, target, idx)) |found| break :blk found;
-            if (findIndex(sp.right, target, idx)) |found| break :blk found;
-            break :blk null;
-        },
-    };
-}
-
 test "session_persist: empty Session compiles and has expected defaults" {
     const empty: Session = .{ .tabs = &.{} };
     try std.testing.expectEqual(@as(u32, SCHEMA_VERSION), empty.version);
@@ -582,29 +540,6 @@ test "session_persist: normalize() clamps ratio above 1" {
         else => return error.UnexpectedLeaf,
     };
     try std.testing.expect(sp.ratio <= 0.95);
-}
-
-test "session_persist: leafByIndexPreOrder walks pre-order" {
-    var l1 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
-    var l2 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
-    var l3 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
-    var inner = NodeSnap{ .split = .{ .layout = .vertical, .ratio = 0.5, .left = &l1, .right = &l2 } };
-    var root = NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &inner, .right = &l3 } };
-
-    try std.testing.expectEqual(@as(u32, 3), countLeaves(&root));
-    try std.testing.expectEqual(@as(?*const NodeSnap, &l1), leafByIndex(&root, 0));
-    try std.testing.expectEqual(@as(?*const NodeSnap, &l2), leafByIndex(&root, 1));
-    try std.testing.expectEqual(@as(?*const NodeSnap, &l3), leafByIndex(&root, 2));
-    try std.testing.expectEqual(@as(?*const NodeSnap, null), leafByIndex(&root, 3));
-}
-
-test "session_persist: indexOfLeafBySurfaceAddress finds leaf in pre-order" {
-    var l1 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{ .cwd = "/A" } } } };
-    var l2 = NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{ .cwd = "/B" } } } };
-    var root = NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &l1, .right = &l2 } };
-
-    try std.testing.expectEqual(@as(?u32, 0), indexOfLeaf(&root, &l1));
-    try std.testing.expectEqual(@as(?u32, 1), indexOfLeaf(&root, &l2));
 }
 
 /// Escape a path so that wrapping it in single quotes (`'...'`) produces a

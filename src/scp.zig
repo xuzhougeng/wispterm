@@ -620,10 +620,7 @@ fn buildUploadCommand(buf: *[2048]u8, remote_path: []const u8, local_path: []con
 }
 
 fn buildDownloadCommand(buf: *[2048]u8, remote_path: []const u8) ?[]const u8 {
-    var pos: usize = 0;
-    if (!appendSlice(buf, &pos, "cat -- ")) return null;
-    if (!appendShellQuote(buf, &pos, remote_path)) return null;
-    return buf[0..pos];
+    return buildRemoteReadCommand(buf, remote_path);
 }
 
 /// Build `cat -- '<path>'` to stream a remote file's bytes to stdout.

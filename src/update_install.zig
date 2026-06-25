@@ -24,10 +24,6 @@ pub fn downloadDestPath(allocator: std.mem.Allocator, asset_name: []const u8) ![
     return try std.fs.path.join(allocator, &.{ downloads, asset_name });
 }
 
-fn siblingTempPath(allocator: std.mem.Allocator, path: []const u8, suffix: []const u8) ![]u8 {
-    return try std.mem.concat(allocator, u8, &.{ path, suffix });
-}
-
 /// Download `url` to `dest_path`, overwriting any existing file with that name.
 /// Writes to a `.part` sibling first and renames into place so a failed or
 /// interrupted download never leaves a truncated file at `dest_path`.
@@ -44,7 +40,7 @@ pub fn downloadAssetAccept(allocator: std.mem.Allocator, url: []const u8, dest_p
         try std.fs.cwd().makePath(dir_path);
     }
 
-    const temp_path = try siblingTempPath(allocator, dest_path, ".part");
+    const temp_path = try std.mem.concat(allocator, u8, &.{ dest_path, ".part" });
     defer allocator.free(temp_path);
     std.fs.deleteFileAbsolute(temp_path) catch |err| switch (err) {
         error.FileNotFound => {},

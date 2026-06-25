@@ -26,8 +26,7 @@ pub fn primaryOpenMod(ctrl: bool, super: bool) bool {
     return if (builtin.target.os.tag == .macos) super else ctrl;
 }
 
-pub fn terminalPathClickAction(launch_kind: platform_pty_command.LaunchKind, has_ssh_conn: bool, mod: bool, shift: bool, alt: bool) TerminalPathClickAction {
-    _ = has_ssh_conn;
+pub fn terminalPathClickAction(launch_kind: platform_pty_command.LaunchKind, mod: bool, shift: bool, alt: bool) TerminalPathClickAction {
     if (mod and shift and !alt and launch_kind == .ssh) return .download_ssh_file;
     if (mod and !shift and !alt) return .open_url_or_preview;
     return .pass_through;
@@ -94,19 +93,15 @@ test "primary open modifier is Cmd on macOS, Ctrl elsewhere" {
 test "terminal path click action maps ctrl shift ssh to download" {
     try std.testing.expectEqual(
         TerminalPathClickAction.download_ssh_file,
-        terminalPathClickAction(.ssh, true, true, true, false),
-    );
-    try std.testing.expectEqual(
-        TerminalPathClickAction.download_ssh_file,
-        terminalPathClickAction(.ssh, false, true, true, false),
+        terminalPathClickAction(.ssh, true, true, false),
     );
     try std.testing.expectEqual(
         TerminalPathClickAction.pass_through,
-        terminalPathClickAction(.wsl, false, true, true, false),
+        terminalPathClickAction(.wsl, true, true, false),
     );
     try std.testing.expectEqual(
         TerminalPathClickAction.open_url_or_preview,
-        terminalPathClickAction(.ssh, true, true, false, false),
+        terminalPathClickAction(.ssh, true, false, false),
     );
 }
 

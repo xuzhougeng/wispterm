@@ -16,7 +16,6 @@ const split_layout = AppWindow.split_layout;
 const file_explorer = AppWindow.file_explorer;
 const file_backend = @import("file_backend.zig");
 const markdown_preview = @import("markdown_preview.zig");
-const markdown_preview_panel = AppWindow.markdown_preview_panel;
 const preview_gallery = @import("preview_gallery.zig");
 const preview_token = @import("preview_token.zig");
 const browser_panel = AppWindow.browser_panel;
@@ -573,7 +572,6 @@ test "input: skill center tool toggle requests a repaint" {
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = false,
-        .approval = .ask,
     } };
     session.mutex.lock();
     session.model.setEntries(entries);
@@ -764,7 +762,6 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = true,
-        .approval = .ask,
     } };
 
     const picker_labels = try allocator.alloc([]u8, 1);
@@ -925,7 +922,6 @@ test "input: skill center deploy and import keys ignore selected tool rows" {
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = false,
-        .approval = .ask,
     } };
 
     session.mutex.lock();
@@ -1320,7 +1316,6 @@ test "input: skill center main actions are blocked while import list overlay is 
         .executable_path = executable_path,
         .skill_path = skill_path,
         .enabled = true,
-        .approval = .ask,
     } };
 
     var import_target = try AppWindow.skill_center.Target.dupe(allocator, "local", "Local", .claude, true);
@@ -2271,13 +2266,6 @@ pub fn copyRemoteSessionKeyToClipboard() bool {
 // ============================================================================
 // Shared helpers (used by input + cell_renderer)
 // ============================================================================
-
-/// Get the viewport's absolute row offset into the scrollback.
-/// Row 0 on screen corresponds to absolute row `viewportOffset()`.
-pub fn viewportOffset() usize {
-    const surface = AppWindow.activeSurface() orelse return 0;
-    return viewportOffsetForSurface(surface);
-}
 
 pub const ScrollbarState = struct {
     total: usize,
@@ -4565,7 +4553,7 @@ fn handleTerminalSelectionPress(ev: platform_input.MouseButtonEvent, xpos: f64, 
 
     const cell_pos = mouseToSurfaceCell(clicked_surface, xpos, ypos);
     const open_mod = primaryOpenMod(ev.ctrl, ev.super);
-    const click_action = terminalPathClickAction(clicked_surface.launch_kind, clicked_surface.ssh_connection != null, open_mod, ev.shift, ev.alt);
+    const click_action = terminalPathClickAction(clicked_surface.launch_kind, open_mod, ev.shift, ev.alt);
     // Only instrument the SSH download gesture (Ctrl/Cmd+Shift) so the log is not
     // flooded by every terminal click. This shows whether a download gesture
     // routed to `download_ssh_file` and whether the surface had SSH metadata.
@@ -4879,7 +4867,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     const allocator = AppWindow.g_allocator orelse return;
     const cell_pos = mouseToSurfaceCell(surface, xpos, ypos);
 
-    const action = terminalPathClickAction(surface.launch_kind, surface.ssh_connection != null, primaryOpenMod(ctrl, super), shift, alt);
+    const action = terminalPathClickAction(surface.launch_kind, primaryOpenMod(ctrl, super), shift, alt);
     const token = extractInteractiveUnderlineRangeAtCell(allocator, surface, cell_pos, action) orelse {
         clearUrlUnderline();
         return;
@@ -4890,7 +4878,7 @@ fn updateInteractiveUnderlineAtMouse(xpos: f64, ypos: f64, ctrl: bool, shift: bo
     setUrlUnderline(surface, vp_off + token.start_row, vp_off + token.end_row, token.start_col, token.end_col);
 }
 
-fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind, move_focus: bool) bool {
+fn openPreviewAsync(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: PreviewPane.PreviewSourceKind, move_focus: bool) bool {
     const perf = ui_perf.begin("input.open_preview_async");
     defer perf.end();
 
@@ -4940,7 +4928,7 @@ fn findPreviewGalleryNeighbor(allocator: std.mem.Allocator, p: *const PreviewPan
     };
 }
 
-fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: markdown_preview_panel.PreviewSourceKind, move_focus: bool) bool {
+fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const u8, source_kind: PreviewPane.PreviewSourceKind, move_focus: bool) bool {
     const perf = ui_perf.begin("input.open_preview_new");
     defer perf.end();
 
@@ -4956,7 +4944,7 @@ fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const 
     return true;
 }
 
-fn fileExplorerPreviewSourceKind() ?markdown_preview_panel.PreviewSourceKind {
+fn fileExplorerPreviewSourceKind() ?PreviewPane.PreviewSourceKind {
     return switch (file_explorer.g_mode) {
         .local => .local,
         .wsl => .wsl,
@@ -4964,7 +4952,7 @@ fn fileExplorerPreviewSourceKind() ?markdown_preview_panel.PreviewSourceKind {
     };
 }
 
-fn terminalPreviewSourceKind(surface: *Surface) ?markdown_preview_panel.PreviewSourceKind {
+fn terminalPreviewSourceKind(surface: *Surface) ?PreviewPane.PreviewSourceKind {
     return switch (surface.launch_kind) {
         .local => .local,
         .wsl => .wsl,
@@ -5071,7 +5059,7 @@ fn openPreviewPanelForCell(surface: *Surface, cell_pos: CellPos, shift: bool) bo
     return true;
 }
 
-fn previewSourceKindName(kind: markdown_preview_panel.PreviewSourceKind) []const u8 {
+fn previewSourceKindName(kind: PreviewPane.PreviewSourceKind) []const u8 {
     return switch (kind) {
         .local => "local",
         .wsl => "wsl",

@@ -43,12 +43,6 @@ comptime {
     if (std.mem.indexOf(u8, update_install_source, "@import(\"builtin\").os.tag") != null) {
         @compileError("update_install.zig must use platform/update_package.zig for OS package selection");
     }
-    const threading_source = @embedFile("threading.zig");
-    if (std.mem.indexOf(u8, threading_source, "Windows") != null or
-        std.mem.indexOf(u8, threading_source, "surface_thread_stack_size") != null)
-    {
-        @compileError("threading.zig must get platform-specific thread spawn policy from platform/threading.zig");
-    }
     const platform_threading_source = @embedFile("platform/threading.zig");
     if (std.mem.indexOf(u8, platform_threading_source, "Windows") != null) {
         @compileError("platform/threading.zig thread policy comments must describe runtime roles, not Windows implementation defaults");
@@ -417,13 +411,6 @@ comptime {
         std.mem.indexOf(u8, browser_panel_source, "utf8ToUtf16Le") != null)
     {
         @compileError("browser_panel.zig must use platform_webview URL helpers instead of WebView2 UTF-16 details");
-    }
-    const system_browser_source = @embedFile("system_browser.zig");
-    if (std.mem.indexOf(u8, system_browser_source, "ShellExecute") != null or
-        std.mem.indexOf(u8, system_browser_source, "shellExecute") != null or
-        std.mem.indexOf(u8, system_browser_source, "Windows-specific") != null)
-    {
-        @compileError("system_browser.zig must stay backend-neutral and delegate URL opening to platform/open_url.zig");
     }
     const open_url_source = @embedFile("platform/open_url.zig");
     if (std.mem.indexOf(u8, open_url_source, "ShellExecute") != null or
@@ -794,8 +781,6 @@ comptime {
     _ = @import("skill_scan.zig");
     _ = @import("skill_install.zig");
     _ = @import("skill_local_fs.zig");
-    _ = @import("skill_inventory.zig");
-    _ = @import("skill_inventory_cache.zig");
     _ = @import("skill_center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
     _ = @import("port_forward_rule.zig");
@@ -812,7 +797,6 @@ comptime {
     _ = @import("ssh_prompt.zig");
     _ = @import("ssh_tunnel.zig");
     _ = @import("startup_tabs.zig");
-    _ = @import("system_browser.zig");
     _ = @import("split_tree.zig");
     _ = @import("preview_pane.zig");
     _ = @import("renderer/markdown_preview_renderer.zig");
