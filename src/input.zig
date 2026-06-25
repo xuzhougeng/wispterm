@@ -6761,42 +6761,37 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
     overlays.startupShortcutsDismiss();
     if (overlays.whatsNewVisible()) {
         overlays.whatsNewHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
+        requestInputRebuild();
         return;
     }
     if (overlays.integrationPromptVisible()) {
         overlays.integrationPromptHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
         return;
     }
     if (overlays.settingsPageVisible()) {
         overlays.settingsPageHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
+        requestInputRebuild();
         return;
     }
     if (overlays.commandPaletteVisible()) {
         overlays.commandPaletteHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
         return;
     }
     if (overlays.sessionLauncherVisible()) {
         overlays.sessionLauncherHandleScroll(@floatFromInt(ev.delta));
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
         return;
     }
     if (copilot_picker.isVisible()) {
         copilot_picker.move(if (ev.delta > 0) -1 else 1);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
         return;
     }
     if (jupyter_picker.isVisible()) {
         jupyter_picker.move(if (ev.delta > 0) -1 else 1);
-        AppWindow.g_force_rebuild = true;
-        AppWindow.g_cells_valid = false;
+        requestInputRepaint();
         return;
     }
     if (tab.g_sidebar_visible and ev.xpos >= 0 and ev.xpos < @as(i32, @intFromFloat(titlebar.sidebarWidth()))) return;
@@ -6812,7 +6807,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             // only redraws on the next cursor-blink tick (~600ms) → stuttery scroll.
             // The explorer draws above the terminal cell grid, so leave
             // g_cells_valid untouched — no need to rebuild the cells underneath.
-            AppWindow.g_force_rebuild = true;
+            requestInputRebuild();
             return;
         }
     }
@@ -6857,13 +6852,12 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                 const units: i32 = @intCast(mouseWheelUnits(ev.delta));
                 const rows = if (ev.delta > 0) -units else units;
                 _ = chat.scrollInputRows(rows, metrics.max_cols, metrics.visible_rows);
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
+                requestInputRepaint();
                 return;
             }
             const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
             chat.scrollBy(delta);
-            AppWindow.g_force_rebuild = true;
+            requestInputRebuild();
             return;
         }
     }
@@ -6897,13 +6891,12 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                     const units: i32 = @intCast(mouseWheelUnits(ev.delta));
                     const rows = if (ev.delta > 0) -units else units;
                     _ = chat.scrollInputRows(rows, metrics.max_cols, metrics.visible_rows);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
                 chat.scrollBy(delta);
-                AppWindow.g_force_rebuild = true;
+                requestInputRebuild();
                 return;
             }
         }
@@ -6924,7 +6917,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
                 const delta: f32 = -@as(f32, @floatFromInt(ev.delta)) * 72.0 / 120.0;
                 p.scrollBy(delta);
             }
-            AppWindow.g_force_rebuild = true;
+            requestInputRebuild();
             return;
         }
     }
