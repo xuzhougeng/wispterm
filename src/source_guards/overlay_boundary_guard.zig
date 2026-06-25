@@ -23,6 +23,7 @@ const pure_overlay_modules = [_]PureModule{
     .{ .name = "ai_profiles.zig", .source = @embedFile("../renderer/overlays/ai_profiles.zig") },
     .{ .name = "profile_codec.zig", .source = @embedFile("../renderer/overlays/profile_codec.zig") },
     .{ .name = "ssh_profiles.zig", .source = @embedFile("../renderer/overlays/ssh_profiles.zig") },
+    .{ .name = "ssh_profiles_layout.zig", .source = @embedFile("../renderer/overlays/ssh_profiles_layout.zig") },
     .{ .name = "transfer_toast_model.zig", .source = @embedFile("../renderer/overlays/transfer_toast_model.zig") },
     .{ .name = "update_prompt_model.zig", .source = @embedFile("../renderer/overlays/update_prompt_model.zig") },
     .{ .name = "whats_new_model.zig", .source = @embedFile("../renderer/overlays/whats_new_model.zig") },

@@ -38,6 +38,7 @@ const confirm_modals = @import("overlays/confirm_modals.zig");
 const settings_page = @import("overlays/settings_page.zig");
 const toasts = @import("overlays/toasts.zig");
 const ssh_profiles = @import("overlays/ssh_profiles.zig");
+const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
 const ai_profiles = @import("overlays/ai_profiles.zig");
 const session_launcher = @import("overlays/session_launcher.zig");
 const command_palette_layout = @import("overlays/command_palette_layout.zig");
@@ -2126,7 +2127,7 @@ const SSH_FIELD_COUNT = ssh_profiles.SSH_FIELD_COUNT;
 const SSH_FIELD_MAX = ssh_profiles.SSH_FIELD_MAX;
 const SSH_PROFILE_MAX = ssh_profiles.SSH_PROFILE_MAX;
 const SSH_PROFILE_NONE = ssh_profiles.SSH_PROFILE_NONE;
-const SSH_LIST_MAX_VISIBLE_ROWS = 5;
+const SSH_LIST_MAX_VISIBLE_ROWS = ssh_profiles_layout.LIST_MAX_VISIBLE_ROWS;
 const AI_FIELD_COUNT = ai_profiles.AI_FIELD_COUNT;
 const AI_FIELD_MAX = ai_profiles.AI_FIELD_MAX;
 const AI_PROFILE_MAX = ai_profiles.AI_PROFILE_MAX;
@@ -2792,31 +2793,15 @@ fn handleSshListKey(ev: input_key.KeyEvent) void {
 }
 
 fn sshListRowCount() usize {
-    return switch (sshState().list_mode) {
-        .manage => sshVisibleProfileCount() + 5,
-        .delete_select => sshVisibleProfileCount() + 2,
-        .edit_select, .ai_history_select, .tmux_connect => sshVisibleProfileCount() + 1,
-    };
+    // Pure row arithmetic lives in ssh_profiles_layout; this thin orchestrator
+    // snapshots the active mode + filtered profile count and delegates.
+    return ssh_profiles_layout.listRowCount(sshState().list_mode, sshVisibleProfileCount());
 }
 
-const SshManageAction = enum {
-    profile,
-    load_openssh_config,
-    new_ssh,
-    edit_ssh,
-    delete_ssh,
-    cancel,
-};
+const SshManageAction = ssh_profiles_layout.ManageAction;
 
 fn sshManageActionForRow(row: usize, visible_profile_count: usize) SshManageAction {
-    if (row < visible_profile_count) return .profile;
-    return switch (row - visible_profile_count) {
-        0 => .load_openssh_config,
-        1 => .new_ssh,
-        2 => .edit_ssh,
-        3 => .delete_ssh,
-        else => .cancel,
-    };
+    return ssh_profiles_layout.manageActionForRow(row, visible_profile_count);
 }
 
 fn sshListFilter() []const u8 {

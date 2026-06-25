@@ -58,6 +58,7 @@ test {
     _ = @import("renderer/overlays/toasts.zig");
     _ = @import("renderer/overlays/confirm_modals.zig");
     _ = @import("renderer/overlays/ssh_profiles.zig");
+    _ = @import("renderer/overlays/ssh_profiles_layout.zig");
     _ = @import("renderer/overlays/ai_profiles.zig");
     _ = @import("renderer/overlays/session_launcher.zig");
     _ = @import("renderer/overlays/state.zig");
