@@ -5619,8 +5619,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             true, // copilot sidebar: dot hit-box
                         )) {
                             chat.stopRequest();
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                             return;
                         }
                         if (AppWindow.ai_chat_renderer.missingApiKeyStatusHitTest(
@@ -5634,8 +5633,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             true, // copilot sidebar: error text left of dot
                         )) {
                             overlays.openAiConfigForSession(chat);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                             return;
                         }
                         if (AppWindow.ai_chat_renderer.interactionHitTest(
@@ -5652,18 +5650,15 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                 .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
                                 .toggle_tool => |message_index| {
                                     chat.toggleToolMessageCollapsed(message_index);
-                                    AppWindow.g_force_rebuild = true;
-                                    AppWindow.g_cells_valid = false;
+                                    requestInputRepaint();
                                 },
                                 .toggle_reasoning => |message_index| {
                                     chat.toggleReasoningCollapsed(message_index);
-                                    AppWindow.g_force_rebuild = true;
-                                    AppWindow.g_cells_valid = false;
+                                    requestInputRepaint();
                                 },
                                 .question_option => |idx| {
                                     _ = chat.resolveQuestionOption(idx);
-                                    AppWindow.g_force_rebuild = true;
-                                    AppWindow.g_cells_valid = false;
+                                    requestInputRepaint();
                                 },
                             }
                             return;
@@ -5678,8 +5673,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             chat_w,
                         )) {
                             overlays.openSwitchModelPicker(chat);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                             return;
                         }
                         if (AppWindow.ai_chat_renderer.permissionChipHitTest(
@@ -5709,8 +5703,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             g_ai_transcript_scroll_panel = .copilot_sidebar;
                             AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = true;
                             applyAiTranscriptScrollbarDrag(chat, ypos);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                             return;
                         }
                         if (!ev.ctrl and !ev.alt) {
@@ -5730,16 +5723,14 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                                 g_ai_transcript_select_auto_copy = ev.shift;
                                 g_ai_transcript_select_panel = .copilot_sidebar;
                                 platform_cursor.set(.ibeam);
-                                AppWindow.g_force_rebuild = true;
-                                AppWindow.g_cells_valid = false;
+                                requestInputRepaint();
                                 return;
                             }
                         }
                         // Click landed in the panel but not on an interactive
                         // element: keep focus, clear any selection, consume it.
                         chat.clearSelection();
-                        AppWindow.g_force_rebuild = true;
-                        AppWindow.g_cells_valid = false;
+                        requestInputRepaint();
                         return;
                     }
                     // Click outside the sidebar: hand focus back to the terminal.
@@ -5761,8 +5752,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     false, // full tab: Esc Stop button hit-box
                 )) {
                     chat.stopRequest();
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 if (AppWindow.ai_chat_renderer.missingApiKeyStatusHitTest(
@@ -5776,8 +5766,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     false, // full tab: status text hit-box
                 )) {
                     overlays.openAiConfigForSession(chat);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 if (AppWindow.ai_chat_renderer.interactionHitTest(
@@ -5794,18 +5783,15 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
                         .toggle_tool => |message_index| {
                             chat.toggleToolMessageCollapsed(message_index);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                         },
                         .toggle_reasoning => |message_index| {
                             chat.toggleReasoningCollapsed(message_index);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                         },
                         .question_option => |idx| {
                             _ = chat.resolveQuestionOption(idx);
-                            AppWindow.g_force_rebuild = true;
-                            AppWindow.g_cells_valid = false;
+                            requestInputRepaint();
                         },
                     }
                     return;
@@ -5820,8 +5806,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     @as(f32, @floatFromInt(fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(fb.width),
                 )) {
                     overlays.openSwitchModelPicker(chat);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 if (AppWindow.ai_chat_renderer.permissionChipHitTest(
@@ -5851,8 +5836,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     g_ai_transcript_scroll_panel = .active_chat;
                     AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = true;
                     applyAiTranscriptScrollbarDrag(chat, ypos);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 if (!ev.ctrl and !ev.alt) {
@@ -5872,8 +5856,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         g_ai_transcript_select_auto_copy = ev.shift;
                         g_ai_transcript_select_panel = .active_chat;
                         platform_cursor.set(.ibeam);
-                        AppWindow.g_force_rebuild = true;
-                        AppWindow.g_cells_valid = false;
+                        requestInputRepaint();
                         return;
                     }
                 }
@@ -5890,13 +5873,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     g_ai_input_scroll_chat = chat;
                     g_ai_input_scroll_drag_offset = hit.drag_offset_px;
                     applyAiInputScrollbarDrag(chat, ypos);
-                    AppWindow.g_force_rebuild = true;
-                    AppWindow.g_cells_valid = false;
+                    requestInputRepaint();
                     return;
                 }
                 chat.clearSelection();
-                AppWindow.g_force_rebuild = true;
-                AppWindow.g_cells_valid = false;
+                requestInputRepaint();
                 return;
             }
 
