@@ -158,6 +158,17 @@ pub fn remoteSpec(buf: *[512]u8, conn: *const SshConnection, remote_path: []cons
 
 const PortMode = enum { ssh, scp };
 
+/// Map a finished scp/ssh child's exit status to a transfer outcome.
+/// A clean exit with code 0 is the only success; a nonzero code, a killing
+/// signal, a stop, or an unknown status are all transfer failures. Pure so the
+/// success/failure boundary can be unit-tested without spawning a process.
+fn classifyTransferTerm(term: std.process.Child.Term) TransferResult {
+    return switch (term) {
+        .Exited => |code| if (code == 0) .ok else .failed,
+        else => .failed,
+    };
+}
+
 fn runScpTransfer(
     allocator: std.mem.Allocator,
     conn: *const SshConnection,
@@ -202,10 +213,7 @@ fn runScpTransfer(
 
     const term = child.wait() catch return .failed;
     if (control.cancelRequested()) return .cancelled;
-    const result: TransferResult = switch (term) {
-        .Exited => |code| if (code == 0) .ok else .failed,
-        else => .failed,
-    };
+    const result = classifyTransferTerm(term);
     if (result != .ok) {
         logProcessFailure(if (legacy_protocol) "SCP -O failed" else "SCP failed", stderr_output);
     }
@@ -1316,4 +1324,77 @@ test "watchdogTimeoutNs: 0 disables the watchdog" {
 test "watchdogTimeoutNs: converts ms to ns and clamps to the ceiling" {
     try std.testing.expectEqual(@as(?u64, 5_000 * std.time.ns_per_ms), watchdogTimeoutNs(5_000));
     try std.testing.expectEqual(@as(?u64, 120_000 * std.time.ns_per_ms), watchdogTimeoutNs(10_000_000));
+}
+
+test "classifyTransferTerm: clean exit 0 is ok, everything else fails" {
+    try std.testing.expectEqual(TransferResult.ok, classifyTransferTerm(.{ .Exited = 0 }));
+    // Nonzero exit code -> failure (scp reports auth/path errors this way).
+    try std.testing.expectEqual(TransferResult.failed, classifyTransferTerm(.{ .Exited = 1 }));
+    try std.testing.expectEqual(TransferResult.failed, classifyTransferTerm(.{ .Exited = 255 }));
+    // Killed/stopped/unknown all map to failure, not success.
+    try std.testing.expectEqual(TransferResult.failed, classifyTransferTerm(.{ .Signal = 9 }));
+    try std.testing.expectEqual(TransferResult.failed, classifyTransferTerm(.{ .Stopped = 19 }));
+    try std.testing.expectEqual(TransferResult.failed, classifyTransferTerm(.{ .Unknown = 0 }));
+}
+
+test "buildScpFlagArgs emits the exact argv token sequence" {
+    var conn: SshConnection = .{};
+    conn.password_auth = false;
+    conn.port_len = 0;
+
+    var argv_buf: [40][]const u8 = undefined;
+
+    // Plain key-auth, non-recursive, non-legacy, no control path:
+    // scp -q <appendSshOptions base = 10 tokens> = 12 tokens total.
+    const argc = buildScpFlagArgs(&argv_buf, &conn, null, false, false);
+    try std.testing.expectEqual(@as(usize, 12), argc);
+    try std.testing.expectEqualStrings(platform_pty_command.scpExecutableName(), argv_buf[0]);
+    try std.testing.expectEqualStrings("-q", argv_buf[1]);
+    try std.testing.expectEqualStrings("-o", argv_buf[2]);
+    try std.testing.expectEqualStrings("StrictHostKeyChecking=accept-new", argv_buf[3]);
+    try std.testing.expectEqualStrings("-o", argv_buf[4]);
+    try std.testing.expectEqualStrings("ConnectTimeout=8", argv_buf[5]);
+    try std.testing.expectEqualStrings("-o", argv_buf[6]);
+    try std.testing.expectEqualStrings("BatchMode=yes", argv_buf[7]);
+    try std.testing.expectEqualStrings("-o", argv_buf[8]);
+    try std.testing.expectEqualStrings("ServerAliveInterval=5", argv_buf[9]);
+    try std.testing.expectEqualStrings("-o", argv_buf[10]);
+    try std.testing.expectEqualStrings("ServerAliveCountMax=2", argv_buf[11]);
+
+    // Recursive + legacy inserts -r then -O right after -q, before the -o block.
+    const argc_rl = buildScpFlagArgs(&argv_buf, &conn, null, true, true);
+    try std.testing.expectEqual(@as(usize, 14), argc_rl);
+    try std.testing.expectEqualStrings(platform_pty_command.scpExecutableName(), argv_buf[0]);
+    try std.testing.expectEqualStrings("-q", argv_buf[1]);
+    try std.testing.expectEqualStrings("-r", argv_buf[2]);
+    try std.testing.expectEqualStrings("-O", argv_buf[3]);
+    try std.testing.expectEqualStrings("-o", argv_buf[4]);
+    try std.testing.expectEqualStrings("StrictHostKeyChecking=accept-new", argv_buf[5]);
+}
+
+test "drainOutputPipesCapped reports stdout exceeded while stderr stays complete" {
+    var stderr_started = std.atomic.Value(bool).init(false);
+    // stdout is far larger than its cap; stderr fits under its cap.
+    var stdout = StdoutRequiresStderrReader{ .data = "o" ** 100, .stderr_started = &stderr_started };
+    var stderr = StderrSignalReader{ .data = "err", .started = &stderr_started };
+    var stdout_list: std.ArrayListUnmanaged(u8) = .empty;
+    defer stdout_list.deinit(std.testing.allocator);
+    var stderr_list: std.ArrayListUnmanaged(u8) = .empty;
+    defer stderr_list.deinit(std.testing.allocator);
+
+    const result = try drainOutputPipesCapped(
+        &stdout,
+        &stderr,
+        std.testing.allocator,
+        &stdout_list,
+        8,
+        &stderr_list,
+        64,
+    );
+
+    // stdout drain aborts on exceed (stop_on_exceed=true), so storage is capped.
+    try std.testing.expectEqual(DrainResult.exceeded, result.stdout);
+    try std.testing.expectEqual(DrainResult.complete, result.stderr);
+    try std.testing.expect(stdout_list.items.len <= 8);
+    try std.testing.expectEqualStrings("err", stderr_list.items);
 }
