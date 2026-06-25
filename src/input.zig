@@ -42,6 +42,7 @@ const window_metrics = @import("ui/window_metrics.zig");
 const WindowMetrics = window_metrics.WindowMetrics;
 const input_key = @import("input/key.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
+const input_action = @import("input/action.zig");
 const input_effects = @import("input/effects.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 const command_palette_input = @import("renderer/overlays/command_palette_input.zig");
@@ -4043,20 +4044,12 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             file_explorer.g_focused = false;
             return true;
         },
-        key_up => {
-            file_explorer.moveSelection(-1);
-            return true;
-        },
-        key_down => {
-            file_explorer.moveSelection(1);
-            return true;
-        },
-        key_enter => {
-            // Enter on directory = toggle expand
-            if (file_explorer.g_selected) |sel| {
-                if (sel < file_explorer.g_entry_count and file_explorer.g_entries[sel].is_dir) {
-                    file_explorer.toggleExpand(sel);
-                }
+        key_up, key_down, key_enter => {
+            // Navigation keys route through a typed InputAction so this branch
+            // asks file_explorer to perform the intent instead of calling its
+            // internals directly. fromNavigationKey owns exactly these keys.
+            if (input_action.fromNavigationKey(ev.key_code)) |action| {
+                file_explorer.handleInputAction(action);
             }
             return true;
         },
