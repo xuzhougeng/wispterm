@@ -16,6 +16,8 @@ const pubmed = @import("pubmed.zig");
 const ai_chat_types = @import("ai_chat_types.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
 
+const title_log = std.log.scoped(.ai_title);
+
 // Type aliases from ai_chat_protocol
 const RequestMessage = ai_chat_protocol.RequestMessage;
 const ToolCall = ai_chat_protocol.ToolCall;
@@ -105,11 +107,27 @@ pub fn titleThreadMain(req: *ChatRequest) void {
     const allocator = req.allocator;
     if (session.closing.load(.acquire)) return;
 
-    const result = runChatRequestForMessages(req, req.messages, false) catch return;
+    const result = runChatRequestForMessages(req, req.messages, false) catch |err| {
+        title_log.warn("title request failed: {}", .{err});
+        return;
+    };
     defer result.deinit(allocator);
     if (session.closing.load(.acquire)) return;
+    if (result.api_error) {
+        const preview = result.content[0..@min(result.content.len, 160)];
+        title_log.warn("title request API error: {s}", .{preview});
+        return;
+    }
 
-    ai_chat.applyGeneratedTitle(session, result.content);
+    const content = std.mem.trim(u8, result.content, " \t\r\n");
+    if (content.len > 0) {
+        ai_chat.applyGeneratedTitle(session, result.content);
+    } else if (result.reasoning) |reasoning| {
+        title_log.warn("title request returned empty content; trying reasoning fallback", .{});
+        ai_chat.applyGeneratedTitle(session, reasoning);
+    } else {
+        title_log.warn("title request returned empty content", .{});
+    }
 }
 
 /// Background worker for the post-model-switch context summary. Owns `sreq`

@@ -12,6 +12,8 @@
 const std = @import("std");
 const scan = @import("scan.zig");
 
+const overlays_source = @embedFile("../renderer/overlays.zig");
+
 const PureModule = struct {
     name: []const u8,
     source: []const u8,
@@ -35,6 +37,10 @@ fn appWindowImportCount(source: []const u8) usize {
     return scan.countOccurrences(source, "@import(\"../../AppWindow.zig\")");
 }
 
+fn staleSessionLauncherTmuxRowCount(source: []const u8) usize {
+    return scan.countOccurrences(source, "command_center_state.SESSION_LAUNCHER_ROW_TMUX");
+}
+
 test "extracted pure overlay modules do not import AppWindow" {
     for (pure_overlay_modules) |module| {
         const count = appWindowImportCount(module.source);
@@ -46,5 +52,17 @@ test "extracted pure overlay modules do not import AppWindow" {
             );
             return error.PureOverlayImportedAppWindow;
         }
+    }
+}
+
+test "session launcher uses runtime tmux row layout" {
+    const count = staleSessionLauncherTmuxRowCount(overlays_source);
+    if (count > 0) {
+        std.debug.print(
+            "overlay_boundary_guard: renderer/overlays.zig uses the compile-time tmux launcher row {d} time(s). " ++
+                "Use platform_pty_command.sessionLauncherTmuxRow() so WSL-less Windows shifts rows correctly.\n",
+            .{count},
+        );
+        return error.SessionLauncherUsedStaticTmuxRow;
     }
 }

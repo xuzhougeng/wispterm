@@ -178,30 +178,29 @@ test "agent surface callbacks reject a surface that is not registered as live" {
 pub fn agentSshConnectionForSurface(ctx: *anyopaque, surface_id: []const u8) ?Surface.SshConnection {
     _ = ctx;
     if (surface_id.len == 0) return null;
-    // This runs on the agent request worker thread, but `g_tabs`/`g_tab_count`
-    // are thread-local to the UI thread. A worker-thread call therefore sees an
-    // empty tab list and resolves nothing — the root of copy_file's "connection
-    // is unavailable" (#268). Log the tab count actually visible here so a log
-    // capture distinguishes "empty thread-local view" from "surface_id mismatch".
-    for (0..tab.g_tab_count) |tab_index| {
-        const tab_state = tab.g_tabs[tab_index] orelse continue;
-        if (tab_state.kind != .terminal) continue;
-        var it = tab_state.tree.surfaces();
-        while (it.next()) |entry| {
-            const sfc = entry.surface;
-            if (!std.mem.eql(u8, sfc.remote_id[0..], surface_id)) continue;
-            preview_diagnostics.debug("agent-ssh-conn", &.{
-                .{ .key = "stage", .value = "match" },
-                .{ .key = "tabs", .value = if (tab.g_tab_count == 0) "0" else "n" },
-                .{ .key = "has_conn", .value = if (sfc.ssh_connection != null) "true" else "false" },
-            });
-            return sfc.ssh_connection; // value copy (or null if not SSH)
-        }
-    }
+    const ptr = surface_registry.acquireById(surface_id) orelse {
+        preview_diagnostics.debug("agent-ssh-conn", &.{.{ .key = "stage", .value = "no-match" }});
+        return null;
+    };
+    defer surface_registry.release();
+    const surface: *Surface = @ptrCast(@alignCast(ptr));
     preview_diagnostics.debug("agent-ssh-conn", &.{
-        .{ .key = "stage", .value = "no-match" },
-        // "0" here means the worker thread sees an empty thread-local tab list.
-        .{ .key = "tabs", .value = if (tab.g_tab_count == 0) "0" else "n" },
+        .{ .key = "stage", .value = "match" },
+        .{ .key = "has_conn", .value = if (surface.ssh_connection != null) "true" else "false" },
     });
-    return null;
+    return surface.ssh_connection; // value copy (or null if not SSH)
+}
+
+test "agent SSH connection resolver rejects unregistered surface id" {
+    try std.testing.expect(agentSshConnectionForSurface(undefined, "missing") == null);
+}
+
+test "agent SSH connection resolver uses registry source" {
+    const source = @embedFile("surface_snapshots.zig");
+    const start = std.mem.indexOf(u8, source, "pub fn agentSshConnectionForSurface") orelse return error.MissingAgentSshResolver;
+    const rest = source[start..];
+    const end = std.mem.indexOf(u8, rest, "test \"agent SSH") orelse return error.MissingAgentSshResolverEnd;
+    const body = rest[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, body, "surface_registry.acquireById") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "tab.g_") == null);
 }

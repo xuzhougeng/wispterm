@@ -3959,14 +3959,17 @@ pub const Session = struct {
 
         const settings = currentAgentSettings();
         const agent_enabled = self.agent_enabled or settings.enabled;
-        const tool_host = if (agent_enabled) currentToolHost() else null;
+        var tool_host = if (agent_enabled) currentToolHost() else null;
         var tool_snapshot: ?ToolSnapshot = null;
         errdefer if (tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
         if (tool_host) |host| {
             // The tab model is thread-local to the UI thread. Capture the agent
             // view before spawning the request worker so tools do not read an
             // empty thread-local copy from the background thread.
-            tool_snapshot = host.collectSnapshot(host.ctx, self.allocator) catch null;
+            tool_snapshot = host.collectSnapshot(host.ctx, self.allocator) catch blk: {
+                tool_host = null;
+                break :blk null;
+            };
         }
 
         var weixin_ctx: ?WeixinReplyContext = null;
@@ -4732,7 +4735,7 @@ fn buildTitleRequestLocked(session: *Session, turn: ai_chat_title.FirstTurn) !*C
         .thinking_enabled = false,
         .reasoning_effort = reasoning_effort,
         .stream = false,
-        .max_tokens = 64,
+        .max_tokens = 512,
         .agent_enabled = false,
         .copilot = false,
         .tool_host = null,
@@ -6200,6 +6203,30 @@ test "ai_chat: applyGeneratedTitle ignores empty model output" {
     defer session.deinit();
     applyGeneratedTitle(session, "   \n  ");
     try std.testing.expectEqualStrings(DEFAULT_NAME, session.title());
+}
+
+test "ai_chat: title request leaves enough budget for reasoning providers" {
+    const allocator = std.testing.allocator;
+    const session = try Session.init(
+        allocator,
+        DEFAULT_NAME,
+        "https://api.example.com",
+        "secret",
+        "model-a",
+        "system",
+        "enabled",
+        "high",
+        "false",
+        "true",
+    );
+    defer session.deinit();
+
+    session.mutex.lock();
+    const req = try buildTitleRequestLocked(session, .{ .user = "hello", .assistant = "world" });
+    session.mutex.unlock();
+    defer req.deinit();
+
+    try std.testing.expect(req.max_tokens >= 256);
 }
 
 test "ai chat endpoint normalization" {
