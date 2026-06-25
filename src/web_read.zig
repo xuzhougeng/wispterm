@@ -459,7 +459,7 @@ test "formatForUser truncates past the cap and notes total length" {
     defer big.deinit();
     const text = try formatForUser(a, "https://x/", &big);
     defer a.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "truncated, " ) != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "truncated, ") != null);
     try std.testing.expect(text.len < user_truncate_cap + 300);
 
     var small = testReadResult(false);

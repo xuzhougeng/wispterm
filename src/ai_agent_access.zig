@@ -34,10 +34,10 @@ pub const BUILTIN_DENY = [_][]const u8{
 };
 
 const READ_ONLY_VERBS = [_][]const u8{
-    "cat",      "bat",  "head",   "tail",     "less",     "more", "grep",
-    "egrep",    "fgrep", "rg",    "ag",       "ls",       "ll",   "find",
-    "stat",     "file", "wc",     "nl",       "od",       "xxd",  "hexdump",
-    "strings",  "cut",  "sort",   "uniq",     "diff",     "tree", "readlink",
+    "cat",      "bat",     "head",     "tail", "less", "more", "grep",
+    "egrep",    "fgrep",   "rg",       "ag",   "ls",   "ll",   "find",
+    "stat",     "file",    "wc",       "nl",   "od",   "xxd",  "hexdump",
+    "strings",  "cut",     "sort",     "uniq", "diff", "tree", "readlink",
     "realpath", "dirname", "basename", "pwd",
 };
 

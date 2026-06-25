@@ -107,18 +107,38 @@ pub const Alignment = struct {
 
 /// A value that indicates some fraction across the cell.
 pub const Fraction = enum {
-    start, left, top, zero,
-    eighth, one_eighth, two_eighths, three_eighths, four_eighths,
-    five_eighths, six_eighths, seven_eighths,
-    quarter, one_quarter, two_quarters, three_quarters,
-    third, one_third, two_thirds,
-    half, one_half,
-    center, middle,
-    end, right, bottom, one, full,
+    start,
+    left,
+    top,
+    zero,
+    eighth,
+    one_eighth,
+    two_eighths,
+    three_eighths,
+    four_eighths,
+    five_eighths,
+    six_eighths,
+    seven_eighths,
+    quarter,
+    one_quarter,
+    two_quarters,
+    three_quarters,
+    third,
+    one_third,
+    two_thirds,
+    half,
+    one_half,
+    center,
+    middle,
+    end,
+    right,
+    bottom,
+    one,
+    full,
 
     /// This can be indexed to get the fraction for `i/8`.
     pub const eighths: [9]Fraction = .{
-        .zero, .one_eighth, .two_eighths, .three_eighths, .four_eighths,
+        .zero,         .one_eighth,  .two_eighths,   .three_eighths, .four_eighths,
         .five_eighths, .six_eighths, .seven_eighths, .one,
     };
 

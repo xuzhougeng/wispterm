@@ -1,6 +1,5 @@
 /// Size and dimension types used throughout the renderer.
 /// Modeled after Ghostty's size types in `src/renderer/size.zig`.
-
 /// Grid dimensions in cells.
 pub const GridSize = struct {
     cols: u16 = 80,

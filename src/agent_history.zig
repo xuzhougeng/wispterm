@@ -858,14 +858,35 @@ test "agent_history: buildCopilotRows lists only copilot records, newest first" 
     var store = Store.init(allocator);
     defer store.deinit();
     const base = SessionRecord{
-        .session_id = "", .title = "", .base_url = "u", .api_key = "k", .model = "m",
-        .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
-        .stream = true, .agent_enabled = true, .created_at = 0, .updated_at = 0,
+        .session_id = "",
+        .title = "",
+        .base_url = "u",
+        .api_key = "k",
+        .model = "m",
+        .system_prompt = "s",
+        .thinking_enabled = false,
+        .reasoning_effort = "low",
+        .stream = true,
+        .agent_enabled = true,
+        .created_at = 0,
+        .updated_at = 0,
         .messages = &[_]MessageRecord{},
     };
-    var a = base; a.session_id = "a"; a.title = "A"; a.updated_at = 10; a.copilot = true;
-    var b = base; b.session_id = "b"; b.title = "B"; b.updated_at = 20; b.copilot = true;
-    var c = base; c.session_id = "c"; c.title = "C"; c.updated_at = 99; c.copilot = false;
+    var a = base;
+    a.session_id = "a";
+    a.title = "A";
+    a.updated_at = 10;
+    a.copilot = true;
+    var b = base;
+    b.session_id = "b";
+    b.title = "B";
+    b.updated_at = 20;
+    b.copilot = true;
+    var c = base;
+    c.session_id = "c";
+    c.title = "C";
+    c.updated_at = 99;
+    c.copilot = false;
     try store.upsertRecord(a);
     try store.upsertRecord(b);
     try store.upsertRecord(c);
@@ -882,13 +903,28 @@ test "agent_history: buildRows carries the copilot sidebar flag per record" {
     var store = Store.init(allocator);
     defer store.deinit();
     const base = SessionRecord{
-        .session_id = "", .title = "", .base_url = "u", .api_key = "k", .model = "m",
-        .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
-        .stream = true, .agent_enabled = true, .created_at = 0, .updated_at = 0,
+        .session_id = "",
+        .title = "",
+        .base_url = "u",
+        .api_key = "k",
+        .model = "m",
+        .system_prompt = "s",
+        .thinking_enabled = false,
+        .reasoning_effort = "low",
+        .stream = true,
+        .agent_enabled = true,
+        .created_at = 0,
+        .updated_at = 0,
         .messages = &[_]MessageRecord{},
     };
-    var sidebar = base; sidebar.session_id = "s"; sidebar.updated_at = 20; sidebar.copilot = true;
-    var tabrec = base; tabrec.session_id = "t"; tabrec.updated_at = 10; tabrec.copilot = false;
+    var sidebar = base;
+    sidebar.session_id = "s";
+    sidebar.updated_at = 20;
+    sidebar.copilot = true;
+    var tabrec = base;
+    tabrec.session_id = "t";
+    tabrec.updated_at = 10;
+    tabrec.copilot = false;
     try store.upsertRecord(sidebar);
     try store.upsertRecord(tabrec);
 
@@ -1231,9 +1267,18 @@ test "agent_history: recordToIndexEntry derives bounded lowercase preview" {
     var store = Store.init(allocator);
     defer store.deinit();
     try store.upsertRecord(.{
-        .session_id = "s1", .title = "Hello World", .base_url = "https://api.example.com",
-        .api_key = "k", .model = "m1", .system_prompt = "sys", .thinking_enabled = false,
-        .reasoning_effort = "low", .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+        .session_id = "s1",
+        .title = "Hello World",
+        .base_url = "https://api.example.com",
+        .api_key = "k",
+        .model = "m1",
+        .system_prompt = "sys",
+        .thinking_enabled = false,
+        .reasoning_effort = "low",
+        .stream = true,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 2,
         .messages = &[_]MessageRecord{.{ .role = .user, .content = "First Question" }},
     });
     var entry = try recordToIndexEntry(allocator, store.records.items[0]);
@@ -1250,10 +1295,19 @@ test "agent_history: single record JSON round-trips" {
     var store = Store.init(allocator);
     defer store.deinit();
     try store.upsertRecord(.{
-        .session_id = "s1", .title = "Title", .base_url = "https://api.example.com",
-        .api_key = "k", .model = "m1", .system_prompt = "sys", .thinking_enabled = true,
-        .reasoning_effort = "high", .stream = false, .agent_enabled = true, .copilot = true,
-        .created_at = 7, .updated_at = 9,
+        .session_id = "s1",
+        .title = "Title",
+        .base_url = "https://api.example.com",
+        .api_key = "k",
+        .model = "m1",
+        .system_prompt = "sys",
+        .thinking_enabled = true,
+        .reasoning_effort = "high",
+        .stream = false,
+        .agent_enabled = true,
+        .copilot = true,
+        .created_at = 7,
+        .updated_at = 9,
         .messages = &[_]MessageRecord{ .{ .role = .user, .content = "hi" }, .{ .role = .assistant, .content = "yo" } },
     });
     const json = try recordToJson(allocator, store.records.items[0]);

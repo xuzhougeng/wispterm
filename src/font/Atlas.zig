@@ -9,7 +9,6 @@
 /// changes. The atlas starts at 512×512 and doubles when full.
 ///
 /// A 1px border is reserved around the atlas edges to prevent sampling artifacts.
-
 const std = @import("std");
 
 const Atlas = @This();

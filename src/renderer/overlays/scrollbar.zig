@@ -124,7 +124,6 @@ pub fn renderScrollbarForSurface(surface: *Surface, view_width: f32, view_height
     const bar_x = view_width - SCROLLBAR_WIDTH;
     const bar_w = SCROLLBAR_WIDTH;
 
-
     const bg = AppWindow.g_theme.background;
     const fg = AppWindow.g_theme.foreground;
 

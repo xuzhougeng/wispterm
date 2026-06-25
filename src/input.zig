@@ -520,7 +520,7 @@ test "input: skill center tool toggle requests a repaint" {
     try tmp.dir.makePath("tools/fake_tool/bin");
     try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/SKILL.md", .data = "---\nname: fake_tool\n---\n" });
     try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/bin/fake_tool", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data =
+    const manifest =
         \\{
         \\  "kind": "binary_tool",
         \\  "id": "fake_tool",
@@ -532,7 +532,8 @@ test "input: skill center tool toggle requests a repaint" {
         \\  "imported_at_ms": 1,
         \\  "description": "fake"
         \\}
-    });
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data = manifest });
     const root = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(root);
     platform_dirs.setTestConfigDirForCurrentThread(root);
@@ -588,9 +589,9 @@ test "input: skill center tool toggle requests a repaint" {
     try std.testing.expect(AppWindow.g_force_rebuild);
     try std.testing.expect(!AppWindow.g_cells_valid);
 
-    const manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
-    defer allocator.free(manifest);
-    try std.testing.expect(std.mem.indexOf(u8, manifest, "\"enabled\": true") != null);
+    const persisted_manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
+    defer allocator.free(persisted_manifest);
+    try std.testing.expect(std.mem.indexOf(u8, persisted_manifest, "\"enabled\": true") != null);
 
     _ = AppWindow.skillCenterToggleToolEnabled();
 }
@@ -710,7 +711,7 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
     try tmp.dir.makePath("tools/fake_tool/bin");
     try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/SKILL.md", .data = "---\nname: fake_tool\n---\n" });
     try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/bin/fake_tool", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data =
+    const manifest =
         \\{
         \\  "kind": "binary_tool",
         \\  "id": "fake_tool",
@@ -722,7 +723,8 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
         \\  "imported_at_ms": 1,
         \\  "description": "fake"
         \\}
-    });
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data = manifest });
     const root = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(root);
     platform_dirs.setTestConfigDirForCurrentThread(root);
@@ -804,9 +806,9 @@ test "input: skill center tool toggle is blocked while selection overlay is acti
     AppWindow.g_cells_valid = true;
     handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
 
-    const manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
-    defer allocator.free(manifest);
-    try std.testing.expect(std.mem.indexOf(u8, manifest, "\"enabled\": true") != null);
+    const persisted_manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
+    defer allocator.free(persisted_manifest);
+    try std.testing.expect(std.mem.indexOf(u8, persisted_manifest, "\"enabled\": true") != null);
 
     session.mutex.lock();
     defer session.mutex.unlock();
@@ -1253,7 +1255,7 @@ test "input: skill center main actions are blocked while import list overlay is 
     try tmp.dir.makePath("tools/fake_tool/bin");
     try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/SKILL.md", .data = "---\nname: fake_tool\n---\n" });
     try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/bin/fake_tool", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data =
+    const manifest =
         \\{
         \\  "kind": "binary_tool",
         \\  "id": "fake_tool",
@@ -1265,7 +1267,8 @@ test "input: skill center main actions are blocked while import list overlay is 
         \\  "imported_at_ms": 1,
         \\  "description": "fake"
         \\}
-    });
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "tools/fake_tool/manifest.json", .data = manifest });
     const root = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(root);
     platform_dirs.setTestConfigDirForCurrentThread(root);
@@ -1404,9 +1407,9 @@ test "input: skill center main actions are blocked while import list overlay is 
     handleKey(.{ .key_code = 0x45, .ctrl = false, .shift = false, .alt = false, .super = false });
     try std.testing.expect(!AppWindow.g_force_rebuild);
     try std.testing.expect(AppWindow.g_cells_valid);
-    const manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
-    defer allocator.free(manifest);
-    try std.testing.expect(std.mem.indexOf(u8, manifest, "\"enabled\": true") != null);
+    const persisted_manifest = try tmp.dir.readFileAlloc(allocator, "tools/fake_tool/manifest.json", 4096);
+    defer allocator.free(persisted_manifest);
+    try std.testing.expect(std.mem.indexOf(u8, persisted_manifest, "\"enabled\": true") != null);
     {
         session.mutex.lock();
         defer session.mutex.unlock();

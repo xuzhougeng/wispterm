@@ -419,7 +419,8 @@ pub fn parseEfetchXml(arena: std.mem.Allocator, xml: []const u8) ![]Article {
         if (pmid.len == 0 or title.len == 0) continue;
         const year = if (findElement(ax, "PubDate", 0)) |pd|
             (if (findElement(pd.content, "Year", 0)) |y| std.mem.trim(u8, y.content, " \t\r\n") else "")
-        else "";
+        else
+            "";
         try list.append(arena, .{
             .pmid = try arena.dupe(u8, pmid),
             .title = title,
@@ -533,8 +534,13 @@ test "parseEfetchXml caps authors with et al" {
 test "formatForAgent includes full abstract and metadata" {
     const a = std.testing.allocator;
     const items = [_]Article{.{
-        .pmid = "123", .title = "T", .authors = "Smith J", .journal = "Lancet",
-        .year = "2023", .doi = "10.1/x", .abstract = "FULL-ABSTRACT-BODY",
+        .pmid = "123",
+        .title = "T",
+        .authors = "Smith J",
+        .journal = "Lancet",
+        .year = "2023",
+        .doi = "10.1/x",
+        .abstract = "FULL-ABSTRACT-BODY",
     }};
     const text = try formatForAgent(a, "q", &items);
     defer a.free(text);
@@ -552,8 +558,13 @@ test "formatForUser truncates long abstract" {
     const a = std.testing.allocator;
     const long = "x" ** 600;
     const items = [_]Article{.{
-        .pmid = "1", .title = "T", .authors = "", .journal = "", .year = "",
-        .doi = "", .abstract = long,
+        .pmid = "1",
+        .title = "T",
+        .authors = "",
+        .journal = "",
+        .year = "",
+        .doi = "",
+        .abstract = long,
     }};
     const text = try formatForUser(a, "q", &items);
     defer a.free(text);

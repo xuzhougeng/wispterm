@@ -156,22 +156,22 @@ fn stderrPrint(allocator: std.mem.Allocator, comptime fmt: []const u8, args: any
 
 const USAGE =
     \\wisptermctl — control WispTerm terminals from external agents/scripts
-        \\
-        \\Usage:
-        \\  wisptermctl panes
-        \\      List tabs/panes as JSON (id, title, cwd, cols/rows, cursor, focus, geometry).
-        \\  wisptermctl ui-state
-        \\      Print overlay UI state as JSON (active overlay, command-palette
-        \\      selection/filter/mode, session launcher, settings visibility).
-        \\  wisptermctl get-text -t <surface-id> [--recent N]
-        \\      Print a surface's terminal text. --recent N prepends N scrollback rows.
-        \\  wisptermctl send-text -t <surface-id> "<text>"
-        \\      Send input to a surface. Escapes: \n \r \t \0 \\ \xNN (e.g. "ls\n").
-        \\  wisptermctl wait-for -t <surface-id> "<substring>" [--timeout SECONDS]
-        \\      Poll get-text until the output contains <substring> (default 60s).
-        \\      Exit 0 on match, 2 on timeout.
-        \\
-        \\Enable in WispTerm config:  agent-control-enabled = true
-        \\Surface ids come from `wisptermctl panes`.
-        \\
+    \\
+    \\Usage:
+    \\  wisptermctl panes
+    \\      List tabs/panes as JSON (id, title, cwd, cols/rows, cursor, focus, geometry).
+    \\  wisptermctl ui-state
+    \\      Print overlay UI state as JSON (active overlay, command-palette
+    \\      selection/filter/mode, session launcher, settings visibility).
+    \\  wisptermctl get-text -t <surface-id> [--recent N]
+    \\      Print a surface's terminal text. --recent N prepends N scrollback rows.
+    \\  wisptermctl send-text -t <surface-id> "<text>"
+    \\      Send input to a surface. Escapes: \n \r \t \0 \\ \xNN (e.g. "ls\n").
+    \\  wisptermctl wait-for -t <surface-id> "<substring>" [--timeout SECONDS]
+    \\      Poll get-text until the output contains <substring> (default 60s).
+    \\      Exit 0 on match, 2 on timeout.
+    \\
+    \\Enable in WispTerm config:  agent-control-enabled = true
+    \\Surface ids come from `wisptermctl panes`.
+    \\
 ;

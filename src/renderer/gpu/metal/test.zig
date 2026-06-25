@@ -301,15 +301,25 @@ test "gl_init compatibility helpers do not panic on Metal" {
     const HookCounter = struct {
         var calls: u32 = 0;
         fn fillQuad(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
-            _ = x; _ = y; _ = w; _ = h; _ = color;
+            _ = x;
+            _ = y;
+            _ = w;
+            _ = h;
+            _ = color;
             calls += 1;
         }
         fn fillQuadAlpha(x: f32, y: f32, w: f32, h: f32, color: [3]f32, alpha: f32) void {
-            _ = x; _ = y; _ = w; _ = h; _ = color; _ = alpha;
+            _ = x;
+            _ = y;
+            _ = w;
+            _ = h;
+            _ = color;
+            _ = alpha;
             calls += 1;
         }
         fn setProjection(width: f32, height: f32) void {
-            _ = width; _ = height;
+            _ = width;
+            _ = height;
             calls += 1;
         }
     };

@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zig-fast-linux:
+    name: Zig fast tests / Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Format check
+        run: zig fmt --check build.zig src
+
+      - name: Fetch dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            zig build test --fetch && exit 0
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((15 * attempt))
+            fi
+          done
+          exit 1
+
+      - name: Fast tests
+        run: zig build test
+
+  zig-full-mac-arm:
+    name: Zig full tests / macOS ARM
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Fetch dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            zig build test-full -Dtarget=native --fetch && exit 0
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((15 * attempt))
+            fi
+          done
+          exit 1
+
+      - name: Full tests
+        run: zig build test-full -Dtarget=native
+
+  remote-ts:
+    name: Remote TypeScript
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: remote
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: remote/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  windows-smoke:
+    name: Windows smoke
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Fetch dependencies
+        shell: pwsh
+        run: |
+          foreach ($attempt in 1..5) {
+            zig build test --fetch
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+            if ($attempt -lt 5) {
+              Start-Sleep -Seconds (15 * $attempt)
+            }
+          }
+          exit 1
+
+      - name: Fast tests only
+        run: zig build test

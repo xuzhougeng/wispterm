@@ -345,7 +345,7 @@ test "buildUserContent: truncates each section on UTF-8 boundary" {
     try std.testing.expect(std.unicode.utf8ValidateSlice(c));
     // user section bytes <= max_section_bytes
     const after_prefix = c["User: ".len..];
-    const user_section = after_prefix[0 .. std.mem.indexOf(u8, after_prefix, "\n\n").?];
+    const user_section = after_prefix[0..std.mem.indexOf(u8, after_prefix, "\n\n").?];
     try std.testing.expect(user_section.len <= max_section_bytes);
 }
 

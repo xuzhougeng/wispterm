@@ -15,7 +15,7 @@ pub const CopyDir = enum { to_remote, to_local };
 
 pub const Endpoint = struct {
     root_expr: []const u8, // shell root expression on its host
-    is_local: bool,        // true → localExec; false → remoteExec + scp
+    is_local: bool, // true → localExec; false → remoteExec + scp
 };
 
 pub const Ops = struct {

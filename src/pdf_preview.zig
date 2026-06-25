@@ -60,12 +60,12 @@ pub fn pdftoppmArgv(
     w.print("{d}", .{target_width}) catch unreachable;
     const width = num_buf[width_start..fbs.pos];
     return .{
-        "pdftoppm",    "-png",
-        "-cropbox",    "-f",
-        page,          "-l",
-        page,          "-scale-to-x",
-        width,         "-scale-to-y",
-        "-1",          pdf_path,
+        "pdftoppm", "-png",
+        "-cropbox", "-f",
+        page,       "-l",
+        page,       "-scale-to-x",
+        width,      "-scale-to-y",
+        "-1",       pdf_path,
     };
 }
 

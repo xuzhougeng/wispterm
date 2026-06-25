@@ -8,9 +8,16 @@ const std = @import("std");
 pub const Rect = struct { x: i32, y: i32, w: i32, h: i32 };
 
 pub const DragHit = enum {
-    normal, draggable,
-    resize_top, resize_bottom, resize_left, resize_right,
-    resize_top_left, resize_top_right, resize_bottom_left, resize_bottom_right,
+    normal,
+    draggable,
+    resize_top,
+    resize_bottom,
+    resize_left,
+    resize_right,
+    resize_top_left,
+    resize_top_right,
+    resize_bottom_left,
+    resize_bottom_right,
 };
 
 pub const Opts = struct { titlebar_height: i32, border: i32, exclusions: []const Rect };

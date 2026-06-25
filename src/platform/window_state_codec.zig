@@ -334,8 +334,14 @@ test "a full state file fits the save buffer with the bring-up marker" {
     // savePersisted formats into a fixed buffer; every key at worst-case
     // width must fit or the marker write would be silently dropped.
     var full = PersistedState{
-        .x = -32768, .y = -32768, .width = 32767, .height = 32767,
-        .quake_x = -32768, .quake_y = -32768, .quake_width = 32767, .quake_height = 32767,
+        .x = -32768,
+        .y = -32768,
+        .width = 32767,
+        .height = 32767,
+        .quake_x = -32768,
+        .quake_y = -32768,
+        .quake_width = 32767,
+        .quake_height = 32767,
         .ai_setup_prompted = true,
         .copilot_hint_shown = true,
     };

@@ -11,7 +11,6 @@
 ///   blocking-with-mutex-release, and resize messages are last-writer-wins anyway
 /// - Mutex-based, not lock-free — adequate for our SPSC pattern with tiny
 ///   critical sections
-
 const std = @import("std");
 const xev = @import("xev");
 const Message = @import("message.zig").Message;

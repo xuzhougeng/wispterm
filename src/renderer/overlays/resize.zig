@@ -174,7 +174,6 @@ fn renderResizeOverlayText(cols: u16, rows: u16, window_width: f32, window_heigh
     const box_x = (window_width - box_width) / 2;
     const box_y = (content_height - box_height) / 2; // Centered in content area (GL coords)
 
-
     // Draw rounded background box (black with alpha, slightly more transparent than scrollbar)
     const corner_radius: f32 = 6;
     renderRoundedQuadAlpha(box_x, box_y, box_width, box_height, corner_radius, .{ 0.0, 0.0, 0.0 }, alpha * 0.35);

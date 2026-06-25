@@ -269,9 +269,18 @@ test "MetaStore: upsert is visible via rows and clone before flush (pending)" {
     var store = try MetaStore.open(allocator, root);
     defer store.deinit();
     try store.upsertRecord(.{
-        .session_id = "s1", .title = "T", .base_url = "https://api.example.com", .api_key = "k", .model = "m",
-        .system_prompt = "sys", .thinking_enabled = false, .reasoning_effort = "low", .stream = true,
-        .agent_enabled = true, .created_at = 1, .updated_at = 2,
+        .session_id = "s1",
+        .title = "T",
+        .base_url = "https://api.example.com",
+        .api_key = "k",
+        .model = "m",
+        .system_prompt = "sys",
+        .thinking_enabled = false,
+        .reasoning_effort = "low",
+        .stream = true,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 2,
         .messages = &[_]agent_history.MessageRecord{.{ .role = .user, .content = "hi" }},
     });
     const rows = try store.buildRows(allocator);
@@ -294,9 +303,18 @@ test "MetaStore: flush writes files and index, reopen reads cold from disk" {
         var store = try MetaStore.open(allocator, root);
         defer store.deinit();
         try store.upsertRecord(.{
-            .session_id = "s1", .title = "T", .base_url = "https://api.example.com", .api_key = "k", .model = "m",
-            .system_prompt = "sys", .thinking_enabled = false, .reasoning_effort = "low", .stream = true,
-            .agent_enabled = true, .created_at = 1, .updated_at = 2,
+            .session_id = "s1",
+            .title = "T",
+            .base_url = "https://api.example.com",
+            .api_key = "k",
+            .model = "m",
+            .system_prompt = "sys",
+            .thinking_enabled = false,
+            .reasoning_effort = "low",
+            .stream = true,
+            .agent_enabled = true,
+            .created_at = 1,
+            .updated_at = 2,
             .messages = &[_]agent_history.MessageRecord{.{ .role = .user, .content = "hi" }},
         });
         try store.flush();
@@ -321,9 +339,18 @@ test "MetaStore: delete removes entry, pending and on-disk file" {
     var store = try MetaStore.open(allocator, root);
     defer store.deinit();
     try store.upsertRecord(.{
-        .session_id = "s1", .title = "T", .base_url = "u", .api_key = "k", .model = "m",
-        .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
-        .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+        .session_id = "s1",
+        .title = "T",
+        .base_url = "u",
+        .api_key = "k",
+        .model = "m",
+        .system_prompt = "s",
+        .thinking_enabled = false,
+        .reasoning_effort = "low",
+        .stream = true,
+        .agent_enabled = true,
+        .created_at = 1,
+        .updated_at = 2,
         .messages = &[_]agent_history.MessageRecord{},
     });
     try store.flush();
@@ -349,9 +376,18 @@ test "MetaStore: rebuilds index from session files when index missing/corrupt; s
         defer store.deinit();
         inline for (.{ "s1", "s2" }) |sid| {
             try store.upsertRecord(.{
-                .session_id = sid, .title = "T", .base_url = "u", .api_key = "k", .model = "m",
-                .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
-                .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+                .session_id = sid,
+                .title = "T",
+                .base_url = "u",
+                .api_key = "k",
+                .model = "m",
+                .system_prompt = "s",
+                .thinking_enabled = false,
+                .reasoning_effort = "low",
+                .stream = true,
+                .agent_enabled = true,
+                .created_at = 1,
+                .updated_at = 2,
                 .messages = &[_]agent_history.MessageRecord{},
             });
         }
@@ -381,9 +417,18 @@ test "MetaStore: completes an interrupted migration when legacy file still prese
         defer legacy.deinit();
         inline for (.{ "old-1", "old-2", "old-3" }) |sid| {
             try legacy.upsertRecord(.{
-                .session_id = sid, .title = "T", .base_url = "u", .api_key = "k", .model = "m",
-                .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
-                .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+                .session_id = sid,
+                .title = "T",
+                .base_url = "u",
+                .api_key = "k",
+                .model = "m",
+                .system_prompt = "s",
+                .thinking_enabled = false,
+                .reasoning_effort = "low",
+                .stream = true,
+                .agent_enabled = true,
+                .created_at = 1,
+                .updated_at = 2,
                 .messages = &[_]agent_history.MessageRecord{},
             });
         }
@@ -397,9 +442,18 @@ test "MetaStore: completes an interrupted migration when legacy file still prese
         var one = agent_history.Store.init(allocator);
         defer one.deinit();
         try one.upsertRecord(.{
-            .session_id = "old-1", .title = "T", .base_url = "u", .api_key = "k", .model = "m",
-            .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
-            .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2,
+            .session_id = "old-1",
+            .title = "T",
+            .base_url = "u",
+            .api_key = "k",
+            .model = "m",
+            .system_prompt = "s",
+            .thinking_enabled = false,
+            .reasoning_effort = "low",
+            .stream = true,
+            .agent_enabled = true,
+            .created_at = 1,
+            .updated_at = 2,
             .messages = &[_]agent_history.MessageRecord{},
         });
         const json = try agent_history.recordToJson(allocator, one.records.items[0]);
@@ -435,15 +489,34 @@ test "MetaStore: migrates legacy single file to dir layout, idempotently, keeps 
         var legacy = agent_history.Store.init(allocator);
         defer legacy.deinit();
         try legacy.upsertRecord(.{
-            .session_id = "old-1", .title = "Old1", .base_url = "u", .api_key = "k", .model = "m",
-            .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
-            .stream = true, .agent_enabled = true, .created_at = 1, .updated_at = 2, .copilot = true,
+            .session_id = "old-1",
+            .title = "Old1",
+            .base_url = "u",
+            .api_key = "k",
+            .model = "m",
+            .system_prompt = "s",
+            .thinking_enabled = false,
+            .reasoning_effort = "low",
+            .stream = true,
+            .agent_enabled = true,
+            .created_at = 1,
+            .updated_at = 2,
+            .copilot = true,
             .messages = &[_]agent_history.MessageRecord{.{ .role = .user, .content = "hey" }},
         });
         try legacy.upsertRecord(.{
-            .session_id = "old-2", .title = "Old2", .base_url = "u", .api_key = "k", .model = "m",
-            .system_prompt = "s", .thinking_enabled = false, .reasoning_effort = "low",
-            .stream = true, .agent_enabled = true, .created_at = 3, .updated_at = 4,
+            .session_id = "old-2",
+            .title = "Old2",
+            .base_url = "u",
+            .api_key = "k",
+            .model = "m",
+            .system_prompt = "s",
+            .thinking_enabled = false,
+            .reasoning_effort = "low",
+            .stream = true,
+            .agent_enabled = true,
+            .created_at = 3,
+            .updated_at = 4,
             .messages = &[_]agent_history.MessageRecord{},
         });
         try legacy.saveDefault();

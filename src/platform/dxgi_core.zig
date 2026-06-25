@@ -411,9 +411,9 @@ test "guid parses canonical string into COM byte layout" {
     // In-memory layout: data1/data2/data3 little-endian, data4 verbatim.
     const expected = [16]u8{
         0xf2, 0xaa, 0x15, 0x6f,
-        0x08, 0xd2,
-        0x89, 0x4e,
-        0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c,
+        0x08, 0xd2, 0x89, 0x4e,
+        0x9a, 0xb4, 0x48, 0x95,
+        0x35, 0xd3, 0x4f, 0x9c,
     };
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(Guid));
     try std.testing.expectEqualSlices(u8, &expected, std.mem.asBytes(&g));

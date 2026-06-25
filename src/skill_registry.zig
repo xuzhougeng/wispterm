@@ -434,8 +434,7 @@ test "skill_registry: folds a YAML block scalar description into one line" {
     try tmp.dir.makePath("skills/bear");
     try tmp.dir.writeFile(.{
         .sub_path = "skills/bear/SKILL.md",
-        .data =
-            "---\n" ++
+        .data = "---\n" ++
             "name: bear\n" ++
             "description: >\n" ++
             "  Find papers that argue against a claim.\n" ++
@@ -464,8 +463,7 @@ test "skill_registry: folds a literal block scalar description into one line" {
     try tmp.dir.makePath("skills/note");
     try tmp.dir.writeFile(.{
         .sub_path = "skills/note/SKILL.md",
-        .data =
-            "---\n" ++
+        .data = "---\n" ++
             "name: note\n" ++
             "description: |\n" ++
             "  First line.\n" ++

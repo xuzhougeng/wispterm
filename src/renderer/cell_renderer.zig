@@ -507,7 +507,6 @@ pub fn drawCells(rend: *const Renderer, window_height: f32, offset_x: f32, offse
             }
         }
     }
-
 }
 
 fn drawUrlUnderline(rend: *const Renderer, window_height: f32, offset_x: f32, offset_y: f32) void {

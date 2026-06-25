@@ -62,9 +62,9 @@ pub fn init() void {
         .{
             .buffer = bg_instances,
             .attrs = &.{
-                .{ .loc = 1, .count = 2, .stride = bg_stride, .offset = 0,                  .divisor = 1 },
-                .{ .loc = 2, .count = 3, .stride = bg_stride, .offset = 2 * @sizeOf(f32),   .divisor = 1 },
-                .{ .loc = 3, .count = 1, .stride = bg_stride, .offset = 5 * @sizeOf(f32),   .divisor = 1 },
+                .{ .loc = 1, .count = 2, .stride = bg_stride, .offset = 0, .divisor = 1 },
+                .{ .loc = 2, .count = 3, .stride = bg_stride, .offset = 2 * @sizeOf(f32), .divisor = 1 },
+                .{ .loc = 3, .count = 1, .stride = bg_stride, .offset = 5 * @sizeOf(f32), .divisor = 1 },
             },
         },
     });
@@ -88,10 +88,10 @@ pub fn init() void {
         .{
             .buffer = fg_instances,
             .attrs = &.{
-                .{ .loc = 1, .count = 2, .stride = fg_stride, .offset = 0,                   .divisor = 1 },
-                .{ .loc = 2, .count = 4, .stride = fg_stride, .offset = 2  * @sizeOf(f32),   .divisor = 1 },
-                .{ .loc = 3, .count = 4, .stride = fg_stride, .offset = 6  * @sizeOf(f32),   .divisor = 1 },
-                .{ .loc = 4, .count = 3, .stride = fg_stride, .offset = 10 * @sizeOf(f32),   .divisor = 1 },
+                .{ .loc = 1, .count = 2, .stride = fg_stride, .offset = 0, .divisor = 1 },
+                .{ .loc = 2, .count = 4, .stride = fg_stride, .offset = 2 * @sizeOf(f32), .divisor = 1 },
+                .{ .loc = 3, .count = 4, .stride = fg_stride, .offset = 6 * @sizeOf(f32), .divisor = 1 },
+                .{ .loc = 4, .count = 3, .stride = fg_stride, .offset = 10 * @sizeOf(f32), .divisor = 1 },
             },
         },
     });
@@ -110,10 +110,10 @@ pub fn init() void {
         .{
             .buffer = color_fg_instances,
             .attrs = &.{
-                .{ .loc = 1, .count = 2, .stride = color_fg_stride, .offset = 0,                   .divisor = 1 },
-                .{ .loc = 2, .count = 4, .stride = color_fg_stride, .offset = 2  * @sizeOf(f32),   .divisor = 1 },
-                .{ .loc = 3, .count = 4, .stride = color_fg_stride, .offset = 6  * @sizeOf(f32),   .divisor = 1 },
-                .{ .loc = 4, .count = 3, .stride = color_fg_stride, .offset = 10 * @sizeOf(f32),   .divisor = 1 },
+                .{ .loc = 1, .count = 2, .stride = color_fg_stride, .offset = 0, .divisor = 1 },
+                .{ .loc = 2, .count = 4, .stride = color_fg_stride, .offset = 2 * @sizeOf(f32), .divisor = 1 },
+                .{ .loc = 3, .count = 4, .stride = color_fg_stride, .offset = 6 * @sizeOf(f32), .divisor = 1 },
+                .{ .loc = 4, .count = 3, .stride = color_fg_stride, .offset = 10 * @sizeOf(f32), .divisor = 1 },
             },
         },
     });
