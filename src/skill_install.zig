@@ -347,19 +347,65 @@ pub fn findSkills(a: std.mem.Allocator, tree_json: []const u8, subpath: []const 
     return .{ .entries = try entries.toOwnedSlice(a), .truncated = truncated };
 }
 
+/// Security predicate for a repo-relative path that will be joined to the local
+/// skill destination directory and written. REJECTS anything that could escape
+/// that directory (path traversal / arbitrary file write):
+///   - empty
+///   - absolute (leading `/`)
+///   - any `\` (a backslash, leading or embedded — also blocks Windows seps)
+///   - a Windows drive prefix (`C:` / `c:` ...) or any `:` in the first segment
+///   - a leading `~` (home expansion)
+///   - any path component equal to `.` or `..`
+///   - any control char (< 0x20) or NUL (NUL is < 0x20, so covered)
+/// Accepts only ordinary forward-slash relative paths (e.g. `a/b/c.md`,
+/// `SKILL.md`). Pure; no allocation or I/O.
+pub fn isSafeSkillEntryPath(rel: []const u8) bool {
+    if (rel.len == 0) return false;
+    if (rel[0] == '/') return false; // absolute
+    if (rel[0] == '~') return false; // home expansion
+    for (rel) |c| {
+        if (c == '\\') return false; // backslash anywhere (Windows sep / escape)
+        if (c < 0x20) return false; // control char / NUL
+    }
+    // Reject a Windows drive prefix (or any colon in the first segment, which
+    // could be read as a drive/stream specifier).
+    {
+        var first = rel;
+        if (std.mem.indexOfScalar(u8, rel, '/')) |slash| first = rel[0..slash];
+        if (std.mem.indexOfScalar(u8, first, ':') != null) return false;
+    }
+    // Reject any `.` or `..` path component.
+    var it = std.mem.splitScalar(u8, rel, '/');
+    while (it.next()) |seg| {
+        if (seg.len == 0) return false; // empty component (e.g. "a//b" or trailing/leading "/")
+        if (std.mem.eql(u8, seg, ".")) return false;
+        if (std.mem.eql(u8, seg, "..")) return false;
+    }
+    return true;
+}
+
 /// Path under which a skill file should be staged/installed: the blob path with
 /// the skill directory's *parent* prefix stripped, so it begins with the skill
 /// name. `root_path == "skills/foo"`, `file == "skills/foo/references/x.md"` ->
 /// `"foo/references/x.md"`. Returns null if `file` is not under `root_path`'s
 /// parent. When `root_path` has no parent, `file` already starts with the name.
+///
+/// SECURITY: returns null for any resulting path that fails
+/// `isSafeSkillEntryPath` (path traversal / absolute / drive / backslash / NUL),
+/// so a malicious repo tree entry can never be joined to the destination dir and
+/// written. Callers already skip on null (`orelse continue`).
 pub fn relInstallPath(root_path: []const u8, file_path: []const u8) ?[]const u8 {
-    if (std.mem.lastIndexOfScalar(u8, root_path, '/')) |idx| {
-        const parent = root_path[0..idx];
-        if (file_path.len > parent.len and std.mem.startsWith(u8, file_path, parent) and file_path[parent.len] == '/')
-            return file_path[parent.len + 1 ..];
-        return null;
-    }
-    return file_path;
+    const rel = blk: {
+        if (std.mem.lastIndexOfScalar(u8, root_path, '/')) |idx| {
+            const parent = root_path[0..idx];
+            if (file_path.len > parent.len and std.mem.startsWith(u8, file_path, parent) and file_path[parent.len] == '/')
+                break :blk file_path[parent.len + 1 ..];
+            return null;
+        }
+        break :blk file_path;
+    };
+    if (!isSafeSkillEntryPath(rel)) return null;
+    return rel;
 }
 
 const sample_tree =
@@ -416,6 +462,40 @@ test "skill_install: relInstallPath strips the skill dir's parent prefix" {
     try std.testing.expectEqualStrings("foo/references/x.md", relInstallPath("skills/foo", "skills/foo/references/x.md").?);
     try std.testing.expectEqualStrings("foo/SKILL.md", relInstallPath("foo", "foo/SKILL.md").?);
     try std.testing.expectEqual(@as(?[]const u8, null), relInstallPath("skills/foo", "other/x.md"));
+}
+
+test "skill_install: isSafeSkillEntryPath accepts ordinary relative paths" {
+    try std.testing.expect(isSafeSkillEntryPath("a/b/c.md"));
+    try std.testing.expect(isSafeSkillEntryPath("SKILL.md"));
+    try std.testing.expect(isSafeSkillEntryPath("foo/references/x.md"));
+    try std.testing.expect(isSafeSkillEntryPath("a.b/c-d_e.txt"));
+}
+
+test "skill_install: isSafeSkillEntryPath rejects traversal and unsafe paths" {
+    try std.testing.expect(!isSafeSkillEntryPath("")); // empty
+    try std.testing.expect(!isSafeSkillEntryPath("/etc/passwd")); // absolute
+    try std.testing.expect(!isSafeSkillEntryPath("../x")); // leading ..
+    try std.testing.expect(!isSafeSkillEntryPath("a/../../x")); // embedded ..
+    try std.testing.expect(!isSafeSkillEntryPath("a/..")); // trailing ..
+    try std.testing.expect(!isSafeSkillEntryPath("..")); // bare ..
+    try std.testing.expect(!isSafeSkillEntryPath(".")); // bare .
+    try std.testing.expect(!isSafeSkillEntryPath("./x")); // leading .
+    try std.testing.expect(!isSafeSkillEntryPath("a/./b")); // embedded .
+    try std.testing.expect(!isSafeSkillEntryPath("C:\\x")); // drive + backslash
+    try std.testing.expect(!isSafeSkillEntryPath("C:/x")); // drive prefix
+    try std.testing.expect(!isSafeSkillEntryPath("a\\b")); // embedded backslash
+    try std.testing.expect(!isSafeSkillEntryPath("\\a")); // leading backslash
+    try std.testing.expect(!isSafeSkillEntryPath("~/x")); // home expansion
+    try std.testing.expect(!isSafeSkillEntryPath("a//b")); // empty component
+    try std.testing.expect(!isSafeSkillEntryPath("a/b\x00c")); // NUL byte
+    try std.testing.expect(!isSafeSkillEntryPath("a/b\nc")); // control char
+}
+
+test "skill_install: relInstallPath rejects a traversing repo entry" {
+    // A malicious tree entry whose path, after prefix-stripping, would escape
+    // the destination dir must yield null (the write site skips on null).
+    try std.testing.expectEqual(@as(?[]const u8, null), relInstallPath("skills/foo", "skills/foo/../../evil.sh"));
+    try std.testing.expectEqual(@as(?[]const u8, null), relInstallPath("foo", "foo/../../evil.sh"));
 }
 
 test "skill_install: SkillEntry.clone is an independent deep copy" {
