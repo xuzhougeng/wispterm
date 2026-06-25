@@ -40,8 +40,6 @@ pub const DEFAULT_PADDING: u32 = 10;
 pub const TAB_CLOSE_BTN_W: f32 = 36;
 pub const TAB_CLOSE_FADE_SPEED: f32 = 6.0;
 
-pub threadlocal var g_ssh_legacy_algorithms: bool = false;
-
 // ============================================================================
 // Tab model — each tab owns a SplitTree of Surfaces
 // ============================================================================
@@ -1619,6 +1617,7 @@ threadlocal var g_restore_cols: u16 = 80;
 threadlocal var g_restore_rows: u16 = 24;
 threadlocal var g_restore_cursor_style: CursorStyle = .block;
 threadlocal var g_restore_cursor_blink: bool = true;
+threadlocal var g_restore_ssh_legacy_algorithms: bool = false;
 const SSH_RESTORE_COMMAND_BUF_SIZE: usize = 4096;
 
 /// Free-function factory passed to SplitTree.fromSnapshot. Reads dimensions
@@ -1640,6 +1639,7 @@ fn surfaceFromSnapImpl(
     const rows: u16 = @max(1, g_restore_rows);
     const cursor_style = g_restore_cursor_style;
     const cursor_blink = g_restore_cursor_blink;
+    const ssh_legacy_algorithms = g_restore_ssh_legacy_algorithms;
 
     switch (snap.*) {
         .local_shell => |sh| {
@@ -1659,7 +1659,7 @@ fn surfaceFromSnapImpl(
         },
         .ssh => |s| {
             var stack_buf: [SSH_RESTORE_COMMAND_BUF_SIZE]u8 = undefined;
-            const command_text = try buildSshRestoreCommand(gpa, &stack_buf, s);
+            const command_text = try buildSshRestoreCommand(gpa, &stack_buf, s, ssh_legacy_algorithms);
 
             var port_buf: [8]u8 = undefined;
             const port_slice = std.fmt.bufPrint(&port_buf, "{}", .{s.port}) catch return error.CommandTooLong;
@@ -1671,7 +1671,7 @@ fn surfaceFromSnapImpl(
             // the native SSH client prompts interactively if key auth fails;
             // the in-app password-autofill flow (which requires password_auth=true)
             // does not engage here.
-            surface.setSshConnection(s.user, s.host, port_slice, "", s.proxy_jump, false, g_ssh_legacy_algorithms);
+            surface.setSshConnection(s.user, s.host, port_slice, "", s.proxy_jump, false, ssh_legacy_algorithms);
             return surface;
         },
     }
@@ -1681,6 +1681,7 @@ fn buildSshRestoreCommand(
     allocator: std.mem.Allocator,
     buf: []u8,
     s: session_persist.SurfaceSnap.SshSnap,
+    ssh_legacy_algorithms: bool,
 ) ![]const u8 {
     // Mirrors the password_auth=false branch: persisted SSH snaps never carry
     // passwords, so restored sessions rely on keys or the native ssh prompt.
@@ -1691,7 +1692,7 @@ fn buildSshRestoreCommand(
         .user = s.user,
         .host = s.host,
         .port = port_slice,
-        .legacy_algorithms = g_ssh_legacy_algorithms,
+        .legacy_algorithms = ssh_legacy_algorithms,
         .proxy_jump = s.proxy_jump,
     }) orelse return error.CommandTooLong;
     var final_len: usize = base.len;
@@ -1719,6 +1720,7 @@ pub fn restoreTab(
     rows: u16,
     cursor_style: CursorStyle,
     cursor_blink: bool,
+    ssh_legacy_algorithms: bool,
 ) bool {
     if (g_tab_count >= MAX_TABS) return false;
 
@@ -1742,6 +1744,7 @@ pub fn restoreTab(
     g_restore_rows = rows;
     g_restore_cursor_style = cursor_style;
     g_restore_cursor_blink = cursor_blink;
+    g_restore_ssh_legacy_algorithms = ssh_legacy_algorithms;
 
     var tree = SplitTree.fromSnapshot(allocator, &snap.tree, &surfaceFromSnap) catch |err| {
         std.debug.print("restoreTab: fromSnapshot failed: {}\n", .{err});
@@ -1891,6 +1894,7 @@ pub fn restoreSessionFromFile(
     rows: u16,
     cursor_style: CursorStyle,
     cursor_blink: bool,
+    ssh_legacy_algorithms: bool,
 ) bool {
     const path = Config.sessionFilePath(allocator) catch return false;
     defer allocator.free(path);
@@ -1902,7 +1906,7 @@ pub fn restoreSessionFromFile(
 
     var rebuilt: usize = 0;
     for (loaded.value.tabs) |*snap| {
-        if (restoreTab(allocator, snap, cols, rows, cursor_style, cursor_blink)) {
+        if (restoreTab(allocator, snap, cols, rows, cursor_style, cursor_blink, ssh_legacy_algorithms)) {
             rebuilt += 1;
         } else {
             std.debug.print("restoreSessionFromFile: skipping failed tab\n", .{});
@@ -1980,7 +1984,7 @@ test "tab: restoreTab routes ai_session_id through the restore hook" {
         .tree = .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
         .ai_session_id = "sess-xyz",
     };
-    try std.testing.expect(restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
+    try std.testing.expect(restoreTab(std.testing.allocator, &snap, 80, 24, .block, false, false));
     try std.testing.expect(Captured.called);
     try std.testing.expectEqualStrings("sess-xyz", Captured.session_id);
     // The hook owns tab creation; restoreTab must not also build a terminal tab.
@@ -1997,7 +2001,7 @@ test "tab: restoreTab skips an ai tab when no restore hook is installed" {
         .tree = .{ .leaf = .{ .surface = .{ .local_shell = .{} } } },
         .ai_session_id = "sess-xyz",
     };
-    try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
+    try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false, false));
 }
 
 test "tab: restoreTab routes ai_history through the restore hook" {
@@ -2026,7 +2030,7 @@ test "tab: restoreTab routes ai_history through the restore hook" {
             .target_name = "Local",
         },
     };
-    try std.testing.expect(restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
+    try std.testing.expect(restoreTab(std.testing.allocator, &snap, 80, 24, .block, false, false));
     try std.testing.expect(Captured.called);
     try std.testing.expectEqualStrings("local-history", Captured.source_id);
     try std.testing.expectEqual(@as(usize, 0), g_tab_count);
@@ -2046,7 +2050,7 @@ test "tab: restoreTab skips an ai_history tab when no restore hook is installed"
             .target_name = "Local",
         },
     };
-    try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
+    try std.testing.expect(!restoreTab(std.testing.allocator, &snap, 80, 24, .block, false, false));
     try std.testing.expectEqual(@as(usize, 0), g_tab_count);
 }
 
@@ -2250,6 +2254,7 @@ test "tab: SSH restore command accepts the longest persisted connection fields a
             .port = 65535,
             .proxy_jump = proxy_buf[0..],
         },
+        false,
     );
 
     try std.testing.expect(std.mem.indexOf(u8, command, "ssh") != null);
@@ -2421,7 +2426,7 @@ test "tab: restoreTab prioritizes ai_history over ai_session_id" {
         },
     };
 
-    try std.testing.expect(restoreTab(std.testing.allocator, &snap, 80, 24, .block, false));
+    try std.testing.expect(restoreTab(std.testing.allocator, &snap, 80, 24, .block, false, false));
     try std.testing.expect(Captured.history_called);
     try std.testing.expect(!Captured.chat_called);
     try std.testing.expectEqual(@as(usize, 0), g_tab_count);

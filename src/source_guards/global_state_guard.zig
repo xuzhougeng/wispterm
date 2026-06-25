@@ -23,7 +23,7 @@ const Frozen = struct {
 };
 
 const monoliths = [_]Frozen{
-    .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 67 },
+    .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 66 },
     .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 55 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 48 },
     .{ .name = "ai_chat.zig", .source = @embedFile("../ai_chat.zig"), .ceiling = 20 },
@@ -47,4 +47,9 @@ test "top-level g_* globals in monolith files only shrink" {
         }
     }
     try std.testing.expect(!failed);
+}
+
+test "AppWindow does not mirror ssh legacy config as a global" {
+    try std.testing.expect(std.mem.indexOf(u8, monoliths[0].source, "g_ssh_legacy_algorithms") == null);
+    try std.testing.expect(std.mem.indexOf(u8, @embedFile("../appwindow/tab.zig"), "g_ssh_legacy_algorithms") == null);
 }
