@@ -63,6 +63,7 @@ const ls_path_context = @import("input/ls_path_context.zig");
 const terminal_link_action = @import("input/terminal_link_action.zig");
 const underline_span = @import("input/underline_span.zig");
 const mouse_report = @import("input/mouse_report.zig");
+const mouse_dispatch = @import("input/mouse_dispatch.zig");
 const mouse_wheel_scroll = @import("input/mouse_wheel_scroll.zig");
 const close_confirm = @import("close_confirm.zig");
 const close_confirm_state = @import("input/close_confirm.zig");
@@ -1782,9 +1783,10 @@ var g_selection_changed_for_copy: bool = false;
 // matching drag-motion and release are routed to the PTY too — until the
 // button lifts — instead of driving local text selection. See
 // input/mouse_report.zig for the protocol encoder.
-threadlocal var g_mouse_report_button: ?mouse_report.Button = null;
-threadlocal var g_mouse_report_surface: ?*Surface = null;
-threadlocal var g_mouse_report_last_cell: ?CellPos = null;
+// The reported-drag state machine (begin/finish/motion-dedupe) lives in
+// input/mouse_dispatch.zig as a pure, std-only helper; input.zig owns the one
+// instance and supplies the I/O (report target, PTY write, focus).
+threadlocal var g_mouse_report: mouse_dispatch.TerminalMouseReportState(*Surface) = .{};
 threadlocal var g_left_click_tracker: click_tracker.ClickTracker = .{};
 const MULTI_CLICK_INTERVAL_MS: i64 = 500;
 const MAX_SELECTION_COLS: usize = 4096;
@@ -5426,7 +5428,11 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     // through the existing path below).
     if (ev.action == .release) {
         if (finishTerminalMouseReport(ev)) return;
-    } else if (!ev.shift and !(primaryOpenMod(ev.ctrl, ev.super) and !ev.alt)) {
+    } else if (mouse_dispatch.pressShouldReport(.{
+        .shift = ev.shift,
+        .alt = ev.alt,
+        .primary_open = primaryOpenMod(ev.ctrl, ev.super),
+    })) {
         if (beginTerminalMouseReport(ev)) return;
     }
 
@@ -6306,8 +6312,8 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
 
     // Reported mouse drag: stream motion to the PTY (button/any tracking
     // modes) and suppress local hover/selection while the button is held.
-    if (g_mouse_report_button) |button| {
-        if (g_mouse_report_surface) |surface| reportMouseMotion(surface, button, ev);
+    if (g_mouse_report.active()) |button| {
+        if (g_mouse_report.activeSurface()) |surface| reportMouseMotion(surface, button, ev);
         return;
     }
 
@@ -6715,9 +6721,7 @@ fn beginTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
         .alt = ev.alt,
         .ctrl = ev.ctrl,
     });
-    g_mouse_report_button = button;
-    g_mouse_report_surface = surface;
-    g_mouse_report_last_cell = null;
+    g_mouse_report.begin(surface, button);
     return true;
 }
 
@@ -6725,14 +6729,10 @@ fn beginTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
 /// regardless of modifiers) so the app always sees button-up and state never
 /// leaks. Returns true if a matching reported press was in progress.
 fn finishTerminalMouseReport(ev: platform_input.MouseButtonEvent) bool {
-    const active = g_mouse_report_button orelse return false;
-    if (active != platformMouseButton(ev.button)) return false;
-    const surface = g_mouse_report_surface;
-    g_mouse_report_button = null;
-    g_mouse_report_surface = null;
-    g_mouse_report_last_cell = null;
-    if (surface) |s| {
-        _ = sendTerminalMouseReport(s, .release, active, ev.x, ev.y, .{
+    const result = g_mouse_report.finishRelease(platformMouseButton(ev.button));
+    if (!result.matched) return false;
+    if (result.surface) |s| {
+        _ = sendTerminalMouseReport(s, .release, result.button, ev.x, ev.y, .{
             .shift = ev.shift,
             .alt = ev.alt,
             .ctrl = ev.ctrl,
@@ -6749,10 +6749,7 @@ fn reportMouseMotion(surface: *Surface, button: mouse_report.Button, ev: platfor
         defer surface.render_state.mutex.unlock();
         break :blk mouseToSurfaceCell(surface, @floatFromInt(ev.x), @floatFromInt(ev.y));
     };
-    if (g_mouse_report_last_cell) |last| {
-        if (last.col == cell.col and last.row == cell.row) return;
-    }
-    g_mouse_report_last_cell = cell;
+    if (!g_mouse_report.motionShouldReport(.{ .col = cell.col, .row = cell.row })) return;
     _ = sendTerminalMouseReport(surface, .motion, button, ev.x, ev.y, .{
         .shift = ev.shift,
         .alt = ev.alt,

@@ -41,6 +41,7 @@ test {
     _ = @import("input/hit_test.zig");
     _ = @import("input/mouse_wheel_scroll.zig");
     _ = @import("input/mouse_report.zig");
+    _ = @import("input/mouse_dispatch.zig");
     _ = @import("input/preview_path.zig");
     _ = @import("input/preview_close_button.zig");
     _ = @import("input/ls_path_context.zig");
