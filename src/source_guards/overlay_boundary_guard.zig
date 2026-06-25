@@ -1,0 +1,50 @@
+//! Overlay-boundary ratchet. The round-1 overlay split carved pure, unit-testable
+//! submodules (layout math, input mapping, codecs, view-models) out of the heavy
+//! `overlays.zig` graph. Those modules are pure precisely BECAUSE they do not
+//! depend on the window object: they never `@import("../../AppWindow.zig")`. This
+//! freezes that — each extracted pure module must keep its AppWindow import count
+//! at 0, so it stays testable in the fast suite without the GL/Surface graph.
+//!
+//! NOTE: only the already-extracted PURE modules are listed. `overlays.zig`
+//! itself legitimately imports AppWindow and is intentionally excluded.
+//! See docs/decoupling-guide.md.
+
+const std = @import("std");
+const scan = @import("scan.zig");
+
+const PureModule = struct {
+    name: []const u8,
+    source: []const u8,
+};
+
+const pure_overlay_modules = [_]PureModule{
+    .{ .name = "command_palette_layout.zig", .source = @embedFile("../renderer/overlays/command_palette_layout.zig") },
+    .{ .name = "command_palette_input.zig", .source = @embedFile("../renderer/overlays/command_palette_input.zig") },
+    .{ .name = "ai_profiles.zig", .source = @embedFile("../renderer/overlays/ai_profiles.zig") },
+    .{ .name = "profile_codec.zig", .source = @embedFile("../renderer/overlays/profile_codec.zig") },
+    .{ .name = "ssh_profiles.zig", .source = @embedFile("../renderer/overlays/ssh_profiles.zig") },
+    .{ .name = "transfer_toast_model.zig", .source = @embedFile("../renderer/overlays/transfer_toast_model.zig") },
+    .{ .name = "update_prompt_model.zig", .source = @embedFile("../renderer/overlays/update_prompt_model.zig") },
+    .{ .name = "whats_new_model.zig", .source = @embedFile("../renderer/overlays/whats_new_model.zig") },
+};
+
+/// Pure overlay submodules must not depend on the window object.
+const appwindow_import_ceiling: usize = 0;
+
+fn appWindowImportCount(source: []const u8) usize {
+    return scan.countOccurrences(source, "@import(\"../../AppWindow.zig\")");
+}
+
+test "extracted pure overlay modules do not import AppWindow" {
+    for (pure_overlay_modules) |module| {
+        const count = appWindowImportCount(module.source);
+        if (count > appwindow_import_ceiling) {
+            std.debug.print(
+                "overlay_boundary_guard: {s} imports AppWindow.zig {d} time(s) " ++
+                    "(frozen ceiling {d}). This module is pure; keep AppWindow out so it stays fast-suite testable.\n",
+                .{ module.name, count, appwindow_import_ceiling },
+            );
+            return error.PureOverlayImportedAppWindow;
+        }
+    }
+}
