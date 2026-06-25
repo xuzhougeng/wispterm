@@ -196,6 +196,38 @@ pub fn isVisibleForActiveTab() bool {
     return g_visible and owner == active_tab_state.g_active_tab;
 }
 
+/// Narrow, read-only queries used by the input layer so it does not have to
+/// reach into file-explorer globals directly. These preserve the exact
+/// semantics of the underlying `g_*` reads.
+pub fn isFocused() bool {
+    return g_focused;
+}
+
+/// Current inline-operation mode (rename / new file / new dir / confirm delete).
+pub fn opMode() OpMode {
+    return g_op_mode;
+}
+
+/// True when any inline file operation is active (not `.none`).
+pub fn hasActiveOp() bool {
+    return g_op_mode != .none;
+}
+
+/// True when the panel is showing the agent-history view rather than files.
+pub fn isAgentHistoryPanel() bool {
+    return g_panel_mode == .agent_history;
+}
+
+/// True when the panel is showing the file-tree view (not agent history).
+pub fn isFilesPanel() bool {
+    return g_panel_mode == .files;
+}
+
+/// True when the explorer is browsing a remote (SSH) location.
+pub fn isRemoteMode() bool {
+    return g_mode == .remote;
+}
+
 pub fn openForActiveTab() void {
     g_visible = true;
     g_owner_tab = active_tab_state.g_active_tab;
@@ -2247,6 +2279,48 @@ test "file_explorer: switching to agent history clears file op state" {
     try std.testing.expectEqual(@as(u8, 0), g_input_len);
     try std.testing.expectEqual(@as(f32, 77), g_scroll_offset);
     try std.testing.expectEqual(@as(f32, 12), g_history_scroll_offset);
+}
+
+test "file_explorer: narrow query accessors reflect global state" {
+    const prev_focused = g_focused;
+    const prev_op_mode = g_op_mode;
+    const prev_panel_mode = g_panel_mode;
+    const prev_mode = g_mode;
+    defer {
+        g_focused = prev_focused;
+        g_op_mode = prev_op_mode;
+        g_panel_mode = prev_panel_mode;
+        g_mode = prev_mode;
+    }
+
+    g_focused = true;
+    try std.testing.expect(isFocused());
+    g_focused = false;
+    try std.testing.expect(!isFocused());
+
+    g_op_mode = .none;
+    try std.testing.expect(!hasActiveOp());
+    try std.testing.expectEqual(OpMode.none, opMode());
+    g_op_mode = .rename;
+    try std.testing.expect(hasActiveOp());
+    try std.testing.expectEqual(OpMode.rename, opMode());
+    g_op_mode = .confirm_delete;
+    try std.testing.expect(hasActiveOp());
+    try std.testing.expectEqual(OpMode.confirm_delete, opMode());
+
+    g_panel_mode = .files;
+    try std.testing.expect(isFilesPanel());
+    try std.testing.expect(!isAgentHistoryPanel());
+    g_panel_mode = .agent_history;
+    try std.testing.expect(isAgentHistoryPanel());
+    try std.testing.expect(!isFilesPanel());
+
+    g_mode = .remote;
+    try std.testing.expect(isRemoteMode());
+    g_mode = .local;
+    try std.testing.expect(!isRemoteMode());
+    g_mode = .wsl;
+    try std.testing.expect(!isRemoteMode());
 }
 
 test "file_explorer: syncPanelForTabKind resets focus and mode" {

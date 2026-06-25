@@ -2651,7 +2651,7 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         return .none;
     }
     // File explorer inline editing
-    if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab() and file_explorer.g_op_mode != .none and file_explorer.g_op_mode != .confirm_delete) {
+    if (file_explorer.isFocused() and file_explorer.isVisibleForActiveTab() and file_explorer.hasActiveOp() and file_explorer.opMode() != .confirm_delete) {
         if (!ev.ctrl and !ev.alt) file_explorer.inputChar(ev.codepoint);
         return .none;
     }
@@ -3127,7 +3127,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         return .none;
     }
     // File explorer key handling (when focused and in operation mode)
-    if (file_explorer.g_focused and file_explorer.isVisibleForActiveTab()) {
+    if (file_explorer.isFocused() and file_explorer.isVisibleForActiveTab()) {
         if (handleFileExplorerKey(ev)) {
             // Navigation/edits change what the panel draws; request a frame so it
             // updates immediately (same rationale as the wheel-scroll path).
@@ -4008,7 +4008,7 @@ fn applyExplorerWidthFromMouse(xpos: f64) void {
 }
 
 fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
-    if (file_explorer.g_panel_mode == .agent_history) {
+    if (file_explorer.isAgentHistoryPanel()) {
         return handleAgentHistoryKey(ev);
     }
 
@@ -4019,7 +4019,7 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
     const key_down = platform_input.key_down;
 
     // In input mode (rename/new file/new dir)
-    if (file_explorer.g_op_mode != .none) {
+    if (file_explorer.hasActiveOp()) {
         switch (ev.key_code) {
             key_escape => {
                 file_explorer.cancelOp();
@@ -4091,7 +4091,7 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
         },
         0x53 => { // 'S' key: Ctrl/Cmd+S = download selected file
             if ((ev.ctrl or ev.super) and !ev.alt and !ev.shift) {
-                if (file_explorer.g_mode == .remote) {
+                if (file_explorer.isRemoteMode()) {
                     // Download to user's Downloads folder
                     var dl_buf: [260]u8 = undefined;
                     const dl_path = getDownloadsFolder(&dl_buf);
@@ -4104,7 +4104,7 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             return false;
         },
         0x55 => { // 'U' = upload file; Shift+U = upload folder
-            if (file_explorer.g_mode == .remote and !ev.ctrl and !ev.alt and !ev.super) {
+            if (file_explorer.isRemoteMode() and !ev.ctrl and !ev.alt and !ev.super) {
                 if (ev.shift) {
                     openFolderDialogAndUpload();
                 } else {
@@ -4208,13 +4208,13 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
         return;
     }
 
-    if (file_explorer.g_panel_mode == .agent_history) {
+    if (file_explorer.isAgentHistoryPanel()) {
         handleAgentHistoryPress(xpos, ypos);
         return;
     }
 
     // Cancel any active op on click elsewhere in the panel
-    if (file_explorer.g_op_mode != .none) {
+    if (file_explorer.hasActiveOp()) {
         file_explorer.cancelOp();
     }
 
@@ -5533,7 +5533,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 closeFileExplorerPanel();
                 return;
             }
-            if (file_explorer.g_panel_mode == .files and hitTestFileExplorerRefreshButton(xpos, ypos)) {
+            if (file_explorer.isFilesPanel() and hitTestFileExplorerRefreshButton(xpos, ypos)) {
                 file_explorer.refresh();
                 requestInputRepaint();
                 return;
@@ -5587,7 +5587,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
 
             if (over_browser_url_bar) {
                 file_explorer.g_focused = false;
-                if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+                if (file_explorer.hasActiveOp()) file_explorer.cancelOp();
                 browser_panel.focusUrlBar();
                 markBrowserUrlBarDirty();
                 return;
@@ -5600,7 +5600,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
 
             if (hitTestBrowserPanel(xpos, ypos)) {
                 file_explorer.g_focused = false;
-                if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+                if (file_explorer.hasActiveOp()) file_explorer.cancelOp();
                 browser_panel.blurUrlBar();
                 markBrowserUrlBarDirty();
                 browser_panel.focus();
@@ -5615,7 +5615,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
 
             // Clicking outside file explorer unfocuses it
             file_explorer.g_focused = false;
-            if (file_explorer.g_op_mode != .none) file_explorer.cancelOp();
+            if (file_explorer.hasActiveOp()) file_explorer.cancelOp();
 
             if (AppWindow.activeAiHistory() != null) {
                 if (AppWindow.aiHistoryHandleMousePress(xpos, ypos)) return;
