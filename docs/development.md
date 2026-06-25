@@ -60,6 +60,25 @@ Test-Path .\zig-out\bin\wispterm.exe
 Get-Item .\zig-out\bin\wispterm.exe
 ```
 
+### Tests and structural guards
+
+```bash
+zig build test         # fast inner loop: platform-independent logic (src/test_fast.zig)
+zig build test-full    # complete pre-merge gate; a SUPERSET of `zig build test`
+zig build check-sizes  # the file-size backstop on its own
+```
+
+`zig build test` is sub-second when cached and does not recompile the heavy app
+binary; `zig build test-full` is the gate to run before finishing a change and
+now also runs the fast suite.
+
+Architecture is enforced by source-scan ratchet tests under `src/source_guards/`
+(file size, top-level `g_*` globals, `AppWindow` import-hub re-exports, and
+direct UI dirty-writes). Each freezes today's count so it can only **shrink** —
+adding a new occurrence fails the gate. The cohesion/coupling rationale and the
+frozen ceilings are in [`../AGENTS.md`](../AGENTS.md) and
+[decoupling-guide.md §8](decoupling-guide.md#8-structural-debt-governance-axis-b-in-practice).
+
 ## Why The UI Is Custom Drawn
 
 WispTerm's main terminal UI is intentionally custom drawn instead of composed
