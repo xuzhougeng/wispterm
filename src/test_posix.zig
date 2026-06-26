@@ -45,9 +45,12 @@ test "ctl server answers a real loopback request and stops cleanly" {
         fn ui_state(_: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
             return try a.dupe(u8, "{\"activeOverlay\":\"none\"}");
         }
+        fn spawn(_: *anyopaque, cwd: []const u8, _: []const u8) bool {
+            return std.mem.eql(u8, cwd, "/work"); // accept only the expected request
+        }
         var dummy: u8 = 0;
         fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn } };
         }
     };
 
@@ -85,6 +88,16 @@ test "ctl server answers a real loopback request and stops cleanly" {
     const ui_n = try s_ui.read(&ui_buf);
     try std.testing.expect(std.mem.indexOf(u8, ui_buf[0..ui_n], "activeOverlay") != null);
 
+    // spawn round-trips its cwd+command over the wire and replies ok.
+    var s_sp = try std.net.tcpConnectToAddress(addr);
+    defer s_sp.close();
+    const sp_line = try protocol.encodeRequest(std.testing.allocator, .{ .token = "tok", .cmd = .spawn, .data = "claude -r abc", .cwd = "/work" });
+    defer std.testing.allocator.free(sp_line);
+    try s_sp.writeAll(sp_line);
+    var sp_buf: [256]u8 = undefined;
+    const sp_n = try s_sp.read(&sp_buf);
+    try std.testing.expect(std.mem.indexOf(u8, sp_buf[0..sp_n], "\"ok\":true") != null);
+
     // A bad token is rejected over the wire too.
     var s2 = try std.net.tcpConnectToAddress(addr);
     defer s2.close();
@@ -113,9 +126,12 @@ test "ctl server shutdown does not hang on a stalled (newline-less) connection" 
         fn ui_state(_: *anyopaque, _: std.mem.Allocator) anyerror!?[]u8 {
             return null;
         }
+        fn spawn(_: *anyopaque, _: []const u8, _: []const u8) bool {
+            return false;
+        }
         var dummy: u8 = 0;
         fn iface() control_mod.Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn } };
         }
     };
 

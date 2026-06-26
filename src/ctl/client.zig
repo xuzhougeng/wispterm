@@ -9,6 +9,9 @@ pub const Action = union(enum) {
     send_text: struct { id: []const u8, data: []const u8 }, // data still escaped
     wait_for: struct { id: []const u8, pattern: []const u8, timeout_ms: u32 },
     ui_state,
+    // command is the argv tail after `--` (joined with spaces by the caller);
+    // empty = open a plain shell tab.
+    spawn: struct { cwd: []const u8, command: []const []const u8 },
     help,
 };
 
@@ -80,6 +83,10 @@ pub fn parseArgs(args: []const []const u8) !Action {
         const text = positionalAfterFlags(args) orelse return error.MissingText;
         return .{ .send_text = .{ .id = id, .data = text } };
     }
+    if (std.mem.eql(u8, cmd, "spawn")) {
+        const cwd = (try flagValue(args, "--cwd")) orelse "";
+        return .{ .spawn = .{ .cwd = cwd, .command = argsAfterDoubleDash(args) } };
+    }
     if (std.mem.eql(u8, cmd, "wait-for")) {
         const id = (try flagValue(args, "-t")) orelse return error.MissingTarget;
         const pat = positionalAfterFlags(args) orelse return error.MissingText;
@@ -123,6 +130,15 @@ fn positionalAfterFlags(args: []const []const u8) ?[]const u8 {
         return args[i];
     }
     return null;
+}
+
+/// Everything after a literal `--` (the program + its args for `spawn`). Empty
+/// slice when there is no `--` or nothing follows it.
+fn argsAfterDoubleDash(args: []const []const u8) []const []const u8 {
+    for (args, 0..) |a, i| {
+        if (std.mem.eql(u8, a, "--")) return args[i + 1 ..];
+    }
+    return &.{};
 }
 
 fn isKnownFlag(a: []const u8) bool {
@@ -182,6 +198,20 @@ test "parseArgs covers every command and required-flag errors" {
 
 test "parseArgs maps ui-state to its no-arg action" {
     try t.expectEqual(Action.ui_state, try parseArgs(&.{"ui-state"}));
+}
+
+test "parseArgs spawn: cwd + command tail after --" {
+    const a = try parseArgs(&.{ "spawn", "--cwd", "F:\\proj", "--", "claude", "-r", "abc" });
+    try t.expectEqualStrings("F:\\proj", a.spawn.cwd);
+    try t.expectEqual(@as(usize, 3), a.spawn.command.len);
+    try t.expectEqualStrings("claude", a.spawn.command[0]);
+    try t.expectEqualStrings("abc", a.spawn.command[2]);
+}
+
+test "parseArgs spawn: bare (no cwd, no command) is a plain shell tab" {
+    const a = try parseArgs(&.{"spawn"});
+    try t.expectEqualStrings("", a.spawn.cwd);
+    try t.expectEqual(@as(usize, 0), a.spawn.command.len);
 }
 
 test "parseArgs: large --timeout does not overflow u32 (clamps)" {
