@@ -5066,7 +5066,27 @@ pub fn clearWeixinTranscriptCache() void {
 
 pub fn enableAgentControl() void {
     control_api.setUiStateBuilder(overlays.buildUiStateJson);
+    control_api.setSpawnHandler(ctlSpawnTab);
     control_api.enable();
+}
+
+/// UI-thread handler for `wisptermctl spawn`: open a new terminal tab. `cwd`
+/// empty = inherit the active tab's cwd; `command` empty = the configured shell.
+fn ctlSpawnTab(cwd_path: []const u8, command: []const u8) void {
+    const allocator = g_allocator orelse return;
+    var cwd_buf: platform_pty_command.CwdBuffer = undefined;
+    const cwd = if (cwd_path.len != 0)
+        platform_pty_command.cwdFromUtf8(&cwd_buf, cwd_path)
+    else
+        getActiveCwd(&cwd_buf);
+
+    const ok = if (command.len != 0) blk: {
+        const command_line = platform_pty_command.allocCommandLineFromUtf8(allocator, command) catch break :blk false;
+        defer platform_pty_command.freeCommandLine(allocator, command_line);
+        break :blk tab.spawnTabWithCommandAndCwd(allocator, term_cols, term_rows, platform_pty_command.commandLineFromOwned(command_line), g_cursor_style, g_cursor_blink, cwd);
+    } else tab.spawnTabWithCwd(allocator, term_cols, term_rows, g_cursor_style, g_cursor_blink, cwd);
+
+    if (ok) clearUiStateOnTabChange();
 }
 
 /// The Control the agent-control server drives. Backed by process-global state,
@@ -6546,6 +6566,9 @@ fn runMainLoop(self: *AppWindow) !void {
         rememberWindowedPosition(win);
         // Fire any due /loop or /watch tasks (UI thread: tab.g_tabs is populated).
         ai_loop_store.tick(std.time.milliTimestamp());
+        // Open any tabs requested via `wisptermctl spawn` (queued by the ctl
+        // server thread, created here on the UI thread).
+        control_api.drainSpawnQueue();
 
         // Handle bells, notifications, and OSC 52 clipboard writes staged by
         // the IO threads. This runs before the render gate: background-tab
@@ -6986,6 +7009,7 @@ fn runMainLoop(self: *AppWindow) !void {
     clearWeixinTranscriptCache();
     control_api.clearPanesCache();
     control_api.clearUiStateCache();
+    control_api.clearSpawnQueue();
     markdown_preview_renderer.deinit();
     browser_panel.deinit();
 

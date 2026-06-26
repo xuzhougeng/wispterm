@@ -18,6 +18,10 @@ pub const Control = struct {
         /// Allocator-owned overlay/UI semantic-state JSON object, or null if not
         /// yet published. Complements list_panes (topology) with the overlay layer.
         ui_state: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8,
+        /// Queue a new terminal tab (UI thread spawns it). `command`/`cwd` empty
+        /// = default shell / active tab's cwd. Returns false if it could not be
+        /// queued (e.g. the spawn handler isn't wired up, or the queue is full).
+        spawn: *const fn (ctx: *anyopaque, cwd: []const u8, command: []const u8) bool,
     };
 
     pub fn listPanes(self: Control, allocator: std.mem.Allocator) anyerror!?[]u8 {
@@ -31,6 +35,9 @@ pub const Control = struct {
     }
     pub fn uiState(self: Control, allocator: std.mem.Allocator) anyerror!?[]u8 {
         return self.vtable.ui_state(self.ctx, allocator);
+    }
+    pub fn spawn(self: Control, cwd: []const u8, command: []const u8) bool {
+        return self.vtable.spawn(self.ctx, cwd, command);
     }
 };
 
@@ -51,9 +58,12 @@ test "Control forwards to the vtable" {
         fn ui_state(_: *anyopaque, a: std.mem.Allocator) anyerror!?[]u8 {
             return try a.dupe(u8, "{\"activeOverlay\":\"none\"}");
         }
+        fn spawn(_: *anyopaque, cwd: []const u8, _: []const u8) bool {
+            return std.mem.eql(u8, cwd, "/ok");
+        }
         var dummy: u8 = 0;
         fn iface() Control {
-            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state } };
+            return .{ .ctx = &dummy, .vtable = &.{ .list_panes = list_panes, .get_text = get_text, .send_text = send_text, .ui_state = ui_state, .spawn = spawn } };
         }
     };
     const c = Fake.iface();
@@ -69,4 +79,6 @@ test "Control forwards to the vtable" {
     try t.expect((try c.getText(t.allocator, "gone", null)) == null);
     try t.expect(c.sendText("live", "x"));
     try t.expect(!c.sendText("gone", "x"));
+    try t.expect(c.spawn("/ok", "bash"));
+    try t.expect(!c.spawn("/nope", "bash"));
 }

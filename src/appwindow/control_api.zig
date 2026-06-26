@@ -6,6 +6,7 @@ const remote = @import("../remote_client.zig");
 const remote_snapshot = @import("../remote_snapshot.zig");
 const ctl_control = @import("../ctl/control.zig");
 const surface_registry = @import("../surface_registry.zig");
+const window_backend = @import("../platform/window_backend.zig");
 const active_tab_state = @import("active_tab.zig");
 const tab = @import("tab.zig");
 const surface_snapshots = @import("surface_snapshots.zig");
@@ -33,6 +34,23 @@ var g_build_ui_state_json: ?BuildUiStateJsonFn = null;
 
 pub fn setUiStateBuilder(builder: BuildUiStateJsonFn) void {
     g_build_ui_state_json = builder;
+}
+
+// --- spawn (new-tab) queue: server thread enqueues, UI thread drains ---
+// Tab creation touches threadlocal tab state + GPU resources, so it can't run on
+// the ctl server thread. The server copies cwd+command into this queue and wakes
+// the UI loop; drainSpawnQueue() (render tick) does the actual spawn.
+pub const SpawnFn = *const fn (cwd: []const u8, command: []const u8) void;
+var g_spawn_handler: ?SpawnFn = null;
+var g_spawn_mutex: std.Thread.Mutex = .{};
+const SpawnItem = struct { cwd: []u8, command: []u8 }; // page_allocator-owned
+var g_spawn_queue: std.ArrayListUnmanaged(SpawnItem) = .empty;
+// ponytail: bounded so a wedged UI thread can't grow this without limit; 32
+// queued tab spawns is far past any real burst. Raise if it ever bites.
+const MAX_SPAWN_QUEUE = 32;
+
+pub fn setSpawnHandler(h: SpawnFn) void {
+    g_spawn_handler = h;
 }
 
 pub fn enable() void {
@@ -82,11 +100,64 @@ fn ctlUiState(ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
     return try allocator.dupe(u8, g_ctl_ui_state_json);
 }
 
+/// Server thread: queue a new-tab request for the UI thread, then wake it.
+/// Returns false if no handler is wired up or the queue is full.
+fn ctlSpawn(ctx: *anyopaque, cwd: []const u8, command: []const u8) bool {
+    _ = ctx;
+    if (g_spawn_handler == null) return false;
+    if (!enqueueSpawn(cwd, command)) return false;
+    window_backend.postWakeup();
+    return true;
+}
+
+fn enqueueSpawn(cwd: []const u8, command: []const u8) bool {
+    const a = std.heap.page_allocator;
+    g_spawn_mutex.lock();
+    defer g_spawn_mutex.unlock();
+    if (g_spawn_queue.items.len >= MAX_SPAWN_QUEUE) return false;
+    const cwd_owned = a.dupe(u8, cwd) catch return false;
+    errdefer a.free(cwd_owned);
+    const cmd_owned = a.dupe(u8, command) catch return false;
+    errdefer a.free(cmd_owned);
+    g_spawn_queue.append(a, .{ .cwd = cwd_owned, .command = cmd_owned }) catch return false;
+    return true;
+}
+
+/// UI thread: spawn every queued tab. Called from the render loop. No-op when
+/// the queue is empty or no handler is registered.
+pub fn drainSpawnQueue() void {
+    const handler = g_spawn_handler orelse return;
+    const a = std.heap.page_allocator;
+    g_spawn_mutex.lock();
+    var items = g_spawn_queue; // move ownership out; process unlocked
+    g_spawn_queue = .empty;
+    g_spawn_mutex.unlock();
+    defer items.deinit(a);
+    for (items.items) |item| {
+        handler(item.cwd, item.command);
+        a.free(item.cwd);
+        a.free(item.command);
+    }
+}
+
+pub fn clearSpawnQueue() void {
+    const a = std.heap.page_allocator;
+    g_spawn_mutex.lock();
+    defer g_spawn_mutex.unlock();
+    for (g_spawn_queue.items) |item| {
+        a.free(item.cwd);
+        a.free(item.command);
+    }
+    g_spawn_queue.deinit(a);
+    g_spawn_queue = .empty;
+}
+
 const ctl_vtable = ctl_control.Control.VTable{
     .list_panes = ctlListPanes,
     .get_text = ctlGetText,
     .send_text = ctlSendText,
     .ui_state = ctlUiState,
+    .spawn = ctlSpawn,
 };
 
 /// The Control the agent-control server drives. Backed by process-global state,
@@ -264,4 +335,34 @@ test "ctl surface callbacks reject an unregistered id without dereferencing" {
     const c = control();
     try std.testing.expect((try c.getText(std.testing.allocator, "missing", null)) == null);
     try std.testing.expect(!c.sendText("missing", "x"));
+}
+
+var g_test_spawn_log: std.ArrayListUnmanaged(u8) = .empty;
+fn testSpawnHandler(cwd: []const u8, command: []const u8) void {
+    g_test_spawn_log.appendSlice(std.testing.allocator, cwd) catch {};
+    g_test_spawn_log.append(std.testing.allocator, '|') catch {};
+    g_test_spawn_log.appendSlice(std.testing.allocator, command) catch {};
+    g_test_spawn_log.append(std.testing.allocator, ';') catch {};
+}
+
+test "spawn queue enqueues and drains in order to the handler" {
+    defer {
+        g_test_spawn_log.deinit(std.testing.allocator);
+        g_test_spawn_log = .empty;
+        g_spawn_handler = null;
+        clearSpawnQueue();
+    }
+    // No handler → reject (don't accumulate undrained work).
+    g_spawn_handler = null;
+    try std.testing.expect(!ctlSpawn(&g_ctl_ctx, "/a", "bash"));
+
+    setSpawnHandler(testSpawnHandler);
+    try std.testing.expect(enqueueSpawn("/a", "bash"));
+    try std.testing.expect(enqueueSpawn("", "claude -r x"));
+    drainSpawnQueue();
+    try std.testing.expectEqualStrings("/a|bash;|claude -r x;", g_test_spawn_log.items);
+
+    g_spawn_mutex.lock();
+    defer g_spawn_mutex.unlock();
+    try std.testing.expectEqual(@as(usize, 0), g_spawn_queue.items.len);
 }

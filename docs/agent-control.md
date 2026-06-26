@@ -57,9 +57,22 @@ wisptermctl send-text -t <surface-id> "<text>"
 wisptermctl wait-for -t <surface-id> "<substring>" [--timeout SECONDS]
     Poll get-text until the output contains <substring> (default 60s).
     Exit 0 on match, 2 on timeout.
+
+wisptermctl spawn [--cwd DIR] [-- program args...]
+    Open a NEW tab in the running instance (no separate window). --cwd sets
+    its working directory (default: the active tab's cwd). Everything after
+    `--` is the command to run (default: your configured shell). The tab is
+    queued and created on the next UI tick; `ok` means "accepted".
 ```
 
 Surface ids come from `wisptermctl panes` (the `id` field).
+
+### Example: jump to a saved session in its own tab
+
+```sh
+wisptermctl spawn --cwd "F:\1_Bio-analysis" -- claude -r 1b42b2ea
+wisptermctl spawn --cwd /home/me/code            # just a shell in that dir
+```
 
 ### Example: run a test in another pane and read the result
 

@@ -7,6 +7,7 @@
 //!   wisptermctl get-text  -t <surface-id> [--recent N]
 //!   wisptermctl send-text -t <surface-id> "<text with \n \t \xNN escapes>"
 //!   wisptermctl wait-for  -t <surface-id> "<substring>" [--timeout SECONDS]
+//!   wisptermctl spawn     [--cwd DIR] [-- program args...]
 //!
 //! Lean by design: imports only ctl/* + platform/dirs.zig (std/builtin), so it
 //! links without any GUI/SDL dependencies.
@@ -51,6 +52,11 @@ pub fn main() !void {
             const data = try client.decodeEscapes(allocator, s.data);
             defer allocator.free(data);
             try runOnce(allocator, info, .{ .token = info.token, .cmd = .send_text, .id = s.id, .data = data }, .ok_only);
+        },
+        .spawn => |sp| {
+            const command = try std.mem.join(allocator, " ", sp.command);
+            defer allocator.free(command);
+            try runOnce(allocator, info, .{ .token = info.token, .cmd = .spawn, .data = command, .cwd = sp.cwd }, .ok_only);
         },
         .wait_for => |w| try runWaitFor(allocator, info, w),
         .help => try stdoutAll(USAGE),
@@ -170,6 +176,12 @@ const USAGE =
     \\  wisptermctl wait-for -t <surface-id> "<substring>" [--timeout SECONDS]
     \\      Poll get-text until the output contains <substring> (default 60s).
     \\      Exit 0 on match, 2 on timeout.
+    \\  wisptermctl spawn [--cwd DIR] [-- program args...]
+    \\      Open a new tab in the running instance. --cwd sets its working
+    \\      directory (default: the active tab's cwd). Everything after `--` is
+    \\      the command to run (default: your configured shell). Examples:
+    \\        wisptermctl spawn --cwd "F:\proj" -- claude -r 1b42b2ea
+    \\        wisptermctl spawn --cwd /home/me/code
     \\
     \\Enable in WispTerm config:  agent-control-enabled = true
     \\Surface ids come from `wisptermctl panes`.
