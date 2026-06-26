@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("ai_history_types.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_dirs = @import("platform/dirs.zig");
 
 const MAX_CACHE_BYTES = 16 * 1024 * 1024;
@@ -65,12 +66,7 @@ pub fn saveToPath(allocator: std.mem.Allocator, path: []const u8, cache: CacheFi
     const json = try dump(allocator, cache);
     defer allocator.free(json);
 
-    if (std.fs.path.dirname(path)) |dir| try std.fs.cwd().makePath(dir);
-    var write_buffer: [0]u8 = .{};
-    var atomic = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buffer });
-    defer atomic.deinit();
-    try atomic.file_writer.file.writeAll(json);
-    try atomic.finish();
+    try platform_atomic_file.writeFileReplaceSafe(path, json);
 }
 
 pub fn saveDefault(allocator: std.mem.Allocator, cache: CacheFile) !void {

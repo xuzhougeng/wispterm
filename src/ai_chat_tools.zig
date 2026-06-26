@@ -7,6 +7,7 @@ const builtin = @import("builtin");
 const types = @import("ai_chat_types.zig");
 const agent_file_edit = @import("agent_file_edit.zig");
 const agent_file_copy = @import("agent_file_copy.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const scp = @import("scp.zig");
 const ToolSshConnection = types.SshConnection;
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
@@ -2181,17 +2182,8 @@ fn resolveLocalPath(allocator: std.mem.Allocator, path: []const u8, working_dir:
 }
 
 fn writeLocalFileAtomic(allocator: std.mem.Allocator, resolved: []const u8, content: []const u8) !void {
-    // Ensure parent directory exists.
-    if (std.fs.path.dirname(resolved)) |dir_path| {
-        try std.fs.cwd().makePath(dir_path);
-    }
-    // Use AtomicFile for a safe replace.
-    var write_buffer: [0]u8 = .{};
-    var atomic = try std.fs.cwd().atomicFile(resolved, .{ .write_buffer = &write_buffer });
-    defer atomic.deinit();
-    try atomic.file_writer.file.writeAll(content);
-    try atomic.finish();
-    _ = allocator; // no heap needed beyond the call
+    _ = allocator;
+    try platform_atomic_file.writeFileReplaceSafe(resolved, content);
 }
 
 fn renderReadResult(ctx: *ToolContext, path: []const u8, bytes: []const u8, offset: usize, limit: usize) ![]u8 {

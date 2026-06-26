@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const log = std.log.scoped(.agent_history);
 
@@ -238,11 +239,7 @@ pub fn saveJsonToPath(path: []const u8, json: []const u8) !void {
         };
     }
 
-    var write_buffer: [0]u8 = .{};
-    var atomic = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buffer });
-    defer atomic.deinit();
-    try atomic.file_writer.file.writeAll(json);
-    try atomic.finish();
+    try platform_atomic_file.writeFileReplaceSafe(path, json);
 }
 
 pub fn sortRows(rows: []Row) void {
