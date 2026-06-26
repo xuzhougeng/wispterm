@@ -82,6 +82,9 @@ test "wispterm image OSC fallback translates to kitty graphics APC" {
     // needs a real mailbox to receive it instead of writing through garbage.
     surface.mailbox = try termio.Mailbox.init();
     defer surface.mailbox.deinit();
+    surface.io_state_mutex = .{};
+    surface.io_state = .running;
+    surface.exited = std.atomic.Value(bool).init(false);
 
     surface.vt_stream = Surface.VtStream.initAlloc(
         surface.terminal.screens.active.alloc,

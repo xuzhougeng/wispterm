@@ -20,6 +20,8 @@ const read_coalesce = @import("read_coalesce.zig");
 const READ_BUF_SIZE = 64 * 1024;
 
 pub fn threadMain(surface: *Surface) void {
+    defer surface.markStopped();
+
     var buf: [READ_BUF_SIZE]u8 = undefined;
     var resize_pending: std.ArrayListUnmanaged(u8) = .empty;
     defer resize_pending.deinit(surface.allocator);
@@ -28,26 +30,15 @@ pub fn threadMain(surface: *Surface) void {
 
     while (!surface.exited.load(.acquire)) {
         const bytes_read = surface.pty.readOutput(&buf) catch |err| {
-            switch (err) {
-                // Backend interrupted the blocking read. Retry unless we're shutting down.
-                error.ReadInterrupted => continue,
-
-                // Pipe closed — child process exited
-                error.BrokenPipe => {
-                    surface.exited.store(true, .release);
-                    return;
-                },
-
-                // Any other error — exit
-                else => {
-                    std.debug.print("ReadThread: read error: {}\n", .{err});
-                    surface.exited.store(true, .release);
-                    return;
-                },
+            switch (handleReadError(surface, err)) {
+                .retry => continue,
+                .stop => return,
             }
         };
         if (bytes_read == 0) {
-            surface.exited.store(true, .release);
+            if (!surface.exited.load(.acquire)) {
+                surface.markExited(.eof, surface.pollExitStatus());
+            }
             return;
         }
 
@@ -96,12 +87,17 @@ fn drainResizeOutput(
         }
 
         const to_read = @min(available, scratch.len);
-        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (err) {
-            error.ReadInterrupted => continue,
-            else => return,
+        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (handleReadError(surface, err)) {
+            .retry => continue,
+            .stop => return,
         };
 
-        if (bytes_read == 0) return;
+        if (bytes_read == 0) {
+            if (!surface.exited.load(.acquire)) {
+                surface.markExited(.eof, surface.pollExitStatus());
+            }
+            return;
+        }
 
         const data = scratch[0..bytes_read];
         if (surface.remote_client) |client| {
@@ -142,11 +138,16 @@ fn drainAvailableOutput(
         const to_read = read_coalesce.nextDrainLen(available, scratch.len, pending.items.len);
         if (to_read == 0) return;
 
-        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (err) {
-            error.ReadInterrupted => continue,
-            else => return,
+        const bytes_read = surface.pty.readOutput(scratch[0..to_read]) catch |err| switch (handleReadError(surface, err)) {
+            .retry => continue,
+            .stop => return,
         };
-        if (bytes_read == 0) return;
+        if (bytes_read == 0) {
+            if (!surface.exited.load(.acquire)) {
+                surface.markExited(.eof, surface.pollExitStatus());
+            }
+            return;
+        }
 
         const data = scratch[0..bytes_read];
         if (surface.remote_client) |client| {
@@ -174,4 +175,22 @@ fn processOutput(surface: *Surface, data: []const u8) void {
     // pending output on a single frame; per-chunk posts only flood the
     // platform event queue during output bursts.
     if (surface.markOutputDirty()) window_backend.postWakeup();
+}
+
+const ReadErrorAction = enum { retry, stop };
+
+fn handleReadError(surface: *Surface, err: anyerror) ReadErrorAction {
+    if (err == error.ReadInterrupted) {
+        return if (surface.exited.load(.acquire)) .stop else .retry;
+    }
+
+    if (surface.exited.load(.acquire)) return .stop;
+
+    if (err == error.BrokenPipe) {
+        surface.markExited(.broken_pipe, surface.pollExitStatus());
+        return .stop;
+    }
+
+    surface.failIo(.pty_read, err);
+    return .stop;
 }

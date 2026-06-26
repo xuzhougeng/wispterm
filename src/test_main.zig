@@ -146,6 +146,20 @@ comptime {
         }
     }
 
+    const termio_thread_source = @embedFile("termio/Thread.zig");
+    if (std.mem.indexOf(u8, termio_thread_source, "self.loop.run(.until_done) catch {};") != null or
+        std.mem.indexOf(u8, termio_thread_source, "surface.pty.writeInput(data) catch {};") != null or
+        std.mem.indexOf(u8, termio_thread_source, "surface.pty.setSize(.{ .ws_col = grid.cols, .ws_row = grid.rows }) catch {};") != null or
+        std.mem.indexOf(u8, termio_thread_source, "surface.terminal.resize(surface.allocator, grid.cols, grid.rows) catch {};") != null)
+    {
+        @compileError("termio Thread IO errors must route through Surface.failIo instead of catch {}");
+    }
+
+    const termio_read_source = @embedFile("termio/ReadThread.zig");
+    if (std.mem.indexOf(u8, termio_read_source, "surface.exited.store(true, .release);") != null) {
+        @compileError("ReadThread exits must route through Surface IoState helpers so UI wakeups and reasons stay consistent");
+    }
+
     const update_check_source = @embedFile("update_check.zig");
     if (std.mem.indexOf(u8, update_check_source, "wispterm-windows-portable") != null) {
         @compileError("update_check.zig tests must build concrete release asset names through release_package helpers");
