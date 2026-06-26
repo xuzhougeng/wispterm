@@ -7,9 +7,11 @@
 /// Design notes:
 /// - send() + notify() are separate (like Ghostty) so the caller can batch
 ///   sends before one notify
-/// - On overflow, control messages (resize) may drop-oldest / last-writer-wins
-///   (resize is idempotent-ish), but WRITE messages are never silently dropped:
-///   send() returns .full and leaves the queue intact so the caller can retry
+/// - On overflow the ring is full for EVERY message kind: send() returns .full
+///   and the queue is left intact — an already-queued payload (a real terminal
+///   write) is never evicted to make room, not even for a control message.
+///   Trailing resizes still coalesce (last-writer-wins) before the full check,
+///   so rapid resize streams do not grow the queue
 /// - Mutex-based, not lock-free — adequate for our SPSC pattern with tiny
 ///   critical sections
 const std = @import("std");
@@ -48,23 +50,14 @@ pub fn deinit(self: *Mailbox) void {
     self.wakeup.deinit();
 }
 
-/// Whether a message is a control message (idempotent-ish; safe to drop-oldest
-/// on overflow) rather than a payload-bearing write that must not be lost.
-fn isControl(msg: Message) bool {
-    return switch (msg) {
-        .resize, .resize_immediate => true,
-        .write_small, .write_alloc => false,
-    };
-}
-
 /// Push a message onto the ring buffer.
 ///
 /// Returns:
 /// - .coalesced if a trailing resize was folded into the pending resize
 /// - .queued on a normal enqueue
-/// - .full if the ring is full and the message is a WRITE: nothing is dropped
-///   and the message is NOT enqueued, so the caller can notify+retry. A full
-///   ring with a CONTROL message drops the oldest entry and returns .queued.
+/// - .full if the ring is full: the message is NOT enqueued and NOTHING is
+///   dropped (no message kind evicts an already-queued payload), so the caller
+///   can notify+retry once the writer drains.
 ///
 /// Thread-safe (uses mutex).
 pub fn send(self: *Mailbox, msg: Message) SendResult {
@@ -73,16 +66,10 @@ pub fn send(self: *Mailbox, msg: Message) SendResult {
 
     if (self.coalesceTrailingResize(msg)) return .coalesced;
 
-    if (self.count == CAPACITY) {
-        // Never silently drop a write: report .full and leave the queue intact
-        // so the caller can wake the writer thread and retry once it drains.
-        if (!isControl(msg)) return .full;
-
-        // Control message (resize): drop oldest, advance head, release payload.
-        self.queue[self.head].deinit();
-        self.head = (self.head + 1) % CAPACITY;
-        self.count -= 1;
-    }
+    // Full means full for every message kind. Never evict an already-queued
+    // payload (a real terminal write) to make room — not even for a control
+    // message; the caller (Surface.queueIo) wakes the writer and retries.
+    if (self.count == CAPACITY) return .full;
 
     self.queue[self.tail] = msg;
     self.tail = (self.tail + 1) % CAPACITY;
@@ -205,27 +192,25 @@ test "Mailbox resize coalescing preserves write messages" {
     try std.testing.expect(mailbox.pop() == null);
 }
 
-test "Mailbox drops oldest control message when full" {
+test "resize on a full mailbox never evicts queued writes" {
     var mailbox = try Mailbox.init();
     defer mailbox.deinit();
 
-    // Fill with writes so the trailing-resize coalesce path is not taken and
-    // each resize lands as a distinct entry until the ring is full.
+    // Fill the ring exactly to capacity with real terminal writes.
     for (0..CAPACITY) |i| {
         try std.testing.expectEqual(SendResult.queued, mailbox.send(writeSmallByte(@intCast(i))));
     }
     try std.testing.expectEqual(@as(usize, CAPACITY), mailbox.count);
 
-    // A control (resize) message on a full ring drops the oldest entry and is
-    // enqueued — control is idempotent-ish, unlike writes.
-    try std.testing.expectEqual(SendResult.queued, mailbox.send(.{ .resize = .{ .cols = 10, .rows = 5 } }));
+    // A control (resize) message on a full ring is rejected with .full — it must
+    // NOT evict a queued write to make room. The caller (Surface.queueIo)
+    // notifies the writer and retries once space frees.
+    try std.testing.expectEqual(SendResult.full, mailbox.send(.{ .resize = .{ .cols = 10, .rows = 5 } }));
     try std.testing.expectEqual(@as(usize, CAPACITY), mailbox.count);
 
-    // Oldest write (byte 0) was dropped; remaining writes 1..CAPACITY-1 stay,
-    // followed by the resize.
-    for (1..CAPACITY) |expected| {
+    // Every queued write survives, in order; none were dropped for the resize.
+    for (0..CAPACITY) |expected| {
         try expectWriteByte(mailbox.pop() orelse return error.MissingMessage, @intCast(expected));
     }
-    try expectResize(mailbox.pop() orelse return error.MissingMessage, 10, 5);
     try std.testing.expect(mailbox.pop() == null);
 }
