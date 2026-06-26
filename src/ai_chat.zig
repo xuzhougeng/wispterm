@@ -30,7 +30,6 @@ const weixin_types = @import("weixin/types.zig");
 const ai_loop_store = @import("ai_loop_store.zig");
 const ai_loop_schedule = @import("ai_loop_schedule.zig");
 const first_party_tools = @import("first_party_tools.zig");
-const message_store = @import("ai_chat/message_store.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
 pub const AgentPermission = ai_chat_types.AgentPermission;
@@ -806,7 +805,7 @@ pub fn agentPermission() AgentPermission {
 pub const Session = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
-    messages: message_store.MessageStore(Message) = .empty,
+    messages: std.ArrayListUnmanaged(Message) = .empty,
     session_id_buf: [64]u8 = undefined,
     session_id_len: usize = 0,
     input_buf: [INPUT_PROMPT_MAX_BYTES]u8 = undefined,
@@ -1133,7 +1132,7 @@ pub const Session = struct {
         // first-turn window; never re-title it. (A half-finished session with no
         // assistant reply keeps auto_title_attempted=false and is still default-
         // titled, so it can be named after its next completed turn.)
-        for (session.messages.items()) |restored| {
+        for (session.messages.items) |restored| {
             if (restored.role == .assistant) {
                 session.auto_title_attempted = true;
                 break;
@@ -1158,7 +1157,7 @@ pub const Session = struct {
             thread.join();
             self.summary_thread = null;
         }
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             msg.deinit(self.allocator);
         }
         self.messages.deinit(self.allocator);
@@ -1492,7 +1491,7 @@ pub const Session = struct {
     pub fn shouldPersistCopilot(self: *Session) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             if (msg.persist_to_history) return true;
         }
         return false;
@@ -1772,7 +1771,7 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.input_select_all = self.input_len > 0;
-        self.transcript_select_all = !self.input_select_all and self.messages.items().len > 0;
+        self.transcript_select_all = !self.input_select_all and self.messages.items.len > 0;
         self.transcript_selection = null;
     }
 
@@ -1793,11 +1792,11 @@ pub const Session = struct {
     pub fn beginTranscriptSelection(self: *Session, message_index: usize, byte_offset: usize) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (message_index >= self.messages.items().len) {
+        if (message_index >= self.messages.items.len) {
             self.clearSelectionLocked();
             return;
         }
-        const msg = self.messages.items()[message_index];
+        const msg = self.messages.items[message_index];
         if (msg.role != .assistant or msg.content.len == 0) {
             self.clearSelectionLocked();
             return;
@@ -1819,8 +1818,8 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         var selection = self.transcript_selection orelse return;
-        if (selection.message_index != message_index or message_index >= self.messages.items().len) return;
-        const msg = self.messages.items()[message_index];
+        if (selection.message_index != message_index or message_index >= self.messages.items.len) return;
+        const msg = self.messages.items[message_index];
         if (msg.role != .assistant) return;
         selection.cursor = byte_offset; // display-text offset; copy path re-clamps
         self.transcript_selection = selection;
@@ -1850,7 +1849,7 @@ pub const Session = struct {
             error.NoSelection => {},
             else => return err,
         }
-        if (self.messages.items().len > 0) {
+        if (self.messages.items.len > 0) {
             return self.allocTranscriptClipboardTextLocked(allocator);
         }
         if (self.input_len > 0) {
@@ -1937,7 +1936,7 @@ pub const Session = struct {
             for (tool_summaries.items) |summary| allocator.free(summary);
             tool_summaries.deinit(allocator);
         }
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             if (msg.role == .tool) {
                 const summary = try allocRemoteToolSummary(allocator, msg);
                 var summary_owned = true;
@@ -1967,15 +1966,15 @@ pub const Session = struct {
     pub fn allocMessageClipboardText(self: *Session, allocator: std.mem.Allocator, message_index: usize) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (message_index >= self.messages.items().len) return allocator.dupe(u8, "");
-        return allocator.dupe(u8, self.messages.items()[message_index].content);
+        if (message_index >= self.messages.items.len) return allocator.dupe(u8, "");
+        return allocator.dupe(u8, self.messages.items[message_index].content);
     }
 
     pub fn toggleToolMessageCollapsed(self: *Session, message_index: usize) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (message_index >= self.messages.items().len) return;
-        var msg = &self.messages.items()[message_index];
+        if (message_index >= self.messages.items.len) return;
+        var msg = &self.messages.items[message_index];
         if (msg.role != .tool and !msg.is_context_summary) return;
         msg.content_collapsed = !msg.content_collapsed;
         msg.content_auto_expand = false;
@@ -1984,8 +1983,8 @@ pub const Session = struct {
     pub fn toggleReasoningCollapsed(self: *Session, message_index: usize) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (message_index >= self.messages.items().len) return;
-        var msg = &self.messages.items()[message_index];
+        if (message_index >= self.messages.items.len) return;
+        var msg = &self.messages.items[message_index];
         const reasoning = msg.reasoning orelse return;
         if (reasoning.len == 0) return;
         msg.reasoning_collapsed = !msg.reasoning_collapsed;
@@ -2397,7 +2396,7 @@ pub const Session = struct {
             return;
         }
 
-        const message_start = self.messages.items().len;
+        const message_start = self.messages.items.len;
         const invocation = parseSkillInvocation(prompt_raw);
         var skill_preload_content: ?[]u8 = null;
         if (invocation) |parsed| {
@@ -3194,7 +3193,8 @@ pub const Session = struct {
     /// Assumes self.mutex is held. Returns the captured history change for the
     /// caller to notify after unlocking.
     fn clearMessagesLocked(self: *Session) ?PendingHistoryChange {
-        self.messages.clearAndDeinit(self.allocator);
+        for (self.messages.items) |m| m.deinit(self.allocator);
+        self.messages.clearRetainingCapacity();
         self.scroll_px = 0;
         self.suggestion_selected = 0;
         self.clearSelectionLocked();
@@ -3562,7 +3562,7 @@ pub const Session = struct {
 
     fn composerHistoryPromptCountLocked(self: *Session) usize {
         var n: usize = 0;
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             if (msg.role == .user) n += 1;
         }
         return n;
@@ -3570,19 +3570,19 @@ pub const Session = struct {
 
     fn composerHistoryPromptMessageIndexLocked(self: *Session, n: usize) usize {
         var seen: usize = 0;
-        for (self.messages.items(), 0..) |msg, i| {
+        for (self.messages.items, 0..) |msg, i| {
             if (msg.role == .user) {
                 if (seen == n) return i;
                 seen += 1;
             }
         }
-        return self.messages.items().len;
+        return self.messages.items.len;
     }
 
     fn restoreComposerHistoryPromptLocked(self: *Session, selected: usize) bool {
         const idx = self.composerHistoryPromptMessageIndexLocked(selected);
-        if (idx >= self.messages.items().len) return false;
-        self.replaceInputTextLocked(self.messages.items()[idx].content);
+        if (idx >= self.messages.items.len) return false;
+        self.replaceInputTextLocked(self.messages.items[idx].content);
         return true;
     }
 
@@ -3639,14 +3639,14 @@ pub const Session = struct {
         }
         const sel = @min(self.rewind_selected, count - 1);
         const idx = self.rewindPointMessageIndexLocked(sel);
-        if (idx >= self.messages.items().len) {
+        if (idx >= self.messages.items.len) {
             self.rewind_open = false;
             self.mutex.unlock();
             return;
         }
         // insertInputBytesLocked 会立即把字节拷入 input_buf，随后 rollback 才释放
         // messages[idx]，两块缓冲区不重叠，安全。
-        self.setInputTextLocked(self.messages.items()[idx].content);
+        self.setInputTextLocked(self.messages.items[idx].content);
         self.rollbackMessagesFromLocked(idx);
         self.rewind_open = false;
         self.scroll_px = 1_000_000;
@@ -3656,13 +3656,15 @@ pub const Session = struct {
     }
 
     fn rollbackMessagesFromLocked(self: *Session, start: usize) void {
-        self.messages.truncateFrom(self.allocator, start);
+        while (self.messages.items.len > start) {
+            if (self.messages.pop()) |m| m.deinit(self.allocator) else break;
+        }
     }
 
     /// 对话中 role == .user 的消息条数（回溯点数量）。持锁内部版本。
     fn rewindPointCountLocked(self: *Session) usize {
         var n: usize = 0;
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             if (msg.role == .user) n += 1;
         }
         return n;
@@ -3679,17 +3681,17 @@ pub const Session = struct {
     /// 调用方需保证 n < rewindPointCountLocked()。找不到返回 messages.items.len。
     fn rewindPointMessageIndexLocked(self: *Session, n: usize) usize {
         var seen: usize = 0;
-        for (self.messages.items(), 0..) |msg, i| {
+        for (self.messages.items, 0..) |msg, i| {
             if (msg.role == .user) {
                 if (seen == n) return i;
                 seen += 1;
             }
         }
-        return self.messages.items().len;
+        return self.messages.items.len;
     }
 
     fn collapseAutoExpandedDetailsLocked(self: *Session) void {
-        for (self.messages.items()) |*msg| {
+        for (self.messages.items) |*msg| {
             if (msg.role == .tool and msg.content_auto_expand) {
                 msg.content_collapsed = true;
                 msg.content_auto_expand = false;
@@ -3704,7 +3706,7 @@ pub const Session = struct {
     fn allocTranscriptClipboardTextLocked(self: *Session, allocator: std.mem.Allocator) ![]u8 {
         var out: std.ArrayListUnmanaged(u8) = .empty;
         errdefer out.deinit(allocator);
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             try appendClipboardSection(allocator, &out, msg.role.label(), msg.content);
             if (msg.reasoning) |reasoning| {
                 if (reasoning.len > 0) try appendClipboardSection(allocator, &out, "Reasoning", reasoning);
@@ -3731,12 +3733,12 @@ pub const Session = struct {
     }
 
     fn appendFullMarkdownExportLocked(self: *Session, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
-        if (self.messages.items().len == 0) {
+        if (self.messages.items.len == 0) {
             try out.appendSlice(allocator, "No messages yet.\n");
             return;
         }
 
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             const heading = if (msg.role == .tool and msg.tool_name != null and msg.tool_name.?.len > 0)
                 "Tool"
             else
@@ -3754,7 +3756,7 @@ pub const Session = struct {
 
     fn appendCleanMarkdownExportLocked(self: *Session, allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)) !void {
         var user_count: usize = 0;
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             if (msg.role == .user and msg.content.len > 0) user_count += 1;
         }
 
@@ -3763,7 +3765,7 @@ pub const Session = struct {
             try out.appendSlice(allocator, "No user input yet.\n\n");
         } else {
             var seen: usize = 0;
-            for (self.messages.items()) |msg| {
+            for (self.messages.items) |msg| {
                 if (msg.role != .user or msg.content.len == 0) continue;
                 if (user_count > 1) {
                     try out.writer(allocator).print("### {d}\n\n", .{seen + 1});
@@ -3775,7 +3777,7 @@ pub const Session = struct {
         }
 
         try out.appendSlice(allocator, "## Final Result\n\n");
-        if (latestAssistantContent(self.messages.items())) |content| {
+        if (latestAssistantContent(self.messages.items)) |content| {
             try appendMarkdownBody(allocator, out, content);
             try out.append(allocator, '\n');
         } else {
@@ -3786,8 +3788,8 @@ pub const Session = struct {
     fn allocTranscriptSelectionTextLocked(self: *Session, allocator: std.mem.Allocator) (error{NoSelection} || std.mem.Allocator.Error)![]u8 {
         const selection = self.transcript_selection orelse return error.NoSelection;
         const range = selection.range() orelse return error.NoSelection;
-        if (selection.message_index >= self.messages.items().len) return error.NoSelection;
-        const msg = self.messages.items()[selection.message_index];
+        if (selection.message_index >= self.messages.items.len) return error.NoSelection;
+        const msg = self.messages.items[selection.message_index];
         if (msg.role != .assistant) return error.NoSelection;
         const display = try markdown_text.allocDisplayText(allocator, msg.content);
         defer allocator.free(display);
@@ -3804,7 +3806,7 @@ pub const Session = struct {
     /// user message (copilot mode); pass null/null for a plain chat.
     fn buildRequestMessagesLocked(self: *Session, copilot_target_idx: ?usize, copilot_ctx: ?[]const u8) ![]RequestMessage {
         var visible_count: usize = 0;
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             if (msg.role != .tool) {
                 visible_count += 1;
             } else if (msg.replay_to_model) {
@@ -3823,7 +3825,7 @@ pub const Session = struct {
             for (messages[0..written]) |msg| msg.deinit(self.allocator);
         }
 
-        for (self.messages.items(), 0..) |msg, idx| {
+        for (self.messages.items, 0..) |msg, idx| {
             if (msg.role == .tool) {
                 if (!msg.replay_to_model) continue;
                 const id = msg.tool_call_id orelse continue;
@@ -3862,8 +3864,8 @@ pub const Session = struct {
     }
 
     fn allocDistillTurnsLocked(self: *Session) ![]ai_skill_distill.DistillTurn {
-        const turns = try self.allocator.alloc(ai_skill_distill.DistillTurn, self.messages.items().len);
-        for (self.messages.items(), 0..) |msg, idx| {
+        const turns = try self.allocator.alloc(ai_skill_distill.DistillTurn, self.messages.items.len);
+        for (self.messages.items, 0..) |msg, idx| {
             turns[idx] = .{
                 .role = switch (msg.role) {
                     .user => .user,
@@ -3989,10 +3991,10 @@ pub const Session = struct {
                     copilot_ctx = ai_chat_tools.buildCopilotContext(self.allocator, surface.cwd, surface.snapshot) catch null;
                     if (copilot_ctx != null) {
                         // index of the LAST user message in self.messages
-                        var k: usize = self.messages.items().len;
+                        var k: usize = self.messages.items.len;
                         while (k > 0) {
                             k -= 1;
-                            if (self.messages.items()[k].role == .user) {
+                            if (self.messages.items[k].role == .user) {
                                 copilot_target_idx = k;
                                 break;
                             }
@@ -4086,7 +4088,7 @@ pub const Session = struct {
 
     fn toHistoryRecordLocked(self: *Session, allocator: std.mem.Allocator) !agent_history.SessionRecord {
         var persist_count: usize = 0;
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             if (msg.persist_to_history) persist_count += 1;
         }
 
@@ -4100,7 +4102,7 @@ pub const Session = struct {
             allocator.free(messages);
         }
 
-        for (self.messages.items()) |msg| {
+        for (self.messages.items) |msg| {
             if (!msg.persist_to_history) continue;
 
             var record_msg = agent_history.MessageRecord{
@@ -4523,7 +4525,7 @@ pub fn applyProviderProfile(
 
         var has_summary_user = false;
         var has_summary_assistant = false;
-        for (session.messages.items()) |m| switch (m.role) {
+        for (session.messages.items) |m| switch (m.role) {
             .user => {
                 if (m.content.len > 0) has_summary_user = true;
             },
@@ -4554,13 +4556,13 @@ pub fn applyProviderProfile(
             session.setStatusLocked("Model switched — kept full history");
             break :locked;
         }
-        const boundary = session.messages.items().len;
+        const boundary = session.messages.items.len;
         const turns = session.allocator.alloc(ai_model_switch.TurnMessage, boundary) catch {
             session.setStatusLocked("Model switched — full history saved. Use /resume to reopen it.");
             break :locked;
         };
         defer session.allocator.free(turns);
-        for (session.messages.items(), 0..) |m, i| turns[i] = .{ .role = m.role, .content = m.content };
+        for (session.messages.items, 0..) |m, i| turns[i] = .{ .role = m.role, .content = m.content };
         sreq = buildSummaryRequestLocked(session, turns, boundary, old_model) catch {
             session.setStatusLocked("Model switched — full history saved. Use /resume to reopen it.");
             break :locked;
@@ -4646,7 +4648,7 @@ pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usiz
         session.notifyHistoryChange(history_change);
     }
     if (session.closing.load(.acquire)) return;
-    if (boundary > session.messages.items().len) {
+    if (boundary > session.messages.items.len) {
         session.setStatusLocked("Ready");
         return; // stale (e.g. /clear happened) — keep raw history
     }
@@ -4666,7 +4668,7 @@ pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usiz
         session.setStatusLocked("Ready");
         return;
     };
-    new_list.appendSlice(allocator, session.messages.items()[boundary..]) catch {
+    new_list.appendSlice(allocator, session.messages.items[boundary..]) catch {
         // OOM: free the summary we just made, keep raw history intact.
         new_list.items[0].deinit(allocator);
         new_list.deinit(allocator);
@@ -4675,9 +4677,9 @@ pub fn applySummaryResult(session: *Session, summary: []const u8, boundary: usiz
     };
     // Free only the collapsed pre-switch messages; tail structs were copied by
     // value into new_list (pointer ownership moved).
-    for (session.messages.items()[0..boundary]) |m| m.deinit(allocator);
+    for (session.messages.items[0..boundary]) |m| m.deinit(allocator);
     session.messages.deinit(allocator);
-    session.messages = @TypeOf(session.messages).fromList(new_list);
+    session.messages = new_list;
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Context summarized. Use /resume to reopen the full pre-switch conversation.");
     history_change = session.captureHistoryChangeLocked();
@@ -4756,9 +4758,9 @@ pub fn maybeAutoTitle(session: *Session) void {
     session.mutex.lock();
     var spawned_req: ?*ChatRequest = null;
     locked: {
-        const turns = allocator.alloc(ai_chat_title.TurnMessage, session.messages.items().len) catch break :locked;
+        const turns = allocator.alloc(ai_chat_title.TurnMessage, session.messages.items.len) catch break :locked;
         defer allocator.free(turns);
-        for (session.messages.items(), 0..) |m, i| {
+        for (session.messages.items, 0..) |m, i| {
             turns[i] = .{ .role = m.role, .content = m.content };
         }
         const turn = ai_chat_title.extractFirstTurn(turns);
@@ -5027,7 +5029,7 @@ pub fn beginAssistantStream(session: *Session) !usize {
     session.scroll_px = 1_000_000;
     session.setStatusLocked("Streaming...");
     history_change = session.captureHistoryChangeLocked();
-    return session.messages.items().len - 1;
+    return session.messages.items.len - 1;
 }
 
 fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content_delta: []const u8, reasoning_delta: []const u8) !void {
@@ -5042,9 +5044,9 @@ fn appendAssistantStreamDelta(session: *Session, message_idx: usize, content_del
         session.notifyHistoryChange(history_change);
     }
     if (sessionCancelled(session)) return;
-    if (message_idx >= session.messages.items().len) return error.StreamMessageMissing;
+    if (message_idx >= session.messages.items.len) return error.StreamMessageMissing;
 
-    var msg = &session.messages.items()[message_idx];
+    var msg = &session.messages.items[message_idx];
     if (content_delta.len > 0) {
         const old_len = msg.content.len;
         msg.content = try allocator.realloc(msg.content, old_len + content_delta.len);
@@ -5087,8 +5089,8 @@ pub fn finishAssistantStream(session: *Session, message_idx: usize, started_ms: 
         session.setStatusLocked("Stopped");
         return;
     }
-    if (message_idx < session.messages.items().len) {
-        const msg = &session.messages.items()[message_idx];
+    if (message_idx < session.messages.items.len) {
+        const msg = &session.messages.items[message_idx];
         if (msg.content.len == 0 and msg.reasoning == null) {
             msg.content = session.allocator.realloc(msg.content, "No response".len) catch msg.content;
             if (msg.content.len == "No response".len) @memcpy(msg.content, "No response");
@@ -5396,15 +5398,15 @@ test "ai chat enter completes selected slash suggestion before command submit" {
     session.handleKey(.{ .key = input_key.Key.enter });
 
     try std.testing.expectEqualStrings("/commands", session.input());
-    try std.testing.expectEqual(@as(usize, 0), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
 
     session.handleKey(.{ .key = input_key.Key.enter });
 
     try std.testing.expectEqualStrings("", session.input());
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
-    try std.testing.expectEqual(Role.tool, session.messages.items()[0].role);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expectEqual(Role.tool, session.messages.items[0].role);
 
-    for (session.messages.items()) |msg| msg.deinit(allocator);
+    for (session.messages.items) |msg| msg.deinit(allocator);
     session.messages.deinit(allocator);
 }
 
@@ -5416,11 +5418,11 @@ test "ai chat enter submits slash commands instead of completing suggestions" {
     session.handleKey(.{ .key = input_key.Key.enter });
 
     try std.testing.expectEqualStrings("", session.input());
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
-    try std.testing.expectEqual(Role.tool, session.messages.items()[0].role);
-    try std.testing.expect(std.mem.indexOf(u8, session.messages.items()[0].content, "/commands - list slash commands") != null);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expectEqual(Role.tool, session.messages.items[0].role);
+    try std.testing.expect(std.mem.indexOf(u8, session.messages.items[0].content, "/commands - list slash commands") != null);
 
-    for (session.messages.items()) |msg| msg.deinit(allocator);
+    for (session.messages.items) |msg| msg.deinit(allocator);
     session.messages.deinit(allocator);
 }
 
@@ -5428,7 +5430,7 @@ test "/rewind via submit opens picker without adding transcript noise" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -5441,7 +5443,7 @@ test "/rewind via submit opens picker without adding transcript noise" {
     try std.testing.expect(session.rewind_open);
     try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
     try std.testing.expectEqualStrings("", session.input());
-    try std.testing.expectEqual(@as(usize, 2), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
 }
 
 test "/clear via submit empties the transcript and shows confirmation" {
@@ -5452,8 +5454,8 @@ test "/clear via submit empties the transcript and shows confirmation" {
     session.appendInputText("/clear");
     session.submit();
     // /clear empties then appends a single confirmation tool message
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
-    try std.testing.expect(std.mem.indexOf(u8, session.messages.items()[0].content, "Cleared") != null);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, session.messages.items[0].content, "Cleared") != null);
 }
 
 var test_export_mode: ?MarkdownExportMode = null;
@@ -5557,7 +5559,7 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
 
     try std.testing.expectEqualStrings("$pdf ", session.input());
     try std.testing.expectEqual(@as(usize, "$pdf ".len), session.inputCursor());
-    try std.testing.expectEqual(@as(usize, 0), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
 }
 
 const WeixinAttachmentCapture = struct {
@@ -5852,7 +5854,7 @@ test "ai_chat: session loads from history record" {
     defer session.deinit();
 
     try std.testing.expectEqualStrings("session-1", session.sessionId());
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
 }
 
 test "ai_chat: loading history record cleans up partial message clone on allocation failure" {
@@ -5979,8 +5981,8 @@ test "ai_chat: progress tool messages are ui-only history" {
 
     try std.testing.expectEqual(@as(usize, 0), capture.calls);
     try std.testing.expect(capture.event == null);
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
-    try std.testing.expect(!session.messages.items()[0].persist_to_history);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expect(!session.messages.items[0].persist_to_history);
 
     session.mutex.lock();
     defer session.mutex.unlock();
@@ -6402,7 +6404,7 @@ test "ai chat appends usage footer to completed assistant message" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -6417,9 +6419,9 @@ test "ai chat appends usage footer to completed assistant message" {
         },
     }, std.time.milliTimestamp() - 2300);
 
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
-    try std.testing.expect(session.messages.items()[0].usage_footer != null);
-    const footer = session.messages.items()[0].usage_footer.?;
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expect(session.messages.items[0].usage_footer != null);
+    const footer = session.messages.items[0].usage_footer.?;
     try std.testing.expect(std.mem.indexOf(u8, footer, "total 46") != null);
     try std.testing.expect(std.mem.indexOf(u8, footer, "cache 5/7") != null);
 }
@@ -6633,7 +6635,7 @@ test "ai chat model context is request-only and hidden from visible history" {
         allocator.free(reqs);
     }
     try std.testing.expectEqual(@as(usize, 1), reqs.len);
-    try std.testing.expect(std.mem.indexOf(u8, session.messages.items()[0].content, "/work/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, session.messages.items[0].content, "/work/") == null);
     try std.testing.expect(std.mem.indexOf(u8, reqs[0].content, "用户通过微信发送了文件：a.pdf") != null);
     try std.testing.expect(std.mem.indexOf(u8, reqs[0].content, "/work/weixin_inbound/a.pdf") != null);
 
@@ -6745,7 +6747,7 @@ test "ai chat composer history recalls prompts at visual boundaries" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
     try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "first prompt") });
@@ -6774,7 +6776,7 @@ test "ai chat composer history preserves multiline vertical editing" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
     try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "previous prompt") });
@@ -6796,7 +6798,7 @@ test "ai chat composer history exits after editing recalled prompt" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
     try session.messages.append(allocator, .{ .role = .user, .content = try allocator.dupe(u8, "old prompt") });
@@ -6947,7 +6949,7 @@ test "ai chat remote snapshot keeps final answer when reasoning is huge (issue 1
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
     session.setStatusLocked("Done in 280.9s");
@@ -6976,7 +6978,7 @@ test "ai chat remote snapshot still includes reasoning when it fits" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7001,7 +7003,7 @@ test "ai chat remote snapshot includes a pending approval section" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
     try session.messages.append(allocator, .{
@@ -7035,7 +7037,7 @@ test "ai chat remote snapshot approval section omits the command line when empty
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7057,7 +7059,7 @@ test "ai chat remote snapshot emits a Question section with numbered options" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7088,7 +7090,7 @@ test "ai chat clipboard text exports transcript when input is empty" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7117,7 +7119,7 @@ test "ai chat clipboard text prefers selected assistant answer range" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7141,7 +7143,7 @@ test "ai chat transcript selection clamps to utf8 boundaries" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7162,7 +7164,7 @@ test "ai chat transcript selection copies cleaned markdown text" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7184,7 +7186,7 @@ test "ai chat transcript selection over table is not truncated to raw length" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7208,7 +7210,7 @@ test "ai chat message clipboard exports one bubble" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7232,7 +7234,7 @@ test "ai chat Markdown export includes full transcript details" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
     session.copyTitle("Chat Export");
@@ -7265,7 +7267,7 @@ test "ai chat clean Markdown export keeps user inputs and final answer only" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
     session.copyTitle("Clean Export");
@@ -7313,7 +7315,7 @@ test "ai chat stop request suppresses late assistant result" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7326,7 +7328,7 @@ test "ai chat stop request suppresses late assistant result" {
     try std.testing.expect(!session.request_inflight);
     try std.testing.expect(!session.request_stopping);
     try std.testing.expect(!session.stop_requested.load(.acquire));
-    try std.testing.expectEqual(@as(usize, 0), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
     try std.testing.expectEqualStrings("Stopped", session.status());
 }
 
@@ -7416,7 +7418,7 @@ test "ai chat distill cancel clears pending candidate" {
     var session = Session{ .allocator = a };
     defer {
         if (session.distill_candidate) |*candidate| candidate.deinit(a);
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     session.distill_candidate = try testDistillCandidate(a);
@@ -7426,8 +7428,8 @@ test "ai chat distill cancel clears pending candidate" {
 
     try std.testing.expect(session.distill_candidate == null);
     try std.testing.expectEqualStrings("", session.input());
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
-    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items()[0].content, 1, "discarded"));
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[0].content, 1, "discarded"));
 }
 
 test "ai chat distill confirm without candidate is local only" {
@@ -7435,7 +7437,7 @@ test "ai chat distill confirm without candidate is local only" {
     var session = Session{ .allocator = a };
     defer {
         if (session.distill_candidate) |*candidate| candidate.deinit(a);
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     session.appendInputText("/沉淀 确认");
@@ -7443,8 +7445,8 @@ test "ai chat distill confirm without candidate is local only" {
     session.submit();
 
     try std.testing.expect(!session.request_inflight);
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
-    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items()[0].content, 1, "No distill candidate"));
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[0].content, 1, "No distill candidate"));
 }
 
 test "ai chat appends automatic distill suggestion after tool-heavy result" {
@@ -7454,7 +7456,7 @@ test "ai chat appends automatic distill suggestion after tool-heavy result" {
     var session = Session{ .allocator = a };
     defer {
         if (session.distill_candidate) |*candidate| candidate.deinit(a);
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
@@ -7465,10 +7467,10 @@ test "ai chat appends automatic distill suggestion after tool-heavy result" {
     appendAssistantResult(&session, .{ .content = @constCast("done") }, 0);
 
     try std.testing.expect(session.distill_suggestion_pending);
-    try std.testing.expectEqual(@as(usize, 5), session.messages.items().len);
-    try std.testing.expectEqual(Role.tool, session.messages.items()[4].role);
-    try std.testing.expect(!session.messages.items()[4].persist_to_history);
-    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items()[4].content, 1, "Distill it into a skill"));
+    try std.testing.expectEqual(@as(usize, 5), session.messages.items.len);
+    try std.testing.expectEqual(Role.tool, session.messages.items[4].role);
+    try std.testing.expect(!session.messages.items[4].persist_to_history);
+    try std.testing.expect(std.mem.containsAtLeast(u8, session.messages.items[4].content, 1, "Distill it into a skill"));
 }
 
 test "ai chat skips automatic distill suggestion when disabled" {
@@ -7480,7 +7482,7 @@ test "ai chat skips automatic distill suggestion when disabled" {
     var session = Session{ .allocator = a };
     defer {
         if (session.distill_candidate) |*candidate| candidate.deinit(a);
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
@@ -7492,8 +7494,8 @@ test "ai chat skips automatic distill suggestion when disabled" {
 
     try std.testing.expect(!session.distill_suggestion_pending);
     // Only the appended assistant message — no extra distill-suggestion tool row.
-    try std.testing.expectEqual(@as(usize, 4), session.messages.items().len);
-    try std.testing.expectEqual(Role.assistant, session.messages.items()[3].role);
+    try std.testing.expectEqual(@as(usize, 4), session.messages.items.len);
+    try std.testing.expectEqual(Role.assistant, session.messages.items[3].role);
 }
 
 test "ai chat escape dismisses pending distill suggestion before rewind" {
@@ -7501,7 +7503,7 @@ test "ai chat escape dismisses pending distill suggestion before rewind" {
     var session = Session{ .allocator = a };
     defer {
         if (session.distill_candidate) |*candidate| candidate.deinit(a);
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
@@ -7520,7 +7522,7 @@ test "ai chat enter on pending distill suggestion requires api key and does not 
     var session = Session{ .allocator = a };
     defer {
         if (session.distill_candidate) |*candidate| candidate.deinit(a);
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "fix this") });
@@ -7538,7 +7540,7 @@ test "ai chat rewind point count and index map user messages" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "first") });
@@ -7557,7 +7559,7 @@ test "ai chat rewind open requires idle and points" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
 
@@ -7585,7 +7587,7 @@ test "ai chat rewind move selection clamps" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "one") });
@@ -7603,7 +7605,7 @@ test "ai chat confirm rewind truncates and restores composer" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "first prompt") });
@@ -7615,7 +7617,7 @@ test "ai chat confirm rewind truncates and restores composer" {
     session.confirmRewind();
 
     // 删除 idx 2 及之后：仅剩前两条。
-    try std.testing.expectEqual(@as(usize, 2), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
     try std.testing.expect(!session.rewind_open);
     try std.testing.expectEqualStrings("second prompt", session.input());
 
@@ -7623,7 +7625,7 @@ test "ai chat confirm rewind truncates and restores composer" {
     session.openRewindPicker(); // 现在 count = 1, selected = 0 (idx 0)
     session.moveRewindSelection(-1);
     session.confirmRewind();
-    try std.testing.expectEqual(@as(usize, 0), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
     try std.testing.expectEqualStrings("first prompt", session.input());
 }
 
@@ -7641,7 +7643,7 @@ test "ai chat collapse helper only closes auto-expanded details" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7669,18 +7671,18 @@ test "ai chat collapse helper only closes auto-expanded details" {
     session.collapseAutoExpandedDetailsLocked();
     session.mutex.unlock();
 
-    try std.testing.expect(session.messages.items()[0].content_collapsed);
-    try std.testing.expect(!session.messages.items()[0].content_auto_expand);
-    try std.testing.expect(session.messages.items()[1].reasoning_collapsed);
-    try std.testing.expect(!session.messages.items()[1].reasoning_auto_expand);
-    try std.testing.expect(!session.messages.items()[2].content_collapsed);
+    try std.testing.expect(session.messages.items[0].content_collapsed);
+    try std.testing.expect(!session.messages.items[0].content_auto_expand);
+    try std.testing.expect(session.messages.items[1].reasoning_collapsed);
+    try std.testing.expect(!session.messages.items[1].reasoning_auto_expand);
+    try std.testing.expect(!session.messages.items[2].content_collapsed);
 }
 
 test "ai chat cut input returns text and clears when selected" {
     const allocator = std.testing.allocator;
     var session = Session{ .allocator = allocator };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(allocator);
+        for (session.messages.items) |msg| msg.deinit(allocator);
         session.messages.deinit(allocator);
     }
 
@@ -7702,10 +7704,10 @@ test "clearMessages empties transcript but keeps settings" {
     var session = try Session.init(a, "chat", "https://api.example.com", "key", "m1", "sys", "disabled", "", "false", "false");
     defer session.deinit();
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
-    try std.testing.expect(session.messages.items().len > 0);
+    try std.testing.expect(session.messages.items.len > 0);
 
     session.clearMessages();
-    try std.testing.expectEqual(@as(usize, 0), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
     try std.testing.expectEqualStrings("sys", session.systemPrompt());
     try std.testing.expectEqualStrings("m1", session.model());
 }
@@ -7728,7 +7730,7 @@ test "ai chat double esc opens rewind picker when idle" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
@@ -7746,7 +7748,7 @@ test "ai chat slow double esc does not open rewind picker" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
@@ -7762,7 +7764,7 @@ test "ai chat esc during generation only stops and does not open picker" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
@@ -7782,7 +7784,7 @@ test "ai chat rewind picker arrow and enter via handleKey" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "alpha") });
@@ -7794,7 +7796,7 @@ test "ai chat rewind picker arrow and enter via handleKey" {
     try std.testing.expectEqual(@as(usize, 0), session.rewind_selected);
     session.handleKey(.{ .key = input_key.Key.enter });
     try std.testing.expect(!session.rewind_open);
-    try std.testing.expectEqual(@as(usize, 0), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 0), session.messages.items.len);
     try std.testing.expectEqualStrings("alpha", session.input());
 }
 
@@ -7802,14 +7804,14 @@ test "ai chat rewind picker esc closes without change" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "keep") });
     session.openRewindPicker();
     session.handleKey(.{ .key = input_key.Key.escape });
     try std.testing.expect(!session.rewind_open);
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
 }
 
 // 清选区是独立动作、不计入双击计时：ESC 清选区后需要重新双击才开选择器。
@@ -7817,7 +7819,7 @@ test "ai chat esc clearing selection does not prime rewind double-tap" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
@@ -7842,7 +7844,7 @@ test "ai chat double esc after stop opens rewind picker" {
     const a = std.testing.allocator;
     var session = Session{ .allocator = a };
     defer {
-        for (session.messages.items()) |msg| msg.deinit(a);
+        for (session.messages.items) |msg| msg.deinit(a);
         session.messages.deinit(a);
     }
     try session.messages.append(a, .{ .role = .user, .content = try a.dupe(u8, "hi") });
@@ -8421,8 +8423,8 @@ test "copilot loop command lists and stops tasks from other sessions" {
     _ = copilot.runBuiltinCommandLocked(.loop, "all");
     copilot.mutex.unlock();
 
-    try std.testing.expect(copilot.messages.items().len > 0);
-    const list_msg = copilot.messages.items()[copilot.messages.items().len - 1].content;
+    try std.testing.expect(copilot.messages.items.len > 0);
+    const list_msg = copilot.messages.items[copilot.messages.items.len - 1].content;
     try std.testing.expect(std.mem.indexOf(u8, list_msg, "legacy copilot task") != null);
     try std.testing.expect(std.mem.indexOf(u8, list_msg, "Old Copilot") != null);
 
@@ -8538,9 +8540,9 @@ test "is_context_summary messages are collapsible" {
         .is_context_summary = true,
         .content_collapsed = true,
     });
-    try std.testing.expect(session.messages.items()[0].content_collapsed);
+    try std.testing.expect(session.messages.items[0].content_collapsed);
     session.toggleToolMessageCollapsed(0);
-    try std.testing.expect(!session.messages.items()[0].content_collapsed);
+    try std.testing.expect(!session.messages.items[0].content_collapsed);
 }
 
 test "applySummaryResult collapses pre-switch messages into one summary card" {
@@ -8554,12 +8556,12 @@ test "applySummaryResult collapses pre-switch messages into one summary card" {
     }
     // boundary = 2 means: collapse the first 2 messages, preserve message[2..].
     applySummaryResult(session, "SUMMARY", 2, "glm-5.2");
-    try std.testing.expectEqual(@as(usize, 2), session.messages.items().len);
-    try std.testing.expect(session.messages.items()[0].is_context_summary);
-    try std.testing.expectEqual(Role.user, session.messages.items()[0].role);
-    try std.testing.expect(std.mem.indexOf(u8, session.messages.items()[0].content, "SUMMARY") != null);
-    try std.testing.expect(std.mem.indexOf(u8, session.messages.items()[0].content, "glm-5.2") != null);
-    try std.testing.expectEqualStrings("u2", session.messages.items()[1].content);
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
+    try std.testing.expect(session.messages.items[0].is_context_summary);
+    try std.testing.expectEqual(Role.user, session.messages.items[0].role);
+    try std.testing.expect(std.mem.indexOf(u8, session.messages.items[0].content, "SUMMARY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, session.messages.items[0].content, "glm-5.2") != null);
+    try std.testing.expectEqualStrings("u2", session.messages.items[1].content);
     try std.testing.expect(std.mem.indexOf(u8, session.status(), "/resume") != null);
 }
 
@@ -8568,8 +8570,8 @@ test "applySummaryResult is a no-op when boundary exceeds message count" {
     defer session.deinit();
     try session.messages.append(std.testing.allocator, .{ .role = .user, .content = try std.testing.allocator.dupe(u8, "only") });
     applySummaryResult(session, "S", 5, "X"); // stale boundary (e.g. after /clear)
-    try std.testing.expectEqual(@as(usize, 1), session.messages.items().len);
-    try std.testing.expectEqualStrings("only", session.messages.items()[0].content);
+    try std.testing.expectEqual(@as(usize, 1), session.messages.items.len);
+    try std.testing.expectEqualStrings("only", session.messages.items[0].content);
 }
 
 test "failSummaryResult keeps raw history and points to resume" {
@@ -8582,9 +8584,9 @@ test "failSummaryResult keeps raw history and points to resume" {
         });
     }
     failSummaryResult(session);
-    try std.testing.expectEqual(@as(usize, 2), session.messages.items().len);
-    try std.testing.expectEqualStrings("u1", session.messages.items()[0].content);
-    try std.testing.expectEqualStrings("a1", session.messages.items()[1].content);
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
+    try std.testing.expectEqualStrings("u1", session.messages.items[0].content);
+    try std.testing.expectEqualStrings("a1", session.messages.items[1].content);
     try std.testing.expect(std.mem.indexOf(u8, session.status(), "/resume") != null);
 }
 
