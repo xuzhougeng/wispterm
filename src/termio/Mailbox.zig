@@ -1,42 +1,59 @@
-/// SPSC mailbox: fixed-capacity ring buffer with mutex + xev.Async wakeup.
+/// Termio mailbox: a payload/control split with mutex + xev.Async wakeup.
 ///
-/// The main thread pushes messages via send(), then calls notify() to wake
-/// the IO writer thread's xev event loop. The writer thread pops messages
-/// via pop() in its wakeup callback.
+/// The main thread enqueues messages, then calls notify() to wake the IO
+/// writer thread's xev event loop. The writer thread drains the mailbox in its
+/// wakeup callback.
+///
+/// Two separately governed lanes share one mutex and one wakeup:
+///
+///   PAYLOAD lane — terminal writes (`write_small` / `write_alloc`).
+///     A fixed-capacity, order-preserving ring (CAPACITY 64). This is the
+///     stream of bytes destined for the child PTY; order matters and nothing
+///     may be silently dropped. When the ring is full, sendWrite() returns
+///     `.full` and the queue is left intact — the caller wakes the writer and
+///     retries. A resize storm can NEVER displace a queued write because resize
+///     no longer occupies a ring slot.
+///
+///   CONTROL lane — resize requests (coalesced + immediate).
+///     Two last-writer-wins fields, not a queue: `pending_resize` and
+///     `pending_immediate_resize`. Resize is inherently a "latest geometry
+///     wins" operation (and the writer thread additionally coalesces the
+///     non-immediate one behind a 25ms timer), so a single overwriting slot per
+///     kind is sufficient. setResize()/setImmediateResize() never fail.
 ///
 /// Design notes:
-/// - send() + notify() are separate (like Ghostty) so the caller can batch
-///   sends before one notify
-/// - On overflow the ring is full for EVERY message kind: send() returns .full
-///   and the queue is left intact — an already-queued payload (a real terminal
-///   write) is never evicted to make room, not even for a control message.
-///   Trailing resizes still coalesce (last-writer-wins) before the full check,
-///   so rapid resize streams do not grow the queue
-/// - Mutex-based, not lock-free — adequate for our SPSC pattern with tiny
-///   critical sections
+/// - send + notify are separate (like Ghostty) so the caller can batch sends
+///   before one notify.
+/// - Mutex-based, not lock-free — adequate for our pattern with tiny critical
+///   sections.
 const std = @import("std");
 const xev = @import("xev");
 const Message = @import("message.zig").Message;
+const geometry = @import("../core/geometry.zig");
 
 const Mailbox = @This();
 
 const CAPACITY = 64;
 
-/// Outcome of a send() call so the caller can react (e.g. retry on .full).
+/// Outcome of a sendWrite() call so the caller can react (e.g. retry on .full).
 pub const SendResult = enum {
-    /// The message was enqueued normally.
+    /// The write was enqueued onto the payload ring.
     queued,
-    /// A trailing resize was coalesced into the existing pending resize.
-    coalesced,
-    /// The ring was full and the message could not be enqueued. The queue is
-    /// left intact (nothing dropped); the caller should notify+retry.
+    /// The payload ring was full and the write could not be enqueued. The queue
+    /// is left intact (nothing dropped); the caller should notify+retry.
     full,
 };
 
+// PAYLOAD lane — order-preserving write ring.
 queue: [CAPACITY]Message = undefined,
 head: usize = 0,
 tail: usize = 0,
 count: usize = 0,
+
+// CONTROL lane — last-writer-wins resize fields (NOT ring slots).
+pending_resize: ?geometry.GridSize = null,
+pending_immediate_resize: ?geometry.GridSize = null,
+
 mutex: std.Thread.Mutex = .{},
 wakeup: xev.Async,
 
@@ -47,28 +64,34 @@ pub fn init() !Mailbox {
 }
 
 pub fn deinit(self: *Mailbox) void {
+    // Free any heap-owned payload still queued (write_alloc) so teardown does
+    // not leak. Resize fields own nothing.
+    while (self.popWrite()) |msg| msg.deinit();
     self.wakeup.deinit();
 }
 
-/// Push a message onto the ring buffer.
+/// Enqueue a terminal write (`write_small` / `write_alloc`) onto the payload
+/// ring, preserving order.
 ///
 /// Returns:
-/// - .coalesced if a trailing resize was folded into the pending resize
-/// - .queued on a normal enqueue
+/// - .queued on a normal enqueue.
 /// - .full if the ring is full: the message is NOT enqueued and NOTHING is
-///   dropped (no message kind evicts an already-queued payload), so the caller
-///   can notify+retry once the writer drains.
+///   dropped, so the caller can notify+retry once the writer drains.
+///
+/// Asserts the message is a write variant — resize must go through
+/// setResize()/setImmediateResize(), which can never fail and never occupy a
+/// ring slot.
 ///
 /// Thread-safe (uses mutex).
-pub fn send(self: *Mailbox, msg: Message) SendResult {
+pub fn sendWrite(self: *Mailbox, msg: Message) SendResult {
+    switch (msg) {
+        .write_small, .write_alloc => {},
+        .resize, .resize_immediate => unreachable, // use setResize/setImmediateResize
+    }
+
     self.mutex.lock();
     defer self.mutex.unlock();
 
-    if (self.coalesceTrailingResize(msg)) return .coalesced;
-
-    // Full means full for every message kind. Never evict an already-queued
-    // payload (a real terminal write) to make room — not even for a control
-    // message; the caller (Surface.queueIo) wakes the writer and retries.
     if (self.count == CAPACITY) return .full;
 
     self.queue[self.tail] = msg;
@@ -77,32 +100,36 @@ pub fn send(self: *Mailbox, msg: Message) SendResult {
     return .queued;
 }
 
-fn coalesceTrailingResize(self: *Mailbox, msg: Message) bool {
-    const latest = switch (msg) {
-        .resize => |grid| grid,
-        else => return false,
-    };
+/// Record a coalesced resize request (last-writer-wins). Never fails; never
+/// occupies a payload ring slot. The previous pending value is simply
+/// overwritten — resize is inherently "latest geometry wins".
+///
+/// Thread-safe (uses mutex).
+pub fn setResize(self: *Mailbox, grid: geometry.GridSize) void {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    self.pending_resize = grid;
+}
 
-    if (self.count == 0) return false;
-    const idx = if (self.tail == 0) CAPACITY - 1 else self.tail - 1;
-    switch (self.queue[idx]) {
-        .resize => {
-            self.queue[idx] = .{ .resize = latest };
-            return true;
-        },
-        else => return false,
-    }
+/// Record an immediate resize request (last-writer-wins). Never fails; never
+/// occupies a payload ring slot.
+///
+/// Thread-safe (uses mutex).
+pub fn setImmediateResize(self: *Mailbox, grid: geometry.GridSize) void {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+    self.pending_immediate_resize = grid;
 }
 
 /// Wake the IO writer thread's xev event loop.
-/// Call after one or more send() calls.
+/// Call after one or more send/set calls.
 pub fn notify(self: *Mailbox) void {
     self.wakeup.notify() catch {};
 }
 
-/// Pop a message from the ring buffer. Returns null if empty.
+/// Pop the next queued write from the payload ring. Returns null if empty.
 /// Thread-safe (uses mutex).
-pub fn pop(self: *Mailbox) ?Message {
+pub fn popWrite(self: *Mailbox) ?Message {
     self.mutex.lock();
     defer self.mutex.unlock();
 
@@ -112,6 +139,28 @@ pub fn pop(self: *Mailbox) ?Message {
     self.head = (self.head + 1) % CAPACITY;
     self.count -= 1;
     return msg;
+}
+
+/// Atomically read and clear the pending coalesced resize.
+/// Returns null if none pending. Thread-safe (uses mutex).
+pub fn takePendingResize(self: *Mailbox) ?geometry.GridSize {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+
+    const grid = self.pending_resize;
+    self.pending_resize = null;
+    return grid;
+}
+
+/// Atomically read and clear the pending immediate resize.
+/// Returns null if none pending. Thread-safe (uses mutex).
+pub fn takePendingImmediateResize(self: *Mailbox) ?geometry.GridSize {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+
+    const grid = self.pending_immediate_resize;
+    self.pending_immediate_resize = null;
+    return grid;
 }
 
 fn writeSmallByte(byte: u8) Message {
@@ -131,86 +180,121 @@ fn expectWriteByte(msg: Message, byte: u8) !void {
     }
 }
 
-fn expectResize(msg: Message, cols: u16, rows: u16) !void {
-    defer msg.deinit();
-    switch (msg) {
-        .resize => |grid| {
-            try std.testing.expectEqual(cols, grid.cols);
-            try std.testing.expectEqual(rows, grid.rows);
-        },
-        else => return error.UnexpectedMessage,
-    }
-}
-
-test "Mailbox returns .full for writes on a full ring without dropping" {
+test "payload ring returns .full without dropping queued writes" {
     var mailbox = try Mailbox.init();
     defer mailbox.deinit();
 
     // Fill the ring exactly to capacity.
     for (0..CAPACITY) |i| {
-        try std.testing.expectEqual(SendResult.queued, mailbox.send(writeSmallByte(@intCast(i))));
+        try std.testing.expectEqual(SendResult.queued, mailbox.sendWrite(writeSmallByte(@intCast(i))));
     }
     try std.testing.expectEqual(@as(usize, CAPACITY), mailbox.count);
 
     // One more write must NOT be dropped: it is rejected with .full and the
     // existing queue is left untouched.
-    try std.testing.expectEqual(SendResult.full, mailbox.send(writeSmallByte(0xFF)));
+    try std.testing.expectEqual(SendResult.full, mailbox.sendWrite(writeSmallByte(0xFF)));
     try std.testing.expectEqual(@as(usize, CAPACITY), mailbox.count);
 
     // All original messages are preserved in order; none were dropped.
     for (0..CAPACITY) |expected| {
-        try expectWriteByte(mailbox.pop() orelse return error.MissingMessage, @intCast(expected));
+        try expectWriteByte(mailbox.popWrite() orelse return error.MissingMessage, @intCast(expected));
     }
-    try std.testing.expect(mailbox.pop() == null);
+    try std.testing.expect(mailbox.popWrite() == null);
 }
 
-test "Mailbox coalesces pending resize messages" {
+test "64 queued writes then a resize: resize evicts nothing" {
     var mailbox = try Mailbox.init();
     defer mailbox.deinit();
 
-    try std.testing.expectEqual(SendResult.queued, mailbox.send(.{ .resize = .{ .cols = 80, .rows = 24 } }));
-    try std.testing.expectEqual(SendResult.coalesced, mailbox.send(.{ .resize = .{ .cols = 120, .rows = 40 } }));
-
-    try std.testing.expectEqual(@as(usize, 1), mailbox.count);
-    try expectResize(mailbox.pop() orelse return error.MissingMessage, 120, 40);
-    try std.testing.expect(mailbox.pop() == null);
-}
-
-test "Mailbox resize coalescing preserves write messages" {
-    var mailbox = try Mailbox.init();
-    defer mailbox.deinit();
-
-    try std.testing.expectEqual(SendResult.queued, mailbox.send(writeSmallByte('a')));
-    try std.testing.expectEqual(SendResult.queued, mailbox.send(.{ .resize = .{ .cols = 80, .rows = 24 } }));
-    try std.testing.expectEqual(SendResult.coalesced, mailbox.send(.{ .resize = .{ .cols = 100, .rows = 30 } }));
-    try std.testing.expectEqual(SendResult.queued, mailbox.send(writeSmallByte('b')));
-
-    try std.testing.expectEqual(@as(usize, 3), mailbox.count);
-    try expectWriteByte(mailbox.pop() orelse return error.MissingMessage, 'a');
-    try expectResize(mailbox.pop() orelse return error.MissingMessage, 100, 30);
-    try expectWriteByte(mailbox.pop() orelse return error.MissingMessage, 'b');
-    try std.testing.expect(mailbox.pop() == null);
-}
-
-test "resize on a full mailbox never evicts queued writes" {
-    var mailbox = try Mailbox.init();
-    defer mailbox.deinit();
-
-    // Fill the ring exactly to capacity with real terminal writes.
+    // Fill the payload ring exactly to capacity with real terminal writes.
     for (0..CAPACITY) |i| {
-        try std.testing.expectEqual(SendResult.queued, mailbox.send(writeSmallByte(@intCast(i))));
+        try std.testing.expectEqual(SendResult.queued, mailbox.sendWrite(writeSmallByte(@intCast(i))));
     }
     try std.testing.expectEqual(@as(usize, CAPACITY), mailbox.count);
 
-    // A control (resize) message on a full ring is rejected with .full — it must
-    // NOT evict a queued write to make room. The caller (Surface.queueIo)
-    // notifies the writer and retries once space frees.
-    try std.testing.expectEqual(SendResult.full, mailbox.send(.{ .resize = .{ .cols = 10, .rows = 5 } }));
+    // A resize on a full ring goes to the control lane (last-writer-wins). It
+    // cannot occupy a payload slot, so it evicts NOTHING.
+    mailbox.setResize(.{ .cols = 10, .rows = 5 });
     try std.testing.expectEqual(@as(usize, CAPACITY), mailbox.count);
 
     // Every queued write survives, in order; none were dropped for the resize.
     for (0..CAPACITY) |expected| {
-        try expectWriteByte(mailbox.pop() orelse return error.MissingMessage, @intCast(expected));
+        try expectWriteByte(mailbox.popWrite() orelse return error.MissingMessage, @intCast(expected));
     }
-    try std.testing.expect(mailbox.pop() == null);
+    try std.testing.expect(mailbox.popWrite() == null);
+
+    // The resize is still pending, last-writer-wins.
+    const grid = mailbox.takePendingResize() orelse return error.MissingResize;
+    try std.testing.expectEqual(@as(u16, 10), grid.cols);
+    try std.testing.expectEqual(@as(u16, 5), grid.rows);
+}
+
+test "interleaved writes and resizes: write order exact, resize last-writer-wins" {
+    var mailbox = try Mailbox.init();
+    defer mailbox.deinit();
+
+    // Interleave writes with resizes. Writes go to the ordered ring; resizes
+    // overwrite the single pending field.
+    const sequence = "ghostty-mailbox";
+    var resize_n: u16 = 0;
+    for (sequence) |byte| {
+        try std.testing.expectEqual(SendResult.queued, mailbox.sendWrite(writeSmallByte(byte)));
+        resize_n += 1;
+        mailbox.setResize(.{ .cols = resize_n, .rows = resize_n });
+    }
+
+    // The popped write byte sequence is EXACTLY the sent order — resizes did
+    // not perturb the payload lane at all.
+    try std.testing.expectEqual(@as(usize, sequence.len), mailbox.count);
+    for (sequence) |byte| {
+        try expectWriteByte(mailbox.popWrite() orelse return error.MissingMessage, byte);
+    }
+    try std.testing.expect(mailbox.popWrite() == null);
+
+    // The resize ends last-writer-wins: only the final geometry survives.
+    const grid = mailbox.takePendingResize() orelse return error.MissingResize;
+    try std.testing.expectEqual(@as(u16, sequence.len), grid.cols);
+    try std.testing.expectEqual(@as(u16, sequence.len), grid.rows);
+}
+
+test "pending resize is last-writer-wins and clears on take" {
+    var mailbox = try Mailbox.init();
+    defer mailbox.deinit();
+
+    mailbox.setResize(.{ .cols = 80, .rows = 24 });
+    mailbox.setResize(.{ .cols = 120, .rows = 40 });
+
+    const grid = mailbox.takePendingResize() orelse return error.MissingResize;
+    try std.testing.expectEqual(@as(u16, 120), grid.cols);
+    try std.testing.expectEqual(@as(u16, 40), grid.rows);
+
+    // Taking again yields null — the field was cleared.
+    try std.testing.expect(mailbox.takePendingResize() == null);
+}
+
+test "pending immediate resize is last-writer-wins and clears on take" {
+    var mailbox = try Mailbox.init();
+    defer mailbox.deinit();
+
+    mailbox.setImmediateResize(.{ .cols = 100, .rows = 30 });
+    mailbox.setImmediateResize(.{ .cols = 132, .rows = 50 });
+
+    const grid = mailbox.takePendingImmediateResize() orelse return error.MissingResize;
+    try std.testing.expectEqual(@as(u16, 132), grid.cols);
+    try std.testing.expectEqual(@as(u16, 50), grid.rows);
+
+    try std.testing.expect(mailbox.takePendingImmediateResize() == null);
+
+    // Coalesced and immediate fields are independent lanes.
+    try std.testing.expect(mailbox.takePendingResize() == null);
+}
+
+test "deinit frees heap-owned write_alloc payload left in the ring" {
+    // A leak here would fail the testing allocator. The ring keeps the owning
+    // write_alloc, and deinit must drain+free it.
+    var mailbox = try Mailbox.init();
+    const owned = try std.testing.allocator.dupe(u8, "x" ** (Message.WRITE_SMALL_MAX + 1));
+    const msg: Message = .{ .write_alloc = .{ .allocator = std.testing.allocator, .data = owned } };
+    try std.testing.expectEqual(SendResult.queued, mailbox.sendWrite(msg));
+    mailbox.deinit();
 }

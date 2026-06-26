@@ -127,7 +127,10 @@ pub const VtHandler = struct {
     /// the handler's terminal pointer, which aliases `&surface.terminal`.
     fn writePtyResponse(handler: *InnerHandler, data: [:0]const u8) void {
         const surface: *Surface = @fieldParentPtr("terminal", handler.terminal);
-        surface.queuePtyWrite(data);
+        surface.queuePtyWrite(data) catch |err| mailbox_log.warn(
+            "dropped terminal query reply ({d} bytes): {s}",
+            .{ data.len, @errorName(err) },
+        );
     }
 
     pub fn deinit(self: *VtHandler) void {
@@ -775,47 +778,72 @@ const MAILBOX_FULL_RETRIES = 64;
 
 const mailbox_log = std.log.scoped(.mailbox);
 
-/// Send a message to the IO writer thread via the mailbox.
-///
-/// On a full ring, control messages (resize) are accepted by the mailbox via
-/// last-writer-wins/drop-oldest. A WRITE message instead reports `.full` and is
-/// NOT enqueued, so we notify the writer thread and retry a bounded number of
-/// times, yielding between attempts to let it drain. If it is still full after
-/// the bound we log a visible warning rather than silently dropping input.
+/// Failure modes of queuePtyWrite. A caller MUST handle these — there is no
+/// silent-drop path. A fire-and-forget caller may `catch |e| log...` but the
+/// outcome is always surfaced.
+pub const QueueWriteError = error{
+    /// The owning surface has already exited (PTY process gone); writes are
+    /// pointless and the IO writer thread is tearing down.
+    SurfaceExited,
+    /// The payload ring stayed full across the bounded notify+retry window;
+    /// the write was NOT delivered and NOT dropped behind the caller's back.
+    BackpressureTimeout,
+    /// Allocating the heap copy for a large write failed.
+    OutOfMemory,
+};
+
+/// Queue a resize (control-lane) message to the IO writer thread. Infallible:
+/// resize uses the mailbox's last-writer-wins control fields, which never
+/// occupy a payload slot and can never report `.full`. Writes must NOT go
+/// through here — use queuePtyWrite, which surfaces backpressure.
 pub fn queueIo(self: *Surface, msg: termio.Message) void {
-    var attempt: usize = 0;
-    while (true) {
-        switch (self.mailbox.send(msg)) {
-            .queued, .coalesced => {
-                self.mailbox.notify();
-                return;
-            },
-            .full => {
-                // Wake the writer so it drains, then yield and retry. The mutex
-                // is released between attempts (send() locks per call), so the
-                // writer's pop() can make progress.
-                self.mailbox.notify();
-                attempt += 1;
-                if (attempt >= MAILBOX_FULL_RETRIES) {
-                    mailbox_log.warn(
-                        "mailbox full after {d} retries; dropping write message to avoid stall",
-                        .{MAILBOX_FULL_RETRIES},
-                    );
-                    msg.deinit();
-                    return;
-                }
-                std.Thread.yield() catch {};
-            },
-        }
+    switch (msg) {
+        .resize => |grid| self.mailbox.setResize(grid),
+        .resize_immediate => |grid| self.mailbox.setImmediateResize(grid),
+        .write_small, .write_alloc => unreachable, // use queuePtyWrite
     }
+    self.mailbox.notify();
 }
 
 /// Queue bytes to the PTY input pipe through the IO writer thread.
 /// This mirrors Ghostty's write-message boundary so local and remote input
 /// share the same PTY write path instead of writing directly to the pipe.
-pub fn queuePtyWrite(self: *Surface, data: []const u8) void {
-    const msg = termio.Message.writeReq(self.allocator, data) catch return;
-    self.queueIo(msg);
+///
+/// On a full payload ring we notify the writer and retry a bounded number of
+/// times, yielding between attempts to let it drain (the mutex is released
+/// between attempts). If it is still full after the bound we RETURN
+/// `error.BackpressureTimeout` rather than discarding the bytes and pretending
+/// success — the caller decides how loud to be. We NEVER use msg.deinit() to
+/// implicitly mean "delivered".
+pub fn queuePtyWrite(self: *Surface, data: []const u8) QueueWriteError!void {
+    if (self.exited.load(.acquire)) return error.SurfaceExited;
+
+    const msg = termio.Message.writeReq(self.allocator, data) catch
+        return error.OutOfMemory;
+
+    var attempt: usize = 0;
+    while (true) {
+        switch (self.mailbox.sendWrite(msg)) {
+            .queued => {
+                self.mailbox.notify();
+                return;
+            },
+            .full => {
+                // Wake the writer so it drains, then yield and retry. The mutex
+                // is released between attempts (sendWrite locks per call), so
+                // the writer's popWrite() can make progress.
+                self.mailbox.notify();
+                attempt += 1;
+                if (attempt >= MAILBOX_FULL_RETRIES) {
+                    // The bytes were never enqueued; free our copy and report
+                    // the backpressure instead of silently dropping input.
+                    msg.deinit();
+                    return error.BackpressureTimeout;
+                }
+                std.Thread.yield() catch {};
+            },
+        }
+    }
 }
 
 pub fn attachRemoteClient(self: *Surface, client: ?*remote.Client) void {
@@ -827,7 +855,10 @@ pub fn attachRemoteClient(self: *Surface, client: ?*remote.Client) void {
 
 fn remoteWrite(ctx: *anyopaque, data: []const u8) void {
     const surface: *Surface = @ptrCast(@alignCast(ctx));
-    surface.queuePtyWrite(data);
+    surface.queuePtyWrite(data) catch |err| mailbox_log.warn(
+        "dropped remote write ({d} bytes): {s}",
+        .{ data.len, @errorName(err) },
+    );
 }
 
 /// Get the padding for rendering. Returns the computed padding
@@ -1462,7 +1493,7 @@ fn vtResponseHarnessDeinit(surface: *Surface) void {
 fn expectPtyResponse(surface: *Surface, expected: []const u8) !void {
     // The popped message owns the bytes; assert while it is still in scope so
     // the slice into write_small.data stays valid.
-    const msg = surface.mailbox.pop() orelse return error.NoPtyResponse;
+    const msg = surface.mailbox.popWrite() orelse return error.NoPtyResponse;
     switch (msg) {
         .write_small => |*w| try std.testing.expectEqualStrings(expected, w.data[0..w.len]),
         else => return error.UnexpectedMessage,
@@ -1484,4 +1515,65 @@ test "kitty keyboard query is answered back to the PTY (issue #302)" {
     surface.vt_stream.nextSlice("\x1b[>1u");
     surface.vt_stream.nextSlice("\x1b[?u");
     try expectPtyResponse(&surface, "\x1b[?1u");
+}
+
+// queuePtyWrite only touches surface.allocator, surface.mailbox, and the
+// exited flag, so a tiny harness is enough to exercise its outcome contract.
+fn writeOutcomeHarness(surface: *Surface) !void {
+    surface.allocator = std.testing.allocator;
+    surface.mailbox = try termio.Mailbox.init();
+    surface.exited = std.atomic.Value(bool).init(false);
+}
+
+fn writeOutcomeHarnessDeinit(surface: *Surface) void {
+    surface.mailbox.deinit();
+}
+
+test "queuePtyWrite returns SurfaceExited on an exited surface" {
+    var surface: Surface = undefined;
+    try writeOutcomeHarness(&surface);
+    defer writeOutcomeHarnessDeinit(&surface);
+
+    surface.exited.store(true, .release);
+    try std.testing.expectError(error.SurfaceExited, surface.queuePtyWrite("hello"));
+}
+
+test "queuePtyWrite returns BackpressureTimeout when the payload ring stays full" {
+    var surface: Surface = undefined;
+    try writeOutcomeHarness(&surface);
+    defer writeOutcomeHarnessDeinit(&surface);
+
+    // Saturate the payload ring directly so every queuePtyWrite retry sees a
+    // full ring (no writer thread is draining it in this harness).
+    while (true) {
+        var small: termio.Message.WriteSmall = .{ .len = 1 };
+        small.data[0] = 'x';
+        if (surface.mailbox.sendWrite(.{ .write_small = small }) == .full) break;
+    }
+
+    // The write is neither delivered nor silently dropped — it is reported.
+    try std.testing.expectError(error.BackpressureTimeout, surface.queuePtyWrite("y"));
+
+    // The original queued writes are untouched: the full ring evicted nothing.
+    var drained: usize = 0;
+    while (surface.mailbox.popWrite()) |msg| {
+        msg.deinit();
+        drained += 1;
+    }
+    try std.testing.expect(drained > 0);
+}
+
+test "queuePtyWrite enqueues a write onto the payload ring on success" {
+    var surface: Surface = undefined;
+    try writeOutcomeHarness(&surface);
+    defer writeOutcomeHarnessDeinit(&surface);
+
+    try surface.queuePtyWrite("ok");
+
+    const msg = surface.mailbox.popWrite() orelse return error.MissingMessage;
+    defer msg.deinit();
+    switch (msg) {
+        .write_small => |*w| try std.testing.expectEqualStrings("ok", w.data[0..w.len]),
+        else => return error.UnexpectedMessage,
+    }
 }

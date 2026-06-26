@@ -92,16 +92,36 @@ fn stopCallback(
     return .disarm;
 }
 
+/// Drain the mailbox: apply the control lane (resizes) first, then flush every
+/// queued payload write.
+///
+/// Order rationale: resize is last-writer-wins on both lanes and the coalesced
+/// resize is additionally deferred behind a 25ms timer, so strict resize/write
+/// interleaving is neither possible nor meaningful — only the latest geometry
+/// can win regardless of when writes land relative to it. We therefore apply
+/// the pending immediate resize (which grows/shrinks the grid now), arm/refresh
+/// the coalesce timer for the pending coalesced resize, and then drain all
+/// queued writes in their exact enqueue order via popWrite(). Writes can never
+/// be evicted by a resize because they live on a separate ordered lane.
 fn drainMailbox(self: *Thread) void {
     const surface = self.surface orelse return;
-    while (surface.mailbox.pop()) |msg| {
-        defer msg.deinit();
 
+    // Control lane: immediate resize applies now; coalesced resize feeds the
+    // 25ms timer (handleResize preserves last-writer-wins + the coalesce gate).
+    if (surface.mailbox.takePendingImmediateResize()) |grid| {
+        self.handleResizeImmediate(grid);
+    }
+    if (surface.mailbox.takePendingResize()) |grid| {
+        self.handleResize(grid);
+    }
+
+    // Payload lane: flush every queued write in order.
+    while (surface.mailbox.popWrite()) |msg| {
+        defer msg.deinit();
         switch (msg) {
-            .resize => |grid| self.handleResize(grid),
-            .resize_immediate => |grid| self.handleResizeImmediate(grid),
             .write_small => |payload| writeToPty(surface, payload.data[0..payload.len]),
             .write_alloc => |payload| writeToPty(surface, payload.data),
+            .resize, .resize_immediate => unreachable, // resize never enters the payload ring
         }
     }
 }

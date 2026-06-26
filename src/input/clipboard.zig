@@ -54,9 +54,19 @@ fn mutatePasteData(data: []u8, bracketed: bool) void {
     }
 }
 
+const pty_write_log = std.log.scoped(.pty_write);
+
 /// Write data to the PTY's input pipe (us -> child stdin).
+///
+/// This is the keyboard/paste input boundary, so it is intentionally
+/// fire-and-forget: there is no caller positioned to recover from backpressure.
+/// queuePtyWrite still surfaces its outcome — on failure we log a visible
+/// warning instead of silently swallowing input.
 pub fn writeToPty(surface: *Surface, data: []const u8) void {
-    surface.queuePtyWrite(data);
+    surface.queuePtyWrite(data) catch |err| pty_write_log.warn(
+        "dropped {d} bytes of input: {s}",
+        .{ data.len, @errorName(err) },
+    );
 }
 
 pub fn writePasteToPty(surface: *Surface, allocator: std.mem.Allocator, data: []const u8) void {

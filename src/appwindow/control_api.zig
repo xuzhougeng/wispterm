@@ -64,7 +64,13 @@ fn ctlSendText(ctx: *anyopaque, id: []const u8, data: []const u8) bool {
     const ptr = surface_registry.acquireById(id) orelse return false;
     defer surface_registry.release();
     const surface: *Surface = @ptrCast(@alignCast(ptr));
-    surface.queuePtyWrite(data);
+    surface.queuePtyWrite(data) catch |err| {
+        std.log.scoped(.control).warn(
+            "dropped control write ({d} bytes): {s}",
+            .{ data.len, @errorName(err) },
+        );
+        return false;
+    };
     return true;
 }
 
