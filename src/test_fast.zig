@@ -259,6 +259,11 @@ test {
     _ = @import("command_registry.zig");
     _ = @import("tool_registry.zig");
     _ = @import("tool_import.zig");
+    // Unified subprocess lifecycle: spawn → concurrent drain → timeout/cancel →
+    // reap-exactly-once. Spawn-based tests gate on non-Windows; type guards run
+    // everywhere.
+    _ = @import("process_runner.zig");
+    _ = @import("platform/process_group.zig");
     _ = @import("agent_detector.zig");
     _ = @import("agent_integration_prompt.zig");
     _ = @import("jupyter_detect.zig");

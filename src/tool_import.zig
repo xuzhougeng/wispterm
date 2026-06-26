@@ -1,11 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const platform_process = @import("platform/process.zig");
+const process_runner = @import("process_runner.zig");
 const tool_registry = @import("tool_registry.zig");
 
 pub const PROBE_TIMEOUT_MS: u32 = 3000;
 pub const PROBE_OUTPUT_LIMIT: u32 = 64 * 1024;
-const PROBE_CAPTURE_MEMORY_LIMIT: usize = PROBE_OUTPUT_LIMIT * 4 + 64 * 1024;
 
 pub const DocSource = enum { skill_flag, sibling_skill, generated_from_help, ai_draft };
 
@@ -185,131 +184,33 @@ pub fn cleanupStagedBinaryPath(staged_binary_path: []const u8) void {
     std.fs.deleteTreeAbsolute(stage_root) catch {};
 }
 
-const PROBE_POLL_STEP_MS: i64 = 25;
-const PROBE_TERMINATE_WAIT_MS: u32 = 1000;
-
+/// Probe a tool binary for `--help` / `--skill` output. Migrated onto the
+/// unified `process_runner.runCapture`, which owns the whole lifecycle:
+/// concurrent stdout/stderr drain (no pipe deadlock), the 3s timeout, and
+/// reaping the child exactly once. External behavior is preserved verbatim:
+///   • timeout  → return "" (probe yielded nothing usable)
+///   • nonzero exit → return ""
+///   • exit 0 → return stdout if it is non-empty or stderr is empty; otherwise
+///     fall back to the (trimmed-at-cap) stderr text
+///   • each stream is capped at PROBE_OUTPUT_LIMIT bytes
 fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    const poll_storage = try allocator.alloc(u8, PROBE_CAPTURE_MEMORY_LIMIT);
-    defer allocator.free(poll_storage);
+    const result = process_runner.runCapture(allocator, argv, .{
+        .timeout_ms = PROBE_TIMEOUT_MS,
+        .max_stdout_bytes = PROBE_OUTPUT_LIMIT,
+        .max_stderr_bytes = PROBE_OUTPUT_LIMIT,
+    }) catch |err| switch (err) {
+        error.SpawnFailed => return error.ProbeSpawnFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    // `result` owns two heap slices; free whichever we do not hand back.
+    const stdout_data = result.stdout;
+    const stderr_data = result.stderr;
+    const exited_zero = switch (result.termination) {
+        .exited => |code| code == 0,
+        .killed => false,
+    };
 
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.create_no_window = true;
-    child.spawn() catch return error.ProbeSpawnFailed;
-
-    var fixed_poll_allocator = std.heap.FixedBufferAllocator.init(poll_storage);
-    var poller = std.Io.poll(fixed_poll_allocator.allocator(), enum { stdout, stderr }, .{
-        .stdout = child.stdout.?,
-        .stderr = child.stderr.?,
-    });
-    const deadline = std.time.milliTimestamp() + PROBE_TIMEOUT_MS;
-    var timed_out = false;
-    var output_capped = false;
-    var child_done = false;
-    var exit_code: i64 = -1;
-    var poll_error: ?anyerror = null;
-
-    while (true) {
-        if (poller.reader(.stdout).bufferedLen() >= PROBE_OUTPUT_LIMIT or
-            poller.reader(.stderr).bufferedLen() >= PROBE_OUTPUT_LIMIT)
-        {
-            output_capped = true;
-            break;
-        }
-
-        if (std.time.milliTimestamp() >= deadline) {
-            timed_out = true;
-            break;
-        }
-
-        const remaining_ms = @max(@as(i64, 0), deadline - std.time.milliTimestamp());
-        const wait_ms = @min(PROBE_POLL_STEP_MS, remaining_ms);
-        _ = poller.pollTimeout(@as(u64, @intCast(wait_ms)) * std.time.ns_per_ms) catch |err| {
-            if (err == error.OutOfMemory) {
-                output_capped = true;
-            } else {
-                poll_error = err;
-            }
-            break;
-        };
-
-        if (pollChildExited(&child, 0)) |code| {
-            child_done = true;
-            exit_code = code;
-            break;
-        }
-    }
-
-    if (child_done and poll_error == null) {
-        while (!output_capped) {
-            const before = poller.reader(.stdout).bufferedLen() + poller.reader(.stderr).bufferedLen();
-            _ = poller.pollTimeout(0) catch |err| {
-                if (err == error.OutOfMemory) {
-                    output_capped = true;
-                } else {
-                    poll_error = err;
-                }
-                break;
-            };
-            const after = poller.reader(.stdout).bufferedLen() + poller.reader(.stderr).bufferedLen();
-            if (after >= PROBE_OUTPUT_LIMIT * 2) {
-                output_capped = true;
-                break;
-            }
-            if (after == before) break;
-        }
-    }
-
-    if (!child_done and (timed_out or output_capped or poll_error != null)) {
-        terminateChildRaw(child.id);
-        if (pollChildExited(&child, PROBE_TERMINATE_WAIT_MS)) |code| {
-            child_done = true;
-            exit_code = code;
-        }
-    }
-
-    var stdout_owned: ?[]u8 = null;
-    var stderr_owned: ?[]u8 = null;
-    var result_error = poll_error;
-    if (result_error == null) {
-        stdout_owned = dupeCapped(allocator, poller.reader(.stdout).buffered()) catch |err| blk: {
-            result_error = err;
-            break :blk null;
-        };
-        if (result_error == null) {
-            stderr_owned = dupeCapped(allocator, poller.reader(.stderr).buffered()) catch |err| blk: {
-                result_error = err;
-                break :blk null;
-            };
-        }
-    }
-    poller.deinit();
-    errdefer if (stdout_owned) |out| allocator.free(out);
-    errdefer if (stderr_owned) |err| allocator.free(err);
-
-    if (child_done) {
-        _ = child.wait() catch {};
-    } else {
-        terminateChildRaw(child.id);
-        if (pollChildExited(&child, PROBE_TERMINATE_WAIT_MS) != null) {
-            _ = child.wait() catch {};
-        } else {
-            closeChildResourcesNoWait(&child);
-        }
-    }
-
-    if (result_error) |err| return err;
-    const stdout_data = stdout_owned orelse try allocator.dupe(u8, "");
-    const stderr_data = stderr_owned orelse try allocator.dupe(u8, "");
-
-    if (timed_out) {
-        allocator.free(stdout_data);
-        allocator.free(stderr_data);
-        return allocator.dupe(u8, "");
-    }
-    if (exit_code != 0) {
+    if (result.timed_out or result.cancelled or !exited_zero) {
         allocator.free(stdout_data);
         allocator.free(stderr_data);
         return allocator.dupe(u8, "");
@@ -321,62 +222,6 @@ fn runArgvProbe(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     }
     allocator.free(stdout_data);
     return stderr_data;
-}
-
-fn pollChildExited(child: *std.process.Child, timeout_ms: u32) ?i64 {
-    const result = platform_process.childExited(child.id, timeout_ms);
-    if (builtin.os.tag != .windows) {
-        switch (result) {
-            // POSIX exit status is masked to 0-255, so the u8 narrowing is safe.
-            .exited => |code| child.term = .{ .Exited = @intCast(code) },
-            .gone => child.term = .{ .Unknown = 0 },
-            .running => {},
-        }
-    }
-    return childExitCode(result);
-}
-
-/// Map a child-poll result to a probe exit code. Windows exit codes span the
-/// full u32 (DWORD) range — e.g. 0xC0000005 for a faulting probe, or 0xFFFFFFFF
-/// from a C `main` returning -1 — so the code must widen to i64; narrowing to
-/// i32 trips a safety panic. Only `!= 0` is ever inspected downstream, so -1
-/// stands in for "gone / killed by signal".
-fn childExitCode(result: platform_process.ChildExit) ?i64 {
-    return switch (result) {
-        .running => null,
-        .exited => |code| @intCast(code),
-        .gone => -1,
-    };
-}
-
-fn terminateChildRaw(id: std.process.Child.Id) void {
-    switch (builtin.os.tag) {
-        .windows => std.os.windows.TerminateProcess(id, 1) catch {},
-        else => std.posix.kill(id, std.posix.SIG.KILL) catch {},
-    }
-}
-
-fn closeChildResourcesNoWait(child: *std.process.Child) void {
-    if (child.stdin) |stdin| {
-        stdin.close();
-        child.stdin = null;
-    }
-    if (child.stdout) |stdout| {
-        stdout.close();
-        child.stdout = null;
-    }
-    if (child.stderr) |stderr| {
-        stderr.close();
-        child.stderr = null;
-    }
-    if (builtin.os.tag == .windows) {
-        std.os.windows.CloseHandle(child.id);
-        std.os.windows.CloseHandle(child.thread_handle);
-    }
-}
-
-fn dupeCapped(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    return allocator.dupe(u8, bytes[0..@min(bytes.len, PROBE_OUTPUT_LIMIT)]);
 }
 
 fn setProcessUmask(mode: std.posix.mode_t) std.posix.mode_t {
@@ -715,22 +560,61 @@ test "tool_import: runArgvProbe is bounded when child leaves inherited pipes ope
     try std.testing.expect(elapsed < 1000);
 }
 
-test "tool_import: probe poller must not use the caller allocator for stream buffers" {
+test "tool_import: runArgvProbe owns no hand-rolled spawn/drain/wait" {
+    // The lifecycle now lives entirely in process_runner.runCapture; tool_import
+    // must not reach for the raw child primitives again. (Full-range Windows
+    // exit codes no longer narrow-panic because runCapture surfaces them as a
+    // u32 Termination.exited, mapped to "" here via the !exited_zero branch.)
     const source = @embedFile("tool_import.zig");
-    const pattern = "std.Io." ++ "poll(allocator";
-    try std.testing.expect(std.mem.indexOf(u8, source, pattern) == null);
+    // Split the needles so this guard's own source does not match them.
+    const raw_spawn = "std.process." ++ "Child.init";
+    const runner_call = "process_runner." ++ "runCapture";
+    try std.testing.expect(std.mem.indexOf(u8, source, raw_spawn) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, runner_call) != null);
 }
 
-test "tool_import: childExitCode widens full-range Windows exit codes without narrowing" {
-    // Windows GetExitCodeProcess returns a u32; probing an arbitrary binary with
-    // --skill yields codes above i32 max (e.g. 0xFFFFFFFF from `return -1`, or
-    // 0xC0000005 for an access violation). These must not panic on i32 narrowing.
-    try std.testing.expectEqual(@as(?i64, 0xC0000005), childExitCode(.{ .exited = 0xC0000005 }));
-    try std.testing.expectEqual(@as(?i64, 0xFFFFFFFF), childExitCode(.{ .exited = 0xFFFFFFFF }));
-    try std.testing.expectEqual(@as(?i64, 0), childExitCode(.{ .exited = 0 }));
-    try std.testing.expectEqual(@as(?i64, 7), childExitCode(.{ .exited = 7 }));
-    try std.testing.expectEqual(@as(?i64, null), childExitCode(.running));
-    try std.testing.expectEqual(@as(?i64, -1), childExitCode(.gone));
+test "tool_import: runArgvProbe maps a nonzero exit to empty output" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const script =
+        "#!/bin/sh\n" ++
+        "printf 'noise\\n'\n" ++
+        "exit 7\n";
+    try tmp.dir.writeFile(.{ .sub_path = "probe-fail.sh", .data = script });
+    var file = try tmp.dir.openFile("probe-fail.sh", .{});
+    defer file.close();
+    try file.chmod(0o755);
+    const script_path = try tmp.dir.realpathAlloc(a, "probe-fail.sh");
+    defer a.free(script_path);
+
+    const output = try runArgvProbe(a, &.{ script_path, "--help" });
+    defer a.free(output);
+    try std.testing.expectEqual(@as(usize, 0), output.len);
+}
+
+test "tool_import: runArgvProbe falls back to stderr when stdout is empty" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const script =
+        "#!/bin/sh\n" ++
+        "printf 'help via stderr\\n' 1>&2\n" ++
+        "exit 0\n";
+    try tmp.dir.writeFile(.{ .sub_path = "probe-stderr.sh", .data = script });
+    var file = try tmp.dir.openFile("probe-stderr.sh", .{});
+    defer file.close();
+    try file.chmod(0o755);
+    const script_path = try tmp.dir.realpathAlloc(a, "probe-stderr.sh");
+    defer a.free(script_path);
+
+    const output = try runArgvProbe(a, &.{ script_path, "--help" });
+    defer a.free(output);
+    try std.testing.expectEqualStrings("help via stderr\n", output);
 }
 
 test "tool_import: probeBinary treats capped nonzero help output as empty" {
