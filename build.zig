@@ -760,6 +760,26 @@ pub fn build(b: *std.Build) void {
         test_full_step.dependOn(&b.addRunArtifact(posix_tests).step);
     }
 
+    // `test-ctl`: the agent-control loopback socket round-trip, runnable on EVERY
+    // host including Windows. This is the regression guard the v1.30.0 "malformed
+    // response" bug slipped through — the round-trip only ran on non-Windows hosts
+    // (posix_tests above), and the broken Stream.read it replaced misbehaves only
+    // on Windows overlapped sockets. Lean (pure std + sockets), so it links
+    // without the app graph; libc only where the socket syscalls need it (Windows
+    // uses ws2_32 directly via ctl/transport.zig, so no libc there).
+    const ctl_socket_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/ctl/socket_test.zig"),
+        .target = b.resolveTargetQuery(.{}),
+        .optimize = optimize,
+        .link_libc = b.graph.host.result.os.tag != .windows,
+    });
+    const ctl_socket_tests = b.addTest(.{
+        .name = "wispterm-ctl-socket-test",
+        .root_module = ctl_socket_test_mod,
+    });
+    const test_ctl_step = b.step("test-ctl", "Run the agent-control loopback socket round-trip (all hosts, incl. Windows)");
+    test_ctl_step.dependOn(&b.addRunArtifact(ctl_socket_tests).step);
+
     const shared_test_mod = b.createModule(.{
         .root_source_file = b.path("src/shared_compile_test.zig"),
         .target = target,

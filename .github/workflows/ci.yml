@@ -122,3 +122,11 @@ jobs:
 
       - name: Fast tests only
         run: zig build test
+
+      # Agent-control loopback round-trip ON Windows. The fast suite above never
+      # touches a real socket, and the round-trip test otherwise runs only on
+      # non-Windows hosts — which is exactly how the v1.30.0 wisptermctl
+      # "malformed response" bug (broken Stream.read on Windows overlapped
+      # sockets) reached release. This guards it where it actually bit.
+      - name: Agent-control socket round-trip
+        run: zig build test-ctl
