@@ -3123,6 +3123,29 @@ fn ensureActiveCopilotSession() ?*ai_chat.Session {
     return session;
 }
 
+fn openCopilotApiConfig(session: ?*ai_chat.Session) void {
+    if (session) |s| {
+        overlays.openAiConfigForSession(s);
+    } else {
+        overlays.openAiConfigForMissingCopilotApi();
+    }
+    overlays.showStatusToast("Missing API key. Configure API settings.");
+}
+
+fn ensureActiveCopilotSessionConfigured() ?*ai_chat.Session {
+    const session = ensureActiveCopilotSession() orelse {
+        _ = tab.setActiveCopilotVisible(false);
+        input.blurAiCopilot();
+        openCopilotApiConfig(null);
+        return null;
+    };
+    if (session.missingApiKey()) {
+        openCopilotApiConfig(session);
+        return null;
+    }
+    return session;
+}
+
 /// Input layer getter: the active terminal tab's copilot session, only when the
 /// copilot panel is visible. Used by input routing (next task).
 pub fn activeCopilotSessionForInput() ?*ai_chat.Session {
@@ -3199,10 +3222,12 @@ pub fn newCopilotConversation() void {
     }
     browser_panel.close();
     _ = tab.setActiveCopilotVisible(true);
-    _ = ensureActiveCopilotSession();
+    _ = ensureActiveCopilotSessionConfigured() orelse {
+        markUiDirty();
+        return;
+    };
     input.focusAiCopilot();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    markUiDirty();
 }
 
 /// The preview pane that currently has split-tree focus, or null if the
@@ -3262,18 +3287,19 @@ pub fn toggleAiCopilot() void {
     if (tab.activeCopilotVisible()) {
         _ = tab.setActiveCopilotVisible(false);
         input.blurAiCopilot();
-        g_force_rebuild = true;
-        g_cells_valid = false;
+        markUiDirty();
         return;
     }
     // Exclusive right slot: close the other right panels first.
     browser_panel.close();
     _ = tab.setActiveCopilotVisible(true);
-    _ = ensureActiveCopilotSession();
+    _ = ensureActiveCopilotSessionConfigured() orelse {
+        markUiDirty();
+        return;
+    };
     input.focusAiCopilot();
     if (g_allocator) |alloc| platform_window_state.setCopilotHintShown(alloc);
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    markUiDirty();
 }
 
 pub fn rightPanelsWidth() f32 {

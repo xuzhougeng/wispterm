@@ -3766,6 +3766,16 @@ pub fn openAiConfigForSession(session: *AppWindow.ai_chat.Session) void {
     aiState().focus = @intFromEnum(AiField.api_key);
 }
 
+pub fn openAiConfigForMissingCopilotApi() void {
+    loadAiProfiles();
+    if (aiState().profile_count == 0) {
+        openAiFormNew();
+    } else {
+        openAiFormEdit(defaultAiProfileIndex());
+    }
+    aiState().focus = @intFromEnum(AiField.api_key);
+}
+
 fn findAiProfileForSession(name: []const u8, base_url: []const u8, model: []const u8) ?usize {
     if (name.len > 0) {
         for (0..aiState().profile_count) |idx| {
@@ -4268,6 +4278,32 @@ test "default AI profile snapshot normalizes Anthropic URL with default protocol
         ai_chat.ApiProtocol.anthropic,
         defaultAiProfileSnapshotProtocol("https://api.anthropic.com", ""),
     );
+}
+
+test "overlays: missing copilot API opens AI config at API key" {
+    const saved_loaded = aiState().profiles_loaded;
+    const saved_count = aiState().profile_count;
+    const saved_focus = aiState().focus;
+    const saved_list = g_ai_list_visible;
+    const saved_form = g_ai_form_visible;
+    defer {
+        aiState().profiles_loaded = saved_loaded;
+        aiState().profile_count = saved_count;
+        aiState().focus = saved_focus;
+        g_ai_list_visible = saved_list;
+        g_ai_form_visible = saved_form;
+    }
+
+    aiState().profiles_loaded = true;
+    aiState().profile_count = 0;
+    g_ai_list_visible = true;
+    g_ai_form_visible = false;
+
+    openAiConfigForMissingCopilotApi();
+
+    try std.testing.expect(!g_ai_list_visible);
+    try std.testing.expect(g_ai_form_visible);
+    try std.testing.expectEqual(@as(usize, @intFromEnum(AiField.api_key)), aiState().focus);
 }
 
 threadlocal var g_ai_default_name_buf: [256]u8 = undefined;
