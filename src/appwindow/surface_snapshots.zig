@@ -158,7 +158,13 @@ pub fn agentWriteSurface(ctx: *anyopaque, surface_id: []const u8, surface_ptr: *
     if (!surface_registry.acquire(surface_ptr, surface_id)) return false;
     defer surface_registry.release();
     const surface: *Surface = @ptrCast(@alignCast(surface_ptr));
-    surface.queuePtyWrite(data);
+    surface.queuePtyWrite(data) catch |err| {
+        std.log.scoped(.agent).warn(
+            "dropped agent write ({d} bytes): {s}",
+            .{ data.len, @errorName(err) },
+        );
+        return false;
+    };
     return true;
 }
 

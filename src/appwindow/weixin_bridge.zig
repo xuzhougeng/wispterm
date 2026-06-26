@@ -204,7 +204,13 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
                 return;
             }
             const surface = weixinTerminalSurfaceFromId(req.surface_id) orelse return;
-            surface.queuePtyWrite(req.bytes);
+            surface.queuePtyWrite(req.bytes) catch |err| {
+                std.log.scoped(.weixin).warn(
+                    "dropped weixin input ({d} bytes): {s}",
+                    .{ req.bytes.len, @errorName(err) },
+                );
+                return;
+            };
             req.sent = true;
         },
         .latest_transcript => {
