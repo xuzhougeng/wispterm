@@ -23,6 +23,7 @@ const ai_agent_config = @import("ai_agent_config.zig");
 const keybind = @import("keybind.zig");
 const link_open = @import("link_open.zig");
 const console_host_policy = @import("platform/console_host_policy.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_editor = @import("platform/editor.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
@@ -1483,12 +1484,13 @@ pub fn ensureConfigExists(allocator: std.mem.Allocator) void {
         std.fs.cwd().makePath(dir) catch return;
     }
 
-    // Create config file with default template if it doesn't exist
-    if (std.fs.cwd().createFile(path, .{ .exclusive = true })) |file| {
-        file.writeAll(default_config_template) catch {};
-        file.close();
-        log.info("created default config file: {s}", .{path});
-    } else |_| {}
+    std.fs.cwd().access(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            platform_atomic_file.writeFileReplaceSafe(path, default_config_template) catch return;
+            log.info("created default config file: {s}", .{path});
+        },
+        else => return,
+    };
 }
 
 // ============================================================================
@@ -1516,20 +1518,19 @@ pub fn openConfigInEditor(allocator: std.mem.Allocator) void {
         };
     }
 
-    // Create config file with default template if it doesn't exist
-    if (std.fs.cwd().createFile(path, .{ .exclusive = true })) |file| {
-        file.writeAll(default_config_template) catch {};
-        file.close();
-        std.debug.print("[config] created default config file\n", .{});
-    } else |err| switch (err) {
-        error.PathAlreadyExists => {
-            std.debug.print("[config] config file already exists\n", .{});
+    std.fs.cwd().access(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            platform_atomic_file.writeFileReplaceSafe(path, default_config_template) catch |write_err| {
+                std.debug.print("[config] ERROR: failed to create config file: {}\n", .{write_err});
+                return;
+            };
+            std.debug.print("[config] created default config file\n", .{});
         },
         else => {
-            std.debug.print("[config] ERROR: failed to create config file: {}\n", .{err});
+            std.debug.print("[config] ERROR: failed to access config file: {}\n", .{err});
             return;
         },
-    }
+    };
 
     std.debug.print("[config] opening editor with path: {s}\n", .{path});
     if (!platform_editor.openTextFile(allocator, .{ .path = path })) {
@@ -1558,9 +1559,7 @@ pub fn setConfigValue(allocator: std.mem.Allocator, key: []const u8, value: []co
     const out = try setConfigValueInContent(allocator, content, key, value);
     defer allocator.free(out);
 
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(out);
+    try platform_atomic_file.writeFileReplaceSafe(path, out);
 }
 
 /// Pure: return a copy of `content` with `key`'s active value set to `value`.
@@ -1644,9 +1643,7 @@ pub fn removeConfigKeys(allocator: std.mem.Allocator, keys: []const []const u8) 
     const out = try stripConfigKeys(allocator, content, keys);
     defer allocator.free(out);
 
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(out);
+    try platform_atomic_file.writeFileReplaceSafe(path, out);
 }
 
 /// Config keys backing the settings page. "Restore default settings" removes

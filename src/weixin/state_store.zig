@@ -1,6 +1,7 @@
 //! Persists the WeChat direct binding to a 0600 JSON file. Secrets never go in
 //! config; they live here in the app state dir.
 const std = @import("std");
+const platform_atomic_file = @import("../platform/atomic_file.zig");
 const types = @import("types.zig");
 
 pub const Loaded = struct {
@@ -21,9 +22,6 @@ const Wire = struct {
 };
 
 pub fn save(allocator: std.mem.Allocator, path: []const u8, binding: types.Binding) !void {
-    if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch {};
-    }
     const wire = Wire{
         .bot_token = binding.bot_token,
         .base_url = binding.base_url,
@@ -34,9 +32,10 @@ pub fn save(allocator: std.mem.Allocator, path: []const u8, binding: types.Bindi
     const json = try std.json.Stringify.valueAlloc(allocator, wire, .{});
     defer allocator.free(json);
 
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
-    try file.writeAll(json);
+    try platform_atomic_file.writeFileReplaceSafeWithOptions(path, json, .{
+        .mode = 0o600,
+        .sync_file = true,
+    });
 }
 
 pub fn load(allocator: std.mem.Allocator, path: []const u8) !Loaded {
@@ -50,7 +49,11 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Loaded {
 
     var parsed = std.json.parseFromSlice(Wire, arena.allocator(), data, .{
         .ignore_unknown_fields = true,
-    }) catch return .{ .arena = arena, .binding = .{} };
+    }) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        renameCorrupt(allocator, path);
+        return .{ .arena = arena, .binding = .{} };
+    };
     defer parsed.deinit();
 
     // Copy strings into the arena so they outlive `parsed`
@@ -62,6 +65,18 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Loaded {
         .bot_id = try a.dupe(u8, parsed.value.bot_id),
         .sync_buf = try a.dupe(u8, parsed.value.sync_buf),
     } };
+}
+
+fn renameCorrupt(allocator: std.mem.Allocator, path: []const u8) void {
+    const corrupt = std.fmt.allocPrint(allocator, "{s}.corrupt-{d}", .{ path, std.time.milliTimestamp() }) catch return;
+    defer allocator.free(corrupt);
+    if (std.fs.path.isAbsolute(path)) {
+        std.fs.renameAbsolute(path, corrupt) catch {
+            std.fs.cwd().rename(path, corrupt) catch {};
+        };
+    } else {
+        std.fs.cwd().rename(path, corrupt) catch {};
+    }
 }
 
 test "round-trips binding through a file" {
@@ -88,4 +103,35 @@ test "load returns empty binding when file is absent" {
     var loaded = try load(std.testing.allocator, "definitely-not-here-weixin.json");
     defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), loaded.binding.bot_token.len);
+}
+
+test "load renames corrupt binding and returns empty" {
+    const allocator = std.testing.allocator;
+    const dir_name = "zig-cache-tmp-weixin-corrupt";
+    std.fs.cwd().deleteTree(dir_name) catch {};
+    defer std.fs.cwd().deleteTree(dir_name) catch {};
+    try std.fs.cwd().makePath(dir_name);
+
+    const path = try std.fs.path.join(allocator, &.{ dir_name, "weixin.json" });
+    defer allocator.free(path);
+
+    try std.fs.cwd().writeFile(.{ .sub_path = path, .data = "{ broken" });
+
+    var loaded = try load(allocator, path);
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), loaded.binding.bot_token.len);
+
+    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(path, .{}));
+
+    var found_corrupt = false;
+    var dir = try std.fs.cwd().openDir(dir_name, .{ .iterate = true });
+    defer dir.close();
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "weixin.json.corrupt-")) {
+            found_corrupt = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_corrupt);
 }

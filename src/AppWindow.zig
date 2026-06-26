@@ -3348,20 +3348,7 @@ fn saveMarkdownDialogPath(
 }
 
 fn writeFilePath(path: []const u8, bytes: []const u8) !void {
-    if (std.fs.path.dirname(path)) |dir| {
-        try std.fs.cwd().makePath(dir);
-    }
-
-    if (std.fs.path.isAbsolute(path)) {
-        var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(bytes);
-        return;
-    }
-
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(bytes);
+    try platform_atomic_file.writeFileReplaceSafe(path, bytes);
 }
 
 fn syncWindowTitlebarHeight(win: *window_backend.Window) f32 {

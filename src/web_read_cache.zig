@@ -3,6 +3,7 @@
 //! markdown lives and reads/writes it. No network, no Jina knowledge. Best-effort:
 //! `read` returns null on any problem; `store` swallows all errors.
 const std = @import("std");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 
 const cache_dir_name = ".webread_cache";
 const max_cache_file_bytes: usize = 64 * 1024 * 1024;
@@ -55,12 +56,7 @@ pub fn read(allocator: std.mem.Allocator, cache_path: []const u8) ?[]u8 {
 /// Best-effort: mkdir -p the parent dir, then atomically write `content`. All errors
 /// are swallowed — caching must never fail the read.
 pub fn store(cache_path: []const u8, content: []const u8) void {
-    if (std.fs.path.dirname(cache_path)) |dir| std.fs.cwd().makePath(dir) catch return;
-    var write_buffer: [0]u8 = .{};
-    var atomic = std.fs.cwd().atomicFile(cache_path, .{ .write_buffer = &write_buffer }) catch return;
-    defer atomic.deinit();
-    atomic.file_writer.file.writeAll(content) catch return;
-    atomic.finish() catch return;
+    platform_atomic_file.writeFileReplaceSafe(cache_path, content) catch return;
 }
 
 test "sha256Hex matches the known empty-input vector" {

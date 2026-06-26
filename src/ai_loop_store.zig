@@ -5,6 +5,7 @@
 //! handling + tick), guarded by a mutex for defensive safety.
 const std = @import("std");
 const engine = @import("ai_loop_schedule.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const ai_history_time = @import("ai_history_time.zig");
 
 pub const Task = engine.Task;
@@ -339,9 +340,7 @@ pub const Store = struct {
         const model = engine.FileModel{ .version = 1, .next_id = self.next_id, .tasks = self.tasks.items };
         const bytes = engine.encode(self.allocator, model) catch return;
         defer self.allocator.free(bytes);
-        const file = std.fs.cwd().createFile(self.path, .{ .truncate = true }) catch return;
-        defer file.close();
-        file.writeAll(bytes) catch return;
+        platform_atomic_file.writeFileReplaceSafe(self.path, bytes) catch return;
     }
 };
 

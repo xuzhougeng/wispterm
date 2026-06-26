@@ -27,6 +27,7 @@ const ctl_ui_state = @import("../ctl/ui_state.zig");
 const command_palette_history_view = @import("../command_palette_history_view.zig");
 const command_palette_model = @import("../command_palette_model.zig");
 const agent_history = @import("../agent_history.zig");
+const platform_atomic_file = @import("../platform/atomic_file.zig");
 const platform_dirs = @import("../platform/dirs.zig");
 const platform_open_url = @import("../platform/open_url.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
@@ -4440,9 +4441,10 @@ fn saveAiProfiles(allocator: std.mem.Allocator) void {
         out.append(allocator, '\n') catch return;
     }
 
-    const file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch return;
-    defer file.close();
-    file.writeAll(out.items) catch {};
+    platform_atomic_file.writeFileReplaceSafe(path, out.items) catch {
+        showStatusToast("Failed to save AI profiles");
+        return;
+    };
 }
 
 fn sshProfilesPath(allocator: std.mem.Allocator) ![]const u8 {
@@ -4473,7 +4475,7 @@ fn loadSshProfiles() void {
 const decodeSshProfileLine = profile_codec.decodeSshProfileLine;
 
 fn saveSshProfiles(allocator: std.mem.Allocator) void {
-    _ = saveSshProfilesChecked(allocator);
+    if (!saveSshProfilesChecked(allocator)) showStatusToast("Failed to save SSH profiles");
 }
 
 fn saveSshProfilesChecked(allocator: std.mem.Allocator) bool {
@@ -4494,9 +4496,7 @@ fn saveSshProfilesChecked(allocator: std.mem.Allocator) bool {
         out.append(allocator, '\n') catch return false;
     }
 
-    const file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch return false;
-    defer file.close();
-    file.writeAll(out.items) catch return false;
+    platform_atomic_file.writeFileReplaceSafe(path, out.items) catch return false;
     return true;
 }
 
