@@ -16,6 +16,7 @@ const MAX_LOCAL_HOST_BYTES = 32;
 const MAX_ACTIVE_TUNNELS = 32;
 const TUNNEL_READY_TIMEOUT_MS = 8000;
 const TUNNEL_READY_POLL_NS = 50 * std.time.ns_per_ms;
+const TUNNEL_HTTP_PROBE_TIMEOUT_MS = 1000;
 
 threadlocal var g_tunnels: [MAX_ACTIVE_TUNNELS]?SshTunnel = [_]?SshTunnel{null} ** MAX_ACTIVE_TUNNELS;
 
@@ -232,7 +233,7 @@ fn findReusableTunnel(allocator: std.mem.Allocator, conn: *const ssh_connection.
             stopTunnelSlot(slot);
             continue;
         }
-        if (!canConnectToLocalPort(allocator, tunnel.localHost(), tunnel.local_port)) {
+        if (!localHttpReadyOnce(allocator, tunnel.localHost(), tunnel.local_port)) {
             stopTunnelSlot(slot);
             continue;
         }
@@ -371,30 +372,56 @@ fn waitForTunnelReady(allocator: std.mem.Allocator, local_host: []const u8, loca
 
     const deadline = std.time.milliTimestamp() + TUNNEL_READY_TIMEOUT_MS;
     while (std.time.milliTimestamp() < deadline) {
-        if (canConnectToLocalPort(allocator, local_host, local_port)) return true;
+        if (localHttpReadyOnce(allocator, local_host, local_port)) return true;
         if (childHasExited(child)) return false;
         std.Thread.sleep(TUNNEL_READY_POLL_NS);
     }
     return false;
 }
 
-fn canConnectToLocalPort(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) bool {
-    if (std.mem.eql(u8, local_host, "127.0.0.1") or std.mem.eql(u8, local_host, "localhost")) {
-        const address = std.net.Address.parseIp4("127.0.0.1", local_port) catch return false;
-        var stream = std.net.tcpConnectToAddress(address) catch {
-            if (!std.mem.eql(u8, local_host, "localhost")) return false;
-            return canConnectToLocalHostName(allocator, local_host, local_port);
-        };
-        stream.close();
-        return true;
-    }
-    return canConnectToLocalHostName(allocator, local_host, local_port);
+fn localHttpReadyOnce(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) bool {
+    var stream = connectToLocalPort(allocator, local_host, local_port) orelse return false;
+    defer stream.close();
+    setReadTimeout(stream.handle, TUNNEL_HTTP_PROBE_TIMEOUT_MS);
+    stream.writeAll("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n") catch return false;
+    var buf: [512]u8 = undefined;
+    const n = stream.read(&buf) catch return false;
+    return httpProbeReady(buf[0..n]);
 }
 
-fn canConnectToLocalHostName(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) bool {
-    var stream = std.net.tcpConnectToHost(allocator, local_host, local_port) catch return false;
-    stream.close();
-    return true;
+fn httpProbeReady(response: []const u8) bool {
+    return std.mem.startsWith(u8, response, "HTTP/");
+}
+
+fn setReadTimeout(handle: std.net.Stream.Handle, ms: u32) void {
+    if (builtin.os.tag == .windows) {
+        const ws2 = std.os.windows.ws2_32;
+        const timeout: u32 = ms;
+        _ = ws2.setsockopt(handle, ws2.SOL.SOCKET, ws2.SO.RCVTIMEO, @ptrCast(&timeout), @sizeOf(u32));
+    } else {
+        const tv = std.posix.timeval{
+            .sec = @intCast(ms / 1000),
+            .usec = @intCast((ms % 1000) * 1000),
+        };
+        std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+    }
+}
+
+fn connectToLocalPort(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) ?std.net.Stream {
+    if (std.mem.eql(u8, local_host, "127.0.0.1") or std.mem.eql(u8, local_host, "localhost")) {
+        const address = std.net.Address.parseIp4("127.0.0.1", local_port) catch return null;
+        const stream = std.net.tcpConnectToAddress(address) catch {
+            if (!std.mem.eql(u8, local_host, "localhost")) return null;
+            return connectToLocalHostName(allocator, local_host, local_port);
+        };
+        return stream;
+    }
+    return connectToLocalHostName(allocator, local_host, local_port);
+}
+
+fn connectToLocalHostName(allocator: std.mem.Allocator, local_host: []const u8, local_port: u16) ?std.net.Stream {
+    const stream = std.net.tcpConnectToHost(allocator, local_host, local_port) catch return null;
+    return stream;
 }
 
 fn childHasExited(child: *const std.process.Child) bool {
@@ -486,6 +513,13 @@ test "ssh_tunnel cache key distinguishes proxy jump" {
 
     try std.testing.expect(tunnel.matches(&conn_a, 8888, "127.0.0.1", "127.0.0.1"));
     try std.testing.expect(!tunnel.matches(&conn_b, 8888, "127.0.0.1", "127.0.0.1"));
+}
+
+test "ssh_tunnel HTTP probe requires a response status line" {
+    try std.testing.expect(httpProbeReady("HTTP/1.0 302 Found\r\nLocation: /\r\n\r\n"));
+    try std.testing.expect(httpProbeReady("HTTP/1.1 404 Not Found\r\n\r\n"));
+    try std.testing.expect(!httpProbeReady(""));
+    try std.testing.expect(!httpProbeReady("SSH-2.0-OpenSSH\r\n"));
 }
 
 test "reservePreferredLocalPort returns the preferred port when it is free" {

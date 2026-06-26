@@ -226,10 +226,20 @@ fn trimIncompleteUtf8(s: []const u8) []const u8 {
     return s[0..i]; // incomplete tail
 }
 
-fn looksLikeApiErrorJson(s: []const u8) bool {
+fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
+    return haystack.len >= prefix.len and std.ascii.eqlIgnoreCase(haystack[0..prefix.len], prefix);
+}
+
+fn looksLikeApiErrorText(s: []const u8) bool {
     const trimmed = std.mem.trim(u8, s, " \t\r\n");
-    return std.mem.startsWith(u8, trimmed, "{") and
-        std.mem.indexOf(u8, trimmed, "\"error\"") != null;
+    if (std.mem.startsWith(u8, trimmed, "{")) {
+        return std.mem.indexOf(u8, trimmed, "\"error\"") != null or
+            std.mem.indexOf(u8, trimmed, "\"code\"") != null or
+            std.mem.indexOf(u8, trimmed, "\"message\"") != null;
+    }
+    return startsWithIgnoreCase(trimmed, "<html") or
+        startsWithIgnoreCase(trimmed, "<!doctype") or
+        startsWithIgnoreCase(trimmed, "http ");
 }
 
 /// Clean a raw model response into a display title written into `out`
@@ -241,7 +251,7 @@ fn looksLikeApiErrorJson(s: []const u8) bool {
 pub fn cleanTitle(raw: []const u8, out: []u8) ?[]const u8 {
     std.debug.assert(out.len >= max_title_bytes);
     const trimmed_raw = std.mem.trim(u8, raw, " \t\r\n");
-    if (looksLikeApiErrorJson(trimmed_raw)) return null;
+    if (looksLikeApiErrorText(trimmed_raw)) return null;
 
     var line = trimmed_raw;
     if (std.mem.indexOfScalar(u8, line, '\n')) |nl| line = line[0..nl];
@@ -302,6 +312,13 @@ test "cleanTitle: rejects raw API error JSON" {
         "{\"error\":{\"message\":\"thinking options type cannot be disabled when reasoning_effort is set\"}}",
         &buf,
     ) == null);
+}
+
+test "cleanTitle: rejects nonstandard API error bodies" {
+    var buf: [max_title_bytes]u8 = undefined;
+    try std.testing.expect(cleanTitle("{\"code\":400,\"message\":\"bad request\"}", &buf) == null);
+    try std.testing.expect(cleanTitle("<html><body>upstream error</body></html>", &buf) == null);
+    try std.testing.expect(cleanTitle("HTTP 502 Bad Gateway", &buf) == null);
 }
 
 test "cleanTitle: clamps to max_title_bytes on UTF-8 boundary" {

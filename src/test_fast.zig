@@ -31,6 +31,65 @@ test "remote file ssh helpers include short keepalive options" {
     try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "\"ServerAliveCountMax=2\"") != null);
 }
 
+test "ai title worker rejects API error results" {
+    const source = @embedFile("ai_chat_request.zig");
+    const start = std.mem.indexOf(u8, source, "pub fn titleThreadMain") orelse return error.MissingTitleWorker;
+    const rest = source[start..];
+    const end = std.mem.indexOf(u8, rest, "pub fn summaryThreadMain") orelse return error.MissingSummaryWorker;
+    const body = rest[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, body, "result.api_error") != null);
+}
+
+test "ai title request does not use the old 64 token budget" {
+    const source = @embedFile("ai_chat.zig");
+    const start = std.mem.indexOf(u8, source, "fn buildTitleRequestLocked") orelse return error.MissingTitleRequestBuilder;
+    const rest = source[start..];
+    const end = std.mem.indexOf(u8, rest, "// titleThreadMain has moved") orelse return error.MissingTitleRequestEnd;
+    const body = rest[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, body, ".max_tokens = 64") == null);
+}
+
+test "ssh browser tunnel readiness probes HTTP through the tunnel" {
+    const source = @embedFile("ssh_tunnel.zig");
+    {
+        const start = std.mem.indexOf(u8, source, "fn waitForTunnelReady") orelse return error.MissingTunnelReady;
+        const rest = source[start..];
+        const end = std.mem.indexOf(u8, rest, "fn childHasExited") orelse return error.MissingTunnelReadyEnd;
+        const body = rest[0..end];
+        try std.testing.expect(std.mem.indexOf(u8, body, "localHttpReadyOnce") != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "canConnectToLocalPort") == null);
+    }
+    {
+        const start = std.mem.indexOf(u8, source, "fn findReusableTunnel") orelse return error.MissingTunnelReuse;
+        const rest = source[start..];
+        const end = std.mem.indexOf(u8, rest, "fn spawnSshTunnel") orelse return error.MissingTunnelReuseEnd;
+        const body = rest[0..end];
+        try std.testing.expect(std.mem.indexOf(u8, body, "localHttpReadyOnce") != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "canConnectToLocalPort") == null);
+    }
+}
+
+test "agent SSH connection resolver uses the surface registry, not tab threadlocals" {
+    const source = @embedFile("appwindow/surface_snapshots.zig");
+    const start = std.mem.indexOf(u8, source, "pub fn agentSshConnectionForSurface") orelse return error.MissingAgentSshResolver;
+    const rest = source[start..];
+    const end = std.mem.indexOf(u8, rest, "test \"agent SSH") orelse return error.MissingAgentSshResolverEnd;
+    const body = rest[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, body, "surface_registry.acquireById") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "tab.g_") == null);
+}
+
+test "agent request disables worker snapshot fallback when UI capture fails" {
+    const source = @embedFile("ai_chat.zig");
+    const start = std.mem.indexOf(u8, source, "fn buildRequestLocked") orelse return error.MissingBuildRequestLocked;
+    const rest = source[start..];
+    const end = std.mem.indexOf(u8, rest, "var weixin_ctx") orelse return error.MissingBuildRequestSnapshotEnd;
+    const body = rest[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, body, "host.collectSnapshot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "catch null") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "tool_host = null") != null);
+}
+
 test {
     _ = @import("input/command_dispatch.zig");
     _ = @import("input/action.zig");
