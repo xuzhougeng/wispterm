@@ -12,11 +12,11 @@ const file_backend = @import("file_backend.zig");
 const platform_local_path = @import("platform/local_path.zig");
 const ui_perf = @import("ui_perf.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
-const input_action = @import("input/action.zig");
+const action = @import("file_explorer/action.zig");
 
-/// Typed file-explorer keyboard intent (re-exported so callers route keys
-/// through `handleInputAction` instead of poking internals directly).
-pub const InputAction = input_action.FileExplorerInputAction;
+/// Domain-owned file-explorer keyboard intent (re-exported so callers route
+/// keys through `handleAction` instead of poking internals directly).
+pub const Action = action.Action;
 
 pub const DEFAULT_WIDTH: f32 = 240;
 pub const MIN_WIDTH: f32 = 160;
@@ -1562,8 +1562,8 @@ pub fn moveSelection(delta: i32) void {
 /// input.zig uses so it no longer calls those internals — or reads the
 /// `g_selected`/`g_entry_count`/`g_entries` globals for the Enter decision —
 /// directly. Behavior matches the previous inline key branch exactly.
-pub fn handleInputAction(action: InputAction) void {
-    switch (action) {
+pub fn handleAction(act: Action) void {
+    switch (act) {
         .move_selection_up => moveSelection(-1),
         .move_selection_down => moveSelection(1),
         .toggle_selected_expand => {
@@ -2273,7 +2273,7 @@ test "file_explorer: moveHistorySelection walks selected row" {
     try std.testing.expectEqual(@as(?usize, 2), g_history_selected);
 }
 
-test "file_explorer: handleInputAction move intents walk the selection" {
+test "file_explorer: handleAction move intents walk the selection" {
     g_panel_mode = .files;
     g_row_height = 20;
     g_visible_height = 200;
@@ -2281,24 +2281,24 @@ test "file_explorer: handleInputAction move intents walk the selection" {
     g_scroll_offset = 0;
     g_selected = 0;
 
-    handleInputAction(.move_selection_down);
+    handleAction(.move_selection_down);
     try std.testing.expectEqual(@as(?usize, 1), g_selected);
 
-    handleInputAction(.move_selection_down);
-    handleInputAction(.move_selection_down);
+    handleAction(.move_selection_down);
+    handleAction(.move_selection_down);
     try std.testing.expectEqual(@as(?usize, 3), g_selected);
 
-    handleInputAction(.move_selection_up);
+    handleAction(.move_selection_up);
     try std.testing.expectEqual(@as(?usize, 2), g_selected);
 
     // Matches moveSelection(-1) clamping at the top row.
-    handleInputAction(.move_selection_up);
-    handleInputAction(.move_selection_up);
-    handleInputAction(.move_selection_up);
+    handleAction(.move_selection_up);
+    handleAction(.move_selection_up);
+    handleAction(.move_selection_up);
     try std.testing.expectEqual(@as(?usize, 0), g_selected);
 }
 
-test "file_explorer: handleInputAction toggle collapses an expanded directory and no-ops on a file" {
+test "file_explorer: handleAction toggle collapses an expanded directory and no-ops on a file" {
     // Mirrors the Enter branch the input.zig key handler used to run inline:
     // route to toggleExpand only when the selection is a directory. Use the
     // collapse direction (in-memory, no filesystem) to keep the test
@@ -2314,20 +2314,20 @@ test "file_explorer: handleInputAction toggle collapses an expanded directory an
     // Selected directory (expanded): Enter toggles it to collapsed and drops
     // the child row.
     g_selected = 0;
-    handleInputAction(.toggle_selected_expand);
+    handleAction(.toggle_selected_expand);
     try std.testing.expect(!g_entries[0].expanded);
     try std.testing.expectEqual(@as(usize, 2), g_entry_count);
 
     // Selected file: Enter is a no-op (entry untouched).
     g_entries[1] = .{ .is_dir = false, .expanded = false, .depth = 0 };
     g_selected = 1;
-    handleInputAction(.toggle_selected_expand);
+    handleAction(.toggle_selected_expand);
     try std.testing.expect(!g_entries[1].expanded);
     try std.testing.expectEqual(@as(usize, 2), g_entry_count);
 
     // No selection: Enter is a no-op (no crash).
     g_selected = null;
-    handleInputAction(.toggle_selected_expand);
+    handleAction(.toggle_selected_expand);
     try std.testing.expectEqual(@as(?usize, null), g_selected);
 }
 

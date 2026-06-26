@@ -42,7 +42,7 @@ const window_metrics = @import("ui/window_metrics.zig");
 const WindowMetrics = window_metrics.WindowMetrics;
 const input_key = @import("input/key.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
-const input_action = @import("input/action.zig");
+const file_explorer_keymap = @import("input/file_explorer_keymap.zig");
 const input_effects = @import("input/effects.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 const command_palette_input = @import("renderer/overlays/command_palette_input.zig");
@@ -4045,11 +4045,11 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             return true;
         },
         key_up, key_down, key_enter => {
-            // Navigation keys route through a typed InputAction so this branch
+            // Navigation keys route through a domain-owned action so this branch
             // asks file_explorer to perform the intent instead of calling its
             // internals directly. fromNavigationKey owns exactly these keys.
-            if (input_action.fromNavigationKey(ev.key_code)) |action| {
-                file_explorer.handleInputAction(action);
+            if (file_explorer_keymap.fromNavigationKey(ev.key_code)) |action| {
+                file_explorer.handleAction(action);
             }
             return true;
         },

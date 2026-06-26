@@ -92,7 +92,8 @@ test "agent request disables worker snapshot fallback when UI capture fails" {
 
 test {
     _ = @import("input/command_dispatch.zig");
-    _ = @import("input/action.zig");
+    _ = @import("input/file_explorer_keymap.zig");
+    _ = @import("file_explorer/action.zig");
     _ = @import("input/effects.zig");
     _ = @import("input/dirty_guard.zig");
     _ = @import("input/command_palette_effect_guard.zig");
