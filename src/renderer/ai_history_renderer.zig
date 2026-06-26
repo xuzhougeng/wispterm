@@ -323,7 +323,7 @@ fn drawDateRow(
     const label_color = if (highlight) fg else muted;
     var num_buf: [16]u8 = undefined;
     const num_text = std.fmt.bufPrint(&num_buf, "{d}", .{count}) catch "";
-    const count_w: f32 = 44;
+    const count_w = countColumnWidth(num_text, draw.glyphAdvance);
     const count_x = layout.left_x + layout.left_w - PAD_X - count_w;
     const label_x = layout.left_x + PAD_X + 6;
     _ = draw.renderTextLimited(label, label_x, yTextFromTop(draw, window_height, text_top), label_color, @max(0, count_x - label_x - 6));
@@ -385,7 +385,7 @@ fn renderLeftColumn(
         const count = types.categoryCount(counts, cat);
         var num_buf: [16]u8 = undefined;
         const num_text = std.fmt.bufPrint(&num_buf, "{d}", .{count}) catch "";
-        const count_w: f32 = 44;
+        const count_w = countColumnWidth(num_text, draw.glyphAdvance);
         const count_x = layout.left_x + layout.left_w - PAD_X - count_w;
         const label_x = layout.left_x + PAD_X + 6;
         _ = draw.renderTextLimited(categoryLabelText(cat), label_x, yTextFromTop(draw, window_height, text_top), label_color, @max(0, count_x - label_x - 6));
@@ -830,10 +830,26 @@ fn clampDateOffset(offset: usize, bucket_count: usize, day_slots: usize) usize {
     return @min(offset, bucket_count - day_slots);
 }
 
+fn countColumnWidth(text: []const u8, advance: *const fn (u32) f32) f32 {
+    var w: f32 = 0;
+    for (text) |ch| w += advance(ch);
+    return @max(@as(f32, 44), w);
+}
+
 fn rectContains(x: f32, y: f32, left: f32, top: f32, width: f32, height: f32) bool {
     return width > 0 and height > 0 and
         x >= left and x < left + width and
         y >= top and y < top + height;
+}
+
+test "ai_history_renderer: left count column fits three digit counts" {
+    const Advance = struct {
+        fn twentyPx(_: u32) f32 {
+            return 20;
+        }
+    };
+    try std.testing.expectEqual(@as(f32, 44), countColumnWidth("98", Advance.twentyPx));
+    try std.testing.expectEqual(@as(f32, 60), countColumnWidth("896", Advance.twentyPx));
 }
 
 test "ai_history_renderer: list row lines never overlap as ui font grows" {
