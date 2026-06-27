@@ -25,6 +25,16 @@ test "input ssh download surfaces missing connection and helper probe failures" 
     try std.testing.expect(std.mem.indexOf(u8, input_source, "\"SSH helper unavailable\"") != null);
 }
 
+test "assistant conversation input routing owns keyboard target lookup" {
+    const routing_source = @embedFile("input/assistant_conversation.zig");
+    try std.testing.expect(std.mem.indexOf(u8, routing_source, "activeAiChat()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, routing_source, "activeCopilotSessionForInput()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, routing_source, ".copilot_sidebar") != null);
+
+    const input_source = @embedFile("input.zig");
+    try std.testing.expect(std.mem.indexOf(u8, input_source, "assistant_conversation.current(aiCopilotFocused())") != null);
+}
+
 test "remote file ssh helpers include short keepalive options" {
     const remote_file_source = @embedFile("platform/remote_file.zig");
     try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "\"ServerAliveInterval=5\"") != null);

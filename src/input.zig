@@ -41,6 +41,7 @@ const window_backend = @import("platform/window_backend.zig");
 const window_metrics = @import("ui/window_metrics.zig");
 const WindowMetrics = window_metrics.WindowMetrics;
 const input_key = @import("input/key.zig");
+const assistant_conversation = @import("input/assistant_conversation.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
 const file_explorer_keymap = @import("input/file_explorer_keymap.zig");
 const input_effects = @import("input/effects.zig");
@@ -2663,10 +2664,10 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         tab.handleRenameChar(ev.codepoint);
         return .none;
     }
-    if (AppWindow.activeAiChat()) |chat| {
+    if (assistant_conversation.current(aiCopilotFocused())) |target| {
         if (!ev.ctrl and !ev.alt) {
             AppWindow.resetCursorBlink();
-            chat.handleChar(ev.codepoint);
+            target.session.handleChar(ev.codepoint);
             return input_effects.repaint();
         }
         return .none;
@@ -2702,19 +2703,6 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
             _ = AppWindow.portForwardingInsertChar(ev.codepoint);
         }
         return .none;
-    }
-    // AI copilot sidebar (terminal tabs): when the copilot owns focus, route
-    // text input to its composer. `activeCopilotSessionForInput` is non-null
-    // only when the panel is visible on the active terminal tab.
-    if (aiCopilotFocused()) {
-        if (AppWindow.activeCopilotSessionForInput()) |chat| {
-            if (!ev.ctrl and !ev.alt) {
-                AppWindow.resetCursorBlink();
-                chat.handleChar(ev.codepoint);
-                return input_effects.repaint();
-            }
-            return .none;
-        }
     }
     // A focused raster (image/PDF) preview consumes +/=/- as zoom in/out. Only
     // raster previews claim these chars (markdown previews ignore them so they
@@ -2933,27 +2921,15 @@ fn executeCommand(cmd: command_dispatch.Command) bool {
         // Late
         .copy => copySelectionToClipboard(),
         .paste => {
-            if (AppWindow.activeAiChat()) |chat| {
-                pasteFromClipboardIntoAiChat(chat);
-            } else if (aiCopilotFocused()) {
-                if (AppWindow.activeCopilotSessionForInput()) |chat| {
-                    pasteFromClipboardIntoAiChat(chat);
-                } else {
-                    pasteFromClipboard();
-                }
+            if (assistant_conversation.current(aiCopilotFocused())) |target| {
+                pasteFromClipboardIntoAiChat(target.session);
             } else {
                 pasteFromClipboard();
             }
         },
         .paste_image => {
-            if (AppWindow.activeAiChat()) |chat| {
-                pasteImageIntoAiChat(chat);
-            } else if (aiCopilotFocused()) {
-                if (AppWindow.activeCopilotSessionForInput()) |chat| {
-                    pasteImageIntoAiChat(chat);
-                } else {
-                    pasteImageFromClipboard();
-                }
+            if (assistant_conversation.current(aiCopilotFocused())) |target| {
+                pasteImageIntoAiChat(target.session);
             } else {
                 pasteImageFromClipboard();
             }
@@ -3153,49 +3129,41 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
             return input_effects.repaint();
         }
     }
-    if (AppWindow.activeAiChat()) |chat| {
+    if (assistant_conversation.current(aiCopilotFocused())) |target| {
         // Accept Cmd (super, macOS) or Ctrl (Windows) for chat editing keys.
         const mod = ev.ctrl or ev.super;
         if (mod and !ev.alt and ev.key_code == 0x41) { // select all
-            chat.selectAll();
+            target.session.selectAll();
             return input_effects.repaint();
         }
         if (mod and !ev.alt and ev.key_code == 0x43) { // copy
-            copyAiChatToClipboard(chat);
+            copyAiChatToClipboard(target.session);
             return .none;
         }
         if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
-            copyAiChatCutToClipboard(chat);
+            copyAiChatCutToClipboard(target.session);
             return .none;
-        }
-    }
-    // AI copilot sidebar editing-mod keys (select-all / copy / cut), mirroring
-    // the ai_chat tab block above but for the copilot session.
-    if (aiCopilotFocused()) {
-        if (AppWindow.activeCopilotSessionForInput()) |chat| {
-            const mod = ev.ctrl or ev.super;
-            if (mod and !ev.alt and ev.key_code == 0x41) { // select all
-                chat.selectAll();
-                return input_effects.repaint();
-            }
-            if (mod and !ev.alt and ev.key_code == 0x43) { // copy
-                copyAiChatToClipboard(chat);
-                return .none;
-            }
-            if (mod and !ev.alt and ev.key_code == 0x58) { // cut input
-                copyAiChatCutToClipboard(chat);
-                return .none;
-            }
         }
     }
     if (action) |app_action| {
         if (handleConfiguredKeybindAction(app_action, .late)) return .none;
     }
 
-    if (AppWindow.activeAiChat()) |chat| {
+    if (assistant_conversation.current(aiCopilotFocused())) |target| {
+        if (target.isSidebar() and ev.key_code == platform_input.key_escape) {
+            if (target.session.requestState().inflight) {
+                target.session.stopRequest();
+            } else if (target.session.hasSelection()) {
+                target.session.clearSelection();
+            } else {
+                AppWindow.hideAiCopilot();
+            }
+            return input_effects.repaint();
+        }
         if (isAiChatKey(ev)) {
             AppWindow.resetCursorBlink();
-            chat.handleKeyWithWrapCols(key_event, aiChatInputWrapCols());
+            const wrap_cols = if (target.isSidebar()) aiCopilotInputWrapCols() else aiChatInputWrapCols();
+            target.session.handleKeyWithWrapCols(key_event, wrap_cols);
             return input_effects.repaint();
         }
     }
@@ -3466,34 +3434,6 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
             else => {},
         }
         return .none;
-    }
-
-    // AI copilot sidebar (terminal tabs): route editing/navigation keys to the
-    // copilot composer. Esc is intercepted specially so it never reaches the
-    // terminal — it stops an in-flight request, or hides the panel when idle.
-    if (aiCopilotFocused()) {
-        if (AppWindow.activeCopilotSessionForInput()) |chat| {
-            if (ev.key_code == platform_input.key_escape) {
-                // Progressive Esc: stop an in-flight request, else clear an
-                // active selection, else hide the panel. Matches the AI-chat
-                // tab's stop/clear behavior; closing is only the final step,
-                // so Esc never abruptly dismisses a panel that still has a
-                // selection to clear.
-                if (chat.requestState().inflight) {
-                    chat.stopRequest();
-                } else if (chat.hasSelection()) {
-                    chat.clearSelection();
-                } else {
-                    AppWindow.hideAiCopilot();
-                }
-                return input_effects.repaint();
-            }
-            if (isAiChatKey(ev)) {
-                AppWindow.resetCursorBlink();
-                chat.handleKeyWithWrapCols(key_event, aiCopilotInputWrapCols());
-                return input_effects.repaint();
-            }
-        }
     }
 
     // A focused preview leaf consumes plain navigation keys for scroll/pan.
