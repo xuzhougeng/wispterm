@@ -346,7 +346,7 @@ pub fn computeSplitLayout(
 }
 
 test "split_layout: soleTerminalSurface only for a single terminal rect" {
-    const PreviewPane = @import("../preview_pane.zig");
+    const PreviewPane = @import("../preview/pane.zig");
     const saved_count = g_split_rect_count;
     const saved_rect = g_split_rects[0];
     defer {

@@ -2,12 +2,12 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
-const markdown_preview = @import("../markdown_preview.zig");
-const pdf_preview = @import("../pdf_preview.zig");
+const markdown_preview = @import("../preview/markdown.zig");
+const pdf_preview = @import("../preview/pdf.zig");
 const text_wrap = @import("../text_wrap.zig");
 const ui_perf = @import("../ui_perf.zig");
-const PreviewPane = @import("../preview_pane.zig");
-const preview_diagnostics = @import("../preview_diagnostics.zig");
+const PreviewPane = @import("../preview/pane.zig");
+const preview_diagnostics = @import("../preview/diagnostics.zig");
 const preview_close_button = @import("../input/preview_close_button.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;

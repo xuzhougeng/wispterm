@@ -1,8 +1,8 @@
 //! Gallery navigation helper for image/PDF preview panes.
 
 const std = @import("std");
-const file_backend = @import("file_backend.zig");
-const markdown_preview = @import("markdown_preview.zig");
+const file_backend = @import("../file_backend.zig");
+const markdown_preview = @import("markdown.zig");
 
 pub const MAX_GALLERY_ENTRIES: usize = 2048;
 pub const MAX_TARGET_PATH_BYTES: usize = 512;
