@@ -33,9 +33,9 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const platform_wsl = @import("platform/wsl.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
 const ai_agent_access = @import("ai_agent_access.zig");
-const web_search = @import("web_search.zig");
-const web_read = @import("web_read.zig");
-const pubmed = @import("pubmed.zig");
+const web_search = @import("research/web_search.zig");
+const web_read = @import("research/web_read.zig");
+const pubmed = @import("research/pubmed.zig");
 const agent_memory = @import("agent_memory.zig");
 
 /// Number of output lines included in a copilot context block.

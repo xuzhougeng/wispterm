@@ -6,7 +6,7 @@
 //! Mirrors `web_search.zig`; intentionally does NOT depend on it — the Jina key is
 //! passed in via `Options.api_key` (empty = anonymous).
 const std = @import("std");
-const platform_http = @import("platform/http_client.zig");
+const platform_http = @import("../platform/http_client.zig");
 const web_read_cache = @import("web_read_cache.zig");
 
 const reader_url = "https://r.jina.ai/";
