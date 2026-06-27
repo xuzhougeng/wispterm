@@ -1,7 +1,7 @@
 //! Pure slash-command / skill / composer suggestion parsing, extracted from
 //! ai_chat.zig. Text + skill metadata -> suggestion data; no Session state.
 const std = @import("std");
-const skill_registry = @import("skill_registry.zig");
+const skill_registry = @import("skill/registry.zig");
 const input_text = @import("ai_chat_input_text.zig");
 
 /// Max bytes the composer input buffer can hold. Mirrors

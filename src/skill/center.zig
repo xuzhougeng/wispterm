@@ -5,9 +5,9 @@
 //! library scan off the UI thread. UI strings live in i18n; transfer/diff live in
 //! sibling modules.
 const std = @import("std");
-const scan = @import("skill_scan.zig");
-const install = @import("skill_install.zig");
-const tool_import = @import("tool_import.zig");
+const scan = @import("scan.zig");
+const install = @import("install.zig");
+const tool_import = @import("../tool_import.zig");
 
 /// Target software — a skills root under $HOME on the target machine. Both use
 /// the same SKILL.md directory format, so a library skill deploys to either.

@@ -100,7 +100,7 @@ test "copilot hint flag I/O wrappers are callable" {
 }
 
 test "skill_local_fs aggHashHex matches the POSIX find|sha256sum recipe byte-for-byte" {
-    const skill_local_fs = @import("skill_local_fs.zig");
+    const skill_local_fs = @import("skill/local_fs.zig");
     const a = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});

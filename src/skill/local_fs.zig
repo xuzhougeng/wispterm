@@ -14,7 +14,7 @@
 //! i.e. sha256( for each regular file, in bytewise-sorted "./path" order:
 //!              <lowercase-hex sha256 of file content> + "  " + "./path" + "\n" ).
 const std = @import("std");
-const skill_scan = @import("skill_scan.zig");
+const skill_scan = @import("scan.zig");
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
