@@ -2,7 +2,7 @@
 //! 设计见 docs/superpowers/specs/2026-06-01-i18n-infrastructure-design.md
 const std = @import("std");
 const builtin = @import("builtin");
-const command_center_state = @import("command_center_state.zig");
+const command_center_state = @import("command/center_state.zig");
 const CommandAction = command_center_state.CommandAction;
 
 pub const Lang = enum { en, zh_CN };

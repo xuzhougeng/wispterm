@@ -3,7 +3,7 @@
 //! and ai_chat_composer. No Session state.
 const std = @import("std");
 const skill_registry = @import("skill_registry.zig");
-const command_registry = @import("command_registry.zig");
+const command_registry = @import("command/registry.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const ai_chat_composer = @import("ai_chat_composer.zig");
 const ai_skill_distill = @import("ai_skill_distill.zig");

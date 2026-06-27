@@ -1,7 +1,7 @@
-const app_metadata = @import("app_metadata.zig");
-const platform_pty_command = @import("platform/pty_command.zig");
+const app_metadata = @import("../app_metadata.zig");
+const platform_pty_command = @import("../platform/pty_command.zig");
 const std = @import("std");
-const command_palette_history_view = @import("command_palette_history_view.zig");
+const command_palette_history_view = @import("palette_history_view.zig");
 
 pub const CommandAction = enum {
     new_tab,
