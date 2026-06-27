@@ -286,7 +286,7 @@ pub fn render(
                 0.22,
             );
         }
-        const cursor = inputCursorRect(input_text, session.input_cursor, layout.text_x, layout.text_w);
+        const cursor = inputCursorRect(input_text, session.inputCursorLocked(), layout.text_x, layout.text_w);
         const visible_rows = inputVisibleRowsForField(layout.field_h);
         const total_rows = countWrappedLines(input_text, layout.text_w);
         const max_first_row = if (total_rows > visible_rows) total_rows - visible_rows else 0;
@@ -314,7 +314,7 @@ pub fn render(
         renderInputScrollbar(layout, total_rows, visible_rows, first_row);
     }
     if (!session.request_inflight and AppWindow.g_cursor_blink_visible) {
-        const cursor = inputCursorRect(input_text, session.input_cursor, layout.text_x, layout.text_w);
+        const cursor = inputCursorRect(input_text, session.inputCursorLocked(), layout.text_x, layout.text_w);
         const visible_rows = inputVisibleRowsForField(layout.field_h);
         const total_rows = countWrappedLines(input_text, layout.text_w);
         const max_first_row = if (total_rows > visible_rows) total_rows - visible_rows else 0;
@@ -1396,7 +1396,8 @@ fn renderRewindPicker(session: *ai_chat.Session, layout: InputLayout) void {
 
 fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, window_width: f32, ceiling_y: f32) void {
     const input_text = session.input();
-    const count = ai_chat.composerSuggestionCountForInput(input_text, session.input_cursor, session.skill_suggestions, session.custom_command_suggestions);
+    const input_cursor = session.inputCursorLocked();
+    const count = ai_chat.composerSuggestionCountForInput(input_text, input_cursor, session.skill_suggestions, session.custom_command_suggestions);
     if (count == 0) return;
 
     const bg = AppWindow.g_theme.background;
@@ -1415,7 +1416,7 @@ fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, win
     // Detail panel: the selected item's full description, wrapped under the
     // list (capped at detail_wrap.MAX_LINES so the popup never grows unbounded).
     const detail_w = popup_w - SUGGESTION_PAD_X * 2;
-    const selected_suggestion = ai_chat.composerSuggestionAtForInput(input_text, session.input_cursor, session.skill_suggestions, session.custom_command_suggestions, selected);
+    const selected_suggestion = ai_chat.composerSuggestionAtForInput(input_text, input_cursor, session.skill_suggestions, session.custom_command_suggestions, selected);
     const detail_desc: []const u8 = if (selected_suggestion) |s| s.description else "";
     const detail_line_h = lineHeight();
     const detail = if (detail_desc.len > 0 and detail_w > 0)
@@ -1448,7 +1449,7 @@ fn renderComposerSuggestions(session: *ai_chat.Session, layout: InputLayout, win
             ui_pipeline.fillQuadAlpha(popup_x + 5, row_y + 4, popup_w - 10, row_h - 8, mixColor(bg, accent, 0.20), 0.90);
             ui_pipeline.fillQuadAlpha(popup_x + 5, row_y + 4, 3, row_h - 8, accent, 0.82);
         }
-        const suggestion = ai_chat.composerSuggestionAtForInput(input_text, session.input_cursor, session.skill_suggestions, session.custom_command_suggestions, i) orelse continue;
+        const suggestion = ai_chat.composerSuggestionAtForInput(input_text, input_cursor, session.skill_suggestions, session.custom_command_suggestions, i) orelse continue;
         const text_y = row_y + @round((row_h - font.g_titlebar_cell_height) / 2);
         var label_buf: [160]u8 = undefined;
         const label = suggestionLabel(&label_buf, suggestion);

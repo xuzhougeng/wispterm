@@ -6,6 +6,7 @@
 //! integration stays in `ai_chat.zig`.
 
 const std = @import("std");
+const text_search = @import("text_search.zig");
 
 pub const Role = @import("ai_chat_protocol.zig").Role;
 
@@ -239,7 +240,7 @@ fn trimIncompleteUtf8(s: []const u8) []const u8 {
 }
 
 fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
-    return haystack.len >= prefix.len and std.ascii.eqlIgnoreCase(haystack[0..prefix.len], prefix);
+    return text_search.startsWithIgnoreCase(haystack, prefix);
 }
 
 fn looksLikeApiErrorText(s: []const u8) bool {

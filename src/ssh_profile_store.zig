@@ -2,10 +2,72 @@ const std = @import("std");
 const ssh_connection = @import("ssh_connection.zig");
 const profile_codec = @import("renderer/overlays/profile_codec.zig");
 const platform_dirs = @import("platform/dirs.zig");
+const platform_atomic_file = @import("platform/atomic_file.zig");
 const command_palette_model = @import("command_palette_model.zig");
 
+const SSH_PROFILES_HEADER = "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump, auth_method, identity_file.\n";
+
+pub fn profilesPath(allocator: std.mem.Allocator) ![]const u8 {
+    return platform_dirs.sshHostsPath(allocator);
+}
+
+pub fn loadProfiles(allocator: std.mem.Allocator, out: []profile_codec.SshProfile) usize {
+    const path = profilesPath(allocator) catch return 0;
+    defer allocator.free(path);
+    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return 0;
+    defer allocator.free(content);
+    return loadProfilesFromContent(content, out);
+}
+
+pub fn loadProfilesFromContent(content: []const u8, out: []profile_codec.SshProfile) usize {
+    var count: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line_raw| {
+        if (count >= out.len) break;
+        const line = std.mem.trimRight(u8, line_raw, "\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const profile = profile_codec.decodeSshProfileLine(line) orelse continue;
+        out[count] = profile;
+        count += 1;
+    }
+    return count;
+}
+
+pub fn saveProfiles(allocator: std.mem.Allocator, profiles: []const profile_codec.SshProfile) bool {
+    const path = profilesPath(allocator) catch return false;
+    defer allocator.free(path);
+    if (std.fs.path.dirname(path)) |dir| {
+        std.fs.cwd().makePath(dir) catch return false;
+    }
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(allocator);
+    out.appendSlice(allocator, SSH_PROFILES_HEADER) catch return false;
+    for (profiles) |*profile| {
+        appendProfileLine(allocator, &out, profile) catch return false;
+    }
+    platform_atomic_file.writeFileReplaceSafe(path, out.items) catch return false;
+    return true;
+}
+
+pub fn appendProfileLine(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), profile: *const profile_codec.SshProfile) !void {
+    for (0..profile_codec.SSH_FIELD_COUNT) |i| {
+        if (i > 0) try out.append(allocator, '\t');
+        try appendHexField(allocator, out, profile.fields[i][0..profile.lens[i]]);
+    }
+    try out.append(allocator, '\n');
+}
+
+fn appendHexField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
+    const hex = "0123456789ABCDEF";
+    for (value) |ch| {
+        try out.append(allocator, hex[ch >> 4]);
+        try out.append(allocator, hex[ch & 0x0f]);
+    }
+}
+
 pub fn connectionByName(allocator: std.mem.Allocator, profile_name: []const u8, legacy_algorithms: bool) ?ssh_connection.SshConnection {
-    const path = platform_dirs.sshHostsPath(allocator) catch return null;
+    const path = profilesPath(allocator) catch return null;
     defer allocator.free(path);
     const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return null;
     defer allocator.free(content);
@@ -184,6 +246,35 @@ test "ssh_profile_store: rejects unsafe profile fields" {
     });
 
     try std.testing.expect(findConnectionInContent(content.items, "bad", false) == null);
+}
+
+test "ssh_profile_store: loadProfilesFromContent decodes bounded profiles" {
+    var content: std.ArrayListUnmanaged(u8) = .empty;
+    defer content.deinit(std.testing.allocator);
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "one", "10.0.0.1", "alice", "", "22", "" });
+    try appendEncodedProfileForTest(std.testing.allocator, &content, &.{ "two", "10.0.0.2", "bob", "", "2202", "" });
+
+    var profiles: [1]profile_codec.SshProfile = undefined;
+    const count = loadProfilesFromContent(content.items, &profiles);
+    try std.testing.expectEqual(@as(usize, 1), count);
+    try std.testing.expectEqualStrings("one", profile_codec.profileField(&profiles[0], .name));
+}
+
+test "ssh_profile_store: appendProfileLine writes all SSH fields as hex" {
+    var profile = profile_codec.makeSshProfile("lab", "host", "user", "22");
+    profile_codec.copySshProfileField(&profile, .password, "secret");
+    profile_codec.copySshProfileField(&profile, .proxy_jump, "jump");
+    profile_codec.copySshProfileField(&profile, .auth_method, "password");
+    profile_codec.copySshProfileField(&profile, .identity_file, "id");
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try appendProfileLine(std.testing.allocator, &out, &profile);
+
+    const decoded = profile_codec.decodeSshProfileLine(std.mem.trimRight(u8, out.items, "\n")) orelse return error.ExpectedProfile;
+    try std.testing.expectEqualStrings("lab", profile_codec.profileField(&decoded, .name));
+    try std.testing.expectEqualStrings("secret", profile_codec.profileField(&decoded, .password));
+    try std.testing.expectEqualStrings("id", profile_codec.profileField(&decoded, .identity_file));
 }
 
 test "ssh_profile_store: cycleProfileName steps through profiles and wraps" {

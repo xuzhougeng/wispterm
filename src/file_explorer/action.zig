@@ -23,4 +23,14 @@ pub const Action = enum {
     /// Expand/collapse the selected directory (Enter). A no-op when the current
     /// selection is not a directory. → file_explorer.toggleExpand(selected)
     toggle_selected_expand,
+    /// Start renaming the selected entry (`R`).
+    rename_selected,
+    /// Refresh the current directory (`Ctrl/Cmd+R` or F5).
+    refresh,
+    /// Start the inline "new file" operation (`N`).
+    create_file,
+    /// Start the inline "new folder" operation (`Shift+N`).
+    create_directory,
+    /// Start the delete confirmation for the selected entry (`D`).
+    delete_selected,
 };

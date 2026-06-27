@@ -9,12 +9,17 @@
 const std = @import("std");
 const scan = @import("scan.zig");
 
-const termio_sources = [_][]const u8{
-    @embedFile("../termio/Thread.zig"),
-    @embedFile("../termio/ReadThread.zig"),
-    @embedFile("../termio/Mailbox.zig"),
-    @embedFile("../termio/message.zig"),
-    @embedFile("../termio/read_coalesce.zig"),
+const GuardedSource = struct {
+    name: []const u8,
+    source: []const u8,
+};
+
+const termio_sources = [_]GuardedSource{
+    .{ .name = "Thread.zig", .source = @embedFile("../termio/Thread.zig") },
+    .{ .name = "ReadThread.zig", .source = @embedFile("../termio/ReadThread.zig") },
+    .{ .name = "Mailbox.zig", .source = @embedFile("../termio/Mailbox.zig") },
+    .{ .name = "message.zig", .source = @embedFile("../termio/message.zig") },
+    .{ .name = "read_coalesce.zig", .source = @embedFile("../termio/read_coalesce.zig") },
 };
 
 /// termio is a lower layer than the renderer: it may not import it at all.
@@ -28,8 +33,8 @@ fn rendererImportCount(source: []const u8) usize {
 
 test "termio does not import the renderer layer" {
     var total: usize = 0;
-    for (termio_sources) |source| {
-        total += rendererImportCount(source);
+    for (termio_sources) |source_file| {
+        total += rendererImportCount(source_file.source);
     }
     if (total > renderer_import_ceiling) {
         std.debug.print(
@@ -39,4 +44,31 @@ test "termio does not import the renderer layer" {
         );
         return error.TermioReachedRenderer;
     }
+}
+
+fn termioSourceListed(name: []const u8) bool {
+    for (termio_sources) |source_file| {
+        if (std.mem.eql(u8, source_file.name, name)) return true;
+    }
+    return false;
+}
+
+test "termio layered-dependency guard covers new Zig files" {
+    var dir = try std.fs.cwd().openDir("src/termio", .{ .iterate = true });
+    defer dir.close();
+
+    var missing = false;
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".zig")) continue;
+        if (!termioSourceListed(entry.name)) {
+            std.debug.print(
+                "layered_dependency_guard: src/termio/{s} is not in termio_sources; add it so new termio files cannot bypass the renderer dependency check.\n",
+                .{entry.name},
+            );
+            missing = true;
+        }
+    }
+
+    try std.testing.expect(!missing);
 }

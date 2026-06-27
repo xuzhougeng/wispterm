@@ -3,6 +3,7 @@
 //! the live screen text; `resolveAnswer` (Task 5) maps a semantic answer to the
 //! keystroke to send. Sibling of `agent_detector.zig`.
 const std = @import("std");
+const text_search = @import("text_search.zig");
 
 pub const Option = struct {
     number: u8 = 0,
@@ -106,18 +107,11 @@ fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
 }
 
 fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
-    if (prefix.len > haystack.len) return false;
-    return std.ascii.eqlIgnoreCase(haystack[0..prefix.len], prefix);
+    return text_search.startsWithIgnoreCase(haystack, prefix);
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
-    }
-    return false;
+    return text_search.containsIgnoreCase(haystack, needle);
 }
 
 /// Parse numbered option lines out of `screen`, writing up to `out.len` of them.

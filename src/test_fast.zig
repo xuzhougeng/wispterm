@@ -31,6 +31,28 @@ test "remote file ssh helpers include short keepalive options" {
     try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "\"ServerAliveCountMax=2\"") != null);
 }
 
+test "remote file capture helpers use process_runner" {
+    const remote_file_source = @embedFile("platform/remote_file.zig");
+    try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "process_runner.runCapture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, remote_file_source, "child_output") == null);
+}
+
+test "SSH profile persistence is owned by ssh_profile_store" {
+    const overlays_source = @embedFile("renderer/overlays.zig");
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "ssh_profile_store.loadProfiles") != null);
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "ssh_profile_store.saveProfiles") != null);
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "fn sshProfilesPath") == null);
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "decodeSshProfileLine") == null);
+}
+
+test "AI profile persistence is owned by ai_profile_store" {
+    const overlays_source = @embedFile("renderer/overlays.zig");
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "ai_profile_store.loadProfiles") != null);
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "ai_profile_store.saveProfiles") != null);
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "fn aiProfilesPath") == null);
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "decodeAiProfileLine") == null);
+}
+
 test "ai title worker rejects API error results" {
     const source = @embedFile("ai_chat_request.zig");
     const start = std.mem.indexOf(u8, source, "pub fn titleThreadMain") orelse return error.MissingTitleWorker;
@@ -131,6 +153,7 @@ test {
     _ = @import("source_guards/global_state_guard.zig");
     _ = @import("source_guards/import_hub_guard.zig");
     _ = @import("source_guards/side_effect_guard.zig");
+    _ = @import("source_guards/process_runner_guard.zig");
     _ = @import("source_guards/layered_dependency_guard.zig");
     _ = @import("source_guards/overlay_boundary_guard.zig");
     _ = @import("source_guards/input_feature_boundary_guard.zig");
@@ -242,6 +265,7 @@ test {
     _ = @import("renderer/titlebar_layout.zig");
     _ = @import("ai_chat_layout.zig");
     _ = @import("ai_chat_types.zig");
+    _ = @import("ai_profile_store.zig");
     _ = @import("ai_sidebar.zig");
     _ = @import("copilot_hint_gate.zig");
     _ = @import("appwindow/flush_scheduler.zig");

@@ -17,7 +17,6 @@ pub const build_options = @import("build_options");
 
 comptime {
     _ = @import("ai_loop_store.zig");
-    _ = @import("child_output.zig");
     _ = @import("platform/pdf_render_linux.zig");
     // tmux posix-only tests: socketpair virtual PTY + pane I/O bridge. They need
     // libc and a real posix target, and are guarded out of the windows app test

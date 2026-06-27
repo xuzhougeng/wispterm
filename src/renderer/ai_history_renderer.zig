@@ -2,6 +2,7 @@ const std = @import("std");
 const ai_history_session = @import("../ai_history_session.zig");
 const types = @import("../ai_history_types.zig");
 const i18n = @import("../i18n.zig");
+const text_search = @import("../text_search.zig");
 
 const HEADER_H: f32 = 54;
 const FILTER_H: f32 = 42;
@@ -781,20 +782,7 @@ fn metadataMatches(meta: anytype, query: []const u8) bool {
 }
 
 fn containsIgnoreCase(haystack: []const u8, query: []const u8) bool {
-    if (query.len == 0) return true;
-    if (query.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + query.len <= haystack.len) : (i += 1) {
-        var matched = true;
-        for (query, 0..) |qch, j| {
-            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(qch)) {
-                matched = false;
-                break;
-            }
-        }
-        if (matched) return true;
-    }
-    return false;
+    return text_search.containsIgnoreCase(haystack, query);
 }
 
 fn buttonHeight(cell_h: f32) f32 {

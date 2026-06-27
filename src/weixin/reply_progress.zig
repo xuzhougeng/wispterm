@@ -1,6 +1,7 @@
 //! AI-reply progress detection by diffing the rendered AI chat transcript
 //! against a baseline. Port of poller.ts aiReplyProgress + parseAiSections.
 const std = @import("std");
+const text_search = @import("../text_search.zig");
 
 pub const Progress = struct {
     done: bool = false,
@@ -204,13 +205,7 @@ fn eq(a: []const u8, b: []const u8) bool {
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (haystack.len < needle.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
-    }
-    return false;
+    return text_search.containsIgnoreCase(haystack, needle);
 }
 
 const t = std.testing;

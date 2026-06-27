@@ -3,7 +3,17 @@ const builtin = @import("builtin");
 const pty_command = @import("pty_command.zig");
 const platform_wsl = @import("wsl.zig");
 const platform_process = @import("process.zig");
-const child_output = @import("../child_output.zig");
+const process_runner = @import("../process_runner.zig");
+
+const DEFAULT_CAPTURE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const SSH_STDERR_MAX_BYTES: usize = 16 * 1024;
+
+fn exitedOk(term: process_runner.Termination) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        .killed => false,
+    };
+}
 
 /// Run a POSIX-shell command on the LOCAL host (`sh -c <command>`) and capture
 /// stdout, capped at `max_bytes`. On non-POSIX hosts (Windows native) there is
@@ -13,30 +23,12 @@ const child_output = @import("../child_output.zig");
 pub fn localPosixExec(allocator: std.mem.Allocator, command: []const u8, max_bytes: usize) ![]u8 {
     if (builtin.os.tag == .windows) return error.Unreachable;
     const argv = [_][]const u8{ "sh", "-c", command };
-    var child = initHiddenCaptureChild(&argv, allocator);
-    try child.spawn();
-
-    var output: std.ArrayListUnmanaged(u8) = .empty;
-    defer output.deinit(allocator);
-    const stdout = child.stdout orelse {
-        _ = child.wait() catch {};
-        return error.RemoteExecFailed;
-    };
-    var buf: [4096]u8 = undefined;
-    while (output.items.len < max_bytes) {
-        const n = stdout.read(&buf) catch break;
-        if (n == 0) break;
-        try output.appendSlice(allocator, buf[0..n]);
-    }
-    // If we stopped at the cap, drain the rest of stdout to EOF so the child
-    // can't block on a full pipe — otherwise child.wait() (and the scan worker
-    // thread joining on it at teardown) would hang forever.
-    while (output.items.len >= max_bytes) {
-        const n = stdout.read(&buf) catch break;
-        if (n == 0) break;
-    }
-    _ = child.wait() catch {};
-    return output.toOwnedSlice(allocator);
+    const result = try process_runner.runCapture(allocator, &argv, .{
+        .max_stdout_bytes = max_bytes,
+        .max_stderr_bytes = SSH_STDERR_MAX_BYTES,
+    });
+    allocator.free(result.stderr);
+    return result.stdout;
 }
 
 /// True if the local host can run POSIX shell commands (false on Windows
@@ -54,21 +46,12 @@ pub fn localPosixExecSupported() bool {
 pub fn localPosixExecOk(allocator: std.mem.Allocator, command: []const u8) bool {
     if (builtin.os.tag == .windows) return false;
     const argv = [_][]const u8{ "sh", "-c", command };
-    var child = initHiddenCaptureChild(&argv, allocator);
-    child.spawn() catch return false;
-    // Drain stdout to EOF so the child can't block on a full pipe at exit.
-    if (child.stdout) |stdout| {
-        var buf: [4096]u8 = undefined;
-        while (true) {
-            const n = stdout.read(&buf) catch break;
-            if (n == 0) break;
-        }
-    }
-    const term = child.wait() catch return false;
-    return switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
+    var result = process_runner.runCapture(allocator, &argv, .{
+        .max_stdout_bytes = DEFAULT_CAPTURE_MAX_BYTES,
+        .max_stderr_bytes = SSH_STDERR_MAX_BYTES,
+    }) catch return false;
+    defer result.deinit(allocator);
+    return exitedOk(result.termination);
 }
 
 pub fn wslHomeCommand() []const u8 {
@@ -78,40 +61,16 @@ pub fn wslHomeCommand() []const u8 {
 /// Run a command inside the default WSL distro and capture stdout.
 pub fn wslExec(allocator: std.mem.Allocator, command: []const u8) ?[]u8 {
     const argv = pty_command.wslExecArgv(command);
-    var child = initHiddenCaptureChild(&argv, allocator);
-    child.spawn() catch return null;
-
-    var output: std.ArrayListUnmanaged(u8) = .empty;
-    defer output.deinit(allocator);
-
-    const stdout = child.stdout orelse {
-        _ = child.wait() catch {};
+    var result = process_runner.runCapture(allocator, &argv, .{
+        .max_stdout_bytes = DEFAULT_CAPTURE_MAX_BYTES,
+        .max_stderr_bytes = SSH_STDERR_MAX_BYTES,
+    }) catch return null;
+    if (!exitedOk(result.termination)) {
+        result.deinit(allocator);
         return null;
-    };
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = stdout.read(&buf) catch break;
-        if (n == 0) break;
-        output.appendSlice(allocator, buf[0..n]) catch break;
     }
-
-    const term = child.wait() catch return null;
-    const ok = switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-    if (!ok) return null;
-
-    return output.toOwnedSlice(allocator) catch null;
-}
-
-fn initHiddenCaptureChild(argv: []const []const u8, allocator: std.mem.Allocator) std.process.Child {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    child.create_no_window = true;
-    return child;
+    allocator.free(result.stderr);
+    return result.stdout;
 }
 
 /// Result of an ssh exec: owned stdout + stderr, plus whether ssh exited 0.
@@ -225,30 +184,16 @@ pub fn sshExecCaptureFull(allocator: std.mem.Allocator, conn: anytype, command: 
     argv_buf[argc] = command;
     argc += 1;
 
-    var child = std.process.Child.init(argv_buf[0..argc], allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.create_no_window = true;
-    if (env_map) |*map| child.env_map = map;
-    try child.spawn();
-
-    const stdout = child.stdout orelse return error.SpawnFailed;
-    const stderr = child.stderr orelse return error.SpawnFailed;
-    // Drain both pipes concurrently — a full stderr pipe must not deadlock the
-    // stdout reader (the old "read stdout to EOF, then stderr" order could).
-    var cap = child_output.capture(allocator, stdout, stderr, 2 * 1024 * 1024, 16 * 1024) catch |err| {
-        _ = child.wait() catch {};
-        return err; // preserve the real error (e.g. OutOfMemory)
+    const result = try process_runner.runCapture(allocator, argv_buf[0..argc], .{
+        .env_map = if (env_map) |*map| map else null,
+        .max_stdout_bytes = 2 * 1024 * 1024,
+        .max_stderr_bytes = SSH_STDERR_MAX_BYTES,
+    });
+    return .{
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+        .exited_ok = exitedOk(result.termination),
     };
-    errdefer cap.deinit(allocator);
-
-    const term = try child.wait();
-    const ok = switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-    return .{ .stdout = cap.stdout, .stderr = cap.stderr, .exited_ok = ok };
 }
 
 pub fn sshExecCapture(allocator: std.mem.Allocator, conn: anytype, command: []const u8) ![]u8 {
@@ -357,15 +302,6 @@ test "platform remote file exposes WSL command helpers" {
     try std.testing.expect(exec_info.params[0].type.? == std.mem.Allocator);
     try std.testing.expect(exec_info.params[1].type.? == []const u8);
     try std.testing.expect(exec_info.return_type.? == ?[]u8);
-}
-
-test "platform remote file hides WSL capture helper windows" {
-    const argv = pty_command.wslExecArgv("true");
-    const child = initHiddenCaptureChild(&argv, std.testing.allocator);
-    try std.testing.expect(child.create_no_window);
-    try std.testing.expectEqual(std.process.Child.StdIo.Ignore, child.stdin_behavior);
-    try std.testing.expectEqual(std.process.Child.StdIo.Pipe, child.stdout_behavior);
-    try std.testing.expectEqual(std.process.Child.StdIo.Ignore, child.stderr_behavior);
 }
 
 test "platform remote file adapts local paste paths by terminal launch kind" {

@@ -7,6 +7,7 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
 const ai_chat_protocol = @import("../ai_chat_protocol.zig");
+const ai_profile_store = @import("../ai_profile_store.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
@@ -21,6 +22,7 @@ const input_key = @import("../input/key.zig");
 const hit_test = @import("../input/hit_test.zig");
 const ssh_prompt = @import("../ssh_prompt.zig");
 const ssh_connection = @import("../ssh_connection.zig");
+const ssh_profile_store = @import("../ssh_profile_store.zig");
 const app_metadata = @import("../app_metadata.zig");
 const command_center_state = @import("../command_center_state.zig");
 const ctl_ui_state = @import("../ctl/ui_state.zig");
@@ -28,7 +30,6 @@ const command_palette_history_view = @import("../command_palette_history_view.zi
 const command_palette_model = @import("../command_palette_model.zig");
 const command_registry = @import("../command_registry.zig");
 const agent_history = @import("../agent_history.zig");
-const platform_atomic_file = @import("../platform/atomic_file.zig");
 const platform_dirs = @import("../platform/dirs.zig");
 const platform_open_url = @import("../platform/open_url.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
@@ -43,6 +44,7 @@ const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
 const ai_profiles = @import("overlays/ai_profiles.zig");
 const session_launcher = @import("overlays/session_launcher.zig");
+const command_palette_state = @import("overlays/command_palette_state.zig");
 const command_palette_layout = @import("overlays/command_palette_layout.zig");
 const close_confirm = @import("../close_confirm.zig");
 const close_confirm_state = @import("../ui/close_shortcut_confirm.zig");
@@ -119,6 +121,10 @@ fn aiState() *ai_profiles.State {
 
 fn launcherState() *session_launcher.State {
     return &g_overlay_state.session;
+}
+
+fn commandPaletteState() *command_palette_state.State {
+    return &g_overlay_state.command_palette;
 }
 
 fn switchModelTarget() ?*AppWindow.ai_chat.Session {
@@ -205,7 +211,7 @@ const TransferCancelConfirmLayout = struct {
 // Command center
 // ============================================================================
 
-const COMMAND_PALETTE_FILTER_MAX = 64;
+const COMMAND_PALETTE_FILTER_MAX = command_palette_state.FILTER_MAX;
 const COMMAND_PALETTE_MAX_VISIBLE_ROWS = command_palette_layout.MAX_VISIBLE_ROWS;
 
 const THEME_OVERRIDE_KEYS = [_][]const u8{
@@ -278,23 +284,14 @@ threadlocal var g_command_palette_history_rows: []agent_history.Row = &.{};
 threadlocal var g_command_palette_history_rows_owned: bool = false;
 threadlocal var g_command_palette_history_revision: u64 = 0;
 
-pub threadlocal var g_command_palette_visible: bool = false;
-threadlocal var g_command_palette_selected: usize = 0;
-threadlocal var g_command_palette_filter: [COMMAND_PALETTE_FILTER_MAX]u8 = undefined;
-threadlocal var g_command_palette_filter_len: usize = 0;
-threadlocal var g_command_palette_mode: CommandPaletteMode = .commands;
-threadlocal var g_command_palette_history_selected: usize = 0;
-threadlocal var g_command_palette_history_source: command_palette_history_view.SourceFilter = .all;
-threadlocal var g_command_palette_history_item_count: usize = 0;
-
 const CommandPaletteLayout = command_palette_layout.Layout;
 
 pub fn commandPaletteVisible() bool {
-    return g_command_palette_visible;
+    return commandPaletteState().visible;
 }
 
 fn commandPaletteIsHistoryMode() bool {
-    return commandCenterStateSnapshot().commandPaletteIsHistoryMode();
+    return commandPaletteState().isHistoryMode();
 }
 
 fn commandPaletteSetMode(mode: CommandPaletteMode) void {
@@ -322,7 +319,7 @@ pub fn commandPaletteClose() void {
 }
 
 pub fn commandPaletteToggle() void {
-    if (g_command_palette_visible) {
+    if (commandPaletteState().visible) {
         commandPaletteClose();
     } else {
         commandPaletteOpen();
@@ -331,18 +328,7 @@ pub fn commandPaletteToggle() void {
 
 pub fn commandPaletteMove(delta: i32) void {
     if (commandPaletteIsHistoryMode()) return;
-    const count = commandPaletteVisibleCount();
-    if (count == 0) {
-        g_command_palette_selected = 0;
-        return;
-    }
-
-    const current: i32 = @intCast(g_command_palette_selected);
-    const count_i: i32 = @intCast(count);
-    var next = current + delta;
-    while (next < 0) next += count_i;
-    next = @mod(next, count_i);
-    g_command_palette_selected = @intCast(next);
+    commandPaletteState().moveSelection(delta, commandPaletteVisibleCount());
 }
 
 /// Mouse-wheel handling for the command center. The list scrolls by moving the
@@ -350,19 +336,14 @@ pub fn commandPaletteMove(delta: i32) void {
 /// matching the keyboard Up/Down model. Positive delta scrolls toward the top,
 /// mirroring whatsNewHandleScroll(). Clamps at the ends so the wheel never wraps.
 pub fn commandPaletteHandleScroll(delta_y: f64) void {
-    if (!g_command_palette_visible) return;
+    if (!commandPaletteState().visible) return;
     const step: i32 = if (delta_y > 0) -1 else if (delta_y < 0) 1 else 0;
     if (step == 0) return;
     if (commandPaletteIsHistoryMode()) {
         commandPaletteMoveAgentHistory(step);
         return;
     }
-    const count = commandPaletteVisibleCount();
-    if (count == 0) return;
-    if (step < 0) {
-        if (g_command_palette_selected == 0) return;
-    } else if (g_command_palette_selected + 1 >= count) return;
-    commandPaletteMove(step);
+    commandPaletteState().scrollSelection(step, commandPaletteVisibleCount());
 }
 
 pub fn commandPaletteAgentHistoryVisible() bool {
@@ -408,35 +389,15 @@ pub fn commandPaletteLeaveAgentHistory() void {
 }
 
 pub fn commandPaletteBackspace() void {
-    if (g_command_palette_filter_len == 0) return;
-    var n = g_command_palette_filter_len - 1;
-    while (n > 0 and (g_command_palette_filter[n] & 0xC0) == 0x80) n -= 1;
-    g_command_palette_filter_len = n;
-    if (commandPaletteIsHistoryMode()) {
-        g_command_palette_history_selected = 0;
-    } else {
-        commandPaletteClampSelection();
-    }
+    commandPaletteState().backspaceFilter(commandPaletteVisibleCount());
 }
 
 pub fn commandPaletteClearFilter() void {
-    if (commandPaletteIsHistoryMode()) return;
-    g_command_palette_filter_len = 0;
-    commandPaletteClampSelection();
+    commandPaletteState().clearFilter(commandPaletteVisibleCount());
 }
 
 pub fn commandPaletteInsertChar(codepoint: u21) void {
-    if (codepoint < 0x20 or codepoint == 0x7f) return;
-    var buf: [4]u8 = undefined;
-    const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
-    if (g_command_palette_filter_len + len > g_command_palette_filter.len) return;
-    @memcpy(g_command_palette_filter[g_command_palette_filter_len..][0..len], buf[0..len]);
-    g_command_palette_filter_len += len;
-    if (commandPaletteIsHistoryMode()) {
-        g_command_palette_history_selected = 0;
-    } else {
-        commandPaletteClampSelection();
-    }
+    commandPaletteState().insertChar(codepoint, commandPaletteVisibleCount());
 }
 
 pub fn commandPaletteExecuteSelected() void {
@@ -446,8 +407,9 @@ pub fn commandPaletteExecuteSelected() void {
     }
     rebuildPaletteScratch();
     if (g_palette_scratch_len == 0) return;
-    if (g_command_palette_selected >= g_palette_scratch_len) return;
-    const item = g_palette_scratch[g_command_palette_selected];
+    const selected = commandPaletteState().selected;
+    if (selected >= g_palette_scratch_len) return;
+    const item = g_palette_scratch[selected];
     commandPaletteClose();
     executePaletteItem(item);
 }
@@ -901,7 +863,7 @@ pub fn commandPaletteOpenAgentHistory() void {
 }
 
 fn commandPaletteFilter() []const u8 {
-    return g_command_palette_filter[0..g_command_palette_filter_len];
+    return commandPaletteState().filterSlice();
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -974,10 +936,7 @@ test "command palette matches English source even when title is localized" {
 }
 
 fn setCommandPaletteFilterForTest(filter: []const u8) void {
-    const len = @min(filter.len, g_command_palette_filter.len);
-    @memcpy(g_command_palette_filter[0..len], filter[0..len]);
-    g_command_palette_filter_len = len;
-    g_command_palette_selected = 0;
+    commandPaletteState().setFilterForTest(filter);
 }
 
 fn paletteContainsSshProfileForTest(profile_idx: usize) bool {
@@ -1067,11 +1026,7 @@ test "command palette surfaces user snippets and filters them by name/descriptio
 }
 
 test "command palette includes tmux profile actions for SSH profile search" {
-    const previous_mode = g_command_palette_mode;
-    const previous_filter_len = g_command_palette_filter_len;
-    var previous_filter: [COMMAND_PALETTE_FILTER_MAX]u8 = undefined;
-    if (previous_filter_len > 0) @memcpy(previous_filter[0..previous_filter_len], g_command_palette_filter[0..previous_filter_len]);
-    const previous_selected = g_command_palette_selected;
+    const previous_state = commandPaletteState().*;
     const previous_scratch_len = g_palette_scratch_len;
     const previous_ssh_loaded = sshState().profiles_loaded;
     const previous_ssh_count = sshState().profile_count;
@@ -1082,10 +1037,7 @@ test "command palette includes tmux profile actions for SSH profile search" {
     var previous_ai_profiles: [AI_PROFILE_MAX]AiProfile = undefined;
     if (previous_ai_count > 0) @memcpy(previous_ai_profiles[0..previous_ai_count], aiState().profiles[0..previous_ai_count]);
     defer {
-        g_command_palette_mode = previous_mode;
-        g_command_palette_filter_len = previous_filter_len;
-        if (previous_filter_len > 0) @memcpy(g_command_palette_filter[0..previous_filter_len], previous_filter[0..previous_filter_len]);
-        g_command_palette_selected = previous_selected;
+        commandPaletteState().* = previous_state;
         g_palette_scratch_len = previous_scratch_len;
         sshState().profiles_loaded = previous_ssh_loaded;
         sshState().profile_count = previous_ssh_count;
@@ -1095,7 +1047,7 @@ test "command palette includes tmux profile actions for SSH profile search" {
         if (previous_ai_count > 0) @memcpy(aiState().profiles[0..previous_ai_count], previous_ai_profiles[0..previous_ai_count]);
     }
 
-    g_command_palette_mode = .commands;
+    commandPaletteState().mode = .commands;
     sshState().profiles_loaded = true;
     sshState().profile_count = 2;
     sshState().profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
@@ -1272,7 +1224,7 @@ fn buildHistoryView() ?command_palette_history_view.View {
         allocator,
         g_command_palette_history_rows,
         commandPaletteFilter(),
-        g_command_palette_history_source,
+        commandPaletteState().history_source,
         now_ms,
         tz,
     ) catch null;
@@ -1292,7 +1244,7 @@ fn commandPaletteVisibleCount() usize {
 }
 
 fn commandPaletteResultCount() usize {
-    if (commandPaletteIsHistoryMode()) return g_command_palette_history_item_count;
+    if (commandPaletteIsHistoryMode()) return commandPaletteState().history_item_count;
     return commandPaletteVisibleCount();
 }
 
@@ -1333,12 +1285,7 @@ fn historySelectedItemIndex(view: command_palette_history_view.View, selected_or
 }
 
 fn commandPaletteClampSelection() void {
-    const count = commandPaletteVisibleCount();
-    if (count == 0) {
-        g_command_palette_selected = 0;
-    } else if (g_command_palette_selected >= count) {
-        g_command_palette_selected = count - 1;
-    }
+    commandPaletteState().clampSelection(commandPaletteVisibleCount());
 }
 
 fn overlayTextHeight() f32 {
@@ -1376,9 +1323,9 @@ fn rowTextY(row_y: f32, row_h: f32) f32 {
 fn commandPaletteFirstVisibleIndex(rendered_rows: usize) usize {
     const count = commandPaletteResultCount();
     const selected = if (commandPaletteIsHistoryMode())
-        g_command_palette_history_selected
+        commandPaletteState().history_selected
     else
-        g_command_palette_selected;
+        commandPaletteState().selected;
     return command_palette_layout.firstVisibleIndex(rendered_rows, count, selected);
 }
 
@@ -1399,7 +1346,7 @@ pub const ImeCaretPx = struct { x: f32, y: f32, h: f32 };
 /// underlying terminal/AI-chat cursor. Returns null when the palette is not in
 /// text-filter mode. Inputs must match what renderCommandPalette is called with.
 pub fn commandPaletteImeCaret(window_width: f32, window_height: f32, top_offset: f32) ?ImeCaretPx {
-    if (!g_command_palette_visible) return null;
+    if (!commandPaletteState().visible) return null;
     if (commandPaletteIsHistoryMode()) return null; // history mode has no text filter
     const layout = commandPaletteLayout(window_width, window_height, top_offset);
     const pad_x: f32 = 24; // must match renderCommandPalette
@@ -1445,7 +1392,7 @@ fn commandPaletteHistoryHitTestIndex(xpos: f64, ypos: f64, window_width: f32, wi
     defer view.deinit(AppWindow.g_allocator.?);
     const selectable = view.rowCount();
     if (selectable == 0) return null;
-    const selected_ord = @min(g_command_palette_history_selected, selectable - 1);
+    const selected_ord = @min(commandPaletteState().history_selected, selectable - 1);
     const focus_item = historySelectedItemIndex(view, selected_ord);
     const first_item = historyWindowStart(view.items.len, layout.rendered_rows, focus_item);
     const item_idx = first_item + row;
@@ -1981,7 +1928,7 @@ pub fn renderBrowserUrlBar(window_width: f32, window_height: f32, top_offset: f3
 
 /// Render the command center overlay.
 pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f32) void {
-    if (!g_command_palette_visible) return;
+    if (!commandPaletteState().visible) return;
     commandPaletteSyncAgentHistoryRows();
 
     var history_view: ?command_palette_history_view.View = null;
@@ -1992,7 +1939,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
     const hist_now_ms = std.time.milliTimestamp();
     if (commandPaletteIsHistoryMode()) {
         history_view = buildHistoryView();
-        g_command_palette_history_item_count = if (history_view) |v| v.items.len else 0;
+        commandPaletteState().history_item_count = if (history_view) |v| v.items.len else 0;
     }
 
     const layout = commandPaletteLayout(window_width, window_height, top_offset);
@@ -2021,7 +1968,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
     const esc_hint = if (commandPaletteIsHistoryMode()) i18n.s().cmd_palette_esc_returns else i18n.s().cmd_palette_esc_closes;
     renderTitlebarText(esc_hint, layout.box_x + layout.box_w - pad_x - measureTitlebarText(esc_hint), title_y, muted);
     if (commandPaletteIsHistoryMode()) {
-        const chip = historySourceLabel(g_command_palette_history_source);
+        const chip = historySourceLabel(commandPaletteState().history_source);
         const chip_w = measureTitlebarText(chip);
         const chip_x = layout.box_x + layout.box_w - pad_x - measureTitlebarText(esc_hint) - 16 - chip_w;
         renderTitlebarText(chip, chip_x, title_y, mixColor(fg, accent, 0.20));
@@ -2058,7 +2005,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
             renderTitlebarText(empty_text, layout.box_x + (layout.box_w - measureTitlebarText(empty_text)) / 2, empty_y, muted);
         } else {
             const view = history_view.?;
-            const selected_ord = @min(g_command_palette_history_selected, selectable - 1);
+            const selected_ord = @min(commandPaletteState().history_selected, selectable - 1);
             const focus_item = historySelectedItemIndex(view, selected_ord);
             const first_item = historyWindowStart(view.items.len, layout.rendered_rows, focus_item);
 
@@ -2116,7 +2063,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                 const item_idx = first_row + display_row;
                 if (item_idx >= g_palette_scratch_len) break;
                 const item = g_palette_scratch[item_idx];
-                const selected = item_idx == g_command_palette_selected;
+                const selected = item_idx == commandPaletteState().selected;
 
                 const row_top = @round(layout.row_top_px + @as(f32, @floatFromInt(display_row)) * layout.row_h);
                 const row_y = @round(window_height - row_top - layout.row_h);
@@ -2229,7 +2176,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
         const first_row = if (commandPaletteIsHistoryMode()) blk: {
             const v = history_view orelse break :blk 0;
             const selectable = v.rowCount();
-            const selected_ord = if (selectable == 0) 0 else @min(g_command_palette_history_selected, selectable - 1);
+            const selected_ord = if (selectable == 0) 0 else @min(commandPaletteState().history_selected, selectable - 1);
             break :blk historyWindowStart(v.items.len, layout.rendered_rows, historySelectedItemIndex(v, selected_ord));
         } else commandPaletteFirstVisibleIndex(layout.rendered_rows);
         const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
@@ -2414,13 +2361,14 @@ pub fn buildUiStateJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanag
 }
 
 fn commandCenterStateSnapshot() command_center_state.State {
+    const palette = commandPaletteState();
     return .{
-        .command_palette_visible = g_command_palette_visible,
-        .command_palette_selected = g_command_palette_selected,
-        .command_palette_filter_len = g_command_palette_filter_len,
-        .command_palette_mode = g_command_palette_mode,
-        .command_palette_history_selected = g_command_palette_history_selected,
-        .command_palette_history_source = g_command_palette_history_source,
+        .command_palette_visible = palette.visible,
+        .command_palette_selected = palette.selected,
+        .command_palette_filter_len = palette.filter_len,
+        .command_palette_mode = palette.mode,
+        .command_palette_history_selected = palette.history_selected,
+        .command_palette_history_source = palette.history_source,
         .startup_shortcuts_visible = startup_shortcuts.g_startup_shortcuts_visible,
         .session_launcher_visible = g_session_launcher_visible,
         .session_launcher_selected = g_session_launcher_selected,
@@ -2443,12 +2391,13 @@ fn commandCenterStateCommit(state: command_center_state.State) void {
 }
 
 fn commandCenterStateApply(state: command_center_state.State) void {
-    g_command_palette_visible = state.command_palette_visible;
-    g_command_palette_selected = state.command_palette_selected;
-    g_command_palette_filter_len = state.command_palette_filter_len;
-    g_command_palette_mode = state.command_palette_mode;
-    g_command_palette_history_selected = state.command_palette_history_selected;
-    g_command_palette_history_source = state.command_palette_history_source;
+    const palette = commandPaletteState();
+    palette.visible = state.command_palette_visible;
+    palette.selected = state.command_palette_selected;
+    palette.filter_len = state.command_palette_filter_len;
+    palette.mode = state.command_palette_mode;
+    palette.history_selected = state.command_palette_history_selected;
+    palette.history_source = state.command_palette_history_source;
     startup_shortcuts.g_startup_shortcuts_visible = state.startup_shortcuts_visible;
     g_session_launcher_visible = state.session_launcher_visible;
     g_session_launcher_selected = state.session_launcher_selected;
@@ -4563,114 +4512,30 @@ fn isHttpUrlish(value: []const u8) bool {
     return std.mem.startsWith(u8, value, "https://") or std.mem.startsWith(u8, value, "http://");
 }
 
-fn aiProfilesPath(allocator: std.mem.Allocator) ![]const u8 {
-    return platform_dirs.aiProfilesPath(allocator);
-}
-
 fn loadAiProfiles() void {
     if (aiState().profiles_loaded) return;
     aiState().profiles_loaded = true;
-    aiState().profile_count = 0;
     const allocator = AppWindow.g_allocator orelse return;
-    const path = aiProfilesPath(allocator) catch return;
-    defer allocator.free(path);
-    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return;
-    defer allocator.free(content);
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line_raw| {
-        if (aiState().profile_count >= AI_PROFILE_MAX) break;
-        const line = std.mem.trimRight(u8, line_raw, "\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        const profile = decodeAiProfileLine(line) orelse continue;
-        aiState().profiles[aiState().profile_count] = profile;
-        aiState().profile_count += 1;
-    }
+    aiState().profile_count = ai_profile_store.loadProfiles(allocator, aiState().profiles[0..]);
 }
-
-/// Decode one tab-separated, hex-encoded AI profile line into an `AiProfile`,
-/// then fill defaults for any empty optional field. Returns null when a present
-/// field contains malformed hex or fewer than five fields are present. Trailing
-/// fields absent from the line (e.g. `protocol`/`max_tokens` from older builds)
-/// are defaulted rather than misaligned, so profiles written before the schema
-/// grew still load correctly.
-const decodeAiProfileLine = profile_codec.decodeAiProfileLine;
 
 fn saveAiProfiles(allocator: std.mem.Allocator) void {
-    const path = aiProfilesPath(allocator) catch return;
-    defer allocator.free(path);
-    if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch return;
-    }
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-    out.appendSlice(allocator, "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens, vision.\n") catch return;
-    for (aiState().profiles[0..aiState().profile_count]) |profile| {
-        for (0..AI_FIELD_COUNT) |i| {
-            if (i > 0) out.append(allocator, '\t') catch return;
-            appendHexField(allocator, &out, profile.fields[i][0..profile.lens[i]]) catch return;
-        }
-        out.append(allocator, '\n') catch return;
-    }
-
-    platform_atomic_file.writeFileReplaceSafe(path, out.items) catch {
-        showStatusToast("Failed to save AI profiles");
-        return;
-    };
-}
-
-fn sshProfilesPath(allocator: std.mem.Allocator) ![]const u8 {
-    return platform_dirs.sshHostsPath(allocator);
+    if (!ai_profile_store.saveProfiles(allocator, aiState().profiles[0..aiState().profile_count])) showStatusToast("Failed to save AI profiles");
 }
 
 fn loadSshProfiles() void {
     if (sshState().profiles_loaded) return;
     sshState().profiles_loaded = true;
-    sshState().profile_count = 0;
     const allocator = AppWindow.g_allocator orelse return;
-    const path = sshProfilesPath(allocator) catch return;
-    defer allocator.free(path);
-    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return;
-    defer allocator.free(content);
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line_raw| {
-        if (sshState().profile_count >= SSH_PROFILE_MAX) break;
-        const line = std.mem.trimRight(u8, line_raw, "\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        const profile = decodeSshProfileLine(line) orelse continue;
-        sshState().profiles[sshState().profile_count] = profile;
-        sshState().profile_count += 1;
-    }
+    sshState().profile_count = ssh_profile_store.loadProfiles(allocator, sshState().profiles[0..]);
 }
-
-const decodeSshProfileLine = profile_codec.decodeSshProfileLine;
 
 fn saveSshProfiles(allocator: std.mem.Allocator) void {
     if (!saveSshProfilesChecked(allocator)) showStatusToast("Failed to save SSH profiles");
 }
 
 fn saveSshProfilesChecked(allocator: std.mem.Allocator) bool {
-    const path = sshProfilesPath(allocator) catch return false;
-    defer allocator.free(path);
-    if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch return false;
-    }
-
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    defer out.deinit(allocator);
-    out.appendSlice(allocator, "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump, auth_method, identity_file.\n") catch return false;
-    for (sshState().profiles[0..sshState().profile_count]) |profile| {
-        for (0..SSH_FIELD_COUNT) |i| {
-            if (i > 0) out.append(allocator, '\t') catch return false;
-            appendHexField(allocator, &out, profile.fields[i][0..profile.lens[i]]) catch return false;
-        }
-        out.append(allocator, '\n') catch return false;
-    }
-
-    platform_atomic_file.writeFileReplaceSafe(path, out.items) catch return false;
-    return true;
+    return ssh_profile_store.saveProfiles(allocator, sshState().profiles[0..sshState().profile_count]);
 }
 
 fn loadOpenSshConfigDefault() void {
@@ -4711,18 +4576,6 @@ fn loadOpenSshConfigDefault() void {
         std.fmt.bufPrint(&msg_buf, "Imported {d}, updated {d} SSH profiles", .{ stats.created, stats.updated }) catch "Imported OpenSSH profiles";
     showStatusToast(msg);
 }
-
-fn appendHexField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
-    const hex = "0123456789ABCDEF";
-    for (value) |ch| {
-        try out.append(allocator, hex[ch >> 4]);
-        try out.append(allocator, hex[ch & 0x0f]);
-    }
-}
-
-const decodeHexField = profile_codec.decodeHexField;
-const decodeHexFieldToSlice = profile_codec.decodeHexFieldToSlice;
-const hexValue = profile_codec.hexValue;
 
 fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
     const right_w = if (right.len > 0) measureTitlebarText(right) + 36.0 else 0.0;
@@ -6348,23 +6201,23 @@ test "overlays: command center mouse wheel moves selection without wrapping" {
     const count = commandPaletteVisibleCount();
     try std.testing.expect(count >= 2);
 
-    g_command_palette_selected = 0;
+    commandPaletteState().selected = 0;
     // Positive delta scrolls toward the top; negative toward the bottom
     // (mirrors whatsNewHandleScroll / the wheel sign convention).
     commandPaletteHandleScroll(-1);
-    try std.testing.expectEqual(@as(usize, 1), g_command_palette_selected);
+    try std.testing.expectEqual(@as(usize, 1), commandPaletteState().selected);
 
     commandPaletteHandleScroll(1);
-    try std.testing.expectEqual(@as(usize, 0), g_command_palette_selected);
+    try std.testing.expectEqual(@as(usize, 0), commandPaletteState().selected);
 
     // At the top, scrolling up does not wrap to the bottom.
     commandPaletteHandleScroll(1);
-    try std.testing.expectEqual(@as(usize, 0), g_command_palette_selected);
+    try std.testing.expectEqual(@as(usize, 0), commandPaletteState().selected);
 
     // At the bottom, scrolling down does not wrap to the top.
-    g_command_palette_selected = count - 1;
+    commandPaletteState().selected = count - 1;
     commandPaletteHandleScroll(-1);
-    try std.testing.expectEqual(count - 1, g_command_palette_selected);
+    try std.testing.expectEqual(count - 1, commandPaletteState().selected);
 }
 
 test "overlays: session launcher caps rows and scrolls to keep selection visible on short windows" {
@@ -6725,7 +6578,7 @@ test "overlays: SSH list filter backspace restores matching rows" {
 }
 
 test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
-    const saved_palette = g_command_palette_visible;
+    const saved_palette = commandPaletteState().visible;
     const saved_settings_visible = settingsState().visible;
     const saved_whats_new = g_whats_new_visible;
     const saved_integration_prompt = g_integration_prompt_visible;
@@ -6737,7 +6590,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     const saved_ai_form = g_ai_form_visible;
     const saved_ai_history = g_ai_history_source_visible;
     defer {
-        g_command_palette_visible = saved_palette;
+        commandPaletteState().visible = saved_palette;
         settingsState().visible = saved_settings_visible;
         g_whats_new_visible = saved_whats_new;
         g_integration_prompt_visible = saved_integration_prompt;
@@ -6751,7 +6604,7 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     }
 
     // Clear every blocking flag → nothing should report blocking.
-    g_command_palette_visible = false;
+    commandPaletteState().visible = false;
     settingsState().visible = false;
     g_whats_new_visible = false;
     g_integration_prompt_visible = false;
@@ -6765,9 +6618,9 @@ test "overlays: anyBlockingOverlayVisible reflects each modal overlay" {
     try std.testing.expect(!anyBlockingOverlayVisible());
 
     // Each modal independently makes the webview need hiding.
-    g_command_palette_visible = true;
+    commandPaletteState().visible = true;
     try std.testing.expect(anyBlockingOverlayVisible());
-    g_command_palette_visible = false;
+    commandPaletteState().visible = false;
 
     settingsState().visible = true;
     try std.testing.expect(anyBlockingOverlayVisible());

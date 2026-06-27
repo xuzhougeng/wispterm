@@ -18,7 +18,7 @@ const mouse_dispatch_source = @embedFile("../input/mouse_dispatch.zig");
 /// Frozen at the current baseline; the ratchet may only ratchet DOWN.
 /// This counts raw `file_explorer.g_` occurrences (not lines): one line can
 /// hold two pokes, so the actual is 73 today even though 72 lines match.
-const file_explorer_global_ceiling: usize = 73;
+const file_explorer_global_ceiling: usize = 55;
 
 /// The extracted mouse-dispatch helper must not depend on the window object.
 const appwindow_import_ceiling: usize = 0;

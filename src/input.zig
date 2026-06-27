@@ -4042,7 +4042,7 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
     // Normal navigation mode
     switch (ev.key_code) {
         key_escape => {
-            file_explorer.g_focused = false;
+            file_explorer.blur();
             return true;
         },
         key_up, key_down, key_enter => {
@@ -4053,35 +4053,6 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
                 file_explorer.handleAction(action);
             }
             return true;
-        },
-        0x52 => { // 'R': bare = rename, Ctrl/Cmd+R = refresh
-            if (!ev.ctrl and !ev.alt and !ev.super) {
-                file_explorer.startRename();
-                return true;
-            }
-            if ((ev.ctrl or ev.super) and !ev.alt and !ev.shift) {
-                file_explorer.refresh();
-                return true;
-            }
-            return false;
-        },
-        0x4E => { // 'N' key = new file, Shift+N = new dir
-            if (!ev.ctrl and !ev.alt and !ev.super) {
-                if (ev.shift) {
-                    file_explorer.startNewDir();
-                } else {
-                    file_explorer.startNewFile();
-                }
-                return true;
-            }
-            return false;
-        },
-        0x44 => { // 'D' key = delete
-            if (!ev.ctrl and !ev.alt and !ev.shift and !ev.super) {
-                file_explorer.startDelete();
-                return true;
-            }
-            return false;
         },
         0x53 => { // 'S' key: Ctrl/Cmd+S = download selected file
             if ((ev.ctrl or ev.super) and !ev.alt and !ev.shift) {
@@ -4108,18 +4079,20 @@ fn handleFileExplorerKey(ev: platform_input.KeyEvent) bool {
             }
             return false;
         },
-        platform_input.key_f5 => {
-            file_explorer.refresh();
-            return true;
+        else => {
+            if (file_explorer_keymap.fromOperationKey(ev)) |action| {
+                file_explorer.handleAction(action);
+                return true;
+            }
+            return false;
         },
-        else => return false,
     }
 }
 
 fn handleAgentHistoryKey(ev: platform_input.KeyEvent) bool {
     switch (ev.key_code) {
         platform_input.key_escape => {
-            file_explorer.g_focused = false;
+            file_explorer.blur();
             return true;
         },
         platform_input.key_up => {
@@ -4192,7 +4165,7 @@ fn openFolderDialogAndUpload() void {
 }
 
 fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: bool, super: bool) void {
-    file_explorer.g_focused = true;
+    file_explorer.focus();
 
     // Check resize handle first
     if (hitTestFileExplorerResizeHandle(xpos, ypos)) {
@@ -4222,22 +4195,16 @@ fn handleFileExplorerPress(xpos: f64, ypos: f64, ctrl: bool, shift: bool, alt: b
     const list_top = titlebar_h + header_h;
     if (ypos < list_top) return;
 
-    const row_h: f64 = @floatCast(file_explorer.rowHeight());
-    const scroll: f64 = @floatCast(file_explorer.g_scroll_offset);
-    const row_idx: usize = @intFromFloat((ypos - list_top + scroll) / row_h);
-
-    if (row_idx < file_explorer.g_entry_count) {
+    if (file_explorer.rowIndexAtListY(ypos - list_top)) |row_idx| {
         const click_count = nextLeftClickCount(xpos, ypos);
-        file_explorer.g_selected = row_idx;
-        if (!file_explorer.g_entries[row_idx].is_dir and ((primaryOpenMod(ctrl, super) and !shift and !alt) or click_count == 2)) {
-            if (openFileExplorerPreview(row_idx)) {
+        const entry = file_explorer.selectEntry(row_idx) orelse return;
+        if (!entry.is_dir and ((primaryOpenMod(ctrl, super) and !shift and !alt) or click_count == 2)) {
+            if (openFileExplorerPreview(entry)) {
                 requestInputRebuild();
                 return;
             }
         }
-        if (file_explorer.g_entries[row_idx].is_dir) {
-            file_explorer.toggleExpand(row_idx);
-        }
+        _ = file_explorer.toggleDirectoryAt(row_idx);
         requestInputRebuild();
     }
 }
@@ -4268,9 +4235,9 @@ fn handleAgentHistoryPress(xpos: f64, ypos: f64) void {
 
 fn activateSelectedAgentHistoryRow() void {
     const session_id = file_explorer.selectedHistorySessionId() orelse return;
-    file_explorer.g_focused = false;
+    file_explorer.blur();
     if (!AppWindow.reopenAiChatTabFromHistorySessionId(session_id)) return;
-    file_explorer.g_focused = false;
+    file_explorer.blur();
 }
 
 fn deleteSelectedAgentHistoryRow() void {
@@ -4960,10 +4927,10 @@ fn openPreviewNew(kind: markdown_preview.Kind, title: []const u8, path: []const 
 }
 
 fn fileExplorerPreviewSourceKind() ?PreviewPane.PreviewSourceKind {
-    return switch (file_explorer.g_mode) {
+    return switch (file_explorer.sourceSnapshot() orelse return null) {
         .local => .local,
         .wsl => .wsl,
-        .remote => if (file_explorer.g_has_ssh_conn) .{ .remote = file_explorer.g_ssh_conn } else null,
+        .remote => |conn| .{ .remote = conn },
     };
 }
 
@@ -4975,17 +4942,13 @@ fn terminalPreviewSourceKind(surface: *Surface) ?PreviewPane.PreviewSourceKind {
     };
 }
 
-fn openFileExplorerPreview(row_idx: usize) bool {
+fn openFileExplorerPreview(entry: file_explorer.EntryView) bool {
     const perf = ui_perf.begin("input.open_file_explorer_preview");
     defer perf.end();
 
-    if (row_idx >= file_explorer.g_entry_count) return false;
-    const entry = &file_explorer.g_entries[row_idx];
     if (entry.is_dir) return false;
 
-    const path = entry.path_buf[0..entry.path_len];
-    const kind = markdown_preview.detectKind(path) orelse return false;
-    const title = entry.name_buf[0..entry.name_len];
+    const kind = markdown_preview.detectKind(entry.path) orelse return false;
     const source_kind = fileExplorerPreviewSourceKind() orelse {
         file_explorer.setTransferStatus(.failed, "Preview failed");
         return true;
@@ -4993,7 +4956,7 @@ fn openFileExplorerPreview(row_idx: usize) bool {
 
     // File-explorer preview keeps moving focus onto the preview so its scroll /
     // gallery keys work straight away (the user is browsing files, not typing).
-    return openPreviewAsync(kind, title, path, source_kind, true);
+    return openPreviewAsync(kind, entry.name, entry.path, source_kind, true);
 }
 
 /// Infer the `ls <dir>/` directory prefix for the clicked cell, copied into
@@ -5580,8 +5543,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
 
             if (over_browser_url_bar) {
-                file_explorer.g_focused = false;
-                if (file_explorer.hasActiveOp()) file_explorer.cancelOp();
+                file_explorer.blurAndCancelOp();
                 browser_panel.focusUrlBar();
                 markBrowserUrlBarDirty();
                 return;
@@ -5593,8 +5555,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
 
             if (hitTestBrowserPanel(xpos, ypos)) {
-                file_explorer.g_focused = false;
-                if (file_explorer.hasActiveOp()) file_explorer.cancelOp();
+                file_explorer.blurAndCancelOp();
                 browser_panel.blurUrlBar();
                 markBrowserUrlBarDirty();
                 browser_panel.focus();
@@ -5608,8 +5569,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
 
             // Clicking outside file explorer unfocuses it
-            file_explorer.g_focused = false;
-            if (file_explorer.hasActiveOp()) file_explorer.cancelOp();
+            file_explorer.blurAndCancelOp();
 
             if (AppWindow.activeAiHistory() != null) {
                 if (AppWindow.aiHistoryHandleMousePress(xpos, ypos)) return;

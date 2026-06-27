@@ -103,6 +103,39 @@ pub const Composer = struct {
         self.cursor = 0;
     }
 
+    /// Replace the whole input and leave the cursor at the end.
+    pub fn replaceText(self: *Composer, bytes: []const u8) void {
+        self.clear();
+        self.insertText(bytes);
+    }
+
+    /// Replace bytes before `prefix_end` with `replacement`, preserving the
+    /// suffix after `prefix_end`. Used by completion acceptance.
+    pub fn replacePrefix(self: *Composer, prefix_end: usize, replacement: []const u8) bool {
+        self.clampCursor();
+        if (prefix_end > self.len) return false;
+        const suffix_len = self.len - prefix_end;
+        if (replacement.len + suffix_len > self.buf.len) return false;
+
+        if (replacement.len > prefix_end) {
+            std.mem.copyBackwards(
+                u8,
+                self.buf[replacement.len .. replacement.len + suffix_len],
+                self.buf[prefix_end..self.len],
+            );
+        } else if (replacement.len < prefix_end) {
+            std.mem.copyForwards(
+                u8,
+                self.buf[replacement.len .. replacement.len + suffix_len],
+                self.buf[prefix_end..self.len],
+            );
+        }
+        @memcpy(self.buf[0..replacement.len], replacement);
+        self.len = replacement.len + suffix_len;
+        self.cursor = replacement.len;
+        return true;
+    }
+
     /// Delete bytes in [start, end) from the buffer, shifting the tail down.
     /// Mirrors Session.deleteInputRangeLocked.
     fn deleteRange(self: *Composer, start: usize, end: usize) void {
@@ -779,4 +812,29 @@ test "Composer insertText truncates at the buffer boundary without splitting utf
     c.insertText("z");
     try std.testing.expectEqual(@as(usize, INPUT_PROMPT_MAX_BYTES), c.len);
     try std.testing.expectEqual(@as(u8, 'z'), c.buf[INPUT_PROMPT_MAX_BYTES - 1]);
+}
+
+test "Composer replaceText replaces the whole buffer" {
+    var c: Composer = .{};
+    c.insertText("draft");
+    c.moveLeft();
+    c.replaceText("new text");
+    try std.testing.expectEqualStrings("new text", c.text());
+    try std.testing.expectEqual(@as(usize, "new text".len), c.cursor);
+}
+
+test "Composer replacePrefix keeps the suffix and moves cursor after replacement" {
+    var c: Composer = .{};
+    c.insertText("/sk trailing");
+    try std.testing.expect(c.replacePrefix("/sk".len, "$skill "));
+    try std.testing.expectEqualStrings("$skill  trailing", c.text());
+    try std.testing.expectEqual(@as(usize, "$skill ".len), c.cursor);
+}
+
+test "ai chat Session owns editable input through Composer" {
+    const source = @embedFile("ai_chat.zig");
+    try std.testing.expect(std.mem.indexOf(u8, source, "composer: ai_chat_composer.Composer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "input_buf: [INPUT_PROMPT_MAX_BYTES]u8") == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "input_len: usize") == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "input_cursor: usize") == null);
 }

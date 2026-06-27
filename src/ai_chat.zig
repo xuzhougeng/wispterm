@@ -808,9 +808,7 @@ pub const Session = struct {
     messages: std.ArrayListUnmanaged(Message) = .empty,
     session_id_buf: [64]u8 = undefined,
     session_id_len: usize = 0,
-    input_buf: [INPUT_PROMPT_MAX_BYTES]u8 = undefined,
-    input_len: usize = 0,
-    input_cursor: usize = 0,
+    composer: ai_chat_composer.Composer = .{},
     input_scroll_row: usize = 0,
     input_scroll_follow_cursor: bool = true,
     input_select_all: bool = false,
@@ -1244,13 +1242,17 @@ pub const Session = struct {
     }
 
     pub fn input(self: *const Session) []const u8 {
-        return self.input_buf[0..self.input_len];
+        return self.composer.buf[0..self.composer.len];
     }
 
     pub fn inputCursor(self: *Session) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.input_cursor;
+        return self.inputCursorLocked();
+    }
+
+    pub fn inputCursorLocked(self: *const Session) usize {
+        return self.composer.cursor;
     }
 
     fn customCommandSuggestions(self: *Session) []const SlashCommandSuggestion {
@@ -1260,19 +1262,19 @@ pub const Session = struct {
     pub fn slashCommandSuggestionCount(self: *Session) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return slashCommandSuggestionCountForInput(self.input(), self.input_cursor, self.customCommandSuggestions());
+        return slashCommandSuggestionCountForInput(self.input(), self.composer.cursor, self.customCommandSuggestions());
     }
 
     pub fn slashCommandSuggestionAt(self: *Session, index: usize) ?SlashCommandSuggestion {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return slashCommandSuggestionAtForInput(self.input(), self.input_cursor, index, self.customCommandSuggestions());
+        return slashCommandSuggestionAtForInput(self.input(), self.composer.cursor, index, self.customCommandSuggestions());
     }
 
     pub fn slashCommandSuggestionSelectedIndex(self: *Session) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
-        const count = slashCommandSuggestionCountForInput(self.input(), self.input_cursor, self.customCommandSuggestions());
+        const count = slashCommandSuggestionCountForInput(self.input(), self.composer.cursor, self.customCommandSuggestions());
         if (count == 0) return 0;
         return @min(self.suggestion_selected, count - 1);
     }
@@ -1281,14 +1283,14 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.ensureSkillSuggestionsForInputLocked();
-        return composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions());
+        return composerSuggestionCountForInput(self.input(), self.composer.cursor, self.skill_suggestions, self.customCommandSuggestions());
     }
 
     pub fn composerSuggestionAt(self: *Session, index: usize) ?ComposerSuggestion {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.ensureSkillSuggestionsForInputLocked();
-        return composerSuggestionAtForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions(), index);
+        return composerSuggestionAtForInput(self.input(), self.composer.cursor, self.skill_suggestions, self.customCommandSuggestions(), index);
     }
 
     fn loadSkillSuggestionsFromRoots(self: *Session, root_paths: []const []const u8) !void {
@@ -1304,7 +1306,7 @@ pub const Session = struct {
     }
 
     fn ensureSkillSuggestionsForInputLocked(self: *Session) void {
-        const prefix = composerSuggestionPrefix(self.input(), self.input_cursor) orelse return;
+        const prefix = composerSuggestionPrefix(self.input(), self.composer.cursor) orelse return;
         if (prefix.kind != .skill or self.skill_suggestions_loaded) return;
 
         const roots = ai_chat_skills.defaultSkillRootPaths(self.allocator) catch {
@@ -1529,8 +1531,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.clearComposerHistoryNavigationLocked();
         if (self.input_select_all) {
-            self.input_len = 0;
-            self.input_cursor = 0;
+            self.composer.clear();
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
             self.input_select_all = false;
@@ -1547,8 +1548,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.clearComposerHistoryNavigationLocked();
         if (self.input_select_all) {
-            self.input_len = 0;
-            self.input_cursor = 0;
+            self.composer.clear();
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
             self.input_select_all = false;
@@ -1566,11 +1566,10 @@ pub const Session = struct {
     pub fn cutInputSelection(self: *Session, allocator: std.mem.Allocator) !?[]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (!self.input_select_all or self.input_len == 0) return null;
-        const text = try allocator.dupe(u8, self.input_buf[0..self.input_len]);
+        if (!self.input_select_all or self.composer.len == 0) return null;
+        const text = try allocator.dupe(u8, self.composer.buf[0..self.composer.len]);
         self.clearComposerHistoryNavigationLocked();
-        self.input_len = 0;
-        self.input_cursor = 0;
+        self.composer.clear();
         self.input_scroll_row = 0;
         self.input_scroll_follow_cursor = true;
         self.input_select_all = false;
@@ -1619,8 +1618,7 @@ pub const Session = struct {
             self.mutex.unlock();
             return false;
         }
-        self.input_len = 0;
-        self.input_cursor = 0;
+        self.composer.clear();
         self.input_scroll_row = 0;
         self.input_scroll_follow_cursor = true;
         self.input_select_all = false;
@@ -1683,8 +1681,7 @@ pub const Session = struct {
         if (ev.ctrl and !ev.alt and ev.key == .key_u) {
             self.mutex.lock();
             self.clearComposerHistoryNavigationLocked();
-            self.input_len = 0;
-            self.input_cursor = 0;
+            self.composer.clear();
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
             self.suggestion_selected = 0;
@@ -1781,7 +1778,7 @@ pub const Session = struct {
     pub fn selectAll(self: *Session) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        self.input_select_all = self.input_len > 0;
+        self.input_select_all = self.composer.len > 0;
         self.transcript_select_all = !self.input_select_all and self.messages.items.len > 0;
         self.transcript_selection = null;
     }
@@ -1851,7 +1848,7 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.input_select_all and self.input_len > 0) {
+        if (self.input_select_all and self.composer.len > 0) {
             return allocator.dupe(u8, self.input());
         }
         if (self.allocTranscriptSelectionTextLocked(allocator)) |selected| {
@@ -1863,7 +1860,7 @@ pub const Session = struct {
         if (self.messages.items.len > 0) {
             return self.allocTranscriptClipboardTextLocked(allocator);
         }
-        if (self.input_len > 0) {
+        if (self.composer.len > 0) {
             return allocator.dupe(u8, self.input());
         }
         return allocator.dupe(u8, "");
@@ -2200,7 +2197,7 @@ pub const Session = struct {
 
     fn canUseDistillSuggestionLocked(self: *Session) bool {
         return self.distill_suggestion_pending and
-            self.input_len == 0 and
+            self.composer.len == 0 and
             !self.input_select_all and
             !self.transcript_select_all and
             self.transcript_selection == null;
@@ -2306,8 +2303,7 @@ pub const Session = struct {
             }
         }
         self.clearComposerHistoryNavigationLocked();
-        self.input_len = 0;
-        self.input_cursor = 0;
+        self.composer.clear();
         self.input_scroll_row = 0;
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
@@ -3279,8 +3275,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.clearComposerHistoryNavigationLocked();
         if (self.input_select_all) {
-            self.input_len = 0;
-            self.input_cursor = 0;
+            self.composer.clear();
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
             self.suggestion_selected = 0;
@@ -3289,11 +3284,10 @@ pub const Session = struct {
         }
         self.transcript_select_all = false;
         self.transcript_selection = null;
-        self.clampInputCursorLocked();
-        if (self.input_cursor == 0) return;
-        const start = previousUtf8Boundary(self.input(), self.input_cursor);
-        self.deleteInputRangeLocked(start, self.input_cursor);
-        self.input_cursor = start;
+        const old_len = self.composer.len;
+        const old_cursor = self.composer.cursor;
+        self.composer.backspace();
+        if (self.composer.len == old_len and self.composer.cursor == old_cursor) return;
         self.input_scroll_follow_cursor = true;
     }
 
@@ -3302,8 +3296,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.clearComposerHistoryNavigationLocked();
         if (self.input_select_all) {
-            self.input_len = 0;
-            self.input_cursor = 0;
+            self.composer.clear();
             self.input_scroll_row = 0;
             self.input_scroll_follow_cursor = true;
             self.suggestion_selected = 0;
@@ -3312,10 +3305,10 @@ pub const Session = struct {
         }
         self.transcript_select_all = false;
         self.transcript_selection = null;
-        self.clampInputCursorLocked();
-        if (self.input_cursor >= self.input_len) return;
-        const end = nextUtf8Boundary(self.input(), self.input_cursor);
-        self.deleteInputRangeLocked(self.input_cursor, end);
+        const old_len = self.composer.len;
+        const old_cursor = self.composer.cursor;
+        self.composer.deleteForward();
+        if (self.composer.len == old_len and self.composer.cursor == old_cursor) return;
         self.input_scroll_follow_cursor = true;
     }
 
@@ -3323,7 +3316,7 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.clearSelectionLocked();
-        self.input_cursor = ai_chat_composer.cursorLeft(self.input(), self.input_cursor);
+        self.composer.moveLeft();
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
     }
@@ -3332,7 +3325,7 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.clearSelectionLocked();
-        self.input_cursor = ai_chat_composer.cursorRight(self.input(), self.input_cursor);
+        self.composer.moveRight();
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
     }
@@ -3341,7 +3334,7 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.clearSelectionLocked();
-        self.input_cursor = 0;
+        self.composer.cursor = 0;
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
     }
@@ -3350,7 +3343,7 @@ pub const Session = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.clearSelectionLocked();
-        self.input_cursor = self.input_len;
+        self.composer.cursor = self.composer.len;
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
     }
@@ -3363,10 +3356,10 @@ pub const Session = struct {
 
         const text = self.input();
         const max_cols = @max(@as(usize, 1), max_cols_raw);
-        const current = visualCursorPosition(text, self.input_cursor, max_cols);
+        const current = visualCursorPosition(text, self.composer.cursor, max_cols);
         if (delta < 0 and current.row == 0) return;
         const target_row = if (delta < 0) current.row - 1 else current.row + 1;
-        self.input_cursor = byteOffsetForVisualPosition(text, target_row, current.col, max_cols) orelse return;
+        self.composer.cursor = byteOffsetForVisualPosition(text, target_row, current.col, max_cols) orelse return;
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
     }
@@ -3381,7 +3374,7 @@ pub const Session = struct {
 
         const max_cols = @max(@as(usize, 1), max_cols_raw);
         const text = self.input();
-        const current = visualCursorPosition(text, self.input_cursor, max_cols);
+        const current = visualCursorPosition(text, self.composer.cursor, max_cols);
         const rows = inputWrappedLineCount(text, max_cols);
 
         if (delta < 0) {
@@ -3412,7 +3405,7 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.ensureSkillSuggestionsForInputLocked();
 
-        const count = composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions());
+        const count = composerSuggestionCountForInput(self.input(), self.composer.cursor, self.skill_suggestions, self.customCommandSuggestions());
         if (count == 0) return false;
         const current = @min(self.suggestion_selected, count - 1);
         self.suggestion_selected = if (delta < 0)
@@ -3430,37 +3423,19 @@ pub const Session = struct {
         defer self.mutex.unlock();
         self.ensureSkillSuggestionsForInputLocked();
 
-        const prefix = composerSuggestionPrefix(self.input(), self.input_cursor) orelse return false;
-        const count = composerSuggestionCountForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions());
+        const prefix = composerSuggestionPrefix(self.input(), self.composer.cursor) orelse return false;
+        const count = composerSuggestionCountForInput(self.input(), self.composer.cursor, self.skill_suggestions, self.customCommandSuggestions());
         if (count == 0) return false;
         const selected = @min(self.suggestion_selected, count - 1);
-        const suggestion = composerSuggestionAtForInput(self.input(), self.input_cursor, self.skill_suggestions, self.customCommandSuggestions(), selected) orelse return false;
+        const suggestion = composerSuggestionAtForInput(self.input(), self.composer.cursor, self.skill_suggestions, self.customCommandSuggestions(), selected) orelse return false;
         if (trigger == .enter and suggestion.kind == .slash_command and std.mem.eql(u8, prefix.prefix, suggestion.text)) {
             return false;
         }
 
         var replacement_buf: [256]u8 = undefined;
         const replacement = suggestionReplacementText(&replacement_buf, suggestion, self.input()[prefix.token_end..]) orelse return false;
-        const suffix_len = self.input_len - prefix.token_end;
-        if (replacement.len + suffix_len > self.input_buf.len) return false;
-
         self.clearComposerHistoryNavigationLocked();
-        if (replacement.len > prefix.token_end) {
-            std.mem.copyBackwards(
-                u8,
-                self.input_buf[replacement.len .. replacement.len + suffix_len],
-                self.input_buf[prefix.token_end..self.input_len],
-            );
-        } else if (replacement.len < prefix.token_end) {
-            std.mem.copyForwards(
-                u8,
-                self.input_buf[replacement.len .. replacement.len + suffix_len],
-                self.input_buf[prefix.token_end..self.input_len],
-            );
-        }
-        @memcpy(self.input_buf[0..replacement.len], replacement);
-        self.input_len = replacement.len + suffix_len;
-        self.input_cursor = replacement.len;
+        if (!self.composer.replacePrefix(prefix.token_end, replacement)) return false;
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
         self.clearSelectionLocked();
@@ -3468,46 +3443,16 @@ pub const Session = struct {
     }
 
     fn insertInputBytesLocked(self: *Session, text: []const u8) void {
-        self.clampInputCursorLocked();
-        var len = @min(text.len, self.input_buf.len - self.input_len);
-        while (len > 0 and len < text.len and (text[len] & 0xC0) == 0x80) {
-            len -= 1;
-        }
-        if (len == 0) return;
-        if (self.input_cursor < self.input_len) {
-            std.mem.copyBackwards(
-                u8,
-                self.input_buf[self.input_cursor + len .. self.input_len + len],
-                self.input_buf[self.input_cursor..self.input_len],
-            );
-        }
-        @memcpy(self.input_buf[self.input_cursor..][0..len], text[0..len]);
-        self.input_len += len;
-        self.input_cursor += len;
+        const old_len = self.composer.len;
+        const old_cursor = self.composer.cursor;
+        self.composer.insertText(text);
+        if (self.composer.len == old_len and self.composer.cursor == old_cursor) return;
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
     }
 
-    fn deleteInputRangeLocked(self: *Session, start: usize, end: usize) void {
-        if (start >= end or end > self.input_len) return;
-        const removed = end - start;
-        if (end < self.input_len) {
-            std.mem.copyForwards(
-                u8,
-                self.input_buf[start .. self.input_len - removed],
-                self.input_buf[end..self.input_len],
-            );
-        }
-        self.input_len -= removed;
-        if (self.input_cursor > self.input_len) self.input_cursor = self.input_len;
-        self.suggestion_selected = 0;
-    }
-
     fn clampInputCursorLocked(self: *Session) void {
-        if (self.input_cursor > self.input_len) self.input_cursor = self.input_len;
-        while (self.input_cursor > 0 and self.input_cursor < self.input_len and (self.input_buf[self.input_cursor] & 0xC0) == 0x80) {
-            self.input_cursor -= 1;
-        }
+        self.composer.clampCursor();
     }
 
     fn maxInputScrollRowLocked(self: *Session, max_cols_raw: usize, visible_rows_raw: usize) usize {
@@ -3524,8 +3469,7 @@ pub const Session = struct {
 
     fn clearSubmittedInputLocked(self: *Session) void {
         self.clearComposerHistoryNavigationLocked();
-        self.input_len = 0;
-        self.input_cursor = 0;
+        self.composer.clear();
         self.input_scroll_row = 0;
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
@@ -3539,13 +3483,11 @@ pub const Session = struct {
     }
 
     fn replaceInputTextLocked(self: *Session, text: []const u8) void {
-        self.input_len = 0;
-        self.input_cursor = 0;
+        self.composer.replaceText(text);
         self.input_scroll_row = 0;
         self.input_scroll_follow_cursor = true;
         self.suggestion_selected = 0;
         self.clearSelectionLocked();
-        self.insertInputBytesLocked(text);
     }
 
     fn clearComposerHistoryNavigationLocked(self: *Session) void {
@@ -3556,18 +3498,18 @@ pub const Session = struct {
     }
 
     fn saveComposerHistoryDraftLocked(self: *Session) void {
-        const len = @min(self.input_len, self.composer_history_draft_buf.len);
-        if (len > 0) @memcpy(self.composer_history_draft_buf[0..len], self.input_buf[0..len]);
+        const len = @min(self.composer.len, self.composer_history_draft_buf.len);
+        if (len > 0) @memcpy(self.composer_history_draft_buf[0..len], self.composer.buf[0..len]);
         self.composer_history_draft_len = len;
-        self.composer_history_draft_cursor = @min(self.input_cursor, len);
+        self.composer_history_draft_cursor = @min(self.composer.cursor, len);
     }
 
     fn restoreComposerHistoryDraftLocked(self: *Session) void {
         const draft = self.composer_history_draft_buf[0..self.composer_history_draft_len];
         const cursor = self.composer_history_draft_cursor;
         self.replaceInputTextLocked(draft);
-        self.input_cursor = @min(cursor, self.input_len);
-        self.clampInputCursorLocked();
+        self.composer.cursor = @min(cursor, self.composer.len);
+        self.composer.clampCursor();
         self.input_scroll_follow_cursor = true;
     }
 
@@ -3655,7 +3597,7 @@ pub const Session = struct {
             self.mutex.unlock();
             return;
         }
-        // insertInputBytesLocked 会立即把字节拷入 input_buf，随后 rollback 才释放
+        // setInputTextLocked 会立即把字节拷入 composer，随后 rollback 才释放
         // messages[idx]，两块缓冲区不重叠，安全。
         self.setInputTextLocked(self.messages.items[idx].content);
         self.rollbackMessagesFromLocked(idx);
@@ -4337,8 +4279,6 @@ fn allocUsageFooter(allocator: std.mem.Allocator, started_ms: i64, usage: ?ApiUs
 
 const VisualCursor = ai_chat_input_text.VisualCursor;
 const clampUtf8Boundary = ai_chat_input_text.clampUtf8Boundary;
-const previousUtf8Boundary = ai_chat_input_text.previousUtf8Boundary;
-const nextUtf8Boundary = ai_chat_input_text.nextUtf8Boundary;
 const visualCursorPosition = ai_chat_input_text.visualCursorPosition;
 const visualRowAt = ai_chat_input_text.visualRowAt;
 const byteOffsetForVisualPosition = ai_chat_input_text.byteOffsetForVisualPosition;
@@ -7763,7 +7703,7 @@ test "ai chat cut input returns text and clears when selected" {
     defer if (cut) |c| allocator.free(c);
     try std.testing.expect(cut != null);
     try std.testing.expectEqualStrings("hello world", cut.?);
-    try std.testing.expectEqual(@as(usize, 0), session.input_len);
+    try std.testing.expectEqual(@as(usize, 0), session.input().len);
 
     const cut_again = try session.cutInputSelection(allocator);
     try std.testing.expect(cut_again == null);

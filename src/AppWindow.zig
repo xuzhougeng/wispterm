@@ -5852,7 +5852,7 @@ fn syncAiChatImeCaret(win: *window_backend.Window, session: *ai_chat.Session, ch
     session.mutex.lock();
     const input_text = session.input();
     const layout = ai_chat_renderer.inputLayout(chat_x, chat_w, input_text);
-    const cursor = ai_chat_renderer.inputCursorRect(input_text, session.input_cursor, layout.text_x, layout.text_w);
+    const cursor = ai_chat_renderer.inputCursorRect(input_text, session.inputCursorLocked(), layout.text_x, layout.text_w);
     const scrolled_row = session.input_scroll_row;
     const follow_cursor = session.input_scroll_follow_cursor;
     session.mutex.unlock();

@@ -23,13 +23,13 @@ const Frozen = struct {
 };
 
 const monoliths = [_]Frozen{
-    // Ceilings re-tightened to the current actual after the round-1
-    // responsibility split. input.zig dropped 55->52 (lost the 3 g_mouse_report_*
-    // globals via the mouse_dispatch slice); overlays.zig dropped 48->47.
-    // AppWindow (67) and ai_chat (20) were already at their actual.
+    // Ceilings re-tightened to the current actual after the adoption passes.
+    // input.zig dropped 73->55 via file-explorer action/query APIs;
+    // overlays.zig dropped 47->39 by moving command-palette fields into
+    // OverlayState. AppWindow (67) and ai_chat (20) are at their actual.
     .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 67 },
     .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 52 },
-    .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 47 },
+    .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 39 },
     .{ .name = "ai_chat.zig", .source = @embedFile("../ai_chat.zig"), .ceiling = 20 },
 };
 

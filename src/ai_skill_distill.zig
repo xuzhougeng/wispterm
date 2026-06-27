@@ -1,6 +1,7 @@
 //! Pure helpers for turning an AI Chat transcript into a candidate SKILL.md.
 const std = @import("std");
 const skill_registry = @import("skill_registry.zig");
+const text_search = @import("text_search.zig");
 
 pub const CommandAction = enum {
     start,
@@ -462,16 +463,7 @@ fn mentionsReusableSteps(text: []const u8) bool {
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        var j: usize = 0;
-        while (j < needle.len) : (j += 1) {
-            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) break;
-        } else return true;
-    }
-    return false;
+    return text_search.containsIgnoreCase(haystack, needle);
 }
 
 test "parse distill command args" {
