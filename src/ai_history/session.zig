@@ -1,14 +1,14 @@
 const std = @import("std");
-const types = @import("ai_history_types.zig");
-const source_mod = @import("ai_history_source.zig");
-const session_persist = @import("session_persist.zig");
-const codex_provider = @import("ai_history_provider_codex.zig");
-const claude_provider = @import("ai_history_provider_claude.zig");
-const reasonix_provider = @import("ai_history_provider_reasonix.zig");
-const remote_file = @import("platform/remote_file.zig");
-const ssh_connection = @import("ssh_connection.zig");
-const ai_history_cache = @import("ai_history_cache.zig");
-const i18n = @import("i18n.zig");
+const types = @import("types.zig");
+const source_mod = @import("source.zig");
+const session_persist = @import("../session_persist.zig");
+const codex_provider = @import("provider_codex.zig");
+const claude_provider = @import("provider_claude.zig");
+const reasonix_provider = @import("provider_reasonix.zig");
+const remote_file = @import("../platform/remote_file.zig");
+const ssh_connection = @import("../ssh_connection.zig");
+const ai_history_cache = @import("cache.zig");
+const i18n = @import("../i18n.zig");
 
 pub const LoadState = enum { idle, scanning, ready, failed };
 pub const TranscriptState = enum { idle, loading, ready, failed };

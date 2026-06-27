@@ -1,7 +1,7 @@
 const std = @import("std");
-const types = @import("ai_history_types.zig");
-const platform_atomic_file = @import("platform/atomic_file.zig");
-const platform_dirs = @import("platform/dirs.zig");
+const types = @import("types.zig");
+const platform_atomic_file = @import("../platform/atomic_file.zig");
+const platform_dirs = @import("../platform/dirs.zig");
 
 const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 
