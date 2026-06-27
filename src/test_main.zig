@@ -802,10 +802,10 @@ comptime {
     _ = @import("skill/local_fs.zig");
     _ = @import("skill/center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
-    _ = @import("port_forward_rule.zig");
+    _ = @import("port_forward/rule.zig");
     _ = @import("ssh_profile_store.zig");
-    _ = @import("port_forward_manager.zig");
-    _ = @import("port_forwarding.zig");
+    _ = @import("port_forward/manager.zig");
+    _ = @import("port_forward/forwarding.zig");
     _ = @import("renderer/port_forwarding_renderer.zig");
     _ = @import("command/registry.zig");
     _ = @import("tool_registry.zig");
