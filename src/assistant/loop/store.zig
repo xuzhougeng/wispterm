@@ -6,7 +6,7 @@
 const std = @import("std");
 const engine = @import("schedule.zig");
 const platform_atomic_file = @import("../../platform/atomic_file.zig");
-const ai_history_time = @import("../../ai_history/time.zig");
+const ai_history_time = @import("../../terminal_agents/sessions/time.zig");
 
 pub const Task = engine.Task;
 pub const TaskKind = engine.TaskKind;

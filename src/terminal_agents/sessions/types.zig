@@ -1,5 +1,5 @@
 const std = @import("std");
-const text_search = @import("../text_search.zig");
+const text_search = @import("../../text_search.zig");
 
 pub const ProviderId = enum {
     codex,
