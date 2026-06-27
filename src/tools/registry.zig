@@ -1,6 +1,6 @@
 const std = @import("std");
-const ai_chat_protocol = @import("ai_chat_protocol.zig");
-const ai_chat_types = @import("ai_chat_types.zig");
+const ai_chat_protocol = @import("../ai_chat_protocol.zig");
+const ai_chat_types = @import("../ai_chat_types.zig");
 
 pub const MAX_SKILL_MD_BYTES: usize = 256 * 1024;
 pub const MAX_TOOL_DESCRIPTION_BYTES: usize = 4096;

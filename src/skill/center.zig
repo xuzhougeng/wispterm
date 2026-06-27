@@ -7,7 +7,7 @@
 const std = @import("std");
 const scan = @import("scan.zig");
 const install = @import("install.zig");
-const tool_import = @import("../tool_import.zig");
+const tool_import = @import("../tools/import.zig");
 
 /// Target software — a skills root under $HOME on the target machine. Both use
 /// the same SKILL.md directory format, so a library skill deploys to either.
