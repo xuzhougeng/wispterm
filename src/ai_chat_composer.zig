@@ -3,6 +3,7 @@
 const std = @import("std");
 const skill_registry = @import("skill/registry.zig");
 const input_text = @import("ai_chat_input_text.zig");
+const research_commands = @import("research/commands.zig");
 
 /// Max bytes the composer input buffer can hold. Mirrors
 /// `ai_chat.INPUT_PROMPT_MAX_BYTES` exactly so the editable buffer semantics
@@ -186,23 +187,16 @@ pub const SlashCommand = enum {
     unknown,
 };
 
-pub const WebCommand = enum { websearch, webread, pubmed };
+pub const WebCommand = research_commands.Command;
 
 /// Reserved `$`-prefixed commands shown in the same dropdown as skills.
-pub const ReservedWebCommand = struct { name: []const u8, description: []const u8 };
-pub const reserved_web_commands = [_]ReservedWebCommand{
-    .{ .name = "websearch", .description = "search the web (Jina)" },
-    .{ .name = "webread", .description = "read a web page or local file (Jina)" },
-    .{ .name = "pubmed", .description = "search PubMed (NCBI)" },
-};
+pub const ReservedWebCommand = research_commands.Entry;
+pub const reserved_web_commands = research_commands.entries;
 
 /// Match the first whitespace-delimited token against a reserved `$` command.
 /// `token` is e.g. "$websearch" (the value of `first_tok` in Session.submit).
 pub fn parseWebCommand(token: []const u8) ?WebCommand {
-    if (std.mem.eql(u8, token, "$websearch")) return .websearch;
-    if (std.mem.eql(u8, token, "$webread")) return .webread;
-    if (std.mem.eql(u8, token, "$pubmed")) return .pubmed;
-    return null;
+    return research_commands.parseToken(token);
 }
 
 pub const ComposerSuggestionKind = enum {
