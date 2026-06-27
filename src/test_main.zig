@@ -421,12 +421,12 @@ comptime {
         @compileError("platform/process.zig must expose local-shell fallback argv as one narrow API instead of public shell variant plumbing");
     }
 
-    const browser_panel_source = @embedFile("browser_panel.zig");
+    const browser_panel_source = @embedFile("browser/panel.zig");
     if (std.mem.indexOf(u8, browser_panel_source, "[MAX_URL_BYTES]u16") != null or
         std.mem.indexOf(u8, browser_panel_source, "urlToWide") != null or
         std.mem.indexOf(u8, browser_panel_source, "utf8ToUtf16Le") != null)
     {
-        @compileError("browser_panel.zig must use platform_webview URL helpers instead of WebView2 UTF-16 details");
+        @compileError("browser/panel.zig must use platform_webview URL helpers instead of WebView2 UTF-16 details");
     }
     const open_url_source = @embedFile("platform/open_url.zig");
     if (std.mem.indexOf(u8, open_url_source, "ShellExecute") != null or
@@ -675,8 +675,8 @@ comptime {
     _ = @import("appwindow/thread_message.zig");
     _ = @import("scp.zig");
     _ = @import("diag_log.zig");
-    _ = if (build_options.webview) @import("browser_panel.zig") else @import("browser_panel_stub.zig");
-    _ = @import("browser_url.zig");
+    _ = if (build_options.webview) @import("browser/panel.zig") else @import("browser/panel_stub.zig");
+    _ = @import("browser/url.zig");
     _ = @import("build_guards.zig");
     _ = @import("command/center_state.zig");
     _ = @import("command/palette_model.zig");
@@ -698,7 +698,7 @@ comptime {
     _ = @import("input/preview_source.zig");
     _ = @import("input/preview_image_drag.zig");
     _ = @import("input_shortcuts.zig");
-    _ = @import("html_server.zig");
+    _ = @import("html/server.zig");
     _ = @import("keybind.zig");
     _ = @import("kitty_graphics_unit.zig");
     _ = @import("renderer/cell_update_unit.zig");

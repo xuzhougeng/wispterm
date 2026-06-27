@@ -1,6 +1,6 @@
 const std = @import("std");
 const ghostty_vt = @import("ghostty-vt");
-const jupyter_detect = @import("jupyter_detect.zig");
+const jupyter_detect = @import("jupyter/detect.zig");
 
 pub const default_max_history_rows: usize = 10_000;
 

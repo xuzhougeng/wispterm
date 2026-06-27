@@ -1,13 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Surface = @import("Surface.zig");
-const model = @import("html_server_model.zig");
-const ssh_tunnel = @import("ssh_tunnel.zig");
-const preview_source = @import("input/preview_source.zig");
-const preview_diagnostics = @import("preview/diagnostics.zig");
-const platform_pty_command = @import("platform/pty_command.zig");
-const platform_process = @import("platform/process.zig");
-const platform_remote_file = @import("platform/remote_file.zig");
+const Surface = @import("../Surface.zig");
+const model = @import("server_model.zig");
+const ssh_tunnel = @import("../ssh_tunnel.zig");
+const preview_source = @import("../input/preview_source.zig");
+const preview_diagnostics = @import("../preview/diagnostics.zig");
+const platform_pty_command = @import("../platform/pty_command.zig");
+const platform_process = @import("../platform/process.zig");
+const platform_remote_file = @import("../platform/remote_file.zig");
 
 pub const Error = std.mem.Allocator.Error || error{
     NotHtml,

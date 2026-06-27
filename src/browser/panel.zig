@@ -1,16 +1,16 @@
 //! State and embedded-browser interop for the right-side browser panel.
 
 const std = @import("std");
-const Surface = @import("Surface.zig");
-const platform_webview = @import("platform/webview.zig");
-const ssh_tunnel = @import("ssh_tunnel.zig");
-const html_server = @import("html_server.zig");
-const preview_diagnostics = @import("preview/diagnostics.zig");
-const window_backend = @import("platform/window_backend.zig");
-const ui_perf = @import("ui_perf.zig");
-const tab = @import("appwindow/tab.zig");
-const active_tab_state = @import("appwindow/active_tab.zig");
-const text_search = @import("text_search.zig");
+const Surface = @import("../Surface.zig");
+const platform_webview = @import("../platform/webview.zig");
+const ssh_tunnel = @import("../ssh_tunnel.zig");
+const html_server = @import("../html/server.zig");
+const preview_diagnostics = @import("../preview/diagnostics.zig");
+const window_backend = @import("../platform/window_backend.zig");
+const ui_perf = @import("../ui_perf.zig");
+const tab = @import("../appwindow/tab.zig");
+const active_tab_state = @import("../appwindow/active_tab.zig");
+const text_search = @import("../text_search.zig");
 
 pub const DEFAULT_WIDTH: f32 = 720;
 pub const MIN_WIDTH: f32 = 360;

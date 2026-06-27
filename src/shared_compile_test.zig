@@ -8,7 +8,7 @@ const app_metadata = @import("app_metadata.zig");
 comptime {
     _ = @import("ai_chat_composer_layout.zig");
     _ = @import("appwindow/thread_message.zig");
-    _ = @import("browser_url.zig");
+    _ = @import("browser/url.zig");
     _ = @import("command/center_state.zig");
     _ = @import("preview/token.zig");
     _ = @import("release_package.zig");
