@@ -1,5 +1,5 @@
 //! Pure scan/parse of the user `commands/` directory into slash commands.
-//! Peer to skill_registry.zig: text + dir -> command data; no Session state,
+//! Peer to skill/registry.zig: text + dir -> command data; no Session state,
 //! no networking. Each *.md file is one command.
 const std = @import("std");
 
