@@ -52,7 +52,7 @@ const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
 const ai_model_switch = @import("../assistant/conversation/model_switch.zig");
-const agent_integration_prompt = @import("../agent/integration_prompt.zig");
+const agent_integration_prompt = @import("../terminal_agents/integration_prompt.zig");
 const ai_history_time = @import("../ai_history/time.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");

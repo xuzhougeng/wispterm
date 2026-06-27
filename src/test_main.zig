@@ -649,9 +649,9 @@ comptime {
         @compileError("ai_chat.zig shared tests must use platform-neutral terminal fixtures unless explicitly testing platform prompt variants");
     }
 
-    const agent_detector_source = @embedFile("agent/detector.zig");
+    const agent_detector_source = @embedFile("terminal_agents/detector.zig");
     if (std.mem.indexOf(u8, agent_detector_source, "detect(\"PowerShell\", \"PS C:\\\\Users> ls\")") != null) {
-        @compileError("agent/detector.zig generic shell tests must use platform-neutral terminal fixtures");
+        @compileError("terminal_agents/detector.zig generic shell tests must use platform-neutral terminal fixtures");
     }
 }
 
@@ -681,10 +681,10 @@ comptime {
     _ = @import("ai_history/resume.zig");
     _ = @import("ai_history/session.zig");
     _ = @import("renderer/ai_history_renderer.zig");
-    _ = @import("agent/detector.zig");
+    _ = @import("terminal_agents/detector.zig");
     _ = @import("Surface.zig");
     _ = @import("termio/Mailbox.zig");
-    _ = @import("agent/prompt_answer.zig");
+    _ = @import("terminal_agents/prompt_answer.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
     _ = @import("agent_tools/args.zig");

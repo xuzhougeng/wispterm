@@ -246,7 +246,7 @@ test {
     _ = @import("agent_tools/weixin.zig");
     _ = @import("research/commands.zig");
     _ = @import("research/web_search.zig");
-    _ = @import("agent/prompt_answer.zig");
+    _ = @import("terminal_agents/prompt_answer.zig");
     _ = @import("tools/first_party.zig");
     _ = @import("research/web_read.zig");
     _ = @import("research/web_read_cache.zig");
@@ -316,8 +316,8 @@ test {
     // everywhere.
     _ = @import("process_runner.zig");
     _ = @import("platform/process_group.zig");
-    _ = @import("agent/detector.zig");
-    _ = @import("agent/integration_prompt.zig");
+    _ = @import("terminal_agents/detector.zig");
+    _ = @import("terminal_agents/integration_prompt.zig");
     _ = @import("jupyter/detect.zig");
     _ = @import("jupyter/picker.zig");
     _ = @import("assistant/sidebar/picker.zig");
