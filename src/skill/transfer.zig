@@ -8,7 +8,7 @@
 //!   - remoteExec(cmd): run a POSIX command on the server, return ok
 //!   - copy(dir, local_path, remote_path): scp the temp tarball
 const std = @import("std");
-const cmd = @import("skill_transfer_cmd.zig");
+const cmd = @import("transfer_cmd.zig");
 
 pub const Result = enum { ok, failed };
 pub const CopyDir = enum { to_remote, to_local };
