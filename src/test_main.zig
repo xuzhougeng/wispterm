@@ -673,6 +673,7 @@ comptime {
     _ = @import("agent_tools/sessions.zig");
     _ = @import("agent_tools/access.zig");
     _ = @import("agent_tools/files.zig");
+    _ = @import("agent_tools/exec.zig");
     _ = @import("surface_registry.zig");
     _ = @import("preview/png_dimensions.zig");
     _ = @import("appwindow/flush_scheduler.zig");
