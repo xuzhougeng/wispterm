@@ -4,7 +4,7 @@
 const build_options = @import("build_options");
 const std = @import("std");
 const app_metadata = @import("app_metadata.zig");
-const command_center_state = @import("command_center_state.zig");
+const command_center_state = @import("command/center_state.zig");
 const keybind = @import("keybind.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
 
@@ -543,12 +543,12 @@ comptime {
         @compileError("renderer/overlays.zig must use platform-local shell launcher names instead of PowerShell-specific shared identifiers");
     }
 
-    const command_center_source = @embedFile("command_center_state.zig");
+    const command_center_source = @embedFile("command/center_state.zig");
     if (std.mem.indexOf(u8, command_center_source, "Choose PowerShell") != null or
         std.mem.indexOf(u8, command_center_source, "WSL") != null or
         std.mem.indexOf(u8, command_center_source, "SESSION_LAUNCHER_ROW_AI_AGENT: usize = 3") != null)
     {
-        @compileError("command_center_state.zig must get session launcher labels and rows from platform/pty_command.zig");
+        @compileError("command/center_state.zig must get session launcher labels and rows from platform/pty_command.zig");
     }
 
     const ai_chat_source = @embedFile("ai_chat.zig");
@@ -678,8 +678,8 @@ comptime {
     _ = if (build_options.webview) @import("browser_panel.zig") else @import("browser_panel_stub.zig");
     _ = @import("browser_url.zig");
     _ = @import("build_guards.zig");
-    _ = @import("command_center_state.zig");
-    _ = @import("command_palette_model.zig");
+    _ = @import("command/center_state.zig");
+    _ = @import("command/palette_model.zig");
     _ = @import("openssh_config_import.zig");
     _ = @import("config.zig");
     _ = @import("i18n.zig");
@@ -807,7 +807,7 @@ comptime {
     _ = @import("port_forward_manager.zig");
     _ = @import("port_forwarding.zig");
     _ = @import("renderer/port_forwarding_renderer.zig");
-    _ = @import("command_registry.zig");
+    _ = @import("command/registry.zig");
     _ = @import("tool_registry.zig");
     _ = @import("tool_import.zig");
     _ = @import("tool_skill_draft.zig");

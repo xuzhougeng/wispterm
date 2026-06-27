@@ -3,7 +3,7 @@ const ssh_connection = @import("ssh_connection.zig");
 const profile_codec = @import("renderer/overlays/profile_codec.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const platform_atomic_file = @import("platform/atomic_file.zig");
-const command_palette_model = @import("command_palette_model.zig");
+const command_palette_model = @import("command/palette_model.zig");
 
 const SSH_PROFILES_HEADER = "# WispTerm SSH profiles. Fields are hex encoded: name, host, user, password, port, proxy_jump, auth_method, identity_file.\n";
 
