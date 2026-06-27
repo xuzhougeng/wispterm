@@ -26,6 +26,7 @@ const agent_terminal = @import("agent_tools/terminal.zig");
 const ai_agent_access = @import("ai_agent_access.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const ai_chat_markdown = @import("ai_chat_markdown.zig");
+const assistant_presentation = @import("assistant/conversation/presentation.zig");
 const weixin_types = @import("weixin/types.zig");
 const ai_loop_store = @import("ai_loop_store.zig");
 const ai_loop_schedule = @import("ai_loop_schedule.zig");
@@ -45,6 +46,7 @@ pub const QuestionView = ai_chat_types.QuestionView;
 pub const AskResult = ai_chat_types.AskResult;
 const WeixinReplyContext = ai_chat_types.WeixinReplyContext;
 pub const ToolContext = ai_chat_types.ToolContext;
+pub const Presentation = assistant_presentation.Presentation;
 
 pub const DEFAULT_NAME = "DeepSeek";
 pub const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -928,6 +930,14 @@ pub const Session = struct {
         return self.working_dir_buf[0..self.working_dir_len];
     }
 
+    pub fn presentation(self: *const Session) Presentation {
+        return if (self.copilot) .copilot_sidebar else .chat_tab;
+    }
+
+    pub fn setPresentation(self: *Session, p: Presentation) void {
+        self.copilot = p.isSidebar();
+    }
+
     fn effectiveWorkingDirLocked(self: *Session) ?[]const u8 {
         if (self.working_dir_len > 0) return self.working_dir_buf[0..self.working_dir_len];
         return defaultWorkingDir();
@@ -1109,7 +1119,7 @@ pub const Session = struct {
         if (record.session_id.len > 0) session.copySessionId(record.session_id);
         session.max_tokens = record.max_tokens;
         session.vision_enabled = record.vision_enabled;
-        session.copilot = record.copilot;
+        session.setPresentation(if (record.copilot) .copilot_sidebar else .chat_tab);
         session.title_is_custom = record.title_is_custom;
         session.created_at_ms = record.created_at;
         session.updated_at_ms = record.updated_at;
@@ -3938,7 +3948,7 @@ pub const Session = struct {
         var copilot_ctx: ?[]u8 = null;
         defer if (copilot_ctx) |c| self.allocator.free(c);
         var copilot_target_idx: ?usize = null;
-        if (self.copilot and self.bound_surface_id_len > 0) {
+        if (self.presentation().isSidebar() and self.bound_surface_id_len > 0) {
             if (tool_snapshot) |snap| {
                 if (agent_terminal.findSurface(snap, self.boundSurfaceId())) |surface| {
                     copilot_ctx = agent_terminal.buildCopilotContext(self.allocator, surface.cwd, surface.snapshot) catch null;
@@ -4010,7 +4020,7 @@ pub const Session = struct {
             .dynamic_tools = dynamic_tools,
             .dynamic_binary_tools = dynamic_binary_tools,
             .disabled_first_party_tools = disabled_first_party_tools,
-            .copilot = self.copilot,
+            .copilot = self.presentation().isSidebar(),
             .tool_host = tool_host,
             .tool_snapshot = tool_snapshot,
             .weixin_reply_context = weixin_ctx,
@@ -4027,7 +4037,7 @@ pub const Session = struct {
         dynamic_tools_owned = false;
         dynamic_binary_tools_owned = false;
         disabled_first_party_tools_owned = false;
-        if (self.copilot and self.bound_surface_id_len > 0) {
+        if (self.presentation().isSidebar() and self.bound_surface_id_len > 0) {
             // Inline the write-context seed directly on ChatRequest (the field
             // layout is identical to ToolContext; terminal tool helpers operate
             // on ToolContext).
@@ -4109,7 +4119,7 @@ pub const Session = struct {
             .max_tokens = self.max_tokens,
             .agent_enabled = self.agent_enabled,
             .vision_enabled = self.vision_enabled,
-            .copilot = self.copilot,
+            .copilot = self.presentation().isSidebar(),
             .title_is_custom = self.title_is_custom,
             .created_at = self.created_at_ms,
             .updated_at = self.updated_at_ms,
@@ -8751,7 +8761,8 @@ test "copilot flag survives toHistoryRecord -> initFromHistoryRecord round-trip"
         "true",
     );
     defer session.deinit();
-    session.copilot = true;
+    session.setPresentation(.copilot_sidebar);
+    try std.testing.expectEqual(Presentation.copilot_sidebar, session.presentation());
 
     var record = try session.toHistoryRecord(allocator);
     defer agent_history.freeOwnedRecord(allocator, &record);
@@ -8760,6 +8771,7 @@ test "copilot flag survives toHistoryRecord -> initFromHistoryRecord round-trip"
     const restored = try Session.initFromHistoryRecord(allocator, record);
     defer restored.deinit();
     try std.testing.expect(restored.copilot);
+    try std.testing.expectEqual(Presentation.copilot_sidebar, restored.presentation());
 }
 
 test "shouldPersistCopilot is false for empty session, true after a real message" {

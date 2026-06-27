@@ -219,6 +219,7 @@ test {
     _ = @import("ai_chat_input_text.zig");
     _ = @import("ai_chat_composer.zig");
     _ = @import("composer_detail_wrap.zig");
+    _ = @import("assistant/conversation/presentation.zig");
     _ = @import("agent_tools/args.zig");
     _ = @import("agent_tools/mod.zig");
     _ = @import("agent_tools/research.zig");
