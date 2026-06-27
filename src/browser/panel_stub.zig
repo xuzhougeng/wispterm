@@ -1,12 +1,12 @@
 //! No-op browser panel used for pure terminal-core builds.
 
 const std = @import("std");
-const Surface = @import("Surface.zig");
-const ssh_tunnel = @import("ssh_tunnel.zig");
-const html_server = @import("html_server.zig");
-const window_backend = @import("platform/window_backend.zig");
-const tab = @import("appwindow/tab.zig");
-const active_tab_state = @import("appwindow/active_tab.zig");
+const Surface = @import("../Surface.zig");
+const ssh_tunnel = @import("../ssh_tunnel.zig");
+const html_server = @import("../html/server.zig");
+const window_backend = @import("../platform/window_backend.zig");
+const tab = @import("../appwindow/tab.zig");
+const active_tab_state = @import("../appwindow/active_tab.zig");
 
 pub const DEFAULT_WIDTH: f32 = 720;
 pub const MIN_WIDTH: f32 = 360;

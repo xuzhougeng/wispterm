@@ -245,7 +245,7 @@ test {
     _ = @import("text_wrap.zig");
     _ = @import("ai_history/resume.zig");
     _ = @import("ai_history/session.zig");
-    _ = @import("browser_url.zig");
+    _ = @import("browser/url.zig");
     _ = @import("text_search.zig");
     _ = @import("ssh_prompt.zig");
     _ = @import("selection_unit.zig");
@@ -291,10 +291,10 @@ test {
     _ = @import("platform/process_group.zig");
     _ = @import("agent_detector.zig");
     _ = @import("agent_integration_prompt.zig");
-    _ = @import("jupyter_detect.zig");
-    _ = @import("jupyter_picker.zig");
+    _ = @import("jupyter/detect.zig");
+    _ = @import("jupyter/picker.zig");
     _ = @import("copilot_picker.zig");
-    _ = @import("html_server_model.zig");
+    _ = @import("html/server_model.zig");
     // Platform-aware agent prompt: pure string constants, no heavy deps.
     _ = @import("platform/agent_prompt.zig");
     // Pure login-shell argv logic (macOS bash/.bashrc fix). OS-agnostic, so it
