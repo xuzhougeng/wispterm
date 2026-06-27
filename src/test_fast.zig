@@ -180,10 +180,10 @@ test {
     _ = @import("tmux/layout.zig");
     _ = @import("tmux/protocol_test.zig");
     _ = @import("tmux/session.zig");
-    _ = @import("port_forward_rule.zig");
+    _ = @import("port_forward/rule.zig");
     _ = @import("ssh_profile_store.zig");
-    _ = @import("port_forward_manager.zig");
-    _ = @import("port_forwarding.zig");
+    _ = @import("port_forward/manager.zig");
+    _ = @import("port_forward/forwarding.zig");
     _ = @import("openssh_config_import.zig");
     _ = @import("apprt/window_drag_region.zig");
     _ = @import("apprt/window_registry.zig");
