@@ -107,11 +107,11 @@ const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
 const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
 pub const weixin_qr_panel = @import("weixin/qr_panel.zig");
 const weixin_qr_renderer = @import("renderer/weixin_qr_renderer.zig");
-const html_server = @import("html_server.zig");
+const html_server = @import("html/server.zig");
 pub const browser_panel = if (build_options.webview)
-    @import("browser_panel.zig")
+    @import("browser/panel.zig")
 else
-    @import("browser_panel_stub.zig");
+    @import("browser/panel_stub.zig");
 pub const ai_chat_renderer = @import("renderer/ai_chat_renderer.zig");
 pub const ai_history_renderer = @import("renderer/ai_history_renderer.zig");
 const skill_center_renderer = @import("renderer/skill_center_renderer.zig");

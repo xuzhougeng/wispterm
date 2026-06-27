@@ -1,5 +1,5 @@
 //! Thread-local state for the Copilot conversation picker overlay. Mirrors
-//! `jupyter_picker.zig`: a keyboard-navigable list of past Copilot conversations
+//! `jupyter/picker.zig`: a keyboard-navigable list of past Copilot conversations
 //! (title + relative time). Rows are populated from the agent-history store by
 //! AppWindow (which owns the store); this module stays UI- and store-free.
 const std = @import("std");
