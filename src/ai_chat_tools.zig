@@ -33,7 +33,7 @@ const ai_agent_access = @import("ai_agent_access.zig");
 const tool_args = @import("agent_tools/args.zig");
 const agent_research = @import("agent_tools/research.zig");
 const knowledge = @import("agent_tools/knowledge.zig");
-const agent_memory = @import("agent_memory.zig");
+const agent_memory_tool = @import("agent_tools/memory.zig");
 
 /// Number of output lines included in a copilot context block.
 pub const COPILOT_CONTEXT_LINES: usize = 40;
@@ -250,33 +250,17 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
     if (std.mem.eql(u8, call.name, "memory_save")) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
-        const name = tool_args.string(args.value, "name") orelse return ctx.allocator.dupe(u8, "Missing name");
-        const description = tool_args.string(args.value, "description") orelse return ctx.allocator.dupe(u8, "Missing description");
-        const body = blk: {
-            if (args.value != .object) break :blk null;
-            const v = args.value.object.get("body") orelse break :blk null;
-            break :blk if (v == .string) v.string else null;
-        } orelse return ctx.allocator.dupe(u8, "Missing body");
-        const tier_text = tool_args.string(args.value, "tier") orelse "global";
-        const tier: agent_memory.Tier = if (std.mem.eql(u8, tier_text, "project")) .project else .global;
-        const type_ = agent_memory.MemoryType.fromString(tool_args.string(args.value, "type") orelse "user");
-        return agent_memory.saveMemory(ctx.allocator, tier, ctx.settings.working_dir, name, description, type_, body);
+        return agent_memory_tool.save(ctx, args.value);
     }
     if (std.mem.eql(u8, call.name, "memory_recall")) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
-        const name = tool_args.string(args.value, "name") orelse return ctx.allocator.dupe(u8, "Missing name");
-        return agent_memory.recallMemory(ctx.allocator, ctx.settings.working_dir orelse "", name);
+        return agent_memory_tool.recall(ctx, args.value);
     }
     if (std.mem.eql(u8, call.name, "memory_delete")) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
-        const name = tool_args.string(args.value, "name") orelse return ctx.allocator.dupe(u8, "Missing name");
-        const tier_opt: ?agent_memory.Tier = if (tool_args.string(args.value, "tier")) |t|
-            (if (std.mem.eql(u8, t, "project")) .project else if (std.mem.eql(u8, t, "global")) .global else null)
-        else
-            null;
-        return agent_memory.deleteMemory(ctx.allocator, ctx.settings.working_dir orelse "", name, tier_opt);
+        return agent_memory_tool.delete(ctx, args.value);
     }
     if (findDynamicBinaryTool(ctx.settings.dynamic_binary_tools, call.name)) |tool| {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
