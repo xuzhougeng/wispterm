@@ -21,12 +21,13 @@ const Frozen = struct {
 
 // Verified against the post-round-1 tree: every direct-write ceiling here
 // already equals the current actual (AppWindow 57, input 81, overlays 12,
-// ai_chat 0), so there is no slack to ratchet away this round.
+// assistant/conversation/session.zig 0), so there is no slack to ratchet away
+// this round.
 const monoliths = [_]Frozen{
     .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 57 },
     .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 81 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 12 },
-    .{ .name = "ai_chat.zig", .source = @embedFile("../ai_chat.zig"), .ceiling = 0 },
+    .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 0 },
 };
 
 fn directWriteCount(source: []const u8) usize {

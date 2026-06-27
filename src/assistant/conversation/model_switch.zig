@@ -3,7 +3,7 @@
 //! case-insensitive profile-name matching for `/model <name>`, and the summary
 //! card marker/content formatting. No Session / GL / AppWindow dependency, so it
 //! is unit-tested in the fast suite. Threading + Session mutation stay in
-//! ai_chat.zig; overlay/input/render glue stays in their files.
+//! session.zig; overlay/input/render glue stays in their files.
 const std = @import("std");
 
 pub const Role = @import("protocol.zig").Role;

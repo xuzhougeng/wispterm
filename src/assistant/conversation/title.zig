@@ -1,9 +1,9 @@
 //! Pure, platform-independent logic for AI Chat conversation auto-titling.
 //!
-//! Lives separate from `ai_chat.zig` (which is too heavy for the fast test
+//! Lives separate from `session.zig` (which is too heavy for the fast test
 //! suite) so this logic can be unit-tested via `zig build test` /
 //! `zig test src/assistant/conversation/title.zig`. The threaded request + Session
-//! integration stays in `ai_chat.zig`.
+//! integration stays in `session.zig`.
 
 const std = @import("std");
 const text_search = @import("../../text_search.zig");

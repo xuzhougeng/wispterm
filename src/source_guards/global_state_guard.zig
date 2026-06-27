@@ -26,11 +26,12 @@ const monoliths = [_]Frozen{
     // Ceilings re-tightened to the current actual after the adoption passes.
     // input.zig dropped 73->55 via file-explorer action/query APIs;
     // overlays.zig dropped 47->39 by moving command-palette fields into
-    // OverlayState. AppWindow (67) and ai_chat (20) are at their actual.
+    // OverlayState. AppWindow (67) and assistant/conversation/session.zig (20)
+    // are at their actual.
     .{ .name = "AppWindow.zig", .source = @embedFile("../AppWindow.zig"), .ceiling = 67 },
     .{ .name = "input.zig", .source = @embedFile("../input.zig"), .ceiling = 52 },
     .{ .name = "renderer/overlays.zig", .source = @embedFile("../renderer/overlays.zig"), .ceiling = 39 },
-    .{ .name = "ai_chat.zig", .source = @embedFile("../ai_chat.zig"), .ceiling = 20 },
+    .{ .name = "assistant/conversation/session.zig", .source = @embedFile("../assistant/conversation/session.zig"), .ceiling = 20 },
 };
 
 fn globalCount(source: []const u8) usize {

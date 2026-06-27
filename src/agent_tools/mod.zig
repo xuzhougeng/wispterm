@@ -1,6 +1,6 @@
 //! Session-free agent tool runtime entrypoint: owns tool dispatch and routes to
 //! focused adapters under `agent_tools/`. Leaf module — depends on ai_chat_types
-//! (ToolContext seam) and ai_chat_protocol/skills, never on ai_chat.zig or
+//! (ToolContext seam) and ai_chat_protocol/skills, never on session.zig or
 //! Session.
 const std = @import("std");
 const builtin = @import("builtin");

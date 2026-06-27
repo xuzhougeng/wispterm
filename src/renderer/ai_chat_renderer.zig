@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
-const ai_chat = @import("../ai_chat.zig");
+const ai_chat = @import("../assistant/conversation/session.zig");
 const ai_model_switch = @import("../assistant/conversation/model_switch.zig");
 const i18n = @import("../i18n.zig");
 const composer_layout = @import("../assistant/conversation/composer_layout.zig");

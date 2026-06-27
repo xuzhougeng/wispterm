@@ -682,8 +682,9 @@ fn waitForAgentAppReplResult(ctx: *const ToolContext, host: ToolHost, surface: T
     // render mutex over heap-owned terminal state, so it works from the agent
     // request worker thread. collectSnapshot() must NOT be used here: the tab
     // model is thread-local to the UI thread and reads empty on the worker (see
-    // the pre-capture comment in ai_chat.zig), which previously left this wait
-    // blind and spinning to the full timeout while the model saw a stale screen.
+    // the pre-capture comment in assistant/conversation/session.zig), which
+    // previously left this wait blind and spinning to the full timeout while the
+    // model saw a stale screen.
     var last_text = host.surfaceSnapshot(host.ctx, ctx.allocator, surface.id, surface.ptr) catch
         try ctx.allocator.dupe(u8, surface.snapshot);
     defer ctx.allocator.free(last_text);

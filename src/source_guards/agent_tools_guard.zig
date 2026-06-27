@@ -36,7 +36,7 @@ test "agent tools guard detects public reexports and AppWindow imports" {
     try std.testing.expect(containsPublicAgentToolsReexport("pub const tools = @import(\"agent_tools/mod.zig\");\n"));
     try std.testing.expect(!containsPublicAgentToolsReexport("const tools = @import(\"agent_tools/mod.zig\");\n"));
     try std.testing.expect(agentToolImportsAppWindow("agent_tools/mod.zig", "const AppWindow = @import(\"../AppWindow.zig\");"));
-    try std.testing.expect(!agentToolImportsAppWindow("ai_chat.zig", "const AppWindow = @import(\"AppWindow.zig\");"));
+    try std.testing.expect(!agentToolImportsAppWindow("assistant/conversation/session.zig", "const AppWindow = @import(\"../../AppWindow.zig\");"));
 }
 
 test "active sources do not recreate old agent tool runtime paths" {

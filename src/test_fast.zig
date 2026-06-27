@@ -73,7 +73,7 @@ test "ai title worker rejects API error results" {
 }
 
 test "ai title request does not use the old 64 token budget" {
-    const source = @embedFile("ai_chat.zig");
+    const source = @embedFile("assistant/conversation/session.zig");
     const start = std.mem.indexOf(u8, source, "fn buildTitleRequestLocked") orelse return error.MissingTitleRequestBuilder;
     const rest = source[start..];
     const end = std.mem.indexOf(u8, rest, "// titleThreadMain has moved") orelse return error.MissingTitleRequestEnd;
@@ -112,7 +112,7 @@ test "agent SSH connection resolver uses the surface registry, not tab threadloc
 }
 
 test "agent request disables worker snapshot fallback when UI capture fails" {
-    const source = @embedFile("ai_chat.zig");
+    const source = @embedFile("assistant/conversation/session.zig");
     const start = std.mem.indexOf(u8, source, "fn buildRequestLocked") orelse return error.MissingBuildRequestLocked;
     const rest = source[start..];
     const end = std.mem.indexOf(u8, rest, "var weixin_ctx") orelse return error.MissingBuildRequestSnapshotEnd;

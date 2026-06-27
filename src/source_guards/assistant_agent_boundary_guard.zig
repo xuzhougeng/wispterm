@@ -1,5 +1,5 @@
 //! Assistant/agent boundary guard. These feature/domain folders must not reach
-//! up into AppWindow, and agent tool runtime must not depend on ai_chat.
+//! up into AppWindow, and agent tool runtime must not depend on the AI chat session.
 
 const std = @import("std");
 
@@ -69,7 +69,7 @@ test "assistant and agent domains do not import AppWindow" {
 }
 
 test "agent tools do not import ai_chat session" {
-    const forbidden = [_][]const u8{"ai_chat.zig"};
+    const forbidden = [_][]const u8{"assistant/conversation/session.zig"};
     try std.testing.expect(try checkTreeNoImports(std.testing.allocator, "agent_tools/", &forbidden));
 }
 

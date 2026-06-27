@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
-const ai_chat = @import("../ai_chat.zig");
+const ai_chat = @import("../assistant/conversation/session.zig");
 const agent_history = @import("../agent/history.zig");
 const agent_history_store = @import("../agent/history_store.zig");
 const tab = @import("tab.zig");

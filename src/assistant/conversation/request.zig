@@ -1,9 +1,9 @@
 //! AI-chat request layer: worker-thread bodies, the agent tool loop, provider
 //! network calls, request-JSON serialization, and request-message cloning.
-//! Mutually imports ai_chat.zig for Session/ChatRequest and the (pub) Session-
+//! Mutually imports session.zig for Session/ChatRequest and the (pub) Session-
 //! state helpers; references are pointer-based so the cycle is legal in Zig.
 const std = @import("std");
-const ai_chat = @import("../../ai_chat.zig");
+const ai_chat = @import("session.zig");
 const Session = ai_chat.Session;
 const ChatRequest = ai_chat.ChatRequest;
 const ai_chat_protocol = @import("protocol.zig");
@@ -906,7 +906,7 @@ pub fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Tests for request JSON serialization (moved from ai_chat.zig)
+// Tests for request JSON serialization (moved out of the session owner).
 // ---------------------------------------------------------------------------
 
 test "ai chat network failure result includes endpoint and underlying error" {

@@ -100,7 +100,7 @@ globals, so they stay tractable. WispTerm's files are smaller and harder.
 
 | File | Lines | What is tangled |
 |------|------|-----------------|
-| `src/ai_chat.zig` | ~8,760 | agent config + dynamic tools + global callbacks + session lifecycle + summary/title generation + streaming + test hooks |
+| `src/assistant/conversation/session.zig` | ~8,800 | agent config + dynamic tools + global callbacks + session lifecycle + summary/title generation + streaming + test hooks |
 | `src/renderer/overlays.zig` | ~7,670 | overlay facade + per-overlay state + input handling + layout + rendering, for many unrelated overlays in one module |
 | `src/AppWindow.zig` | ~7,090 | window orchestration + 123 imports (29 re-exported as a hub) + 67 top-level `g_*` globals + render/input routing |
 | `src/input.zig` | ~7,040 | platform events + mouse selection + panel swap + preview + AI copilot + browser + terminal mouse report + repaint side effects |
@@ -276,7 +276,7 @@ with **A**. **D** is deferred until a macOS SDK environment exists.
   concern (dispatch, selection, panel drag, preview, terminal mouse report) and
   route every repaint through `UiEffect`. *Ghostty: `input/` + `Binding.zig` are
   separate from apprt input.*
-- **B2** `ai_chat.zig` (~8,760 ln): separate agent config / session / protocol /
+- **B2** `assistant/conversation/session.zig` (~8,800 ln): separate agent config / session / protocol /
   tools / streaming / summary-title from UI callbacks; inject a `Host` interface
   instead of holding global UI triggers. Split into testable sub-modules.
 - **B3** `AppWindow.zig` (~7,090 ln): keep reducing it toward an orchestration
@@ -494,11 +494,14 @@ pub fn handleMouse(state: *State, ev: MouseEvent) UiEffect
 pub fn render(ctx: *RenderContext, state: *const State) void
 ```
 
-**`ai_chat.zig` → an agent domain.** Split by domain, not by slicing:
-`ai_chat/session.zig`, `ai_chat/settings.zig`, `ai_chat/tool_state.zig`,
-`ai_chat/access.zig`, `ai_chat/stream.zig`, `ai_chat/summary.zig`,
-`ai_chat/title.zig`, `ai_chat/memory.zig`, `ai_chat/slash_commands.zig`,
-`ai_chat/host.zig`, `ai_chat/test_support.zig`. Collapse the scattered global UI
+**`assistant/conversation/session.zig` → an assistant conversation domain.**
+Split by domain, not by slicing: `assistant/conversation/session.zig`,
+`assistant/conversation/settings.zig`, `assistant/conversation/tool_state.zig`,
+`assistant/conversation/access.zig`, `assistant/conversation/stream.zig`,
+`assistant/conversation/summary.zig`, `assistant/conversation/title.zig`,
+`assistant/conversation/memory.zig`,
+`assistant/conversation/slash_commands.zig`, `assistant/conversation/host.zig`,
+`assistant/conversation/test_support.zig`. Collapse the scattered global UI
 callbacks into one injected `Host` interface:
 
 ```zig
@@ -510,27 +513,29 @@ pub const Host = struct {
 };
 ```
 
-`AppWindow` injects the `Host`; `ai_chat` stops reaching back for window details.
+`AppWindow` injects the `Host`; the assistant conversation domain stops reaching
+back for window details.
 
 ### 8.5 The layer model
 
 The dependency direction these guards defend. Imports should flow downward only:
 
 - **`platform/*`** — platform capabilities only; never imports app business.
-- **core / domain** (terminal state, IO, `ai_chat/*` domain) — no UI/renderer
-  imports.
+- **core / domain** (terminal state, IO, assistant conversation domain) — no
+  UI/renderer imports.
 - **`input/*`** — produces actions/effects; does not render directly.
 - **`renderer/*`** — renders view state; does not perform business mutation.
 - **`appwindow/*`** — orchestration; does not carry concrete feature business.
-- **`ai_chat/*`** — owns agent/session/protocol/tools; does not know window
-  details (reaches the UI only through an injected `Host`).
+- **`assistant/conversation/*`** — owns agent/session/protocol/tools; does not
+  know window details (reaches the UI only through an injected `Host`).
 - **`remote/*`** — an independent security boundary; does not reach into
   main-app state (also out of scope for the Ghostty/platform-leakage checks).
 
 The reverse edges worth locking first (the layered-dependency guard in §8.2):
 `renderer/overlays/*` must not import `AppWindow.zig` (only narrow types such as
 `appwindow/ui_effect.zig`); `input/*` must not import a concrete renderer module;
-`ai_chat.zig` must not hold a set of UI-trigger callbacks directly.
+`assistant/conversation/session.zig` must not hold a set of UI-trigger callbacks
+directly.
 
 Restated as rules for new code, against the integration-layer/feature-domain
 split above: **feature domains must not depend on `AppWindow`** — they expose a

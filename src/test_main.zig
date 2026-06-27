@@ -551,7 +551,7 @@ comptime {
         @compileError("command/center_state.zig must get session launcher labels and rows from platform/pty_command.zig");
     }
 
-    const ai_chat_source = @embedFile("ai_chat.zig");
+    const ai_chat_source = @embedFile("assistant/conversation/session.zig");
     const ai_chat_request_source = @embedFile("assistant/conversation/request.zig");
     const agent_tools_source = @embedFile("agent_tools/mod.zig");
     const agent_tools_exec_source = @embedFile("agent_tools/exec.zig");
@@ -608,7 +608,7 @@ comptime {
         std.mem.indexOf(u8, agent_tools_source, "Use default, powershell, pwsh, cmd, wsl, or command") != null or
         std.mem.indexOf(u8, agent_tools_exec_source, "Use default, powershell, pwsh, cmd, wsl, or command") != null)
     {
-        @compileError("ai_chat.zig must get local command tool names, labels, default prompts, and tab kind text from platform modules");
+        @compileError("assistant/conversation/session.zig must get local command tool names, labels, default prompts, and tab kind text from platform modules");
     }
     if (std.mem.indexOf(u8, ai_chat_source, "localShellFallback(") != null or
         std.mem.indexOf(u8, ai_chat_request_source, "localShellFallback(") != null or
@@ -619,7 +619,7 @@ comptime {
         std.mem.indexOf(u8, agent_tools_source, "localShellCommandArgv(") != null or
         std.mem.indexOf(u8, agent_tools_exec_source, "localShellCommandArgv(") != null)
     {
-        @compileError("ai_chat.zig must ask platform/process.zig for fallback argv without handling shell variants directly");
+        @compileError("assistant/conversation/session.zig must ask platform/process.zig for fallback argv without handling shell variants directly");
     }
     if (std.mem.indexOf(u8, ai_chat_source, ".title = try allocator.dupe(u8, \"PowerShell\")") != null or
         std.mem.indexOf(u8, ai_chat_request_source, ".title = try allocator.dupe(u8, \"PowerShell\")") != null or
@@ -646,7 +646,7 @@ comptime {
         std.mem.indexOf(u8, agent_tools_source, "Get-ChildItem") != null or
         std.mem.indexOf(u8, agent_tools_exec_source, "Get-ChildItem") != null)
     {
-        @compileError("ai_chat.zig shared tests must use platform-neutral terminal fixtures unless explicitly testing platform prompt variants");
+        @compileError("assistant/conversation/session.zig shared tests must use platform-neutral terminal fixtures unless explicitly testing platform prompt variants");
     }
 
     const agent_detector_source = @embedFile("terminal_agents/detector.zig");
@@ -656,7 +656,7 @@ comptime {
 }
 
 comptime {
-    _ = @import("ai_chat.zig");
+    _ = @import("assistant/conversation/session.zig");
     _ = @import("assistant/conversation/request.zig");
     _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("agent_tools/mod.zig");

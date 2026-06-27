@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const Surface = @import("../Surface.zig");
-const ai_chat = @import("../ai_chat.zig");
+const ai_chat = @import("../assistant/conversation/session.zig");
 const agent_detector = @import("../terminal_agents/detector.zig");
 const preview_diagnostics = @import("../preview/diagnostics.zig");
 const remote = @import("../remote_client.zig");

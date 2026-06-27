@@ -1,7 +1,7 @@
 //! Skill Center action/input and async operation glue for AppWindow.
 
 const std = @import("std");
-const ai_chat = @import("../ai_chat.zig");
+const ai_chat = @import("../assistant/conversation/session.zig");
 const ai_chat_request = @import("../assistant/conversation/request.zig");
 const clipboard = @import("../input/clipboard.zig");
 const first_party_tools = @import("../tools/first_party.zig");

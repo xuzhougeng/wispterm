@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
-const ai_chat = @import("../ai_chat.zig");
+const ai_chat = @import("../assistant/conversation/session.zig");
 const ai_chat_protocol = @import("../assistant/conversation/protocol.zig");
 const assistant_profile_store = @import("../assistant/profile/store.zig");
 const titlebar = AppWindow.titlebar;

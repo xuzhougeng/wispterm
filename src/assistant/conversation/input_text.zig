@@ -2,7 +2,7 @@
 //!
 //! This module is std-only: no platform imports, no app graph. It provides
 //! UTF-8 boundary utilities and visual layout calculations (cursor position,
-//! row spans, wrapped line counts) used by `ai_chat.zig`.
+//! row spans, wrapped line counts) used by `session.zig`.
 
 const std = @import("std");
 

@@ -15,7 +15,7 @@ const font_backend = @import("platform/font_backend.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const window_backend = @import("platform/window_backend.zig");
 const i18n = @import("i18n.zig");
-const ai_chat = @import("ai_chat.zig");
+const ai_chat = @import("assistant/conversation/session.zig");
 const build_options = @import("build_options");
 const diag_log = @import("diag_log.zig");
 

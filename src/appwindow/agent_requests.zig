@@ -7,7 +7,7 @@
 const std = @import("std");
 
 const Surface = @import("../Surface.zig");
-const ai_chat = @import("../ai_chat.zig");
+const ai_chat = @import("../assistant/conversation/session.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const active_tab_state = @import("active_tab.zig");

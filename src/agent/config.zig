@@ -1,6 +1,7 @@
 //! Small, dependency-light AI-agent config types shared by config.zig and
-//! ai_chat.zig. Kept out of the 8k-line ai_chat.zig so config (and its fast
-//! unit tests) need not compile the full AI session/API/tool-exec graph.
+//! the AI chat session. Kept out of the heavy conversation session so config
+//! (and its fast unit tests) need not compile the full AI session/API/tool-exec
+//! graph.
 const std = @import("std");
 
 pub const AgentPermission = enum {

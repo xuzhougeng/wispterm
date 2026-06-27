@@ -1,5 +1,5 @@
 //! Pure slash-command / skill / composer suggestion parsing, extracted from
-//! ai_chat.zig. Text + skill metadata -> suggestion data; no Session state.
+//! session.zig. Text + skill metadata -> suggestion data; no Session state.
 const std = @import("std");
 const skill_registry = @import("../../skill/registry.zig");
 const input_text = @import("input_text.zig");
@@ -826,7 +826,7 @@ test "Composer replacePrefix keeps the suffix and moves cursor after replacement
 }
 
 test "ai chat Session owns editable input through Composer" {
-    const source = @embedFile("../../ai_chat.zig");
+    const source = @embedFile("session.zig");
     try std.testing.expect(std.mem.indexOf(u8, source, "composer: ai_chat_composer.Composer") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "input_buf: [INPUT_PROMPT_MAX_BYTES]u8") == null);
     try std.testing.expect(std.mem.indexOf(u8, source, "input_len: usize") == null);

@@ -6,31 +6,31 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const ai_chat_input_text = @import("assistant/conversation/input_text.zig");
-const input_key = @import("input/key.zig");
-const platform_agent_prompt = @import("platform/agent_prompt.zig");
-const platform_process = @import("platform/process.zig");
-const platform_pty_command = @import("platform/pty_command.zig");
-const agent_history = @import("agent/history.zig");
-const skill_registry = @import("skill/registry.zig");
-const command_registry = @import("command/registry.zig");
-const tool_registry = @import("tools/registry.zig");
-const markdown_text = @import("markdown_text.zig");
-const ai_chat_protocol = @import("assistant/conversation/protocol.zig");
-const ai_chat_composer = @import("assistant/conversation/composer.zig");
-const ai_model_switch = @import("assistant/conversation/model_switch.zig");
-const ai_chat_skills = @import("assistant/conversation/skills.zig");
-const ai_skill_distill = @import("assistant/conversation/distill.zig");
-const ai_chat_types = @import("assistant/conversation/types.zig");
-const agent_terminal = @import("agent_tools/terminal.zig");
-const ai_agent_access = @import("agent/access.zig");
-const platform_dirs = @import("platform/dirs.zig");
-const ai_chat_markdown = @import("assistant/conversation/markdown.zig");
-const assistant_presentation = @import("assistant/conversation/presentation.zig");
-const weixin_types = @import("weixin/types.zig");
-const ai_loop_store = @import("assistant/loop/store.zig");
-const ai_loop_schedule = @import("assistant/loop/schedule.zig");
-const first_party_tools = @import("tools/first_party.zig");
+const ai_chat_input_text = @import("input_text.zig");
+const input_key = @import("../../input/key.zig");
+const platform_agent_prompt = @import("../../platform/agent_prompt.zig");
+const platform_process = @import("../../platform/process.zig");
+const platform_pty_command = @import("../../platform/pty_command.zig");
+const agent_history = @import("../../agent/history.zig");
+const skill_registry = @import("../../skill/registry.zig");
+const command_registry = @import("../../command/registry.zig");
+const tool_registry = @import("../../tools/registry.zig");
+const markdown_text = @import("../../markdown_text.zig");
+const ai_chat_protocol = @import("protocol.zig");
+const ai_chat_composer = @import("composer.zig");
+const ai_model_switch = @import("model_switch.zig");
+const ai_chat_skills = @import("skills.zig");
+const ai_skill_distill = @import("distill.zig");
+const ai_chat_types = @import("types.zig");
+const agent_terminal = @import("../../agent_tools/terminal.zig");
+const ai_agent_access = @import("../../agent/access.zig");
+const platform_dirs = @import("../../platform/dirs.zig");
+const ai_chat_markdown = @import("markdown.zig");
+const assistant_presentation = @import("presentation.zig");
+const weixin_types = @import("../../weixin/types.zig");
+const ai_loop_store = @import("../loop/store.zig");
+const ai_loop_schedule = @import("../loop/schedule.zig");
+const first_party_tools = @import("../../tools/first_party.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
 pub const AgentPermission = ai_chat_types.AgentPermission;
@@ -151,12 +151,12 @@ pub const TranscriptSelection = struct {
 
 const RequestMessage = ai_chat_protocol.RequestMessage;
 const ImageBlock = ai_chat_protocol.ImageBlock;
-const ai_chat_title = @import("assistant/conversation/title.zig");
+const ai_chat_title = @import("title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
-const ai_chat_request = @import("assistant/conversation/request.zig");
-const web_search = @import("research/web_search.zig");
-const pubmed = @import("research/pubmed.zig");
-const agent_memory = @import("agent/memory.zig");
+const ai_chat_request = @import("request.zig");
+const web_search = @import("../../research/web_search.zig");
+const pubmed = @import("../../research/pubmed.zig");
+const agent_memory = @import("../../agent/memory.zig");
 
 pub const ChatRequest = struct {
     allocator: std.mem.Allocator,
@@ -2750,7 +2750,7 @@ pub const Session = struct {
         };
         const trimmed = std.mem.trim(u8, arg, " \t\r\n");
         const now_ms = std.time.milliTimestamp();
-        const offset_s = @import("terminal_agents/sessions/time.zig").localOffsetSeconds();
+        const offset_s = @import("../../terminal_agents/sessions/time.zig").localOffsetSeconds();
         const ctx = ai_loop_store.SessionCtx{
             .session_id = self.sessionId(),
             .model = self.model(),
@@ -5097,7 +5097,7 @@ const isDeepSeekBaseUrl = ai_chat_protocol.isDeepSeekBaseUrl;
 const isAnthropicBaseUrl = ai_chat_protocol.isAnthropicBaseUrl;
 
 // ---------------------------------------------------------------------------
-// Local helpers for tests that remain in ai_chat.zig and use ChatRequest.
+// Local helpers for tests that remain in session.zig and use ChatRequest.
 // ---------------------------------------------------------------------------
 
 // setWriteContext: operates on ChatRequest directly (field layout identical to ToolContext).
@@ -5107,7 +5107,7 @@ fn setWriteContext(request: *ChatRequest, surface_id: []const u8) void {
     request.write_context_surface_id_len = len;
 }
 
-// wslSessionExecTool: the "wsl_session_exec refuses..." test in ai_chat.zig
+// wslSessionExecTool: the "wsl_session_exec refuses..." test in session.zig
 // constructs a ChatRequest + calls wslSessionExecTool directly.  Delegates to
 // ai_chat_request.executeToolCall so the write-back is handled there.
 fn wslSessionExecTool(request: *ChatRequest, surface_id: []const u8, command: []const u8, timeout_ms: u32) ![]u8 {
@@ -8533,10 +8533,10 @@ test "composeSystemPromptWithMemory appends the index block when enabled" {
     defer tmp.cleanup();
     const root = try tmp.dir.realpathAlloc(a, ".");
     defer a.free(root);
-    const dirs_mod = @import("platform/dirs.zig");
+    const dirs_mod = @import("../../platform/dirs.zig");
     dirs_mod.setTestConfigDirForCurrentThread(root);
     defer dirs_mod.clearTestConfigDirForCurrentThread();
-    const am = @import("agent/memory.zig");
+    const am = @import("../../agent/memory.zig");
     const m = try am.saveMemory(a, .global, null, "k1", "v1", .user, "body");
     a.free(m);
 

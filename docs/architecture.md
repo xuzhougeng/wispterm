@@ -129,8 +129,9 @@ today's structural debt so it can only **shrink**:
 - **`file_size_guard`** — no `src/**/*.zig` over 10,000 lines (a runaway
   backstop; also `zig build check-sizes`).
 - **`global_state_guard`** — the top-level `g_*` / `threadlocal` count in
-  `AppWindow.zig` / `input.zig` / `renderer/overlays.zig` / `ai_chat.zig` may
-  only shrink; new state belongs in an explicit state struct.
+  `AppWindow.zig` / `input.zig` / `renderer/overlays.zig` /
+  `assistant/conversation/session.zig` may only shrink; new state belongs in an
+  explicit state struct.
 - **`import_hub_guard`** — `AppWindow.zig`'s `pub const X = @import(...)`
   re-export count may only shrink; import the real module directly, not via
   `AppWindow.X`.

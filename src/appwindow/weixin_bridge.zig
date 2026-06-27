@@ -12,7 +12,7 @@
 
 const std = @import("std");
 const Surface = @import("../Surface.zig");
-const ai_chat = @import("../ai_chat.zig");
+const ai_chat = @import("../assistant/conversation/session.zig");
 const weixin_control = @import("../weixin/control.zig");
 const weixin_types = @import("../weixin/types.zig");
 const window_backend = @import("../platform/window_backend.zig");
