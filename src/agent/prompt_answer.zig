@@ -1,9 +1,9 @@
 //! Pure parsing/answer logic for Claude Code / Codex approval menus. No I/O.
 //! `parsePromptOptions` extracts the numbered options of an approval prompt from
 //! the live screen text; `resolveAnswer` (Task 5) maps a semantic answer to the
-//! keystroke to send. Sibling of `agent_detector.zig`.
+//! keystroke to send. Sibling of `detector.zig`.
 const std = @import("std");
-const text_search = @import("text_search.zig");
+const text_search = @import("../text_search.zig");
 
 pub const Option = struct {
     number: u8 = 0,

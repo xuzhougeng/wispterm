@@ -1,7 +1,7 @@
 //! Shared agent tool approval-gate helpers.
 const std = @import("std");
 const types = @import("../assistant/conversation/types.zig");
-const ai_agent_access = @import("../ai_agent_access.zig");
+const ai_agent_access = @import("../agent/access.zig");
 
 const ToolContext = types.ToolContext;
 const AgentPermission = types.AgentPermission;

@@ -649,9 +649,9 @@ comptime {
         @compileError("ai_chat.zig shared tests must use platform-neutral terminal fixtures unless explicitly testing platform prompt variants");
     }
 
-    const agent_detector_source = @embedFile("agent_detector.zig");
+    const agent_detector_source = @embedFile("agent/detector.zig");
     if (std.mem.indexOf(u8, agent_detector_source, "detect(\"PowerShell\", \"PS C:\\\\Users> ls\")") != null) {
-        @compileError("agent_detector.zig generic shell tests must use platform-neutral terminal fixtures");
+        @compileError("agent/detector.zig generic shell tests must use platform-neutral terminal fixtures");
     }
 }
 
@@ -662,10 +662,10 @@ comptime {
     _ = @import("agent_tools/mod.zig");
     _ = @import("assistant/conversation/skills.zig");
     _ = @import("assistant/conversation/types.zig");
-    _ = @import("ai_agent_access.zig");
+    _ = @import("agent/access.zig");
     _ = @import("assistant/conversation/protocol.zig");
     _ = @import("assistant/conversation/markdown.zig");
-    _ = @import("agent_history.zig");
+    _ = @import("agent/history.zig");
     _ = @import("assistant/conversation/composer_layout.zig");
     _ = @import("assistant/conversation/input_text.zig");
     _ = @import("assistant/conversation/composer.zig");
@@ -681,10 +681,10 @@ comptime {
     _ = @import("ai_history/resume.zig");
     _ = @import("ai_history/session.zig");
     _ = @import("renderer/ai_history_renderer.zig");
-    _ = @import("agent_detector.zig");
+    _ = @import("agent/detector.zig");
     _ = @import("Surface.zig");
     _ = @import("termio/Mailbox.zig");
-    _ = @import("agent_prompt_answer.zig");
+    _ = @import("agent/prompt_answer.zig");
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
     _ = @import("agent_tools/args.zig");
@@ -832,7 +832,7 @@ comptime {
     _ = @import("renderer/overlays/toasts.zig");
     _ = @import("selection_unit.zig");
     _ = @import("session_persist.zig");
-    _ = @import("agent_memory.zig");
+    _ = @import("agent/memory.zig");
     _ = @import("skill/registry.zig");
     _ = @import("skill/scan.zig");
     _ = @import("skill/install.zig");

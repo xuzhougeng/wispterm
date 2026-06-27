@@ -29,7 +29,7 @@ const ctl_ui_state = @import("../ctl/ui_state.zig");
 const command_palette_history_view = @import("../command/palette_history_view.zig");
 const command_palette_model = @import("../command/palette_model.zig");
 const command_registry = @import("../command/registry.zig");
-const agent_history = @import("../agent_history.zig");
+const agent_history = @import("../agent/history.zig");
 const platform_dirs = @import("../platform/dirs.zig");
 const platform_open_url = @import("../platform/open_url.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
@@ -52,7 +52,7 @@ const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
 const ai_model_switch = @import("../assistant/conversation/model_switch.zig");
-const agent_integration_prompt = @import("../agent_integration_prompt.zig");
+const agent_integration_prompt = @import("../agent/integration_prompt.zig");
 const ai_history_time = @import("../ai_history/time.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");

@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const ssh_connection = @import("ssh_connection.zig");
-const agent_history = @import("agent_history.zig");
+const agent_history = @import("agent/history.zig");
 const scp = @import("scp.zig");
 const file_backend = @import("file_backend.zig");
 const platform_local_path = @import("platform/local_path.zig");

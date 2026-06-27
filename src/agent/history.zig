@@ -1,6 +1,6 @@
 const std = @import("std");
-const platform_atomic_file = @import("platform/atomic_file.zig");
-const platform_dirs = @import("platform/dirs.zig");
+const platform_atomic_file = @import("../platform/atomic_file.zig");
+const platform_dirs = @import("../platform/dirs.zig");
 const log = std.log.scoped(.agent_history);
 
 pub const MAX_SESSION_BYTES = 32 * 1024 * 1024;

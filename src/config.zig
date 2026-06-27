@@ -19,7 +19,7 @@ const Config = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
-const ai_agent_config = @import("ai_agent_config.zig");
+const ai_agent_config = @import("agent/config.zig");
 const keybind = @import("keybind.zig");
 const link_open = @import("link_open.zig");
 const console_host_policy = @import("platform/console_host_policy.zig");

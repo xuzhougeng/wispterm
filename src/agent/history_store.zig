@@ -1,6 +1,6 @@
 const std = @import("std");
-const agent_history = @import("agent_history.zig");
-const platform_dirs = @import("platform/dirs.zig");
+const agent_history = @import("history.zig");
+const platform_dirs = @import("../platform/dirs.zig");
 
 pub const MAX_INDEX_BYTES = 32 * 1024 * 1024;
 const MIGRATION_MAX_BYTES = 1 << 30;

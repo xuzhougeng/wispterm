@@ -182,10 +182,10 @@ test {
     _ = @import("whats_new_gate.zig");
     _ = @import("startup_tabs.zig");
     _ = @import("config.zig");
-    _ = @import("ai_agent_config.zig");
-    _ = @import("ai_agent_access.zig");
-    _ = @import("agent_file_edit.zig");
-    _ = @import("agent_file_copy.zig");
+    _ = @import("agent/config.zig");
+    _ = @import("agent/access.zig");
+    _ = @import("agent/file_edit.zig");
+    _ = @import("agent/file_copy.zig");
     _ = @import("ssh_connection.zig");
     _ = @import("tmux/control.zig");
     _ = @import("tmux/layout.zig");
@@ -245,7 +245,7 @@ test {
     _ = @import("agent_tools/weixin.zig");
     _ = @import("research/commands.zig");
     _ = @import("research/web_search.zig");
-    _ = @import("agent_prompt_answer.zig");
+    _ = @import("agent/prompt_answer.zig");
     _ = @import("tools/first_party.zig");
     _ = @import("research/web_read.zig");
     _ = @import("research/web_read_cache.zig");
@@ -280,8 +280,8 @@ test {
     _ = @import("preview/token.zig");
     _ = @import("ime_caret.zig");
     _ = @import("sync_output.zig");
-    _ = @import("agent_history.zig");
-    _ = @import("agent_history_store.zig");
+    _ = @import("agent/history.zig");
+    _ = @import("agent/history_store.zig");
     _ = @import("render_diagnostics.zig");
     _ = @import("diag_log.zig");
     _ = @import("notification.zig");
@@ -315,8 +315,8 @@ test {
     // everywhere.
     _ = @import("process_runner.zig");
     _ = @import("platform/process_group.zig");
-    _ = @import("agent_detector.zig");
-    _ = @import("agent_integration_prompt.zig");
+    _ = @import("agent/detector.zig");
+    _ = @import("agent/integration_prompt.zig");
     _ = @import("jupyter/detect.zig");
     _ = @import("jupyter/picker.zig");
     _ = @import("assistant/sidebar/picker.zig");

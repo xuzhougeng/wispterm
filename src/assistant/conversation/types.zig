@@ -3,9 +3,9 @@
 //! (leaf) tool layer so it never touches Session. No Session/ChatRequest deps.
 const std = @import("std");
 const weixin_types = @import("../../weixin/types.zig");
-const agent_detector = @import("../../agent_detector.zig");
+const agent_detector = @import("../../agent/detector.zig");
 const ai_chat_protocol = @import("protocol.zig");
-const ai_agent_access = @import("../../ai_agent_access.zig");
+const ai_agent_access = @import("../../agent/access.zig");
 const ssh_connection = @import("../../ssh_connection.zig");
 pub const SshConnection = ssh_connection.SshConnection;
 
@@ -40,9 +40,9 @@ pub const DynamicBinaryTool = struct {
     description: []const u8,
 };
 
-// AgentPermission lives in ai_agent_config.zig (extracted on main so config.zig
+// AgentPermission lives in agent/config.zig (extracted so config.zig
 // stays out of the ai_chat dependency graph). Re-export the single source of truth.
-pub const AgentPermission = @import("../../ai_agent_config.zig").AgentPermission;
+pub const AgentPermission = @import("../../agent/config.zig").AgentPermission;
 
 pub const ToolSurface = struct {
     id: []u8,

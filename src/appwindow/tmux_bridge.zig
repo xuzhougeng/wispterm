@@ -381,7 +381,7 @@ pub const TmuxBridge = struct {
         const op = p.surface orelse return;
         const s: *Surface = @ptrCast(@alignCast(op));
         if (path.len > 0) s.setCwdPath(path);
-        s.noteAgentCommand(@import("../agent_detector.zig").appFromCommand(cmd));
+        s.noteAgentCommand(@import("../agent/detector.zig").appFromCommand(cmd));
     }
 
     // ----- tab lookup / creation -----

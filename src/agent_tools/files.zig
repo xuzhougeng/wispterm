@@ -1,8 +1,8 @@
 //! Agent file tool adapters.
 const std = @import("std");
 const types = @import("../assistant/conversation/types.zig");
-const agent_file_edit = @import("../agent_file_edit.zig");
-const agent_file_copy = @import("../agent_file_copy.zig");
+const agent_file_edit = @import("../agent/file_edit.zig");
+const agent_file_copy = @import("../agent/file_copy.zig");
 const platform_atomic_file = @import("../platform/atomic_file.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const platform_wsl = @import("../platform/wsl.zig");

@@ -11,7 +11,7 @@ const input_key = @import("input/key.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
 const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
-const agent_history = @import("agent_history.zig");
+const agent_history = @import("agent/history.zig");
 const skill_registry = @import("skill/registry.zig");
 const command_registry = @import("command/registry.zig");
 const tool_registry = @import("tools/registry.zig");
@@ -23,7 +23,7 @@ const ai_chat_skills = @import("assistant/conversation/skills.zig");
 const ai_skill_distill = @import("assistant/conversation/distill.zig");
 const ai_chat_types = @import("assistant/conversation/types.zig");
 const agent_terminal = @import("agent_tools/terminal.zig");
-const ai_agent_access = @import("ai_agent_access.zig");
+const ai_agent_access = @import("agent/access.zig");
 const platform_dirs = @import("platform/dirs.zig");
 const ai_chat_markdown = @import("assistant/conversation/markdown.zig");
 const assistant_presentation = @import("assistant/conversation/presentation.zig");
@@ -156,7 +156,7 @@ const ToolCall = ai_chat_protocol.ToolCall;
 const ai_chat_request = @import("assistant/conversation/request.zig");
 const web_search = @import("research/web_search.zig");
 const pubmed = @import("research/pubmed.zig");
-const agent_memory = @import("agent_memory.zig");
+const agent_memory = @import("agent/memory.zig");
 
 pub const ChatRequest = struct {
     allocator: std.mem.Allocator,
@@ -8536,7 +8536,7 @@ test "composeSystemPromptWithMemory appends the index block when enabled" {
     const dirs_mod = @import("platform/dirs.zig");
     dirs_mod.setTestConfigDirForCurrentThread(root);
     defer dirs_mod.clearTestConfigDirForCurrentThread();
-    const am = @import("agent_memory.zig");
+    const am = @import("agent/memory.zig");
     const m = try am.saveMemory(a, .global, null, "k1", "v1", .user, "body");
     a.free(m);
 

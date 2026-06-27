@@ -3,8 +3,8 @@
 //! plus thin filesystem I/O and orchestration. Leaf module: depends only on
 //! std + platform/dirs + platform/atomic_file. No Session/ai_chat deps.
 const std = @import("std");
-const dirs = @import("platform/dirs.zig");
-const atomic_file = @import("platform/atomic_file.zig");
+const dirs = @import("../platform/dirs.zig");
+const atomic_file = @import("../platform/atomic_file.zig");
 
 pub const MAX_MEMORY_MD_BYTES: usize = 64 * 1024;
 pub const INDEX_BUDGET_BYTES: usize = 4096;

@@ -1,7 +1,7 @@
 //! Weixin agent tool adapters.
 const std = @import("std");
 const types = @import("../assistant/conversation/types.zig");
-const ai_agent_access = @import("../ai_agent_access.zig");
+const ai_agent_access = @import("../agent/access.zig");
 const weixin_types = @import("../weixin/types.zig");
 const tool_access = @import("access.zig");
 const tool_output = @import("output.zig");
