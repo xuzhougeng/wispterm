@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const process_runner = @import("process_runner.zig");
-const tool_registry = @import("tool_registry.zig");
+const process_runner = @import("../process_runner.zig");
+const tool_registry = @import("registry.zig");
 
 pub const PROBE_TIMEOUT_MS: u32 = 3000;
 pub const PROBE_OUTPUT_LIMIT: u32 = 64 * 1024;
@@ -565,7 +565,7 @@ test "tool_import: runArgvProbe owns no hand-rolled spawn/drain/wait" {
     // must not reach for the raw child primitives again. (Full-range Windows
     // exit codes no longer narrow-panic because runCapture surfaces them as a
     // u32 Termination.exited, mapped to "" here via the !exited_zero branch.)
-    const source = @embedFile("tool_import.zig");
+    const source = @embedFile("import.zig");
     // Split the needles so this guard's own source does not match them.
     const raw_spawn = "std.process." ++ "Child.init";
     const runner_call = "process_runner." ++ "runCapture";

@@ -3,7 +3,7 @@
 //! data + an allocator. (Imports the platform tool-description facades that the
 //! tool-schema builders already used.)
 const std = @import("std");
-const first_party_tools = @import("first_party_tools.zig");
+const first_party_tools = @import("tools/first_party.zig");
 const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 

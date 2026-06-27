@@ -686,7 +686,7 @@ comptime {
     _ = @import("config_watcher.zig");
     _ = @import("file_backend.zig");
     _ = @import("file_explorer.zig");
-    _ = @import("first_party_tools.zig");
+    _ = @import("tools/first_party.zig");
     _ = @import("input.zig");
     _ = @import("input/clipboard.zig");
     _ = @import("clipboard_osc52.zig");
@@ -808,9 +808,9 @@ comptime {
     _ = @import("port_forward/forwarding.zig");
     _ = @import("renderer/port_forwarding_renderer.zig");
     _ = @import("command/registry.zig");
-    _ = @import("tool_registry.zig");
-    _ = @import("tool_import.zig");
-    _ = @import("tool_skill_draft.zig");
+    _ = @import("tools/registry.zig");
+    _ = @import("tools/import.zig");
+    _ = @import("tools/skill_draft.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("ai_chat_scrollbar_model.zig");
     _ = @import("ssh_prompt.zig");

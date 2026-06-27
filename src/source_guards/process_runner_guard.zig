@@ -11,7 +11,7 @@ const GuardedSource = struct {
 };
 
 const guarded = [_]GuardedSource{
-    .{ .name = "tool_import.zig", .source = @embedFile("../tool_import.zig") },
+    .{ .name = "tools/import.zig", .source = @embedFile("../tools/import.zig") },
     .{ .name = "platform/remote_file.zig", .source = @embedFile("../platform/remote_file.zig") },
 };
 

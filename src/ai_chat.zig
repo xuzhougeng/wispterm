@@ -14,7 +14,7 @@ const platform_pty_command = @import("platform/pty_command.zig");
 const agent_history = @import("agent_history.zig");
 const skill_registry = @import("skill/registry.zig");
 const command_registry = @import("command/registry.zig");
-const tool_registry = @import("tool_registry.zig");
+const tool_registry = @import("tools/registry.zig");
 const markdown_text = @import("markdown_text.zig");
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_chat_composer = @import("ai_chat_composer.zig");
@@ -29,7 +29,7 @@ const ai_chat_markdown = @import("ai_chat_markdown.zig");
 const weixin_types = @import("weixin/types.zig");
 const ai_loop_store = @import("ai_loop_store.zig");
 const ai_loop_schedule = @import("ai_loop_schedule.zig");
-const first_party_tools = @import("first_party_tools.zig");
+const first_party_tools = @import("tools/first_party.zig");
 
 pub const AgentSettings = ai_chat_types.AgentSettings;
 pub const AgentPermission = ai_chat_types.AgentPermission;

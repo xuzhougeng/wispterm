@@ -1,8 +1,8 @@
 const std = @import("std");
-const platform_atomic_file = @import("platform/atomic_file.zig");
-const platform_dirs = @import("platform/dirs.zig");
-const platform_process = @import("platform/process.zig");
-const platform_pty_command = @import("platform/pty_command.zig");
+const platform_atomic_file = @import("../platform/atomic_file.zig");
+const platform_dirs = @import("../platform/dirs.zig");
+const platform_process = @import("../platform/process.zig");
+const platform_pty_command = @import("../platform/pty_command.zig");
 
 const MAX_STATE_BYTES: usize = 64 * 1024;
 const STATE_BASENAME = "agent_tools.json";

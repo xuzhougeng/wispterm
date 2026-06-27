@@ -220,7 +220,7 @@ test {
     _ = @import("composer_detail_wrap.zig");
     _ = @import("web_search.zig");
     _ = @import("agent_prompt_answer.zig");
-    _ = @import("first_party_tools.zig");
+    _ = @import("tools/first_party.zig");
     _ = @import("web_read.zig");
     _ = @import("web_read_cache.zig");
     _ = @import("pubmed.zig");
@@ -241,7 +241,7 @@ test {
     _ = @import("skill/transfer_cmd.zig");
     _ = @import("skill/transfer.zig");
     _ = @import("skill/diff.zig");
-    _ = @import("tool_skill_draft.zig");
+    _ = @import("tools/skill_draft.zig");
     _ = @import("text_wrap.zig");
     _ = @import("ai_history/resume.zig");
     _ = @import("ai_history/session.zig");
@@ -282,8 +282,8 @@ test {
     _ = @import("ai_chat_title.zig");
     _ = @import("ai_model_switch.zig");
     _ = @import("command/registry.zig");
-    _ = @import("tool_registry.zig");
-    _ = @import("tool_import.zig");
+    _ = @import("tools/registry.zig");
+    _ = @import("tools/import.zig");
     // Unified subprocess lifecycle: spawn → concurrent drain → timeout/cancel →
     // reap-exactly-once. Spawn-based tests gate on non-Windows; type guards run
     // everywhere.
