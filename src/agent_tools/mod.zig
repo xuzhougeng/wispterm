@@ -1,12 +1,12 @@
-//! Session-free agent tool layer: tool dispatch and every tool implementation,
-//! shell/argv runners, REPL handling, dangerous-command detection, and write/
-//! copilot context. Leaf module — depends on ai_chat_types (ToolContext seam)
-//! and ai_chat_protocol/skills, never on ai_chat.zig or Session.
+//! Session-free agent tool runtime entrypoint: owns tool dispatch and routes to
+//! focused adapters under `agent_tools/`. Leaf module — depends on ai_chat_types
+//! (ToolContext seam) and ai_chat_protocol/skills, never on ai_chat.zig or
+//! Session.
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("ai_chat_types.zig");
-const ai_chat_protocol = @import("ai_chat_protocol.zig");
-const first_party_tools = @import("tools/first_party.zig");
+const types = @import("../ai_chat_types.zig");
+const ai_chat_protocol = @import("../ai_chat_protocol.zig");
+const first_party_tools = @import("../tools/first_party.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ToolContext = types.ToolContext;
 const ToolSurface = types.ToolSurface;
@@ -15,19 +15,19 @@ const ToolHost = types.ToolHost;
 const ToolClosedTab = types.ToolClosedTab;
 const SshProfileSaveArgs = types.SshProfileSaveArgs;
 const SavedSshProfile = types.SavedSshProfile;
-const weixin_types = @import("weixin/types.zig");
-const platform_process = @import("platform/process.zig");
-const tool_args = @import("agent_tools/args.zig");
-const agent_research = @import("agent_tools/research.zig");
-const knowledge = @import("agent_tools/knowledge.zig");
-const agent_memory_tool = @import("agent_tools/memory.zig");
-const terminal_tools = @import("agent_tools/terminal.zig");
-const agent_sessions = @import("agent_tools/sessions.zig");
-const tool_access = @import("agent_tools/access.zig");
-const agent_files = @import("agent_tools/files.zig");
-const agent_exec = @import("agent_tools/exec.zig");
-const agent_dynamic = @import("agent_tools/dynamic.zig");
-const agent_weixin = @import("agent_tools/weixin.zig");
+const weixin_types = @import("../weixin/types.zig");
+const platform_process = @import("../platform/process.zig");
+const tool_args = @import("args.zig");
+const agent_research = @import("research.zig");
+const knowledge = @import("knowledge.zig");
+const agent_memory_tool = @import("memory.zig");
+const terminal_tools = @import("terminal.zig");
+const agent_sessions = @import("sessions.zig");
+const tool_access = @import("access.zig");
+const agent_files = @import("files.zig");
+const agent_exec = @import("exec.zig");
+const agent_dynamic = @import("dynamic.zig");
+const agent_weixin = @import("weixin.zig");
 
 // ---------------------------------------------------------------------------
 // Tool dispatch
@@ -931,7 +931,7 @@ test "executeToolCall handles memory_save and memory_recall" {
     defer tmp.cleanup();
     const root = try tmp.dir.realpathAlloc(a, ".");
     defer a.free(root);
-    const dirs_mod = @import("platform/dirs.zig");
+    const dirs_mod = @import("../platform/dirs.zig");
     dirs_mod.setTestConfigDirForCurrentThread(root);
     defer dirs_mod.clearTestConfigDirForCurrentThread();
 

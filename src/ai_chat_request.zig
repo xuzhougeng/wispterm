@@ -8,7 +8,7 @@ const Session = ai_chat.Session;
 const ChatRequest = ai_chat.ChatRequest;
 const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_skill_distill = @import("ai_skill_distill.zig");
-const ai_chat_tools = @import("ai_chat_tools.zig");
+const agent_tools = @import("agent_tools/mod.zig");
 const tool_args = @import("agent_tools/args.zig");
 const tool_output = @import("agent_tools/output.zig");
 const first_party_tools = @import("tools/first_party.zig");
@@ -896,7 +896,7 @@ pub fn executeToolCall(request: *ChatRequest, call: ToolCall) ![]u8 {
     }
     if (std.mem.eql(u8, call.name, "subagent")) return subagentToolCall(request, call);
     var tool_ctx = toolContextFromRequest(request);
-    const result = try ai_chat_tools.executeToolCall(&tool_ctx, call);
+    const result = try agent_tools.executeToolCall(&tool_ctx, call);
     // Write-context state may have changed inside the tool (e.g. terminal_select).
     request.write_context_surface_id = tool_ctx.write_context_surface_id;
     request.write_context_surface_id_len = tool_ctx.write_context_surface_id_len;
