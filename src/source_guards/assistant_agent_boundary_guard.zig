@@ -64,6 +64,7 @@ test "assistant and agent domains do not import AppWindow" {
     ok = (try checkTreeNoImports(allocator, "assistant/sidebar/", &forbidden)) and ok;
     ok = (try checkTreeNoImports(allocator, "agent/", &forbidden)) and ok;
     ok = (try checkTreeNoImports(allocator, "agent_tools/", &forbidden)) and ok;
+    ok = (try checkTreeNoImports(allocator, "terminal_agents/", &forbidden)) and ok;
     try std.testing.expect(ok);
 }
 

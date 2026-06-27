@@ -16,7 +16,7 @@ const cell_renderer = AppWindow.cell_renderer;
 const gl_init = AppWindow.gpu.gl_init;
 const font_backend = @import("../platform/font_backend.zig");
 const window_backend = @import("../platform/window_backend.zig");
-const agent_detector = @import("../agent/detector.zig");
+const agent_detector = @import("../terminal_agents/detector.zig");
 const keybind = @import("../keybind.zig");
 const Character = font.Character;
 
