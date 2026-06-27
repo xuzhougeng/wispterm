@@ -2750,7 +2750,7 @@ pub const Session = struct {
         };
         const trimmed = std.mem.trim(u8, arg, " \t\r\n");
         const now_ms = std.time.milliTimestamp();
-        const offset_s = @import("ai_history/time.zig").localOffsetSeconds();
+        const offset_s = @import("terminal_agents/sessions/time.zig").localOffsetSeconds();
         const ctx = ai_loop_store.SessionCtx{
             .session_id = self.sessionId(),
             .model = self.model(),

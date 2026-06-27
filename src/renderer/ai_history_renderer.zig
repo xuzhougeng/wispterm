@@ -1,6 +1,6 @@
 const std = @import("std");
-const ai_history_session = @import("../ai_history/session.zig");
-const types = @import("../ai_history/types.zig");
+const ai_history_session = @import("../terminal_agents/sessions/session.zig");
+const types = @import("../terminal_agents/sessions/types.zig");
 const i18n = @import("../i18n.zig");
 const text_search = @import("../text_search.zig");
 
