@@ -24,10 +24,7 @@ const AgentSettings = types.AgentSettings;
 const AgentPermission = types.AgentPermission;
 const agent_detector = @import("agent_detector.zig");
 const agent_prompt_answer = @import("agent_prompt_answer.zig");
-const skill_registry = @import("skill/registry.zig");
-const wispterm_docs = @import("wispterm_docs.zig");
 const weixin_types = @import("weixin/types.zig");
-const ai_chat_skills = @import("ai_chat_skills.zig");
 const platform_process = @import("platform/process.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const platform_wsl = @import("platform/wsl.zig");
@@ -35,6 +32,7 @@ const platform_agent_prompt = @import("platform/agent_prompt.zig");
 const ai_agent_access = @import("ai_agent_access.zig");
 const tool_args = @import("agent_tools/args.zig");
 const agent_research = @import("agent_tools/research.zig");
+const knowledge = @import("agent_tools/knowledge.zig");
 const agent_memory = @import("agent_memory.zig");
 
 /// Number of output lines included in a copilot context block.
@@ -209,13 +207,13 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         const skill_name = tool_args.string(args.value, "skill_name") orelse return ctx.allocator.dupe(u8, "Missing skill_name");
-        return skillInfoTool(ctx.allocator, skill_name);
+        return knowledge.skillInfo(ctx.allocator, skill_name);
     }
     if (std.mem.eql(u8, call.name, "wispterm_docs")) {
         const args = tool_args.parse(ctx.allocator, call.arguments);
         defer if (args) |parsed| parsed.deinit();
         const topic = if (args) |parsed| tool_args.string(parsed.value, "topic") else null;
-        return wisptermDocsTool(ctx.allocator, topic);
+        return knowledge.wisptermDocs(ctx.allocator, topic);
     }
     if (std.mem.eql(u8, call.name, "weixin_send_attachment")) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
@@ -348,44 +346,6 @@ fn askUserTool(ctx: *ToolContext, question: []const u8, options: []const types.Q
         .custom => |text| std.fmt.allocPrint(ctx.allocator, "User answered (custom): \"{s}\"", .{text}),
         .cancelled => ctx.allocator.dupe(u8, "User did not answer (request cancelled)."),
     };
-}
-
-// ---------------------------------------------------------------------------
-// Skill / docs tools (allocator-only, no context)
-// ---------------------------------------------------------------------------
-
-fn skillInfoTool(allocator: std.mem.Allocator, skill_name: []const u8) ![]u8 {
-    const roots = try ai_chat_skills.defaultSkillRootPaths(allocator);
-    defer ai_chat_skills.freeSkillRootPaths(allocator, roots);
-    return skillInfoToolFromRoots(allocator, skill_name, roots);
-}
-
-pub fn skillInfoToolFromRoots(allocator: std.mem.Allocator, skill_name: []const u8, root_paths: []const []const u8) ![]u8 {
-    var snapshot = ai_chat_skills.loadSkillSnapshotFromRoots(allocator, skill_name, root_paths) catch |err| switch (err) {
-        skill_registry.LookupError.SkillNotFound => return std.fmt.allocPrint(allocator, "Skill not found: {s}", .{skill_name}),
-        skill_registry.LookupError.DuplicateSkillName => return std.fmt.allocPrint(allocator, "Duplicate skill name: {s}", .{skill_name}),
-        skill_registry.LookupError.InvalidSkillMarkdown => return std.fmt.allocPrint(allocator, "Invalid SKILL.md for skill: {s}", .{skill_name}),
-        skill_registry.LookupError.SkillTooLarge => return std.fmt.allocPrint(allocator, "SKILL.md too large for skill: {s}", .{skill_name}),
-        else => |e| return std.fmt.allocPrint(allocator, "Failed to load skill {s}: {}", .{ skill_name, e }),
-    };
-    defer snapshot.deinit(allocator);
-    return allocator.dupe(u8, snapshot.content);
-}
-
-pub fn wisptermDocsTool(allocator: std.mem.Allocator, topic: ?[]const u8) ![]u8 {
-    if (topic) |name| {
-        if (wispterm_docs.readTopic(name)) |content| {
-            return allocator.dupe(u8, content);
-        }
-        var out: std.ArrayListUnmanaged(u8) = .empty;
-        errdefer out.deinit(allocator);
-        try out.print(allocator, "Unknown topic \"{s}\". Available topics:", .{name});
-        for (wispterm_docs.topics) |t| {
-            try out.print(allocator, " {s}", .{t.name});
-        }
-        return out.toOwnedSlice(allocator);
-    }
-    return wispterm_docs.listTopics(allocator);
 }
 
 // ---------------------------------------------------------------------------
@@ -3628,52 +3588,6 @@ test "ai chat ssh profile save approval text redacts password" {
     try std.testing.expect(std.mem.indexOf(u8, text, "admin@bastion.example.com:22") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "super-secret") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "<redacted>") != null);
-}
-
-test "ai chat skill_info loads from explicit root paths" {
-    const allocator = std.testing.allocator;
-    const root = ".zig-cache/skill-root-load-test";
-    std.fs.cwd().deleteTree(root) catch {};
-    defer std.fs.cwd().deleteTree(root) catch {};
-
-    try std.fs.cwd().makePath(root ++ "/bin/skills/web");
-    try std.fs.cwd().writeFile(.{
-        .sub_path = root ++ "/bin/skills/web/SKILL.md",
-        .data = "---\nname: web\ndescription: Browse pages.\n---\n# Web Skill\n",
-    });
-
-    const roots = [_][]const u8{
-        root ++ "/cwd/skills",
-        root ++ "/bin/skills",
-    };
-    const output = try skillInfoToolFromRoots(allocator, "web", roots[0..]);
-    defer allocator.free(output);
-
-    try std.testing.expect(std.mem.indexOf(u8, output, "# Skill: web") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "# Web Skill") != null);
-}
-
-test "wispterm_docs tool lists topics when no topic is given" {
-    const a = std.testing.allocator;
-    const text = try wisptermDocsTool(a, null);
-    defer a.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "faq") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "configuration") != null);
-}
-
-test "wispterm_docs tool returns content for a known topic" {
-    const a = std.testing.allocator;
-    const text = try wisptermDocsTool(a, "faq");
-    defer a.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "FAQ") != null);
-}
-
-test "wispterm_docs tool reports unknown topic with the topic list" {
-    const a = std.testing.allocator;
-    const text = try wisptermDocsTool(a, "does-not-exist");
-    defer a.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "Unknown topic") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "faq") != null);
 }
 
 const WeixinAttachmentCapture = struct {
