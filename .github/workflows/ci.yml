@@ -8,14 +8,42 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Decide which jobs need to run from the changed paths. Doc-only changes skip
+  # the zig/windows suites; remote-only changes run just the npm job. Required
+  # checks gated below report "skipped" (which satisfies branch protection)
+  # instead of being filtered out at the `on:` level (which would leave them
+  # pending forever and block the merge).
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      remote: ${{ steps.filter.outputs.remote }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # `code` = anything that isn't pure docs/remote. Single negation glob
+          # so the `some` quantifier means "some changed file is real code".
+          filters: |
+            code:
+              - '!{docs/**,wiki/**,release-notes/**,plans/**,remote/**,**/*.md,*.md}'
+            remote:
+              - 'remote/**'
+
   zig-fast-linux:
     name: Zig fast tests / Linux
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -45,6 +73,8 @@ jobs:
 
   zig-full-mac-arm:
     name: Zig full tests / macOS ARM
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: macos-15
     timeout-minutes: 60
 
@@ -71,6 +101,8 @@ jobs:
 
   remote-ts:
     name: Remote TypeScript
+    needs: changes
+    if: ${{ needs.changes.outputs.remote == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -96,6 +128,8 @@ jobs:
 
   windows-smoke:
     name: Windows smoke
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 45
 
