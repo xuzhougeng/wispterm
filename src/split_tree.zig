@@ -18,7 +18,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Surface = @import("Surface.zig");
-const PreviewPane = @import("preview_pane.zig");
+const PreviewPane = @import("preview/pane.zig");
 
 const SplitTree = @This();
 

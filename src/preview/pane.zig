@@ -4,12 +4,12 @@
 //! in preview panes.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const markdown_preview = @import("markdown_preview.zig");
-const preview_source = @import("input/preview_source.zig");
-const preview_diagnostics = @import("preview_diagnostics.zig");
-const pdf_preview = @import("pdf_preview.zig");
-const pdf_render = @import("platform/pdf_render.zig");
-const gpu = @import("renderer/gpu/gpu.zig");
+const markdown_preview = @import("markdown.zig");
+const preview_source = @import("../input/preview_source.zig");
+const preview_diagnostics = @import("diagnostics.zig");
+const pdf_preview = @import("pdf.zig");
+const pdf_render = @import("../platform/pdf_render.zig");
+const gpu = @import("../renderer/gpu/gpu.zig");
 
 const PreviewPane = @This();
 

@@ -665,7 +665,7 @@ comptime {
     _ = @import("App.zig");
     _ = @import("AppWindow.zig");
     _ = @import("surface_registry.zig");
-    _ = @import("png_dimensions.zig");
+    _ = @import("preview/png_dimensions.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("appwindow/window_state.zig");
     _ = @import("appwindow/remote_state.zig");
@@ -706,7 +706,7 @@ comptime {
     _ = @import("input/underline_span.zig");
     _ = @import("surface_output_unit.zig");
     _ = @import("link_open.zig");
-    _ = @import("markdown_preview.zig");
+    _ = @import("preview/markdown.zig");
     _ = @import("markdown_text.zig");
     _ = @import("memory_debug.zig");
     _ = @import("wispterm_docs.zig");
@@ -762,7 +762,7 @@ comptime {
     _ = @import("platform/window_backend.zig");
     _ = @import("platform/window_state.zig");
     _ = @import("platform/wsl.zig");
-    _ = @import("preview_token.zig");
+    _ = @import("preview/token.zig");
     _ = @import("quick_terminal.zig");
     _ = @import("remote_client.zig");
     _ = @import("remote_snapshot.zig");
@@ -817,7 +817,7 @@ comptime {
     _ = @import("ssh_tunnel.zig");
     _ = @import("startup_tabs.zig");
     _ = @import("split_tree.zig");
-    _ = @import("preview_pane.zig");
+    _ = @import("preview/pane.zig");
     _ = @import("renderer/markdown_preview_renderer.zig");
     _ = @import("ui_perf.zig");
     _ = @import("update_check.zig");

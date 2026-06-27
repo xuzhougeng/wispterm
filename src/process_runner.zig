@@ -121,6 +121,42 @@ fn dupeCapped(allocator: std.mem.Allocator, src: []const u8, max: usize) RunErro
     return allocator.dupe(u8, src[0..@min(src.len, max)]);
 }
 
+/// POSIX poll can report POLLHUP without POLLIN while final pipe bytes are still
+/// readable (observed on macOS CI). After the direct child has exited, do a
+/// bounded, event-driven drain so we keep those bytes without waiting for a
+/// grandchild-held pipe to hit EOF.
+fn dupeCappedAfterPosixExitDrain(
+    allocator: std.mem.Allocator,
+    src: []const u8,
+    max: usize,
+    file: std.fs.File,
+) RunError![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, src[0..@min(src.len, max)]);
+    if (out.items.len >= max) return out.toOwnedSlice(allocator);
+
+    var pfd = [_]std.posix.pollfd{.{
+        .fd = file.handle,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+    var scratch: [4096]u8 = undefined;
+    while (out.items.len < max) {
+        pfd[0].revents = 0;
+        const ready = std.posix.poll(&pfd, 0) catch break;
+        if (ready == 0) break;
+        if (pfd[0].revents & (std.posix.POLL.IN | std.posix.POLL.HUP) == 0) break;
+
+        const want = @min(scratch.len, max - out.items.len);
+        const amt = std.posix.read(file.handle, scratch[0..want]) catch break;
+        if (amt == 0) break;
+        try out.appendSlice(allocator, scratch[0..amt]);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 /// Run `argv` to completion, capturing bounded stdout/stderr. Always reaps the
 /// child exactly once before returning. On any timeout/cancel the child is
 /// terminated and still reaped. Caller owns `result.stdout`/`result.stderr`.
@@ -244,12 +280,18 @@ pub fn runCapture(
     }
 
     // Snapshot captured bytes BEFORE deinit frees the poller buffers.
-    const stdout_slice = dupeCapped(allocator, poller.reader(.stdout).buffered(), options.max_stdout_bytes) catch |err| {
+    const stdout_slice = (if (builtin.os.tag != .windows and child_done)
+        dupeCappedAfterPosixExitDrain(allocator, poller.reader(.stdout).buffered(), options.max_stdout_bytes, child.stdout.?)
+    else
+        dupeCapped(allocator, poller.reader(.stdout).buffered(), options.max_stdout_bytes)) catch |err| {
         if (poll_open) poller.deinit();
         return finishWithError(&child, err);
     };
     errdefer allocator.free(stdout_slice);
-    const stderr_slice = dupeCapped(allocator, poller.reader(.stderr).buffered(), options.max_stderr_bytes) catch |err| {
+    const stderr_slice = (if (builtin.os.tag != .windows and child_done)
+        dupeCappedAfterPosixExitDrain(allocator, poller.reader(.stderr).buffered(), options.max_stderr_bytes, child.stderr.?)
+    else
+        dupeCapped(allocator, poller.reader(.stderr).buffered(), options.max_stderr_bytes)) catch |err| {
         if (poll_open) poller.deinit();
         return finishWithError(&child, err);
     };

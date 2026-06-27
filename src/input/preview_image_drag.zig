@@ -6,7 +6,7 @@
 //! lifetime-sensitive (the pane ref held across the drag) lives here.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const PreviewPane = @import("../preview_pane.zig");
+const PreviewPane = @import("../preview/pane.zig");
 
 const PreviewImageDrag = @This();
 
