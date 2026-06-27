@@ -154,6 +154,7 @@ test {
     _ = @import("source_guards/import_hub_guard.zig");
     _ = @import("source_guards/side_effect_guard.zig");
     _ = @import("source_guards/process_runner_guard.zig");
+    _ = @import("source_guards/agent_tools_guard.zig");
     _ = @import("source_guards/layered_dependency_guard.zig");
     _ = @import("source_guards/overlay_boundary_guard.zig");
     _ = @import("source_guards/input_feature_boundary_guard.zig");
