@@ -15,20 +15,19 @@ const ToolHost = types.ToolHost;
 const ToolClosedTab = types.ToolClosedTab;
 const SshProfileSaveArgs = types.SshProfileSaveArgs;
 const SavedSshProfile = types.SavedSshProfile;
-const AgentSettings = types.AgentSettings;
 const weixin_types = @import("weixin/types.zig");
 const platform_process = @import("platform/process.zig");
-const ai_agent_access = @import("ai_agent_access.zig");
 const tool_args = @import("agent_tools/args.zig");
 const agent_research = @import("agent_tools/research.zig");
 const knowledge = @import("agent_tools/knowledge.zig");
 const agent_memory_tool = @import("agent_tools/memory.zig");
-const tool_output = @import("agent_tools/output.zig");
 const terminal_tools = @import("agent_tools/terminal.zig");
 const agent_sessions = @import("agent_tools/sessions.zig");
 const tool_access = @import("agent_tools/access.zig");
 const agent_files = @import("agent_tools/files.zig");
 const agent_exec = @import("agent_tools/exec.zig");
+const agent_dynamic = @import("agent_tools/dynamic.zig");
+const agent_weixin = @import("agent_tools/weixin.zig");
 
 // ---------------------------------------------------------------------------
 // Tool dispatch
@@ -214,7 +213,7 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const kind = weixin_types.AttachmentKind.parse(kind_text) orelse return ctx.allocator.dupe(u8, "Invalid kind; expected file, image, or voice");
         const path = tool_args.string(args.value, "path") orelse return ctx.allocator.dupe(u8, "Missing path");
         const display_name = tool_args.string(args.value, "display_name") orelse "";
-        return weixinSendAttachmentTool(ctx, kind, path, display_name);
+        return agent_weixin.sendAttachment(ctx, kind, path, display_name);
     }
     if (std.mem.eql(u8, call.name, "websearch")) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
@@ -254,7 +253,7 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         defer args.deinit();
         return agent_memory_tool.delete(ctx, args.value);
     }
-    if (findDynamicBinaryTool(ctx.settings.dynamic_binary_tools, call.name)) |tool| {
+    if (agent_dynamic.find(ctx.settings.dynamic_binary_tools, call.name)) |tool| {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         const argv_args = tool_args.stringArray(ctx.allocator, args.value, "args") catch |err| switch (err) {
@@ -264,16 +263,9 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         defer tool_args.freeStringArray(ctx.allocator, argv_args);
         const cwd = tool_args.string(args.value, "cwd") orelse ctx.settings.working_dir;
         const timeout_ms = tool_args.int(args.value, "timeout_ms") orelse ctx.settings.command_timeout_ms;
-        return dynamicBinaryTool(ctx, tool, argv_args, cwd, timeout_ms);
+        return agent_dynamic.run(ctx, tool, argv_args, cwd, timeout_ms);
     }
     return std.fmt.allocPrint(ctx.allocator, "Unknown tool: {s}", .{call.name});
-}
-
-fn findDynamicBinaryTool(tools: []const types.DynamicBinaryTool, name: []const u8) ?types.DynamicBinaryTool {
-    for (tools) |tool| {
-        if (std.mem.eql(u8, tool.function_name, name)) return tool;
-    }
-    return null;
 }
 
 /// Extract the `options` array of an ask_user call into `buf`. Each item needs a
@@ -322,80 +314,6 @@ fn askUserTool(ctx: *ToolContext, question: []const u8, options: []const types.Q
         .custom => |text| std.fmt.allocPrint(ctx.allocator, "User answered (custom): \"{s}\"", .{text}),
         .cancelled => ctx.allocator.dupe(u8, "User did not answer (request cancelled)."),
     };
-}
-
-// ---------------------------------------------------------------------------
-// Weixin attachment tool
-// ---------------------------------------------------------------------------
-
-fn weixinSendAttachmentTool(
-    ctx: *ToolContext,
-    kind: weixin_types.AttachmentKind,
-    path: []const u8,
-    display_name: []const u8,
-) ![]u8 {
-    const wx_ctx = ctx.weixin_reply_context orelse {
-        return ctx.allocator.dupe(u8, "No active Weixin reply context; cannot send attachment.");
-    };
-    // Sending an attachment reads the file off disk and uploads it to a remote
-    // user, so a protected path here is an exfiltration risk. In auto mode,
-    // protected paths still require approval; full mode intentionally bypasses
-    // this guard.
-    if (ctx.settings.access_rules) |rules| {
-        if (ai_agent_access.isPathDenied(ctx.allocator, rules, path, null)) {
-            const gate = tool_access.Gate{ .dangerous = false, .blacklisted = true, .force = true, .skip = false, .matched = path };
-            if (tool_access.approvalRequired(ctx.settings.permission, gate)) {
-                const bl_reason = tool_access.allocBlacklistReason(ctx.allocator, path);
-                defer if (bl_reason) |r| ctx.allocator.free(r);
-                const reason = bl_reason orelse "Sends a protected file — confirm to allow";
-                if (!ctx.requestApproval("weixin_send_attachment", path, reason)) {
-                    return tool_output.deniedResult(ctx.allocator, path, "operator rejected sending a protected file");
-                }
-            }
-        }
-    }
-    wx_ctx.sender.sendAttachment(kind, path, display_name, wx_ctx.to_user_id, wx_ctx.context_token) catch |err| {
-        return std.fmt.allocPrint(ctx.allocator, "Failed to send {s} to Weixin: {}", .{ kind.name(), err });
-    };
-    const shown = if (display_name.len != 0) display_name else std.fs.path.basename(path);
-    return std.fmt.allocPrint(ctx.allocator, "Sent {s} to Weixin: {s}", .{ kind.name(), shown });
-}
-
-fn dynamicBinaryTool(ctx: *ToolContext, tool: types.DynamicBinaryTool, args: []const []const u8, cwd: ?[]const u8, timeout_ms: u32) ![]u8 {
-    if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
-
-    var approval_text = std.ArrayListUnmanaged(u8).empty;
-    defer approval_text.deinit(ctx.allocator);
-    try approval_text.appendSlice(ctx.allocator, tool.function_name);
-    for (args) |arg| {
-        try approval_text.append(ctx.allocator, ' ');
-        try approval_text.appendSlice(ctx.allocator, arg);
-    }
-
-    switch (ctx.settings.permission) {
-        .confirm, .auto => {
-            if (!ctx.requestApproval(tool.function_name, approval_text.items, "Run installed binary tool")) {
-                return tool_output.deniedResult(ctx.allocator, approval_text.items, "operator denied binary tool execution");
-            }
-        },
-        .full => {},
-    }
-
-    const argv = try ctx.allocator.alloc([]const u8, args.len + 1);
-    defer ctx.allocator.free(argv);
-    argv[0] = tool.executable_abs;
-    for (args, 0..) |arg, i| argv[i + 1] = arg;
-
-    const result = agent_exec.runArgv(ctx.allocator, argv, cwd, ctx.settings.output_limit, timeout_ms, ctx) catch |err| {
-        return std.fmt.allocPrint(ctx.allocator, "Binary tool {s} failed: {}", .{ tool.function_name, err });
-    };
-    defer ctx.allocator.free(result.stdout);
-    defer ctx.allocator.free(result.stderr);
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(ctx.allocator);
-    if (result.timed_out) try out.appendSlice(ctx.allocator, "timed_out=true\n");
-    try out.print(ctx.allocator, "exit_code={d}\nstdout:\n{s}\nstderr:\n{s}", .{ result.exit_code, result.stdout, result.stderr });
-    return tool_output.truncateOwned(ctx.allocator, ctx.settings, try out.toOwnedSlice(ctx.allocator));
 }
 
 // ---------------------------------------------------------------------------

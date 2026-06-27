@@ -674,6 +674,8 @@ comptime {
     _ = @import("agent_tools/access.zig");
     _ = @import("agent_tools/files.zig");
     _ = @import("agent_tools/exec.zig");
+    _ = @import("agent_tools/dynamic.zig");
+    _ = @import("agent_tools/weixin.zig");
     _ = @import("surface_registry.zig");
     _ = @import("preview/png_dimensions.zig");
     _ = @import("appwindow/flush_scheduler.zig");

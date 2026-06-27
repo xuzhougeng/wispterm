@@ -228,6 +228,8 @@ test {
     _ = @import("agent_tools/access.zig");
     _ = @import("agent_tools/files.zig");
     _ = @import("agent_tools/exec.zig");
+    _ = @import("agent_tools/dynamic.zig");
+    _ = @import("agent_tools/weixin.zig");
     _ = @import("research/commands.zig");
     _ = @import("research/web_search.zig");
     _ = @import("agent_prompt_answer.zig");
