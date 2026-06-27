@@ -1,7 +1,7 @@
 //! Pure formatting for a file path dropped onto the AI chat composer.
 //!
 //! No platform/AppWindow imports so it runs in the fast test suite (mirrors
-//! ai_chat_layout.zig / ai_sidebar.zig). The drop pipeline
+//! ai_chat_layout.zig / assistant/sidebar/panel.zig). The drop pipeline
 //! (src/input/clipboard.zig) calls this to turn an OS-provided absolute path
 //! into the text inserted at the composer cursor.
 

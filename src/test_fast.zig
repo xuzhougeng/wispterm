@@ -282,8 +282,8 @@ test {
     _ = @import("ai_chat_layout.zig");
     _ = @import("ai_chat_types.zig");
     _ = @import("ai_profile_store.zig");
-    _ = @import("ai_sidebar.zig");
-    _ = @import("copilot_hint_gate.zig");
+    _ = @import("assistant/sidebar/panel.zig");
+    _ = @import("assistant/sidebar/hint_gate.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("appwindow/resize_throttle.zig");
     _ = @import("termio/read_coalesce.zig");
@@ -309,7 +309,7 @@ test {
     _ = @import("agent_integration_prompt.zig");
     _ = @import("jupyter/detect.zig");
     _ = @import("jupyter/picker.zig");
-    _ = @import("copilot_picker.zig");
+    _ = @import("assistant/sidebar/picker.zig");
     _ = @import("html/server_model.zig");
     // Platform-aware agent prompt: pure string constants, no heavy deps.
     _ = @import("platform/agent_prompt.zig");

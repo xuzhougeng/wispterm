@@ -1652,7 +1652,7 @@ fn renderTitlebarTextStrongLimited(text: []const u8, x_start: f32, y: f32, color
 }
 
 const jupyter_picker = @import("../jupyter/picker.zig");
-const copilot_picker = @import("../copilot_picker.zig");
+const copilot_picker = @import("../assistant/sidebar/picker.zig");
 
 /// Render the multi-server Jupyter picker overlay.
 pub fn renderJupyterPicker(window_width: f32, window_height: f32) void {

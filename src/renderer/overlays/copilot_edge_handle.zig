@@ -4,7 +4,7 @@
 //! startup_shortcuts.zig: threadlocal animation state, time-based easing.
 const std = @import("std");
 const AppWindow = @import("../../AppWindow.zig");
-const ai_sidebar = @import("../../ai_sidebar.zig");
+const ai_sidebar = @import("../../assistant/sidebar/panel.zig");
 const keybind = @import("../../keybind.zig");
 const primitives = @import("primitives.zig");
 const hint_tooltip = @import("hint_tooltip.zig");
