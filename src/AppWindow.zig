@@ -41,6 +41,7 @@ const quick_terminal = @import("quick_terminal.zig");
 const keybind = @import("keybind.zig");
 const thread_message = @import("appwindow/thread_message.zig");
 const skill_center_actions = @import("appwindow/skill_center_actions.zig");
+const copilot_sidebar = @import("appwindow/copilot_sidebar.zig");
 const appwindow_state = @import("appwindow/state.zig");
 const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
@@ -85,7 +86,6 @@ pub const ui_pipeline = @import("renderer/ui_pipeline.zig");
 pub const titlebar = @import("renderer/titlebar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("renderer/overlays.zig");
-const copilot_picker = @import("assistant/sidebar/picker.zig");
 const post_process = @import("renderer/post_process.zig");
 pub const gpu = @import("renderer/gpu/gpu.zig");
 pub const split_layout = @import("appwindow/split_layout.zig");
@@ -3094,8 +3094,23 @@ pub fn leftPanelsWidth() f32 {
     return titlebar.sidebarWidth() + file_explorer.width();
 }
 
+fn copilotSidebarHost() copilot_sidebar.Host {
+    return .{
+        .allocator = g_allocator,
+        .history_store = &g_agent_history,
+        .history_mutex = &g_agent_history_mutex,
+        .make_session = makeCopilotSession,
+        .open_api_config = openCopilotApiConfig,
+        .focus_input = input.focusAiCopilot,
+        .blur_input = input.blurAiCopilot,
+        .mark_dirty = markUiDirty,
+        .mark_history_dirty_locked = markAgentHistoryDirtyLocked,
+        .reopen_session = reopenCopilotSessionFromHistorySessionId,
+    };
+}
+
 pub fn aiCopilotVisible() bool {
-    return tab.activeCopilotVisible();
+    return copilot_sidebar.visible();
 }
 
 /// True when a right-docked panel (browser / Jupyter webview) is showing for the
@@ -3108,15 +3123,11 @@ pub fn anyRightDockPanelVisible() bool {
 /// Hide the active tab's copilot panel if visible (used by the right-slot
 /// arbiter when another right panel opens). No-op if already hidden.
 pub fn hideAiCopilot() void {
-    if (!tab.setActiveCopilotVisible(false)) return;
-    input.blurAiCopilot();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    copilot_sidebar.hide(copilotSidebarHost());
 }
 
 pub fn aiCopilotWidth(window_width: i32) f32 {
-    if (!aiCopilotVisible()) return 0;
-    return ai_sidebar.panelWidthForWindow(window_width, leftPanelsWidth(), 0);
+    return copilot_sidebar.width(window_width, leftPanelsWidth());
 }
 
 fn makeCopilotSession() ?*ai_chat.Session {
@@ -3124,12 +3135,7 @@ fn makeCopilotSession() ?*ai_chat.Session {
 }
 
 fn ensureActiveCopilotSession() ?*ai_chat.Session {
-    const session = tab.activeCopilotSession(makeCopilotSession) orelse return null;
-    const context_surface_id = surface_snapshots.agentContextSurfaceId();
-    if (context_surface_id.len > 0) {
-        session.setBoundSurface(context_surface_id);
-    }
-    return session;
+    return copilot_sidebar.ensureActiveSession(copilotSidebarHost());
 }
 
 fn openCopilotApiConfig(session: ?*ai_chat.Session) void {
@@ -3142,101 +3148,39 @@ fn openCopilotApiConfig(session: ?*ai_chat.Session) void {
 }
 
 fn ensureActiveCopilotSessionConfigured() ?*ai_chat.Session {
-    const session = ensureActiveCopilotSession() orelse {
-        _ = tab.setActiveCopilotVisible(false);
-        input.blurAiCopilot();
-        openCopilotApiConfig(null);
-        return null;
-    };
-    if (session.missingApiKey()) {
-        openCopilotApiConfig(session);
-        return null;
-    }
-    return session;
+    return copilot_sidebar.ensureActiveSessionConfigured(copilotSidebarHost());
 }
 
 /// Input layer getter: the active terminal tab's copilot session, only when the
 /// copilot panel is visible. Used by input routing (next task).
 pub fn activeCopilotSessionForInput() ?*ai_chat.Session {
-    if (!aiCopilotVisible()) return null;
-    const t = tab.activeTab() orelse return null;
-    return t.copilot_session;
+    return copilot_sidebar.activeSessionForInput();
 }
 
 /// Build the picker rows from the store (copilot records only) and open it.
 pub fn openCopilotConversationPicker() void {
-    refreshCopilotPickerRows();
+    copilot_sidebar.openPicker(copilotSidebarHost());
 }
 
 /// (Re)load picker rows from the store. Called on open and after a delete.
 pub fn refreshCopilotPickerRows() void {
-    const allocator = g_allocator orelse return;
-    var empty_rows = [_]agent_history.Row{};
-    g_agent_history_mutex.lock();
-    const rows: []agent_history.Row = blk: {
-        const store = g_agent_history orelse break :blk empty_rows[0..];
-        break :blk store.buildCopilotRows(allocator) catch empty_rows[0..];
-    };
-    g_agent_history_mutex.unlock();
-    defer if (rows.len > 0) agent_history.freeRows(allocator, rows);
-
-    var picker_rows: [copilot_picker.MAX_ROWS]copilot_picker.Row = undefined;
-    const n = @min(rows.len, copilot_picker.MAX_ROWS);
-    for (0..n) |i| picker_rows[i] = .{
-        .session_id = rows[i].session_id,
-        .title = rows[i].title,
-        .updated_at = rows[i].updated_at,
-    };
-    copilot_picker.show(picker_rows[0..n]);
+    copilot_sidebar.refreshPickerRows(copilotSidebarHost());
 }
 
 /// Load conversation `session_id` into the active terminal tab's sidebar. If a
 /// live copy is already open in some tab, switch to that tab instead (a second
 /// live Session with the same id would corrupt the store).
 pub fn loadCopilotConversationById(session_id: []const u8) void {
-    if (tab.switchToCopilotTabBySessionId(session_id)) {
-        browser_panel.close(); // exclusive right slot, mirror toggleAiCopilot
-        _ = tab.setActiveCopilotVisible(true);
-        input.focusAiCopilot();
-        g_force_rebuild = true;
-        g_cells_valid = false;
-        return;
-    }
-    if (!isActiveTabTerminal()) return;
-    const t = tab.activeTab() orelse return;
-    const session = reopenCopilotSessionFromHistorySessionId(session_id) orelse return;
-    if (t.copilot_session) |old| old.deinit(); // already saved by its hook
-    t.copilot_session = session;
-    browser_panel.close();
-    _ = tab.setActiveCopilotVisible(true);
-    input.focusAiCopilot();
-    g_force_rebuild = true;
-    g_cells_valid = false;
+    copilot_sidebar.loadConversationById(copilotSidebarHost(), session_id);
 }
 
 pub fn deleteCopilotConversationById(session_id: []const u8) void {
-    g_agent_history_mutex.lock();
-    defer g_agent_history_mutex.unlock();
-    const store = g_agent_history orelse return;
-    if (store.deleteBySessionId(session_id)) markAgentHistoryDirtyLocked();
+    copilot_sidebar.deleteConversationById(copilotSidebarHost(), session_id);
 }
 
 /// Start a fresh, empty Copilot conversation on the active terminal tab.
 pub fn newCopilotConversation() void {
-    if (!isActiveTabTerminal()) return;
-    const t = tab.activeTab() orelse return;
-    if (t.copilot_session) |old| {
-        old.deinit(); // already persisted by its hook if non-empty
-        t.copilot_session = null;
-    }
-    browser_panel.close();
-    _ = tab.setActiveCopilotVisible(true);
-    _ = ensureActiveCopilotSessionConfigured() orelse {
-        markUiDirty();
-        return;
-    };
-    input.focusAiCopilot();
-    markUiDirty();
+    copilot_sidebar.newConversation(copilotSidebarHost());
 }
 
 /// The preview pane that currently has split-tree focus, or null if the
@@ -3292,23 +3236,7 @@ pub fn appendDroppedPathToChatAtPoint(text: []const u8, x: i32, y: i32) bool {
 }
 
 pub fn toggleAiCopilot() void {
-    if (!isActiveTabTerminal()) return; // copilot is terminal-only
-    if (tab.activeCopilotVisible()) {
-        _ = tab.setActiveCopilotVisible(false);
-        input.blurAiCopilot();
-        markUiDirty();
-        return;
-    }
-    // Exclusive right slot: close the other right panels first.
-    browser_panel.close();
-    _ = tab.setActiveCopilotVisible(true);
-    _ = ensureActiveCopilotSessionConfigured() orelse {
-        markUiDirty();
-        return;
-    };
-    input.focusAiCopilot();
-    if (g_allocator) |alloc| platform_window_state.setCopilotHintShown(alloc);
-    markUiDirty();
+    copilot_sidebar.toggle(copilotSidebarHost());
 }
 
 pub fn rightPanelsWidth() f32 {
