@@ -206,10 +206,10 @@ test {
     _ = @import("ctl/client.zig");
     _ = @import("ctl/transport.zig");
     _ = @import("ctl/ui_state.zig");
-    _ = @import("png_dimensions.zig");
-    _ = @import("pdf_preview.zig");
-    _ = @import("preview_gallery.zig");
-    _ = @import("preview_diagnostics.zig");
+    _ = @import("preview/png_dimensions.zig");
+    _ = @import("preview/pdf.zig");
+    _ = @import("preview/gallery.zig");
+    _ = @import("preview/diagnostics.zig");
     _ = @import("file_backend.zig");
     _ = @import("file_explorer.zig");
     _ = @import("i18n.zig");
@@ -251,7 +251,7 @@ test {
     _ = @import("selection_unit.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("resize_gate.zig");
-    _ = @import("preview_token.zig");
+    _ = @import("preview/token.zig");
     _ = @import("ime_caret.zig");
     _ = @import("sync_output.zig");
     _ = @import("agent_history.zig");

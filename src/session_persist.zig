@@ -37,7 +37,7 @@ pub const SurfaceSnap = union(enum) {
 };
 
 pub const PreviewSnap = struct {
-    kind: @import("markdown_preview.zig").Kind = .markdown,
+    kind: @import("preview/markdown.zig").Kind = .markdown,
     path: []const u8 = "",
 };
 
@@ -297,7 +297,7 @@ test "session_persist: preview leaf round-trips through JSON" {
     try std.testing.expectEqual(NodeSnap.LeafSnap.Kind.preview, leaf.kind);
     try std.testing.expect(leaf.preview != null);
     try std.testing.expectEqualStrings("README.md", leaf.preview.?.path);
-    try std.testing.expectEqual(@import("markdown_preview.zig").Kind.markdown, leaf.preview.?.kind);
+    try std.testing.expectEqual(@import("preview/markdown.zig").Kind.markdown, leaf.preview.?.kind);
 }
 
 test "session_persist: old terminal leaf JSON (no kind field) still parses as terminal" {
