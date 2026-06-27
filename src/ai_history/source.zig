@@ -1,5 +1,5 @@
 const std = @import("std");
-const types = @import("ai_history_types.zig");
+const types = @import("types.zig");
 
 pub const Target = union(enum) {
     local,

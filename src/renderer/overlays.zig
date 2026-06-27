@@ -53,7 +53,7 @@ const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
 const ai_model_switch = @import("../ai_model_switch.zig");
 const agent_integration_prompt = @import("../agent_integration_prompt.zig");
-const ai_history_time = @import("../ai_history_time.zig");
+const ai_history_time = @import("../ai_history/time.zig");
 
 const ui_pipeline = @import("ui_pipeline.zig");
 
@@ -976,18 +976,14 @@ fn paletteContainsSnippetForTest(snippet_idx: usize) bool {
 }
 
 test "command palette surfaces user snippets and filters them by name/description" {
-    const previous_mode = g_command_palette_mode;
-    const previous_filter_len = g_command_palette_filter_len;
-    const previous_selected = g_command_palette_selected;
+    const previous_palette = commandPaletteState().*;
     const previous_scratch_len = g_palette_scratch_len;
     const previous_snippets = snippetsState().items;
     const previous_snippets_loaded = snippetsState().loaded;
     const previous_ssh_loaded = sshState().profiles_loaded;
     const previous_ai_loaded = aiState().profiles_loaded;
     defer {
-        g_command_palette_mode = previous_mode;
-        g_command_palette_filter_len = previous_filter_len;
-        g_command_palette_selected = previous_selected;
+        commandPaletteState().* = previous_palette;
         g_palette_scratch_len = previous_scratch_len;
         snippetsState().items = previous_snippets;
         snippetsState().loaded = previous_snippets_loaded;
@@ -999,7 +995,7 @@ test "command palette surfaces user snippets and filters them by name/descriptio
         .{ .name = @constCast("deploy"), .description = @constCast("ship to prod"), .action = null, .body = @constCast("make deploy\n") },
         .{ .name = @constCast("logs"), .description = @constCast("tail server logs"), .action = null, .body = @constCast("tail -f app.log\n") },
     };
-    g_command_palette_mode = .commands;
+    commandPaletteState().mode = .commands;
     snippetsState().items = &snippets;
     snippetsState().loaded = true; // prevent loadSnippets from re-reading disk over our fixtures
     sshState().profiles_loaded = true;
