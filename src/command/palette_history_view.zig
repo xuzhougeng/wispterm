@@ -1,6 +1,6 @@
 const std = @import("std");
-const agent_history = @import("agent_history.zig");
-const command_palette_model = @import("command_palette_model.zig");
+const agent_history = @import("../agent_history.zig");
+const command_palette_model = @import("palette_model.zig");
 
 pub const Bucket = enum { today, yesterday, past_week, earlier };
 pub const SourceFilter = enum { all, sidebar, tab };

@@ -1,6 +1,6 @@
 const std = @import("std");
-const command_center_state = @import("../../command_center_state.zig");
-const command_palette_history_view = @import("../../command_palette_history_view.zig");
+const command_center_state = @import("../../command/center_state.zig");
+const command_palette_history_view = @import("../../command/palette_history_view.zig");
 
 pub const FILTER_MAX: usize = 64;
 pub const Mode = command_center_state.CommandPaletteMode;

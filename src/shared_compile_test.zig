@@ -9,7 +9,7 @@ comptime {
     _ = @import("ai_chat_composer_layout.zig");
     _ = @import("appwindow/thread_message.zig");
     _ = @import("browser_url.zig");
-    _ = @import("command_center_state.zig");
+    _ = @import("command/center_state.zig");
     _ = @import("preview_token.zig");
     _ = @import("release_package.zig");
     _ = @import("scrollbar_model.zig");

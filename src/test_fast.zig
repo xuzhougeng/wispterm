@@ -162,9 +162,9 @@ test {
     _ = @import("renderer/overlays/whats_new_model.zig");
     _ = @import("renderer/ui_batch.zig");
     _ = @import("close_confirm.zig");
-    _ = @import("command_palette_model.zig");
-    _ = @import("command_center_state.zig");
-    _ = @import("command_palette_history_view.zig");
+    _ = @import("command/palette_model.zig");
+    _ = @import("command/center_state.zig");
+    _ = @import("command/palette_history_view.zig");
     _ = @import("platform/window_state_codec.zig");
     _ = @import("platform/dxgi_core.zig");
     _ = @import("platform/console_host_policy.zig");
@@ -281,7 +281,7 @@ test {
     _ = @import("weixin/question_reply.zig");
     _ = @import("ai_chat_title.zig");
     _ = @import("ai_model_switch.zig");
-    _ = @import("command_registry.zig");
+    _ = @import("command/registry.zig");
     _ = @import("tool_registry.zig");
     _ = @import("tool_import.zig");
     // Unified subprocess lifecycle: spawn → concurrent drain → timeout/cancel →

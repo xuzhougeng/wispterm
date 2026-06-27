@@ -6,7 +6,7 @@ const ssh_profiles = @import("ssh_profiles.zig");
 const ai_profiles = @import("ai_profiles.zig");
 const session_launcher = @import("session_launcher.zig");
 const command_palette_state = @import("command_palette_state.zig");
-const command_registry = @import("../../command_registry.zig");
+const command_registry = @import("../../command/registry.zig");
 
 /// User command snippets loaded from `<config-dir>/snippets/*.md`, re-read each
 /// time the command center opens. `items` is heap-owned; `loaded` gates the
