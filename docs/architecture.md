@@ -158,11 +158,18 @@ side of it today, which is why they carry the ratchets.
   they hold a feature's `g_*` globals or reach into a feature's internals, that
   is the entanglement the ratchets are freezing — not a property of being a host.
 
-- **Feature domains** — each owns its own state, query/action API, and tests:
-  `ai_chat*` (agent/session/tools/streaming), `weixin/*`, the `skill_*` modules,
-  `file_explorer.zig`, the `tmux_*` controllers, and the `remote_*` client/sync
-  code. A domain is responsible for its own behavior; the integration layer only
-  wires it in and asks it to do things.
+- **Feature domains** — each owns its own state, query/action API, and tests.
+  A domain is responsible for its own behavior; the integration layer only wires
+  it in and asks it to do things. The current AI/agent ownership split is:
+  `assistant/` owns WispTerm's Assistant/Copilot conversation experience;
+  `agent/` owns WispTerm's own agent permissions, config, memory, file editing,
+  and conversation history; `agent_tools/` owns model tool-call runtime wrappers;
+  and `terminal_agents/` owns adapters for external terminal agent applications
+  such as Claude Code, Codex, Reasonix, and Subagent. In particular,
+  `terminal_agents/sessions/` owns discovery, transcript preview, and resume
+  commands for those external terminal agents. Other feature domains include
+  `weixin/*`, `skill/`, `file_explorer.zig`, the `tmux_*` controllers, and the
+  `remote_*` client/sync code.
 
 Guidance for new code (these keep the boundary from re-tangling):
 
