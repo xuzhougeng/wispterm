@@ -1,6 +1,6 @@
 //! Pure helpers for turning an AI Chat transcript into a candidate SKILL.md.
 const std = @import("std");
-const skill_registry = @import("skill_registry.zig");
+const skill_registry = @import("skill/registry.zig");
 const text_search = @import("text_search.zig");
 
 pub const CommandAction = enum {

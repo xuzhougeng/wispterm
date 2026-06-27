@@ -796,11 +796,11 @@ comptime {
     _ = @import("selection_unit.zig");
     _ = @import("session_persist.zig");
     _ = @import("agent_memory.zig");
-    _ = @import("skill_registry.zig");
-    _ = @import("skill_scan.zig");
-    _ = @import("skill_install.zig");
-    _ = @import("skill_local_fs.zig");
-    _ = @import("skill_center.zig");
+    _ = @import("skill/registry.zig");
+    _ = @import("skill/scan.zig");
+    _ = @import("skill/install.zig");
+    _ = @import("skill/local_fs.zig");
+    _ = @import("skill/center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
     _ = @import("port_forward_rule.zig");
     _ = @import("ssh_profile_store.zig");
