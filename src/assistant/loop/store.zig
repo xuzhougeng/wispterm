@@ -1,12 +1,12 @@
 //! Runtime store + persistence for /loop and /watch tasks. Thin glue over the
-//! pure engine (ai_loop_schedule.zig). Owns the in-memory task list, the
+//! pure engine (schedule.zig). Owns the in-memory task list, the
 //! `loop_tasks.json` file, and the per-frame `tick` that fires due tasks through
 //! a wired injector callback. All mutation happens on the UI thread (slash-command
 //! handling + tick), guarded by a mutex for defensive safety.
 const std = @import("std");
-const engine = @import("ai_loop_schedule.zig");
-const platform_atomic_file = @import("platform/atomic_file.zig");
-const ai_history_time = @import("ai_history/time.zig");
+const engine = @import("schedule.zig");
+const platform_atomic_file = @import("../../platform/atomic_file.zig");
+const ai_history_time = @import("../../ai_history/time.zig");
 
 pub const Task = engine.Task;
 pub const TaskKind = engine.TaskKind;

@@ -1,7 +1,7 @@
 const std = @import("std");
-const profile_codec = @import("renderer/overlays/profile_codec.zig");
-const platform_dirs = @import("platform/dirs.zig");
-const platform_atomic_file = @import("platform/atomic_file.zig");
+const profile_codec = @import("../../renderer/overlays/profile_codec.zig");
+const platform_dirs = @import("../../platform/dirs.zig");
+const platform_atomic_file = @import("../../platform/atomic_file.zig");
 
 const AI_PROFILES_HEADER = "# WispTerm AI Chat profiles. Fields are hex encoded: name, base_url, api_key, model, system_prompt, thinking, reasoning_effort, stream, agent, protocol, max_tokens, vision.\n";
 
@@ -76,7 +76,7 @@ fn appendEncodedProfileForTest(allocator: std.mem.Allocator, out: *std.ArrayList
     try out.append(allocator, '\n');
 }
 
-test "ai_profile_store: loadProfilesFromContent decodes bounded profiles" {
+test "assistant profile store: loadProfilesFromContent decodes bounded profiles" {
     var content: std.ArrayListUnmanaged(u8) = .empty;
     defer content.deinit(std.testing.allocator);
     try appendEncodedProfileForTest(std.testing.allocator, &content, &.{
@@ -93,7 +93,7 @@ test "ai_profile_store: loadProfilesFromContent decodes bounded profiles" {
     try std.testing.expectEqualStrings("8192", profile_codec.aiProfileField(&profiles[0], .max_tokens));
 }
 
-test "ai_profile_store: appendProfileLine writes all AI fields as hex" {
+test "assistant profile store: appendProfileLine writes all AI fields as hex" {
     var profile = profile_codec.AiProfile{};
     profile_codec.setProfileDefault(&profile, .name, "ai");
     profile_codec.setProfileDefault(&profile, .base_url, "https://api.example.com");

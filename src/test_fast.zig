@@ -55,10 +55,10 @@ test "SSH profile persistence is owned by ssh_profile_store" {
     try std.testing.expect(std.mem.indexOf(u8, overlays_source, "decodeSshProfileLine") == null);
 }
 
-test "AI profile persistence is owned by ai_profile_store" {
+test "AI profile persistence is owned by assistant profile store" {
     const overlays_source = @embedFile("renderer/overlays.zig");
-    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "ai_profile_store.loadProfiles") != null);
-    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "ai_profile_store.saveProfiles") != null);
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "assistant_profile_store.loadProfiles") != null);
+    try std.testing.expect(std.mem.indexOf(u8, overlays_source, "assistant_profile_store.saveProfiles") != null);
     try std.testing.expect(std.mem.indexOf(u8, overlays_source, "fn aiProfilesPath") == null);
     try std.testing.expect(std.mem.indexOf(u8, overlays_source, "decodeAiProfileLine") == null);
 }
@@ -250,8 +250,8 @@ test {
     _ = @import("research/web_read.zig");
     _ = @import("research/web_read_cache.zig");
     _ = @import("research/pubmed.zig");
-    _ = @import("ai_loop_schedule.zig");
-    _ = @import("ai_skill_distill.zig");
+    _ = @import("assistant/loop/schedule.zig");
+    _ = @import("assistant/conversation/distill.zig");
     _ = @import("ai_history/types.zig");
     _ = @import("ai_history/provider_codex.zig");
     _ = @import("ai_history/provider_claude.zig");
@@ -291,7 +291,7 @@ test {
     _ = @import("renderer/titlebar_layout.zig");
     _ = @import("assistant/conversation/layout.zig");
     _ = @import("assistant/conversation/types.zig");
-    _ = @import("ai_profile_store.zig");
+    _ = @import("assistant/profile/store.zig");
     _ = @import("assistant/sidebar/panel.zig");
     _ = @import("assistant/sidebar/hint_gate.zig");
     _ = @import("appwindow/flush_scheduler.zig");

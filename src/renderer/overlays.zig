@@ -7,7 +7,7 @@ const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
 const ai_chat_protocol = @import("../assistant/conversation/protocol.zig");
-const ai_profile_store = @import("../ai_profile_store.zig");
+const assistant_profile_store = @import("../assistant/profile/store.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
 const tab = AppWindow.tab;
@@ -4512,11 +4512,11 @@ fn loadAiProfiles() void {
     if (aiState().profiles_loaded) return;
     aiState().profiles_loaded = true;
     const allocator = AppWindow.g_allocator orelse return;
-    aiState().profile_count = ai_profile_store.loadProfiles(allocator, aiState().profiles[0..]);
+    aiState().profile_count = assistant_profile_store.loadProfiles(allocator, aiState().profiles[0..]);
 }
 
 fn saveAiProfiles(allocator: std.mem.Allocator) void {
-    if (!ai_profile_store.saveProfiles(allocator, aiState().profiles[0..aiState().profile_count])) showStatusToast("Failed to save AI profiles");
+    if (!assistant_profile_store.saveProfiles(allocator, aiState().profiles[0..aiState().profile_count])) showStatusToast("Failed to save AI profiles");
 }
 
 fn loadSshProfiles() void {

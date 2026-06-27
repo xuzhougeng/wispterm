@@ -1,7 +1,7 @@
 //! Pure (std-only) schedule engine for the /loop and /watch AI-chat commands.
 //! No I/O, no Session, no globals. The caller passes the current time (`now_ms`,
 //! ms since epoch) and the local UTC offset (`offset_s`, seconds); nothing here
-//! reads the clock or the timezone. The runtime store (ai_loop_store.zig) is the
+//! reads the clock or the timezone. The runtime store (store.zig) is the
 //! I/O layer over this.
 const std = @import("std");
 

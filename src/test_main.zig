@@ -670,8 +670,8 @@ comptime {
     _ = @import("assistant/conversation/input_text.zig");
     _ = @import("assistant/conversation/composer.zig");
     _ = @import("assistant/conversation/presentation.zig");
-    _ = @import("ai_loop_schedule.zig");
-    _ = @import("ai_loop_store.zig");
+    _ = @import("assistant/loop/schedule.zig");
+    _ = @import("assistant/loop/store.zig");
     _ = @import("ai_history/types.zig");
     _ = @import("ai_history/provider_codex.zig");
     _ = @import("ai_history/provider_claude.zig");
