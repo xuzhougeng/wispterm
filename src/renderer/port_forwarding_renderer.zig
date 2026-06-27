@@ -1,6 +1,6 @@
 const std = @import("std");
-const rule_mod = @import("../port_forward_rule.zig");
-const form_mod = @import("../port_forwarding.zig");
+const rule_mod = @import("../port_forward/rule.zig");
+const form_mod = @import("../port_forward/forwarding.zig");
 
 const HEADER_H: f32 = 54;
 const ROW_H: f32 = 52;

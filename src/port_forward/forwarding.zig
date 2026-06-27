@@ -1,5 +1,5 @@
 const std = @import("std");
-const rule_mod = @import("port_forward_rule.zig");
+const rule_mod = @import("rule.zig");
 
 pub const FormMode = enum { new, edit };
 
