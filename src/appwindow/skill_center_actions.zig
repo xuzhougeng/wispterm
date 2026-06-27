@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const ai_chat = @import("../ai_chat.zig");
-const ai_chat_request = @import("../ai_chat_request.zig");
+const ai_chat_request = @import("../assistant/conversation/request.zig");
 const clipboard = @import("../input/clipboard.zig");
 const first_party_tools = @import("../tools/first_party.zig");
 const i18n = @import("../i18n.zig");

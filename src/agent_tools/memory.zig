@@ -1,6 +1,6 @@
 //! Agent memory tool-call adapters.
 const std = @import("std");
-const types = @import("../ai_chat_types.zig");
+const types = @import("../assistant/conversation/types.zig");
 const tool_args = @import("args.zig");
 const agent_memory = @import("../agent_memory.zig");
 

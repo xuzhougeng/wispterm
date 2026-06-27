@@ -2,11 +2,11 @@
 //! Leaf module: imports only std, skill_registry, command_registry, platform_dirs,
 //! and ai_chat_composer. No Session state.
 const std = @import("std");
-const skill_registry = @import("skill/registry.zig");
-const command_registry = @import("command/registry.zig");
-const platform_dirs = @import("platform/dirs.zig");
-const ai_chat_composer = @import("ai_chat_composer.zig");
-const ai_skill_distill = @import("ai_skill_distill.zig");
+const skill_registry = @import("../../skill/registry.zig");
+const command_registry = @import("../../command/registry.zig");
+const platform_dirs = @import("../../platform/dirs.zig");
+const ai_chat_composer = @import("composer.zig");
+const ai_skill_distill = @import("../../ai_skill_distill.zig");
 
 const SlashCommand = ai_chat_composer.SlashCommand;
 const slash_command_entries = ai_chat_composer.slash_command_entries;

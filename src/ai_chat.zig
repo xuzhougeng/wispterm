@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const ai_chat_input_text = @import("ai_chat_input_text.zig");
+const ai_chat_input_text = @import("assistant/conversation/input_text.zig");
 const input_key = @import("input/key.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
 const platform_process = @import("platform/process.zig");
@@ -16,16 +16,16 @@ const skill_registry = @import("skill/registry.zig");
 const command_registry = @import("command/registry.zig");
 const tool_registry = @import("tools/registry.zig");
 const markdown_text = @import("markdown_text.zig");
-const ai_chat_protocol = @import("ai_chat_protocol.zig");
-const ai_chat_composer = @import("ai_chat_composer.zig");
-const ai_model_switch = @import("ai_model_switch.zig");
-const ai_chat_skills = @import("ai_chat_skills.zig");
+const ai_chat_protocol = @import("assistant/conversation/protocol.zig");
+const ai_chat_composer = @import("assistant/conversation/composer.zig");
+const ai_model_switch = @import("assistant/conversation/model_switch.zig");
+const ai_chat_skills = @import("assistant/conversation/skills.zig");
 const ai_skill_distill = @import("ai_skill_distill.zig");
-const ai_chat_types = @import("ai_chat_types.zig");
+const ai_chat_types = @import("assistant/conversation/types.zig");
 const agent_terminal = @import("agent_tools/terminal.zig");
 const ai_agent_access = @import("ai_agent_access.zig");
 const platform_dirs = @import("platform/dirs.zig");
-const ai_chat_markdown = @import("ai_chat_markdown.zig");
+const ai_chat_markdown = @import("assistant/conversation/markdown.zig");
 const assistant_presentation = @import("assistant/conversation/presentation.zig");
 const weixin_types = @import("weixin/types.zig");
 const ai_loop_store = @import("ai_loop_store.zig");
@@ -151,9 +151,9 @@ pub const TranscriptSelection = struct {
 
 const RequestMessage = ai_chat_protocol.RequestMessage;
 const ImageBlock = ai_chat_protocol.ImageBlock;
-const ai_chat_title = @import("ai_chat_title.zig");
+const ai_chat_title = @import("assistant/conversation/title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
-const ai_chat_request = @import("ai_chat_request.zig");
+const ai_chat_request = @import("assistant/conversation/request.zig");
 const web_search = @import("research/web_search.zig");
 const pubmed = @import("research/pubmed.zig");
 const agent_memory = @import("agent_memory.zig");
@@ -4294,7 +4294,8 @@ const visualRowAt = ai_chat_input_text.visualRowAt;
 const byteOffsetForVisualPosition = ai_chat_input_text.byteOffsetForVisualPosition;
 pub const inputWrappedLineCount = ai_chat_input_text.inputWrappedLineCount;
 
-// Markdown export helpers — defined in ai_chat_markdown.zig (pure leaf, no Session).
+// Markdown export helpers — defined in assistant/conversation/markdown.zig
+// (pure leaf, no Session).
 const appendClipboardSection = ai_chat_markdown.appendClipboardSection;
 const appendMarkdownDocumentHeader = ai_chat_markdown.appendMarkdownDocumentHeader;
 const appendMarkdownSection = ai_chat_markdown.appendMarkdownSection;
@@ -4417,7 +4418,7 @@ fn allocRemoteToolSummary(allocator: std.mem.Allocator, msg: Message) ![]u8 {
     return allocator.dupe(u8, trimmed);
 }
 
-// requestThreadMain has moved to ai_chat_request.zig.
+// requestThreadMain has moved to assistant/conversation/request.zig.
 
 pub fn requestCancelled(request: *const ChatRequest) bool {
     return request.session.closing.load(.acquire) or request.session.stop_requested.load(.acquire);
@@ -4706,7 +4707,7 @@ fn buildTitleRequestLocked(session: *Session, turn: ai_chat_title.FirstTurn) !*C
     return req;
 }
 
-// titleThreadMain has moved to ai_chat_request.zig.
+// titleThreadMain has moved to assistant/conversation/request.zig.
 
 /// After a completed turn, generate a title in the background if the gate
 /// passes. Called from the request worker (`requestThreadMain`) with no lock
@@ -4751,7 +4752,7 @@ pub fn maybeAutoTitle(session: *Session) void {
 
 // runAgentRequest, cloneRequestMessage, cloneToolCalls, assistantToolCallMessage,
 // requestMessageWithClonedFields, durableToolAssistantRequestMessage have moved
-// to ai_chat_request.zig.
+// to assistant/conversation/request.zig.
 
 pub fn appendAssistantResult(session: *Session, result: ApiResult, started_ms: i64) void {
     const allocator = session.allocator;
@@ -5087,7 +5088,7 @@ pub fn failAssistantStream(session: *Session, message_idx: ?usize, text: []const
 // runChatRequest, runChatRequestForMessages, runChatRequestStreaming,
 // buildRequestJson, buildRequestJsonForMessages, and the ToolContext seam
 // adapters (toolApprove, toolCancelled, toolContextFromRequest, executeToolCall)
-// have moved to ai_chat_request.zig.
+// have moved to assistant/conversation/request.zig.
 
 // Protocol aliases still referenced internally (e.g. in tests).
 const apiEndpoint = ai_chat_protocol.apiEndpoint;
@@ -6330,7 +6331,7 @@ test "ai chat empty profile system prompt uses full embedded default" {
     try std.testing.expectEqualStrings(DEFAULT_SYSTEM_PROMPT, session.systemPrompt());
 }
 
-// The following tests live in ai_chat_request.zig (no Session private calls):
+// The following tests live in assistant/conversation/request.zig (no Session private calls):
 //   "ai chat request json includes deepseek thinking mode"
 //   "ai chat agent request json includes tool schemas"
 //   "ai chat responses request json uses input and response tool schemas"
@@ -6447,7 +6448,7 @@ test "ai chat appends usage footer to completed assistant message" {
 
 // "ai chat streaming request asks provider to include usage" and
 // "copilot session pre-targets the bound surface in its request" have moved
-// to ai_chat_request.zig.
+// to assistant/conversation/request.zig.
 
 // Local test stub host for the wsl_session_exec test below.
 const CopilotTestHost = struct {

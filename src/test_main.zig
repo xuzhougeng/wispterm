@@ -552,7 +552,7 @@ comptime {
     }
 
     const ai_chat_source = @embedFile("ai_chat.zig");
-    const ai_chat_request_source = @embedFile("ai_chat_request.zig");
+    const ai_chat_request_source = @embedFile("assistant/conversation/request.zig");
     const agent_tools_source = @embedFile("agent_tools/mod.zig");
     const agent_tools_exec_source = @embedFile("agent_tools/exec.zig");
     if (std.mem.indexOf(u8, ai_chat_source, "toolSchema(\"powershell_exec\"") != null or
@@ -657,18 +657,18 @@ comptime {
 
 comptime {
     _ = @import("ai_chat.zig");
-    _ = @import("ai_chat_request.zig");
-    _ = @import("ai_model_switch.zig");
+    _ = @import("assistant/conversation/request.zig");
+    _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("agent_tools/mod.zig");
-    _ = @import("ai_chat_skills.zig");
-    _ = @import("ai_chat_types.zig");
+    _ = @import("assistant/conversation/skills.zig");
+    _ = @import("assistant/conversation/types.zig");
     _ = @import("ai_agent_access.zig");
-    _ = @import("ai_chat_protocol.zig");
-    _ = @import("ai_chat_markdown.zig");
+    _ = @import("assistant/conversation/protocol.zig");
+    _ = @import("assistant/conversation/markdown.zig");
     _ = @import("agent_history.zig");
-    _ = @import("ai_chat_composer_layout.zig");
-    _ = @import("ai_chat_input_text.zig");
-    _ = @import("ai_chat_composer.zig");
+    _ = @import("assistant/conversation/composer_layout.zig");
+    _ = @import("assistant/conversation/input_text.zig");
+    _ = @import("assistant/conversation/composer.zig");
     _ = @import("assistant/conversation/presentation.zig");
     _ = @import("ai_loop_schedule.zig");
     _ = @import("ai_loop_store.zig");
@@ -849,7 +849,7 @@ comptime {
     _ = @import("tools/import.zig");
     _ = @import("tools/skill_draft.zig");
     _ = @import("scrollbar_model.zig");
-    _ = @import("ai_chat_scrollbar_model.zig");
+    _ = @import("assistant/conversation/scrollbar_model.zig");
     _ = @import("ssh_prompt.zig");
     _ = @import("ssh_tunnel.zig");
     _ = @import("startup_tabs.zig");

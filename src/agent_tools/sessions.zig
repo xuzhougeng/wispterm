@@ -1,6 +1,6 @@
 //! Agent session, SSH profile, and tab tool adapters.
 const std = @import("std");
-const types = @import("../ai_chat_types.zig");
+const types = @import("../assistant/conversation/types.zig");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const terminal_tools = @import("terminal.zig");
 const tool_output = @import("output.zig");

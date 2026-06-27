@@ -64,7 +64,7 @@ test "AI profile persistence is owned by ai_profile_store" {
 }
 
 test "ai title worker rejects API error results" {
-    const source = @embedFile("ai_chat_request.zig");
+    const source = @embedFile("assistant/conversation/request.zig");
     const start = std.mem.indexOf(u8, source, "pub fn titleThreadMain") orelse return error.MissingTitleWorker;
     const rest = source[start..];
     const end = std.mem.indexOf(u8, rest, "pub fn summaryThreadMain") orelse return error.MissingSummaryWorker;
@@ -225,9 +225,9 @@ test {
     _ = @import("file_explorer.zig");
     _ = @import("i18n.zig");
     _ = @import("markdown_text.zig");
-    _ = @import("ai_chat_composer_layout.zig");
-    _ = @import("ai_chat_input_text.zig");
-    _ = @import("ai_chat_composer.zig");
+    _ = @import("assistant/conversation/composer_layout.zig");
+    _ = @import("assistant/conversation/input_text.zig");
+    _ = @import("assistant/conversation/composer.zig");
     _ = @import("composer_detail_wrap.zig");
     _ = @import("assistant/conversation/presentation.zig");
     _ = @import("agent_tools/args.zig");
@@ -289,15 +289,15 @@ test {
     _ = @import("renderer/gpu/backend.zig");
     _ = @import("renderer/cell_geometry.zig");
     _ = @import("renderer/titlebar_layout.zig");
-    _ = @import("ai_chat_layout.zig");
-    _ = @import("ai_chat_types.zig");
+    _ = @import("assistant/conversation/layout.zig");
+    _ = @import("assistant/conversation/types.zig");
     _ = @import("ai_profile_store.zig");
     _ = @import("assistant/sidebar/panel.zig");
     _ = @import("assistant/sidebar/hint_gate.zig");
     _ = @import("appwindow/flush_scheduler.zig");
     _ = @import("appwindow/resize_throttle.zig");
     _ = @import("termio/read_coalesce.zig");
-    _ = @import("ai_chat_protocol.zig");
+    _ = @import("assistant/conversation/protocol.zig");
     _ = @import("weixin/types.zig");
     _ = @import("weixin/ilink_codec.zig");
     _ = @import("weixin/ilink_client.zig");
@@ -305,8 +305,8 @@ test {
     _ = @import("weixin/binding.zig");
     _ = @import("weixin/approval_reply.zig");
     _ = @import("weixin/question_reply.zig");
-    _ = @import("ai_chat_title.zig");
-    _ = @import("ai_model_switch.zig");
+    _ = @import("assistant/conversation/title.zig");
+    _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("command/registry.zig");
     _ = @import("tools/registry.zig");
     _ = @import("tools/import.zig");

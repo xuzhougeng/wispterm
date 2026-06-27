@@ -6,7 +6,7 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
-const ai_chat_protocol = @import("../ai_chat_protocol.zig");
+const ai_chat_protocol = @import("../assistant/conversation/protocol.zig");
 const ai_profile_store = @import("../ai_profile_store.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
@@ -51,7 +51,7 @@ const close_confirm_state = @import("../ui/close_shortcut_confirm.zig");
 const weixin_qr_panel = @import("../weixin/qr_panel.zig");
 const weixin_types = @import("../weixin/types.zig");
 const i18n = @import("../i18n.zig");
-const ai_model_switch = @import("../ai_model_switch.zig");
+const ai_model_switch = @import("../assistant/conversation/model_switch.zig");
 const agent_integration_prompt = @import("../agent_integration_prompt.zig");
 const ai_history_time = @import("../ai_history/time.zig");
 

@@ -1,6 +1,6 @@
 //! Agent terminal context and surface-selection tools.
 const std = @import("std");
-const types = @import("../ai_chat_types.zig");
+const types = @import("../assistant/conversation/types.zig");
 const tool_output = @import("output.zig");
 
 const ToolContext = types.ToolContext;

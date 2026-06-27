@@ -1,7 +1,7 @@
 //! Pure rect geometry for the AI Chat renderer.
 //!
 //! No GL, font, or platform imports so it can be unit-tested in the fast test
-//! build (mirrors ai_chat_composer_layout.zig / ai_chat_scrollbar_model.zig,
+//! build (mirrors composer_layout.zig / scrollbar_model.zig,
 //! extracted for the same reason — src/renderer/ai_chat_renderer.zig @cImports
 //! OpenGL historically and the font globals are not part of the test build).
 //! Callers pass font-derived metrics (e.g. header_h) and layout constants as

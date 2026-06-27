@@ -3,10 +3,10 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const ai_chat = @import("../ai_chat.zig");
-const ai_model_switch = @import("../ai_model_switch.zig");
+const ai_model_switch = @import("../assistant/conversation/model_switch.zig");
 const i18n = @import("../i18n.zig");
-const composer_layout = @import("../ai_chat_composer_layout.zig");
-const scrollbar_model = @import("../ai_chat_scrollbar_model.zig");
+const composer_layout = @import("../assistant/conversation/composer_layout.zig");
+const scrollbar_model = @import("../assistant/conversation/scrollbar_model.zig");
 const md = @import("../markdown_text.zig");
 const detail_wrap = @import("../composer_detail_wrap.zig");
 
@@ -26,7 +26,7 @@ const tableBlockEnd = md.tableBlockEnd;
 const font = AppWindow.font;
 const titlebar = AppWindow.titlebar;
 const ui_pipeline = @import("ui_pipeline.zig");
-const ai_chat_layout = @import("../ai_chat_layout.zig");
+const ai_chat_layout = @import("../assistant/conversation/layout.zig");
 
 pub const LINE_PAD_X: f32 = 18;
 pub const HEADER_H: f32 = 54;

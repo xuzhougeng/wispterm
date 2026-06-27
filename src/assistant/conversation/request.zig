@@ -3,20 +3,20 @@
 //! Mutually imports ai_chat.zig for Session/ChatRequest and the (pub) Session-
 //! state helpers; references are pointer-based so the cycle is legal in Zig.
 const std = @import("std");
-const ai_chat = @import("ai_chat.zig");
+const ai_chat = @import("../../ai_chat.zig");
 const Session = ai_chat.Session;
 const ChatRequest = ai_chat.ChatRequest;
-const ai_chat_protocol = @import("ai_chat_protocol.zig");
-const ai_skill_distill = @import("ai_skill_distill.zig");
-const agent_tools = @import("agent_tools/mod.zig");
-const tool_args = @import("agent_tools/args.zig");
-const tool_output = @import("agent_tools/output.zig");
-const first_party_tools = @import("tools/first_party.zig");
-const web_search = @import("research/web_search.zig");
-const web_read = @import("research/web_read.zig");
-const pubmed = @import("research/pubmed.zig");
-const ai_chat_types = @import("ai_chat_types.zig");
-const platform_agent_prompt = @import("platform/agent_prompt.zig");
+const ai_chat_protocol = @import("protocol.zig");
+const ai_skill_distill = @import("../../ai_skill_distill.zig");
+const agent_tools = @import("../../agent_tools/mod.zig");
+const tool_args = @import("../../agent_tools/args.zig");
+const tool_output = @import("../../agent_tools/output.zig");
+const first_party_tools = @import("../../tools/first_party.zig");
+const web_search = @import("../../research/web_search.zig");
+const web_read = @import("../../research/web_read.zig");
+const pubmed = @import("../../research/pubmed.zig");
+const ai_chat_types = @import("types.zig");
+const platform_agent_prompt = @import("../../platform/agent_prompt.zig");
 
 const title_log = std.log.scoped(.ai_title);
 
@@ -1007,7 +1007,7 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_context\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_select\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_session_exec\"") != null);
-    if (@import("platform/pty_command.zig").wslSessionToolsEnabled()) {
+    if (@import("../../platform/pty_command.zig").wslSessionToolsEnabled()) {
         try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") != null);
     } else {
         try std.testing.expect(std.mem.indexOf(u8, json, "\"wsl_session_exec\"") == null);
@@ -1017,8 +1017,8 @@ test "ai chat agent request json includes tool schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"proxy_jump\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"ssh_profile_connect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_new\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, @import("platform/pty_command.zig").tabNewToolPropertiesJson()) != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, @import("platform/pty_command.zig").tabKindUsage()) != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, @import("../../platform/pty_command.zig").tabNewToolPropertiesJson()) != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, @import("../../platform/pty_command.zig").tabKindUsage()) != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tab_close\"") != null);
 }
 
@@ -1194,7 +1194,7 @@ const SubagentStubModel = struct {
         self.saw_base_url_len = n;
         self.saw_toolset = request.toolset;
         self.saw_memory_enabled = request.memory_enabled;
-        self.saw_subagent_prompt = std.mem.eql(u8, request.system_prompt, @import("platform/agent_prompt.zig").subagentSystemPrompt);
+        self.saw_subagent_prompt = std.mem.eql(u8, request.system_prompt, @import("../../platform/agent_prompt.zig").subagentSystemPrompt);
         defer self.step += 1;
         if (self.step == 0) {
             const calls = try a.alloc(ToolCall, 1);

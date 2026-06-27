@@ -6,7 +6,7 @@
 //! ai_chat.zig; overlay/input/render glue stays in their files.
 const std = @import("std");
 
-pub const Role = @import("ai_chat_protocol.zig").Role;
+pub const Role = @import("protocol.zig").Role;
 
 /// Max bytes taken from each message when rendering the transcript for the
 /// summary prompt. Truncated on a UTF-8 boundary.

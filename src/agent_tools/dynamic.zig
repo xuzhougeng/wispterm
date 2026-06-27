@@ -1,6 +1,6 @@
 //! Dynamic binary agent tool adapter.
 const std = @import("std");
-const types = @import("../ai_chat_types.zig");
+const types = @import("../assistant/conversation/types.zig");
 const agent_exec = @import("exec.zig");
 const tool_output = @import("output.zig");
 

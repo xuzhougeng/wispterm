@@ -2,13 +2,13 @@
 //!
 //! Lives separate from `ai_chat.zig` (which is too heavy for the fast test
 //! suite) so this logic can be unit-tested via `zig build test` /
-//! `zig test src/ai_chat_title.zig`. The threaded request + Session
+//! `zig test src/assistant/conversation/title.zig`. The threaded request + Session
 //! integration stays in `ai_chat.zig`.
 
 const std = @import("std");
-const text_search = @import("text_search.zig");
+const text_search = @import("../../text_search.zig");
 
-pub const Role = @import("ai_chat_protocol.zig").Role;
+pub const Role = @import("protocol.zig").Role;
 
 /// Max bytes taken from each of the user / assistant sections when building the
 /// title prompt. Truncated on a UTF-8 boundary.

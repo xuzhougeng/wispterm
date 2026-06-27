@@ -11,7 +11,7 @@ const platform_remote_file = @import("../platform/remote_file.zig");
 const Surface = @import("../Surface.zig");
 const selection_unit = @import("../selection_unit.zig");
 const file_drop_path = @import("file_drop_path.zig");
-const ai_chat_composer_layout = @import("../ai_chat_composer_layout.zig");
+const ai_chat_composer_layout = @import("../assistant/conversation/composer_layout.zig");
 
 fn isPasteStripByte(byte: u8) bool {
     return switch (byte) {

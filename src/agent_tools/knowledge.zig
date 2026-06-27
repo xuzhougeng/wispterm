@@ -1,6 +1,6 @@
 //! Agent knowledge tool runtime adapters.
 const std = @import("std");
-const ai_chat_skills = @import("../ai_chat_skills.zig");
+const ai_chat_skills = @import("../assistant/conversation/skills.zig");
 const skill_registry = @import("../skill/registry.zig");
 const wispterm_docs = @import("../wispterm_docs.zig");
 

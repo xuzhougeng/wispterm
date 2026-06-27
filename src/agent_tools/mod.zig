@@ -4,8 +4,8 @@
 //! Session.
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("../ai_chat_types.zig");
-const ai_chat_protocol = @import("../ai_chat_protocol.zig");
+const types = @import("../assistant/conversation/types.zig");
+const ai_chat_protocol = @import("../assistant/conversation/protocol.zig");
 const first_party_tools = @import("../tools/first_party.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ToolContext = types.ToolContext;

@@ -5,7 +5,7 @@
 //! overlays.zig keeps the form state, persistence I/O, and drawing, and
 //! re-exports these symbols so its call sites are unchanged.
 const std = @import("std");
-const ai_chat_protocol = @import("../../ai_chat_protocol.zig");
+const ai_chat_protocol = @import("../../assistant/conversation/protocol.zig");
 const ssh_connection = @import("../../ssh_connection.zig");
 
 pub const SSH_FIELD_COUNT = 8;

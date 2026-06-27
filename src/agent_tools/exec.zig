@@ -1,7 +1,7 @@
 //! Agent terminal execution and REPL tool adapters.
 const std = @import("std");
 const builtin = @import("builtin");
-const types = @import("../ai_chat_types.zig");
+const types = @import("../assistant/conversation/types.zig");
 const agent_detector = @import("../agent_detector.zig");
 const agent_prompt_answer = @import("../agent_prompt_answer.zig");
 const ai_agent_access = @import("../ai_agent_access.zig");

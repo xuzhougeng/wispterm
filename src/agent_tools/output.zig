@@ -1,6 +1,6 @@
 //! Agent tool output truncation helpers.
 const std = @import("std");
-const types = @import("../ai_chat_types.zig");
+const types = @import("../assistant/conversation/types.zig");
 
 const AgentSettings = types.AgentSettings;
 
