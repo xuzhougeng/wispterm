@@ -3,7 +3,7 @@
 //! markdown lives and reads/writes it. No network, no Jina knowledge. Best-effort:
 //! `read` returns null on any problem; `store` swallows all errors.
 const std = @import("std");
-const platform_atomic_file = @import("platform/atomic_file.zig");
+const platform_atomic_file = @import("../platform/atomic_file.zig");
 
 const cache_dir_name = ".webread_cache";
 const max_cache_file_bytes: usize = 64 * 1024 * 1024;

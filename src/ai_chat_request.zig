@@ -10,9 +10,9 @@ const ai_chat_protocol = @import("ai_chat_protocol.zig");
 const ai_skill_distill = @import("ai_skill_distill.zig");
 const ai_chat_tools = @import("ai_chat_tools.zig");
 const first_party_tools = @import("tools/first_party.zig");
-const web_search = @import("web_search.zig");
-const web_read = @import("web_read.zig");
-const pubmed = @import("pubmed.zig");
+const web_search = @import("research/web_search.zig");
+const web_read = @import("research/web_read.zig");
+const pubmed = @import("research/pubmed.zig");
 const ai_chat_types = @import("ai_chat_types.zig");
 const platform_agent_prompt = @import("platform/agent_prompt.zig");
 

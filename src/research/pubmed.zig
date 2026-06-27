@@ -7,7 +7,7 @@
 //! use system proxies. Anonymous access only (no API key); `tool=wispterm` is
 //! sent per NCBI etiquette.
 const std = @import("std");
-const platform_http = @import("platform/http_client.zig");
+const platform_http = @import("../platform/http_client.zig");
 
 const esearch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi";
 const efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi";

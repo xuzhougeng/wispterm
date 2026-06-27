@@ -152,8 +152,8 @@ const ImageBlock = ai_chat_protocol.ImageBlock;
 const ai_chat_title = @import("ai_chat_title.zig");
 const ToolCall = ai_chat_protocol.ToolCall;
 const ai_chat_request = @import("ai_chat_request.zig");
-const web_search = @import("web_search.zig");
-const pubmed = @import("pubmed.zig");
+const web_search = @import("research/web_search.zig");
+const pubmed = @import("research/pubmed.zig");
 const agent_memory = @import("agent_memory.zig");
 
 pub const ChatRequest = struct {

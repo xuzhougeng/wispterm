@@ -3,7 +3,7 @@
 //! today; a new engine is a new branch in `executeSearch`. HTTP transport goes
 //! through `platform/http_client.zig` so desktop builds can use system proxies.
 const std = @import("std");
-const platform_http = @import("platform/http_client.zig");
+const platform_http = @import("../platform/http_client.zig");
 
 const jina_search_url = "https://s.jina.ai/";
 
