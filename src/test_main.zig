@@ -686,6 +686,7 @@ comptime {
     _ = @import("config_watcher.zig");
     _ = @import("file_backend.zig");
     _ = @import("file_explorer.zig");
+    _ = @import("research/commands.zig");
     _ = @import("tools/first_party.zig");
     _ = @import("input.zig");
     _ = @import("input/clipboard.zig");
