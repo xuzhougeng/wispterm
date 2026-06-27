@@ -154,3 +154,55 @@ Current app-level actions include `toggle_command_palette`, `toggle_quake`,
 `focus_next`, `equalize_splits`, `next_tab`, `previous_tab`, `switch_tab_1`
 through `switch_tab_9`, `focus_panel_1` through `focus_panel_9`, and
 `open_config`.
+
+## Command Snippets
+
+Command snippets are reusable text payloads you trigger from the command center
+(`Ctrl+Shift+P`, `Cmd+Shift+P` on macOS). Selecting one sends its text to the
+**active session** — local shell, WSL, PowerShell, or SSH — so a fixed command
+lives in WispTerm instead of being re-aliased on every machine you connect to.
+
+Each snippet is one Markdown file under a `snippets/` directory next to your
+config file:
+
+- **Windows:** `%APPDATA%\wispterm\snippets\`
+- **macOS:** `~/Library/Application Support/wispterm/snippets/`
+- **Linux:** `$XDG_CONFIG_HOME/wispterm/snippets/` (fallback: `~/.config/wispterm/snippets/`)
+
+The file name is ignored; the front matter and body define the snippet:
+
+```markdown
+---
+name: deploy
+description: build and ship to production
+---
+make deploy
+```
+
+- `name` — required. The title shown in the command center and what you type to
+  filter to it.
+- `description` — optional. Extra text that the filter also matches.
+- **body** — everything after the front matter. This is the exact text sent to
+  the session, byte for byte.
+
+**Run vs. insert:** the body is sent verbatim, so a trailing newline decides
+what happens. End the body with a newline (the example above) and the command
+runs immediately; remove the final newline and the text is only inserted at the
+prompt for you to review and press Enter yourself. Note that many editors add a
+trailing newline on save — that is the "run immediately" case.
+
+Snippets are re-read every time you open the command center, so edits show up
+without restarting WispTerm.
+
+### Let the Copilot create snippets
+
+You do not have to hand-write the file. Because the AI Copilot already has a
+`write_file` tool, you can just ask it:
+
+> Create a WispTerm command snippet named `gs` that runs `git status`. Snippets
+> live in `~/Library/Application Support/wispterm/snippets/` as a Markdown file
+> with `name:` front matter and the command in the body, ending with a newline
+> so it runs on selection.
+
+The Copilot writes the `.md` file for you; open the command center and the new
+snippet is already there.

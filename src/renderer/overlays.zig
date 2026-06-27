@@ -26,6 +26,7 @@ const command_center_state = @import("../command_center_state.zig");
 const ctl_ui_state = @import("../ctl/ui_state.zig");
 const command_palette_history_view = @import("../command_palette_history_view.zig");
 const command_palette_model = @import("../command_palette_model.zig");
+const command_registry = @import("../command_registry.zig");
 const agent_history = @import("../agent_history.zig");
 const platform_atomic_file = @import("../platform/atomic_file.zig");
 const platform_dirs = @import("../platform/dirs.zig");
@@ -223,11 +224,51 @@ const COMMAND_ENTRIES = command_center_state.command_entries;
 
 const PaletteItem = union(enum) {
     command: usize,
+    snippet: usize,
     ssh_profile: usize,
     tmux_profile: usize,
     ai_profile: usize,
     theme: usize,
 };
+
+// User-defined snippets: `<config-dir>/snippets/*.md`, parsed by command_registry
+// (frontmatter name=title, description=detail, body=text sent to the active PTY).
+// State lives in g_overlay_state.snippets; reloaded each time the palette opens
+// (see commandPaletteOpenWithMode).
+fn snippetsState() *overlay_state.SnippetState {
+    return &g_overlay_state.snippets;
+}
+
+fn loadSnippets() void {
+    const snippets = snippetsState();
+    if (snippets.loaded) return;
+    snippets.loaded = true;
+    const allocator = AppWindow.g_allocator orelse return;
+    const dir_path = platform_dirs.configDir(allocator) catch return;
+    defer allocator.free(dir_path);
+    var dir = std.fs.cwd().openDir(dir_path, .{}) catch return;
+    defer dir.close();
+    snippets.items = command_registry.listCommands(allocator, dir, "snippets") catch &.{};
+}
+
+fn freeSnippets() void {
+    const snippets = snippetsState();
+    if (snippets.items.len == 0) return;
+    const allocator = AppWindow.g_allocator orelse return;
+    command_registry.freeCommandList(allocator, snippets.items);
+    snippets.items = &.{};
+}
+
+// The snippet body is the exact bytes to send to the active session. Authors
+// include a trailing newline when they want the command to run immediately;
+// otherwise it is only inserted at the prompt for review. The caller
+// (commandPaletteExecute*) has already closed the palette and the triggering
+// keypress/click drives the repaint, so this only needs the PTY write.
+fn sendSnippet(idx: usize) void {
+    const items = snippetsState().items;
+    if (idx >= items.len) return;
+    AppWindow.input.writeTextToActivePty(items[idx].body);
+}
 
 const CommandPaletteMode = command_center_state.CommandPaletteMode;
 
@@ -263,6 +304,8 @@ fn commandPaletteSetMode(mode: CommandPaletteMode) void {
 }
 
 fn commandPaletteOpenWithMode(mode: CommandPaletteMode) void {
+    freeSnippets(); // re-read snippet files on each open so edits show without restart
+    snippetsState().loaded = false;
     var state = commandCenterStateSnapshot();
     state.commandPaletteOpenWithMode(mode);
     commandCenterStateCommit(state);
@@ -961,6 +1004,68 @@ fn paletteContainsTmuxProfileForTest(profile_idx: usize) bool {
     return false;
 }
 
+fn paletteContainsSnippetForTest(snippet_idx: usize) bool {
+    for (g_palette_scratch[0..g_palette_scratch_len]) |item| {
+        switch (item) {
+            .snippet => |idx| {
+                if (idx == snippet_idx) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+test "command palette surfaces user snippets and filters them by name/description" {
+    const previous_mode = g_command_palette_mode;
+    const previous_filter_len = g_command_palette_filter_len;
+    const previous_selected = g_command_palette_selected;
+    const previous_scratch_len = g_palette_scratch_len;
+    const previous_snippets = snippetsState().items;
+    const previous_snippets_loaded = snippetsState().loaded;
+    const previous_ssh_loaded = sshState().profiles_loaded;
+    const previous_ai_loaded = aiState().profiles_loaded;
+    defer {
+        g_command_palette_mode = previous_mode;
+        g_command_palette_filter_len = previous_filter_len;
+        g_command_palette_selected = previous_selected;
+        g_palette_scratch_len = previous_scratch_len;
+        snippetsState().items = previous_snippets;
+        snippetsState().loaded = previous_snippets_loaded;
+        sshState().profiles_loaded = previous_ssh_loaded;
+        aiState().profiles_loaded = previous_ai_loaded;
+    }
+
+    var snippets = [_]command_registry.CustomCommand{
+        .{ .name = @constCast("deploy"), .description = @constCast("ship to prod"), .action = null, .body = @constCast("make deploy\n") },
+        .{ .name = @constCast("logs"), .description = @constCast("tail server logs"), .action = null, .body = @constCast("tail -f app.log\n") },
+    };
+    g_command_palette_mode = .commands;
+    snippetsState().items = &snippets;
+    snippetsState().loaded = true; // prevent loadSnippets from re-reading disk over our fixtures
+    sshState().profiles_loaded = true;
+    aiState().profiles_loaded = true;
+
+    // Empty filter shows only the curated built-in commands; snippets surface
+    // by typing, like SSH/AI/theme rows.
+    setCommandPaletteFilterForTest("");
+    rebuildPaletteScratch();
+    try std.testing.expect(!paletteContainsSnippetForTest(0));
+    try std.testing.expect(!paletteContainsSnippetForTest(1));
+
+    // Name match.
+    setCommandPaletteFilterForTest("deploy");
+    rebuildPaletteScratch();
+    try std.testing.expect(paletteContainsSnippetForTest(0));
+    try std.testing.expect(!paletteContainsSnippetForTest(1));
+
+    // Description match (filter absent from the name).
+    setCommandPaletteFilterForTest("server");
+    rebuildPaletteScratch();
+    try std.testing.expect(!paletteContainsSnippetForTest(0));
+    try std.testing.expect(paletteContainsSnippetForTest(1));
+}
+
 test "command palette includes tmux profile actions for SSH profile search" {
     const previous_mode = g_command_palette_mode;
     const previous_filter_len = g_command_palette_filter_len;
@@ -1045,8 +1150,12 @@ fn rebuildPaletteScratch() void {
     }
     const filter = commandPaletteFilter();
     g_palette_scratch_len = 0;
+    loadSnippets();
 
     if (filter.len == 0) {
+        // Empty filter shows the curated top-N built-in commands only. Snippets
+        // (like SSH/AI/theme rows) surface once the user types a filter — the
+        // 14-row cap means anything appended here would just be truncated.
         for (COMMAND_ENTRIES, 0..) |entry, idx| {
             if (!commandEntryMatches(entry)) continue;
             if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
@@ -1060,6 +1169,12 @@ fn rebuildPaletteScratch() void {
         if (!commandEntryTitleMatches(entry, filter)) continue;
         if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
         g_palette_scratch[g_palette_scratch_len] = .{ .command = idx };
+        g_palette_scratch_len += 1;
+    }
+    for (snippetsState().items, 0..) |snippet, idx| {
+        if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
+        if (!containsIgnoreCase(snippet.name, filter) and !containsIgnoreCase(snippet.description, filter)) continue;
+        g_palette_scratch[g_palette_scratch_len] = .{ .snippet = idx };
         g_palette_scratch_len += 1;
     }
     for (COMMAND_ENTRIES, 0..) |entry, idx| {
@@ -1103,6 +1218,7 @@ fn rebuildPaletteScratch() void {
 fn executePaletteItem(item: PaletteItem) void {
     switch (item) {
         .command => |cmd_idx| executeCommand(COMMAND_ENTRIES[cmd_idx].action),
+        .snippet => |snippet_idx| sendSnippet(snippet_idx),
         .ssh_profile => |profile_idx| connectSshProfile(profile_idx),
         .tmux_profile => |profile_idx| connectSshProfileTmux(profile_idx),
         .ai_profile => |profile_idx| _ = spawnAiProfileWithAgentOverride(profile_idx, null),
@@ -2027,6 +2143,16 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                             renderTitlebarText(shortcut, shortcut_left, text_y, shortcut_color);
                         }
                         renderTitlebarTextLimited(i18n.commandTitle(entry.action) orelse entry.title, title_x, text_y, row_title_color, shortcut_left - title_x - 18);
+                    },
+                    .snippet => |snippet_idx| {
+                        const snippet_items = snippetsState().items;
+                        if (snippet_idx >= snippet_items.len) continue;
+                        const snippet = snippet_items[snippet_idx];
+                        const suffix = "  send";
+                        const suffix_w = measureTitlebarText(suffix);
+                        const suffix_right = layout.box_x + layout.box_w - pad_x;
+                        renderTitlebarText(suffix, suffix_right - suffix_w, text_y, shortcut_color);
+                        renderTitlebarTextLimited(snippet.name, title_x, text_y, row_title_color, (suffix_right - suffix_w) - title_x - 18);
                     },
                     .ssh_profile => |profile_idx| {
                         if (profile_idx >= sshState().profile_count) continue;

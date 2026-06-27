@@ -5,6 +5,15 @@ const confirm_modals = @import("confirm_modals.zig");
 const ssh_profiles = @import("ssh_profiles.zig");
 const ai_profiles = @import("ai_profiles.zig");
 const session_launcher = @import("session_launcher.zig");
+const command_registry = @import("../../command_registry.zig");
+
+/// User command snippets loaded from `<config-dir>/snippets/*.md`, re-read each
+/// time the command center opens. `items` is heap-owned; `loaded` gates the
+/// lazy read inside the palette rebuild.
+pub const SnippetState = struct {
+    items: []command_registry.CustomCommand = &.{},
+    loaded: bool = false,
+};
 
 pub const OverlayState = struct {
     settings: settings_page.State = .{},
@@ -13,9 +22,12 @@ pub const OverlayState = struct {
     ssh: ssh_profiles.State = .{},
     ai: ai_profiles.State = .{},
     session: session_launcher.State = .{},
+    snippets: SnippetState = .{},
 
     pub fn deinit(self: *OverlayState, allocator: std.mem.Allocator) void {
         self.settings.deinit(allocator);
+        command_registry.freeCommandList(allocator, self.snippets.items);
+        self.snippets = .{};
     }
 };
 

@@ -22,6 +22,7 @@ out where relevant.
 - **Terminal emulation** — libghostty-vt VT parsing, FreeType glyph rendering, sprite/box-drawing.
 - **Themes & appearance** — 450+ built-in Ghostty themes, custom fonts, background images, GLSL shaders → [[Themes-Appearance]]
 - **Tabs, splits & panels** — vertical/horizontal splits, focus navigation, panel swap, Quake drop-down → [[Tabs-Splits-Panels]]
+- **Command snippets** — define reusable commands and fire them into any session from the command center → [[Command-Snippets]]
 - **File Explorer & previews** — browse local, WSL, and SSH files; preview Markdown/text/tables/images → [[File-Explorer]]
 - **SSH & remote development** — profile sessions, remote file download, automatic loopback port forwarding → [[SSH-Remote-Development]]
 - **Port forwarding & proxy** — manual reverse/local SSH tunnels; share your local proxy with a remote server → [[Port-Forwarding]]

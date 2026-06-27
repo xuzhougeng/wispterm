@@ -15,7 +15,8 @@ from pathlib import Path
 WIKI = Path(__file__).resolve().parent
 BASE_SLUGS = [
     "Home", "Installation", "Getting-Started", "Tabs-Splits-Panels",
-    "Configuration", "Themes-Appearance", "Keyboard-Shortcuts", "File-Explorer",
+    "Configuration", "Themes-Appearance", "Keyboard-Shortcuts", "Command-Snippets",
+    "File-Explorer",
     "SSH-Remote-Development", "Port-Forwarding", "AI-Copilot",
     "Agent-Terminal-Control", "Browser-Jupyter-Panel", "Inline-Images",
     "Remote-Access", "FAQ",
