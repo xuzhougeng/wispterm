@@ -105,7 +105,7 @@ src/                         # Desktop terminal application
 ├── pty.zig                  # App-facing PTY API (re-exports src/platform/pty.zig)
 ├── remote_client.zig        # Outbound WispTerm Remote relay client
 ├── file_explorer.zig        # Local/SSH file explorer state and operations
-├── browser_panel.zig        # Embedded browser panel and SSH tunnel handling
+├── browser/panel.zig        # Embedded browser panel and SSH tunnel handling
 ├── themes.zig               # Embedded Ghostty-compatible themes
 ├── platform/                # Platform abstraction layer: narrow capability
 │                            #   interfaces with per-platform impls (_windows) and

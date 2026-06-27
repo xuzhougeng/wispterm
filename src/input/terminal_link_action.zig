@@ -7,7 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const platform_pty_command = @import("../platform/pty_command.zig");
 const preview_path = @import("preview_path.zig");
-const html_server_model = @import("../html_server_model.zig");
+const html_server_model = @import("../html/server_model.zig");
 
 const looksLikePreviewPath = preview_path.looksLikePreviewPath;
 
