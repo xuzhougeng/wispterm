@@ -28,6 +28,7 @@ const agent_files = @import("files.zig");
 const agent_exec = @import("exec.zig");
 const agent_dynamic = @import("dynamic.zig");
 const agent_weixin = @import("weixin.zig");
+const agent_ui_screenshot = @import("ui_screenshot.zig");
 
 // ---------------------------------------------------------------------------
 // Tool dispatch
@@ -49,6 +50,13 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         defer if (args) |parsed| parsed.deinit();
         const surface_id = if (args) |parsed| tool_args.string(parsed.value, "surface_id") else null;
         return terminal_tools.snapshot(ctx, surface_id);
+    }
+    if (std.mem.eql(u8, call.name, "ui_screenshot")) {
+        const args = tool_args.parse(ctx.allocator, call.arguments);
+        defer if (args) |parsed| parsed.deinit();
+        const target = if (args) |parsed| tool_args.string(parsed.value, "target") else null;
+        const surface_id = if (args) |parsed| tool_args.string(parsed.value, "surface_id") else null;
+        return agent_ui_screenshot.run(ctx, target, surface_id);
     }
     if (std.mem.eql(u8, call.name, "terminal_select")) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
@@ -329,6 +337,98 @@ fn fakeApprove(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8) bool 
 }
 fn fakeCancelled(_: *anyopaque) bool {
     return false;
+}
+
+test "executeToolCall ui_screenshot reports missing host clearly" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null, .working_dir = "/work" },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("call-shot"),
+        .name = @constCast("ui_screenshot"),
+        .arguments = @constCast("{}"),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "No UI screenshot host") != null);
+}
+
+test "executeToolCall ui_screenshot calls host and formats path" {
+    const Fake = struct {
+        fn collectSnapshot(_: *anyopaque, allocator: std.mem.Allocator) anyerror!ToolSnapshot {
+            return .{ .surfaces = try allocator.alloc(ToolSurface, 0), .active_tab = 0 };
+        }
+        fn surfaceSnapshot(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: *anyopaque) anyerror![]u8 {
+            return allocator.dupe(u8, "");
+        }
+        fn writeSurface(_: *anyopaque, _: []const u8, _: *anyopaque, _: []const u8) bool {
+            return false;
+        }
+        fn unsupportedSpawn(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?[]const u8) anyerror!ToolSurface {
+            return error.Unsupported;
+        }
+        fn unsupportedClose(_: *anyopaque, _: std.mem.Allocator, _: ?usize, _: ?[]const u8, _: ?[]const u8) anyerror!ToolClosedTab {
+            return error.Unsupported;
+        }
+        fn unsupportedSaveSsh(_: *anyopaque, _: std.mem.Allocator, _: SshProfileSaveArgs) anyerror!SavedSshProfile {
+            return error.Unsupported;
+        }
+        fn unsupportedConnectSsh(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!ToolSurface {
+            return error.Unsupported;
+        }
+        fn shot(_: *anyopaque, allocator: std.mem.Allocator, target: types.UiScreenshotTarget, surface_id: ?[]const u8, working_dir: ?[]const u8) anyerror!types.UiScreenshotResult {
+            try std.testing.expectEqual(types.UiScreenshotTarget.active_tab, target);
+            try std.testing.expectEqualStrings("abc", surface_id.?);
+            try std.testing.expectEqualStrings("/work", working_dir.?);
+            return .{
+                .path = try allocator.dupe(u8, "/work/wispterm-files/ui-screenshot-1.png"),
+                .width = 10,
+                .height = 20,
+                .target = target,
+            };
+        }
+        var dummy: u8 = 0;
+        fn host() ToolHost {
+            return .{
+                .ctx = &dummy,
+                .collectSnapshot = collectSnapshot,
+                .surfaceSnapshot = surfaceSnapshot,
+                .writeSurface = writeSurface,
+                .spawnTab = unsupportedSpawn,
+                .closeTab = unsupportedClose,
+                .saveSshProfile = unsupportedSaveSsh,
+                .connectSshProfile = unsupportedConnectSsh,
+                .uiScreenshot = shot,
+            };
+        }
+    };
+
+    const a = std.testing.allocator;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &Fake.dummy,
+        .tool_host = Fake.host(),
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null, .working_dir = "/work" },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("call-shot"),
+        .name = @constCast("ui_screenshot"),
+        .arguments = @constCast("{\"target\":\"active_tab\",\"surface_id\":\"abc\"}"),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "path=/work/wispterm-files/ui-screenshot-1.png") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "width=10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "height=20") != null);
 }
 
 const FakeApprover = struct {

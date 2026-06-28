@@ -748,6 +748,7 @@ fn forEachToolSpec(
     try Filtered.emitTool(ctx, opts, "terminal_list", "List WispTerm terminal surfaces visible to the agent, including the current agent-selected write context. Before any terminal write, use terminal_select to choose the intended surface_id; use focused=true only as a default hint.", "{}");
     try Filtered.emitTool(ctx, opts, "terminal_context", "Report the current selected terminal write context/binding without changing it. Use this to verify which terminal Copilot or the agent will write to.", "{}");
     try Filtered.emitTool(ctx, opts, "terminal_snapshot", "Read a bounded text snapshot from one terminal surface or all surfaces.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Optional surface id from terminal_list.\"}}");
+    try Filtered.emitTool(ctx, opts, "ui_screenshot", "Capture a PNG screenshot of the active WispTerm tab or the focused panel in the active tab. Use target=focused_panel for the panel the user is looking at, or target=active_tab for the whole visible active tab. In a dedicated AI/Copilot tab, focused_panel falls back to active_tab. The tool returns a local PNG path; when the request came from Weixin, call weixin_send_attachment with kind=image and that path.", "{\"target\":{\"type\":\"string\",\"description\":\"Optional: focused_panel (default) or active_tab.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Optional terminal surface id from terminal_list. Only valid for terminal panels in the active tab.\"}}");
     try Filtered.emitTool(ctx, opts, "terminal_select", platform_pty_command.terminalSelectToolDescription(), "{\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list to make the current agent write context.\"}}");
     try Filtered.emitTool(ctx, opts, platform_process.localCommandToolName(), platform_process.localCommandToolDescription(), "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}");
     try Filtered.emitTool(ctx, opts, "ssh_session_exec", "Run a POSIX shell command in the selected already-open SSH terminal surface. The surface_id must match the current terminal_select context. Use only when the surface is at a shell prompt and the command returns; for R, Python, Codex, Claude Code, other REPLs, or launching full-screen agent apps, use terminal_repl_exec.", "{\"surface_id\":{\"type\":\"string\",\"description\":\"Selected surface id from terminal_select.\"},\"command\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\"}}");
@@ -2045,6 +2046,17 @@ test "terminal_answer_prompt appears in the tool schema" {
     const json = out.items;
     try std.testing.expect(std.mem.indexOf(u8, json, "\"terminal_answer_prompt\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "approve_all") != null);
+}
+
+test "agent tool set includes ui_screenshot" {
+    const a = std.testing.allocator;
+    var msgs = [_]RequestMessage{.{ .role = .user, .content = @constCast("show me the screen") }};
+    const params = RequestParams{ .model = "m", .system_prompt = "", .protocol = .chat_completions, .thinking_enabled = false, .reasoning_effort = "", .stream = false };
+    const json = try buildRequestJson(a, params, &msgs, true);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"ui_screenshot\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"target\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"surface_id\"") != null);
 }
 
 test "subagentToolAllowed accepts exactly the research tools" {
