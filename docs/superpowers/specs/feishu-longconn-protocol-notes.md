@@ -54,3 +54,16 @@ Header { 1 key: string; 2 value: string }
 
 - Zig **0.15.2**。`std.http.Client` 自带 TLS。
 - HTTP 写法参考仓库现有 `src/weixin/ilink_client.zig`(`client.fetch` + `std.Io.Writer.Allocating`)。
+
+## 8. CardKit 流式卡片（spike 实测确认,2026-06-28）
+
+实测 `src/feishu/spike/cardkit.zig`,真凭证打通。鉴权统一 `Authorization: Bearer {tenant_access_token}`。
+
+- **建卡**:`POST /open-apis/cardkit/v1/cards`,body `{"type":"card_json","data":"<卡片 JSON 2.0 字符串>"}`(注意 data 是**字符串化**的卡片 JSON,不是嵌套对象)→ `200 {"code":0,"data":{"card_id":"7656..."},...}`。
+  - 卡片 JSON 2.0 实测可用最小形:`{"schema":"2.0","config":{"streaming_mode":true},"body":{"elements":[{"tag":"markdown","element_id":"md","content":"处理中…"}]}}`。
+- **流式更新元素**:**`PUT`**(不是 POST!POST→404)`/open-apis/cardkit/v1/cards/:card_id/elements/:element_id/content`,body `{"content":"...","sequence":N}`(sequence 递增)→ `200 {"code":0,"data":{},...}`。
+- **关流**:`PATCH /open-apis/cardkit/v1/cards/:card_id/settings`,body `{"settings":"{\"config\":{\"streaming_mode\":false}}","sequence":N}`→ `200 {"code":0,...}`。
+- **限流**:单卡 10 次/秒;**流式模式 10 分钟自动关**;需飞书客户端 7.20+。
+- **stream/close 不需要 chat_id**——打的是 card_id 实体;只有「把卡发到会话给人看」才需 chat_id。
+- **待确认(非阻塞)**:把卡发到会话的 im 消息形状(`msg_type:"interactive"` + content 引用 card_id 的确切结构)。`GET /open-apis/im/v1/chats` 实测返回空(bot 不在任何群,p2p DM 不列出),spike 拿不到 chat_id。**运行时 onEvent 本就有 msg.chat_id**,故 send 形状在 Task 5 E2E 用真实 chat_id 自然验证。当前最佳猜测:content=`{"type":"card","data":{"card_id":"..."}}`。
+- 复现:`source ~/.zshrc && zig run src/feishu/spike/cardkit.zig`(可选 `FEISHU_TEST_CHAT_ID=<id>` 触发 send+可视化)。**spike 打印含 token 的 TOKEN 响应已 redact**,勿存原始 token。
