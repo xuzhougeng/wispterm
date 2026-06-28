@@ -253,6 +253,140 @@ pub fn sendText(
 }
 
 // ---------------------------------------------------------------------------
+// CardKit pure builders (unit-testable, no network)
+// ---------------------------------------------------------------------------
+
+/// Builds the `content` JSON string for an interactive card message, e.g.
+/// `{"type":"card","data":{"card_id":"abc"}}`.  Caller owns the returned slice.
+///
+/// ponytail: send shape is best-guess — spike couldn't get a chat_id.
+/// Validated at E2E (Task S5). Adjust content structure if E2E reports error.
+pub fn buildCardMessageContent(alloc: std.mem.Allocator, card_id: []const u8) ![]u8 {
+    return std.json.Stringify.valueAlloc(alloc, .{
+        .type = "card",
+        .data = .{ .card_id = card_id },
+    }, .{});
+}
+
+/// Builds the body for `streamCardContent` PUT.
+/// Caller owns the returned slice.
+pub fn buildStreamBody(alloc: std.mem.Allocator, content: []const u8, sequence: i64) ![]u8 {
+    return std.json.Stringify.valueAlloc(alloc, .{
+        .content = content,
+        .sequence = sequence,
+    }, .{});
+}
+
+/// Builds the body for `closeStreaming` PATCH.
+/// Caller owns the returned slice.
+pub fn buildCloseBody(alloc: std.mem.Allocator, sequence: i64) ![]u8 {
+    // settings value is a JSON-encoded string (per spike: §8).
+    return std.json.Stringify.valueAlloc(alloc, .{
+        .settings = "{\"config\":{\"streaming_mode\":false}}",
+        .sequence = sequence,
+    }, .{});
+}
+
+// ---------------------------------------------------------------------------
+// CardKit REST calls
+// ---------------------------------------------------------------------------
+
+/// Creates a streaming card via CardKit v1.  Returns the card_id; caller owns.
+/// card_json is the JSON 2.0 card definition string (not nested — it's stringified).
+pub fn createStreamingCard(alloc: std.mem.Allocator, token: []const u8, card_json: []const u8) ![]u8 {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // data field MUST be a JSON-encoded string (spike confirmed §8).
+    const body = try std.json.Stringify.valueAlloc(a, .{
+        .type = "card_json",
+        .data = card_json,
+    }, .{});
+
+    const resp = try httpsReqWithBearer(alloc, a, .POST, BASE ++ "/open-apis/cardkit/v1/cards", token, body);
+
+    const Data = struct { card_id: []const u8 = "" };
+    const Resp = struct {
+        code: i64 = -1,
+        msg: []const u8 = "",
+        data: Data = .{},
+    };
+    const parsed = try std.json.parseFromSliceLeaky(Resp, a, resp, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    if (parsed.code != 0) {
+        log.err("createStreamingCard: code={d} msg={s}", .{ parsed.code, parsed.msg });
+        return error.FeishuCardCreateFailed;
+    }
+
+    return alloc.dupe(u8, parsed.data.card_id);
+}
+
+/// Sends a card as an interactive message to a chat.
+/// NOTE: send shape is best-guess (spike §8 — chat_id unavailable during spike).
+/// Validated at E2E Task S5; adjust buildCardMessageContent if shape is wrong.
+pub fn sendCardMessage(
+    alloc: std.mem.Allocator,
+    token: []const u8,
+    receive_id_type: []const u8,
+    receive_id: []const u8,
+    card_id: []const u8,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const content = try buildCardMessageContent(a, card_id);
+    // Reuse sendMessage — it handles interactive msg_type and content as JSON string.
+    return sendMessage(alloc, token, receive_id_type, receive_id, "interactive", content);
+}
+
+/// Streams content to a specific element of a card (PUT, not POST).
+/// sequence must be monotonically increasing per card lifecycle.
+pub fn streamCardContent(
+    alloc: std.mem.Allocator,
+    token: []const u8,
+    card_id: []const u8,
+    element_id: []const u8,
+    content: []const u8,
+    sequence: i64,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const url = try std.fmt.allocPrint(
+        a,
+        BASE ++ "/open-apis/cardkit/v1/cards/{s}/elements/{s}/content",
+        .{ card_id, element_id },
+    );
+    const body = try buildStreamBody(a, content, sequence);
+    try httpsReqWithBearer(alloc, a, .PUT, url, token, body);
+}
+
+/// Closes streaming mode for a card (PATCH).
+pub fn closeStreaming(
+    alloc: std.mem.Allocator,
+    token: []const u8,
+    card_id: []const u8,
+    sequence: i64,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const url = try std.fmt.allocPrint(
+        a,
+        BASE ++ "/open-apis/cardkit/v1/cards/{s}/settings",
+        .{card_id},
+    );
+    const body = try buildCloseBody(a, sequence);
+    try httpsReqWithBearer(alloc, a, .PATCH, url, token, body);
+}
+
+// ---------------------------------------------------------------------------
 // getBotOpenId
 // ---------------------------------------------------------------------------
 
@@ -322,6 +456,20 @@ fn httpsPostWithBearer(
     token: []const u8,
     body: []const u8,
 ) !void {
+    _ = try httpsReqWithBearer(client_alloc, resp_arena, .POST, url, token, body);
+}
+
+/// Generic bearer-authenticated HTTPS request for POST/PUT/PATCH.
+/// Returns the raw response body (arena-owned).
+/// Non-200 → error; 200 + unparseable body → error.
+fn httpsReqWithBearer(
+    client_alloc: std.mem.Allocator,
+    resp_arena: std.mem.Allocator,
+    method: std.http.Method,
+    url: []const u8,
+    token: []const u8,
+    body: []const u8,
+) ![]u8 {
     var client: std.http.Client = .{ .allocator = client_alloc };
     defer client.deinit();
 
@@ -331,7 +479,7 @@ fn httpsPostWithBearer(
     var out: std.Io.Writer.Allocating = .init(resp_arena);
     const response = try client.fetch(.{
         .location = .{ .url = url },
-        .method = .POST,
+        .method = method,
         .keep_alive = false,
         .payload = body,
         .headers = .{
@@ -342,7 +490,7 @@ fn httpsPostWithBearer(
     });
 
     if (response.status != .ok) {
-        log.warn("POST {s} -> HTTP {}", .{ endpointForLog(url), response.status });
+        log.warn("{s} {s} -> HTTP {}", .{ @tagName(method), endpointForLog(url), response.status });
         return error.FeishuHttpError;
     }
 
@@ -354,9 +502,10 @@ fn httpsPostWithBearer(
         .allocate = .alloc_always,
     }) catch return error.FeishuSendFailed; // 200 + unparseable body can't confirm delivery
     if (parsed.code != 0) {
-        log.err("sendMessage: code={d} msg={s}", .{ parsed.code, parsed.msg });
+        log.err("{s} {s}: code={d} msg={s}", .{ @tagName(method), endpointForLog(url), parsed.code, parsed.msg });
         return error.FeishuSendFailed;
     }
+    return items;
 }
 
 fn httpsGetWithBearer(
@@ -444,4 +593,76 @@ test "buildTextContent: empty text" {
     const content = try buildTextContent(std.testing.allocator, "");
     defer std.testing.allocator.free(content);
     try std.testing.expectEqualStrings("{\"text\":\"\"}", content);
+}
+
+test "buildCardMessageContent: basic card_id" {
+    const content = try buildCardMessageContent(std.testing.allocator, "card123");
+    defer std.testing.allocator.free(content);
+    // Must be valid JSON containing type and card_id.
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"type\":\"card\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"card_id\":\"card123\"") != null);
+    // Verify it parses as JSON.
+    const p = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, content, .{});
+    defer p.deinit();
+}
+
+test "buildStreamBody: content + sequence, escaping" {
+    // content with quotes must be escaped correctly
+    const body = try buildStreamBody(std.testing.allocator, "say \"hi\"", 42);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"sequence\":42") != null);
+    // The quote in content must be escaped
+    try std.testing.expect(std.mem.indexOf(u8, body, "\\\"hi\\\"") != null);
+    // Valid JSON
+    const p = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer p.deinit();
+}
+
+test "buildCloseBody: streaming_mode false in settings string" {
+    const body = try buildCloseBody(std.testing.allocator, 7);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"sequence\":7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "streaming_mode") != null);
+    // Valid JSON
+    const p = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer p.deinit();
+}
+
+test "createStreamingCard response parsing: code=0 → card_id" {
+    // Simulate the response parsing logic inline (pure, no network).
+    const resp = "{\"code\":0,\"data\":{\"card_id\":\"abc\"},\"msg\":\"ok\"}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Data = struct { card_id: []const u8 = "" };
+    const Resp = struct {
+        code: i64 = -1,
+        msg: []const u8 = "",
+        data: Data = .{},
+    };
+    const parsed = try std.json.parseFromSliceLeaky(Resp, a, resp, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    try std.testing.expectEqual(@as(i64, 0), parsed.code);
+    try std.testing.expectEqualStrings("abc", parsed.data.card_id);
+}
+
+test "createStreamingCard response parsing: code!=0 → would error" {
+    const resp = "{\"code\":11400,\"msg\":\"invalid card\",\"data\":{}}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Data = struct { card_id: []const u8 = "" };
+    const Resp = struct {
+        code: i64 = -1,
+        msg: []const u8 = "",
+        data: Data = .{},
+    };
+    const parsed = try std.json.parseFromSliceLeaky(Resp, a, resp, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    // createStreamingCard would return error.FeishuCardCreateFailed here.
+    try std.testing.expect(parsed.code != 0);
 }
