@@ -4,9 +4,9 @@
 //! allocates per frame and never imports the model. Strings come pre-localized
 //! from the caller (which reads i18n).
 const std = @import("std");
-const ai_history_renderer = @import("ai_history_renderer.zig");
+const panel_draw = @import("panel_draw.zig");
 
-pub const DrawContext = ai_history_renderer.DrawContext;
+pub const DrawContext = panel_draw.DrawContext;
 
 const HEADER_H: f32 = 54;
 const ROW_H: f32 = 30;
