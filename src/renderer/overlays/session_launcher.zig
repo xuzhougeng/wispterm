@@ -3,7 +3,7 @@ const std = @import("std");
 pub const AiHistorySourceChoice = enum { local, wsl, ssh };
 
 /// Launcher-level transient picker state that is neither form data
-/// (see `ssh_profiles` / `ai_profiles`) nor visibility (`command_center_state`).
+/// (see `ssh_profiles` / `assistant_profiles`) nor visibility (`command_center_state`).
 /// `switch_model_target` is the live `ai_chat.Session` bound to a `.switch_model`
 /// picker, stored opaque so this module stays compilable in the fast test suite
 /// without importing the heavy conversation session graph; `overlays.zig` casts it.

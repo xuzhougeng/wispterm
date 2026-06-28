@@ -826,7 +826,7 @@ comptime {
     _ = @import("renderer/overlays/command_palette_layout.zig");
     _ = @import("renderer/overlays/settings_page.zig");
     _ = @import("renderer/overlays/ssh_profiles.zig");
-    _ = @import("renderer/overlays/ai_profiles.zig");
+    _ = @import("renderer/overlays/assistant_profiles.zig");
     _ = @import("renderer/overlays/session_launcher.zig");
     _ = @import("renderer/overlays/state.zig");
     _ = @import("renderer/overlays/toasts.zig");

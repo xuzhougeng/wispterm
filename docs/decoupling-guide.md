@@ -486,7 +486,7 @@ pub const InputResult = struct {
 **`renderer/overlays.zig` → facade + registry.** `overlays.zig` keeps only the
 facade/registry; each overlay moves to its own module/dir
 (`command_palette/`, `settings/`, `confirm/`, `session_launcher/`,
-`ssh_profiles/`, `ai_profiles/`, `toasts/`, `update_prompt/`) with a uniform
+`ssh_profiles/`, `assistant_profiles/`, `toasts/`, `update_prompt/`) with a uniform
 trio — `state.zig`, `input.zig`, `render.zig` (`+ layout.zig`/`model.zig` as
 needed) — behind a uniform interface:
 

@@ -42,7 +42,7 @@ const settings_page = @import("overlays/settings_page.zig");
 const toasts = @import("overlays/toasts.zig");
 const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
-const ai_profiles = @import("overlays/ai_profiles.zig");
+const assistant_profiles = @import("overlays/assistant_profiles.zig");
 const session_launcher = @import("overlays/session_launcher.zig");
 const command_palette_state = @import("overlays/command_palette_state.zig");
 const command_palette_layout = @import("overlays/command_palette_layout.zig");
@@ -115,8 +115,8 @@ fn sshState() *ssh_profiles.State {
     return &g_overlay_state.ssh;
 }
 
-fn aiState() *ai_profiles.State {
-    return &g_overlay_state.ai;
+fn assistantProfiles() *assistant_profiles.State {
+    return &g_overlay_state.assistant_profiles;
 }
 
 fn launcherState() *session_launcher.State {
@@ -981,14 +981,14 @@ test "command palette surfaces user snippets and filters them by name/descriptio
     const previous_snippets = snippetsState().items;
     const previous_snippets_loaded = snippetsState().loaded;
     const previous_ssh_loaded = sshState().profiles_loaded;
-    const previous_ai_loaded = aiState().profiles_loaded;
+    const previous_ai_loaded = assistantProfiles().profiles_loaded;
     defer {
         commandPaletteState().* = previous_palette;
         g_palette_scratch_len = previous_scratch_len;
         snippetsState().items = previous_snippets;
         snippetsState().loaded = previous_snippets_loaded;
         sshState().profiles_loaded = previous_ssh_loaded;
-        aiState().profiles_loaded = previous_ai_loaded;
+        assistantProfiles().profiles_loaded = previous_ai_loaded;
     }
 
     var snippets = [_]command_registry.CustomCommand{
@@ -999,7 +999,7 @@ test "command palette surfaces user snippets and filters them by name/descriptio
     snippetsState().items = &snippets;
     snippetsState().loaded = true; // prevent loadSnippets from re-reading disk over our fixtures
     sshState().profiles_loaded = true;
-    aiState().profiles_loaded = true;
+    assistantProfiles().profiles_loaded = true;
 
     // Empty filter shows only the curated built-in commands; snippets surface
     // by typing, like SSH/AI/theme rows.
@@ -1028,19 +1028,19 @@ test "command palette includes tmux profile actions for SSH profile search" {
     const previous_ssh_count = sshState().profile_count;
     var previous_ssh_profiles: [SSH_PROFILE_MAX]SshProfile = undefined;
     if (previous_ssh_count > 0) @memcpy(previous_ssh_profiles[0..previous_ssh_count], sshState().profiles[0..previous_ssh_count]);
-    const previous_ai_loaded = aiState().profiles_loaded;
-    const previous_ai_count = aiState().profile_count;
+    const previous_ai_loaded = assistantProfiles().profiles_loaded;
+    const previous_ai_count = assistantProfiles().profile_count;
     var previous_ai_profiles: [AI_PROFILE_MAX]AiProfile = undefined;
-    if (previous_ai_count > 0) @memcpy(previous_ai_profiles[0..previous_ai_count], aiState().profiles[0..previous_ai_count]);
+    if (previous_ai_count > 0) @memcpy(previous_ai_profiles[0..previous_ai_count], assistantProfiles().profiles[0..previous_ai_count]);
     defer {
         commandPaletteState().* = previous_state;
         g_palette_scratch_len = previous_scratch_len;
         sshState().profiles_loaded = previous_ssh_loaded;
         sshState().profile_count = previous_ssh_count;
         if (previous_ssh_count > 0) @memcpy(sshState().profiles[0..previous_ssh_count], previous_ssh_profiles[0..previous_ssh_count]);
-        aiState().profiles_loaded = previous_ai_loaded;
-        aiState().profile_count = previous_ai_count;
-        if (previous_ai_count > 0) @memcpy(aiState().profiles[0..previous_ai_count], previous_ai_profiles[0..previous_ai_count]);
+        assistantProfiles().profiles_loaded = previous_ai_loaded;
+        assistantProfiles().profile_count = previous_ai_count;
+        if (previous_ai_count > 0) @memcpy(assistantProfiles().profiles[0..previous_ai_count], previous_ai_profiles[0..previous_ai_count]);
     }
 
     commandPaletteState().mode = .commands;
@@ -1048,8 +1048,8 @@ test "command palette includes tmux profile actions for SSH profile search" {
     sshState().profile_count = 2;
     sshState().profiles[0] = makeSshProfile("CPU2", "10.0.0.1", "user", "22");
     sshState().profiles[1] = makeSshProfile("GPU", "10.0.0.2", "user", "22");
-    aiState().profiles_loaded = true;
-    aiState().profile_count = 0;
+    assistantProfiles().profiles_loaded = true;
+    assistantProfiles().profile_count = 0;
 
     setCommandPaletteFilterForTest("CPU");
     rebuildPaletteScratch();
@@ -1148,9 +1148,9 @@ fn rebuildPaletteScratch() void {
         }
     }
     loadAiProfiles();
-    for (0..aiState().profile_count) |ai_idx| {
+    for (0..assistantProfiles().profile_count) |ai_idx| {
         if (g_palette_scratch_len >= COMMAND_PALETTE_MAX_VISIBLE_ROWS) break;
-        const profile = &aiState().profiles[ai_idx];
+        const profile = &assistantProfiles().profiles[ai_idx];
         if (!command_palette_model.aiProfileLabelMatchesFilter(aiProfileField(profile, .name), filter)) continue;
         g_palette_scratch[g_palette_scratch_len] = .{ .ai_profile = ai_idx };
         g_palette_scratch_len += 1;
@@ -2124,8 +2124,8 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
                         renderTitlebarTextLimited(tmux_title, title_x, text_y, row_title_color, @max(1.0, target_left - title_x - 18));
                     },
                     .ai_profile => |profile_idx| {
-                        if (profile_idx >= aiState().profile_count) continue;
-                        const profile = &aiState().profiles[profile_idx];
+                        if (profile_idx >= assistantProfiles().profile_count) continue;
+                        const profile = &assistantProfiles().profiles[profile_idx];
                         var title_buf: [AI_FIELD_MAX + 8]u8 = undefined;
                         const ai_title = std.fmt.bufPrint(title_buf[0..], "AI: {s}", .{aiProfileField(profile, .name)}) catch "AI";
                         var tag_buf: [24]u8 = undefined;
@@ -2198,10 +2198,10 @@ const SSH_FIELD_MAX = ssh_profiles.SSH_FIELD_MAX;
 const SSH_PROFILE_MAX = ssh_profiles.SSH_PROFILE_MAX;
 const SSH_PROFILE_NONE = ssh_profiles.SSH_PROFILE_NONE;
 const SSH_LIST_MAX_VISIBLE_ROWS = ssh_profiles_layout.LIST_MAX_VISIBLE_ROWS;
-const AI_FIELD_COUNT = ai_profiles.AI_FIELD_COUNT;
-const AI_FIELD_MAX = ai_profiles.AI_FIELD_MAX;
-const AI_PROFILE_MAX = ai_profiles.AI_PROFILE_MAX;
-const AI_PROFILE_NONE = ai_profiles.AI_PROFILE_NONE;
+const AI_FIELD_COUNT = assistant_profiles.AI_FIELD_COUNT;
+const AI_FIELD_MAX = assistant_profiles.AI_FIELD_MAX;
+const AI_PROFILE_MAX = assistant_profiles.AI_PROFILE_MAX;
+const AI_PROFILE_NONE = assistant_profiles.AI_PROFILE_NONE;
 const SshField = profile_codec.SshField;
 const AiField = profile_codec.AiField;
 
@@ -2233,7 +2233,7 @@ const SessionAction = enum {
 
 const SshListMode = ssh_profiles.SshListMode;
 
-const AiListMode = ai_profiles.AiListMode;
+const AiListMode = assistant_profiles.AiListMode;
 
 const AiHistorySourceChoice = session_launcher.AiHistorySourceChoice;
 
@@ -2282,8 +2282,8 @@ threadlocal var g_ai_history_source_visible: bool = false;
 // through `launcherState()` / `switchModelTarget()` / `setSwitchModelTarget()`.
 // SSH list/form state now lives in `g_overlay_state.ssh` (ssh_profiles.State),
 // reached through `sshState()`.
-// AI list/form state now lives in `g_overlay_state.ai` (ai_profiles.State),
-// reached through `aiState()`.
+// AI list/form state now lives in `g_overlay_state.assistant_profiles` (assistant_profiles.State),
+// reached through `assistantProfiles()`.
 
 pub const RemoteAgentOpenResult = enum {
     opened,
@@ -2422,7 +2422,7 @@ pub fn sessionLauncherOpenFromCommandPalette() void {
 
 fn resetSessionLauncherTransientModes() void {
     sshState().list_mode = .manage;
-    aiState().list_mode = .manage;
+    assistantProfiles().list_mode = .manage;
     launcherState().ai_history_source_selected = 0;
 }
 
@@ -2476,8 +2476,8 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
         return;
     }
     if (g_ai_form_visible) {
-        if (aiState().focus >= AI_FIELD_COUNT) return;
-        appendAiFormCodepoint(aiState().focus, codepoint);
+        if (assistantProfiles().focus >= AI_FIELD_COUNT) return;
+        appendAiFormCodepoint(assistantProfiles().focus, codepoint);
     }
 }
 
@@ -2487,8 +2487,8 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
         return true;
     }
     if (g_ai_form_visible) {
-        if (aiState().focus >= AI_FIELD_COUNT) return false;
-        appendAiFormText(aiState().focus, text);
+        if (assistantProfiles().focus >= AI_FIELD_COUNT) return false;
+        appendAiFormText(assistantProfiles().focus, text);
         return true;
     }
     if (g_ssh_form_visible) {
@@ -2600,18 +2600,18 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
 
     if (g_ai_form_visible) {
         switch (ev.key) {
-            .tab, .arrow_down => aiState().focusNextRow(),
-            .arrow_up => aiState().focusPrevRow(),
+            .tab, .arrow_down => assistantProfiles().focusNextRow(),
+            .arrow_up => assistantProfiles().focusPrevRow(),
             .arrow_right => {
-                if (aiState().focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(true);
-                if (aiState().focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
+                if (assistantProfiles().focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(true);
+                if (assistantProfiles().focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
             },
             .arrow_left => {
-                if (aiState().focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(false);
-                if (aiState().focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
+                if (assistantProfiles().focus == @intFromEnum(AiField.protocol)) cycleAiFormProtocol(false);
+                if (assistantProfiles().focus == @intFromEnum(AiField.vision)) toggleAiFormVision();
             },
             .backspace => {
-                if (aiState().focus < AI_FIELD_COUNT) backspaceAiFormField(aiState().focus);
+                if (assistantProfiles().focus < AI_FIELD_COUNT) backspaceAiFormField(assistantProfiles().focus);
             },
             .enter => runAiFormFocusAction(),
             else => {},
@@ -2675,7 +2675,7 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
         .new_ssh => openSshFormNew(),
         .edit_selected => openSshEditPicker(),
         .delete_selected => openSshDeletePicker(),
-        .connect_ai_selected => runAiListRow(aiState().list_selected),
+        .connect_ai_selected => runAiListRow(assistantProfiles().list_selected),
         .new_ai => openAiFormNew(),
         .edit_ai_selected => openAiEditPicker(),
         .delete_ai_selected => openAiDeletePicker(),
@@ -3701,13 +3701,13 @@ fn openAiList() void {
     g_ai_history_source_visible = false;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
-    aiState().list_mode = .manage;
-    aiState().list_selected = @min(aiState().list_selected, aiListRowCount() - 1);
+    assistantProfiles().list_mode = .manage;
+    assistantProfiles().list_selected = @min(assistantProfiles().list_selected, aiListRowCount() - 1);
 }
 
 fn openDefaultAiSession() void {
     loadAiProfiles();
-    if (aiState().profile_count == 0) {
+    if (assistantProfiles().profile_count == 0) {
         openAiFormNew();
         return;
     }
@@ -3716,7 +3716,7 @@ fn openDefaultAiSession() void {
 
 fn openDefaultAgentSessionFromCommandCenter() void {
     loadAiProfiles();
-    switch (command_center_state.resolveNewAgentLaunch(aiState().profile_count != 0)) {
+    switch (command_center_state.resolveNewAgentLaunch(assistantProfiles().profile_count != 0)) {
         .open_form => openAiFormNewFromCommandPalette(),
         .connect_default_profile_as_agent => connectAiProfileWithAgentOverride(defaultAiProfileIndex(), "true"),
     }
@@ -3724,12 +3724,12 @@ fn openDefaultAgentSessionFromCommandCenter() void {
 
 pub fn hasAiProfiles() bool {
     loadAiProfiles();
-    return aiState().profile_count > 0;
+    return assistantProfiles().profile_count > 0;
 }
 
 pub fn openDefaultAgentSessionForStartup() DefaultAgentOpenResult {
     loadAiProfiles();
-    if (aiState().profile_count == 0) {
+    if (assistantProfiles().profile_count == 0) {
         openAiFormNew();
         return .form_opened;
     }
@@ -3738,31 +3738,31 @@ pub fn openDefaultAgentSessionForStartup() DefaultAgentOpenResult {
 
 pub fn openDefaultAgentSessionForRemote() RemoteAgentOpenResult {
     loadAiProfiles();
-    if (aiState().profile_count == 0) return .no_profile;
+    if (assistantProfiles().profile_count == 0) return .no_profile;
     return if (spawnAiProfileWithAgentOverride(defaultAiProfileIndex(), "true")) .opened else .failed;
 }
 
 pub fn openAgentSessionForRemoteProfile(profile_name: []const u8) NamedAgentOpenResult {
     loadAiProfiles();
-    if (aiState().profile_count == 0) return .no_profile;
+    if (assistantProfiles().profile_count == 0) return .no_profile;
     const idx = blk: {
         const name = std.mem.trim(u8, profile_name, " \t\r\n");
         if (name.len == 0) break :blk defaultAiProfileIndex();
         var names: [AI_PROFILE_MAX][]const u8 = undefined;
-        for (0..aiState().profile_count) |i| names[i] = aiProfileField(&aiState().profiles[i], .name);
-        break :blk ai_model_switch.matchProfileByName(names[0..aiState().profile_count], name) orelse return .unknown_profile;
+        for (0..assistantProfiles().profile_count) |i| names[i] = aiProfileField(&assistantProfiles().profiles[i], .name);
+        break :blk ai_model_switch.matchProfileByName(names[0..assistantProfiles().profile_count], name) orelse return .unknown_profile;
     };
     return if (spawnAiProfileWithAgentOverride(idx, "true")) .opened else .failed;
 }
 
 pub fn aiModelProfileList(allocator: std.mem.Allocator) ![]u8 {
     loadAiProfiles();
-    if (aiState().profile_count == 0) return allocator.dupe(u8, "");
+    if (assistantProfiles().profile_count == 0) return allocator.dupe(u8, "");
     const default_idx = defaultAiProfileIndex();
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
-    for (0..aiState().profile_count) |idx| {
-        const profile = &aiState().profiles[idx];
+    for (0..assistantProfiles().profile_count) |idx| {
+        const profile = &assistantProfiles().profiles[idx];
         const name = aiProfileField(profile, .name);
         const model = aiProfileField(profile, .model);
         try out.print(allocator, "- {s}", .{name});
@@ -3784,30 +3784,30 @@ fn openAiDeletePicker() void {
 }
 
 fn openAiProfilePicker(mode: AiListMode) void {
-    if (aiState().profile_count == 0) return;
+    if (assistantProfiles().profile_count == 0) return;
     g_session_launcher_visible = false;
     g_ssh_list_visible = false;
     g_ssh_form_visible = false;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
-    aiState().list_mode = mode;
-    aiState().list_selected = if (aiState().list_selected < aiState().profile_count) aiState().list_selected else 0;
+    assistantProfiles().list_mode = mode;
+    assistantProfiles().list_selected = if (assistantProfiles().list_selected < assistantProfiles().profile_count) assistantProfiles().list_selected else 0;
 }
 
 fn openAiFormNew() void {
     clearAiForm();
-    aiState().edit_index = AI_PROFILE_NONE;
+    assistantProfiles().edit_index = AI_PROFILE_NONE;
     openAiForm();
 }
 
 fn openAiFormEdit(index: usize) void {
-    if (index >= aiState().profile_count) return;
+    if (index >= assistantProfiles().profile_count) return;
     clearAiForm();
     for (0..AI_FIELD_COUNT) |i| {
-        aiState().lens[i] = @min(aiState().profiles[index].lens[i], AI_FIELD_MAX);
-        @memcpy(aiState().bufs[i][0..aiState().lens[i]], aiState().profiles[index].fields[i][0..aiState().lens[i]]);
+        assistantProfiles().lens[i] = @min(assistantProfiles().profiles[index].lens[i], AI_FIELD_MAX);
+        @memcpy(assistantProfiles().bufs[i][0..assistantProfiles().lens[i]], assistantProfiles().profiles[index].fields[i][0..assistantProfiles().lens[i]]);
     }
-    aiState().edit_index = index;
+    assistantProfiles().edit_index = index;
     openAiForm();
 }
 
@@ -3820,7 +3820,7 @@ pub fn openAiConfigForSession(session: *AppWindow.ai_chat.Session) void {
 
     if (profile_idx) |idx| {
         openAiFormEdit(idx);
-        aiState().focus = @intFromEnum(AiField.api_key);
+        assistantProfiles().focus = @intFromEnum(AiField.api_key);
         return;
     }
 
@@ -3843,32 +3843,32 @@ pub fn openAiConfigForSession(session: *AppWindow.ai_chat.Session) void {
     } else |_| {}
     session.mutex.unlock();
 
-    aiState().edit_index = AI_PROFILE_NONE;
+    assistantProfiles().edit_index = AI_PROFILE_NONE;
     openAiForm();
-    aiState().focus = @intFromEnum(AiField.api_key);
+    assistantProfiles().focus = @intFromEnum(AiField.api_key);
 }
 
 pub fn openAiConfigForMissingCopilotApi() void {
     loadAiProfiles();
-    if (aiState().profile_count == 0) {
+    if (assistantProfiles().profile_count == 0) {
         openAiFormNew();
     } else {
         openAiFormEdit(defaultAiProfileIndex());
     }
-    aiState().focus = @intFromEnum(AiField.api_key);
+    assistantProfiles().focus = @intFromEnum(AiField.api_key);
 }
 
 fn findAiProfileForSession(name: []const u8, base_url: []const u8, model: []const u8) ?usize {
     if (name.len > 0) {
-        for (0..aiState().profile_count) |idx| {
-            if (std.mem.eql(u8, aiProfileField(&aiState().profiles[idx], .name), name)) return idx;
+        for (0..assistantProfiles().profile_count) |idx| {
+            if (std.mem.eql(u8, aiProfileField(&assistantProfiles().profiles[idx], .name), name)) return idx;
         }
     }
 
     if (base_url.len > 0 and model.len > 0) {
-        for (0..aiState().profile_count) |idx| {
-            if (std.mem.eql(u8, aiProfileField(&aiState().profiles[idx], .base_url), base_url) and
-                std.mem.eql(u8, aiProfileField(&aiState().profiles[idx], .model), model))
+        for (0..assistantProfiles().profile_count) |idx| {
+            if (std.mem.eql(u8, aiProfileField(&assistantProfiles().profiles[idx], .base_url), base_url) and
+                std.mem.eql(u8, aiProfileField(&assistantProfiles().profiles[idx], .model), model))
             {
                 return idx;
             }
@@ -3885,20 +3885,20 @@ fn openAiForm() void {
     g_session_launcher_visible = false;
     settingsState().visible = false;
     g_ai_form_visible = true;
-    aiState().focus = @intFromEnum(AiField.name);
+    assistantProfiles().focus = @intFromEnum(AiField.name);
 }
 
 fn setAiDefault(field: AiField, value: []const u8) void {
     const idx: usize = @intFromEnum(field);
     const len = @min(value.len, AI_FIELD_MAX);
-    @memcpy(aiState().bufs[idx][0..len], value[0..len]);
-    aiState().lens[idx] = len;
+    @memcpy(assistantProfiles().bufs[idx][0..len], value[0..len]);
+    assistantProfiles().lens[idx] = len;
 }
 
 const setProfileDefault = profile_codec.setProfileDefault;
 
 fn clearAiForm() void {
-    aiState().lens = .{0} ** AI_FIELD_COUNT;
+    assistantProfiles().lens = .{0} ** AI_FIELD_COUNT;
     setAiDefault(.name, AppWindow.ai_chat.DEFAULT_NAME);
     setAiDefault(.base_url, AppWindow.ai_chat.DEFAULT_BASE_URL);
     setAiDefault(.model, AppWindow.ai_chat.DEFAULT_MODEL);
@@ -3919,9 +3919,9 @@ fn appendAiFormCodepoint(field: usize, codepoint: u21) void {
     if (field == @intFromEnum(AiField.vision)) return;
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(codepoint, &buf) catch return;
-    if (aiState().lens[field] + len > AI_FIELD_MAX) return;
-    @memcpy(aiState().bufs[field][aiState().lens[field]..][0..len], buf[0..len]);
-    aiState().lens[field] += len;
+    if (assistantProfiles().lens[field] + len > AI_FIELD_MAX) return;
+    @memcpy(assistantProfiles().bufs[field][assistantProfiles().lens[field]..][0..len], buf[0..len]);
+    assistantProfiles().lens[field] += len;
 }
 
 fn appendAiFormText(field: usize, text: []const u8) void {
@@ -3955,13 +3955,13 @@ fn appendSshFormText(field: usize, text: []const u8) void {
 }
 
 fn backspaceAiFormField(field: usize) void {
-    if (field >= AI_FIELD_COUNT or aiState().lens[field] == 0) return;
+    if (field >= AI_FIELD_COUNT or assistantProfiles().lens[field] == 0) return;
     // Protocol and Vision are toggle fields; they are not text-editable.
     if (field == @intFromEnum(AiField.protocol)) return;
     if (field == @intFromEnum(AiField.vision)) return;
-    aiState().lens[field] -= 1;
-    while (aiState().lens[field] > 0 and (aiState().bufs[field][aiState().lens[field]] & 0xC0) == 0x80) {
-        aiState().lens[field] -= 1;
+    assistantProfiles().lens[field] -= 1;
+    while (assistantProfiles().lens[field] > 0 and (assistantProfiles().bufs[field][assistantProfiles().lens[field]] & 0xC0) == 0x80) {
+        assistantProfiles().lens[field] -= 1;
     }
 }
 
@@ -3970,7 +3970,7 @@ fn backspaceAiFormField(field: usize) void {
 /// so users toggle with ←/→ instead of typing an arbitrary string.
 fn cycleAiFormProtocol(forward: bool) void {
     const idx = @intFromEnum(AiField.protocol);
-    const current = AppWindow.ai_chat.ApiProtocol.parse(aiState().bufs[idx][0..aiState().lens[idx]]);
+    const current = AppWindow.ai_chat.ApiProtocol.parse(assistantProfiles().bufs[idx][0..assistantProfiles().lens[idx]]);
     setAiDefault(.protocol, current.cycle(forward).name());
 }
 
@@ -4003,35 +4003,35 @@ fn aiVisionDisplay() []const u8 {
 fn handleAiListKey(ev: input_key.KeyEvent) void {
     const row_count = aiListRowCount();
     switch (ev.key) {
-        .arrow_down, .tab => aiState().list_selected = (aiState().list_selected + 1) % row_count,
-        .arrow_up => aiState().list_selected = if (aiState().list_selected == 0) row_count - 1 else aiState().list_selected - 1,
-        .enter => runAiListRow(aiState().list_selected),
+        .arrow_down, .tab => assistantProfiles().list_selected = (assistantProfiles().list_selected + 1) % row_count,
+        .arrow_up => assistantProfiles().list_selected = if (assistantProfiles().list_selected == 0) row_count - 1 else assistantProfiles().list_selected - 1,
+        .enter => runAiListRow(assistantProfiles().list_selected),
         else => {},
     }
 }
 
 fn aiListRowCount() usize {
-    return switch (aiState().list_mode) {
-        .manage => aiState().profile_count + 4,
-        .edit_select, .delete_select, .switch_model => aiState().profile_count + 1,
+    return switch (assistantProfiles().list_mode) {
+        .manage => assistantProfiles().profile_count + 4,
+        .edit_select, .delete_select, .switch_model => assistantProfiles().profile_count + 1,
     };
 }
 
 fn aiField(field: AiField) []const u8 {
     const idx: usize = @intFromEnum(field);
-    return aiState().bufs[idx][0..aiState().lens[idx]];
+    return assistantProfiles().bufs[idx][0..assistantProfiles().lens[idx]];
 }
 
 const aiProfileField = profile_codec.aiProfileField;
 
 fn runAiListRow(row: usize) void {
-    switch (aiState().list_mode) {
+    switch (assistantProfiles().list_mode) {
         .manage => {
-            if (row < aiState().profile_count) {
+            if (row < assistantProfiles().profile_count) {
                 connectAiProfile(row);
                 return;
             }
-            const action_row = row - aiState().profile_count;
+            const action_row = row - assistantProfiles().profile_count;
             switch (action_row) {
                 0 => openAiFormNew(),
                 1 => openAiEditPicker(),
@@ -4040,14 +4040,14 @@ fn runAiListRow(row: usize) void {
             }
         },
         .edit_select => {
-            if (row < aiState().profile_count) {
+            if (row < assistantProfiles().profile_count) {
                 openAiFormEdit(row);
             } else {
                 openAiList();
             }
         },
         .delete_select => {
-            if (row < aiState().profile_count) {
+            if (row < assistantProfiles().profile_count) {
                 deleteAiProfile(row);
                 openAiList();
             } else {
@@ -4055,7 +4055,7 @@ fn runAiListRow(row: usize) void {
             }
         },
         .switch_model => {
-            if (row < aiState().profile_count) {
+            if (row < assistantProfiles().profile_count) {
                 if (switchModelTarget()) |session| _ = applyProfileToSession(session, row);
             }
             launcherState().clearSwitchTarget();
@@ -4065,15 +4065,15 @@ fn runAiListRow(row: usize) void {
 }
 
 fn deleteAiProfile(idx: usize) void {
-    if (aiState().profile_count == 0) return;
-    if (idx >= aiState().profile_count) return;
-    const deleted_is_default = std.mem.eql(u8, aiProfileField(&aiState().profiles[idx], .name), aiDefaultProfileName());
+    if (assistantProfiles().profile_count == 0) return;
+    if (idx >= assistantProfiles().profile_count) return;
+    const deleted_is_default = std.mem.eql(u8, aiProfileField(&assistantProfiles().profiles[idx], .name), aiDefaultProfileName());
     var i = idx;
-    while (i + 1 < aiState().profile_count) : (i += 1) {
-        aiState().profiles[i] = aiState().profiles[i + 1];
+    while (i + 1 < assistantProfiles().profile_count) : (i += 1) {
+        assistantProfiles().profiles[i] = assistantProfiles().profiles[i + 1];
     }
-    aiState().profile_count -= 1;
-    aiState().list_selected = @min(aiState().list_selected, aiListRowCount() - 1);
+    assistantProfiles().profile_count -= 1;
+    assistantProfiles().list_selected = @min(assistantProfiles().list_selected, aiListRowCount() - 1);
     if (deleted_is_default) {
         if (AppWindow.g_allocator) |allocator| Config.removeConfigKeys(allocator, &.{"ai-default-profile"}) catch {};
         invalidateAiDefaultName();
@@ -4096,11 +4096,11 @@ fn cancelAiFormOrLauncher() void {
 }
 
 fn runAiFormFocusAction() void {
-    if (aiState().focus < AI_FIELD_COUNT) {
-        aiState().focusNextRow();
+    if (assistantProfiles().focus < AI_FIELD_COUNT) {
+        assistantProfiles().focusNextRow();
         return;
     }
-    switch (aiState().focus - AI_FIELD_COUNT) {
+    switch (assistantProfiles().focus - AI_FIELD_COUNT) {
         0 => connectAiFromForm(),
         1 => saveAiFormOnly(),
         else => cancelAiFormOrLauncher(),
@@ -4114,13 +4114,13 @@ fn saveAiFormProfile() ?usize {
     if (base_url.len == 0 or model.len == 0) return null;
     if (!isHttpUrlish(base_url)) return null;
 
-    const editing_existing = aiState().edit_index != AI_PROFILE_NONE;
+    const editing_existing = assistantProfiles().edit_index != AI_PROFILE_NONE;
     const idx = if (editing_existing)
-        aiState().edit_index
+        assistantProfiles().edit_index
     else blk: {
-        if (aiState().profile_count >= AI_PROFILE_MAX) return null;
-        const next = aiState().profile_count;
-        aiState().profile_count += 1;
+        if (assistantProfiles().profile_count >= AI_PROFILE_MAX) return null;
+        const next = assistantProfiles().profile_count;
+        assistantProfiles().profile_count += 1;
         break :blk next;
     };
 
@@ -4130,24 +4130,24 @@ fn saveAiFormProfile() ?usize {
     var old_name_buf: [256]u8 = undefined;
     var old_name_len: usize = 0;
     if (editing_existing) {
-        const old_name = aiProfileField(&aiState().profiles[idx], .name);
+        const old_name = aiProfileField(&assistantProfiles().profiles[idx], .name);
         old_name_len = @min(old_name.len, old_name_buf.len);
         @memcpy(old_name_buf[0..old_name_len], old_name[0..old_name_len]);
     }
 
     for (0..AI_FIELD_COUNT) |i| {
-        aiState().profiles[idx].lens[i] = aiState().lens[i];
-        @memcpy(aiState().profiles[idx].fields[i][0..aiState().lens[i]], aiState().bufs[i][0..aiState().lens[i]]);
+        assistantProfiles().profiles[idx].lens[i] = assistantProfiles().lens[i];
+        @memcpy(assistantProfiles().profiles[idx].fields[i][0..assistantProfiles().lens[i]], assistantProfiles().bufs[i][0..assistantProfiles().lens[i]]);
     }
-    if (aiState().profiles[idx].lens[@intFromEnum(AiField.name)] == 0) {
+    if (assistantProfiles().profiles[idx].lens[@intFromEnum(AiField.name)] == 0) {
         const len = @min(model.len, AI_FIELD_MAX);
-        @memcpy(aiState().profiles[idx].fields[@intFromEnum(AiField.name)][0..len], model[0..len]);
-        aiState().profiles[idx].lens[@intFromEnum(AiField.name)] = len;
+        @memcpy(assistantProfiles().profiles[idx].fields[@intFromEnum(AiField.name)][0..len], model[0..len]);
+        assistantProfiles().profiles[idx].lens[@intFromEnum(AiField.name)] = len;
     }
 
     if (editing_existing and old_name_len > 0) {
         const old_name = old_name_buf[0..old_name_len];
-        const new_name = aiProfileField(&aiState().profiles[idx], .name);
+        const new_name = aiProfileField(&assistantProfiles().profiles[idx], .name);
         if (!std.mem.eql(u8, old_name, new_name) and std.mem.eql(u8, old_name, aiDefaultProfileName())) {
             Config.setConfigValue(allocator, "ai-default-profile", new_name) catch {};
             invalidateAiDefaultName();
@@ -4155,7 +4155,7 @@ fn saveAiFormProfile() ?usize {
     }
 
     saveAiProfiles(allocator);
-    aiState().edit_index = idx;
+    assistantProfiles().edit_index = idx;
     return idx;
 }
 
@@ -4168,8 +4168,8 @@ fn connectAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) vo
 }
 
 fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool {
-    if (idx >= aiState().profile_count) return false;
-    const profile = &aiState().profiles[idx];
+    if (idx >= assistantProfiles().profile_count) return false;
+    const profile = &assistantProfiles().profiles[idx];
     const name = aiProfileField(profile, .name);
     const base_url = aiProfileField(profile, .base_url);
     const api_key = aiProfileField(profile, .api_key);
@@ -4192,8 +4192,8 @@ fn spawnAiProfileWithAgentOverride(idx: usize, agent_override: ?[]const u8) bool
 /// Apply profile `idx` to the given live session in place (provider/model only)
 /// and kick off the background summary. Returns false on an invalid profile.
 fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
-    if (idx >= aiState().profile_count) return false;
-    const profile = &aiState().profiles[idx];
+    if (idx >= assistantProfiles().profile_count) return false;
+    const profile = &assistantProfiles().profiles[idx];
     const base_url = aiProfileField(profile, .base_url);
     const api_key = aiProfileField(profile, .api_key);
     const model = aiProfileField(profile, .model);
@@ -4212,17 +4212,17 @@ fn applyProfileToSession(session: *AppWindow.ai_chat.Session, idx: usize) bool {
 
 pub fn switchSessionModelByProfileName(session: *AppWindow.ai_chat.Session, profile_name: []const u8) ModelProfileSwitchResult {
     loadAiProfiles();
-    if (aiState().profile_count == 0) return .no_profile;
+    if (assistantProfiles().profile_count == 0) return .no_profile;
     var names: [AI_PROFILE_MAX][]const u8 = undefined;
-    for (0..aiState().profile_count) |i| names[i] = aiProfileField(&aiState().profiles[i], .name);
-    const idx = ai_model_switch.matchProfileByName(names[0..aiState().profile_count], profile_name) orelse return .unknown_profile;
+    for (0..assistantProfiles().profile_count) |i| names[i] = aiProfileField(&assistantProfiles().profiles[i], .name);
+    const idx = ai_model_switch.matchProfileByName(names[0..assistantProfiles().profile_count], profile_name) orelse return .unknown_profile;
     return if (applyProfileToSession(session, idx)) .switched else .failed;
 }
 
 /// Open the profile picker in switch-model mode, bound to `session`.
 pub fn openSwitchModelPicker(session: *AppWindow.ai_chat.Session) void {
     loadAiProfiles();
-    if (aiState().profile_count == 0) {
+    if (assistantProfiles().profile_count == 0) {
         session.appendLocalToolMessage(i18n.s().ai_model_no_profiles);
         AppWindow.g_force_rebuild = true;
         AppWindow.g_cells_valid = false;
@@ -4230,8 +4230,8 @@ pub fn openSwitchModelPicker(session: *AppWindow.ai_chat.Session) void {
     }
     setSwitchModelTarget(session);
     openAiList(); // sets visibility flags + mode .manage
-    aiState().list_mode = .switch_model;
-    aiState().list_selected = @min(aiState().list_selected, aiListRowCount() - 1);
+    assistantProfiles().list_mode = .switch_model;
+    assistantProfiles().list_selected = @min(assistantProfiles().list_selected, aiListRowCount() - 1);
 }
 
 /// `/model <name>`: match by name and apply directly; on no match, note the
@@ -4251,10 +4251,10 @@ pub fn switchModelByName(session: *AppWindow.ai_chat.Session, name: []const u8) 
 /// Session with copilot mode + the copilot system prompt, instead of a tab.
 pub fn makeCopilotSessionForDefaultProfile() ?*ai_chat.Session {
     loadAiProfiles();
-    if (aiState().profile_count == 0) return null;
+    if (assistantProfiles().profile_count == 0) return null;
     const idx = defaultAiProfileIndex();
-    if (idx >= aiState().profile_count) return null;
-    const profile = &aiState().profiles[idx];
+    if (idx >= assistantProfiles().profile_count) return null;
+    const profile = &assistantProfiles().profiles[idx];
     const base_url = aiProfileField(profile, .base_url);
     const api_key = aiProfileField(profile, .api_key);
     const model = aiProfileField(profile, .model);
@@ -4306,10 +4306,10 @@ pub const DefaultAiProfileSnapshot = struct {
 
 pub fn defaultAiProfileSnapshot(allocator: std.mem.Allocator) ?DefaultAiProfileSnapshot {
     loadAiProfiles();
-    if (aiState().profile_count == 0) return null;
+    if (assistantProfiles().profile_count == 0) return null;
     const idx = defaultAiProfileIndex();
-    if (idx >= aiState().profile_count) return null;
-    const profile = &aiState().profiles[idx];
+    if (idx >= assistantProfiles().profile_count) return null;
+    const profile = &assistantProfiles().profiles[idx];
     const base_url = aiProfileField(profile, .base_url);
     const api_key = aiProfileField(profile, .api_key);
     const model = aiProfileField(profile, .model);
@@ -4363,21 +4363,21 @@ test "default AI profile snapshot normalizes Anthropic URL with default protocol
 }
 
 test "overlays: missing copilot API opens AI config at API key" {
-    const saved_loaded = aiState().profiles_loaded;
-    const saved_count = aiState().profile_count;
-    const saved_focus = aiState().focus;
+    const saved_loaded = assistantProfiles().profiles_loaded;
+    const saved_count = assistantProfiles().profile_count;
+    const saved_focus = assistantProfiles().focus;
     const saved_list = g_ai_list_visible;
     const saved_form = g_ai_form_visible;
     defer {
-        aiState().profiles_loaded = saved_loaded;
-        aiState().profile_count = saved_count;
-        aiState().focus = saved_focus;
+        assistantProfiles().profiles_loaded = saved_loaded;
+        assistantProfiles().profile_count = saved_count;
+        assistantProfiles().focus = saved_focus;
         g_ai_list_visible = saved_list;
         g_ai_form_visible = saved_form;
     }
 
-    aiState().profiles_loaded = true;
-    aiState().profile_count = 0;
+    assistantProfiles().profiles_loaded = true;
+    assistantProfiles().profile_count = 0;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
 
@@ -4385,7 +4385,7 @@ test "overlays: missing copilot API opens AI config at API key" {
 
     try std.testing.expect(!g_ai_list_visible);
     try std.testing.expect(g_ai_form_visible);
-    try std.testing.expectEqual(@as(usize, @intFromEnum(AiField.api_key)), aiState().focus);
+    try std.testing.expectEqual(@as(usize, @intFromEnum(AiField.api_key)), assistantProfiles().focus);
 }
 
 threadlocal var g_ai_default_name_buf: [256]u8 = undefined;
@@ -4432,14 +4432,14 @@ pub fn resolveSubagentProfileOverride(allocator: std.mem.Allocator) ?ai_chat.Sub
     if (name.len == 0) return null;
     loadAiProfiles();
     var found: ?usize = null;
-    for (0..aiState().profile_count) |i| {
-        if (std.mem.eql(u8, aiProfileField(&aiState().profiles[i], .name), name)) {
+    for (0..assistantProfiles().profile_count) |i| {
+        if (std.mem.eql(u8, aiProfileField(&assistantProfiles().profiles[i], .name), name)) {
             found = i;
             break;
         }
     }
     const idx = found orelse return null;
-    const profile = &aiState().profiles[idx];
+    const profile = &assistantProfiles().profiles[idx];
     const base_url = aiProfileField(profile, .base_url);
     const model = aiProfileField(profile, .model);
     if (base_url.len == 0 or model.len == 0) return null;
@@ -4476,21 +4476,21 @@ pub fn resolveSubagentProfileOverride(allocator: std.mem.Allocator) ?ai_chat.Sub
 /// to the first profile. Returns 0 when no profiles exist (callers guard).
 fn defaultAiProfileIndex() usize {
     loadAiProfiles();
-    if (aiState().profile_count == 0) return 0;
+    if (assistantProfiles().profile_count == 0) return 0;
     var names: [AI_PROFILE_MAX][]const u8 = undefined;
-    for (0..aiState().profile_count) |i| {
-        names[i] = aiProfileField(&aiState().profiles[i], .name);
+    for (0..assistantProfiles().profile_count) |i| {
+        names[i] = aiProfileField(&assistantProfiles().profiles[i], .name);
     }
-    return command_palette_model.resolveDefaultIndex(names[0..aiState().profile_count], aiDefaultProfileName());
+    return command_palette_model.resolveDefaultIndex(names[0..assistantProfiles().profile_count], aiDefaultProfileName());
 }
 
 /// Name of the profile `delta` positions from the current default, wrapping in
 /// both directions (+1 for next, -1 for previous). Empty when no profiles exist.
 fn cycledDefaultAiProfileName(delta: i64) []const u8 {
     loadAiProfiles();
-    if (aiState().profile_count == 0) return "";
-    const idx = command_palette_model.cycleIndex(defaultAiProfileIndex(), aiState().profile_count, delta);
-    return aiProfileField(&aiState().profiles[idx], .name);
+    if (assistantProfiles().profile_count == 0) return "";
+    const idx = command_palette_model.cycleIndex(defaultAiProfileIndex(), assistantProfiles().profile_count, delta);
+    return aiProfileField(&assistantProfiles().profiles[idx], .name);
 }
 
 /// Persist the default AI profile `delta` positions from the current one
@@ -4498,7 +4498,7 @@ fn cycledDefaultAiProfileName(delta: i64) []const u8 {
 fn cycleDefaultAiProfile(delta: i64) void {
     const allocator = AppWindow.g_allocator orelse return;
     loadAiProfiles();
-    if (aiState().profile_count == 0) return;
+    if (assistantProfiles().profile_count == 0) return;
     const next_name = cycledDefaultAiProfileName(delta);
     Config.setConfigValue(allocator, "ai-default-profile", next_name) catch {};
     invalidateAiDefaultName();
@@ -4509,14 +4509,14 @@ fn isHttpUrlish(value: []const u8) bool {
 }
 
 fn loadAiProfiles() void {
-    if (aiState().profiles_loaded) return;
-    aiState().profiles_loaded = true;
+    if (assistantProfiles().profiles_loaded) return;
+    assistantProfiles().profiles_loaded = true;
     const allocator = AppWindow.g_allocator orelse return;
-    aiState().profile_count = assistant_profile_store.loadProfiles(allocator, aiState().profiles[0..]);
+    assistantProfiles().profile_count = assistant_profile_store.loadProfiles(allocator, assistantProfiles().profiles[0..]);
 }
 
 fn saveAiProfiles(allocator: std.mem.Allocator) void {
-    if (!assistant_profile_store.saveProfiles(allocator, aiState().profiles[0..aiState().profile_count])) showStatusToast("Failed to save AI profiles");
+    if (!assistant_profile_store.saveProfiles(allocator, assistantProfiles().profiles[0..assistantProfiles().profile_count])) showStatusToast("Failed to save AI profiles");
 }
 
 fn loadSshProfiles() void {
@@ -4584,7 +4584,7 @@ fn sessionLauncherTitle() []const u8 {
         return i18n.s().sl_ai_agent;
     }
     if (g_ai_list_visible) {
-        return switch (aiState().list_mode) {
+        return switch (assistantProfiles().list_mode) {
             .manage => i18n.s().sl_llm_providers,
             .edit_select => i18n.s().sl_edit_llm_provider,
             .delete_select => i18n.s().sl_delete_llm_provider,
@@ -4610,7 +4610,7 @@ fn sessionLauncherHint() []const u8 {
         return i18n.s().sl_hint_ai_form;
     }
     if (g_ai_list_visible) {
-        return switch (aiState().list_mode) {
+        return switch (assistantProfiles().list_mode) {
             .manage => i18n.s().sl_hint_ai_manage,
             .edit_select => i18n.s().sl_hint_choose_profile_edit,
             .delete_select => i18n.s().sl_hint_choose_profile_delete,
@@ -4674,9 +4674,9 @@ fn sessionDesiredBoxWidth() f32 {
 
     if (g_ai_list_visible) {
         var row: usize = 0;
-        while (row < aiState().profile_count) : (row += 1) {
+        while (row < assistantProfiles().profile_count) : (row += 1) {
             var detail_buf: [AI_FIELD_MAX]u8 = undefined;
-            const profile = &aiState().profiles[row];
+            const profile = &assistantProfiles().profiles[row];
             const model = aiProfileField(profile, .model);
             const base_url = aiProfileField(profile, .base_url);
             const detail = if (model.len > 0)
@@ -4685,11 +4685,11 @@ fn sessionDesiredBoxWidth() f32 {
                 std.fmt.bufPrint(&detail_buf, "{s}", .{base_url}) catch "";
             desired = @max(desired, sessionTwoColumnWidth(aiProfileField(profile, .name), detail));
         }
-        switch (aiState().list_mode) {
+        switch (assistantProfiles().list_mode) {
             .manage => {
                 desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_new_llm_provider, i18n.s().sl_v_add));
-                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_llm_provider, if (aiState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
-                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_llm_provider, if (aiState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_edit_llm_provider, if (assistantProfiles().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
+                desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_delete_llm_provider, if (assistantProfiles().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile));
                 desired = @max(desired, sessionTwoColumnWidth(sessionLauncherCancelLabel(), "Esc"));
             },
             .edit_select, .delete_select, .switch_model => {
@@ -4777,9 +4777,9 @@ fn sessionActiveRowCount() usize {
 /// Selected/focused row of the currently active session-launcher mode.
 fn sessionActiveSelection() usize {
     return if (g_ai_form_visible)
-        aiState().focus
+        assistantProfiles().focus
     else if (g_ai_list_visible)
-        aiState().list_selected
+        assistantProfiles().list_selected
     else if (g_ai_history_source_visible)
         launcherState().ai_history_source_selected
     else if (g_ssh_form_visible)
@@ -4793,9 +4793,9 @@ fn sessionActiveSelection() usize {
 /// Mutable pointer to the active mode's selection (for the mouse wheel).
 fn sessionActiveSelectionPtr() *usize {
     return if (g_ai_form_visible)
-        &aiState().focus
+        &assistantProfiles().focus
     else if (g_ai_list_visible)
-        &aiState().list_selected
+        &assistantProfiles().list_selected
     else if (g_ai_history_source_visible)
         &launcherState().ai_history_source_selected
     else if (g_ssh_form_visible)
@@ -4894,10 +4894,10 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
 
     if (g_ai_list_visible) {
         if (row >= aiListRowCount()) return null;
-        aiState().list_selected = row;
-        if (row < aiState().profile_count) return .connect_ai_selected;
-        if (aiState().list_mode != .manage) return .connect_ai_selected;
-        return switch (row - aiState().profile_count) {
+        assistantProfiles().list_selected = row;
+        if (row < assistantProfiles().profile_count) return .connect_ai_selected;
+        if (assistantProfiles().list_mode != .manage) return .connect_ai_selected;
+        return switch (row - assistantProfiles().profile_count) {
             0 => .new_ai,
             1 => .edit_ai_selected,
             2 => .delete_ai_selected,
@@ -4921,10 +4921,10 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
 
     if (g_ai_form_visible) {
         if (row < AI_FIELD_COUNT) {
-            aiState().focus = row;
+            assistantProfiles().focus = row;
             return null;
         }
-        aiState().focus = row;
+        assistantProfiles().focus = row;
         return switch (row) {
             AI_FIELD_COUNT => .connect_ai,
             AI_FIELD_COUNT + 1 => .save_ai,
@@ -4983,7 +4983,7 @@ fn renderSessionField(layout: SessionLayout, window_height: f32, row: usize, lab
 }
 
 fn renderAiSessionField(layout: SessionLayout, window_height: f32, row: usize, label: []const u8, value: []const u8, masked: bool) void {
-    renderSessionFieldValue(layout, window_height, row, label, value, masked, aiState().focus == row);
+    renderSessionFieldValue(layout, window_height, row, label, value, masked, assistantProfiles().focus == row);
 }
 
 fn renderSessionFieldValue(layout: SessionLayout, window_height: f32, row: usize, label: []const u8, value: []const u8, masked: bool, selected: bool) void {
@@ -5048,7 +5048,7 @@ fn aiProfileModeLabel(profile: *const AiProfile) []const u8 {
 
 fn defaultAiModeLabel() []const u8 {
     loadAiProfiles();
-    if (aiState().profile_count > 0) return aiProfileModeLabel(&aiState().profiles[defaultAiProfileIndex()]);
+    if (assistantProfiles().profile_count > 0) return aiProfileModeLabel(&assistantProfiles().profiles[defaultAiProfileIndex()]);
     return aiModeText(AppWindow.ai_chat.DEFAULT_AGENT);
 }
 
@@ -5129,21 +5129,21 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         }
         if (g_ai_list_visible) {
             var row: usize = 0;
-            while (row < aiState().profile_count) : (row += 1) {
-                renderAiProfileRow(layout, window_height, row, &aiState().profiles[row], aiState().list_selected == row);
+            while (row < assistantProfiles().profile_count) : (row += 1) {
+                renderAiProfileRow(layout, window_height, row, &assistantProfiles().profiles[row], assistantProfiles().list_selected == row);
             }
-            switch (aiState().list_mode) {
+            switch (assistantProfiles().list_mode) {
                 .manage => {
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_new_llm_provider, i18n.s().sl_v_add, aiState().list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_new_llm_provider, i18n.s().sl_v_add, assistantProfiles().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_edit_llm_provider, if (aiState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, aiState().list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_edit_llm_provider, if (assistantProfiles().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, assistantProfiles().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_delete_llm_provider, if (aiState().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, aiState().list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_delete_llm_provider, if (assistantProfiles().profile_count > 0) i18n.s().sl_v_choose else i18n.s().sl_v_no_profile, assistantProfiles().list_selected == row);
                     row += 1;
-                    renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", aiState().list_selected == row);
+                    renderSessionRow(layout, window_height, row, sessionLauncherCancelLabel(), "Esc", assistantProfiles().list_selected == row);
                 },
                 .edit_select, .delete_select, .switch_model => {
-                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, aiState().list_selected == row);
+                    renderSessionRow(layout, window_height, row, i18n.s().sl_back, i18n.s().sl_v_manage, assistantProfiles().list_selected == row);
                 },
             }
             return;
@@ -5221,9 +5221,9 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.protocol), i18n.s().sl_ai_protocol, aiProtocolDisplay(), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.max_tokens), i18n.s().sl_ai_max_tokens, aiField(.max_tokens), false);
         renderAiSessionField(layout, window_height, @intFromEnum(AiField.vision), i18n.s().sl_ai_vision, aiVisionDisplay(), false);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT, i18n.s().sl_save_open, i18n.s().sl_v_agent, aiState().focus == AI_FIELD_COUNT);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, aiState().focus == AI_FIELD_COUNT + 1);
-        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", aiState().focus == AI_FIELD_COUNT + 2);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT, i18n.s().sl_save_open, i18n.s().sl_v_agent, assistantProfiles().focus == AI_FIELD_COUNT);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, assistantProfiles().focus == AI_FIELD_COUNT + 1);
+        renderSessionRow(layout, window_height, AI_FIELD_COUNT + 2, sessionLauncherCancelLabel(), "Esc", assistantProfiles().focus == AI_FIELD_COUNT + 2);
         return;
     }
 
@@ -5287,7 +5287,7 @@ pub fn settingsPageOpen() void {
     state.settingsPageOpen();
     commandCenterStateCommit(state);
     settingsState().open();
-    aiState().list_mode = .manage;
+    assistantProfiles().list_mode = .manage;
 }
 
 fn settingsPageReloadCfg() void {
@@ -5655,12 +5655,12 @@ pub fn renderSettingsPage(window_width: f32, window_height: f32, top_offset: f32
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 2, i18n.s().settings_focus_follows_mouse, boolText(cfg.@"focus-follows-mouse"), "", true, focus == SETTINGS_CONTROL_ROW_START + 2);
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 3, i18n.s().settings_shell, cfg.shell, "", true, focus == SETTINGS_CONTROL_ROW_START + 3);
     loadAiProfiles();
-    const ai_default_value = if (aiState().profile_count > 0)
-        aiProfileField(&aiState().profiles[defaultAiProfileIndex()], .name)
+    const ai_default_value = if (assistantProfiles().profile_count > 0)
+        aiProfileField(&assistantProfiles().profiles[defaultAiProfileIndex()], .name)
     else
         i18n.s().settings_value_none;
-    const ai_default_hint = if (aiState().profile_count > 0)
-        aiProfileModeLabel(&aiState().profiles[defaultAiProfileIndex()])
+    const ai_default_hint = if (assistantProfiles().profile_count > 0)
+        aiProfileModeLabel(&assistantProfiles().profiles[defaultAiProfileIndex()])
     else
         i18n.s().settings_hint_add_profiles;
     renderSettingsRow(layout, window_height, SETTINGS_CONTROL_ROW_START + 4, i18n.s().settings_default_ai, ai_default_value, ai_default_hint, true, focus == SETTINGS_CONTROL_ROW_START + 4);

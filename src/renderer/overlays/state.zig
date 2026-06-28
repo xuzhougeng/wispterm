@@ -3,7 +3,7 @@ const settings_page = @import("settings_page.zig");
 const toasts = @import("toasts.zig");
 const confirm_modals = @import("confirm_modals.zig");
 const ssh_profiles = @import("ssh_profiles.zig");
-const ai_profiles = @import("ai_profiles.zig");
+const assistant_profiles = @import("assistant_profiles.zig");
 const session_launcher = @import("session_launcher.zig");
 const command_palette_state = @import("command_palette_state.zig");
 const command_registry = @import("../../command/registry.zig");
@@ -21,7 +21,7 @@ pub const OverlayState = struct {
     toasts: toasts.State = .{},
     confirms: confirm_modals.State = .{},
     ssh: ssh_profiles.State = .{},
-    ai: ai_profiles.State = .{},
+    assistant_profiles: assistant_profiles.State = .{},
     session: session_launcher.State = .{},
     command_palette: command_palette_state.State = .{},
     snippets: SnippetState = .{},
@@ -43,7 +43,7 @@ test "overlay state aggregates migrated overlay groups" {
     state.toasts.copy.show("Copied", 10, 100);
     state.confirms.openRestoreDefaults();
     state.ssh.setFormField(.name, "web");
-    state.ai.setFormField(.name, "claude");
+    state.assistant_profiles.setFormField(.name, "claude");
     state.session.ai_history_source_selected = 2;
     state.command_palette.openWithMode(.commands);
 
@@ -51,7 +51,7 @@ test "overlay state aggregates migrated overlay groups" {
     try std.testing.expectEqualStrings("Copied", state.toasts.copy.text().?);
     try std.testing.expect(state.confirms.restore_defaults_visible);
     try std.testing.expectEqualStrings("web", state.ssh.formField(.name));
-    try std.testing.expectEqualStrings("claude", state.ai.formField(.name));
+    try std.testing.expectEqualStrings("claude", state.assistant_profiles.formField(.name));
     try std.testing.expectEqual(@as(usize, 2), state.session.ai_history_source_selected);
     try std.testing.expect(state.command_palette.visible);
 }
