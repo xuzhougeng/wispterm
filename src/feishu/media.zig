@@ -39,6 +39,7 @@ pub fn buildMultipart(alloc: std.mem.Allocator, parts: []const Part) !MultipartR
     // Fixed boundary — deterministic for tests, unique enough for single-request use.
     // ponytail: static boundary is fine for sequential requests; randomise if reusing client across concurrent uploads.
     const boundary = try alloc.dupe(u8, "----WispTermFeishuBoundary7f3a9b2c");
+    errdefer alloc.free(boundary);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(alloc);
@@ -199,7 +200,10 @@ pub fn downloadResource(
         .{ message_id, file_key, kind_str },
     );
 
-    return httpsGetWithBearer(alloc, a, url, token);
+    // httpsGetWithBearer returns bytes owned by arena `a`; dupe into the
+    // caller's allocator before `defer arena.deinit()` frees them (UAF otherwise).
+    const raw = try httpsGetWithBearer(alloc, a, url, token);
+    return alloc.dupe(u8, raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +330,8 @@ test "buildMultipart: binary part with filename" {
     try std.testing.expect(std.mem.indexOf(u8, body, "filename=\"photo.png\"") != null);
     // Content-Type for binary part
     try std.testing.expect(std.mem.indexOf(u8, body, "Content-Type: application/octet-stream") != null);
+    // blank line separating headers from body (RFC 2046 §5.1.1)
+    try std.testing.expect(std.mem.indexOf(u8, body, "\r\n\r\n") != null);
     // binary bytes survive verbatim
     try std.testing.expect(std.mem.indexOf(u8, body, binary_data) != null);
     // terminator
