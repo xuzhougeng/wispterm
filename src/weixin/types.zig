@@ -34,7 +34,6 @@ pub const Message = struct {
     item_list: []const MessageItem = &.{},
 };
 
-
 pub const UploadUrl = struct {
     upload_param: []const u8 = "",
     upload_full_url: []const u8 = "",
@@ -63,7 +62,6 @@ pub const UploadedImage = struct {
     media: CdnMedia,
     mid_size: u64,
 };
-
 
 pub const GetUpdatesResult = struct {
     ret: i64 = 0,
@@ -105,5 +103,3 @@ pub const Binding = struct {
     bot_id: []const u8 = "",
     sync_buf: []const u8 = "",
 };
-
-

@@ -370,6 +370,12 @@ test "maps qrcode status strings to the enum" {
     try t.expectEqual(types.QrStatusKind.unknown, statusKindFromString("nonsense"));
 }
 
+test "uploadMediaTypeFor maps kinds to weixin media_type integers" {
+    try t.expectEqual(@as(i64, 1), uploadMediaTypeFor(.image));
+    try t.expectEqual(@as(i64, 3), uploadMediaTypeFor(.file));
+    try t.expectEqual(@as(i64, 3), uploadMediaTypeFor(.voice));
+}
+
 test "builds getuploadurl body for file media" {
     const body = try buildGetUploadUrlBody(t.allocator, .file, "wx-user", 123, "900150983cd24fb0d6963f7d28e17f72", 128, "00112233445566778899aabbccddeeff", "file-key");
     defer t.allocator.free(body);
