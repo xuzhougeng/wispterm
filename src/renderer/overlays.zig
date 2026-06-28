@@ -694,6 +694,13 @@ fn executeCommand(action: CommandAction) void {
                 showUpdateDownloadUnavailableToast();
             }
         },
+        .install_update => {
+            if (AppWindow.g_app) |app| {
+                if (!app.requestUpdateInstall()) showUpdatePrompt(.{ .state = .downloaded }, .none);
+            } else {
+                showUpdateDownloadUnavailableToast();
+            }
+        },
         .open_latest_release => openLatestRelease(),
         .show_whats_new => showWhatsNew(),
         .show_integration_prompt => integrationPromptOpen(),
@@ -6708,10 +6715,16 @@ const updatePromptActionForResult = update_prompt_model.updatePromptActionForRes
 
 fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction) void {
     var status_buf: [96]u8 = undefined;
-    const status = update_check.formatStatusMessage(&status_buf, result) catch return;
+    const status = if (action == .install_update) blk: {
+        if (result.latest_version.len > 0)
+            break :blk std.fmt.bufPrint(&status_buf, "Update ready: {s}", .{result.latest_version}) catch return
+        else
+            break :blk "Update ready";
+    } else update_check.formatStatusMessage(&status_buf, result) catch return;
     const suffix = switch (action) {
         .download_update => "  click to download",
         .open_release => "  click to open",
+        .install_update => "  立即更新",
         .none => "",
     };
     var msg_buf: [128]u8 = undefined;
@@ -7554,6 +7567,17 @@ pub fn activateUpdatePrompt() void {
                 }
             } else {
                 showUpdateDownloadUnavailableToast();
+            }
+        },
+        .install_update => {
+            if (AppWindow.g_app) |app| {
+                if (!app.requestUpdateInstall()) {
+                    // Fallback: app already revealed the DMG at download time;
+                    // show the manual prompt again.
+                    showUpdatePrompt(.{ .state = .downloaded }, .none);
+                }
+            } else {
+                showUpdatePrompt(.{ .state = .downloaded }, .none);
             }
         },
         .open_release => openStoredPromptUrl(),
