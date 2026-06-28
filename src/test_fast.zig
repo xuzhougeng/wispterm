@@ -204,6 +204,7 @@ test {
     _ = @import("appwindow/frame_scheduler.zig");
     _ = @import("appwindow/png_writer.zig");
     _ = @import("appwindow/render_gate.zig");
+    _ = @import("appwindow/ui_screenshot.zig");
     _ = @import("appwindow/ui_effect.zig");
     _ = @import("appwindow/window_state.zig");
     _ = @import("appwindow/remote_state.zig");
