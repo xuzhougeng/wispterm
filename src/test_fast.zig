@@ -312,6 +312,7 @@ test {
     _ = @import("feishu/rest.zig");
     _ = @import("feishu/codec.zig");
     _ = @import("feishu/binding.zig");
+    _ = @import("feishu/longconn.zig");
     _ = @import("assistant/conversation/title.zig");
     _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("command/registry.zig");

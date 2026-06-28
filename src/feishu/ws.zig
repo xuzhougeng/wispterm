@@ -111,10 +111,10 @@ pub const Conn = struct {
 
     /// Write one masked binary frame (client->server frames MUST be masked).
     pub fn writeBinary(self: *Conn, payload: []const u8) !void {
-        var w = self.conn.writer();
+        const w = self.conn.writer(); // returns *std.Io.Writer
         var mask: [4]u8 = undefined;
         self.rng.random().bytes(&mask);
-        try writeFrame(&w, 0x82, &mask, payload);
+        try writeFrame(w, 0x82, &mask, payload);
         try self.conn.flush();
     }
 
