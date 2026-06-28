@@ -1,14 +1,14 @@
-//! Native renderer for AI Chat sessions.
+//! Native renderer for assistant conversation sessions.
 
 const std = @import("std");
-const AppWindow = @import("../AppWindow.zig");
-const ai_chat = @import("../assistant/conversation/session.zig");
-const ai_model_switch = @import("../assistant/conversation/model_switch.zig");
-const i18n = @import("../i18n.zig");
-const composer_layout = @import("../assistant/conversation/composer_layout.zig");
-const scrollbar_model = @import("../assistant/conversation/scrollbar_model.zig");
-const md = @import("../markdown_text.zig");
-const detail_wrap = @import("../composer_detail_wrap.zig");
+const AppWindow = @import("../../AppWindow.zig");
+const ai_chat = @import("../../assistant/conversation/session.zig");
+const ai_model_switch = @import("../../assistant/conversation/model_switch.zig");
+const i18n = @import("../../i18n.zig");
+const composer_layout = @import("../../assistant/conversation/composer_layout.zig");
+const scrollbar_model = @import("../../assistant/conversation/scrollbar_model.zig");
+const md = @import("../../markdown_text.zig");
+const detail_wrap = @import("../../composer_detail_wrap.zig");
 
 // Transcript scrollbar interaction state (one mouse). Set by input.zig,
 // read by the fade computation in renderTranscriptScrollbar.
@@ -25,8 +25,8 @@ const tableBlockEnd = md.tableBlockEnd;
 
 const font = AppWindow.font;
 const titlebar = AppWindow.titlebar;
-const ui_pipeline = @import("ui_pipeline.zig");
-const ai_chat_layout = @import("../assistant/conversation/layout.zig");
+const ui_pipeline = @import("../ui_pipeline.zig");
+const ai_chat_layout = @import("../../assistant/conversation/layout.zig");
 
 pub const LINE_PAD_X: f32 = 18;
 pub const HEADER_H: f32 = 54;

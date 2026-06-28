@@ -2,7 +2,7 @@
 //!
 //! No GL or platform imports so it can be unit-tested in test_main.zig
 //! (mirrors src/scrollbar_model.zig, which the terminal scrollbar extracted
-//! for the same reason — src/renderer/ai_chat_renderer.zig @cImports OpenGL
+//! for the same reason — src/renderer/assistant/conversation.zig @cImports OpenGL
 //! and is not part of the test build).
 
 const std = @import("std");

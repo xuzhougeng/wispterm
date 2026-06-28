@@ -30,7 +30,7 @@ const gl_context_bypass = "gpu.Context.gl";
 const src_app_window = @embedFile("../../AppWindow.zig");
 const src_font_manager = @embedFile("../../font/manager.zig");
 const src_titlebar = @embedFile("../titlebar.zig");
-const src_ai_chat = @embedFile("../ai_chat_renderer.zig");
+const src_assistant_conversation = @embedFile("../assistant/conversation.zig");
 const src_file_explorer = @embedFile("../file_explorer_renderer.zig");
 const src_markdown = @embedFile("../markdown_preview_renderer.zig");
 const src_overlays = @embedFile("../overlays.zig");
@@ -54,7 +54,7 @@ const glad_free = [_]Entry{
     .{ .name = "AppWindow.zig", .source = src_app_window },
     .{ .name = "font/manager.zig", .source = src_font_manager },
     .{ .name = "renderer/titlebar.zig", .source = src_titlebar },
-    .{ .name = "renderer/ai_chat_renderer.zig", .source = src_ai_chat },
+    .{ .name = "renderer/assistant/conversation.zig", .source = src_assistant_conversation },
     .{ .name = "renderer/file_explorer_renderer.zig", .source = src_file_explorer },
     .{ .name = "renderer/markdown_preview_renderer.zig", .source = src_markdown },
     .{ .name = "renderer/overlays.zig", .source = src_overlays },
@@ -78,7 +78,7 @@ const raw_gl_free = [_]Entry{
     .{ .name = "renderer/post_process.zig", .source = src_post_process },
     .{ .name = "renderer/Renderer.zig", .source = src_renderer },
     .{ .name = "renderer/titlebar.zig", .source = src_titlebar },
-    .{ .name = "renderer/ai_chat_renderer.zig", .source = src_ai_chat },
+    .{ .name = "renderer/assistant/conversation.zig", .source = src_assistant_conversation },
     .{ .name = "renderer/file_explorer_renderer.zig", .source = src_file_explorer },
     .{ .name = "renderer/markdown_preview_renderer.zig", .source = src_markdown },
     .{ .name = "renderer/image_renderer.zig", .source = src_image },

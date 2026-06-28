@@ -112,7 +112,7 @@ pub const browser_panel = if (build_options.webview)
     @import("browser/panel.zig")
 else
     @import("browser/panel_stub.zig");
-pub const ai_chat_renderer = @import("renderer/ai_chat_renderer.zig");
+pub const assistant_conversation_renderer = @import("renderer/assistant/conversation.zig");
 pub const ai_history_renderer = @import("renderer/ai_history_renderer.zig");
 const skill_center_renderer = @import("renderer/skill_center_renderer.zig");
 const port_forwarding_renderer = @import("renderer/port_forwarding_renderer.zig");
@@ -1728,7 +1728,7 @@ fn renderAiChatFrame(fb_width: c_int, fb_height: c_int, titlebar_offset: f32, le
     if (activeAiChat()) |session| {
         const chat_x = left_panels_w;
         const chat_w = @as(f32, @floatFromInt(fb_width)) - left_panels_w - right_panels_w;
-        ai_chat_renderer.render(
+        assistant_conversation_renderer.render(
             session,
             @floatFromInt(fb_width),
             @floatFromInt(fb_height),
@@ -2024,7 +2024,7 @@ fn renderAiCopilotPanel(fb_width: c_int, fb_height: c_int, titlebar_offset: f32)
     const bounds = ai_sidebar.boundsForWindow(@intCast(fb_width), @intCast(fb_height), titlebar_offset, left, 0);
     const chat_x: f32 = @floatFromInt(bounds.left);
     const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-    ai_chat_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w, true); // copilot sidebar: status shown as a colored dot
+    assistant_conversation_renderer.render(session, @floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset, chat_x, chat_w, true); // copilot sidebar: status shown as a colored dot
     renderAiCopilotCloseButton(bounds, @floatFromInt(fb_height));
 }
 
@@ -2034,7 +2034,7 @@ fn renderAiCopilotCloseButton(bounds: ai_sidebar.Bounds, window_height: f32) voi
         .left = @floatFromInt(bounds.left),
         .right = @floatFromInt(bounds.right),
         .top = @floatFromInt(bounds.top),
-        .height = ai_chat_renderer.HEADER_H,
+        .height = assistant_conversation_renderer.HEADER_H,
     };
     const close = hit_test.panelCloseButtonRect(layout) orelse return;
     const close_x: f32 = @floatCast(close.left);
@@ -5779,13 +5779,13 @@ fn syncAiChatImeCaret(win: *window_backend.Window, session: *ai_chat.Session, ch
     const wh: f32 = @floatFromInt(size.height);
     session.mutex.lock();
     const input_text = session.input();
-    const layout = ai_chat_renderer.inputLayout(chat_x, chat_w, input_text);
-    const cursor = ai_chat_renderer.inputCursorRect(input_text, session.inputCursorLocked(), layout.text_x, layout.text_w);
+    const layout = assistant_conversation_renderer.inputLayout(chat_x, chat_w, input_text);
+    const cursor = assistant_conversation_renderer.inputCursorRect(input_text, session.inputCursorLocked(), layout.text_x, layout.text_w);
     const scrolled_row = session.input_scroll_row;
     const follow_cursor = session.input_scroll_follow_cursor;
     session.mutex.unlock();
     const input_line_h = @round(@max(23.0, font.g_titlebar_cell_height + 8.0));
-    const visible_rows = ai_chat_renderer.inputVisibleRowsForField(layout.field_h);
+    const visible_rows = assistant_conversation_renderer.inputVisibleRowsForField(layout.field_h);
     var first_row = scrolled_row;
     if (follow_cursor) {
         if (cursor.row < first_row) {
@@ -5797,7 +5797,7 @@ fn syncAiChatImeCaret(win: *window_backend.Window, session: *ai_chat.Session, ch
     if (cursor.row < first_row) return;
     const row = cursor.row - first_row;
     const field_top_px = wh - layout.field_y - layout.field_h;
-    const cursor_top_px = field_top_px + ai_chat_renderer.INPUT_FIELD_PAD_TOP + @as(f32, @floatFromInt(row)) * input_line_h;
+    const cursor_top_px = field_top_px + assistant_conversation_renderer.INPUT_FIELD_PAD_TOP + @as(f32, @floatFromInt(row)) * input_line_h;
     const cursor_y = cursor_top_px;
     const h = font.g_titlebar_cell_height;
     window_backend.setImeCaret(
