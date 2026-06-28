@@ -1,12 +1,13 @@
-//! 飞书 channel controller — M2.8.
+//! 飞书 channel controller — M2.8/M2.9.
 //! Lifecycle (create/start/stop/destroy) mirroring src/weixin/controller.zig,
 //! but uses longconn.Client instead of ilink poller.
 //!
 //! onEvent pipeline (runs on the longconn thread):
 //!   codec.parseReceiveV1 → Dedup → binding.shouldHandle
+//!   → capture baseline transcript (before route)
 //!   → build ReplyContext → chatops_router.route
 //!   → immediate ack via send_text sink (injectable for tests)
-//!   → TODO(M2.9): schedule AI-progress driver if expect_ai_progress
+//!   → beginEpisode on progress worker if expect_ai_progress (M2.9)
 //!
 //! Security: token/secret are never logged.
 const std = @import("std");
@@ -18,6 +19,7 @@ const types = @import("types.zig");
 const control_mod = @import("../chatops/control.zig");
 const router = @import("../chatops/router.zig");
 const reply_mod = @import("../chatops/reply.zig");
+const progress_mod = @import("progress.zig");
 
 const log = std.log.scoped(.feishu_ctrl);
 
@@ -100,6 +102,10 @@ pub const Controller = struct {
     // Injectable send sink: points at restSendText in production; tests override.
     send_sink: SendSink,
 
+    // AI-reply progress worker (M2.9). Polls the transcript on a separate
+    // thread and sends the final reply / approval/question prompts to Feishu.
+    progress: progress_mod.ProgressWorker,
+
     pub fn create(
         allocator: std.mem.Allocator,
         creds: types.Credentials,
@@ -126,6 +132,13 @@ pub const Controller = struct {
             .dedup = dedup,
             .conn = .{ .allocator = allocator },
             .send_sink = .{ .ctx = self, .send = restSendText },
+            // progress.send_sink is set to self.send_sink after self.* is
+            // initialized (send_sink.ctx = self, which is now stable on the heap).
+            .progress = .{
+                .allocator = allocator,
+                .control = control,
+                .send_sink = .{ .ctx = self, .send = restSendText },
+            },
         };
         return self;
     }
@@ -139,20 +152,27 @@ pub const Controller = struct {
         self.allocator.destroy(self);
     }
 
-    /// Starts the long-connection thread. Idempotent: no-op if already running.
+    /// Starts the long-connection thread and the AI-progress worker.
+    /// Idempotent: no-op if already running.
     pub fn start(self: *Controller) !void {
         if (self.running) return;
+        try self.progress.start();
+        errdefer self.progress.stop();
         try self.conn.start(self.creds, onEvent, self);
         self.running = true;
         log.info("feishu controller started", .{});
     }
 
-    /// Signals stop and joins the longconn thread cleanly.
+    /// Signals stop and joins both the longconn thread and the progress worker.
+    /// progress.stop() is always called (idempotent) so episode allocations
+    /// created by onEvent are freed even when start() was never called.
     pub fn stop(self: *Controller) void {
-        if (!self.running) return;
-        self.conn.stop(); // signals + joins
-        self.running = false;
-        log.info("feishu controller stopped", .{});
+        if (self.running) {
+            self.conn.stop(); // signals + joins longconn
+            self.running = false;
+            log.info("feishu controller stopped", .{});
+        }
+        self.progress.stop(); // idempotent: safe even if never started
     }
 
     // ---------------------------------------------------------------------------
@@ -188,7 +208,17 @@ pub const Controller = struct {
             return;
         }
 
-        // Step 4: build ReplyContext (feishu replies to chat_id)
+        // Step 4: capture baseline transcript BEFORE routing, so the baseline
+        // does not include the AI response to the current message. The dup is
+        // freed after beginEpisode (which dups it again) or on no-progress path.
+        const baseline: []u8 = blk: {
+            const raw = self.control.latestTranscript();
+            if (raw.len == 0) break :blk &.{};
+            break :blk self.allocator.dupe(u8, raw) catch &.{};
+        };
+        defer if (baseline.len != 0) self.allocator.free(baseline);
+
+        // Step 5: build ReplyContext (feishu replies to chat_id)
         const reply_ctx = reply_mod.ReplyContext{
             .sender = .{
                 .ctx = self,
@@ -199,7 +229,7 @@ pub const Controller = struct {
             .model_context = "",
         };
 
-        // Step 5: route. r.text borrows arena `a`, so arena.deinit (above)
+        // Step 6: route. r.text borrows arena `a`, so arena.deinit (above)
         // reclaims it — no r.deinit() needed.
         var r = router.Reply.init(a);
         var reply_text: []const u8 = "";
@@ -214,19 +244,25 @@ pub const Controller = struct {
             reply_text = "处理出错，请稍候重试。";
         }
 
-        // Step 6: immediate ack via injectable sink
+        // /stop: cancel any active AI progress episode before sending the ack.
+        if (r.stop_followup) {
+            log.debug("onEvent: stop_followup → cancelling progress episode", .{});
+            self.progress.cancelEpisode();
+        }
+
+        // Step 7: immediate ack via injectable sink
         if (reply_text.len > 0) {
             self.send_sink.send(self.send_sink.ctx, self.allocator, msg.chat_id, reply_text) catch |err| {
                 log.warn("onEvent: ack send failed: {s}", .{@errorName(err)});
             };
         }
 
-        // Step 7: AI progress hook
+        // Step 8: schedule AI-progress driver if the route expects an async reply.
+        // Runs off-thread (progress worker), not here on the longconn read loop.
         if (r.expect_ai_progress) {
-            // TODO(M2.9): schedule progress driver — poll latestTranscript and
-            // forward AI reply to msg.chat_id via send_sink. Must run off-thread
-            // (not here on the longconn read loop). See task M2.9 brief.
-            log.debug("onEvent: expect_ai_progress=true (M2.9 hook pending)", .{});
+            self.progress.beginEpisode(msg.chat_id, baseline) catch |err| {
+                log.warn("onEvent: beginEpisode failed: {s}", .{@errorName(err)});
+            };
         }
     }
 };

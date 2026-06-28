@@ -314,6 +314,7 @@ test {
     _ = @import("feishu/binding.zig");
     _ = @import("feishu/longconn.zig");
     _ = @import("feishu/controller.zig");
+    _ = @import("feishu/progress.zig");
     _ = @import("assistant/conversation/title.zig");
     _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("command/registry.zig");
