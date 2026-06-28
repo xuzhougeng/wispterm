@@ -776,6 +776,38 @@ fn storeDownloadComplete(self: *App) void {
     self.update_result = self.pendingDownloadResultWithStateLocked(.downloaded);
 }
 
+/// Apply the downloaded macOS update in place and quit so the helper can swap
+/// and relaunch. Returns false (no quit) when not applicable — caller shows the
+/// manual fallback. Safe to call on any platform: non-macOS returns false.
+pub fn requestUpdateInstall(self: *App) bool {
+    if (!update_apply.isSupported()) return false;
+
+    var asset_buf: [128]u8 = undefined;
+    var asset_len: usize = 0;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        const r = self.update_result;
+        if (r.state != .downloaded or r.asset_name.len == 0) return false;
+        asset_len = @min(r.asset_name.len, asset_buf.len);
+        @memcpy(asset_buf[0..asset_len], r.asset_name[0..asset_len]);
+    }
+
+    const dmg_path = update_install.downloadDestPath(self.allocator, asset_buf[0..asset_len]) catch return false;
+    defer self.allocator.free(dmg_path);
+
+    const exe_path = std.fs.selfExePathAlloc(self.allocator) catch return false;
+    defer self.allocator.free(exe_path);
+
+    update_apply.applyUpdate(self.allocator, dmg_path, exe_path) catch |err| {
+        std.debug.print("Update install: failed: {}\n", .{err});
+        return false;
+    };
+
+    window_backend.requestQuit();
+    return true;
+}
+
 fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
     if (out.len == 0 or value.len == 0) return null;
     const len = @min(out.len, value.len);
