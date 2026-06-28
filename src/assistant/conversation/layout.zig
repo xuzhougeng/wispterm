@@ -2,7 +2,7 @@
 //!
 //! No GL, font, or platform imports so it can be unit-tested in the fast test
 //! build (mirrors composer_layout.zig / scrollbar_model.zig,
-//! extracted for the same reason — src/renderer/ai_chat_renderer.zig @cImports
+//! extracted for the same reason — src/renderer/assistant/conversation.zig @cImports
 //! OpenGL historically and the font globals are not part of the test build).
 //! Callers pass font-derived metrics (e.g. header_h) and layout constants as
 //! params; this module owns none of them.

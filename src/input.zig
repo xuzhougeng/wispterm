@@ -2047,8 +2047,8 @@ pub fn cancelTransientMouseState(win: anytype) void {
     g_ai_input_scroll_chat = null;
     g_ai_transcript_scroll_dragging = false;
     g_ai_transcript_scroll_chat = null;
-    AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = false;
-    AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = false;
+    AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = false;
+    AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover = false;
     g_ai_transcript_scroll_panel = .active_chat;
     g_ai_transcript_selecting = false;
     g_ai_transcript_select_chat = null;
@@ -3585,7 +3585,7 @@ fn aiChatInputWrapCols() usize {
     const size = clientSize(win);
     const ww: f32 = @floatFromInt(size.width);
     const panel_w = @max(1.0, ww - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidth());
-    return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
+    return AppWindow.assistant_conversation_renderer.inputWrapColumns(panel_w);
 }
 
 /// Wrap columns for the AI copilot sidebar's composer. Mirrors
@@ -3595,7 +3595,7 @@ fn aiCopilotInputWrapCols() usize {
     const win = AppWindow.g_window orelse return std.math.maxInt(usize);
     const size = clientSize(win);
     const panel_w = AppWindow.aiCopilotWidth(size.width);
-    return AppWindow.ai_chat_renderer.inputWrapColumns(panel_w);
+    return AppWindow.assistant_conversation_renderer.inputWrapColumns(panel_w);
 }
 
 fn handleBrowserUrlBarKey(ev: platform_input.KeyEvent) void {
@@ -3839,7 +3839,7 @@ fn aiCopilotHeaderLayout() ?hit_test.PanelHeaderLayout {
         .left = @floatFromInt(bounds.left),
         .right = @floatFromInt(bounds.right),
         .top = @floatFromInt(bounds.top),
-        .height = @floatCast(AppWindow.ai_chat_renderer.HEADER_H),
+        .height = @floatCast(AppWindow.assistant_conversation_renderer.HEADER_H),
     };
 }
 
@@ -5385,7 +5385,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
         if (AppWindow.activeAiChat()) |chat| {
             const win = AppWindow.g_window orelse return;
             const fb = window_backend.framebufferSize(win);
-            if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
+            if (AppWindow.assistant_conversation_renderer.inputFieldMetricsAt(
                 chat,
                 xpos,
                 ypos,
@@ -5541,7 +5541,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         focusAiCopilot();
                         const chat_x: f32 = @floatFromInt(bounds.left);
                         const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-                        if (AppWindow.ai_chat_renderer.stopButtonHitTest(
+                        if (AppWindow.assistant_conversation_renderer.stopButtonHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -5555,7 +5555,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             requestInputRepaint();
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.missingApiKeyStatusHitTest(
+                        if (AppWindow.assistant_conversation_renderer.missingApiKeyStatusHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -5569,7 +5569,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             requestInputRepaint();
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.interactionHitTest(
+                        if (AppWindow.assistant_conversation_renderer.interactionHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -5596,7 +5596,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             }
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.modelLabelHitTest(
+                        if (AppWindow.assistant_conversation_renderer.modelLabelHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -5609,7 +5609,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             requestInputRepaint();
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.permissionChipHitTest(
+                        if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
                             xpos,
                             ypos,
                             @floatFromInt(fb.width),
@@ -5620,7 +5620,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             toggleAiAgentPermission();
                             return;
                         }
-                        if (AppWindow.ai_chat_renderer.transcriptScrollbarHitTest(
+                        if (AppWindow.assistant_conversation_renderer.transcriptScrollbarHitTest(
                             chat,
                             xpos,
                             ypos,
@@ -5634,13 +5634,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                             g_ai_transcript_scroll_chat = chat;
                             g_ai_transcript_scroll_drag_offset = drag_offset;
                             g_ai_transcript_scroll_panel = .copilot_sidebar;
-                            AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = true;
+                            AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = true;
                             applyAiTranscriptScrollbarDrag(chat, ypos);
                             requestInputRepaint();
                             return;
                         }
                         if (!ev.ctrl and !ev.alt) {
-                            if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
+                            if (AppWindow.assistant_conversation_renderer.transcriptTextHitTest(
                                 chat,
                                 xpos,
                                 ypos,
@@ -5674,7 +5674,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             if (AppWindow.activeAiChat()) |chat| {
                 const win = AppWindow.g_window orelse return;
                 const fb = window_backend.framebufferSize(win);
-                if (AppWindow.ai_chat_renderer.stopButtonHitTest(
+                if (AppWindow.assistant_conversation_renderer.stopButtonHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -5688,7 +5688,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     requestInputRepaint();
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.missingApiKeyStatusHitTest(
+                if (AppWindow.assistant_conversation_renderer.missingApiKeyStatusHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -5702,7 +5702,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     requestInputRepaint();
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.interactionHitTest(
+                if (AppWindow.assistant_conversation_renderer.interactionHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -5729,7 +5729,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     }
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.modelLabelHitTest(
+                if (AppWindow.assistant_conversation_renderer.modelLabelHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -5742,7 +5742,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     requestInputRepaint();
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.permissionChipHitTest(
+                if (AppWindow.assistant_conversation_renderer.permissionChipHitTest(
                     xpos,
                     ypos,
                     @floatFromInt(fb.width),
@@ -5753,7 +5753,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     toggleAiAgentPermission();
                     return;
                 }
-                if (AppWindow.ai_chat_renderer.transcriptScrollbarHitTest(
+                if (AppWindow.assistant_conversation_renderer.transcriptScrollbarHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -5767,13 +5767,13 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                     g_ai_transcript_scroll_chat = chat;
                     g_ai_transcript_scroll_drag_offset = drag_offset;
                     g_ai_transcript_scroll_panel = .active_chat;
-                    AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = true;
+                    AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = true;
                     applyAiTranscriptScrollbarDrag(chat, ypos);
                     requestInputRepaint();
                     return;
                 }
                 if (!ev.ctrl and !ev.alt) {
-                    if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
+                    if (AppWindow.assistant_conversation_renderer.transcriptTextHitTest(
                         chat,
                         xpos,
                         ypos,
@@ -5793,7 +5793,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         return;
                     }
                 }
-                if (AppWindow.ai_chat_renderer.inputScrollbarHitTest(
+                if (AppWindow.assistant_conversation_renderer.inputScrollbarHitTest(
                     chat,
                     xpos,
                     ypos,
@@ -5913,7 +5913,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             g_ai_transcript_scroll_dragging = false;
             g_ai_transcript_scroll_chat = null;
             g_ai_transcript_scroll_panel = .active_chat;
-            AppWindow.ai_chat_renderer.g_transcript_scrollbar_dragging = false;
+            AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_dragging = false;
             if (g_ai_transcript_selecting) {
                 if (g_ai_transcript_select_chat) |chat| {
                     if (chat.finishTranscriptSelection() and g_ai_transcript_select_auto_copy) copyAiChatToClipboard(chat);
@@ -6108,7 +6108,7 @@ fn hitTestPlusButton(xpos: f64) bool {
 fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
     const win = AppWindow.g_window orelse return;
     const size = clientSize(win);
-    if (AppWindow.ai_chat_renderer.inputScrollbarDragRowAt(
+    if (AppWindow.assistant_conversation_renderer.inputScrollbarDragRowAt(
         chat,
         ypos,
         @floatFromInt(size.width),
@@ -6124,7 +6124,7 @@ fn applyAiInputScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
 
 fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) void {
     const geometry = aiTranscriptPanelGeometry(g_ai_transcript_scroll_panel) orelse return;
-    if (AppWindow.ai_chat_renderer.transcriptScrollbarScrollPxAt(
+    if (AppWindow.assistant_conversation_renderer.transcriptScrollbarScrollPxAt(
         chat,
         ypos,
         geometry.window_width,
@@ -6141,7 +6141,7 @@ fn applyAiTranscriptScrollbarDrag(chat: *AppWindow.ai_chat.Session, ypos: f64) v
 
 fn updateAiTranscriptSelectionDrag(chat: *AppWindow.ai_chat.Session, xpos: f64, ypos: f64) void {
     const geometry = aiTranscriptPanelGeometry(g_ai_transcript_select_panel) orelse return;
-    if (AppWindow.ai_chat_renderer.transcriptTextHitTest(
+    if (AppWindow.assistant_conversation_renderer.transcriptTextHitTest(
         chat,
         xpos,
         ypos,
@@ -6214,7 +6214,7 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
     if (AppWindow.g_window) |hover_win| {
         if (AppWindow.activeAiChat()) |chat| {
             const hover_fb = window_backend.framebufferSize(hover_win);
-            const over = AppWindow.ai_chat_renderer.transcriptScrollbarHitTest(
+            const over = AppWindow.assistant_conversation_renderer.transcriptScrollbarHitTest(
                 chat,
                 xpos,
                 ypos,
@@ -6224,12 +6224,12 @@ fn handleMouseMove(ev: platform_input.MouseMoveEvent) void {
                 AppWindow.leftPanelsWidth(),
                 @as(f32, @floatFromInt(hover_fb.width)) - AppWindow.leftPanelsWidth() - AppWindow.rightPanelsWidthForWindow(hover_fb.width),
             ) != null;
-            if (over != AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
-                AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = over;
+            if (over != AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover) {
+                AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover = over;
                 requestInputRebuild();
             }
-        } else if (AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover) {
-            AppWindow.ai_chat_renderer.g_transcript_scrollbar_hover = false;
+        } else if (AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover) {
+            AppWindow.assistant_conversation_renderer.g_transcript_scrollbar_hover = false;
             requestInputRebuild();
         }
     }
@@ -6734,7 +6734,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         const left = @as(i32, @intFromFloat(AppWindow.leftPanelsWidth()));
         const right = size.width - @as(i32, @intFromFloat(AppWindow.rightPanelsWidthForWindow(size.width)));
         if (ev.xpos >= left and ev.xpos < right) {
-            if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
+            if (AppWindow.assistant_conversation_renderer.inputFieldMetricsAt(
                 chat,
                 @floatFromInt(ev.xpos),
                 @floatFromInt(ev.ypos),
@@ -6773,7 +6773,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
             if (ev.xpos >= bounds.left and ev.xpos < bounds.right and ev.ypos >= bounds.top and ev.ypos < bounds.bottom) {
                 const chat_x: f32 = @floatFromInt(bounds.left);
                 const chat_w: f32 = @floatFromInt(bounds.right - bounds.left);
-                if (AppWindow.ai_chat_renderer.inputFieldMetricsAt(
+                if (AppWindow.assistant_conversation_renderer.inputFieldMetricsAt(
                     chat,
                     @floatFromInt(ev.xpos),
                     @floatFromInt(ev.ypos),

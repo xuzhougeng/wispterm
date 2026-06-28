@@ -63,7 +63,7 @@ is Metal-only on Darwin). Evidence:
 
 - ~**700 raw `gl.*` call sites across 16 files**. Heaviest:
   `gl_init.zig` (123), `titlebar.zig` (113), `overlays.zig` (72),
-  `ai_chat_renderer.zig` (68), `post_process.zig` (66), `cell_renderer.zig`
+  `renderer/assistant/conversation.zig` (68), `post_process.zig` (66), `cell_renderer.zig`
   (62), `markdown_preview_renderer.zig` (44), `background_image.zig` (39),
   `fbo.zig` (33), `image_renderer.zig` (23), `file_explorer_renderer.zig` (17),
   plus the `overlays/` primitives.
@@ -246,7 +246,7 @@ with **A**. **D** is deferred until a macOS SDK environment exists.
   `Renderer.zig:14` shortcut. *Ghostty: `renderer/opengl/`.*
 - **A3** Convert renderer files from raw `gl.*` to `gpu.zig` primitives, and
   **split each file's presentation vs. logic in the same pass** (one touch
-  each): `cell_renderer`, `titlebar`, `overlays`, `ai_chat_renderer`,
+  each): `cell_renderer`, `titlebar`, `overlays`, `renderer/assistant/conversation.zig`,
   `image_renderer`, `post_process`, `background_image`, `fbo`,
   `markdown_preview_renderer`, `file_explorer_renderer`. *Ghostty:
   API-agnostic `renderer/cell.zig`, `cursor.zig`, `image.zig`.*
