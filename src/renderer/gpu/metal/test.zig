@@ -7,9 +7,14 @@ const Framebuffer = @import("Framebuffer.zig");
 const Pipeline = @import("Pipeline.zig");
 const Texture = @import("Texture.zig");
 const gl_init = @import("gl_init.zig");
+const readback = @import("readback.zig");
 const render_state = @import("render_state.zig");
 const shaders = @import("shaders.zig");
 const vertex = @import("vertex.zig");
+
+test {
+    _ = readback;
+}
 
 test "Context.init creates a usable Metal backend context" {
     try Context.init(null);
