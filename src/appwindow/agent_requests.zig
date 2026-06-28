@@ -34,6 +34,7 @@ pub const Host = struct {
     connectSshProfile: *const fn ([]const u8) SshConnectResult,
     saveSshProfile: *const fn (std.mem.Allocator, ai_chat.SshProfileSaveArgs) anyerror!ai_chat.SavedSshProfile,
     captureUiScreenshot: *const fn (std.mem.Allocator, ai_chat_types.UiScreenshotTarget, ?[]const u8, ?[]const u8) anyerror!ai_chat_types.UiScreenshotResult,
+    focusTerminalSurface: *const fn (std.mem.Allocator, []const u8) anyerror!ai_chat.ToolSurface,
 };
 
 pub const AgentSshConnectRequest = struct {
@@ -81,6 +82,13 @@ pub const AgentUiScreenshotRequest = struct {
     next: ?*AgentUiScreenshotRequest = null,
 };
 
+pub const AgentTerminalFocusRequest = struct {
+    allocator: std.mem.Allocator,
+    surface_id: []const u8,
+    result: ?ai_chat.ToolSurface = null,
+    err: ?anyerror = null,
+};
+
 var g_host: ?Host = null;
 threadlocal var pending_ui_screenshot_head: ?*AgentUiScreenshotRequest = null;
 threadlocal var pending_ui_screenshot_tail: ?*AgentUiScreenshotRequest = null;
@@ -115,6 +123,10 @@ fn postAgentSshSave(native_handle: window_backend.NativeHandle, request: *AgentS
 
 fn postAgentUiScreenshot(native_handle: window_backend.NativeHandle, request: *AgentUiScreenshotRequest) bool {
     return thread_message.postPointer(native_handle, .agent_ui_screenshot, @intFromPtr(request));
+}
+
+fn postAgentTerminalFocus(native_handle: window_backend.NativeHandle, request: *AgentTerminalFocusRequest) void {
+    postAgentRequest(native_handle, .agent_terminal_focus, @intFromPtr(request));
 }
 
 fn destroyUiScreenshotRequest(request: *AgentUiScreenshotRequest) void {
@@ -382,6 +394,29 @@ pub fn uiScreenshot(
     return waitUiScreenshotRequest(request, allocator);
 }
 
+pub fn focusTerminal(ctx: *anyopaque, allocator: std.mem.Allocator, surface_id: []const u8) anyerror!ai_chat.ToolSurface {
+    const host = try installedHost();
+    const native_handle = host.nativeHandleForContext(ctx) orelse return error.WindowUnavailable;
+
+    var request = AgentTerminalFocusRequest{
+        .allocator = allocator,
+        .surface_id = surface_id,
+    };
+
+    if (host.currentNativeHandle()) |current| {
+        if (current == native_handle) {
+            handleTerminalFocusRequest(&request, host);
+        } else {
+            postAgentTerminalFocus(native_handle, &request);
+        }
+    } else {
+        postAgentTerminalFocus(native_handle, &request);
+    }
+
+    if (request.err) |err| return err;
+    return request.result orelse error.SurfaceNotFound;
+}
+
 fn agentTabCommand(kind_raw: []const u8, command_raw: ?[]const u8) anyerror!?[]const u8 {
     return platform_pty_command.tabCommandForKind(kind_raw, command_raw, tab.getShellCmd());
 }
@@ -537,4 +572,11 @@ pub fn handleUiScreenshotRequest(request: *AgentUiScreenshotRequest, host: Host)
         return;
     }
     enqueueUiScreenshotRequest(request);
+}
+
+pub fn handleTerminalFocusRequest(request: *AgentTerminalFocusRequest, host: Host) void {
+    request.result = host.focusTerminalSurface(request.allocator, request.surface_id) catch |err| {
+        request.err = err;
+        return;
+    };
 }

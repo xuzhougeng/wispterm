@@ -64,6 +64,12 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const surface_id = tool_args.string(args.value, "surface_id") orelse return ctx.allocator.dupe(u8, "Missing surface_id");
         return terminal_tools.select(ctx, surface_id);
     }
+    if (std.mem.eql(u8, call.name, "terminal_focus")) {
+        const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
+        defer args.deinit();
+        const surface_id = tool_args.string(args.value, "surface_id") orelse return ctx.allocator.dupe(u8, "Missing surface_id");
+        return terminal_tools.focus(ctx, surface_id);
+    }
     if (std.mem.eql(u8, call.name, platform_process.localCommandToolName())) {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
@@ -358,6 +364,27 @@ test "executeToolCall ui_screenshot reports missing host clearly" {
     });
     defer a.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "No UI screenshot host") != null);
+}
+
+test "executeToolCall terminal_focus reports missing host clearly" {
+    const a = std.testing.allocator;
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = null,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    const out = try executeToolCall(&ctx, .{
+        .id = @constCast("call-focus"),
+        .name = @constCast("terminal_focus"),
+        .arguments = @constCast("{\"surface_id\":\"surface-2\"}"),
+    });
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "No terminal focus host") != null);
 }
 
 test "executeToolCall ui_screenshot calls host and formats path" {

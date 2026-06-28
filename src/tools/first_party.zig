@@ -32,6 +32,7 @@ const static_definitions = [_]Definition{
     .{ .name = "terminal_snapshot", .label = "terminal_snapshot", .description = "Read a bounded text snapshot from terminal surfaces.", .category = .terminal },
     .{ .name = "ui_screenshot", .label = "ui_screenshot", .description = "Capture the active WispTerm tab or focused active-tab panel as a local PNG file.", .category = .terminal },
     .{ .name = "terminal_select", .label = "terminal_select", .description = "Select the terminal surface used for subsequent write tools.", .category = .terminal },
+    .{ .name = "terminal_focus", .label = "terminal_focus", .description = "Focus a terminal surface in the visible WispTerm UI.", .category = .terminal },
     .{ .name = "ssh_session_exec", .label = "ssh_session_exec", .description = "Run a shell command in an already-open SSH terminal surface.", .category = .terminal },
     .{ .name = "terminal_repl_exec", .label = "terminal_repl_exec", .description = "Send text to an already-open interactive REPL or agent app.", .category = .terminal },
     .{ .name = "terminal_answer_prompt", .label = "terminal_answer_prompt", .description = "Answer an approval prompt in an agent terminal surface.", .category = .terminal },

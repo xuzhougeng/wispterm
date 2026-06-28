@@ -5061,6 +5061,46 @@ fn agentRequestSaveSshProfile(allocator: std.mem.Allocator, args: ai_chat.SshPro
     return overlays.agentSaveSshProfile(allocator, args);
 }
 
+const AgentTerminalFocusTarget = struct {
+    surface: *Surface,
+    tab_index: usize,
+};
+
+fn focusAgentTerminalSurfaceById(surface_id_raw: []const u8) ?AgentTerminalFocusTarget {
+    const surface_id = std.mem.trim(u8, surface_id_raw, " \t\r\n");
+    if (surface_id.len == 0) return null;
+
+    for (0..tab.g_tab_count) |tab_index| {
+        const tab_state = tab.g_tabs[tab_index] orelse continue;
+        if (tab_state.kind != .terminal) continue;
+        var it = tab_state.tree.surfaces();
+        while (it.next()) |entry| {
+            if (!std.mem.eql(u8, entry.surface.remote_id[0..], surface_id)) continue;
+
+            if (active_tab_state.g_active_tab != tab_index) {
+                switchTab(tab_index);
+            }
+            tab_state.focused = entry.handle;
+            handleActiveSurfaceChangeWithinTab();
+            return .{
+                .surface = entry.surface,
+                .tab_index = tab_index,
+            };
+        }
+    }
+    return null;
+}
+
+fn agentRequestFocusTerminalSurface(allocator: std.mem.Allocator, surface_id: []const u8) anyerror!ai_chat.ToolSurface {
+    const target = focusAgentTerminalSurfaceById(surface_id) orelse return error.SurfaceNotFound;
+    return surface_snapshots.makeAgentToolSurface(
+        allocator,
+        target.surface,
+        target.tab_index,
+        true,
+    );
+}
+
 const AgentUiScreenshotCapture = struct {
     rect: appwindow_ui_screenshot.Rect,
     target: ai_chat_types.UiScreenshotTarget,
@@ -5272,6 +5312,7 @@ fn agentRequestHost() agent_requests.Host {
         .connectSshProfile = agentRequestConnectSshProfile,
         .saveSshProfile = agentRequestSaveSshProfile,
         .captureUiScreenshot = agentRequestCaptureUiScreenshot,
+        .focusTerminalSurface = agentRequestFocusTerminalSurface,
     };
 }
 
@@ -5411,6 +5452,7 @@ fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordP
         .agent_tab_new => agent_requests.handleTabNewRequest(@ptrFromInt(decoded.ptr), agent_host),
         .agent_tab_close => agent_requests.handleTabCloseRequest(@ptrFromInt(decoded.ptr), agent_host),
         .agent_ui_screenshot => agent_requests.handleUiScreenshotRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .agent_terminal_focus => agent_requests.handleTerminalFocusRequest(@ptrFromInt(decoded.ptr), agent_host),
         .remote_ai_input => remote_sync.handleAiInputRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
         .remote_open_ai_agent => remote_sync.handleAiAgentOpenRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
         .weixin_control => weixin_bridge.handleControlRequest(@ptrFromInt(decoded.ptr), weixinBridgeHost()),
@@ -5431,6 +5473,7 @@ fn installAgentToolHost(self: *AppWindow) void {
         .connectSshProfile = agent_requests.connectSshProfile,
         .sshConnectionForSurface = surface_snapshots.agentSshConnectionForSurface,
         .uiScreenshot = agent_requests.uiScreenshot,
+        .focusTerminal = agent_requests.focusTerminal,
     });
 }
 
@@ -7334,6 +7377,68 @@ test "appwindow: ui screenshot explicit surface id errors on non-terminal active
         error.SurfaceNotInActiveTab,
         resolveAgentUiScreenshotCapture(.active_tab, "surface-123", 100, 100),
     );
+}
+
+test "appwindow: agent terminal focus activates the owning tab and split" {
+    const allocator = std.testing.allocator;
+    const id_a = "00000000000000a1";
+    const id_b = "00000000000000b2";
+    const id_c = "00000000000000c3";
+
+    var surface_a: Surface = undefined;
+    surface_a.ref_count = 1;
+    @memcpy(surface_a.remote_id[0..], id_a);
+    var surface_b: Surface = undefined;
+    surface_b.ref_count = 1;
+    @memcpy(surface_b.remote_id[0..], id_b);
+    var surface_c: Surface = undefined;
+    surface_c.ref_count = 1;
+    @memcpy(surface_c.remote_id[0..], id_c);
+
+    var tab0_v = tab.TabState{ .tree = try SplitTree.init(allocator, &surface_a) };
+    defer tab0_v.tree.deinit();
+
+    var left = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var right = session_persist.NodeSnap{ .leaf = .{ .surface = .{ .local_shell = .{} } } };
+    var root = session_persist.NodeSnap{ .split = .{ .layout = .horizontal, .ratio = 0.5, .left = &left, .right = &right } };
+    const Stub = struct {
+        var idx: usize = 0;
+        var surfaces: [2]*Surface = undefined;
+        fn make(_: *const session_persist.SurfaceSnap, _: std.mem.Allocator) ?*Surface {
+            const surface = surfaces[idx];
+            idx += 1;
+            return surface;
+        }
+    };
+    Stub.idx = 0;
+    Stub.surfaces = .{ &surface_b, &surface_c };
+    var tab1_v = tab.TabState{
+        .tree = try SplitTree.fromSnapshot(allocator, &root, Stub.make),
+        .focused = @enumFromInt(1),
+    };
+    defer tab1_v.tree.arena.deinit();
+
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_tab_count = tab.g_tab_count;
+    const saved_tab0 = tab.g_tabs[0];
+    const saved_tab1 = tab.g_tabs[1];
+    defer {
+        tab.g_tabs[0] = saved_tab0;
+        tab.g_tabs[1] = saved_tab1;
+        tab.g_tab_count = saved_tab_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    tab.g_tabs[0] = &tab0_v;
+    tab.g_tabs[1] = &tab1_v;
+    tab.g_tab_count = 2;
+    active_tab_state.g_active_tab = 0;
+
+    const target = focusAgentTerminalSurfaceById(id_c) orelse return error.FocusTargetMissing;
+    try std.testing.expect(target.surface == &surface_c);
+    try std.testing.expectEqual(@as(usize, 1), target.tab_index);
+    try std.testing.expectEqual(@as(usize, 1), active_tab_state.g_active_tab);
+    try std.testing.expectEqual(@as(SplitTree.Node.Handle.Backing, 2), @intFromEnum(tab1_v.focused));
 }
 
 test "appwindow: ui screenshot base dir falls back to exports dir" {

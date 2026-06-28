@@ -246,6 +246,7 @@ pub const ToolHost = struct {
     /// this; others leave it null (file tools then treat the target as local).
     sshConnectionForSurface: ?*const fn (*anyopaque, []const u8) ?SshConnection = null,
     uiScreenshot: ?*const fn (*anyopaque, std.mem.Allocator, UiScreenshotTarget, ?[]const u8, ?[]const u8) anyerror!UiScreenshotResult = null,
+    focusTerminal: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!ToolSurface = null,
 };
 
 pub const WeixinReplyContext = struct {

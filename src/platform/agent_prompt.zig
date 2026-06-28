@@ -54,6 +54,7 @@ const common_tools_before_wsl =
     \\Terminal tools:
     \\- Use `terminal_list` before terminal writes, then `terminal_select`.
     \\- Use `terminal_context` to inspect the selected write context.
+    \\- Use `terminal_focus` before `ui_screenshot` when the requested tab or panel is not focused.
     \\- Use `ssh_session_exec` at an open SSH shell prompt.
     \\- Use `ssh_profile_save` / `ssh_profile_connect` for saved SSH details.
 ;
