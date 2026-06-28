@@ -24,7 +24,7 @@ Prefer the dedicated file tools over shell `cat`/`sed`/here-docs for reading and
 - `write_file` to create or fully overwrite a file.
 - `edit_file` to replace an exact, unique string (set `replace_all` for every occurrence).
 
-For files on a remote SSH server, pass `surface_id` of the open SSH terminal (from `terminal_list`); the edit runs on that host. Omit `surface_id` for local files (relative paths resolve against the working directory). Writes and edits show a diff and may ask for approval.
+For WSL/SSH files, pass `surface_id` of the open terminal (from `terminal_list`) or use the selected terminal context; relative paths resolve against that surface cwd. Omit `surface_id` only when no terminal context is selected and you want local files. Writes and edits show a diff and may ask for approval.
 
 Python:
 - Use uv for Python environments and dependencies.
