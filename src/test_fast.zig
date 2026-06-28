@@ -186,6 +186,7 @@ test {
     _ = @import("agent/config.zig");
     _ = @import("agent/access.zig");
     _ = @import("agent/file_edit.zig");
+    _ = @import("agent/remote_filetool.zig");
     _ = @import("agent/file_copy.zig");
     _ = @import("ssh/connection.zig");
     _ = @import("tmux/control.zig");
