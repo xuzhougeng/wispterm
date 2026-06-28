@@ -5563,7 +5563,7 @@ fn testWeixinSender(capture: *WeixinAttachmentCapture) chatops_reply.AttachmentS
     return .{ .ctx = capture, .send_attachment = WeixinAttachmentCapture.send };
 }
 
-test "weixin_send_attachment without reply context returns a clear tool result" {
+test "send_attachment without reply context returns a clear tool result" {
     var session = try Session.init(
         std.testing.allocator,
         "test",
@@ -5599,17 +5599,17 @@ test "weixin_send_attachment without reply context returns a clear tool result" 
 
     var call = ToolCall{
         .id = try std.testing.allocator.dupe(u8, "call_1"),
-        .name = try std.testing.allocator.dupe(u8, "weixin_send_attachment"),
+        .name = try std.testing.allocator.dupe(u8, "send_attachment"),
         .arguments = try std.testing.allocator.dupe(u8, "{\"kind\":\"image\",\"path\":\"C:\\\\tmp\\\\plot.png\"}"),
     };
     defer call.deinit(std.testing.allocator);
 
     const result = try ai_chat_request.executeToolCall(request, call);
     defer std.testing.allocator.free(result);
-    try std.testing.expectEqualStrings("No active Weixin reply context; cannot send attachment.", result);
+    try std.testing.expectEqualStrings("No active chat reply context; cannot send attachment.", result);
 }
 
-test "weixin_send_attachment calls the active Weixin sender" {
+test "send_attachment calls the active chat sender" {
     var capture = WeixinAttachmentCapture{};
     var session = try Session.init(
         std.testing.allocator,
@@ -5651,7 +5651,7 @@ test "weixin_send_attachment calls the active Weixin sender" {
 
     var call = ToolCall{
         .id = try std.testing.allocator.dupe(u8, "call_1"),
-        .name = try std.testing.allocator.dupe(u8, "weixin_send_attachment"),
+        .name = try std.testing.allocator.dupe(u8, "send_attachment"),
         .arguments = try std.testing.allocator.dupe(u8, "{\"kind\":\"file\",\"path\":\"C:\\\\tmp\\\\report.pdf\",\"display_name\":\"report.pdf\"}"),
     };
     defer call.deinit(std.testing.allocator);
@@ -5665,7 +5665,7 @@ test "weixin_send_attachment calls the active Weixin sender" {
     try std.testing.expectEqualStrings("report.pdf", capture.display_name);
     try std.testing.expectEqualStrings("wx-user", capture.to_user_id);
     try std.testing.expectEqualStrings("ctx-1", capture.context_token);
-    try std.testing.expectEqualStrings("Sent file to Weixin: report.pdf", result);
+    try std.testing.expectEqualStrings("Sent file to chat: report.pdf", result);
 }
 
 test "ai_chat: session serializes to history record" {

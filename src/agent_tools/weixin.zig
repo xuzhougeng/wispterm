@@ -1,4 +1,5 @@
 //! Weixin agent tool adapters.
+// ponytail: module name historical; logic is channel-neutral (WeChat + Feishu)
 const std = @import("std");
 const types = @import("../assistant/conversation/types.zig");
 const ai_agent_access = @import("../agent/access.zig");
@@ -15,7 +16,7 @@ pub fn sendAttachment(
     display_name: []const u8,
 ) ![]u8 {
     const wx_ctx = ctx.reply_context orelse {
-        return ctx.allocator.dupe(u8, "No active Weixin reply context; cannot send attachment.");
+        return ctx.allocator.dupe(u8, "No active chat reply context; cannot send attachment.");
     };
     // Sending an attachment reads the file off disk and uploads it to a remote
     // user, so a protected path here is an exfiltration risk. In auto mode,
@@ -28,17 +29,17 @@ pub fn sendAttachment(
                 const bl_reason = tool_access.allocBlacklistReason(ctx.allocator, path);
                 defer if (bl_reason) |r| ctx.allocator.free(r);
                 const reason = bl_reason orelse "Sends a protected file - confirm to allow";
-                if (!ctx.requestApproval("weixin_send_attachment", path, reason)) {
+                if (!ctx.requestApproval("send_attachment", path, reason)) {
                     return tool_output.deniedResult(ctx.allocator, path, "operator rejected sending a protected file");
                 }
             }
         }
     }
     wx_ctx.sender.sendAttachment(kind, path, display_name, wx_ctx.to_user_id, wx_ctx.context_token) catch |err| {
-        return std.fmt.allocPrint(ctx.allocator, "Failed to send {s} to Weixin: {}", .{ kind.name(), err });
+        return std.fmt.allocPrint(ctx.allocator, "Failed to send {s} to chat: {}", .{ kind.name(), err });
     };
     const shown = if (display_name.len != 0) display_name else std.fs.path.basename(path);
-    return std.fmt.allocPrint(ctx.allocator, "Sent {s} to Weixin: {s}", .{ kind.name(), shown });
+    return std.fmt.allocPrint(ctx.allocator, "Sent {s} to chat: {s}", .{ kind.name(), shown });
 }
 
 fn fakeApprove(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8) bool {
@@ -105,7 +106,7 @@ test "sendAttachment without reply context returns a clear tool result" {
 
     const result = try sendAttachment(&ctx, .image, "C:\\tmp\\plot.png", "");
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("No active Weixin reply context; cannot send attachment.", result);
+    try std.testing.expectEqualStrings("No active chat reply context; cannot send attachment.", result);
 }
 
 test "sendAttachment calls the active Weixin sender" {
@@ -137,5 +138,5 @@ test "sendAttachment calls the active Weixin sender" {
     try std.testing.expectEqualStrings("report.pdf", capture.display_name);
     try std.testing.expectEqualStrings("wx-user", capture.to_user_id);
     try std.testing.expectEqualStrings("ctx-1", capture.context_token);
-    try std.testing.expectEqualStrings("Sent file to Weixin: report.pdf", result);
+    try std.testing.expectEqualStrings("Sent file to chat: report.pdf", result);
 }

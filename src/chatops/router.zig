@@ -556,7 +556,7 @@ test "busy copilot replies with a busy notice and does not start a follow-up" {
     try t.expect(!out.expect_ai_progress);
 }
 
-test "default AI route forwards Weixin reply context only to AI surface" {
+test "default AI route forwards chat reply context only to AI surface" {
     const Sender = struct {
         fn sendAttachment(ctx: *anyopaque, kind: reply_types.AttachmentKind, path: []const u8, display_name: []const u8, to_user_id: []const u8, context_token: []const u8) anyerror!void {
             _ = ctx;

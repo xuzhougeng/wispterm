@@ -206,7 +206,9 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const topic = if (args) |parsed| tool_args.string(parsed.value, "topic") else null;
         return knowledge.wisptermDocs(ctx.allocator, topic);
     }
-    if (std.mem.eql(u8, call.name, "weixin_send_attachment")) {
+    if (std.mem.eql(u8, call.name, "send_attachment") or
+        std.mem.eql(u8, call.name, "weixin_send_attachment")) // legacy alias
+    {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         const kind_text = tool_args.string(args.value, "kind") orelse return ctx.allocator.dupe(u8, "Missing kind");
@@ -711,7 +713,7 @@ fn testWeixinSender(capture: *WeixinAttachmentCapture) chatops_reply.AttachmentS
     return .{ .ctx = capture, .send_attachment = WeixinAttachmentCapture.send };
 }
 
-test "weixin_send_attachment without reply context returns a clear tool result" {
+test "send_attachment without reply context returns a clear tool result" {
     const allocator = std.testing.allocator;
     var dummy: u8 = 0;
     var ctx = ToolContext{
@@ -727,16 +729,17 @@ test "weixin_send_attachment without reply context returns a clear tool result" 
 
     const call = ToolCall{
         .id = @constCast("call_1"),
-        .name = @constCast("weixin_send_attachment"),
+        .name = @constCast("send_attachment"),
         .arguments = @constCast("{\"kind\":\"image\",\"path\":\"C:\\\\tmp\\\\plot.png\"}"),
     };
 
     const result = try executeToolCall(&ctx, call);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("No active Weixin reply context; cannot send attachment.", result);
+    try std.testing.expectEqualStrings("No active chat reply context; cannot send attachment.", result);
 }
 
-test "weixin_send_attachment calls the active Weixin sender" {
+test "weixin_send_attachment legacy alias still routes to sender" {
+    // ponytail: keep this test — proves the backward-compat alias still dispatches
     const allocator = std.testing.allocator;
     var capture = WeixinAttachmentCapture{};
     var dummy: u8 = 0;
@@ -771,7 +774,7 @@ test "weixin_send_attachment calls the active Weixin sender" {
     try std.testing.expectEqualStrings("report.pdf", capture.display_name);
     try std.testing.expectEqualStrings("wx-user", capture.to_user_id);
     try std.testing.expectEqualStrings("ctx-1", capture.context_token);
-    try std.testing.expectEqualStrings("Sent file to Weixin: report.pdf", result);
+    try std.testing.expectEqualStrings("Sent file to chat: report.pdf", result);
 }
 
 const ReplWaitTestHost = struct {

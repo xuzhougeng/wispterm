@@ -49,7 +49,7 @@ const static_definitions = [_]Definition{
     .{ .name = "webread", .label = "webread", .description = "Read a web page or local document into markdown via Jina Reader.", .category = .web },
     .{ .name = "pubmed", .label = "pubmed", .description = "Search PubMed biomedical literature.", .category = .web },
     .{ .name = "subagent", .label = "subagent", .description = "Delegate a self-contained research task to a background subagent.", .category = .agent },
-    .{ .name = "weixin_send_attachment", .label = "weixin_send_attachment", .description = "Send a local file back to the active Weixin conversation.", .category = .integration },
+    .{ .name = "send_attachment", .label = "send_attachment", .description = "Send a local file back to the active chat conversation (WeChat or Feishu).", .category = .integration },
     .{ .name = "memory_save", .label = "memory_save", .description = "Save a durable long-term memory.", .category = .memory },
     .{ .name = "memory_recall", .label = "memory_recall", .description = "Read a durable long-term memory.", .category = .memory },
     .{ .name = "memory_delete", .label = "memory_delete", .description = "Delete a durable long-term memory.", .category = .memory },
