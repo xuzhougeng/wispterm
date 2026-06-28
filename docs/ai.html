@@ -195,6 +195,10 @@ ai-agent-output-limit       = 16384</code></pre>
             <p>Use <code>$skill-name your request</code> in the AI Agent tab to load that skill for the next request without changing global configuration.</p>
           </div>
           <div class="feature">
+            <h3>Third-party tools</h3>
+            <p>WispTerm also works with external utilities. For example, <a href="https://github.com/AHMUJia/claude-chatmap" target="_blank" rel="noopener">Claude ChatMap</a> is a local Claude Code history dashboard that groups chats by folder and can resume a selected chat in a WispTerm tab through <code>wisptermctl</code>. Community tools are not bundled with WispTerm.</p>
+          </div>
+          <div class="feature">
             <h3>Slash commands</h3>
             <p><code>/commands</code> lists the current command set. Common commands include <code>/model</code> for profile switching, <code>/cwd</code> for the conversation working directory, <code>/permission</code> for agent approval mode, <code>/export</code> for Markdown, <code>/distill</code> for reusable skills, and <code>/remember</code> / <code>/memory</code> / <code>/forget</code> for long-term memory.</p>
             <p><code>/loop</code> repeats a prompt on an interval and <code>/watch</code> schedules daily or one-shot prompts. <code>/clear</code>, <code>/rewind</code>, <code>/resume</code>, <code>/skills</code>, <code>/reload-skills</code>, and <code>/reload-commands</code> cover conversation lifecycle and local command refresh.</p>

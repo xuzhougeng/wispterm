@@ -200,6 +200,12 @@ current working directory, or the directory containing the executable. Use
 skill is stored as a replayable tool result, so existing conversations stay
 reproducible even if the skill file changes later.
 
+Third-party companion tools can use ordinary WispTerm entry points too. For
+example, [Claude ChatMap](https://github.com/AHMUJia/claude-chatmap) is a local
+Claude Code history dashboard that groups chats by folder and can resume a
+selected chat in a WispTerm tab through `wisptermctl`. Community tools are not
+bundled with WispTerm.
+
 ## Skill distillation
 
 After a useful workflow, run `/distill`, `/distill <topic>`, `/沉淀`, or

@@ -188,6 +188,12 @@ First-party tool state is stored separately in `agent_tools.json`. Turning a
 built-in tool off hides it from newly built AI request schemas/tool lists, and
 runtime execution rejects stale or hallucinated calls for that disabled tool.
 
+Third-party companion tools can use ordinary WispTerm entry points too. For
+example, [Claude ChatMap](https://github.com/AHMUJia/claude-chatmap) is a local
+Claude Code history dashboard that groups chats by folder and can resume a
+selected chat in a WispTerm tab through `wisptermctl`. Community tools are not
+bundled with WispTerm.
+
 Local slash commands (handled in the panel, without calling the model):
 
 - `/skills` lists discovered local skills.

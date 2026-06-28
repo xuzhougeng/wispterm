@@ -195,6 +195,10 @@ ai-agent-output-limit       = 16384</code></pre>
             <p>在 AI Agent 标签中输入 <code>$skill-name your request</code>，即可为下一次请求加载指定 Skill，不需要改全局配置。</p>
           </div>
           <div class="feature">
+            <h3>第三方工具</h3>
+            <p>WispTerm 也可以配合外部工具使用。例如 <a href="https://github.com/AHMUJia/claude-chatmap" target="_blank" rel="noopener">Claude ChatMap</a> 是一个本地 Claude Code 会话索引面板，按文件夹整理历史，并可通过 <code>wisptermctl</code> 把选中的会话恢复到 WispTerm 标签页。这类社区工具不随 WispTerm 捆绑。</p>
+          </div>
+          <div class="feature">
             <h3>Slash Commands</h3>
             <p><code>/commands</code> 会列出当前命令集合。常用命令包括：用 <code>/model</code> 切换 profile，用 <code>/cwd</code> 设置本次对话工作目录，用 <code>/permission</code> 切换 Agent 审批模式，用 <code>/export</code> 导出 Markdown，用 <code>/distill</code> 沉淀可复用 Skill，以及用 <code>/remember</code> / <code>/memory</code> / <code>/forget</code> 管理长期记忆。</p>
             <p><code>/loop</code> 可以按固定间隔重复发送 prompt，<code>/watch</code> 可以按每日时间或一次性时间发送 prompt。<code>/clear</code>、<code>/rewind</code>、<code>/resume</code>、<code>/skills</code>、<code>/reload-skills</code> 和 <code>/reload-commands</code> 用于管理对话生命周期与本地命令刷新。</p>
