@@ -125,18 +125,15 @@ fn writeHelperScript(allocator: std.mem.Allocator, new_app: []const u8, dst_app:
 }
 
 /// Launch the helper fully detached so it survives this process exiting.
-/// `nohup ... &` inside `sh -c` backgrounds and reparents the job; the outer
-/// shell returns immediately. The script path is our temp path (no quotes).
+/// `nohup` makes it ignore SIGHUP; passing the script path as an argv element
+/// (not a shell string) avoids any shell-quoting/injection concern. We do not
+/// wait: the helper runs until after this app exits, then swaps and relaunches.
 fn launchHelper(allocator: std.mem.Allocator, script_path: []const u8) !void {
-    const cmd = try std.fmt.allocPrint(allocator, "nohup /bin/sh '{s}' >/dev/null 2>&1 &", .{script_path});
-    defer allocator.free(cmd);
-
-    var child = std.process.Child.init(&.{ "/bin/sh", "-c", cmd }, allocator);
+    var child = std.process.Child.init(&.{ "/usr/bin/nohup", "/bin/sh", script_path }, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
     try child.spawn();
-    _ = child.wait() catch {}; // outer sh exits at once after backgrounding
 }
 
 test "resolveAppBundle finds the .app for an executable inside a bundle" {
