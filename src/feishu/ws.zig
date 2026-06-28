@@ -108,9 +108,17 @@ pub fn handshake(conn: *std.http.Client.Connection, host: []const u8, path_query
 pub const Conn = struct {
     conn: *std.http.Client.Connection,
     rng: std.Random.DefaultPrng,
+    /// Serializes ALL sends (writeBinary/writePong) + rng use. The recv thread
+    /// (ACK, auto-pong) and a separate ping thread both write the same TLS
+    /// writer concurrently; without this lock their frames interleave on the
+    /// wire and rng has a data race. The chokepoint lives here so every write
+    /// path is covered — callers need no external lock.
+    send_mu: std.Thread.Mutex = .{},
 
     /// Write one masked binary frame (client->server frames MUST be masked).
     pub fn writeBinary(self: *Conn, payload: []const u8) !void {
+        self.send_mu.lock();
+        defer self.send_mu.unlock();
         const w = self.conn.writer(); // returns *std.Io.Writer
         var mask: [4]u8 = undefined;
         self.rng.random().bytes(&mask);
@@ -121,9 +129,9 @@ pub const Conn = struct {
     /// Read one full message (handles control frames internally), returns the
     /// payload of the next binary/text data frame allocated in `a`.
     pub fn readBinary(self: *Conn, a: std.mem.Allocator) ![]u8 {
-        var r = self.conn.reader();
+        const r = self.conn.reader(); // returns *std.Io.Reader
         while (true) {
-            const result = try readFrame(&r, a);
+            const result = try readFrame(r, a);
             switch (result.opcode) {
                 0x1, 0x2 => return result.data, // text or binary
                 0x8 => {
@@ -148,7 +156,9 @@ pub const Conn = struct {
     }
 
     fn writePong(self: *Conn, payload: []const u8) !void {
-        var w = self.conn.writer();
+        self.send_mu.lock();
+        defer self.send_mu.unlock();
+        const w = self.conn.writer();
         var mask: [4]u8 = undefined;
         self.rng.random().bytes(&mask);
         // ponytail: pong payload is small (control frames ≤125 bytes per RFC6455)

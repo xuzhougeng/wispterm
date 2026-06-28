@@ -8,12 +8,15 @@
 //!   conn thread: discover → connect → handshake → recv loop.
 //!   ping thread: spawned per connection; sends buildPing every ping_interval_s.
 //!
-//! Ping approach: a SEPARATE ping thread sleeps ping_interval_s, then acquires
-//! send_mu and calls writeBinary. The recv thread also holds send_mu for ACKs.
-//! This avoids needing a read timeout or polling — readBinary stays a simple
-//! blocking call; the ping thread never touches the reader, only the writer.
-//! send_mu is per-connection-session, allocated on the stack of connectLoop and
-//! passed by pointer to the ping thread via PingCtx.
+//! Ping approach: a SEPARATE ping thread sleeps ping_interval_s, then calls
+//! conn.writeBinary. All sends (ACK, ping, auto-pong) are serialized inside
+//! ws.Conn.send_mu, so the recv thread and ping thread never interleave frames.
+//! readBinary stays a simple blocking call; the ping thread only writes.
+//!
+//! stop() unblocks the blocking read: it shuts down the socket (via the fd held
+//! under conn_mu), which makes readBinary return an error → the recv loop exits
+//! → connectLoop's defer destroys the connection (sole owner). conn_mu serializes
+//! the stop-side shutdown against the defer's null+destroy, so no UAF/double-free.
 //!
 //! Security: wss URL query / token / app_secret are NEVER logged.
 //! on_event is called on the conn thread — caller must not block it long.
@@ -37,6 +40,13 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
+
+    // Live connection, published by connectLoop under conn_mu so stop() can
+    // shutdown() the socket to unblock a blocking readBinary. ONLY connectLoop's
+    // defer ever destroy()s it — stop() only shuts it down. conn_mu serializes
+    // stop's shutdown against the defer's null+destroy.
+    conn_mu: std.Thread.Mutex = .{},
+    conn: ?*std.http.Client.Connection = null,
 
     // Thread context is passed by pointer into threadMain; both start() and
     // stop() touch these fields only before/after the thread is live, so no
@@ -62,8 +72,21 @@ pub const Client = struct {
     }
 
     /// Signal stop and join. Blocks until the thread exits.
+    /// Shuts down the live socket (if any) so a blocking readBinary returns
+    /// promptly instead of hanging the join on an idle connection.
     pub fn stop(self: *Client) void {
         self.stop_requested.store(true, .release);
+        {
+            self.conn_mu.lock();
+            defer self.conn_mu.unlock();
+            if (self.conn) |c| {
+                // shutdown only — destroy stays with connectLoop's defer (sole owner).
+                const fd = c.stream_reader.getStream().handle;
+                std.posix.shutdown(fd, .both) catch |err| {
+                    log.debug("longconn: shutdown failed: {s}", .{@errorName(err)});
+                };
+            }
+        }
         if (self.thread) |th| {
             th.join();
             self.thread = null;
@@ -100,7 +123,6 @@ fn threadMain(self: *Client) void {
 
 const PingCtx = struct {
     conn: *ws.Conn,
-    send_mu: *std.Thread.Mutex,
     stop: *const std.atomic.Value(bool),
     interval_s: i64,
     service_id_buf: [32]u8,
@@ -129,16 +151,13 @@ fn pingThread(ctx: *PingCtx) void {
             log.warn("ping: buildPing failed: {s}", .{@errorName(err)});
             continue;
         };
-        ctx.send_mu.lock();
-        const send_err = ctx.conn.writeBinary(ping);
-        ctx.send_mu.unlock();
-        if (send_err) |_| {
-            log.debug("ping: sent", .{});
-        } else |err| {
+        // writeBinary serializes internally (ws.Conn.send_mu).
+        ctx.conn.writeBinary(ping) catch |err| {
             // Connection is broken; recv thread will see it too and exit.
             log.warn("ping: send failed: {s}", .{@errorName(err)});
             return;
-        }
+        };
+        log.debug("ping: sent", .{});
     }
 }
 
@@ -169,16 +188,32 @@ fn connectLoop(self: *Client) !void {
     try client.ca_bundle.rescan(self.allocator);
 
     const conn_ptr = try client.connect(u.host, u.port, .tls);
-    defer conn_ptr.destroy();
+    // Sole owner: destroy here on every exit. Before destroying, clear the
+    // published pointer under conn_mu so a concurrent stop() can't shutdown a
+    // freed socket.
+    defer {
+        self.conn_mu.lock();
+        self.conn = null;
+        self.conn_mu.unlock();
+        conn_ptr.destroy();
+    }
 
     // 3. WS handshake (auth is in URL query, no extra headers needed).
     try ws.handshake(conn_ptr, u.host, u.path_query);
     log.info("longconn: handshake OK", .{});
 
+    // Publish the live connection so stop() can unblock readBinary by
+    // shutting down its socket. Do this AFTER handshake (handshake itself is a
+    // short blocking exchange; if stop races in before this, the next
+    // stop_requested check below catches it).
+    {
+        self.conn_mu.lock();
+        self.conn = conn_ptr;
+        self.conn_mu.unlock();
+    }
+
     if (self.stop_requested.load(.acquire)) return;
 
-    // Per-connection send mutex (shared between recv loop and ping thread).
-    var send_mu: std.Thread.Mutex = .{};
     var conn = ws.Conn{
         .conn = conn_ptr,
         .rng = std.Random.DefaultPrng.init(@bitCast(std.time.milliTimestamp())),
@@ -187,7 +222,6 @@ fn connectLoop(self: *Client) !void {
     // 4. Spawn ping thread.
     var ping_ctx = PingCtx{
         .conn = &conn,
-        .send_mu = &send_mu,
         .stop = &self.stop_requested,
         .interval_s = ep.ping_interval_s,
         .service_id_buf = undefined,
@@ -209,47 +243,70 @@ fn connectLoop(self: *Client) !void {
             },
             else => return err,
         };
-        // raw is arena-owned; no free needed.
+        // raw is arena-owned; freed by the per-frame reset below.
 
         const frame = pbbp2.decode(a, raw) catch |err| {
             log.warn("longconn: frame decode error: {s} ({d} bytes)", .{ @errorName(err), raw.len });
+            _ = arena.reset(.retain_capacity);
             continue;
         };
 
-        handleFrame(frame, &conn, &send_mu, self.on_event, self.on_event_ctx) catch |err| {
+        connWriteAck(&conn, frame, self.on_event, self.on_event_ctx) catch |err| {
             log.warn("longconn: handleFrame error: {s}", .{@errorName(err)});
         };
+
+        // Bound memory to a single frame: on_event is synchronous and has
+        // returned, the ACK is already on the wire, so nothing references the
+        // arena anymore. Without this a healthy (never-reconnecting) connection
+        // grows the arena unboundedly.
+        _ = arena.reset(.retain_capacity);
     }
+}
+
+/// Production ACK sink: write the ACK bytes through the real ws.Conn (sends are
+/// serialized inside Conn.send_mu).
+fn connWriteAck(
+    conn: *ws.Conn,
+    frame: pbbp2.Frame,
+    on_event: *const fn (ctx: *anyopaque, payload: []const u8) void,
+    ctx: *anyopaque,
+) !void {
+    const sink = AckSink{ .ctx = conn, .write = connSinkWrite };
+    return handleFrame(frame, sink, on_event, ctx);
+}
+
+fn connSinkWrite(ctx: *anyopaque, bytes: []const u8) anyerror!void {
+    const conn: *ws.Conn = @ptrCast(@alignCast(ctx));
+    return conn.writeBinary(bytes);
 }
 
 // ===================== Testable frame dispatcher =====================
 
+/// Abstracts "send the ACK bytes" so handleFrame is unit-testable without a
+/// real TLS connection: production passes a ws.Conn-backed sink, tests pass a
+/// recorder. `null` skips the ACK write entirely.
+pub const AckSink = struct {
+    ctx: *anyopaque,
+    write: *const fn (ctx: *anyopaque, bytes: []const u8) anyerror!void,
+};
+
 /// Dispatch one decoded pbbp2 Frame.
-/// Data frames (method==1): send ACK immediately (before on_event), then call on_event.
+/// Data frames (method==1): send ACK immediately (BEFORE on_event, to meet
+/// Feishu's 3-second deadline regardless of on_event cost), then call on_event.
 /// Control frames (method==0): log only; on_event is NOT called.
-///
-/// `conn` and `send_mu` are nil-able: if null, ACK write is skipped (for unit tests).
 pub fn handleFrame(
     frame: pbbp2.Frame,
-    conn: ?*ws.Conn,
-    send_mu: ?*std.Thread.Mutex,
+    ack_sink: ?AckSink,
     on_event: *const fn (ctx: *anyopaque, payload: []const u8) void,
     ctx: *anyopaque,
 ) !void {
     if (frame.method == 1) {
-        // Data frame: ACK first (3-second deadline), then hand payload to caller.
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const ack = try pbbp2.buildAck(arena.allocator(), frame);
-        if (conn) |c| {
-            if (send_mu) |mu| {
-                mu.lock();
-                const err = c.writeBinary(ack);
-                mu.unlock();
-                try err; // propagate write errors
-            } else {
-                try c.writeBinary(ack);
-            }
+        // Data frame: ACK first, then hand payload to caller.
+        if (ack_sink) |sink| {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const ack = try pbbp2.buildAck(arena.allocator(), frame);
+            try sink.write(sink.ctx, ack);
         }
         on_event(ctx, frame.payload);
     } else {
@@ -264,7 +321,7 @@ pub fn handleFrame(
 
 const t = std.testing;
 
-// Capture helper for tests.
+// Records on_event calls.
 const EventCapture = struct {
     called: bool = false,
     payload: std.ArrayListUnmanaged(u8) = .empty,
@@ -280,15 +337,33 @@ const EventCapture = struct {
     }
 };
 
-// Fake Conn writer: captures bytes written via writeBinary.
-// We bypass ws.Conn (which wraps std.http.Client.Connection) by using
-// handleFrame with conn=null for ACK capture tests and separately testing
-// buildAck independently.  For the "ACK bytes are correct" assertion we
-// decode the ACK from pbbp2.buildAck directly (already tested in pbbp2.zig).
-// Here we verify: (a) on_event called with correct payload, (b) on_event NOT
-// called for Control frames.
+// Records ACK bytes + ordering relative to on_event. Both the sink write and
+// onEvent append a tag to `order`, so the test can assert "ack" precedes "event".
+const OrderRecorder = struct {
+    order: std.ArrayListUnmanaged([]const u8) = .empty,
+    ack_bytes: std.ArrayListUnmanaged(u8) = .empty,
+    payload: std.ArrayListUnmanaged(u8) = .empty,
 
-test "handleFrame Data: on_event called with payload, ACK not required for unit (conn=null)" {
+    fn deinit(self: *OrderRecorder) void {
+        self.order.deinit(t.allocator);
+        self.ack_bytes.deinit(t.allocator);
+        self.payload.deinit(t.allocator);
+    }
+
+    fn sinkWrite(ctx: *anyopaque, bytes: []const u8) anyerror!void {
+        const self: *OrderRecorder = @ptrCast(@alignCast(ctx));
+        try self.order.append(t.allocator, "ack");
+        try self.ack_bytes.appendSlice(t.allocator, bytes);
+    }
+
+    fn onEvent(ctx: *anyopaque, payload: []const u8) void {
+        const self: *OrderRecorder = @ptrCast(@alignCast(ctx));
+        self.order.append(t.allocator, "event") catch {};
+        self.payload.appendSlice(t.allocator, payload) catch {};
+    }
+};
+
+test "handleFrame Data: on_event called with payload (no ack sink)" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -307,7 +382,7 @@ test "handleFrame Data: on_event called with payload, ACK not required for unit 
     var cap = EventCapture{};
     defer cap.deinit();
 
-    try handleFrame(frame, null, null, EventCapture.onEvent, &cap);
+    try handleFrame(frame, null, EventCapture.onEvent, &cap);
 
     try t.expect(cap.called);
     try t.expectEqualStrings("{\"event\":\"im.message.receive_v1\"}", cap.payload.items);
@@ -331,14 +406,12 @@ test "handleFrame Control: on_event NOT called" {
     var cap = EventCapture{};
     defer cap.deinit();
 
-    try handleFrame(frame, null, null, EventCapture.onEvent, &cap);
+    try handleFrame(frame, null, EventCapture.onEvent, &cap);
 
     try t.expect(!cap.called);
 }
 
-test "handleFrame Data: ACK bytes reuse seqid/logid/service/method, payload={\"code\":200}" {
-    // Verify ACK correctness by building it directly (mirrors the handleFrame
-    // path for conn=null) and decoding it.
+test "handleFrame Data: ACK is sent BEFORE on_event, reuses ids, payload={\"code\":200}" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -351,12 +424,25 @@ test "handleFrame Data: ACK bytes reuse seqid/logid/service/method, payload={\"c
         .service = 3,
         .method = 1,
         .headers = hdrs,
-        .payload = "{}",
+        .payload = "{\"e\":1}",
     };
 
-    const ack_bytes = try pbbp2.buildAck(a, frame);
-    const ack = try pbbp2.decode(a, ack_bytes);
+    var rec = OrderRecorder{};
+    defer rec.deinit();
+    const sink = AckSink{ .ctx = &rec, .write = OrderRecorder.sinkWrite };
 
+    try handleFrame(frame, sink, OrderRecorder.onEvent, &rec);
+
+    // Ordering: ack first, event second.
+    try t.expectEqual(@as(usize, 2), rec.order.items.len);
+    try t.expectEqualStrings("ack", rec.order.items[0]);
+    try t.expectEqualStrings("event", rec.order.items[1]);
+
+    // Payload passed through to on_event.
+    try t.expectEqualStrings("{\"e\":1}", rec.payload.items);
+
+    // ACK bytes are a valid ACK reusing ids with code 200 + biz_rt.
+    const ack = try pbbp2.decode(a, rec.ack_bytes.items);
     try t.expectEqual(@as(u64, 5), ack.seqid);
     try t.expectEqual(@as(u64, 6), ack.logid);
     try t.expectEqual(@as(i64, 3), ack.service);
