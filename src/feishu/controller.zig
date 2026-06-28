@@ -6,8 +6,8 @@
 //!   codec.parseReceiveV1 → Dedup → binding.shouldHandle
 //!   → capture baseline transcript (before route)
 //!   → build ReplyContext → chatops_router.route
-//!   → immediate ack via send_text sink (injectable for tests)
-//!   → beginEpisode on progress worker if expect_ai_progress (M2.9)
+//!   → immediate ack via send_text sink (injectable for tests; suppressed for AI-progress)
+//!   → beginEpisode on progress worker if expect_ai_progress (M2.9/S5)
 //!
 //! Security: token/secret are never logged.
 const std = @import("std");
@@ -21,6 +21,7 @@ const router = @import("../chatops/router.zig");
 const reply_mod = @import("../chatops/reply.zig");
 const progress_mod = @import("progress.zig");
 const media = @import("media.zig");
+const card = @import("card.zig");
 
 const log = std.log.scoped(.feishu_ctrl);
 
@@ -61,35 +62,54 @@ pub const CardSink = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Stub CardSink — always errors (S5 will wire the real implementation).
-// The worker falls back to text mode when card creation fails, so no-op stubs
-// that return error cause graceful fallback without any crash.
-// ponytail: stub returns error so worker falls back to text; real impl is S5.
+// Production CardSink — calls rest.CardKit APIs with a live token.
+// token via self.token_cache.get(self.allocator, ...) — NEVER arena (M3.2 UAF).
 // ---------------------------------------------------------------------------
 
-fn stubCardCreate(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]u8 {
-    return error.NotImplemented;
-}
-fn stubCardSend(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8) anyerror!void {
-    return error.NotImplemented;
-}
-fn stubCardStream(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8, _: i64) anyerror!void {
-    return error.NotImplemented;
-}
-fn stubCardClose(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: i64) anyerror!void {
-    return error.NotImplemented;
+fn cardCreate(ctx: *anyopaque, alloc: std.mem.Allocator, initial_md: []const u8) anyerror![]u8 {
+    const self: *Controller = @ptrCast(@alignCast(ctx));
+    const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
+        log.warn("cardCreate: token refresh failed: {s}", .{@errorName(err)});
+        return err;
+    };
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const card_json = try card.buildStreamingCard(arena.allocator(), initial_md);
+    const card_id = try rest.createStreamingCard(alloc, token, card_json);
+    log.info("feishu_ctrl: streaming card created", .{});
+    return card_id;
 }
 
-/// Stub CardSink used until S5 wires the production implementation.
-/// All ops return error → worker falls back to text mode for this episode.
-fn stubCardSink(ctx: *anyopaque) CardSink {
-    return .{
-        .ctx = ctx,
-        .create = stubCardCreate,
-        .send = stubCardSend,
-        .stream = stubCardStream,
-        .close = stubCardClose,
+fn cardSend(ctx: *anyopaque, alloc: std.mem.Allocator, chat_id: []const u8, card_id: []const u8) anyerror!void {
+    const self: *Controller = @ptrCast(@alignCast(ctx));
+    const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
+        log.warn("cardSend: token refresh failed: {s}", .{@errorName(err)});
+        return err;
     };
+    return rest.sendCardMessage(alloc, token, "chat_id", chat_id, card_id);
+}
+
+fn cardStream(ctx: *anyopaque, alloc: std.mem.Allocator, card_id: []const u8, content: []const u8, sequence: i64) anyerror!void {
+    const self: *Controller = @ptrCast(@alignCast(ctx));
+    const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
+        log.warn("cardStream: token refresh failed: {s}", .{@errorName(err)});
+        return err;
+    };
+    return rest.streamCardContent(alloc, token, card_id, card.PROGRESS_ELEMENT_ID, content, sequence);
+}
+
+fn cardClose(ctx: *anyopaque, alloc: std.mem.Allocator, card_id: []const u8, sequence: i64) anyerror!void {
+    const self: *Controller = @ptrCast(@alignCast(ctx));
+    const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
+        log.warn("cardClose: token refresh failed: {s}", .{@errorName(err)});
+        return err;
+    };
+    try rest.closeStreaming(alloc, token, card_id, sequence);
+    log.info("feishu_ctrl: streaming card closed", .{});
+}
+
+fn productionCardSink(ctx: *anyopaque) CardSink {
+    return .{ .ctx = ctx, .create = cardCreate, .send = cardSend, .stream = cardStream, .close = cardClose };
 }
 
 /// Production sink: calls rest.sendText with the live token.
@@ -246,12 +266,11 @@ pub const Controller = struct {
             .send_sink = .{ .ctx = self, .send = restSendText },
             // progress.send_sink is set to self.send_sink after self.* is
             // initialized (send_sink.ctx = self, which is now stable on the heap).
-            // progress.card_sink uses the stub (S5 wires the real implementation).
             .progress = .{
                 .allocator = allocator,
                 .control = control,
                 .send_sink = .{ .ctx = self, .send = restSendText },
-                .card_sink = stubCardSink(self),
+                .card_sink = productionCardSink(self),
             },
         };
         return self;
@@ -371,8 +390,9 @@ pub const Controller = struct {
             self.progress.cancelEpisode();
         }
 
-        // Step 7: immediate ack via injectable sink
-        if (reply_text.len > 0) {
+        // Step 7: immediate ack via injectable sink.
+        // AI-progress messages skip the inline text ack — the streaming card is the first feedback.
+        if (reply_text.len > 0 and !r.expect_ai_progress) {
             self.send_sink.send(self.send_sink.ctx, self.allocator, msg.chat_id, reply_text) catch |err| {
                 log.warn("onEvent: ack send failed: {s}", .{@errorName(err)});
             };
@@ -569,10 +589,8 @@ test "onEvent pipeline: p2p text → route called + ack captured" {
     // route was called → sendInput got the text (with trailing \r from sendAi)
     try t.expect(std.mem.indexOf(u8, fake.last_input.items, "hello feishu") != null);
 
-    // ack was sent exactly once
-    try t.expectEqual(@as(usize, 1), ack.calls);
-    try t.expectEqualStrings("oc_chat001", ack.last_chat_id.items);
-    try t.expect(ack.last_text.items.len > 0);
+    // AI-progress path: inline ack is suppressed (streaming card is first feedback).
+    try t.expectEqual(@as(usize, 0), ack.calls);
 }
 
 test "onEvent dedup: re-delivery with same event_id is ignored" {

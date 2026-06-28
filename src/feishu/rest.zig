@@ -363,7 +363,7 @@ pub fn streamCardContent(
         .{ card_id, element_id },
     );
     const body = try buildStreamBody(a, content, sequence);
-    try httpsReqWithBearer(alloc, a, .PUT, url, token, body);
+    _ = try httpsReqWithBearer(alloc, a, .PUT, url, token, body);
 }
 
 /// Closes streaming mode for a card (PATCH).
@@ -383,7 +383,7 @@ pub fn closeStreaming(
         .{card_id},
     );
     const body = try buildCloseBody(a, sequence);
-    try httpsReqWithBearer(alloc, a, .PATCH, url, token, body);
+    _ = try httpsReqWithBearer(alloc, a, .PATCH, url, token, body);
 }
 
 // ---------------------------------------------------------------------------
