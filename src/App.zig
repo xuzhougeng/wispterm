@@ -788,8 +788,8 @@ pub fn requestUpdateInstall(self: *App) bool {
         self.update_mutex.lock();
         defer self.update_mutex.unlock();
         const r = self.update_result;
-        if (r.state != .downloaded or r.asset_name.len == 0) return false;
-        asset_len = @min(r.asset_name.len, asset_buf.len);
+        if (r.state != .downloaded or r.asset_name.len == 0 or r.asset_name.len > asset_buf.len) return false;
+        asset_len = r.asset_name.len;
         @memcpy(asset_buf[0..asset_len], r.asset_name[0..asset_len]);
     }
 
