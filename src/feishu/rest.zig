@@ -334,7 +334,7 @@ fn httpsPostWithBearer(
     const parsed = std.json.parseFromSliceLeaky(Resp, resp_arena, items, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
-    }) catch return; // best-effort; HTTP 200 is authoritative
+    }) catch return error.FeishuSendTextFailed; // 200 + unparseable body can't confirm delivery
     if (parsed.code != 0) {
         log.err("sendText: code={d} msg={s}", .{ parsed.code, parsed.msg });
         return error.FeishuSendTextFailed;
