@@ -3,10 +3,10 @@
 const std = @import("std");
 const types = @import("types.zig");
 const binding = @import("binding.zig");
-const agent = @import("agent.zig");
+const agent = @import("../chatops/router.zig");
 const ilink = @import("ilink_client.zig");
-const control_mod = @import("control.zig");
-const reply_progress = @import("reply_progress.zig");
+const control_mod = @import("../chatops/control.zig");
+const reply_progress = @import("../chatops/reply_progress.zig");
 const media_inbound_mod = @import("media_inbound.zig");
 
 const log = std.log.scoped(.weixin);

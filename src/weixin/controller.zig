@@ -7,7 +7,7 @@ const types = @import("types.zig");
 const state_store = @import("state_store.zig");
 const ilink = @import("ilink_client.zig");
 const poller = @import("poller.zig");
-const control_mod = @import("control.zig");
+const control_mod = @import("../chatops/control.zig");
 
 const log = std.log.scoped(.weixin);
 

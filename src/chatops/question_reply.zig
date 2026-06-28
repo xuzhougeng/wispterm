@@ -5,7 +5,7 @@
 //! question is a *consultation*: any reply that is not a valid option digit is a
 //! free-text custom answer rather than being rejected.
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("reply.zig");
 
 pub const QuestionReply = types.QuestionReply;
 

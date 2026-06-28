@@ -2,7 +2,7 @@
 //! including /list + /switch conversation switching (aliases /sessions, /ls, /use).
 const std = @import("std");
 const control = @import("control.zig");
-const types = @import("types.zig");
+const types = @import("../weixin/types.zig");
 const approval_reply = @import("approval_reply.zig");
 const question_reply = @import("question_reply.zig");
 const session_list = @import("session_list.zig");

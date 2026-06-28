@@ -806,9 +806,9 @@ comptime {
     _ = @import("weixin/types.zig");
     _ = @import("weixin/state_store.zig");
     _ = @import("weixin/binding.zig");
-    _ = @import("weixin/control.zig");
-    _ = @import("weixin/agent.zig");
-    _ = @import("weixin/reply_progress.zig");
+    _ = @import("chatops/control.zig");
+    _ = @import("chatops/router.zig");
+    _ = @import("chatops/reply_progress.zig");
     _ = @import("weixin/ilink_codec.zig");
     _ = @import("weixin/media_inbound.zig");
     _ = @import("weixin/ilink_client.zig");
@@ -816,8 +816,9 @@ comptime {
     _ = @import("weixin/controller.zig");
     _ = @import("weixin/qr_code.zig");
     _ = @import("weixin/qr_panel.zig");
-    _ = @import("weixin/approval_reply.zig");
-    _ = @import("weixin/question_reply.zig");
+    _ = @import("chatops/approval_reply.zig");
+    _ = @import("chatops/question_reply.zig");
+    _ = @import("chatops/session_list.zig");
     _ = @import("renderer/overlay_keys.zig");
     _ = @import("close_confirm.zig");
     _ = @import("renderer/overlays.zig");

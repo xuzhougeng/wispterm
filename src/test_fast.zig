@@ -304,8 +304,8 @@ test {
     _ = @import("weixin/ilink_client.zig");
     _ = @import("weixin/media.zig");
     _ = @import("weixin/binding.zig");
-    _ = @import("weixin/approval_reply.zig");
-    _ = @import("weixin/question_reply.zig");
+    _ = @import("chatops/approval_reply.zig");
+    _ = @import("chatops/question_reply.zig");
     _ = @import("assistant/conversation/title.zig");
     _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("command/registry.zig");
