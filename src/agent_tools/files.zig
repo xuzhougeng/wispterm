@@ -47,8 +47,12 @@ fn renderReadResult(ctx: *ToolContext, path: []const u8, bytes: []const u8, offs
 // ---------------------------------------------------------------------------
 
 const FileTarget = union(enum) {
-    local,
-    remote: ToolSshConnection,
+    local: ?ToolSurface,
+    wsl: ToolSurface,
+    remote: struct {
+        surface: ToolSurface,
+        conn: ToolSshConnection,
+    },
     /// Owned error message to return verbatim to the model.
     err: []u8,
 };
@@ -63,20 +67,21 @@ const CopyEndpoint = union(enum) {
     err: []u8,
 };
 
-/// Resolve a file tool's optional `surface_id` to a local or remote target.
-/// A missing surface_id means local. A provided surface_id (including the
-/// focused/active/current aliases) is resolved against the snapshot: an SSH
-/// surface -> remote (its connection), a local/WSL surface -> local, no match
-/// -> err (lists open surfaces).
+/// Resolve a file tool's optional `surface_id` to a local, WSL, or SSH target.
+/// A missing surface_id follows the selected terminal context when one exists;
+/// otherwise it means local.
 fn resolveFileTarget(ctx: *ToolContext, surface_id: ?[]const u8) !FileTarget {
-    const sid = surface_id orelse return .local;
-    const snapshot = ctx.tool_snapshot orelse return .local;
+    const sid = surface_id orelse terminal_tools.selectedWriteContext(ctx) orelse return .{ .local = null };
+    const snapshot = ctx.tool_snapshot orelse return .{
+        .err = try std.fmt.allocPrint(ctx.allocator, "No terminal snapshot is available for surface_id={s}.", .{sid}),
+    };
     const surface = terminal_tools.resolveSurfaceId(snapshot, sid, terminal_tools.selectedWriteContext(ctx)) orelse {
         return .{ .err = try terminal_tools.allocNoSurfaceError(ctx.allocator, snapshot, sid) };
     };
-    if (!surface.is_ssh) return .local;
-    if (surface.ssh_connection) |conn| return .{ .remote = conn };
-    if (ctx.sshConnectionForSurface(surface.id)) |conn| return .{ .remote = conn };
+    if (surface.is_wsl) return .{ .wsl = surface };
+    if (!surface.is_ssh) return .{ .local = surface };
+    if (surface.ssh_connection) |conn| return .{ .remote = .{ .surface = surface, .conn = conn } };
+    if (ctx.sshConnectionForSurface(surface.id)) |conn| return .{ .remote = .{ .surface = surface, .conn = conn } };
     return .{ .err = try std.fmt.allocPrint(ctx.allocator, "Surface {s} is an SSH terminal but its connection is unavailable.", .{surface.id}) };
 }
 
@@ -120,6 +125,15 @@ fn endpointCwd(ctx: *ToolContext, endpoint: CopyEndpoint) ?[]const u8 {
     };
 }
 
+fn fileTargetCwd(ctx: *ToolContext, target: FileTarget) ?[]const u8 {
+    return switch (target) {
+        .local => |surface| if (surface) |s| if (s.cwd.len > 0) s.cwd else ctx.settings.working_dir else ctx.settings.working_dir,
+        .wsl => |surface| if (surface.cwd.len > 0) surface.cwd else null,
+        .remote => |remote| if (remote.surface.cwd.len > 0) remote.surface.cwd else null,
+        .err => null,
+    };
+}
+
 fn resolveEndpointPath(ctx: *ToolContext, endpoint: CopyEndpoint, path: []const u8) ![]u8 {
     return switch (endpoint) {
         .local => {
@@ -130,6 +144,18 @@ fn resolveEndpointPath(ctx: *ToolContext, endpoint: CopyEndpoint, path: []const 
         .wsl, .ssh => {
             if (posixPathIsAbsolute(path)) return ctx.allocator.dupe(u8, path);
             const cwd = endpointCwd(ctx, endpoint) orelse return error.MissingWorkingDir;
+            return posixJoin(ctx.allocator, cwd, path);
+        },
+        .err => unreachable,
+    };
+}
+
+fn resolveFileTargetPath(ctx: *ToolContext, target: FileTarget, path: []const u8) ![]u8 {
+    return switch (target) {
+        .local => resolveLocalPath(ctx.allocator, path, fileTargetCwd(ctx, target)),
+        .wsl, .remote => {
+            if (posixPathIsAbsolute(path)) return ctx.allocator.dupe(u8, path);
+            const cwd = fileTargetCwd(ctx, target) orelse return error.MissingWorkingDir;
             return posixJoin(ctx.allocator, cwd, path);
         },
         .err => unreachable,
@@ -169,6 +195,22 @@ fn localPathForEndpoint(ctx: *ToolContext, endpoint: CopyEndpoint, path: []const
         .local => ctx.allocator.dupe(u8, path),
         .wsl => wslGuestPathToLocalAlloc(ctx.allocator, path),
         .ssh, .err => unreachable,
+    };
+}
+
+fn localPathForFileTarget(ctx: *ToolContext, target: FileTarget, path: []const u8) ![]u8 {
+    return switch (target) {
+        .local => ctx.allocator.dupe(u8, path),
+        .wsl => wslGuestPathToLocalAlloc(ctx.allocator, path),
+        .remote, .err => unreachable,
+    };
+}
+
+fn gateForFileTarget(ctx: *ToolContext, target: FileTarget, path: []const u8, is_write: bool) tool_access.Gate {
+    return switch (target) {
+        .local => tool_access.fileGate(ctx, path, is_write),
+        .wsl, .remote => tool_access.remoteFileGate(is_write),
+        .err => unreachable,
     };
 }
 
@@ -296,40 +338,38 @@ pub fn copyFile(
 pub fn readFile(ctx: *ToolContext, path: []const u8, surface_id: ?[]const u8, offset: usize, limit: usize) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
     const target = try resolveFileTarget(ctx, surface_id);
-    const remote_conn: ?ToolSshConnection = switch (target) {
-        .err => |msg| return msg,
-        .remote => |conn| conn,
-        .local => null,
+    if (target == .err) return target.err;
+    const resolved = resolveFileTargetPath(ctx, target, path) catch |err| {
+        return std.fmt.allocPrint(ctx.allocator, "Failed to resolve {s}: {s}", .{ path, @errorName(err) });
     };
-    if (remote_conn) |conn| {
-        const gate = tool_access.remoteFileGate(false);
-        if (tool_access.approvalRequired(ctx.settings.permission, gate)) {
-            if (!ctx.requestApproval("read_file", path, "Read remote file")) {
-                return tool_output.deniedResult(ctx.allocator, path, "operator rejected remote read");
-            }
-        }
-        const bytes = scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES) orelse
-            return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s}", .{path});
-        defer ctx.allocator.free(bytes);
-        return renderReadResult(ctx, path, bytes, offset, limit);
-    }
-    const gate = tool_access.fileGate(ctx, path, false);
+    defer ctx.allocator.free(resolved);
+
+    const gate = gateForFileTarget(ctx, target, resolved, false);
     if (tool_access.approvalRequired(ctx.settings.permission, gate)) {
         const reason = if (gate.blacklisted) "Reads a protected path - confirm to allow" else "Read file";
-        if (!ctx.requestApproval("read_file", path, reason)) {
-            return tool_output.deniedResult(ctx.allocator, path, "operator rejected file read");
+        if (!ctx.requestApproval("read_file", resolved, reason)) {
+            return tool_output.deniedResult(ctx.allocator, resolved, "operator rejected file read");
         }
     }
-    const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
-    defer ctx.allocator.free(resolved);
-    const bytes = std.fs.cwd().readFileAlloc(ctx.allocator, resolved, agent_file_edit.MAX_FILE_BYTES) catch |err| {
+
+    if (target == .remote) {
+        const bytes = scp.sshReadFile(ctx.allocator, &target.remote.conn, resolved, agent_file_edit.MAX_FILE_BYTES) orelse
+            return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s}", .{resolved});
+        defer ctx.allocator.free(bytes);
+        return renderReadResult(ctx, resolved, bytes, offset, limit);
+    }
+    const local_path = localPathForFileTarget(ctx, target, resolved) catch |err| {
+        return std.fmt.allocPrint(ctx.allocator, "Failed to map {s}: {s}", .{ resolved, @errorName(err) });
+    };
+    defer ctx.allocator.free(local_path);
+    const bytes = std.fs.cwd().readFileAlloc(ctx.allocator, local_path, agent_file_edit.MAX_FILE_BYTES) catch |err| {
         if (err == error.FileTooBig) {
-            return std.fmt.allocPrint(ctx.allocator, "File {s} is too large (>= {d} bytes). Use offset/limit to read a range.", .{ path, agent_file_edit.MAX_FILE_BYTES });
+            return std.fmt.allocPrint(ctx.allocator, "File {s} is too large (>= {d} bytes). Use offset/limit to read a range.", .{ resolved, agent_file_edit.MAX_FILE_BYTES });
         }
-        return std.fmt.allocPrint(ctx.allocator, "Failed to read {s}: {s}", .{ path, @errorName(err) });
+        return std.fmt.allocPrint(ctx.allocator, "Failed to read {s}: {s}", .{ resolved, @errorName(err) });
     };
     defer ctx.allocator.free(bytes);
-    return renderReadResult(ctx, path, bytes, offset, limit);
+    return renderReadResult(ctx, resolved, bytes, offset, limit);
 }
 
 // ---------------------------------------------------------------------------
@@ -339,57 +379,61 @@ pub fn readFile(ctx: *ToolContext, path: []const u8, surface_id: ?[]const u8, of
 pub fn writeFile(ctx: *ToolContext, path: []const u8, content: []const u8, surface_id: ?[]const u8) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
     const target = try resolveFileTarget(ctx, surface_id);
-    const remote_conn: ?ToolSshConnection = switch (target) {
-        .err => |msg| return msg,
-        .remote => |conn| conn,
-        .local => null,
+    if (target == .err) return target.err;
+    const resolved = resolveFileTargetPath(ctx, target, path) catch |err| {
+        return std.fmt.allocPrint(ctx.allocator, "Failed to resolve {s}: {s}", .{ path, @errorName(err) });
     };
-    const gate = if (remote_conn != null) tool_access.remoteFileGate(true) else tool_access.fileGate(ctx, path, true);
+    defer ctx.allocator.free(resolved);
+    const gate = gateForFileTarget(ctx, target, resolved, true);
 
     // Do not disclose a protected file's existing content in the diff.
     var old_content: []u8 = &[_]u8{};
     var owns_old = false;
     defer if (owns_old) ctx.allocator.free(old_content);
     if (!gate.blacklisted) {
-        if (remote_conn) |conn| {
-            if (scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES)) |bytes| {
+        if (target == .remote) {
+            if (scp.sshReadFile(ctx.allocator, &target.remote.conn, resolved, agent_file_edit.MAX_FILE_BYTES)) |bytes| {
                 old_content = bytes;
                 owns_old = true;
             }
         } else {
-            const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
-            defer ctx.allocator.free(resolved);
-            if (std.fs.cwd().readFileAlloc(ctx.allocator, resolved, agent_file_edit.MAX_FILE_BYTES)) |bytes| {
-                old_content = bytes;
-                owns_old = true;
-            } else |_| {}
+            const local_path = localPathForFileTarget(ctx, target, resolved) catch null;
+            if (local_path) |p| {
+                defer ctx.allocator.free(p);
+                if (std.fs.cwd().readFileAlloc(ctx.allocator, p, agent_file_edit.MAX_FILE_BYTES)) |bytes| {
+                    old_content = bytes;
+                    owns_old = true;
+                } else |_| {}
+            }
         }
     }
 
-    const diff = try agent_file_edit.unifiedDiffAlloc(ctx.allocator, path, old_content, content);
+    const diff = try agent_file_edit.unifiedDiffAlloc(ctx.allocator, resolved, old_content, content);
     defer ctx.allocator.free(diff);
     ctx.emitNote(diff);
 
     if (tool_access.approvalRequired(ctx.settings.permission, gate)) {
-        const reason = try std.fmt.allocPrint(ctx.allocator, "Write {s}", .{path});
+        const reason = try std.fmt.allocPrint(ctx.allocator, "Write {s}", .{resolved});
         defer ctx.allocator.free(reason);
-        if (!ctx.requestApproval("write_file", path, reason)) {
-            return tool_output.deniedResult(ctx.allocator, path, "operator rejected file write");
+        if (!ctx.requestApproval("write_file", resolved, reason)) {
+            return tool_output.deniedResult(ctx.allocator, resolved, "operator rejected file write");
         }
     }
 
-    if (remote_conn) |conn| {
-        if (!scp.sshWriteFile(ctx.allocator, &conn, path, content)) {
-            return std.fmt.allocPrint(ctx.allocator, "Failed to write remote file {s}", .{path});
+    if (target == .remote) {
+        if (!scp.sshWriteFile(ctx.allocator, &target.remote.conn, resolved, content)) {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to write remote file {s}", .{resolved});
         }
     } else {
-        const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
-        defer ctx.allocator.free(resolved);
-        writeLocalFileAtomic(ctx.allocator, resolved, content) catch |err| {
-            return std.fmt.allocPrint(ctx.allocator, "Failed to write {s}: {s}", .{ path, @errorName(err) });
+        const local_path = localPathForFileTarget(ctx, target, resolved) catch |err| {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to map {s}: {s}", .{ resolved, @errorName(err) });
+        };
+        defer ctx.allocator.free(local_path);
+        writeLocalFileAtomic(ctx.allocator, local_path, content) catch |err| {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to write {s}: {s}", .{ resolved, @errorName(err) });
         };
     }
-    return std.fmt.allocPrint(ctx.allocator, "Wrote {d} bytes to {s}", .{ content.len, path });
+    return std.fmt.allocPrint(ctx.allocator, "Wrote {d} bytes to {s}", .{ content.len, resolved });
 }
 
 // ---------------------------------------------------------------------------
@@ -399,66 +443,70 @@ pub fn writeFile(ctx: *ToolContext, path: []const u8, content: []const u8, surfa
 pub fn editFile(ctx: *ToolContext, path: []const u8, old_string: []const u8, new_string: []const u8, replace_all: bool, surface_id: ?[]const u8) ![]u8 {
     if (ctx.isCancelled()) return ctx.allocator.dupe(u8, "Canceled.");
     const target = try resolveFileTarget(ctx, surface_id);
-    const remote_conn: ?ToolSshConnection = switch (target) {
-        .err => |msg| return msg,
-        .remote => |conn| conn,
-        .local => null,
+    if (target == .err) return target.err;
+    const resolved = resolveFileTargetPath(ctx, target, path) catch |err| {
+        return std.fmt.allocPrint(ctx.allocator, "Failed to resolve {s}: {s}", .{ path, @errorName(err) });
     };
+    defer ctx.allocator.free(resolved);
 
     var old_content: []u8 = undefined;
-    if (remote_conn) |conn| {
-        old_content = scp.sshReadFile(ctx.allocator, &conn, path, agent_file_edit.MAX_FILE_BYTES) orelse
-            return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s} for editing", .{path});
+    if (target == .remote) {
+        old_content = scp.sshReadFile(ctx.allocator, &target.remote.conn, resolved, agent_file_edit.MAX_FILE_BYTES) orelse
+            return std.fmt.allocPrint(ctx.allocator, "Failed to read remote file {s} for editing", .{resolved});
     } else {
-        const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
-        defer ctx.allocator.free(resolved);
-        old_content = std.fs.cwd().readFileAlloc(ctx.allocator, resolved, agent_file_edit.MAX_FILE_BYTES) catch |err|
-            return std.fmt.allocPrint(ctx.allocator, "Failed to read {s}: {s}", .{ path, @errorName(err) });
+        const local_path = localPathForFileTarget(ctx, target, resolved) catch |err| {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to map {s}: {s}", .{ resolved, @errorName(err) });
+        };
+        defer ctx.allocator.free(local_path);
+        old_content = std.fs.cwd().readFileAlloc(ctx.allocator, local_path, agent_file_edit.MAX_FILE_BYTES) catch |err|
+            return std.fmt.allocPrint(ctx.allocator, "Failed to read {s}: {s}", .{ resolved, @errorName(err) });
     }
     defer ctx.allocator.free(old_content);
 
     const outcome = agent_file_edit.applyEdit(ctx.allocator, old_content, old_string, new_string, replace_all) catch |err| {
         return switch (err) {
             error.EmptyOld => ctx.allocator.dupe(u8, "old_string must not be empty."),
-            error.NotFound => std.fmt.allocPrint(ctx.allocator, "old_string not found in {s}.", .{path}),
-            error.NotUnique => std.fmt.allocPrint(ctx.allocator, "old_string is not unique in {s}; pass replace_all=true or add more context.", .{path}),
+            error.NotFound => std.fmt.allocPrint(ctx.allocator, "old_string not found in {s}.", .{resolved}),
+            error.NotUnique => std.fmt.allocPrint(ctx.allocator, "old_string is not unique in {s}; pass replace_all=true or add more context.", .{resolved}),
             error.OutOfMemory => error.OutOfMemory,
         };
     };
     defer ctx.allocator.free(outcome.new_content);
 
-    const gate = if (remote_conn != null) tool_access.remoteFileGate(true) else tool_access.fileGate(ctx, path, true);
+    const gate = gateForFileTarget(ctx, target, resolved, true);
 
     // Do not disclose a protected file's content in the diff; show a redacted note.
     if (gate.blacklisted) {
-        const note = try std.fmt.allocPrint(ctx.allocator, "edit_file {s}: protected path - diff hidden ({d} change(s))", .{ path, outcome.occurrences });
+        const note = try std.fmt.allocPrint(ctx.allocator, "edit_file {s}: protected path - diff hidden ({d} change(s))", .{ resolved, outcome.occurrences });
         defer ctx.allocator.free(note);
         ctx.emitNote(note);
     } else {
-        const diff = try agent_file_edit.unifiedDiffAlloc(ctx.allocator, path, old_content, outcome.new_content);
+        const diff = try agent_file_edit.unifiedDiffAlloc(ctx.allocator, resolved, old_content, outcome.new_content);
         defer ctx.allocator.free(diff);
         ctx.emitNote(diff);
     }
 
     if (tool_access.approvalRequired(ctx.settings.permission, gate)) {
-        const reason = try std.fmt.allocPrint(ctx.allocator, "Edit {s} ({d} change(s))", .{ path, outcome.occurrences });
+        const reason = try std.fmt.allocPrint(ctx.allocator, "Edit {s} ({d} change(s))", .{ resolved, outcome.occurrences });
         defer ctx.allocator.free(reason);
-        if (!ctx.requestApproval("edit_file", path, reason)) {
-            return tool_output.deniedResult(ctx.allocator, path, "operator rejected file edit");
+        if (!ctx.requestApproval("edit_file", resolved, reason)) {
+            return tool_output.deniedResult(ctx.allocator, resolved, "operator rejected file edit");
         }
     }
 
-    if (remote_conn) |conn| {
-        if (!scp.sshWriteFile(ctx.allocator, &conn, path, outcome.new_content)) {
-            return std.fmt.allocPrint(ctx.allocator, "Failed to write remote file {s}", .{path});
+    if (target == .remote) {
+        if (!scp.sshWriteFile(ctx.allocator, &target.remote.conn, resolved, outcome.new_content)) {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to write remote file {s}", .{resolved});
         }
     } else {
-        const resolved = try resolveLocalPath(ctx.allocator, path, ctx.settings.working_dir);
-        defer ctx.allocator.free(resolved);
-        writeLocalFileAtomic(ctx.allocator, resolved, outcome.new_content) catch |err|
-            return std.fmt.allocPrint(ctx.allocator, "Failed to write {s}: {s}", .{ path, @errorName(err) });
+        const local_path = localPathForFileTarget(ctx, target, resolved) catch |err| {
+            return std.fmt.allocPrint(ctx.allocator, "Failed to map {s}: {s}", .{ resolved, @errorName(err) });
+        };
+        defer ctx.allocator.free(local_path);
+        writeLocalFileAtomic(ctx.allocator, local_path, outcome.new_content) catch |err|
+            return std.fmt.allocPrint(ctx.allocator, "Failed to write {s}: {s}", .{ resolved, @errorName(err) });
     }
-    return std.fmt.allocPrint(ctx.allocator, "Edited {s} ({d} change(s)).", .{ path, outcome.occurrences });
+    return std.fmt.allocPrint(ctx.allocator, "Edited {s} ({d} change(s)).", .{ resolved, outcome.occurrences });
 }
 
 fn fakeApprove(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8) bool {
@@ -565,16 +613,17 @@ test "file tool resolution uses ssh connection carried by the request snapshot" 
     const target = try resolveFileTarget(&ctx, "ssh-surface");
     switch (target) {
         .remote => |remote| {
-            try std.testing.expectEqualStrings("alice", remote.user());
-            try std.testing.expectEqualStrings("example.test", remote.host());
-            try std.testing.expectEqualStrings("2222", remote.port());
-            try std.testing.expectEqualStrings("jump.example.test", remote.proxyJump());
+            try std.testing.expectEqualStrings("ssh-surface", remote.surface.id);
+            try std.testing.expectEqualStrings("alice", remote.conn.user());
+            try std.testing.expectEqualStrings("example.test", remote.conn.host());
+            try std.testing.expectEqualStrings("2222", remote.conn.port());
+            try std.testing.expectEqualStrings("jump.example.test", remote.conn.proxyJump());
         },
         .err => |msg| {
             defer a.free(msg);
             return error.TestExpectedEqual;
         },
-        .local => return error.TestExpectedEqual,
+        else => return error.TestExpectedEqual,
     }
 
     const endpoint = try resolveCopyEndpoint(&ctx, "ssh-surface");
@@ -590,6 +639,89 @@ test "file tool resolution uses ssh connection carried by the request snapshot" 
         },
         else => return error.TestExpectedEqual,
     }
+}
+
+test "file tool resolution defaults to the selected WSL surface" {
+    const a = std.testing.allocator;
+    var surfaces = try a.alloc(ToolSurface, 1);
+    surfaces[0] = .{
+        .id = try a.dupe(u8, "wsl-surface"),
+        .title = try a.dupe(u8, "WSL"),
+        .cwd = try a.dupe(u8, "/data1/home/xzg/test"),
+        .snapshot = try a.dupe(u8, "$ "),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = false,
+        .is_wsl = true,
+        .agent_app = .none,
+        .agent_state = .none,
+        .agent_confidence = 0,
+        .ptr = @ptrFromInt(1),
+    };
+    const snapshot = ToolSnapshot{ .surfaces = surfaces, .active_tab = 0 };
+    defer snapshot.deinit(a);
+
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = snapshot,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    terminal_tools.setWriteContext(&ctx, "wsl-surface");
+
+    const target = try resolveFileTarget(&ctx, null);
+    switch (target) {
+        .wsl => |surface| try std.testing.expectEqualStrings("wsl-surface", surface.id),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "file tool paths resolve relative to selected remote cwd" {
+    const a = std.testing.allocator;
+    const conn = ToolSshConnection.fromParts(.{
+        .user = "alice",
+        .host = "example.test",
+        .port = "2222",
+    });
+    var surfaces = try a.alloc(ToolSurface, 1);
+    surfaces[0] = .{
+        .id = try a.dupe(u8, "ssh-surface"),
+        .title = try a.dupe(u8, "SSH"),
+        .cwd = try a.dupe(u8, "/data1/home/xzg/test"),
+        .snapshot = try a.dupe(u8, "$ "),
+        .tab_index = 0,
+        .focused = true,
+        .is_ssh = true,
+        .is_wsl = false,
+        .ssh_connection = conn,
+        .agent_app = .none,
+        .agent_state = .none,
+        .agent_confidence = 0,
+        .ptr = @ptrFromInt(1),
+    };
+    const snapshot = ToolSnapshot{ .surfaces = surfaces, .active_tab = 0 };
+    defer snapshot.deinit(a);
+
+    var dummy: u8 = 0;
+    var ctx = ToolContext{
+        .allocator = a,
+        .ctx = &dummy,
+        .tool_host = null,
+        .tool_snapshot = snapshot,
+        .settings = .{ .permission = .full, .access_rules = null },
+        .approve = fakeApprove,
+        .cancelled = fakeCancelled,
+    };
+    terminal_tools.setWriteContext(&ctx, "ssh-surface");
+
+    const target = try resolveFileTarget(&ctx, null);
+    const resolved = try resolveFileTargetPath(&ctx, target, "demo.txt");
+    defer a.free(resolved);
+    try std.testing.expectEqualStrings("/data1/home/xzg/test/demo.txt", resolved);
 }
 
 test "write_file creates a local file in full permission mode" {
