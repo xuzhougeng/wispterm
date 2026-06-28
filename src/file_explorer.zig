@@ -5,9 +5,9 @@
 //! Supports local (std.fs), WSL, and remote SSH/SCP modes.
 
 const std = @import("std");
-const ssh_connection = @import("ssh_connection.zig");
+const ssh_connection = @import("ssh/connection.zig");
 const agent_history = @import("agent/history.zig");
-const scp = @import("scp.zig");
+const scp = @import("ssh/scp.zig");
 const file_backend = @import("file_backend.zig");
 const platform_local_path = @import("platform/local_path.zig");
 const ui_perf = @import("ui_perf.zig");

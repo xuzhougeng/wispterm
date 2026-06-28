@@ -14,7 +14,7 @@ comptime {
     _ = @import("release_package.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("selection_unit.zig");
-    _ = @import("ssh_prompt.zig");
+    _ = @import("ssh/prompt.zig");
     _ = @import("update_check.zig");
     _ = @import("update_install.zig");
     _ = @import("platform/webview.zig");

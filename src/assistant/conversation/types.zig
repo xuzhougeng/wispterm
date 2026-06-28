@@ -6,7 +6,7 @@ const weixin_types = @import("../../weixin/types.zig");
 const agent_detector = @import("../../terminal_agents/detector.zig");
 const ai_chat_protocol = @import("protocol.zig");
 const ai_agent_access = @import("../../agent/access.zig");
-const ssh_connection = @import("../../ssh_connection.zig");
+const ssh_connection = @import("../../ssh/connection.zig");
 pub const SshConnection = ssh_connection.SshConnection;
 
 const DEFAULT_AGENT_TIMEOUT_MS: u32 = 60_000;

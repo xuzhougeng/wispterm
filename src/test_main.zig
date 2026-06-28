@@ -122,7 +122,7 @@ comptime {
         @compileError("ssh_hosts profile schema must only add server auth fields; port forwarding must not extend it");
     }
 
-    const ssh_tunnel_source = @embedFile("ssh_tunnel.zig");
+    const ssh_tunnel_source = @embedFile("ssh/tunnel.zig");
     if (std.mem.indexOf(u8, ssh_tunnel_source, "\"-L\"") == null or
         std.mem.indexOf(u8, ssh_tunnel_source, "\"-R\"") != null)
     {
@@ -709,14 +709,14 @@ comptime {
     _ = @import("appwindow/split_layout.zig");
     _ = @import("appwindow/tab.zig");
     _ = @import("appwindow/thread_message.zig");
-    _ = @import("scp.zig");
+    _ = @import("ssh/scp.zig");
     _ = @import("diag_log.zig");
     _ = if (build_options.webview) @import("browser/panel.zig") else @import("browser/panel_stub.zig");
     _ = @import("browser/url.zig");
     _ = @import("build_guards.zig");
     _ = @import("command/center_state.zig");
     _ = @import("command/palette_model.zig");
-    _ = @import("openssh_config_import.zig");
+    _ = @import("ssh/openssh_config_import.zig");
     _ = @import("config.zig");
     _ = @import("i18n.zig");
     _ = @import("config_watcher.zig");
@@ -840,7 +840,7 @@ comptime {
     _ = @import("skill/center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
     _ = @import("port_forward/rule.zig");
-    _ = @import("ssh_profile_store.zig");
+    _ = @import("ssh/profile_store.zig");
     _ = @import("port_forward/manager.zig");
     _ = @import("port_forward/forwarding.zig");
     _ = @import("renderer/port_forwarding_renderer.zig");
@@ -850,8 +850,8 @@ comptime {
     _ = @import("tools/skill_draft.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("assistant/conversation/scrollbar_model.zig");
-    _ = @import("ssh_prompt.zig");
-    _ = @import("ssh_tunnel.zig");
+    _ = @import("ssh/prompt.zig");
+    _ = @import("ssh/tunnel.zig");
     _ = @import("startup_tabs.zig");
     _ = @import("split_tree.zig");
     _ = @import("preview/pane.zig");

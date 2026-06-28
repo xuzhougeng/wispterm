@@ -60,7 +60,7 @@ const clipboard = @import("input/clipboard.zig");
 const port_forwarding = @import("port_forward/forwarding.zig");
 const port_forward_manager = @import("port_forward/manager.zig");
 const port_forward_rule = @import("port_forward/rule.zig");
-const ssh_profile_store = @import("ssh_profile_store.zig");
+const ssh_profile_store = @import("ssh/profile_store.zig");
 const skill_scan = @import("skill/scan.zig");
 const skill_local_fs = @import("skill/local_fs.zig");
 const skill_transfer_cmd = @import("skill/transfer_cmd.zig");
@@ -70,11 +70,11 @@ const tool_skill_draft = @import("tools/skill_draft.zig");
 const first_party_tools = @import("tools/first_party.zig");
 const ai_chat_request = @import("assistant/conversation/request.zig");
 const remote_file = @import("platform/remote_file.zig");
-const ssh_connection = @import("ssh_connection.zig");
+const ssh_connection = @import("ssh/connection.zig");
 const skill_transfer = @import("skill/transfer.zig");
 const skill_diff = @import("skill/diff.zig");
-const scp = @import("scp.zig");
-const ssh_error = @import("ssh_error.zig");
+const scp = @import("ssh/scp.zig");
+const ssh_error = @import("ssh/error.zig");
 const i18n = @import("i18n.zig");
 pub const tab = @import("appwindow/tab.zig");
 const active_tab_state = @import("appwindow/active_tab.zig");
@@ -3523,7 +3523,7 @@ pub fn spawnTabWithCommandUtf8(command: []const u8) bool {
 /// for key auth). The controller (pumped from the main loop) builds tabs/splits
 /// from the remote tmux windows/panes. Returns false if the transport could not
 /// be launched.
-pub fn startTmuxSession(ssh_cmd: []const u8, password: []const u8, profile_name: []const u8, ssh_conn: ?@import("ssh_connection.zig").SshConnection) bool {
+pub fn startTmuxSession(ssh_cmd: []const u8, password: []const u8, profile_name: []const u8, ssh_conn: ?@import("ssh/connection.zig").SshConnection) bool {
     const allocator = g_allocator orelse return false;
     return tmux_controller.start(
         allocator,

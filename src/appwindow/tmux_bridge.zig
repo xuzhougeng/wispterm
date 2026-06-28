@@ -20,7 +20,7 @@ const pane_mod = @import("../tmux/pane.zig");
 const layout = @import("../tmux/layout.zig");
 const tab = @import("tab.zig");
 const active_tab_state = @import("active_tab.zig");
-const SshConnection = @import("../ssh_connection.zig").SshConnection;
+const SshConnection = @import("../ssh/connection.zig").SshConnection;
 
 const Session = session_mod.Session;
 const PaneMap = pane_mod.PaneMap;

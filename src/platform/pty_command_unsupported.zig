@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const process_shared = @import("process_shared.zig");
-const ssh_connection = @import("../ssh_connection.zig");
+const ssh_connection = @import("../ssh/connection.zig");
 
 pub const CommandLineBuffer = [256]u8;
 pub const CwdBuffer = [260]u8;

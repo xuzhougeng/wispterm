@@ -20,9 +20,9 @@ const Config = @import("../config.zig");
 const themes_embed = @import("../themes.zig");
 const input_key = @import("../input/key.zig");
 const hit_test = @import("../input/hit_test.zig");
-const ssh_prompt = @import("../ssh_prompt.zig");
-const ssh_connection = @import("../ssh_connection.zig");
-const ssh_profile_store = @import("../ssh_profile_store.zig");
+const ssh_prompt = @import("../ssh/prompt.zig");
+const ssh_connection = @import("../ssh/connection.zig");
+const ssh_profile_store = @import("../ssh/profile_store.zig");
 const app_metadata = @import("../app_metadata.zig");
 const command_center_state = @import("../command/center_state.zig");
 const ctl_ui_state = @import("../ctl/ui_state.zig");
@@ -2192,7 +2192,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
 // ============================================================================
 
 const profile_codec = @import("overlays/profile_codec.zig");
-const openssh_config_import = @import("../openssh_config_import.zig");
+const openssh_config_import = @import("../ssh/openssh_config_import.zig");
 const SSH_FIELD_COUNT = ssh_profiles.SSH_FIELD_COUNT;
 const SSH_FIELD_MAX = ssh_profiles.SSH_FIELD_MAX;
 const SSH_PROFILE_MAX = ssh_profiles.SSH_PROFILE_MAX;

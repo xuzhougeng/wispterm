@@ -5,8 +5,8 @@
 //! adding extra filesystem/SSH dependencies.
 
 const std = @import("std");
-const ssh_connection = @import("ssh_connection.zig");
-const scp = @import("scp.zig");
+const ssh_connection = @import("ssh/connection.zig");
+const scp = @import("ssh/scp.zig");
 const platform_remote_file = @import("platform/remote_file.zig");
 
 pub const MAX_NAME_LEN = 255;
