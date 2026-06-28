@@ -329,6 +329,81 @@ test "Stopping... still counts as in progress" {
     try t.expect(p.text.len != 0);
 }
 
+/// Render the current transcript into a compact progress markdown string for the streaming card.
+/// Returns owned []u8; caller must free. Never returns empty.
+pub fn renderProgress(alloc: std.mem.Allocator, current: []const u8) ![]u8 {
+    var buf: [MAX_SECTIONS]Section = undefined;
+    const sections = parseSections(current, &buf);
+    const status = latestStatus(sections);
+
+    // Find last non-empty assistant section
+    var last_assistant: ?[]const u8 = null;
+    for (sections) |s| {
+        if (s.role == .assistant and trim(s.content).len != 0) last_assistant = trim(s.content);
+    }
+
+    // Find last tool section's first line (tool name)
+    var last_tool_name: ?[]const u8 = null;
+    for (sections) |s| {
+        if (s.role == .tool and trim(s.content).len != 0) {
+            const c = trim(s.content);
+            // ponytail: first line = tool name heuristic, good enough for v1
+            const nl = std.mem.indexOfScalar(u8, c, '\n') orelse c.len;
+            last_tool_name = trim(c[0..nl]);
+        }
+    }
+
+    const active = isActiveStatus(status) or hasRole(sections, .tool);
+
+    if (last_assistant) |content| {
+        if (!active) return alloc.dupe(u8, content);
+        // Active: append tool status line
+        if (last_tool_name) |tool| {
+            return std.fmt.allocPrint(alloc, "{s}\n\n🔧 正在执行 {s}…", .{ content, tool });
+        }
+        return std.fmt.allocPrint(alloc, "{s}\n\n🔧 正在执行…", .{content});
+    }
+
+    // No assistant content yet
+    if (active) {
+        if (last_tool_name) |tool| {
+            return std.fmt.allocPrint(alloc, "🔧 正在执行 {s}…", .{tool});
+        }
+        return alloc.dupe(u8, "🔧 正在执行…");
+    }
+    return alloc.dupe(u8, "处理中…");
+}
+
+test "renderProgress: active with tool shows tool name" {
+    const transcript =
+        "User:\n帮我读 README\nAI:\n好的，我来读取。\nTool:\nread_file\nStatus:\nrunning tools\n";
+    const md = try renderProgress(t.allocator, transcript);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "我来读取") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") != null);
+}
+
+test "renderProgress: done state shows assistant content only" {
+    const transcript = "AI:\n这是最终答案。\nStatus:\ndone\n";
+    const md = try renderProgress(t.allocator, transcript);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "最终答案") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") == null);
+}
+
+test "renderProgress: no assistant content returns non-empty placeholder" {
+    const transcript = "Status:\nrunning tools\n";
+    const md = try renderProgress(t.allocator, transcript);
+    defer t.allocator.free(md);
+    try t.expect(md.len > 0);
+}
+
+test "renderProgress: empty transcript returns placeholder" {
+    const md = try renderProgress(t.allocator, "");
+    defer t.allocator.free(md);
+    try t.expect(md.len > 0);
+}
+
 test "a resolved approval (gone from current) does not re-fire even if baseline had one" {
     // Detection reads `current`, not the baseline: once the copilot resolves the
     // approval the snapshot stops emitting the section, so the turn completes
