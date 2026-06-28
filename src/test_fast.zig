@@ -306,6 +306,7 @@ test {
     _ = @import("weixin/binding.zig");
     _ = @import("chatops/approval_reply.zig");
     _ = @import("chatops/question_reply.zig");
+    _ = @import("feishu/pbbp2.zig");
     _ = @import("assistant/conversation/title.zig");
     _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("command/registry.zig");
