@@ -449,6 +449,66 @@ pub fn editFile(ctx: *ToolContext, path: []const u8, old_string: []const u8, new
     };
     defer ctx.allocator.free(resolved);
 
+    const gate = gateForFileTarget(ctx, target, resolved, true);
+    if (target == .remote) {
+        switch (try tryRemoteEditFile(ctx, &target.remote.conn, resolved, old_string, new_string, replace_all, gate)) {
+            .done => |out| return out,
+            .fallback => {},
+        }
+    }
+
+    return legacyEditFile(ctx, target, resolved, old_string, new_string, replace_all, gate);
+}
+
+const RemoteEditAttempt = union(enum) {
+    done: []u8,
+    fallback,
+};
+
+fn tryRemoteEditFile(
+    ctx: *ToolContext,
+    conn: *const ToolSshConnection,
+    resolved: []const u8,
+    old_string: []const u8,
+    new_string: []const u8,
+    replace_all: bool,
+    gate: tool_access.Gate,
+) !RemoteEditAttempt {
+    var check = scp.sshRemoteEditCheck(ctx.allocator, conn, resolved, old_string, new_string, replace_all, !gate.blacklisted);
+    switch (check) {
+        .unavailable => return .fallback,
+        .edit_error => |msg| return .{ .done = msg },
+        .failed => |msg| return .{ .done = msg },
+        .ok => |ok| {
+            defer check.deinit(ctx.allocator);
+            if (gate.blacklisted) {
+                const note = try std.fmt.allocPrint(ctx.allocator, "edit_file {s}: protected path - diff hidden ({d} change(s))", .{ resolved, ok.occurrences });
+                defer ctx.allocator.free(note);
+                ctx.emitNote(note);
+            } else {
+                ctx.emitNote(ok.diff);
+            }
+
+            if (tool_access.approvalRequired(ctx.settings.permission, gate)) {
+                const reason = try std.fmt.allocPrint(ctx.allocator, "Edit {s} ({d} change(s))", .{ resolved, ok.occurrences });
+                defer ctx.allocator.free(reason);
+                if (!ctx.requestApproval("edit_file", resolved, reason)) {
+                    return .{ .done = try tool_output.deniedResult(ctx.allocator, resolved, "operator rejected file edit") };
+                }
+            }
+
+            const apply = scp.sshRemoteEditApply(ctx.allocator, conn, resolved, old_string, new_string, replace_all);
+            switch (apply) {
+                .unavailable => return .{ .done = try std.fmt.allocPrint(ctx.allocator, "wispterm-filetool disappeared before applying {s}; retry the edit to use the legacy fallback.", .{resolved}) },
+                .ok => |occurrences| return .{ .done = try std.fmt.allocPrint(ctx.allocator, "Edited {s} ({d} change(s)).", .{ resolved, occurrences }) },
+                .edit_error => |msg| return .{ .done = msg },
+                .failed => |msg| return .{ .done = msg },
+            }
+        },
+    }
+}
+
+fn legacyEditFile(ctx: *ToolContext, target: FileTarget, resolved: []const u8, old_string: []const u8, new_string: []const u8, replace_all: bool, gate: tool_access.Gate) ![]u8 {
     var old_content: []u8 = undefined;
     if (target == .remote) {
         old_content = scp.sshReadFile(ctx.allocator, &target.remote.conn, resolved, agent_file_edit.MAX_FILE_BYTES) orelse
@@ -472,8 +532,6 @@ pub fn editFile(ctx: *ToolContext, path: []const u8, old_string: []const u8, new
         };
     };
     defer ctx.allocator.free(outcome.new_content);
-
-    const gate = gateForFileTarget(ctx, target, resolved, true);
 
     // Do not disclose a protected file's content in the diff; show a redacted note.
     if (gate.blacklisted) {
@@ -795,6 +853,17 @@ test "edit_file applies a unique replacement to a local file" {
     const after = try tmp.dir.readFileAlloc(a, "e.txt", 1024);
     defer a.free(after);
     try std.testing.expectEqualStrings("alpha\nBETA\ngamma\n", after);
+}
+
+test "edit_file SSH path tries wispterm-filetool before legacy fallback" {
+    const source = @embedFile("files.zig");
+    const start = std.mem.indexOf(u8, source, "pub fn editFile") orelse return error.MissingEditFile;
+    const body = source[start..];
+    const end = std.mem.indexOf(u8, body, "fn fakeApprove") orelse return error.MissingEditFileEnd;
+    const edit_body = body[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, edit_body, "tryRemoteEditFile") != null);
+    try std.testing.expect(std.mem.indexOf(u8, edit_body, "legacyEditFile") != null);
+    try std.testing.expect(std.mem.indexOf(u8, edit_body, "sshRemoteEditCheck") != null);
 }
 
 test "read_file with an unknown surface_id returns a no-surface error" {

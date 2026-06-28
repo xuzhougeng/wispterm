@@ -396,6 +396,13 @@ test "desktop executable emission defaults to implemented platform backends" {
     try std.testing.expect(defaultEmitDesktopExe(PlatformFeatures.forOs(.macos)));
 }
 
+test "standalone filetool build contract is declared" {
+    const source = @embedFile("build.zig");
+    try expectSourceContains(source, ".name = \"wispterm-filetool\"");
+    try expectSourceContains(source, "src/wispterm_filetool.zig");
+    try expectSourceContains(source, "b.step(\"wispterm-filetool\"");
+}
+
 test "shared compile checks default to platforms without desktop backends" {
     try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.windows)));
     try std.testing.expect(!defaultEmitSharedCompileChecks(PlatformFeatures.forOs(.linux)));
@@ -628,6 +635,19 @@ pub fn build(b: *std.Build) void {
         const wisptermctl_step = b.step("wisptermctl", "Build the standalone wisptermctl CLI client (separate artifact; not bundled with the app)");
         wisptermctl_step.dependOn(&b.addInstallArtifact(ctl_exe, .{}).step);
     }
+
+    const filetool_mod = b.createModule(.{
+        .root_source_file = b.path("src/wispterm_filetool.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const filetool_exe = b.addExecutable(.{
+        .name = "wispterm-filetool",
+        .root_module = filetool_mod,
+    });
+    if (platform.supports_gui_subsystem) filetool_exe.subsystem = .Console;
+    const filetool_step = b.step("wispterm-filetool", "Build the standalone remote-side file edit helper");
+    filetool_step.dependOn(&b.addInstallArtifact(filetool_exe, .{}).step);
 
     b.installDirectory(.{
         .source_dir = b.path("plugins"),

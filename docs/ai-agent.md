@@ -136,6 +136,8 @@ The AI agent can read and edit files directly:
 
 To edit a file on a remote SSH server, the agent passes the `surface_id` of an open SSH terminal tab; the operation runs on that host over the existing connection. Local files (no `surface_id`) resolve relative paths against the conversation's working directory. Writes and edits display a diff and, depending on the permission level (confirm / auto / full), may ask you to approve before applying.
 
+SSH `edit_file` can use the optional `wispterm-filetool` helper on the remote host so the exact-string replacement is checked and applied server-side. Build it separately with `zig build wispterm-filetool -Dtarget=<remote-target>` and put `zig-out/bin/wispterm-filetool` on the remote server's `PATH`. If the helper is missing, WispTerm automatically falls back to the legacy SSH read/apply/write path.
+
 ## Long-term memory
 
 Copilot keeps two tiers of long-term memory under the config directory
