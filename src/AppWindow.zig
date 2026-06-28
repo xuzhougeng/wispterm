@@ -5196,6 +5196,13 @@ fn writeUiScreenshotFile(path: []const u8, bytes: []const u8) !void {
     try file.writeAll(bytes);
 }
 
+fn agentUiScreenshotBaseDir(allocator: std.mem.Allocator, working_dir: ?[]const u8) ![]const u8 {
+    if (working_dir) |wd| {
+        if (wd.len > 0) return allocator.dupe(u8, wd);
+    }
+    return platform_dirs.exportsDir(allocator);
+}
+
 fn agentRequestCaptureUiScreenshot(
     allocator: std.mem.Allocator,
     target: ai_chat_types.UiScreenshotTarget,
@@ -5210,8 +5217,8 @@ fn agentRequestCaptureUiScreenshot(
     const fb_width: u32 = @intCast(fb.width);
     const fb_height: u32 = @intCast(fb.height);
 
-    const wd = working_dir orelse return error.MissingWorkingDir;
-    if (wd.len == 0) return error.MissingWorkingDir;
+    const output_base = try agentUiScreenshotBaseDir(allocator, working_dir);
+    defer allocator.free(output_base);
 
     const capture = try resolveAgentUiScreenshotCapture(target, surface_id, fb_width, fb_height);
     const rect = appwindow_ui_screenshot.clampRect(capture.rect, fb_width, fb_height) orelse return error.WindowUnavailable;
@@ -5241,7 +5248,7 @@ fn agentRequestCaptureUiScreenshot(
         result_surface_id = try allocator.dupe(u8, id);
     }
 
-    const path = try appwindow_ui_screenshot.outputPath(allocator, wd, std.time.milliTimestamp());
+    const path = try appwindow_ui_screenshot.outputPath(allocator, output_base, std.time.milliTimestamp());
     errdefer allocator.free(path);
     try writeUiScreenshotFile(path, png);
 
@@ -7327,6 +7334,22 @@ test "appwindow: ui screenshot explicit surface id errors on non-terminal active
         error.SurfaceNotInActiveTab,
         resolveAgentUiScreenshotCapture(.active_tab, "surface-123", 100, 100),
     );
+}
+
+test "appwindow: ui screenshot base dir falls back to exports dir" {
+    const allocator = std.testing.allocator;
+    platform_dirs.setTestConfigDirForCurrentThread("/tmp/wispterm-test-config");
+    defer platform_dirs.clearTestConfigDirForCurrentThread();
+
+    const fallback = try agentUiScreenshotBaseDir(allocator, null);
+    defer allocator.free(fallback);
+    const expected = try std.fs.path.join(allocator, &.{ "/tmp/wispterm-test-config", "exports" });
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, fallback);
+
+    const explicit = try agentUiScreenshotBaseDir(allocator, "/work/project");
+    defer allocator.free(explicit);
+    try std.testing.expectEqualStrings("/work/project", explicit);
 }
 
 test "appwindow: ui screenshot reports unavailable window before missing working dir" {
