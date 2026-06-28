@@ -1,5 +1,5 @@
 const std = @import("std");
-const platform_process = @import("platform/process.zig");
+const platform_process = @import("../platform/process.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

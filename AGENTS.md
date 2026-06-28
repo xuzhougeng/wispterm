@@ -85,7 +85,7 @@ When debugging UI behavior, automate WispTerm as a real visible Windows app from
 
 ## Windows SSH/SCP Compatibility
 
-When changing SSH/SCP code paths (`src/scp.zig`, SSH clipboard image paste, remote file explorer, or SSH session metadata), test against the real profile in `%APPDATA%\wispterm\ssh_hosts` when available — but never print or commit the password. Two hard rules: do **not** add OpenSSH connection sharing (`ControlMaster`/`ControlPersist`/`ControlPath`) to helper `ssh.exe`/`scp.exe` commands (it breaks SCP on Windows OpenSSH), and keep the underlying OpenSSH stderr visible rather than collapsing it to a generic failure. Test commands and the full rationale are in [docs/development.md](docs/development.md#windows-sshscp-compatibility).
+When changing SSH/SCP code paths (`src/ssh/scp.zig`, SSH clipboard image paste, remote file explorer, or SSH session metadata), test against the real profile in `%APPDATA%\wispterm\ssh_hosts` when available — but never print or commit the password. Two hard rules: do **not** add OpenSSH connection sharing (`ControlMaster`/`ControlPersist`/`ControlPath`) to helper `ssh.exe`/`scp.exe` commands (it breaks SCP on Windows OpenSSH), and keep the underlying OpenSSH stderr visible rather than collapsing it to a generic failure. Test commands and the full rationale are in [docs/development.md](docs/development.md#windows-sshscp-compatibility).
 
 ## Windows Development Compatibility
 
@@ -137,6 +137,8 @@ src/                         # Desktop terminal application
 ├── renderer/                # OpenGL renderer, cell renderer, overlays, titlebar, panels
 ├── source_guards/           # Cross-cutting architecture ratchets: file-size backstop
 │                            #   + global-state / import-hub / side-effect freezes
+├── ssh/                     # SSH/SCP descriptors, profile store, prompts, tunnels,
+│                            #   OpenSSH config import, and transfer helpers
 └── termio/                  # PTY read/write threads and terminal IO mailbox
 
 remote/                      # WispTerm-specific web remote console and relay

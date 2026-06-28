@@ -1,6 +1,6 @@
 const std = @import("std");
 const windows = std.os.windows;
-const ssh_connection = @import("../ssh_connection.zig");
+const ssh_connection = @import("../ssh/connection.zig");
 
 const PseudoConsoleHandle = windows.HANDLE;
 pub const CommandLineBuffer = [256]u16;

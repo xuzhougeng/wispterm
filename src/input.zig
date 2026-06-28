@@ -72,7 +72,7 @@ const close_confirm_state = @import("ui/close_shortcut_confirm.zig");
 const jupyter_picker = @import("jupyter/picker.zig");
 const copilot_picker = @import("assistant/sidebar/picker.zig");
 const jupyter_detect = @import("jupyter/detect.zig");
-const scp = @import("scp.zig");
+const scp = @import("ssh/scp.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
@@ -4995,7 +4995,7 @@ fn buildRemotePathKindCommand(buf: []u8, remote_path: []const u8) ?[]const u8 {
     ) catch null;
 }
 
-fn remotePathIsDirectoryForDownload(allocator: std.mem.Allocator, conn: *const @import("ssh_connection.zig").SshConnection, remote_path: []const u8) ?bool {
+fn remotePathIsDirectoryForDownload(allocator: std.mem.Allocator, conn: *const @import("ssh/connection.zig").SshConnection, remote_path: []const u8) ?bool {
     var cmd_buf: [2300]u8 = undefined;
     const cmd = buildRemotePathKindCommand(cmd_buf[0..], remote_path) orelse return null;
     // Runs on the UI thread, so bound it: a hung remote `test -d` becomes a

@@ -39,9 +39,11 @@ These feature families have already moved into owner directories:
 5. skill modules -> `src/skill/`
 6. port-forward modules -> `src/port_forward/`
 7. AI conversation session and helpers -> `src/assistant/conversation/`
+8. SSH/SCP helpers -> `src/ssh/`
 
-Do not move `agent/`, `ssh_*`, `scp.zig`, or the root integration files without
-a separate ownership reason. Directory cleanup must stay mechanical.
+Do not move `agent/`, overlay-owned SSH profile UI files, or the root integration
+files without a separate ownership reason. Directory cleanup must stay
+mechanical.
 
 ## Guard Checklist
 

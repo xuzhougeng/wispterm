@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const Surface = @import("../Surface.zig");
-const ssh_tunnel = @import("../ssh_tunnel.zig");
+const ssh_tunnel = @import("../ssh/tunnel.zig");
 const html_server = @import("../html/server.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const tab = @import("../appwindow/tab.zig");

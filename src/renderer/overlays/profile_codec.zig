@@ -6,7 +6,7 @@
 //! re-exports these symbols so its call sites are unchanged.
 const std = @import("std");
 const ai_chat_protocol = @import("../../assistant/conversation/protocol.zig");
-const ssh_connection = @import("../../ssh_connection.zig");
+const ssh_connection = @import("../../ssh/connection.zig");
 
 pub const SSH_FIELD_COUNT = 8;
 pub const SSH_FIELD_MAX = ssh_connection.IDENTITY_FILE_MAX;

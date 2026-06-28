@@ -6,11 +6,11 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const ssh_connection = @import("ssh_connection.zig");
+const ssh_connection = @import("connection.zig");
 const SshConnection = ssh_connection.SshConnection;
-const platform_dirs = @import("platform/dirs.zig");
-const platform_process = @import("platform/process.zig");
-const platform_pty_command = @import("platform/pty_command.zig");
+const platform_dirs = @import("../platform/dirs.zig");
+const platform_process = @import("../platform/process.zig");
+const platform_pty_command = @import("../platform/pty_command.zig");
 
 /// Result of a transfer operation.
 pub const TransferResult = enum { ok, failed, spawn_error, cancelled };

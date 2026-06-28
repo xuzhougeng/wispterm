@@ -6,7 +6,7 @@ const codex_provider = @import("provider_codex.zig");
 const claude_provider = @import("provider_claude.zig");
 const reasonix_provider = @import("provider_reasonix.zig");
 const remote_file = @import("../../platform/remote_file.zig");
-const ssh_connection = @import("../../ssh_connection.zig");
+const ssh_connection = @import("../../ssh/connection.zig");
 const ai_history_cache = @import("cache.zig");
 const i18n = @import("../../i18n.zig");
 
