@@ -199,16 +199,22 @@ pub const Controller = struct {
             .model_context = "",
         };
 
-        // Step 5: route
+        // Step 5: route. r.text borrows arena `a`, so arena.deinit (above)
+        // reclaims it — no r.deinit() needed.
         var r = router.Reply.init(a);
-        defer r.deinit();
-        router.route(a, self.control, msg.text, reply_ctx, &r) catch |err| {
-            log.warn("onEvent: route error: {s}", .{@errorName(err)});
-            // Still attempt to ack so the user isn't left hanging.
-        };
+        var reply_text: []const u8 = "";
+        if (router.route(a, self.control, msg.text, reply_ctx, &r)) |_| {
+            // route SUCCESS with an empty r.text (e.g. a non-command no-op) is a
+            // normal empty reply and is correctly skipped by the len check below.
+            reply_text = r.text.items;
+        } else |err| {
+            // route ERROR (mainly OOM): ack a fallback so the user gets a reply
+            // instead of silence.
+            log.warn("onEvent: route error: {s}; sending fallback ack", .{@errorName(err)});
+            reply_text = "处理出错，请稍候重试。";
+        }
 
         // Step 6: immediate ack via injectable sink
-        const reply_text = r.text.items;
         if (reply_text.len > 0) {
             self.send_sink.send(self.send_sink.ctx, self.allocator, msg.chat_id, reply_text) catch |err| {
                 log.warn("onEvent: ack send failed: {s}", .{@errorName(err)});
