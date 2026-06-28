@@ -195,7 +195,7 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
                 // correct if the surface registry is ever extended to Copilot panes.
                 const session = tabConversationSession(tab_state) orelse return;
                 if (req.reply_context) |ctx| {
-                    req.busy = !session.applyWeixinInput(req.bytes, ctx);
+                    req.busy = !session.applyChatInput(req.bytes, ctx);
                 } else {
                     session.applyRemoteInput(req.bytes);
                 }

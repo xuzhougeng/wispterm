@@ -27,7 +27,7 @@ const ai_agent_access = @import("../../agent/access.zig");
 const platform_dirs = @import("../../platform/dirs.zig");
 const ai_chat_markdown = @import("markdown.zig");
 const assistant_presentation = @import("presentation.zig");
-const weixin_types = @import("../../weixin/types.zig");
+const chatops_reply = @import("../../chatops/reply.zig");
 const ai_loop_store = @import("../loop/store.zig");
 const ai_loop_schedule = @import("../loop/schedule.zig");
 const first_party_tools = @import("../../tools/first_party.zig");
@@ -44,7 +44,7 @@ pub const ApprovalView = ai_chat_types.ApprovalView;
 pub const QuestionOption = ai_chat_types.QuestionOption;
 pub const QuestionView = ai_chat_types.QuestionView;
 pub const AskResult = ai_chat_types.AskResult;
-const WeixinReplyContext = ai_chat_types.WeixinReplyContext;
+const OwnedReplyContext = ai_chat_types.OwnedReplyContext;
 pub const ToolContext = ai_chat_types.ToolContext;
 pub const Presentation = assistant_presentation.Presentation;
 
@@ -179,7 +179,7 @@ pub const ChatRequest = struct {
     copilot: bool = false,
     tool_host: ?ToolHost,
     tool_snapshot: ?ToolSnapshot,
-    weixin_reply_context: ?WeixinReplyContext = null,
+    reply_context: ?OwnedReplyContext = null,
     started_ms: i64,
     write_context_surface_id: [64]u8 = undefined,
     write_context_surface_id_len: usize = 0,
@@ -202,7 +202,7 @@ pub const ChatRequest = struct {
         freeOwnedDynamicBinaryTools(self.allocator, self.dynamic_binary_tools);
         freeOwnedStringList(self.allocator, self.disabled_first_party_tools);
         if (self.tool_snapshot) |snapshot| snapshot.deinit(self.allocator);
-        if (self.weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
+        if (self.reply_context) |*ctx| ctx.deinit(self.allocator);
         if (self.subagent_profile) |profile| profile.deinit(self.allocator);
         self.allocator.destroy(self);
     }
@@ -864,7 +864,7 @@ pub const Session = struct {
     request_stopping: bool = false,
     request_thread: ?std.Thread = null,
     title_thread: ?std.Thread = null,
-    pending_weixin_reply_context: ?WeixinReplyContext = null,
+    pending_reply_context: ?OwnedReplyContext = null,
     distill_candidate: ?ai_skill_distill.Candidate = null,
     distill_suggestion_pending: bool = false,
     distill_last_suggested_turn_count: usize = 0,
@@ -1179,7 +1179,7 @@ pub const Session = struct {
         self.freeSkillSuggestions();
         self.freeCustomCommandSuggestions();
         command_registry.freeCommandList(self.allocator, self.custom_commands);
-        if (self.pending_weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
+        if (self.pending_reply_context) |*ctx| ctx.deinit(self.allocator);
         if (self.distill_candidate) |*candidate| candidate.deinit(self.allocator);
         self.freeQuestionPayloadLocked();
         self.freeQuestionAnswerLocked();
@@ -1644,27 +1644,27 @@ pub const Session = struct {
     /// is stripped. Returns false (busy) without touching the composer when a
     /// request is already inflight, so the poller reports it to the sender
     /// instead of silently swallowing the message.
-    pub fn applyWeixinInput(self: *Session, data: []const u8, ctx: weixin_types.ReplyContext) bool {
+    pub fn applyChatInput(self: *Session, data: []const u8, ctx: chatops_reply.ReplyContext) bool {
         self.mutex.lock();
         if (self.request_inflight) {
             self.mutex.unlock();
             return false;
         }
-        if (self.pending_weixin_reply_context) |*old| old.deinit(self.allocator);
-        self.pending_weixin_reply_context = WeixinReplyContext.init(self.allocator, ctx) catch null;
+        if (self.pending_reply_context) |*old| old.deinit(self.allocator);
+        self.pending_reply_context = OwnedReplyContext.init(self.allocator, ctx) catch null;
         self.mutex.unlock();
         if (self.submitScheduledPrompt(std.mem.trimRight(u8, data, "\r\n"))) return true;
         // Lost the race with a concurrently started request: drop the stale
         // context so a later local prompt cannot inherit this WeChat target.
         self.mutex.lock();
-        self.clearPendingWeixinReplyContextLocked();
+        self.clearPendingReplyContextLocked();
         self.mutex.unlock();
         return false;
     }
 
-    fn clearPendingWeixinReplyContextLocked(self: *Session) void {
-        if (self.pending_weixin_reply_context) |*ctx| ctx.deinit(self.allocator);
-        self.pending_weixin_reply_context = null;
+    fn clearPendingReplyContextLocked(self: *Session) void {
+        if (self.pending_reply_context) |*ctx| ctx.deinit(self.allocator);
+        self.pending_reply_context = null;
     }
 
     pub fn handleKey(self: *Session, ev: input_key.KeyEvent) void {
@@ -2330,7 +2330,7 @@ pub const Session = struct {
         }
         if (self.request_thread) |thread| {
             if (self.request_inflight) {
-                self.clearPendingWeixinReplyContextLocked();
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
                 return;
             }
@@ -2342,7 +2342,7 @@ pub const Session = struct {
 
         var prompt_raw = std.mem.trim(u8, self.input(), " \t\r\n");
         if (prompt_raw.len == 0) {
-            self.clearPendingWeixinReplyContextLocked();
+            self.clearPendingReplyContextLocked();
             self.mutex.unlock();
             return;
         }
@@ -2354,13 +2354,13 @@ pub const Session = struct {
         // 1) Built-in command (with optional argument), exact first-token match.
         if (ai_chat_composer.exactBuiltinCommand(first_tok)) |command| {
             if (command == .distill) {
-                self.clearPendingWeixinReplyContextLocked();
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
                 self.submitDistillCommand(arg);
                 return;
             }
             const r = self.runBuiltinCommandLocked(command, arg);
-            self.clearPendingWeixinReplyContextLocked();
+            self.clearPendingReplyContextLocked();
             self.mutex.unlock();
             self.notifyHistoryChange(r.history_change);
             fireDeferredAction(self, r.deferred);
@@ -2372,7 +2372,7 @@ pub const Session = struct {
             if (cmd.action) |av| {
                 if (ai_chat_skills.knownActionFromName(av)) |builtin_command| {
                     const r = self.runBuiltinCommandLocked(builtin_command, arg);
-                    self.clearPendingWeixinReplyContextLocked();
+                    self.clearPendingReplyContextLocked();
                     self.mutex.unlock();
                     self.notifyHistoryChange(r.history_change);
                     fireDeferredAction(self, r.deferred);
@@ -2386,7 +2386,7 @@ pub const Session = struct {
             // legacy: a no-arg unknown slash like "/help" still shows "Unknown command".
             if (parseSlashCommand(prompt_raw)) |command| {
                 const r = self.runBuiltinCommandLocked(command, "");
-                self.clearPendingWeixinReplyContextLocked();
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
                 self.notifyHistoryChange(r.history_change);
                 fireDeferredAction(self, r.deferred);
@@ -2396,7 +2396,7 @@ pub const Session = struct {
         // otherwise (e.g. "/help me", "/usr/bin path", or a rebound template body): fall through.
 
         if (ai_chat_composer.parseWebCommand(first_tok)) |web_cmd| {
-            self.clearPendingWeixinReplyContextLocked();
+            self.clearPendingReplyContextLocked();
             self.mutex.unlock();
             switch (web_cmd) {
                 .websearch => self.startWebSearchRequest(arg),
@@ -2408,7 +2408,7 @@ pub const Session = struct {
 
         if (self.api_key_len == 0) {
             self.setStatusLocked("Missing API key. Edit the Copilot profile or set DEEPSEEK_API_KEY.");
-            self.clearPendingWeixinReplyContextLocked();
+            self.clearPendingReplyContextLocked();
             self.mutex.unlock();
             return;
         }
@@ -2419,7 +2419,7 @@ pub const Session = struct {
         if (invocation) |parsed| {
             skill_preload_content = ai_chat_skills.loadSkillPreloadContent(self.allocator, parsed.skill_name) catch {
                 self.setStatusLocked("Could not load skill");
-                self.clearPendingWeixinReplyContextLocked();
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
                 return;
             };
@@ -2432,18 +2432,18 @@ pub const Session = struct {
         const prompt = self.allocator.dupe(u8, prompt_for_history) catch {
             if (skill_preload_content) |content| self.allocator.free(content);
             self.setStatusLocked("Out of memory");
-            self.clearPendingWeixinReplyContextLocked();
+            self.clearPendingReplyContextLocked();
             self.mutex.unlock();
             return;
         };
         var prompt_model_context: ?[]u8 = null;
-        if (self.pending_weixin_reply_context) |ctx| {
+        if (self.pending_reply_context) |ctx| {
             if (ctx.model_context.len != 0) {
                 prompt_model_context = self.allocator.dupe(u8, ctx.model_context) catch {
                     if (skill_preload_content) |content| self.allocator.free(content);
                     self.allocator.free(prompt);
                     self.setStatusLocked("Out of memory");
-                    self.clearPendingWeixinReplyContextLocked();
+                    self.clearPendingReplyContextLocked();
                     self.mutex.unlock();
                     return;
                 };
@@ -2461,7 +2461,7 @@ pub const Session = struct {
                 self.allocator.free(imgs);
             }
             self.setStatusLocked("Out of memory");
-            self.clearPendingWeixinReplyContextLocked();
+            self.clearPendingReplyContextLocked();
             self.mutex.unlock();
             return;
         };
@@ -2474,7 +2474,7 @@ pub const Session = struct {
                 var user_msg = self.messages.pop().?;
                 user_msg.deinit(self.allocator);
                 self.setStatusLocked("Out of memory");
-                self.clearPendingWeixinReplyContextLocked();
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
                 return;
             };
@@ -2484,7 +2484,7 @@ pub const Session = struct {
                 var user_msg = self.messages.pop().?;
                 user_msg.deinit(self.allocator);
                 self.setStatusLocked("Out of memory");
-                self.clearPendingWeixinReplyContextLocked();
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
                 return;
             };
@@ -2504,7 +2504,7 @@ pub const Session = struct {
                 var user_msg = self.messages.pop().?;
                 user_msg.deinit(self.allocator);
                 self.setStatusLocked("Out of memory");
-                self.clearPendingWeixinReplyContextLocked();
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
                 return;
             };
@@ -2521,12 +2521,12 @@ pub const Session = struct {
             if (skill_preload_appended) {
                 self.rollbackMessagesFromLocked(message_start);
                 self.setStatusLocked("Could not prepare request");
-                self.clearPendingWeixinReplyContextLocked();
+                self.clearPendingReplyContextLocked();
                 self.mutex.unlock();
                 return;
             }
             self.setStatusLocked("Could not prepare request");
-            self.clearPendingWeixinReplyContextLocked();
+            self.clearPendingReplyContextLocked();
             self.mutex.unlock();
             self.notifyHistoryChange(history_change);
             return;
@@ -3888,7 +3888,7 @@ pub const Session = struct {
             .copilot = false,
             .tool_host = null,
             .tool_snapshot = null,
-            .weixin_reply_context = null,
+            .reply_context = null,
             .started_ms = std.time.milliTimestamp(),
         };
         message_initialized = false;
@@ -3934,11 +3934,11 @@ pub const Session = struct {
             };
         }
 
-        var weixin_ctx: ?WeixinReplyContext = null;
+        var weixin_ctx: ?OwnedReplyContext = null;
         errdefer if (weixin_ctx) |*ctx| ctx.deinit(self.allocator);
-        if (self.pending_weixin_reply_context) |ctx| {
+        if (self.pending_reply_context) |ctx| {
             weixin_ctx = try ctx.clone(self.allocator);
-            self.clearPendingWeixinReplyContextLocked();
+            self.clearPendingReplyContextLocked();
         }
 
         // Each copilot user message carries a lightweight snapshot of the bound
@@ -4023,7 +4023,7 @@ pub const Session = struct {
             .copilot = self.presentation().isSidebar(),
             .tool_host = tool_host,
             .tool_snapshot = tool_snapshot,
-            .weixin_reply_context = weixin_ctx,
+            .reply_context = weixin_ctx,
             .started_ms = std.time.milliTimestamp(),
             .subagent_profile = subagent_profile,
         };
@@ -5525,7 +5525,7 @@ test "ai chat dollar skill suggestions filter and enter completes with trailing 
 
 const WeixinAttachmentCapture = struct {
     called: bool = false,
-    kind: weixin_types.AttachmentKind = .file,
+    kind: chatops_reply.AttachmentKind = .file,
     path: []const u8 = "",
     display_name: []const u8 = "",
     to_user_id: []const u8 = "",
@@ -5543,7 +5543,7 @@ const WeixinAttachmentCapture = struct {
 
     fn send(
         ctx: *anyopaque,
-        kind: weixin_types.AttachmentKind,
+        kind: chatops_reply.AttachmentKind,
         path: []const u8,
         display_name: []const u8,
         to_user_id: []const u8,
@@ -5559,7 +5559,7 @@ const WeixinAttachmentCapture = struct {
     }
 };
 
-fn testWeixinSender(capture: *WeixinAttachmentCapture) weixin_types.AttachmentSender {
+fn testWeixinSender(capture: *WeixinAttachmentCapture) chatops_reply.AttachmentSender {
     return .{ .ctx = capture, .send_attachment = WeixinAttachmentCapture.send };
 }
 
@@ -5641,7 +5641,7 @@ test "weixin_send_attachment calls the active Weixin sender" {
         .tool_host = null,
         .tool_snapshot = null,
         .started_ms = 0,
-        .weixin_reply_context = try WeixinReplyContext.init(std.testing.allocator, .{
+        .reply_context = try OwnedReplyContext.init(std.testing.allocator, .{
             .sender = testWeixinSender(&capture),
             .to_user_id = "wx-user",
             .context_token = "ctx-1",
@@ -5660,7 +5660,7 @@ test "weixin_send_attachment calls the active Weixin sender" {
     defer std.testing.allocator.free(result);
 
     try std.testing.expect(capture.called);
-    try std.testing.expectEqual(weixin_types.AttachmentKind.file, capture.kind);
+    try std.testing.expectEqual(chatops_reply.AttachmentKind.file, capture.kind);
     try std.testing.expectEqualStrings("C:\\tmp\\report.pdf", capture.path);
     try std.testing.expectEqualStrings("report.pdf", capture.display_name);
     try std.testing.expectEqualStrings("wx-user", capture.to_user_id);
@@ -8336,13 +8336,13 @@ test "submitScheduledPrompt sets composer and reports busy state" {
     session.request_inflight = false;
 }
 
-test "applyWeixinInput submits the whole multi-line message as one prompt" {
+test "applyChatInput submits the whole multi-line message as one prompt" {
     const a = std.testing.allocator;
     const session = try Session.init(a, "test", "", "", "", "", "", "", "", "");
     defer session.deinit();
 
     var capture = WeixinAttachmentCapture{};
-    const ctx = weixin_types.ReplyContext{
+    const ctx = chatops_reply.ReplyContext{
         .sender = testWeixinSender(&capture),
         .to_user_id = "wx-user",
         .context_token = "ctx-1",
@@ -8352,17 +8352,17 @@ test "applyWeixinInput submits the whole multi-line message as one prompt" {
     // newlines are content, only the trailing CR is the submit convention. With
     // no API key submit() stops at the missing-key gate WITHOUT consuming the
     // composer, so the composer shows exactly what the single submit sent.
-    try std.testing.expect(session.applyWeixinInput("第一段\n\n第二段\r", ctx));
+    try std.testing.expect(session.applyChatInput("第一段\n\n第二段\r", ctx));
     try std.testing.expectEqualStrings("第一段\n\n第二段", session.input());
 }
 
-test "applyWeixinInput reports busy and leaves composer and reply context untouched" {
+test "applyChatInput reports busy and leaves composer and reply context untouched" {
     const a = std.testing.allocator;
     const session = try Session.init(a, "test", "", "", "", "", "", "", "", "");
     defer session.deinit();
 
     var capture = WeixinAttachmentCapture{};
-    const ctx = weixin_types.ReplyContext{
+    const ctx = chatops_reply.ReplyContext{
         .sender = testWeixinSender(&capture),
         .to_user_id = "wx-user",
         .context_token = "ctx-1",
@@ -8370,10 +8370,10 @@ test "applyWeixinInput reports busy and leaves composer and reply context untouc
 
     session.appendInputText("draft");
     session.request_inflight = true;
-    try std.testing.expect(!session.applyWeixinInput("新任务\r", ctx));
+    try std.testing.expect(!session.applyChatInput("新任务\r", ctx));
     session.request_inflight = false;
     try std.testing.expectEqualStrings("draft", session.input());
-    try std.testing.expect(session.pending_weixin_reply_context == null);
+    try std.testing.expect(session.pending_reply_context == null);
 }
 
 test "runLoopCommandLocked creates, lists, and stops a loop task" {

@@ -2,7 +2,7 @@
 //! tool host vtable, agent settings, and the ToolContext seam handed to the
 //! (leaf) tool layer so it never touches Session. No Session/ChatRequest deps.
 const std = @import("std");
-const weixin_types = @import("../../weixin/types.zig");
+const chatops_reply = @import("../../chatops/reply.zig");
 const agent_detector = @import("../../terminal_agents/detector.zig");
 const ai_chat_protocol = @import("protocol.zig");
 const ai_agent_access = @import("../../agent/access.zig");
@@ -221,14 +221,14 @@ pub const ToolHost = struct {
     sshConnectionForSurface: ?*const fn (*anyopaque, []const u8) ?SshConnection = null,
 };
 
-pub const WeixinReplyContext = struct {
-    sender: weixin_types.AttachmentSender,
+pub const OwnedReplyContext = struct {
+    sender: chatops_reply.AttachmentSender,
     to_user_id: []u8,
     context_token: []u8,
     model_context: []u8 = &.{},
 
-    pub fn init(allocator: std.mem.Allocator, ctx: weixin_types.ReplyContext) !WeixinReplyContext {
-        var out = WeixinReplyContext{
+    pub fn init(allocator: std.mem.Allocator, ctx: chatops_reply.ReplyContext) !OwnedReplyContext {
+        var out = OwnedReplyContext{
             .sender = ctx.sender,
             .to_user_id = try allocator.dupe(u8, ctx.to_user_id),
             .context_token = &.{},
@@ -240,8 +240,8 @@ pub const WeixinReplyContext = struct {
         return out;
     }
 
-    pub fn clone(self: WeixinReplyContext, allocator: std.mem.Allocator) !WeixinReplyContext {
-        var out = WeixinReplyContext{
+    pub fn clone(self: OwnedReplyContext, allocator: std.mem.Allocator) !OwnedReplyContext {
+        var out = OwnedReplyContext{
             .sender = self.sender,
             .to_user_id = try allocator.dupe(u8, self.to_user_id),
             .context_token = &.{},
@@ -253,7 +253,7 @@ pub const WeixinReplyContext = struct {
         return out;
     }
 
-    pub fn deinit(self: *WeixinReplyContext, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *OwnedReplyContext, allocator: std.mem.Allocator) void {
         allocator.free(self.to_user_id);
         allocator.free(self.context_token);
         if (self.model_context.len != 0) allocator.free(self.model_context);
@@ -305,7 +305,7 @@ pub const ToolContext = struct {
     tool_snapshot: ?ToolSnapshot,
     settings: AgentSettings,
     copilot: bool = false,
-    weixin_reply_context: ?WeixinReplyContext = null,
+    reply_context: ?OwnedReplyContext = null,
     write_context_surface_id: [64]u8 = undefined,
     write_context_surface_id_len: usize = 0,
 

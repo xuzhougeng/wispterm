@@ -880,7 +880,7 @@ fn toolContextFromRequest(request: *ChatRequest) ai_chat_types.ToolContext {
         .tool_snapshot = request.tool_snapshot,
         .settings = settings,
         .copilot = request.copilot,
-        .weixin_reply_context = request.weixin_reply_context,
+        .reply_context = request.reply_context,
         .write_context_surface_id = request.write_context_surface_id,
         .write_context_surface_id_len = request.write_context_surface_id_len,
         .approve = toolApprove,
