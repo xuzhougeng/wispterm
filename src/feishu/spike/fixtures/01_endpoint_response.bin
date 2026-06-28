@@ -1,0 +1,1 @@
+{"code":0,"msg":"","data":{"ClientConfig":{"PingInterval":90,"ReconnectCount":-1,"ReconnectInterval":90,"ReconnectNonce":25},"URL":"wss://msg-frontier.feishu.cn/ws/v2?<redacted-query>"}}
