@@ -211,7 +211,14 @@ pub const Controller = struct {
         // Step 4: capture baseline transcript BEFORE routing, so the baseline
         // does not include the AI response to the current message. The dup is
         // freed after beginEpisode (which dups it again) or on no-progress path.
+        //
+        // latestTranscript() returns a single process-global buffer that the next
+        // caller frees+overwrites; we dupe it out under progress.transcript_mu —
+        // the SAME mutex the worker poll loop holds — so the worker can never read
+        // a buffer this path is about to invalidate (and vice versa).
         const baseline: []u8 = blk: {
+            self.progress.transcript_mu.lock();
+            defer self.progress.transcript_mu.unlock();
             const raw = self.control.latestTranscript();
             if (raw.len == 0) break :blk &.{};
             break :blk self.allocator.dupe(u8, raw) catch &.{};

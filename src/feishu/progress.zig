@@ -136,10 +136,15 @@ pub const ProgressWorker = struct {
 
     mu: std.Thread.Mutex = .{},
     episode: Episode = .{},
-    // Transcript mutex mirrors weixin's transcript_mutex: protects
-    // latestTranscript() against concurrent controller writes if any.
-    // ponytail: latestTranscript is already safe on this vtable; kept for
-    // symmetry with the weixin poller pattern.
+    // Serializes ALL latestTranscript() callers in this channel. latestTranscript
+    // returns a single process-global buffer (chatops_bridge
+    // g_chatops_transcript_owned) that the next caller frees + overwrites, so the
+    // returned slice is only valid until the next call. Every caller must hold
+    // this mutex from latestTranscript() until it has DUPED what it needs out of
+    // the returned slice. The controller's baseline capture (onEvent) locks this
+    // SAME mutex — otherwise a route-path latestTranscript on the longconn thread
+    // would free the buffer the worker is reading. (Mirrors weixin transcript_mutex,
+    // which wraps both its baseline and followup-poll call sites.)
     transcript_mu: std.Thread.Mutex = .{},
 
     /// Start the single worker thread. Safe to call once; idempotent if
@@ -162,6 +167,11 @@ pub const ProgressWorker = struct {
             self.mu.unlock();
         }
         if (self.thread) |th| {
+            // TODO(M4): if stop() is called on the UI thread while the worker is
+            // blocked in a synchronous latestTranscript()→sendMessage round-trip,
+            // this join can stall. Shared with the weixin poller's followup
+            // thread; needs a cancel-synchronous-io path (see poller.zig
+            // stopForProcessExit). Acceptable for M2.
             th.join();
             self.thread = null;
         }
@@ -272,25 +282,34 @@ pub const ProgressWorker = struct {
             if (steps_since_poll < POLL_STEPS) continue;
             steps_since_poll = 0;
 
-            // Get transcript snapshot under transcript_mu.
-            self.transcript_mu.lock();
-            const current = self.control.latestTranscript();
-            const p = reply_progress.progress(snap.baseline, current);
-            self.transcript_mu.unlock();
+            // Poll the transcript and decide, then materialize an OWNED copy of
+            // any text the action needs — all WHILE holding transcript_mu. The
+            // detector's text fields borrow from `current`, which is a single
+            // process-global buffer (chatops_bridge g_chatops_transcript_owned)
+            // that the NEXT latestTranscript() caller frees and overwrites. So
+            // nothing borrowed from `current`/`p` may survive the unlock; we
+            // dupe before unlocking and free after sending. (Mirrors weixin's
+            // allocProgressText.) The approval/question prompt is also built
+            // here so its formatted text owns its bytes.
+            var owned = OwnedAction{ .tag = .none };
+            {
+                self.transcript_mu.lock();
+                defer self.transcript_mu.unlock();
+                const current = self.control.latestTranscript();
+                const p = reply_progress.progress(snap.baseline, current);
+                owned = self.materialize(decide(p, &announced), p) catch OwnedAction{ .tag = .none };
+            }
+            defer if (owned.text.len != 0) self.allocator.free(owned.text);
 
-            const action = decide(p, &announced);
-            switch (action) {
-                .send_approval_prompt => |cmd| {
-                    self.sendApprovalPrompt(snap.chat_id, p.approval_tool, cmd) catch |err| {
-                        log.warn("progress: send approval prompt failed: {s}", .{@errorName(err)});
-                    };
+            switch (owned.tag) {
+                .send_approval_prompt, .send_question_prompt => {
+                    if (owned.text.len != 0) {
+                        self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, owned.text) catch |err| {
+                            log.warn("progress: send prompt failed: {s}", .{@errorName(err)});
+                        };
+                    }
                 },
-                .send_question_prompt => |q| {
-                    self.sendQuestionPrompt(snap.chat_id, q) catch |err| {
-                        log.warn("progress: send question prompt failed: {s}", .{@errorName(err)});
-                    };
-                },
-                .send_final => |text| {
+                .send_final => {
                     // Re-check generation before sending to avoid stale final reply.
                     if (self.currentGeneration() != gen) {
                         log.debug("progress: stale final reply discarded gen={d}", .{gen});
@@ -298,10 +317,12 @@ pub const ProgressWorker = struct {
                         self.allocator.free(snap.baseline);
                         return;
                     }
-                    log.debug("progress: sending final reply gen={d} bytes={d}", .{ gen, text.len });
-                    self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, text) catch |err| {
-                        log.warn("progress: send final failed: {s}", .{@errorName(err)});
-                    };
+                    if (owned.text.len != 0) {
+                        log.debug("progress: sending final reply gen={d} bytes={d}", .{ gen, owned.text.len });
+                        self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, owned.text) catch |err| {
+                            log.warn("progress: send final failed: {s}", .{@errorName(err)});
+                        };
+                    }
                     self.allocator.free(snap.chat_id);
                     self.allocator.free(snap.baseline);
                     self.deactivateEpisode(gen);
@@ -365,28 +386,46 @@ pub const ProgressWorker = struct {
         }
     }
 
-    fn sendApprovalPrompt(self: *ProgressWorker, chat_id: []const u8, tool: []const u8, cmd: []const u8) !void {
-        const subject = if (cmd.len != 0) cmd else tool;
-        const clipped = clipUtf8(subject, 400);
-        const text = try std.fmt.allocPrint(
-            self.allocator,
-            "⚠️ 副驾需要你确认是否执行：\n{s}\n\n回复 Y 同意 / N 拒绝。",
-            .{clipped},
-        );
-        defer self.allocator.free(text);
-        try self.send_sink.send(self.send_sink.ctx, self.allocator, chat_id, text);
+    /// Converts a `decide` Action (whose text borrows from the transient
+    /// `current` transcript) into an OwnedAction whose `text` is heap-owned by
+    /// self.allocator. MUST be called while transcript_mu is held (the borrowed
+    /// `p`/Action slices are only valid then); allocPrint/dupe copy the bytes so
+    /// the result outlives the unlock. Caller frees `text` after sending.
+    fn materialize(self: *ProgressWorker, action: Action, p: reply_progress.Progress) !OwnedAction {
+        switch (action) {
+            .send_approval_prompt => {
+                const subject = if (p.approval_command.len != 0) p.approval_command else p.approval_tool;
+                const clipped = clipUtf8(subject, 400);
+                const text = try std.fmt.allocPrint(
+                    self.allocator,
+                    "⚠️ 副驾需要你确认是否执行：\n{s}\n\n回复 Y 同意 / N 拒绝。",
+                    .{clipped},
+                );
+                return .{ .tag = .send_approval_prompt, .text = text };
+            },
+            .send_question_prompt => |q| {
+                const clipped = clipUtf8(q, 1200);
+                const text = try std.fmt.allocPrint(
+                    self.allocator,
+                    "❓ 副驾想请你选择：\n{s}\n\n回复序号，或直接输入你的答案。",
+                    .{clipped},
+                );
+                return .{ .tag = .send_question_prompt, .text = text };
+            },
+            .send_final => |final| {
+                if (final.len == 0) return .{ .tag = .none };
+                return .{ .tag = .send_final, .text = try self.allocator.dupe(u8, final) };
+            },
+            .none => return .{ .tag = .none },
+        }
     }
+};
 
-    fn sendQuestionPrompt(self: *ProgressWorker, chat_id: []const u8, question_text: []const u8) !void {
-        const clipped = clipUtf8(question_text, 1200);
-        const text = try std.fmt.allocPrint(
-            self.allocator,
-            "❓ 副驾想请你选择：\n{s}\n\n回复序号，或直接输入你的答案。",
-            .{clipped},
-        );
-        defer self.allocator.free(text);
-        try self.send_sink.send(self.send_sink.ctx, self.allocator, chat_id, text);
-    }
+/// An action with heap-owned `text` (copied out of the transient transcript
+/// buffer under transcript_mu). `text` is empty for `.none`.
+const OwnedAction = struct {
+    tag: ActionTag,
+    text: []u8 = &.{},
 };
 
 /// Clips `s` to at most `max` bytes without splitting a UTF-8 codepoint.
