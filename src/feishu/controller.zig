@@ -139,6 +139,8 @@ fn feishuSendAttachment(
         log.warn("feishuSendAttachment: sendMessage failed kind={s} err={s}", .{ kind.name(), @errorName(err) });
         return err;
     };
+    // Success audit trail: a file egress to a remote chat should never be silent.
+    log.info("feishuSendAttachment: sent kind={s} bytes={d}", .{ kind.name(), bytes.len });
 }
 
 // ---------------------------------------------------------------------------
