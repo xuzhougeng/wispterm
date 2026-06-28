@@ -97,7 +97,7 @@ const resize_throttle = @import("appwindow/resize_throttle.zig");
 const surface_snapshots = @import("appwindow/surface_snapshots.zig");
 const control_api = @import("appwindow/control_api.zig");
 const remote_sync = @import("appwindow/remote_sync.zig");
-const weixin_bridge = @import("appwindow/weixin_bridge.zig");
+const weixin_bridge = @import("appwindow/chatops_bridge.zig");
 const agent_requests = @import("appwindow/agent_requests.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 pub const UiEffect = ui_effect.UiEffect;
@@ -4983,8 +4983,8 @@ fn weixinBridgeHost() weixin_bridge.Host {
     };
 }
 
-/// The Control the weixin controller drives. Backed by process-global state.
-pub fn weixinControl() weixin_control.Control {
+/// The Control the chatops channel drives. Backed by process-global state.
+pub fn chatopsControl() weixin_control.Control {
     return weixin_bridge.control();
 }
 
@@ -5207,7 +5207,7 @@ fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordP
         .agent_tab_close => agent_requests.handleTabCloseRequest(@ptrFromInt(decoded.ptr), agent_host),
         .remote_ai_input => remote_sync.handleAiInputRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
         .remote_open_ai_agent => remote_sync.handleAiAgentOpenRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
-        .weixin_control => weixin_bridge.handleControlRequest(@ptrFromInt(decoded.ptr), weixinBridgeHost()),
+        .chatops_control => weixin_bridge.handleControlRequest(@ptrFromInt(decoded.ptr), weixinBridgeHost()),
     }
     return 1;
 }

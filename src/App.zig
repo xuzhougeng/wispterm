@@ -363,7 +363,7 @@ pub fn startPortForwarding(self: *App, cfg: *const Config) void {
 
 // WeChat direct (embedded ilink). App owns the controller's lifecycle; the
 // Control vtable lives in AppWindow (it needs UI-thread tab/overlay state,
-// marshalled from the poller thread). See AppWindow.weixinControl.
+// marshalled from the poller thread). See AppWindow.chatopsControl.
 //
 // Cross-compiles to the Windows exe; not yet run (no Windows runtime / live
 // WeChat here). /term-/keys terminal delegation and the AI transcript (for
@@ -381,7 +381,7 @@ pub fn startWeixin(self: *App, cfg: *const Config) void {
         .reply_timeout_ms = std.math.clamp(cfg.@"weixin-reply-timeout-ms", 5000, 180000),
         .allowed_user = cfg.@"weixin-allowed-user" orelse "",
     };
-    const controller = weixin.Controller.create(self.allocator, state_path, AppWindow.weixinControl(), settings) catch |err| {
+    const controller = weixin.Controller.create(self.allocator, state_path, AppWindow.chatopsControl(), settings) catch |err| {
         std.debug.print("weixin-direct disabled: {}\n", .{err});
         return;
     };

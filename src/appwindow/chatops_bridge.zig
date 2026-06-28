@@ -1,8 +1,8 @@
-//! WeChat direct (embedded ilink) UI-thread control bridge.
+//! IM-channel (WeChat / Feishu / …) UI-thread control bridge.
 //!
-//! The weixin poller runs on its own thread, but tab state (tab.g_tabs etc.) is
+//! The chatops poller runs on its own thread, but tab state (tab.g_tabs etc.) is
 //! threadlocal to the UI thread. So the Control vtable marshals each request to
-//! the UI thread via SendMessage (.weixin_control), where handleControlRequest
+//! the UI thread via SendMessage (.chatops_control), where handleControlRequest
 //! reads/acts on tab state, mirroring the remote .remote_ai_input path.
 //!
 //! UNVERIFIED AT RUNTIME: cross-compiles to the Windows exe, but has not been run
@@ -29,17 +29,17 @@ pub const Host = struct {
     switchSessionModelProfile: *const fn (*ai_chat.Session, []const u8) weixin_control.SwitchModelResult,
 };
 
-var g_weixin_ui_handle = std.atomic.Value(usize).init(0);
-var g_weixin_ctx: u8 = 0;
-var g_weixin_transcript_mutex: std.Thread.Mutex = .{};
-var g_weixin_transcript_owned: []u8 = &.{};
-/// The AI conversation WeChat is pinned to (independent of the on-screen active
+var g_chatops_ui_handle = std.atomic.Value(usize).init(0);
+var g_chatops_ctx: u8 = 0;
+var g_chatops_transcript_mutex: std.Thread.Mutex = .{};
+var g_chatops_transcript_owned: []u8 = &.{};
+/// The AI conversation the chatops channel is pinned to (independent of the on-screen active
 /// tab). UI-thread-only - read/written exclusively inside handleControlRequest,
 /// so no lock is needed. Cleared automatically when its conversation closes
-/// (see weixinActiveAiTabIndex).
-var g_weixin_pinned_session: ?*ai_chat.Session = null;
+/// (see chatopsActiveAiTabIndex).
+var g_chatops_pinned_session: ?*ai_chat.Session = null;
 
-pub const WeixinRequest = struct {
+pub const ChatopsRequest = struct {
     op: enum { find_ai, find_term, open_ai, open_ai_profile, model_profiles, switch_ai_profile, send_input, latest_transcript, ai_approval_pending, resolve_ai_approval, ai_question_option_count, resolve_ai_question, inbound_file_dir, list_conversations, pin_by_index },
     // operation inputs (valid for the duration of the synchronous call):
     surface_id: [16]u8 = [_]u8{0} ** 16, // send_input
@@ -67,7 +67,7 @@ pub const WeixinRequest = struct {
 };
 
 pub fn setUiHandle(handle_bits: usize) void {
-    g_weixin_ui_handle.store(handle_bits, .release);
+    g_chatops_ui_handle.store(handle_bits, .release);
 }
 
 /// The *ai_chat.Session a tab contributes as its AI conversation, or null:
@@ -80,17 +80,17 @@ fn tabConversationSession(ts: *tab.TabState) ?*ai_chat.Session {
 
 /// Index of the AI-chat tab to target: the active tab if it is AI chat, else the
 /// first AI-chat tab. UI-thread only (reads threadlocal tab state).
-fn weixinActiveAiTabIndex() ?usize {
-    // 1) Honor an explicit WeChat pin if its conversation is still open.
+fn chatopsActiveAiTabIndex() ?usize {
+    // 1) Honor an explicit channel pin if its conversation is still open.
     //    Pointer identity only - never dereference a possibly-stale pointer.
-    if (g_weixin_pinned_session) |pinned| {
+    if (g_chatops_pinned_session) |pinned| {
         for (0..tab.g_tab_count) |i| {
             if (tab.g_tabs[i]) |ts| {
                 if (tabConversationSession(ts) == pinned) return i;
             }
         }
         // The pinned conversation was closed: drop the stale pin and fall back.
-        g_weixin_pinned_session = null;
+        g_chatops_pinned_session = null;
     }
     // 2) Default (unchanged): the active tab if it is an AI-chat tab, else the
     //    first AI-chat tab. Copilot sidebars are reachable only via an explicit
@@ -108,12 +108,12 @@ fn weixinActiveAiTabIndex() ?usize {
     return null;
 }
 
-fn weixinTabIndexFromSurfaceId(id: [16]u8) ?usize {
+fn chatopsTabIndexFromSurfaceId(id: [16]u8) ?usize {
     if (!std.mem.eql(u8, id[0..6], "aichat")) return null;
     return std.fmt.parseInt(usize, id[6..16], 10) catch null;
 }
 
-fn weixinActiveTerminalSurface() ?*Surface {
+fn chatopsActiveTerminalSurface() ?*Surface {
     if (active_tab_state.g_active_tab < tab.g_tab_count) {
         if (tab.g_tabs[active_tab_state.g_active_tab]) |ts| {
             if (ts.kind == .terminal) {
@@ -131,7 +131,7 @@ fn weixinActiveTerminalSurface() ?*Surface {
     return null;
 }
 
-fn weixinTerminalSurfaceFromId(id: [16]u8) ?*Surface {
+fn chatopsTerminalSurfaceFromId(id: [16]u8) ?*Surface {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
@@ -144,16 +144,16 @@ fn weixinTerminalSurfaceFromId(id: [16]u8) ?*Surface {
 }
 
 /// Runs on the UI thread (dispatched from the window message pump).
-pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
+pub fn handleControlRequest(req: *ChatopsRequest, host: Host) void {
     switch (req.op) {
         .find_ai => {
-            if (weixinActiveAiTabIndex()) |idx| {
+            if (chatopsActiveAiTabIndex()) |idx| {
                 req.out_surface_id = remote_sync.remoteAiSurfaceId(idx);
                 req.found = true;
             }
         },
         .find_term => {
-            if (weixinActiveTerminalSurface()) |surface| {
+            if (chatopsActiveTerminalSurface()) |surface| {
                 req.out_surface_id = surface.remote_id;
                 req.found = true;
             }
@@ -171,7 +171,7 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
             req.found = true;
         },
         .switch_ai_profile => {
-            const idx = weixinActiveAiTabIndex() orelse {
+            const idx = chatopsActiveAiTabIndex() orelse {
                 req.switch_result = .no_ai;
                 return;
             };
@@ -187,7 +187,7 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
             if (req.switch_result == .switched) host.markUiDirty();
         },
         .send_input => {
-            if (weixinTabIndexFromSurfaceId(req.surface_id)) |idx| {
+            if (chatopsTabIndexFromSurfaceId(req.surface_id)) |idx| {
                 if (idx >= tab.g_tab_count) return;
                 const tab_state = tab.g_tabs[idx] orelse return;
                 // copilot_session is unreachable here in practice: aichat{N} surface
@@ -203,10 +203,10 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
                 req.sent = true;
                 return;
             }
-            const surface = weixinTerminalSurfaceFromId(req.surface_id) orelse return;
+            const surface = chatopsTerminalSurfaceFromId(req.surface_id) orelse return;
             surface.queuePtyWrite(req.bytes) catch |err| {
-                std.log.scoped(.weixin).warn(
-                    "dropped weixin input ({d} bytes): {s}",
+                std.log.scoped(.chatops).warn(
+                    "dropped chatops input ({d} bytes): {s}",
                     .{ req.bytes.len, @errorName(err) },
                 );
                 return;
@@ -214,27 +214,27 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
             req.sent = true;
         },
         .latest_transcript => {
-            const idx = weixinActiveAiTabIndex() orelse return;
+            const idx = chatopsActiveAiTabIndex() orelse return;
             const tab_state = tab.g_tabs[idx] orelse return;
             const session = tabConversationSession(tab_state) orelse return;
             req.transcript = session.allocRemoteSnapshot(std.heap.page_allocator) catch return;
             req.found = true;
         },
         .ai_approval_pending => {
-            const idx = weixinActiveAiTabIndex() orelse return;
+            const idx = chatopsActiveAiTabIndex() orelse return;
             const tab_state = tab.g_tabs[idx] orelse return;
             const session = tabConversationSession(tab_state) orelse return;
             req.found = session.approvalView() != null;
         },
         .resolve_ai_approval => {
-            const idx = weixinActiveAiTabIndex() orelse return;
+            const idx = chatopsActiveAiTabIndex() orelse return;
             const tab_state = tab.g_tabs[idx] orelse return;
             const session = tabConversationSession(tab_state) orelse return;
             req.sent = session.resolveApprovalExternal(req.approve);
             if (req.sent) host.markUiDirty();
         },
         .ai_question_option_count => {
-            const idx = weixinActiveAiTabIndex() orelse return;
+            const idx = chatopsActiveAiTabIndex() orelse return;
             const tab_state = tab.g_tabs[idx] orelse return;
             const session = tabConversationSession(tab_state) orelse return;
             if (session.questionView()) |view| {
@@ -243,7 +243,7 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
             }
         },
         .resolve_ai_question => {
-            const idx = weixinActiveAiTabIndex() orelse return;
+            const idx = chatopsActiveAiTabIndex() orelse return;
             const tab_state = tab.g_tabs[idx] orelse return;
             const session = tabConversationSession(tab_state) orelse return;
             req.sent = switch (req.question_reply) {
@@ -255,7 +255,7 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
         },
         .inbound_file_dir => {
             // Per-conversation working dir if set, else the global default.
-            if (weixinActiveAiTabIndex()) |idx| {
+            if (chatopsActiveAiTabIndex()) |idx| {
                 if (tab.g_tabs[idx]) |tab_state| {
                     if (tabConversationSession(tab_state)) |session| {
                         if (session.workingDirOverride()) |w| {
@@ -273,10 +273,10 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
         },
         .list_conversations => {
             const out = req.conv_list_out orelse return;
-            // Also clears g_weixin_pinned_session as a side effect if the pin is
+            // Also clears g_chatops_pinned_session as a side effect if the pin is
             // stale (its conversation closed) - listing then correctly marks no
             // row current and drops the dead pin.
-            const cur = weixinActiveAiTabIndex();
+            const cur = chatopsActiveAiTabIndex();
             var n: usize = 0;
             for (0..tab.g_tab_count) |i| {
                 if (n >= out.items.len) break;
@@ -302,7 +302,7 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
                 const ts = tab.g_tabs[i] orelse continue;
                 const session = tabConversationSession(ts) orelse continue;
                 if (n == req.pin_index) {
-                    g_weixin_pinned_session = session;
+                    g_chatops_pinned_session = session;
                     out.* = .{};
                     out.is_copilot = (ts.kind != .ai_chat);
                     out.is_current = true;
@@ -321,45 +321,45 @@ pub fn handleControlRequest(req: *WeixinRequest, host: Host) void {
 
 /// Marshals a request to the UI thread synchronously. Returns false if no UI
 /// window is currently published. Called from the poller thread.
-fn weixinDispatch(req: *WeixinRequest) bool {
-    const bits = g_weixin_ui_handle.load(.acquire);
+fn chatopsDispatch(req: *ChatopsRequest) bool {
+    const bits = g_chatops_ui_handle.load(.acquire);
     if (bits == 0) return false;
     const handle = window_backend.nativeHandleFromBits(bits) orelse return false;
-    _ = thread_message.sendPointer(handle, .weixin_control, @intFromPtr(req));
+    _ = thread_message.sendPointer(handle, .chatops_control, @intFromPtr(req));
     return true;
 }
 
 fn wxIsConnected(_: *anyopaque) bool {
-    return g_weixin_ui_handle.load(.acquire) != 0;
+    return g_chatops_ui_handle.load(.acquire) != 0;
 }
 
 fn wxFindAiSurface(_: *anyopaque) ?weixin_control.Surface {
-    var req = WeixinRequest{ .op = .find_ai };
-    if (!weixinDispatch(&req) or !req.found) return null;
+    var req = ChatopsRequest{ .op = .find_ai };
+    if (!chatopsDispatch(&req) or !req.found) return null;
     return .{ .id = req.out_surface_id, .title = "" };
 }
 
 fn wxFindTerminalSurface(_: *anyopaque) ?weixin_control.Surface {
-    var req = WeixinRequest{ .op = .find_term };
-    if (!weixinDispatch(&req) or !req.found) return null;
+    var req = ChatopsRequest{ .op = .find_term };
+    if (!chatopsDispatch(&req) or !req.found) return null;
     return .{ .id = req.out_surface_id, .title = "" };
 }
 
 fn wxOpenAiAgent(_: *anyopaque, _: u32) weixin_control.OpenResult {
-    var req = WeixinRequest{ .op = .open_ai };
-    if (!weixinDispatch(&req)) return .offline;
+    var req = ChatopsRequest{ .op = .open_ai };
+    if (!chatopsDispatch(&req)) return .offline;
     return req.open_result;
 }
 
 fn wxOpenAiAgentProfile(_: *anyopaque, profile_name: []const u8, _: u32) weixin_control.OpenResult {
-    var req = WeixinRequest{ .op = .open_ai_profile, .profile_name = profile_name };
-    if (!weixinDispatch(&req)) return .offline;
+    var req = ChatopsRequest{ .op = .open_ai_profile, .profile_name = profile_name };
+    if (!chatopsDispatch(&req)) return .offline;
     return req.open_result;
 }
 
 fn wxModelProfiles(_: *anyopaque, buf: []u8) []const u8 {
-    var req = WeixinRequest{ .op = .model_profiles };
-    if (!weixinDispatch(&req) or !req.found) return "";
+    var req = ChatopsRequest{ .op = .model_profiles };
+    if (!chatopsDispatch(&req) or !req.found) return "";
     defer if (req.profiles.len != 0) std.heap.page_allocator.free(req.profiles);
     const n = @min(req.profiles.len, buf.len);
     @memcpy(buf[0..n], req.profiles[0..n]);
@@ -367,31 +367,31 @@ fn wxModelProfiles(_: *anyopaque, buf: []u8) []const u8 {
 }
 
 fn wxSwitchAiProfile(_: *anyopaque, profile_name: []const u8) weixin_control.SwitchModelResult {
-    var req = WeixinRequest{ .op = .switch_ai_profile, .profile_name = profile_name };
-    if (!weixinDispatch(&req)) return .offline;
+    var req = ChatopsRequest{ .op = .switch_ai_profile, .profile_name = profile_name };
+    if (!chatopsDispatch(&req)) return .offline;
     return req.switch_result;
 }
 
 fn wxSendInput(_: *anyopaque, surface_id: [16]u8, bytes: []const u8, reply_context: ?weixin_types.ReplyContext) weixin_control.SendResult {
-    var req = WeixinRequest{ .op = .send_input, .surface_id = surface_id, .bytes = bytes, .reply_context = reply_context };
-    if (!weixinDispatch(&req) or !req.sent) return .offline;
+    var req = ChatopsRequest{ .op = .send_input, .surface_id = surface_id, .bytes = bytes, .reply_context = reply_context };
+    if (!chatopsDispatch(&req) or !req.sent) return .offline;
     return if (req.busy) .busy else .ok;
 }
 
 fn wxTranscript(_: *anyopaque) []const u8 {
-    var req = WeixinRequest{ .op = .latest_transcript };
-    if (!weixinDispatch(&req) or !req.found) return "";
+    var req = ChatopsRequest{ .op = .latest_transcript };
+    if (!chatopsDispatch(&req) or !req.found) return "";
 
-    g_weixin_transcript_mutex.lock();
-    defer g_weixin_transcript_mutex.unlock();
-    if (g_weixin_transcript_owned.len != 0) std.heap.page_allocator.free(g_weixin_transcript_owned);
-    g_weixin_transcript_owned = req.transcript;
-    return g_weixin_transcript_owned;
+    g_chatops_transcript_mutex.lock();
+    defer g_chatops_transcript_mutex.unlock();
+    if (g_chatops_transcript_owned.len != 0) std.heap.page_allocator.free(g_chatops_transcript_owned);
+    g_chatops_transcript_owned = req.transcript;
+    return g_chatops_transcript_owned;
 }
 
 fn wxInboundFileDir(_: *anyopaque, buf: []u8) []const u8 {
-    var req = WeixinRequest{ .op = .inbound_file_dir };
-    if (!weixinDispatch(&req) or !req.found or req.dir.len == 0) return "";
+    var req = ChatopsRequest{ .op = .inbound_file_dir };
+    if (!chatopsDispatch(&req) or !req.found or req.dir.len == 0) return "";
     defer std.heap.page_allocator.free(req.dir);
     const n = @min(req.dir.len, buf.len);
     @memcpy(buf[0..n], req.dir[0..n]);
@@ -400,42 +400,42 @@ fn wxInboundFileDir(_: *anyopaque, buf: []u8) []const u8 {
 
 fn wxListAiConversations(_: *anyopaque, out: *weixin_control.ConversationList) void {
     out.count = 0;
-    var req = WeixinRequest{ .op = .list_conversations, .conv_list_out = out };
-    _ = weixinDispatch(&req);
+    var req = ChatopsRequest{ .op = .list_conversations, .conv_list_out = out };
+    _ = chatopsDispatch(&req);
     // On dispatch failure (no UI window) out stays count=0, which is correct.
 }
 
 fn wxPinAiConversationByIndex(_: *anyopaque, idx0: usize, out: *weixin_control.Conversation) bool {
-    var req = WeixinRequest{ .op = .pin_by_index, .pin_index = idx0, .conv_one_out = out };
-    if (!weixinDispatch(&req)) return false;
+    var req = ChatopsRequest{ .op = .pin_by_index, .pin_index = idx0, .conv_one_out = out };
+    if (!chatopsDispatch(&req)) return false;
     return req.found;
 }
 
 fn wxAiApprovalPending(_: *anyopaque) bool {
-    var req = WeixinRequest{ .op = .ai_approval_pending };
-    if (!weixinDispatch(&req)) return false;
+    var req = ChatopsRequest{ .op = .ai_approval_pending };
+    if (!chatopsDispatch(&req)) return false;
     return req.found;
 }
 
 fn wxAiQuestionOptionCount(_: *anyopaque) usize {
-    var req = WeixinRequest{ .op = .ai_question_option_count };
-    if (!weixinDispatch(&req) or !req.found) return 0;
+    var req = ChatopsRequest{ .op = .ai_question_option_count };
+    if (!chatopsDispatch(&req) or !req.found) return 0;
     return req.option_count;
 }
 
 fn wxResolveAiQuestion(_: *anyopaque, reply: weixin_types.QuestionReply) bool {
-    var req = WeixinRequest{ .op = .resolve_ai_question, .question_reply = reply };
-    if (!weixinDispatch(&req)) return false;
+    var req = ChatopsRequest{ .op = .resolve_ai_question, .question_reply = reply };
+    if (!chatopsDispatch(&req)) return false;
     return req.sent;
 }
 
 fn wxResolveAiApproval(_: *anyopaque, approve: bool) bool {
-    var req = WeixinRequest{ .op = .resolve_ai_approval, .approve = approve };
-    if (!weixinDispatch(&req)) return false;
+    var req = ChatopsRequest{ .op = .resolve_ai_approval, .approve = approve };
+    if (!chatopsDispatch(&req)) return false;
     return req.sent;
 }
 
-const weixin_vtable = weixin_control.Control.VTable{
+const chatops_vtable = weixin_control.Control.VTable{
     .is_connected = wxIsConnected,
     .find_ai_surface = wxFindAiSurface,
     .find_terminal_surface = wxFindTerminalSurface,
@@ -454,15 +454,15 @@ const weixin_vtable = weixin_control.Control.VTable{
     .pin_ai_conversation_by_index = wxPinAiConversationByIndex,
 };
 
-/// The Control the weixin controller drives. Backed by process-global state, so
+/// The Control the chatops channel drives. Backed by process-global state, so
 /// the dummy ctx is unused.
 pub fn control() weixin_control.Control {
-    return .{ .ctx = &g_weixin_ctx, .vtable = &weixin_vtable };
+    return .{ .ctx = &g_chatops_ctx, .vtable = &chatops_vtable };
 }
 
 pub fn clearTranscriptCache() void {
-    g_weixin_transcript_mutex.lock();
-    defer g_weixin_transcript_mutex.unlock();
-    if (g_weixin_transcript_owned.len != 0) std.heap.page_allocator.free(g_weixin_transcript_owned);
-    g_weixin_transcript_owned = &.{};
+    g_chatops_transcript_mutex.lock();
+    defer g_chatops_transcript_mutex.unlock();
+    if (g_chatops_transcript_owned.len != 0) std.heap.page_allocator.free(g_chatops_transcript_owned);
+    g_chatops_transcript_owned = &.{};
 }
