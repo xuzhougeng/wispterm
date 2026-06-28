@@ -47,6 +47,7 @@ const render_diagnostics = @import("render_diagnostics.zig");
 const ime_caret = @import("ime_caret.zig");
 const hit_test = @import("input/hit_test.zig");
 pub const ai_chat = @import("assistant/conversation/session.zig");
+const ai_chat_types = @import("assistant/conversation/types.zig");
 const ai_history_cache = @import("terminal_agents/sessions/cache.zig");
 const ai_history_resume = @import("terminal_agents/sessions/resume.zig");
 const ai_loop_store = @import("assistant/loop/store.zig");
@@ -99,6 +100,8 @@ const control_api = @import("appwindow/control_api.zig");
 const remote_sync = @import("appwindow/remote_sync.zig");
 const weixin_bridge = @import("appwindow/weixin_bridge.zig");
 const agent_requests = @import("appwindow/agent_requests.zig");
+const appwindow_ui_screenshot = @import("appwindow/ui_screenshot.zig");
+const png_writer = @import("appwindow/png_writer.zig");
 const ui_effect = @import("appwindow/ui_effect.zig");
 pub const UiEffect = ui_effect.UiEffect;
 pub const background_image = @import("renderer/background_image.zig");
@@ -5058,6 +5061,200 @@ fn agentRequestSaveSshProfile(allocator: std.mem.Allocator, args: ai_chat.SshPro
     return overlays.agentSaveSshProfile(allocator, args);
 }
 
+const AgentUiScreenshotCapture = struct {
+    rect: appwindow_ui_screenshot.Rect,
+    target: ai_chat_types.UiScreenshotTarget,
+    surface_id: ?[]const u8 = null,
+};
+
+const LiveUiScreenshotRect = struct {
+    rect: appwindow_ui_screenshot.Rect,
+    surface_id: ?[]const u8 = null,
+};
+
+fn fullUiScreenshotCapture(fb_width: u32, fb_height: u32) AgentUiScreenshotCapture {
+    return .{
+        .rect = .{ .x = 0, .y = 0, .width = fb_width, .height = fb_height },
+        .target = .active_tab,
+    };
+}
+
+fn splitRectToUiScreenshotRect(rect: split_layout.SplitRect) ?appwindow_ui_screenshot.Rect {
+    if (rect.width <= 0 or rect.height <= 0) return null;
+    return .{
+        .x = rect.x,
+        .y = rect.y,
+        .width = @intCast(rect.width),
+        .height = @intCast(rect.height),
+    };
+}
+
+fn liveUiScreenshotRectForHandle(handle: SplitTree.Node.Handle) ?LiveUiScreenshotRect {
+    for (0..split_layout.g_split_rect_count) |i| {
+        const rect = split_layout.g_split_rects[i];
+        if (rect.handle != handle) continue;
+        if (!split_layout.cachedRectIsLive(rect)) continue;
+        return .{
+            .rect = splitRectToUiScreenshotRect(rect) orelse return null,
+            .surface_id = if (rect.surface()) |surface| surface.remote_id[0..] else null,
+        };
+    }
+    return null;
+}
+
+fn liveUiScreenshotRectForSurfaceId(surface_id: []const u8) ?LiveUiScreenshotRect {
+    for (0..split_layout.g_split_rect_count) |i| {
+        const rect = split_layout.g_split_rects[i];
+        if (!split_layout.cachedRectIsLive(rect)) continue;
+        const surface = rect.surface() orelse continue;
+        if (std.mem.eql(u8, surface.remote_id[0..], surface_id)) {
+            return .{
+                .rect = splitRectToUiScreenshotRect(rect) orelse continue,
+                .surface_id = surface.remote_id[0..],
+            };
+        }
+    }
+    return null;
+}
+
+fn isFocusedUiScreenshotSelector(surface_id: []const u8) bool {
+    return surface_id.len == 0 or
+        std.ascii.eqlIgnoreCase(surface_id, "focused") or
+        std.ascii.eqlIgnoreCase(surface_id, "active") or
+        std.ascii.eqlIgnoreCase(surface_id, "current");
+}
+
+fn resolveAgentUiScreenshotCapture(
+    target: ai_chat_types.UiScreenshotTarget,
+    surface_id: ?[]const u8,
+    fb_width: u32,
+    fb_height: u32,
+) anyerror!AgentUiScreenshotCapture {
+    const full = fullUiScreenshotCapture(fb_width, fb_height);
+    const id = if (surface_id) |raw| std.mem.trim(u8, raw, " \t\r\n") else "";
+    const focused_selector = isFocusedUiScreenshotSelector(id);
+    switch (target) {
+        .active_tab => {
+            if (focused_selector) return full;
+            const active_tab = tab.activeTab() orelse return error.SurfaceNotInActiveTab;
+            if (active_tab.kind != .terminal) return error.SurfaceNotInActiveTab;
+            const live = liveUiScreenshotRectForSurfaceId(id) orelse return error.SurfaceNotInActiveTab;
+            return .{ .rect = full.rect, .target = .active_tab, .surface_id = live.surface_id };
+        },
+        .focused_panel => {
+            const active_tab = tab.activeTab() orelse {
+                if (focused_selector) return full;
+                return error.SurfaceNotInActiveTab;
+            };
+            if (active_tab.kind != .terminal) {
+                if (focused_selector) return full;
+                return error.SurfaceNotInActiveTab;
+            }
+
+            if (focused_selector) {
+                const live = liveUiScreenshotRectForHandle(active_tab.focused) orelse return full;
+                return .{ .rect = live.rect, .target = .focused_panel, .surface_id = live.surface_id };
+            }
+
+            const live = liveUiScreenshotRectForSurfaceId(id) orelse return error.SurfaceNotInActiveTab;
+            return .{ .rect = live.rect, .target = .focused_panel, .surface_id = live.surface_id };
+        },
+    }
+}
+
+fn ensureAbsoluteDir(path: []const u8) !void {
+    std.fs.makeDirAbsolute(path) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        error.FileNotFound => {
+            const parent = std.fs.path.dirname(path) orelse return err;
+            try ensureAbsoluteDir(parent);
+            std.fs.makeDirAbsolute(path) catch |err2| switch (err2) {
+                error.PathAlreadyExists => {},
+                else => return err2,
+            };
+        },
+        else => return err,
+    };
+}
+
+fn writeUiScreenshotFile(path: []const u8, bytes: []const u8) !void {
+    if (std.fs.path.dirname(path)) |parent| {
+        if (parent.len > 0) {
+            if (std.fs.path.isAbsolute(parent)) {
+                try ensureAbsoluteDir(parent);
+            } else {
+                try std.fs.cwd().makePath(parent);
+            }
+        }
+    }
+
+    var file = if (std.fs.path.isAbsolute(path))
+        try std.fs.createFileAbsolute(path, .{ .truncate = true })
+    else
+        try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(bytes);
+}
+
+fn agentRequestCaptureUiScreenshot(
+    allocator: std.mem.Allocator,
+    target: ai_chat_types.UiScreenshotTarget,
+    surface_id: ?[]const u8,
+    working_dir: ?[]const u8,
+) anyerror!ai_chat_types.UiScreenshotResult {
+    const win = g_window orelse return error.WindowUnavailable;
+    if (window_backend.isMinimized(win)) return error.WindowUnavailable;
+
+    const fb = window_backend.framebufferSize(win);
+    if (fb.width <= 0 or fb.height <= 0) return error.WindowUnavailable;
+    const fb_width: u32 = @intCast(fb.width);
+    const fb_height: u32 = @intCast(fb.height);
+
+    const wd = working_dir orelse return error.MissingWorkingDir;
+    if (wd.len == 0) return error.MissingWorkingDir;
+
+    const capture = try resolveAgentUiScreenshotCapture(target, surface_id, fb_width, fb_height);
+    const rect = appwindow_ui_screenshot.clampRect(capture.rect, fb_width, fb_height) orelse return error.WindowUnavailable;
+
+    const bottom_up = try gpu.readback.readRgba(
+        allocator,
+        rect.x,
+        appwindow_ui_screenshot.glReadY(rect, fb_height),
+        rect.width,
+        rect.height,
+    );
+    defer allocator.free(bottom_up);
+
+    const top_down = try png_writer.flipRgbaRows(allocator, bottom_up, rect.width, rect.height);
+    defer allocator.free(top_down);
+
+    const png = try png_writer.encodeRgba(allocator, .{
+        .width = rect.width,
+        .height = rect.height,
+        .rgba = top_down,
+    });
+    defer allocator.free(png);
+
+    var result_surface_id: ?[]u8 = null;
+    errdefer if (result_surface_id) |id| allocator.free(id);
+    if (capture.surface_id) |id| {
+        result_surface_id = try allocator.dupe(u8, id);
+    }
+
+    const path = try appwindow_ui_screenshot.outputPath(allocator, wd, std.time.milliTimestamp());
+    errdefer allocator.free(path);
+    try writeUiScreenshotFile(path, png);
+
+    return .{
+        .path = path,
+        .mime = "image/png",
+        .width = rect.width,
+        .height = rect.height,
+        .target = capture.target,
+        .surface_id = result_surface_id,
+    };
+}
+
 fn agentRequestHost() agent_requests.Host {
     return .{
         .nativeHandleForContext = agentRequestNativeHandle,
@@ -5067,6 +5264,7 @@ fn agentRequestHost() agent_requests.Host {
         .closeTabByIndex = agentRequestCloseTabByIndex,
         .connectSshProfile = agentRequestConnectSshProfile,
         .saveSshProfile = agentRequestSaveSshProfile,
+        .captureUiScreenshot = agentRequestCaptureUiScreenshot,
     };
 }
 
@@ -5205,6 +5403,7 @@ fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordP
         .agent_ssh_save => agent_requests.handleSshSaveRequest(@ptrFromInt(decoded.ptr), agent_host),
         .agent_tab_new => agent_requests.handleTabNewRequest(@ptrFromInt(decoded.ptr), agent_host),
         .agent_tab_close => agent_requests.handleTabCloseRequest(@ptrFromInt(decoded.ptr), agent_host),
+        .agent_ui_screenshot => agent_requests.handleUiScreenshotRequest(@ptrFromInt(decoded.ptr), agent_host),
         .remote_ai_input => remote_sync.handleAiInputRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
         .remote_open_ai_agent => remote_sync.handleAiAgentOpenRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
         .weixin_control => weixin_bridge.handleControlRequest(@ptrFromInt(decoded.ptr), weixinBridgeHost()),
@@ -5224,6 +5423,7 @@ fn installAgentToolHost(self: *AppWindow) void {
         .saveSshProfile = agent_requests.saveSshProfile,
         .connectSshProfile = agent_requests.connectSshProfile,
         .sshConnectionForSurface = surface_snapshots.agentSshConnectionForSurface,
+        .uiScreenshot = agent_requests.uiScreenshot,
     });
 }
 
@@ -6530,6 +6730,7 @@ fn runMainLoop(self: *AppWindow) !void {
         const fb_width: c_int = fb.width;
         const fb_height: c_int = fb.height;
         if (window_backend.isMinimized(win) or fb_width <= 0 or fb_height <= 0) {
+            agent_requests.failPendingUiScreenshots(error.WindowUnavailable);
             const timeout_ms = render_gate.computeBlockTimeoutMs(.{
                 .visibility = .hidden,
                 .cursor_blink_enabled = false,
@@ -6557,7 +6758,7 @@ fn runMainLoop(self: *AppWindow) !void {
         });
 
         const signals = render_gate.RenderSignals{
-            .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate,
+            .force_rebuild = g_force_rebuild or !g_cells_valid or pendingResizeActive() or windowState().layout_resize_immediate or agent_requests.hasPendingUiScreenshot(),
             .any_surface_dirty = anyVisibleSurfaceDirty(),
             .cursor_blink_due = blink.due,
             .ai_streaming = aiStreamingActive(),
@@ -6868,6 +7069,7 @@ fn runMainLoop(self: *AppWindow) !void {
         logSwapDiagnosticsIfChanged(win, fb_width, fb_height);
         forceOpaqueBackbufferForPresent();
         gpu.state.endFrame();
+        agent_requests.capturePendingUiScreenshots(agentRequestHost());
         window_backend.swapBuffers(win);
         if (windowState().takePresentBringupSettlement()) {
             platform_window_state.settleD3dBringup(allocator);
@@ -6898,6 +7100,8 @@ fn runMainLoop(self: *AppWindow) !void {
             platform_window_state.blockD3dBringup(allocator, build_options.app_version);
         }
     }
+
+    agent_requests.failPendingUiScreenshots(error.WindowUnavailable);
 
     // Save window position + size for next session
     if (g_window) |w| {
@@ -7043,6 +7247,91 @@ test "appwindow: render gate ignores background-tab surface dirty" {
     clearVisibleSurfaceDirty();
     try std.testing.expect(!active_surface.dirty.load(.acquire));
     try std.testing.expect(background_surface.dirty.load(.acquire));
+}
+
+test "appwindow: ui screenshot focused_panel uses focused non-terminal split rect" {
+    const allocator = std.testing.allocator;
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_tab_count = tab.g_tab_count;
+    const saved_tab0 = tab.g_tabs[0];
+    const saved_split_rect_count = split_layout.g_split_rect_count;
+    const saved_split_rect0: split_layout.SplitRect = if (saved_split_rect_count > 0) split_layout.g_split_rects[0] else undefined;
+
+    var surface: Surface = undefined;
+    surface.ref_count = 1;
+    var active_tab_v = tab.TabState{ .tree = try SplitTree.init(allocator, &surface) };
+    defer active_tab_v.tree.deinit();
+
+    tab.g_tabs[0] = &active_tab_v;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    split_layout.g_split_rect_count = 0;
+    defer {
+        if (saved_split_rect_count > 0) split_layout.g_split_rects[0] = saved_split_rect0;
+        split_layout.g_split_rect_count = saved_split_rect_count;
+        tab.g_tabs[0] = saved_tab0;
+        tab.g_tab_count = saved_tab_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    const preview = tab.splitIntoPreview(allocator) orelse return error.SplitIntoPreviewFailed;
+    try std.testing.expect(tab.focusPreviewPane(preview));
+    const focused_pane = switch (active_tab_v.tree.nodes[active_tab_v.focused.idx()]) {
+        .leaf => |pane| pane,
+        .split => return error.FocusedIsSplit,
+    };
+
+    split_layout.g_split_rects[0] = .{
+        .x = 11,
+        .y = 22,
+        .width = 33,
+        .height = 44,
+        .cols = 0,
+        .rows = 0,
+        .pane = focused_pane,
+        .handle = active_tab_v.focused,
+    };
+    split_layout.g_split_rect_count = 1;
+
+    const capture = try resolveAgentUiScreenshotCapture(.focused_panel, null, 100, 100);
+    try std.testing.expectEqual(ai_chat_types.UiScreenshotTarget.focused_panel, capture.target);
+    try std.testing.expectEqual(appwindow_ui_screenshot.Rect{ .x = 11, .y = 22, .width = 33, .height = 44 }, capture.rect);
+}
+
+test "appwindow: ui screenshot explicit surface id errors on non-terminal active tab" {
+    const saved_active = active_tab_state.g_active_tab;
+    const saved_tab_count = tab.g_tab_count;
+    const saved_tab0 = tab.g_tabs[0];
+
+    var active_tab_v = tab.TabState{ .kind = .ai_chat, .tree = .empty };
+    tab.g_tabs[0] = &active_tab_v;
+    tab.g_tab_count = 1;
+    active_tab_state.g_active_tab = 0;
+    defer {
+        tab.g_tabs[0] = saved_tab0;
+        tab.g_tab_count = saved_tab_count;
+        active_tab_state.g_active_tab = saved_active;
+    }
+
+    try std.testing.expectError(
+        error.SurfaceNotInActiveTab,
+        resolveAgentUiScreenshotCapture(.focused_panel, "surface-123", 100, 100),
+    );
+    try std.testing.expectError(
+        error.SurfaceNotInActiveTab,
+        resolveAgentUiScreenshotCapture(.active_tab, "surface-123", 100, 100),
+    );
+}
+
+test "appwindow: ui screenshot reports unavailable window before missing working dir" {
+    const saved_window = g_window;
+    g_window = null;
+    defer g_window = saved_window;
+
+    try std.testing.expectError(
+        error.WindowUnavailable,
+        agentRequestCaptureUiScreenshot(std.testing.allocator, .active_tab, null, null),
+    );
 }
 
 test "appwindow: ai history content width accounts for right panels" {

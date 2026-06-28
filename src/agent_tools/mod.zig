@@ -389,9 +389,11 @@ test "executeToolCall ui_screenshot calls host and formats path" {
             try std.testing.expectEqualStrings("/work", working_dir.?);
             return .{
                 .path = try allocator.dupe(u8, "/work/wispterm-files/ui-screenshot-1.png"),
+                .mime = "image/png",
                 .width = 10,
                 .height = 20,
                 .target = target,
+                .surface_id = try allocator.dupe(u8, "abc"),
             };
         }
         var dummy: u8 = 0;
@@ -427,8 +429,10 @@ test "executeToolCall ui_screenshot calls host and formats path" {
     });
     defer a.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "path=/work/wispterm-files/ui-screenshot-1.png") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "mime=image/png") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "width=10") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "height=20") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "surface_id=abc") != null);
 }
 
 const FakeApprover = struct {

@@ -9,6 +9,7 @@ pub const Tag = enum(u8) {
     remote_ai_input,
     remote_open_ai_agent,
     weixin_control,
+    agent_ui_screenshot,
 };
 
 pub const Decoded = struct {
@@ -25,6 +26,7 @@ fn offset(tag: Tag) u32 {
         .remote_open_ai_agent => 0x55,
         .agent_ssh_save => 0x56,
         .weixin_control => 0x57,
+        .agent_ui_screenshot => 0x58,
     };
 }
 

@@ -21,10 +21,17 @@ pub fn run(ctx: *ToolContext, target_text: ?[]const u8, surface_id: ?[]const u8)
         return std.fmt.allocPrint(ctx.allocator, "ui_screenshot failed: {s}", .{@errorName(err)});
     };
     defer result.deinit(ctx.allocator);
+    if (result.surface_id) |result_surface_id| {
+        return std.fmt.allocPrint(
+            ctx.allocator,
+            "screenshot path={s} mime={s} width={d} height={d} target={s} surface_id={s}",
+            .{ result.path, result.mime, result.width, result.height, result.target.label(), result_surface_id },
+        );
+    }
     return std.fmt.allocPrint(
         ctx.allocator,
-        "screenshot path={s} width={d} height={d} target={s}",
-        .{ result.path, result.width, result.height, result.target.label() },
+        "screenshot path={s} mime={s} width={d} height={d} target={s}",
+        .{ result.path, result.mime, result.width, result.height, result.target.label() },
     );
 }
 

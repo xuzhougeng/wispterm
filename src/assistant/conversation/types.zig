@@ -190,12 +190,15 @@ pub const UiScreenshotTarget = enum {
 
 pub const UiScreenshotResult = struct {
     path: []u8,
+    mime: []const u8 = "image/png",
     width: u32,
     height: u32,
     target: UiScreenshotTarget,
+    surface_id: ?[]u8 = null,
 
     pub fn deinit(self: UiScreenshotResult, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
+        if (self.surface_id) |surface_id| allocator.free(surface_id);
     }
 };
 
