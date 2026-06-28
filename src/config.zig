@@ -365,6 +365,19 @@ language: i18n.LanguageSetting = .auto,
 /// instance uses it directly and later local instances append _1, _2, ...
 @"remote-session-key": ?[]const u8 = null,
 
+/// Enables the Feishu (Lark) long-connection channel.
+@"feishu-enabled": bool = false,
+
+/// Feishu app_id. Falls back to env FEISHU_APP_ID when empty.
+@"feishu-app-id": ?[]const u8 = null,
+
+/// Feishu app_secret. Falls back to env FEISHU_APP_SECRET when empty.
+@"feishu-app-secret": ?[]const u8 = null,
+
+/// When set, only this open_id may control the terminal/AI via Feishu.
+/// Empty = no restriction (first sender is auto-bound as owner).
+@"feishu-allowed-user": ?[]const u8 = null,
+
 /// Enables the embedded WeChat ilink direct path. Independent from
 /// remote-enabled and from the Remote server's Weixin bridge binding.
 @"weixin-direct-enabled": bool = false,

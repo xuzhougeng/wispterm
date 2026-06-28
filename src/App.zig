@@ -21,6 +21,9 @@ const window_backend = @import("platform/window_backend.zig");
 const remote = @import("remote_client.zig");
 const weixin = @import("weixin/controller.zig");
 const weixin_types = @import("weixin/types.zig");
+const feishu = @import("feishu/controller.zig");
+const feishu_types = @import("feishu/types.zig");
+const feishu_binding = @import("feishu/binding.zig");
 const ctl_server = @import("ctl/server.zig");
 const ctl_discovery = @import("ctl/discovery.zig");
 const port_forward_manager_mod = @import("port_forward/manager.zig");
@@ -99,6 +102,9 @@ remote_client: ?*remote.Client,
 
 // WeChat direct (embedded ilink). Independent from the remote relay client.
 weixin_controller: ?*weixin.Controller,
+
+// Feishu long-connection channel. Created by startFeishu().
+feishu_controller: ?*feishu.Controller = null,
 
 // Local agent terminal control API (wisptermctl). Created by startAgentControl().
 agent_control_server: ?*ctl_server.Server = null,
@@ -387,6 +393,41 @@ pub fn startWeixin(self: *App, cfg: *const Config) void {
     };
     controller.start() catch {};
     self.weixin_controller = controller;
+}
+
+/// Creates and starts the Feishu long-connection controller when enabled.
+/// Credentials come from config keys; falls back to env FEISHU_APP_ID /
+/// FEISHU_APP_SECRET when a config key is absent or empty. Call once, after
+/// App is at its final address (see main.zig).
+pub fn startFeishu(self: *App, cfg: *const Config) void {
+    if (!cfg.@"feishu-enabled") return;
+
+    const app_id = blk: {
+        const v = cfg.@"feishu-app-id" orelse "";
+        if (v.len != 0) break :blk v;
+        break :blk std.posix.getenv("FEISHU_APP_ID") orelse "";
+    };
+    const app_secret = blk: {
+        const v = cfg.@"feishu-app-secret" orelse "";
+        if (v.len != 0) break :blk v;
+        break :blk std.posix.getenv("FEISHU_APP_SECRET") orelse "";
+    };
+
+    if (app_id.len == 0 or app_secret.len == 0) {
+        std.log.warn("feishu-enabled but credentials missing; skipping feishu startup", .{});
+        return;
+    }
+
+    const creds = feishu_types.Credentials{ .app_id = app_id, .app_secret = app_secret };
+    const binding_cfg = feishu_binding.Config{
+        .allowed_user = cfg.@"feishu-allowed-user" orelse "",
+    };
+    const controller = feishu.Controller.create(self.allocator, creds, binding_cfg, AppWindow.chatopsControl()) catch |err| {
+        std.debug.print("feishu disabled: {}\n", .{err});
+        return;
+    };
+    controller.start() catch {};
+    self.feishu_controller = controller;
 }
 
 /// Starts the local agent terminal control API (wisptermctl) when enabled.
@@ -1072,6 +1113,12 @@ pub fn deinit(self: *App) void {
             std.process.exit(0);
         }
         self.weixin_controller = null;
+    }
+
+    if (self.feishu_controller) |controller| {
+        controller.stop();
+        controller.destroy();
+        self.feishu_controller = null;
     }
 
     self.port_forward_manager.deinit();
