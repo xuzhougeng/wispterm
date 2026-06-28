@@ -6713,7 +6713,7 @@ fn handleMouseWheel(ev: platform_input.MouseWheelEvent) void {
         const left_f = AppWindow.leftPanelsWidth();
         const right_f = @as(f32, @floatFromInt(size.width)) - AppWindow.rightPanelsWidthForWindow(size.width);
         const content_w = @max(0, right_f - left_f);
-        const layout = AppWindow.ai_history_renderer.computeLayout(left_f, content_w);
+        const layout = AppWindow.terminal_agent_sessions_renderer.computeLayout(left_f, content_w);
         const x: f32 = @floatFromInt(ev.xpos);
         if (x >= layout.detail_x and x < layout.detail_x + layout.detail_w) {
             const units: i32 = @intCast(mouseWheelUnits(ev.delta));

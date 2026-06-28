@@ -1,9 +1,9 @@
 const std = @import("std");
-const ai_history_session = @import("../terminal_agents/sessions/session.zig");
-const types = @import("../terminal_agents/sessions/types.zig");
-const i18n = @import("../i18n.zig");
-const text_search = @import("../text_search.zig");
-const panel_draw = @import("panel_draw.zig");
+const ai_history_session = @import("../../terminal_agents/sessions/session.zig");
+const types = @import("../../terminal_agents/sessions/types.zig");
+const i18n = @import("../../i18n.zig");
+const text_search = @import("../../text_search.zig");
+const panel_draw = @import("../panel_draw.zig");
 
 const HEADER_H: f32 = 54;
 const FILTER_H: f32 = 42;
@@ -820,7 +820,7 @@ fn rectContains(x: f32, y: f32, left: f32, top: f32, width: f32, height: f32) bo
         y >= top and y < top + height;
 }
 
-test "ai_history_renderer: left count column fits three digit counts" {
+test "terminal agent sessions renderer: left count column fits three digit counts" {
     const Advance = struct {
         fn twentyPx(_: u32) f32 {
             return 20;
@@ -830,7 +830,7 @@ test "ai_history_renderer: left count column fits three digit counts" {
     try std.testing.expectEqual(@as(f32, 60), countColumnWidth("896", Advance.twentyPx));
 }
 
-test "ai_history_renderer: list row lines never overlap as ui font grows" {
+test "terminal agent sessions renderer: list row lines never overlap as ui font grows" {
     const cell_heights = [_]f32{ 12, 16, 18, 22, 28, 32, 40 };
     for (cell_heights) |cell_h| {
         const lines = rowTextLayout(cell_h);
@@ -842,13 +842,13 @@ test "ai_history_renderer: list row lines never overlap as ui font grows" {
     }
 }
 
-test "ai_history_renderer: hit test maps list rows" {
+test "terminal agent sessions renderer: hit test maps list rows" {
     const layout = computeLayout(0, 1000);
     const hit = hitTest(layout, layout.list_x + 10, 120, 100, 24, 5);
     try std.testing.expectEqual(@as(usize, 0), hit.row);
 }
 
-test "ai_history_renderer: layout keeps a readable detail column" {
+test "terminal agent sessions renderer: layout keeps a readable detail column" {
     const layout = computeLayout(0, 1200);
     try std.testing.expect(layout.left_w >= 180);
     try std.testing.expect(layout.list_w >= 260);
@@ -857,7 +857,7 @@ test "ai_history_renderer: layout keeps a readable detail column" {
     try std.testing.expectEqual(layout.list_x + layout.list_w, layout.detail_x);
 }
 
-test "ai_history_renderer: narrow layout stays inside available width" {
+test "terminal agent sessions renderer: narrow layout stays inside available width" {
     const layout = computeLayout(10, 300);
     try std.testing.expect(layout.left_w >= 0);
     try std.testing.expect(layout.list_w >= 0);
@@ -867,7 +867,7 @@ test "ai_history_renderer: narrow layout stays inside available width" {
     try std.testing.expect(layout.detail_x + layout.detail_w <= 310.001);
 }
 
-test "ai_history_renderer: zero width layout has no columns" {
+test "terminal agent sessions renderer: zero width layout has no columns" {
     const layout = computeLayout(20, 0);
     try std.testing.expectEqual(@as(f32, 0), layout.left_w);
     try std.testing.expectEqual(@as(f32, 0), layout.list_w);
@@ -877,7 +877,7 @@ test "ai_history_renderer: zero width layout has no columns" {
     try std.testing.expectEqual(@as(f32, 20), layout.detail_x);
 }
 
-test "ai_history_renderer: interaction hit test maps buttons and row offset" {
+test "terminal agent sessions renderer: interaction hit test maps buttons and row offset" {
     const FakeSession = struct {
         date_offset: usize = 0,
         fn visibleCount(_: @This()) usize {
@@ -927,7 +927,7 @@ fn collectWrapped(text: []const u8, max_w: f32, out: *std.ArrayList([]const u8))
     while (it.next()) |line| try out.append(std.testing.allocator, line);
 }
 
-test "ai_history_renderer: LineWrap hard-wraps when text exceeds width" {
+test "terminal agent sessions renderer: LineWrap hard-wraps when text exceeds width" {
     var lines: std.ArrayList([]const u8) = .empty;
     defer lines.deinit(std.testing.allocator);
     // max_w 35 fits three 10px glyphs (30) but not four (40).
@@ -938,7 +938,7 @@ test "ai_history_renderer: LineWrap hard-wraps when text exceeds width" {
     try std.testing.expectEqualStrings("g", lines.items[2]);
 }
 
-test "ai_history_renderer: LineWrap breaks on explicit newlines" {
+test "terminal agent sessions renderer: LineWrap breaks on explicit newlines" {
     var lines: std.ArrayList([]const u8) = .empty;
     defer lines.deinit(std.testing.allocator);
     try collectWrapped("ab\n\ncd", 1000, &lines);
@@ -948,7 +948,7 @@ test "ai_history_renderer: LineWrap breaks on explicit newlines" {
     try std.testing.expectEqualStrings("cd", lines.items[2]);
 }
 
-test "ai_history_renderer: LineWrap prefers a space boundary when wrapping" {
+test "terminal agent sessions renderer: LineWrap prefers a space boundary when wrapping" {
     var lines: std.ArrayList([]const u8) = .empty;
     defer lines.deinit(std.testing.allocator);
     // "ab cd ef" at max_w 55: "ab cd " would need 60px, so break at the first space.
@@ -958,7 +958,7 @@ test "ai_history_renderer: LineWrap prefers a space boundary when wrapping" {
     try std.testing.expectEqualStrings("cd ef", lines.items[1]);
 }
 
-test "ai_history_renderer: LineWrap always advances past an oversized glyph" {
+test "terminal agent sessions renderer: LineWrap always advances past an oversized glyph" {
     var lines: std.ArrayList([]const u8) = .empty;
     defer lines.deinit(std.testing.allocator);
     // max_w smaller than one glyph must still emit one glyph per line, not loop.
@@ -966,13 +966,13 @@ test "ai_history_renderer: LineWrap always advances past an oversized glyph" {
     try std.testing.expectEqual(@as(usize, 3), lines.items.len);
 }
 
-test "ai_history_renderer: LineWrap counts wrapped lines" {
+test "terminal agent sessions renderer: LineWrap counts wrapped lines" {
     try std.testing.expectEqual(@as(usize, 3), wrappedLineCount("abcdefg", 35, tenPxAdvance));
     try std.testing.expectEqual(@as(usize, 1), wrappedLineCount("ab", 1000, tenPxAdvance));
     try std.testing.expectEqual(@as(usize, 0), wrappedLineCount("", 1000, tenPxAdvance));
 }
 
-test "ai_history_renderer: transcriptLineTotal counts a role line plus wrapped content per message" {
+test "terminal agent sessions renderer: transcriptLineTotal counts a role line plus wrapped content per message" {
     const Msg = struct { content: []const u8 };
     const msgs = [_]Msg{
         .{ .content = "abcdefg" }, // 1 role + 3 wrapped = 4
@@ -982,14 +982,14 @@ test "ai_history_renderer: transcriptLineTotal counts a role line plus wrapped c
     try std.testing.expectEqual(@as(usize, 7), transcriptLineTotal(&msgs, 35, tenPxAdvance));
 }
 
-test "ai_history_renderer: clampScroll keeps scroll within the scrollable range" {
+test "terminal agent sessions renderer: clampScroll keeps scroll within the scrollable range" {
     try std.testing.expectEqual(@as(usize, 0), clampScroll(5, 3, 10)); // everything fits
     try std.testing.expectEqual(@as(usize, 2), clampScroll(5, 12, 10)); // clamped to max
     try std.testing.expectEqual(@as(usize, 1), clampScroll(1, 12, 10)); // within range
     try std.testing.expectEqual(@as(usize, 0), clampScroll(0, 12, 10));
 }
 
-test "ai_history_renderer: left column layout is ordered top to bottom" {
+test "terminal agent sessions renderer: left column layout is ordered top to bottom" {
     const lc = leftColumnLayout(40, 16);
     try std.testing.expect(lc.source_name_top < lc.status_label_top);
     try std.testing.expect(lc.status_label_top < lc.status_value_top);
@@ -1000,7 +1000,7 @@ test "ai_history_renderer: left column layout is ordered top to bottom" {
     try std.testing.expectEqual(lc.retry_text_top - BUTTON_PAD_Y, refreshButtonTop(40, 16));
 }
 
-test "ai_history_renderer: interaction hit test maps category rows" {
+test "terminal agent sessions renderer: interaction hit test maps category rows" {
     const FakeSession = struct {
         date_offset: usize = 0,
         fn visibleCount(_: @This()) usize {
@@ -1051,7 +1051,7 @@ test "ai_history_renderer: interaction hit test maps category rows" {
     );
 }
 
-test "ai_history_renderer: interaction hit test maps date rows" {
+test "terminal agent sessions renderer: interaction hit test maps date rows" {
     const FakeSession = struct {
         date_offset: usize = 0,
         fn visibleCount(_: @This()) usize {

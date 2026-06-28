@@ -113,7 +113,7 @@ pub const browser_panel = if (build_options.webview)
 else
     @import("browser/panel_stub.zig");
 pub const assistant_conversation_renderer = @import("renderer/assistant/conversation.zig");
-pub const ai_history_renderer = @import("renderer/ai_history_renderer.zig");
+pub const terminal_agent_sessions_renderer = @import("renderer/terminal_agents/sessions.zig");
 const skill_center_renderer = @import("renderer/skill_center_renderer.zig");
 const port_forwarding_renderer = @import("renderer/port_forwarding_renderer.zig");
 const ai_sidebar = @import("assistant/sidebar/panel.zig");
@@ -1752,7 +1752,7 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
     titlebar.renderSidebar(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     file_explorer_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     if (active_tab.ai_history_session) |session| {
-        const draw: ai_history_renderer.DrawContext = .{
+        const draw: terminal_agent_sessions_renderer.DrawContext = .{
             .bg = g_theme.background,
             .fg = g_theme.foreground,
             .accent = g_theme.cursor_color,
@@ -1764,7 +1764,7 @@ fn renderAiHistoryFrame(active_tab: *TabState, fb_width: c_int, fb_height: c_int
         };
         session.mutex.lock();
         defer session.mutex.unlock();
-        ai_history_renderer.render(
+        terminal_agent_sessions_renderer.render(
             draw,
             session,
             @floatFromInt(fb_width),
@@ -2916,10 +2916,10 @@ pub fn aiHistoryHandleMousePress(xpos: f64, ypos: f64) bool {
     const left = leftPanelsWidth();
     const right = rightPanelsWidthForWindow(fb.width);
     const width = @as(f32, @floatFromInt(fb.width)) - left - right;
-    const visible_rows = ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
+    const visible_rows = terminal_agent_sessions_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
 
     session.mutex.lock();
-    const hit = ai_history_renderer.interactionHitTest(
+    const hit = terminal_agent_sessions_renderer.interactionHitTest(
         session,
         @floatFromInt(fb.width),
         @floatFromInt(fb.height),
@@ -3015,7 +3015,7 @@ fn tickAllPreviewPanes() bool {
 fn aiHistoryListVisibleRowsForWindow() usize {
     const win = g_window orelse return 1;
     const fb = window_backend.framebufferSize(win);
-    return ai_history_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
+    return terminal_agent_sessions_renderer.listVisibleCapacity(@floatFromInt(fb.height), currentTitlebarHeight(), font.g_titlebar_cell_height);
 }
 
 /// Number of day rows (excluding the pinned "All dates") visible in the DATE
@@ -3024,8 +3024,8 @@ fn aiHistoryDateDaySlotsForWindow() usize {
     const win = g_window orelse return 0;
     const fb = window_backend.framebufferSize(win);
     const cell_h = font.g_titlebar_cell_height;
-    const lc = ai_history_renderer.leftColumnLayout(currentTitlebarHeight(), cell_h);
-    const cap = ai_history_renderer.dateVisibleCapacity(@floatFromInt(fb.height), lc.date_rows_top, cell_h);
+    const lc = terminal_agent_sessions_renderer.leftColumnLayout(currentTitlebarHeight(), cell_h);
+    const cap = terminal_agent_sessions_renderer.dateVisibleCapacity(@floatFromInt(fb.height), lc.date_rows_top, cell_h);
     return if (cap > 1) cap - 1 else 0;
 }
 

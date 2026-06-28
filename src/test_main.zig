@@ -680,7 +680,7 @@ comptime {
     _ = @import("terminal_agents/sessions/cache.zig");
     _ = @import("terminal_agents/sessions/resume.zig");
     _ = @import("terminal_agents/sessions/session.zig");
-    _ = @import("renderer/ai_history_renderer.zig");
+    _ = @import("renderer/terminal_agents/sessions.zig");
     _ = @import("terminal_agents/detector.zig");
     _ = @import("Surface.zig");
     _ = @import("termio/Mailbox.zig");
