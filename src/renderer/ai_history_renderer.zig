@@ -3,6 +3,7 @@ const ai_history_session = @import("../terminal_agents/sessions/session.zig");
 const types = @import("../terminal_agents/sessions/types.zig");
 const i18n = @import("../i18n.zig");
 const text_search = @import("../text_search.zig");
+const panel_draw = @import("panel_draw.zig");
 
 const HEADER_H: f32 = 54;
 const FILTER_H: f32 = 42;
@@ -16,18 +17,7 @@ const RESUME_BUTTON_W: f32 = 104;
 const RETRY_LABEL_W: f32 = 70;
 const MAX_DATE_BUCKETS: usize = 256;
 
-pub const DrawContext = struct {
-    bg: [3]f32,
-    fg: [3]f32,
-    accent: [3]f32,
-    cell_h: f32,
-    fillQuad: *const fn (f32, f32, f32, f32, [3]f32) void,
-    fillQuadAlpha: *const fn (f32, f32, f32, f32, [3]f32, f32) void,
-    renderTextLimited: *const fn ([]const u8, f32, f32, [3]f32, f32) f32,
-    // Advance width (px) of a single glyph in the UI font, used to wrap
-    // transcript text. Must use the same metric as renderTextLimited.
-    glyphAdvance: *const fn (u32) f32,
-};
+pub const DrawContext = panel_draw.DrawContext;
 
 pub const Layout = struct {
     left_x: f32,
