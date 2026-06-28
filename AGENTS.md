@@ -20,9 +20,9 @@ The goal is not small files but code that can be **understood, tested, and chang
 
 ### Integration layer vs feature domains
 
-`AppWindow.zig`, `input.zig`, and `renderer/overlays.zig` are an **integration layer**, not terminal "core". They *coordinate* features — AppWindow assembles modules and routes render/input, `input.zig` dispatches events, `overlays.zig` is the overlay facade/registry — but they must **not own feature state**. The **feature domains** own their own state, query/action APIs, and tests: `ai_chat*`, `weixin/*`, the `skill_*` modules, `file_explorer.zig`, the `tmux_*` controllers, and the `remote_*` client/sync code.
+`AppWindow.zig`, `input.zig`, and `renderer/overlays.zig` are an **integration layer**, not terminal "core". They *coordinate* features — AppWindow assembles modules and routes render/input, `input.zig` dispatches events, `overlays.zig` is the overlay facade/registry — but they must **not own feature state**. The **feature domains** own their own state, query/action APIs, and tests: `assistant/conversation/*`, `assistant/loop/*`, `agent/*`, `agent_tools/*`, `terminal_agents/*`, `weixin/*`, `skill/`, `file_explorer.zig`, `tmux/*`, and the remote client/sync code.
 
-When writing new code: feature domains should not depend on `AppWindow` (expose an API, receive context explicitly); `input.zig` only dispatches and returns a `UiEffect` — it must not read a feature's internal `g_*` state; overlays get capabilities through a Host/Context, not by importing `AppWindow.zig`. Prefer explicit context structs, feature-owned query/action APIs, and `UiEffect` returns. **Each time you touch one of these monoliths, lower the matching source-guard ratchet** — that is how the boundary converges. The full layer model and per-edge rules are in [docs/architecture.md](docs/architecture.md#integration-layer-vs-feature-domains) and [docs/decoupling-guide.md §8.5](docs/decoupling-guide.md#85-the-layer-model).
+When writing new code: feature domains should not depend on `AppWindow` (expose an API, receive context explicitly); `input.zig` only dispatches and returns a `UiEffect` — it must not read a feature's internal `g_*` state; overlays get capabilities through a Host/Context, not by importing `AppWindow.zig`. Prefer explicit context structs, feature-owned query/action APIs, and `UiEffect` returns. **Each time you touch a watched integration/session file, lower the matching source-guard ratchet** — that is how the boundary converges. The full layer model and per-edge rules are in [docs/architecture.md](docs/architecture.md#integration-layer-vs-feature-domains) and [docs/decoupling-guide.md §8.5](docs/decoupling-guide.md#85-the-layer-model).
 
 ### Boundary guards (`src/source_guards/`)
 
@@ -31,11 +31,11 @@ Structural debt is frozen mechanically by source-scanning ratchet tests (the sam
 | Guard | Freezes | Today's ceiling | Escape hatch |
 |---|---|---|---|
 | `file_size_guard` | lines in any `src/**/*.zig` | < **10,000** (also `zig build check-sizes`) | split by responsibility; never raise the limit |
-| `global_state_guard` | top-level `g_*` / `threadlocal` in the four monoliths | AppWindow **67**, input **55**, overlays **48**, ai_chat **20** | put new state in a state struct (`appwindow/state.zig`, …) |
-| `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | **29** | import the real module directly, not via `AppWindow.X` |
-| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the four monoliths | AppWindow **63**, input **81**, overlays **12**, ai_chat **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
+| `global_state_guard` | top-level `g_*` / `threadlocal` in the watched integration/session files | AppWindow **67**, input **52**, overlays **39**, assistant/conversation/session **20** | put new state in a state struct (`appwindow/state.zig`, …) |
+| `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | **17** | import the real module directly, not via `AppWindow.X` |
+| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow **57**, input **81**, overlays **12**, assistant/conversation/session **0** | return a `UiEffect`, land it through `AppWindow.applyUiEffect` |
 
-The 10,000-line guard is a **runaway tripwire, not a health metric**: `check-sizes` prevents uncontrolled growth, it does not certify architectural health. A file under it can still be tangled; treat any file over **5,000 lines** as a signal to review responsibility, dependency direction, state ownership, and test boundaries. The four boundary ratchets — not the line count — are the primary enforcement mechanism.
+The 10,000-line guard is a **runaway tripwire, not a health metric**: `check-sizes` prevents uncontrolled growth, it does not certify architectural health. A file under it can still be tangled; treat any file over **5,000 lines** as a signal to review responsibility, dependency direction, state ownership, and test boundaries. The boundary ratchets — not the line count — are the primary enforcement mechanism.
 
 A fifth guard — a **layered-dependency** check (e.g. `renderer/overlays/*` must not import `AppWindow.zig`; `input/*` must not import a concrete renderer) — is the documented next step; it needs per-edge allowlists and lands once the boundaries it asserts have converged. The layer model and the full remediation roadmap (state structs first, then import-hub, then per-domain file splits) live in [docs/decoupling-guide.md](docs/decoupling-guide.md).
 
@@ -45,7 +45,7 @@ When changing application **keyboard shortcuts** (bindings in `src/input.zig` an
 
 The main render loop is **event-driven** (`src/appwindow/render_gate.zig`): a frame is drawn only when `frameNeedsRender` is true, and `overlays.anyOverlayActive()` deliberately excludes statically-open overlays (command palette / command center, session launcher / new session, settings page) to keep idle CPU low. Therefore, any **overlay or panel key/char handler** in `src/input.zig` (`handleKey`/`handleChar`) that mutates UI state — selection index, filter text, focus — **must request a repaint**, or the change paints only on the next incidental wake (cursor blink ~530ms, mouse move) and navigation visibly lags ("不跟手") identically on Windows and macOS — it is shared logic, not platform code.
 
-The mechanism is the **UI-effect boundary**, not a direct global write. Input dispatch returns a `UiEffect` (`src/appwindow/ui_effect.zig`: `consumed` / `needs_rebuild` / `cells_invalid` / `wake_backend`), and `input.zig` lands it through `requestInputRepaint()` / `requestInputRebuild()` / `applyInputEffect()`, which funnel into the single sink `AppWindow.applyUiEffect` — the only place that touches `g_force_rebuild` / `g_cells_valid` (and `window_backend.postWakeup()` for a worker thread, via `UiEffect{ .wake_backend = true }`). New or converted handlers **must return/route a `UiEffect`** and **must not write `AppWindow.g_force_rebuild` / `AppWindow.g_cells_valid` directly**: `src/input/dirty_guard.zig` enforces this on the converted regions of `input.zig`, and `src/source_guards/side_effect_guard.zig` freezes the remaining direct-write count per monolith so it can only shrink. Legacy direct writes survive only where already counted by that ratchet.
+The mechanism is the **UI-effect boundary**, not a direct global write. Input dispatch returns a `UiEffect` (`src/appwindow/ui_effect.zig`: `consumed` / `needs_rebuild` / `cells_invalid` / `wake_backend`), and `input.zig` lands it through `requestInputRepaint()` / `requestInputRebuild()` / `applyInputEffect()`, which funnel into the single sink `AppWindow.applyUiEffect` — the only place that touches `g_force_rebuild` / `g_cells_valid` (and `window_backend.postWakeup()` for a worker thread, via `UiEffect{ .wake_backend = true }`). New or converted handlers **must return/route a `UiEffect`** and **must not write `AppWindow.g_force_rebuild` / `AppWindow.g_cells_valid` directly**: `src/input/dirty_guard.zig` enforces this on the converted regions of `input.zig`, and `src/source_guards/side_effect_guard.zig` freezes the remaining direct-write count per watched file so it can only shrink. Legacy direct writes survive only where already counted by that ratchet.
 
 These `input.zig` compiled tests run only in the full app test binary (`zig build test-full`, and `zig build test-macos-ui` on macOS); the fast `zig build test` suite does **not** compile `input.zig` (the source-scan guards `@embedFile` it as text instead). Because `test-full` now also runs the fast suite, those guards gate the pre-merge build.
 
@@ -105,8 +105,21 @@ src/                         # Desktop terminal application
 ├── pty.zig                  # App-facing PTY API (re-exports src/platform/pty.zig)
 ├── remote_client.zig        # Outbound WispTerm Remote relay client
 ├── file_explorer.zig        # Local/SSH file explorer state and operations
-├── browser/panel.zig        # Embedded browser panel and SSH tunnel handling
 ├── themes.zig               # Embedded Ghostty-compatible themes
+├── assistant/               # AI conversation session/protocol/composer plus loop,
+│                            #   profile, and sidebar-owned state
+├── agent/                   # Agent config, access rules, history, and memory
+├── agent_tools/             # Model tool-call runtime adapters
+├── terminal_agents/         # External terminal agent detection/prompts/sessions
+├── command/                 # Command center/palette model and registry
+├── preview/                 # Preview pane, gallery, diagnostics, PDF/markdown/png
+├── browser/                 # Embedded browser panel and URL handling
+├── html/                    # Local HTML server and server model
+├── jupyter/                 # Jupyter server detection and picker state
+├── skill/                   # Skill center, install, registry, scan, transfer
+├── port_forward/            # Port-forward rules, manager, and forwarding runtime
+├── research/                # Web/PubMed/read helpers used by assistant tools
+├── tools/                   # First-party assistant tool catalog and registry
 ├── platform/                # Platform abstraction layer: narrow capability
 │                            #   interfaces with per-platform impls (_windows) and
 │                            #   _unsupported/_posix stubs — PTY/process, window/input

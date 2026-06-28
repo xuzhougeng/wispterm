@@ -64,7 +64,7 @@ Several large files still combine UI presentation, input routing, and state
 logic. Future feature work should keep extracting testable modules as it touches
 these areas:
 
-- `src/ai_chat.zig`
+- `src/assistant/conversation/session.zig`
 - `src/input.zig`
 - `src/AppWindow.zig`
 - `src/renderer/overlays.zig`

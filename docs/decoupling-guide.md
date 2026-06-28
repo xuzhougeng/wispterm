@@ -383,8 +383,9 @@ state**. `AppWindow.zig`, `input.zig`, and `renderer/overlays.zig` are an
 integration layer: they *coordinate* features (module assembly + render/input
 routing, event dispatch, overlay facade/registry) and are **not** terminal
 "core". The **feature domains** are the modules that own their own state and
-behavior — `ai_chat*`, `weixin/*`, the `skill_*` modules, `file_explorer.zig`,
-the `tmux_*` controllers, and the `remote_*` client/sync code. Today the
+behavior — `assistant/conversation/*`, `assistant/loop/*`, `agent/*`,
+`agent_tools/*`, `terminal_agents/*`, `weixin/*`, `skill/`,
+`file_explorer.zig`, `tmux/*`, and the remote client/sync code. Today the
 integration layer holds feature `g_*` globals, re-exports unrelated feature
 modules, and reaches into feature internals; that is exactly what the §8.2
 ratchets freeze and shrink. Treat each ratchet step as moving one responsibility
@@ -411,9 +412,9 @@ gate — you must first remove one, or use the pattern the guard names.
 | Guard | Freezes | Today's ceiling | Escape hatch |
 |---|---|---|---|
 | `file_size_guard` | lines in any `src/**/*.zig` (whole tree, future files too) | < 10,000 | split by responsibility; never raise the limit |
-| `global_state_guard` | top-level `g_*` / `threadlocal` in the four monoliths | AppWindow 67, input 55, overlays 48, ai_chat 20 | new state → an explicit state struct (`appwindow/state.zig`, …) |
-| `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | 29 | import the real module directly, not via `AppWindow.X` |
-| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the four monoliths | AppWindow 63, input 81, overlays 12, ai_chat 0 | return a `UiEffect`; land it via `AppWindow.applyUiEffect` |
+| `global_state_guard` | top-level `g_*` / `threadlocal` in the watched integration/session files | AppWindow 67, input 52, overlays 39, assistant/conversation/session 20 | new state → an explicit state struct (`appwindow/state.zig`, …) |
+| `import_hub_guard` | `pub const X = @import(...)` re-exports in `AppWindow.zig` | 17 | import the real module directly, not via `AppWindow.X` |
+| `side_effect_guard` | direct `g_force_rebuild` / `g_cells_valid` writes in the watched integration/session files | AppWindow 57, input 81, overlays 12, assistant/conversation/session 0 | return a `UiEffect`; land it via `AppWindow.applyUiEffect` |
 
 They run in `zig build test` and — since `test-full` is now a superset of `test`
 — in the pre-merge gate. The file-size backstop is also a standalone command,
@@ -431,25 +432,27 @@ Decompose in this order. The point of the ordering is to *freeze new debt first*
 and *move state before functions*, so the work never makes the files larger on
 the way to making them smaller.
 
-1. **Freeze new debt (done — the §8.2 ratchets).** No new `g_*` in the monoliths,
-   no new `AppWindow` re-export hub entry, no new direct dirty write, no file
-   over 10k. New input paths return a `UiEffect` / result; new overlays own their
-   state/input/render modules.
+1. **Freeze new debt (done — the §8.2 ratchets).** No new `g_*` in watched
+   integration/session files, no new `AppWindow` re-export hub entry, no new
+   direct dirty write, no file over 10k. New input paths return a `UiEffect` /
+   result; new overlays own their state/input/render modules.
 2. **Finish the side-effect boundary.** Extend `UiEffect` returns from input to
    every overlay handler, command palette, confirm modal, settings page, and
    session launcher, so all repaint/rebuild/wake requests flow through
    `AppWindow.applyUiEffect`. Ratchet `side_effect_guard` down as each converts.
 3. **Split state before functions.** Move scattered globals into explicit state
-   owners (`AppWindow.State`, `InputState`, `OverlayState`, `AiChatState`,
-   `RemoteState`, `BrowserState`, `PreviewState`) and ratchet `global_state_guard`
-   down. Moving functions before state only manufactures more imports.
+   owners (`AppWindow.State`, `InputState`, `OverlayState`,
+   `AssistantConversationState`, `RemoteState`, `BrowserState`, `PreviewState`)
+   and ratchet `global_state_guard` down. Moving functions before state only
+   manufactures more imports.
 4. **Dismantle the import hub.** Stop routing unrelated modules through
    `AppWindow`; convert callers to direct imports / narrow interfaces and ratchet
    `import_hub_guard` down.
 5. **Split the big files by domain** (§8.4), in the order overlays → input →
-   ai_chat → AppWindow: overlays decompose naturally by feature; input by event
-   type and consumer; ai_chat needs its `Host`/`State`/`Session` boundaries
-   designed first; AppWindow thins out last, once its dependencies have boundaries.
+   assistant conversation session → AppWindow: overlays decompose naturally by
+   feature; input by event type and consumer; the assistant conversation session
+   needs its `Host`/`State`/`Session` boundaries designed first; AppWindow thins
+   out last, once its dependencies have boundaries.
 
 ### 8.4 Per-file target decomposition
 

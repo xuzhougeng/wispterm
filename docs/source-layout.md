@@ -27,20 +27,21 @@ nodes alone until their ownership boundaries have converged.
 - After every move, old active source imports must be gone and source guards must
   still cover the same boundary.
 
-## First Moves
+## Completed Stable Moves
 
-Do these in separate PRs:
+These feature families have already moved into owner directories:
 
-1. `ai_history_*` -> `src/ai_history/`
-2. `command_*` -> `src/command/`
+1. external terminal agent sessions -> `src/terminal_agents/sessions/`
+2. command modules -> `src/command/`
 3. preview modules -> `src/preview/`
 4. small browser/html/jupyter families -> `src/browser/`, `src/html/`,
    `src/jupyter/`
-5. `skill_*` -> `src/skill/`
-6. `port_forward_*` -> `src/port_forward/`
+5. skill modules -> `src/skill/`
+6. port-forward modules -> `src/port_forward/`
+7. AI conversation session and helpers -> `src/assistant/conversation/`
 
-Do not move `ai_chat_*`, `agent_*`, `ssh_*`, `scp.zig`, or the root integration
-files in this pass.
+Do not move `agent/`, `ssh_*`, `scp.zig`, or the root integration files without
+a separate ownership reason. Directory cleanup must stay mechanical.
 
 ## Guard Checklist
 

@@ -148,8 +148,8 @@ the contributor-facing summary is in [`AGENTS.md`](../AGENTS.md).
 
 A second boundary cuts *across* the core, orthogonal to the platform seam: the
 distinction between the **integration layer** that coordinates features and the
-**feature domains** that own them. The four monoliths above sit on the wrong
-side of it today, which is why they carry the ratchets.
+**feature domains** that own them. The watched integration/session files still
+carry historical boundary debt, which is why they carry the ratchets.
 
 - **Integration layer** — `src/AppWindow.zig`, `src/input.zig`, and
   `src/renderer/overlays.zig`. These *coordinate*: AppWindow assembles modules
@@ -169,8 +169,8 @@ side of it today, which is why they carry the ratchets.
   such as Claude Code, Codex, Reasonix, and Subagent. In particular,
   `terminal_agents/sessions/` owns discovery, transcript preview, and resume
   commands for those external terminal agents. Other feature domains include
-  `weixin/*`, `skill/`, `file_explorer.zig`, the `tmux_*` controllers, and the
-  `remote_*` client/sync code.
+  `weixin/*`, `skill/`, `file_explorer.zig`, `tmux/*`, and the remote
+  client/sync code.
 
 Guidance for new code (these keep the boundary from re-tangling):
 
