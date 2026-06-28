@@ -735,6 +735,7 @@ pub const ComposerSuggestionKind = ai_chat_composer.ComposerSuggestionKind;
 pub const ComposerSuggestion = ai_chat_composer.ComposerSuggestion;
 pub const SlashCommandSuggestion = ai_chat_composer.SlashCommandSuggestion;
 const parseSlashCommand = ai_chat_composer.parseSlashCommand;
+const exactBuiltinCommand = ai_chat_composer.exactBuiltinCommand;
 const composerSuggestionPrefix = ai_chat_composer.composerSuggestionPrefix;
 const slashCommandSuggestionPrefix = ai_chat_composer.slashCommandSuggestionPrefix;
 const suggestionReplacementText = ai_chat_composer.suggestionReplacementText;
@@ -759,6 +760,7 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
         .distill => allocator.dupe(u8, "Use /distill [topic] to preview a reusable skill candidate."),
         .unknown => allocator.dupe(u8, "Unknown command. Use /commands to list commands."),
         .skills => ai_chat_skills.listSkillsForDisplay(allocator),
+        .btw => allocator.dupe(u8, ""),
         // .loop and .watch suppress output and emit their own messages via
         // runLoopCommandLocked; this path is never reached.
         .loop, .watch => allocator.dupe(u8, ""),
@@ -773,6 +775,22 @@ fn slashCommandOutput(allocator: std.mem.Allocator, command: SlashCommand) ![]u8
 
 fn previewPrompt(p: []const u8) []const u8 {
     return if (p.len > 48) p[0..48] else p;
+}
+
+fn parseBtwArg(input: []const u8) ?[]const u8 {
+    const prompt = std.mem.trim(u8, input, " \t\r\n");
+    if (prompt.len == 0) return null;
+    const tok_end = ai_chat_composer.slashCommandTokenEnd(prompt);
+    const first_tok = prompt[0..tok_end];
+    const command = exactBuiltinCommand(first_tok) orelse return null;
+    if (command != .btw) return null;
+    return std.mem.trim(u8, prompt[tok_end..], " \t\r\n");
+}
+
+fn firstProgressLine(s: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, s, " \t\r\n");
+    const end = std.mem.indexOfScalar(u8, trimmed, '\n') orelse trimmed.len;
+    return std.mem.trim(u8, trimmed[0..end], " \t\r\n");
 }
 
 const LoopTaskListScope = enum { session, all };
@@ -2259,6 +2277,24 @@ pub const Session = struct {
         self.scroll_px = 1_000_000;
     }
 
+    fn allocCurrentProgressLocked(self: *Session) ![]u8 {
+        var i = self.messages.items.len;
+        while (i > 0) : (i -= 1) {
+            const msg = self.messages.items[i - 1];
+            if (msg.role != .tool) continue;
+            const content = firstProgressLine(msg.content);
+            if (std.mem.startsWith(u8, content, "subagent:")) return self.allocator.dupe(u8, content);
+        }
+        const s = std.mem.trim(u8, self.status(), " \t\r\n");
+        if (s.len != 0 and !std.mem.eql(u8, s, "Ready")) return std.fmt.allocPrint(self.allocator, "Status: {s}", .{s});
+        return self.allocator.dupe(u8, "No active progress.");
+    }
+
+    fn runBtwCommandLocked(self: *Session) ?BuiltinResult {
+        _ = parseBtwArg(self.input()) orelse return null;
+        return self.runBuiltinCommandLocked(.btw, "");
+    }
+
     /// Thread-safe wrapper used by the tool layer (worker thread) to post a
     /// transcript note such as a diff. Swallows OOM (best-effort UI message).
     pub fn appendLocalToolMessage(self: *Session, text: []const u8) void {
@@ -2324,6 +2360,13 @@ pub const Session = struct {
     pub fn submit(self: *Session) void {
         var history_change: ?PendingHistoryChange = null;
         self.mutex.lock();
+        if (self.runBtwCommandLocked()) |r| {
+            self.clearPendingWeixinReplyContextLocked();
+            self.mutex.unlock();
+            self.notifyHistoryChange(r.history_change);
+            fireDeferredAction(self, r.deferred);
+            return;
+        }
         if (self.tryAnswerPendingQuestionLocked()) {
             self.mutex.unlock();
             return;
@@ -2723,6 +2766,22 @@ pub const Session = struct {
                 result.deferred = .model_switch_picker;
                 self.clearSubmittedInputLocked();
                 self.setStatusLocked("Ready");
+                result.suppress_output = true;
+            },
+            .btw => {
+                const text = self.allocCurrentProgressLocked() catch {
+                    self.setStatusLocked("Out of memory");
+                    result.suppress_output = true;
+                    return result;
+                };
+                defer self.allocator.free(text);
+                self.appendLocalToolMessageLocked(text) catch {
+                    self.setStatusLocked("Out of memory");
+                    result.suppress_output = true;
+                    return result;
+                };
+                self.clearSubmittedInputLocked();
+                if (!self.request_inflight) self.setStatusLocked("Ready");
                 result.suppress_output = true;
             },
             else => {},
@@ -5425,6 +5484,47 @@ test "ai chat enter submits slash commands instead of completing suggestions" {
 
     for (session.messages.items) |msg| msg.deinit(allocator);
     session.messages.deinit(allocator);
+}
+
+test "/btw emits local progress without adding user context" {
+    const allocator = std.testing.allocator;
+    var session = Session{ .allocator = allocator };
+    defer {
+        if (session.request_thread) |thread| {
+            session.request_thread = null;
+            thread.join();
+        }
+        for (session.messages.items) |msg| msg.deinit(allocator);
+        session.messages.deinit(allocator);
+    }
+    const Noop = struct {
+        fn run() void {}
+    };
+    session.request_thread = try std.Thread.spawn(.{}, Noop.run, .{});
+    session.request_inflight = true;
+
+    try session.messages.append(allocator, .{
+        .role = .tool,
+        .content = try allocator.dupe(u8, "subagent: running web_search"),
+        .persist_to_history = false,
+    });
+    session.appendInputText("/btw 当前进展");
+    session.submit();
+
+    try std.testing.expectEqualStrings("", session.input());
+    try std.testing.expectEqual(@as(usize, 2), session.messages.items.len);
+    try std.testing.expectEqual(Role.tool, session.messages.items[1].role);
+    try std.testing.expectEqualStrings("subagent: running web_search", session.messages.items[1].content);
+    try std.testing.expect(!session.messages.items[1].persist_to_history);
+
+    session.mutex.lock();
+    defer session.mutex.unlock();
+    const reqs = try session.buildRequestMessagesLocked(null, null);
+    defer {
+        for (reqs) |msg| msg.deinit(allocator);
+        allocator.free(reqs);
+    }
+    try std.testing.expectEqual(@as(usize, 0), reqs.len);
 }
 
 test "/rewind via submit opens picker without adding transcript noise" {

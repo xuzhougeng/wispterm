@@ -5,6 +5,7 @@ const control = @import("control.zig");
 const types = @import("types.zig");
 const approval_reply = @import("approval_reply.zig");
 const question_reply = @import("question_reply.zig");
+const reply_progress = @import("reply_progress.zig");
 const session_list = @import("session_list.zig");
 
 const AI_ACK = "信息已收到，开始处理。\n发送 /stop 可停止本次处理。\n发送 /help 查看帮助手册。";
@@ -62,19 +63,23 @@ fn isSwitchCommand(cmd: []const u8) bool {
     return eqIgnoreCase(cmd, "/switch") or eqIgnoreCase(cmd, "/use");
 }
 
+fn isProgressCommand(cmd: []const u8) bool {
+    return eqIgnoreCase(cmd, "/btw") or eqIgnoreCase(cmd, "/verbos") or eqIgnoreCase(cmd, "/verbose");
+}
+
 fn isKnownCommand(cmd: []const u8) bool {
     return eqIgnoreCase(cmd, "/term") or eqIgnoreCase(cmd, "/keys") or
         eqIgnoreCase(cmd, "/ai") or eqIgnoreCase(cmd, "/stop") or
         eqIgnoreCase(cmd, "/models") or eqIgnoreCase(cmd, "/new") or
         eqIgnoreCase(cmd, "/model") or
-        isListCommand(cmd) or isSwitchCommand(cmd);
+        isProgressCommand(cmd) or isListCommand(cmd) or isSwitchCommand(cmd);
 }
 
 /// Commands that are valid with no argument.
 fn isNoArgCommand(cmd: []const u8) bool {
     return eqIgnoreCase(cmd, "/stop") or eqIgnoreCase(cmd, "/models") or
         eqIgnoreCase(cmd, "/new") or eqIgnoreCase(cmd, "/model") or
-        isListCommand(cmd);
+        isProgressCommand(cmd) or isListCommand(cmd);
 }
 
 pub fn route(
@@ -99,6 +104,7 @@ pub fn route(
     if (eqIgnoreCase(cmd, "/models")) return listModelProfiles(ctrl, out);
     if (eqIgnoreCase(cmd, "/new")) return openNewAi(ctrl, parts.arg, out);
     if (eqIgnoreCase(cmd, "/model")) return switchAiModel(ctrl, parts.arg, out);
+    if (isProgressCommand(cmd)) return progressReply(ctrl, out);
     if (cmd.len != 0 and !isKnownCommand(cmd)) {
         return out.set("未知命令。\n\n" ++ helpTextConst);
     }
@@ -301,6 +307,12 @@ fn statusReply(ctrl: control.Control, out: *Reply) !void {
     return out.set("微信直连：在线\n当前会话：默认（发送消息将新建副驾会话）");
 }
 
+fn progressReply(ctrl: control.Control, out: *Reply) !void {
+    const p = reply_progress.progress("", ctrl.latestTranscript());
+    if (p.text.len != 0) return out.set(p.text);
+    return out.set("当前没有进展可显示。");
+}
+
 fn sendTerminal(ctrl: control.Control, text: []const u8, enter: bool, out: *Reply) !void {
     const term = ctrl.findTerminalSurface() orelse return out.set("当前没有可写终端 surface。");
     var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -315,6 +327,7 @@ const helpTextConst =
     "WispTerm 微信直连命令：\n" ++
     "/ping 验证连接\n/status 查看状态\n/list 列出副驾会话\n" ++
     "/switch <编号> 切换并固定会话\n/ai <内容> 发送给副驾\n" ++
+    "/btw [问题] 立即查看当前进展\n/verbos 查看详细进展\n" ++
     "/models 查看已有 model profile\n/new [profile] 新建独立副驾\n/model <profile> 切换当前副驾模型\n" ++
     "/stop 停止当前 AI 处理\n/term <命令> 发送到终端并回车\n/keys <文本> 发送原始文本\n" ++
     "普通文本默认发送给当前会话。";
@@ -356,6 +369,7 @@ const FakeControl = struct {
     conv_copilot: []const bool = &.{},
     conv_current: ?usize = null,
     pin_called_index: ?usize = null,
+    transcript: []const u8 = "",
 
     /// Bytes captured from the last send_input. send_input borrows its argument
     /// (production consumes it synchronously), so the fake copies for inspection.
@@ -427,8 +441,8 @@ const FakeControl = struct {
         self.len = n;
         return .ok;
     }
-    fn latest_transcript(_: *anyopaque) []const u8 {
-        return "";
+    fn latest_transcript(ctx: *anyopaque) []const u8 {
+        return cast(ctx).transcript;
     }
     fn ai_approval_pending(ctx: *anyopaque) bool {
         return cast(ctx).approval_pending;
@@ -800,6 +814,19 @@ test "/switch with no argument shows usage" {
     defer out.deinit();
     try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "用法") != null);
+}
+
+test "/btw reports progress without sending input" {
+    var fake = FakeControl{
+        .transcript = "Model:\nGLM\n\nStatus:\nRunning tools...\n\n" ++
+            "You:\nq\n\nTool:\nsubagent: running web_search\n",
+    };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), defaultSettings(), "/btw 当前进展", null, &out);
+    try t.expectEqualStrings("subagent: running web_search", out.text.items);
+    try t.expectEqual(@as(usize, 0), fake.len);
+    try t.expect(!out.expect_ai_progress);
 }
 
 test "/sessions, /ls, /use are aliases" {

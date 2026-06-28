@@ -457,7 +457,7 @@ pub fn runSubagentTaskWithModel(request: *ChatRequest, task: []const u8, model: 
 
         for (result.tool_calls.?) |tool_call| {
             if (ai_chat.requestCancelled(request)) return error.Canceled;
-            const progress = try std.fmt.allocPrint(allocator, "subagent: running {s} {s}", .{ tool_call.name, tool_call.arguments });
+            const progress = try std.fmt.allocPrint(allocator, "subagent: running {s}", .{tool_call.name});
             defer allocator.free(progress);
             ai_chat.appendProgressMessage(request.session, progress) catch {};
 

@@ -184,6 +184,7 @@ pub const SlashCommand = enum {
     memory,
     forget,
     model_switch,
+    btw,
     unknown,
 };
 
@@ -288,6 +289,18 @@ pub const slash_command_entries = [_]SlashCommandEntry{
     .{
         .suggestion = .{ .command = "/model", .description = "switch the model / AI profile" },
         .action = .model_switch,
+    },
+    .{
+        .suggestion = .{ .command = "/btw", .description = "show current progress without adding context" },
+        .action = .btw,
+    },
+    .{
+        .suggestion = .{ .command = "/verbos", .description = "show detailed current progress" },
+        .action = .btw,
+    },
+    .{
+        .suggestion = .{ .command = "/verbose", .description = "show detailed current progress" },
+        .action = .btw,
     },
 };
 
@@ -595,6 +608,9 @@ test "parseSlashCommand recognizes model switch and alias" {
 
 test "parseSlashCommand recognizes exact, unknown, and rejects non-slash" {
     try std.testing.expectEqual(SlashCommand.skills, parseSlashCommand("/skills").?);
+    try std.testing.expectEqual(SlashCommand.btw, parseSlashCommand("/btw").?);
+    try std.testing.expectEqual(SlashCommand.btw, parseSlashCommand("/verbos").?);
+    try std.testing.expectEqual(SlashCommand.btw, parseSlashCommand("/verbose").?);
     try std.testing.expectEqual(SlashCommand.unknown, parseSlashCommand("/help").?);
     try std.testing.expectEqual(@as(?SlashCommand, null), parseSlashCommand("hello"));
     try std.testing.expectEqual(@as(?SlashCommand, null), parseSlashCommand("/has space"));
@@ -610,7 +626,7 @@ test "slash command suggestions filter by prefix" {
     try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/sk", 3, &.{}));
     const s = slashCommandSuggestionAtForInput("/sk", 3, 0, &.{}).?;
     try std.testing.expectEqualStrings("/skills", s.command);
-    try std.testing.expectEqual(@as(usize, 17), slashCommandSuggestionCountForInput("/", 1, &.{}));
+    try std.testing.expectEqual(slash_command_entries.len, slashCommandSuggestionCountForInput("/", 1, &.{}));
     try std.testing.expectEqual(@as(usize, 1), slashCommandSuggestionCountForInput("/di", 3, &.{}));
     try std.testing.expectEqualStrings("/distill", slashCommandSuggestionAtForInput("/di", 3, 0, &.{}).?.command);
 }
