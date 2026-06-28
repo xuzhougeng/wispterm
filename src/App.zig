@@ -28,6 +28,7 @@ const platform_dirs = @import("platform/dirs.zig");
 const platform_open_url = @import("platform/open_url.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
+const update_apply = @import("platform/update_apply.zig");
 const whats_new_gate = @import("whats_new_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
 
