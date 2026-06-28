@@ -20,6 +20,66 @@ pub const Rect = struct {
     height: u32,
 };
 
+pub const max_output_long_edge: u32 = 1920;
+
+pub const RgbaImage = struct {
+    width: u32,
+    height: u32,
+    rgba: []const u8,
+    owned: bool = false,
+
+    pub fn deinit(self: RgbaImage, allocator: std.mem.Allocator) void {
+        if (self.owned) allocator.free(self.rgba);
+    }
+};
+
+fn rgbaLen(width: u32, height: u32) !usize {
+    if (width == 0 or height == 0) return error.InvalidImageDimensions;
+    const pixels = std.math.mul(usize, @as(usize, width), @as(usize, height)) catch return error.InvalidImageDimensions;
+    return std.math.mul(usize, pixels, 4) catch return error.InvalidImageDimensions;
+}
+
+pub fn fitRgbaToMaxLongEdge(
+    allocator: std.mem.Allocator,
+    rgba: []const u8,
+    width: u32,
+    height: u32,
+    max_long_edge: u32,
+) !RgbaImage {
+    if (rgba.len != try rgbaLen(width, height)) return error.InvalidImageBuffer;
+    if (max_long_edge == 0) return error.InvalidImageDimensions;
+
+    const long_edge = @max(width, height);
+    if (long_edge <= max_long_edge) {
+        return .{ .width = width, .height = height, .rgba = rgba };
+    }
+
+    var out_w = width;
+    var out_h = height;
+    if (width >= height) {
+        out_w = max_long_edge;
+        out_h = @max(1, @as(u32, @intCast((@as(u64, height) * max_long_edge + width / 2) / width)));
+    } else {
+        out_h = max_long_edge;
+        out_w = @max(1, @as(u32, @intCast((@as(u64, width) * max_long_edge + height / 2) / height)));
+    }
+
+    const out = try allocator.alloc(u8, try rgbaLen(out_w, out_h));
+    errdefer allocator.free(out);
+
+    for (0..out_h) |dst_y| {
+        const src_y = @as(u32, @intCast((@as(u64, dst_y) * height) / out_h));
+        for (0..out_w) |dst_x| {
+            const src_x = @as(u32, @intCast((@as(u64, dst_x) * width) / out_w));
+            const src = (@as(usize, src_y) * width + src_x) * 4;
+            const dst = (@as(usize, dst_y) * out_w + dst_x) * 4;
+            @memcpy(out[dst .. dst + 4], rgba[src .. src + 4]);
+        }
+    }
+
+    return .{ .width = out_w, .height = out_h, .rgba = out, .owned = true };
+}
+
 pub fn clampRect(rect: Rect, fb_width: u32, fb_height: u32) ?Rect {
     if (rect.width == 0 or rect.height == 0 or fb_width == 0 or fb_height == 0) return null;
     const x0 = @max(@as(i64, rect.x), 0);
@@ -117,4 +177,20 @@ test "ui_screenshot output path uses wispterm-files and a png basename" {
 
 test "ui_screenshot output path rejects empty working dir" {
     try std.testing.expectError(error.MissingWorkingDir, outputPath(std.testing.allocator, "", 1234));
+}
+
+test "ui_screenshot downscales 4k rgba to 1080p long-edge cap" {
+    var rgba = [_]u8{
+        1, 1, 1, 255, 2, 2, 2, 255, 3, 3, 3, 255, 4, 4, 4, 255,
+        5, 5, 5, 255, 6, 6, 6, 255, 7, 7, 7, 255, 8, 8, 8, 255,
+    };
+
+    const image = try fitRgbaToMaxLongEdge(std.testing.allocator, &rgba, 4, 2, 2);
+    defer image.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 2), image.width);
+    try std.testing.expectEqual(@as(u32, 1), image.height);
+    try std.testing.expectEqualSlices(u8, &[_]u8{
+        1, 1, 1, 255, 3, 3, 3, 255,
+    }, image.rgba);
 }

@@ -5275,10 +5275,19 @@ fn agentRequestCaptureUiScreenshot(
     const top_down = try png_writer.flipRgbaRows(allocator, bottom_up, rect.width, rect.height);
     defer allocator.free(top_down);
 
+    const output_image = try appwindow_ui_screenshot.fitRgbaToMaxLongEdge(
+        allocator,
+        top_down,
+        rect.width,
+        rect.height,
+        appwindow_ui_screenshot.max_output_long_edge,
+    );
+    defer output_image.deinit(allocator);
+
     const png = try png_writer.encodeRgba(allocator, .{
-        .width = rect.width,
-        .height = rect.height,
-        .rgba = top_down,
+        .width = output_image.width,
+        .height = output_image.height,
+        .rgba = output_image.rgba,
     });
     defer allocator.free(png);
 
@@ -5295,8 +5304,8 @@ fn agentRequestCaptureUiScreenshot(
     return .{
         .path = path,
         .mime = "image/png",
-        .width = rect.width,
-        .height = rect.height,
+        .width = output_image.width,
+        .height = output_image.height,
         .target = capture.target,
         .surface_id = result_surface_id,
     };
