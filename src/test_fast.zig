@@ -310,6 +310,7 @@ test {
     _ = @import("feishu/pbbp2.zig");
     _ = @import("feishu/ws.zig");
     _ = @import("feishu/rest.zig");
+    _ = @import("feishu/codec.zig");
     _ = @import("assistant/conversation/title.zig");
     _ = @import("assistant/conversation/model_switch.zig");
     _ = @import("command/registry.zig");
