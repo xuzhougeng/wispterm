@@ -683,6 +683,7 @@ fn runChatRequestStreaming(request: *const ChatRequest) !void {
 
     const message_idx = try ai_chat.beginAssistantStream(request.session);
     var usage: ?ApiUsage = null;
+    var first_token_ms: i64 = 0;
     while (true) {
         if (ai_chat.requestCancelled(request)) return error.Canceled;
         const line = reader.takeDelimiter('\n') catch |err| {
@@ -694,9 +695,9 @@ fn runChatRequestStreaming(request: *const ChatRequest) !void {
         } orelse break;
 
         if (ai_chat.requestCancelled(request)) return error.Canceled;
-        if (try ai_chat.applyApiStreamLineToSession(allocator, request.session, message_idx, line, &usage)) break;
+        if (try ai_chat.applyApiStreamLineToSession(allocator, request.session, message_idx, line, &usage, &first_token_ms)) break;
     }
-    ai_chat.finishAssistantStream(request.session, message_idx, request.started_ms, usage);
+    ai_chat.finishAssistantStream(request.session, message_idx, request.started_ms, first_token_ms, usage);
 }
 
 fn networkFailureResult(allocator: std.mem.Allocator, endpoint: []const u8, err: anyerror) !ApiResult {
