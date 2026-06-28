@@ -104,7 +104,10 @@ fn feishuSendAttachment(
     defer arena.deinit();
     const a = arena.allocator();
 
-    const token = self.token_cache.get(a, self.creds) catch |err| {
+    // Token must use self.allocator (NOT arena `a`): TokenCache stores it across
+    // calls and frees it in deinit(self.allocator); an arena-owned token would
+    // dangle after this function's arena.deinit (UAF on next hit + double-free).
+    const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
         log.warn("feishuSendAttachment: token refresh failed kind={s} err={s}", .{ kind.name(), @errorName(err) });
         return err;
     };

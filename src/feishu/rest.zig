@@ -1,6 +1,6 @@
 //! 飞书 REST client — M2.4.
 //! Covers: tenant_access_token, TokenCache, discoverWsEndpoint, sendText,
-//! getBotOpenId.  Long-connection / frame logic lives in M2.7 (ws.zig).
+//! sendMessage, getBotOpenId.  Long-connection / frame logic lives in M2.7 (ws.zig).
 //!
 //! Security invariants (must never be broken):
 //!   • app_secret, tenant_access_token and the wss URL query are NEVER
@@ -352,10 +352,10 @@ fn httpsPostWithBearer(
     const parsed = std.json.parseFromSliceLeaky(Resp, resp_arena, items, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
-    }) catch return error.FeishuSendTextFailed; // 200 + unparseable body can't confirm delivery
+    }) catch return error.FeishuSendFailed; // 200 + unparseable body can't confirm delivery
     if (parsed.code != 0) {
-        log.err("sendText: code={d} msg={s}", .{ parsed.code, parsed.msg });
-        return error.FeishuSendTextFailed;
+        log.err("sendMessage: code={d} msg={s}", .{ parsed.code, parsed.msg });
+        return error.FeishuSendFailed;
     }
 }
 
