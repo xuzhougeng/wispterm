@@ -594,7 +594,7 @@ pub fn build(b: *std.Build) void {
 
         if (target.result.os.tag == .windows) {
             const askpass_mod = b.createModule(.{
-                .root_source_file = b.path("src/ssh_askpass.zig"),
+                .root_source_file = b.path("src/ssh/askpass.zig"),
                 .target = target,
                 .optimize = optimize,
             });
