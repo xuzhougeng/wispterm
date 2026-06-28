@@ -1118,3 +1118,15 @@ Implemented ui_screenshot for active-tab OpenGL screenshots. Verified zig build 
 ```
 
 Do not claim macOS screenshot support until Metal readback has a real implementation.
+
+## Follow-up (2026-06-28): Metal readback implemented
+
+The Metal backend now has a real readback, so macOS is supported too. The
+drawable can't be read after `frame_end` presents+releases it, so the capture
+happens inside `frame_end`: on frames the caller arms via
+`gpu.state.armUiScreenshotCapture()` (no-op on OpenGL), the rendered drawable is
+blitted into a shared CPU buffer and the GPU is waited on; `metal/readback.zig`
+then crops it, swaps BGRA→RGBA, and flips to GL bottom-up so the AppWindow path
+is backend-agnostic. `metal_layer.framebufferOnly` is `NO` to allow the blit.
+Verified `zig build test-metal`, `macos-app -Dtarget=aarch64-macos`, and
+`test-full -Dtarget=aarch64-macos`.

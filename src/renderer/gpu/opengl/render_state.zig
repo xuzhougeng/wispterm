@@ -26,6 +26,11 @@ pub fn endFrame() void {
     notifyPreChange();
 }
 
+/// No-op: the OpenGL `readback.readRgba` reads the live back buffer with
+/// `glReadPixels` directly (the buffer is still intact between endFrame and
+/// swapBuffers). Only the Metal backend needs an armed in-frame capture.
+pub fn armUiScreenshotCapture() void {}
+
 pub fn setBlendEnabled(enabled: bool) void {
     notifyPreChange();
     if (enabled) Context.gl.Enable.?(c.GL_BLEND) else Context.gl.Disable.?(c.GL_BLEND);

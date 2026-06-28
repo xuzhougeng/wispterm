@@ -6778,6 +6778,12 @@ fn runMainLoop(self: *AppWindow) !void {
         }
         if (blink.due) g_gate_last_blink_render = gate_now;
 
+        // A pending ui_screenshot is captured from this frame's framebuffer right
+        // after endFrame. The Metal backend can't read a presented+released
+        // drawable, so arm an in-frame capture before we render+endFrame. No-op
+        // on OpenGL (it reads the live back buffer post-endFrame).
+        if (agent_requests.hasPendingUiScreenshot()) gpu.state.armUiScreenshotCapture();
+
         gpu.gl_init.g_draw_call_count = 0;
         overlays.updateFps();
 
