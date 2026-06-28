@@ -123,6 +123,39 @@ const Episode = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Pure planPoll — no threads, no I/O; fully unit-testable
+// ---------------------------------------------------------------------------
+
+/// Per-poll operations decided by planPoll. All slices borrow from caller args.
+pub const PollOps = struct {
+    /// Content to stream to the card (null = no update this poll).
+    stream: ?[]const u8 = null,
+    /// True when the episode is done: caller should close card via defer and return.
+    finalize: bool = false,
+    /// Text to send via send_sink as an independent message (approval/question prompt).
+    prompt_text: ?[]const u8 = null,
+};
+
+/// Pure: given the current poll's action tag, action text, rendered md, and the
+/// last-pushed md, decide which operations to perform. Slices borrow from arguments.
+fn planPoll(action_tag: ActionTag, action_text: []const u8, md: []const u8, last_md: []const u8) PollOps {
+    const md_changed = !std.mem.eql(u8, md, last_md);
+    switch (action_tag) {
+        .send_final => return .{
+            .stream = md,
+            .finalize = true,
+        },
+        .send_approval_prompt, .send_question_prompt => return .{
+            .prompt_text = action_text,
+            .stream = if (md_changed) md else null,
+        },
+        .none => return .{
+            .stream = if (md_changed) md else null,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ProgressWorker
 // ---------------------------------------------------------------------------
 
@@ -130,6 +163,7 @@ pub const ProgressWorker = struct {
     allocator: std.mem.Allocator,
     control: @import("../chatops/control.zig").Control,
     send_sink: controller.SendSink,
+    card_sink: controller.CardSink,
 
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
@@ -256,6 +290,27 @@ pub const ProgressWorker = struct {
 
         log.debug("progress: episode started gen={d} chat_id_len={d}", .{ gen, snap.chat_id.len });
 
+        // Create streaming card at episode start; fall back to text if it fails.
+        const card_id: ?[]u8 = self.card_sink.create(self.card_sink.ctx, self.allocator, "处理中…") catch |err| blk: {
+            log.warn("progress: card create failed: {s}; falling back to text", .{@errorName(err)});
+            break :blk null;
+        };
+        if (card_id) |cid| {
+            self.card_sink.send(self.card_sink.ctx, self.allocator, snap.chat_id, cid) catch |err| {
+                log.warn("progress: card send failed: {s}", .{@errorName(err)});
+            };
+        }
+        var seq: i64 = 1;
+        var last_md: []u8 = &.{};
+        defer if (last_md.len != 0) self.allocator.free(last_md);
+        // Unified cleanup: ALL exit paths (cancel/deadline/stop/done) close card + free card_id.
+        // card_id=null (create failed) is handled by the optional check — no close/free needed.
+        // Zig defers run LIFO; seq and card_id are outer locals, valid through all defers.
+        defer if (card_id) |cid| {
+            self.card_sink.close(self.card_sink.ctx, self.allocator, cid, seq) catch {};
+            self.allocator.free(cid);
+        };
+
         while (!self.stop_requested.load(.acquire)) {
             std.Thread.sleep(STEP_MS * std.time.ns_per_ms);
             steps_since_poll += 1;
@@ -266,7 +321,7 @@ pub const ProgressWorker = struct {
                 log.debug("progress: episode cancelled gen_old={d} gen_new={d}", .{ gen, current_gen });
                 self.allocator.free(snap.chat_id);
                 self.allocator.free(snap.baseline);
-                return;
+                return; // defer: close card + free card_id + free last_md
             }
 
             // Check deadline.
@@ -275,7 +330,7 @@ pub const ProgressWorker = struct {
                 self.allocator.free(snap.chat_id);
                 self.allocator.free(snap.baseline);
                 self.deactivateEpisode(gen);
-                return;
+                return; // defer: close card + free card_id + free last_md
             }
 
             // Poll at ~3s intervals.
@@ -291,49 +346,103 @@ pub const ProgressWorker = struct {
             // dupe before unlocking and free after sending. (Mirrors weixin's
             // allocProgressText.) The approval/question prompt is also built
             // here so its formatted text owns its bytes.
+            // renderProgress is also called under transcript_mu (reads global transcript buffer).
             var owned = OwnedAction{ .tag = .none };
+            var md: []u8 = &.{};
             {
                 self.transcript_mu.lock();
                 defer self.transcript_mu.unlock();
                 const current = self.control.latestTranscript();
                 const p = reply_progress.progress(snap.baseline, current);
                 owned = self.materialize(decide(p, &announced), p) catch OwnedAction{ .tag = .none };
+                // renderProgress returns owned; read it under the same lock (it reads `current`).
+                md = reply_progress.renderProgress(self.allocator, current) catch &.{};
             }
             defer if (owned.text.len != 0) self.allocator.free(owned.text);
+            // md is freed at end of this poll iteration unless it becomes the new last_md.
 
-            switch (owned.tag) {
-                .send_approval_prompt, .send_question_prompt => {
-                    if (owned.text.len != 0) {
-                        self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, owned.text) catch |err| {
-                            log.warn("progress: send prompt failed: {s}", .{@errorName(err)});
-                        };
-                    }
-                },
-                .send_final => {
-                    // Re-check generation before sending to avoid stale final reply.
-                    if (self.currentGeneration() != gen) {
-                        log.debug("progress: stale final reply discarded gen={d}", .{gen});
+            if (card_id == null) {
+                // Card creation failed: fall back to existing text behavior for all paths.
+                switch (owned.tag) {
+                    .send_approval_prompt, .send_question_prompt => {
+                        if (owned.text.len != 0) {
+                            self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, owned.text) catch |err| {
+                                log.warn("progress: send prompt failed: {s}", .{@errorName(err)});
+                            };
+                        }
+                    },
+                    .send_final => {
+                        // Re-check generation before sending to avoid stale final reply.
+                        if (self.currentGeneration() != gen) {
+                            log.debug("progress: stale final reply discarded gen={d}", .{gen});
+                            if (md.len != 0) self.allocator.free(md);
+                            self.allocator.free(snap.chat_id);
+                            self.allocator.free(snap.baseline);
+                            return;
+                        }
+                        if (owned.text.len != 0) {
+                            log.debug("progress: sending final reply gen={d} bytes={d}", .{ gen, owned.text.len });
+                            self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, owned.text) catch |err| {
+                                log.warn("progress: send final failed: {s}", .{@errorName(err)});
+                            };
+                        }
+                        if (md.len != 0) self.allocator.free(md);
                         self.allocator.free(snap.chat_id);
                         self.allocator.free(snap.baseline);
+                        self.deactivateEpisode(gen);
                         return;
-                    }
-                    if (owned.text.len != 0) {
-                        log.debug("progress: sending final reply gen={d} bytes={d}", .{ gen, owned.text.len });
-                        self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, owned.text) catch |err| {
-                            log.warn("progress: send final failed: {s}", .{@errorName(err)});
+                    },
+                    .none => {},
+                }
+                if (md.len != 0) self.allocator.free(md);
+            } else {
+                // Card path: use planPoll to decide ops.
+                const ops = planPoll(owned.tag, owned.text, md, last_md);
+
+                // Send approval/question prompt as independent text message.
+                if (ops.prompt_text) |txt| {
+                    if (txt.len != 0) {
+                        self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, txt) catch |err| {
+                            log.warn("progress: send prompt (card path) failed: {s}", .{@errorName(err)});
                         };
                     }
+                }
+
+                // Stream card update if content changed.
+                if (ops.stream) |s| {
+                    self.card_sink.stream(self.card_sink.ctx, self.allocator, card_id.?, s, seq) catch |err| {
+                        log.warn("progress: card stream failed seq={d}: {s}", .{ seq, @errorName(err) });
+                    };
+                    seq += 1;
+                    // Update last_md: dupe the streamed content.
+                    if (last_md.len != 0) self.allocator.free(last_md);
+                    last_md = self.allocator.dupe(u8, s) catch &.{};
+                }
+
+                // Free md unless it was stored as last_md (dupe was taken above).
+                if (md.len != 0) self.allocator.free(md);
+
+                if (ops.finalize) {
+                    // Re-check generation before finalizing to avoid stale close.
+                    if (self.currentGeneration() != gen) {
+                        log.debug("progress: stale final (card) discarded gen={d}", .{gen});
+                        self.allocator.free(snap.chat_id);
+                        self.allocator.free(snap.baseline);
+                        return; // defer closes card
+                    }
+                    log.debug("progress: finalizing card episode gen={d}", .{gen});
                     self.allocator.free(snap.chat_id);
                     self.allocator.free(snap.baseline);
                     self.deactivateEpisode(gen);
-                    return;
-                },
-                .none => {},
+                    return; // defer closes card + frees card_id + frees last_md
+                }
             }
         }
 
+        // stop_requested: exit normally, defer handles card close.
         self.allocator.free(snap.chat_id);
         self.allocator.free(snap.baseline);
+        // defer: close card + free card_id + free last_md
     }
 
     // ---------------------------------------------------------------------------
@@ -520,4 +629,185 @@ test "decide: in-progress (not done, no approval, no question) returns none" {
     var ann = Announced{};
     const action = decide(p, &ann);
     try t.expect(action == .none);
+}
+
+// ---------------------------------------------------------------------------
+// Tests for the pure `planPoll` function
+// ---------------------------------------------------------------------------
+
+test "planPoll: done → stream=md + finalize=true" {
+    const ops = planPoll(.send_final, "final text", "answer md", "");
+    try t.expect(ops.finalize);
+    try t.expect(ops.stream != null);
+    try t.expectEqualStrings("answer md", ops.stream.?);
+    try t.expect(ops.prompt_text == null);
+}
+
+test "planPoll: done → stream uses md even when md==last_md (finalize always streams)" {
+    // For send_final we always stream regardless of md==last_md (final frame must go).
+    const ops = planPoll(.send_final, "final text", "same md", "same md");
+    try t.expect(ops.finalize);
+    try t.expect(ops.stream != null);
+}
+
+test "planPoll: approval → prompt_text set + stream when md changed" {
+    const ops = planPoll(.send_approval_prompt, "approve msg", "new md", "old md");
+    try t.expect(ops.prompt_text != null);
+    try t.expectEqualStrings("approve msg", ops.prompt_text.?);
+    try t.expect(ops.stream != null);
+    try t.expectEqualStrings("new md", ops.stream.?);
+    try t.expect(!ops.finalize);
+}
+
+test "planPoll: approval → no stream when md unchanged" {
+    const ops = planPoll(.send_approval_prompt, "approve msg", "same md", "same md");
+    try t.expect(ops.prompt_text != null);
+    try t.expect(ops.stream == null);
+}
+
+test "planPoll: question → prompt_text set + stream when md changed" {
+    const ops = planPoll(.send_question_prompt, "question msg", "progress", "");
+    try t.expect(ops.prompt_text != null);
+    try t.expectEqualStrings("question msg", ops.prompt_text.?);
+    try t.expect(ops.stream != null);
+}
+
+test "planPoll: none + md changed → only stream, no finalize, no prompt" {
+    const ops = planPoll(.none, "", "new content", "old content");
+    try t.expect(ops.stream != null);
+    try t.expectEqualStrings("new content", ops.stream.?);
+    try t.expect(!ops.finalize);
+    try t.expect(ops.prompt_text == null);
+}
+
+test "planPoll: none + md unchanged → all null (skip API call)" {
+    const ops = planPoll(.none, "", "same content", "same content");
+    try t.expect(ops.stream == null);
+    try t.expect(!ops.finalize);
+    try t.expect(ops.prompt_text == null);
+}
+
+// ---------------------------------------------------------------------------
+// Fake CardSink for unit testing PollOps execution
+// ---------------------------------------------------------------------------
+
+/// Records card_sink calls for test assertions.
+const FakeCard = struct {
+    alloc: std.mem.Allocator,
+    created: usize = 0,
+    streams: usize = 0,
+    closes: usize = 0,
+    last_seq: i64 = 0,
+    last_stream_content: std.ArrayListUnmanaged(u8) = .empty,
+    // ponytail: simple counter/content capture; enough to verify seq monotonicity
+
+    fn deinit(self: *FakeCard) void {
+        self.last_stream_content.deinit(self.alloc);
+    }
+
+    fn create(ctx: *anyopaque, alloc: std.mem.Allocator, _: []const u8) anyerror![]u8 {
+        const self: *FakeCard = @ptrCast(@alignCast(ctx));
+        self.created += 1;
+        return alloc.dupe(u8, "fake-card-id");
+    }
+    fn send(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8) anyerror!void {}
+    fn stream(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, content: []const u8, sequence: i64) anyerror!void {
+        const self: *FakeCard = @ptrCast(@alignCast(ctx));
+        self.streams += 1;
+        self.last_seq = sequence;
+        self.last_stream_content.clearRetainingCapacity();
+        self.last_stream_content.appendSlice(self.alloc, content) catch {};
+    }
+    fn close(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, sequence: i64) anyerror!void {
+        const self: *FakeCard = @ptrCast(@alignCast(ctx));
+        self.closes += 1;
+        self.last_seq = sequence;
+    }
+    fn sink(self: *FakeCard) controller.CardSink {
+        return .{ .ctx = self, .create = create, .send = send, .stream = stream, .close = close };
+    }
+};
+
+/// Execute a single PollOps against a real allocator + fake card sink.
+/// Tests that seq increments and last_md tracking works with no leaks.
+fn executePollOps(
+    alloc: std.mem.Allocator,
+    card: *FakeCard,
+    card_id: []const u8,
+    ops: PollOps,
+    seq: *i64,
+    last_md: *[]u8,
+) !void {
+    if (ops.stream) |s| {
+        try card.sink().stream(card.sink().ctx, alloc, card_id, s, seq.*);
+        seq.* += 1;
+        if (last_md.len != 0) alloc.free(last_md.*);
+        last_md.* = try alloc.dupe(u8, s);
+    }
+    if (ops.finalize) {
+        try card.sink().close(card.sink().ctx, alloc, card_id, seq.*);
+    }
+}
+
+test "FakeCard: done ops → stream then close, seq monotonic, no leak" {
+    var card = FakeCard{ .alloc = t.allocator };
+    defer card.deinit();
+
+    const card_id = try t.allocator.dupe(u8, "fake-card-id");
+    defer t.allocator.free(card_id);
+
+    var seq: i64 = 1;
+    var last_md: []u8 = &.{};
+    defer if (last_md.len != 0) t.allocator.free(last_md);
+
+    const ops = planPoll(.send_final, "", "final answer", "");
+    try executePollOps(t.allocator, &card, card_id, ops, &seq, &last_md);
+
+    try t.expectEqual(@as(usize, 1), card.streams);
+    try t.expectEqual(@as(usize, 1), card.closes);
+    try t.expectEqualStrings("final answer", last_md);
+    // seq: after stream=1 → seq becomes 2; close uses seq=2.
+    try t.expectEqual(@as(i64, 2), card.last_seq);
+}
+
+test "FakeCard: two none-polls with changing md → two streams, seq 1 then 2" {
+    var card = FakeCard{ .alloc = t.allocator };
+    defer card.deinit();
+
+    const card_id = try t.allocator.dupe(u8, "fake-card-id");
+    defer t.allocator.free(card_id);
+
+    var seq: i64 = 1;
+    var last_md: []u8 = &.{};
+    defer if (last_md.len != 0) t.allocator.free(last_md);
+
+    const ops1 = planPoll(.none, "", "step 1", "");
+    try executePollOps(t.allocator, &card, card_id, ops1, &seq, &last_md);
+    try t.expectEqual(@as(usize, 1), card.streams);
+    try t.expectEqual(@as(i64, 1), card.last_seq);
+
+    const ops2 = planPoll(.none, "", "step 2", last_md);
+    try executePollOps(t.allocator, &card, card_id, ops2, &seq, &last_md);
+    try t.expectEqual(@as(usize, 2), card.streams);
+    try t.expectEqual(@as(i64, 2), card.last_seq);
+
+    try t.expectEqual(@as(usize, 0), card.closes);
+}
+
+test "FakeCard: none-poll with same md → no stream (skip API call)" {
+    var card = FakeCard{ .alloc = t.allocator };
+    defer card.deinit();
+
+    const card_id = try t.allocator.dupe(u8, "fake-card-id");
+    defer t.allocator.free(card_id);
+
+    var seq: i64 = 1;
+    var last_md = try t.allocator.dupe(u8, "unchanged");
+    defer t.allocator.free(last_md);
+
+    const ops = planPoll(.none, "", "unchanged", last_md);
+    try executePollOps(t.allocator, &card, card_id, ops, &seq, &last_md);
+
+    try t.expectEqual(@as(usize, 0), card.streams);
+    try t.expectEqual(@as(usize, 0), card.closes);
 }

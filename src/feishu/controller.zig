@@ -45,6 +45,53 @@ pub const SendSink = struct {
     send: SendTextFn,
 };
 
+/// Abstracts "manage a Feishu streaming card" so tests can stub it without a real token.
+/// Production implementation (calling rest.createStreamingCard / streamUpdate / finishUpdate)
+/// is wired in Task S5. Here we only define the interface.
+pub const CardSink = struct {
+    ctx: *anyopaque,
+    /// Create a streaming card with initial markdown content. Returns owned card_id (alloc).
+    create: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, initial_md: []const u8) anyerror![]u8,
+    /// Send (surface) the card to the Feishu chat so the user sees it.
+    send: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, chat_id: []const u8, card_id: []const u8) anyerror!void,
+    /// Stream a content update to the card. `sequence` must be monotonically increasing from 1.
+    stream: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, card_id: []const u8, content: []const u8, sequence: i64) anyerror!void,
+    /// Close the streaming card (no more updates). `sequence` is the next monotonic value.
+    close: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, card_id: []const u8, sequence: i64) anyerror!void,
+};
+
+// ---------------------------------------------------------------------------
+// Stub CardSink — always errors (S5 will wire the real implementation).
+// The worker falls back to text mode when card creation fails, so no-op stubs
+// that return error cause graceful fallback without any crash.
+// ponytail: stub returns error so worker falls back to text; real impl is S5.
+// ---------------------------------------------------------------------------
+
+fn stubCardCreate(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]u8 {
+    return error.NotImplemented;
+}
+fn stubCardSend(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8) anyerror!void {
+    return error.NotImplemented;
+}
+fn stubCardStream(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8, _: i64) anyerror!void {
+    return error.NotImplemented;
+}
+fn stubCardClose(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: i64) anyerror!void {
+    return error.NotImplemented;
+}
+
+/// Stub CardSink used until S5 wires the production implementation.
+/// All ops return error → worker falls back to text mode for this episode.
+fn stubCardSink(ctx: *anyopaque) CardSink {
+    return .{
+        .ctx = ctx,
+        .create = stubCardCreate,
+        .send = stubCardSend,
+        .stream = stubCardStream,
+        .close = stubCardClose,
+    };
+}
+
 /// Production sink: calls rest.sendText with the live token.
 fn restSendText(
     ctx: *anyopaque,
@@ -199,10 +246,12 @@ pub const Controller = struct {
             .send_sink = .{ .ctx = self, .send = restSendText },
             // progress.send_sink is set to self.send_sink after self.* is
             // initialized (send_sink.ctx = self, which is now stable on the heap).
+            // progress.card_sink uses the stub (S5 wires the real implementation).
             .progress = .{
                 .allocator = allocator,
                 .control = control,
                 .send_sink = .{ .ctx = self, .send = restSendText },
+                .card_sink = stubCardSink(self),
             },
         };
         return self;
