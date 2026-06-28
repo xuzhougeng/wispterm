@@ -34,10 +34,6 @@ pub const Reply = struct {
     }
 };
 
-pub fn defaultSettings() types.Settings {
-    return .{};
-}
-
 /// Returns the command token (including leading '/') and the trimmed argument.
 fn splitCommand(text: []const u8) struct { cmd: []const u8, arg: []const u8 } {
     if (text.len == 0 or text[0] != '/') return .{ .cmd = "", .arg = text };
@@ -80,13 +76,11 @@ fn isNoArgCommand(cmd: []const u8) bool {
 pub fn route(
     allocator: std.mem.Allocator,
     ctrl: control.Control,
-    settings: types.Settings,
     raw_text: []const u8,
     reply_context: ?types.ReplyContext,
     out: *Reply,
 ) !void {
     _ = allocator;
-    _ = settings;
     const text = std.mem.trim(u8, raw_text, " \t\r\n");
     if (text.len == 0) return;
     if (isPing(text)) return out.set("pong");
@@ -517,7 +511,7 @@ test "ping returns pong without touching surfaces" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "ping", null, &out);
+    try route(t.allocator, fake.control_iface(), "ping", null, &out);
     try t.expectEqualStrings("pong", out.text.items);
     try t.expect(!out.expect_ai_progress);
 }
@@ -526,7 +520,7 @@ test "/help lists WeChat conversation and model profile commands" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/help", null, &out);
+    try route(t.allocator, fake.control_iface(), "/help", null, &out);
     const s = out.text.items;
     try t.expect(std.mem.indexOf(u8, s, "/ping") != null);
     try t.expect(std.mem.indexOf(u8, s, "/status") != null);
@@ -545,7 +539,7 @@ test "default text goes to the AI surface with a carriage return" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "hello world", null, &out);
+    try route(t.allocator, fake.control_iface(), "hello world", null, &out);
     try t.expectEqualStrings("hello world\r", fake.lastInput());
     try t.expectEqualSlices(u8, &FakeControl.aiId(), &fake.last_surface);
     try t.expect(out.expect_ai_progress);
@@ -557,7 +551,7 @@ test "busy copilot replies with a busy notice and does not start a follow-up" {
     var fake = FakeControl{ .busy = true };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "hello", null, &out);
+    try route(t.allocator, fake.control_iface(), "hello", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "正在处理") != null);
     try t.expect(!out.expect_ai_progress);
 }
@@ -583,7 +577,7 @@ test "default AI route forwards Weixin reply context only to AI surface" {
         .context_token = "ctx-1",
     };
 
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "make a chart", reply_ctx, &out);
+    try route(t.allocator, fake.control_iface(), "make a chart", reply_ctx, &out);
     try t.expect(fake.last_reply_context != null);
     try t.expectEqualStrings("wx-user", fake.last_reply_context.?.to_user_id);
     try t.expectEqualStrings("ctx-1", fake.last_reply_context.?.context_token);
@@ -593,12 +587,12 @@ test "/term sends to terminal with enter, /keys without" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/term ls", null, &out);
+    try route(t.allocator, fake.control_iface(), "/term ls", null, &out);
     try t.expectEqualStrings("ls\r", fake.lastInput());
 
     var out2 = Reply.init(t.allocator);
     defer out2.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/keys abc", null, &out2);
+    try route(t.allocator, fake.control_iface(), "/keys abc", null, &out2);
     try t.expectEqualStrings("abc", fake.lastInput());
 }
 
@@ -606,7 +600,7 @@ test "offline control yields an offline message and no progress" {
     var fake = FakeControl{ .connected = false };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "do a thing", null, &out);
+    try route(t.allocator, fake.control_iface(), "do a thing", null, &out);
     try t.expect(!out.expect_ai_progress);
     try t.expect(std.mem.indexOf(u8, out.text.items, "离线") != null);
 }
@@ -615,7 +609,7 @@ test "/stop sends ESC to the AI surface and requests followup cancellation" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/stop", null, &out);
+    try route(t.allocator, fake.control_iface(), "/stop", null, &out);
     try t.expectEqualStrings(ESC, fake.lastInput());
     try t.expect(out.stop_followup);
     try t.expect(!out.expect_ai_progress);
@@ -625,7 +619,7 @@ test "approval pending: Y approves, acks, and streams progress" {
     var fake = FakeControl{ .approval_pending = true };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "Y", null, &out);
+    try route(t.allocator, fake.control_iface(), "Y", null, &out);
     try t.expectEqual(@as(u8, 1), fake.resolved_calls);
     try t.expect(fake.last_resolve_approve);
     try t.expectEqualStrings("已确认，继续执行。", out.text.items);
@@ -636,7 +630,7 @@ test "approval pending: 拒绝 denies and streams the continuation" {
     var fake = FakeControl{ .approval_pending = true };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "拒绝", null, &out);
+    try route(t.allocator, fake.control_iface(), "拒绝", null, &out);
     try t.expectEqual(@as(u8, 1), fake.resolved_calls);
     try t.expect(!fake.last_resolve_approve);
     try t.expectEqualStrings("已拒绝该操作。", out.text.items);
@@ -647,7 +641,7 @@ test "approval pending: unrecognized reply reminds without acting" {
     var fake = FakeControl{ .approval_pending = true };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "先删回收站", null, &out);
+    try route(t.allocator, fake.control_iface(), "先删回收站", null, &out);
     try t.expectEqual(@as(u8, 0), fake.resolved_calls);
     try t.expect(!out.expect_ai_progress);
     try t.expect(std.mem.indexOf(u8, out.text.items, "请先回复") != null);
@@ -659,7 +653,7 @@ test "question pending: a digit selects that option and streams progress" {
     var fake = FakeControl{ .question_option_count = 3 };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "2", null, &out);
+    try route(t.allocator, fake.control_iface(), "2", null, &out);
     try t.expectEqual(@as(u8, 1), fake.question_resolved_calls);
     try t.expect(fake.last_question_reply.? == .option);
     try t.expectEqual(@as(usize, 1), fake.last_question_reply.?.option); // zero-based
@@ -671,7 +665,7 @@ test "question pending: free text becomes a custom answer" {
     var fake = FakeControl{ .question_option_count = 3 };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "用 DuckDB", null, &out);
+    try route(t.allocator, fake.control_iface(), "用 DuckDB", null, &out);
     try t.expectEqual(@as(u8, 1), fake.question_resolved_calls);
     try t.expect(fake.last_question_reply.? == .custom);
     try t.expectEqualStrings("用 DuckDB", fake.last_question_reply.?.custom);
@@ -682,7 +676,7 @@ test "no question pending: a digit flows on as a normal prompt" {
     var fake = FakeControl{}; // question_option_count defaults to 0
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "2", null, &out);
+    try route(t.allocator, fake.control_iface(), "2", null, &out);
     try t.expectEqual(@as(u8, 0), fake.question_resolved_calls);
     // The digit reached the composer as ordinary input (trailing carriage return).
     try t.expect(fake.len > 0);
@@ -693,7 +687,7 @@ test "/models lists saved model profiles" {
     var fake = FakeControl{ .profile_names = &names };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/models", null, &out);
+    try route(t.allocator, fake.control_iface(), "/models", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "GPT-5") != null);
     try t.expect(std.mem.indexOf(u8, out.text.items, "Claude") != null);
     try t.expect(!out.expect_ai_progress);
@@ -704,7 +698,7 @@ test "/new opens an independent copilot with a named profile" {
     var fake = FakeControl{ .profile_names = &names };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/new Claude", null, &out);
+    try route(t.allocator, fake.control_iface(), "/new Claude", null, &out);
     try t.expectEqualStrings("Claude", fake.opened_profile);
     try t.expect(std.mem.indexOf(u8, out.text.items, "Claude") != null);
     try t.expect(!out.expect_ai_progress);
@@ -715,7 +709,7 @@ test "/new without a profile opens the default copilot" {
     var fake = FakeControl{ .profile_names = &names };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/new", null, &out);
+    try route(t.allocator, fake.control_iface(), "/new", null, &out);
     try t.expectEqual(@as(usize, 1), fake.open_count);
     try t.expectEqualStrings("", fake.opened_profile);
     try t.expect(std.mem.indexOf(u8, out.text.items, "默认") != null);
@@ -726,7 +720,7 @@ test "/model switches the active copilot profile by name" {
     var fake = FakeControl{ .profile_names = &names };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/model Claude", null, &out);
+    try route(t.allocator, fake.control_iface(), "/model Claude", null, &out);
     try t.expectEqualStrings("Claude", fake.switched_profile);
     try t.expect(std.mem.indexOf(u8, out.text.items, "Claude") != null);
     try t.expect(!out.expect_ai_progress);
@@ -736,7 +730,7 @@ test "no approval pending: default text still goes to the AI surface" {
     var fake = FakeControl{}; // approval_pending defaults false
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "hello world", null, &out);
+    try route(t.allocator, fake.control_iface(), "hello world", null, &out);
     try t.expectEqualStrings("hello world\r", fake.lastInput());
     try t.expect(out.expect_ai_progress);
 }
@@ -751,7 +745,7 @@ test "/list shows conversations with current marker and copilot tag" {
     };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/list", null, &out);
+    try route(t.allocator, fake.control_iface(), "/list", null, &out);
     const s = out.text.items;
     try t.expect(std.mem.indexOf(u8, s, "共 2 个") != null);
     try t.expect(std.mem.indexOf(u8, s, "➤") != null);
@@ -763,7 +757,7 @@ test "/list with no conversations" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/list", null, &out);
+    try route(t.allocator, fake.control_iface(), "/list", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "没有副驾会话") != null);
 }
 
@@ -771,7 +765,7 @@ test "/switch pins the right conversation and replies with a digest" {
     var fake = FakeControl{ .conv_titles = &.{ "A", "B" }, .conv_models = &.{ "m1", "m2" } };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch 2", null, &out);
+    try route(t.allocator, fake.control_iface(), "/switch 2", null, &out);
     try t.expectEqual(@as(?usize, 1), fake.pin_called_index);
     try t.expect(std.mem.indexOf(u8, out.text.items, "已切换到会话 2：B") != null);
     try t.expect(std.mem.indexOf(u8, out.text.items, "未作为对话上下文") != null);
@@ -781,7 +775,7 @@ test "/switch out of range does not pin" {
     var fake = FakeControl{ .conv_titles = &.{"A"} };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch 9", null, &out);
+    try route(t.allocator, fake.control_iface(), "/switch 9", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "无效的会话编号") != null);
     try t.expect(fake.pin_called_index == null);
 }
@@ -790,7 +784,7 @@ test "/switch non-numeric arg" {
     var fake = FakeControl{ .conv_titles = &.{"A"} };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch abc", null, &out);
+    try route(t.allocator, fake.control_iface(), "/switch abc", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "无效的会话编号") != null);
 }
 
@@ -798,7 +792,7 @@ test "/switch with no argument shows usage" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/switch", null, &out);
+    try route(t.allocator, fake.control_iface(), "/switch", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "用法") != null);
 }
 
@@ -806,17 +800,17 @@ test "/sessions, /ls, /use are aliases" {
     var fake = FakeControl{ .conv_titles = &.{ "A", "B" }, .conv_models = &.{ "m1", "m2" } };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/sessions", null, &out);
+    try route(t.allocator, fake.control_iface(), "/sessions", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "共 2 个") != null);
 
     var out2 = Reply.init(t.allocator);
     defer out2.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/use 1", null, &out2);
+    try route(t.allocator, fake.control_iface(), "/use 1", null, &out2);
     try t.expectEqual(@as(?usize, 0), fake.pin_called_index);
 
     var out3 = Reply.init(t.allocator);
     defer out3.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/ls", null, &out3);
+    try route(t.allocator, fake.control_iface(), "/ls", null, &out3);
     try t.expect(std.mem.indexOf(u8, out3.text.items, "共 2 个") != null);
 }
 
@@ -824,7 +818,7 @@ test "unknown command is still rejected" {
     var fake = FakeControl{};
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/bogus x", null, &out);
+    try route(t.allocator, fake.control_iface(), "/bogus x", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "未知命令") != null);
 }
 
@@ -836,7 +830,7 @@ test "/status reports the current conversation" {
     };
     var out = Reply.init(t.allocator);
     defer out.deinit();
-    try route(t.allocator, fake.control_iface(), defaultSettings(), "/status", null, &out);
+    try route(t.allocator, fake.control_iface(), "/status", null, &out);
     try t.expect(std.mem.indexOf(u8, out.text.items, "在线") != null);
     try t.expect(std.mem.indexOf(u8, out.text.items, "Claude") != null);
 }

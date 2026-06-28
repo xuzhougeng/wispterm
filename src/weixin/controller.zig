@@ -342,7 +342,6 @@ pub const Controller = struct {
             .allocator = self.allocator,
             .client = self.client.api(),
             .control = self.control,
-            .settings = self.settings,
             .owner = self.owner,
             .account_id = self.bot_id,
             .sync_buf = try self.allocator.dupe(u8, binding.sync_buf),
