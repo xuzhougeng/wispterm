@@ -198,8 +198,41 @@ pub fn discoverWsEndpoint(alloc: std.mem.Allocator, creds: types.Credentials) !W
 }
 
 // ---------------------------------------------------------------------------
-// sendText
+// sendMessage / sendText
 // ---------------------------------------------------------------------------
+
+/// Sends a message via the Feishu IM v1 API.
+/// `receive_id_type` is one of: "open_id", "user_id", "union_id", "email", "chat_id".
+/// `msg_type` is one of: "text", "image", "file", …
+/// `content` is an already-serialised JSON string (e.g. `{"text":"hi"}` or `{"image_key":"…"}`).
+pub fn sendMessage(
+    alloc: std.mem.Allocator,
+    token: []const u8,
+    receive_id_type: []const u8,
+    receive_id: []const u8,
+    msg_type: []const u8,
+    content: []const u8,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Feishu IM v1: `content` field must be a JSON-encoded string whose value
+    // is itself JSON (e.g. "{\"text\":\"hi\"}").  std.json.Stringify.valueAlloc
+    // ensures both receive_id and content get proper quoting/escaping.
+    const body_str = try std.json.Stringify.valueAlloc(a, .{
+        .receive_id = receive_id,
+        .msg_type = msg_type,
+        .content = content,
+    }, .{});
+
+    const url = try std.fmt.allocPrint(a,
+        BASE ++ "/open-apis/im/v1/messages?receive_id_type={s}",
+        .{receive_id_type},
+    );
+
+    try httpsPostWithBearer(alloc, a, url, token, body_str);
+}
 
 /// Sends a plain-text message via the Feishu IM v1 API.
 /// `receive_id_type` is one of: "open_id", "user_id", "union_id", "email",
@@ -216,22 +249,7 @@ pub fn sendText(
     const a = arena.allocator();
 
     const content = try buildTextContent(a, text);
-
-    // Feishu IM v1: `content` field must be a JSON-encoded string whose value
-    // is itself JSON (e.g. "{\"text\":\"hi\"}").  std.json.Stringify.valueAlloc
-    // ensures both receive_id and content get proper quoting/escaping.
-    const body_str = try std.json.Stringify.valueAlloc(a, .{
-        .receive_id = receive_id,
-        .msg_type = @as([]const u8, "text"),
-        .content = content,
-    }, .{});
-
-    const url = try std.fmt.allocPrint(a,
-        BASE ++ "/open-apis/im/v1/messages?receive_id_type={s}",
-        .{receive_id_type},
-    );
-
-    try httpsPostWithBearer(alloc, a, url, token, body_str);
+    try sendMessage(alloc, token, receive_id_type, receive_id, "text", content);
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ const control_mod = @import("../chatops/control.zig");
 const router = @import("../chatops/router.zig");
 const reply_mod = @import("../chatops/reply.zig");
 const progress_mod = @import("progress.zig");
+const media = @import("media.zig");
 
 const log = std.log.scoped(.feishu_ctrl);
 
@@ -63,19 +64,78 @@ fn restSendText(
 }
 
 // ---------------------------------------------------------------------------
-// feishu AttachmentSender — text is handled above; files → TODO M3
+// feishu AttachmentSender
 // ---------------------------------------------------------------------------
 
+// Max file read size: 30 MB (Feishu file upload limit; image limit 10 MB is
+// enforced server-side, not here).
+// ponytail: single cap covers both kinds; Feishu rejects oversized images itself.
+const ATTACHMENT_MAX_BYTES: usize = 30 * 1024 * 1024;
+
+/// Maps a file extension (case-insensitive) to a Feishu file_type value.
+/// Feishu accepted values: opus, mp4, pdf, doc, xls, ppt, stream.
+/// Unknown or missing extension → "stream".
+fn fileTypeFromName(name: []const u8) []const u8 {
+    const ext_start = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "stream";
+    const ext = name[ext_start..]; // includes the dot
+    if (std.ascii.eqlIgnoreCase(ext, ".pdf")) return "pdf";
+    if (std.ascii.eqlIgnoreCase(ext, ".doc")) return "doc";
+    if (std.ascii.eqlIgnoreCase(ext, ".docx")) return "doc";
+    if (std.ascii.eqlIgnoreCase(ext, ".xls")) return "xls";
+    if (std.ascii.eqlIgnoreCase(ext, ".xlsx")) return "xls";
+    if (std.ascii.eqlIgnoreCase(ext, ".ppt")) return "ppt";
+    if (std.ascii.eqlIgnoreCase(ext, ".pptx")) return "ppt";
+    if (std.ascii.eqlIgnoreCase(ext, ".mp4")) return "mp4";
+    if (std.ascii.eqlIgnoreCase(ext, ".opus")) return "opus";
+    return "stream";
+}
+
 fn feishuSendAttachment(
-    _: *anyopaque,
+    ctx: *anyopaque,
     kind: reply_mod.AttachmentKind,
-    _: []const u8,
-    _: []const u8,
-    _: []const u8,
-    _: []const u8,
+    path: []const u8,
+    display_name: []const u8,
+    to_user_id: []const u8,
+    _: []const u8, // context_token: unused (M3.2 scope)
 ) anyerror!void {
-    log.warn("feishu attachment kind={s}: file/media send not implemented (M3)", .{kind.name()});
-    return error.Unsupported;
+    const self: *Controller = @ptrCast(@alignCast(ctx));
+
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const token = self.token_cache.get(a, self.creds) catch |err| {
+        log.warn("feishuSendAttachment: token refresh failed kind={s} err={s}", .{ kind.name(), @errorName(err) });
+        return err;
+    };
+
+    const bytes = std.fs.cwd().readFileAlloc(a, path, ATTACHMENT_MAX_BYTES) catch |err| {
+        log.warn("feishuSendAttachment: readFile failed path={s} err={s}", .{ path, @errorName(err) });
+        return err;
+    };
+
+    const msg_type: []const u8 = switch (kind) {
+        .image => "image",
+        .file, .voice => "file",
+    };
+
+    const content: []u8 = switch (kind) {
+        .image => blk: {
+            const key = try media.uploadImage(a, token, bytes);
+            break :blk try std.json.Stringify.valueAlloc(a, .{ .image_key = key }, .{});
+        },
+        .file, .voice => blk: {
+            const file_name = if (display_name.len != 0) display_name else std.fs.path.basename(path);
+            const file_type = fileTypeFromName(file_name);
+            const key = try media.uploadFile(a, token, file_name, file_type, bytes);
+            break :blk try std.json.Stringify.valueAlloc(a, .{ .file_key = key }, .{});
+        },
+    };
+
+    rest.sendMessage(a, token, "chat_id", to_user_id, msg_type, content) catch |err| {
+        log.warn("feishuSendAttachment: sendMessage failed kind={s} err={s}", .{ kind.name(), @errorName(err) });
+        return err;
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -540,4 +600,29 @@ test "create/destroy without start is clean (no thread spawned)" {
     defer ctrl.destroy();
 
     try t.expect(!ctrl.running);
+}
+
+test "fileTypeFromName: known extensions" {
+    try t.expectEqualStrings("pdf", fileTypeFromName("report.pdf"));
+    try t.expectEqualStrings("doc", fileTypeFromName("notes.doc"));
+    try t.expectEqualStrings("doc", fileTypeFromName("notes.docx"));
+    try t.expectEqualStrings("xls", fileTypeFromName("data.xls"));
+    try t.expectEqualStrings("xls", fileTypeFromName("data.xlsx"));
+    try t.expectEqualStrings("ppt", fileTypeFromName("slides.ppt"));
+    try t.expectEqualStrings("ppt", fileTypeFromName("slides.pptx"));
+    try t.expectEqualStrings("mp4", fileTypeFromName("video.mp4"));
+    try t.expectEqualStrings("opus", fileTypeFromName("audio.opus"));
+}
+
+test "fileTypeFromName: unknown and missing extension → stream" {
+    try t.expectEqualStrings("stream", fileTypeFromName("archive.zip"));
+    try t.expectEqualStrings("stream", fileTypeFromName("noextension"));
+    try t.expectEqualStrings("stream", fileTypeFromName(""));
+}
+
+test "fileTypeFromName: case-insensitive" {
+    try t.expectEqualStrings("pdf", fileTypeFromName("REPORT.PDF"));
+    try t.expectEqualStrings("doc", fileTypeFromName("NOTES.DOCX"));
+    try t.expectEqualStrings("xls", fileTypeFromName("DATA.XLSX"));
+    try t.expectEqualStrings("ppt", fileTypeFromName("SLIDES.PPTX"));
 }
