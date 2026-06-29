@@ -947,11 +947,54 @@ pre.code-block code {
   overflow-wrap: anywhere;
 }
 
-.feishu-shot-grid {
+.feishu-steps {
+  display: grid;
+  gap: 32px;
+  margin-top: 28px;
+}
+
+.feishu-step {
+  border-top: 1px solid var(--border);
+  padding-top: 24px;
+}
+
+.feishu-step:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.feishu-step h3 {
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-size: 1.08rem;
+}
+
+.feishu-step p,
+.feishu-step ol {
+  color: var(--fg-muted);
+}
+
+.feishu-step p {
+  margin: 0 0 14px;
+}
+
+.feishu-step ol {
+  margin: 0 0 16px 1.25rem;
+  padding: 0;
+}
+
+.feishu-step li + li {
+  margin-top: 8px;
+}
+
+.feishu-step .code-block {
+  margin: 12px 0 16px;
+}
+
+.feishu-step-shots {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
-  margin-top: 28px;
 }
 
 .feishu-shot {
@@ -1014,7 +1057,7 @@ pre.code-block code {
     grid-template-columns: 1fr;
   }
 
-  .feishu-shot-grid {
+  .feishu-step-shots {
     grid-template-columns: 1fr;
   }
 

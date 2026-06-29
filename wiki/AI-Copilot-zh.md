@@ -132,18 +132,21 @@ https://open.larksuite.com
 
 先在飞书开放平台完成应用创建和发布：
 
-1. 登录飞书开放平台，创建**企业自建应用**，例如 `WispTerm-Lab`。
-2. 进入**添加应用能力**，选择**机器人**。
-3. 在**权限管理**里选择**批量导入/导出权限**，切到**导入**，粘贴下面的 JSON。
-4. 进入**事件与回调 → 事件配置**，选择**长连接**模式（不需要公网回调地址），然后添加
-   **接收消息** / `im.message.receive_v1` 事件。此时长连接显示**连接失败**是正常的，
-   因为 WispTerm 还没有配置 App ID 和 App Secret。
-5. 进入**应用发布 → 创建版本**。版本号填 `1.0.0`，移动端默认能力和桌面端默认能力都选择
-   **机器人**，更新说明随意填写，然后提交发布。飞书个人版通常免审核，提交后立即可用。
+### 第 1 步：创建企业自建应用
+
+登录飞书开放平台，创建**企业自建应用**，例如 `WispTerm-Lab`。
 
 ![创建飞书企业自建应用](assets/feishu-create-enterprise-app.png)
 
+### 第 2 步：添加机器人能力
+
+进入**添加应用能力**，选择**机器人**。
+
 ![添加机器人能力](assets/feishu-add-robot-capability.png)
+
+### 第 3 步：导入权限
+
+在**权限管理**里选择**批量导入/导出权限**，切到**导入**，粘贴下面的 JSON：
 
 ```json
 {
@@ -192,13 +195,30 @@ https://open.larksuite.com
 
 ![批量导入飞书权限 JSON](assets/feishu-permission-bulk-import.png)
 
+### 第 4 步：配置长连接事件
+
+进入**事件与回调 → 事件配置**，选择**长连接**模式（不需要公网回调地址）。
+
 ![选择飞书长连接事件模式](assets/feishu-event-long-connection.png)
+
+然后添加**接收消息** / `im.message.receive_v1` 事件。
 
 ![添加 im.message.receive_v1 事件](assets/feishu-event-receive-message.png)
 
-应用发布后，把 App ID 和 App Secret 填到 WispTerm：
+此时长连接显示**连接失败**是正常的，因为 WispTerm 还没有配置 App ID 和 App Secret。
+
+### 第 5 步：发布应用
+
+进入**应用发布 → 创建版本**。版本号填 `1.0.0`，移动端默认能力和桌面端默认能力都选择
+**机器人**，更新说明随意填写，然后提交发布。飞书个人版通常免审核，提交后立即可用。
+
+### 第 6 步：把凭证填到 WispTerm
+
+应用发布后，从飞书复制 App ID 和 App Secret：
 
 ![飞书应用创建成功](assets/feishu-app-created.png)
+
+### 第 7 步：在 WispTerm 中配置
 
 然后在 WispTerm 里填写凭证：
 

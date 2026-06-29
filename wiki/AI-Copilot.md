@@ -152,22 +152,23 @@ https://open.larksuite.com
 
 Create and publish the Feishu app first:
 
-1. Log in to Feishu Open Platform and create an **enterprise self-built app**,
-   for example `WispTerm-Lab`.
-2. Open **Add app capabilities** and select **Robot**.
-3. In **Permission management**, open **Bulk import/export permissions**, switch
-   to **Import**, and paste the JSON below.
-4. Open **Events & Callbacks → Event configuration**. Select **Long connection**
-   mode, then add the event **Receive message** / `im.message.receive_v1`.
-   The long-connection status showing **connection failed** is expected at this
-   point because WispTerm has not been configured with the app credentials yet.
-5. Open **App release → Create version**. Use version `1.0.0`, select **Robot**
-   as the default mobile and desktop capability, add any release note, and submit
-   the release. Feishu personal tenants usually publish immediately.
+### Step 1: Create an enterprise self-built app
+
+Log in to Feishu Open Platform and create an **enterprise self-built app**, for
+example `WispTerm-Lab`.
 
 ![Create Feishu enterprise self-built app](assets/feishu-create-enterprise-app.png)
 
+### Step 2: Add the Robot capability
+
+Open **Add app capabilities** and select **Robot**.
+
 ![Add Robot capability](assets/feishu-add-robot-capability.png)
+
+### Step 3: Import permissions
+
+In **Permission management**, open **Bulk import/export permissions**, switch to
+**Import**, and paste this JSON:
 
 ```json
 {
@@ -216,13 +217,33 @@ Create and publish the Feishu app first:
 
 ![Import Feishu permissions as JSON](assets/feishu-permission-bulk-import.png)
 
+### Step 4: Configure long-connection events
+
+Open **Events & Callbacks → Event configuration** and select **Long connection**
+mode.
+
 ![Choose Feishu long-connection event mode](assets/feishu-event-long-connection.png)
+
+Then add the event **Receive message** / `im.message.receive_v1`.
 
 ![Add im.message.receive_v1 event](assets/feishu-event-receive-message.png)
 
-After the app is published, copy the App ID and App Secret into WispTerm:
+The long-connection status showing **connection failed** is expected at this
+point because WispTerm has not been configured with the app credentials yet.
+
+### Step 5: Publish the app
+
+Open **App release → Create version**. Use version `1.0.0`, select **Robot** as
+the default mobile and desktop capability, add any release note, and submit the
+release. Feishu personal tenants usually publish immediately.
+
+### Step 6: Copy credentials into WispTerm
+
+After the app is published, copy the App ID and App Secret from Feishu:
 
 ![Feishu app created](assets/feishu-app-created.png)
+
+### Step 7: Configure in WispTerm
 
 Then configure WispTerm:
 
