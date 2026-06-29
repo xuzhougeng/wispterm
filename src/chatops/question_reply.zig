@@ -5,12 +5,12 @@
 //! question is a *consultation*: any reply that is not a valid option digit is a
 //! free-text custom answer rather than being rejected.
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("reply.zig");
 
 pub const QuestionReply = types.QuestionReply;
 
 /// One option as rendered into the WeChat push. Kept local to this module so the
-/// pure parser/formatter never depends on the AI-chat types (the weixin layer
+/// pure parser/formatter never depends on the AI-chat types (the channel layer
 /// reaches the Session only through the Control vtable).
 pub const PromptOption = struct {
     label: []const u8,

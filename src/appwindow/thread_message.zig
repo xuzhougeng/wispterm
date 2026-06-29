@@ -8,7 +8,7 @@ pub const Tag = enum(u8) {
     agent_tab_close,
     remote_ai_input,
     remote_open_ai_agent,
-    weixin_control,
+    chatops_control,
     agent_ui_screenshot,
     agent_terminal_focus,
 };
@@ -26,7 +26,7 @@ fn offset(tag: Tag) u32 {
         .remote_ai_input => 0x54,
         .remote_open_ai_agent => 0x55,
         .agent_ssh_save => 0x56,
-        .weixin_control => 0x57,
+        .chatops_control => 0x57,
         .agent_ui_screenshot => 0x58,
         .agent_terminal_focus => 0x59,
     };

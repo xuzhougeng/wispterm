@@ -165,7 +165,7 @@ pub fn buildGetUploadUrlBody(
         base_info: BaseInfo,
     };
     return std.json.Stringify.valueAlloc(allocator, Body{
-        .media_type = kind.uploadMediaType(),
+        .media_type = uploadMediaTypeFor(kind),
         .to_user_id = to_user_id,
         .rawsize = raw_size,
         .rawfilemd5 = raw_md5,
@@ -175,6 +175,15 @@ pub fn buildGetUploadUrlBody(
         .filekey = file_key,
         .base_info = .{ .channel_version = CHANNEL_VERSION },
     }, .{});
+}
+
+/// Returns the ilink media_type integer for a given attachment kind.
+/// WeChat-specific: 1 = image, 3 = file/voice.
+pub fn uploadMediaTypeFor(kind: types.AttachmentKind) i64 {
+    return switch (kind) {
+        .image => 1,
+        .file, .voice => 3,
+    };
 }
 
 pub fn statusKindFromString(s: []const u8) types.QrStatusKind {
@@ -359,6 +368,12 @@ test "maps qrcode status strings to the enum" {
     try t.expectEqual(types.QrStatusKind.scaned, statusKindFromString("scaned"));
     try t.expectEqual(types.QrStatusKind.confirmed, statusKindFromString("confirmed"));
     try t.expectEqual(types.QrStatusKind.unknown, statusKindFromString("nonsense"));
+}
+
+test "uploadMediaTypeFor maps kinds to weixin media_type integers" {
+    try t.expectEqual(@as(i64, 1), uploadMediaTypeFor(.image));
+    try t.expectEqual(@as(i64, 3), uploadMediaTypeFor(.file));
+    try t.expectEqual(@as(i64, 3), uploadMediaTypeFor(.voice));
 }
 
 test "builds getuploadurl body for file media" {

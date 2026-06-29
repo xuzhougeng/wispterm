@@ -15,7 +15,7 @@ const ToolHost = types.ToolHost;
 const ToolClosedTab = types.ToolClosedTab;
 const SshProfileSaveArgs = types.SshProfileSaveArgs;
 const SavedSshProfile = types.SavedSshProfile;
-const weixin_types = @import("../weixin/types.zig");
+const chatops_reply = @import("../chatops/reply.zig");
 const platform_process = @import("../platform/process.zig");
 const tool_args = @import("args.zig");
 const agent_research = @import("research.zig");
@@ -220,11 +220,13 @@ pub fn executeToolCall(ctx: *ToolContext, call: ToolCall) ![]u8 {
         const topic = if (args) |parsed| tool_args.string(parsed.value, "topic") else null;
         return knowledge.wisptermDocs(ctx.allocator, topic);
     }
-    if (std.mem.eql(u8, call.name, "weixin_send_attachment")) {
+    if (std.mem.eql(u8, call.name, "send_attachment") or
+        std.mem.eql(u8, call.name, "weixin_send_attachment")) // legacy alias
+    {
         const args = tool_args.parse(ctx.allocator, call.arguments) orelse return ctx.allocator.dupe(u8, "Invalid tool arguments");
         defer args.deinit();
         const kind_text = tool_args.string(args.value, "kind") orelse return ctx.allocator.dupe(u8, "Missing kind");
-        const kind = weixin_types.AttachmentKind.parse(kind_text) orelse return ctx.allocator.dupe(u8, "Invalid kind; expected file, image, or voice");
+        const kind = chatops_reply.AttachmentKind.parse(kind_text) orelse return ctx.allocator.dupe(u8, "Invalid kind; expected file, image, or voice");
         const path = tool_args.string(args.value, "path") orelse return ctx.allocator.dupe(u8, "Missing path");
         const display_name = tool_args.string(args.value, "display_name") orelse "";
         return agent_weixin.sendAttachment(ctx, kind, path, display_name);
@@ -804,7 +806,7 @@ test "terminal_context reports a stale selected write context" {
 
 const WeixinAttachmentCapture = struct {
     called: bool = false,
-    kind: weixin_types.AttachmentKind = .file,
+    kind: chatops_reply.AttachmentKind = .file,
     path: []const u8 = "",
     display_name: []const u8 = "",
     to_user_id: []const u8 = "",
@@ -822,7 +824,7 @@ const WeixinAttachmentCapture = struct {
 
     fn send(
         ctx: *anyopaque,
-        kind: weixin_types.AttachmentKind,
+        kind: chatops_reply.AttachmentKind,
         path: []const u8,
         display_name: []const u8,
         to_user_id: []const u8,
@@ -838,11 +840,11 @@ const WeixinAttachmentCapture = struct {
     }
 };
 
-fn testWeixinSender(capture: *WeixinAttachmentCapture) weixin_types.AttachmentSender {
+fn testWeixinSender(capture: *WeixinAttachmentCapture) chatops_reply.AttachmentSender {
     return .{ .ctx = capture, .send_attachment = WeixinAttachmentCapture.send };
 }
 
-test "weixin_send_attachment without reply context returns a clear tool result" {
+test "send_attachment without reply context returns a clear tool result" {
     const allocator = std.testing.allocator;
     var dummy: u8 = 0;
     var ctx = ToolContext{
@@ -853,21 +855,22 @@ test "weixin_send_attachment without reply context returns a clear tool result" 
         .settings = .{},
         .approve = fakeApprove,
         .cancelled = fakeCancelled,
-        .weixin_reply_context = null,
+        .reply_context = null,
     };
 
     const call = ToolCall{
         .id = @constCast("call_1"),
-        .name = @constCast("weixin_send_attachment"),
+        .name = @constCast("send_attachment"),
         .arguments = @constCast("{\"kind\":\"image\",\"path\":\"C:\\\\tmp\\\\plot.png\"}"),
     };
 
     const result = try executeToolCall(&ctx, call);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("No active Weixin reply context; cannot send attachment.", result);
+    try std.testing.expectEqualStrings("No active chat reply context; cannot send attachment.", result);
 }
 
-test "weixin_send_attachment calls the active Weixin sender" {
+test "weixin_send_attachment legacy alias still routes to sender" {
+    // ponytail: keep this test — proves the backward-compat alias still dispatches
     const allocator = std.testing.allocator;
     var capture = WeixinAttachmentCapture{};
     var dummy: u8 = 0;
@@ -879,13 +882,13 @@ test "weixin_send_attachment calls the active Weixin sender" {
         .settings = .{},
         .approve = fakeApprove,
         .cancelled = fakeCancelled,
-        .weixin_reply_context = try types.WeixinReplyContext.init(allocator, .{
+        .reply_context = try types.OwnedReplyContext.init(allocator, .{
             .sender = testWeixinSender(&capture),
             .to_user_id = "wx-user",
             .context_token = "ctx-1",
         }),
     };
-    defer if (ctx.weixin_reply_context) |*wx| wx.deinit(allocator);
+    defer if (ctx.reply_context) |*wx| wx.deinit(allocator);
 
     const call = ToolCall{
         .id = @constCast("call_1"),
@@ -897,12 +900,12 @@ test "weixin_send_attachment calls the active Weixin sender" {
     defer allocator.free(result);
 
     try std.testing.expect(capture.called);
-    try std.testing.expectEqual(weixin_types.AttachmentKind.file, capture.kind);
+    try std.testing.expectEqual(chatops_reply.AttachmentKind.file, capture.kind);
     try std.testing.expectEqualStrings("C:\\tmp\\report.pdf", capture.path);
     try std.testing.expectEqualStrings("report.pdf", capture.display_name);
     try std.testing.expectEqualStrings("wx-user", capture.to_user_id);
     try std.testing.expectEqualStrings("ctx-1", capture.context_token);
-    try std.testing.expectEqualStrings("Sent file to Weixin: report.pdf", result);
+    try std.testing.expectEqualStrings("Sent file to chat: report.pdf", result);
 }
 
 const ReplWaitTestHost = struct {

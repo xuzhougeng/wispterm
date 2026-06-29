@@ -1,7 +1,7 @@
 //! Boundary between WeChat routing and the live WispTerm surfaces. The real
 //! vtable is supplied by controller.zig; tests supply a fake.
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("reply.zig");
 
 pub const Surface = struct { id: [16]u8, title: []const u8 };
 

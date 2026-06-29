@@ -365,6 +365,19 @@ language: i18n.LanguageSetting = .auto,
 /// instance uses it directly and later local instances append _1, _2, ...
 @"remote-session-key": ?[]const u8 = null,
 
+/// Enables the Feishu (Lark) long-connection channel.
+@"feishu-enabled": bool = false,
+
+/// Feishu app_id. Falls back to env FEISHU_APP_ID when empty.
+@"feishu-app-id": ?[]const u8 = null,
+
+/// Feishu app_secret. Falls back to env FEISHU_APP_SECRET when empty.
+@"feishu-app-secret": ?[]const u8 = null,
+
+/// When set, only this open_id may control the terminal/AI via Feishu.
+/// Empty = no restriction (first sender is auto-bound as owner).
+@"feishu-allowed-user": ?[]const u8 = null,
+
 /// Enables the embedded WeChat ilink direct path. Independent from
 /// remote-enabled and from the Remote server's Weixin bridge binding.
 @"weixin-direct-enabled": bool = false,
@@ -939,6 +952,20 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
         } else {
             log.warn("invalid weixin-notify-forward: {s}", .{value});
         }
+    } else if (std.mem.eql(u8, key, "feishu-enabled")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"feishu-enabled" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"feishu-enabled" = false;
+        } else {
+            log.warn("invalid feishu-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "feishu-app-id")) {
+        self.@"feishu-app-id" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "feishu-app-secret")) {
+        self.@"feishu-app-secret" = self.dupeString(allocator, value) orelse return;
+    } else if (std.mem.eql(u8, key, "feishu-allowed-user")) {
+        self.@"feishu-allowed-user" = self.dupeString(allocator, value) orelse return;
     } else if (std.mem.eql(u8, key, "agent-control-enabled")) {
         if (std.mem.eql(u8, value, "true")) {
             self.@"agent-control-enabled" = true;
@@ -1972,6 +1999,20 @@ test "config: restore-tabs-on-startup parses true/false" {
     // Invalid value leaves the previous state untouched (still false).
     cfg.applyKeyValue(allocator, "restore-tabs-on-startup", "maybe", ".");
     try std.testing.expectEqual(false, cfg.@"restore-tabs-on-startup");
+}
+
+test "config: feishu-enabled parses true/false (regression: field needs a parse handler)" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(false, cfg.@"feishu-enabled");
+    cfg.applyKeyValue(allocator, "feishu-enabled", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"feishu-enabled");
+    cfg.applyKeyValue(allocator, "feishu-enabled", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"feishu-enabled");
+    // Invalid value leaves the previous state untouched.
+    cfg.applyKeyValue(allocator, "feishu-enabled", "maybe", ".");
+    try std.testing.expectEqual(false, cfg.@"feishu-enabled");
 }
 
 test "config: auto update check option parses true false" {

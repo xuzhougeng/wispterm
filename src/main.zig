@@ -242,6 +242,9 @@ pub fn main() !void {
     // Start the WeChat direct bridge (no-op unless weixin-direct-enabled is set).
     app.startWeixin(&cfg);
 
+    // Start the Feishu long-connection channel (no-op unless feishu-enabled is set).
+    app.startFeishu(&cfg);
+
     // Start the local agent terminal control API (no-op unless agent-control-enabled).
     app.startAgentControl(&cfg);
 

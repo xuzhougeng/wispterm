@@ -16,7 +16,7 @@ const renderer = @import("renderer.zig");
 const window_backend = @import("platform/window_backend.zig");
 const App = @import("App.zig");
 const Renderer = @import("renderer/Renderer.zig");
-const weixin_control = @import("weixin/control.zig");
+const weixin_control = @import("chatops/control.zig");
 const ctl_control = @import("ctl/control.zig");
 const memory_debug = @import("memory_debug.zig");
 const agent_history = @import("agent/history.zig");
@@ -98,7 +98,7 @@ const resize_throttle = @import("appwindow/resize_throttle.zig");
 const surface_snapshots = @import("appwindow/surface_snapshots.zig");
 const control_api = @import("appwindow/control_api.zig");
 const remote_sync = @import("appwindow/remote_sync.zig");
-const weixin_bridge = @import("appwindow/weixin_bridge.zig");
+const weixin_bridge = @import("appwindow/chatops_bridge.zig");
 const agent_requests = @import("appwindow/agent_requests.zig");
 const appwindow_ui_screenshot = @import("appwindow/ui_screenshot.zig");
 const png_writer = @import("appwindow/png_writer.zig");
@@ -4986,8 +4986,8 @@ fn weixinBridgeHost() weixin_bridge.Host {
     };
 }
 
-/// The Control the weixin controller drives. Backed by process-global state.
-pub fn weixinControl() weixin_control.Control {
+/// The Control the chatops channel drives. Backed by process-global state.
+pub fn chatopsControl() weixin_control.Control {
     return weixin_bridge.control();
 }
 
@@ -5464,7 +5464,7 @@ fn onPlatformMessage(msg: window_backend.MessageId, wParam: window_backend.WordP
         .agent_terminal_focus => agent_requests.handleTerminalFocusRequest(@ptrFromInt(decoded.ptr), agent_host),
         .remote_ai_input => remote_sync.handleAiInputRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
         .remote_open_ai_agent => remote_sync.handleAiAgentOpenRequest(@ptrFromInt(decoded.ptr), remoteSyncHost()),
-        .weixin_control => weixin_bridge.handleControlRequest(@ptrFromInt(decoded.ptr), weixinBridgeHost()),
+        .chatops_control => weixin_bridge.handleControlRequest(@ptrFromInt(decoded.ptr), weixinBridgeHost()),
     }
     return 1;
 }

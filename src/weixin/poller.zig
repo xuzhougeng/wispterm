@@ -3,10 +3,10 @@
 const std = @import("std");
 const types = @import("types.zig");
 const binding = @import("binding.zig");
-const agent = @import("agent.zig");
+const agent = @import("../chatops/router.zig");
 const ilink = @import("ilink_client.zig");
-const control_mod = @import("control.zig");
-const reply_progress = @import("reply_progress.zig");
+const control_mod = @import("../chatops/control.zig");
+const reply_progress = @import("../chatops/reply_progress.zig");
 const media_inbound_mod = @import("media_inbound.zig");
 
 const log = std.log.scoped(.weixin);
@@ -223,7 +223,6 @@ pub const Poller = struct {
     allocator: std.mem.Allocator,
     client: ilink.ClientApi,
     control: control_mod.Control,
-    settings: types.Settings,
     owner: []const u8,
     account_id: []const u8,
     sync_buf: []u8,
@@ -357,7 +356,7 @@ pub const Poller = struct {
             .context_token = context_token,
             .model_context = model_context,
         };
-        try agent.route(allocator, self.control, self.settings, text, reply_context, &r);
+        try agent.route(allocator, self.control, "微信", text, reply_context, &r);
         try reply.appendSlice(allocator, r.text.items);
         if (!r.expect_ai_progress) {
             if (baseline.len != 0) allocator.free(baseline);
@@ -1275,7 +1274,6 @@ test "poller bootstrap advances cursor without replying to historical messages" 
         .allocator = t.allocator,
         .client = fake.api(),
         .control = NoopControl.iface(),
-        .settings = .{},
         .owner = "u1",
         .account_id = "",
         .sync_buf = try t.allocator.dupe(u8, "OLD"),
@@ -1428,7 +1426,6 @@ test "allocProgressText surfaces a needs-approval prompt naming the command" {
         .allocator = t.allocator,
         .client = undefined, // unused by allocProgressText
         .control = ApprovalTranscriptControl.iface(),
-        .settings = .{},
         .owner = "u1",
         .account_id = "",
         .sync_buf = empty_sync,
@@ -1553,7 +1550,6 @@ test "pollerMediaAdapter downloads, saves under weixin_inbound, and builds recei
         .allocator = t.allocator,
         .client = client.api(),
         .control = ctrl.iface(),
-        .settings = .{},
         .owner = "u1",
         .account_id = "",
         .sync_buf = empty_sync,

@@ -356,6 +356,134 @@ test "Stopping... still counts as in progress" {
     try t.expect(p.text.len != 0);
 }
 
+/// Render the current transcript into a compact progress markdown string for the streaming card.
+/// Returns owned []u8; caller must free. Never returns empty.
+pub fn renderProgress(alloc: std.mem.Allocator, baseline: []const u8, current: []const u8) ![]u8 {
+    var base_buf: [MAX_SECTIONS]Section = undefined;
+    var cur_buf: [MAX_SECTIONS]Section = undefined;
+    var base_msg_buf: [MAX_SECTIONS]Section = undefined;
+    var cur_msg_buf: [MAX_SECTIONS]Section = undefined;
+
+    const base_sections = parseSections(baseline, &base_buf);
+    const cur_sections = parseSections(current, &cur_buf);
+    const base_msgs = filterMessages(base_sections, &base_msg_buf);
+    const cur_msgs = filterMessages(cur_sections, &cur_msg_buf);
+    // Only THIS episode's messages — without baseline scoping the card would
+    // render the *previous* episode's last answer until the new one appears.
+    const new_msgs = afterBaseline(base_msgs, cur_msgs);
+    const status = latestStatus(cur_sections);
+
+    // Find last non-empty assistant section in this episode
+    var last_assistant: ?[]const u8 = null;
+    for (new_msgs) |m| {
+        if (m.role == .assistant and trim(m.content).len != 0) last_assistant = trim(m.content);
+    }
+
+    // Find last tool section's first line (tool name) in this episode
+    var last_tool_name: ?[]const u8 = null;
+    for (new_msgs) |m| {
+        if (m.role == .tool and trim(m.content).len != 0) {
+            const c = trim(m.content);
+            // ponytail: first line = tool name heuristic, good enough for v1
+            const nl = std.mem.indexOfScalar(u8, c, '\n') orelse c.len;
+            last_tool_name = trim(c[0..nl]);
+        }
+    }
+
+    // ponytail: hasRole(.tool) removed — it flags completed tools as active;
+    // isActiveStatus covers "running tools" while truly active.
+    const active = isActiveStatus(status);
+
+    if (last_assistant) |content| {
+        if (!active) return alloc.dupe(u8, content);
+        // Active: append tool status line
+        if (last_tool_name) |tool| {
+            return std.fmt.allocPrint(alloc, "{s}\n\n🔧 正在执行 {s}…", .{ content, tool });
+        }
+        return std.fmt.allocPrint(alloc, "{s}\n\n🔧 正在执行…", .{content});
+    }
+
+    // No assistant content yet
+    if (active) {
+        if (last_tool_name) |tool| {
+            return std.fmt.allocPrint(alloc, "🔧 正在执行 {s}…", .{tool});
+        }
+        return alloc.dupe(u8, "🔧 正在执行…");
+    }
+    return alloc.dupe(u8, "处理中…");
+}
+
+test "renderProgress: active with tool shows tool name" {
+    const transcript =
+        "User:\n帮我读 README\nAI:\n好的，我来读取。\nTool:\nread_file\nStatus:\nrunning tools\n";
+    const md = try renderProgress(t.allocator, "", transcript);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "我来读取") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") != null);
+}
+
+test "renderProgress: done state shows assistant content only" {
+    const transcript = "AI:\n这是最终答案。\nStatus:\ndone\n";
+    const md = try renderProgress(t.allocator, "", transcript);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "最终答案") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") == null);
+}
+
+test "renderProgress: no assistant content returns non-empty placeholder" {
+    const transcript = "Status:\nrunning tools\n";
+    const md = try renderProgress(t.allocator, "", transcript);
+    defer t.allocator.free(md);
+    try t.expect(md.len > 0);
+}
+
+test "renderProgress: empty transcript returns placeholder" {
+    const md = try renderProgress(t.allocator, "", "");
+    defer t.allocator.free(md);
+    try t.expect(md.len > 0);
+}
+
+test "renderProgress: ignores prior-episode answer before baseline (regression)" {
+    // baseline = previous episode (its answer already in the transcript).
+    // current = baseline + a new turn still running (no new assistant text yet).
+    // The card must NOT show the prior answer — it must show this episode's progress.
+    const baseline = "User:\n上一条\nAI:\n上一轮的旧答案\n";
+    const current = "User:\n上一条\nAI:\n上一轮的旧答案\nUser:\n新问题\nTool:\nsearch\nStatus:\nrunning tools\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "旧答案") == null); // not the previous answer
+    try t.expect(std.mem.indexOf(u8, md, "🔧") != null); // this episode's progress
+}
+
+test "renderProgress: shows only this episode's assistant answer (regression)" {
+    const baseline = "User:\n上一条\nAI:\n旧答案\n";
+    const current = "User:\n上一条\nAI:\n旧答案\nUser:\n新问题\nAI:\n新答案\nStatus:\ndone\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "新答案") != null);
+    try t.expect(std.mem.indexOf(u8, md, "旧答案") == null);
+}
+
+test "renderProgress: done with completed tool section — no 🔧 (bug2 regression)" {
+    // A done transcript that contains a Tool section (already completed).
+    // active = isActiveStatus("Done in 5s") → false → must NOT append 🔧.
+    const baseline = "User:\nq\n";
+    const current =
+        "User:\nq\nTool:\nterminal completed.\nAI:\nthe answer\nStatus:\nDone in 5s\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "the answer") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") == null); // must be absent
+}
+
+test "renderProgress: running tools status shows 🔧 (regression guard)" {
+    const baseline = "User:\nq\n";
+    const current = "User:\nq\nTool:\nsearch\nStatus:\nRunning tools\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") != null);
+}
+
 test "a resolved approval (gone from current) does not re-fire even if baseline had one" {
     // Detection reads `current`, not the baseline: once the copilot resolves the
     // approval the snapshot stops emitting the section, so the turn completes

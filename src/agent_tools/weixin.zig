@@ -1,8 +1,9 @@
 //! Weixin agent tool adapters.
+// ponytail: module name historical; logic is channel-neutral (WeChat + Feishu)
 const std = @import("std");
 const types = @import("../assistant/conversation/types.zig");
 const ai_agent_access = @import("../agent/access.zig");
-const weixin_types = @import("../weixin/types.zig");
+const chatops_reply = @import("../chatops/reply.zig");
 const tool_access = @import("access.zig");
 const tool_output = @import("output.zig");
 
@@ -10,12 +11,12 @@ const ToolContext = types.ToolContext;
 
 pub fn sendAttachment(
     ctx: *ToolContext,
-    kind: weixin_types.AttachmentKind,
+    kind: chatops_reply.AttachmentKind,
     path: []const u8,
     display_name: []const u8,
 ) ![]u8 {
-    const wx_ctx = ctx.weixin_reply_context orelse {
-        return ctx.allocator.dupe(u8, "No active Weixin reply context; cannot send attachment.");
+    const wx_ctx = ctx.reply_context orelse {
+        return ctx.allocator.dupe(u8, "No active chat reply context; cannot send attachment.");
     };
     // Sending an attachment reads the file off disk and uploads it to a remote
     // user, so a protected path here is an exfiltration risk. In auto mode,
@@ -28,17 +29,17 @@ pub fn sendAttachment(
                 const bl_reason = tool_access.allocBlacklistReason(ctx.allocator, path);
                 defer if (bl_reason) |r| ctx.allocator.free(r);
                 const reason = bl_reason orelse "Sends a protected file - confirm to allow";
-                if (!ctx.requestApproval("weixin_send_attachment", path, reason)) {
+                if (!ctx.requestApproval("send_attachment", path, reason)) {
                     return tool_output.deniedResult(ctx.allocator, path, "operator rejected sending a protected file");
                 }
             }
         }
     }
     wx_ctx.sender.sendAttachment(kind, path, display_name, wx_ctx.to_user_id, wx_ctx.context_token) catch |err| {
-        return std.fmt.allocPrint(ctx.allocator, "Failed to send {s} to Weixin: {}", .{ kind.name(), err });
+        return std.fmt.allocPrint(ctx.allocator, "Failed to send {s} to chat: {}", .{ kind.name(), err });
     };
     const shown = if (display_name.len != 0) display_name else std.fs.path.basename(path);
-    return std.fmt.allocPrint(ctx.allocator, "Sent {s} to Weixin: {s}", .{ kind.name(), shown });
+    return std.fmt.allocPrint(ctx.allocator, "Sent {s} to chat: {s}", .{ kind.name(), shown });
 }
 
 fn fakeApprove(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8) bool {
@@ -51,7 +52,7 @@ fn fakeCancelled(_: *anyopaque) bool {
 
 const AttachmentCapture = struct {
     called: bool = false,
-    kind: weixin_types.AttachmentKind = .file,
+    kind: chatops_reply.AttachmentKind = .file,
     path: []const u8 = "",
     display_name: []const u8 = "",
     to_user_id: []const u8 = "",
@@ -69,7 +70,7 @@ const AttachmentCapture = struct {
 
     fn send(
         ctx: *anyopaque,
-        kind: weixin_types.AttachmentKind,
+        kind: chatops_reply.AttachmentKind,
         path: []const u8,
         display_name: []const u8,
         to_user_id: []const u8,
@@ -85,7 +86,7 @@ const AttachmentCapture = struct {
     }
 };
 
-fn testSender(capture: *AttachmentCapture) weixin_types.AttachmentSender {
+fn testSender(capture: *AttachmentCapture) chatops_reply.AttachmentSender {
     return .{ .ctx = capture, .send_attachment = AttachmentCapture.send };
 }
 
@@ -100,12 +101,12 @@ test "sendAttachment without reply context returns a clear tool result" {
         .settings = .{},
         .approve = fakeApprove,
         .cancelled = fakeCancelled,
-        .weixin_reply_context = null,
+        .reply_context = null,
     };
 
     const result = try sendAttachment(&ctx, .image, "C:\\tmp\\plot.png", "");
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("No active Weixin reply context; cannot send attachment.", result);
+    try std.testing.expectEqualStrings("No active chat reply context; cannot send attachment.", result);
 }
 
 test "sendAttachment calls the active Weixin sender" {
@@ -120,22 +121,22 @@ test "sendAttachment calls the active Weixin sender" {
         .settings = .{},
         .approve = fakeApprove,
         .cancelled = fakeCancelled,
-        .weixin_reply_context = try types.WeixinReplyContext.init(allocator, .{
+        .reply_context = try types.OwnedReplyContext.init(allocator, .{
             .sender = testSender(&capture),
             .to_user_id = "wx-user",
             .context_token = "ctx-1",
         }),
     };
-    defer if (ctx.weixin_reply_context) |*wx| wx.deinit(allocator);
+    defer if (ctx.reply_context) |*wx| wx.deinit(allocator);
 
     const result = try sendAttachment(&ctx, .file, "C:\\tmp\\report.pdf", "report.pdf");
     defer allocator.free(result);
 
     try std.testing.expect(capture.called);
-    try std.testing.expectEqual(weixin_types.AttachmentKind.file, capture.kind);
+    try std.testing.expectEqual(chatops_reply.AttachmentKind.file, capture.kind);
     try std.testing.expectEqualStrings("C:\\tmp\\report.pdf", capture.path);
     try std.testing.expectEqualStrings("report.pdf", capture.display_name);
     try std.testing.expectEqualStrings("wx-user", capture.to_user_id);
     try std.testing.expectEqualStrings("ctx-1", capture.context_token);
-    try std.testing.expectEqualStrings("Sent file to Weixin: report.pdf", result);
+    try std.testing.expectEqualStrings("Sent file to chat: report.pdf", result);
 }
