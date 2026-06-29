@@ -363,7 +363,9 @@ pub fn renderProgress(alloc: std.mem.Allocator, baseline: []const u8, current: [
         }
     }
 
-    const active = isActiveStatus(status) or hasRole(new_msgs, .tool);
+    // ponytail: hasRole(.tool) removed — it flags completed tools as active;
+    // isActiveStatus covers "running tools" while truly active.
+    const active = isActiveStatus(status);
 
     if (last_assistant) |content| {
         if (!active) return alloc.dupe(u8, content);
@@ -433,6 +435,26 @@ test "renderProgress: shows only this episode's assistant answer (regression)" {
     defer t.allocator.free(md);
     try t.expect(std.mem.indexOf(u8, md, "新答案") != null);
     try t.expect(std.mem.indexOf(u8, md, "旧答案") == null);
+}
+
+test "renderProgress: done with completed tool section — no 🔧 (bug2 regression)" {
+    // A done transcript that contains a Tool section (already completed).
+    // active = isActiveStatus("Done in 5s") → false → must NOT append 🔧.
+    const baseline = "User:\nq\n";
+    const current =
+        "User:\nq\nTool:\nterminal completed.\nAI:\nthe answer\nStatus:\nDone in 5s\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "the answer") != null);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") == null); // must be absent
+}
+
+test "renderProgress: running tools status shows 🔧 (regression guard)" {
+    const baseline = "User:\nq\n";
+    const current = "User:\nq\nTool:\nsearch\nStatus:\nRunning tools\n";
+    const md = try renderProgress(t.allocator, baseline, current);
+    defer t.allocator.free(md);
+    try t.expect(std.mem.indexOf(u8, md, "🔧") != null);
 }
 
 test "a resolved approval (gone from current) does not re-fire even if baseline had one" {

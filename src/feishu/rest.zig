@@ -325,22 +325,51 @@ pub fn createStreamingCard(alloc: std.mem.Allocator, token: []const u8, card_jso
 }
 
 /// Sends a card as an interactive message to a chat.
-/// NOTE: send shape is best-guess (spike §8 — chat_id unavailable during spike).
-/// Validated at E2E Task S5; adjust buildCardMessageContent if shape is wrong.
+/// Returns the message_id; caller owns (alloc.dupe). error on send failure or missing message_id.
+/// NOTE: send shape validated in spike §8 + E2E Task S5.
 pub fn sendCardMessage(
     alloc: std.mem.Allocator,
     token: []const u8,
     receive_id_type: []const u8,
     receive_id: []const u8,
     card_id: []const u8,
-) !void {
+) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
     const a = arena.allocator();
 
     const content = try buildCardMessageContent(a, card_id);
-    // Reuse sendMessage — it handles interactive msg_type and content as JSON string.
-    return sendMessage(alloc, token, receive_id_type, receive_id, "interactive", content);
+    const body_str = try std.json.Stringify.valueAlloc(a, .{
+        .receive_id = receive_id,
+        .msg_type = "interactive",
+        .content = content,
+    }, .{});
+    const url = try std.fmt.allocPrint(a,
+        BASE ++ "/open-apis/im/v1/messages?receive_id_type={s}",
+        .{receive_id_type},
+    );
+    const resp = try httpsReqWithBearer(alloc, a, .POST, url, token, body_str);
+
+    // Parse data.message_id from response (mirrors createStreamingCard parsing card_id).
+    const DataMsg = struct { message_id: []const u8 = "" };
+    const Resp = struct {
+        code: i64 = -1,
+        msg: []const u8 = "",
+        data: DataMsg = .{},
+    };
+    const parsed = try std.json.parseFromSliceLeaky(Resp, a, resp, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    if (parsed.code != 0) {
+        log.err("sendCardMessage: code={d} msg={s}", .{ parsed.code, parsed.msg });
+        return error.FeishuSendFailed;
+    }
+    if (parsed.data.message_id.len == 0) {
+        log.err("sendCardMessage: empty message_id in response", .{});
+        return error.FeishuSendFailed;
+    }
+    return alloc.dupe(u8, parsed.data.message_id);
 }
 
 /// Streams content to a specific element of a card (PUT, not POST).
@@ -653,6 +682,25 @@ test "buildCloseBody: streaming_mode false in settings string" {
     // Valid JSON
     const p = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
     defer p.deinit();
+}
+
+test "sendCardMessage response parsing: code=0 → message_id" {
+    const resp = "{\"code\":0,\"data\":{\"message_id\":\"om_test001\"},\"msg\":\"ok\"}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const DataMsg = struct { message_id: []const u8 = "" };
+    const Resp = struct {
+        code: i64 = -1,
+        msg: []const u8 = "",
+        data: DataMsg = .{},
+    };
+    const parsed = try std.json.parseFromSliceLeaky(Resp, a, resp, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    try std.testing.expectEqual(@as(i64, 0), parsed.code);
+    try std.testing.expectEqualStrings("om_test001", parsed.data.message_id);
 }
 
 test "createStreamingCard response parsing: code=0 → card_id" {

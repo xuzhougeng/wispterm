@@ -90,11 +90,15 @@ pub const CardSink = struct {
     /// Create a streaming card with initial markdown content. Returns owned card_id (alloc).
     create: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, initial_md: []const u8) anyerror![]u8,
     /// Send (surface) the card to the Feishu chat so the user sees it.
-    send: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, chat_id: []const u8, card_id: []const u8) anyerror!void,
+    /// Returns owned message_id (alloc); caller frees.
+    send: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, chat_id: []const u8, card_id: []const u8) anyerror![]u8,
     /// Stream a content update to the card. `sequence` must be monotonically increasing from 1.
     stream: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, card_id: []const u8, content: []const u8, sequence: i64) anyerror!void,
     /// Close the streaming card (no more updates). `sequence` is the next monotonic value.
     close: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, card_id: []const u8, sequence: i64) anyerror!void,
+    /// Patch the message to a button-less resolved card (close first, then call this).
+    /// message_id is the id returned by send; card_json is from card.buildResolvedCard.
+    updateMessage: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, message_id: []const u8, card_json: []const u8) anyerror!void,
 };
 
 // ---------------------------------------------------------------------------
@@ -116,13 +120,26 @@ fn cardCreate(ctx: *anyopaque, alloc: std.mem.Allocator, initial_md: []const u8)
     return card_id;
 }
 
-fn cardSend(ctx: *anyopaque, alloc: std.mem.Allocator, chat_id: []const u8, card_id: []const u8) anyerror!void {
+fn cardSend(ctx: *anyopaque, alloc: std.mem.Allocator, chat_id: []const u8, card_id: []const u8) anyerror![]u8 {
     const self: *Controller = @ptrCast(@alignCast(ctx));
     const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
         log.warn("cardSend: token refresh failed: {s}", .{@errorName(err)});
         return err;
     };
     return rest.sendCardMessage(alloc, token, "chat_id", chat_id, card_id);
+}
+
+fn cardUpdateMessage(ctx: *anyopaque, alloc: std.mem.Allocator, message_id: []const u8, card_json: []const u8) anyerror!void {
+    const self: *Controller = @ptrCast(@alignCast(ctx));
+    // token via self.allocator (NOT arena) — TokenCache owns and frees it.
+    const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
+        log.warn("cardUpdateMessage: token refresh failed: {s}", .{@errorName(err)});
+        return err;
+    };
+    rest.patchMessageCard(alloc, token, message_id, card_json) catch |err| {
+        log.warn("cardUpdateMessage: patch failed: {s}", .{@errorName(err)});
+        return err;
+    };
 }
 
 fn cardStream(ctx: *anyopaque, alloc: std.mem.Allocator, card_id: []const u8, content: []const u8, sequence: i64) anyerror!void {
@@ -145,7 +162,7 @@ fn cardClose(ctx: *anyopaque, alloc: std.mem.Allocator, card_id: []const u8, seq
 }
 
 fn productionCardSink(ctx: *anyopaque) CardSink {
-    return .{ .ctx = ctx, .create = cardCreate, .send = cardSend, .stream = cardStream, .close = cardClose };
+    return .{ .ctx = ctx, .create = cardCreate, .send = cardSend, .stream = cardStream, .close = cardClose, .updateMessage = cardUpdateMessage };
 }
 
 /// Production sink: calls rest.sendText with the live token.

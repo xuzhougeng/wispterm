@@ -295,19 +295,28 @@ pub const ProgressWorker = struct {
             log.warn("progress: card create failed: {s}; falling back to text", .{@errorName(err)});
             break :blk null;
         };
-        if (card_id) |cid| {
-            self.card_sink.send(self.card_sink.ctx, self.allocator, snap.chat_id, cid) catch |err| {
+        // Send card to chat; capture message_id for finalize-patch (close+PATCH to button-less card).
+        // message_id=null if send fails or card_id=null (text fallback); skip patch in that case.
+        const message_id: ?[]u8 = if (card_id) |cid| blk: {
+            break :blk self.card_sink.send(self.card_sink.ctx, self.allocator, snap.chat_id, cid) catch |err| {
                 log.warn("progress: card send failed: {s}", .{@errorName(err)});
+                break :blk null;
             };
-        }
+        } else null;
         var seq: i64 = 1;
         var last_md: []u8 = &.{};
+        // finalized=true when explicit finalize/cancel already called close+patch; defer skips close.
+        var finalized: bool = false;
         defer if (last_md.len != 0) self.allocator.free(last_md);
-        // Unified cleanup: ALL exit paths (cancel/deadline/stop/done) close card + free card_id.
-        // card_id=null (create failed) is handled by the optional check — no close/free needed.
-        // Zig defers run LIFO; seq and card_id are outer locals, valid through all defers.
+        defer if (message_id) |mid| self.allocator.free(mid);
+        // Unified cleanup: explicit finalize/cancel set finalized=true (close done there already).
+        // Fallback paths (deadline/stop-loop/stale) enter with finalized=false → close here.
+        // free(card_id) and free(message_id) always run via their own defers above.
+        // Invariants: close exactly once, free exactly once per pointer, seq monotonic.
         defer if (card_id) |cid| {
-            self.card_sink.close(self.card_sink.ctx, self.allocator, cid, seq) catch {};
+            if (!finalized) {
+                self.card_sink.close(self.card_sink.ctx, self.allocator, cid, seq) catch {};
+            }
             self.allocator.free(cid);
         };
 
@@ -319,18 +328,27 @@ pub const ProgressWorker = struct {
             const current_gen = self.currentGeneration();
             if (current_gen != gen) {
                 log.debug("progress: episode cancelled gen_old={d} gen_new={d}", .{ gen, current_gen });
-                // Stream "⏹ 已停止" to the card before the defer closes it.
-                // Still within S4 ownership: card_id is outer local, seq is incremented here,
-                // and the defer below will call close(seq) then free(cid) — no double close/leak.
+                // cancel path: close streaming first, then patch to button-less resolved card.
+                // Spike-confirmed order: close → patch. Set finalized=true so defer skips close.
                 if (card_id) |cid| {
-                    self.card_sink.stream(self.card_sink.ctx, self.allocator, cid, "⏹ 已停止", seq) catch |err| {
-                        log.warn("progress: cancel stream failed: {s}", .{@errorName(err)});
+                    self.card_sink.close(self.card_sink.ctx, self.allocator, cid, seq) catch |err| {
+                        log.warn("progress: cancel close failed: {s}", .{@errorName(err)});
                     };
-                    seq += 1;
+                    finalized = true;
+                    if (message_id) |mid| {
+                        var arena = std.heap.ArenaAllocator.init(self.allocator);
+                        defer arena.deinit();
+                        const card_json = @import("card.zig").buildResolvedCard(arena.allocator(), "⏹ 已停止") catch null;
+                        if (card_json) |cj| {
+                            self.card_sink.updateMessage(self.card_sink.ctx, self.allocator, mid, cj) catch |err| {
+                                log.warn("progress: cancel updateMessage failed: {s}", .{@errorName(err)});
+                            };
+                        }
+                    }
                 }
                 self.allocator.free(snap.chat_id);
                 self.allocator.free(snap.baseline);
-                return; // defer: close card + free card_id + free last_md
+                return; // defer: free card_id + free message_id + free last_md (no close: finalized)
             }
 
             // Check deadline.
@@ -437,13 +455,32 @@ pub const ProgressWorker = struct {
                         log.debug("progress: stale final (card) discarded gen={d}", .{gen});
                         self.allocator.free(snap.chat_id);
                         self.allocator.free(snap.baseline);
-                        return; // defer closes card
+                        return; // defer closes card (finalized=false, fallback path)
                     }
                     log.debug("progress: finalizing card episode gen={d}", .{gen});
+                    // Finalize: close streaming first (spike-confirmed order), then patch to resolved card.
+                    // owned.text is the clean answer, valid in this poll before its defer-free.
+                    if (card_id) |cid| {
+                        self.card_sink.close(self.card_sink.ctx, self.allocator, cid, seq) catch |err| {
+                            log.warn("progress: finalize close failed: {s}", .{@errorName(err)});
+                        };
+                        finalized = true;
+                        if (message_id) |mid| {
+                            var arena = std.heap.ArenaAllocator.init(self.allocator);
+                            defer arena.deinit();
+                            const answer = if (owned.text.len != 0) owned.text else "处理完成";
+                            const card_json = @import("card.zig").buildResolvedCard(arena.allocator(), answer) catch null;
+                            if (card_json) |cj| {
+                                self.card_sink.updateMessage(self.card_sink.ctx, self.allocator, mid, cj) catch |err| {
+                                    log.warn("progress: finalize updateMessage failed: {s}", .{@errorName(err)});
+                                };
+                            }
+                        }
+                    }
                     self.allocator.free(snap.chat_id);
                     self.allocator.free(snap.baseline);
                     self.deactivateEpisode(gen);
-                    return; // defer closes card + frees card_id + frees last_md
+                    return; // defer: free card_id + message_id + last_md (no close: finalized=true)
                 }
             }
         }
@@ -704,14 +741,18 @@ test "planPoll: none + md unchanged → all null (skip API call)" {
 const FakeCard = struct {
     alloc: std.mem.Allocator,
     created: usize = 0,
+    sends: usize = 0,
     streams: usize = 0,
     closes: usize = 0,
+    update_messages: usize = 0,
     last_seq: i64 = 0,
     last_stream_content: std.ArrayListUnmanaged(u8) = .empty,
-    // ponytail: simple counter/content capture; enough to verify seq monotonicity
+    last_update_content: std.ArrayListUnmanaged(u8) = .empty,
+    // ponytail: simple counter/content capture; enough to verify seq monotonicity + finalize
 
     fn deinit(self: *FakeCard) void {
         self.last_stream_content.deinit(self.alloc);
+        self.last_update_content.deinit(self.alloc);
     }
 
     fn create(ctx: *anyopaque, alloc: std.mem.Allocator, _: []const u8) anyerror![]u8 {
@@ -719,7 +760,11 @@ const FakeCard = struct {
         self.created += 1;
         return alloc.dupe(u8, "fake-card-id");
     }
-    fn send(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8) anyerror!void {}
+    fn send(ctx: *anyopaque, alloc: std.mem.Allocator, _: []const u8, _: []const u8) anyerror![]u8 {
+        const self: *FakeCard = @ptrCast(@alignCast(ctx));
+        self.sends += 1;
+        return alloc.dupe(u8, "fake-message-id");
+    }
     fn stream(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, content: []const u8, sequence: i64) anyerror!void {
         const self: *FakeCard = @ptrCast(@alignCast(ctx));
         self.streams += 1;
@@ -732,8 +777,14 @@ const FakeCard = struct {
         self.closes += 1;
         self.last_seq = sequence;
     }
+    fn updateMessage(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, card_json: []const u8) anyerror!void {
+        const self: *FakeCard = @ptrCast(@alignCast(ctx));
+        self.update_messages += 1;
+        self.last_update_content.clearRetainingCapacity();
+        self.last_update_content.appendSlice(self.alloc, card_json) catch {};
+    }
     fn sink(self: *FakeCard) controller.CardSink {
-        return .{ .ctx = self, .create = create, .send = send, .stream = stream, .close = close };
+        return .{ .ctx = self, .create = create, .send = send, .stream = stream, .close = close, .updateMessage = updateMessage };
     }
 };
 
@@ -819,4 +870,126 @@ test "FakeCard: none-poll with same md → no stream (skip API call)" {
 
     try t.expectEqual(@as(usize, 0), card.streams);
     try t.expectEqual(@as(usize, 0), card.closes);
+}
+
+test "FakeCard: send returns owned message_id, no leak" {
+    var card = FakeCard{ .alloc = t.allocator };
+    defer card.deinit();
+    // send must return an owned []u8; caller frees.
+    const s = card.sink();
+    const mid = try s.send(s.ctx, t.allocator, "oc_chat", "fake-card-id");
+    defer t.allocator.free(mid);
+    try t.expectEqualStrings("fake-message-id", mid);
+    try t.expectEqual(@as(usize, 1), card.sends);
+}
+
+test "FakeCard: updateMessage records card_json" {
+    var card = FakeCard{ .alloc = t.allocator };
+    defer card.deinit();
+    const s = card.sink();
+    try s.updateMessage(s.ctx, t.allocator, "om_test", "{\"schema\":\"2.0\"}");
+    try t.expectEqual(@as(usize, 1), card.update_messages);
+    try t.expectEqualStrings("{\"schema\":\"2.0\"}", card.last_update_content.items);
+}
+
+// Simulates finalize path: close→updateMessage, finalized=true, defer skips close.
+// Verifies: close exactly once, updateMessage exactly once (with answer), card_id freed, no leak.
+test "finalize path: close+updateMessage, close exactly once, no leak" {
+    var card = FakeCard{ .alloc = t.allocator };
+    defer card.deinit();
+    const s = card.sink();
+
+    const card_id: ?[]u8 = try t.allocator.dupe(u8, "fake-card-id");
+    const message_id: ?[]u8 = try t.allocator.dupe(u8, "fake-message-id");
+    const seq: i64 = 1;
+    var finalized: bool = false;
+
+    defer if (message_id) |mid| t.allocator.free(mid);
+    defer if (card_id) |cid| {
+        if (!finalized) {
+            s.close(s.ctx, t.allocator, cid, seq) catch {};
+        }
+        t.allocator.free(cid);
+    };
+
+    // Simulate finalize (done path)
+    if (card_id) |cid| {
+        try s.close(s.ctx, t.allocator, cid, seq);
+        finalized = true;
+        if (message_id) |mid| {
+            var arena = std.heap.ArenaAllocator.init(t.allocator);
+            defer arena.deinit();
+            const card_json = try @import("card.zig").buildResolvedCard(arena.allocator(), "the answer");
+            try s.updateMessage(s.ctx, t.allocator, mid, card_json);
+        }
+    }
+
+    try t.expect(finalized);
+    try t.expectEqual(@as(usize, 1), card.closes); // exactly once
+    try t.expectEqual(@as(usize, 1), card.update_messages);
+    try t.expect(std.mem.indexOf(u8, card.last_update_content.items, "the answer") != null);
+    // defer runs after this: card_id freed, message_id freed; finalized=true → no extra close.
+}
+
+// Simulates cancel path: close→updateMessage("⏹ 已停止"), finalized=true.
+test "cancel path: close+updateMessage(已停止), close exactly once, no leak" {
+    var card = FakeCard{ .alloc = t.allocator };
+    defer card.deinit();
+    const s = card.sink();
+
+    const card_id: ?[]u8 = try t.allocator.dupe(u8, "fake-card-id");
+    const message_id: ?[]u8 = try t.allocator.dupe(u8, "fake-message-id");
+    const seq: i64 = 1;
+    var finalized: bool = false;
+
+    defer if (message_id) |mid| t.allocator.free(mid);
+    defer if (card_id) |cid| {
+        if (!finalized) {
+            s.close(s.ctx, t.allocator, cid, seq) catch {};
+        }
+        t.allocator.free(cid);
+    };
+
+    // Simulate cancel path
+    if (card_id) |cid| {
+        try s.close(s.ctx, t.allocator, cid, seq);
+        finalized = true;
+        if (message_id) |mid| {
+            var arena = std.heap.ArenaAllocator.init(t.allocator);
+            defer arena.deinit();
+            const card_json = try @import("card.zig").buildResolvedCard(arena.allocator(), "⏹ 已停止");
+            try s.updateMessage(s.ctx, t.allocator, mid, card_json);
+        }
+    }
+
+    try t.expect(finalized);
+    try t.expectEqual(@as(usize, 1), card.closes);
+    try t.expectEqual(@as(usize, 1), card.update_messages);
+    try t.expect(std.mem.indexOf(u8, card.last_update_content.items, "已停止") != null);
+}
+
+// Simulates deadline/stop-loop path: finalized=false → defer closes exactly once.
+test "fallback path (deadline): defer closes, no updateMessage, no leak" {
+    var card = FakeCard{ .alloc = t.allocator };
+    defer card.deinit();
+    const s = card.sink();
+
+    const card_id: ?[]u8 = try t.allocator.dupe(u8, "fake-card-id");
+    const message_id: ?[]u8 = try t.allocator.dupe(u8, "fake-message-id");
+    const seq: i64 = 1;
+    const finalized: bool = false;
+
+    defer if (message_id) |mid| t.allocator.free(mid);
+    defer if (card_id) |cid| {
+        if (!finalized) {
+            s.close(s.ctx, t.allocator, cid, seq) catch {};
+        }
+        t.allocator.free(cid);
+    };
+
+    // No explicit finalize — fallback path (defer fires).
+    // After this block defers run: close once (finalized=false), free card_id, free message_id.
+    try t.expect(!finalized);
+    // closes=0 before defer; testing.allocator will catch any leaks.
+    try t.expectEqual(@as(usize, 0), card.update_messages);
 }
