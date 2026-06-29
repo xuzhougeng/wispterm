@@ -90,6 +90,112 @@ pub fn parseReceiveV1(arena: std.mem.Allocator, payload_json: []const u8) !types
 }
 
 // ---------------------------------------------------------------------------
+// card.action.trigger 解析
+// ---------------------------------------------------------------------------
+
+/// card.action.trigger 点击事件解析结果。
+/// 所有 []const u8 字段借用 arena，生命周期由调用方负责。
+pub const CardAction = struct {
+    act: []const u8, // "stop" | "approval" | "question"
+    decision: []const u8 = "", // approval: "approve" | "reject"
+    option: i64 = -1, // question: 0-based index; -1 for non-question
+    open_id: []const u8 = "", // 点击者 open_id
+    message_id: []const u8 = "", // event.context.open_message_id
+    chat_id: []const u8 = "", // event.context.open_chat_id
+};
+
+/// 解析 card.action.trigger 事件 payload → CardAction。
+/// event.action.value 是 JSON 对象，直接读字段，无需二次解析。
+/// act 缺失或结构不合法 → error.FeishuCardActionMalformed。
+pub fn parseCardAction(arena: std.mem.Allocator, payload: []const u8) !CardAction {
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, arena, payload, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+
+    // 路径: event.action.value (是对象)
+    const event_obj = switch (root) {
+        .object => |o| o.get("event") orelse return error.FeishuCardActionMalformed,
+        else => return error.FeishuCardActionMalformed,
+    };
+    const action_obj = switch (event_obj) {
+        .object => |o| o.get("action") orelse return error.FeishuCardActionMalformed,
+        else => return error.FeishuCardActionMalformed,
+    };
+    const value_obj = switch (action_obj) {
+        .object => |o| o.get("value") orelse return error.FeishuCardActionMalformed,
+        else => return error.FeishuCardActionMalformed,
+    };
+    const value_map = switch (value_obj) {
+        .object => |o| o,
+        else => return error.FeishuCardActionMalformed,
+    };
+
+    // act 必需
+    const act = switch (value_map.get("act") orelse return error.FeishuCardActionMalformed) {
+        .string => |s| s,
+        else => return error.FeishuCardActionMalformed,
+    };
+
+    // decision 可选
+    const decision: []const u8 = if (value_map.get("decision")) |v| switch (v) {
+        .string => |s| s,
+        else => "",
+    } else "";
+
+    // option 可选，JSON number → i64
+    const option: i64 = if (value_map.get("option")) |v| switch (v) {
+        .integer => |n| n,
+        .float => |f| @intFromFloat(f),
+        else => -1,
+    } else -1;
+
+    // event.operator.open_id
+    const open_id: []const u8 = blk: {
+        const op = switch (event_obj) {
+            .object => |o| o.get("operator") orelse break :blk "",
+            else => break :blk "",
+        };
+        break :blk switch (op) {
+            .object => |o| if (o.get("open_id")) |v| switch (v) {
+                .string => |s| s,
+                else => "",
+            } else "",
+            else => "",
+        };
+    };
+
+    // event.context.open_message_id / open_chat_id
+    var message_id: []const u8 = "";
+    var chat_id: []const u8 = "";
+    if (switch (event_obj) {
+        .object => |o| o.get("context"),
+        else => null,
+    }) |ctx| {
+        if (switch (ctx) {
+            .object => |o| o,
+            else => null,
+        }) |ctx_map| {
+            if (ctx_map.get("open_message_id")) |v| {
+                if (v == .string) message_id = v.string;
+            }
+            if (ctx_map.get("open_chat_id")) |v| {
+                if (v == .string) chat_id = v.string;
+            }
+        }
+    }
+
+    return .{
+        .act = act,
+        .decision = decision,
+        .option = option,
+        .open_id = open_id,
+        .message_id = message_id,
+        .chat_id = chat_id,
+    };
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -195,4 +301,134 @@ test "parseReceiveV1: non-text (image) — text is empty, other fields set" {
     try std.testing.expectEqualStrings("image", msg.message_type);
     // 非 text 类型，text 应为空。
     try std.testing.expectEqualStrings("", msg.text);
+}
+
+// ---------------------------------------------------------------------------
+// parseCardAction 测试（§9 真实 payload 形状，脱敏 id）
+// ---------------------------------------------------------------------------
+
+const card_stop_payload =
+    \\{"schema":"2.0",
+    \\ "header":{"event_id":"ev-c1","event_type":"card.action.trigger","tenant_key":"tk_test","app_id":"cli_test"},
+    \\ "event":{
+    \\   "operator":{"open_id":"ou_test","union_id":"on_test"},
+    \\   "token":"c-token",
+    \\   "action":{"value":{"act":"stop"},"tag":"button"},
+    \\   "host":"im_message",
+    \\   "context":{"open_message_id":"om_test","open_chat_id":"oc_test"}}}
+;
+
+test "parseCardAction: stop" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const ca = try parseCardAction(arena.allocator(), card_stop_payload);
+    try std.testing.expectEqualStrings("stop", ca.act);
+    try std.testing.expectEqualStrings("", ca.decision);
+    try std.testing.expectEqual(@as(i64, -1), ca.option);
+    try std.testing.expectEqualStrings("ou_test", ca.open_id);
+    try std.testing.expectEqualStrings("om_test", ca.message_id);
+    try std.testing.expectEqualStrings("oc_test", ca.chat_id);
+}
+
+test "parseCardAction: approval approve" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const payload =
+        \\{"schema":"2.0",
+        \\ "header":{"event_id":"ev-c2","event_type":"card.action.trigger"},
+        \\ "event":{
+        \\   "operator":{"open_id":"ou_test"},
+        \\   "action":{"value":{"act":"approval","decision":"approve"},"tag":"button"},
+        \\   "context":{"open_message_id":"om_test","open_chat_id":"oc_test"}}}
+    ;
+    const ca = try parseCardAction(arena.allocator(), payload);
+    try std.testing.expectEqualStrings("approval", ca.act);
+    try std.testing.expectEqualStrings("approve", ca.decision);
+    try std.testing.expectEqual(@as(i64, -1), ca.option);
+}
+
+test "parseCardAction: approval reject" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const payload =
+        \\{"schema":"2.0",
+        \\ "header":{"event_id":"ev-c3","event_type":"card.action.trigger"},
+        \\ "event":{
+        \\   "operator":{"open_id":"ou_test"},
+        \\   "action":{"value":{"act":"approval","decision":"reject"},"tag":"button"},
+        \\   "context":{"open_message_id":"om_test","open_chat_id":"oc_test"}}}
+    ;
+    const ca = try parseCardAction(arena.allocator(), payload);
+    try std.testing.expectEqualStrings("approval", ca.act);
+    try std.testing.expectEqualStrings("reject", ca.decision);
+}
+
+test "parseCardAction: question option 2" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const payload =
+        \\{"schema":"2.0",
+        \\ "header":{"event_id":"ev-c4","event_type":"card.action.trigger"},
+        \\ "event":{
+        \\   "operator":{"open_id":"ou_test"},
+        \\   "action":{"value":{"act":"question","option":2},"tag":"button"},
+        \\   "context":{"open_message_id":"om_test","open_chat_id":"oc_test"}}}
+    ;
+    const ca = try parseCardAction(arena.allocator(), payload);
+    try std.testing.expectEqualStrings("question", ca.act);
+    try std.testing.expectEqualStrings("", ca.decision);
+    try std.testing.expectEqual(@as(i64, 2), ca.option);
+}
+
+test "parseCardAction: malformed — no event key" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const result = parseCardAction(arena.allocator(), "{\"schema\":\"2.0\",\"header\":{}}");
+    try std.testing.expectError(error.FeishuCardActionMalformed, result);
+}
+
+test "parseCardAction: malformed — no action key" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const payload =
+        \\{"schema":"2.0","event":{"operator":{"open_id":"ou_test"},"context":{}}}
+    ;
+    const result = parseCardAction(arena.allocator(), payload);
+    try std.testing.expectError(error.FeishuCardActionMalformed, result);
+}
+
+test "parseCardAction: malformed — no value key" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const payload =
+        \\{"schema":"2.0","event":{"operator":{},"action":{"tag":"button"},"context":{}}}
+    ;
+    const result = parseCardAction(arena.allocator(), payload);
+    try std.testing.expectError(error.FeishuCardActionMalformed, result);
+}
+
+test "parseCardAction: malformed — value without act" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const payload =
+        \\{"schema":"2.0","event":{"operator":{},"action":{"value":{"decision":"approve"},"tag":"button"},"context":{}}}
+    ;
+    const result = parseCardAction(arena.allocator(), payload);
+    try std.testing.expectError(error.FeishuCardActionMalformed, result);
 }
