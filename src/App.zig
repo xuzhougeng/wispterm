@@ -426,6 +426,10 @@ pub fn startFeishu(self: *App, cfg: *const Config) void {
         return;
     }
 
+    // Select the API region (China feishu.cn vs international larksuite.com) before
+    // any network call. Process-wide singleton — see feishu_types.apiBase().
+    feishu_types.setRegion(cfg.@"feishu-international");
+
     const creds = feishu_types.Credentials{ .app_id = app_id, .app_secret = app_secret };
     const binding_cfg = feishu_binding.Config{
         .allowed_user = cfg.@"feishu-allowed-user" orelse "",

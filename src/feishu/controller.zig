@@ -297,6 +297,9 @@ pub const Controller = struct {
     app_secret_buf: []u8,
 
     token_cache: rest.TokenCache = .{},
+    // 机器人自身 open_id（start 时经 getBotOpenId 获取），群聊用它判断是否被 @。
+    // 空 = 获取失败的降级（群聊不响应，私聊照常）。owned by allocator。
+    bot_open_id_buf: []u8 = &.{},
     dedup: binding_mod.Dedup,
 
     // longconn ownership — addr stable because Controller is heap-allocated.
@@ -357,6 +360,7 @@ pub const Controller = struct {
         self.stop();
         self.dedup.deinit();
         self.token_cache.deinit(self.allocator);
+        if (self.bot_open_id_buf.len != 0) self.allocator.free(self.bot_open_id_buf);
         self.allocator.free(self.app_id_buf);
         self.allocator.free(self.app_secret_buf);
         self.allocator.destroy(self);
@@ -368,9 +372,29 @@ pub const Controller = struct {
         if (self.running) return;
         try self.progress.start();
         errdefer self.progress.stop();
+
+        // Best-effort：拿机器人自身 open_id，供群聊判断是否被 @。失败不致命
+        // （群聊 @ 失效，私聊照常）。仅在尚未取得时获取，避免 start 重试时泄漏。
+        if (self.bot_open_id_buf.len == 0) self.resolveBotOpenId();
+
         try self.conn.start(self.creds, onEvent, self);
         self.running = true;
         log.info("feishu controller started", .{});
+    }
+
+    /// Best-effort fetch of the bot's own open_id for group @-mention detection.
+    /// Errors are logged, never propagated — p2p must work even if this fails.
+    fn resolveBotOpenId(self: *Controller) void {
+        const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
+            log.warn("feishu: token fetch before getBotOpenId failed: {s}; group @ disabled", .{@errorName(err)});
+            return;
+        };
+        const id = rest.getBotOpenId(self.allocator, token) catch |err| {
+            log.warn("feishu: getBotOpenId failed: {s}; group @ disabled", .{@errorName(err)});
+            return;
+        };
+        self.bot_open_id_buf = id; // owned by self.allocator; freed in destroy
+        log.info("feishu: bot open_id resolved; group @-mention enabled", .{});
     }
 
     /// Signals stop and joins both the longconn thread and the progress worker.
@@ -419,8 +443,8 @@ pub const Controller = struct {
             // Continue — a dedup failure is not fatal; worst case we process once.
         };
 
-        // Step 3: binding filter
-        if (!binding_mod.shouldHandle(msg, self.cfg)) {
+        // Step 3: binding filter (group messages require an @-mention of the bot)
+        if (!binding_mod.shouldHandle(msg, self.cfg, self.bot_open_id_buf)) {
             log.debug("onEvent: message filtered by binding.shouldHandle", .{});
             return;
         }
@@ -700,6 +724,39 @@ fn buildPayload(
     , .{ event_id, sender_open_id, chat_id, chat_type, content_escaped });
 }
 
+// Synthetic group receive_v1 payload whose text @-mentions `bot_open_id`
+// (placeholder @_user_1). Mirrors buildPayload but chat_type=group + mentions[].
+fn buildGroupAtPayload(
+    alloc: std.mem.Allocator,
+    event_id: []const u8,
+    chat_id: []const u8,
+    sender_open_id: []const u8,
+    bot_open_id: []const u8,
+    text: []const u8,
+) ![]u8 {
+    const inner_content = try std.fmt.allocPrint(alloc, "{{\"text\":\"@_user_1 {s}\"}}", .{text});
+    defer alloc.free(inner_content);
+    const content_escaped = try std.json.Stringify.valueAlloc(alloc, inner_content, .{});
+    defer alloc.free(content_escaped);
+    return std.fmt.allocPrint(alloc,
+        \\{{
+        \\  "schema":"2.0",
+        \\  "header":{{"event_id":"{s}","event_type":"im.message.receive_v1"}},
+        \\  "event":{{
+        \\    "sender":{{"sender_id":{{"open_id":"{s}"}}}},
+        \\    "message":{{
+        \\      "message_id":"om_g1",
+        \\      "chat_id":"{s}",
+        \\      "chat_type":"group",
+        \\      "message_type":"text",
+        \\      "content":{s},
+        \\      "mentions":[{{"key":"@_user_1","id":{{"open_id":"{s}"}}}}]
+        \\    }}
+        \\  }}
+        \\}}
+    , .{ event_id, sender_open_id, chat_id, content_escaped, bot_open_id });
+}
+
 /// Create a controller wired to a fake control + ack capture (no network).
 fn makeTestCtrl(fake: *FakeControl, ack: *AckCapture) !*Controller {
     const ctrl = try Controller.create(
@@ -788,7 +845,48 @@ test "onEvent binding filter: group message is ignored" {
 
     Controller.onEvent(ctrl, payload);
 
-    // Group messages must be filtered by binding.shouldHandle → no ack.
+    // Group message with no @-mention of the bot → filtered by shouldHandle → no ack.
+    try t.expectEqual(@as(usize, 0), ack.calls);
+    try t.expectEqual(@as(usize, 0), fake.last_input.items.len);
+}
+
+test "onEvent: group message that @-mentions the bot is handled (placeholder stripped)" {
+    var fake = FakeControl{};
+    defer fake.deinit();
+    var ack = AckCapture{};
+    defer ack.deinit();
+
+    const ctrl = try makeTestCtrl(&fake, &ack);
+    defer ctrl.destroy();
+    // Simulate start() having resolved the bot's open_id (owned; freed by destroy).
+    ctrl.bot_open_id_buf = try t.allocator.dupe(u8, "ou_bot");
+
+    const payload = try buildGroupAtPayload(t.allocator, "ev-g1", "oc_group1", "ou_alice", "ou_bot", "部署服务");
+    defer t.allocator.free(payload);
+
+    Controller.onEvent(ctrl, payload);
+
+    // route ran → sendInput got the text with the @ placeholder stripped.
+    try t.expect(std.mem.indexOf(u8, fake.last_input.items, "部署服务") != null);
+    try t.expect(std.mem.indexOf(u8, fake.last_input.items, "@_user_1") == null);
+}
+
+test "onEvent: group message @-mentioning someone else is ignored" {
+    var fake = FakeControl{};
+    defer fake.deinit();
+    var ack = AckCapture{};
+    defer ack.deinit();
+
+    const ctrl = try makeTestCtrl(&fake, &ack);
+    defer ctrl.destroy();
+    ctrl.bot_open_id_buf = try t.allocator.dupe(u8, "ou_bot");
+
+    // @ targets another user, not the bot → must be ignored.
+    const payload = try buildGroupAtPayload(t.allocator, "ev-g2", "oc_group1", "ou_alice", "ou_someone_else", "随便聊聊");
+    defer t.allocator.free(payload);
+
+    Controller.onEvent(ctrl, payload);
+
     try t.expectEqual(@as(usize, 0), ack.calls);
     try t.expectEqual(@as(usize, 0), fake.last_input.items.len);
 }

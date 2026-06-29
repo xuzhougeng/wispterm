@@ -4,10 +4,12 @@
 //! 上传依赖 multipart/form-data；核心编码抽为纯函数 buildMultipart 以便离线测试。
 
 const std = @import("std");
+const types = @import("types.zig");
 
 const log = std.log.scoped(.feishu_media);
 
-const BASE = "https://open.feishu.cn";
+// API base host (open.feishu.cn vs open.larksuite.com) is resolved at runtime
+// from the configured region — see types.apiBase().
 
 // ---------------------------------------------------------------------------
 // multipart/form-data — pure, offline-testable
@@ -105,7 +107,8 @@ pub fn uploadImage(alloc: std.mem.Allocator, token: []const u8, image_bytes: []c
 
     const ct = try std.fmt.allocPrint(a, "multipart/form-data; boundary={s}", .{mp.boundary});
 
-    const resp_bytes = try httpsPostMultipart(alloc, a, BASE ++ "/open-apis/im/v1/images", token, mp.body, ct);
+    const url = try std.fmt.allocPrint(a, "{s}/open-apis/im/v1/images", .{types.apiBase()});
+    const resp_bytes = try httpsPostMultipart(alloc, a, url, token, mp.body, ct);
 
     const Resp = struct {
         code: i64 = -1,
@@ -150,7 +153,8 @@ pub fn uploadFile(
 
     const ct = try std.fmt.allocPrint(a, "multipart/form-data; boundary={s}", .{mp.boundary});
 
-    const resp_bytes = try httpsPostMultipart(alloc, a, BASE ++ "/open-apis/im/v1/files", token, mp.body, ct);
+    const url = try std.fmt.allocPrint(a, "{s}/open-apis/im/v1/files", .{types.apiBase()});
+    const resp_bytes = try httpsPostMultipart(alloc, a, url, token, mp.body, ct);
 
     const Resp = struct {
         code: i64 = -1,
@@ -196,8 +200,8 @@ pub fn downloadResource(
     };
     const url = try std.fmt.allocPrint(
         a,
-        BASE ++ "/open-apis/im/v1/messages/{s}/resources/{s}?type={s}",
-        .{ message_id, file_key, kind_str },
+        "{s}/open-apis/im/v1/messages/{s}/resources/{s}?type={s}",
+        .{ types.apiBase(), message_id, file_key, kind_str },
     );
 
     // httpsGetWithBearer returns bytes owned by arena `a`; dupe into the

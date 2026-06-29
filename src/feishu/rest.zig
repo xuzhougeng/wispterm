@@ -12,7 +12,8 @@ const types = @import("types.zig");
 
 const log = std.log.scoped(.feishu_rest);
 
-const BASE = "https://open.feishu.cn";
+// API base host (open.feishu.cn vs open.larksuite.com) is resolved at runtime
+// from the configured region — see types.apiBase().
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-testable without network)
@@ -57,7 +58,8 @@ pub fn tenantAccessToken(alloc: std.mem.Allocator, creds: types.Credentials) !To
         .app_secret = creds.app_secret,
     }, .{});
 
-    const resp = try httpsPost(alloc, a, BASE ++ "/open-apis/auth/v3/tenant_access_token/internal", body);
+    const url = try std.fmt.allocPrint(a, "{s}/open-apis/auth/v3/tenant_access_token/internal", .{types.apiBase()});
+    const resp = try httpsPost(alloc, a, url, body);
 
     const Resp = struct {
         code: i64 = -1,
@@ -148,7 +150,8 @@ pub fn discoverWsEndpoint(alloc: std.mem.Allocator, creds: types.Credentials) !W
         .AppSecret = creds.app_secret,
     }, .{});
 
-    const resp = try httpsPost(alloc, a, BASE ++ "/callback/ws/endpoint", body);
+    const url = try std.fmt.allocPrint(a, "{s}/callback/ws/endpoint", .{types.apiBase()});
+    const resp = try httpsPost(alloc, a, url, body);
 
     const ClientConfig = struct {
         PingInterval: i64 = 0,
@@ -228,8 +231,8 @@ pub fn sendMessage(
 
     const url = try std.fmt.allocPrint(
         a,
-        BASE ++ "/open-apis/im/v1/messages?receive_id_type={s}",
-        .{receive_id_type},
+        "{s}/open-apis/im/v1/messages?receive_id_type={s}",
+        .{ types.apiBase(), receive_id_type },
     );
 
     try httpsPostWithBearer(alloc, a, url, token, body_str);
@@ -305,7 +308,8 @@ pub fn createStreamingCard(alloc: std.mem.Allocator, token: []const u8, card_jso
         .data = card_json,
     }, .{});
 
-    const resp = try httpsReqWithBearer(alloc, a, .POST, BASE ++ "/open-apis/cardkit/v1/cards", token, body);
+    const url = try std.fmt.allocPrint(a, "{s}/open-apis/cardkit/v1/cards", .{types.apiBase()});
+    const resp = try httpsReqWithBearer(alloc, a, .POST, url, token, body);
 
     const Data = struct { card_id: []const u8 = "" };
     const Resp = struct {
@@ -347,8 +351,8 @@ pub fn sendCardMessage(
     }, .{});
     const url = try std.fmt.allocPrint(
         a,
-        BASE ++ "/open-apis/im/v1/messages?receive_id_type={s}",
-        .{receive_id_type},
+        "{s}/open-apis/im/v1/messages?receive_id_type={s}",
+        .{ types.apiBase(), receive_id_type },
     );
     const resp = try httpsReqWithBearer(alloc, a, .POST, url, token, body_str);
 
@@ -390,8 +394,8 @@ pub fn streamCardContent(
 
     const url = try std.fmt.allocPrint(
         a,
-        BASE ++ "/open-apis/cardkit/v1/cards/{s}/elements/{s}/content",
-        .{ card_id, element_id },
+        "{s}/open-apis/cardkit/v1/cards/{s}/elements/{s}/content",
+        .{ types.apiBase(), card_id, element_id },
     );
     const body = try buildStreamBody(a, content, sequence);
     _ = try httpsReqWithBearer(alloc, a, .PUT, url, token, body);
@@ -410,8 +414,8 @@ pub fn closeStreaming(
 
     const url = try std.fmt.allocPrint(
         a,
-        BASE ++ "/open-apis/cardkit/v1/cards/{s}/settings",
-        .{card_id},
+        "{s}/open-apis/cardkit/v1/cards/{s}/settings",
+        .{ types.apiBase(), card_id },
     );
     const body = try buildCloseBody(a, sequence);
     _ = try httpsReqWithBearer(alloc, a, .PATCH, url, token, body);
@@ -437,8 +441,8 @@ pub fn patchMessageCard(
 
     const url = try std.fmt.allocPrint(
         a,
-        BASE ++ "/open-apis/im/v1/messages/{s}",
-        .{message_id},
+        "{s}/open-apis/im/v1/messages/{s}",
+        .{ types.apiBase(), message_id },
     );
     // content field must be card_json serialized as a JSON string value.
     const body = try std.json.Stringify.valueAlloc(a, .{ .content = card_json }, .{});
@@ -455,7 +459,8 @@ pub fn getBotOpenId(alloc: std.mem.Allocator, token: []const u8) ![]u8 {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const resp = try httpsGetWithBearer(alloc, a, BASE ++ "/open-apis/bot/v3/info", token);
+    const url = try std.fmt.allocPrint(a, "{s}/open-apis/bot/v3/info", .{types.apiBase()});
+    const resp = try httpsGetWithBearer(alloc, a, url, token);
 
     const BotInfo = struct {
         open_id: []const u8 = "",

@@ -2588,11 +2588,10 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
         switch (ev.key) {
             .tab, .arrow_down => feishuConfig().focusNextRow(),
             .arrow_up => feishuConfig().focusPrevRow(),
-            .arrow_left, .arrow_right => if (feishuConfig().focus == feishu_config.ENABLED_ROW) feishuConfig().toggleEnabled(),
+            .arrow_left, .arrow_right => feishuConfig().toggleFocusedBool(),
             .enter => switch (feishuConfig().focus) {
                 feishu_config.SAVE_ROW => saveFeishuConfig(),
-                feishu_config.ENABLED_ROW => feishuConfig().toggleEnabled(),
-                else => {},
+                else => feishuConfig().toggleFocusedBool(), // toggle rows flip; field rows no-op
             },
             .backspace => if (feishuConfig().focusedField()) |f| feishuConfig().backspace(f),
             .escape => closeFeishuConfigForm(),
@@ -3968,6 +3967,7 @@ fn openFeishuConfigForm() void {
         var cfg = Config.load(allocator) catch Config{};
         defer cfg.deinit(allocator);
         st.enabled = cfg.@"feishu-enabled"; // reflect current enable state in the form's toggle row
+        st.international = cfg.@"feishu-international"; // reflect current region in the form's toggle row
         if (cfg.@"feishu-app-id") |id| st.setValue(.app_id, id); // app-id prefilled; secret never prefilled
         feishuForm().secret_already_set = cfg.@"feishu-app-secret" != null; // boolean only — secret value never read into the form
     }
@@ -3986,6 +3986,7 @@ fn saveFeishuConfig() void {
     if (AppWindow.g_allocator) |allocator| {
         const st = feishuConfig();
         Config.setConfigValue(allocator, "feishu-enabled", if (st.enabled) "true" else "false") catch {};
+        Config.setConfigValue(allocator, "feishu-international", if (st.international) "true" else "false") catch {};
         const app_id = st.value(.app_id);
         if (app_id.len > 0) Config.setConfigValue(allocator, "feishu-app-id", app_id) catch {};
         const secret = st.value(.app_secret);
@@ -4986,7 +4987,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         if (row >= FEISHU_ROW_COUNT) return null;
         feishuConfig().focus = row;
         if (row == feishu_config.SAVE_ROW) return .feishu_save;
-        if (row == feishu_config.ENABLED_ROW) feishuConfig().toggleEnabled(); // click toggles enable
+        feishuConfig().toggleFocusedBool(); // toggle rows flip on click; field rows no-op
         return null;
     }
 
@@ -5184,10 +5185,13 @@ fn renderFeishuConfigForm(layout: SessionLayout, window_height: f32) void {
     // Row 0: enabled toggle (shows current on/off so the user knows the state before flipping)
     renderSessionRow(layout, window_height, feishu_config.ENABLED_ROW, i18n.s().feishu_form_enabled, boolText(st.enabled), st.focus == feishu_config.ENABLED_ROW);
 
-    // Row 1: app_id (plain text)
-    renderSessionFieldValue(layout, window_height, 1, i18n.s().feishu_form_app_id, st.value(.app_id), false, st.focus == 1);
+    // Row 1: international (Lark) toggle — picks open.larksuite.com over open.feishu.cn
+    renderSessionRow(layout, window_height, feishu_config.INTERNATIONAL_ROW, i18n.s().feishu_form_international, boolText(st.international), st.focus == feishu_config.INTERNATIONAL_ROW);
 
-    // Row 2: app_secret (masked)
+    // Row 2: app_id (plain text)
+    renderSessionFieldValue(layout, window_height, feishu_config.APP_ID_ROW, i18n.s().feishu_form_app_id, st.value(.app_id), false, st.focus == feishu_config.APP_ID_ROW);
+
+    // Row 3: app_secret (masked)
     const secret = st.value(.app_secret);
     var dot_buf: [feishu_config.FEISHU_FIELD_MAX * 3]u8 = undefined; // • is 3 UTF-8 bytes; mask by codepoint count
     const secret_display: []const u8 = if (secret.len > 0) blk: {
@@ -5202,9 +5206,9 @@ fn renderFeishuConfigForm(layout: SessionLayout, window_height: f32) void {
         i18n.s().feishu_form_secret_set_hint
     else
         "";
-    renderSessionRow(layout, window_height, 2, i18n.s().feishu_form_app_secret, secret_display, st.focus == 2);
+    renderSessionRow(layout, window_height, feishu_config.APP_SECRET_ROW, i18n.s().feishu_form_app_secret, secret_display, st.focus == feishu_config.APP_SECRET_ROW);
 
-    // Row 3: Save
+    // Row 4: Save
     renderSessionRow(layout, window_height, feishu_config.SAVE_ROW, i18n.s().feishu_form_save, i18n.s().toast_feishu_restart, st.focus == feishu_config.SAVE_ROW);
 }
 

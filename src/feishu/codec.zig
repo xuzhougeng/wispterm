@@ -45,6 +45,15 @@ const Sender = struct {
     sender_id: SenderId = .{},
 };
 
+// event.message.mentions[].id.open_id —— 被 @ 者的 open_id。
+const RawMentionId = struct {
+    open_id: []const u8 = "",
+};
+const RawMention = struct {
+    key: []const u8 = "",
+    id: RawMentionId = .{},
+};
+
 const Message = struct {
     message_id: []const u8 = "",
     chat_id: []const u8 = "",
@@ -52,6 +61,8 @@ const Message = struct {
     message_type: []const u8 = "",
     /// content 是一段 JSON 字符串，其值本身又是 JSON。
     content: []const u8 = "",
+    /// 群聊 @ 列表；私聊一般缺失（→ 空数组）。
+    mentions: []const RawMention = &.{},
 };
 
 const Event = struct {
@@ -97,6 +108,17 @@ pub fn parseReceiveV1(arena: std.mem.Allocator, payload_json: []const u8) !types
         text = inner.text;
     }
 
+    // 映射 mentions（borrow arena），并从 text 中剥除 @ 占位符。
+    var mentions: []const types.Mention = &.{};
+    if (env.event.message.mentions.len > 0) {
+        const out = try arena.alloc(types.Mention, env.event.message.mentions.len);
+        for (env.event.message.mentions, 0..) |m, i| {
+            out[i] = .{ .key = m.key, .open_id = m.id.open_id };
+        }
+        mentions = out;
+    }
+    text = try stripMentions(arena, text, mentions);
+
     return .{
         .event_id = env.header.event_id,
         .message_id = env.event.message.message_id,
@@ -105,7 +127,20 @@ pub fn parseReceiveV1(arena: std.mem.Allocator, payload_json: []const u8) !types
         .chat_type = types.ChatType.fromString(env.event.message.chat_type),
         .message_type = env.event.message.message_type,
         .text = text,
+        .mentions = mentions,
     };
+}
+
+/// 从 text 中移除所有 @ 占位符（mentions[].key，如 "@_user_1"）并 trim 首尾空白。
+/// mentions 为空时原样返回（私聊常见路径，零分配）。返回的切片借 arena。
+pub fn stripMentions(arena: std.mem.Allocator, text: []const u8, mentions: []const types.Mention) ![]const u8 {
+    if (mentions.len == 0) return text;
+    var cur: []const u8 = text;
+    for (mentions) |m| {
+        if (m.key.len == 0) continue;
+        cur = try std.mem.replaceOwned(u8, arena, cur, m.key, "");
+    }
+    return std.mem.trim(u8, cur, " \t\r\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +400,58 @@ test "parseReceiveV1: non-text (image) — text is empty, other fields set" {
     try std.testing.expectEqualStrings("image", msg.message_type);
     // 非 text 类型，text 应为空。
     try std.testing.expectEqualStrings("", msg.text);
+}
+
+test "parseReceiveV1: group @ message — mentions parsed and placeholder stripped" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    // 群聊 @ 机器人：text 含占位符 @_user_1，mentions 给出被 @ 者 open_id。
+    const json =
+        \\{
+        \\  "schema":"2.0",
+        \\  "header":{"event_id":"ev-g1","event_type":"im.message.receive_v1"},
+        \\  "event":{
+        \\    "sender":{"sender_id":{"open_id":"ou_alice"}},
+        \\    "message":{
+        \\      "message_id":"om_g1",
+        \\      "chat_id":"oc_group1",
+        \\      "chat_type":"group",
+        \\      "message_type":"text",
+        \\      "content":"{\"text\":\"@_user_1 帮我看下日志\"}",
+        \\      "mentions":[{"key":"@_user_1","id":{"open_id":"ou_bot"},"name":"小助手"}]
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    const msg = try parseReceiveV1(arena.allocator(), json);
+
+    try std.testing.expectEqual(types.ChatType.group, msg.chat_type);
+    try std.testing.expectEqual(@as(usize, 1), msg.mentions.len);
+    try std.testing.expectEqualStrings("ou_bot", msg.mentions[0].open_id);
+    try std.testing.expect(msg.mentionsOpenId("ou_bot"));
+    // 占位符 @_user_1 已被剥除并 trim。
+    try std.testing.expectEqualStrings("帮我看下日志", msg.text);
+}
+
+test "stripMentions: multiple placeholders removed and trimmed; empty mentions is a no-op" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const al = arena.allocator();
+
+    const mentions = [_]types.Mention{
+        .{ .key = "@_user_1", .open_id = "ou_bot" },
+        .{ .key = "@_user_2", .open_id = "ou_alice" },
+    };
+    const out = try stripMentions(al, "@_user_1 @_user_2 部署一下", &mentions);
+    try std.testing.expectEqualStrings("部署一下", out);
+
+    // 无 mentions：原样返回。
+    const same = try stripMentions(al, "纯私聊文本", &.{});
+    try std.testing.expectEqualStrings("纯私聊文本", same);
 }
 
 // ---------------------------------------------------------------------------

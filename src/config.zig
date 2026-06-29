@@ -368,6 +368,11 @@ language: i18n.LanguageSetting = .auto,
 /// Enables the Feishu (Lark) long-connection channel.
 @"feishu-enabled": bool = false,
 
+/// Use the international Lark platform (open.larksuite.com) instead of the
+/// China Feishu platform (open.feishu.cn, default). An app belongs to exactly
+/// one region — credentials are not interchangeable.
+@"feishu-international": bool = false,
+
 /// Feishu app_id. Falls back to env FEISHU_APP_ID when empty.
 @"feishu-app-id": ?[]const u8 = null,
 
@@ -959,6 +964,14 @@ fn applyKeyValue(self: *Config, allocator: std.mem.Allocator, key: []const u8, v
             self.@"feishu-enabled" = false;
         } else {
             log.warn("invalid feishu-enabled: {s}", .{value});
+        }
+    } else if (std.mem.eql(u8, key, "feishu-international")) {
+        if (std.mem.eql(u8, value, "true")) {
+            self.@"feishu-international" = true;
+        } else if (std.mem.eql(u8, value, "false")) {
+            self.@"feishu-international" = false;
+        } else {
+            log.warn("invalid feishu-international: {s}", .{value});
         }
     } else if (std.mem.eql(u8, key, "feishu-app-id")) {
         self.@"feishu-app-id" = self.dupeString(allocator, value) orelse return;
@@ -2013,6 +2026,20 @@ test "config: feishu-enabled parses true/false (regression: field needs a parse 
     // Invalid value leaves the previous state untouched.
     cfg.applyKeyValue(allocator, "feishu-enabled", "maybe", ".");
     try std.testing.expectEqual(false, cfg.@"feishu-enabled");
+}
+
+test "config: feishu-international parses true/false (regression: field needs a parse handler)" {
+    const allocator = std.testing.allocator;
+    var cfg: Config = .{};
+
+    try std.testing.expectEqual(false, cfg.@"feishu-international");
+    cfg.applyKeyValue(allocator, "feishu-international", "true", ".");
+    try std.testing.expectEqual(true, cfg.@"feishu-international");
+    cfg.applyKeyValue(allocator, "feishu-international", "false", ".");
+    try std.testing.expectEqual(false, cfg.@"feishu-international");
+    // Invalid value leaves the previous state untouched.
+    cfg.applyKeyValue(allocator, "feishu-international", "maybe", ".");
+    try std.testing.expectEqual(false, cfg.@"feishu-international");
 }
 
 test "config: auto update check option parses true false" {
