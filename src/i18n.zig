@@ -238,6 +238,7 @@ pub const Strings = struct {
     // —— 飞书凭证表单 ——
     feishu_form_title: []const u8,
     feishu_form_enabled: []const u8,
+    feishu_form_international: []const u8,
     feishu_form_app_id: []const u8,
     feishu_form_app_secret: []const u8,
     feishu_form_secret_set_hint: []const u8,
@@ -464,6 +465,7 @@ const en = Strings{
 
     .feishu_form_title = "Feishu bot config",
     .feishu_form_enabled = "Enabled",
+    .feishu_form_international = "International (Lark)",
     .feishu_form_app_id = "App ID",
     .feishu_form_app_secret = "App Secret",
     .feishu_form_secret_set_hint = "already set — leave blank to keep",
@@ -690,6 +692,7 @@ const zh_CN = Strings{
 
     .feishu_form_title = "飞书 bot 配置",
     .feishu_form_enabled = "启用",
+    .feishu_form_international = "国际版 (Lark)",
     .feishu_form_app_id = "App ID",
     .feishu_form_app_secret = "App Secret",
     .feishu_form_secret_set_hint = "已设置，留空保留",

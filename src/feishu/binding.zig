@@ -1,4 +1,4 @@
-//! 飞书入站过滤 + event_id 去重。M2 p2p-only；群聊 @ 留 M3。
+//! 飞书入站过滤 + event_id 去重。私聊全收；群聊仅响应 @ 机器人的消息。
 const std = @import("std");
 const types = @import("types.zig");
 
@@ -8,12 +8,15 @@ pub const Config = struct {
 };
 
 /// 决定是否处理该消息。
-/// - group → false（v1 仅 p2p；群聊 @ 是 M3）
+/// - group 且未 @ 机器人 → false（群聊仅响应 @ 机器人的消息，避免刷屏）
 /// - sender_open_id 空 → false
 /// - allowed_user 非空且不匹配 → false
 /// - 否则 true
-pub fn shouldHandle(msg: types.IncomingMessage, cfg: Config) bool {
-    if (msg.chat_type == .group) return false;
+///
+/// bot_open_id 为机器人自身 open_id（controller 在 start 时经 getBotOpenId 获取）。
+/// 为空时（获取失败的降级）群聊一律 false，私聊不受影响。
+pub fn shouldHandle(msg: types.IncomingMessage, cfg: Config, bot_open_id: []const u8) bool {
+    if (msg.chat_type == .group and !msg.mentionsOpenId(bot_open_id)) return false;
     if (msg.sender_open_id.len == 0) return false;
     if (cfg.allowed_user.len != 0 and !std.mem.eql(u8, msg.sender_open_id, cfg.allowed_user)) return false;
     return true;
@@ -64,28 +67,45 @@ pub const Dedup = struct {
 
 const t = std.testing;
 
+const bot = "ou_bot"; // 测试用机器人 open_id
+
 test "shouldHandle: p2p with sender → true" {
-    try t.expect(shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "ou_abc" }, .{}));
+    try t.expect(shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "ou_abc" }, .{}, bot));
 }
 
-test "shouldHandle: group → false" {
-    try t.expect(!shouldHandle(.{ .chat_type = .group, .sender_open_id = "ou_abc" }, .{}));
+test "shouldHandle: group without @bot → false" {
+    try t.expect(!shouldHandle(.{ .chat_type = .group, .sender_open_id = "ou_abc" }, .{}, bot));
+}
+
+test "shouldHandle: group @bot → true" {
+    const m = [_]types.Mention{.{ .key = "@_user_1", .open_id = bot }};
+    try t.expect(shouldHandle(.{ .chat_type = .group, .sender_open_id = "ou_abc", .mentions = &m }, .{}, bot));
+}
+
+test "shouldHandle: group @someone-else → false" {
+    const m = [_]types.Mention{.{ .key = "@_user_1", .open_id = "ou_other" }};
+    try t.expect(!shouldHandle(.{ .chat_type = .group, .sender_open_id = "ou_abc", .mentions = &m }, .{}, bot));
+}
+
+test "shouldHandle: group @bot but empty bot_open_id (degraded) → false" {
+    const m = [_]types.Mention{.{ .key = "@_user_1", .open_id = bot }};
+    try t.expect(!shouldHandle(.{ .chat_type = .group, .sender_open_id = "ou_abc", .mentions = &m }, .{}, ""));
 }
 
 test "shouldHandle: empty sender → false" {
-    try t.expect(!shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "" }, .{}));
+    try t.expect(!shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "" }, .{}, bot));
 }
 
 test "shouldHandle: allowlist hit → true" {
-    try t.expect(shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "ou_abc" }, .{ .allowed_user = "ou_abc" }));
+    try t.expect(shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "ou_abc" }, .{ .allowed_user = "ou_abc" }, bot));
 }
 
 test "shouldHandle: allowlist miss → false" {
-    try t.expect(!shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "ou_xyz" }, .{ .allowed_user = "ou_abc" }));
+    try t.expect(!shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "ou_xyz" }, .{ .allowed_user = "ou_abc" }, bot));
 }
 
 test "shouldHandle: empty allowlist → any user passes" {
-    try t.expect(shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "ou_anyone" }, .{ .allowed_user = "" }));
+    try t.expect(shouldHandle(.{ .chat_type = .p2p, .sender_open_id = "ou_anyone" }, .{ .allowed_user = "" }, bot));
 }
 
 test "Dedup: first seen=false, after markSeen seen=true" {
