@@ -1035,24 +1035,54 @@ test "cancel path: close+updateMessage(已停止), close exactly once, no leak" 
 const FakeControlProgress = struct {
     question_count: usize = 0,
 
-    fn is_connected(_: *anyopaque) bool { return true; }
-    fn find_ai_surface(_: *anyopaque) ?@import("../chatops/control.zig").Surface { return null; }
-    fn find_terminal_surface(_: *anyopaque) ?@import("../chatops/control.zig").Surface { return null; }
-    fn open_ai_agent(_: *anyopaque, _: u32) @import("../chatops/control.zig").OpenResult { return .opened; }
-    fn open_ai_agent_profile(_: *anyopaque, _: []const u8, _: u32) @import("../chatops/control.zig").OpenResult { return .opened; }
-    fn model_profiles(_: *anyopaque, _: []u8) []const u8 { return ""; }
-    fn switch_ai_profile(_: *anyopaque, _: []const u8) @import("../chatops/control.zig").SwitchModelResult { return .offline; }
-    fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?@import("../chatops/reply.zig").ReplyContext) @import("../chatops/control.zig").SendResult { return .ok; }
-    fn latest_transcript(_: *anyopaque) []const u8 { return ""; }
-    fn ai_approval_pending(_: *anyopaque) bool { return false; }
-    fn resolve_ai_approval(_: *anyopaque, _: bool) bool { return false; }
+    fn is_connected(_: *anyopaque) bool {
+        return true;
+    }
+    fn find_ai_surface(_: *anyopaque) ?@import("../chatops/control.zig").Surface {
+        return null;
+    }
+    fn find_terminal_surface(_: *anyopaque) ?@import("../chatops/control.zig").Surface {
+        return null;
+    }
+    fn open_ai_agent(_: *anyopaque, _: u32) @import("../chatops/control.zig").OpenResult {
+        return .opened;
+    }
+    fn open_ai_agent_profile(_: *anyopaque, _: []const u8, _: u32) @import("../chatops/control.zig").OpenResult {
+        return .opened;
+    }
+    fn model_profiles(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
+    fn switch_ai_profile(_: *anyopaque, _: []const u8) @import("../chatops/control.zig").SwitchModelResult {
+        return .offline;
+    }
+    fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?@import("../chatops/reply.zig").ReplyContext) @import("../chatops/control.zig").SendResult {
+        return .ok;
+    }
+    fn latest_transcript(_: *anyopaque) []const u8 {
+        return "";
+    }
+    fn ai_approval_pending(_: *anyopaque) bool {
+        return false;
+    }
+    fn resolve_ai_approval(_: *anyopaque, _: bool) bool {
+        return false;
+    }
     fn ai_question_option_count(ctx: *anyopaque) usize {
         return @as(*FakeControlProgress, @ptrCast(@alignCast(ctx))).question_count;
     }
-    fn resolve_ai_question(_: *anyopaque, _: @import("../chatops/reply.zig").QuestionReply) bool { return false; }
-    fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 { return ""; }
-    fn list_ai_conversations(_: *anyopaque, out: *@import("../chatops/control.zig").ConversationList) void { out.count = 0; }
-    fn pin_ai_conversation_by_index(_: *anyopaque, _: usize, _: *@import("../chatops/control.zig").Conversation) bool { return false; }
+    fn resolve_ai_question(_: *anyopaque, _: @import("../chatops/reply.zig").QuestionReply) bool {
+        return false;
+    }
+    fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
+    fn list_ai_conversations(_: *anyopaque, out: *@import("../chatops/control.zig").ConversationList) void {
+        out.count = 0;
+    }
+    fn pin_ai_conversation_by_index(_: *anyopaque, _: usize, _: *@import("../chatops/control.zig").Conversation) bool {
+        return false;
+    }
 
     fn iface(self: *FakeControlProgress) @import("../chatops/control.zig").Control {
         return .{ .ctx = self, .vtable = &.{

@@ -226,7 +226,8 @@ pub fn sendMessage(
         .content = content,
     }, .{});
 
-    const url = try std.fmt.allocPrint(a,
+    const url = try std.fmt.allocPrint(
+        a,
         BASE ++ "/open-apis/im/v1/messages?receive_id_type={s}",
         .{receive_id_type},
     );
@@ -344,7 +345,8 @@ pub fn sendCardMessage(
         .msg_type = "interactive",
         .content = content,
     }, .{});
-    const url = try std.fmt.allocPrint(a,
+    const url = try std.fmt.allocPrint(
+        a,
         BASE ++ "/open-apis/im/v1/messages?receive_id_type={s}",
         .{receive_id_type},
     );
@@ -433,7 +435,8 @@ pub fn patchMessageCard(
     defer arena.deinit();
     const a = arena.allocator();
 
-    const url = try std.fmt.allocPrint(a,
+    const url = try std.fmt.allocPrint(
+        a,
         BASE ++ "/open-apis/im/v1/messages/{s}",
         .{message_id},
     );

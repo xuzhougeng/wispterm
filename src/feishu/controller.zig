@@ -723,7 +723,12 @@ test "onEvent pipeline: p2p text → route called + ack captured" {
     defer ctrl.destroy();
 
     const payload = try buildPayload(
-        t.allocator, "ev-001", "oc_chat001", "ou_alice", "p2p", "hello feishu",
+        t.allocator,
+        "ev-001",
+        "oc_chat001",
+        "ou_alice",
+        "p2p",
+        "hello feishu",
     );
     defer t.allocator.free(payload);
 
@@ -746,7 +751,12 @@ test "onEvent dedup: re-delivery with same event_id is ignored" {
     defer ctrl.destroy();
 
     const payload = try buildPayload(
-        t.allocator, "ev-dedup", "oc_chat002", "ou_bob", "p2p", "ping",
+        t.allocator,
+        "ev-dedup",
+        "oc_chat002",
+        "ou_bob",
+        "p2p",
+        "ping",
     );
     defer t.allocator.free(payload);
 
@@ -767,7 +777,12 @@ test "onEvent binding filter: group message is ignored" {
     defer ctrl.destroy();
 
     const payload = try buildPayload(
-        t.allocator, "ev-group", "oc_group001", "ou_carol", "group", "hello group",
+        t.allocator,
+        "ev-group",
+        "oc_group001",
+        "ou_carol",
+        "group",
+        "hello group",
     );
     defer t.allocator.free(payload);
 
@@ -795,7 +810,12 @@ test "onEvent binding filter: allowed_user mismatch → ignored" {
     ctrl.send_sink = .{ .ctx = &ack, .send = AckCapture.send };
 
     const payload = try buildPayload(
-        t.allocator, "ev-filtered", "oc_chat003", "ou_stranger", "p2p", "hi",
+        t.allocator,
+        "ev-filtered",
+        "oc_chat003",
+        "ou_stranger",
+        "p2p",
+        "hi",
     );
     defer t.allocator.free(payload);
 
@@ -864,12 +884,24 @@ const FakeResolveControl = struct {
     fn find_ai_surface(_: *anyopaque) ?control_mod.Surface {
         return .{ .id = "aichat0000000000".*, .title = "Copilot" };
     }
-    fn find_terminal_surface(_: *anyopaque) ?control_mod.Surface { return null; }
-    fn is_connected(_: *anyopaque) bool { return true; }
-    fn open_ai_agent(_: *anyopaque, _: u32) control_mod.OpenResult { return .opened; }
-    fn open_ai_agent_profile(_: *anyopaque, _: []const u8, _: u32) control_mod.OpenResult { return .opened; }
-    fn model_profiles(_: *anyopaque, _: []u8) []const u8 { return ""; }
-    fn switch_ai_profile(_: *anyopaque, _: []const u8) control_mod.SwitchModelResult { return .offline; }
+    fn find_terminal_surface(_: *anyopaque) ?control_mod.Surface {
+        return null;
+    }
+    fn is_connected(_: *anyopaque) bool {
+        return true;
+    }
+    fn open_ai_agent(_: *anyopaque, _: u32) control_mod.OpenResult {
+        return .opened;
+    }
+    fn open_ai_agent_profile(_: *anyopaque, _: []const u8, _: u32) control_mod.OpenResult {
+        return .opened;
+    }
+    fn model_profiles(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
+    fn switch_ai_profile(_: *anyopaque, _: []const u8) control_mod.SwitchModelResult {
+        return .offline;
+    }
     fn send_input(ctx: *anyopaque, _: [16]u8, bytes: []const u8, _: ?reply_mod.ReplyContext) control_mod.SendResult {
         const self: *FakeResolveControl = @ptrCast(@alignCast(ctx));
         self.send_input_called = true;
@@ -877,24 +909,36 @@ const FakeResolveControl = struct {
         self.send_input_bytes.appendSlice(t.allocator, bytes) catch {};
         return .ok;
     }
-    fn latest_transcript(_: *anyopaque) []const u8 { return ""; }
-    fn ai_approval_pending(_: *anyopaque) bool { return false; }
+    fn latest_transcript(_: *anyopaque) []const u8 {
+        return "";
+    }
+    fn ai_approval_pending(_: *anyopaque) bool {
+        return false;
+    }
     fn resolve_ai_approval(ctx: *anyopaque, approve: bool) bool {
         const self: *FakeResolveControl = @ptrCast(@alignCast(ctx));
         self.approve_called = true;
         self.approve_arg = approve;
         return self.approve_returns;
     }
-    fn ai_question_option_count(_: *anyopaque) usize { return 0; }
+    fn ai_question_option_count(_: *anyopaque) usize {
+        return 0;
+    }
     fn resolve_ai_question(ctx: *anyopaque, reply: reply_mod.QuestionReply) bool {
         const self: *FakeResolveControl = @ptrCast(@alignCast(ctx));
         self.question_called = true;
         self.question_option = reply.option;
         return self.question_returns;
     }
-    fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 { return ""; }
-    fn list_ai_conversations(_: *anyopaque, out: *control_mod.ConversationList) void { out.count = 0; }
-    fn pin_ai_conversation_by_index(_: *anyopaque, _: usize, _: *control_mod.Conversation) bool { return false; }
+    fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 {
+        return "";
+    }
+    fn list_ai_conversations(_: *anyopaque, out: *control_mod.ConversationList) void {
+        out.count = 0;
+    }
+    fn pin_ai_conversation_by_index(_: *anyopaque, _: usize, _: *control_mod.Conversation) bool {
+        return false;
+    }
 
     fn iface(self: *FakeResolveControl) control_mod.Control {
         return .{ .ctx = self, .vtable = &.{
