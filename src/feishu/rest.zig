@@ -387,6 +387,33 @@ pub fn closeStreaming(
 }
 
 // ---------------------------------------------------------------------------
+// patchMessageCard
+// ---------------------------------------------------------------------------
+
+/// Updates an interactive card message via PATCH /open-apis/im/v1/messages/{message_id}.
+/// card_json is the complete card JSON string (JSON 2.0 format).
+/// Body: {"content": <card_json_string>} where card_json is serialized as a JSON string value.
+/// Non-200 or code!=0 → error.
+pub fn patchMessageCard(
+    alloc: std.mem.Allocator,
+    token: []const u8,
+    message_id: []const u8,
+    card_json: []const u8,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const url = try std.fmt.allocPrint(a,
+        BASE ++ "/open-apis/im/v1/messages/{s}",
+        .{message_id},
+    );
+    // content field must be card_json serialized as a JSON string value.
+    const body = try std.json.Stringify.valueAlloc(a, .{ .content = card_json }, .{});
+    _ = try httpsReqWithBearer(alloc, a, .PATCH, url, token, body);
+}
+
+// ---------------------------------------------------------------------------
 // getBotOpenId
 // ---------------------------------------------------------------------------
 

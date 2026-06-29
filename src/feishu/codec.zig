@@ -14,6 +14,25 @@ const types = @import("types.zig");
 // 外层信封结构（仅取 M2 所需字段，ignore_unknown_fields=true 忽略其余）
 // ---------------------------------------------------------------------------
 
+// eventType 辅助结构：只读 header.event_type，避免完整解析
+const EventTypeHeader = struct {
+    event_type: []const u8 = "",
+};
+const EventTypeEnv = struct {
+    header: EventTypeHeader = .{},
+};
+
+/// 峰值取 payload 的 header.event_type；失败/缺失返回 null。
+/// 供 onEvent 分派前判断 event 类型，避免对 card.action.trigger 误走 parseReceiveV1。
+pub fn eventType(arena: std.mem.Allocator, payload: []const u8) ?[]const u8 {
+    const env = std.json.parseFromSliceLeaky(EventTypeEnv, arena, payload, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return null;
+    if (env.header.event_type.len == 0) return null;
+    return env.header.event_type;
+}
+
 const EnvHeader = struct {
     event_id: []const u8 = "",
 };
@@ -201,6 +220,51 @@ pub fn parseCardAction(arena: std.mem.Allocator, payload: []const u8) !CardActio
 
 // TODO(M2.E2E): 捕获 fixtures/02_event_data_frame.bin 后，在此补一条
 // "pbbp2.decode 真帧 → parseReceiveV1" 的端到端断言。
+
+// ---------------------------------------------------------------------------
+// eventType 测试
+// ---------------------------------------------------------------------------
+
+test "eventType: card.action.trigger payload" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const et = eventType(arena.allocator(), card_stop_payload);
+    try std.testing.expect(et != null);
+    try std.testing.expectEqualStrings("card.action.trigger", et.?);
+}
+
+test "eventType: im.message.receive_v1 payload" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const payload =
+        \\{"schema":"2.0","header":{"event_id":"ev-001","event_type":"im.message.receive_v1"},"event":{}}
+    ;
+    const et = eventType(arena.allocator(), payload);
+    try std.testing.expect(et != null);
+    try std.testing.expectEqualStrings("im.message.receive_v1", et.?);
+}
+
+test "eventType: malformed JSON → null" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const et = eventType(arena.allocator(), "not json at all");
+    try std.testing.expect(et == null);
+}
+
+test "eventType: missing event_type field → null" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const et = eventType(arena.allocator(), "{\"schema\":\"2.0\",\"header\":{\"event_id\":\"ev-x\"}}");
+    try std.testing.expect(et == null);
+}
 
 test "parseReceiveV1: text message — all fields extracted" {
     const a = std.testing.allocator;

@@ -319,6 +319,15 @@ pub const ProgressWorker = struct {
             const current_gen = self.currentGeneration();
             if (current_gen != gen) {
                 log.debug("progress: episode cancelled gen_old={d} gen_new={d}", .{ gen, current_gen });
+                // Stream "⏹ 已停止" to the card before the defer closes it.
+                // Still within S4 ownership: card_id is outer local, seq is incremented here,
+                // and the defer below will call close(seq) then free(cid) — no double close/leak.
+                if (card_id) |cid| {
+                    self.card_sink.stream(self.card_sink.ctx, self.allocator, cid, "⏹ 已停止", seq) catch |err| {
+                        log.warn("progress: cancel stream failed: {s}", .{@errorName(err)});
+                    };
+                    seq += 1;
+                }
                 self.allocator.free(snap.chat_id);
                 self.allocator.free(snap.baseline);
                 return; // defer: close card + free card_id + free last_md

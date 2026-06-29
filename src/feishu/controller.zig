@@ -30,6 +30,42 @@ const log = std.log.scoped(.feishu_ctrl);
 const DEDUP_CAP: usize = 256;
 
 // ---------------------------------------------------------------------------
+// Injectable card update fn (makes handleCardAction testable without network)
+// ---------------------------------------------------------------------------
+
+/// Abstracts "update a Feishu interactive card message" so tests can record calls
+/// without hitting the network. Production: calls token_cache+rest.patchMessageCard.
+pub const CardUpdateFn = *const fn (
+    ctx: *anyopaque,
+    alloc: std.mem.Allocator,
+    message_id: []const u8,
+    card_json: []const u8,
+) anyerror!void;
+
+pub const CardUpdateSink = struct {
+    ctx: *anyopaque,
+    update: CardUpdateFn,
+};
+
+/// Production card_update: fetches token then calls rest.patchMessageCard.
+fn restPatchCard(
+    ctx: *anyopaque,
+    alloc: std.mem.Allocator,
+    message_id: []const u8,
+    card_json: []const u8,
+) anyerror!void {
+    const self: *Controller = @ptrCast(@alignCast(ctx));
+    const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
+        log.warn("restPatchCard: token refresh failed: {s}", .{@errorName(err)});
+        return err;
+    };
+    rest.patchMessageCard(alloc, token, message_id, card_json) catch |err| {
+        log.warn("restPatchCard: patch failed: {s}", .{@errorName(err)});
+        return err;
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Injectable send sink (makes ack testable without hitting the network)
 // ---------------------------------------------------------------------------
 
@@ -234,6 +270,9 @@ pub const Controller = struct {
     // Injectable send sink: points at restSendText in production; tests override.
     send_sink: SendSink,
 
+    // Injectable card update: production → restPatchCard; tests → recorder/no-op.
+    card_update: CardUpdateSink,
+
     // AI-reply progress worker (M2.9). Polls the transcript on a separate
     // thread and sends the final reply / approval/question prompts to Feishu.
     progress: progress_mod.ProgressWorker,
@@ -264,6 +303,7 @@ pub const Controller = struct {
             .dedup = dedup,
             .conn = .{ .allocator = allocator },
             .send_sink = .{ .ctx = self, .send = restSendText },
+            .card_update = .{ .ctx = self, .update = restPatchCard },
             // progress.send_sink is set to self.send_sink after self.* is
             // initialized (send_sink.ctx = self, which is now stable on the heap).
             .progress = .{
@@ -318,6 +358,13 @@ pub const Controller = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const a = arena.allocator();
+
+        // Step 0: dispatch card.action.trigger before parseReceiveV1 (which would fail on it).
+        const etype = codec.eventType(a, payload) orelse "";
+        if (std.mem.eql(u8, etype, "card.action.trigger")) {
+            self.handleCardAction(payload);
+            return;
+        }
 
         // Step 1: parse
         const msg = codec.parseReceiveV1(a, payload) catch |err| {
@@ -405,6 +452,65 @@ pub const Controller = struct {
                 log.warn("onEvent: beginEpisode failed: {s}", .{@errorName(err)});
             };
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // handleCardAction — runs on the longconn thread (same as onEvent)
+    // ---------------------------------------------------------------------------
+
+    fn handleCardAction(self: *Controller, payload: []const u8) void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const ca = codec.parseCardAction(a, payload) catch |err| {
+            log.warn("handleCardAction: parse failed: {s}", .{@errorName(err)});
+            return;
+        };
+
+        if (std.mem.eql(u8, ca.act, "stop")) {
+            // Mirror /stop: ESC to AI surface + cancel episode.
+            // Card visual update is handled by the worker cancel path (⏹ 已停止 stream).
+            if (self.control.findAiSurface()) |ai| {
+                _ = self.control.sendInput(ai.id, "\x1b", null);
+            }
+            self.progress.cancelEpisode();
+        } else if (std.mem.eql(u8, ca.act, "approval")) {
+            const approve = std.mem.eql(u8, ca.decision, "approve");
+            const ok = self.control.resolveAiApproval(approve);
+            const text = if (!ok)
+                "(此审批已处理或已失效)"
+            else if (approve)
+                "✅ 已批准"
+            else
+                "❌ 已拒绝";
+            self.updateClickedCard(a, ca.message_id, text);
+        } else if (std.mem.eql(u8, ca.act, "question")) {
+            if (ca.option < 0) {
+                log.warn("handleCardAction: question act missing valid option", .{});
+                return;
+            }
+            const ok = self.control.resolveAiQuestion(.{ .option = @intCast(ca.option) });
+            const text = if (!ok) "(此提问已处理或已失效)" else "已收到你的选择";
+            self.updateClickedCard(a, ca.message_id, text);
+        } else {
+            log.warn("handleCardAction: unknown act={s}", .{ca.act});
+        }
+    }
+
+    /// Patch the clicked card to a resolved state. arena is the handleCardAction arena.
+    fn updateClickedCard(self: *Controller, arena: std.mem.Allocator, message_id: []const u8, text: []const u8) void {
+        if (message_id.len == 0) {
+            log.warn("updateClickedCard: empty message_id, cannot patch", .{});
+            return;
+        }
+        const card_json = card.buildResolvedCard(arena, text) catch |err| {
+            log.warn("updateClickedCard: buildResolvedCard failed: {s}", .{@errorName(err)});
+            return;
+        };
+        self.card_update.update(self.card_update.ctx, self.allocator, message_id, card_json) catch |err| {
+            log.warn("updateClickedCard: card_update failed: {s}", .{@errorName(err)});
+        };
     }
 };
 
@@ -697,4 +803,249 @@ test "fileTypeFromName: case-insensitive" {
     try t.expectEqualStrings("doc", fileTypeFromName("NOTES.DOCX"));
     try t.expectEqualStrings("xls", fileTypeFromName("DATA.XLSX"));
     try t.expectEqualStrings("ppt", fileTypeFromName("SLIDES.PPTX"));
+}
+
+// ---------------------------------------------------------------------------
+// handleCardAction tests — FakeResolveControl + CardUpdateCapture
+// ---------------------------------------------------------------------------
+
+/// Extends FakeControl to record resolve calls.
+const FakeResolveControl = struct {
+    approve_called: bool = false,
+    approve_arg: bool = false,
+    approve_returns: bool = true,
+    question_called: bool = false,
+    question_option: usize = 99,
+    question_returns: bool = true,
+    send_input_called: bool = false,
+    send_input_bytes: std.ArrayListUnmanaged(u8) = .empty,
+
+    fn deinit(self: *FakeResolveControl) void {
+        self.send_input_bytes.deinit(t.allocator);
+    }
+
+    fn find_ai_surface(_: *anyopaque) ?control_mod.Surface {
+        return .{ .id = "aichat0000000000".*, .title = "Copilot" };
+    }
+    fn find_terminal_surface(_: *anyopaque) ?control_mod.Surface { return null; }
+    fn is_connected(_: *anyopaque) bool { return true; }
+    fn open_ai_agent(_: *anyopaque, _: u32) control_mod.OpenResult { return .opened; }
+    fn open_ai_agent_profile(_: *anyopaque, _: []const u8, _: u32) control_mod.OpenResult { return .opened; }
+    fn model_profiles(_: *anyopaque, _: []u8) []const u8 { return ""; }
+    fn switch_ai_profile(_: *anyopaque, _: []const u8) control_mod.SwitchModelResult { return .offline; }
+    fn send_input(ctx: *anyopaque, _: [16]u8, bytes: []const u8, _: ?reply_mod.ReplyContext) control_mod.SendResult {
+        const self: *FakeResolveControl = @ptrCast(@alignCast(ctx));
+        self.send_input_called = true;
+        self.send_input_bytes.clearRetainingCapacity();
+        self.send_input_bytes.appendSlice(t.allocator, bytes) catch {};
+        return .ok;
+    }
+    fn latest_transcript(_: *anyopaque) []const u8 { return ""; }
+    fn ai_approval_pending(_: *anyopaque) bool { return false; }
+    fn resolve_ai_approval(ctx: *anyopaque, approve: bool) bool {
+        const self: *FakeResolveControl = @ptrCast(@alignCast(ctx));
+        self.approve_called = true;
+        self.approve_arg = approve;
+        return self.approve_returns;
+    }
+    fn ai_question_option_count(_: *anyopaque) usize { return 0; }
+    fn resolve_ai_question(ctx: *anyopaque, reply: reply_mod.QuestionReply) bool {
+        const self: *FakeResolveControl = @ptrCast(@alignCast(ctx));
+        self.question_called = true;
+        self.question_option = reply.option;
+        return self.question_returns;
+    }
+    fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 { return ""; }
+    fn list_ai_conversations(_: *anyopaque, out: *control_mod.ConversationList) void { out.count = 0; }
+    fn pin_ai_conversation_by_index(_: *anyopaque, _: usize, _: *control_mod.Conversation) bool { return false; }
+
+    fn iface(self: *FakeResolveControl) control_mod.Control {
+        return .{ .ctx = self, .vtable = &.{
+            .is_connected = is_connected,
+            .find_ai_surface = find_ai_surface,
+            .find_terminal_surface = find_terminal_surface,
+            .open_ai_agent = open_ai_agent,
+            .open_ai_agent_profile = open_ai_agent_profile,
+            .model_profiles = model_profiles,
+            .switch_ai_profile = switch_ai_profile,
+            .send_input = send_input,
+            .latest_transcript = latest_transcript,
+            .ai_approval_pending = ai_approval_pending,
+            .resolve_ai_approval = resolve_ai_approval,
+            .ai_question_option_count = ai_question_option_count,
+            .resolve_ai_question = resolve_ai_question,
+            .inbound_file_dir = inbound_file_dir,
+            .list_ai_conversations = list_ai_conversations,
+            .pin_ai_conversation_by_index = pin_ai_conversation_by_index,
+        } };
+    }
+};
+
+/// Captures card_update calls without network.
+const CardUpdateCapture = struct {
+    calls: usize = 0,
+    last_message_id: std.ArrayListUnmanaged(u8) = .empty,
+    last_card_json: std.ArrayListUnmanaged(u8) = .empty,
+
+    fn deinit(self: *CardUpdateCapture) void {
+        self.last_message_id.deinit(t.allocator);
+        self.last_card_json.deinit(t.allocator);
+    }
+
+    fn update(ctx: *anyopaque, _: std.mem.Allocator, message_id: []const u8, card_json: []const u8) anyerror!void {
+        const self: *CardUpdateCapture = @ptrCast(@alignCast(ctx));
+        self.calls += 1;
+        self.last_message_id.clearRetainingCapacity();
+        self.last_message_id.appendSlice(t.allocator, message_id) catch {};
+        self.last_card_json.clearRetainingCapacity();
+        self.last_card_json.appendSlice(t.allocator, card_json) catch {};
+    }
+};
+
+/// Create a controller wired to FakeResolveControl + CardUpdateCapture.
+fn makeCardActionCtrl(fake: *FakeResolveControl, cu: *CardUpdateCapture) !*Controller {
+    var ack = AckCapture{};
+    defer ack.deinit();
+    const ctrl = try Controller.create(
+        t.allocator,
+        .{ .app_id = "app_test", .app_secret = "secret_test" },
+        .{},
+        fake.iface(),
+    );
+    ctrl.card_update = .{ .ctx = cu, .update = CardUpdateCapture.update };
+    return ctrl;
+}
+
+const approval_approve_payload =
+    \\{"schema":"2.0",
+    \\ "header":{"event_id":"ev-ap1","event_type":"card.action.trigger"},
+    \\ "event":{"operator":{"open_id":"ou_test"},
+    \\   "action":{"value":{"act":"approval","decision":"approve"},"tag":"button"},
+    \\   "context":{"open_message_id":"om_ap1","open_chat_id":"oc_test"}}}
+;
+
+const approval_reject_payload =
+    \\{"schema":"2.0",
+    \\ "header":{"event_id":"ev-ap2","event_type":"card.action.trigger"},
+    \\ "event":{"operator":{"open_id":"ou_test"},
+    \\   "action":{"value":{"act":"approval","decision":"reject"},"tag":"button"},
+    \\   "context":{"open_message_id":"om_ap2","open_chat_id":"oc_test"}}}
+;
+
+const question_payload =
+    \\{"schema":"2.0",
+    \\ "header":{"event_id":"ev-q1","event_type":"card.action.trigger"},
+    \\ "event":{"operator":{"open_id":"ou_test"},
+    \\   "action":{"value":{"act":"question","option":2},"tag":"button"},
+    \\   "context":{"open_message_id":"om_q1","open_chat_id":"oc_test"}}}
+;
+
+const stop_payload =
+    \\{"schema":"2.0",
+    \\ "header":{"event_id":"ev-stop1","event_type":"card.action.trigger"},
+    \\ "event":{"operator":{"open_id":"ou_test"},
+    \\   "action":{"value":{"act":"stop"},"tag":"button"},
+    \\   "context":{"open_message_id":"om_stop","open_chat_id":"oc_test"}}}
+;
+
+test "handleCardAction: approval approve → resolveAiApproval(true) + card_update ✅ 已批准" {
+    var fake = FakeResolveControl{};
+    defer fake.deinit();
+    var cu = CardUpdateCapture{};
+    defer cu.deinit();
+
+    const ctrl = try makeCardActionCtrl(&fake, &cu);
+    defer ctrl.destroy();
+
+    ctrl.handleCardAction(approval_approve_payload);
+
+    try t.expect(fake.approve_called);
+    try t.expect(fake.approve_arg);
+    try t.expectEqual(@as(usize, 1), cu.calls);
+    try t.expectEqualStrings("om_ap1", cu.last_message_id.items);
+    try t.expect(std.mem.indexOf(u8, cu.last_card_json.items, "已批准") != null);
+}
+
+test "handleCardAction: approval reject → resolveAiApproval(false) + card_update ❌ 已拒绝" {
+    var fake = FakeResolveControl{};
+    defer fake.deinit();
+    var cu = CardUpdateCapture{};
+    defer cu.deinit();
+
+    const ctrl = try makeCardActionCtrl(&fake, &cu);
+    defer ctrl.destroy();
+
+    ctrl.handleCardAction(approval_reject_payload);
+
+    try t.expect(fake.approve_called);
+    try t.expect(!fake.approve_arg);
+    try t.expectEqual(@as(usize, 1), cu.calls);
+    try t.expect(std.mem.indexOf(u8, cu.last_card_json.items, "已拒绝") != null);
+}
+
+test "handleCardAction: question option=2 → resolveAiQuestion(.option=2) + card_update 已收到" {
+    var fake = FakeResolveControl{};
+    defer fake.deinit();
+    var cu = CardUpdateCapture{};
+    defer cu.deinit();
+
+    const ctrl = try makeCardActionCtrl(&fake, &cu);
+    defer ctrl.destroy();
+
+    ctrl.handleCardAction(question_payload);
+
+    try t.expect(fake.question_called);
+    try t.expectEqual(@as(usize, 2), fake.question_option);
+    try t.expectEqual(@as(usize, 1), cu.calls);
+    try t.expect(std.mem.indexOf(u8, cu.last_card_json.items, "已收到") != null);
+}
+
+test "handleCardAction: approval resolve=false → card_update 已处理或已失效" {
+    var fake = FakeResolveControl{ .approve_returns = false };
+    defer fake.deinit();
+    var cu = CardUpdateCapture{};
+    defer cu.deinit();
+
+    const ctrl = try makeCardActionCtrl(&fake, &cu);
+    defer ctrl.destroy();
+
+    ctrl.handleCardAction(approval_approve_payload);
+
+    try t.expect(fake.approve_called);
+    try t.expectEqual(@as(usize, 1), cu.calls);
+    try t.expect(std.mem.indexOf(u8, cu.last_card_json.items, "已失效") != null);
+}
+
+test "handleCardAction: stop → cancelEpisode triggered + ESC sent, no card_update" {
+    var fake = FakeResolveControl{};
+    defer fake.deinit();
+    var cu = CardUpdateCapture{};
+    defer cu.deinit();
+
+    const ctrl = try makeCardActionCtrl(&fake, &cu);
+    defer ctrl.destroy();
+
+    ctrl.handleCardAction(stop_payload);
+
+    // ESC was sent to AI surface
+    try t.expect(fake.send_input_called);
+    try t.expectEqualStrings("\x1b", fake.send_input_bytes.items);
+    // No card_update for stop (worker cancel path handles it)
+    try t.expectEqual(@as(usize, 0), cu.calls);
+}
+
+test "handleCardAction: malformed payload → no crash, no resolve" {
+    var fake = FakeResolveControl{};
+    defer fake.deinit();
+    var cu = CardUpdateCapture{};
+    defer cu.deinit();
+
+    const ctrl = try makeCardActionCtrl(&fake, &cu);
+    defer ctrl.destroy();
+
+    ctrl.handleCardAction("{\"not\":\"valid card action\"}");
+
+    try t.expect(!fake.approve_called);
+    try t.expect(!fake.question_called);
+    try t.expectEqual(@as(usize, 0), cu.calls);
 }
