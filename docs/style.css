@@ -941,7 +941,8 @@ pre.code-block code {
 }
 
 .ai-setup-grid pre.code-block,
-#tools pre.code-block {
+#tools pre.code-block,
+#feishu pre.code-block {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

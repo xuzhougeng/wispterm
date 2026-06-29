@@ -222,29 +222,99 @@ ai-agent-output-limit       = 16384</code></pre>
         <div class="feature-grid">
           <div class="feature">
             <h3>Open Platform app</h3>
-            <p>Open your self-built app at <code>https://open.feishu.cn/app</code>, or create a new enterprise self-built app. For international Lark tenants, use the corresponding API domain <code>https://open.larksuite.com</code>.</p>
+            <p>Open <code>https://open.feishu.cn/app</code>, create an enterprise self-built app such as <code>WispTerm-Lab</code>, or open an existing one. For international Lark tenants, use <code>https://open.larksuite.com</code>.</p>
           </div>
           <div class="feature">
-            <h3>Permissions baseline</h3>
-            <p>Use the <code>openclaw/hermes</code> self-built app as the recommended permission baseline; it already covers the message, card, media, and event capabilities WispTerm's Feishu channel uses.</p>
+            <h3>Robot capability</h3>
+            <p>In <strong>Add app capabilities</strong>, choose <strong>Robot</strong>. This is the capability WispTerm uses for chat messages, cards, and user interaction.</p>
+          </div>
+          <div class="feature">
+            <h3>Permissions</h3>
+            <p>In <strong>Permission management</strong>, open <strong>Bulk import/export permissions</strong>, switch to <strong>Import</strong>, and paste the JSON below.</p>
+          </div>
+          <div class="feature">
+            <h3>Event subscription</h3>
+            <p>Open <strong>Events &amp; Callbacks → Event configuration</strong>, select <strong>Long connection</strong>, then add <code>im.message.receive_v1</code>. A connection-failed status is normal until WispTerm has the app credentials.</p>
+          </div>
+          <div class="feature">
+            <h3>Publish app</h3>
+            <p>Create version <code>1.0.0</code>, select <strong>Robot</strong> as both the mobile and desktop default capability, add any release note, and submit. Feishu personal tenants usually publish immediately.</p>
           </div>
           <div class="feature">
             <h3>Configure in WispTerm</h3>
-            <p>Open the command center, type <code>feishu</code>, run <code>Feishu: Configure</code>, fill <code>App ID</code> and <code>App Secret</code>, then save. Restart WispTerm for the setting to take effect.</p>
+            <p>After publication, copy the app <code>App ID</code> and <code>App Secret</code>. Open the command center, type <code>feishu</code>, run <code>Feishu: Configure</code>, save the credentials, then restart WispTerm.</p>
           </div>
           <div class="feature">
             <h3>Config fallback</h3>
             <p>You can also set <code>feishu-enabled</code>, <code>feishu-app-id</code>, <code>feishu-app-secret</code>, and optionally <code>feishu-allowed-user</code>. Empty ID/secret values fall back to <code>FEISHU_APP_ID</code> and <code>FEISHU_APP_SECRET</code>.</p>
           </div>
         </div>
+        <pre class="code-block"><code>{
+  "scopes": {
+    "tenant": [
+      "application:application:self_manage",
+      "application:bot.basic_info:read",
+      "application:bot.menu:write",
+      "cardkit:card:read",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "docs:document.comment:create",
+      "docs:document.comment:delete",
+      "docs:document.comment:read",
+      "docs:document.comment:update",
+      "docs:document.comment:write_only",
+      "docx:document.block:convert",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive.metadata:readonly",
+      "im:chat.members:bot_access",
+      "im:chat:create",
+      "im:chat:read",
+      "im:chat:update",
+      "im:message.group_at_msg.include_bot:readonly",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message.pins:read",
+      "im:message.pins:write_only",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message:readonly",
+      "im:message:send_as_bot",
+      "im:message:send_multi_users",
+      "im:message:send_sys_msg",
+      "im:message:update",
+      "im:resource",
+      "wiki:node:read"
+    ],
+    "user": [
+      "offline_access"
+    ]
+  }
+}</code></pre>
         <div class="feishu-shot-grid">
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-create-enterprise-app.png" alt="Feishu enterprise self-built app creation form">
+            <figcaption>Create an enterprise self-built app, for example <code>WispTerm-Lab</code>.</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-add-robot-capability.png" alt="Feishu Add app capabilities page with Robot selected">
+            <figcaption>Add the <strong>Robot</strong> capability.</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-permission-bulk-import.png" alt="Feishu bulk permission import dialog with JSON editor">
+            <figcaption>Bulk-import the permission JSON.</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-event-long-connection.png" alt="Feishu event configuration page with long connection selected">
+            <figcaption>Use long connection mode; no public callback URL is required.</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-event-receive-message.png" alt="Feishu add event dialog showing im.message.receive_v1">
+            <figcaption>Add the <code>im.message.receive_v1</code> receive-message event.</figcaption>
+          </figure>
           <figure class="feishu-shot">
             <img src="assets/feishu/app-created.png" alt="Feishu app creation success screen showing App ID and App Secret">
             <figcaption>Copy the App ID and App Secret from the self-built app.</figcaption>
-          </figure>
-          <figure class="feishu-shot">
-            <img src="assets/feishu/app-approved.png" alt="Feishu app approved and published screen">
-            <figcaption>Publish the app after approval.</figcaption>
           </figure>
           <figure class="feishu-shot wide">
             <img src="assets/feishu/command-center-config.png" alt="WispTerm Feishu bot configuration form in the command center">

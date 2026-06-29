@@ -130,12 +130,75 @@ https://open.feishu.cn/app
 https://open.larksuite.com
 ```
 
-权限配置建议直接参考 `openclaw/hermes` 这个自建应用；它已经配好了 WispTerm 飞书通道需要
-的消息、卡片、媒体和事件相关能力。
+先在飞书开放平台完成应用创建和发布：
+
+1. 登录飞书开放平台，创建**企业自建应用**，例如 `WispTerm-Lab`。
+2. 进入**添加应用能力**，选择**机器人**。
+3. 在**权限管理**里选择**批量导入/导出权限**，切到**导入**，粘贴下面的 JSON。
+4. 进入**事件与回调 → 事件配置**，选择**长连接**模式（不需要公网回调地址），然后添加
+   **接收消息** / `im.message.receive_v1` 事件。此时长连接显示**连接失败**是正常的，
+   因为 WispTerm 还没有配置 App ID 和 App Secret。
+5. 进入**应用发布 → 创建版本**。版本号填 `1.0.0`，移动端默认能力和桌面端默认能力都选择
+   **机器人**，更新说明随意填写，然后提交发布。飞书个人版通常免审核，提交后立即可用。
+
+![创建飞书企业自建应用](assets/feishu-create-enterprise-app.png)
+
+![添加机器人能力](assets/feishu-add-robot-capability.png)
+
+```json
+{
+  "scopes": {
+    "tenant": [
+      "application:application:self_manage",
+      "application:bot.basic_info:read",
+      "application:bot.menu:write",
+      "cardkit:card:read",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "docs:document.comment:create",
+      "docs:document.comment:delete",
+      "docs:document.comment:read",
+      "docs:document.comment:update",
+      "docs:document.comment:write_only",
+      "docx:document.block:convert",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive.metadata:readonly",
+      "im:chat.members:bot_access",
+      "im:chat:create",
+      "im:chat:read",
+      "im:chat:update",
+      "im:message.group_at_msg.include_bot:readonly",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message.pins:read",
+      "im:message.pins:write_only",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message:readonly",
+      "im:message:send_as_bot",
+      "im:message:send_multi_users",
+      "im:message:send_sys_msg",
+      "im:message:update",
+      "im:resource",
+      "wiki:node:read"
+    ],
+    "user": [
+      "offline_access"
+    ]
+  }
+}
+```
+
+![批量导入飞书权限 JSON](assets/feishu-permission-bulk-import.png)
+
+![选择飞书长连接事件模式](assets/feishu-event-long-connection.png)
+
+![添加 im.message.receive_v1 事件](assets/feishu-event-receive-message.png)
+
+应用发布后，把 App ID 和 App Secret 填到 WispTerm：
 
 ![飞书应用创建成功](assets/feishu-app-created.png)
-
-![飞书应用审批通过并发布](assets/feishu-app-approved.png)
 
 然后在 WispTerm 里填写凭证：
 

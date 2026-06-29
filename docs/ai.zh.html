@@ -222,29 +222,99 @@ ai-agent-output-limit       = 16384</code></pre>
         <div class="feature-grid">
           <div class="feature">
             <h3>开放平台应用</h3>
-            <p>进入 <code>https://open.feishu.cn/app</code> 打开你的自建应用；如果还没有应用，就新建一个企业自建应用。国际版 Lark 对应接口域名为 <code>https://open.larksuite.com</code>。</p>
+            <p>进入 <code>https://open.feishu.cn/app</code> 创建企业自建应用，例如 <code>WispTerm-Lab</code>，或打开已有应用。国际版 Lark 对应接口域名为 <code>https://open.larksuite.com</code>。</p>
           </div>
           <div class="feature">
-            <h3>权限基线</h3>
-            <p>权限配置建议直接参考 <code>openclaw/hermes</code> 这个自建应用；它已经配好了 WispTerm 飞书通道需要的消息、卡片、媒体和事件相关能力。</p>
+            <h3>机器人能力</h3>
+            <p>在<strong>添加应用能力</strong>里选择<strong>机器人</strong>。WispTerm 使用机器人能力收发消息、卡片和交互回调。</p>
+          </div>
+          <div class="feature">
+            <h3>权限导入</h3>
+            <p>在<strong>权限管理</strong>里选择<strong>批量导入/导出权限</strong>，切到<strong>导入</strong>，粘贴下面的 JSON。</p>
+          </div>
+          <div class="feature">
+            <h3>事件订阅</h3>
+            <p>进入<strong>事件与回调 → 事件配置</strong>，选择<strong>长连接</strong>模式，然后添加 <code>im.message.receive_v1</code>。WispTerm 配好凭证前显示连接失败是正常的。</p>
+          </div>
+          <div class="feature">
+            <h3>发布应用</h3>
+            <p>创建版本 <code>1.0.0</code>，移动端默认能力和桌面端默认能力都选<strong>机器人</strong>，更新说明随意填写，然后提交发布。飞书个人版通常免审核，提交后立即可用。</p>
           </div>
           <div class="feature">
             <h3>在 WispTerm 中配置</h3>
-            <p>打开命令中心，输入 <code>feishu</code>，运行 <code>Feishu: Configure</code>，填写 <code>App ID</code> 和 <code>App Secret</code>，然后保存。重启 WispTerm 后生效。</p>
+            <p>应用发布后复制 <code>App ID</code> 和 <code>App Secret</code>。打开命令中心，输入 <code>feishu</code>，运行 <code>Feishu: Configure</code>，保存凭证，然后重启 WispTerm。</p>
           </div>
           <div class="feature">
             <h3>配置文件回退</h3>
             <p>也可以设置 <code>feishu-enabled</code>、<code>feishu-app-id</code>、<code>feishu-app-secret</code>，以及可选的 <code>feishu-allowed-user</code>。ID/secret 留空时会回退读取 <code>FEISHU_APP_ID</code> 和 <code>FEISHU_APP_SECRET</code>。</p>
           </div>
         </div>
+        <pre class="code-block"><code>{
+  "scopes": {
+    "tenant": [
+      "application:application:self_manage",
+      "application:bot.basic_info:read",
+      "application:bot.menu:write",
+      "cardkit:card:read",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "docs:document.comment:create",
+      "docs:document.comment:delete",
+      "docs:document.comment:read",
+      "docs:document.comment:update",
+      "docs:document.comment:write_only",
+      "docx:document.block:convert",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive.metadata:readonly",
+      "im:chat.members:bot_access",
+      "im:chat:create",
+      "im:chat:read",
+      "im:chat:update",
+      "im:message.group_at_msg.include_bot:readonly",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message.pins:read",
+      "im:message.pins:write_only",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message:readonly",
+      "im:message:send_as_bot",
+      "im:message:send_multi_users",
+      "im:message:send_sys_msg",
+      "im:message:update",
+      "im:resource",
+      "wiki:node:read"
+    ],
+    "user": [
+      "offline_access"
+    ]
+  }
+}</code></pre>
         <div class="feishu-shot-grid">
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-create-enterprise-app.png" alt="飞书企业自建应用创建表单">
+            <figcaption>创建企业自建应用，例如 <code>WispTerm-Lab</code>。</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-add-robot-capability.png" alt="飞书添加应用能力页面，选择机器人">
+            <figcaption>添加<strong>机器人</strong>能力。</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-permission-bulk-import.png" alt="飞书批量导入权限 JSON 编辑器">
+            <figcaption>批量导入权限 JSON。</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-event-long-connection.png" alt="飞书事件配置页面选择长连接">
+            <figcaption>选择长连接模式，不需要公网回调地址。</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/feishu-event-receive-message.png" alt="飞书添加事件弹窗，搜索 im.message.receive_v1">
+            <figcaption>添加 <code>im.message.receive_v1</code> 接收消息事件。</figcaption>
+          </figure>
           <figure class="feishu-shot">
             <img src="assets/feishu/app-created.png" alt="飞书应用创建成功页面，显示 App ID 和 App Secret">
             <figcaption>从自建应用复制 App ID 和 App Secret。</figcaption>
-          </figure>
-          <figure class="feishu-shot">
-            <img src="assets/feishu/app-approved.png" alt="飞书应用审批通过并发布成功页面">
-            <figcaption>应用审批通过后发布。</figcaption>
           </figure>
           <figure class="feishu-shot wide">
             <img src="assets/feishu/command-center-config.png" alt="WispTerm 命令中心里的飞书 bot 配置表单">

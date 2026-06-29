@@ -150,13 +150,79 @@ For international Lark tenants, use the corresponding Open Platform API domain:
 https://open.larksuite.com
 ```
 
-Follow the `openclaw/hermes` app as the recommended permission baseline; that
-setup already covers the message, card, media, and event capabilities WispTerm's
-Feishu channel uses.
+Create and publish the Feishu app first:
+
+1. Log in to Feishu Open Platform and create an **enterprise self-built app**,
+   for example `WispTerm-Lab`.
+2. Open **Add app capabilities** and select **Robot**.
+3. In **Permission management**, open **Bulk import/export permissions**, switch
+   to **Import**, and paste the JSON below.
+4. Open **Events & Callbacks → Event configuration**. Select **Long connection**
+   mode, then add the event **Receive message** / `im.message.receive_v1`.
+   The long-connection status showing **connection failed** is expected at this
+   point because WispTerm has not been configured with the app credentials yet.
+5. Open **App release → Create version**. Use version `1.0.0`, select **Robot**
+   as the default mobile and desktop capability, add any release note, and submit
+   the release. Feishu personal tenants usually publish immediately.
+
+![Create Feishu enterprise self-built app](assets/feishu-create-enterprise-app.png)
+
+![Add Robot capability](assets/feishu-add-robot-capability.png)
+
+```json
+{
+  "scopes": {
+    "tenant": [
+      "application:application:self_manage",
+      "application:bot.basic_info:read",
+      "application:bot.menu:write",
+      "cardkit:card:read",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "docs:document.comment:create",
+      "docs:document.comment:delete",
+      "docs:document.comment:read",
+      "docs:document.comment:update",
+      "docs:document.comment:write_only",
+      "docx:document.block:convert",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive.metadata:readonly",
+      "im:chat.members:bot_access",
+      "im:chat:create",
+      "im:chat:read",
+      "im:chat:update",
+      "im:message.group_at_msg.include_bot:readonly",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message.pins:read",
+      "im:message.pins:write_only",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message:readonly",
+      "im:message:send_as_bot",
+      "im:message:send_multi_users",
+      "im:message:send_sys_msg",
+      "im:message:update",
+      "im:resource",
+      "wiki:node:read"
+    ],
+    "user": [
+      "offline_access"
+    ]
+  }
+}
+```
+
+![Import Feishu permissions as JSON](assets/feishu-permission-bulk-import.png)
+
+![Choose Feishu long-connection event mode](assets/feishu-event-long-connection.png)
+
+![Add im.message.receive_v1 event](assets/feishu-event-receive-message.png)
+
+After the app is published, copy the App ID and App Secret into WispTerm:
 
 ![Feishu app created](assets/feishu-app-created.png)
-
-![Feishu app approved](assets/feishu-app-approved.png)
 
 Then configure WispTerm:
 
