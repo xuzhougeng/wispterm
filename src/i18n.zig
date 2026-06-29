@@ -237,6 +237,7 @@ pub const Strings = struct {
 
     // —— 飞书凭证表单 ——
     feishu_form_title: []const u8,
+    feishu_form_enabled: []const u8,
     feishu_form_app_id: []const u8,
     feishu_form_app_secret: []const u8,
     feishu_form_secret_set_hint: []const u8,
@@ -462,6 +463,7 @@ const en = Strings{
     .shortcuts_unbound = "unbound",
 
     .feishu_form_title = "Feishu bot config",
+    .feishu_form_enabled = "Enabled",
     .feishu_form_app_id = "App ID",
     .feishu_form_app_secret = "App Secret",
     .feishu_form_secret_set_hint = "already set — leave blank to keep",
@@ -687,6 +689,7 @@ const zh_CN = Strings{
     .shortcuts_unbound = "未绑定",
 
     .feishu_form_title = "飞书 bot 配置",
+    .feishu_form_enabled = "启用",
     .feishu_form_app_id = "App ID",
     .feishu_form_app_secret = "App Secret",
     .feishu_form_secret_set_hint = "已设置，留空保留",
@@ -832,7 +835,6 @@ pub fn commandTitle(action: CommandAction) ?[]const u8 {
         .wechat_status => "微信：状态",
         .unbind_wechat => "微信：解绑",
         .configure_feishu => "飞书：配置",
-        .toggle_feishu => "飞书：开关",
         .export_ai_chat_markdown => "导出副驾 Markdown",
         .export_ai_chat_markdown_clean => "导出副驾 Markdown 精简版",
         .show_version => "版本",
@@ -886,7 +888,6 @@ pub fn commandDetail(action: CommandAction) ?[]const u8 {
         .wechat_status => "显示微信直连连接状态",
         .unbind_wechat => "清除已存储的微信直连绑定",
         .configure_feishu => "填写飞书 bot 的 App ID 和 App Secret",
-        .toggle_feishu => "启用或停用飞书 bot（重启生效）",
         .export_ai_chat_markdown => "把当前 AI 对话保存为 Markdown",
         .export_ai_chat_markdown_clean => "保存用户提问与最终回答（不含思考过程）",
         .show_version => "显示 WispTerm 版本",

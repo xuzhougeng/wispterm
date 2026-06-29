@@ -684,7 +684,6 @@ fn executeCommand(action: CommandAction) void {
         .stop_wechat => stopWeixinDirect(),
         .wechat_status => showWeixinDirectStatus(),
         .unbind_wechat => unbindWeixinDirect(),
-        .toggle_feishu => toggleFeishuEnabled(),
         .configure_feishu => openFeishuConfigForm(),
         .export_ai_chat_markdown => AppWindow.exportActiveAiChatMarkdown(.full),
         .export_ai_chat_markdown_clean => AppWindow.exportActiveAiChatMarkdown(.clean),
@@ -2221,6 +2220,7 @@ const AI_FIELD_MAX = assistant_profiles.AI_FIELD_MAX;
 const AI_PROFILE_MAX = assistant_profiles.AI_PROFILE_MAX;
 const AI_PROFILE_NONE = assistant_profiles.AI_PROFILE_NONE;
 const FEISHU_FIELD_COUNT = feishu_config.FEISHU_FIELD_COUNT;
+const FEISHU_ROW_COUNT = feishu_config.FEISHU_ROW_COUNT;
 const FeishuField = feishu_config.FeishuField;
 const SshField = profile_codec.SshField;
 const AiField = profile_codec.AiField;
@@ -2494,10 +2494,10 @@ fn openAiFormNewFromCommandPalette() void {
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
     if (codepoint < 0x20 or codepoint == 0x7f) return;
     if (feishuForm().visible) {
-        if (feishuConfig().focus >= FEISHU_FIELD_COUNT) return;
+        const field = feishuConfig().focusedField() orelse return;
         var buf: [4]u8 = undefined;
         const n = std.unicode.utf8Encode(codepoint, &buf) catch return;
-        feishuConfig().append(@enumFromInt(feishuConfig().focus), buf[0..n]);
+        feishuConfig().append(field, buf[0..n]);
         return;
     }
     if (g_ssh_list_visible) {
@@ -2521,8 +2521,8 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
 
 pub fn sessionLauncherPasteText(text: []const u8) bool {
     if (feishuForm().visible) {
-        if (feishuConfig().focus >= FEISHU_FIELD_COUNT) return false;
-        feishuConfig().append(@enumFromInt(feishuConfig().focus), text);
+        const field = feishuConfig().focusedField() orelse return false;
+        feishuConfig().append(field, text);
         return true;
     }
     if (g_ssh_list_visible) {
@@ -2588,9 +2588,13 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
         switch (ev.key) {
             .tab, .arrow_down => feishuConfig().focusNextRow(),
             .arrow_up => feishuConfig().focusPrevRow(),
-            .enter => if (feishuConfig().focus == FEISHU_FIELD_COUNT) saveFeishuConfig(),
-            .backspace => if (feishuConfig().focus < FEISHU_FIELD_COUNT)
-                feishuConfig().backspace(@enumFromInt(feishuConfig().focus)),
+            .arrow_left, .arrow_right => if (feishuConfig().focus == feishu_config.ENABLED_ROW) feishuConfig().toggleEnabled(),
+            .enter => switch (feishuConfig().focus) {
+                feishu_config.SAVE_ROW => saveFeishuConfig(),
+                feishu_config.ENABLED_ROW => feishuConfig().toggleEnabled(),
+                else => {},
+            },
+            .backspace => if (feishuConfig().focusedField()) |f| feishuConfig().backspace(f),
             .escape => closeFeishuConfigForm(),
             else => {},
         }
@@ -3963,20 +3967,13 @@ fn openFeishuConfigForm() void {
     if (AppWindow.g_allocator) |allocator| {
         var cfg = Config.load(allocator) catch Config{};
         defer cfg.deinit(allocator);
+        st.enabled = cfg.@"feishu-enabled"; // reflect current enable state in the form's toggle row
         if (cfg.@"feishu-app-id") |id| st.setValue(.app_id, id); // app-id prefilled; secret never prefilled
         feishuForm().secret_already_set = cfg.@"feishu-app-secret" != null; // boolean only — secret value never read into the form
     }
     st.focus = 0;
     g_session_launcher_visible = true;
     feishuForm().visible = true;
-}
-
-fn toggleFeishuEnabled() void {
-    const allocator = AppWindow.g_allocator orelse return;
-    var cfg = Config.load(allocator) catch Config{};
-    defer cfg.deinit(allocator);
-    Config.setConfigValue(allocator, "feishu-enabled", if (cfg.@"feishu-enabled") "false" else "true") catch {};
-    showStatusToast(i18n.s().toast_feishu_restart);
 }
 
 fn closeFeishuConfigForm() void {
@@ -3988,6 +3985,7 @@ fn closeFeishuConfigForm() void {
 fn saveFeishuConfig() void {
     if (AppWindow.g_allocator) |allocator| {
         const st = feishuConfig();
+        Config.setConfigValue(allocator, "feishu-enabled", if (st.enabled) "true" else "false") catch {};
         const app_id = st.value(.app_id);
         if (app_id.len > 0) Config.setConfigValue(allocator, "feishu-app-id", app_id) catch {};
         const secret = st.value(.app_secret);
@@ -4872,7 +4870,7 @@ fn sessionDesiredBoxWidth() f32 {
 /// Total rows in the currently active session-launcher mode.
 fn sessionActiveRowCount() usize {
     return if (feishuForm().visible)
-        FEISHU_FIELD_COUNT + 1
+        FEISHU_ROW_COUNT
     else if (g_ai_form_visible)
         AI_FIELD_COUNT + 3
     else if (g_ai_list_visible)
@@ -4985,9 +4983,11 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     const row = visible_index + layout.scroll;
 
     if (feishuForm().visible) {
-        if (row > FEISHU_FIELD_COUNT) return null;
+        if (row >= FEISHU_ROW_COUNT) return null;
         feishuConfig().focus = row;
-        return if (row == FEISHU_FIELD_COUNT) .feishu_save else null;
+        if (row == feishu_config.SAVE_ROW) return .feishu_save;
+        if (row == feishu_config.ENABLED_ROW) feishuConfig().toggleEnabled(); // click toggles enable
+        return null;
     }
 
     if (g_ai_history_source_visible) {
@@ -5180,8 +5180,14 @@ fn defaultAiModeLabel() []const u8 {
 // plaintext), or the "leave blank to keep" hint when empty and a secret already exists.
 fn renderFeishuConfigForm(layout: SessionLayout, window_height: f32) void {
     const st = feishuConfig();
-    renderSessionFieldValue(layout, window_height, @intFromEnum(FeishuField.app_id), i18n.s().feishu_form_app_id, st.value(.app_id), false, st.focus == @intFromEnum(FeishuField.app_id));
 
+    // Row 0: enabled toggle (shows current on/off so the user knows the state before flipping)
+    renderSessionRow(layout, window_height, feishu_config.ENABLED_ROW, i18n.s().feishu_form_enabled, boolText(st.enabled), st.focus == feishu_config.ENABLED_ROW);
+
+    // Row 1: app_id (plain text)
+    renderSessionFieldValue(layout, window_height, 1, i18n.s().feishu_form_app_id, st.value(.app_id), false, st.focus == 1);
+
+    // Row 2: app_secret (masked)
     const secret = st.value(.app_secret);
     var dot_buf: [feishu_config.FEISHU_FIELD_MAX * 3]u8 = undefined; // • is 3 UTF-8 bytes; mask by codepoint count
     const secret_display: []const u8 = if (secret.len > 0) blk: {
@@ -5196,9 +5202,10 @@ fn renderFeishuConfigForm(layout: SessionLayout, window_height: f32) void {
         i18n.s().feishu_form_secret_set_hint
     else
         "";
-    renderSessionRow(layout, window_height, @intFromEnum(FeishuField.app_secret), i18n.s().feishu_form_app_secret, secret_display, st.focus == @intFromEnum(FeishuField.app_secret));
+    renderSessionRow(layout, window_height, 2, i18n.s().feishu_form_app_secret, secret_display, st.focus == 2);
 
-    renderSessionRow(layout, window_height, FEISHU_FIELD_COUNT, i18n.s().feishu_form_save, i18n.s().toast_feishu_restart, st.focus == FEISHU_FIELD_COUNT);
+    // Row 3: Save
+    renderSessionRow(layout, window_height, feishu_config.SAVE_ROW, i18n.s().feishu_form_save, i18n.s().toast_feishu_restart, st.focus == feishu_config.SAVE_ROW);
 }
 
 pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: f32) void {
