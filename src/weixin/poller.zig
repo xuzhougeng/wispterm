@@ -356,7 +356,7 @@ pub const Poller = struct {
             .context_token = context_token,
             .model_context = model_context,
         };
-        try agent.route(allocator, self.control, text, reply_context, &r);
+        try agent.route(allocator, self.control, "微信", text, reply_context, &r);
         try reply.appendSlice(allocator, r.text.items);
         if (!r.expect_ai_progress) {
             if (baseline.len != 0) allocator.free(baseline);

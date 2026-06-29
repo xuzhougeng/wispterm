@@ -457,7 +457,7 @@ pub const Controller = struct {
         // reclaims it — no r.deinit() needed.
         var r = router.Reply.init(a);
         var reply_text: []const u8 = "";
-        if (router.route(a, self.control, msg.text, reply_ctx, &r)) |_| {
+        if (router.route(a, self.control, "飞书", msg.text, reply_ctx, &r)) |_| {
             // route SUCCESS with an empty r.text (e.g. a non-command no-op) is a
             // normal empty reply and is correctly skipped by the len check below.
             reply_text = r.text.items;

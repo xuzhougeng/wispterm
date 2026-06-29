@@ -47,6 +47,7 @@ pub fn writeList(
     buf: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
     convs: []const Conversation,
+    channel_name: []const u8,
 ) !void {
     if (convs.len == 0) {
         try buf.appendSlice(allocator, "当前没有副驾会话，发送任意消息可自动打开。");
@@ -66,7 +67,7 @@ pub fn writeList(
     if (!any_current) {
         try buf.appendSlice(allocator, "（当前默认：发送消息将新建副驾会话）\n");
     }
-    try buf.appendSlice(allocator, "发送 /switch <编号> 切换；微信将固定到所选会话。");
+    try appendFmt(buf, allocator, "发送 /switch <编号> 切换；{s}将固定到所选会话。", .{channel_name});
 }
 
 /// Render the post-switch digest into `buf`. `idx1` is the 1-based number the
@@ -120,19 +121,20 @@ test "writeList renders count, current marker, copilot tag, busy state" {
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(t.allocator);
-    try writeList(&buf, t.allocator, &convs);
+    try writeList(&buf, t.allocator, &convs, "微信");
     const s = buf.items;
     try t.expect(std.mem.indexOf(u8, s, "共 2 个") != null);
     try t.expect(std.mem.indexOf(u8, s, "➤") != null);
     try t.expect(std.mem.indexOf(u8, s, "· 副驾") != null);
     try t.expect(std.mem.indexOf(u8, s, "忙") != null);
     try t.expect(std.mem.indexOf(u8, s, "闲") != null);
+    try t.expect(std.mem.indexOf(u8, s, "微信将固定") != null);
 }
 
 test "writeList empty" {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(t.allocator);
-    try writeList(&buf, t.allocator, &.{});
+    try writeList(&buf, t.allocator, &.{}, "微信");
     try t.expect(std.mem.indexOf(u8, buf.items, "没有副驾会话") != null);
 }
 
@@ -143,7 +145,7 @@ test "writeList notes default when nothing is current" {
     const convs = [_]Conversation{c0};
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(t.allocator);
-    try writeList(&buf, t.allocator, &convs);
+    try writeList(&buf, t.allocator, &convs, "微信");
     try t.expect(std.mem.indexOf(u8, buf.items, "将新建副驾会话") != null);
 }
 
