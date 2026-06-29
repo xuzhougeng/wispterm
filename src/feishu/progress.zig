@@ -356,7 +356,7 @@ pub const ProgressWorker = struct {
                 const p = reply_progress.progress(snap.baseline, current);
                 owned = self.materialize(decide(p, &announced), p) catch OwnedAction{ .tag = .none };
                 // renderProgress returns owned; read it under the same lock (it reads `current`).
-                md = reply_progress.renderProgress(self.allocator, current) catch &.{};
+                md = reply_progress.renderProgress(self.allocator, snap.baseline, current) catch &.{};
             }
             defer if (owned.text.len != 0) self.allocator.free(owned.text);
             // md is freed at end of this poll iteration unless it becomes the new last_md.
