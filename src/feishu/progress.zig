@@ -452,15 +452,21 @@ pub const ProgressWorker = struct {
                         .send_question_prompt => {
                             const count = self.control.aiQuestionOptionCount();
                             // Build numbered labels "1".."count" (value option:0..count-1, 0-based).
-                            var labels = try std.ArrayListUnmanaged([]const u8).initCapacity(a, count);
-                            for (0..count) |i| {
-                                const label = try std.fmt.allocPrint(a, "{d}", .{i + 1});
-                                try labels.append(a, label);
-                            }
-                            const cj = @import("card.zig").buildQuestionCard(a, owned.text, labels.items) catch null;
-                            if (cj) |c| self.send_card.send(self.send_card.ctx, self.allocator, snap.chat_id, c) catch |err| {
-                                log.warn("progress: send question card failed: {s}", .{@errorName(err)});
+                            // runEpisodeLoop returns void (thread entry) — must NOT `try`; on OOM skip the card.
+                            const labels: ?[]const []const u8 = blk: {
+                                var l = std.ArrayListUnmanaged([]const u8).initCapacity(a, count) catch break :blk null;
+                                for (0..count) |i| {
+                                    const label = std.fmt.allocPrint(a, "{d}", .{i + 1}) catch break :blk null;
+                                    l.append(a, label) catch break :blk null;
+                                }
+                                break :blk l.items;
                             };
+                            if (labels) |lbls| {
+                                const cj = @import("card.zig").buildQuestionCard(a, owned.text, lbls) catch null;
+                                if (cj) |c| self.send_card.send(self.send_card.ctx, self.allocator, snap.chat_id, c) catch |err| {
+                                    log.warn("progress: send question card failed: {s}", .{@errorName(err)});
+                                };
+                            }
                         },
                         else => {},
                     }
