@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ONLINE_TTL_MS,
   injectStatsSnippet,
+  latestDownloadKey,
   pruneActiveVisitors,
 } from "../src/worker.js";
 
@@ -32,4 +33,21 @@ test("pruneActiveVisitors keeps only recent heartbeats", () => {
     fresh: now,
     edge: now - ONLINE_TTL_MS,
   });
+});
+
+test("latestDownloadKey maps public latest download URLs to R2 keys", () => {
+  assert.equal(
+    latestDownloadKey("/downloads/latest/wispterm-windows-portable.zip"),
+    "latest/wispterm-windows-portable.zip",
+  );
+  assert.equal(
+    latestDownloadKey("/downloads/latest/wispterm-linux-x86_64.AppImage"),
+    "latest/wispterm-linux-x86_64.AppImage",
+  );
+});
+
+test("latestDownloadKey rejects unknown or nested download paths", () => {
+  assert.equal(latestDownloadKey("/downloads/latest/private.zip"), null);
+  assert.equal(latestDownloadKey("/downloads/latest/nested/file.zip"), null);
+  assert.equal(latestDownloadKey("/downloads/old/wispterm-windows-portable.zip"), null);
 });

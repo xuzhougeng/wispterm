@@ -452,6 +452,13 @@ h1 {
   flex-grow: 1;
 }
 .install-card .cta { align-self: flex-start; margin-top: 6px; }
+.download-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.install-card .download-row .cta { margin-top: 0; }
 
 .install-card pre.code-block {
   margin: 6px 0 0;

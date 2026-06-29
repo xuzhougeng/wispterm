@@ -18,6 +18,10 @@ run_worker_first = true
 name = "DOCS_STATS"
 class_name = "DocsStats"
 
+[[r2_buckets]]
+binding = "DOCS_DOWNLOADS"
+bucket_name = "wispterm-downloads"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["DocsStats"]

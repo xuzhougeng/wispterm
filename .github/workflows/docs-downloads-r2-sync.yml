@@ -1,0 +1,56 @@
+name: Sync latest release downloads to Cloudflare R2
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      R2_BUCKET: wispterm-downloads
+    steps:
+      - name: Download latest GitHub release assets
+        run: |
+          set -euo pipefail
+          tag="$(gh release view --repo "${GH_REPO}" --json tagName --jq '.tagName')"
+          echo "Latest release: ${tag}"
+          mkdir -p release-assets
+          gh release download "${tag}" --repo "${GH_REPO}" --dir release-assets --clobber
+
+      - name: Upload latest assets to R2
+        run: |
+          set -euo pipefail
+
+          upload_first() {
+            local pattern="$1"
+            local dest="$2"
+            local content_type="$3"
+            local matches=(release-assets/${pattern})
+            if [[ ! -e "${matches[0]}" ]]; then
+              echo "Skipping missing asset: ${pattern}"
+              return 0
+            fi
+            local src="${matches[0]}"
+            echo "Uploading ${src} -> ${R2_BUCKET}/latest/${dest}"
+            npx --yes wrangler@4.88.0 r2 object put "${R2_BUCKET}/latest/${dest}" \
+              --file "${src}" \
+              --content-type "${content_type}" \
+              --cache-control "public, max-age=300" \
+              --force
+          }
+
+          upload_first 'wispterm-windows-portable-[0-9v]*.zip' 'wispterm-windows-portable.zip' 'application/zip'
+          upload_first 'wispterm-windows-portable-compat-[0-9v]*.zip' 'wispterm-windows-portable-compat.zip' 'application/zip'
+          upload_first 'wispterm-windows-portable-no-webview-[0-9v]*.zip' 'wispterm-windows-portable-no-webview.zip' 'application/zip'
+          upload_first 'wispterm-macos-aarch64-[0-9v]*.dmg' 'wispterm-macos-aarch64.dmg' 'application/x-apple-diskimage'
+          upload_first 'wispterm-macos-x86_64-[0-9v]*.dmg' 'wispterm-macos-x86_64.dmg' 'application/x-apple-diskimage'
+          upload_first 'WispTerm-*-x86_64.AppImage' 'wispterm-linux-x86_64.AppImage' 'application/octet-stream'

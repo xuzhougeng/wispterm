@@ -1,5 +1,14 @@
 export const ONLINE_TTL_MS = 2 * 60 * 1000;
 
+const LATEST_DOWNLOADS = new Set([
+  "wispterm-windows-portable.zip",
+  "wispterm-windows-portable-compat.zip",
+  "wispterm-windows-portable-no-webview.zip",
+  "wispterm-macos-aarch64.dmg",
+  "wispterm-macos-x86_64.dmg",
+  "wispterm-linux-x86_64.AppImage",
+]);
+
 const STATS_SNIPPET = `
 <div class="cloudflare-stats" data-wispterm-stats hidden>
   <span><span data-stat-label="online">Online</span> <strong data-stat="online">-</strong></span>
@@ -23,6 +32,14 @@ const STATS_SNIPPET = `
 </style>
 <script type="module">
 (() => {
+  const downloadLinks = document.querySelectorAll("[data-cloudflare-download]");
+  downloadLinks.forEach((link) => {
+    const href = link.getAttribute("data-cloudflare-download");
+    if (href) link.setAttribute("href", href);
+    link.removeAttribute("target");
+    link.removeAttribute("rel");
+  });
+
   const root = document.querySelector("[data-wispterm-stats]");
   if (!root) return;
 
@@ -80,6 +97,14 @@ export function pruneActiveVisitors(active, now) {
     }
   }
   return fresh;
+}
+
+export function latestDownloadKey(pathname) {
+  const prefix = "/downloads/latest/";
+  if (!pathname.startsWith(prefix)) return null;
+  const file = pathname.slice(prefix.length);
+  if (file.includes("/") || !LATEST_DOWNLOADS.has(file)) return null;
+  return `latest/${file}`;
 }
 
 export class DocsStats {
@@ -149,6 +174,9 @@ export default {
       const id = env.DOCS_STATS.idFromName("global");
       return env.DOCS_STATS.get(id).fetch(request);
     }
+    if (url.pathname.startsWith("/downloads/latest/")) {
+      return serveLatestDownload(url.pathname, env);
+    }
 
     const response = await env.ASSETS.fetch(request);
     if (!shouldInjectStats(request, response)) return response;
@@ -162,6 +190,22 @@ export default {
     });
   },
 };
+
+async function serveLatestDownload(pathname, env) {
+  const key = latestDownloadKey(pathname);
+  if (!key) return new Response("Not found", { status: 404 });
+  if (!env.DOCS_DOWNLOADS) return new Response("Downloads are not configured", { status: 503 });
+
+  const object = await env.DOCS_DOWNLOADS.get(key);
+  if (!object) return new Response("Not found", { status: 404 });
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", headers.get("cache-control") || "public, max-age=300");
+  headers.set("content-disposition", `attachment; filename="${key.slice("latest/".length)}"`);
+  return new Response(object.body, { headers });
+}
 
 function shouldInjectStats(request, response) {
   if (request.method !== "GET") return false;

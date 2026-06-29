@@ -66,3 +66,11 @@ Object. The browser keeps a random visitor ID in `localStorage`; no IP address
 is stored by the app. The committed Worker custom domain is
 `wispterm.cc-remote.app`; remove any existing DNS record for that hostname before
 deploying so Wrangler can create and bind the Worker custom domain.
+
+Latest release downloads are served from the same Worker at
+`/downloads/latest/*` and backed by the `wispterm-downloads` R2 bucket. The
+weekly `.github/workflows/docs-downloads-r2-sync.yml` workflow mirrors only the
+latest GitHub release into stable R2 object names; older versions remain on
+GitHub Releases. Configure `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+repository secrets, and create the `wispterm-downloads` R2 bucket, before
+running that workflow.
