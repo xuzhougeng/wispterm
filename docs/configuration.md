@@ -46,6 +46,9 @@ remote-server-url = https://remote.example.com
 remote-server-fingerprint = sha256:...
 remote-device-name = Workstation
 remote-session-key = Workstation
+feishu-enabled = false
+feishu-app-id = cli_xxx
+feishu-app-secret = your-app-secret
 ```
 
 ## Available Keys
@@ -83,6 +86,10 @@ remote-session-key = Workstation
 | `remote-server-fingerprint` | *(none)*   | Expected relay fingerprint for server identity pinning                                                                                                                                                                  |
 | `remote-device-name`        | *(none)*   | Friendly device name sent with the WispTerm WebSocket pairing                                                                                                                                                            |
 | `remote-session-key`        | *(none)*   | Fixed remote session key base. The first local WispTerm instance uses it directly; later concurrently running instances use `_1`, `_2`, `_3`, and so on.                                                                  |
+| `feishu-enabled`            | `false`    | Enable the Feishu/Lark long-connection channel. Configure credentials from the command center by typing `feishu`, or set `feishu-app-id` and `feishu-app-secret`; restart required.                                      |
+| `feishu-app-id`             | *(none)*   | Feishu app ID (`cli_...`). Falls back to the `FEISHU_APP_ID` environment variable when empty.                                                                                                                            |
+| `feishu-app-secret`         | *(none)*   | Feishu app secret. Falls back to the `FEISHU_APP_SECRET` environment variable when empty. Keep this private.                                                                                                             |
+| `feishu-allowed-user`       | *(none)*   | Optional Feishu `open_id` allowed to control WispTerm. Empty means no explicit restriction; the first sender is auto-bound as owner.                                                                                       |
 | `focus-follows-mouse`       | `false`    | Focus whichever split panel the mouse is over, without clicking.                                                                                                                                                        |
 | `confirm-close-running-program` | `true` | Ask for confirmation before closing a panel or tab that is running a full-screen TUI (anything on the alternate screen, such as `vim` or `htop`).                                                                        |
 | `right-click-action`        | *(none)*   | Right-click behavior in the terminal: `paste`, or `copy-or-paste` (copy when a selection exists, otherwise paste).                                                                                                      |

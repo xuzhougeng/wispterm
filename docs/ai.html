@@ -215,6 +215,45 @@ ai-agent-output-limit       = 16384</code></pre>
       </div>
     </section>
 
+    <section id="feishu" class="section">
+      <div class="container">
+        <h2>Feishu/Lark direct control</h2>
+        <p class="section-lead">Use a Feishu enterprise self-built app to send messages into WispTerm's Copilot/Agent flow. The desktop app opens a long connection at startup, so save the credentials first, then restart WispTerm.</p>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>Open Platform app</h3>
+            <p>Open your self-built app at <code>https://open.feishu.cn/app</code>, or create a new enterprise self-built app. For international Lark tenants, use the corresponding API domain <code>https://open.larksuite.com</code>.</p>
+          </div>
+          <div class="feature">
+            <h3>Permissions baseline</h3>
+            <p>Use the <code>openclaw/hermes</code> self-built app as the recommended permission baseline; it already covers the message, card, media, and event capabilities WispTerm's Feishu channel uses.</p>
+          </div>
+          <div class="feature">
+            <h3>Configure in WispTerm</h3>
+            <p>Open the command center, type <code>feishu</code>, run <code>Feishu: Configure</code>, fill <code>App ID</code> and <code>App Secret</code>, then save. Restart WispTerm for the setting to take effect.</p>
+          </div>
+          <div class="feature">
+            <h3>Config fallback</h3>
+            <p>You can also set <code>feishu-enabled</code>, <code>feishu-app-id</code>, <code>feishu-app-secret</code>, and optionally <code>feishu-allowed-user</code>. Empty ID/secret values fall back to <code>FEISHU_APP_ID</code> and <code>FEISHU_APP_SECRET</code>.</p>
+          </div>
+        </div>
+        <div class="feishu-shot-grid">
+          <figure class="feishu-shot">
+            <img src="assets/feishu/app-created.png" alt="Feishu app creation success screen showing App ID and App Secret">
+            <figcaption>Copy the App ID and App Secret from the self-built app.</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/app-approved.png" alt="Feishu app approved and published screen">
+            <figcaption>Publish the app after approval.</figcaption>
+          </figure>
+          <figure class="feishu-shot wide">
+            <img src="assets/feishu/command-center-config.png" alt="WispTerm Feishu bot configuration form in the command center">
+            <figcaption>Type <code>feishu</code> in the command center, save credentials, then restart WispTerm.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
     <section id="troubleshooting" class="section">
       <div class="container">
         <h2>Troubleshooting</h2>

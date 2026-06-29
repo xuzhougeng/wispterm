@@ -122,6 +122,16 @@ test "agent request disables worker snapshot fallback when UI capture fails" {
     try std.testing.expect(std.mem.indexOf(u8, body, "tool_host = null") != null);
 }
 
+test "App Feishu env fallback uses cross-platform env API" {
+    const source = @embedFile("App.zig");
+    const start = std.mem.indexOf(u8, source, "pub fn startFeishu") orelse return error.MissingStartFeishu;
+    const rest = source[start..];
+    const end = std.mem.indexOf(u8, rest, "pub fn startAgentControl") orelse return error.MissingStartFeishuEnd;
+    const body = rest[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, body, "std.posix.getenv") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "std.process.getEnvVarOwned") != null);
+}
+
 test {
     _ = @import("input/command_dispatch.zig");
     _ = @import("input/file_explorer_keymap.zig");

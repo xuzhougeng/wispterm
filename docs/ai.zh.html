@@ -215,6 +215,45 @@ ai-agent-output-limit       = 16384</code></pre>
       </div>
     </section>
 
+    <section id="feishu" class="section">
+      <div class="container">
+        <h2>飞书/Lark 直连控制</h2>
+        <p class="section-lead">使用飞书企业自建应用，把飞书消息发送到 WispTerm 的 Copilot/Agent 流程。桌面端会在启动时创建长连接，所以先保存凭证，再重启 WispTerm。</p>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>开放平台应用</h3>
+            <p>进入 <code>https://open.feishu.cn/app</code> 打开你的自建应用；如果还没有应用，就新建一个企业自建应用。国际版 Lark 对应接口域名为 <code>https://open.larksuite.com</code>。</p>
+          </div>
+          <div class="feature">
+            <h3>权限基线</h3>
+            <p>权限配置建议直接参考 <code>openclaw/hermes</code> 这个自建应用；它已经配好了 WispTerm 飞书通道需要的消息、卡片、媒体和事件相关能力。</p>
+          </div>
+          <div class="feature">
+            <h3>在 WispTerm 中配置</h3>
+            <p>打开命令中心，输入 <code>feishu</code>，运行 <code>Feishu: Configure</code>，填写 <code>App ID</code> 和 <code>App Secret</code>，然后保存。重启 WispTerm 后生效。</p>
+          </div>
+          <div class="feature">
+            <h3>配置文件回退</h3>
+            <p>也可以设置 <code>feishu-enabled</code>、<code>feishu-app-id</code>、<code>feishu-app-secret</code>，以及可选的 <code>feishu-allowed-user</code>。ID/secret 留空时会回退读取 <code>FEISHU_APP_ID</code> 和 <code>FEISHU_APP_SECRET</code>。</p>
+          </div>
+        </div>
+        <div class="feishu-shot-grid">
+          <figure class="feishu-shot">
+            <img src="assets/feishu/app-created.png" alt="飞书应用创建成功页面，显示 App ID 和 App Secret">
+            <figcaption>从自建应用复制 App ID 和 App Secret。</figcaption>
+          </figure>
+          <figure class="feishu-shot">
+            <img src="assets/feishu/app-approved.png" alt="飞书应用审批通过并发布成功页面">
+            <figcaption>应用审批通过后发布。</figcaption>
+          </figure>
+          <figure class="feishu-shot wide">
+            <img src="assets/feishu/command-center-config.png" alt="WispTerm 命令中心里的飞书 bot 配置表单">
+            <figcaption>在命令中心输入 <code>feishu</code>，保存凭证，然后重启 WispTerm。</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
     <section id="troubleshooting" class="section">
       <div class="container">
         <h2>故障排查</h2>

@@ -19,6 +19,7 @@ This folder is the source for the WispTerm GitHub Pages site.
 - `style.css` — Poimandres-inspired dark styling.
 - `assets/wispterm.png` — logo (mirrored from repo `assets/wispterm.png`).
 - `assets/favicon.ico` — favicon (mirrored from repo `assets/wispterm.ico`).
+- `assets/feishu/` — Feishu/Lark setup screenshots used by the AI docs.
 - `.nojekyll` — disables Jekyll so the raw HTML/CSS is served as-is.
 
 ## Enable GitHub Pages

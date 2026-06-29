@@ -340,6 +340,56 @@ back over WeChat. The remaining command-center entries manage that binding:
 Because replies are delivered to a phone, the `Export Copilot Markdown Clean`
 output (prompts plus the final answer only) is a good fit for forwarding results.
 
+## Feishu/Lark Direct Control
+
+WispTerm can also receive messages from a Feishu self-built app and route them
+to the active Copilot/Agent flow. In Feishu Open Platform, open your self-built
+app, or create a new **enterprise self-built app** first:
+
+```text
+https://open.feishu.cn/app
+```
+
+For international Lark tenants, the corresponding Open Platform API domain is:
+
+```text
+https://open.larksuite.com
+```
+
+The current desktop build uses the Feishu config key names below. Follow the
+`openclaw/hermes` app as the recommended permission baseline when configuring
+the self-built app; that setup already enables the message, card, media, and
+event capabilities WispTerm's Feishu channel needs.
+
+![Feishu app created with App ID and App Secret](assets/feishu/app-created.png)
+
+After the app is approved and published, copy the App ID and App Secret into
+WispTerm:
+
+![Feishu app approved and published](assets/feishu/app-approved.png)
+
+1. Open the command center with `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS).
+2. Type `feishu`.
+3. Run **Feishu: Configure**.
+4. Fill `App ID` and `App Secret`, then save.
+5. Restart WispTerm. The Feishu long-connection channel starts only during app
+   startup.
+
+![WispTerm Feishu bot configuration form](assets/feishu/command-center-config.png)
+
+You can also set the same values in the config file or the process environment:
+
+```text
+feishu-enabled = true
+feishu-app-id = cli_xxx
+feishu-app-secret = your-app-secret
+# Optional: restrict control to one Feishu open_id.
+feishu-allowed-user = ou_xxx
+```
+
+If `feishu-app-id` or `feishu-app-secret` is empty, WispTerm falls back to the
+`FEISHU_APP_ID` and `FEISHU_APP_SECRET` environment variables.
+
 ## Asking About WispTerm Itself
 
 The agent can read WispTerm's own user documentation on demand through the

@@ -50,6 +50,9 @@ config-file = extra.conf
 auto-update-check = true
 focus-follows-mouse = false
 remote-enabled = false
+feishu-enabled = false
+feishu-app-id = cli_xxx
+feishu-app-secret = your-app-secret
 ```
 
 ## 配置项参考
@@ -88,6 +91,10 @@ remote-enabled = false
 | `remote-server-fingerprint` | *(无)* | 用于服务端身份固定的预期 relay 指纹 |
 | `remote-device-name` | *(无)* | 随 WispTerm 配对发送的友好设备名 |
 | `remote-session-key` | *(无)* | 固定的远程会话密钥基；之后并发的实例使用 `_1`、`_2`… |
+| `feishu-enabled` | `false` | 启用飞书/Lark 长连接通道。可在命令中心输入 `feishu` 填写凭证，也可设置下面两个键；需要重启 |
+| `feishu-app-id` | *(无)* | 飞书 App ID（`cli_...`）。为空时回退读取 `FEISHU_APP_ID` |
+| `feishu-app-secret` | *(无)* | 飞书 App Secret。为空时回退读取 `FEISHU_APP_SECRET`；请妥善保管 |
+| `feishu-allowed-user` | *(无)* | 可选：只允许这个飞书 `open_id` 控制 WispTerm。空值表示不显式限制；首个发送者会自动绑定为 owner |
 | `ssh-legacy-algorithms` | `false` | 为老旧 SSH 服务追加兼容选项（ssh-rsa、旧 KEX、CBC）—— 见 [[SSH 与远程开发|SSH-Remote-Development-zh]] |
 | `copy-on-select` | `false` | 自动复制终端选区 —— 见 [[AI 副驾与智能体|AI-Copilot-zh]] |
 | `right-click-action` | *(无)* | `paste`，或 `copy-or-paste`（有选区时复制，否则粘贴） |

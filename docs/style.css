@@ -946,6 +946,36 @@ pre.code-block code {
   overflow-wrap: anywhere;
 }
 
+.feishu-shot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 28px;
+}
+
+.feishu-shot {
+  margin: 0;
+}
+
+.feishu-shot.wide {
+  grid-column: 1 / -1;
+}
+
+.feishu-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+
+.feishu-shot figcaption {
+  margin-top: 8px;
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+}
+
 .config-table {
   width: 100%;
   border-collapse: collapse;
@@ -981,6 +1011,14 @@ pre.code-block code {
   .ai-hero-grid,
   .ai-setup-grid {
     grid-template-columns: 1fr;
+  }
+
+  .feishu-shot-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .feishu-shot.wide {
+    grid-column: auto;
   }
 }
 

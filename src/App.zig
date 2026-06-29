@@ -405,16 +405,21 @@ pub fn startWeixin(self: *App, cfg: *const Config) void {
 pub fn startFeishu(self: *App, cfg: *const Config) void {
     if (!cfg.@"feishu-enabled") return;
 
-    const app_id = blk: {
-        const v = cfg.@"feishu-app-id" orelse "";
-        if (v.len != 0) break :blk v;
-        break :blk std.posix.getenv("FEISHU_APP_ID") orelse "";
-    };
-    const app_secret = blk: {
-        const v = cfg.@"feishu-app-secret" orelse "";
-        if (v.len != 0) break :blk v;
-        break :blk std.posix.getenv("FEISHU_APP_SECRET") orelse "";
-    };
+    const configured_app_id = cfg.@"feishu-app-id" orelse "";
+    const env_app_id: ?[]u8 = if (configured_app_id.len == 0)
+        std.process.getEnvVarOwned(self.allocator, "FEISHU_APP_ID") catch null
+    else
+        null;
+    defer if (env_app_id) |v| self.allocator.free(v);
+    const app_id: []const u8 = if (configured_app_id.len != 0) configured_app_id else env_app_id orelse "";
+
+    const configured_app_secret = cfg.@"feishu-app-secret" orelse "";
+    const env_app_secret: ?[]u8 = if (configured_app_secret.len == 0)
+        std.process.getEnvVarOwned(self.allocator, "FEISHU_APP_SECRET") catch null
+    else
+        null;
+    defer if (env_app_secret) |v| self.allocator.free(v);
+    const app_secret: []const u8 = if (configured_app_secret.len != 0) configured_app_secret else env_app_secret orelse "";
 
     if (app_id.len == 0 or app_secret.len == 0) {
         std.log.warn("feishu-enabled but credentials missing; skipping feishu startup", .{});

@@ -50,6 +50,9 @@ config-file = extra.conf
 auto-update-check = true
 focus-follows-mouse = false
 remote-enabled = false
+feishu-enabled = false
+feishu-app-id = cli_xxx
+feishu-app-secret = your-app-secret
 ```
 
 ## Key reference
@@ -88,6 +91,10 @@ remote-enabled = false
 | `remote-server-fingerprint` | *(none)* | Expected relay fingerprint for server identity pinning |
 | `remote-device-name` | *(none)* | Friendly device name sent with the WispTerm pairing |
 | `remote-session-key` | *(none)* | Fixed remote session key base; later concurrent instances use `_1`, `_2`, … |
+| `feishu-enabled` | `false` | Enable the Feishu/Lark long-connection channel. Configure credentials from the command center by typing `feishu`, or set the keys below; restart required |
+| `feishu-app-id` | *(none)* | Feishu app ID (`cli_...`). Falls back to `FEISHU_APP_ID` when empty |
+| `feishu-app-secret` | *(none)* | Feishu app secret. Falls back to `FEISHU_APP_SECRET` when empty; keep it private |
+| `feishu-allowed-user` | *(none)* | Optional Feishu `open_id` allowed to control WispTerm. Empty means no explicit restriction; the first sender is auto-bound as owner |
 | `ssh-legacy-algorithms` | `false` | Append compatibility options (ssh-rsa, old KEX, CBC) for legacy SSH servers — see [[SSH-Remote-Development]] |
 | `copy-on-select` | `false` | Copy the terminal selection automatically — see [[AI-Copilot]] |
 | `right-click-action` | *(none)* | `paste`, or `copy-or-paste` (copy when a selection exists, else paste) |

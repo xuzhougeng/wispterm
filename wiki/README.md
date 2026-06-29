@@ -23,6 +23,7 @@ any one page once so `wispterm.wiki.git` exists). Then:
 ```bash
 git clone https://github.com/xuzhougeng/wispterm.wiki.git /tmp/wt-wiki
 cp wiki/*.md /tmp/wt-wiki/        # copies pages + _Sidebar + _Footer
+cp -R wiki/assets /tmp/wt-wiki/   # copies image assets used by pages
 rm -f /tmp/wt-wiki/README.md      # README.md is staging-only, not a wiki page
 cd /tmp/wt-wiki && git add -A && git commit -m "docs: publish user wiki" && git push
 ```

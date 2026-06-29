@@ -134,6 +134,54 @@ that reply back into the same approval dialog that would otherwise wait in the
 desktop UI. The desktop app remains the source of truth, and protected file
 paths still use the normal access gate before an approval prompt is emitted.
 
+## Feishu/Lark direct control
+
+WispTerm can receive messages from a Feishu self-built app and route them into
+the active Copilot/Agent flow. In Feishu Open Platform, open your self-built app,
+or create a new **enterprise self-built app**:
+
+```text
+https://open.feishu.cn/app
+```
+
+For international Lark tenants, use the corresponding Open Platform API domain:
+
+```text
+https://open.larksuite.com
+```
+
+Follow the `openclaw/hermes` app as the recommended permission baseline; that
+setup already covers the message, card, media, and event capabilities WispTerm's
+Feishu channel uses.
+
+![Feishu app created](assets/feishu-app-created.png)
+
+![Feishu app approved](assets/feishu-app-approved.png)
+
+Then configure WispTerm:
+
+1. Open the command center with `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS).
+2. Type `feishu`.
+3. Run **Feishu: Configure**.
+4. Fill `App ID` and `App Secret`, then save.
+5. Restart WispTerm. The Feishu long-connection channel starts only during app
+   startup.
+
+![WispTerm Feishu bot configuration form](assets/feishu-command-center-config.png)
+
+Equivalent config keys:
+
+```text
+feishu-enabled = true
+feishu-app-id = cli_xxx
+feishu-app-secret = your-app-secret
+# Optional: restrict control to one Feishu open_id.
+feishu-allowed-user = ou_xxx
+```
+
+If `feishu-app-id` or `feishu-app-secret` is empty, WispTerm falls back to
+`FEISHU_APP_ID` and `FEISHU_APP_SECRET`.
+
 ## Sessions browser & resume
 
 Open the command center (`Ctrl+Shift+P`) and run **Copilot History** to reopen
