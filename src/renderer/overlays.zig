@@ -684,6 +684,8 @@ fn executeCommand(action: CommandAction) void {
         .stop_wechat => stopWeixinDirect(),
         .wechat_status => showWeixinDirectStatus(),
         .unbind_wechat => unbindWeixinDirect(),
+        .toggle_feishu => toggleFeishuEnabled(),
+        .configure_feishu => openFeishuConfigForm(),
         .export_ai_chat_markdown => AppWindow.exportActiveAiChatMarkdown(.full),
         .export_ai_chat_markdown_clean => AppWindow.exportActiveAiChatMarkdown(.clean),
         .show_version => showVersionToast(),

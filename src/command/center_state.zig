@@ -35,6 +35,8 @@ pub const CommandAction = enum {
     stop_wechat,
     wechat_status,
     unbind_wechat,
+    toggle_feishu,
+    configure_feishu,
     export_ai_chat_markdown,
     export_ai_chat_markdown_clean,
     show_version,
@@ -89,6 +91,8 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "WeChat: Stop", .detail = "Stop polling and keep the saved WeChat binding", .shortcut = "", .action = .stop_wechat },
     .{ .title = "WeChat: Status", .detail = "Show the WeChat direct connection state", .shortcut = "", .action = .wechat_status },
     .{ .title = "WeChat: Unbind", .detail = "Clear the stored WeChat direct binding", .shortcut = "", .action = .unbind_wechat },
+    .{ .title = "Feishu: Configure", .detail = "Enter App ID and App Secret for the Feishu bot", .shortcut = "", .action = .configure_feishu },
+    .{ .title = "Feishu: Toggle", .detail = "Enable or disable the Feishu bot (restart to apply)", .shortcut = "", .action = .toggle_feishu },
     .{ .title = "Export Copilot Markdown", .detail = "Save the active Copilot transcript as Markdown", .shortcut = "", .action = .export_ai_chat_markdown },
     .{ .title = "Export Copilot Markdown Clean", .detail = "Save user prompts and the final AI result without thinking", .shortcut = "", .action = .export_ai_chat_markdown_clean },
     .{ .title = "Version", .detail = "Show WispTerm version", .shortcut = app_metadata.version, .action = .show_version },
@@ -409,6 +413,11 @@ test "command center includes WeChat direct actions" {
     try expectCommandEntry("WeChat: Stop", .stop_wechat);
     try expectCommandEntry("WeChat: Status", .wechat_status);
     try expectCommandEntry("WeChat: Unbind", .unbind_wechat);
+}
+
+test "command center includes Feishu direct actions" {
+    try expectCommandEntry("Feishu: Configure", .configure_feishu);
+    try expectCommandEntry("Feishu: Toggle", .toggle_feishu);
 }
 
 test "command center browser text is backend neutral" {
