@@ -34,10 +34,9 @@ In the GitHub repo settings:
    Jekyll and breaks on the Primer theme's missing `assets/css/style.scss`.)
 3. Push to `main`; the workflow runs whenever `docs/**` changes.
 
-The site publishes at `https://<user>.github.io/wispterm/`.
-
-For a custom domain, add a `CNAME` file to this folder containing the domain
-and configure DNS at the registrar.
+The site publishes at `https://<user>.github.io/wispterm/`. Do not add a
+`CNAME` here when `wispterm.cc-remote.app` is served by the Cloudflare Worker
+version below.
 
 ## Local preview
 
@@ -48,3 +47,22 @@ cd docs
 python3 -m http.server 8000
 # open http://localhost:8000
 ```
+
+## Cloudflare version with visitor stats
+
+The GitHub Pages version is intentionally plain static HTML and does not load
+visitor stats. To deploy the fuller Cloudflare version, copy the example config
+and deploy from this folder:
+
+```bash
+cp wrangler.toml.example wrangler.toml
+npm run deploy
+```
+
+The deploy script copies the public static docs into `dist-cloudflare/`, then
+Wrangler uploads that directory. The Cloudflare Worker injects the footer stats
+only for Cloudflare HTML responses and stores site-wide totals in one Durable
+Object. The browser keeps a random visitor ID in `localStorage`; no IP address
+is stored by the app. The committed Worker custom domain is
+`wispterm.cc-remote.app`; remove any existing DNS record for that hostname before
+deploying so Wrangler can create and bind the Worker custom domain.

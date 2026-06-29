@@ -34,6 +34,9 @@ remote/dist-server/
 remote/.wrangler/
 remote/wrangler.toml
 remote/.env
+docs/.wrangler/
+docs/dist-cloudflare/
+docs/wrangler.toml
 
 # Local high-res app-icon source (generate assets/wispterm.* from it; not tracked)
 /wispterm.png

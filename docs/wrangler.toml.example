@@ -1,0 +1,23 @@
+name = "wispterm-docs"
+main = "src/worker.js"
+compatibility_date = "2026-06-29"
+
+# Copy this file to wrangler.toml before deploying. Do not commit the copied
+# wrangler.toml if you add account-specific local settings.
+
+[[routes]]
+pattern = "wispterm.cc-remote.app"
+custom_domain = true
+
+[assets]
+directory = "./dist-cloudflare"
+binding = "ASSETS"
+run_worker_first = true
+
+[[durable_objects.bindings]]
+name = "DOCS_STATS"
+class_name = "DocsStats"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DocsStats"]
