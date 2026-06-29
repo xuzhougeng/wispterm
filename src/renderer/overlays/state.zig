@@ -4,6 +4,7 @@ const toasts = @import("toasts.zig");
 const confirm_modals = @import("confirm_modals.zig");
 const ssh_profiles = @import("ssh_profiles.zig");
 const assistant_profiles = @import("assistant_profiles.zig");
+const feishu_config = @import("feishu_config.zig");
 const session_launcher = @import("session_launcher.zig");
 const command_palette_state = @import("command_palette_state.zig");
 const command_registry = @import("../../command/registry.zig");
@@ -16,12 +17,22 @@ pub const SnippetState = struct {
     loaded: bool = false,
 };
 
+/// Feishu credential-form overlay state: the field buffers plus presentation flags
+/// (`visible` short-circuits the launcher render/input branches; `secret_already_set`
+/// drives the "leave blank to keep" hint without re-reading the secret each frame).
+pub const FeishuFormState = struct {
+    config: feishu_config.State = .{},
+    visible: bool = false,
+    secret_already_set: bool = false,
+};
+
 pub const OverlayState = struct {
     settings: settings_page.State = .{},
     toasts: toasts.State = .{},
     confirms: confirm_modals.State = .{},
     ssh: ssh_profiles.State = .{},
     assistant_profiles: assistant_profiles.State = .{},
+    feishu: FeishuFormState = .{},
     session: session_launcher.State = .{},
     command_palette: command_palette_state.State = .{},
     snippets: SnippetState = .{},

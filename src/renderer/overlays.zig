@@ -43,6 +43,7 @@ const toasts = @import("overlays/toasts.zig");
 const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
 const assistant_profiles = @import("overlays/assistant_profiles.zig");
+const feishu_config = @import("overlays/feishu_config.zig");
 const session_launcher = @import("overlays/session_launcher.zig");
 const command_palette_state = @import("overlays/command_palette_state.zig");
 const command_palette_layout = @import("overlays/command_palette_layout.zig");
@@ -117,6 +118,14 @@ fn sshState() *ssh_profiles.State {
 
 fn assistantProfiles() *assistant_profiles.State {
     return &g_overlay_state.assistant_profiles;
+}
+
+fn feishuForm() *overlay_state.FeishuFormState {
+    return &g_overlay_state.feishu;
+}
+
+fn feishuConfig() *feishu_config.State {
+    return &g_overlay_state.feishu.config;
 }
 
 fn launcherState() *session_launcher.State {
@@ -2209,6 +2218,8 @@ const AI_FIELD_COUNT = assistant_profiles.AI_FIELD_COUNT;
 const AI_FIELD_MAX = assistant_profiles.AI_FIELD_MAX;
 const AI_PROFILE_MAX = assistant_profiles.AI_PROFILE_MAX;
 const AI_PROFILE_NONE = assistant_profiles.AI_PROFILE_NONE;
+const FEISHU_FIELD_COUNT = feishu_config.FEISHU_FIELD_COUNT;
+const FeishuField = feishu_config.FeishuField;
 const SshField = profile_codec.SshField;
 const AiField = profile_codec.AiField;
 
@@ -2235,6 +2246,7 @@ const SessionAction = enum {
     save,
     connect_ai,
     save_ai,
+    feishu_save,
     cancel,
 };
 
@@ -2284,6 +2296,11 @@ threadlocal var g_ssh_form_visible: bool = false;
 threadlocal var g_ai_list_visible: bool = false;
 threadlocal var g_ai_form_visible: bool = false;
 threadlocal var g_ai_history_source_visible: bool = false;
+// Feishu credential form rides on the session-launcher overlay plumbing
+// (render/input/hit-test are all gated by sessionLauncherVisible()); openFeishuConfigForm
+// sets g_session_launcher_visible so those gates fire, then feishuForm().visible
+// short-circuits the launcher branches. State lives in g_overlay_state.feishu (not a new
+// top-level global — see global_state_guard; not in command_center_state — Task 2 scope).
 // Launcher transient state (AI history source selection + switch-model target)
 // now lives in `g_overlay_state.session` (session_launcher.State), reached
 // through `launcherState()` / `switchModelTarget()` / `setSwitchModelTarget()`.
@@ -2411,6 +2428,11 @@ fn commandCenterStateApply(state: command_center_state.State) void {
     g_ai_form_visible = state.ai_form_visible;
     g_ai_history_source_visible = state.ai_history_source_visible;
     settingsState().visible = state.settings_visible;
+    // Feishu form isn't tracked in command_center_state; any overlay transition that goes
+    // through commit clears it. openFeishuConfigForm re-sets it AFTER commandPaletteClose(),
+    // so it can't be stomped on open. Prevents the feishu render gate from firing stale when
+    // another launcher mode (AI list, SSH, plain launcher) reuses g_session_launcher_visible.
+    feishuForm().visible = false;
 }
 
 pub fn sessionLauncherOpen() void {
@@ -2469,6 +2491,13 @@ fn openAiFormNewFromCommandPalette() void {
 
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
     if (codepoint < 0x20 or codepoint == 0x7f) return;
+    if (feishuForm().visible) {
+        if (feishuConfig().focus >= FEISHU_FIELD_COUNT) return;
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(codepoint, &buf) catch return;
+        feishuConfig().append(@enumFromInt(feishuConfig().focus), buf[0..n]);
+        return;
+    }
     if (g_ssh_list_visible) {
         appendSshListFilterCodepoint(codepoint);
         return;
@@ -2489,6 +2518,11 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
 }
 
 pub fn sessionLauncherPasteText(text: []const u8) bool {
+    if (feishuForm().visible) {
+        if (feishuConfig().focus >= FEISHU_FIELD_COUNT) return false;
+        feishuConfig().append(@enumFromInt(feishuConfig().focus), text);
+        return true;
+    }
     if (g_ssh_list_visible) {
         appendSshListFilterText(text);
         return true;
@@ -2548,6 +2582,18 @@ pub fn sessionLauncherHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
 }
 
 fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
+    if (feishuForm().visible) {
+        switch (ev.key) {
+            .tab, .arrow_down => feishuConfig().focusNextRow(),
+            .arrow_up => feishuConfig().focusPrevRow(),
+            .enter => if (feishuConfig().focus == FEISHU_FIELD_COUNT) saveFeishuConfig(),
+            .backspace => if (feishuConfig().focus < FEISHU_FIELD_COUNT)
+                feishuConfig().backspace(@enumFromInt(feishuConfig().focus)),
+            .escape => closeFeishuConfigForm(),
+            else => {},
+        }
+        return;
+    }
     if (ev.key == .escape) {
         if (g_ssh_list_visible and sshState().list_filter_len > 0) {
             clearSshListFilter();
@@ -2690,6 +2736,7 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
         .save => saveSshFormOnly(),
         .connect_ai => connectAiFromForm(),
         .save_ai => saveAiFormOnly(),
+        .feishu_save => saveFeishuConfig(),
         .cancel => sessionLauncherBackOrClose(),
     }
     return true;
@@ -3895,6 +3942,59 @@ fn openAiForm() void {
     assistantProfiles().focus = @intFromEnum(AiField.name);
 }
 
+// Feishu credential form: opened from the command palette (Task 3). Rides on the
+// session-launcher render/input plumbing, so it keeps g_session_launcher_visible true
+// (the only flag sessionLauncherVisible() checks that we can set without touching
+// command_center_state) and short-circuits the launcher branches via feishuForm().visible.
+// NOTE: never log app_secret; app-id is prefilled but the secret is left blank on open.
+fn openFeishuConfigForm() void {
+    g_ssh_list_visible = false;
+    g_ssh_form_visible = false;
+    g_ai_list_visible = false;
+    g_ai_form_visible = false;
+    g_ai_history_source_visible = false;
+    settingsState().visible = false;
+    commandPaletteClose();
+    const st = feishuConfig();
+    st.reset();
+    feishuForm().secret_already_set = false;
+    if (AppWindow.g_allocator) |allocator| {
+        var cfg = Config.load(allocator) catch Config{};
+        defer cfg.deinit(allocator);
+        if (cfg.@"feishu-app-id") |id| st.setValue(.app_id, id); // app-id prefilled; secret never prefilled
+        feishuForm().secret_already_set = cfg.@"feishu-app-secret" != null; // boolean only — secret value never read into the form
+    }
+    st.focus = 0;
+    g_session_launcher_visible = true;
+    feishuForm().visible = true;
+}
+
+fn toggleFeishuEnabled() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    var cfg = Config.load(allocator) catch Config{};
+    defer cfg.deinit(allocator);
+    Config.setConfigValue(allocator, "feishu-enabled", if (cfg.@"feishu-enabled") "false" else "true") catch {};
+    showStatusToast(i18n.s().toast_feishu_restart);
+}
+
+fn closeFeishuConfigForm() void {
+    feishuForm().visible = false;
+    g_session_launcher_visible = false;
+    feishuConfig().reset();
+}
+
+fn saveFeishuConfig() void {
+    if (AppWindow.g_allocator) |allocator| {
+        const st = feishuConfig();
+        const app_id = st.value(.app_id);
+        if (app_id.len > 0) Config.setConfigValue(allocator, "feishu-app-id", app_id) catch {};
+        const secret = st.value(.app_secret);
+        if (secret.len > 0) Config.setConfigValue(allocator, "feishu-app-secret", secret) catch {}; // blank leaves existing
+    }
+    closeFeishuConfigForm();
+    showStatusToast(i18n.s().toast_feishu_restart);
+}
+
 fn setAiDefault(field: AiField, value: []const u8) void {
     const idx: usize = @intFromEnum(field);
     const len = @min(value.len, AI_FIELD_MAX);
@@ -4586,6 +4686,7 @@ fn sessionTwoColumnWidth(left: []const u8, right: []const u8) f32 {
 }
 
 fn sessionLauncherTitle() []const u8 {
+    if (feishuForm().visible) return i18n.s().feishu_form_title;
     if (g_ai_history_source_visible) return i18n.s().sl_sessions;
     if (g_ai_form_visible) {
         return i18n.s().sl_ai_agent;
@@ -4612,6 +4713,7 @@ fn sessionLauncherTitle() []const u8 {
 }
 
 fn sessionLauncherHint() []const u8 {
+    if (feishuForm().visible) return i18n.s().toast_feishu_restart;
     if (g_ai_history_source_visible) return "Choose a source";
     if (g_ai_form_visible) {
         return i18n.s().sl_hint_ai_form;
@@ -4767,7 +4869,9 @@ fn sessionDesiredBoxWidth() f32 {
 
 /// Total rows in the currently active session-launcher mode.
 fn sessionActiveRowCount() usize {
-    return if (g_ai_form_visible)
+    return if (feishuForm().visible)
+        FEISHU_FIELD_COUNT + 1
+    else if (g_ai_form_visible)
         AI_FIELD_COUNT + 3
     else if (g_ai_list_visible)
         aiListRowCount()
@@ -4783,7 +4887,9 @@ fn sessionActiveRowCount() usize {
 
 /// Selected/focused row of the currently active session-launcher mode.
 fn sessionActiveSelection() usize {
-    return if (g_ai_form_visible)
+    return if (feishuForm().visible)
+        feishuConfig().focus
+    else if (g_ai_form_visible)
         assistantProfiles().focus
     else if (g_ai_list_visible)
         assistantProfiles().list_selected
@@ -4799,7 +4905,9 @@ fn sessionActiveSelection() usize {
 
 /// Mutable pointer to the active mode's selection (for the mouse wheel).
 fn sessionActiveSelectionPtr() *usize {
-    return if (g_ai_form_visible)
+    return if (feishuForm().visible)
+        &feishuConfig().focus
+    else if (g_ai_form_visible)
         &assistantProfiles().focus
     else if (g_ai_list_visible)
         &assistantProfiles().list_selected
@@ -4873,6 +4981,12 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     const visible_index: usize = @intFromFloat(@floor((y - layout.first_row_top_px) / layout.row_h));
     if (visible_index >= layout.visible_rows) return null;
     const row = visible_index + layout.scroll;
+
+    if (feishuForm().visible) {
+        if (row > FEISHU_FIELD_COUNT) return null;
+        feishuConfig().focus = row;
+        return if (row == FEISHU_FIELD_COUNT) .feishu_save else null;
+    }
 
     if (g_ai_history_source_visible) {
         if (row >= aiHistorySourceRowCount()) return null;
@@ -5059,6 +5173,32 @@ fn defaultAiModeLabel() []const u8 {
     return aiModeText(AppWindow.ai_chat.DEFAULT_AGENT);
 }
 
+// Draws the 2-field feishu credential form inside the session-launcher box. The
+// app_secret row is masked: rendered as U+2022 (•) repeated once per *codepoint* (never the
+// plaintext), or the "leave blank to keep" hint when empty and a secret already exists.
+fn renderFeishuConfigForm(layout: SessionLayout, window_height: f32) void {
+    const st = feishuConfig();
+    renderSessionFieldValue(layout, window_height, @intFromEnum(FeishuField.app_id), i18n.s().feishu_form_app_id, st.value(.app_id), false, st.focus == @intFromEnum(FeishuField.app_id));
+
+    const secret = st.value(.app_secret);
+    var dot_buf: [feishu_config.FEISHU_FIELD_MAX * 3]u8 = undefined; // • is 3 UTF-8 bytes; mask by codepoint count
+    const secret_display: []const u8 = if (secret.len > 0) blk: {
+        var out: usize = 0;
+        for (secret) |b| {
+            if ((b & 0xC0) == 0x80) continue; // skip UTF-8 continuation bytes — one • per codepoint
+            @memcpy(dot_buf[out..][0..3], "\u{2022}");
+            out += 3;
+        }
+        break :blk dot_buf[0..out];
+    } else if (feishuForm().secret_already_set)
+        i18n.s().feishu_form_secret_set_hint
+    else
+        "";
+    renderSessionRow(layout, window_height, @intFromEnum(FeishuField.app_secret), i18n.s().feishu_form_app_secret, secret_display, st.focus == @intFromEnum(FeishuField.app_secret));
+
+    renderSessionRow(layout, window_height, FEISHU_FIELD_COUNT, i18n.s().feishu_form_save, i18n.s().toast_feishu_restart, st.focus == FEISHU_FIELD_COUNT);
+}
+
 pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: f32) void {
     if (!sessionLauncherVisible()) return;
 
@@ -5118,6 +5258,11 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
         const text = if (filter.len > 0) filter else i18n.s().sl_search_ssh_servers;
         const color = if (filter.len > 0) fg else dim_color;
         renderTitlebarTextLimited(text, filter_x + 12, rowTextY(filter_box_y, layout.filter_h), color, filter_w - 24);
+    }
+
+    if (feishuForm().visible) {
+        renderFeishuConfigForm(layout, window_height);
+        return;
     }
 
     if (!g_ssh_form_visible and !g_ai_form_visible) {
