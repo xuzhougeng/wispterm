@@ -156,8 +156,8 @@ pub fn buildPing(a: std.mem.Allocator, service_id: []const u8) ![]u8 {
     return encode(a, .{ .method = 0, .service = svc, .headers = hdrs });
 }
 
-pub fn buildAck(a: std.mem.Allocator, recv: Frame) ![]u8 {
-    // Reuse seqid/logid/service/method; replace payload with {"code":200}; add biz_rt.
+/// 复用收到帧的 ids/headers + biz_rt，payload 换成传入值。用于 ACK 与卡片回调响应。
+pub fn buildResponse(a: std.mem.Allocator, recv: Frame, payload: []const u8) ![]u8 {
     var hdrs: std.ArrayListUnmanaged(Header) = .empty;
     for (recv.headers) |h| try hdrs.append(a, h);
     try hdrs.append(a, .{ .key = "biz_rt", .value = "0" });
@@ -167,8 +167,12 @@ pub fn buildAck(a: std.mem.Allocator, recv: Frame) ![]u8 {
         .service = recv.service,
         .method = recv.method,
         .headers = hdrs.items,
-        .payload = "{\"code\":200}",
+        .payload = payload,
     });
+}
+
+pub fn buildAck(a: std.mem.Allocator, recv: Frame) ![]u8 {
+    return buildResponse(a, recv, "{\"code\":200}");
 }
 
 test "pbbp2 round-trip: encode then decode a Frame" {
@@ -226,4 +230,24 @@ test "ack reuses ids and sets code 200 + biz_rt" {
     try std.testing.expectEqual(@as(i64, 1), f.method);
     try std.testing.expectEqualStrings("{\"code\":200}", f.payload);
     try std.testing.expect(f.header("biz_rt") != null);
+}
+
+test "buildResponse round-trip: custom payload, ids reused, biz_rt present" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const al = arena.allocator();
+    const hdrs = try al.alloc(Header, 1);
+    hdrs[0] = .{ .key = "type", .value = "card.action.trigger" };
+    const recv = Frame{ .seqid = 42, .logid = 99, .service = 3, .method = 2, .headers = hdrs, .payload = "original" };
+    const custom_payload = "{\"toast\":{\"type\":\"success\",\"content\":\"已停止\"}}";
+    const bytes = try buildResponse(al, recv, custom_payload);
+    const f = try decode(al, bytes);
+    try std.testing.expectEqual(@as(u64, 42), f.seqid);
+    try std.testing.expectEqual(@as(u64, 99), f.logid);
+    try std.testing.expectEqual(@as(i64, 3), f.service);
+    try std.testing.expectEqual(@as(i64, 2), f.method);
+    try std.testing.expectEqualStrings(custom_payload, f.payload);
+    try std.testing.expect(f.header("biz_rt") != null);
+    try std.testing.expectEqualStrings("card.action.trigger", f.header("type").?);
 }
