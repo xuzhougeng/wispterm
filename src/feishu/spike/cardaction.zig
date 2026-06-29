@@ -59,14 +59,27 @@ pub fn main() !void {
         std.debug.print("\n[CREATE_STREAM_CARD] card_id={s}\n", .{card_id});
         const content = try std.json.Stringify.valueAlloc(a, .{ .type = "card", .data = .{ .card_id = card_id } }, .{});
         const send_body = try std.json.Stringify.valueAlloc(a, .{ .receive_id = chat, .msg_type = "interactive", .content = content }, .{});
-        _ = try httpReq(a, .POST, BASE ++ "/open-apis/im/v1/messages?receive_id_type=chat_id", token, send_body, "SEND_STREAM_CARD");
-        // leave it in streaming_mode (do NOT close) so we test clicking WHILE streaming.
-        std.debug.print("\n[NOTE] stream card left OPEN (streaming_mode on) — click its button to test Spike B.\n", .{});
+        const send_resp = try httpReq(a, .POST, BASE ++ "/open-apis/im/v1/messages?receive_id_type=chat_id", token, send_body, "SEND_STREAM_CARD");
+
+        // --- FINALIZE-PATCH test: replace the streaming card with a button-less resolved card ---
+        if (try extractString(a, send_resp, "message_id")) |mid| {
+            std.debug.print("\n[FINALIZE] message_id={s}\n", .{mid});
+            // 1. close streaming first (settings streaming_mode:false).
+            const settings_url = try std.fmt.allocPrint(a, BASE ++ "/open-apis/cardkit/v1/cards/{s}/settings", .{card_id});
+            const close_body = try std.json.Stringify.valueAlloc(a, .{ .settings = "{\"config\":{\"streaming_mode\":false}}", .sequence = 99 }, .{});
+            _ = try httpReq(a, .PATCH, settings_url, token, close_body, "CLOSE_STREAM");
+            // 2. patch the MESSAGE to a button-less resolved card (inline card json string).
+            const resolved_card = "{\"schema\":\"2.0\",\"body\":{\"elements\":[{\"tag\":\"markdown\",\"content\":\"✅ 已完成(无按钮)\"}]}}";
+            const patch_url = try std.fmt.allocPrint(a, BASE ++ "/open-apis/im/v1/messages/{s}", .{mid});
+            const patch_body = try std.json.Stringify.valueAlloc(a, .{ .content = resolved_card }, .{});
+            _ = try httpReq(a, .PATCH, patch_url, token, patch_body, "PATCH_MESSAGE");
+            std.debug.print("\n[FINALIZE] If the 2nd card became '✅ 已完成(无按钮)' with NO stop button → patch-on-streaming-card works.\n", .{});
+        }
     } else {
         std.debug.print("\n[CREATE_STREAM_CARD] no card_id — inspect body above.\n", .{});
     }
 
-    std.debug.print("\n[DONE] Now click BOTH buttons in Feishu. Watch the app's SPIKE log for card.action.trigger frames.\n", .{});
+    std.debug.print("\n[DONE] Click the STATIC card button; check the streaming card's FINALIZE result.\n", .{});
 }
 
 fn err(msg: []const u8) error{Spike} {
