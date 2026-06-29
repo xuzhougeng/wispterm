@@ -8,6 +8,9 @@ sign_identity="${WISPTERM_MACOS_SIGN_IDENTITY:--}"
 notary_profile="${WISPTERM_MACOS_NOTARY_PROFILE:-}"
 entitlements="${WISPTERM_MACOS_ENTITLEMENTS:-"$repo_root/packaging/macos/WispTerm.entitlements"}"
 dist_dir="${WISPTERM_MACOS_DIST_DIR:-"$repo_root/zig-out/dist/macos"}"
+# Output format: "dmg" (default, for releases) or "zip" (internal/beta builds —
+# ship the signed .app as a zip, no DMG).
+package_format="${WISPTERM_MACOS_PACKAGE_FORMAT:-dmg}"
 
 if [[ -z "$version" ]]; then
   version="$(grep -E '^[[:space:]]*\.version[[:space:]]*=' "$repo_root/build.zig.zon" | sed -E 's/.*"([^"]+)".*/\1/')"
@@ -55,13 +58,26 @@ else
   echo "notarization skipped: set WISPTERM_MACOS_NOTARY_PROFILE to submit with notarytool" >&2
 fi
 
-ditto "$app_path" "$staging/WispTerm.app"
-ln -s /Applications "$staging/Applications"
-
 tag_version="$version"
 if [[ "$tag_version" != v* ]]; then
   tag_version="v$tag_version"
 fi
+
+if [[ "$package_format" == "zip" ]]; then
+  # Internal/beta distribution: ship the signed (and, when a notary profile is
+  # set, notarized + stapled) .app as a zip — no DMG. ditto -c -k --keepParent
+  # preserves the bundle and the stapled ticket, so a downloaded + unzipped .app
+  # launches without an online Gatekeeper round-trip.
+  zip_path="$dist_dir/wispterm-macos-$tag_version.zip"
+  rm -f "$zip_path"
+  ditto -c -k --keepParent "$app_path" "$zip_path"
+  echo "$zip_path"
+  exit 0
+fi
+
+ditto "$app_path" "$staging/WispTerm.app"
+ln -s /Applications "$staging/Applications"
+
 dmg_path="$dist_dir/wispterm-macos-$tag_version.dmg"
 rm -f "$dmg_path"
 hdiutil create -volname "WispTerm" -srcfolder "$staging" -ov -format UDZO "$dmg_path" >/dev/null
