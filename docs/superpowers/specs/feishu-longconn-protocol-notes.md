@@ -65,5 +65,32 @@ Header { 1 key: string; 2 value: string }
 - **关流**:`PATCH /open-apis/cardkit/v1/cards/:card_id/settings`,body `{"settings":"{\"config\":{\"streaming_mode\":false}}","sequence":N}`→ `200 {"code":0,...}`。
 - **限流**:单卡 10 次/秒;**流式模式 10 分钟自动关**;需飞书客户端 7.20+。
 - **stream/close 不需要 chat_id**——打的是 card_id 实体;只有「把卡发到会话给人看」才需 chat_id。
-- **待确认(非阻塞)**:把卡发到会话的 im 消息形状(`msg_type:"interactive"` + content 引用 card_id 的确切结构)。`GET /open-apis/im/v1/chats` 实测返回空(bot 不在任何群,p2p DM 不列出),spike 拿不到 chat_id。**运行时 onEvent 本就有 msg.chat_id**,故 send 形状在 Task 5 E2E 用真实 chat_id 自然验证。当前最佳猜测:content=`{"type":"card","data":{"card_id":"..."}}`。
+- **send 形状已确认**(spike cardaction.zig,2026-06-29):发卡到会话 = `POST /open-apis/im/v1/messages?receive_id_type=chat_id`,body `{"receive_id":"oc_...","msg_type":"interactive","content":"<JSON 字符串>"}`,其中 content(字符串化)= `{"type":"card","data":{"card_id":"..."}}`(流式卡片引用 card_id);**静态交互卡片**则 content 直接是卡片 JSON 2.0 字符串(无需 CardKit 实体)。200 返回 message_id。旧客户端响应里 body.content 显示「请升级至最新版本客户端」是降级占位,新客户端(7.20+)正常渲染。
+
+## 9. 交互卡片回调 card.action.trigger（spike 实测确认,2026-06-29）
+
+实测 `src/feishu/spike/cardaction.zig` + app 临时日志。
+
+- **按钮元素(卡片 JSON 2.0,实测渲染+可点)**:
+  ```json
+  {"tag":"button","text":{"tag":"plain_text","content":"按钮文字"},"type":"primary|danger|default",
+   "behaviors":[{"type":"callback","value":{"act":"stop"}}]}
+  ```
+  `behaviors[].type="callback"` + 自定义 `value`(任意 JSON 对象)。
+- **点击回调**:经长连接 **Data 帧(method=1)、header `type`=`event`**、payload `event_type`=`card.action.trigger` 到达 on_event(与 im.message.receive_v1 同通道,**靠 event_type 区分**)。payload 结构:
+  ```json
+  {"schema":"2.0",
+   "header":{"event_id":"...","token":"<verify-token,勿存>","event_type":"card.action.trigger","tenant_key":"...","app_id":"cli_..."},
+   "event":{
+     "operator":{"open_id":"ou_...","union_id":"on_..."},
+     "token":"c-<callback-token,勿存>",
+     "action":{"value":{"act":"stop"},"tag":"button"},
+     "host":"im_message",
+     "context":{"open_message_id":"om_...","open_chat_id":"oc_..."}}}
+  ```
+  - **`event.action.value` = 我们按钮的 value(JSON 对象,直接读 `.act`/`.decision`/`.option`,无需二次解析)**。
+  - `event.operator.open_id`=点击者;`event.context.open_message_id`=卡片消息 id;`open_chat_id`=会话。
+- **⭐ Spike B 结论:streaming_mode 开着的卡片,按钮点击照样触发 card.action.trigger**(实测流式卡片的按钮多次点击均收到事件)。→ 进度卡片**保留 streaming_mode + 加停止按钮**,无需改常规更新。「流式须先关才能处理回调」指的应是**在回调响应里更新该卡片**,而非接收点击。
+- **响应(3 秒内)**:card.action.trigger 是 Data 帧 → 现有 longconn 自动 ACK(payload `{"code":200}`)。要弹 toast/更新卡片,把 ACK 帧 payload 换成 `{"toast":{"type":"success","content":"已停止"},"card":{...可选更新卡片...}}`(即 pbbp2 响应帧泛化)。**此响应 envelope 待 Task 4 E2E 最终确认**(doc 称 HTTP 200 body 即此形;长连接走 ACK 帧 payload)。
+- 复现:`source ~/.zshrc && FEISHU_TEST_CHAT_ID=oc_... zig run src/feishu/spike/cardaction.zig`,然后点卡片按钮,看 app 日志。**勿存 verify/callback token 与 open_id 真实值。**
 - 复现:`source ~/.zshrc && zig run src/feishu/spike/cardkit.zig`(可选 `FEISHU_TEST_CHAT_ID=<id>` 触发 send+可视化)。**spike 打印含 token 的 TOKEN 响应已 redact**,勿存原始 token。
