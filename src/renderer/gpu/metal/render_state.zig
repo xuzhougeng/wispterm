@@ -23,6 +23,7 @@ threadlocal var scratch_error: [256]u8 = @splat(0);
 
 extern fn wispterm_metal_frame_begin(ctx: *Context.Handles, r: f32, g: f32, b: f32, a: f32, error_buf: [*]u8, error_buf_len: usize) bool;
 extern fn wispterm_metal_frame_end(ctx: *Context.Handles, error_buf: [*]u8, error_buf_len: usize) bool;
+extern fn wispterm_metal_arm_capture() void;
 // Viewport/scissor are encoder state: the renderer records them here per pane,
 // and the C bridge applies them on the active `MTLRenderCommandEncoder` before
 // each draw (with the GL bottom-left → Metal top-left y-flip and a clamp to the
@@ -112,6 +113,15 @@ pub fn restoreScissor(s: ScissorState) void {
 
 pub fn isFrameActive() bool {
     return frame_active;
+}
+
+/// Arm a one-shot ui_screenshot capture for the frame currently being rendered.
+/// frame_end blits the drawable into a CPU-readable buffer and waits for the GPU
+/// so `gpu.readback.readRgba` can read it right after the frame. Must be called
+/// before `endFrame` of the target frame. No-op on the OpenGL backend (its
+/// readback reads the live back buffer directly).
+pub fn armUiScreenshotCapture() void {
+    wispterm_metal_arm_capture();
 }
 
 pub fn isBlendEnabled() bool {

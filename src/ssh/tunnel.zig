@@ -2,13 +2,13 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const Surface = @import("Surface.zig");
-const ssh_connection = @import("ssh_connection.zig");
-const browser_url = @import("browser/url.zig");
-const preview_diagnostics = @import("preview/diagnostics.zig");
-const platform_process = @import("platform/process.zig");
-const platform_pty_command = @import("platform/pty_command.zig");
-const ui_perf = @import("ui_perf.zig");
+const Surface = @import("../Surface.zig");
+const ssh_connection = @import("connection.zig");
+const browser_url = @import("../browser/url.zig");
+const preview_diagnostics = @import("../preview/diagnostics.zig");
+const platform_process = @import("../platform/process.zig");
+const platform_pty_command = @import("../platform/pty_command.zig");
+const ui_perf = @import("../ui_perf.zig");
 
 const MAX_SSH_DEST_BYTES = 280;
 const MAX_TUNNEL_SPEC_BYTES = 96;

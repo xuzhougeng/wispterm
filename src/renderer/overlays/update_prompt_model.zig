@@ -3,9 +3,10 @@
 //! nothing). Extracted from overlays.zig for fast-suite testing; overlays keeps
 //! the prompt's stored URLs and draw state.
 const std = @import("std");
+const builtin = @import("builtin");
 const update_check = @import("../../update_check.zig");
 
-pub const UpdatePromptAction = enum { none, open_release, download_update };
+pub const UpdatePromptAction = enum { none, open_release, download_update, install_update };
 
 pub fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromptAction {
     return if (result.state == .update_available and result.asset_download_url.len > 0)
@@ -16,8 +17,15 @@ pub fn updatePromptActionForResult(result: update_check.CheckResult) UpdatePromp
         .open_release
     else if (result.state == .download_failed and result.release_url.len > 0)
         .open_release
+    else if (result.state == .downloaded and builtin.os.tag == .macos)
+        .install_update
     else
         .none;
+}
+
+test "overlays: downloaded maps to install_update on macOS only" {
+    const expected: UpdatePromptAction = if (builtin.os.tag == .macos) .install_update else .none;
+    try std.testing.expectEqual(expected, updatePromptActionForResult(.{ .state = .downloaded, .latest_version = "v1.31.0" }));
 }
 
 test "overlays: update prompt action selection prefers downloadable asset" {

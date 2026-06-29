@@ -82,6 +82,7 @@ pub fn progress(baseline: []const u8, current: []const u8) Progress {
         return .{ .done = true, .text = "本次处理已停止，未生成新的回复。" };
     }
     if (containsIgnoreCase(status, "running tools") or hasRole(new_msgs, .tool)) {
+        if (latestSubagentProgress(new_msgs)) |detail| return .{ .done = false, .text = detail };
         return .{ .done = false, .text = "还在处理中，工具调用仍在执行。" };
     }
     if (new_msgs.len != 0 or last_assistant != null) {
@@ -200,6 +201,22 @@ fn hasRole(msgs: []const Section, role: Role) bool {
     return false;
 }
 
+fn latestSubagentProgress(msgs: []const Section) ?[]const u8 {
+    var i = msgs.len;
+    while (i > 0) : (i -= 1) {
+        const m = msgs[i - 1];
+        if (m.role != .tool) continue;
+        const content = firstLine(trim(m.content));
+        if (std.mem.startsWith(u8, content, "subagent:")) return content;
+    }
+    return null;
+}
+
+fn firstLine(s: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, s, '\n') orelse s.len;
+    return trim(s[0..end]);
+}
+
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
@@ -251,6 +268,16 @@ test "not done while a tool turn is still streaming" {
     const p = progress(baseline, current);
     try t.expect(!p.done);
     try t.expect(p.text.len != 0);
+}
+
+test "subagent progress beats generic tool-running text" {
+    const baseline = "Model:\nGLM\n\nStatus:\nReady\n\nYou:\nq\n";
+    const current =
+        "Model:\nGLM\n\nStatus:\nRunning tools...\n\n" ++
+        "You:\nq\n\nTool:\nsubagent: running web_search\n";
+    const p = progress(baseline, current);
+    try t.expect(!p.done);
+    try t.expectEqualStrings("subagent: running web_search", p.text);
 }
 
 test "approval section is detected and takes priority over done/tool branches" {

@@ -26,7 +26,7 @@ const notification = @import("notification.zig");
 const platform_pty_command = @import("platform/pty_command.zig");
 const surface_registry = @import("surface_registry.zig");
 const platform_process = @import("platform/process.zig");
-const ssh_connection_mod = @import("ssh_connection.zig");
+const ssh_connection_mod = @import("ssh/connection.zig");
 const clipboard_osc52 = @import("clipboard_osc52.zig");
 
 const Surface = @This();

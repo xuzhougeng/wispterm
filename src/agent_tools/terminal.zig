@@ -165,6 +165,33 @@ pub fn select(ctx: *ToolContext, surface_id: []const u8) ![]u8 {
     );
 }
 
+pub fn focus(ctx: *ToolContext, surface_id: []const u8) ![]u8 {
+    const host = ctx.tool_host orelse return ctx.allocator.dupe(u8, "No terminal focus host is available.");
+    const callback = host.focusTerminal orelse return ctx.allocator.dupe(u8, "No terminal focus host is available.");
+    const surface = callback(host.ctx, ctx.allocator, surface_id) catch |err| {
+        return std.fmt.allocPrint(ctx.allocator, "terminal_focus failed: {s}", .{@errorName(err)});
+    };
+    defer surface.deinit(ctx.allocator);
+    if (ctx.tool_snapshot) |*snapshot_value| {
+        snapshot_value.active_tab = surface.tab_index;
+        for (snapshot_value.surfaces) |*existing| {
+            existing.focused = std.mem.eql(u8, existing.id, surface.id);
+        }
+    }
+    return std.fmt.allocPrint(
+        ctx.allocator,
+        "focused surface_id={s} tab={d} focused={} kind={s} title=\"{s}\" cwd=\"{s}\"",
+        .{
+            surface.id,
+            surface.tab_index + 1,
+            surface.focused,
+            surfaceKind(surface),
+            surface.title,
+            surface.cwd,
+        },
+    );
+}
+
 pub fn collectToolSnapshot(ctx: *const ToolContext) !ToolSnapshot {
     if (ctx.tool_snapshot) |snapshot_value| {
         return snapshot_value.clone(ctx.allocator);

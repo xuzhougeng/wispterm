@@ -82,7 +82,7 @@ test "ai title request does not use the old 64 token budget" {
 }
 
 test "ssh browser tunnel readiness probes HTTP through the tunnel" {
-    const source = @embedFile("ssh_tunnel.zig");
+    const source = @embedFile("ssh/tunnel.zig");
     {
         const start = std.mem.indexOf(u8, source, "fn waitForTunnelReady") orelse return error.MissingTunnelReady;
         const rest = source[start..];
@@ -186,30 +186,33 @@ test {
     _ = @import("agent/config.zig");
     _ = @import("agent/access.zig");
     _ = @import("agent/file_edit.zig");
+    _ = @import("agent/remote_filetool.zig");
     _ = @import("agent/file_copy.zig");
-    _ = @import("ssh_connection.zig");
+    _ = @import("ssh/connection.zig");
     _ = @import("tmux/control.zig");
     _ = @import("tmux/layout.zig");
     _ = @import("tmux/protocol_test.zig");
     _ = @import("tmux/session.zig");
     _ = @import("port_forward/rule.zig");
-    _ = @import("ssh_profile_store.zig");
+    _ = @import("ssh/profile_store.zig");
     _ = @import("port_forward/manager.zig");
     _ = @import("port_forward/forwarding.zig");
-    _ = @import("openssh_config_import.zig");
+    _ = @import("ssh/openssh_config_import.zig");
     _ = @import("apprt/window_drag_region.zig");
     _ = @import("apprt/window_registry.zig");
     _ = @import("appwindow/active_tab.zig");
     _ = @import("appwindow/frame_latency.zig");
     _ = @import("appwindow/frame_scheduler.zig");
+    _ = @import("appwindow/png_writer.zig");
     _ = @import("appwindow/render_gate.zig");
+    _ = @import("appwindow/ui_screenshot.zig");
     _ = @import("appwindow/ui_effect.zig");
     _ = @import("appwindow/window_state.zig");
     _ = @import("appwindow/remote_state.zig");
     _ = @import("appwindow/state.zig");
     _ = @import("appwindow/state_guard.zig");
     _ = @import("appwindow/p3_1_guard.zig");
-    _ = @import("scp.zig");
+    _ = @import("ssh/scp.zig");
     _ = @import("surface_registry.zig");
     _ = @import("ctl/protocol.zig");
     _ = @import("ctl/discovery.zig");
@@ -261,7 +264,7 @@ test {
     _ = @import("terminal_agents/sessions/cache.zig");
     _ = @import("skill/scan.zig");
     _ = @import("skill/install.zig");
-    _ = @import("ssh_error.zig");
+    _ = @import("ssh/error.zig");
     _ = @import("skill/center.zig");
     _ = @import("renderer/skill_center_renderer.zig");
     _ = @import("renderer/port_forwarding_renderer.zig");
@@ -274,7 +277,7 @@ test {
     _ = @import("terminal_agents/sessions/session.zig");
     _ = @import("browser/url.zig");
     _ = @import("text_search.zig");
-    _ = @import("ssh_prompt.zig");
+    _ = @import("ssh/prompt.zig");
     _ = @import("selection_unit.zig");
     _ = @import("scrollbar_model.zig");
     _ = @import("resize_gate.zig");

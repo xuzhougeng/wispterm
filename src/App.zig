@@ -31,6 +31,7 @@ const platform_dirs = @import("platform/dirs.zig");
 const platform_open_url = @import("platform/open_url.zig");
 const update_check = @import("update_check.zig");
 const update_install = @import("update_install.zig");
+const update_apply = @import("platform/update_apply.zig");
 const whats_new_gate = @import("whats_new_gate.zig");
 const platform_window_state = @import("platform/window_state.zig");
 
@@ -149,6 +150,7 @@ update_check_in_flight: bool,
 download_thread: ?std.Thread,
 download_in_flight: bool,
 download_worker_running: bool,
+download_completed: bool,
 startup_update_check_started: bool,
 
 // Window management
@@ -306,6 +308,7 @@ pub fn init(allocator: std.mem.Allocator, cfg: Config) !App {
         .download_thread = null,
         .download_in_flight = false,
         .download_worker_running = false,
+        .download_completed = false,
         .startup_update_check_started = false,
         .windows = .empty,
         .mutex = .{},
@@ -711,6 +714,7 @@ pub fn requestUpdateDownload(self: *App) void {
             return;
         }
         self.download_in_flight = true;
+        self.download_completed = false;
         self.download_worker_running = true;
         self.update_result = self.pendingDownloadResultWithStateLocked(.downloading);
     }
@@ -806,6 +810,7 @@ fn storeDownloadFailure(self: *App) void {
     defer self.update_mutex.unlock();
     self.download_worker_running = false;
     self.download_in_flight = false;
+    self.download_completed = false;
     self.update_result = self.pendingDownloadResultWithStateLocked(.download_failed);
 }
 
@@ -813,7 +818,40 @@ fn storeDownloadComplete(self: *App) void {
     self.update_mutex.lock();
     defer self.update_mutex.unlock();
     self.download_worker_running = false;
+    self.download_completed = true;
     self.update_result = self.pendingDownloadResultWithStateLocked(.downloaded);
+}
+
+/// Apply the downloaded macOS update in place and quit so the helper can swap
+/// and relaunch. Returns false (no quit) when not applicable — caller shows the
+/// manual fallback. Safe to call on any platform: non-macOS returns false.
+pub fn requestUpdateInstall(self: *App) bool {
+    if (!update_apply.isSupported()) return false;
+
+    var asset_buf: [128]u8 = undefined;
+    var asset_len: usize = 0;
+    {
+        self.update_mutex.lock();
+        defer self.update_mutex.unlock();
+        const name = self.pending_download_update.asset_name;
+        if (!self.download_completed or name.len == 0 or name.len > asset_buf.len) return false;
+        asset_len = name.len;
+        @memcpy(asset_buf[0..asset_len], name[0..asset_len]);
+    }
+
+    const dmg_path = update_install.downloadDestPath(self.allocator, asset_buf[0..asset_len]) catch return false;
+    defer self.allocator.free(dmg_path);
+
+    const exe_path = std.fs.selfExePathAlloc(self.allocator) catch return false;
+    defer self.allocator.free(exe_path);
+
+    update_apply.applyUpdate(self.allocator, dmg_path, exe_path) catch |err| {
+        std.debug.print("Update install: failed: {}\n", .{err});
+        return false;
+    };
+
+    window_backend.requestQuit();
+    return true;
 }
 
 fn copyBounded(out: []u8, value: []const u8) ?[]const u8 {
@@ -1337,4 +1375,48 @@ test "app: download completion can be joined while duplicate downloads stay bloc
     try testing.expect(!app.download_worker_running);
     try testing.expectEqual(update_check.State.downloaded, app.update_result.state);
     try testing.expectEqualStrings("https://example.test/releases/v0.28.0", app.update_result.release_url);
+}
+
+test "app: download_completed is durable across consumeUpdateResult" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var app = try App.init(allocator, .{});
+    defer app.deinit();
+
+    // Set up pending download state directly and call storeDownloadComplete
+    app.update_mutex.lock();
+    try testing.expect(app.copyPendingDownloadUpdateLocked() == false); // nothing set yet
+    // Manually seed pending_download_update so storeDownloadComplete has something to store
+    _ = std.fmt.bufPrint(&app.download_asset_name_buf, "test-update.zip", .{}) catch unreachable;
+    app.pending_download_update.asset_name = app.download_asset_name_buf[0..15];
+    app.download_worker_running = true;
+    app.update_mutex.unlock();
+
+    // Before completion: flag is false
+    try testing.expect(!app.download_completed);
+
+    app.storeDownloadComplete();
+
+    // After storeDownloadComplete: flag must be true and durable
+    try testing.expect(app.download_completed);
+
+    // Consuming the result resets update_result but must NOT clear download_completed
+    _ = app.consumeUpdateResult();
+    try testing.expect(app.download_completed); // durable: survives consume
+
+    // A new download start clears it
+    app.update_mutex.lock();
+    app.download_completed = false; // ponytail: simulate requestUpdateDownload locked block
+    app.update_mutex.unlock();
+    try testing.expect(!app.download_completed);
+
+    // storeDownloadFailure also clears it
+    app.update_mutex.lock();
+    app.download_worker_running = true;
+    app.update_mutex.unlock();
+    app.storeDownloadComplete(); // set true again
+    try testing.expect(app.download_completed);
+    app.storeDownloadFailure();
+    try testing.expect(!app.download_completed);
 }

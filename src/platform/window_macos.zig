@@ -29,7 +29,7 @@ const wm_close: u32 = 0x0010;
 const wm_app: u32 = 0x8000;
 
 /// Reserved message id for the synchronous-send shim (see `sendMessage`).
-/// Distinct from the app-message range thread_message uses (wm_app + 0x51..0x57)
+/// Distinct from the app-message range thread_message uses (wm_app + 0x51..0x59)
 /// and from `hotkey_message`, so it never collides with a real posted message.
 pub const sync_message: MessageId = wm_app + 0x7e;
 

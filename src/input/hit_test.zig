@@ -81,6 +81,14 @@ pub fn sidebarTabCloseButton(l: SidebarLayout, x: f64, y: f64, tab_idx: usize) b
     return x >= close_x and x < close_x + l.close_btn_w;
 }
 
+pub fn sidebarTabRenameTarget(l: SidebarLayout, x: f64, y: f64) ?usize {
+    const tab_idx = sidebarTabAt(l, x, y) orelse return null;
+    if (sidebarPlusButton(l, x, y)) return null;
+    if (sidebarResizeHandle(l, x, y)) return null;
+    if (sidebarTabCloseButton(l, x, y, tab_idx)) return null;
+    return tab_idx;
+}
+
 /// True if (x, y) is within the horizontal resize-hit band around the sidebar
 /// right edge and below the titlebar.
 pub fn sidebarResizeHandle(l: SidebarLayout, x: f64, y: f64) bool {
@@ -184,6 +192,13 @@ test "sidebarTabCloseButton: only on its own hovered row, needs >1 tab" {
     var one = sample;
     one.tab_count = 1;
     try std.testing.expect(!sidebarTabCloseButton(one, 170, 80, 0)); // single tab: no close
+}
+
+test "sidebarTabRenameTarget: accepts row body and rejects controls" {
+    try std.testing.expectEqual(@as(?usize, 0), sidebarTabRenameTarget(sample, 24, 80));
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabRenameTarget(sample, 170, 80)); // close button
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabRenameTarget(sample, 200, 100)); // resize handle
+    try std.testing.expectEqual(@as(?usize, null), sidebarTabRenameTarget(sample, 10, 50)); // header
 }
 
 test "sidebarResizeHandle: band around the right edge" {

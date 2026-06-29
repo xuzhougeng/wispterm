@@ -54,6 +54,7 @@ const common_tools_before_wsl =
     \\Terminal tools:
     \\- Use `terminal_list` before terminal writes, then `terminal_select`.
     \\- Use `terminal_context` to inspect the selected write context.
+    \\- Use `terminal_focus` before `ui_screenshot` when the requested tab or panel is not focused.
     \\- Use `ssh_session_exec` at an open SSH shell prompt.
     \\- Use `ssh_profile_save` / `ssh_profile_connect` for saved SSH details.
 ;
@@ -80,7 +81,7 @@ const common_tools_after_wsl =
     \\- From a chat channel (WeChat/Feishu), send generated/local artifacts with `send_attachment`: use `kind=image` for images and `kind=file` for files; voice files are sent as file attachments (`kind=voice` aliases `kind=file`).
     \\- Before sending WSL/SSH artifacts to a chat channel, call `copy_file` without a destination to stage under `wispterm-files`, then pass its local path to `send_attachment`.
     \\- To send a local/Weixin/workspace file to WSL or SSH, call `copy_file` with `dest_surface_id`; do not paste copy commands into agent/REPL terminals.
-    \\- Prefer `read_file`, `write_file`, `edit_file`, and `copy_file` for local/WSL/remote SSH files; remote paths need the open SSH `surface_id`. Writes show a diff and may require approval.
+    \\- Prefer `read_file`, `write_file`, `edit_file`, and `copy_file` for local/WSL/remote SSH files. For WSL/SSH, pass the open terminal `surface_id` or rely on the selected terminal context; relative paths use that surface cwd. Writes show a diff and may require approval.
     \\
     \\Python:
     \\- Use uv for Python environments; run `uv --version` first.

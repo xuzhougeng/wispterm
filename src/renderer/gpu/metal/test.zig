@@ -7,9 +7,14 @@ const Framebuffer = @import("Framebuffer.zig");
 const Pipeline = @import("Pipeline.zig");
 const Texture = @import("Texture.zig");
 const gl_init = @import("gl_init.zig");
+const readback = @import("readback.zig");
 const render_state = @import("render_state.zig");
 const shaders = @import("shaders.zig");
 const vertex = @import("vertex.zig");
+
+test {
+    _ = readback;
+}
 
 test "Context.init creates a usable Metal backend context" {
     try Context.init(null);
@@ -160,6 +165,53 @@ test "render_state batches multiple Metal draws into one presented frame" {
     try std.testing.expect(Pipeline.lastDrawSucceeded());
     render_state.endFrame();
     try std.testing.expect(!render_state.isFrameActive());
+}
+
+test "armed ui screenshot capture reads back the rendered frame" {
+    try Context.init(null);
+    defer Context.deinit();
+
+    // Fullscreen triangle rendered solid orange (R!=B so the channel swap is
+    // actually exercised); the readback must return that pixel as RGBA
+    // (origin-correct + BGRA->RGBA swap), proving the in-frame blit + shared
+    // buffer + readback path works on a real Metal device.
+    const vs: [*c]const u8 =
+        \\#include <metal_stdlib>
+        \\using namespace metal;
+        \\vertex float4 vertex_main(uint vertex_id [[vertex_id]]) {
+        \\    float2 positions[3] = {
+        \\        float2(-1.0, -1.0),
+        \\        float2( 3.0, -1.0),
+        \\        float2(-1.0,  3.0),
+        \\    };
+        \\    return float4(positions[vertex_id], 0.0, 1.0);
+        \\}
+    ;
+    const fs: [*c]const u8 =
+        \\#include <metal_stdlib>
+        \\using namespace metal;
+        \\fragment float4 fragment_main() {
+        \\    return float4(1.0, 0.5, 0.0, 1.0);
+        \\}
+    ;
+
+    var pipeline = Pipeline.init(vs, fs, 0);
+    defer pipeline.deinit();
+
+    render_state.clear(0, 0, 0, 1);
+    render_state.armUiScreenshotCapture();
+    pipeline.drawArrays(c.GL_TRIANGLES, 0, 3);
+    try std.testing.expect(Pipeline.lastDrawSucceeded());
+    render_state.endFrame();
+
+    // Standalone layer is 64x64 (Context.init). Read a 1x1 at the origin.
+    const px = try readback.readRgba(std.testing.allocator, 0, 0, 1, 1);
+    defer std.testing.allocator.free(px);
+    try std.testing.expectEqual(@as(usize, 4), px.len);
+    try std.testing.expect(px[0] >= 254); // R ~ 255
+    try std.testing.expect(px[1] >= 126 and px[1] <= 130); // G ~ 128
+    try std.testing.expect(px[2] <= 1); // B ~ 0
+    try std.testing.expectEqual(@as(u8, 255), px[3]); // A
 }
 
 test "viewport and scissor apply to the encoder without breaking draws" {

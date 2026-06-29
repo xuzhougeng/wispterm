@@ -6,11 +6,12 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const ssh_connection = @import("ssh_connection.zig");
+const ssh_connection = @import("connection.zig");
 const SshConnection = ssh_connection.SshConnection;
-const platform_dirs = @import("platform/dirs.zig");
-const platform_process = @import("platform/process.zig");
-const platform_pty_command = @import("platform/pty_command.zig");
+const platform_dirs = @import("../platform/dirs.zig");
+const platform_process = @import("../platform/process.zig");
+const platform_pty_command = @import("../platform/pty_command.zig");
+const remote_filetool = @import("../agent/remote_filetool.zig");
 
 /// Result of a transfer operation.
 pub const TransferResult = enum { ok, failed, spawn_error, cancelled };
@@ -652,6 +653,159 @@ pub fn buildRemoteWriteCommand(buf: *[2048]u8, path: []const u8, tmp: []const u8
     return buf[0..pos];
 }
 
+fn buildRemoteFiletoolCommand(buf: *[2048]u8, command: []const u8, path: []const u8) ?[]const u8 {
+    var pos: usize = 0;
+    if (!appendSlice(buf, &pos, "command -v ")) return null;
+    if (!appendSlice(buf, &pos, remote_filetool.tool_name)) return null;
+    if (!appendSlice(buf, &pos, " >/dev/null 2>&1 || exit 127; exec ")) return null;
+    if (!appendSlice(buf, &pos, remote_filetool.tool_name)) return null;
+    if (!appendSlice(buf, &pos, " ")) return null;
+    if (!appendSlice(buf, &pos, command)) return null;
+    if (!appendSlice(buf, &pos, " -- ")) return null;
+    if (!appendShellQuote(buf, &pos, path)) return null;
+    return buf[0..pos];
+}
+
+const RemoteFiletoolOk = struct {
+    occurrences: usize,
+    diff: []const u8,
+};
+
+fn parseRemoteFiletoolOk(output: []const u8) ?RemoteFiletoolOk {
+    const prefix = "ok occurrences=";
+    if (!std.mem.startsWith(u8, output, prefix)) return null;
+    const line_end = std.mem.indexOfScalar(u8, output, '\n') orelse return null;
+    const occurrences = std.fmt.parseUnsigned(usize, output[prefix.len..line_end], 10) catch return null;
+    return .{ .occurrences = occurrences, .diff = output[line_end + 1 ..] };
+}
+
+fn parseRemoteFiletoolError(output: []const u8) ?[]const u8 {
+    const prefix = "error ";
+    if (!std.mem.startsWith(u8, output, prefix)) return null;
+    const line_end = std.mem.indexOfScalar(u8, output, '\n') orelse output.len;
+    return output[prefix.len..line_end];
+}
+
+fn remoteFiletoolErrorAlloc(allocator: std.mem.Allocator, path: []const u8, code: []const u8) ![]u8 {
+    if (std.mem.eql(u8, code, "EmptyOld")) return allocator.dupe(u8, "old_string must not be empty.");
+    if (std.mem.eql(u8, code, "NotFound")) return std.fmt.allocPrint(allocator, "old_string not found in {s}.", .{path});
+    if (std.mem.eql(u8, code, "NotUnique")) return std.fmt.allocPrint(allocator, "old_string is not unique in {s}; pass replace_all=true or add more context.", .{path});
+    if (std.mem.eql(u8, code, "TooLarge")) return std.fmt.allocPrint(allocator, "File {s} is too large (>= {d} bytes).", .{ path, @import("../agent/file_edit.zig").MAX_FILE_BYTES });
+    if (std.mem.eql(u8, code, "BadRequest")) return allocator.dupe(u8, "wispterm-filetool received a malformed edit request.");
+    if (std.mem.eql(u8, code, "ReadFailed")) return std.fmt.allocPrint(allocator, "Failed to read remote file {s} for editing.", .{path});
+    if (std.mem.eql(u8, code, "WriteFailed")) return std.fmt.allocPrint(allocator, "Failed to write remote file {s}.", .{path});
+    return std.fmt.allocPrint(allocator, "wispterm-filetool failed for {s}: {s}", .{ path, code });
+}
+
+pub const RemoteEditCheckResult = union(enum) {
+    unavailable,
+    ok: struct {
+        occurrences: usize,
+        diff: []u8,
+    },
+    edit_error: []u8,
+    failed: []u8,
+
+    pub fn deinit(self: RemoteEditCheckResult, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .ok => |ok| allocator.free(ok.diff),
+            .edit_error, .failed => |msg| allocator.free(msg),
+            .unavailable => {},
+        }
+    }
+};
+
+pub const RemoteEditApplyResult = union(enum) {
+    unavailable,
+    ok: usize,
+    edit_error: []u8,
+    failed: []u8,
+
+    pub fn deinit(self: RemoteEditApplyResult, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .edit_error, .failed => |msg| allocator.free(msg),
+            .unavailable, .ok => {},
+        }
+    }
+};
+
+pub fn sshRemoteEditCheck(
+    allocator: std.mem.Allocator,
+    conn: *const SshConnection,
+    path: []const u8,
+    old_string: []const u8,
+    new_string: []const u8,
+    replace_all: bool,
+    include_diff: bool,
+) RemoteEditCheckResult {
+    const command_name = if (include_diff) remote_filetool.edit_check_command else remote_filetool.edit_count_command;
+    const request = remote_filetool.encodeEditRequestAlloc(allocator, old_string, new_string, replace_all) catch return .{
+        .failed = allocator.dupe(u8, "Failed to encode remote edit request.") catch return .unavailable,
+    };
+    defer allocator.free(request);
+
+    var cmd_buf: [2048]u8 = undefined;
+    const command = buildRemoteFiletoolCommand(&cmd_buf, command_name, path) orelse return .{
+        .failed = allocator.dupe(u8, "Failed to build wispterm-filetool command.") catch return .unavailable,
+    };
+
+    var cap = sshExecStdinCapture(allocator, conn, command, request, remote_filetool.max_request_bytes) orelse return .{
+        .failed = allocator.dupe(u8, "Failed to run wispterm-filetool.") catch return .unavailable,
+    };
+    defer cap.deinit(allocator);
+
+    if (cap.exit_code == remote_filetool.helper_unavailable_exit_code and cap.stdout.len == 0) return .unavailable;
+    if (parseRemoteFiletoolOk(cap.stdout)) |ok| {
+        const diff = allocator.dupe(u8, ok.diff) catch return .{
+            .failed = allocator.dupe(u8, "Failed to copy wispterm-filetool response.") catch return .unavailable,
+        };
+        return .{ .ok = .{ .occurrences = ok.occurrences, .diff = diff } };
+    }
+    if (parseRemoteFiletoolError(cap.stdout)) |code| {
+        return .{ .edit_error = remoteFiletoolErrorAlloc(allocator, path, code) catch return .unavailable };
+    }
+    return .{ .failed = remoteFiletoolFailureAlloc(allocator, "wispterm-filetool check failed", cap) catch return .unavailable };
+}
+
+pub fn sshRemoteEditApply(
+    allocator: std.mem.Allocator,
+    conn: *const SshConnection,
+    path: []const u8,
+    old_string: []const u8,
+    new_string: []const u8,
+    replace_all: bool,
+) RemoteEditApplyResult {
+    const request = remote_filetool.encodeEditRequestAlloc(allocator, old_string, new_string, replace_all) catch return .{
+        .failed = allocator.dupe(u8, "Failed to encode remote edit request.") catch return .unavailable,
+    };
+    defer allocator.free(request);
+
+    var cmd_buf: [2048]u8 = undefined;
+    const command = buildRemoteFiletoolCommand(&cmd_buf, remote_filetool.edit_apply_command, path) orelse return .{
+        .failed = allocator.dupe(u8, "Failed to build wispterm-filetool command.") catch return .unavailable,
+    };
+
+    var cap = sshExecStdinCapture(allocator, conn, command, request, 4096) orelse return .{
+        .failed = allocator.dupe(u8, "Failed to run wispterm-filetool.") catch return .unavailable,
+    };
+    defer cap.deinit(allocator);
+
+    if (cap.exit_code == remote_filetool.helper_unavailable_exit_code and cap.stdout.len == 0) return .unavailable;
+    if (parseRemoteFiletoolOk(cap.stdout)) |ok| return .{ .ok = ok.occurrences };
+    if (parseRemoteFiletoolError(cap.stdout)) |code| {
+        return .{ .edit_error = remoteFiletoolErrorAlloc(allocator, path, code) catch return .unavailable };
+    }
+    return .{ .failed = remoteFiletoolFailureAlloc(allocator, "wispterm-filetool apply failed", cap) catch return .unavailable };
+}
+
+fn remoteFiletoolFailureAlloc(allocator: std.mem.Allocator, label: []const u8, cap: SshStdinCapture) ![]u8 {
+    const stderr = std.mem.trim(u8, cap.stderr, " \t\r\n");
+    if (stderr.len > 0) return std.fmt.allocPrint(allocator, "{s}: {s}", .{ label, stderr });
+    const stdout = std.mem.trim(u8, cap.stdout, " \t\r\n");
+    if (stdout.len > 0) return std.fmt.allocPrint(allocator, "{s}: {s}", .{ label, stdout });
+    return std.fmt.allocPrint(allocator, "{s} (exit={?})", .{ label, cap.exit_code });
+}
+
 /// Read a remote file via `ssh ... cat`. Returns owned bytes, null on
 /// failure — including files larger than `max_bytes`, mirroring the local
 /// read_file cap. Failing outright (instead of truncating) matters: a
@@ -671,19 +825,39 @@ pub fn sshWriteFile(allocator: std.mem.Allocator, conn: *const SshConnection, pa
     return sshExecStdin(allocator, conn, cmd, content);
 }
 
+pub const SshStdinCapture = struct {
+    stdout: []u8,
+    stderr: []u8,
+    exit_code: ?u8,
+
+    pub fn deinit(self: *SshStdinCapture, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+        self.* = undefined;
+    }
+};
+
 /// Run `ssh user@host "<command>"` piping `stdin_bytes` to the remote stdin.
 /// Returns true on exit code 0. Mirrors `sshExec`'s askpass env setup.
 fn sshExecStdin(allocator: std.mem.Allocator, conn: *const SshConnection, command: []const u8, stdin_bytes: []const u8) bool {
+    var cap = sshExecStdinCapture(allocator, conn, command, stdin_bytes, 4096) orelse return false;
+    defer cap.deinit(allocator);
+    const ok = cap.exit_code == 0;
+    if (!ok) logProcessFailure("sshExecStdin failed", cap.stderr);
+    return ok;
+}
+
+fn sshExecStdinCapture(allocator: std.mem.Allocator, conn: *const SshConnection, command: []const u8, stdin_bytes: []const u8, max_stdout_bytes: usize) ?SshStdinCapture {
     var askpass_path: ?[]const u8 = null;
     defer if (askpass_path) |p| allocator.free(p);
     var env_map: ?std.process.EnvMap = null;
     defer if (env_map) |*map| map.deinit();
 
     if (conn.usesPasswordAuth()) {
-        askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return false;
-        env_map = std.process.getEnvMap(allocator) catch return false;
+        askpass_path = platform_process.ensureSshAskPassScript(allocator) orelse return null;
+        env_map = std.process.getEnvMap(allocator) catch return null;
         if (env_map) |*map| {
-            platform_process.putSshAskPassEnv(map, askpass_path.?, conn.password()) catch return false;
+            platform_process.putSshAskPassEnv(map, askpass_path.?, conn.password()) catch return null;
         }
     }
 
@@ -710,32 +884,59 @@ fn sshExecStdin(allocator: std.mem.Allocator, conn: *const SshConnection, comman
 
     var child = std.process.Child.init(argv_buf[0..argc], allocator);
     child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
     if (env_map) |*map| child.env_map = map;
     child.create_no_window = true;
     child.spawn() catch |err| {
         std.debug.print("sshExecStdin: spawn failed: {}\n", .{err});
-        return false;
+        return null;
     };
 
+    var write_ok = true;
     if (child.stdin) |stdin| {
         var in = stdin;
-        platform_process.writeAllToPipe(in, stdin_bytes) catch {};
+        platform_process.writeAllToPipe(in, stdin_bytes) catch {
+            write_ok = false;
+        };
         in.close();
         child.stdin = null;
+    } else {
+        write_ok = false;
     }
 
-    var stderr_output: ?[]u8 = null;
-    defer if (stderr_output) |stderr| allocator.free(stderr);
-    if (child.stderr) |stderr| {
-        stderr_output = stderr.readToEndAlloc(allocator, 16 * 1024) catch null;
+    var stdout_output: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer stdout_output.deinit(allocator);
+    if (child.stdout) |stdout| {
+        var out = stdout;
+        child.stdout = null;
+        defer out.close();
+        const drain = drainCapped(out, allocator, &stdout_output, max_stdout_bytes, true) catch return null;
+        if (drain == .exceeded) {
+            _ = child.kill() catch {};
+            return null;
+        }
     }
 
-    const term = child.wait() catch return false;
-    return switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
+    const stderr_output = if (child.stderr) |stderr| blk: {
+        var err_file = stderr;
+        child.stderr = null;
+        defer err_file.close();
+        break :blk err_file.readToEndAlloc(allocator, SSH_EXEC_MAX_STDERR_BYTES) catch return null;
+    } else allocator.dupe(u8, "") catch return null;
+    errdefer allocator.free(stderr_output);
+
+    const term = child.wait() catch return null;
+    const exit_code = switch (term) {
+        .Exited => |code| code,
+        else => null,
+    };
+    if (!write_ok and exit_code == 0) return null;
+
+    return .{
+        .stdout = stdout_output.toOwnedSlice(allocator) catch return null,
+        .stderr = stderr_output,
+        .exit_code = exit_code,
     };
 }
 
@@ -1191,6 +1392,21 @@ test "buildRemoteWriteCommand builds an atomic temp+mv" {
     var buf: [2048]u8 = undefined;
     const cmd = buildRemoteWriteCommand(&buf, "/tmp/a.txt", "/tmp/a.txt.tmp").?;
     try std.testing.expectEqualStrings("cat > '/tmp/a.txt.tmp' && mv -- '/tmp/a.txt.tmp' '/tmp/a.txt'", cmd);
+}
+
+test "buildRemoteFiletoolCommand probes PATH and quotes the path" {
+    var buf: [2048]u8 = undefined;
+    const cmd = buildRemoteFiletoolCommand(&buf, "edit-check", "/tmp/it's here.txt").?;
+    try std.testing.expectEqualStrings(
+        "command -v wispterm-filetool >/dev/null 2>&1 || exit 127; exec wispterm-filetool edit-check -- '/tmp/it'\\''s here.txt'",
+        cmd,
+    );
+}
+
+test "parseRemoteFiletoolOk splits count and diff" {
+    const parsed = parseRemoteFiletoolOk("ok occurrences=2\n--- a/f\n+++ b/f\n").?;
+    try std.testing.expectEqual(@as(usize, 2), parsed.occurrences);
+    try std.testing.expectEqualStrings("--- a/f\n+++ b/f\n", parsed.diff);
 }
 
 /// Test stand-in for a pipe: serves `data` in chunks of at most `chunk` bytes.

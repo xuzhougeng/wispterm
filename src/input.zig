@@ -72,7 +72,7 @@ const close_confirm_state = @import("ui/close_shortcut_confirm.zig");
 const jupyter_picker = @import("jupyter/picker.zig");
 const copilot_picker = @import("assistant/sidebar/picker.zig");
 const jupyter_detect = @import("jupyter/detect.zig");
-const scp = @import("scp.zig");
+const scp = @import("ssh/scp.zig");
 const writeToPty = clipboard.writeToPty;
 pub const copyTextToClipboard = clipboard.copyTextToClipboard;
 const activeTerminalSelectionExists = clipboard.activeTerminalSelectionExists;
@@ -1741,6 +1741,40 @@ test "input: overlay navigation drives the render gate to repaint" {
         .atlas_sync_pending = false,
     };
     try std.testing.expect(render_gate.frameNeedsRender(signals));
+}
+
+test "input: right-clicking a sidebar tab starts tab rename" {
+    const previous_tabs = tab.g_tabs;
+    const previous_count = tab.g_tab_count;
+    const previous_active = active_tab_state.g_active_tab;
+    const previous_sidebar = tab.g_sidebar_visible;
+    const previous_sidebar_width = titlebar.g_sidebar_width;
+    defer {
+        tab.g_tabs = previous_tabs;
+        tab.g_tab_count = previous_count;
+        active_tab_state.g_active_tab = previous_active;
+        tab.g_sidebar_visible = previous_sidebar;
+        titlebar.g_sidebar_width = previous_sidebar_width;
+        tab.g_tab_rename_active = false;
+        tab.g_tab_rename_idx = 0;
+    }
+
+    var first = tab.TabState{ .kind = .skill_center, .tree = .empty };
+    var second = tab.TabState{ .kind = .skill_center, .tree = .empty };
+    tab.g_tabs = .{null} ** tab.MAX_TABS;
+    tab.g_tabs[0] = &first;
+    tab.g_tabs[1] = &second;
+    tab.g_tab_count = 2;
+    active_tab_state.g_active_tab = 0;
+    tab.g_sidebar_visible = true;
+    titlebar.g_sidebar_width = 220;
+    tab.g_tab_rename_active = false;
+
+    const y: i32 = @intFromFloat(titlebarHeight() + titlebar.sidebarHeaderHeight() + 6 + titlebar.sidebarRowHeight() / 2);
+    handleMouseButton(.{ .button = .right, .action = .release, .x = 24, .y = y });
+
+    try std.testing.expect(tab.g_tab_rename_active);
+    try std.testing.expectEqual(@as(usize, 0), tab.g_tab_rename_idx);
 }
 
 test "macOS UI smoke: Cmd+Shift+B toggles the tab sidebar" {
@@ -3710,12 +3744,12 @@ fn hitTestSidebarTabCloseButton(xpos: f64, ypos: f64, tab_idx: usize) bool {
     return hit_test.sidebarTabCloseButton(sidebarLayout(), xpos, ypos, tab_idx);
 }
 
-fn shouldStartSidebarTabRename(xpos: f64, ypos: f64, tab_idx: usize) bool {
-    if (tab_idx >= tab.g_tab_count) return false;
-    const layout = sidebarLayout();
-    if (hit_test.sidebarPlusButton(layout, xpos, ypos)) return false;
-    if (hit_test.sidebarResizeHandle(layout, xpos, ypos)) return false;
-    if (hit_test.sidebarTabCloseButton(layout, xpos, ypos, tab_idx)) return false;
+fn handleSidebarTabRenameGesture(xpos: f64, ypos: f64) bool {
+    if (hitTestSidebarTab(xpos, ypos) == null) return false;
+    if (hit_test.sidebarTabRenameTarget(sidebarLayout(), xpos, ypos)) |tab_idx| {
+        tab.startTabRename(tab_idx);
+        requestInputRepaint();
+    }
     return true;
 }
 
@@ -4995,7 +5029,7 @@ fn buildRemotePathKindCommand(buf: []u8, remote_path: []const u8) ?[]const u8 {
     ) catch null;
 }
 
-fn remotePathIsDirectoryForDownload(allocator: std.mem.Allocator, conn: *const @import("ssh_connection.zig").SshConnection, remote_path: []const u8) ?bool {
+fn remotePathIsDirectoryForDownload(allocator: std.mem.Allocator, conn: *const @import("ssh/connection.zig").SshConnection, remote_path: []const u8) ?bool {
     var cmd_buf: [2300]u8 = undefined;
     const cmd = buildRemotePathKindCommand(cmd_buf[0..], remote_path) orelse return null;
     // Runs on the UI thread, so bound it: a hung remote `test -d` becomes a
@@ -5355,12 +5389,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             }
             return;
         }
-        if (hitTestSidebarTab(xpos, ypos)) |tab_idx| {
-            if (shouldStartSidebarTabRename(xpos, ypos, tab_idx)) {
-                tab.startTabRename(tab_idx);
-            }
-            return;
-        }
+        if (handleSidebarTabRenameGesture(xpos, ypos)) return;
         // No chrome hit — this is a double-click in terminal content. The macOS
         // backend reports the 2nd/3rd/4th click of a multi-click as
         // double_click (clickCount > 1) rather than press, so they never reach
@@ -5404,6 +5433,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
     // Ctrl+right-click (Cmd on macOS) over a local terminal opens the file under
     // the cursor in the OS default app; otherwise follow the configured action.
     if (ev.button == .right and ev.action == .release) {
+        if (handleSidebarTabRenameGesture(@floatFromInt(ev.x), @floatFromInt(ev.y))) return;
         if (openInEditorAtRightClick(ev)) return;
         handleConfiguredRightClick();
         return;

@@ -91,6 +91,31 @@ static _Thread_local int wispterm_metal_sc_h = 0;
 static _Thread_local int wispterm_metal_drawable_w = 0;
 static _Thread_local int wispterm_metal_drawable_h = 0;
 
+// Agent ui_screenshot capture (macOS). The Zig readback runs AFTER frame_end has
+// presented + released the drawable, so the drawable is gone by then. Instead, on
+// frames the caller arms (wispterm_metal_arm_capture), frame_end blits the just-
+// rendered drawable into this shared buffer before present and waits for the GPU,
+// so the bytes are CPU-readable when readback.zig asks. BGRA8, top-down (Metal
+// origin top-left); the Zig side converts to RGBA bottom-up to match GL readback.
+static _Thread_local bool wispterm_metal_capture_armed = false;
+static _Thread_local id<MTLBuffer> wispterm_metal_capture_buffer = nil;
+static _Thread_local int wispterm_metal_capture_w = 0;
+static _Thread_local int wispterm_metal_capture_h = 0;
+static _Thread_local int wispterm_metal_capture_row_stride = 0; // bytes per row (256-aligned)
+
+void wispterm_metal_arm_capture(void) {
+    wispterm_metal_capture_armed = true;
+}
+
+const unsigned char *wispterm_metal_capture_pixels(void) {
+    if (wispterm_metal_capture_buffer == nil) return NULL;
+    return (const unsigned char *)[wispterm_metal_capture_buffer contents];
+}
+
+int wispterm_metal_capture_width(void) { return wispterm_metal_capture_w; }
+int wispterm_metal_capture_height(void) { return wispterm_metal_capture_h; }
+int wispterm_metal_capture_stride(void) { return wispterm_metal_capture_row_stride; }
+
 void wispterm_metal_set_viewport(int x, int y, int w, int h) {
     wispterm_metal_vp_x = x;
     wispterm_metal_vp_y = y;
@@ -323,7 +348,13 @@ bool wispterm_metal_context_init(void *layer, WispTermMetalContext *out, char *e
         [metal_layer retain];
         metal_layer.device = device;
         metal_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        metal_layer.framebufferOnly = YES;
+        // NO (not YES) so the drawable texture can be a blit source for the
+        // agent ui_screenshot readback (see wispterm_metal_frame_end capture
+        // path). ponytail: tiny per-frame cost (loses some drawable lossless
+        // compression); the expensive blit+wait is still gated by the capture
+        // arm flag, so steady-state perf is unaffected. Gate framebufferOnly by
+        // the arm flag too only if drawable bandwidth ever shows up in a profile.
+        metal_layer.framebufferOnly = NO;
         metal_layer.opaque = YES;
         metal_layer.contentsScale = 1.0;
         metal_layer.drawableSize = CGSizeMake(64.0, 64.0);
@@ -916,6 +947,47 @@ bool wispterm_metal_frame_end(WispTermMetalContext *ctx, char *error_buf, size_t
         id<CAMetalDrawable> drawable = (id<CAMetalDrawable>)ctx->drawable;
 
         [encoder endEncoding];
+
+        // Agent ui_screenshot: on armed frames, blit the just-rendered drawable
+        // into a shared CPU-readable buffer in the SAME command buffer, then wait
+        // below so readback.zig can read it after frame_end returns. Gated by the
+        // arm flag, so non-capture frames keep the async (no-wait) fast path.
+        bool captured_this_frame = false;
+        if (wispterm_metal_capture_armed && drawable != nil) {
+            id<MTLTexture> tex = drawable.texture;
+            NSUInteger w = tex.width;
+            NSUInteger h = tex.height;
+            NSUInteger stride = (w * 4 + 255) & ~((NSUInteger)255); // 256-align (macOS blit req)
+            NSUInteger needed = stride * h;
+            id<MTLDevice> device = (id<MTLDevice>)ctx->device;
+            if (w > 0 && h > 0 && device != nil) {
+                if (wispterm_metal_capture_buffer == nil ||
+                    wispterm_metal_capture_buffer.length < needed) {
+                    if (wispterm_metal_capture_buffer != nil) [wispterm_metal_capture_buffer release];
+                    wispterm_metal_capture_buffer =
+                        [device newBufferWithLength:needed options:MTLResourceStorageModeShared];
+                }
+                if (wispterm_metal_capture_buffer != nil) {
+                    id<MTLBlitCommandEncoder> blit = [command_buffer blitCommandEncoder];
+                    [blit copyFromTexture:tex
+                              sourceSlice:0
+                              sourceLevel:0
+                             sourceOrigin:MTLOriginMake(0, 0, 0)
+                               sourceSize:MTLSizeMake(w, h, 1)
+                                 toBuffer:wispterm_metal_capture_buffer
+                        destinationOffset:0
+                   destinationBytesPerRow:stride
+                 destinationBytesPerImage:needed];
+                    [blit endEncoding];
+                    wispterm_metal_capture_w = (int)w;
+                    wispterm_metal_capture_h = (int)h;
+                    wispterm_metal_capture_row_stride = (int)stride;
+                    captured_this_frame = true;
+                }
+            }
+        }
+        wispterm_metal_capture_armed = false;
+
         if (drawable != nil) [command_buffer presentDrawable:drawable];
 
         // Report GPU errors asynchronously rather than blocking the render
@@ -931,6 +1003,9 @@ bool wispterm_metal_frame_end(WispTermMetalContext *ctx, char *error_buf, size_t
             }
         }];
         [command_buffer commit];
+        // Capture frames must block until the blit finishes so the shared buffer
+        // is populated before readback.zig reads it. Rare (agent-triggered) only.
+        if (captured_this_frame) [command_buffer waitUntilCompleted];
         wispterm_metal_set_error(error_buf, error_buf_len, "");
 
         [encoder release];

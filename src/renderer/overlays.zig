@@ -20,9 +20,9 @@ const Config = @import("../config.zig");
 const themes_embed = @import("../themes.zig");
 const input_key = @import("../input/key.zig");
 const hit_test = @import("../input/hit_test.zig");
-const ssh_prompt = @import("../ssh_prompt.zig");
-const ssh_connection = @import("../ssh_connection.zig");
-const ssh_profile_store = @import("../ssh_profile_store.zig");
+const ssh_prompt = @import("../ssh/prompt.zig");
+const ssh_connection = @import("../ssh/connection.zig");
+const ssh_profile_store = @import("../ssh/profile_store.zig");
 const app_metadata = @import("../app_metadata.zig");
 const command_center_state = @import("../command/center_state.zig");
 const ctl_ui_state = @import("../ctl/ui_state.zig");
@@ -690,6 +690,13 @@ fn executeCommand(action: CommandAction) void {
                 } else {
                     showUpdateDownloadUnavailableToast();
                 }
+            } else {
+                showUpdateDownloadUnavailableToast();
+            }
+        },
+        .install_update => {
+            if (AppWindow.g_app) |app| {
+                if (!app.requestUpdateInstall()) showUpdatePrompt(.{ .state = .downloaded }, .none);
             } else {
                 showUpdateDownloadUnavailableToast();
             }
@@ -2192,7 +2199,7 @@ pub fn renderCommandPalette(window_width: f32, window_height: f32, top_offset: f
 // ============================================================================
 
 const profile_codec = @import("overlays/profile_codec.zig");
-const openssh_config_import = @import("../openssh_config_import.zig");
+const openssh_config_import = @import("../ssh/openssh_config_import.zig");
 const SSH_FIELD_COUNT = ssh_profiles.SSH_FIELD_COUNT;
 const SSH_FIELD_MAX = ssh_profiles.SSH_FIELD_MAX;
 const SSH_PROFILE_MAX = ssh_profiles.SSH_PROFILE_MAX;
@@ -6708,10 +6715,16 @@ const updatePromptActionForResult = update_prompt_model.updatePromptActionForRes
 
 fn showUpdatePrompt(result: update_check.CheckResult, action: UpdatePromptAction) void {
     var status_buf: [96]u8 = undefined;
-    const status = update_check.formatStatusMessage(&status_buf, result) catch return;
+    const status = if (action == .install_update) blk: {
+        if (result.latest_version.len > 0)
+            break :blk std.fmt.bufPrint(&status_buf, "Update ready: {s}", .{result.latest_version}) catch return
+        else
+            break :blk "Update ready";
+    } else update_check.formatStatusMessage(&status_buf, result) catch return;
     const suffix = switch (action) {
         .download_update => "  click to download",
         .open_release => "  click to open",
+        .install_update => "  立即更新",
         .none => "",
     };
     var msg_buf: [128]u8 = undefined;
@@ -7554,6 +7567,17 @@ pub fn activateUpdatePrompt() void {
                 }
             } else {
                 showUpdateDownloadUnavailableToast();
+            }
+        },
+        .install_update => {
+            if (AppWindow.g_app) |app| {
+                if (!app.requestUpdateInstall()) {
+                    // Fallback: app already revealed the DMG at download time;
+                    // show the manual prompt again.
+                    showUpdatePrompt(.{ .state = .downloaded }, .none);
+                }
+            } else {
+                showUpdatePrompt(.{ .state = .downloaded }, .none);
             }
         },
         .open_release => openStoredPromptUrl(),

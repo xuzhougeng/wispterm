@@ -1,12 +1,13 @@
 const std = @import("std");
-const platform_process = @import("platform/process.zig");
+
+const ssh_askpass_password_env = "WISPTERM_SSH_PASSWORD";
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const password = std.process.getEnvVarOwned(allocator, platform_process.SSH_ASKPASS_PASSWORD_ENV) catch |err| switch (err) {
+    const password = std.process.getEnvVarOwned(allocator, ssh_askpass_password_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return,
         else => return err,
     };
