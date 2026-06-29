@@ -42,6 +42,7 @@ jobs:
             local src="${matches[0]}"
             echo "Uploading ${src} -> ${R2_BUCKET}/latest/${dest}"
             npx --yes wrangler@4.88.0 r2 object put "${R2_BUCKET}/latest/${dest}" \
+              --remote \
               --file "${src}" \
               --content-type "${content_type}" \
               --cache-control "public, max-age=300" \
