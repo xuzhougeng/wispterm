@@ -165,6 +165,25 @@ fn productionCardSink(ctx: *anyopaque) CardSink {
     return .{ .ctx = ctx, .create = cardCreate, .send = cardSend, .stream = cardStream, .close = cardClose, .updateMessage = cardUpdateMessage };
 }
 
+/// Production send_card: fetches token then calls rest.sendMessage with msg_type="interactive".
+/// Token via self.allocator (NOT arena) — TokenCache owns it. Token never logged.
+fn restSendCard(
+    ctx: *anyopaque,
+    alloc: std.mem.Allocator,
+    chat_id: []const u8,
+    card_json: []const u8,
+) anyerror!void {
+    const self: *Controller = @ptrCast(@alignCast(ctx));
+    const token = self.token_cache.get(self.allocator, self.creds) catch |err| {
+        log.warn("restSendCard: token refresh failed: {s}", .{@errorName(err)});
+        return err;
+    };
+    rest.sendMessage(alloc, token, "chat_id", chat_id, "interactive", card_json) catch |err| {
+        log.warn("restSendCard: sendMessage failed: {s}", .{@errorName(err)});
+        return err;
+    };
+}
+
 /// Production sink: calls rest.sendText with the live token.
 fn restSendText(
     ctx: *anyopaque,
@@ -328,6 +347,7 @@ pub const Controller = struct {
                 .control = control,
                 .send_sink = .{ .ctx = self, .send = restSendText },
                 .card_sink = productionCardSink(self),
+                .send_card = .{ .ctx = self, .send = restSendCard },
             },
         };
         return self;

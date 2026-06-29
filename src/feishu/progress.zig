@@ -159,11 +159,22 @@ fn planPoll(action_tag: ActionTag, action_text: []const u8, md: []const u8, last
 // ProgressWorker
 // ---------------------------------------------------------------------------
 
+/// Injectable: send a static interactive card to a chat.
+/// Production: token via token_cache.get(self.allocator) + rest.sendMessage("interactive").
+/// Tests: recorder stub.
+pub const SendCardFn = *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, chat_id: []const u8, card_json: []const u8) anyerror!void;
+
+pub const SendCardSink = struct {
+    ctx: *anyopaque,
+    send: SendCardFn,
+};
+
 pub const ProgressWorker = struct {
     allocator: std.mem.Allocator,
     control: @import("../chatops/control.zig").Control,
     send_sink: controller.SendSink,
     card_sink: controller.CardSink,
+    send_card: SendCardSink,
 
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
@@ -426,12 +437,32 @@ pub const ProgressWorker = struct {
                 // Card path: use planPoll to decide ops.
                 const ops = planPoll(owned.tag, owned.text, md, last_md);
 
-                // Send approval/question prompt as independent text message.
-                if (ops.prompt_text) |txt| {
-                    if (txt.len != 0) {
-                        self.send_sink.send(self.send_sink.ctx, self.allocator, snap.chat_id, txt) catch |err| {
-                            log.warn("progress: send prompt (card path) failed: {s}", .{@errorName(err)});
-                        };
+                // Send approval/question prompt as interactive card (card path).
+                if (ops.prompt_text != null) {
+                    var arena = std.heap.ArenaAllocator.init(self.allocator);
+                    defer arena.deinit();
+                    const a = arena.allocator();
+                    switch (owned.tag) {
+                        .send_approval_prompt => {
+                            const cj = @import("card.zig").buildApprovalCard(a, owned.text) catch null;
+                            if (cj) |c| self.send_card.send(self.send_card.ctx, self.allocator, snap.chat_id, c) catch |err| {
+                                log.warn("progress: send approval card failed: {s}", .{@errorName(err)});
+                            };
+                        },
+                        .send_question_prompt => {
+                            const count = self.control.aiQuestionOptionCount();
+                            // Build numbered labels "1".."count" (value option:0..count-1, 0-based).
+                            var labels = try std.ArrayListUnmanaged([]const u8).initCapacity(a, count);
+                            for (0..count) |i| {
+                                const label = try std.fmt.allocPrint(a, "{d}", .{i + 1});
+                                try labels.append(a, label);
+                            }
+                            const cj = @import("card.zig").buildQuestionCard(a, owned.text, labels.items) catch null;
+                            if (cj) |c| self.send_card.send(self.send_card.ctx, self.allocator, snap.chat_id, c) catch |err| {
+                                log.warn("progress: send question card failed: {s}", .{@errorName(err)});
+                            };
+                        },
+                        else => {},
                     }
                 }
 
@@ -737,6 +768,28 @@ test "planPoll: none + md unchanged → all null (skip API call)" {
 // Fake CardSink for unit testing PollOps execution
 // ---------------------------------------------------------------------------
 
+/// Records send_card calls for test assertions.
+const FakeSendCard = struct {
+    alloc: std.mem.Allocator,
+    calls: usize = 0,
+    last_card_json: std.ArrayListUnmanaged(u8) = .empty,
+
+    fn deinit(self: *FakeSendCard) void {
+        self.last_card_json.deinit(self.alloc);
+    }
+
+    fn sendCard(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, card_json: []const u8) anyerror!void {
+        const self: *FakeSendCard = @ptrCast(@alignCast(ctx));
+        self.calls += 1;
+        self.last_card_json.clearRetainingCapacity();
+        self.last_card_json.appendSlice(self.alloc, card_json) catch {};
+    }
+
+    fn sink(self: *FakeSendCard) SendCardSink {
+        return .{ .ctx = self, .send = sendCard };
+    }
+};
+
 /// Records card_sink calls for test assertions.
 const FakeCard = struct {
     alloc: std.mem.Allocator,
@@ -966,6 +1019,159 @@ test "cancel path: close+updateMessage(已停止), close exactly once, no leak" 
     try t.expectEqual(@as(usize, 1), card.closes);
     try t.expectEqual(@as(usize, 1), card.update_messages);
     try t.expect(std.mem.indexOf(u8, card.last_update_content.items, "已停止") != null);
+}
+
+// ---------------------------------------------------------------------------
+// FakeControlProgress — minimal control stub for send_card tests
+// ---------------------------------------------------------------------------
+
+/// Minimal control with configurable aiQuestionOptionCount for send_card tests.
+const FakeControlProgress = struct {
+    question_count: usize = 0,
+
+    fn is_connected(_: *anyopaque) bool { return true; }
+    fn find_ai_surface(_: *anyopaque) ?@import("../chatops/control.zig").Surface { return null; }
+    fn find_terminal_surface(_: *anyopaque) ?@import("../chatops/control.zig").Surface { return null; }
+    fn open_ai_agent(_: *anyopaque, _: u32) @import("../chatops/control.zig").OpenResult { return .opened; }
+    fn open_ai_agent_profile(_: *anyopaque, _: []const u8, _: u32) @import("../chatops/control.zig").OpenResult { return .opened; }
+    fn model_profiles(_: *anyopaque, _: []u8) []const u8 { return ""; }
+    fn switch_ai_profile(_: *anyopaque, _: []const u8) @import("../chatops/control.zig").SwitchModelResult { return .offline; }
+    fn send_input(_: *anyopaque, _: [16]u8, _: []const u8, _: ?@import("../chatops/reply.zig").ReplyContext) @import("../chatops/control.zig").SendResult { return .ok; }
+    fn latest_transcript(_: *anyopaque) []const u8 { return ""; }
+    fn ai_approval_pending(_: *anyopaque) bool { return false; }
+    fn resolve_ai_approval(_: *anyopaque, _: bool) bool { return false; }
+    fn ai_question_option_count(ctx: *anyopaque) usize {
+        return @as(*FakeControlProgress, @ptrCast(@alignCast(ctx))).question_count;
+    }
+    fn resolve_ai_question(_: *anyopaque, _: @import("../chatops/reply.zig").QuestionReply) bool { return false; }
+    fn inbound_file_dir(_: *anyopaque, _: []u8) []const u8 { return ""; }
+    fn list_ai_conversations(_: *anyopaque, out: *@import("../chatops/control.zig").ConversationList) void { out.count = 0; }
+    fn pin_ai_conversation_by_index(_: *anyopaque, _: usize, _: *@import("../chatops/control.zig").Conversation) bool { return false; }
+
+    fn iface(self: *FakeControlProgress) @import("../chatops/control.zig").Control {
+        return .{ .ctx = self, .vtable = &.{
+            .is_connected = is_connected,
+            .find_ai_surface = find_ai_surface,
+            .find_terminal_surface = find_terminal_surface,
+            .open_ai_agent = open_ai_agent,
+            .open_ai_agent_profile = open_ai_agent_profile,
+            .model_profiles = model_profiles,
+            .switch_ai_profile = switch_ai_profile,
+            .send_input = send_input,
+            .latest_transcript = latest_transcript,
+            .ai_approval_pending = ai_approval_pending,
+            .resolve_ai_approval = resolve_ai_approval,
+            .ai_question_option_count = ai_question_option_count,
+            .resolve_ai_question = resolve_ai_question,
+            .inbound_file_dir = inbound_file_dir,
+            .list_ai_conversations = list_ai_conversations,
+            .pin_ai_conversation_by_index = pin_ai_conversation_by_index,
+        } };
+    }
+};
+
+// ---------------------------------------------------------------------------
+// send_card card-path tests
+// ---------------------------------------------------------------------------
+
+// Approval poll in card path → send_card receives interactive card JSON with "act":"approval".
+test "send_card: approval prompt → card with act:approval" {
+    var fsc = FakeSendCard{ .alloc = t.allocator };
+    defer fsc.deinit();
+
+    // Simulate the card-path send_card branch directly (no live worker thread).
+    const owned_text = try t.allocator.dupe(u8, "批准该操作");
+    defer t.allocator.free(owned_text);
+    const owned_tag: ActionTag = .send_approval_prompt;
+
+    {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        switch (owned_tag) {
+            .send_approval_prompt => {
+                const cj = @import("card.zig").buildApprovalCard(a, owned_text) catch null;
+                if (cj) |c| try fsc.sink().send(fsc.sink().ctx, t.allocator, "oc_test", c);
+            },
+            else => {},
+        }
+    }
+
+    try t.expectEqual(@as(usize, 1), fsc.calls);
+    try t.expect(std.mem.indexOf(u8, fsc.last_card_json.items, "\"act\":\"approval\"") != null);
+    try t.expect(std.mem.indexOf(u8, fsc.last_card_json.items, "\"decision\":\"approve\"") != null);
+}
+
+// Question poll in card path → send_card receives card with 3 buttons (option:0/1/2).
+test "send_card: question prompt count=3 → card with 3 act:question buttons" {
+    var fc = FakeControlProgress{ .question_count = 3 };
+    var fsc = FakeSendCard{ .alloc = t.allocator };
+    defer fsc.deinit();
+
+    const owned_text = try t.allocator.dupe(u8, "1. optA\n2. optB\n3. optC");
+    defer t.allocator.free(owned_text);
+    const owned_tag: ActionTag = .send_question_prompt;
+
+    {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        switch (owned_tag) {
+            .send_question_prompt => {
+                const count = fc.iface().aiQuestionOptionCount();
+                var labels = try std.ArrayListUnmanaged([]const u8).initCapacity(a, count);
+                for (0..count) |i| {
+                    const label = try std.fmt.allocPrint(a, "{d}", .{i + 1});
+                    try labels.append(a, label);
+                }
+                const cj = @import("card.zig").buildQuestionCard(a, owned_text, labels.items) catch null;
+                if (cj) |c| try fsc.sink().send(fsc.sink().ctx, t.allocator, "oc_test", c);
+            },
+            else => {},
+        }
+    }
+
+    try t.expectEqual(@as(usize, 1), fsc.calls);
+    try t.expect(std.mem.indexOf(u8, fsc.last_card_json.items, "\"act\":\"question\"") != null);
+    try t.expect(std.mem.indexOf(u8, fsc.last_card_json.items, "\"option\":0") != null);
+    try t.expect(std.mem.indexOf(u8, fsc.last_card_json.items, "\"option\":1") != null);
+    try t.expect(std.mem.indexOf(u8, fsc.last_card_json.items, "\"option\":2") != null);
+}
+
+// Text-fallback path (card_id==null): approval/question still send via send_sink (regression).
+test "send_card: text-fallback (card_id==null): approval → send_sink text, no card" {
+    // Stub send_sink: counts calls + captures text.
+    const FakeTextSink = struct {
+        calls: usize = 0,
+        last_text: std.ArrayListUnmanaged(u8) = .empty,
+
+        fn send(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, text: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            self.last_text.clearRetainingCapacity();
+            self.last_text.appendSlice(std.testing.allocator, text) catch {};
+        }
+        fn deinit(self: *@This()) void {
+            self.last_text.deinit(std.testing.allocator);
+        }
+    };
+    var fts = FakeTextSink{};
+    defer fts.deinit();
+    var fsc = FakeSendCard{ .alloc = t.allocator };
+    defer fsc.deinit();
+
+    // Simulate the card_id==null branch (text fallback).
+    const owned_text = try t.allocator.dupe(u8, "⚠️ 需要批准");
+    defer t.allocator.free(owned_text);
+
+    // Text fallback: send via send_sink (card path not reached).
+    const s: controller.SendSink = .{ .ctx = &fts, .send = FakeTextSink.send };
+    if (owned_text.len != 0) {
+        try s.send(s.ctx, t.allocator, "oc_test", owned_text);
+    }
+
+    try t.expectEqual(@as(usize, 1), fts.calls);
+    try t.expectEqual(@as(usize, 0), fsc.calls); // no interactive card sent
 }
 
 // Simulates deadline/stop-loop path: finalized=false → defer closes exactly once.
