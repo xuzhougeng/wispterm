@@ -33,6 +33,27 @@ pub fn buildTextContent(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
     return std.json.Stringify.valueAlloc(alloc, .{ .text = text }, .{});
 }
 
+/// Normalises the server-sent `ClientConfig.PingInterval` to a ping period in
+/// seconds. The value is already in SECONDS — see the official Go SDK
+/// `larksuite/oapi-sdk-go` `ws/client.go`:
+/// `c.pingInterval = time.Duration(conf.PingInterval) * time.Second`.
+/// When the server omits it (0 or negative) fall back to 120s, matching the
+/// SDK default (`2 * time.Minute`).
+///
+/// Previously this divided by 1000 as if PingInterval were milliseconds, so a
+/// real value like 120 truncated to 0 and the ping thread floored it to 1s — a
+/// ping storm every second.
+pub fn pingIntervalSeconds(raw: i64) i64 {
+    return if (raw > 0) raw else 120;
+}
+
+test "pingIntervalSeconds: value is seconds, default 120 on non-positive" {
+    try std.testing.expectEqual(@as(i64, 120), pingIntervalSeconds(120));
+    try std.testing.expectEqual(@as(i64, 8), pingIntervalSeconds(8));
+    try std.testing.expectEqual(@as(i64, 120), pingIntervalSeconds(0));
+    try std.testing.expectEqual(@as(i64, 120), pingIntervalSeconds(-1));
+}
+
 // ---------------------------------------------------------------------------
 // tenant_access_token
 // ---------------------------------------------------------------------------
@@ -190,13 +211,10 @@ pub fn discoverWsEndpoint(alloc: std.mem.Allocator, creds: types.Credentials) !W
     const safe_url = stripQuery(parsed.data.URL);
     log.info("discoverWsEndpoint: ok url_host_path={s}", .{safe_url});
 
-    const ping_ms = parsed.data.ClientConfig.PingInterval;
-    // PingInterval in the protocol notes is in milliseconds.
-    const ping_s = @divTrunc(ping_ms, 1000);
-
     return .{
         .url = try alloc.dupe(u8, parsed.data.URL),
-        .ping_interval_s = ping_s,
+        // PingInterval is in SECONDS (Go SDK ws/client.go); default 120s when absent.
+        .ping_interval_s = pingIntervalSeconds(parsed.data.ClientConfig.PingInterval),
     };
 }
 
