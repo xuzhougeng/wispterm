@@ -129,7 +129,7 @@ fn listModelProfiles(ctrl: control.Control, out: *Reply) !void {
     if (profiles.len == 0) return out.set("尚未配置模型 profile。");
     out.text.clearRetainingCapacity();
     try out.text.appendSlice(out.allocator, "已有 model profile：\n");
-    try out.text.appendSlice(out.allocator, profiles);
+    try appendNumberedProfileList(out, profiles);
 }
 
 fn openNewAi(ctrl: control.Control, arg: []const u8, out: *Reply) !void {
@@ -156,10 +156,12 @@ fn switchAiModel(ctrl: control.Control, arg: []const u8, out: *Reply) !void {
     const name = std.mem.trim(u8, arg, " \t\r\n");
     if (name.len == 0) return setModelUsage(ctrl, out);
     if (!ctrl.isConnected()) return out.set("WispTerm 当前离线，无法切换副驾模型。");
-    switch (ctrl.switchAiProfile(name)) {
+    var profile_buf: [PROFILE_LIST_BUF_MAX]u8 = undefined;
+    const resolved_name = resolveProfileArg(ctrl, name, &profile_buf) orelse return setUnknownProfile(ctrl, name, out);
+    switch (ctrl.switchAiProfile(resolved_name)) {
         .switched => {
             out.text.clearRetainingCapacity();
-            try out.text.print(out.allocator, "已切换当前副驾模型：{s}", .{name});
+            try out.text.print(out.allocator, "已切换当前副驾模型：{s}", .{resolved_name});
         },
         .no_ai => return out.set("当前没有副驾可切换。发送 /new [profile] 可新建独立副驾。"),
         .no_profile => return out.set("尚未配置模型 profile。"),
@@ -171,12 +173,12 @@ fn switchAiModel(ctrl: control.Control, arg: []const u8, out: *Reply) !void {
 
 fn setModelUsage(ctrl: control.Control, out: *Reply) !void {
     out.text.clearRetainingCapacity();
-    try out.text.appendSlice(out.allocator, "用法：/model <model-profile>");
+    try out.text.appendSlice(out.allocator, "用法：/model <model-profile|编号>");
     var buf: [PROFILE_LIST_BUF_MAX]u8 = undefined;
     const profiles = ctrl.modelProfiles(&buf);
     if (profiles.len != 0) {
-        try out.text.appendSlice(out.allocator, "\n\n已有 model profile：\n");
-        try out.text.appendSlice(out.allocator, profiles);
+        try out.text.appendSlice(out.allocator, "\n\n已有 model profile（可用 /model 1 快速切换）：\n");
+        try appendNumberedProfileList(out, profiles);
     }
 }
 
@@ -187,8 +189,55 @@ fn setUnknownProfile(ctrl: control.Control, name: []const u8, out: *Reply) !void
     const profiles = ctrl.modelProfiles(&buf);
     if (profiles.len != 0) {
         try out.text.appendSlice(out.allocator, "\n\n已有 model profile：\n");
-        try out.text.appendSlice(out.allocator, profiles);
+        try appendNumberedProfileList(out, profiles);
     }
+}
+
+fn appendNumberedProfileList(out: *Reply, profiles: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, profiles, '\n');
+    var idx: usize = 1;
+    while (lines.next()) |raw_line| {
+        const display = profileDisplayLine(raw_line);
+        if (display.len == 0) continue;
+        try out.text.print(out.allocator, "{d}. {s}\n", .{ idx, display });
+        idx += 1;
+    }
+}
+
+fn resolveProfileArg(ctrl: control.Control, arg: []const u8, buf: []u8) ?[]const u8 {
+    const idx = std.fmt.parseUnsigned(usize, arg, 10) catch return arg;
+    if (idx == 0) return null;
+    const profiles = ctrl.modelProfiles(buf);
+    if (profiles.len == 0) return arg;
+    var lines = std.mem.splitScalar(u8, profiles, '\n');
+    var current: usize = 1;
+    while (lines.next()) |raw_line| {
+        const display = profileDisplayLine(raw_line);
+        if (display.len == 0) continue;
+        if (current == idx) return profileNameFromDisplay(display);
+        current += 1;
+    }
+    return null;
+}
+
+fn profileDisplayLine(raw_line: []const u8) []const u8 {
+    var line = std.mem.trim(u8, raw_line, " \t\r\n");
+    if (std.mem.startsWith(u8, line, "-")) line = std.mem.trimLeft(u8, line[1..], " \t");
+    return line;
+}
+
+fn profileNameFromDisplay(display: []const u8) []const u8 {
+    var name = display;
+    const default_suffix = " [default]";
+    if (std.mem.endsWith(u8, name, default_suffix)) {
+        name = std.mem.trimRight(u8, name[0 .. name.len - default_suffix.len], " \t");
+    }
+    if (std.mem.endsWith(u8, name, ")")) {
+        if (std.mem.lastIndexOf(u8, name, " (")) |model_suffix_start| {
+            name = std.mem.trimRight(u8, name[0..model_suffix_start], " \t");
+        }
+    }
+    return name;
 }
 
 fn sendAi(ctrl: control.Control, text: []const u8, reply_context: ?reply_types.ReplyContext, out: *Reply) !void {
@@ -332,7 +381,7 @@ const helpBodyConst =
     "/ping 验证连接\n/status 查看状态\n/list 列出副驾会话\n" ++
     "/switch <编号> 切换并固定会话\n/ai <内容> 发送给副驾\n" ++
     "/btw [问题] 立即查看当前进展\n/verbos 查看详细进展\n" ++
-    "/models 查看已有 model profile\n/new [profile] 新建独立副驾\n/model <profile> 切换当前副驾模型\n" ++
+    "/models 查看已有 model profile\n/new [profile] 新建独立副驾\n/model <profile|编号> 切换当前副驾模型\n" ++
     "/stop 停止当前 AI 处理\n/term <命令> 发送到终端并回车\n/keys <文本> 发送原始文本\n" ++
     "普通文本默认发送给当前会话。";
 
@@ -349,7 +398,7 @@ fn usageText(cmd: []const u8) []const u8 {
     if (eqIgnoreCase(cmd, "/term")) return "用法：/term <命令>";
     if (eqIgnoreCase(cmd, "/keys")) return "用法：/keys <文本>";
     if (eqIgnoreCase(cmd, "/ai")) return "用法：/ai <内容>";
-    if (eqIgnoreCase(cmd, "/model")) return "用法：/model <model-profile>";
+    if (eqIgnoreCase(cmd, "/model")) return "用法：/model <model-profile|编号>";
     if (isSwitchCommand(cmd)) return "用法：/switch <会话编号>";
     return helpBodyConst;
 }
@@ -361,6 +410,7 @@ const FakeControl = struct {
     has_ai: bool = true,
     busy: bool = false,
     profile_names: []const []const u8 = &.{},
+    profile_models: []const []const u8 = &.{},
     opened_profile: []const u8 = "",
     open_count: usize = 0,
     switched_profile: []const u8 = "",
@@ -425,8 +475,12 @@ const FakeControl = struct {
         const self = cast(ctx);
         var fbs = std.io.fixedBufferStream(buf);
         const writer = fbs.writer();
-        for (self.profile_names) |name| {
-            writer.print("- {s}\n", .{name}) catch break;
+        for (self.profile_names, 0..) |name, i| {
+            writer.print("- {s}", .{name}) catch break;
+            if (i < self.profile_models.len and self.profile_models[i].len != 0 and !std.mem.eql(u8, name, self.profile_models[i])) {
+                writer.print(" ({s})", .{self.profile_models[i]}) catch break;
+            }
+            writer.writeByte('\n') catch break;
         }
         return fbs.getWritten();
     }
@@ -721,8 +775,8 @@ test "/models lists saved model profiles" {
     var out = Reply.init(t.allocator);
     defer out.deinit();
     try route(t.allocator, fake.control_iface(), "微信", "/models", null, &out);
-    try t.expect(std.mem.indexOf(u8, out.text.items, "GPT-5") != null);
-    try t.expect(std.mem.indexOf(u8, out.text.items, "Claude") != null);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "1. GPT-5") != null);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "2. Claude") != null);
     try t.expect(!out.expect_ai_progress);
 }
 
@@ -757,6 +811,35 @@ test "/model switches the active copilot profile by name" {
     try t.expectEqualStrings("Claude", fake.switched_profile);
     try t.expect(std.mem.indexOf(u8, out.text.items, "Claude") != null);
     try t.expect(!out.expect_ai_progress);
+}
+
+test "/model switches the active copilot profile by list number" {
+    const names = [_][]const u8{ "GPT-5", "Claude" };
+    var fake = FakeControl{ .profile_names = &names };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), "微信", "/model 2", null, &out);
+    try t.expectEqualStrings("Claude", fake.switched_profile);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "Claude") != null);
+    try t.expect(!out.expect_ai_progress);
+}
+
+test "/model list number switches by profile name when the list includes model suffixes" {
+    const names = [_][]const u8{ "DeepSeek", "Codex" };
+    const models = [_][]const u8{ "deepseek-v4-pro", "gpt-5.4" };
+    var fake = FakeControl{ .profile_names = &names, .profile_models = &models };
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), "微信", "/model 1", null, &out);
+    try t.expectEqualStrings("DeepSeek", fake.switched_profile);
+}
+
+test "/model list number with no profiles reports missing profile config" {
+    var fake = FakeControl{};
+    var out = Reply.init(t.allocator);
+    defer out.deinit();
+    try route(t.allocator, fake.control_iface(), "微信", "/model 1", null, &out);
+    try t.expect(std.mem.indexOf(u8, out.text.items, "尚未配置模型 profile") != null);
 }
 
 test "no approval pending: default text still goes to the AI surface" {
