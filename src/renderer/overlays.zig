@@ -3989,6 +3989,7 @@ fn closeFeishuConfigForm() void {
 
 fn startFeishuRegistration() void {
     const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
+    feishu_registration.setWakeupHook(&AppWindow.postWakeup);
     feishu_registration.start(allocator, feishuConfig().international) catch {
         showStatusToast(i18n.s().toast_feishu_scan_failed);
         return;
@@ -4007,6 +4008,7 @@ pub fn feishuRegPanelHandleAction(action: feishu_reg_panel.Action) void {
         },
         .retry => {
             const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
+            feishu_registration.setWakeupHook(&AppWindow.postWakeup);
             feishu_registration.start(allocator, feishuConfig().international) catch {
                 showStatusToast(i18n.s().toast_feishu_scan_failed);
                 return;

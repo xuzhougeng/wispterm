@@ -9,8 +9,6 @@
 
 const std = @import("std");
 
-const log = std.log.scoped(.feishu_reg);
-
 const ENDPOINT_PATH = "/oauth/v1/app/registration";
 
 fn accountsBase(international: bool) []const u8 {
@@ -142,10 +140,24 @@ var g_verify_url: []const u8 = "";
 var g_app_id: []const u8 = "";
 var g_app_secret: []const u8 = "";
 
+/// UI 层注入的唤醒回调(app 传 window_backend.postWakeup),让 worker 线程状态变更后
+/// 唤醒事件驱动渲染循环。registration.zig 保持平台无关(fast 测试可编译);
+/// 测试中 hook 为 null,wake() 为 no-op。
+var g_wakeup_hook: ?*const fn () void = null;
+
+pub fn setWakeupHook(hook: ?*const fn () void) void {
+    g_wakeup_hook = hook;
+}
+
+fn wake() void {
+    if (g_wakeup_hook) |h| h();
+}
+
 fn setStatus(s: StatusKind) void {
     g_mutex.lock();
     defer g_mutex.unlock();
     g_status = s;
+    wake();
 }
 
 fn resetState(alloc: std.mem.Allocator, s: StatusKind) void {
@@ -164,6 +176,7 @@ fn setVerifyUrl(url: []const u8) void {
     defer g_mutex.unlock();
     const a = (&g_arena.?).allocator();
     g_verify_url = a.dupe(u8, url) catch "";
+    wake();
 }
 
 fn setCreds(s: StatusKind, app_id: []const u8, app_secret: []const u8) void {
@@ -173,6 +186,7 @@ fn setCreds(s: StatusKind, app_id: []const u8, app_secret: []const u8) void {
     g_app_id = a.dupe(u8, app_id) catch "";
     g_app_secret = a.dupe(u8, app_secret) catch "";
     g_status = s;
+    wake();
 }
 
 pub fn snapshot(arena: std.mem.Allocator) Snapshot {

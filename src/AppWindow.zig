@@ -3001,6 +3001,12 @@ pub fn applyUiEffect(effect: UiEffect) void {
     if (effect.wake_backend) window_backend.postWakeup();
 }
 
+/// Worker 线程用:直接唤醒后端事件循环,无需经 UiEffect 结构。
+/// 供 feishu registration worker 等后台线程在状态变更后调用。
+pub fn postWakeup() void {
+    window_backend.postWakeup();
+}
+
 /// Tick all preview panes across every tab. Returns true if any pane
 /// updated its content (caller should redraw).
 fn tickAllPreviewPanes() bool {

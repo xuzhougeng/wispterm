@@ -36,7 +36,6 @@ const PANEL_MAX_H: f32 = 620;
 const PANEL_MARGIN: f32 = 24;
 const BUTTON_H: f32 = 38;
 const BUTTON_W: f32 = 118;
-const BUTTON_GAP: f32 = 10;
 
 pub threadlocal var g_visible: bool = false;
 threadlocal var g_status: StatusKind = .requesting;
