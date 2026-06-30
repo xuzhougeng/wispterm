@@ -421,6 +421,21 @@ pub fn copyAiChatMessageToClipboard(chat: *AppWindow.ai_chat.Session, message_in
     }
 }
 
+/// Copy a single code block or table (a byte sub-range of a message) located by
+/// the renderer's per-block copy button.
+pub fn copyAiChatSpanToClipboard(chat: *AppWindow.ai_chat.Session, message_index: usize, start: usize, end: usize) void {
+    const allocator = AppWindow.g_allocator orelse return;
+    const text = chat.allocMessageSpanText(allocator, message_index, start, end) catch return;
+    defer allocator.free(text);
+    if (text.len == 0) return;
+    if (copyTextToClipboard(text)) {
+        overlays.showCopyToast(text.len);
+        AppWindow.g_force_rebuild = true;
+        AppWindow.g_cells_valid = false;
+        std.debug.print("Copied {} AI chat block bytes to clipboard\n", .{text.len});
+    }
+}
+
 pub fn copySelectionToClipboard() void {
     const surface = selectionSurfaceForClipboard() orelse return;
     const allocator = AppWindow.g_allocator orelse return;

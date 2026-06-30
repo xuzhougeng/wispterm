@@ -370,7 +370,44 @@ pub fn allocDisplayText(allocator: std.mem.Allocator, content: []const u8) ![]u8
     return out.toOwnedSlice(allocator);
 }
 
+pub const Range = struct { start: usize, end: usize };
+
+/// Byte range of a fenced code block's *content* — the lines between the
+/// opening fence at `fence_start` and the matching closing fence, excluding
+/// both fence lines. An unterminated fence (still streaming) runs to EOF.
+/// Powers the renderer's per-code-block copy button (copies just the code).
+pub fn codeBlockContentRange(text: []const u8, fence_start: usize) Range {
+    const opening = nextSourceLine(text, fence_start);
+    const start = opening.next;
+    var cursor = start;
+    while (cursor < text.len) {
+        const info = nextSourceLine(text, cursor);
+        if (isFence(std.mem.trimLeft(u8, info.line, " \t"))) return .{ .start = start, .end = cursor };
+        cursor = info.next;
+    }
+    return .{ .start = start, .end = text.len };
+}
+
 const testing = std.testing;
+
+test "codeBlockContentRange extracts code between fences" {
+    const text = "```rust\nfn main() {}\n```\n";
+    const r = codeBlockContentRange(text, 0);
+    try testing.expectEqualStrings("fn main() {}\n", text[r.start..r.end]);
+}
+
+test "codeBlockContentRange unterminated fence runs to end" {
+    const text = "```\nline1\nline2";
+    const r = codeBlockContentRange(text, 0);
+    try testing.expectEqualStrings("line1\nline2", text[r.start..r.end]);
+}
+
+test "codeBlockContentRange skips language label and finds nested closing" {
+    const text = "prefix\n```py\na\nb\nc\n```\nafter";
+    const fence = std.mem.indexOf(u8, text, "```").?;
+    const r = codeBlockContentRange(text, fence);
+    try testing.expectEqualStrings("a\nb\nc\n", text[r.start..r.end]);
+}
 
 test "allocDisplayText strips inline emphasis and code spans" {
     const out = try allocDisplayText(testing.allocator, "**生成的完整 `Markdown`**");
