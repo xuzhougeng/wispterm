@@ -579,7 +579,7 @@ git commit -m "feat(feishu): device-authorization registration core (begin/poll/
 
 **Files:**
 - Create: `src/feishu/registration_panel.zig`
-- Modify: `src/test_main.zig:818`(注册模块)
+- Modify: `src/test_fast.zig`(注册模块 —— 本文件纯逻辑,无 GPU/AppWindow 依赖,挂 fast suite 秒级验证)
 - Test: 同文件内 test 块
 
 **Interfaces:**
@@ -852,23 +852,24 @@ test "updateQr builds a matrix and dedups by url hash" {
 }
 ```
 
-- [ ] **Step 2: 注册到 test_main**
+- [ ] **Step 2: 注册到 test_fast**
 
-在 `src/test_main.zig:818`(`_ = @import("weixin/qr_panel.zig");` 后)加:
+`registration_panel.zig` 只 import `registration.zig` 与 `weixin/qr_code.zig`(均纯逻辑,无 AppWindow/GPU),可挂 fast suite。在 `src/test_fast.zig` 的 `_ = @import("feishu/registration.zig");` 后加:
 
 ```zig
     _ = @import("feishu/registration_panel.zig");
 ```
 
-- [ ] **Step 3: 跑原生全量测试**
+- [ ] **Step 3: 跑 fast 测试**
 
-Run: `zig build test-full -Dtarget=aarch64-macos`
-Expected: PASS(含本文件 3 个测试;忽略已知无关 flaky `skill center tool import`)。
+Run: `zig build test`
+Expected: PASS(含本文件 3 个测试)。
+若该文件因某依赖无法在 fast suite 编译(理论上不会),回退:改注册到 `src/test_main.zig:818` 并用 `zig build test-full -Dtarget=aarch64-macos`,并在报告里说明。
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/feishu/registration_panel.zig src/test_main.zig
+git add src/feishu/registration_panel.zig src/test_fast.zig
 git commit -m "feat(feishu): UI-thread snapshot panel for registration QR"
 ```
 
@@ -1047,17 +1048,15 @@ pub fn deinit() void {}
 
 (若该 guard 实际不是这种名单结构,以 weixin 条目为准照抄一份对应飞书条目。)
 
-- [ ] **Step 3: 编译(此时 overlays.applyFeishuRegistrationSuccess 尚不存在,预期编译失败)**
+> **执行顺序/合并说明(重要)**:本任务在 **Task 5 之后** 完成,并**与 Task 6 合并为一次实现**。原因:`feishu_qr_renderer.zig` 只有被 `AppWindow` import(Task 6)才进入编译图——`@embedFile`(guard)只嵌字节、不编译;fast suite 不引 AppWindow。因此渲染器无法单独编译验证。把"建渲染器 + 注册 guard"(本任务)与"AppWindow import/render/deinit/shutdown + input 路由"(Task 6)一起做,用 `zig build macos-app` 一次性编译验证。`applyFeishuRegistrationSuccess` 此时已由 Task 5 提供。
 
-Run: `zig build test`
-Expected: FAIL —— 报 `applyFeishuRegistrationSuccess` 未定义。这是预期的,Task 5 提供该函数。**本步只确认渲染器其余部分编译干净**(错误应只此一个符号)。
+- [ ] **Step 3: 不单独验证(渲染器随 Task 6 一起编译)**
 
-- [ ] **Step 4: Commit(与 Task 5 紧邻,先存渲染器)**
+渲染器此刻不在编译图中(无人 import),`zig build test` 不会编译它。**不在此处单独 build**;继续做 Task 6 的 AppWindow import,使渲染器进入编译图后统一验证。
 
-```bash
-git add src/renderer/feishu_qr_renderer.zig src/renderer/gpu/gl_backend_guard.zig
-git commit -m "feat(feishu): GPU renderer for registration QR panel"
-```
+- [ ] **Step 4: 合并提交(见 Task 6)**
+
+不单独提交渲染器;与 Task 6 的 AppWindow/input 改动一起验证后提交(见 Task 6 的提交步骤,git add 时包含 `src/renderer/feishu_qr_renderer.zig` 和 `src/renderer/gpu/gl_backend_guard.zig`)。
 
 ---
 
@@ -1199,10 +1198,12 @@ pub fn feishuRegPanelExecuteAt(xpos: f64, ypos: f64, w: f32, h: f32, top: f32) f
 
 在 i18n.zig 加 `toast_feishu_scan_failed`(中文"创建应用失败,请重试")、`toast_feishu_scan_success`(中文"应用已创建,凭据已回填,请保存")。逐语言表照 `toast_feishu_restart` 补。
 
-- [ ] **Step 9: 编译(此时 input/AppWindow 还没接渲染,渲染器引用已满足)**
+- [ ] **Step 9: 编译(overlays 独立编译,不依赖渲染器)**
 
-Run: `zig build test`
-Expected: PASS —— Task 4 缺的 `applyFeishuRegistrationSuccess` 现已提供,渲染器与 overlays 都编译通过。面板还没接进渲染管线/输入(Task 6),但不影响编译与既有测试。
+> 执行顺序修正:本任务在 Task 4/6 之前完成。overlays.zig 只 import `feishu_registration`(Task 2 ✅)与 `feishu_reg_panel`(Task 3 ✅),**不引用渲染器**,故可独立编译。新增的 `applyFeishuRegistrationSuccess`/`feishuRegPanelVisible/ExecuteAt/HandleAction` 都是 `pub fn`,未被调用也不报 unused。
+
+Run: `zig build test` 和 `zig build macos-app`
+Expected: 均 PASS(overlays + i18n 编译进 app;渲染器尚未存在,但 overlays 不依赖它)。
 
 - [ ] **Step 10: Commit**
 
@@ -1227,6 +1228,7 @@ git commit -m "feat(feishu): wire scan-row trigger, panel actions, credential fi
 `src/AppWindow.zig:111-112`(weixin 两行旁)加:
 
 ```zig
+const feishu_registration = @import("feishu/registration.zig");
 pub const feishu_reg_panel = @import("feishu/registration_panel.zig");
 const feishu_reg_renderer = @import("renderer/feishu_qr_renderer.zig");
 ```
@@ -1243,11 +1245,12 @@ const feishu_reg_renderer = @import("renderer/feishu_qr_renderer.zig");
 
 - [ ] **Step 3: deinit 清理**
 
-`:7204` 的 `weixin_qr_renderer.deinit(); weixin_qr_panel.deinit();` 后加:
+`:7204` 的 `weixin_qr_renderer.deinit(); weixin_qr_panel.deinit();` 后加(`shutdown()` 停并 join 注册轮询线程,关闭 Task 2 评审标记的线程泄漏):
 
 ```zig
     feishu_reg_renderer.deinit();
     feishu_reg_panel.deinit();
+    feishu_registration.shutdown();
 ```
 
 - [ ] **Step 4: input.zig 字符吞噬**
