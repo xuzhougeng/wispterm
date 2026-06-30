@@ -6668,6 +6668,7 @@ fn runMainLoop(self: *AppWindow) !void {
         if (config_watcher) |*w| checkConfigReload(allocator, w);
         tmux_controller.tickAll(allocator, term_cols, term_rows);
         overlays.tickSessionLauncher();
+        overlays.tickQuickAiVerify();
         if (file_explorer.tickAsync()) {
             g_force_rebuild = true;
             g_cells_valid = false;
