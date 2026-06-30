@@ -1009,13 +1009,21 @@ pub fn respawn(self: *Surface) void {
     self.mailbox = new_mailbox;
     self.io_thread_state = new_state;
 
-    // Sync the retained grid to the (possibly resized-while-exited) pane size
-    // and drop a separator into the existing scrollback.
+    // Sync the retained grid to the (possibly resized-while-exited) pane size,
+    // clear the visible screen, then print a separator.
+    //
+    // The clear is load-bearing for SSH reconnect: the previous session's
+    // "password:" prompt would otherwise linger in the viewport, and the SSH
+    // password autofill (which scans the viewport for a prompt) would match that
+    // stale line and type the password in plaintext BEFORE the real prompt shows
+    // up. Erasing the screen makes the only on-screen prompt the reconnect's own.
+    // Scrollback above the viewport is preserved (ED 2 erases the screen only).
     {
         self.render_state.mutex.lock();
         defer self.render_state.mutex.unlock();
         self.terminal.resize(self.allocator, cols, rows) catch {};
-        self.terminal.printString("\r\n[WispTerm] Reconnecting...\r\n") catch {};
+        self.vt_stream.nextSlice("\x1b[2J\x1b[H");
+        self.terminal.printString("[WispTerm] Reconnecting...\r\n") catch {};
         self.clearSynchronizedOutputLocked();
     }
 

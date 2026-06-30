@@ -3524,6 +3524,16 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         !ev.ctrl and !ev.alt and !ev.super and !ev.shift)
     {
         surface.respawn();
+        // Initial connect arms SSH password auto-injection; respawn only re-runs
+        // the command, so re-arm it here or the reconnect stalls at the password
+        // prompt. The surface keeps its ssh_connection (with the saved password)
+        // across respawn. Key-auth profiles report usesPasswordAuth()=false and
+        // are skipped.
+        if (surface.ssh_connection) |*conn| {
+            if (conn.usesPasswordAuth()) {
+                overlays.scheduleSshPasswordForSurface(surface, conn.password());
+            }
+        }
         return input_effects.repaint();
     }
 
