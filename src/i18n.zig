@@ -235,6 +235,19 @@ pub const Strings = struct {
     shortcuts_hint: []const u8,
     shortcuts_unbound: []const u8,
 
+    // —— 快速配置 AI ——
+    quick_ai_form_title: []const u8,
+    quick_ai_intro: []const u8,
+    quick_ai_register_row: []const u8,
+    quick_ai_tutorial_row: []const u8,
+    quick_ai_verify_row: []const u8,
+    quick_ai_status_idle: []const u8,
+    quick_ai_status_verifying: []const u8,
+    quick_ai_status_empty: []const u8,
+    quick_ai_status_invalid: []const u8,
+    quick_ai_status_network: []const u8,
+    toast_quick_ai_done: []const u8,
+
     // —— 飞书凭证表单 ——
     feishu_form_title: []const u8,
     feishu_form_enabled: []const u8,
@@ -463,6 +476,18 @@ const en = Strings{
     .shortcuts_hint = "Press any key or click to hide",
     .shortcuts_unbound = "unbound",
 
+    .quick_ai_form_title = "Quick Configure AI",
+    .quick_ai_intro = "Paste your DeepSeek API key to set up the main and subagent models.",
+    .quick_ai_register_row = "1. Register at platform.deepseek.com  (Enter to open)",
+    .quick_ai_tutorial_row = "2. Open the setup guide  (Enter to open)",
+    .quick_ai_verify_row = "Verify & Save",
+    .quick_ai_status_idle = "Paste your API key, then Verify.",
+    .quick_ai_status_verifying = "Verifying…",
+    .quick_ai_status_empty = "Paste an API key first.",
+    .quick_ai_status_invalid = "Invalid API key — check it and retry.",
+    .quick_ai_status_network = "Network error — check your connection and retry.",
+    .toast_quick_ai_done = "AI configured — DeepSeek is ready.",
+
     .feishu_form_title = "Feishu bot config",
     .feishu_form_enabled = "Enabled",
     .feishu_form_international = "International (Lark)",
@@ -689,6 +714,18 @@ const zh_CN = Strings{
     .shortcuts_heading = "键盘快捷键",
     .shortcuts_hint = "按任意键或点击隐藏",
     .shortcuts_unbound = "未绑定",
+
+    .quick_ai_form_title = "快速配置 AI",
+    .quick_ai_intro = "粘贴 DeepSeek API key，自动配好主模型和 subagent。",
+    .quick_ai_register_row = "1. 去 platform.deepseek.com 注册（回车打开）",
+    .quick_ai_tutorial_row = "2. 打开配置教程（回车打开）",
+    .quick_ai_verify_row = "校验并保存",
+    .quick_ai_status_idle = "粘贴 API key 后点校验。",
+    .quick_ai_status_verifying = "校验中…",
+    .quick_ai_status_empty = "请先粘贴 API Key。",
+    .quick_ai_status_invalid = "API key 无效，请检查后重试。",
+    .quick_ai_status_network = "网络错误，请检查网络后重试。",
+    .toast_quick_ai_done = "AI 配置完成，DeepSeek 已就绪。",
 
     .feishu_form_title = "飞书 bot 配置",
     .feishu_form_enabled = "启用",
