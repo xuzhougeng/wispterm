@@ -243,7 +243,11 @@ pub const Strings = struct {
     feishu_form_app_secret: []const u8,
     feishu_form_secret_set_hint: []const u8,
     feishu_form_save: []const u8,
+    feishu_form_scan: []const u8,
+    feishu_form_scan_hint: []const u8,
     toast_feishu_restart: []const u8,
+    toast_feishu_scan_failed: []const u8,
+    toast_feishu_scan_success: []const u8,
 };
 
 const en = Strings{
@@ -470,7 +474,11 @@ const en = Strings{
     .feishu_form_app_secret = "App Secret",
     .feishu_form_secret_set_hint = "already set — leave blank to keep",
     .feishu_form_save = "Save",
+    .feishu_form_scan = "Create app via QR",
+    .feishu_form_scan_hint = "Scan with Feishu to auto-fill app_id/secret",
     .toast_feishu_restart = "Feishu setting updated — restart WispTerm to apply",
+    .toast_feishu_scan_failed = "App creation failed, please retry",
+    .toast_feishu_scan_success = "App created, credentials filled in — please save",
 };
 
 const zh_CN = Strings{
@@ -697,7 +705,11 @@ const zh_CN = Strings{
     .feishu_form_app_secret = "App Secret",
     .feishu_form_secret_set_hint = "已设置，留空保留",
     .feishu_form_save = "保存",
+    .feishu_form_scan = "扫码创建应用",
+    .feishu_form_scan_hint = "用飞书扫码自动获取 app_id/secret",
     .toast_feishu_restart = "飞书配置已更新，重启 WispTerm 生效",
+    .toast_feishu_scan_failed = "创建应用失败，请重试",
+    .toast_feishu_scan_success = "应用已创建，凭据已回填，请保存",
 };
 
 // Set once at startup before any UI thread exists (see main.zig startup wiring).
