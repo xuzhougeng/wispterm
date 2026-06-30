@@ -3637,12 +3637,14 @@ fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {
         switchTab(first_tab_index);
     }
 
-    // No AI profile yet: surface the Quick Configure AI overlay so the user can
-    // paste a DeepSeek key and finish setup in one step (it's an overlay, not a tab).
-    // Shown whenever no AI profile is configured — first launch and any later launch
-    // without AI both land here; dismissable with Esc.
-    if (!has_ai_profile) {
+    // No AI profile yet, first launch only: surface the Quick Configure AI overlay so
+    // the user can paste a DeepSeek key in one step (it's an overlay, not a tab). The
+    // persisted ai-setup-prompted flag suppresses it after it has been shown once, so
+    // it does not reappear every launch — opening the Copilot sidebar later still
+    // prompts setup when no AI is configured.
+    if (startup_tabs.shouldAutoShowAgentForm(has_ai_profile, platform_window_state.aiSetupPrompted(allocator))) {
         overlays.openQuickAiForm();
+        platform_window_state.setAiSetupPrompted(allocator);
     }
 
     // After an upgrade, surface the changelog once (records last-seen version

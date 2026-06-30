@@ -2502,11 +2502,6 @@ fn openAiListFromCommandPalette() void {
     markSessionLauncherReturnToCommandPalette();
 }
 
-fn openAiFormNewFromCommandPalette() void {
-    openAiFormNew();
-    markSessionLauncherReturnToCommandPalette();
-}
-
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
     if (codepoint < 0x20 or codepoint == 0x7f) return;
     if (feishuForm().visible) {
@@ -3817,7 +3812,7 @@ fn openAiList() void {
 fn openDefaultAiSession() void {
     loadAiProfiles();
     if (assistantProfiles().profile_count == 0) {
-        openAiFormNew();
+        openQuickAiForm(); // no AI configured: guide setup via Quick Configure, not the full form
         return;
     }
     connectAiProfile(defaultAiProfileIndex());
@@ -3826,7 +3821,7 @@ fn openDefaultAiSession() void {
 fn openDefaultAgentSessionFromCommandCenter() void {
     loadAiProfiles();
     switch (command_center_state.resolveNewAgentLaunch(assistantProfiles().profile_count != 0)) {
-        .open_form => openAiFormNewFromCommandPalette(),
+        .open_form => openQuickAiForm(), // no AI configured: guide setup via Quick Configure, not the full form
         .connect_default_profile_as_agent => connectAiProfileWithAgentOverride(defaultAiProfileIndex(), "true"),
     }
 }
@@ -3839,7 +3834,7 @@ pub fn hasAiProfiles() bool {
 pub fn openDefaultAgentSessionForStartup() DefaultAgentOpenResult {
     loadAiProfiles();
     if (assistantProfiles().profile_count == 0) {
-        openAiFormNew();
+        openQuickAiForm(); // no AI configured: guide setup via Quick Configure, not the full form
         return .form_opened;
     }
     return if (spawnAiProfileWithAgentOverride(defaultAiProfileIndex(), "true")) .opened else .failed;
@@ -3960,10 +3955,11 @@ pub fn openAiConfigForSession(session: *AppWindow.ai_chat.Session) void {
 pub fn openAiConfigForMissingCopilotApi() void {
     loadAiProfiles();
     if (assistantProfiles().profile_count == 0) {
-        openAiFormNew();
-    } else {
-        openAiFormEdit(defaultAiProfileIndex());
+        openQuickAiForm(); // no AI at all: guide setup via Quick Configure
+        return;
     }
+    // A profile exists but its API key is missing: jump to that profile's key field.
+    openAiFormEdit(defaultAiProfileIndex());
     assistantProfiles().focus = @intFromEnum(AiField.api_key);
 }
 
@@ -4642,30 +4638,35 @@ test "default AI profile snapshot normalizes Anthropic URL with default protocol
     );
 }
 
-test "overlays: missing copilot API opens AI config at API key" {
+test "overlays: missing copilot API with no profile opens Quick Configure" {
     const saved_loaded = assistantProfiles().profiles_loaded;
     const saved_count = assistantProfiles().profile_count;
-    const saved_focus = assistantProfiles().focus;
     const saved_list = g_ai_list_visible;
     const saved_form = g_ai_form_visible;
+    const saved_quick = quickAiForm().visible;
+    const saved_launcher = g_session_launcher_visible;
     defer {
         assistantProfiles().profiles_loaded = saved_loaded;
         assistantProfiles().profile_count = saved_count;
-        assistantProfiles().focus = saved_focus;
         g_ai_list_visible = saved_list;
         g_ai_form_visible = saved_form;
+        quickAiForm().visible = saved_quick;
+        g_session_launcher_visible = saved_launcher;
     }
 
     assistantProfiles().profiles_loaded = true;
     assistantProfiles().profile_count = 0;
     g_ai_list_visible = true;
     g_ai_form_visible = false;
+    quickAiForm().visible = false;
 
     openAiConfigForMissingCopilotApi();
 
+    // No AI configured → guide setup via the Quick Configure overlay, not the full
+    // 12-field profile form (which g_ai_form_visible tracks).
+    try std.testing.expect(quickAiForm().visible);
+    try std.testing.expect(!g_ai_form_visible);
     try std.testing.expect(!g_ai_list_visible);
-    try std.testing.expect(g_ai_form_visible);
-    try std.testing.expectEqual(@as(usize, @intFromEnum(AiField.api_key)), assistantProfiles().focus);
 }
 
 threadlocal var g_ai_default_name_buf: [256]u8 = undefined;
