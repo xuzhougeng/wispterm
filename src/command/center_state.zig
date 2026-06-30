@@ -36,6 +36,7 @@ pub const CommandAction = enum {
     wechat_status,
     unbind_wechat,
     configure_feishu,
+    quick_configure_ai,
     export_ai_chat_markdown,
     export_ai_chat_markdown_clean,
     show_version,
@@ -91,6 +92,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "WeChat: Status", .detail = "Show the WeChat direct connection state", .shortcut = "", .action = .wechat_status },
     .{ .title = "WeChat: Unbind", .detail = "Clear the stored WeChat direct binding", .shortcut = "", .action = .unbind_wechat },
     .{ .title = "Feishu: Configure", .detail = "Enter App ID and App Secret for the Feishu bot", .shortcut = "", .action = .configure_feishu },
+    .{ .title = "Settings: Quick Configure AI", .detail = "Paste one DeepSeek API key to set up the main + subagent models", .shortcut = "", .action = .quick_configure_ai },
     .{ .title = "Export Copilot Markdown", .detail = "Save the active Copilot transcript as Markdown", .shortcut = "", .action = .export_ai_chat_markdown },
     .{ .title = "Export Copilot Markdown Clean", .detail = "Save user prompts and the final AI result without thinking", .shortcut = "", .action = .export_ai_chat_markdown_clean },
     .{ .title = "Version", .detail = "Show WispTerm version", .shortcut = app_metadata.version, .action = .show_version },
@@ -415,6 +417,10 @@ test "command center includes WeChat direct actions" {
 
 test "command center includes Feishu direct actions" {
     try expectCommandEntry("Feishu: Configure", .configure_feishu);
+}
+
+test "command center includes quick configure AI" {
+    try expectCommandEntry("Settings: Quick Configure AI", .quick_configure_ai);
 }
 
 test "command center browser text is backend neutral" {
