@@ -4028,7 +4028,13 @@ fn closeFeishuConfigForm() void {
 /// Quick Configure AI: guided overlay to paste + verify a DeepSeek key.
 /// Rides on the session-launcher plumbing like the Feishu form.
 pub fn openQuickAiForm() void {
-    commandPaletteClose(); // mirror Feishu: close palette FIRST, then set our visible flag
+    g_ssh_list_visible = false;
+    g_ssh_form_visible = false;
+    g_ai_list_visible = false;
+    g_ai_form_visible = false;
+    g_ai_history_source_visible = false;
+    settingsState().visible = false;
+    commandPaletteClose();
     quickAi().reset();
     g_session_launcher_visible = true;
     quickAiForm().visible = true;
@@ -5266,8 +5272,9 @@ fn quickAiStatusText() []const u8 {
 }
 
 // Draws the quick-configure AI form inside the session-launcher box.
-// The API key row is masked: rendered as U+2022 (•) repeated once per byte
-// (the key is ASCII-only, so byte count == codepoint count).
+// The API key row is masked: rendered as U+2022 (•) repeated once per codepoint
+// (continuation bytes are skipped, so the dot count matches the codepoint count,
+// not the byte count; ASCII keys happen to match either way).
 fn renderQuickAiConfigForm(layout: SessionLayout, window_height: f32) void {
     const st = quickAi();
 
