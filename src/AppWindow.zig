@@ -110,6 +110,9 @@ const file_explorer_renderer = @import("renderer/file_explorer_renderer.zig");
 const markdown_preview_renderer = @import("renderer/markdown_preview_renderer.zig");
 pub const weixin_qr_panel = @import("weixin/qr_panel.zig");
 const weixin_qr_renderer = @import("renderer/weixin_qr_renderer.zig");
+const feishu_registration = @import("feishu/registration.zig");
+const feishu_reg_panel = @import("feishu/registration_panel.zig");
+const feishu_reg_renderer = @import("renderer/feishu_qr_renderer.zig");
 const html_server = @import("html/server.zig");
 pub const browser_panel = if (build_options.webview)
     @import("browser/panel.zig")
@@ -4398,6 +4401,7 @@ fn renderResizeFrame(width: i32, height: i32) void {
     overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+    feishu_reg_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
     overlays.renderDebugOverlay(@floatFromInt(fb_width));
     overlays.renderCloseShortcutConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
     overlays.renderCopyToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
@@ -7119,6 +7123,7 @@ fn runMainLoop(self: *AppWindow) !void {
         overlays.renderSettingsPage(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderSessionLauncher(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         weixin_qr_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
+        feishu_reg_renderer.render(@floatFromInt(fb_width), @floatFromInt(fb_height), titlebar_offset);
         overlays.renderDebugOverlay(@floatFromInt(fb_width));
         overlays.renderCloseShortcutConfirm(@floatFromInt(fb_width), @floatFromInt(fb_height));
         overlays.renderCopyToast(@floatFromInt(fb_width), @floatFromInt(fb_height));
@@ -7203,6 +7208,9 @@ fn runMainLoop(self: *AppWindow) !void {
     file_explorer.deinit();
     weixin_qr_renderer.deinit();
     weixin_qr_panel.deinit();
+    feishu_reg_renderer.deinit();
+    feishu_reg_panel.deinit();
+    feishu_registration.shutdown();
     clearWeixinTranscriptCache();
     control_api.clearPanesCache();
     control_api.clearUiStateCache();

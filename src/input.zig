@@ -41,6 +41,7 @@ const window_backend = @import("platform/window_backend.zig");
 const window_metrics = @import("ui/window_metrics.zig");
 const WindowMetrics = window_metrics.WindowMetrics;
 const input_key = @import("input/key.zig");
+const feishu_reg_panel = @import("feishu/registration_panel.zig");
 const assistant_conversation = @import("input/assistant_conversation.zig");
 const command_dispatch = @import("input/command_dispatch.zig");
 const file_explorer_keymap = @import("input/file_explorer_keymap.zig");
@@ -2679,6 +2680,7 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         return effect;
     }
     if (weixinQrPanelConsumesChar()) return .none;
+    if (overlays.feishuRegPanelVisible()) return .none;
     if (browser_panel.urlBarFocused()) {
         if (!ev.ctrl and !ev.alt) {
             browser_panel.insertUrlBarChar(ev.codepoint);
@@ -3134,6 +3136,17 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         switch (ev.key_code) {
             platform_input.key_escape => overlays.weixinQrPanelHandleAction(.close),
             platform_input.key_enter => if (AppWindow.weixin_qr_panel.status() == .expired) overlays.weixinQrPanelHandleAction(.retry),
+            else => {},
+        }
+        return .none;
+    }
+    if (overlays.feishuRegPanelVisible()) {
+        switch (ev.key_code) {
+            platform_input.key_escape => overlays.feishuRegPanelHandleAction(.close),
+            platform_input.key_enter => {
+                const s = feishu_reg_panel.status();
+                if (s == .expired or s == .denied or s == .err) overlays.feishuRegPanelHandleAction(.retry);
+            },
             else => {},
         }
         return .none;
@@ -5314,6 +5327,19 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
             const xpos: f64 = @floatFromInt(ev.x);
             const ypos: f64 = @floatFromInt(ev.y);
             overlays.weixinQrPanelHandleAction(AppWindow.weixin_qr_panel.executeAt(xpos, ypos, w_f, h_f, top_offset));
+        }
+        return;
+    }
+    if (overlays.feishuRegPanelVisible()) {
+        if (ev.button == .left and ev.action == .press) {
+            const win = AppWindow.g_window orelse return;
+            const fb = window_backend.framebufferSize(win);
+            const w_f: f32 = @floatFromInt(fb.width);
+            const h_f: f32 = @floatFromInt(fb.height);
+            const top_offset: f32 = @floatCast(titlebarHeight());
+            const xpos: f64 = @floatFromInt(ev.x);
+            const ypos: f64 = @floatFromInt(ev.y);
+            overlays.feishuRegPanelHandleAction(overlays.feishuRegPanelExecuteAt(xpos, ypos, w_f, h_f, top_offset));
         }
         return;
     }
