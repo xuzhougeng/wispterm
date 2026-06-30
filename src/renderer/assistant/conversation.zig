@@ -45,6 +45,7 @@ const STOP_BUTTON_H: f32 = 28;
 // stops an in-flight request when the dot is busy/yellow.
 const STATUS_DOT_D: f32 = 9;
 const STATUS_DOT_HIT: f32 = 28;
+const COMPACT_STATUS_TRAILING_RESERVE: f32 = 36;
 const MODE_SLOT_W: f32 = 76;
 const INPUT_SCROLLBAR_GUTTER: f32 = 10;
 const INPUT_SCROLLBAR_W: f32 = 4;
@@ -1260,7 +1261,7 @@ fn permissionChipX(x: f32, w: f32) f32 {
 // dot is yellow and clicking this square stops it (mirrors the old stop button;
 // Esc still works). Reuses the generic header-button geometry.
 fn statusDotRect(x: f32, w: f32, titlebar_offset: f32) HeaderButtonRect {
-    return ai_chat_layout.stopButtonRect(x, w, titlebar_offset, LINE_PAD_X, STATUS_DOT_HIT, STATUS_DOT_HIT, HEADER_H);
+    return ai_chat_layout.headerButtonRect(x, w, titlebar_offset, LINE_PAD_X + COMPACT_STATUS_TRAILING_RESERVE, STATUS_DOT_HIT, STATUS_DOT_HIT, HEADER_H);
 }
 
 // Filled disc approximated by stacked 1px scanlines (no circle primitive exists;
