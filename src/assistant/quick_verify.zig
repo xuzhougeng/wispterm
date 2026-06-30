@@ -94,11 +94,13 @@ pub fn start(base_url: []const u8, api_key: []const u8, wake: WakeFn) bool {
     const a = std.heap.page_allocator;
     const key_copy = a.dupe(u8, api_key) catch {
         record(.network_error);
+        wake();
         return true;
     };
     const ctx = a.create(Ctx) catch {
         a.free(key_copy);
         record(.network_error);
+        wake();
         return true;
     };
     ctx.* = .{ .base_url = base_url, .key = key_copy, .wake = wake };
@@ -106,6 +108,7 @@ pub fn start(base_url: []const u8, api_key: []const u8, wake: WakeFn) bool {
         a.free(key_copy);
         a.destroy(ctx);
         record(.network_error);
+        wake();
         return true;
     };
     thread.detach();
