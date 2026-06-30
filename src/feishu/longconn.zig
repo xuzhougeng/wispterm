@@ -195,7 +195,7 @@ fn connectLoop(self: *Client) !void {
         self.conn_mu.lock();
         self.conn = null;
         self.conn_mu.unlock();
-        conn_ptr.destroy();
+        releaseUpgradedConnection(&client, conn_ptr);
     }
 
     // 3. WS handshake (auth is in URL query, no extra headers needed).
@@ -278,6 +278,11 @@ fn connWriteAck(
 fn connSinkWrite(ctx: *anyopaque, bytes: []const u8) anyerror!void {
     const conn: *ws.Conn = @ptrCast(@alignCast(ctx));
     return conn.writeBinary(bytes);
+}
+
+fn releaseUpgradedConnection(client: *std.http.Client, conn: *std.http.Client.Connection) void {
+    conn.closing = true;
+    client.connection_pool.release(conn);
 }
 
 // ===================== Testable frame dispatcher =====================
@@ -449,4 +454,25 @@ test "handleFrame Data: ACK is sent BEFORE on_event, reuses ids, payload={\"code
     try t.expectEqual(@as(i64, 1), ack.method);
     try t.expectEqualStrings("{\"code\":200}", ack.payload);
     try t.expect(ack.header("biz_rt") != null);
+}
+
+test "upgraded websocket connection is released before http client deinit" {
+    const addr = try std.net.Address.parseIp4("127.0.0.1", 0);
+    var server = try addr.listen(.{});
+    defer server.deinit();
+
+    const accept = struct {
+        fn run(s: *std.net.Server) void {
+            const accepted = s.accept() catch return;
+            accepted.stream.close();
+        }
+    }.run;
+    const th = try std.Thread.spawn(.{}, accept, .{&server});
+    defer th.join();
+
+    var client: std.http.Client = .{ .allocator = t.allocator };
+    defer client.deinit();
+
+    const conn = try client.connect("127.0.0.1", server.listen_address.getPort(), .plain);
+    releaseUpgradedConnection(&client, conn);
 }
