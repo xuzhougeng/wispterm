@@ -877,30 +877,44 @@ fn requestWriterStop(self: *Surface) void {
     }
 }
 
+/// Build the terminal status line printed when IO ends. Pure (no terminal
+/// access) so it is unit-testable. `show_reconnect_hint` appends the
+/// Enter-to-reconnect prompt to a normal exit message.
+fn formatIoStatusMessage(buf: []u8, state: IoState, show_reconnect_hint: bool) ?[]const u8 {
+    const hint = if (show_reconnect_hint) " Press Enter to reconnect." else "";
+    return switch (state) {
+        .failed => |failure| std.fmt.bufPrint(
+            buf,
+            "\r\n[WispTerm] Terminal IO failed during {s}: {s}\r\n",
+            .{ @tagName(failure.operation), @errorName(failure.error_code) },
+        ) catch null,
+        .exited => |info| exited: {
+            if (info.status) |status| switch (status) {
+                .exited => |code| break :exited std.fmt.bufPrint(
+                    buf,
+                    "\r\n[WispTerm] Process exited with code {d}.{s}\r\n",
+                    .{ code, hint },
+                ) catch null,
+                .unknown => {},
+            };
+            break :exited std.fmt.bufPrint(
+                buf,
+                "\r\n[WispTerm] Process exited.{s}\r\n",
+                .{hint},
+            ) catch null;
+        },
+        else => null,
+    };
+}
+
 fn paintIoStatus(self: *Surface, state: IoState) void {
     self.render_state.mutex.lock();
     defer self.render_state.mutex.unlock();
 
     var buf: [256]u8 = undefined;
-    const message = switch (state) {
-        .failed => |failure| std.fmt.bufPrint(
-            &buf,
-            "\r\n[WispTerm] Terminal IO failed during {s}: {s}\r\n",
-            .{ @tagName(failure.operation), @errorName(failure.error_code) },
-        ) catch return,
-        .exited => |info| exited: {
-            if (info.status) |status| switch (status) {
-                .exited => |code| break :exited std.fmt.bufPrint(
-                    &buf,
-                    "\r\n[WispTerm] Process exited with code {d}.\r\n",
-                    .{code},
-                ) catch return,
-                .unknown => {},
-            };
-            break :exited std.fmt.bufPrint(&buf, "\r\n[WispTerm] Process exited.\r\n", .{}) catch return;
-        },
-        else => return,
-    };
+    // Only a panel with a stored command can actually reconnect (virtual/tmux
+    // panes and dup failures leave respawn_command null), so gate the hint.
+    const message = formatIoStatusMessage(&buf, state, self.respawn_command != null) orelse return;
 
     self.terminal.printString(message) catch |err| {
         io_log.warn("failed to paint io status err={s}", .{@errorName(err)});
@@ -1914,4 +1928,21 @@ test "Surface respawn target stores command and frees it without leaking" {
     // double-frees.
     surface.freeRespawnTarget(std.testing.allocator);
     try std.testing.expect(surface.respawn_command == null);
+}
+
+test "exit status message shows the reconnect hint only when asked" {
+    var buf: [256]u8 = undefined;
+    const state: IoState = .{ .exited = .{
+        .reason = .eof,
+        .status = .{ .exited = 0 },
+        .timestamp_ms = 0,
+    } };
+
+    const with_hint = formatIoStatusMessage(&buf, state, true).?;
+    try std.testing.expect(std.mem.indexOf(u8, with_hint, "Process exited with code 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with_hint, "Press Enter to reconnect") != null);
+
+    var buf2: [256]u8 = undefined;
+    const no_hint = formatIoStatusMessage(&buf2, state, false).?;
+    try std.testing.expect(std.mem.indexOf(u8, no_hint, "Press Enter to reconnect") == null);
 }
