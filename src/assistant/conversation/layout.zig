@@ -104,11 +104,23 @@ pub fn stopButtonRect(
     stop_h: f32,
     header_h: f32,
 ) Rect {
+    return headerButtonRect(x, w, titlebar_offset, line_pad_x, stop_w, stop_h, header_h);
+}
+
+pub fn headerButtonRect(
+    x: f32,
+    w: f32,
+    titlebar_offset: f32,
+    right_pad: f32,
+    button_w: f32,
+    button_h: f32,
+    header_h: f32,
+) Rect {
     return .{
-        .x = x + w - line_pad_x - stop_w,
-        .top_px = titlebar_offset + @round((header_h - stop_h) / 2),
-        .w = stop_w,
-        .h = stop_h,
+        .x = x + w - right_pad - button_w,
+        .top_px = titlebar_offset + @round((header_h - button_h) / 2),
+        .w = button_w,
+        .h = button_h,
     };
 }
 
@@ -304,6 +316,14 @@ test "stopButtonRect centers in header_h" {
     try std.testing.expectApproxEqAbs(@as(f32, 878), r.x, 0.001); // 1000-18-104
     try std.testing.expectApproxEqAbs(@as(f32, 18), r.top_px, 0.001); // 5+round((54-28)/2)
     try std.testing.expectApproxEqAbs(@as(f32, 104), r.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 28), r.h, 0.001);
+}
+
+test "headerButtonRect can reserve trailing controls" {
+    const r = headerButtonRect(600, 128, 5, 18 + 34, 28, 28, 54);
+    try std.testing.expectApproxEqAbs(@as(f32, 648), r.x, 0.001); // 600+128-52-28
+    try std.testing.expectApproxEqAbs(@as(f32, 18), r.top_px, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 28), r.w, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 28), r.h, 0.001);
 }
 
