@@ -244,6 +244,12 @@ ssh_connection: ?SshConnection,
 remote_client: ?*remote.Client,
 remote_id: [16]u8,
 
+/// The command + cwd this surface was launched with, owned copies kept so the
+/// panel can be re-run in place after its process exits (Enter-to-reconnect).
+/// Null for virtual/tmux panes (no child) and if the dup ever fails.
+respawn_command: ?platform_pty_command.OwnedCommandLine = null,
+respawn_cwd: ?platform_pty_command.OwnedCwd = null,
+
 /// Size information for this surface (screen size, cell size, padding).
 /// Used by the renderer to position content correctly.
 size: renderer.size.Size = .{},
@@ -466,7 +472,9 @@ pub fn init(
     try surface.command.start(&surface.pty, shell_cmd, cwd);
     errdefer surface.command.deinit();
 
-    return finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd);
+    const ready = try finishInit(surface, allocator, cols, rows, platform_pty_command.launchKindForCommand(shell_cmd), cwd);
+    ready.setRespawnTarget(allocator, shell_cmd, cwd);
+    return ready;
 }
 
 /// Shared constructor tail for `init` (real PTY + child) and `initVirtual`
@@ -487,6 +495,8 @@ fn finishInit(
     surface.render_state = renderer.State.init(&surface.terminal);
     surface.launch_kind = launch_kind;
     surface.ssh_connection = null;
+    surface.respawn_command = null;
+    surface.respawn_cwd = null;
     surface.remote_client = null;
     remote.nextSurfaceId(&surface.remote_id);
     surface.vt_stream = surface.initVtStream();
@@ -703,6 +713,7 @@ pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
         self.allocator.free(pending);
         self.clipboard_write_pending = null;
     }
+    self.freeRespawnTarget(allocator);
     self.wispterm_image_osc_buf.deinit(allocator);
     self.vt_stream.deinit();
     self.command.deinit();
@@ -1172,6 +1183,31 @@ fn captureInitialCwd(self: *Surface, cwd: platform_pty_command.Cwd) void {
 
     const path = std.process.getCwd(&self.initial_cwd_path) catch return;
     self.initial_cwd_path_len = path.len;
+}
+
+/// Store owned copies of the launch command/cwd for Enter-to-reconnect.
+/// `CommandLine`/`Cwd` are platform-native (`u8` POSIX / `u16` Windows); we
+/// dup with the element unit so this is cross-platform. Best-effort: on dup
+/// failure the field stays null and reconnect is simply unavailable.
+fn setRespawnTarget(
+    self: *Surface,
+    allocator: std.mem.Allocator,
+    cmd: platform_pty_command.CommandLine,
+    cwd: platform_pty_command.Cwd,
+) void {
+    const CmdUnit = std.meta.Child(platform_pty_command.CommandLine);
+    self.respawn_command = allocator.dupeZ(CmdUnit, cmd) catch null;
+    self.respawn_cwd = if (cwd) |c|
+        (allocator.dupeZ(platform_pty_command.CwdUnit, std.mem.span(c)) catch null)
+    else
+        null;
+}
+
+fn freeRespawnTarget(self: *Surface, allocator: std.mem.Allocator) void {
+    if (self.respawn_command) |c| platform_pty_command.freeCommandLine(allocator, c);
+    if (self.respawn_cwd) |c| platform_pty_command.freeCwd(allocator, c);
+    self.respawn_command = null;
+    self.respawn_cwd = null;
 }
 
 /// Reset OSC batch state — call before each PTY read batch.
@@ -1848,4 +1884,34 @@ test "Surface markExited preserves a normal exit as non-failure and blocks input
         },
         else => return error.ExpectedExitedState,
     }
+}
+
+test "Surface respawn target stores command and frees it without leaking" {
+    var surface: Surface = undefined;
+    surface.respawn_command = null;
+    surface.respawn_cwd = null;
+
+    // Build a platform CommandLine from utf8 so this compiles on Windows too.
+    const owned = try platform_pty_command.allocCommandLineFromUtf8(
+        std.testing.allocator,
+        "ssh demo@host",
+    );
+    defer platform_pty_command.freeCommandLine(std.testing.allocator, owned);
+    const cmd = platform_pty_command.commandLineFromOwned(owned);
+
+    surface.setRespawnTarget(std.testing.allocator, cmd, null);
+    try std.testing.expect(surface.respawn_command != null);
+    try std.testing.expect(surface.respawn_cwd == null);
+
+    var disp: [64]u8 = undefined;
+    const got = platform_pty_command.commandLineDisplay(
+        platform_pty_command.commandLineFromOwned(surface.respawn_command.?),
+        &disp,
+    );
+    try std.testing.expectEqualStrings("ssh demo@host", got);
+
+    // testing.allocator fails the test if freeRespawnTarget leaks or
+    // double-frees.
+    surface.freeRespawnTarget(std.testing.allocator);
+    try std.testing.expect(surface.respawn_command == null);
 }
