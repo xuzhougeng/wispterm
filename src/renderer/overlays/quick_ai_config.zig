@@ -26,7 +26,7 @@ pub const MAIN_MODEL = "deepseek-v4-pro";
 pub const SUB_PROFILE_NAME = "DeepSeek Flash";
 pub const SUB_MODEL = "deepseek-v4-flash";
 
-pub const VerifyStatus = enum { idle, verifying, ok, empty, invalid, network };
+pub const VerifyStatus = enum { idle, verifying, ok, empty, invalid, network, store_full };
 
 pub const State = struct {
     key_buf: [KEY_FIELD_MAX]u8 = undefined,
@@ -105,6 +105,12 @@ fn upsertOne(profiles: []AiProfile, count: usize, name: []const u8, model: []con
     return count + 1;
 }
 
+/// True only if BOTH quick-config DeepSeek profiles are present by name in profiles[0..count].
+pub fn bothProfilesPresent(profiles: []const AiProfile, count: usize) bool {
+    return indexByName(profiles, count, MAIN_PROFILE_NAME) != null and
+        indexByName(profiles, count, SUB_PROFILE_NAME) != null;
+}
+
 /// Upsert the two DeepSeek quick-config profiles by name into `profiles[0..count]`.
 /// Existing same-named profiles have only their connection fields refreshed; new
 /// ones are appended with documented defaults. Returns the new count.
@@ -166,6 +172,18 @@ test "upsertProfiles: appends two profiles into an empty store" {
     try std.testing.expectEqualStrings("DeepSeek Flash", profile_codec.aiProfileField(&profiles[1], .name));
     try std.testing.expectEqualStrings("deepseek-v4-flash", profile_codec.aiProfileField(&profiles[1], .model));
     try std.testing.expectEqualStrings("true", profile_codec.aiProfileField(&profiles[1], .agent));
+}
+
+test "upsertProfiles: full store does not overflow and reports incomplete" {
+    const profiles = try std.testing.allocator.alloc(AiProfile, 2);
+    defer std.testing.allocator.free(profiles);
+    profiles[0] = .{};
+    profile_codec.setProfileDefault(&profiles[0], .name, "Other A");
+    profiles[1] = .{};
+    profile_codec.setProfileDefault(&profiles[1], .name, "Other B");
+    const n = upsertProfiles(profiles, 2, "sk-key");
+    try std.testing.expectEqual(@as(usize, 2), n); // no overflow, count unchanged
+    try std.testing.expect(!bothProfilesPresent(profiles, n)); // neither DeepSeek landed
 }
 
 test "upsertProfiles: updates an existing same-named profile in place" {

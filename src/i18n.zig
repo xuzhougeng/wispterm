@@ -246,6 +246,7 @@ pub const Strings = struct {
     quick_ai_status_empty: []const u8,
     quick_ai_status_invalid: []const u8,
     quick_ai_status_network: []const u8,
+    quick_ai_status_full: []const u8,
     toast_quick_ai_done: []const u8,
 
     // —— 飞书凭证表单 ——
@@ -486,6 +487,7 @@ const en = Strings{
     .quick_ai_status_empty = "Paste an API key first.",
     .quick_ai_status_invalid = "Invalid API key — check it and retry.",
     .quick_ai_status_network = "Network error — check your connection and retry.",
+    .quick_ai_status_full = "Too many AI profiles — remove one and retry.",
     .toast_quick_ai_done = "AI configured — DeepSeek is ready.",
 
     .feishu_form_title = "Feishu bot config",
@@ -725,6 +727,7 @@ const zh_CN = Strings{
     .quick_ai_status_empty = "请先粘贴 API Key。",
     .quick_ai_status_invalid = "API key 无效，请检查后重试。",
     .quick_ai_status_network = "网络错误，请检查网络后重试。",
+    .quick_ai_status_full = "AI 配置数量已满，请删除一个后重试。",
     .toast_quick_ai_done = "AI 配置完成，DeepSeek 已就绪。",
 
     .feishu_form_title = "飞书 bot 配置",

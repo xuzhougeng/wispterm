@@ -4071,6 +4071,11 @@ fn applyQuickAiConfig() void {
     const profiles = assistantProfiles().profiles[0..];
     var count = assistant_profile_store.loadProfiles(allocator, profiles);
     count = quick_ai_config.upsertProfiles(profiles, count, quickAi().key());
+    if (!quick_ai_config.bothProfilesPresent(profiles, count)) {
+        quickAi().status = .store_full;
+        AppWindow.applyUiEffect(.{ .needs_rebuild = true });
+        return; // do not persist config keys, save, toast success, or close
+    }
     assistantProfiles().profile_count = count;
     _ = assistant_profile_store.saveProfiles(allocator, profiles[0..count]);
     Config.setConfigValue(allocator, "ai-default-profile", quick_ai_config.MAIN_PROFILE_NAME) catch {};
@@ -5307,6 +5312,7 @@ fn quickAiStatusText() []const u8 {
         .empty => i18n.s().quick_ai_status_empty,
         .invalid => i18n.s().quick_ai_status_invalid,
         .network => i18n.s().quick_ai_status_network,
+        .store_full => i18n.s().quick_ai_status_full,
         .ok => i18n.s().toast_quick_ai_done,
     };
 }
