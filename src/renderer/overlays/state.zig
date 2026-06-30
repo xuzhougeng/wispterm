@@ -5,6 +5,7 @@ const confirm_modals = @import("confirm_modals.zig");
 const ssh_profiles = @import("ssh_profiles.zig");
 const assistant_profiles = @import("assistant_profiles.zig");
 const feishu_config = @import("feishu_config.zig");
+const quick_ai_config = @import("quick_ai_config.zig");
 const session_launcher = @import("session_launcher.zig");
 const command_palette_state = @import("command_palette_state.zig");
 const command_registry = @import("../../command/registry.zig");
@@ -26,6 +27,12 @@ pub const FeishuFormState = struct {
     secret_already_set: bool = false,
 };
 
+/// Quick AI config-form overlay state: the config fields plus visibility flag.
+pub const QuickAiFormState = struct {
+    config: quick_ai_config.State = .{},
+    visible: bool = false,
+};
+
 pub const OverlayState = struct {
     settings: settings_page.State = .{},
     toasts: toasts.State = .{},
@@ -33,6 +40,7 @@ pub const OverlayState = struct {
     ssh: ssh_profiles.State = .{},
     assistant_profiles: assistant_profiles.State = .{},
     feishu: FeishuFormState = .{},
+    quick_ai: QuickAiFormState = .{},
     session: session_launcher.State = .{},
     command_palette: command_palette_state.State = .{},
     snippets: SnippetState = .{},
@@ -74,4 +82,10 @@ test "overlay state deinit releases settings cache" {
 
     _ = state.settings.cfg(std.testing.allocator);
     state.deinit(std.testing.allocator);
+}
+
+test "quick ai form defaults hidden and idle" {
+    const s = QuickAiFormState{};
+    try std.testing.expect(!s.visible);
+    try std.testing.expectEqual(quick_ai_config.VerifyStatus.idle, s.config.status);
 }
