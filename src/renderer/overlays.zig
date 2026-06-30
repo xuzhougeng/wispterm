@@ -46,6 +46,7 @@ const assistant_profiles = @import("overlays/assistant_profiles.zig");
 const feishu_config = @import("overlays/feishu_config.zig");
 const quick_ai_config = @import("overlays/quick_ai_config.zig");
 const quick_verify = @import("../assistant/quick_verify.zig");
+const window_backend = @import("../platform/window_backend.zig");
 const session_launcher = @import("overlays/session_launcher.zig");
 const command_palette_state = @import("overlays/command_palette_state.zig");
 const command_palette_layout = @import("overlays/command_palette_layout.zig");
@@ -2516,7 +2517,7 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
         var buf: [4]u8 = undefined;
         const n = std.unicode.utf8Encode(codepoint, &buf) catch return;
         quickAi().append(buf[0..n]);
-        AppWindow.g_force_rebuild = true;
+        AppWindow.applyUiEffect(.{ .needs_rebuild = true });
         return;
     }
     if (g_ssh_list_visible) {
@@ -2547,7 +2548,7 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
     if (quickAiForm().visible) {
         if (quickAi().focus != quick_ai_config.ROW_KEY) return false;
         quickAi().append(text);
-        AppWindow.g_force_rebuild = true;
+        AppWindow.applyUiEffect(.{ .needs_rebuild = true });
         return true;
     }
     if (g_ssh_list_visible) {
@@ -2632,14 +2633,14 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
                 quick_ai_config.ROW_OPEN_REGISTER => openQuickAiUrl(quick_ai_config.REGISTER_URL),
                 quick_ai_config.ROW_OPEN_TUTORIAL => openQuickAiUrl(quick_ai_config.TUTORIAL_URL),
                 quick_ai_config.ROW_KEY => quickAi().focus = quick_ai_config.ROW_VERIFY,
-                quick_ai_config.ROW_VERIFY => {}, // inert in this task; Task 6 rewires this arm to startQuickAiVerify()
+                quick_ai_config.ROW_VERIFY => startQuickAiVerify(),
                 else => {},
             },
             .backspace => if (quickAi().focus == quick_ai_config.ROW_KEY) quickAi().backspace(),
             .escape => closeQuickAiForm(),
             else => {},
         }
-        AppWindow.g_force_rebuild = true;
+        AppWindow.applyUiEffect(.{ .needs_rebuild = true });
         return;
     }
     if (ev.key == .escape) {
@@ -4038,18 +4039,56 @@ pub fn openQuickAiForm() void {
     quickAi().reset();
     g_session_launcher_visible = true;
     quickAiForm().visible = true;
-    AppWindow.g_force_rebuild = true;
+    AppWindow.applyUiEffect(.{ .needs_rebuild = true });
 }
 
 fn closeQuickAiForm() void {
     quickAiForm().visible = false;
     g_session_launcher_visible = false;
     quickAi().reset();
-    AppWindow.g_force_rebuild = true;
+    AppWindow.applyUiEffect(.{ .needs_rebuild = true });
 }
 
 fn openQuickAiUrl(url: []const u8) void {
     if (AppWindow.g_allocator) |alloc| _ = platform_open_url.open(alloc, .{ .url = url });
+}
+
+fn startQuickAiVerify() void {
+    const k = quickAi().key();
+    if (k.len == 0) {
+        quickAi().status = .empty;
+        AppWindow.applyUiEffect(.{ .needs_rebuild = true });
+        return;
+    }
+    quickAi().status = .verifying;
+    AppWindow.applyUiEffect(.{ .needs_rebuild = true });
+    _ = quick_verify.start(quick_ai_config.BASE_URL, k, window_backend.postWakeup);
+}
+
+fn applyQuickAiConfig() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    const profiles = assistantProfiles().profiles[0..];
+    var count = assistant_profile_store.loadProfiles(allocator, profiles);
+    count = quick_ai_config.upsertProfiles(profiles, count, quickAi().key());
+    assistantProfiles().profile_count = count;
+    _ = assistant_profile_store.saveProfiles(allocator, profiles[0..count]);
+    Config.setConfigValue(allocator, "ai-default-profile", quick_ai_config.MAIN_PROFILE_NAME) catch {};
+    Config.setConfigValue(allocator, "ai-subagent-profile", quick_ai_config.SUB_PROFILE_NAME) catch {};
+    showStatusToast(i18n.s().toast_quick_ai_done);
+    closeQuickAiForm();
+}
+
+/// Called every frame from the main loop. Drains a finished verify result and,
+/// if the overlay is still open, applies it (success) or shows the error.
+pub fn tickQuickAiVerify() void {
+    const outcome = quick_verify.take() orelse return; // always drain to clear the channel
+    if (!quickAiForm().visible) return; // overlay was closed mid-verify — drop stale result
+    switch (outcome) {
+        .ok => applyQuickAiConfig(),
+        .invalid_key => quickAi().status = .invalid,
+        .network_error => quickAi().status = .network,
+    }
+    AppWindow.applyUiEffect(.{ .needs_rebuild = true });
 }
 
 fn saveFeishuConfig() void {
@@ -5071,7 +5110,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
     if (quickAiForm().visible) {
         if (row >= quick_ai_config.ROW_COUNT) return null;
         quickAi().focus = row;
-        AppWindow.g_force_rebuild = true;
+        AppWindow.applyUiEffect(.{ .needs_rebuild = true });
         return null;
     }
 
