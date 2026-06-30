@@ -22,8 +22,10 @@ required for the macOS port; they are worked in parallel (see
 [§4](#4-execution-strategy-approach-c)).
 
 - **Axis A — Portability seam (host swap).** The platform/host layer must be
-  cleanly separable so a new platform implements a host + platform-service
-  impls and reuses the core unchanged. This is the `architecture.md` contract.
+  cleanly separable so a platform implements a host + platform-service impls
+  and reuses the core unchanged. This is the `architecture.md` contract. The
+  current long-term GPU target is Windows = D3D11/DXGI, macOS = Metal, Linux =
+  OpenGL.
 - **Axis B — Presentation/logic separation.** Within the core, *what a feature
   does* must be separable from *how it is drawn and how input is handled*, so
   functionality is independently testable and can be driven by more than one
@@ -148,16 +150,18 @@ The fix for Gap 1 is the abstraction Ghostty already ships and that
 
 ### WispTerm target layout
 
-Mirror Ghostty (per `AGENTS.md`) under `src/renderer/gpu/`:
+Mirror Ghostty's shape (per `AGENTS.md`) under `src/renderer/gpu/`, while
+adding WispTerm's Windows-native D3D11 backend:
 
 ```
 src/renderer/gpu/
 ├── gpu.zig            # the GraphicsAPI interface (Target/Frame/RenderPass/Pipeline/Buffer/Texture/Sampler/shaders)
-├── backend.zig        # Backend enum {opengl, metal}; default(target) → metal on Darwin
+├── backend.zig        # Backend enum {opengl, metal, d3d11}; default(target) → d3d11 on Windows, metal on Darwin
 ├── opengl/            # FIRST backend — wraps today's glad/gl.h code + gl_init handles
 │   ├── Target.zig  Frame.zig  RenderPass.zig  Pipeline.zig
 │   ├── Buffer.zig  Texture.zig  Sampler.zig  shaders.zig (GLSL)
-└── metal/             # Phase D — mirrors opengl/, shaders.zig (MSL)
+├── metal/             # macOS native backend — mirrors opengl/, shaders.zig (MSL)
+└── d3d11/             # Windows native backend — Direct3D 11 + DXGI, shaders.zig (HLSL)
 ```
 
 The renderer (`cell_renderer`, `titlebar`, `overlays`, …) issues draw work
@@ -187,8 +191,8 @@ Rules that keep this safe:
    on `x86_64-windows-gnu`.
 2. **OpenGL is the live regression test for the interface.** Introduce
    `gpu.zig` with OpenGL as the first backend *behind it*; if Windows still
-   renders correctly, the interface is sound. Metal joins later as a second
-   backend, validated against the same interface.
+   renders correctly, the interface is sound. Metal and D3D11 validate that the
+   same interface is truly native-backend-neutral.
 3. **Touch each renderer file once** — route it through `gpu.zig` and split its
    presentation/logic in the same change.
 4. **Compare against Ghostty per file** (`AGENTS.md`). The `opengl/` backend and
@@ -201,8 +205,8 @@ Rules that keep this safe:
 
 ## 5. Phased roadmap
 
-Dependency summary: **A** gates **D1** (Metal). **B** and **C** run in parallel
-with **A**. **D** is deferred until a macOS SDK environment exists.
+Dependency summary: **A** gates both native backend tracks: **D** (macOS Metal)
+and **E** (Windows D3D11). **B** and **C** run in parallel with **A**.
 
 ### Phase A — GPU interface spine
 *Verifiable on Windows; OpenGL keeps working behind the new interface.*
@@ -309,6 +313,35 @@ Windows-default toolchain.*
   DPI/content-scale via AppKit; config/theme dirs under `~/Library`.
 - **D5** Packaging: `.app` bundle / `.dmg` + updater story.
 
+### Phase E — Windows native D3D11 renderer
+*Gated on Phase A. Windows remains shippable through the existing OpenGL +
+DXGI-present fallback while this lands incrementally.*
+
+The long-term Windows goal is a true Direct3D 11 renderer, not just the current
+DXGI flip-model presenter for OpenGL frames. The focused roadmap is
+[windows-native-d3d11-roadmap.md](windows-native-d3d11-roadmap.md).
+
+- **E1** Neutralize remaining GL-shaped renderer vocabulary (`GL_*`, `gpu.c`,
+  `gl_init`) into WispTerm-owned primitive, texture, buffer, blend, viewport,
+  scissor, and render-target types.
+- **E2** Add `Backend.d3d11` and `src/renderer/gpu/d3d11/` with `Context`,
+  `Buffer`, `Texture`, `Pipeline`, `Framebuffer`, `render_state`, `readback`,
+  and HLSL shader slots.
+- **E3** Bring up clear + solid-quad presentation on a DXGI flip-model
+  swapchain, with diagnostics and fallback markers separate from the current
+  `wispterm-d3d-present` path.
+- **E4** Port the terminal grid MVP: cell bg/fg instancing, FreeType-backed
+  glyph atlas uploads, BGRA emoji atlas, cursor, selection, underlines, and
+  screenshot/readback.
+- **E5** Port the remaining UI renderers and auxiliary surfaces: titlebar,
+  overlays, panels, previews, background images, framebuffers, and post-process
+  behavior or documented fallback.
+- **E6** Harden for Windows driver reality: device removal/reset, RDP, VMs,
+  hybrid GPUs, weak iGPUs, high-DPI monitor moves, rapid resize, and automatic
+  fallback to OpenGL + DXGI present.
+- **E7** Switch Windows `auto` backend to D3D11 only after feature parity and at
+  least one compatibility release cycle with the OpenGL fallback intact.
+
 ---
 
 ## 6. Invariants & verification
@@ -332,6 +365,7 @@ These join the existing checks in `src/build_guards.zig` and the facade scan in
 | B (presentation/logic split) | ✅ full | ✅ `zig test` (pure modules) | — |
 | C (POSIX PTY/process) | n/a | ✅ unit tests | (also valid) |
 | D (Metal, AppKit, CoreText, packaging) | — | — | requires SDK |
+| E (D3D11 renderer) | ✅ required | n/a | n/a |
 
 Note: this host is Windows/WSL today; per project memory, most tests are
 compile-only here and pure modules run with `zig test`. Phases A and B are
@@ -348,6 +382,7 @@ that gets real runtime coverage on Linux.
 | `src/renderer/gpu/backend.zig` | `src/renderer/backend.zig` | `Backend{opengl,metal,webgl}`; `default(target)` → Metal on Darwin |
 | `src/renderer/gpu/opengl/*` | `src/renderer/opengl/*` | `Target/Frame/RenderPass/Pipeline/Buffer/Texture/Sampler/shaders` |
 | `src/renderer/gpu/metal/*` | `src/renderer/metal/*` | Phase D; mirrors opengl with MSL shaders |
+| `src/renderer/gpu/d3d11/*` | no Ghostty equivalent | WispTerm-specific Windows native backend; keeps Ghostty's backend boundary shape |
 | `src/renderer/cell_geometry.zig`, `image_renderer.zig` | `src/renderer/cell.zig`, `cursor.zig`, `image.zig` | API-agnostic; build geometry, not GL/Metal calls |
 | `src/platform/pty_posix.zig` | `src/pty.zig` (POSIX) | `openpty`/`fork`/`exec` + `ioctl(TIOCSWINSZ)` |
 | `src/platform/window_backend_macos.zig` | Swift/AppKit + `src/apprt/embedded.zig` | AppKit host owns its own event loop |

@@ -62,8 +62,10 @@ unsupported stubs only for missing capabilities). A new host implements a
   `src/platform/input_events.zig` (backend-neutral `key_*` codes, not raw OS
   keycodes). IME composition goes through `setImeCaret` / `imePreeditText`.
 - **Rendering surface** — `swapBuffers`, `framebufferSize`, `clientSize`. The
-  GPU backend (OpenGL on Windows, Metal on macOS, OpenGL/Vulkan on Linux) is
-  selected behind the renderer and wired to this surface.
+  GPU backend is selected behind the renderer and wired to this surface. The
+  long-term target matrix is Direct3D 11/DXGI on Windows, Metal on macOS, and
+  OpenGL on Linux; today Windows still uses OpenGL for drawing with a DXGI/D3D11
+  flip-model presenter as the default present path.
 - **Window state** — DPI/content scale (`dpi`, `effectiveDpi`,
   `consumeDpiChanged`), geometry (`clientRect`, `windowRect`,
   `nearestMonitorWorkArea`, `setOuterFrame`), and chrome state (fullscreen,
@@ -200,7 +202,7 @@ To bring up a platform (see [`ROADMAP.md`](../ROADMAP.md)):
 2. Implement the platform-service impls behind the existing facades
    (`<cap>_posix.zig` or a new `<cap>_<platform>.zig`): PTY/process, fonts,
    clipboard, file dialogs, notifications, config/theme dirs, etc.
-3. Wire the renderer's GPU backend to the host's surface (Metal on macOS;
-   OpenGL or Vulkan on Linux).
+3. Wire the renderer's GPU backend to the host's surface (D3D11/DXGI on
+   Windows, Metal on macOS, OpenGL on Linux).
 4. Flip the build target's feature gates in `build.zig` once the host backend is
    real, keeping Windows as the default development target.

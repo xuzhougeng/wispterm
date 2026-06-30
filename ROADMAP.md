@@ -50,6 +50,11 @@ feel first-class rather than just compile:
 
 ## Renderer And GPU Work
 
+- Make Windows a native GPU target by adding a real Direct3D 11 backend behind
+  the existing renderer backend abstraction. The long-term target matrix is
+  Windows = D3D11/DXGI, macOS = Metal, Linux = OpenGL, with the current
+  OpenGL + DXGI flip-present path retained as the Windows fallback during the
+  migration. See [docs/windows-native-d3d11-roadmap.md](docs/windows-native-d3d11-roadmap.md).
 - Finish the custom-shader path on Metal by adding a GLSL-to-MSL translation
   layer and then wiring FBO render-target switching where it has a working
   consumer.
