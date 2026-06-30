@@ -294,6 +294,15 @@ exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 io_state_mutex: std.Thread.Mutex = .{},
 io_state: IoState = .starting,
 
+/// SSH password autofill timing. When an SSH session (re)connects the saved
+/// password is typed once the remote password prompt appears. Per-surface (not
+/// a single global slot) so many sessions restoring at once each get filled.
+/// `deadline` == 0 means not armed; `due` is the earliest inject time (gives
+/// the prompt a moment to settle). The password itself is read from
+/// `ssh_connection` at inject time — not stored here.
+ssh_autofill_due_ms: i64 = 0,
+ssh_autofill_deadline_ms: i64 = 0,
+
 /// Set while the IO writer thread is resizing PTY and terminal state.
 /// The reader thread still drains PTY output during this window, but
 /// delays VT parsing until terminal.resize has caught up to the new grid.
@@ -496,6 +505,8 @@ fn finishInit(
     surface.render_state = renderer.State.init(&surface.terminal);
     surface.launch_kind = launch_kind;
     surface.ssh_connection = null;
+    surface.ssh_autofill_due_ms = 0;
+    surface.ssh_autofill_deadline_ms = 0;
     surface.respawn_command = null;
     surface.respawn_cwd = null;
     surface.remote_client = null;

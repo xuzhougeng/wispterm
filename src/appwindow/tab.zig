@@ -196,6 +196,9 @@ pub threadlocal var g_copilot_restore_hook: ?*const fn (session_id: []const u8) 
 // controller/overlay dependency (and the import cycle).
 pub threadlocal var g_tmux_active_profiles_hook: ?*const fn (std.mem.Allocator) []const []const u8 = null;
 pub threadlocal var g_tmux_restore_hook: ?*const fn (profile_name: []const u8) bool = null;
+/// Re-supply a restored SSH surface's password from its saved profile and arm
+/// autofill (the snapshot carries no password). Registered by AppWindow.
+pub threadlocal var g_ssh_restore_arm_hook: ?*const fn (*Surface) void = null;
 
 // Forced title from config (overrides all tab titles)
 pub threadlocal var g_forced_title: ?[]const u8 = null;
@@ -1667,11 +1670,12 @@ fn surfaceFromSnapImpl(
             defer platform_pty_command.freeCommandLine(gpa, command);
             const surface = try Surface.init(gpa, cols, rows, platform_pty_command.commandLineFromOwned(command), g_scrollback_limit, cursor_style, cursor_blink, null);
             surface.attachRemoteClient(g_remote_client);
-            // SSH password is never persisted (security invariant I1). On restore,
-            // the native SSH client prompts interactively if key auth fails;
-            // the in-app password-autofill flow (which requires password_auth=true)
-            // does not engage here.
+            // SSH password is never persisted (security invariant I1). Restore the
+            // endpoint without a password, then let the arm hook re-supply it from
+            // the saved profile (host/user/port match) and arm autofill — so a
+            // restored session logs in without re-typing, like a fresh connect.
             surface.setSshConnection(s.user, s.host, port_slice, "", s.proxy_jump, false, g_ssh_legacy_algorithms);
+            if (g_ssh_restore_arm_hook) |hook| hook(surface);
             return surface;
         },
     }

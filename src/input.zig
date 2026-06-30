@@ -3531,7 +3531,7 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
         // are skipped.
         if (surface.ssh_connection) |*conn| {
             if (conn.usesPasswordAuth()) {
-                overlays.scheduleSshPasswordForSurface(surface, conn.password());
+                overlays.scheduleSshPasswordForSurface(surface);
             }
         }
         return input_effects.repaint();
