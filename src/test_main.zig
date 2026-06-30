@@ -242,7 +242,7 @@ comptime {
     if (std.mem.indexOf(u8, pty_command_source, "if (std.ascii.eqlIgnoreCase(kind, \"powershell\")) return") != null or
         std.mem.indexOf(u8, pty_command_source, "if (!appendAscii(buf, &pos, \"wsl.exe\"))") != null or
         std.mem.indexOf(u8, pty_command_source, "return .{ \"wsl.exe\"") != null or
-        std.mem.indexOf(u8, pty_command_source, "std.fmt.bufPrint(buf, \"cmd.exe /k ssh.exe") != null)
+        std.mem.indexOf(u8, pty_command_source, "std.fmt.bufPrint(buf, \"cmd.exe /c ssh.exe") != null)
     {
         @compileError("platform/pty_command.zig must delegate concrete tab, WSL, and SSH command construction to backend implementations");
     }
@@ -251,7 +251,7 @@ comptime {
     {
         @compileError("platform/pty_command.zig must delegate concrete launch-kind command classification to backend implementations");
     }
-    if (std.mem.indexOf(u8, pty_command_source, "\"cmd.exe /k ssh.exe") != null or
+    if (std.mem.indexOf(u8, pty_command_source, "\"cmd.exe /c ssh.exe") != null or
         std.mem.indexOf(u8, pty_command_source, "\"wsl.exe ~") != null)
     {
         @compileError("platform/pty_command.zig facade tests must keep concrete Windows SSH/WSL command-line samples in backend implementations");

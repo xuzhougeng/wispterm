@@ -371,7 +371,12 @@ pub fn scpExecutableName() []const u8 {
 
 pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
     var pos: usize = 0;
-    if (!appendAscii(buf, &pos, "cmd.exe /k ssh.exe -tt ")) return null;
+    // `/c` (run then terminate), not `/k` (keep open): when ssh exits the cmd
+    // host exits too, so the panel's process actually ends. That lets the
+    // exited-panel reconnect flow fire ("Press Enter to reconnect") instead of
+    // dropping the user into a lingering local cmd prompt. The cmd wrapper is
+    // kept (vs bare ssh.exe) so the remote-command quoting below is unchanged.
+    if (!appendAscii(buf, &pos, "cmd.exe /c ssh.exe -tt ")) return null;
     if (!appendSshOptionString(buf, &pos, options, .interactive)) return null;
     if (options.port.len > 0) {
         if (!appendAscii(buf, &pos, "-p ")) return null;
@@ -397,8 +402,9 @@ pub fn sshInteractiveCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 
 pub fn sshControlCommand(buf: []u8, options: SshCommandOptions) ?[]const u8 {
     var pos: usize = 0;
     // Hidden controller transport: launch ssh.exe directly so process exit
-    // means the transport is really gone. Interactive SSH tabs keep the cmd.exe
-    // wrapper above so the user sees a normal shell after ssh exits.
+    // means the transport is really gone. Interactive SSH tabs wrap in
+    // `cmd.exe /c` (above) — also exits on ssh close, but via cmd so the
+    // remote-command quoting matches the interactive path.
     if (!appendAscii(buf, &pos, "ssh.exe -tt ")) return null;
     if (!appendSshOptionString(buf, &pos, options, .control)) return null;
     if (options.port.len > 0) {
@@ -701,7 +707,7 @@ test "windows pty command maps native shell titles to friendly display labels" {
 test "windows pty command classifies launch context from native command lines" {
     const allocator = std.testing.allocator;
 
-    const ssh = try allocCommandLineFromUtf8(allocator, "cmd.exe /k ssh.exe -tt user@example.test");
+    const ssh = try allocCommandLineFromUtf8(allocator, "cmd.exe /c ssh.exe -tt user@example.test");
     defer freeCommandLine(allocator, ssh);
     try std.testing.expectEqual(LaunchKind.ssh, launchKindForCommand(commandLineFromOwned(ssh)));
 
@@ -737,7 +743,7 @@ test "windows pty command builds SSH interactive command lines" {
     var buf: [1024]u8 = undefined;
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -p 2222 user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -p 2222 user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -748,7 +754,7 @@ test "windows pty command builds SSH interactive command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o HostkeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 -o Ciphers=+aes128-cbc,3des-cbc user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -760,7 +766,7 @@ test "windows pty command builds SSH interactive command lines" {
 
     // ProxyJump is inserted after the auth/legacy flags, before any port flag.
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ProxyJump=admin@jump.test:2200 -p 2222 user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -770,7 +776,7 @@ test "windows pty command builds SSH interactive command lines" {
     );
 
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -i \"C:/Users/user/.ssh/id_ed25519\" user@example.test",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
@@ -782,7 +788,7 @@ test "windows pty command builds SSH interactive command lines" {
     // An interactive remote command gains the TERM_PROGRAM export so remote
     // Claude Code/Codex enable the Kitty keyboard protocol (#302).
     try std.testing.expectEqualStrings(
-        "cmd.exe /k ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 user@example.test \"export TERM_PROGRAM=ghostty; cd /srv && claude\"",
+        "cmd.exe /c ssh.exe -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 -o ServerAliveCountMax=3 user@example.test \"export TERM_PROGRAM=ghostty; cd /srv && claude\"",
         sshInteractiveCommand(&buf, .{
             .user = "user",
             .host = "example.test",
