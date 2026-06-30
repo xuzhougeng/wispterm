@@ -164,6 +164,7 @@ test {
     _ = @import("renderer/overlays/ssh_profiles_layout.zig");
     _ = @import("renderer/overlays/assistant_profiles.zig");
     _ = @import("renderer/overlays/feishu_config.zig");
+    _ = @import("renderer/overlays/quick_ai_config.zig");
     _ = @import("renderer/overlays/session_launcher.zig");
     _ = @import("renderer/overlays/state.zig");
     _ = @import("renderer/overlays/state_guard.zig");
