@@ -42,6 +42,7 @@ const src_cell_renderer = @embedFile("../cell_renderer.zig");
 const src_cell_pipeline = @embedFile("../cell_pipeline.zig");
 const src_ui_pipeline = @embedFile("../ui_pipeline.zig");
 const src_weixin = @embedFile("../weixin_qr_renderer.zig");
+const src_feishu_qr = @embedFile("../feishu_qr_renderer.zig");
 const src_renderer = @embedFile("../Renderer.zig");
 const src_ov_resize = @embedFile("../overlays/resize.zig");
 const src_ov_scrollbar = @embedFile("../overlays/scrollbar.zig");
@@ -64,6 +65,7 @@ const glad_free = [_]Entry{
     .{ .name = "renderer/fbo.zig", .source = src_fbo },
     .{ .name = "renderer/cell_renderer.zig", .source = src_cell_renderer },
     .{ .name = "renderer/weixin_qr_renderer.zig", .source = src_weixin },
+    .{ .name = "renderer/feishu_qr_renderer.zig", .source = src_feishu_qr },
     .{ .name = "renderer/Renderer.zig", .source = src_renderer },
     .{ .name = "renderer/overlays/resize.zig", .source = src_ov_resize },
     .{ .name = "renderer/overlays/startup_shortcuts.zig", .source = src_ov_startup },
@@ -85,6 +87,7 @@ const raw_gl_free = [_]Entry{
     .{ .name = "renderer/background_image.zig", .source = src_background },
     .{ .name = "renderer/fbo.zig", .source = src_fbo },
     .{ .name = "renderer/weixin_qr_renderer.zig", .source = src_weixin },
+    .{ .name = "renderer/feishu_qr_renderer.zig", .source = src_feishu_qr },
     .{ .name = "renderer/overlays.zig", .source = src_overlays },
     .{ .name = "renderer/overlays/resize.zig", .source = src_ov_resize },
     .{ .name = "renderer/overlays/scrollbar.zig", .source = src_ov_scrollbar },

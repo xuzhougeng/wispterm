@@ -3,12 +3,14 @@ const std = @import("std");
 pub const FEISHU_FIELD_COUNT: usize = 2; // text fields: app_id, app_secret (buffer count)
 pub const FEISHU_FIELD_MAX: usize = 256;
 
-// Form rows: 0 = enabled, 1 = international (Lark), 2 = app_id, 3 = app_secret, 4 = Save.
-pub const FEISHU_ROW_COUNT: usize = 5;
+// Form rows: 0 = enabled, 1 = international (Lark), 2 = scan-create app,
+// 3 = app_id, 4 = app_secret, 5 = Save.
+pub const FEISHU_ROW_COUNT: usize = 6;
 pub const ENABLED_ROW: usize = 0;
 pub const INTERNATIONAL_ROW: usize = 1;
-pub const APP_ID_ROW: usize = 2;
-pub const APP_SECRET_ROW: usize = 3;
+pub const SCAN_ROW: usize = 2;
+pub const APP_ID_ROW: usize = 3;
+pub const APP_SECRET_ROW: usize = 4;
 pub const SAVE_ROW: usize = FEISHU_ROW_COUNT - 1;
 
 pub const FeishuField = enum(usize) {
@@ -17,7 +19,7 @@ pub const FeishuField = enum(usize) {
 };
 
 /// 凭证表单的固定缓冲区状态(镜像 assistant_profiles.State 的最小子集)。
-/// focus: 0 = 启用;1 = 国际版;2 = app_id;3 = app_secret;4 = Save 行。
+/// focus: 0 = 启用;1 = 国际版;2 = 扫码创建;3 = app_id;4 = app_secret;5 = Save 行。
 pub const State = struct {
     enabled: bool = false,
     international: bool = false,
@@ -61,12 +63,12 @@ pub const State = struct {
         self.lens[i] = n;
     }
 
-    /// 焦点所在行对应的文本字段(仅 app_id/app_secret 行),开关行/Save 行返回 null。
+    /// 焦点所在行对应的文本字段(仅 app_id/app_secret 行),开关行/SCAN/Save 行返回 null。
     pub fn focusedField(self: *const State) ?FeishuField {
         return switch (self.focus) {
             APP_ID_ROW => .app_id,
             APP_SECRET_ROW => .app_secret,
-            else => null,
+            else => null, // ENABLED / INTERNATIONAL / SCAN / SAVE 行都没有文本字段
         };
     }
 
@@ -140,12 +142,25 @@ test "focus navigation clamps over enabled, international, fields, and Save row"
     s.focusPrevRow(); // clamp at enabled row
     try std.testing.expectEqual(ENABLED_ROW, s.focus);
     s.focusNextRow(); // international
+    s.focusNextRow(); // scan
     s.focusNextRow(); // app_id
     s.focusNextRow(); // app_secret
     s.focusNextRow(); // Save row
     try std.testing.expectEqual(SAVE_ROW, s.focus);
     s.focusNextRow(); // clamp at Save row
     try std.testing.expectEqual(SAVE_ROW, s.focus);
+}
+
+test "SCAN_ROW sits between international and app_id, has no field and no toggle" {
+    try std.testing.expectEqual(@as(usize, 2), SCAN_ROW);
+    try std.testing.expectEqual(@as(usize, 3), APP_ID_ROW);
+    try std.testing.expectEqual(@as(usize, 6), FEISHU_ROW_COUNT);
+
+    var s = State{};
+    s.focus = SCAN_ROW;
+    try std.testing.expect(s.focusedField() == null); // 不是文本字段
+    s.toggleFocusedBool(); // 不是 toggle 行 → 不动 enabled/international
+    try std.testing.expect(!s.enabled and !s.international);
 }
 
 test "focusedField maps only text rows to fields" {

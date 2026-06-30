@@ -44,6 +44,8 @@ const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
 const assistant_profiles = @import("overlays/assistant_profiles.zig");
 const feishu_config = @import("overlays/feishu_config.zig");
+const feishu_registration = @import("../feishu/registration.zig");
+const feishu_reg_panel = @import("../feishu/registration_panel.zig");
 const session_launcher = @import("overlays/session_launcher.zig");
 const command_palette_state = @import("overlays/command_palette_state.zig");
 const command_palette_layout = @import("overlays/command_palette_layout.zig");
@@ -2249,6 +2251,7 @@ const SessionAction = enum {
     connect_ai,
     save_ai,
     feishu_save,
+    feishu_scan,
     cancel,
 };
 
@@ -2591,6 +2594,7 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
             .arrow_left, .arrow_right => feishuConfig().toggleFocusedBool(),
             .enter => switch (feishuConfig().focus) {
                 feishu_config.SAVE_ROW => saveFeishuConfig(),
+                feishu_config.SCAN_ROW => startFeishuRegistration(),
                 else => feishuConfig().toggleFocusedBool(), // toggle rows flip; field rows no-op
             },
             .backspace => if (feishuConfig().focusedField()) |f| feishuConfig().backspace(f),
@@ -2742,6 +2746,7 @@ pub fn sessionLauncherExecuteAt(xpos: f64, ypos: f64, window_width: f32, window_
         .connect_ai => connectAiFromForm(),
         .save_ai => saveAiFormOnly(),
         .feishu_save => saveFeishuConfig(),
+        .feishu_scan => startFeishuRegistration(),
         .cancel => sessionLauncherBackOrClose(),
     }
     return true;
@@ -3982,6 +3987,58 @@ fn closeFeishuConfigForm() void {
     feishuConfig().reset();
 }
 
+fn startFeishuRegistration() void {
+    const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
+    feishu_registration.setWakeupHook(&AppWindow.postWakeup);
+    feishu_registration.start(allocator, feishuConfig().international) catch {
+        showStatusToast(i18n.s().toast_feishu_scan_failed);
+        return;
+    };
+    feishu_reg_panel.open();
+    AppWindow.applyUiEffect(.repaint);
+}
+
+pub fn feishuRegPanelHandleAction(action: feishu_reg_panel.Action) void {
+    switch (action) {
+        .none => {},
+        .close => {
+            feishu_registration.cancel();
+            feishu_reg_panel.close();
+            AppWindow.applyUiEffect(.repaint);
+        },
+        .retry => {
+            const allocator = AppWindow.g_allocator orelse std.heap.page_allocator;
+            feishu_registration.setWakeupHook(&AppWindow.postWakeup);
+            feishu_registration.start(allocator, feishuConfig().international) catch {
+                showStatusToast(i18n.s().toast_feishu_scan_failed);
+                return;
+            };
+            feishu_reg_panel.open();
+            AppWindow.applyUiEffect(.repaint);
+        },
+    }
+}
+
+/// 渲染层在检测到注册成功时调用:把凭据回填进飞书配置表单并关面板。
+pub fn applyFeishuRegistrationSuccess() void {
+    if (feishu_reg_panel.takeSuccessCreds()) |creds| {
+        feishuConfig().setValue(.app_id, creds.app_id);
+        if (creds.app_secret.len > 0) feishuConfig().setValue(.app_secret, creds.app_secret);
+        showStatusToast(i18n.s().toast_feishu_scan_success);
+    }
+    feishu_registration.cancel();
+    feishu_reg_panel.close();
+    AppWindow.applyUiEffect(.repaint);
+}
+
+pub fn feishuRegPanelVisible() bool {
+    return feishu_reg_panel.visible();
+}
+
+pub fn feishuRegPanelExecuteAt(xpos: f64, ypos: f64, w: f32, h: f32, top: f32) feishu_reg_panel.Action {
+    return feishu_reg_panel.executeAt(xpos, ypos, w, h, top);
+}
+
 fn saveFeishuConfig() void {
     if (AppWindow.g_allocator) |allocator| {
         const st = feishuConfig();
@@ -4987,6 +5044,7 @@ fn sessionHitTest(xpos: f64, ypos: f64, window_width: f32, window_height: f32, t
         if (row >= FEISHU_ROW_COUNT) return null;
         feishuConfig().focus = row;
         if (row == feishu_config.SAVE_ROW) return .feishu_save;
+        if (row == feishu_config.SCAN_ROW) return .feishu_scan;
         feishuConfig().toggleFocusedBool(); // toggle rows flip on click; field rows no-op
         return null;
     }
@@ -5188,10 +5246,13 @@ fn renderFeishuConfigForm(layout: SessionLayout, window_height: f32) void {
     // Row 1: international (Lark) toggle — picks open.larksuite.com over open.feishu.cn
     renderSessionRow(layout, window_height, feishu_config.INTERNATIONAL_ROW, i18n.s().feishu_form_international, boolText(st.international), st.focus == feishu_config.INTERNATIONAL_ROW);
 
-    // Row 2: app_id (plain text)
+    // Row 2: 扫码创建应用(动作行,右侧给一句提示)
+    renderSessionRow(layout, window_height, feishu_config.SCAN_ROW, i18n.s().feishu_form_scan, i18n.s().feishu_form_scan_hint, st.focus == feishu_config.SCAN_ROW);
+
+    // Row 3: app_id (plain text)
     renderSessionFieldValue(layout, window_height, feishu_config.APP_ID_ROW, i18n.s().feishu_form_app_id, st.value(.app_id), false, st.focus == feishu_config.APP_ID_ROW);
 
-    // Row 3: app_secret (masked)
+    // Row 4: app_secret (masked)
     const secret = st.value(.app_secret);
     var dot_buf: [feishu_config.FEISHU_FIELD_MAX * 3]u8 = undefined; // • is 3 UTF-8 bytes; mask by codepoint count
     const secret_display: []const u8 = if (secret.len > 0) blk: {
@@ -5208,7 +5269,7 @@ fn renderFeishuConfigForm(layout: SessionLayout, window_height: f32) void {
         "";
     renderSessionRow(layout, window_height, feishu_config.APP_SECRET_ROW, i18n.s().feishu_form_app_secret, secret_display, st.focus == feishu_config.APP_SECRET_ROW);
 
-    // Row 4: Save
+    // Row 5: Save
     renderSessionRow(layout, window_height, feishu_config.SAVE_ROW, i18n.s().feishu_form_save, i18n.s().toast_feishu_restart, st.focus == feishu_config.SAVE_ROW);
 }
 
