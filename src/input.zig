@@ -3529,6 +3529,28 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
 
     const surface = AppWindow.activeSurface() orelse return .none;
 
+    // A cleanly-exited panel (SSH closed, shell `exit`) stays open showing
+    // "Press Enter to reconnect". Plain Enter re-runs the panel's original
+    // command in place. Other keys fall through, so e.g. Shift+PageUp still
+    // scrolls the scrollback before reconnecting.
+    if (surface.isExited() and
+        ev.key_code == platform_input.key_enter and
+        !ev.ctrl and !ev.alt and !ev.super and !ev.shift)
+    {
+        surface.respawn();
+        // Initial connect arms SSH password auto-injection; respawn only re-runs
+        // the command, so re-arm it here or the reconnect stalls at the password
+        // prompt. The surface keeps its ssh_connection (with the saved password)
+        // across respawn. Key-auth profiles report usesPasswordAuth()=false and
+        // are skipped.
+        if (surface.ssh_connection) |*conn| {
+            if (conn.usesPasswordAuth()) {
+                overlays.scheduleSshPasswordForSurface(surface);
+            }
+        }
+        return input_effects.repaint();
+    }
+
     // Track whether this keypress actually sends data to the PTY.
     // Like Ghostty, we only scroll-to-bottom when input is actually generated,
     // not for modifier-only keys or key combos that don't produce PTY output.

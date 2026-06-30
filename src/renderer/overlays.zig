@@ -2346,12 +2346,6 @@ pub const ModelProfileSwitchResult = enum {
     failed,
 };
 
-threadlocal var g_pending_ssh_password: [SSH_FIELD_MAX + 1]u8 = undefined;
-threadlocal var g_pending_ssh_password_len: usize = 0;
-threadlocal var g_pending_ssh_password_due_ms: i64 = 0;
-threadlocal var g_pending_ssh_password_deadline_ms: i64 = 0;
-threadlocal var g_pending_ssh_surface: ?*Surface = null;
-
 const SSH_PASSWORD_PROMPT_MIN_WAIT_MS: i64 = 250;
 const SSH_PASSWORD_PROMPT_TIMEOUT_MS: i64 = 60_000;
 const SSH_PROMPT_SCAN_MAX_COLS: usize = 4096;
@@ -3663,7 +3657,7 @@ fn connectSshProfileReturningSurfaceWithCommand(idx: usize, remote_command: []co
             surface.setTitleOverride(server_name);
         }
         if (conn.usesPasswordAuth()) {
-            scheduleSshPasswordForSurface(surface, conn.password());
+            scheduleSshPasswordForSurface(surface);
         }
         return surface;
     }
@@ -3690,59 +3684,85 @@ fn isPortTokenSafe(value: []const u8) bool {
 /// Queue password entry for a new SSH surface.
 ///
 /// OpenSSH only consumes the password after it has printed the password prompt.
-/// A fixed startup delay races slow networks, so the main-loop tick waits until
-/// the prompt is visible in terminal state before injecting the stored password.
-pub fn scheduleSshPasswordForSurface(surface: *Surface, password: []const u8) void {
-    const len = @min(password.len, SSH_FIELD_MAX);
+/// Arm SSH password autofill for `surface`. Once the remote password prompt
+/// shows up (after a short settle delay), `tickSessionLauncher` types the
+/// password stored in the surface's `ssh_connection`. Per-surface (no single
+/// global slot), so many sessions (re)connecting at once each get filled.
+/// Callers only arm password-auth connections (key auth is left to native ssh).
+pub fn scheduleSshPasswordForSurface(surface: *Surface) void {
     const now = std.time.milliTimestamp();
-    @memcpy(g_pending_ssh_password[0..len], password[0..len]);
-    g_pending_ssh_password[len] = '\r';
-    g_pending_ssh_password_len = len + 1;
-    g_pending_ssh_password_due_ms = now + SSH_PASSWORD_PROMPT_MIN_WAIT_MS;
-    g_pending_ssh_password_deadline_ms = now + SSH_PASSWORD_PROMPT_TIMEOUT_MS;
-    g_pending_ssh_surface = surface;
+    surface.ssh_autofill_due_ms = now + SSH_PASSWORD_PROMPT_MIN_WAIT_MS;
+    surface.ssh_autofill_deadline_ms = now + SSH_PASSWORD_PROMPT_TIMEOUT_MS;
+}
+
+/// Re-supply an SSH password from the saved profile config and arm autofill.
+/// Used on session restore: the snapshot carries no password (security invariant
+/// I1 — never persisted to session.json), so the password is matched back from
+/// the profile by host/user/port and copied into the live `ssh_connection`.
+/// No-op if the surface is not SSH, no profile matches, or the match is key-auth.
+pub fn armSshPasswordFromProfileForSurface(surface: *Surface) void {
+    const conn = surface.ssh_connection orelse return;
+    loadSshProfiles();
+    var idx: usize = 0;
+    while (idx < sshState().profile_count) : (idx += 1) {
+        const profile = &sshState().profiles[idx];
+        if (!std.mem.eql(u8, profileField(profile, .ip), conn.host())) continue;
+        if (!std.mem.eql(u8, profileField(profile, .user), conn.user())) continue;
+        const p_port = profileField(profile, .port);
+        const c_port = conn.port();
+        const ports_match = std.mem.eql(u8, p_port, c_port) or
+            (p_port.len == 0 and std.mem.eql(u8, c_port, "22")) or
+            (c_port.len == 0 and std.mem.eql(u8, p_port, "22"));
+        if (!ports_match) continue;
+        if ((sshProfileAuthMethod(profile) orelse return) != .password) return;
+        const password = profileField(profile, .password);
+        if (password.len == 0) return;
+        // Copy the password into the live ssh_connection so this connect (and any
+        // later Enter-reconnect of the same pane) can autofill it.
+        surface.setSshConnection(conn.user(), conn.host(), conn.port(), password, conn.proxyJump(), true, AppWindow.g_ssh_legacy_algorithms);
+        scheduleSshPasswordForSurface(surface);
+        return;
+    }
 }
 
 pub fn tickSessionLauncher() void {
-    if (g_pending_ssh_password_len == 0) return;
     const now = std.time.milliTimestamp();
-    if (now < g_pending_ssh_password_due_ms) return;
-
-    const surface = g_pending_ssh_surface orelse {
-        clearPendingSshPassword();
-        return;
-    };
-    if (!surfaceIsOpen(surface)) {
-        clearPendingSshPassword();
-        return;
-    }
-    if (now > g_pending_ssh_password_deadline_ms) {
-        clearPendingSshPassword();
-        return;
-    }
-    if (!surfaceHasSshPasswordPrompt(surface)) return;
-
-    AppWindow.input.writeTextToSurfacePty(surface, g_pending_ssh_password[0..g_pending_ssh_password_len]);
-    clearPendingSshPassword();
-}
-
-fn clearPendingSshPassword() void {
-    g_pending_ssh_password_len = 0;
-    g_pending_ssh_password_due_ms = 0;
-    g_pending_ssh_password_deadline_ms = 0;
-    g_pending_ssh_surface = null;
-}
-
-fn surfaceIsOpen(surface: *const Surface) bool {
     for (0..tab.g_tab_count) |tab_index| {
         const tab_state = tab.g_tabs[tab_index] orelse continue;
         if (tab_state.kind != .terminal) continue;
         var it = tab_state.tree.surfaces();
         while (it.next()) |entry| {
-            if (@intFromPtr(entry.surface) == @intFromPtr(surface)) return true;
+            maybeInjectSshPassword(entry.surface, now);
         }
     }
-    return false;
+}
+
+/// Inject the armed SSH password into `surface` once its own password prompt is
+/// on screen. Each surface is independent, so concurrently-restoring sessions
+/// each fill their own prompt. `ssh_autofill_deadline_ms == 0` means not armed.
+fn maybeInjectSshPassword(surface: *Surface, now: i64) void {
+    if (surface.ssh_autofill_deadline_ms == 0) return;
+    if (now < surface.ssh_autofill_due_ms) return;
+    if (now > surface.ssh_autofill_deadline_ms) {
+        surface.ssh_autofill_deadline_ms = 0; // gave up waiting for the prompt
+        return;
+    }
+    if (surface.ssh_connection) |*conn| {
+        const pw = conn.password();
+        if (pw.len == 0) {
+            surface.ssh_autofill_deadline_ms = 0;
+            return;
+        }
+        if (!surfaceHasSshPasswordPrompt(surface)) return; // prompt not up yet
+        var buf: [129]u8 = undefined; // ssh_connection password_buf is [128]
+        const len = @min(pw.len, buf.len - 1);
+        @memcpy(buf[0..len], pw[0..len]);
+        buf[len] = '\r';
+        AppWindow.input.writeTextToSurfacePty(surface, buf[0 .. len + 1]);
+        surface.ssh_autofill_deadline_ms = 0; // injected once
+    } else {
+        surface.ssh_autofill_deadline_ms = 0;
+    }
 }
 
 fn surfaceHasSshPasswordPrompt(surface: *Surface) bool {

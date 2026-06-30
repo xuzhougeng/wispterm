@@ -3430,6 +3430,7 @@ fn installSessionRestoreHooks() void {
     // restore, re-attach each via the launcher's tmux connect path.
     tab.g_tmux_active_profiles_hook = tmux_controller.activeProfileNames;
     tab.g_tmux_restore_hook = overlays.connectProfileByNameTmux;
+    tab.g_ssh_restore_arm_hook = overlays.armSshPasswordFromProfileForSurface;
 }
 
 fn deinitGlobalAgentHistoryStore(allocator: std.mem.Allocator) void {
@@ -3961,7 +3962,7 @@ pub fn splitFocusedReturningSurface(direction: SplitTree.Split.Direction) ?*Surf
         if (conn.usesPasswordAuth()) {
             const pw = conn.password();
             if (pw.len > 0)
-                overlays.scheduleSshPasswordForSurface(surface, pw);
+                overlays.scheduleSshPasswordForSurface(surface);
         }
     }
     handleActiveSurfaceChangeWithinTab();
