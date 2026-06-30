@@ -58,6 +58,7 @@ pub const Operation = enum {
     terminal_resize,
     thread_spawn,
     thread_shutdown,
+    respawn,
 };
 
 pub const IoFailure = struct {
@@ -933,10 +934,12 @@ fn paintIoStatus(self: *Surface, state: IoState) void {
 /// Re-run this panel's original command in place after its process exited
 /// (Enter-to-reconnect). Keeps the terminal/scrollback; replaces the whole IO
 /// subsystem. Main-thread only (spawns threads, touches the mailbox). No-op
-/// unless the panel has cleanly exited and has a stored command.
+/// unless the panel has exited or failed and has a stored command.
 pub fn respawn(self: *Surface) void {
     switch (self.currentIoState()) {
-        .exited => {},
+        // .failed too: a respawn that fails to acquire a PTY lands here, and
+        // the user must still be able to press Enter to retry.
+        .exited, .failed => {},
         else => return,
     }
     const owned_cmd = self.respawn_command orelse {
@@ -996,6 +999,7 @@ pub fn respawn(self: *Surface) void {
     if (self.io_thread_state) |state| {
         state.deinit();
         self.allocator.destroy(state);
+        self.io_thread_state = null;
     }
     self.mailbox.deinit();
     self.command.deinit();
@@ -1051,7 +1055,7 @@ pub fn respawn(self: *Surface) void {
 /// untouched and remain owned by the surface; surface a failure message.
 fn respawnFailed(self: *Surface, err: anyerror) void {
     io_log.warn("respawn failed: {s}", .{@errorName(err)});
-    self.failIo(.thread_spawn, err);
+    self.failIo(.respawn, err);
 }
 
 // ============================================================================
