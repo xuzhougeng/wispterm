@@ -57,6 +57,10 @@ const USAGE_FOOTER_PAD_TOP: f32 = 4;
 const APPROVAL_GAP: f32 = 12;
 const COPY_BUTTON_SIZE: f32 = 24;
 const COPY_BUTTON_PAD: f32 = 8;
+// Per-block (code fence / table) copy buttons hug the block's top-right corner
+// tighter than the bubble button, since a fence line is shorter than the bubble
+// header.
+const BLOCK_COPY_BUTTON_PAD: f32 = 4;
 const DETAIL_PAD_X: f32 = 14;
 const DETAIL_PAD_Y: f32 = 10;
 const DETAIL_ARROW_W: f32 = 12;
@@ -80,10 +84,19 @@ const MISSING_API_KEY_ACTION_TEXT = "Missing API key. Click to configure";
 
 pub const HitTarget = union(enum) {
     copy_message: usize,
+    /// Click on a code block / table's own copy button: copy just that block's
+    /// source (a byte range of the message), not the whole message.
+    copy_span: CopySpan,
     toggle_tool: usize,
     toggle_reasoning: usize,
     /// Click on the Nth (zero-based) visible option of a pending ask_user card.
     question_option: usize,
+};
+
+pub const CopySpan = struct {
+    message_index: usize,
+    start: usize,
+    end: usize,
 };
 
 /// Visible option rows in the question card before it scrolls. Beyond this, the
@@ -497,6 +510,15 @@ pub fn interactionHitTest(
         } else if (sectionVisible(cursor_top, block_h, transcript_top, viewport_bottom_top_px)) {
             const rect = copyButtonRect(msg.role, content_x, cursor_top, content_w);
             if (pointInRect(px, py, rect)) return .{ .copy_message = message_index };
+            if (msg.role == .assistant) {
+                const bubble = bubbleGeometry(msg.role, content_x, content_w);
+                const body_x = bubble.x + BUBBLE_PAD_X;
+                const body_top = cursor_top + BUBBLE_PAD_Y + lineHeight();
+                const body_w = @max(1.0, bubble.w - BUBBLE_PAD_X * 2);
+                var hctx = BlockHitCtx{ .px = px, .py = py, .message_index = message_index };
+                forEachCopyBlock(msg.content, body_x, body_top, body_w, &hctx, checkBlockHit);
+                if (hctx.hit) |h| return h;
+            }
         }
         cursor_top += block_h;
 
@@ -1828,7 +1850,90 @@ fn renderMarkdownContent(
         display_cursor += prepared.text.len + 1;
     }
 
+    forEachCopyBlock(text, x, top_px, max_w, window_height, drawCopyBlockButton);
     return current_top - top_px;
+}
+
+const CopyBlock = struct {
+    button: Rect,
+    start: usize,
+    end: usize,
+};
+
+/// Walk an assistant message's markdown body and `emit` a copy-button rect plus
+/// the source byte range for every code block and table. The renderer calls it
+/// to draw the buttons and `interactionHitTest` calls it to detect clicks, so a
+/// button the user sees and the region a click maps to come from one geometry
+/// source. Vertical advance MUST stay in lockstep with markdownContentHeight /
+/// renderMarkdownContent, or the buttons drift off their blocks.
+fn forEachCopyBlock(
+    text: []const u8,
+    x: f32,
+    top_px: f32,
+    max_w: f32,
+    ctx: anytype,
+    comptime emit: anytype,
+) void {
+    if (std.mem.trim(u8, text, " \t\r\n").len == 0) return;
+    const palette = markdownPalette(AppWindow.g_theme.background, AppWindow.g_theme.foreground, AppWindow.g_theme.cursor_color);
+    var cursor: usize = 0;
+    var current_top = top_px;
+    var in_code = false;
+
+    while (cursor < text.len) {
+        if (!in_code and isMarkdownTableStart(text, cursor)) {
+            const start = cursor;
+            const end = tableBlockEnd(text, cursor);
+            var widths: [TABLE_MAX_COLS]f32 = .{0} ** TABLE_MAX_COLS;
+            const col_count = measureTableColumns(text, start, end, max_w, &widths);
+            const table_w = if (col_count == 0) max_w else tableUsedWidth(widths[0..col_count]);
+            emit(ctx, CopyBlock{ .button = blockCopyButtonRect(x, current_top, table_w), .start = start, .end = end });
+            current_top += tableBlockHeight(text, start, end);
+            cursor = end;
+            continue;
+        }
+
+        const info = nextSourceLine(text, cursor);
+        var clean_buf: [1024]u8 = undefined;
+        const prepared = prepareMarkdownLine(&clean_buf, info.line, in_code, palette);
+        switch (prepared.kind) {
+            .fence => {
+                if (!in_code) {
+                    const range = md.codeBlockContentRange(text, cursor);
+                    if (range.end > range.start) {
+                        emit(ctx, CopyBlock{ .button = blockCopyButtonRect(x, current_top, max_w), .start = range.start, .end = range.end });
+                    }
+                }
+                current_top += prepared.line_h;
+                in_code = !in_code;
+            },
+            .blank, .rule => current_top += prepared.line_h,
+            .text => current_top += plainContentHeight(prepared.text, @max(1.0, max_w - prepared.indent), prepared.line_h),
+        }
+        cursor = info.next;
+    }
+}
+
+fn blockCopyButtonRect(x: f32, top_px: f32, block_w: f32) Rect {
+    return ai_chat_layout.copyButtonRectForBlock(x, top_px, block_w, COPY_BUTTON_SIZE, BLOCK_COPY_BUTTON_PAD);
+}
+
+fn drawCopyBlockButton(window_height: f32, block: CopyBlock) void {
+    renderCopyButton(block.button, window_height, false);
+}
+
+const BlockHitCtx = struct {
+    px: f32,
+    py: f32,
+    message_index: usize,
+    hit: ?HitTarget = null,
+};
+
+fn checkBlockHit(ctx: *BlockHitCtx, block: CopyBlock) void {
+    if (ctx.hit != null) return;
+    if (pointInRect(ctx.px, ctx.py, block.button)) {
+        ctx.hit = .{ .copy_span = .{ .message_index = ctx.message_index, .start = block.start, .end = block.end } };
+    }
 }
 
 fn byteOffsetForMarkdownPoint(

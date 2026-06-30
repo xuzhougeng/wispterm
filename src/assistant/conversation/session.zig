@@ -2006,6 +2006,20 @@ pub const Session = struct {
         return allocator.dupe(u8, self.messages.items[message_index].content);
     }
 
+    /// Copy a byte sub-range of a message's raw content — a single code block or
+    /// table the renderer located for its per-block copy button. Bounds are
+    /// clamped so a range stale from a streaming edit can never read OOB.
+    pub fn allocMessageSpanText(self: *Session, allocator: std.mem.Allocator, message_index: usize, start: usize, end: usize) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (message_index >= self.messages.items.len) return allocator.dupe(u8, "");
+        const content = self.messages.items[message_index].content;
+        const s = @min(start, content.len);
+        const e = @min(end, content.len);
+        if (e <= s) return allocator.dupe(u8, "");
+        return allocator.dupe(u8, content[s..e]);
+    }
+
     pub fn toggleToolMessageCollapsed(self: *Session, message_index: usize) void {
         self.mutex.lock();
         defer self.mutex.unlock();

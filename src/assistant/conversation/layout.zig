@@ -73,6 +73,24 @@ pub fn detailCopyButtonRect(
     };
 }
 
+/// Copy button anchored to the top-right corner of a markdown sub-block (a code
+/// fence or a table) of width `block_w`, sitting inside the block. Lets the user
+/// copy just that block's source instead of the whole message bubble.
+pub fn copyButtonRectForBlock(
+    x: f32,
+    top_px: f32,
+    block_w: f32,
+    button_size: f32,
+    button_pad: f32,
+) Rect {
+    return .{
+        .x = x + block_w - button_pad - button_size,
+        .top_px = top_px + button_pad,
+        .w = button_size,
+        .h = button_size,
+    };
+}
+
 pub fn permissionChipX(x: f32, w: f32, line_pad_x: f32, status_slot_w: f32, chip_gap: f32, chip_w: f32) f32 {
     return x + w - line_pad_x - status_slot_w - chip_gap - chip_w;
 }
@@ -264,6 +282,14 @@ test "detailCopyButtonRect centers in header_h" {
     const r = detailCopyButtonRect(10, 20, 300, 40, 14, 24);
     try std.testing.expectApproxEqAbs(@as(f32, 272), r.x, 0.001); // 10+300-14-24
     try std.testing.expectApproxEqAbs(@as(f32, 28), r.top_px, 0.001); // 20+round((40-24)/2)
+    try std.testing.expectApproxEqAbs(@as(f32, 24), r.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 24), r.h, 0.001);
+}
+
+test "copyButtonRectForBlock anchors to block top-right" {
+    const r = copyButtonRectForBlock(100, 50, 300, 24, 4);
+    try std.testing.expectApproxEqAbs(@as(f32, 372), r.x, 0.001); // 100+300-4-24
+    try std.testing.expectApproxEqAbs(@as(f32, 54), r.top_px, 0.001); // 50+4
     try std.testing.expectApproxEqAbs(@as(f32, 24), r.w, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 24), r.h, 0.001);
 }

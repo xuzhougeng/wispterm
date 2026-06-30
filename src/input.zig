@@ -80,6 +80,7 @@ const handleConfiguredRightClick = clipboard.handleConfiguredRightClick;
 const copyAiChatToClipboard = clipboard.copyAiChatToClipboard;
 const copyAiChatCutToClipboard = clipboard.copyAiChatCutToClipboard;
 const copyAiChatMessageToClipboard = clipboard.copyAiChatMessageToClipboard;
+const copyAiChatSpanToClipboard = clipboard.copyAiChatSpanToClipboard;
 pub const handleFileDrop = clipboard.handleFileDrop;
 pub const copySelectionToClipboard = clipboard.copySelectionToClipboard;
 pub const pasteFromClipboard = clipboard.pasteFromClipboard;
@@ -5611,6 +5612,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                         )) |target| {
                             switch (target) {
                                 .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
+                                .copy_span => |s| copyAiChatSpanToClipboard(chat, s.message_index, s.start, s.end),
                                 .toggle_tool => |message_index| {
                                     chat.toggleToolMessageCollapsed(message_index);
                                     requestInputRepaint();
@@ -5744,6 +5746,7 @@ fn handleMouseButton(ev: platform_input.MouseButtonEvent) void {
                 )) |target| {
                     switch (target) {
                         .copy_message => |message_index| copyAiChatMessageToClipboard(chat, message_index),
+                        .copy_span => |s| copyAiChatSpanToClipboard(chat, s.message_index, s.start, s.end),
                         .toggle_tool => |message_index| {
                             chat.toggleToolMessageCollapsed(message_index);
                             requestInputRepaint();
