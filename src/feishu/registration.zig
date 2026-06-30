@@ -250,8 +250,7 @@ fn threadMain(international: bool) void {
     var begin_arena = std.heap.ArenaAllocator.init(alloc);
     const begin: BeginResp = blk: {
         defer begin_arena.deinit();
-        const body = postForm(alloc, begin_arena.allocator(), accountsBase(international),
-            "action=begin&archetype=PersonalAgent&auth_method=client_secret&request_user_info=open_id") catch {
+        const body = postForm(alloc, begin_arena.allocator(), accountsBase(international), "action=begin&archetype=PersonalAgent&auth_method=client_secret&request_user_info=open_id") catch {
             setStatus(.err);
             g_active.store(false, .release);
             return;
