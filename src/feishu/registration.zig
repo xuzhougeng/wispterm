@@ -112,7 +112,6 @@ const PollRespJson = struct {
     client_secret: []const u8 = "",
     user_info: ?struct { open_id: []const u8 = "", tenant_brand: []const u8 = "" } = null,
     @"error": []const u8 = "",
-    error_description: []const u8 = "",
 };
 
 fn parsePoll(arena: std.mem.Allocator, body: []const u8) !PollResp {
@@ -191,6 +190,31 @@ pub fn cancel() void {
     g_active.store(false, .release);
 }
 
+/// 可中断睡眠:每 ~200ms 检查一次活动标志,cancel() 后及时退出。
+fn sleepInterruptible(total_s: u64) void {
+    const chunk_ns: u64 = 200 * std.time.ns_per_ms;
+    var remaining: u64 = total_s * std.time.ns_per_s;
+    while (remaining > 0 and g_active.load(.acquire)) {
+        const step = @min(remaining, chunk_ns);
+        std.Thread.sleep(step);
+        remaining -= step;
+    }
+}
+
+/// 面板拆除 / 进程退出时调用:停轮询线程、join、释放快照内存。
+/// 配合可中断睡眠,join 通常在 ~200ms 内返回。
+pub fn shutdown() void {
+    cancel();
+    if (g_thread) |th| {
+        th.join();
+        g_thread = null;
+    }
+    g_mutex.lock();
+    defer g_mutex.unlock();
+    if (g_arena) |*a| a.deinit();
+    g_arena = null;
+}
+
 pub fn start(allocator: std.mem.Allocator, international: bool) !void {
     if (g_active.swap(true, .acq_rel)) return; // 已在跑
     if (g_thread) |th| {
@@ -250,7 +274,7 @@ fn threadMain(international: bool) void {
 
     var first = true;
     while (g_active.load(.acquire)) {
-        if (!first) std.Thread.sleep(interval_s * std.time.ns_per_s);
+        if (!first) sleepInterruptible(interval_s);
         first = false;
         if (std.time.timestamp() >= deadline) {
             setStatus(.expired);
@@ -260,7 +284,7 @@ fn threadMain(international: bool) void {
         var poll_arena = std.heap.ArenaAllocator.init(alloc);
         const resp = pollOnce(alloc, poll_arena.allocator(), base, begin.device_code) catch {
             poll_arena.deinit();
-            std.Thread.sleep(2 * std.time.ns_per_s);
+            sleepInterruptible(2);
             continue;
         };
         if (!g_active.load(.acquire)) {
@@ -279,7 +303,7 @@ fn threadMain(international: bool) void {
                 // 立即重 poll(不 sleep):置 first 让循环跳过 sleep。
                 first = true;
             },
-            .slow_down => interval_s += 5,
+            .slow_down => interval_s += 5, // ponytail: uncapped backoff, bounded by the expire_s deadline below
             .keep_waiting => {},
             .denied => {
                 setStatus(.denied);
