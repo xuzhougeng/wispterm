@@ -3637,13 +3637,12 @@ fn spawnDefaultAgentAndLocalShellTabs(allocator: std.mem.Allocator) bool {
         switchTab(first_tab_index);
     }
 
-    // No AI profile yet: surface the profile-creation form so the user can set one
-    // up (the form is an overlay, not a tab) — but only on the first launch. After
-    // it has been shown once, the persisted flag suppresses it so it does not
-    // reappear every launch. Users can still open setup via the session launcher.
-    if (startup_tabs.shouldAutoShowAgentForm(has_ai_profile, platform_window_state.aiSetupPrompted(allocator))) {
-        _ = overlays.openDefaultAgentSessionForStartup();
-        platform_window_state.setAiSetupPrompted(allocator);
+    // No AI profile yet: surface the Quick Configure AI overlay so the user can
+    // paste a DeepSeek key and finish setup in one step (it's an overlay, not a tab).
+    // Shown whenever no AI profile is configured — first launch and any later launch
+    // without AI both land here; dismissable with Esc.
+    if (!has_ai_profile) {
+        overlays.openQuickAiForm();
     }
 
     // After an upgrade, surface the changelog once (records last-seen version
