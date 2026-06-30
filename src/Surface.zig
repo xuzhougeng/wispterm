@@ -779,6 +779,13 @@ pub fn acceptsInput(self: *Surface) bool {
     };
 }
 
+pub fn isExited(self: *Surface) bool {
+    return switch (self.currentIoState()) {
+        .exited => true,
+        else => false,
+    };
+}
+
 fn setIoRunning(self: *Surface) void {
     self.io_state_mutex.lock();
     defer self.io_state_mutex.unlock();
@@ -921,6 +928,130 @@ fn paintIoStatus(self: *Surface, state: IoState) void {
         return;
     };
     self.clearSynchronizedOutputLocked();
+}
+
+/// Re-run this panel's original command in place after its process exited
+/// (Enter-to-reconnect). Keeps the terminal/scrollback; replaces the whole IO
+/// subsystem. Main-thread only (spawns threads, touches the mailbox). No-op
+/// unless the panel has cleanly exited and has a stored command.
+pub fn respawn(self: *Surface) void {
+    switch (self.currentIoState()) {
+        .exited => {},
+        else => return,
+    }
+    const owned_cmd = self.respawn_command orelse {
+        io_log.warn("respawn requested but no stored command", .{});
+        return;
+    };
+    const cmd = platform_pty_command.commandLineFromOwned(owned_cmd);
+    const cwd: platform_pty_command.Cwd =
+        if (self.respawn_cwd) |c| platform_pty_command.cwdFromOwned(c) else null;
+    const cols = self.size.grid.cols;
+    const rows = self.size.grid.rows;
+
+    // Both IO threads already returned (reader on EOF, writer on the stop
+    // notify markExited sent) but were never joined. Collect them before
+    // anything new starts.
+    if (self.io_thread_state) |state| state.stop.notify() catch {};
+    self.pty.cancelOutputRead();
+    if (self.io_writer_thread) |t| {
+        t.join();
+        self.io_writer_thread = null;
+    }
+    if (self.io_reader_thread) |t| {
+        t.join();
+        self.io_reader_thread = null;
+    }
+
+    // Acquire the new IO subsystem into locals FIRST. On any failure the OLD
+    // pty/command/mailbox/thread_state are still the surface's fields and stay
+    // deinit-safe — we just report failure and the old "exited" state holds.
+    var new_pty = Pty.open(.{ .ws_col = cols, .ws_row = rows }) catch |err|
+        return self.respawnFailed(err);
+    var new_command: Command = .{};
+    new_command.start(&new_pty, cmd, cwd) catch |err| {
+        new_pty.deinit();
+        return self.respawnFailed(err);
+    };
+    var new_mailbox = termio.Mailbox.init() catch |err| {
+        new_command.deinit();
+        new_pty.deinit();
+        return self.respawnFailed(err);
+    };
+    const new_state = self.allocator.create(termio.Thread) catch |err| {
+        new_mailbox.deinit();
+        new_command.deinit();
+        new_pty.deinit();
+        return self.respawnFailed(err);
+    };
+    new_state.* = termio.Thread.init() catch |err| {
+        self.allocator.destroy(new_state);
+        new_mailbox.deinit();
+        new_command.deinit();
+        new_pty.deinit();
+        return self.respawnFailed(err);
+    };
+
+    // Commit: tear down the OLD subsystem, swap in the new one.
+    if (self.io_thread_state) |state| {
+        state.deinit();
+        self.allocator.destroy(state);
+    }
+    self.mailbox.deinit();
+    self.command.deinit();
+    self.pty.deinit();
+    self.pty = new_pty;
+    self.command = new_command;
+    self.mailbox = new_mailbox;
+    self.io_thread_state = new_state;
+
+    // Sync the retained grid to the (possibly resized-while-exited) pane size
+    // and drop a separator into the existing scrollback.
+    {
+        self.render_state.mutex.lock();
+        defer self.render_state.mutex.unlock();
+        self.terminal.resize(self.allocator, cols, rows) catch {};
+        self.terminal.printString("\r\n[WispTerm] Reconnecting...\r\n") catch {};
+        self.clearSynchronizedOutputLocked();
+    }
+
+    // The reader loops on `!exited`; clear it and reset lifecycle BEFORE spawn.
+    self.exited.store(false, .release);
+    self.io_state_mutex.lock();
+    self.io_state = .starting;
+    self.io_state_mutex.unlock();
+
+    // ponytail: thread-spawn failure after the swap marks the surface failed
+    // with the NEW resources owned (still deinit-safe); we don't unwind the
+    // swap. Same residual exposure finishInit already has. Make spawn pre-swap
+    // only if this ever actually bites.
+    self.io_writer_thread = std.Thread.spawn(
+        threading.surface_thread_spawn_config,
+        termio.Thread.threadMain,
+        .{ new_state, self },
+    ) catch |err| {
+        self.failIo(.thread_spawn, err);
+        return;
+    };
+    self.io_reader_thread = std.Thread.spawn(
+        threading.surface_thread_spawn_config,
+        termio.ReadThread.threadMain,
+        .{self},
+    ) catch |err| {
+        self.failIo(.thread_spawn, err);
+        return;
+    };
+
+    self.setIoRunning();
+    self.dirty.store(true, .release);
+    window_backend.postWakeup();
+}
+
+/// Reconnect could not open a fresh PTY/command. The old (exited) resources are
+/// untouched and remain owned by the surface; surface a failure message.
+fn respawnFailed(self: *Surface, err: anyerror) void {
+    io_log.warn("respawn failed: {s}", .{@errorName(err)});
+    self.failIo(.thread_spawn, err);
 }
 
 // ============================================================================
@@ -1928,6 +2059,26 @@ test "Surface respawn target stores command and frees it without leaking" {
     // double-frees.
     surface.freeRespawnTarget(std.testing.allocator);
     try std.testing.expect(surface.respawn_command == null);
+}
+
+test "respawn is a no-op unless the surface has exited with a stored command" {
+    var surface: Surface = undefined;
+    try ioStateHarness(&surface);
+    defer ioStateHarnessDeinit(&surface);
+    surface.respawn_command = null;
+    surface.respawn_cwd = null;
+
+    // .running (harness default): guard returns immediately, state unchanged.
+    try std.testing.expect(!surface.isExited());
+    surface.respawn();
+    try std.testing.expect(surface.acceptsInput());
+
+    // .exited but no stored command: returns at the command guard, before any
+    // pty/thread work (which would crash on the null-threaded harness).
+    surface.markExited(.eof, .{ .exited = 0 });
+    try std.testing.expect(surface.isExited());
+    surface.respawn();
+    try std.testing.expect(surface.isExited());
 }
 
 test "exit status message shows the reconnect hint only when asked" {
