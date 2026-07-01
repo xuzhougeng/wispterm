@@ -43,6 +43,9 @@ pub const State = struct {
     form_bufs: [FORM_FIELD_COUNT][FIELD_MAX]u8 = undefined,
     form_lens: [FORM_FIELD_COUNT]usize = .{0} ** FORM_FIELD_COUNT,
     editing_index: usize = EDIT_INDEX_NONE,
+    /// Set by `save` on success; the caller (input handler) reads and clears
+    /// this to show a one-shot "Saved" confirmation.
+    saved: bool = false,
 
     /// Reset to defaults and load `<config-dir>/mcp.json` into `servers`.
     /// A missing/unreadable config file yields zero servers (not an error).
@@ -162,6 +165,65 @@ pub const State = struct {
         if (self.list_selected >= self.count) return;
         self.servers[self.list_selected].enabled = !self.servers[self.list_selected].enabled;
     }
+
+    /// Build an owned `[]mcp_registry.ServerConfig` from `servers[0..count]`.
+    /// Each server's `args` display string is split on whitespace runs.
+    /// Caller frees with `mcp_registry.freeServersConfig`.
+    pub fn toServerConfigs(self: *const State, allocator: std.mem.Allocator) ![]mcp_registry.ServerConfig {
+        var list: std.ArrayListUnmanaged(mcp_registry.ServerConfig) = .empty;
+        errdefer {
+            for (list.items) |cfg| {
+                allocator.free(cfg.name);
+                allocator.free(cfg.command);
+                for (cfg.args) |arg| allocator.free(arg);
+                allocator.free(cfg.args);
+            }
+            list.deinit(allocator);
+        }
+
+        for (0..self.count) |i| {
+            const name = try allocator.dupe(u8, self.serverName(i));
+            errdefer allocator.free(name);
+            const command = try allocator.dupe(u8, self.servers[i].command[0..self.servers[i].command_len]);
+            errdefer allocator.free(command);
+
+            var args: std.ArrayListUnmanaged([]u8) = .empty;
+            errdefer {
+                for (args.items) |arg| allocator.free(arg);
+                args.deinit(allocator);
+            }
+            var it = std.mem.tokenizeAny(u8, self.serverArgs(i), " \t");
+            while (it.next()) |tok| {
+                try args.append(allocator, try allocator.dupe(u8, tok));
+            }
+            const args_owned = try args.toOwnedSlice(allocator);
+            errdefer allocator.free(args_owned);
+
+            try list.append(allocator, .{
+                .name = name,
+                .command = command,
+                .args = args_owned,
+                .enabled = self.servers[i].enabled,
+            });
+        }
+        return list.toOwnedSlice(allocator);
+    }
+
+    /// Read-only JSON preview of what `save` would write.
+    pub fn jsonPreview(self: *const State, allocator: std.mem.Allocator) ![]u8 {
+        const cfgs = try self.toServerConfigs(allocator);
+        defer mcp_registry.freeServersConfig(allocator, cfgs);
+        return mcp_registry.writeServersConfig(allocator, cfgs);
+    }
+
+    /// Write `servers[0..count]` to `<config-dir>/mcp.json` and mark `saved`.
+    /// The caller is responsible for triggering an MCP tools reload.
+    pub fn save(self: *State, allocator: std.mem.Allocator) !void {
+        const cfgs = try self.toServerConfigs(allocator);
+        defer mcp_registry.freeServersConfig(allocator, cfgs);
+        try mcp_registry.saveConfigFile(allocator, cfgs);
+        self.saved = true;
+    }
 };
 
 /// Truncate-copy `src` into `buf`, recording the copied length in `len_ptr`.
@@ -256,6 +318,27 @@ test "edit preserves enabled state of a disabled server" {
     s.setFormField(.command, "y");
     try s.commitForm();
     try std.testing.expect(!s.servers[0].enabled);
+}
+
+test "jsonPreview equals what save writes, and splits args" {
+    const a = std.testing.allocator;
+    var s: State = .{};
+    s.beginAdd();
+    s.setFormField(.name, "c");
+    s.setFormField(.command, "npx");
+    s.setFormField(.args, "-y  pkg");
+    try s.commitForm(); // double space → 2 args
+
+    const cfgs = try s.toServerConfigs(a);
+    defer mcp_registry.freeServersConfig(a, cfgs);
+    try std.testing.expectEqual(@as(usize, 1), cfgs.len);
+    try std.testing.expectEqual(@as(usize, 2), cfgs[0].args.len);
+    try std.testing.expectEqualStrings("pkg", cfgs[0].args[1]);
+
+    const preview = try s.jsonPreview(a);
+    defer a.free(preview);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"c\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"npx\"") != null);
 }
 
 test "commitForm rejects a 33rd server" {
