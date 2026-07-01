@@ -35,12 +35,27 @@ def _accessibility_trusted() -> bool:
         return False
 
 
+def _screen_locked() -> bool:
+    # Synthetic CGEvents (keyboard/mouse) are silently dropped by WindowServer
+    # while the screen is locked, so a locked session must skip rather than
+    # produce a confusing "OS keyboard input path never became ready" failure
+    # deep inside MacDriver.ensure_keyboard_ready. Best-effort: treat any
+    # inspection failure as "not locked" (fail open) rather than skip tests
+    # that could otherwise run.
+    try:
+        import Quartz
+        info = Quartz.CGSessionCopyCurrentDictionary()
+        return bool(info and info.get("CGSSessionScreenIsLocked"))
+    except Exception:
+        return False
+
+
 def require_macos_gui():
     """Skip the calling test unless this host can drive a real WispTerm.app via
     synthetic input: macOS + importable PyObjC + a built app/ctl bundle + granted
-    Accessibility permission. Fixtures that build their own MacDriver (instead of
-    using the `app` fixture) must call this so they skip — rather than fail — when
-    those preconditions are absent."""
+    Accessibility permission + an unlocked screen. Fixtures that build their own
+    MacDriver (instead of using the `app` fixture) must call this so they skip —
+    rather than fail — when those preconditions are absent."""
     if sys.platform != "darwin":
         pytest.skip("macOS-only E2E harness")
     if not _pyobjc_available():
@@ -58,6 +73,8 @@ def require_macos_gui():
             "Accessibility permission required: grant the terminal running pytest under "
             "System Settings → Privacy & Security → Accessibility, then retry."
         )
+    if _screen_locked():
+        pytest.skip("screen is locked: synthetic CGEvents are dropped while locked; unlock and retry")
 
 
 @pytest.fixture(scope="session")
