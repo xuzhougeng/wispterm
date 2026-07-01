@@ -1123,7 +1123,7 @@ fn appendSshOptions(
     if (conn.usesPasswordAuth()) {
         argv_buf[argc] = "-o";
         argc += 1;
-        argv_buf[argc] = "PreferredAuthentications=publickey,password,keyboard-interactive";
+        argv_buf[argc] = "PreferredAuthentications=password,keyboard-interactive";
         argc += 1;
         argv_buf[argc] = "-o";
         argc += 1;

@@ -285,7 +285,7 @@ fn spawnSshTunnel(allocator: std.mem.Allocator, conn: *const ssh_connection.SshC
     appendSshOption(&argv_buf, &argc, "ServerAliveInterval=60");
     appendSshOption(&argv_buf, &argc, "ServerAliveCountMax=3");
     if (conn.usesPasswordAuth()) {
-        appendSshOption(&argv_buf, &argc, "PreferredAuthentications=publickey,password,keyboard-interactive");
+        appendSshOption(&argv_buf, &argc, "PreferredAuthentications=password,keyboard-interactive");
         appendSshOption(&argv_buf, &argc, "NumberOfPasswordPrompts=1");
     } else {
         appendSshOption(&argv_buf, &argc, "BatchMode=yes");
