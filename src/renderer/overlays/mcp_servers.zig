@@ -79,9 +79,6 @@ pub const State = struct {
     /// open instead of returning to the list. A later task renders this;
     /// cleared by `beginAdd`, `beginEdit`, and a successful commit.
     form_error: ?FormError = null,
-    /// Set by `save` on success; the caller (input handler) reads and clears
-    /// this to show a one-shot "Saved" confirmation.
-    saved: bool = false,
     /// Result of the last "Test" probe, applied via `applyProbeResult`.
     probe: ProbeState = .{},
 
@@ -190,7 +187,11 @@ pub const State = struct {
         setBuf(&target.args, &target.args_len, self.formField(.args));
     }
 
-    /// Remove `servers[list_selected]`, shifting later entries down.
+    /// Remove `servers[list_selected]`, shifting later entries down. Clears
+    /// `probe` because a shift invalidates `probe.target_index`: without
+    /// this, the render (gated on `probe.target_index == list_selected`)
+    /// could show a stale probe result misattributed to the server that
+    /// just shifted into the deleted index.
     pub fn removeSelected(self: *State) void {
         if (self.list_selected >= self.count) return;
         for (self.list_selected..self.count - 1) |i| {
@@ -200,6 +201,8 @@ pub const State = struct {
         if (self.list_selected >= self.count and self.count > 0) {
             self.list_selected = self.count - 1;
         }
+        self.probe.status = .idle;
+        self.probe.target_index = 0;
     }
 
     /// Flip `enabled` on `servers[list_selected]`.
@@ -271,13 +274,12 @@ pub const State = struct {
         return mcp_registry.writeServersConfig(allocator, cfgs);
     }
 
-    /// Write `servers[0..count]` to `<config-dir>/mcp.json` and mark `saved`.
+    /// Write `servers[0..count]` to `<config-dir>/mcp.json`.
     /// The caller is responsible for triggering an MCP tools reload.
     pub fn save(self: *State, allocator: std.mem.Allocator) !void {
         const cfgs = try self.toServerConfigs(allocator);
         defer mcp_registry.freeServersConfig(allocator, cfgs);
         try mcp_registry.saveConfigFile(allocator, cfgs);
-        self.saved = true;
     }
 };
 
@@ -334,6 +336,32 @@ test "toggle and remove the selected server" {
     try std.testing.expect(!s.servers[0].enabled);
     s.removeSelected();
     try std.testing.expectEqual(@as(usize, 0), s.count);
+}
+
+test "removeSelected clears a stale probe result so it isn't misattributed" {
+    var s: State = .{};
+    var i: usize = 0;
+    while (i < 3) : (i += 1) {
+        s.beginAdd();
+        var name_buf: [8]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "s{d}", .{i}) catch unreachable;
+        s.setFormField(.name, name);
+        s.setFormField(.command, "x");
+        try s.commitForm();
+    }
+    try std.testing.expectEqual(@as(usize, 3), s.count);
+
+    // Simulate a completed probe against index 1.
+    const r = mcp_probe.Result{ .ok = true, .message = undefined, .message_len = 0, .tools = undefined, .tool_count = 0 };
+    s.applyProbeResult(1, r);
+    try std.testing.expect(s.probe.status == .ok);
+
+    // Delete index 0; index 1's server shifts down to index 0, but the
+    // stale probe result must not follow it.
+    s.list_selected = 0;
+    s.removeSelected();
+    try std.testing.expectEqual(@as(usize, 2), s.count);
+    try std.testing.expect(s.probe.status == .idle);
 }
 
 test "open loads servers from the config dir and clamps selection" {

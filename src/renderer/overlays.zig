@@ -2554,7 +2554,7 @@ pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
         .list => switch (ev.key) {
             .arrow_up => st.moveSelection(-1),
             .arrow_down => st.moveSelection(1),
-            .enter => if (st.count > 0) st.beginEdit(st.list_selected),
+            .enter, .key_e => if (st.count > 0) st.beginEdit(st.list_selected),
             .key_a => st.beginAdd(),
             .key_d => st.removeSelected(),
             .key_t => {
