@@ -81,6 +81,20 @@ pub const State = struct {
     form_error: ?FormError = null,
     /// Result of the last "Test" probe, applied via `applyProbeResult`.
     probe: ProbeState = .{},
+    /// Swallow the very next typed character. Entering the form via a letter
+    /// shortcut (`a`/`e`) fires a KeyEvent (→ beginAdd/beginEdit, view→.form)
+    /// and then a CharEvent for the same physical key; without this the shortcut
+    /// letter would leak into the newly-focused field. Set by the `a`/`e` list
+    /// arms, consumed by the char handler.
+    consume_next_char: bool = false,
+
+    /// If a shortcut-entry char is pending, consume it (return true) and clear
+    /// the flag; otherwise return false. See `consume_next_char`.
+    pub fn takeConsumeChar(self: *State) bool {
+        if (!self.consume_next_char) return false;
+        self.consume_next_char = false;
+        return true;
+    }
 
     /// Reset to defaults and load `<config-dir>/mcp.json` into `servers`.
     /// A missing/unreadable config file yields zero servers (not an error).
@@ -441,6 +455,14 @@ test "applyProbeResult stores tool names and status on the state" {
     s.applyProbeResult(0, r);
     try std.testing.expect(s.probe.status == .ok);
     try std.testing.expectEqual(@as(usize, 1), s.probe.tool_count);
+}
+
+test "takeConsumeChar swallows exactly one pending char" {
+    var s: State = .{};
+    try std.testing.expect(!s.takeConsumeChar()); // nothing pending
+    s.consume_next_char = true;
+    try std.testing.expect(s.takeConsumeChar()); // swallows the shortcut's char
+    try std.testing.expect(!s.takeConsumeChar()); // and only one
 }
 
 test "commitForm rejects a 33rd server" {

@@ -71,8 +71,8 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "Split Down", .detail = "Create a panel below", .shortcut = "", .action = .split_down },
     .{ .title = "Split Left", .detail = "Create a panel to the left", .shortcut = "", .action = .split_left },
     .{ .title = "Split Up", .detail = "Create a panel above", .shortcut = "", .action = .split_up },
-    .{ .title = "Previous Panel", .detail = "Move focus to the previous panel", .shortcut = "", .action = .focus_previous },
-    .{ .title = "Next Panel", .detail = "Move focus to the next panel", .shortcut = "", .action = .focus_next },
+    // Previous/Next Panel removed from the palette (declutter); the Shift+Cmd+[ / ]
+    // keybinds in keybind.zig still work — focus_previous/focus_next stay in the enum.
     .{ .title = "Equalize Panels", .detail = "Reset split sizes in the current tab", .shortcut = "", .action = .equalize_splits },
     .{ .title = "Close Panel / Tab", .detail = "Close focused panel or tab; press again for the last panel", .shortcut = "", .action = .close_split_or_tab },
     .{ .title = "Toggle Sidebar", .detail = "Show or hide the tab sidebar", .shortcut = "", .action = .toggle_sidebar },

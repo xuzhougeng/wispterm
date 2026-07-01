@@ -2538,6 +2538,9 @@ fn backspaceMcpFormField(field: mcp_servers.Field) void {
 /// sessionLauncherInsertChar's per-overlay gating.
 pub fn mcpServersInsertChar(codepoint: u21) void {
     if (mcpState().view != .form) return;
+    // Drop the shortcut letter ('a'/'e') that just opened the form: its KeyEvent
+    // switched the view to .form, and its own CharEvent follows here.
+    if (mcpState().takeConsumeChar()) return;
     if (codepoint < 0x20 or codepoint >= 0x7f) return; // printable ASCII only, like appendSshFormText
     appendMcpFormChar(mcpState().form_focus, @intCast(codepoint));
 }
@@ -2554,8 +2557,15 @@ pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
         .list => switch (ev.key) {
             .arrow_up => st.moveSelection(-1),
             .arrow_down => st.moveSelection(1),
-            .enter, .key_e => if (st.count > 0) st.beginEdit(st.list_selected),
-            .key_a => st.beginAdd(),
+            .enter => if (st.count > 0) st.beginEdit(st.list_selected),
+            .key_e => if (st.count > 0) {
+                st.beginEdit(st.list_selected);
+                st.consume_next_char = true; // don't type 'e' into the field
+            },
+            .key_a => {
+                st.beginAdd();
+                st.consume_next_char = true; // don't type 'a' into the field
+            },
             .key_d => st.removeSelected(),
             .key_t => {
                 if (st.count == 0) return .none;
@@ -5852,7 +5862,7 @@ const McpLayout = struct {
 
 fn mcpLayout(window_width: f32, window_height: f32, top_offset: f32, row_count: usize, selected: usize) McpLayout {
     const content_height = @max(1, window_height - top_offset);
-    const box_w: f32 = @round(@min(@max(420.0, window_width - 48.0), 620.0));
+    const box_w: f32 = @round(@min(@max(420.0, window_width - 48.0), 860.0));
     const row_h = overlayRowHeight(38);
     const header_h = @round(18 + overlayLineHeight() * 2 + 12);
     const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
@@ -5933,8 +5943,10 @@ fn mcpEnabledMark(enabled: bool) []const u8 {
     return if (enabled) "\u{2713}" else "\u{2717}"; // checkmark / cross
 }
 
-const MCP_LIST_FOOTER = "\u{2191}\u{2193} select \u{00b7} a add \u{00b7} e/Enter edit \u{00b7} d delete \u{00b7} space enable \u{00b7} t test \u{00b7} Tab JSON \u{00b7} Ctrl-S save \u{00b7} Esc close";
-const MCP_FORM_FOOTER = "Tab next field \u{00b7} Enter save \u{00b7} Esc back";
+// Two short lines so the hint fits the panel width at the overlay font size.
+const MCP_LIST_FOOTER1 = "a add \u{00b7} e edit \u{00b7} d del \u{00b7} space toggle";
+const MCP_LIST_FOOTER2 = "t test \u{00b7} Tab JSON \u{00b7} Ctrl-S save \u{00b7} Esc";
+const MCP_FORM_FOOTER = "Tab next \u{00b7} Enter save \u{00b7} Esc back";
 const MCP_JSON_FOOTER = "Tab/Esc back";
 const MCP_ERROR_COLOR = [3]f32{ 0.92, 0.35, 0.32 };
 
@@ -5954,7 +5966,8 @@ fn renderMcpListView(window_width: f32, window_height: f32, top_offset: f32) voi
     // scroll/highlight math stays in one place.
     const status_row = st.count;
     const footer_row = status_row + 1;
-    const row_count = footer_row + 1;
+    const footer_row2 = footer_row + 1;
+    const row_count = footer_row2 + 1;
     const layout = mcpLayout(window_width, window_height, top_offset, row_count, st.list_selected);
     const box_y = @round(window_height - layout.box_top_px - layout.box_h);
 
@@ -5973,7 +5986,7 @@ fn renderMcpListView(window_width: f32, window_height: f32, top_offset: f32) voi
     const title_y = textYFromTop(window_height, layout.box_top_px + 18);
     const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
     renderTitlebarTextStrong("MCP Servers", layout.box_x + 24, title_y, title_color);
-    const hint = if (st.count == 0) "No servers configured yet — press a to add one." else "Configured MCP tool servers.";
+    const hint = if (st.count == 0) "No servers yet — press a to add." else "Configured MCP tool servers.";
     renderTitlebarTextStrongLimited(hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
 
     for (0..st.count) |i| {
@@ -6009,7 +6022,8 @@ fn renderMcpListView(window_width: f32, window_height: f32, top_offset: f32) voi
         if (status_text.len > 0) renderMcpLine(layout, window_height, status_row, status_text, status_color);
     }
 
-    renderMcpLine(layout, window_height, footer_row, MCP_LIST_FOOTER, muted_color);
+    renderMcpLine(layout, window_height, footer_row, MCP_LIST_FOOTER1, muted_color);
+    renderMcpLine(layout, window_height, footer_row2, MCP_LIST_FOOTER2, muted_color);
 }
 
 fn renderMcpFormView(window_width: f32, window_height: f32, top_offset: f32) void {
@@ -6045,7 +6059,7 @@ fn renderMcpFormView(window_width: f32, window_height: f32, top_offset: f32) voi
     renderMcpRow(layout, window_height, name_row, "Name", st.formField(.name), st.form_focus == .name);
     renderMcpRow(layout, window_height, command_row, "Command", st.formField(.command), st.form_focus == .command);
     renderMcpRow(layout, window_height, args_row, "Args", st.formField(.args), st.form_focus == .args);
-    renderMcpLine(layout, window_height, hint_row, "space-separated; use JSON view to verify", muted_color);
+    renderMcpLine(layout, window_height, hint_row, "space-separated (see JSON view)", muted_color);
     if (st.form_error) |err| {
         renderMcpLine(layout, window_height, error_row, mcpFormErrorText(err), MCP_ERROR_COLOR);
     }
