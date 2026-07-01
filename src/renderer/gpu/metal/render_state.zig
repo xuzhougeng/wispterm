@@ -4,21 +4,27 @@
 const std = @import("std");
 
 const Context = @import("Context.zig");
+const types = @import("../types.zig");
 
-pub const Rect = struct { x: i32, y: i32, w: i32, h: i32 };
+pub const Rect = types.Scissor;
+pub const Viewport = types.Viewport;
+pub const Scissor = types.Scissor;
+pub const ClearColor = types.ClearColor;
+pub const DriverInfo = types.DriverInfo;
+pub const SwapDiagnostics = types.SwapDiagnostics;
 pub const Size = struct { w: i32, h: i32 };
-pub const BlendMode = enum { alpha, premultiplied };
-pub const ScissorState = struct { enabled: bool, box: Rect };
+pub const BlendMode = types.BlendMode;
+pub const ScissorState = struct { enabled: bool, box: Scissor };
 
 threadlocal var frame_active = false;
 threadlocal var blend_enabled = false;
 threadlocal var blend_mode: BlendMode = .alpha;
-threadlocal var viewport: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+threadlocal var viewport: Viewport = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
 threadlocal var scissor: ScissorState = .{
     .enabled = false,
     .box = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 };
-threadlocal var clear_color: [4]f32 = .{ 0, 0, 0, 0 };
+threadlocal var clear_color: ClearColor = .{ .r = 0, .g = 0, .b = 0, .a = 0 };
 threadlocal var scratch_error: [256]u8 = @splat(0);
 
 extern fn wispterm_metal_frame_begin(ctx: *Context.Handles, r: f32, g: f32, b: f32, a: f32, error_buf: [*]u8, error_buf_len: usize) bool;
@@ -43,10 +49,10 @@ pub fn beginFrame() void {
     if (!Context.isInitialized()) return;
     if (!wispterm_metal_frame_begin(
         &Context.handles,
-        clear_color[0],
-        clear_color[1],
-        clear_color[2],
-        clear_color[3],
+        clear_color.r,
+        clear_color.g,
+        clear_color.b,
+        clear_color.a,
         &scratch_error,
         scratch_error.len,
     )) {
@@ -79,7 +85,7 @@ pub fn setBlendMode(mode: BlendMode) void {
 }
 
 pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
-    clear_color = .{ r, g, b, a };
+    clear_color = .{ .r = r, .g = g, .b = b, .a = a };
     beginFrame();
 }
 
@@ -90,6 +96,42 @@ pub fn setViewport(x: i32, y: i32, w: i32, h: i32) void {
 
 pub fn viewportSize() Size {
     return .{ .w = viewport.w, .h = viewport.h };
+}
+
+pub fn driverInfo() DriverInfo {
+    return .{
+        .vendor = "Metal",
+        .renderer = "Metal",
+        .version = "(unavailable)",
+        .shading_language = "(unavailable)",
+    };
+}
+
+pub fn swapDiagnostics() ?SwapDiagnostics {
+    return .{
+        .viewport = viewport,
+        .blend = blendSnapshot(),
+    };
+}
+
+fn blendSnapshot() types.BlendSnapshot {
+    const factors = switch (blend_mode) {
+        .alpha => .{
+            .src = types.BlendFactor.src_alpha,
+            .dst = types.BlendFactor.one_minus_src_alpha,
+        },
+        .premultiplied => .{
+            .src = types.BlendFactor.one,
+            .dst = types.BlendFactor.one_minus_src_alpha,
+        },
+    };
+    return .{
+        .enabled = blend_enabled,
+        .src_rgb = factors.src,
+        .dst_rgb = factors.dst,
+        .src_alpha = factors.src,
+        .dst_alpha = factors.dst,
+    };
 }
 
 pub fn setScissor(rect: Rect) void {
@@ -132,6 +174,6 @@ pub fn currentBlendMode() BlendMode {
     return blend_mode;
 }
 
-pub fn currentClearColor() [4]f32 {
+pub fn currentClearColor() ClearColor {
     return clear_color;
 }

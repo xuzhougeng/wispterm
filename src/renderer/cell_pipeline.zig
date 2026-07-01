@@ -1,12 +1,11 @@
 //! Cell-grid render pipelines (bg / fg / color-emoji). Cell-specific
 //! presentation, built from the gpu backend primitives + the backend GLSL.
-//! Relocated from gl_init.initInstancedBuffers (A3). The vertex-attribute
-//! layout matches the CellBg/CellFg memory layout exactly.
+//! Relocated from the legacy instanced-buffer init path (A3). The
+//! vertex-attribute layout matches the CellBg/CellFg memory layout exactly.
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const Renderer = @import("Renderer.zig");
 const gpu = AppWindow.gpu;
-const c = gpu.c;
 
 const Pipeline = gpu.Pipeline;
 const Buffer = gpu.Buffer;
@@ -41,16 +40,16 @@ pub fn init() void {
         .{ 0.0, 1.0 },
         .{ 1.0, 1.0 },
     };
-    quad = Buffer.init(c.GL_ARRAY_BUFFER);
-    quad.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), c.GL_STATIC_DRAW);
+    quad = Buffer.initVertex();
+    quad.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), .static);
 
     // --- BG VAO ---
     // attr 0 (loc=0, count=2): position xy from quad buffer (divisor=0)
     // attr 1 (loc=1, count=2): grid_col/grid_row from bg_instances (divisor=1)
     // attr 2 (loc=2, count=3): r/g/b from bg_instances (divisor=1)
     // attr 3 (loc=3, count=1): alpha from bg_instances (divisor=1)
-    bg_instances = Buffer.init(c.GL_ARRAY_BUFFER);
-    bg_instances.allocate(@sizeOf(Renderer.CellBg) * Renderer.MAX_CELLS, c.GL_STREAM_DRAW);
+    bg_instances = Buffer.initVertex();
+    bg_instances.allocate(@sizeOf(Renderer.CellBg) * Renderer.MAX_CELLS, .stream);
     const bg_stride = @sizeOf(Renderer.CellBg);
     const bg_vao = gpu.vertex.buildVertexArray(&.{
         .{
@@ -75,8 +74,8 @@ pub fn init() void {
     // attr 2 (loc=2, count=4): glyph_x/y/w/h (divisor=1)
     // attr 3 (loc=3, count=4): uv_left/top/right/bottom (divisor=1)
     // attr 4 (loc=4, count=3): r/g/b (divisor=1)
-    fg_instances = Buffer.init(c.GL_ARRAY_BUFFER);
-    fg_instances.allocate(@sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, c.GL_STREAM_DRAW);
+    fg_instances = Buffer.initVertex();
+    fg_instances.allocate(@sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, .stream);
     const fg_stride = @sizeOf(Renderer.CellFg);
     const fg_vao = gpu.vertex.buildVertexArray(&.{
         .{
@@ -97,8 +96,8 @@ pub fn init() void {
     });
 
     // --- Color FG VAO (same layout as FG) ---
-    color_fg_instances = Buffer.init(c.GL_ARRAY_BUFFER);
-    color_fg_instances.allocate(@sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, c.GL_STREAM_DRAW);
+    color_fg_instances = Buffer.initVertex();
+    color_fg_instances.allocate(@sizeOf(Renderer.CellFg) * Renderer.MAX_CELLS, .stream);
     const color_fg_stride = @sizeOf(Renderer.CellFg); // same CellFg layout as fg
     const color_fg_vao = gpu.vertex.buildVertexArray(&.{
         .{

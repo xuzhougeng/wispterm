@@ -39,6 +39,14 @@ pub fn initColor(width: c_int, height: c_int) ?Framebuffer {
     return .{ .handle = handle, .color = color.handle, .width = width, .height = height };
 }
 
+pub fn isValid(self: Framebuffer) bool {
+    return self.handle != 0 and self.color != 0;
+}
+
+pub fn colorTexture(self: Framebuffer) Texture {
+    return Texture.fromHandle(self.color);
+}
+
 /// Bind this framebuffer and set the viewport to its full size. Pending
 /// batched UI draws are flushed first (via the state hook) so they land in
 /// the render target they were issued against.

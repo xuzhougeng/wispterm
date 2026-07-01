@@ -13,7 +13,6 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const gpu = AppWindow.gpu;
-const c = gpu.c;
 const ui_pipeline = @import("ui_pipeline.zig");
 const cell_renderer = AppWindow.cell_renderer;
 const background_image = AppWindow.background_image;
@@ -110,8 +109,8 @@ fn initPostShader(allocator: std.mem.Allocator, shader_path: []const u8) bool {
         -1.0, 1.0,  0.0, 1.0,
     };
 
-    g_post_vbo_buf = gpu.Buffer.init(c.GL_ARRAY_BUFFER);
-    g_post_vbo_buf.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), c.GL_STATIC_DRAW);
+    g_post_vbo_buf = gpu.Buffer.initVertex();
+    g_post_vbo_buf.uploadData(std.mem.sliceAsBytes(quad_verts[0..]), .static);
 
     // Fullscreen quad VAO: vec2 position (loc 0) + vec2 texcoord (loc 1), interleaved.
     const vao = gpu.vertex.buildVertexArray(&.{
@@ -173,8 +172,8 @@ fn renderPostProcess(width: c_int, height: c_int) void {
 
     // Draw fullscreen quad
     g_post_pipeline.bindVao();
-    g_post_pipeline.drawArrays(c.GL_TRIANGLES, 0, 6);
-    AppWindow.gpu.gl_init.g_draw_call_count += 1;
+    g_post_pipeline.drawArrays(.triangles, 0, 6);
+    AppWindow.gpu.draw_call_count += 1;
 
     // Re-enable blending for next terminal render pass
     ui_pipeline.setBlendEnabled(true);

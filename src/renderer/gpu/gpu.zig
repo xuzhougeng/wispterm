@@ -4,7 +4,29 @@
 const builtin = @import("builtin");
 
 pub const Backend = @import("backend.zig").Backend;
+pub const types = @import("types.zig");
+pub const PrimitiveTopology = types.PrimitiveTopology;
+pub const BufferUsage = types.BufferUsage;
+pub const TextureFormat = types.TextureFormat;
+pub const TextureUsage = types.TextureUsage;
+pub const BlendMode = types.BlendMode;
+pub const BlendFactor = types.BlendFactor;
+pub const ProgramHandle = types.ProgramHandle;
+pub const VertexArrayHandle = types.VertexArrayHandle;
+pub const SamplerMode = types.SamplerMode;
+pub const Viewport = types.Viewport;
+pub const Scissor = types.Scissor;
+pub const ClearColor = types.ClearColor;
+pub const DriverInfo = types.DriverInfo;
+pub const BlendSnapshot = types.BlendSnapshot;
+pub const SwapDiagnostics = types.SwapDiagnostics;
 pub const active: Backend = Backend.default(builtin.os.tag);
+
+/// Backend-neutral per-frame renderer diagnostics/state.
+/// Transition note: `gpu.gl_init` still mirrors old names for compatibility,
+/// but renderer feature code should use these WispTerm-owned fields.
+pub threadlocal var draw_call_count: u32 = 0;
+pub threadlocal var background_opacity: f32 = 1.0;
 
 // Resolve the active backend lazily inside each branch so a non-selected
 // backend's C imports (e.g. the OpenGL backend's `@cInclude("glad/gl.h")`) are

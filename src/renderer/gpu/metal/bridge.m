@@ -641,9 +641,10 @@ bool wispterm_metal_texture_sub_image_2d(
     }
 }
 
-void wispterm_metal_texture_set_wrap(unsigned int handle, unsigned int wrap) {
+void wispterm_metal_texture_set_sampler(unsigned int handle, unsigned int wrap, unsigned int filter) {
     if (!wispterm_metal_texture_valid(handle)) return;
     wispterm_metal_textures[handle].wrap = wrap;
+    wispterm_metal_textures[handle].filter = filter;
 }
 
 void wispterm_metal_texture_bind(unsigned int handle, unsigned int unit) {
@@ -665,6 +666,7 @@ void wispterm_metal_texture_destroy(unsigned int handle) {
         }
         wispterm_metal_textures[handle].texture = nil;
         wispterm_metal_textures[handle].wrap = 0;
+        wispterm_metal_textures[handle].filter = 0;
         wispterm_metal_textures[handle].width = 0;
         wispterm_metal_textures[handle].height = 0;
         wispterm_metal_textures[handle].bpp = 0;

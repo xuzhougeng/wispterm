@@ -4,9 +4,9 @@
 const std = @import("std");
 const AppWindow = @import("../AppWindow.zig");
 const panel = @import("../feishu/registration_panel.zig");
+const ui_pipeline = @import("ui_pipeline.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
 
 fn mix(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
     const amount = @max(0.0, @min(1.0, t));
@@ -90,8 +90,8 @@ pub fn render(window_width: f32, window_height: f32, top_offset: f32) void {
     const detail_y = textYFromTop(window_height, l.panel.top_px + 94);
     _ = titlebar.renderTextLimited(panel.statusDetail(s), l.panel.x + pad_x, detail_y, muted, l.panel.w - pad_x * 2);
 
-    gl_init.renderQuadAlpha(l.qr.x - 10, qr_y - 10, l.qr.w + 20, l.qr.h + 20, qr_border, 0.42);
-    gl_init.renderQuadAlpha(l.qr.x - 8, qr_y - 8, l.qr.w + 16, l.qr.h + 16, qr_bg, 1.0);
+    ui_pipeline.fillQuadAlpha(l.qr.x - 10, qr_y - 10, l.qr.w + 20, l.qr.h + 20, qr_border, 0.42);
+    ui_pipeline.fillQuadAlpha(l.qr.x - 8, qr_y - 8, l.qr.w + 16, l.qr.h + 16, qr_bg, 1.0);
 
     if (panel.qrMatrix()) |matrix| {
         renderQrMatrix(matrix, l.qr, window_height);
@@ -124,7 +124,7 @@ fn renderQrMatrix(matrix: panel.QrMatrixView, rect: panel.Rect, window_height: f
         for (0..matrix.size) |x| {
             if (!matrix.isBlack(x, y)) continue;
             const gl_x = start_x + module_px * @as(f32, @floatFromInt(x));
-            gl_init.renderQuadAlpha(gl_x, gl_y, module_px, module_px, black, 1.0);
+            ui_pipeline.fillQuadAlpha(gl_x, gl_y, module_px, module_px, black, 1.0);
         }
     }
 }

@@ -5,11 +5,8 @@ const AppWindow = @import("../../AppWindow.zig");
 const Surface = @import("../../Surface.zig");
 const titlebar = AppWindow.titlebar;
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
 const primitives = @import("primitives.zig");
 const renderRoundedQuadAlpha = primitives.renderRoundedQuadAlpha;
-
-const c = AppWindow.gpu.c;
 
 pub const RESIZE_OVERLAY_DURATION_MS: i64 = 750; // How long to show after resize stops
 const RESIZE_OVERLAY_FADE_MS: i64 = 150; // Fade out duration

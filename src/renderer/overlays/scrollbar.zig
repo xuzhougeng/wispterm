@@ -4,7 +4,7 @@ const std = @import("std");
 const AppWindow = @import("../../AppWindow.zig");
 const Surface = @import("../../Surface.zig");
 const scrollbar_model = @import("../../scrollbar_model.zig");
-const gl_init = AppWindow.gpu.gl_init;
+const ui_pipeline = @import("../ui_pipeline.zig");
 const primitives = @import("primitives.zig");
 const mixColor = primitives.mixColor;
 
@@ -129,11 +129,11 @@ pub fn renderScrollbarForSurface(surface: *Surface, view_width: f32, view_height
 
     const track_color = mixColor(bg, fg, 0.18);
     const track_alpha = fade * 0.20;
-    gl_init.renderQuadAlpha(bar_x, geo.track_y, bar_w, geo.track_h, track_color, track_alpha);
+    ui_pipeline.fillQuadAlpha(bar_x, geo.track_y, bar_w, geo.track_h, track_color, track_alpha);
 
     const thumb_color = mixColor(bg, fg, 0.46);
     const thumb_alpha = fade * 0.62;
-    gl_init.renderQuadAlpha(bar_x, geo.thumb_y, bar_w, geo.thumb_h, thumb_color, thumb_alpha);
+    ui_pipeline.fillQuadAlpha(bar_x, geo.thumb_y, bar_w, geo.thumb_h, thumb_color, thumb_alpha);
 }
 
 /// Render the scrollbar overlay (uses active surface at full window size).

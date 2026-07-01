@@ -1,8 +1,8 @@
 //! Titlebar rendering — tab bar, caption buttons, bell indicator, placeholder.
 //!
 //! Owns the visual rendering of the tab bar (active/inactive tabs, close buttons,
-//! + button, caption buttons). Uses AppWindow's GL context and shared rendering
-//! primitives. Depends on font module for glyph loading and tab module for state.
+//! + button, caption buttons). Uses shared renderer pipelines owned by the active
+//! GPU backend. Depends on font module for glyph loading and tab module for state.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -10,10 +10,10 @@ const titlebar_layout = @import("titlebar_layout.zig");
 const AppWindow = @import("../AppWindow.zig");
 const ui_pipeline = AppWindow.ui_pipeline;
 const font = AppWindow.font;
+const gpu = AppWindow.gpu;
 const tab = AppWindow.tab;
 const active_tab_state = @import("../appwindow/active_tab.zig");
 const cell_renderer = AppWindow.cell_renderer;
-const gl_init = AppWindow.gpu.gl_init;
 const font_backend = @import("../platform/font_backend.zig");
 const window_backend = @import("../platform/window_backend.zig");
 const agent_detector = @import("../terminal_agents/detector.zig");
@@ -148,7 +148,7 @@ fn renderAgentBadge(detection: agent_detector.Detection, x: f32, text_y: f32, ac
     const bg = blend(AppWindow.g_theme.background, base, if (active) 0.46 else 0.34);
     const fg = blend(.{ 1.0, 1.0, 1.0 }, base, 0.08);
 
-    gl_init.renderQuad(x, badge_y, badge_w, badge_h, bg);
+    ui_pipeline.fillQuad(x, badge_y, badge_w, badge_h, bg);
     _ = renderTextLimited(text, x + (badge_w - text_w) / 2, text_y, fg, badge_w - pad_x * 2);
     return x + badge_w;
 }
@@ -230,9 +230,9 @@ fn renderFallbackMenuIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     const cy = y + h / 2;
     const line_w: f32 = 14;
     const line_h: f32 = 1.5;
-    gl_init.renderQuad(cx - line_w / 2, cy - 5, line_w, line_h, color);
-    gl_init.renderQuad(cx - line_w / 2, cy, line_w, line_h, color);
-    gl_init.renderQuad(cx - line_w / 2, cy + 5, line_w, line_h, color);
+    ui_pipeline.fillQuad(cx - line_w / 2, cy - 5, line_w, line_h, color);
+    ui_pipeline.fillQuad(cx - line_w / 2, cy, line_w, line_h, color);
+    ui_pipeline.fillQuad(cx - line_w / 2, cy + 5, line_w, line_h, color);
 }
 
 fn renderFallbackGearIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
@@ -242,15 +242,15 @@ fn renderFallbackGearIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     const ring: f32 = 12;
     const tooth: f32 = 4;
 
-    gl_init.renderQuad(cx - ring / 2, cy - ring / 2, ring, stroke, color);
-    gl_init.renderQuad(cx - ring / 2, cy + ring / 2 - stroke, ring, stroke, color);
-    gl_init.renderQuad(cx - ring / 2, cy - ring / 2, stroke, ring, color);
-    gl_init.renderQuad(cx + ring / 2 - stroke, cy - ring / 2, stroke, ring, color);
+    ui_pipeline.fillQuad(cx - ring / 2, cy - ring / 2, ring, stroke, color);
+    ui_pipeline.fillQuad(cx - ring / 2, cy + ring / 2 - stroke, ring, stroke, color);
+    ui_pipeline.fillQuad(cx - ring / 2, cy - ring / 2, stroke, ring, color);
+    ui_pipeline.fillQuad(cx + ring / 2 - stroke, cy - ring / 2, stroke, ring, color);
 
-    gl_init.renderQuad(cx - stroke / 2, cy - ring / 2 - tooth, stroke, tooth, color);
-    gl_init.renderQuad(cx - stroke / 2, cy + ring / 2, stroke, tooth, color);
-    gl_init.renderQuad(cx - ring / 2 - tooth, cy - stroke / 2, tooth, stroke, color);
-    gl_init.renderQuad(cx + ring / 2, cy - stroke / 2, tooth, stroke, color);
+    ui_pipeline.fillQuad(cx - stroke / 2, cy - ring / 2 - tooth, stroke, tooth, color);
+    ui_pipeline.fillQuad(cx - stroke / 2, cy + ring / 2, stroke, tooth, color);
+    ui_pipeline.fillQuad(cx - ring / 2 - tooth, cy - stroke / 2, tooth, stroke, color);
+    ui_pipeline.fillQuad(cx + ring / 2, cy - stroke / 2, tooth, stroke, color);
 }
 
 fn renderFallbackHelpIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
@@ -274,11 +274,11 @@ fn renderFallbackCopilotIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void
     const bh: f32 = 11;
     const bx = cx - bw / 2;
     const by = cy - bh / 2 + 1;
-    gl_init.renderQuad(bx, by, bw, stroke, color); // top
-    gl_init.renderQuad(bx, by + bh - stroke, bw, stroke, color); // bottom
-    gl_init.renderQuad(bx, by, stroke, bh, color); // left
-    gl_init.renderQuad(bx + bw - stroke, by, stroke, bh, color); // right
-    gl_init.renderQuad(bx + 3, by - 3, stroke, 3, color); // tail
+    ui_pipeline.fillQuad(bx, by, bw, stroke, color); // top
+    ui_pipeline.fillQuad(bx, by + bh - stroke, bw, stroke, color); // bottom
+    ui_pipeline.fillQuad(bx, by, stroke, bh, color); // left
+    ui_pipeline.fillQuad(bx + bw - stroke, by, stroke, bh, color); // right
+    ui_pipeline.fillQuad(bx + 3, by - 3, stroke, 3, color); // tail
 }
 
 fn renderPlusIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
@@ -293,8 +293,8 @@ fn renderPlusIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     const cy = y + h / 2;
     const arm: f32 = 5;
     const t: f32 = 1.25;
-    gl_init.renderQuad(cx - arm, cy - t / 2, arm * 2, t, color);
-    gl_init.renderQuad(cx - t / 2, cy - arm, t, arm * 2, color);
+    ui_pipeline.fillQuad(cx - arm, cy - t / 2, arm * 2, t, color);
+    ui_pipeline.fillQuad(cx - t / 2, cy - arm, t, arm * 2, color);
 }
 
 pub fn renderCloseIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
@@ -313,8 +313,8 @@ pub fn renderCloseIcon(x: f32, y: f32, w: f32, h: f32, color: [3]f32) void {
     for (0..steps) |si| {
         const frac = @as(f32, @floatFromInt(si)) / @as(f32, @floatFromInt(steps - 1));
         const px = cx - arm + frac * arm * 2;
-        gl_init.renderQuad(px - t / 2, (cy + arm - frac * arm * 2) - t / 2, t, t, color);
-        gl_init.renderQuad(px - t / 2, (cy - arm + frac * arm * 2) - t / 2, t, t, color);
+        ui_pipeline.fillQuad(px - t / 2, (cy + arm - frac * arm * 2) - t / 2, t, t, color);
+        ui_pipeline.fillQuad(px - t / 2, (cy - arm + frac * arm * 2) - t / 2, t, t, color);
     }
 }
 
@@ -420,9 +420,8 @@ pub fn renderIconGlyph(ch: Character, btn_x: f32, btn_y: f32, btn_w: f32, btn_h:
 /// OpenGL Y=0 is BOTTOM, so titlebar top = window_height - titlebar_h.
 pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) void {
     if (titlebar_h <= 0) return;
-    // No GL program/VAO setup here: the ui_pipeline helpers (and gl_init.renderQuad,
-    // which now delegates to ui_pipeline) are self-contained — each binds its own
-    // program + VAO per draw.
+    // The ui_pipeline helpers are self-contained: each binds its own program and
+    // vertex state per draw.
 
     const tb_top = window_height - titlebar_h; // top of titlebar in GL coords
     const bg = AppWindow.g_theme.background;
@@ -437,13 +436,13 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         // Ghostty's apprt action/tab-view split. The top bar now only hosts the
         // sidebar toggle and native caption buttons; tab navigation is rendered by
         // renderSidebar below.
-        gl_init.renderQuad(0, tb_top, window_width, titlebar_h, top_bg);
-        gl_init.renderQuad(0, tb_top, window_width, 1, border_color_simple);
+        ui_pipeline.fillQuad(0, tb_top, window_width, titlebar_h, top_bg);
+        ui_pipeline.fillQuad(0, tb_top, window_width, 1, border_color_simple);
 
         const toggle_x = titlebarLeftReserved();
         const toggle_hovered = mouseInTitlebarRange(titlebar_h, toggle_x, toggle_x + TITLEBAR_TOGGLE_W);
         if (toggle_hovered) {
-            gl_init.renderQuad(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
+            ui_pipeline.fillQuad(toggle_x, tb_top, TITLEBAR_TOGGLE_W, titlebar_h, hover_bg);
         }
         if (font.icon_face != null) {
             if (font.loadIconGlyph(0xE700)) |ch| {
@@ -465,7 +464,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         if (TITLEBAR_CONFIG_W > 0) {
             const config_hovered = mouseInTitlebarRange(titlebar_h, config_x, config_x + TITLEBAR_CONFIG_W);
             if (config_hovered) {
-                gl_init.renderQuad(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
+                ui_pipeline.fillQuad(config_x, tb_top, TITLEBAR_CONFIG_W, titlebar_h, hover_bg);
             }
             if (font.icon_face != null) {
                 if (font.loadIconGlyph(0xE713)) |ch| {
@@ -482,7 +481,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         if (TITLEBAR_HELP_W > 0) {
             const help_hovered = mouseInTitlebarRange(titlebar_h, help_x, help_x + TITLEBAR_HELP_W);
             if (help_hovered) {
-                gl_init.renderQuad(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, hover_bg);
+                ui_pipeline.fillQuad(help_x, tb_top, TITLEBAR_HELP_W, titlebar_h, hover_bg);
             }
             if (font.icon_face != null) {
                 if (font.loadIconGlyph(0xEDA7)) |ch| {
@@ -501,7 +500,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             const copilot_usable = AppWindow.isActiveTabTerminal();
             const copilot_hovered = mouseInTitlebarRange(titlebar_h, copilot_x, copilot_x + TITLEBAR_COPILOT_W);
             if (copilot_hovered and copilot_usable) {
-                gl_init.renderQuad(copilot_x, tb_top, TITLEBAR_COPILOT_W, titlebar_h, hover_bg);
+                ui_pipeline.fillQuad(copilot_x, tb_top, TITLEBAR_COPILOT_W, titlebar_h, hover_bg);
             }
             const copilot_tint = if (!copilot_usable)
                 blend(bg, fg, 0.30) // dimmed: no terminal target
@@ -528,10 +527,10 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             const is_maximized = currentWindowIsMaximized();
             if (is_focused and !is_maximized) {
                 const b: f32 = 1;
-                gl_init.renderQuad(0, 0, window_width, b, bg);
-                gl_init.renderQuad(0, window_height - b, window_width, b, bg);
-                gl_init.renderQuad(0, 0, b, window_height, bg);
-                gl_init.renderQuad(window_width - b, 0, b, window_height, bg);
+                ui_pipeline.fillQuad(0, 0, window_width, b, bg);
+                ui_pipeline.fillQuad(0, window_height - b, window_width, b, bg);
+                ui_pipeline.fillQuad(0, 0, b, window_height, bg);
+                ui_pipeline.fillQuad(window_width - b, 0, b, window_height, bg);
             }
         }
         return;
@@ -568,7 +567,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
     const tab_w: f32 = if (num_tabs > 0) tab_area_w / @as(f32, @floatFromInt(num_tabs)) else tab_area_w;
 
     // --- Tab bar background (same as terminal bg) ---
-    gl_init.renderQuad(0, tb_top, window_width, titlebar_h, bg);
+    ui_pipeline.fillQuad(0, tb_top, window_width, titlebar_h, bg);
 
     // --- Tabs ---
     var cursor_x: f32 = 0;
@@ -629,12 +628,12 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                 @min(1.0, inactive_tab_bg[1] + 0.04),
                 @min(1.0, inactive_tab_bg[2] + 0.04),
             } else inactive_tab_bg;
-            gl_init.renderQuad(cursor_x, tb_top, tab_w, titlebar_h, tab_bg);
+            ui_pipeline.fillQuad(cursor_x, tb_top, tab_w, titlebar_h, tab_bg);
 
             // 1px inset border — left border only (skip on first tab), bottom
-            gl_init.renderQuad(cursor_x, tb_top, tab_w, bdr, border_color); // bottom
+            ui_pipeline.fillQuad(cursor_x, tb_top, tab_w, bdr, border_color); // bottom
             if (tab_idx > 0) {
-                gl_init.renderQuad(cursor_x, tb_top, bdr, titlebar_h, border_color); // left
+                ui_pipeline.fillQuad(cursor_x, tb_top, bdr, titlebar_h, border_color); // left
             }
         }
 
@@ -749,7 +748,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                 if (is_renaming) {
                     if (tab.g_tab_rename_select_all and text_width > 0) {
                         // Highlight behind the text — use cursor color
-                        gl_init.renderQuad(text_start_x, text_y, text_width, font.g_titlebar_cell_height, AppWindow.g_theme.cursor_color);
+                        ui_pipeline.fillQuad(text_start_x, text_y, text_width, font.g_titlebar_cell_height, AppWindow.g_theme.cursor_color);
                         // Re-render text on top in contrasting color
                         const sel_text_color = AppWindow.g_theme.cursor_text orelse AppWindow.g_theme.background;
                         var sel_x = text_start_x;
@@ -761,7 +760,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                         if (!found_cursor) rename_cursor_x = text_x;
                         // Blink the cursor using the existing blink timer
                         if (AppWindow.g_cursor_blink_visible) {
-                            gl_init.renderQuad(rename_cursor_x, text_y, 1.0, font.g_titlebar_cell_height, text_active);
+                            ui_pipeline.fillQuad(rename_cursor_x, text_y, 1.0, font.g_titlebar_cell_height, text_active);
                         }
                     }
                 }
@@ -825,7 +824,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                     const trunc_width = text_x - text_x_start;
                     if (tab.g_tab_rename_select_all and trunc_width > 0) {
                         // Highlight behind the text — use cursor color
-                        gl_init.renderQuad(text_x_start, text_y, trunc_width, font.g_titlebar_cell_height, AppWindow.g_theme.cursor_color);
+                        ui_pipeline.fillQuad(text_x_start, text_y, trunc_width, font.g_titlebar_cell_height, AppWindow.g_theme.cursor_color);
                         // Re-render text on top in contrasting color
                         const sel_text_color = AppWindow.g_theme.cursor_text orelse AppWindow.g_theme.background;
                         var sel_x = text_x_start;
@@ -843,7 +842,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                         // Blink cursor at end (cursor position tracking in truncated
                         // text is approximate — place at end for simplicity)
                         if (AppWindow.g_cursor_blink_visible) {
-                            gl_init.renderQuad(text_x, text_y, 1.0, font.g_titlebar_cell_height, text_active);
+                            ui_pipeline.fillQuad(text_x, text_y, 1.0, font.g_titlebar_cell_height, text_active);
                         }
                     }
                 }
@@ -909,7 +908,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                     const btn_size: f32 = 22;
                     const bx = close_btn_x + (tab.TAB_CLOSE_BTN_W - btn_size) / 2;
                     const by = tb_top + (titlebar_h - btn_size) / 2;
-                    gl_init.renderQuadAlpha(bx, by, btn_size, btn_size, hover_bg, close_opacity);
+                    ui_pipeline.fillQuadAlpha(bx, by, btn_size, btn_size, hover_bg, close_opacity);
                 }
 
                 if (font.icon_face != null) {
@@ -925,8 +924,8 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                     for (0..steps) |si| {
                         const frac = @as(f32, @floatFromInt(si)) / @as(f32, @floatFromInt(steps - 1));
                         const px = cx - arm + frac * arm * 2;
-                        gl_init.renderQuad(px - t / 2, (cy + arm - frac * arm * 2) - t / 2, t, t, faded_close_color);
-                        gl_init.renderQuad(px - t / 2, (cy - arm + frac * arm * 2) - t / 2, t, t, faded_close_color);
+                        ui_pipeline.fillQuad(px - t / 2, (cy + arm - frac * arm * 2) - t / 2, t, t, faded_close_color);
+                        ui_pipeline.fillQuad(px - t / 2, (cy - arm + frac * arm * 2) - t / 2, t, t, faded_close_color);
                     }
                 }
             }
@@ -972,7 +971,7 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
                     const dot_h: f32 = 2;
                     const dot_x = cursor_x + (tab_w - dot_w) / 2;
                     const dot_y = tb_top; // bottom edge of titlebar in GL coords
-                    gl_init.renderQuad(dot_x, dot_y, dot_w, dot_h, dot_color);
+                    ui_pipeline.fillQuad(dot_x, dot_y, dot_w, dot_h, dot_color);
                 }
             }
         }
@@ -986,13 +985,13 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
         const plus_hovered = mouseInTitlebarRange(titlebar_h, cursor_x, cursor_x + plus_btn_w);
 
         if (plus_hovered) {
-            gl_init.renderQuad(cursor_x, tb_top, plus_btn_w, titlebar_h, inactive_tab_bg);
-            gl_init.renderQuad(cursor_x, tb_top, plus_btn_w, bdr, border_color); // bottom
+            ui_pipeline.fillQuad(cursor_x, tb_top, plus_btn_w, titlebar_h, inactive_tab_bg);
+            ui_pipeline.fillQuad(cursor_x, tb_top, plus_btn_w, bdr, border_color); // bottom
         }
 
         // Left border — skip when last tab is active (no visual break needed)
         if (active_tab_state.g_active_tab != num_tabs - 1) {
-            gl_init.renderQuad(cursor_x, tb_top, bdr, titlebar_h, border_color);
+            ui_pipeline.fillQuad(cursor_x, tb_top, bdr, titlebar_h, border_color);
         }
 
         // + icon — same font/color as caption buttons, scaled up 15% to match stroke weight
@@ -1007,8 +1006,8 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             const plus_cy = tb_top + titlebar_h / 2;
             const arm: f32 = 5;
             const t: f32 = 1.0;
-            gl_init.renderQuad(plus_cx - arm, plus_cy - t / 2, arm * 2, t, plus_icon_color);
-            gl_init.renderQuad(plus_cx - t / 2, plus_cy - arm, t, arm * 2, plus_icon_color);
+            ui_pipeline.fillQuad(plus_cx - arm, plus_cy - t / 2, arm * 2, t, plus_icon_color);
+            ui_pipeline.fillQuad(plus_cx - t / 2, plus_cy - arm, t, arm * 2, plus_icon_color);
         }
         // Sync plus button position for double-click suppression in WndProc
         if (AppWindow.g_window) |w| {
@@ -1034,10 +1033,10 @@ pub fn renderTitlebar(window_width: f32, window_height: f32, titlebar_h: f32) vo
             // Same color as active tab (terminal background)
             const accent = bg;
             const b: f32 = 1; // 1px border
-            gl_init.renderQuad(0, 0, window_width, b, accent); // bottom
-            gl_init.renderQuad(0, window_height - b, window_width, b, accent); // top
-            gl_init.renderQuad(0, 0, b, window_height, accent); // left
-            gl_init.renderQuad(window_width - b, 0, b, window_height, accent); // right
+            ui_pipeline.fillQuad(0, 0, window_width, b, accent); // bottom
+            ui_pipeline.fillQuad(0, window_height - b, window_width, b, accent); // top
+            ui_pipeline.fillQuad(0, 0, b, window_height, accent); // left
+            ui_pipeline.fillQuad(window_width - b, 0, b, window_height, accent); // right
         }
     }
 }
@@ -1068,8 +1067,8 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
     const resize_hovered = mouseInRect(sidebar_w - half_resize_hit, titlebar_h, SIDEBAR_RESIZE_HIT_WIDTH, window_height - titlebar_h);
     const edge_color = if (resize_hovered) blend(bg, accent, 0.38) else border_color;
 
-    gl_init.renderQuad(0, 0, sidebar_w, side_h, sidebar_bg);
-    gl_init.renderQuad(sidebar_w - 1, 0, if (resize_hovered) 2 else 1, side_h, edge_color);
+    ui_pipeline.fillQuad(0, 0, sidebar_w, side_h, sidebar_bg);
+    ui_pipeline.fillQuad(sidebar_w - 1, 0, if (resize_hovered) 2 else 1, side_h, edge_color);
 
     const header_top_px = titlebar_h;
     const header_h = sidebarHeaderHeight();
@@ -1079,11 +1078,11 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
     const plus_x = sidebar_w - plus_btn_w - 6;
     const plus_hovered = mouseInRect(plus_x, header_top_px, plus_btn_w, header_h);
     if (plus_hovered) {
-        gl_init.renderQuad(plus_x, header_y + 4, plus_btn_w, header_h - 8, hover_bg);
+        ui_pipeline.fillQuad(plus_x, header_y + 4, plus_btn_w, header_h - 8, hover_bg);
     }
     _ = renderTextLimited("Tabs", 14, header_y + (header_h - font.g_titlebar_cell_height) / 2, header_text, sidebar_w - plus_btn_w - 26);
     renderPlusIcon(plus_x, header_y, plus_btn_w, header_h, text_active);
-    gl_init.renderQuad(0, header_y, sidebar_w, 1, border_color);
+    ui_pipeline.fillQuad(0, header_y, sidebar_w, 1, border_color);
 
     const now_ms = std.time.milliTimestamp();
     const dt: f32 = if (tab.g_last_frame_time_ms > 0)
@@ -1114,10 +1113,10 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         const row_hovered = mouseInRect(0, row_top_px, sidebar_w, row_h);
 
         if (is_active) {
-            gl_init.renderQuad(0, row_y, sidebar_w, row_h, active_bg);
-            gl_init.renderQuad(0, row_y + 6, 3, row_h - 12, AppWindow.g_theme.cursor_color);
+            ui_pipeline.fillQuad(0, row_y, sidebar_w, row_h, active_bg);
+            ui_pipeline.fillQuad(0, row_y + 6, 3, row_h - 12, AppWindow.g_theme.cursor_color);
         } else if (row_hovered) {
-            gl_init.renderQuad(0, row_y, sidebar_w, row_h, hover_bg);
+            ui_pipeline.fillQuad(0, row_y, sidebar_w, row_h, hover_bg);
         }
 
         if (tab.g_tab_count > 1) {
@@ -1215,7 +1214,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
         const text_end = renderTextLimited(title, title_x, text_y, title_color, title_max_w);
 
         if (tab.g_tab_rename_active and tab_idx == tab.g_tab_rename_idx and AppWindow.g_cursor_blink_visible) {
-            gl_init.renderQuad(@min(text_end + 1, title_x + title_max_w), text_y, 1, font.g_titlebar_cell_height, text_active);
+            ui_pipeline.fillQuad(@min(text_end + 1, title_x + title_max_w), text_y, 1, font.g_titlebar_cell_height, text_active);
         }
 
         if (show_bell) {
@@ -1237,7 +1236,7 @@ pub fn renderSidebar(window_width: f32, window_height: f32, titlebar_h: f32) voi
                 raw_color[2] * close_opacity + sidebar_bg[2] * (1 - close_opacity),
             };
             if (close_hovered) {
-                gl_init.renderQuad(close_btn_x + 6, row_y + 10, 20, 20, blend(bg, fg, 0.14));
+                ui_pipeline.fillQuad(close_btn_x + 6, row_y + 10, 20, 20, blend(bg, fg, 0.14));
             }
             renderCloseIcon(close_btn_x, row_y, tab.TAB_CLOSE_BTN_W, row_h, close_color);
         }
@@ -1269,9 +1268,9 @@ pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButt
             const is_focused = if (AppWindow.g_window) |win| window_backend.isFocused(win) else false;
             const is_maximized = currentWindowIsMaximized();
             const b: f32 = if (is_focused and !is_maximized) 1 else 0;
-            gl_init.renderQuad(x, y + b, w - b, h - b, hover_bg);
+            ui_pipeline.fillQuad(x, y + b, w - b, h - b, hover_bg);
         } else {
-            gl_init.renderQuad(x, y, w, h, hover_bg);
+            ui_pipeline.fillQuad(x, y, w, h, hover_bg);
         }
     }
 
@@ -1308,23 +1307,23 @@ pub fn renderCaptionButton(x: f32, y: f32, w: f32, h: f32, btn_type: CaptionButt
                 const frac = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(steps - 1));
                 const px = cx - size + frac * size * 2;
                 const py1 = cy + size - frac * size * 2;
-                gl_init.renderQuad(px - t / 2, py1 - t / 2, t, t, icon_color);
+                ui_pipeline.fillQuad(px - t / 2, py1 - t / 2, t, t, icon_color);
                 const py2 = cy - size + frac * size * 2;
-                gl_init.renderQuad(px - t / 2, py2 - t / 2, t, t, icon_color);
+                ui_pipeline.fillQuad(px - t / 2, py2 - t / 2, t, t, icon_color);
             }
         },
         .maximize => {
             const size: f32 = 5;
             const t: f32 = 1;
-            gl_init.renderQuad(cx - size, cy + size - t, size * 2, t, icon_color); // top
-            gl_init.renderQuad(cx - size, cy - size, size * 2, t, icon_color); // bottom
-            gl_init.renderQuad(cx - size, cy - size, t, size * 2, icon_color); // left
-            gl_init.renderQuad(cx + size - t, cy - size, t, size * 2, icon_color); // right
+            ui_pipeline.fillQuad(cx - size, cy + size - t, size * 2, t, icon_color); // top
+            ui_pipeline.fillQuad(cx - size, cy - size, size * 2, t, icon_color); // bottom
+            ui_pipeline.fillQuad(cx - size, cy - size, t, size * 2, icon_color); // left
+            ui_pipeline.fillQuad(cx + size - t, cy - size, t, size * 2, icon_color); // right
         },
         .minimize => {
             const size: f32 = 5;
             const t: f32 = 1;
-            gl_init.renderQuad(cx - size, cy - t / 2, size * 2, t, icon_color);
+            ui_pipeline.fillQuad(cx - size, cy - t / 2, size * 2, t, icon_color);
         },
     }
 }

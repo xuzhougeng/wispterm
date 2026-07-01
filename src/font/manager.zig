@@ -2,7 +2,7 @@
 //!
 //! Owns all font state: FreeType faces, glyph caches, font atlases,
 //! HarfBuzz shaping, fallback font discovery, and cell metrics.
-//! Uses AppWindow's GL context for GPU texture operations.
+//! Uses AppWindow's GPU context for texture operations.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -17,7 +17,6 @@ const AppWindow = @import("../AppWindow.zig");
 const render_diagnostics = @import("../render_diagnostics.zig");
 
 const gpu = AppWindow.gpu;
-const c = gpu.c;
 
 /// Hard ceiling on a single glyph bitmap dimension (in pixels).
 ///
@@ -91,17 +90,17 @@ pub threadlocal var icon_cache: std.AutoHashMapUnmanaged(u32, Character) = .empt
 
 // Font atlas — single texture for all glyphs (replaces per-glyph textures)
 pub threadlocal var g_atlas: ?FontAtlas = null;
-pub threadlocal var g_atlas_texture: c.GLuint = 0;
+pub threadlocal var g_atlas_texture: gpu.Texture = gpu.Texture.invalid();
 pub threadlocal var g_atlas_modified: usize = 0; // Last synced modified counter
 
 // Color atlas — BGRA texture for color emoji (like Ghostty's separate color atlas)
 pub threadlocal var g_color_atlas: ?FontAtlas = null;
-pub threadlocal var g_color_atlas_texture: c.GLuint = 0;
+pub threadlocal var g_color_atlas_texture: gpu.Texture = gpu.Texture.invalid();
 pub threadlocal var g_color_atlas_modified: usize = 0;
 
 // Icon atlas — separate atlas for caption button icons
 pub threadlocal var g_icon_atlas: ?FontAtlas = null;
-pub threadlocal var g_icon_atlas_texture: c.GLuint = 0;
+pub threadlocal var g_icon_atlas_texture: gpu.Texture = gpu.Texture.invalid();
 pub threadlocal var g_icon_atlas_modified: usize = 0;
 
 // UI font — separate face/cache/atlas derived from the terminal font size.
@@ -109,7 +108,7 @@ pub threadlocal var g_icon_atlas_modified: usize = 0;
 pub threadlocal var g_titlebar_face: ?freetype.Face = null;
 pub threadlocal var g_titlebar_cache: std.AutoHashMapUnmanaged(u32, Character) = .empty;
 pub threadlocal var g_titlebar_atlas: ?FontAtlas = null;
-pub threadlocal var g_titlebar_atlas_texture: c.GLuint = 0;
+pub threadlocal var g_titlebar_atlas_texture: gpu.Texture = gpu.Texture.invalid();
 pub threadlocal var g_titlebar_atlas_modified: usize = 0;
 pub threadlocal var g_titlebar_cell_width: f32 = 8;
 pub threadlocal var g_titlebar_cell_height: f32 = 14;
@@ -745,38 +744,33 @@ pub fn atlasSyncPending() bool {
 
 /// Sync the font atlas CPU data to the GPU texture.
 /// Called once per frame before rendering. Only uploads if the atlas was modified.
-/// Supports both grayscale (GL_RED) and BGRA (GL_RGBA) atlas formats.
-pub fn syncAtlasTexture(atlas_ptr: *?FontAtlas, texture_ptr: *c.GLuint, modified_ptr: *usize) void {
+/// Supports both grayscale and BGRA atlas formats.
+pub fn syncAtlasTexture(atlas_ptr: *?FontAtlas, texture_ptr: *gpu.Texture, modified_ptr: *usize) void {
     const atlas = atlas_ptr.*.?;
     const modified = atlas.modified.load(.monotonic);
     if (modified <= modified_ptr.*) return;
 
     const size: c_int = @intCast(atlas.size);
 
-    // Pick GL format based on atlas pixel format.
-    // FreeType color emoji bitmaps are BGRA byte order, so we upload with GL_BGRA
-    // which tells OpenGL to swizzle B↔R on upload, giving us proper RGBA in the texture.
-    const gl_internal: c.GLenum = if (atlas.format == .bgra) c.GL_RGBA8 else c.GL_RED;
-    const gl_format: c.GLenum = if (atlas.format == .bgra) c.GL_BGRA else c.GL_RED;
+    // FreeType color emoji bitmaps are BGRA byte order; the active backend
+    // maps that source layout to its native texture upload path.
+    const texture_format: gpu.TextureFormat = if (atlas.format == .bgra) .bgra8 else .r8;
     const upload_opts = gpu.Texture.Upload{
-        .internal_format = gl_internal,
-        .format = gl_format,
-        .filter = .linear,
-        .wrap = .clamp_to_edge,
+        .format = texture_format,
+        .sampler = .linear_clamp,
         .unpack_alignment = 1,
     };
 
-    if (texture_ptr.* == 0) {
+    if (!texture_ptr.*.isValid()) {
         const tex = gpu.Texture.create();
-        texture_ptr.* = tex.handle;
+        texture_ptr.* = tex;
         tex.upload2D(size, size, atlas.data.ptr, upload_opts);
     } else {
-        const tex = gpu.Texture.fromHandle(texture_ptr.*);
+        const tex = texture_ptr.*;
         if (tex.levelWidth() < size) {
-            var old = tex;
-            old.destroy();
+            texture_ptr.*.destroy();
             const new_tex = gpu.Texture.create();
-            texture_ptr.* = new_tex.handle;
+            texture_ptr.* = new_tex;
             new_tex.upload2D(size, size, atlas.data.ptr, upload_opts);
         } else {
             tex.subImage2D(0, 0, size, size, atlas.data.ptr, upload_opts);
@@ -1594,8 +1588,8 @@ fn atlasCpuBytes(atlas: ?FontAtlas) usize {
     return if (atlas) |a| a.data.len else 0;
 }
 
-fn atlasGpuBytes(atlas: ?FontAtlas, texture: c.GLuint) usize {
-    if (texture == 0) return 0;
+fn atlasGpuBytes(atlas: ?FontAtlas, texture: gpu.Texture) usize {
+    if (!texture.isValid()) return 0;
     return atlasCpuBytes(atlas);
 }
 
@@ -1627,7 +1621,7 @@ pub fn memoryStats() MemoryStats {
     };
 }
 
-/// Clear all GL textures from the glyph cache and reset it.
+/// Clear all GPU textures from the glyph cache and reset it.
 pub fn clearGlyphCache(allocator: std.mem.Allocator) void {
     glyph_cache.deinit(allocator);
     glyph_cache = .empty;
@@ -1639,10 +1633,9 @@ pub fn clearGlyphCache(allocator: std.mem.Allocator) void {
         a.deinit(allocator);
         g_atlas = null;
     }
-    if (g_atlas_texture != 0) {
-        var t = gpu.Texture.fromHandle(g_atlas_texture);
-        t.destroy();
-        g_atlas_texture = 0;
+    if (g_atlas_texture.isValid()) {
+        g_atlas_texture.destroy();
+        g_atlas_texture = gpu.Texture.invalid();
         g_atlas_modified = 0;
     }
 
@@ -1651,10 +1644,9 @@ pub fn clearGlyphCache(allocator: std.mem.Allocator) void {
         a.deinit(allocator);
         g_color_atlas = null;
     }
-    if (g_color_atlas_texture != 0) {
-        var t = gpu.Texture.fromHandle(g_color_atlas_texture);
-        t.destroy();
-        g_color_atlas_texture = 0;
+    if (g_color_atlas_texture.isValid()) {
+        g_color_atlas_texture.destroy();
+        g_color_atlas_texture = gpu.Texture.invalid();
         g_color_atlas_modified = 0;
     }
 }

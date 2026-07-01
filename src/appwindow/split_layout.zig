@@ -9,7 +9,6 @@ const tab = AppWindow.tab;
 const input = AppWindow.input;
 const overlays = AppWindow.overlays;
 const font = AppWindow.font;
-const gl_init = AppWindow.gpu.gl_init;
 const Surface = @import("../Surface.zig");
 const SplitTree = @import("../split_tree.zig");
 const renderer = @import("../renderer.zig");
