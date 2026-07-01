@@ -117,6 +117,31 @@ test "parseServersConfig reads command, args and the enabled flag in order" {
     try std.testing.expectEqual(@as(usize, 0), servers[1].args.len);
 }
 
+/// Serialize `servers` back to `{"mcpServers":{...}}` text (owned, ends in
+/// `\n`). Inverse of `parseServersConfig`: a disabled server gets an explicit
+/// `"enabled":false`; enabled is the default so it's omitted.
+pub fn writeServersConfig(allocator: std.mem.Allocator, servers: []const ServerConfig) ![]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var root = std.json.ObjectMap.init(aa);
+    var servers_obj = std.json.ObjectMap.init(aa);
+    for (servers) |s| {
+        var entry = std.json.ObjectMap.init(aa);
+        try entry.put("command", .{ .string = s.command });
+        var arr = std.json.Array.init(aa);
+        for (s.args) |arg| try arr.append(.{ .string = arg });
+        try entry.put("args", .{ .array = arr });
+        if (!s.enabled) try entry.put("enabled", .{ .bool = false });
+        try servers_obj.put(s.name, .{ .object = entry });
+    }
+    try root.put("mcpServers", .{ .object = servers_obj });
+
+    const body = try std.json.Stringify.valueAlloc(aa, std.json.Value{ .object = root }, .{});
+    return std.fmt.allocPrint(allocator, "{s}\n", .{body});
+}
+
 test "parseServersConfig returns empty for a missing key or malformed json" {
     const a = std.testing.allocator;
     const empty = try parseServersConfig(a, "{}");
@@ -125,6 +150,38 @@ test "parseServersConfig returns empty for a missing key or malformed json" {
     const bad = try parseServersConfig(a, "not json");
     defer freeServersConfig(a, bad);
     try std.testing.expectEqual(@as(usize, 0), bad.len);
+}
+
+test "writeServersConfig round-trips through parseServersConfig" {
+    const a = std.testing.allocator;
+    var args0 = [_][]u8{ @constCast("-y"), @constCast("pkg") };
+    const servers = [_]ServerConfig{
+        .{ .name = @constCast("ctx7"), .command = @constCast("npx"), .args = args0[0..], .enabled = true },
+        .{ .name = @constCast("off"), .command = @constCast("foo"), .args = &.{}, .enabled = false },
+    };
+    const json = try writeServersConfig(a, servers[0..]);
+    defer a.free(json);
+    // enabled:true omitted, false emitted
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"enabled\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"enabled\":true") == null);
+    // parse it back
+    const back = try parseServersConfig(a, json);
+    defer freeServersConfig(a, back);
+    try std.testing.expectEqual(@as(usize, 2), back.len);
+    try std.testing.expectEqualStrings("ctx7", back[0].name);
+    try std.testing.expectEqualStrings("npx", back[0].command);
+    try std.testing.expectEqual(@as(usize, 2), back[0].args.len);
+    try std.testing.expect(back[0].enabled);
+    try std.testing.expect(!back[1].enabled);
+}
+
+test "writeServersConfig with no servers is an empty mcpServers object" {
+    const a = std.testing.allocator;
+    const json = try writeServersConfig(a, &.{});
+    defer a.free(json);
+    const back = try parseServersConfig(a, json);
+    defer freeServersConfig(a, back);
+    try std.testing.expectEqual(@as(usize, 0), back.len);
 }
 
 /// Extract the inner `properties` map from a full JSON-Schema `inputSchema`,
