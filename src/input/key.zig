@@ -19,6 +19,7 @@ pub const Key = enum {
     arrow_right,
     key_a,
     key_c,
+    key_d,
     key_e,
     key_h,
     key_k,

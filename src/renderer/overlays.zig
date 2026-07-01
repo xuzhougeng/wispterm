@@ -2507,6 +2507,87 @@ fn openMcpServersFromCommandPalette() void {
     mcpState().open(allocator);
 }
 
+pub fn mcpServersVisible() bool {
+    return mcpState().visible;
+}
+
+/// Append one printable-ASCII byte to `field`, going through the existing
+/// `formField`/`setFormField` pair rather than reaching into mcp_servers'
+/// buffers directly. Mirrors appendSshFormText's append semantics, just
+/// expressed against a State that only exposes whole-field get/set.
+fn appendMcpFormChar(field: mcp_servers.Field, ch: u8) void {
+    const current = mcpState().formField(field);
+    if (current.len >= mcp_servers.FIELD_MAX) return;
+    var buf: [mcp_servers.FIELD_MAX]u8 = undefined;
+    @memcpy(buf[0..current.len], current);
+    buf[current.len] = ch;
+    mcpState().setFormField(field, buf[0 .. current.len + 1]);
+}
+
+fn backspaceMcpFormField(field: mcp_servers.Field) void {
+    const current = mcpState().formField(field);
+    if (current.len == 0) return;
+    var buf: [mcp_servers.FIELD_MAX]u8 = undefined;
+    @memcpy(buf[0 .. current.len - 1], current[0 .. current.len - 1]);
+    mcpState().setFormField(field, buf[0 .. current.len - 1]);
+}
+
+/// Typed-character input into the MCP form's focused field. Only the form
+/// view accepts free text (list/json_preview are navigation-only); mirrors
+/// sessionLauncherInsertChar's per-overlay gating.
+pub fn mcpServersInsertChar(codepoint: u21) void {
+    if (mcpState().view != .form) return;
+    if (codepoint < 0x20 or codepoint >= 0x7f) return; // printable ASCII only, like appendSshFormText
+    appendMcpFormChar(mcpState().form_focus, @intCast(codepoint));
+}
+
+/// Keyboard handling for the MCP servers panel. Navigation/control keys only
+/// (arrows, tab, enter, escape, backspace, and the list's letter shortcuts);
+/// free-text typing into form fields arrives separately via
+/// mcpServersInsertChar. The probe/"Test" (`t`) key is deliberately not
+/// wired here — that is a separate follow-up task.
+pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
+    const st = mcpState();
+    switch (st.view) {
+        .list => switch (ev.key) {
+            .arrow_up => st.moveSelection(-1),
+            .arrow_down => st.moveSelection(1),
+            .enter => if (st.count > 0) st.beginEdit(st.list_selected),
+            .key_a => st.beginAdd(),
+            .key_d => st.removeSelected(),
+            .space => st.toggleSelected(),
+            .tab => st.view = .json_preview,
+            .key_s => {
+                if (!ev.ctrlOnly(.key_s)) return .none;
+                const allocator = AppWindow.g_allocator orelse return .none;
+                st.save(allocator) catch {};
+                ai_chat.reloadMcpTools(allocator);
+            },
+            .escape => st.visible = false,
+            else => return .none,
+        },
+        .form => switch (ev.key) {
+            .tab => st.form_focus = st.form_focus.next(),
+            .backspace => backspaceMcpFormField(st.form_focus),
+            .enter => {
+                st.commitForm() catch |err| {
+                    st.form_error = err;
+                    return .repaint;
+                };
+                st.form_error = null;
+                st.view = .list;
+            },
+            .escape => st.view = .list,
+            else => return .none,
+        },
+        .json_preview => switch (ev.key) {
+            .tab, .escape => st.view = .list,
+            else => return .none,
+        },
+    }
+    return .repaint;
+}
+
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
     if (codepoint < 0x20 or codepoint == 0x7f) return;
     if (feishuForm().visible) {

@@ -26,7 +26,20 @@ pub const Server = struct {
 pub const View = enum { list, form, json_preview };
 
 /// Form field identifiers, indexed into `State.form_bufs`/`form_lens`.
-pub const Field = enum { name, command, args };
+pub const Field = enum {
+    name,
+    command,
+    args,
+
+    /// Tab order: name -> command -> args -> name.
+    pub fn next(self: Field) Field {
+        return switch (self) {
+            .name => .command,
+            .command => .args,
+            .args => .name,
+        };
+    }
+};
 const FORM_FIELD_COUNT = @typeInfo(Field).@"enum".fields.len;
 
 pub const FormError = error{ EmptyName, DuplicateName, EmptyCommand, Full };
@@ -60,6 +73,12 @@ pub const State = struct {
     form_bufs: [FORM_FIELD_COUNT][FIELD_MAX]u8 = undefined,
     form_lens: [FORM_FIELD_COUNT]usize = .{0} ** FORM_FIELD_COUNT,
     editing_index: usize = EDIT_INDEX_NONE,
+    /// Which form field currently has keyboard focus; Tab cycles it.
+    form_focus: Field = .name,
+    /// Set when `commitForm` fails, so the input handler can keep the form
+    /// open instead of returning to the list. A later task renders this;
+    /// cleared by `beginAdd`, `beginEdit`, and a successful commit.
+    form_error: ?FormError = null,
     /// Set by `save` on success; the caller (input handler) reads and clears
     /// this to show a one-shot "Saved" confirmation.
     saved: bool = false,
@@ -124,6 +143,8 @@ pub const State = struct {
     pub fn beginAdd(self: *State) void {
         self.form_lens = .{0} ** FORM_FIELD_COUNT;
         self.editing_index = EDIT_INDEX_NONE;
+        self.form_focus = .name;
+        self.form_error = null;
         self.view = .form;
     }
 
@@ -133,6 +154,8 @@ pub const State = struct {
         self.setFormField(.command, self.servers[index].command[0..self.servers[index].command_len]);
         self.setFormField(.args, self.serverArgs(index));
         self.editing_index = index;
+        self.form_focus = .name;
+        self.form_error = null;
         self.view = .form;
     }
 
@@ -263,6 +286,12 @@ fn setBuf(buf: []u8, len_ptr: *usize, src: []const u8) void {
     const len = @min(src.len, buf.len);
     @memcpy(buf[0..len], src[0..len]);
     len_ptr.* = len;
+}
+
+test "Field.next cycles name -> command -> args -> name" {
+    try std.testing.expectEqual(Field.command, Field.name.next());
+    try std.testing.expectEqual(Field.args, Field.command.next());
+    try std.testing.expectEqual(Field.name, Field.args.next());
 }
 
 test "add a server through the form" {

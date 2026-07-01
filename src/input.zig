@@ -2675,6 +2675,13 @@ fn dispatchChar(ev: platform_input.CharEvent) ui_effect.UiEffect {
         }
         return .none;
     }
+    if (overlays.mcpServersVisible()) {
+        if (!ev.ctrl and !ev.alt) {
+            overlays.mcpServersInsertChar(ev.codepoint);
+            return input_effects.repaint();
+        }
+        return .none;
+    }
     if (overlays.commandPaletteVisible()) {
         const effect = command_palette_input.charEffect(ev);
         if (effect.needs_rebuild) overlays.commandPaletteInsertChar(ev.codepoint);
@@ -2823,6 +2830,7 @@ fn logicalKeyFromCode(key_code: platform_input.KeyCode) input_key.Key {
         platform_input.key_right => .arrow_right,
         0x41 => .key_a,
         0x43 => .key_c,
+        0x44 => .key_d,
         0x45 => .key_e,
         0x48 => .key_h,
         0x4B => .key_k,
@@ -3074,6 +3082,9 @@ fn dispatchKey(ev: platform_input.KeyEvent) ui_effect.UiEffect {
             return if (pasteClipboardIntoSessionLauncher()) .repaint else .none;
         }
         return overlays.sessionLauncherHandleKey(key_event);
+    }
+    if (overlays.mcpServersVisible()) {
+        return overlays.mcpServersHandleKey(key_event);
     }
     if (action) |app_action| {
         if (handleConfiguredKeybindAction(app_action, .early)) return .none;
