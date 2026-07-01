@@ -26,6 +26,24 @@ pub const SshAuthMethod = enum {
             .credentials => "credentials",
         };
     }
+
+    /// Cycle to the next/previous auth method (wraps). Used by the SSH profile
+    /// form so the auth-method field is a ←/→ toggle over valid values instead
+    /// of a free-text field.
+    pub fn cycle(self: SshAuthMethod, forward: bool) SshAuthMethod {
+        if (forward) {
+            return switch (self) {
+                .password => .key,
+                .key => .credentials,
+                .credentials => .password,
+            };
+        }
+        return switch (self) {
+            .password => .credentials,
+            .key => .password,
+            .credentials => .key,
+        };
+    }
 };
 
 pub const SshConnection = struct {
@@ -146,4 +164,14 @@ test "fromParts supports explicit key auth" {
     try std.testing.expectEqual(SshAuthMethod.key, c.auth_method);
     try std.testing.expectEqualStrings("C:/Users/alice/.ssh/id_ed25519", c.identityFile());
     try std.testing.expect(!c.password_auth);
+}
+
+test "SshAuthMethod.cycle wraps forward and backward over all three methods" {
+    try std.testing.expectEqual(SshAuthMethod.key, SshAuthMethod.password.cycle(true));
+    try std.testing.expectEqual(SshAuthMethod.credentials, SshAuthMethod.key.cycle(true));
+    try std.testing.expectEqual(SshAuthMethod.password, SshAuthMethod.credentials.cycle(true));
+
+    try std.testing.expectEqual(SshAuthMethod.credentials, SshAuthMethod.password.cycle(false));
+    try std.testing.expectEqual(SshAuthMethod.password, SshAuthMethod.key.cycle(false));
+    try std.testing.expectEqual(SshAuthMethod.key, SshAuthMethod.credentials.cycle(false));
 }
