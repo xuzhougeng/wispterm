@@ -9,6 +9,7 @@ pub const CommandAction = enum {
     new_agent,
     toggle_ai_copilot,
     manage_ai_profiles,
+    manage_mcp_servers,
     select_agent_history,
     split_right,
     split_down,
@@ -63,6 +64,7 @@ pub const command_entries = [_]CommandEntry{
     .{ .title = "New Copilot", .detail = "Open a new Copilot tab with the default AI config", .shortcut = "", .action = .new_agent },
     .{ .title = "Toggle Copilot", .detail = "Open or close the Copilot sidebar on the current terminal", .shortcut = "", .action = .toggle_ai_copilot },
     .{ .title = "Manage AI Profiles", .detail = "Create, edit, or delete saved AI profiles", .shortcut = "", .action = .manage_ai_profiles },
+    .{ .title = "MCP Servers", .detail = "Add, edit, test, or remove MCP tool servers", .shortcut = "", .action = .manage_mcp_servers },
     .{ .title = "Copilot History", .detail = "Open the command-center Copilot history picker", .shortcut = "", .action = .select_agent_history },
     .{ .title = "Skill Center", .detail = "Manage Claude Code / Codex skills and local executable tools", .shortcut = "", .action = .open_skill_center },
     .{ .title = "Split Right", .detail = "Create a panel to the right", .shortcut = "", .action = .split_right },
@@ -337,6 +339,10 @@ test "command center exposes Toggle Copilot" {
 
 test "command center includes Manage AI Profiles action" {
     try expectCommandEntry("Manage AI Profiles", .manage_ai_profiles);
+}
+
+test "command center includes MCP Servers action" {
+    try expectCommandEntry("MCP Servers", .manage_mcp_servers);
 }
 
 test "command center includes Copilot History action" {

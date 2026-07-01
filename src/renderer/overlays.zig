@@ -42,6 +42,7 @@ const settings_page = @import("overlays/settings_page.zig");
 const toasts = @import("overlays/toasts.zig");
 const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
+const mcp_servers = @import("overlays/mcp_servers.zig");
 const assistant_profiles = @import("overlays/assistant_profiles.zig");
 const feishu_config = @import("overlays/feishu_config.zig");
 const quick_ai_config = @import("overlays/quick_ai_config.zig");
@@ -119,6 +120,10 @@ fn confirmState() *confirm_modals.State {
 
 fn sshState() *ssh_profiles.State {
     return &g_overlay_state.ssh;
+}
+
+fn mcpState() *mcp_servers.State {
+    return &g_overlay_state.mcp;
 }
 
 fn assistantProfiles() *assistant_profiles.State {
@@ -669,6 +674,7 @@ fn executeCommand(action: CommandAction) void {
         .new_agent => openDefaultAgentSessionFromCommandCenter(),
         .toggle_ai_copilot => AppWindow.toggleAiCopilot(),
         .manage_ai_profiles => openAiListFromCommandPalette(),
+        .manage_mcp_servers => openMcpServersFromCommandPalette(),
         .select_agent_history => commandPaletteOpenAgentHistory(),
         .split_right => AppWindow.splitFocused(.right),
         .split_down => AppWindow.splitFocused(.down),
@@ -2494,6 +2500,11 @@ fn markSessionLauncherReturnToCommandPalette() void {
 fn openAiListFromCommandPalette() void {
     openAiList();
     markSessionLauncherReturnToCommandPalette();
+}
+
+fn openMcpServersFromCommandPalette() void {
+    const allocator = AppWindow.g_allocator orelse return;
+    mcpState().open(allocator);
 }
 
 pub fn sessionLauncherInsertChar(codepoint: u21) void {
