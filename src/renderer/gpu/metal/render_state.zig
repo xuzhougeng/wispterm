@@ -115,7 +115,11 @@ pub fn swapDiagnostics() ?SwapDiagnostics {
 }
 
 fn blendSnapshot() types.BlendSnapshot {
-    const factors = switch (blend_mode) {
+    const BlendFactors = struct {
+        src: types.BlendFactor,
+        dst: types.BlendFactor,
+    };
+    const factors: BlendFactors = switch (blend_mode) {
         .alpha => .{
             .src = types.BlendFactor.src_alpha,
             .dst = types.BlendFactor.one_minus_src_alpha,
