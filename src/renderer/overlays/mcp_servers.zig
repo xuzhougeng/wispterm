@@ -24,12 +24,25 @@ pub const Server = struct {
 
 pub const View = enum { list, form, json_preview };
 
+/// Form field identifiers, indexed into `State.form_bufs`/`form_lens`.
+pub const Field = enum { name, command, args };
+const FORM_FIELD_COUNT = @typeInfo(Field).@"enum".fields.len;
+
+pub const FormError = error{ EmptyName, DuplicateName, EmptyCommand };
+
+/// Sentinel for `editing_index`: no server is being edited (an add, not
+/// an edit).
+pub const EDIT_INDEX_NONE: usize = std.math.maxInt(usize);
+
 pub const State = struct {
     visible: bool = false,
     view: View = .list,
     servers: [MCP_SERVER_MAX]Server = undefined,
     count: usize = 0,
     list_selected: usize = 0,
+    form_bufs: [FORM_FIELD_COUNT][FIELD_MAX]u8 = undefined,
+    form_lens: [FORM_FIELD_COUNT]usize = .{0} ** FORM_FIELD_COUNT,
+    editing_index: usize = EDIT_INDEX_NONE,
 
     /// Reset to defaults and load `<config-dir>/mcp.json` into `servers`.
     /// A missing/unreadable config file yields zero servers (not an error).
@@ -70,6 +83,80 @@ pub const State = struct {
     pub fn serverName(self: *const State, i: usize) []const u8 {
         return self.servers[i].name[0..self.servers[i].name_len];
     }
+
+    pub fn serverArgs(self: *const State, i: usize) []const u8 {
+        return self.servers[i].args[0..self.servers[i].args_len];
+    }
+
+    pub fn formField(self: *const State, field: Field) []const u8 {
+        const idx = @intFromEnum(field);
+        return self.form_bufs[idx][0..self.form_lens[idx]];
+    }
+
+    pub fn setFormField(self: *State, field: Field, value: []const u8) void {
+        const idx = @intFromEnum(field);
+        setBuf(&self.form_bufs[idx], &self.form_lens[idx], value);
+    }
+
+    /// Clear the form and switch to it, ready to add a new server.
+    pub fn beginAdd(self: *State) void {
+        self.form_lens = .{0} ** FORM_FIELD_COUNT;
+        self.editing_index = EDIT_INDEX_NONE;
+        self.view = .form;
+    }
+
+    /// Populate the form from `servers[index]` and switch to it.
+    pub fn beginEdit(self: *State, index: usize) void {
+        self.setFormField(.name, self.serverName(index));
+        self.setFormField(.command, self.servers[index].command[0..self.servers[index].command_len]);
+        self.setFormField(.args, self.serverArgs(index));
+        self.editing_index = index;
+        self.view = .form;
+    }
+
+    /// Validate the form (non-empty unique name, non-empty command) and
+    /// write it into `servers`: appends when adding, overwrites in place
+    /// when `editing_index` was set by `beginEdit`. The duplicate-name
+    /// check skips `editing_index` so editing a server keeps its own name.
+    pub fn commitForm(self: *State) FormError!void {
+        const name = self.formField(.name);
+        if (name.len == 0) return error.EmptyName;
+        const command = self.formField(.command);
+        if (command.len == 0) return error.EmptyCommand;
+        for (0..self.count) |i| {
+            if (i == self.editing_index) continue;
+            if (std.mem.eql(u8, self.serverName(i), name)) return error.DuplicateName;
+        }
+
+        const target: *Server = if (self.editing_index != EDIT_INDEX_NONE)
+            &self.servers[self.editing_index]
+        else blk: {
+            self.count += 1;
+            break :blk &self.servers[self.count - 1];
+        };
+        target.* = .{};
+        setBuf(&target.name, &target.name_len, name);
+        setBuf(&target.command, &target.command_len, command);
+        setBuf(&target.args, &target.args_len, self.formField(.args));
+    }
+
+    /// Remove `servers[list_selected]`, shifting later entries down.
+    pub fn removeSelected(self: *State) void {
+        if (self.list_selected >= self.count) return;
+        for (self.list_selected..self.count - 1) |i| {
+            self.servers[i] = self.servers[i + 1];
+        }
+        self.count -= 1;
+        if (self.list_selected >= self.count and self.count > 0) {
+            self.list_selected = self.count - 1;
+        }
+    }
+
+    /// Flip `enabled` on `servers[list_selected]`.
+    pub fn toggleSelected(self: *State) void {
+        if (self.list_selected >= self.count) return;
+        self.servers[self.list_selected].enabled = !self.servers[self.list_selected].enabled;
+    }
 };
 
 /// Truncate-copy `src` into `buf`, recording the copied length in `len_ptr`.
@@ -77,6 +164,48 @@ fn setBuf(buf: []u8, len_ptr: *usize, src: []const u8) void {
     const len = @min(src.len, buf.len);
     @memcpy(buf[0..len], src[0..len]);
     len_ptr.* = len;
+}
+
+test "add a server through the form" {
+    var s: State = .{};
+    s.beginAdd();
+    s.setFormField(.name, "gh");
+    s.setFormField(.command, "github-mcp");
+    s.setFormField(.args, "stdio --verbose");
+    try s.commitForm();
+    try std.testing.expectEqual(@as(usize, 1), s.count);
+    try std.testing.expectEqualStrings("gh", s.serverName(0));
+    try std.testing.expectEqualStrings("stdio --verbose", s.serverArgs(0));
+    try std.testing.expect(s.servers[0].enabled);
+}
+
+test "form rejects empty name, empty command, and duplicate name" {
+    var s: State = .{};
+    s.beginAdd();
+    s.setFormField(.command, "x");
+    try std.testing.expectError(error.EmptyName, s.commitForm());
+    s.setFormField(.name, "a");
+    s.setFormField(.command, "");
+    try std.testing.expectError(error.EmptyCommand, s.commitForm());
+    s.setFormField(.command, "x");
+    try s.commitForm(); // "a" added
+    s.beginAdd();
+    s.setFormField(.name, "a");
+    s.setFormField(.command, "y");
+    try std.testing.expectError(error.DuplicateName, s.commitForm());
+}
+
+test "toggle and remove the selected server" {
+    var s: State = .{};
+    s.beginAdd();
+    s.setFormField(.name, "a");
+    s.setFormField(.command, "x");
+    try s.commitForm();
+    s.list_selected = 0;
+    s.toggleSelected();
+    try std.testing.expect(!s.servers[0].enabled);
+    s.removeSelected();
+    try std.testing.expectEqual(@as(usize, 0), s.count);
 }
 
 test "open loads servers from the config dir and clamps selection" {
