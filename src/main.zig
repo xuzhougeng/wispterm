@@ -234,6 +234,10 @@ pub fn main() !void {
     defer ai_chat.deinitAccessRules();
     defer app.deinit();
     ai_chat.loadAccessRules(allocator);
+    // Discover external MCP servers from <configDir>/mcp.json (no-op when absent).
+    // ponytail: synchronous discovery at startup; move off-thread if a slow
+    // server ever delays launch.
+    ai_chat.reloadMcpTools(allocator);
 
     // App now lives at a stable address; start app-owned background services
     // before opening the first window.

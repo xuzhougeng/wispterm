@@ -11,9 +11,12 @@ const builtin = @import("builtin");
 const mcp_client = @import("../agent_tools/mcp_client.zig");
 const ai_chat_protocol = @import("../assistant/conversation/protocol.zig");
 const ai_chat_types = @import("../assistant/conversation/types.zig");
+const platform_dirs = @import("../platform/dirs.zig");
 
 const McpToolSpec = ai_chat_protocol.McpToolSpec;
 const McpTool = ai_chat_types.McpTool;
+
+const MAX_MCP_CONFIG_BYTES: usize = 256 * 1024;
 
 /// One configured MCP server. All fields owned.
 pub const ServerConfig = struct {
@@ -308,4 +311,125 @@ test "discover skips a disabled server" {
     defer freeSnapshots(a, snap);
     try std.testing.expectEqual(@as(usize, 0), snap.specs.len);
     try std.testing.expectEqual(@as(usize, 0), snap.tools.len);
+}
+
+// ---------------------------------------------------------------------------
+// Session-lifetime cache. Lives here (a feature-owned module) rather than as
+// fresh top-level globals in the session monolith — see global_state_guard.
+// ---------------------------------------------------------------------------
+
+threadlocal var g_cache_specs: []McpToolSpec = &.{};
+threadlocal var g_cache_specs_owned: bool = false;
+threadlocal var g_cache_tools: []McpTool = &.{};
+threadlocal var g_cache_tools_owned: bool = false;
+
+/// MCP tools to advertise to the model (borrowed; valid until the next reload).
+pub fn cachedSpecs() []const McpToolSpec {
+    return g_cache_specs;
+}
+
+/// MCP tools to dispatch a call back to (borrowed; valid until the next reload).
+pub fn cachedTools() []const McpTool {
+    return g_cache_tools;
+}
+
+fn freeCache(allocator: std.mem.Allocator) void {
+    if (g_cache_specs_owned) {
+        freeSpecItems(allocator, g_cache_specs);
+        allocator.free(g_cache_specs);
+        g_cache_specs = &.{};
+        g_cache_specs_owned = false;
+    }
+    if (g_cache_tools_owned) {
+        freeToolItems(allocator, g_cache_tools);
+        allocator.free(g_cache_tools);
+        g_cache_tools = &.{};
+        g_cache_tools_owned = false;
+    }
+}
+
+fn loadSnapshots(allocator: std.mem.Allocator) !Snapshots {
+    const path = try platform_dirs.pathInConfigDir(allocator, "mcp.json");
+    defer allocator.free(path);
+    const bytes = std.fs.cwd().readFileAlloc(allocator, path, MAX_MCP_CONFIG_BYTES) catch {
+        // No config file (or unreadable) → no MCP tools. Not an error.
+        return .{ .specs = &.{}, .tools = &.{} };
+    };
+    defer allocator.free(bytes);
+
+    const servers = try parseServersConfig(allocator, bytes);
+    defer freeServersConfig(allocator, servers);
+    return discover(allocator, servers);
+}
+
+/// Re-read <configDir>/mcp.json, run discovery, and swap the cache. Never
+/// fails: on any error the cache is left empty. Call at startup and whenever
+/// the config changes. ponytail: discovery is synchronous here.
+pub fn reloadCache(allocator: std.mem.Allocator) void {
+    freeCache(allocator);
+    const snap = loadSnapshots(allocator) catch return;
+    g_cache_specs = snap.specs;
+    g_cache_specs_owned = snap.specs.len != 0;
+    g_cache_tools = snap.tools;
+    g_cache_tools_owned = snap.tools.len != 0;
+}
+
+test "discovered tools compose into an advertised request" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // uses /bin/sh
+    const a = std.testing.allocator;
+    const init_line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1\"}}}";
+    const list_line = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"greet\",\"description\":\"Greet someone\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"who\":{\"type\":\"string\"}}}}]}}";
+    const script = "printf '%s\\n' '" ++ init_line ++ "' '" ++ list_line ++ "'; exec cat >/dev/null";
+    var args = [_][]u8{ @constCast("-c"), @constCast(script) };
+    const servers = [_]ServerConfig{.{ .name = @constCast("demo"), .command = @constCast("/bin/sh"), .args = args[0..], .enabled = true }};
+
+    const snap = try discover(a, servers[0..]);
+    defer freeSnapshots(a, snap);
+
+    // The discovered specs flow into a real request, schema and all.
+    const params = ai_chat_protocol.RequestParams{
+        .model = "m",
+        .system_prompt = "s",
+        .protocol = .anthropic,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+        .mcp_tools = snap.specs,
+    };
+    const json = try ai_chat_protocol.buildRequestJson(a, params, &.{}, true);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"greet\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"who\":{\"type\":\"string\"}") != null);
+}
+
+/// Test seam: populate the cache directly from server configs, skipping the
+/// config-file read (which depends on the user's config dir).
+pub fn reloadCacheFromServersForTest(allocator: std.mem.Allocator, servers: []const ServerConfig) void {
+    freeCache(allocator);
+    const snap = discover(allocator, servers) catch return;
+    g_cache_specs = snap.specs;
+    g_cache_specs_owned = snap.specs.len != 0;
+    g_cache_tools = snap.tools;
+    g_cache_tools_owned = snap.tools.len != 0;
+}
+
+test "cache stores discovered tools and frees them on the next reload" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // uses /bin/sh
+    const a = std.testing.allocator;
+    const init_line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1\"}}}";
+    const list_line = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"greet\",\"description\":\"Greet\",\"inputSchema\":{\"type\":\"object\"}}]}}";
+    const script = "printf '%s\\n' '" ++ init_line ++ "' '" ++ list_line ++ "'; exec cat >/dev/null";
+    var args = [_][]u8{ @constCast("-c"), @constCast(script) };
+    const servers = [_]ServerConfig{.{ .name = @constCast("demo"), .command = @constCast("/bin/sh"), .args = args[0..], .enabled = true }};
+
+    reloadCacheFromServersForTest(a, servers[0..]);
+    try std.testing.expectEqual(@as(usize, 1), cachedSpecs().len);
+    try std.testing.expectEqualStrings("greet", cachedSpecs()[0].name);
+    try std.testing.expectEqual(@as(usize, 1), cachedTools().len);
+    try std.testing.expectEqualStrings("greet", cachedTools()[0].function_name);
+
+    // Reload with no servers frees the previous cache (leak checker asserts) and empties it.
+    reloadCacheFromServersForTest(a, &.{});
+    try std.testing.expectEqual(@as(usize, 0), cachedSpecs().len);
+    try std.testing.expectEqual(@as(usize, 0), cachedTools().len);
 }

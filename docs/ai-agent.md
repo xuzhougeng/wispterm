@@ -253,6 +253,38 @@ without submitting a normal AI turn:
 The agent can also call the `websearch`, `webread`, and `pubmed` tools on its
 own when those first-party tools are enabled in Skill Center.
 
+## MCP Servers (external tools)
+
+WispTerm acts as an MCP (Model Context Protocol) **host**: the Copilot can call
+tools exposed by external MCP servers (GitHub, Context7, Playwright, a
+filesystem server, your own, …).
+
+Create `mcp.json` in your WispTerm config directory — the same directory as
+`agent-access.local`:
+
+- macOS: `~/Library/Application Support/<WispTerm>/mcp.json`
+- Linux: `$XDG_CONFIG_HOME/<WispTerm>/mcp.json` (usually `~/.config/...`)
+- Windows: `%APPDATA%\<WispTerm>\mcp.json`
+
+It uses the standard `mcpServers` format (see [`mcp.json.example`](mcp.json.example)):
+
+```json
+{
+  "mcpServers": {
+    "context7": { "command": "npx", "args": ["-y", "@upstash/context7-mcp"] }
+  }
+}
+```
+
+Each server is a local program launched over stdio. At startup WispTerm runs
+`tools/list` against every enabled server and advertises its tools to the
+model; a tool call is routed back to its server. Set `"enabled": false` to keep
+a server configured but off. Tool calls honor the same approval prompt
+(`ai-agent-permission`) as other agent tools.
+
+Scope note (v0): stdio servers only — remote HTTP/OAuth servers, an in-app
+server manager, and a marketplace are not yet supported.
+
 ## Skill Distillation
 
 Use `/distill`, `/distill <topic>`, `/沉淀`, or `/沉淀 <主题>` after a useful AI
