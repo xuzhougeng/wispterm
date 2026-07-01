@@ -218,6 +218,17 @@ pub const DynamicToolSpec = struct {
     description: []const u8,
 };
 
+/// One MCP tool advertised to the model. `properties_json` is the JSON Schema
+/// `properties` map (inner object) that the emitter wraps in
+/// `{"type":"object","properties": ...}`, derived from the server's inputSchema
+/// at discovery time. `required` is not carried (v0 — the model still sees each
+/// property's description).
+pub const McpToolSpec = struct {
+    name: []const u8,
+    description: []const u8,
+    properties_json: []const u8,
+};
+
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------
@@ -233,6 +244,7 @@ pub const RequestParams = struct {
     memory_enabled: bool = false,
     toolset: Toolset = .full,
     dynamic_tools: []const DynamicToolSpec = &.{},
+    mcp_tools: []const McpToolSpec = &.{},
     disabled_first_party_tools: []const []const u8 = &.{},
 };
 
@@ -402,7 +414,7 @@ fn buildChatCompletionsRequestJsonForMessages(
         try out.appendSlice(allocator, ",\"stream_options\":{\"include_usage\":true}");
     }
     if (include_tools) {
-        try appendToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools, .disabled_first_party_tools = params.disabled_first_party_tools });
+        try appendToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools, .mcp_tools = params.mcp_tools, .disabled_first_party_tools = params.disabled_first_party_tools });
     }
     try out.append(allocator, '}');
 
@@ -465,7 +477,7 @@ fn buildResponsesRequestJsonForMessages(
     try out.appendSlice(allocator, ",\"stream\":");
     try out.appendSlice(allocator, if (params.stream) "true" else "false");
     if (include_tools) {
-        try appendResponseToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools, .disabled_first_party_tools = params.disabled_first_party_tools });
+        try appendResponseToolSchemas(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools, .mcp_tools = params.mcp_tools, .disabled_first_party_tools = params.disabled_first_party_tools });
     }
     try out.append(allocator, '}');
 
@@ -491,7 +503,7 @@ fn buildAnthropicRequestJsonForMessages(
     try out.appendSlice(allocator, ",\"messages\":[");
     try appendAnthropicMessages(allocator, &out, messages);
     try out.append(allocator, ']');
-    if (include_tools) try appendAnthropicTools(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools, .disabled_first_party_tools = params.disabled_first_party_tools });
+    if (include_tools) try appendAnthropicTools(allocator, &out, .{ .include_memory = params.memory_enabled, .toolset = params.toolset, .dynamic_tools = params.dynamic_tools, .mcp_tools = params.mcp_tools, .disabled_first_party_tools = params.disabled_first_party_tools });
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
 }
@@ -661,6 +673,7 @@ pub const ToolSpecOpts = struct {
     include_memory: bool,
     toolset: Toolset = .full,
     dynamic_tools: []const DynamicToolSpec = &.{},
+    mcp_tools: []const McpToolSpec = &.{},
     disabled_first_party_tools: []const []const u8 = &.{},
 };
 
@@ -718,6 +731,14 @@ pub fn builtinToolNameReserved(name: []const u8) bool {
 }
 
 fn dynamicToolNameSeenBefore(tools: []const DynamicToolSpec, index: usize) bool {
+    const name = tools[index].name;
+    for (tools[0..index]) |previous| {
+        if (std.mem.eql(u8, previous.name, name)) return true;
+    }
+    return false;
+}
+
+fn mcpToolNameSeenBefore(tools: []const McpToolSpec, index: usize) bool {
     const name = tools[index].name;
     for (tools[0..index]) |previous| {
         if (std.mem.eql(u8, previous.name, name)) return true;
@@ -790,6 +811,11 @@ fn forEachToolSpec(
                 tool.description,
                 "{\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Command-line arguments to pass after the executable name.\"},\"cwd\":{\"type\":\"string\",\"description\":\"Optional working directory. Defaults to the AI Agent working directory.\"},\"timeout_ms\":{\"type\":\"integer\",\"description\":\"Optional timeout. Defaults to ai-agent-command-timeout-ms.\"}}",
             );
+        }
+        for (opts.mcp_tools, 0..) |tool, i| {
+            if (builtinToolNameReserved(tool.name)) continue;
+            if (mcpToolNameSeenBefore(opts.mcp_tools, i)) continue;
+            try Filtered.emitTool(ctx, opts, tool.name, tool.description, tool.properties_json);
         }
     }
 }
@@ -1780,6 +1806,53 @@ test "buildRequestJson advertises enabled binary tools" {
     defer a.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"agent_docx_review\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"args\"") != null);
+}
+
+test "buildRequestJson advertises MCP tools with their own schema (anthropic)" {
+    const a = std.testing.allocator;
+    const tools = [_]McpToolSpec{.{
+        .name = "add",
+        .description = "Add two integers",
+        .properties_json = "{\"x\":{\"type\":\"integer\"}}",
+    }};
+    const params = RequestParams{
+        .model = "m",
+        .system_prompt = "s",
+        .protocol = .anthropic,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+        .mcp_tools = tools[0..],
+    };
+    const json = try buildRequestJson(a, params, &.{}, true);
+    defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"add\"") != null);
+    // its OWN schema, not the fixed dynamic-binary {"args":...} shape
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"x\":{\"type\":\"integer\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"args\"") == null);
+}
+
+test "MCP tool whose name collides with a builtin is not advertised" {
+    const a = std.testing.allocator;
+    const tools = [_]McpToolSpec{.{
+        .name = "read_file",
+        .description = "shadow attempt",
+        .properties_json = "{}",
+    }};
+    const params = RequestParams{
+        .model = "m",
+        .system_prompt = "s",
+        .protocol = .anthropic,
+        .thinking_enabled = false,
+        .reasoning_effort = "",
+        .stream = false,
+        .mcp_tools = tools[0..],
+    };
+    const json = try buildRequestJson(a, params, &.{}, true);
+    defer a.free(json);
+    // The builtin read_file is still advertised, but our shadowing MCP tool
+    // (unique description) must be skipped.
+    try std.testing.expect(std.mem.indexOf(u8, json, "shadow attempt") == null);
 }
 
 test "disabled first-party list does not hide dynamic binary tools" {
