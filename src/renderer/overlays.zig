@@ -43,6 +43,7 @@ const toasts = @import("overlays/toasts.zig");
 const ssh_profiles = @import("overlays/ssh_profiles.zig");
 const ssh_profiles_layout = @import("overlays/ssh_profiles_layout.zig");
 const mcp_servers = @import("overlays/mcp_servers.zig");
+const mcp_probe = @import("../assistant/mcp_probe.zig");
 const assistant_profiles = @import("overlays/assistant_profiles.zig");
 const feishu_config = @import("overlays/feishu_config.zig");
 const quick_ai_config = @import("overlays/quick_ai_config.zig");
@@ -2544,8 +2545,9 @@ pub fn mcpServersInsertChar(codepoint: u21) void {
 /// Keyboard handling for the MCP servers panel. Navigation/control keys only
 /// (arrows, tab, enter, escape, backspace, and the list's letter shortcuts);
 /// free-text typing into form fields arrives separately via
-/// mcpServersInsertChar. The probe/"Test" (`t`) key is deliberately not
-/// wired here — that is a separate follow-up task.
+/// mcpServersInsertChar. `t` kicks off a background "Test" probe against the
+/// selected server (see `mcpProbeDone`); rendering the probe result is a
+/// separate follow-up task.
 pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
     const st = mcpState();
     switch (st.view) {
@@ -2555,6 +2557,27 @@ pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
             .enter => if (st.count > 0) st.beginEdit(st.list_selected),
             .key_a => st.beginAdd(),
             .key_d => st.removeSelected(),
+            .key_t => {
+                if (st.count == 0) return .none;
+                // ponytail: single in-flight probe — re-pressing `t` while
+                // one is already running just repaints instead of racing a
+                // second probe thread against `probe`.
+                if (st.probe.status == .running) return .repaint;
+                const allocator = AppWindow.g_allocator orelse return .none;
+                const idx = st.list_selected;
+                const command = st.servers[idx].command[0..st.servers[idx].command_len];
+                var args_buf: [64][]const u8 = undefined;
+                var args_len: usize = 0;
+                var it = std.mem.tokenizeAny(u8, st.serverArgs(idx), " \t");
+                while (it.next()) |tok| {
+                    if (args_len >= args_buf.len) break;
+                    args_buf[args_len] = tok;
+                    args_len += 1;
+                }
+                st.probe.status = .running;
+                st.probe.target_index = idx;
+                mcp_probe.start(allocator, command, args_buf[0..args_len], mcpProbeDone, @ptrCast(st));
+            },
             .space => st.toggleSelected(),
             .tab => st.view = .json_preview,
             .key_s => {
@@ -2586,6 +2609,25 @@ pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
         },
     }
     return .repaint;
+}
+
+/// `mcp_probe.start`'s completion callback — runs on its worker thread, not
+/// the UI thread. `ctx` is the `*mcp_servers.State` pointer captured via
+/// `mcpState()` back on the main thread when the probe was started (in
+/// `mcpServersHandleKey`'s `.key_t` case). It is deliberately NOT re-derived
+/// by calling `mcpState()` here: `g_overlay_state` is `threadlocal`, so
+/// invoking `mcpState()` from this thread would silently resolve to a
+/// different, never-initialized copy and the result would never reach the
+/// UI's real state.
+// ponytail: `probe`'s fixed-buffer fields are written here without a lock.
+// The single in-flight guard (see `.key_t`) plus POD copy semantics make the
+// worst case one stale render frame, not corruption; upgrade to a
+// mutex-guarded channel (see assistant/quick_verify.zig) if that ever needs
+// tightening.
+fn mcpProbeDone(ctx: *anyopaque, r: mcp_probe.Result) void {
+    const st: *mcp_servers.State = @ptrCast(@alignCast(ctx));
+    st.applyProbeResult(st.probe.target_index, r);
+    window_backend.postWakeup();
 }
 
 pub fn sessionLauncherInsertChar(codepoint: u21) void {

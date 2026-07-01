@@ -30,6 +30,7 @@ pub const Key = enum {
     key_n,
     key_p,
     key_s,
+    key_t,
     key_w,
 };
 

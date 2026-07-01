@@ -2838,6 +2838,7 @@ fn logicalKeyFromCode(key_code: platform_input.KeyCode) input_key.Key {
         0x4E => .key_n,
         0x50 => .key_p,
         0x53 => .key_s,
+        0x54 => .key_t,
         0x55 => .key_u,
         0x56 => .key_v,
         0x57 => .key_w,
