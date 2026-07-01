@@ -211,6 +211,19 @@ fn restSendText(
 // ponytail: single cap covers both kinds; Feishu rejects oversized images itself.
 const ATTACHMENT_MAX_BYTES: usize = 30 * 1024 * 1024;
 
+// Feishu's image endpoint caps at 10 MB; the file endpoint allows 30 MB.
+const FEISHU_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+const SendKind = enum { image, file };
+
+/// Picks how an attachment is sent to Feishu. Images within the image-endpoint
+/// cap send inline (preview); explicit files/voice and oversized screenshots
+/// fall back to the larger file endpoint.
+fn chooseSendKind(kind: reply_mod.AttachmentKind, byte_len: usize) SendKind {
+    if (kind == .image and byte_len <= FEISHU_IMAGE_MAX_BYTES) return .image;
+    return .file;
+}
+
 /// Maps a file extension (case-insensitive) to a Feishu file_type value.
 /// Feishu accepted values: opus, mp4, pdf, doc, xls, ppt, stream.
 /// Unknown or missing extension → "stream".
@@ -256,17 +269,18 @@ fn feishuSendAttachment(
         return err;
     };
 
-    const msg_type: []const u8 = switch (kind) {
+    const send_kind = chooseSendKind(kind, bytes.len);
+    const msg_type: []const u8 = switch (send_kind) {
         .image => "image",
-        .file, .voice => "file",
+        .file => "file",
     };
 
-    const content: []u8 = switch (kind) {
+    const content: []u8 = switch (send_kind) {
         .image => blk: {
             const key = try media.uploadImage(a, token, bytes);
             break :blk try std.json.Stringify.valueAlloc(a, .{ .image_key = key }, .{});
         },
-        .file, .voice => blk: {
+        .file => blk: {
             const file_name = if (display_name.len != 0) display_name else std.fs.path.basename(path);
             const file_type = fileTypeFromName(file_name);
             const key = try media.uploadFile(a, token, file_name, file_type, bytes);
@@ -279,7 +293,8 @@ fn feishuSendAttachment(
         return err;
     };
     // Success audit trail: a file egress to a remote chat should never be silent.
-    log.info("feishuSendAttachment: sent kind={s} bytes={d}", .{ kind.name(), bytes.len });
+    // Log both the requested kind and how it was sent (oversized images fall back to file).
+    log.info("feishuSendAttachment: sent requested={s} as={s} bytes={d}", .{ kind.name(), msg_type, bytes.len });
 }
 
 // ---------------------------------------------------------------------------
@@ -951,6 +966,14 @@ test "fileTypeFromName: unknown and missing extension → stream" {
     try t.expectEqualStrings("stream", fileTypeFromName("archive.zip"));
     try t.expectEqualStrings("stream", fileTypeFromName("noextension"));
     try t.expectEqualStrings("stream", fileTypeFromName(""));
+}
+
+test "chooseSendKind: image within cap inline, oversized image falls back to file" {
+    try t.expectEqual(SendKind.image, chooseSendKind(.image, 1024));
+    try t.expectEqual(SendKind.image, chooseSendKind(.image, FEISHU_IMAGE_MAX_BYTES));
+    try t.expectEqual(SendKind.file, chooseSendKind(.image, FEISHU_IMAGE_MAX_BYTES + 1));
+    try t.expectEqual(SendKind.file, chooseSendKind(.file, 1024));
+    try t.expectEqual(SendKind.file, chooseSendKind(.voice, 1024));
 }
 
 test "fileTypeFromName: case-insensitive" {
