@@ -12,6 +12,7 @@ const mcp_client = @import("../agent_tools/mcp_client.zig");
 const ai_chat_protocol = @import("../assistant/conversation/protocol.zig");
 const ai_chat_types = @import("../assistant/conversation/types.zig");
 const platform_dirs = @import("../platform/dirs.zig");
+const atomic_file = @import("../platform/atomic_file.zig");
 
 const McpToolSpec = ai_chat_protocol.McpToolSpec;
 const McpTool = ai_chat_types.McpTool;
@@ -180,6 +181,60 @@ test "writeServersConfig with no servers is an empty mcpServers object" {
     const json = try writeServersConfig(a, &.{});
     defer a.free(json);
     const back = try parseServersConfig(a, json);
+    defer freeServersConfig(a, back);
+    try std.testing.expectEqual(@as(usize, 0), back.len);
+}
+
+/// Read `<config-dir>/mcp.json`. A missing (or unreadable) file is not an
+/// error — it means no servers are configured yet.
+pub fn loadConfigFile(allocator: std.mem.Allocator) ![]ServerConfig {
+    const path = try platform_dirs.pathInConfigDir(allocator, "mcp.json");
+    defer allocator.free(path);
+    const bytes = std.fs.cwd().readFileAlloc(allocator, path, MAX_MCP_CONFIG_BYTES) catch
+        return allocator.alloc(ServerConfig, 0);
+    defer allocator.free(bytes);
+    return parseServersConfig(allocator, bytes);
+}
+
+/// Serialize `servers` and atomically replace `<config-dir>/mcp.json`.
+pub fn saveConfigFile(allocator: std.mem.Allocator, servers: []const ServerConfig) !void {
+    const path = try platform_dirs.pathInConfigDir(allocator, "mcp.json");
+    defer allocator.free(path);
+    const json = try writeServersConfig(allocator, servers);
+    defer allocator.free(json);
+    try atomic_file.writeFileReplaceSafe(path, json);
+}
+
+test "saveConfigFile then loadConfigFile round-trips via the config dir" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    platform_dirs.setTestConfigDirOverride(dir_path);
+    defer platform_dirs.setTestConfigDirOverride(null);
+
+    var args0 = [_][]u8{@constCast("--stdio")};
+    const servers = [_]ServerConfig{.{ .name = @constCast("gh"), .command = @constCast("github-mcp"), .args = args0[0..], .enabled = true }};
+    try saveConfigFile(a, servers[0..]);
+
+    const back = try loadConfigFile(a);
+    defer freeServersConfig(a, back);
+    try std.testing.expectEqual(@as(usize, 1), back.len);
+    try std.testing.expectEqualStrings("gh", back[0].name);
+    try std.testing.expectEqualStrings("github-mcp", back[0].command);
+}
+
+test "loadConfigFile returns empty when the file is absent" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(dir_path);
+    platform_dirs.setTestConfigDirOverride(dir_path);
+    defer platform_dirs.setTestConfigDirOverride(null);
+
+    const back = try loadConfigFile(a);
     defer freeServersConfig(a, back);
     try std.testing.expectEqual(@as(usize, 0), back.len);
 }
