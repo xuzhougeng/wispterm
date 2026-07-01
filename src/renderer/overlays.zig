@@ -5829,6 +5829,281 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
 }
 
 // ============================================================================
+// MCP servers panel
+// ============================================================================
+
+/// Layout for the MCP servers overlay box. A standalone struct (not
+/// `SessionLayout`) because `sessionLayout`'s row-count/selection helpers
+/// switch on the session-launcher-only globals (ssh/ai/feishu visibility) and
+/// would silently miscompute for this overlay; this mirrors its *shape*
+/// (box rect, header, row grid, scroll) without wiring into that machinery.
+const McpLayout = struct {
+    box_x: f32,
+    box_top_px: f32,
+    box_w: f32,
+    box_h: f32,
+    header_h: f32,
+    first_row_top_px: f32,
+    row_h: f32,
+    row_count: usize,
+    visible_rows: usize,
+    scroll: usize,
+};
+
+fn mcpLayout(window_width: f32, window_height: f32, top_offset: f32, row_count: usize, selected: usize) McpLayout {
+    const content_height = @max(1, window_height - top_offset);
+    const box_w: f32 = @round(@min(@max(420.0, window_width - 48.0), 620.0));
+    const row_h = overlayRowHeight(38);
+    const header_h = @round(18 + overlayLineHeight() * 2 + 12);
+    const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
+    const visible_rows = sessionRowCapacity(content_height, header_h + bottom_pad, row_h, row_count);
+    const scroll = sessionFirstVisibleRow(selected, visible_rows, row_count);
+    const box_h = @round(clampOverlayBoxHeight(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + bottom_pad, content_height));
+    const box_x = @round(@max(16, (window_width - box_w) / 2));
+    const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
+    return .{
+        .box_x = box_x,
+        .box_top_px = box_top_px,
+        .box_w = box_w,
+        .box_h = box_h,
+        .header_h = header_h,
+        .first_row_top_px = box_top_px + header_h,
+        .row_h = row_h,
+        .row_count = row_count,
+        .visible_rows = visible_rows,
+        .scroll = scroll,
+    };
+}
+
+/// `renderSessionRow` keyed off `McpLayout` instead of `SessionLayout` — same
+/// field names (`scroll`/`visible_rows`/`first_row_top_px`/`row_h`/`box_x`/`box_w`),
+/// different struct type, so it needs its own thin copy rather than reusing
+/// `renderSessionRow` directly (Zig has no structural typing for this).
+fn renderMcpRow(layout: McpLayout, window_height: f32, row: usize, left: []const u8, right: []const u8, selected: bool) void {
+    if (row < layout.scroll) return;
+    const visible_index = row - layout.scroll;
+    if (visible_index >= layout.visible_rows) return;
+    const row_top = @round(layout.first_row_top_px + @as(f32, @floatFromInt(visible_index)) * layout.row_h);
+    const row_y = @round(window_height - row_top - layout.row_h);
+    const x = layout.box_x + 18;
+    const w = layout.box_w - 36;
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const row_color = if (selected) mixColor(bg, accent, 0.34) else mixColor(bg, fg, 0.055);
+    ui_pipeline.fillQuadAlpha(x, row_y + 3, w, layout.row_h - 6, row_color, if (selected) 0.82 else 0.78);
+    if (selected) ui_pipeline.fillQuadAlpha(x, row_y + 3, 3, layout.row_h - 6, accent, 0.86);
+    const text_y = rowTextY(row_y, layout.row_h);
+    const left_color = if (selected) mixColor(fg, accent, 0.12) else mixColor(bg, fg, 0.88);
+    const left_x = x + 12;
+    const right_edge = layout.box_x + layout.box_w - 34;
+    if (right.len > 0) {
+        const right_w = measureTitlebarText(right);
+        const right_color = if (selected) mixColor(fg, accent, 0.08) else mixColor(bg, fg, 0.56);
+        const right_max_w = @max(0.0, right_edge - left_x - 96);
+        const right_draw_w = @min(right_w, right_max_w);
+        const right_x = @round(right_edge - right_draw_w);
+        renderTitlebarTextStrongLimited(left, left_x, text_y, left_color, right_x - left_x - 18);
+        renderTitlebarTextStrongLimited(right, right_x, text_y, right_color, right_draw_w);
+    } else {
+        renderTitlebarTextStrongLimited(left, left_x, text_y, left_color, w - 24);
+    }
+}
+
+/// A single line of plain text at `row`'s vertical slot (status/hint/footer
+/// lines that aren't selectable rows — no background, no highlight).
+fn renderMcpLine(layout: McpLayout, window_height: f32, row: usize, text: []const u8, color: [3]f32) void {
+    if (row < layout.scroll) return;
+    const visible_index = row - layout.scroll;
+    if (visible_index >= layout.visible_rows) return;
+    const row_top = @round(layout.first_row_top_px + @as(f32, @floatFromInt(visible_index)) * layout.row_h);
+    const row_y = @round(window_height - row_top - layout.row_h);
+    const text_y = rowTextY(row_y, layout.row_h);
+    renderTitlebarTextLimited(text, layout.box_x + 30, text_y, color, layout.box_w - 60);
+}
+
+/// Length of a NUL-padded fixed tool-name buffer (`ProbeState.tools[i]` /
+/// `mcp_probe.Result.tools[i]` carry no per-tool length — only the overall
+/// `tool_count` — so the name ends at the first zero byte or the buffer end).
+fn mcpToolNameLen(buf: []const u8) usize {
+    return std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+}
+
+fn mcpEnabledMark(enabled: bool) []const u8 {
+    return if (enabled) "\u{2713}" else "\u{2717}"; // checkmark / cross
+}
+
+const MCP_LIST_FOOTER = "\u{2191}\u{2193} select \u{00b7} a add \u{00b7} e/Enter edit \u{00b7} d delete \u{00b7} space enable \u{00b7} t test \u{00b7} Tab JSON \u{00b7} Ctrl-S save \u{00b7} Esc close";
+const MCP_FORM_FOOTER = "Tab next field \u{00b7} Enter save \u{00b7} Esc back";
+const MCP_JSON_FOOTER = "Tab/Esc back";
+const MCP_ERROR_COLOR = [3]f32{ 0.92, 0.35, 0.32 };
+
+fn mcpFormErrorText(err: mcp_servers.FormError) []const u8 {
+    return switch (err) {
+        error.EmptyName => "Name is required.",
+        error.EmptyCommand => "Command is required.",
+        error.DuplicateName => "A server with this name already exists.",
+        error.Full => "Server list is full.",
+    };
+}
+
+fn renderMcpListView(window_width: f32, window_height: f32, top_offset: f32) void {
+    const st = mcpState();
+    // Rows: one per server, a status line for the selected server, a blank
+    // spacer, then the footer hint — all laid out on the same row grid so
+    // scroll/highlight math stays in one place.
+    const status_row = st.count;
+    const footer_row = status_row + 1;
+    const row_count = footer_row + 1;
+    const layout = mcpLayout(window_width, window_height, top_offset, row_count, st.list_selected);
+    const box_y = @round(window_height - layout.box_top_px - layout.box_h);
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const panel_color = mixColor(bg, fg, 0.035);
+    const border_color = mixColor(bg, accent, 0.24);
+    const title_color = mixColor(fg, accent, 0.14);
+    const muted_color = mixColor(bg, fg, 0.58);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.18);
+    renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
+    renderRoundedQuadAlpha(layout.box_x, box_y, layout.box_w, layout.box_h, 10, panel_color, 0.96);
+
+    const title_y = textYFromTop(window_height, layout.box_top_px + 18);
+    const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
+    renderTitlebarTextStrong("MCP Servers", layout.box_x + 24, title_y, title_color);
+    const hint = if (st.count == 0) "No servers configured yet — press a to add one." else "Configured MCP tool servers.";
+    renderTitlebarTextStrongLimited(hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
+
+    for (0..st.count) |i| {
+        var left_buf: [mcp_servers.FIELD_MAX + 4]u8 = undefined;
+        const left = std.fmt.bufPrint(&left_buf, "{s} {s}", .{ mcpEnabledMark(st.servers[i].enabled), st.serverName(i) }) catch st.serverName(i);
+        const command = st.servers[i].command[0..st.servers[i].command_len];
+        renderMcpRow(layout, window_height, i, left, command, st.list_selected == i);
+    }
+
+    if (st.count > 0 and st.probe.target_index == st.list_selected) {
+        var status_buf: [320]u8 = undefined;
+        const status_text: []const u8 = switch (st.probe.status) {
+            .idle => "",
+            .running => "probing...",
+            .ok => blk: {
+                var w = std.io.fixedBufferStream(&status_buf);
+                const writer = w.writer();
+                writer.print("\u{2713} {d} tools: ", .{st.probe.tool_count}) catch {};
+                for (0..st.probe.tool_count) |i| {
+                    if (i != 0) writer.writeAll(", ") catch {};
+                    const name_len = mcpToolNameLen(&st.probe.tools[i]);
+                    writer.writeAll(st.probe.tools[i][0..name_len]) catch {};
+                }
+                break :blk w.getWritten();
+            },
+            .failed => std.fmt.bufPrint(&status_buf, "\u{2717} {s}", .{st.probe.message[0..st.probe.message_len]}) catch "\u{2717} probe failed",
+        };
+        const status_color = switch (st.probe.status) {
+            .ok => mixColor(bg, accent, 0.7),
+            .failed => MCP_ERROR_COLOR,
+            else => muted_color,
+        };
+        if (status_text.len > 0) renderMcpLine(layout, window_height, status_row, status_text, status_color);
+    }
+
+    renderMcpLine(layout, window_height, footer_row, MCP_LIST_FOOTER, muted_color);
+}
+
+fn renderMcpFormView(window_width: f32, window_height: f32, top_offset: f32) void {
+    const st = mcpState();
+    const name_row = 0;
+    const command_row = 1;
+    const args_row = 2;
+    const hint_row = 3;
+    const error_row = 4;
+    const footer_row = 5;
+    const row_count = footer_row + 1;
+    const layout = mcpLayout(window_width, window_height, top_offset, row_count, @intFromEnum(st.form_focus));
+    const box_y = @round(window_height - layout.box_top_px - layout.box_h);
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const panel_color = mixColor(bg, fg, 0.035);
+    const border_color = mixColor(bg, accent, 0.24);
+    const title_color = mixColor(fg, accent, 0.14);
+    const muted_color = mixColor(bg, fg, 0.58);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.18);
+    renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
+    renderRoundedQuadAlpha(layout.box_x, box_y, layout.box_w, layout.box_h, 10, panel_color, 0.96);
+
+    const title_y = textYFromTop(window_height, layout.box_top_px + 18);
+    const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
+    const title = if (st.editing_index != mcp_servers.EDIT_INDEX_NONE) "Edit MCP Server" else "Add MCP Server";
+    renderTitlebarTextStrong(title, layout.box_x + 24, title_y, title_color);
+    renderTitlebarTextStrongLimited("Fill in the fields below.", layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
+
+    renderMcpRow(layout, window_height, name_row, "Name", st.formField(.name), st.form_focus == .name);
+    renderMcpRow(layout, window_height, command_row, "Command", st.formField(.command), st.form_focus == .command);
+    renderMcpRow(layout, window_height, args_row, "Args", st.formField(.args), st.form_focus == .args);
+    renderMcpLine(layout, window_height, hint_row, "space-separated; use JSON view to verify", muted_color);
+    if (st.form_error) |err| {
+        renderMcpLine(layout, window_height, error_row, mcpFormErrorText(err), MCP_ERROR_COLOR);
+    }
+    renderMcpLine(layout, window_height, footer_row, MCP_FORM_FOOTER, muted_color);
+}
+
+fn renderMcpJsonPreviewView(window_width: f32, window_height: f32, top_offset: f32) void {
+    const allocator = AppWindow.g_allocator orelse return;
+    const preview = mcpState().jsonPreview(allocator) catch return;
+    defer allocator.free(preview);
+
+    var line_count: usize = 1;
+    for (preview) |b| {
+        if (b == '\n') line_count += 1;
+    }
+    const header_row_count = 1; // "mcp.json (read-only preview)..." header line
+    const footer_row = header_row_count + line_count;
+    const row_count = footer_row + 1;
+    const layout = mcpLayout(window_width, window_height, top_offset, row_count, 0);
+    const box_y = @round(window_height - layout.box_top_px - layout.box_h);
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const panel_color = mixColor(bg, fg, 0.035);
+    const border_color = mixColor(bg, accent, 0.24);
+    const title_color = mixColor(fg, accent, 0.14);
+    const muted_color = mixColor(bg, fg, 0.58);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.18);
+    renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
+    renderRoundedQuadAlpha(layout.box_x, box_y, layout.box_w, layout.box_h, 10, panel_color, 0.96);
+
+    const title_y = textYFromTop(window_height, layout.box_top_px + 18);
+    const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
+    renderTitlebarTextStrong("mcp.json (read-only preview)", layout.box_x + 24, title_y, title_color);
+    renderTitlebarTextStrongLimited("This is what Ctrl-S in the list saves.", layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
+
+    var row: usize = header_row_count;
+    var lines = std.mem.splitScalar(u8, preview, '\n');
+    while (lines.next()) |line| : (row += 1) {
+        renderMcpLine(layout, window_height, row, line, fg);
+    }
+
+    renderMcpLine(layout, window_height, footer_row, MCP_JSON_FOOTER, muted_color);
+}
+
+pub fn renderMcpServers(window_width: f32, window_height: f32, top_offset: f32) void {
+    if (!mcpServersVisible()) return;
+    const st = mcpState();
+    switch (st.view) {
+        .list => renderMcpListView(window_width, window_height, top_offset),
+        .form => renderMcpFormView(window_width, window_height, top_offset),
+        .json_preview => renderMcpJsonPreviewView(window_width, window_height, top_offset),
+    }
+}
+
+// ============================================================================
 // Settings page
 // ============================================================================
 
