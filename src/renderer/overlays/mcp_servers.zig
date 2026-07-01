@@ -5,6 +5,7 @@
 //! multi-MB OverlayState).
 const std = @import("std");
 const mcp_registry = @import("../../tools/mcp_registry.zig");
+const mcp_probe = @import("../../assistant/mcp_probe.zig");
 
 pub const MCP_SERVER_MAX = 32;
 pub const FIELD_MAX = 512;
@@ -34,6 +35,22 @@ pub const FormError = error{ EmptyName, DuplicateName, EmptyCommand, Full };
 /// an edit).
 pub const EDIT_INDEX_NONE: usize = std.math.maxInt(usize);
 
+pub const ProbeStatus = enum { idle, running, ok, failed };
+
+/// Holds the outcome of the "Test" probe against `servers[target_index]`.
+/// Mirrors `mcp_probe.Result`'s fixed buffers (message/tools are plain
+/// values, not owned pointers) so `applyProbeResult` can copy one in without
+/// touching the heap. The probe thread itself (Task 10) lives in the input
+/// handler; this struct only holds + applies the result it hands back.
+pub const ProbeState = struct {
+    status: ProbeStatus = .idle,
+    target_index: usize = 0,
+    message: [256]u8 = undefined,
+    message_len: usize = 0,
+    tools: [24][64]u8 = undefined,
+    tool_count: usize = 0,
+};
+
 pub const State = struct {
     visible: bool = false,
     view: View = .list,
@@ -46,6 +63,8 @@ pub const State = struct {
     /// Set by `save` on success; the caller (input handler) reads and clears
     /// this to show a one-shot "Saved" confirmation.
     saved: bool = false,
+    /// Result of the last "Test" probe, applied via `applyProbeResult`.
+    probe: ProbeState = .{},
 
     /// Reset to defaults and load `<config-dir>/mcp.json` into `servers`.
     /// A missing/unreadable config file yields zero servers (not an error).
@@ -164,6 +183,19 @@ pub const State = struct {
     pub fn toggleSelected(self: *State) void {
         if (self.list_selected >= self.count) return;
         self.servers[self.list_selected].enabled = !self.servers[self.list_selected].enabled;
+    }
+
+    /// Copy a completed `mcp_probe.probeBlocking`/`start` result into
+    /// `self.probe`, tagging it with the `servers[index]` it belongs to.
+    /// `r` is a plain value (no owned heap memory), so this is a straight
+    /// field copy — heap-free like the rest of `State`.
+    pub fn applyProbeResult(self: *State, index: usize, r: mcp_probe.Result) void {
+        self.probe.target_index = index;
+        self.probe.message = r.message;
+        self.probe.message_len = r.message_len;
+        self.probe.tools = r.tools;
+        self.probe.tool_count = r.tool_count;
+        self.probe.status = if (r.ok) .ok else .failed;
     }
 
     /// Build an owned `[]mcp_registry.ServerConfig` from `servers[0..count]`.
@@ -339,6 +371,19 @@ test "jsonPreview equals what save writes, and splits args" {
     defer a.free(preview);
     try std.testing.expect(std.mem.indexOf(u8, preview, "\"c\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, preview, "\"npx\"") != null);
+}
+
+test "applyProbeResult stores tool names and status on the state" {
+    var s: State = .{};
+    s.beginAdd();
+    s.setFormField(.name, "x");
+    s.setFormField(.command, "/bin/sh");
+    try s.commitForm();
+    var r = mcp_probe.Result{ .ok = true, .message = undefined, .message_len = 0, .tools = undefined, .tool_count = 1 };
+    @memcpy(r.tools[0][0..4], "echo");
+    s.applyProbeResult(0, r);
+    try std.testing.expect(s.probe.status == .ok);
+    try std.testing.expectEqual(@as(usize, 1), s.probe.tool_count);
 }
 
 test "commitForm rejects a 33rd server" {
