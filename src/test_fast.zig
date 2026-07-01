@@ -167,6 +167,7 @@ test {
     _ = @import("renderer/overlays/quick_ai_config.zig");
     _ = @import("renderer/overlays/mcp_servers.zig");
     _ = @import("assistant/quick_verify.zig");
+    _ = @import("assistant/mcp_probe.zig");
     _ = @import("renderer/overlays/session_launcher.zig");
     _ = @import("renderer/overlays/state.zig");
     _ = @import("renderer/overlays/state_guard.zig");
