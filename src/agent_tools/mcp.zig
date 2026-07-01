@@ -15,6 +15,9 @@ const tool_output = @import("output.zig");
 const ToolContext = types.ToolContext;
 const McpTool = types.McpTool;
 
+/// Diagnostic scope for MCP; visible in `-Ddebug-console` builds. Filter `(mcp)`.
+const log = std.log.scoped(.mcp);
+
 pub fn find(tools: []const McpTool, name: []const u8) ?McpTool {
     for (tools) |tool| {
         if (std.mem.eql(u8, tool.function_name, name)) return tool;
@@ -45,20 +48,26 @@ pub fn run(ctx: *ToolContext, tool: McpTool, arguments_json: []const u8) ![]u8 {
     argv[0] = tool.server_command;
     for (tool.server_args, 0..) |arg, i| argv[i + 1] = arg;
 
+    log.debug("call '{s}' via {s} args={s}", .{ tool.function_name, tool.server_command, arguments_json });
+
     // ponytail: no read timeout / cancellation on the MCP call yet — a hung
     // server blocks the turn. Wire a deadline + child kill if that bites.
     var conn = mcp_client.Connection.spawn(ctx.allocator, argv) catch |err| {
+        log.warn("call '{s}': server '{s}' failed to start: {s}", .{ tool.function_name, tool.server_command, @errorName(err) });
         return std.fmt.allocPrint(ctx.allocator, "MCP server '{s}' failed to start: {s}", .{ tool.server_command, @errorName(err) });
     };
     defer conn.deinit();
 
     conn.initialize() catch |err| {
+        log.warn("call '{s}': initialize failed: {s}", .{ tool.function_name, @errorName(err) });
         return std.fmt.allocPrint(ctx.allocator, "MCP server '{s}' initialize failed: {s}", .{ tool.server_command, @errorName(err) });
     };
 
     const raw = conn.callTool(tool.function_name, arguments_json) catch |err| {
+        log.warn("call '{s}': tools/call failed: {s}", .{ tool.function_name, @errorName(err) });
         return std.fmt.allocPrint(ctx.allocator, "MCP tool '{s}' failed: {s}", .{ tool.function_name, @errorName(err) });
     };
+    log.debug("call '{s}' ok ({d} bytes)", .{ tool.function_name, raw.len });
     // truncateOwned takes ownership of `raw`.
     return tool_output.truncateOwned(ctx.allocator, ctx.settings, raw);
 }

@@ -16,6 +16,10 @@ const platform_dirs = @import("../platform/dirs.zig");
 const McpToolSpec = ai_chat_protocol.McpToolSpec;
 const McpTool = ai_chat_types.McpTool;
 
+/// Diagnostic scope for MCP. Visible in `-Ddebug-console` builds
+/// (<config-dir>/wispterm-debug.log); filter with `(mcp)`.
+const log = std.log.scoped(.mcp);
+
 const MAX_MCP_CONFIG_BYTES: usize = 256 * 1024;
 
 /// One configured MCP server. All fields owned.
@@ -229,14 +233,27 @@ pub fn discover(allocator: std.mem.Allocator, servers: []const ServerConfig) !Sn
         argv[0] = server.command;
         for (server.args, 0..) |arg, i| argv[i + 1] = arg;
 
-        var conn = mcp_client.Connection.spawn(allocator, argv) catch continue;
+        var conn = mcp_client.Connection.spawn(allocator, argv) catch |err| {
+            log.warn("server '{s}' failed to start ({s}): {s}", .{ server.name, server.command, @errorName(err) });
+            continue;
+        };
         defer conn.deinit();
-        conn.initialize() catch continue;
-        const defs = conn.listTools() catch continue;
+        conn.initialize() catch |err| {
+            log.warn("server '{s}' initialize failed: {s}", .{ server.name, @errorName(err) });
+            continue;
+        };
+        const defs = conn.listTools() catch |err| {
+            log.warn("server '{s}' tools/list failed: {s}", .{ server.name, @errorName(err) });
+            continue;
+        };
         defer mcp_client.freeToolDefs(allocator, defs);
+        log.info("server '{s}': discovered {d} tool(s)", .{ server.name, defs.len });
 
         for (defs) |def| {
-            if (ai_chat_protocol.builtinToolNameReserved(def.name)) continue; // never shadow a builtin
+            if (ai_chat_protocol.builtinToolNameReserved(def.name)) {
+                log.warn("server '{s}': tool '{s}' shadows a builtin — skipped", .{ server.name, def.name });
+                continue;
+            }
 
             const props = try mcpPropertiesFromSchema(allocator, def.input_schema_json);
             errdefer allocator.free(props);
@@ -367,11 +384,15 @@ fn loadSnapshots(allocator: std.mem.Allocator) !Snapshots {
 /// the config changes. ponytail: discovery is synchronous here.
 pub fn reloadCache(allocator: std.mem.Allocator) void {
     freeCache(allocator);
-    const snap = loadSnapshots(allocator) catch return;
+    const snap = loadSnapshots(allocator) catch |err| {
+        log.warn("reload failed: {s}", .{@errorName(err)});
+        return;
+    };
     g_cache_specs = snap.specs;
     g_cache_specs_owned = snap.specs.len != 0;
     g_cache_tools = snap.tools;
     g_cache_tools_owned = snap.tools.len != 0;
+    log.info("ready: {d} tool(s) from mcp.json", .{g_cache_tools.len});
 }
 
 test "discovered tools compose into an advertised request" {

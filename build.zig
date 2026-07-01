@@ -672,7 +672,7 @@ pub fn build(b: *std.Build) void {
             macos_app_step.dependOn(&b.addFail("macos-app supports only aarch64-macos and x86_64-macos targets").step);
             macos_dist_step.dependOn(&b.addFail("macos-dist supports only aarch64-macos and x86_64-macos targets").step);
         } else {
-            const macos_app_install = addMacosAppBundle(b, target, optimize, app_version, platform);
+            const macos_app_install = addMacosAppBundle(b, target, optimize, app_version, platform, debug_console);
             macos_app_step.dependOn(&macos_app_install.step);
             const macos_package = b.addSystemCommand(&.{ "bash", macosPackageScriptPath() });
             macos_package.step.dependOn(&macos_app_install.step);
@@ -1200,9 +1200,10 @@ fn addMacosAppBundle(
     optimize: std.builtin.OptimizeMode,
     app_version: []const u8,
     platform: PlatformFeatures,
+    debug_console: bool,
 ) *std.Build.Step.InstallDir {
     const metadata = macosBundleMetadata();
-    const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser, false);
+    const macos_mod = createAppModule(b, target, optimize, app_version, platform, platform.supports_embedded_browser, debug_console);
 
     const exe = b.addExecutable(.{
         .name = metadata.executable_name,

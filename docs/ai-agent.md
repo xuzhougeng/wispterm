@@ -282,6 +282,19 @@ model; a tool call is routed back to its server. Set `"enabled": false` to keep
 a server configured but off. Tool calls honor the same approval prompt
 (`ai-agent-permission`) as other agent tools.
 
+**Troubleshooting.** MCP discovery and tool calls are logged under the `mcp`
+scope. Build a diagnostic app and read the log:
+
+```
+zig build -Dtarget=aarch64-macos -Ddebug-console macos-app
+# run it, then:
+grep '(mcp)' "$HOME/Library/Application Support/wispterm/wispterm-debug.log"
+```
+
+You'll see one line per server (`discovered N tool(s)` or the failure reason)
+and one per tool call. A server that fails to start/handshake is skipped, not
+fatal — the log line tells you why.
+
 Scope note (v0): stdio servers only — remote HTTP/OAuth servers, an in-app
 server manager, and a marketplace are not yet supported.
 
