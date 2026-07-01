@@ -2521,6 +2521,7 @@ pub fn sessionLauncherInsertChar(codepoint: u21) void {
         if (codepoint > 0x7f) return;
         if (sshState().focus >= SSH_FIELD_COUNT) return;
         const field = sshState().focus;
+        if (field == @intFromEnum(SshField.auth_method)) return; // ←/→ toggle, not free text
         if (sshState().lens[field] >= SSH_FIELD_MAX) return;
         sshState().bufs[field][sshState().lens[field]] = @intCast(codepoint);
         sshState().lens[field] += 1;
@@ -2555,6 +2556,7 @@ pub fn sessionLauncherPasteText(text: []const u8) bool {
     }
     if (g_ssh_form_visible) {
         if (sshState().focus >= SSH_FIELD_COUNT) return false;
+        if (sshState().focus == @intFromEnum(SshField.auth_method)) return true; // toggle field, ignore paste
         appendSshFormText(sshState().focus, text);
         return true;
     }
@@ -2718,8 +2720,15 @@ fn sessionLauncherHandleKeyImpl(ev: input_key.KeyEvent) void {
     switch (ev.key) {
         .tab, .arrow_down => sshState().focusNextRow(),
         .arrow_up => sshState().focusPrevRow(),
+        .arrow_right => {
+            if (sshState().focus == @intFromEnum(SshField.auth_method)) cycleSshFormAuthMethod(true);
+        },
+        .arrow_left => {
+            if (sshState().focus == @intFromEnum(SshField.auth_method)) cycleSshFormAuthMethod(false);
+        },
         .backspace => {
-            if (sshState().focus < SSH_FIELD_COUNT and sshState().lens[sshState().focus] > 0) sshState().lens[sshState().focus] -= 1;
+            // auth_method is a ←/→ toggle, not a text field — never backspace it.
+            if (sshState().focus < SSH_FIELD_COUNT and sshState().focus != @intFromEnum(SshField.auth_method) and sshState().lens[sshState().focus] > 0) sshState().lens[sshState().focus] -= 1;
         },
         .enter => runSshFormFocusAction(),
         else => {},
@@ -3110,6 +3119,27 @@ fn sshFormAuthMethod() ?ssh_connection.SshAuthMethod {
     const raw = sshField(.auth_method);
     if (std.mem.trim(u8, raw, " \t\r\n").len == 0) return defaultSshAuthMethodForPassword(sshField(.password));
     return parseSshAuthMethod(raw);
+}
+
+/// Cycle the auth-method form field to the next/previous valid method. The field
+/// is constrained to password/key/credentials, so users toggle with ←/→ instead
+/// of typing an arbitrary string.
+fn cycleSshFormAuthMethod(forward: bool) void {
+    const idx = @intFromEnum(SshField.auth_method);
+    const current: ssh_connection.SshAuthMethod = sshFormAuthMethod() orelse .credentials;
+    const next = current.cycle(forward).fieldValue();
+    const len = @min(next.len, SSH_FIELD_MAX);
+    @memcpy(sshState().bufs[idx][0..len], next[0..len]);
+    sshState().lens[idx] = len;
+}
+
+/// Auth-method row display: current method name plus the ←/→ toggle affordance.
+fn sshAuthMethodDisplay() []const u8 {
+    const S = struct {
+        threadlocal var buf: [48]u8 = undefined;
+    };
+    const m: ssh_connection.SshAuthMethod = sshFormAuthMethod() orelse .credentials;
+    return std.fmt.bufPrint(&S.buf, "{s}   <-/->", .{m.fieldValue()}) catch m.fieldValue();
 }
 
 fn sshProfileAuthMethod(profile: *const SshProfile) ?ssh_connection.SshAuthMethod {
@@ -4968,7 +4998,7 @@ fn sessionDesiredBoxWidth() f32 {
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_password, sshField(.password)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_port, sshField(.port)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_jump_host, sshField(.proxy_jump)));
-        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_auth_method, sshField(.auth_method)));
+        desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_auth_method, sshAuthMethodDisplay()));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_ssh_identity_file, sshField(.identity_file)));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail()));
         desired = @max(desired, sessionTwoColumnWidth(i18n.s().sl_save, i18n.s().sl_v_profile));
@@ -5657,7 +5687,7 @@ pub fn renderSessionLauncher(window_width: f32, window_height: f32, top_offset: 
     renderSessionField(layout, window_height, @intFromEnum(SshField.password), i18n.s().sl_ssh_password, sshField(.password), true);
     renderSessionField(layout, window_height, @intFromEnum(SshField.port), i18n.s().sl_ssh_port, sshField(.port), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.proxy_jump), i18n.s().sl_ssh_jump_host, sshField(.proxy_jump), false);
-    renderSessionField(layout, window_height, @intFromEnum(SshField.auth_method), i18n.s().sl_ssh_auth_method, sshField(.auth_method), false);
+    renderSessionField(layout, window_height, @intFromEnum(SshField.auth_method), i18n.s().sl_ssh_auth_method, sshAuthMethodDisplay(), false);
     renderSessionField(layout, window_height, @intFromEnum(SshField.identity_file), i18n.s().sl_ssh_identity_file, sshField(.identity_file), false);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT, i18n.s().sl_save_connect, platform_pty_command.sshLauncherDetail(), sshState().focus == SSH_FIELD_COUNT);
     renderSessionRow(layout, window_height, SSH_FIELD_COUNT + 1, i18n.s().sl_save, i18n.s().sl_v_profile, sshState().focus == SSH_FIELD_COUNT + 1);

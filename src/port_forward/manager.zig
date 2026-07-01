@@ -673,7 +673,7 @@ fn buildSshArgv(allocator: std.mem.Allocator, rule: *const rule_mod.Rule, conn: 
         try appendSshOption(allocator, &argv, "Ciphers=+aes128-cbc,3des-cbc");
     }
     if (conn.usesPasswordAuth()) {
-        try appendSshOption(allocator, &argv, "PreferredAuthentications=publickey,password,keyboard-interactive");
+        try appendSshOption(allocator, &argv, "PreferredAuthentications=password,keyboard-interactive");
         try appendSshOption(allocator, &argv, "NumberOfPasswordPrompts=1");
     } else {
         try appendSshOption(allocator, &argv, "BatchMode=yes");
@@ -1083,7 +1083,7 @@ test "port_forward_manager: password auth argv uses askpass compatible options a
     defer arena.deinit();
 
     const password_argv = try buildSshArgvForTest(arena.allocator(), &rule, &password_conn);
-    try std.testing.expect(argvContainsForTest(password_argv, "PreferredAuthentications=publickey,password,keyboard-interactive"));
+    try std.testing.expect(argvContainsForTest(password_argv, "PreferredAuthentications=password,keyboard-interactive"));
     try std.testing.expect(argvContainsForTest(password_argv, "NumberOfPasswordPrompts=1"));
     try std.testing.expect(!argvContainsForTest(password_argv, "BatchMode=yes"));
     try expectArgvLacksForTest(password_argv, "secret");
@@ -1091,7 +1091,7 @@ test "port_forward_manager: password auth argv uses askpass compatible options a
     var key_conn = sshConnectionForTest("alice", "key.test", "", "", "", false, false);
     const key_argv = try buildSshArgvForTest(arena.allocator(), &rule, &key_conn);
     try std.testing.expect(argvContainsForTest(key_argv, "BatchMode=yes"));
-    try std.testing.expect(!argvContainsForTest(key_argv, "PreferredAuthentications=publickey,password,keyboard-interactive"));
+    try std.testing.expect(!argvContainsForTest(key_argv, "PreferredAuthentications=password,keyboard-interactive"));
 }
 
 test "port_forward_manager: running child exit becomes error on tick" {
