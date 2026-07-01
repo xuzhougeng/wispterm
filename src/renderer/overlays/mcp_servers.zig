@@ -28,7 +28,7 @@ pub const View = enum { list, form, json_preview };
 pub const Field = enum { name, command, args };
 const FORM_FIELD_COUNT = @typeInfo(Field).@"enum".fields.len;
 
-pub const FormError = error{ EmptyName, DuplicateName, EmptyCommand };
+pub const FormError = error{ EmptyName, DuplicateName, EmptyCommand, Full };
 
 /// Sentinel for `editing_index`: no server is being edited (an add, not
 /// an edit).
@@ -118,6 +118,10 @@ pub const State = struct {
     /// write it into `servers`: appends when adding, overwrites in place
     /// when `editing_index` was set by `beginEdit`. The duplicate-name
     /// check skips `editing_index` so editing a server keeps its own name.
+    /// `enabled` is not a form field: editing a server preserves its
+    /// existing `enabled` value, and adding one defaults it to `true`.
+    /// Adding past `MCP_SERVER_MAX` returns `error.Full` instead of
+    /// overflowing `servers`.
     pub fn commitForm(self: *State) FormError!void {
         const name = self.formField(.name);
         if (name.len == 0) return error.EmptyName;
@@ -131,10 +135,11 @@ pub const State = struct {
         const target: *Server = if (self.editing_index != EDIT_INDEX_NONE)
             &self.servers[self.editing_index]
         else blk: {
+            if (self.count >= MCP_SERVER_MAX) return error.Full;
             self.count += 1;
+            self.servers[self.count - 1] = .{};
             break :blk &self.servers[self.count - 1];
         };
-        target.* = .{};
         setBuf(&target.name, &target.name_len, name);
         setBuf(&target.command, &target.command_len, command);
         setBuf(&target.args, &target.args_len, self.formField(.args));
@@ -235,4 +240,40 @@ test "open loads servers from the config dir and clamps selection" {
     try std.testing.expectEqual(@as(usize, 0), state.list_selected);
     state.moveSelection(5); // clamps at count-1
     try std.testing.expectEqual(@as(usize, 1), state.list_selected);
+}
+
+test "edit preserves enabled state of a disabled server" {
+    var s: State = .{};
+    s.beginAdd();
+    s.setFormField(.name, "a");
+    s.setFormField(.command, "x");
+    try s.commitForm();
+    s.list_selected = 0;
+    s.toggleSelected();
+    try std.testing.expect(!s.servers[0].enabled);
+
+    s.beginEdit(0);
+    s.setFormField(.command, "y");
+    try s.commitForm();
+    try std.testing.expect(!s.servers[0].enabled);
+}
+
+test "commitForm rejects a 33rd server" {
+    var s: State = .{};
+    var i: usize = 0;
+    while (i < MCP_SERVER_MAX) : (i += 1) {
+        s.beginAdd();
+        var name_buf: [8]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "s{d}", .{i}) catch unreachable;
+        s.setFormField(.name, name);
+        s.setFormField(.command, "x");
+        try s.commitForm();
+    }
+    try std.testing.expectEqual(@as(usize, MCP_SERVER_MAX), s.count);
+
+    s.beginAdd();
+    s.setFormField(.name, "overflow");
+    s.setFormField(.command, "x");
+    try std.testing.expectError(error.Full, s.commitForm());
+    try std.testing.expectEqual(@as(usize, MCP_SERVER_MAX), s.count);
 }
