@@ -80,13 +80,180 @@ fn legendHeight(cell_h: f32) f32 {
     return @max(LEGEND_H, cell_h + 18);
 }
 
-/// Rows that fit between the header and the legend.
-pub fn bodyVisibleCapacity(window_height: f32, titlebar_offset: f32, cell_h: f32) usize {
+const DrawRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+const HeaderChrome = struct {
+    band: DrawRect,
+    rule: DrawRect,
+    title_y: f32,
+};
+
+const FooterChrome = struct {
+    rule: DrawRect,
+    text_y: f32,
+};
+
+const RowSlot = struct {
+    rect: DrawRect,
+    text_y: f32,
+};
+
+const ListWindow = struct {
+    top_px: f32,
+    visible_rows: usize,
+    first_visible: usize,
+};
+
+const ListScrollbar = struct {
+    track: DrawRect,
+    thumb: DrawRect,
+};
+
+const PanelLayout = struct {
+    content_x: f32,
+    content_w: f32,
+    top: f32,
+    content_h: f32,
+    header_h: f32,
+    row_h: f32,
+    legend_h: f32,
+    body_top: f32,
+
+    fn background(self: PanelLayout) DrawRect {
+        return .{ .x = self.content_x, .y = 0, .w = self.content_w, .h = self.content_h };
+    }
+
+    fn header(self: PanelLayout, window_height: f32, cell_h: f32) HeaderChrome {
+        return .{
+            .band = .{
+                .x = self.content_x,
+                .y = yFromTop(window_height, self.top, self.header_h),
+                .w = self.content_w,
+                .h = self.header_h,
+            },
+            .rule = .{
+                .x = self.content_x,
+                .y = yFromTop(window_height, self.top + self.header_h, 1),
+                .w = self.content_w,
+                .h = 1,
+            },
+            .title_y = yTextFromTop(window_height, self.top + 11, cell_h),
+        };
+    }
+
+    fn bodyVisibleRows(self: PanelLayout) usize {
+        const usable = self.content_h - self.header_h - self.legend_h;
+        if (usable <= 0) return 0;
+        return @intFromFloat(@max(0.0, @floor(usable / self.row_h)));
+    }
+
+    fn mainListWindow(self: PanelLayout, total: usize, requested_scroll: usize) ListWindow {
+        const cap = self.bodyVisibleRows();
+        return .{
+            .top_px = self.body_top,
+            .visible_rows = cap,
+            .first_visible = clampScroll(requested_scroll, total, cap),
+        };
+    }
+
+    fn overlayListWindow(self: PanelLayout, window_height: f32, total: usize, selected: usize) ListWindow {
+        const list_top = self.body_top + self.row_h;
+        const usable = window_height - list_top - self.legend_h;
+        const cap: usize = if (usable <= 0) 0 else @intFromFloat(@max(0.0, @floor(usable / self.row_h)));
+        return .{
+            .top_px = list_top,
+            .visible_rows = cap,
+            .first_visible = firstVisibleForSelection(selected, cap, total),
+        };
+    }
+
+    fn rowSlot(self: PanelLayout, window_height: f32, list_top_px: f32, display_row: usize, cell_h: f32) RowSlot {
+        const row_top_px = list_top_px + @as(f32, @floatFromInt(display_row)) * self.row_h;
+        return .{
+            .rect = .{
+                .x = self.content_x,
+                .y = yFromTop(window_height, row_top_px, self.row_h),
+                .w = self.content_w,
+                .h = self.row_h,
+            },
+            .text_y = yTextFromTop(window_height, row_top_px + (self.row_h - cell_h) / 2, cell_h),
+        };
+    }
+
+    fn footer(self: PanelLayout, cell_h: f32) FooterChrome {
+        return .{
+            .rule = .{ .x = self.content_x, .y = self.legend_h, .w = self.content_w, .h = 1 },
+            .text_y = (self.legend_h - cell_h) / 2,
+        };
+    }
+
+    fn bottomBar(self: PanelLayout, rows: f32) DrawRect {
+        return .{ .x = self.content_x, .y = self.legend_h, .w = self.content_w, .h = self.row_h * rows };
+    }
+
+    fn topRule(self: PanelLayout, window_height: f32, top_px: f32) DrawRect {
+        return .{ .x = self.content_x, .y = yFromTop(window_height, top_px, 1), .w = self.content_w, .h = 1 };
+    }
+};
+
+fn panelLayout(window_height: f32, titlebar_offset: f32, cell_h: f32, x: f32, width: f32) ?PanelLayout {
+    const content_x = @round(x);
+    const content_w = @round(@max(1.0, width));
     const top = @round(titlebar_offset);
     const content_h = @round(@max(1.0, window_height - top));
-    const usable = content_h - headerHeight(cell_h) - legendHeight(cell_h);
-    if (usable <= 0) return 0;
-    return @intFromFloat(@max(0.0, @floor(usable / rowHeight(cell_h))));
+    if (content_w <= 1 or content_h <= 1) return null;
+
+    const header_h = headerHeight(cell_h);
+    const row_h = rowHeight(cell_h);
+    return .{
+        .content_x = content_x,
+        .content_w = content_w,
+        .top = top,
+        .content_h = content_h,
+        .header_h = header_h,
+        .row_h = row_h,
+        .legend_h = legendHeight(cell_h),
+        .body_top = top + header_h,
+    };
+}
+
+fn listScrollbar(layout: PanelLayout, window_height: f32, list: ListWindow, total: usize) ?ListScrollbar {
+    if (total <= list.visible_rows or list.visible_rows == 0) return null;
+
+    const total_f: f32 = @floatFromInt(total);
+    const vis_f: f32 = @floatFromInt(list.visible_rows);
+    const track_h = layout.row_h * vis_f;
+    const sb_w: f32 = 3;
+    const sb_x = layout.content_x + layout.content_w - sb_w - 4;
+    const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
+    const max_scroll_f: f32 = @floatFromInt(total - list.visible_rows);
+    const scroll_f: f32 = @floatFromInt(list.first_visible);
+    const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
+    return .{
+        .track = .{
+            .x = sb_x,
+            .y = yFromTop(window_height, list.top_px, track_h),
+            .w = sb_w,
+            .h = track_h,
+        },
+        .thumb = .{
+            .x = sb_x,
+            .y = yFromTop(window_height, list.top_px + thumb_offset, thumb_h),
+            .w = sb_w,
+            .h = thumb_h,
+        },
+    };
+}
+
+/// Rows that fit between the header and the legend.
+pub fn bodyVisibleCapacity(window_height: f32, titlebar_offset: f32, cell_h: f32) usize {
+    const layout = panelLayout(window_height, titlebar_offset, cell_h, 0, 2) orelse return 0;
+    return layout.bodyVisibleRows();
 }
 
 /// Scroll offset that keeps the selected row visible, for lists that have only a
@@ -106,8 +273,8 @@ fn clampScroll(requested: usize, total: usize, visible: usize) usize {
 fn yFromTop(window_height: f32, top_px: f32, h: f32) f32 {
     return window_height - top_px - h;
 }
-fn yTextFromTop(draw: DrawContext, window_height: f32, top_px: f32) f32 {
-    return window_height - top_px - draw.cell_h;
+fn yTextFromTop(window_height: f32, top_px: f32, cell_h: f32) f32 {
+    return window_height - top_px - cell_h;
 }
 
 fn mixColor(a: [3]f32, b: [3]f32, t: f32) [3]f32 {
@@ -167,11 +334,7 @@ pub fn render(
     width: f32,
 ) void {
     _ = window_width;
-    const content_x = @round(x);
-    const content_w = @round(@max(1.0, width));
-    const top = @round(titlebar_offset);
-    const content_h = @round(@max(1.0, window_height - top));
-    if (content_w <= 1 or content_h <= 1) return;
+    const layout = panelLayout(window_height, titlebar_offset, draw.cell_h, x, width) orelse return;
 
     const bg = draw.bg;
     const fg = draw.fg;
@@ -181,71 +344,65 @@ pub fn render(
     const muted = mixColor(bg, fg, 0.58);
     const selected_bg = mixColor(bg, accent, 0.18);
 
-    draw.fillQuad(content_x, 0, content_w, content_h, bg);
+    const background = layout.background();
+    draw.fillQuad(background.x, background.y, background.w, background.h, bg);
 
     // --- Header: title · count + status. ---
-    const header_h = headerHeight(draw.cell_h);
-    draw.fillQuadAlpha(content_x, yFromTop(window_height, top, header_h), content_w, header_h, panel_strong, 0.9);
-    draw.fillQuad(content_x, yFromTop(window_height, top + header_h, 1), content_w, 1, line);
+    const header = layout.header(window_height, draw.cell_h);
+    draw.fillQuadAlpha(header.band.x, header.band.y, header.band.w, header.band.h, panel_strong, 0.9);
+    draw.fillQuad(header.rule.x, header.rule.y, header.rule.w, header.rule.h, line);
 
-    const title_y = yTextFromTop(draw, window_height, top + 11);
-    const title_end = draw.renderTextLimited(view.title, content_x + PAD_X, title_y, fg, content_w - PAD_X * 2);
+    const title_y = header.title_y;
+    const title_end = draw.renderTextLimited(view.title, layout.content_x + PAD_X, title_y, fg, layout.content_w - PAD_X * 2);
     var sub_buf: [64]u8 = undefined;
     const sub = std.fmt.bufPrint(&sub_buf, " · {d}", .{view.skills_len}) catch "";
-    const sub_end = draw.renderTextLimited(sub, title_end, title_y, muted, @max(0, content_x + content_w - PAD_X - title_end));
+    const sub_end = draw.renderTextLimited(sub, title_end, title_y, muted, @max(0, layout.content_x + layout.content_w - PAD_X - title_end));
     if (view.status.len > 0) {
         const sx = sub_end + 16;
-        _ = draw.renderTextLimited(view.status, sx, title_y, accent, @max(0, content_x + content_w - PAD_X - sx));
+        _ = draw.renderTextLimited(view.status, sx, title_y, accent, @max(0, layout.content_x + layout.content_w - PAD_X - sx));
     }
-
-    const body_top = top + header_h;
 
     switch (view.overlay) {
         .list => |lv| {
-            renderList(draw, lv, content_x, content_w, window_height, body_top, fg, muted, accent, line, selected_bg);
+            renderList(draw, lv, layout, window_height, fg, muted, accent, line, selected_bg);
         },
         .text => |tv| {
-            renderTextPreview(draw, tv, content_x, content_w, window_height, top, body_top, fg, muted, accent, line);
+            renderTextPreview(draw, tv, layout, window_height, fg, muted, accent, line);
             return; // own footer hint; no action legend
         },
         else => {
-            renderSkillList(draw, view, content_x, content_w, window_height, top, body_top, fg, muted, accent, line, selected_bg);
+            renderSkillList(draw, view, layout, window_height, fg, muted, accent, line, selected_bg);
             if (view.overlay == .confirm) {
-                const bar_h = rowHeight(draw.cell_h);
-                const bar_y = legendHeight(draw.cell_h);
-                draw.fillQuadAlpha(content_x, bar_y, content_w, bar_h, mixColor(bg, accent, 0.22), 0.97);
-                const t_y = bar_y + (bar_h - draw.cell_h) / 2;
-                _ = draw.renderTextLimited(view.overlay.confirm, content_x + PAD_X, t_y, fg, content_w - PAD_X * 2);
+                const bar = layout.bottomBar(1);
+                draw.fillQuadAlpha(bar.x, bar.y, bar.w, bar.h, mixColor(bg, accent, 0.22), 0.97);
+                const t_y = bar.y + (bar.h - draw.cell_h) / 2;
+                _ = draw.renderTextLimited(view.overlay.confirm, layout.content_x + PAD_X, t_y, fg, layout.content_w - PAD_X * 2);
                 return; // confirm replaces the legend line
             }
             if (view.overlay == .input) {
                 const iv = view.overlay.input;
-                const bar_h = rowHeight(draw.cell_h) * 2;
-                const bar_y = legendHeight(draw.cell_h);
-                draw.fillQuadAlpha(content_x, bar_y, content_w, bar_h, mixColor(bg, accent, 0.22), 0.97);
-                const prompt_y = bar_y + bar_h - draw.cell_h - 6;
-                _ = draw.renderTextLimited(iv.prompt, content_x + PAD_X, prompt_y, muted, content_w - PAD_X * 2);
+                const bar = layout.bottomBar(2);
+                draw.fillQuadAlpha(bar.x, bar.y, bar.w, bar.h, mixColor(bg, accent, 0.22), 0.97);
+                const prompt_y = bar.y + bar.h - draw.cell_h - 6;
+                _ = draw.renderTextLimited(iv.prompt, layout.content_x + PAD_X, prompt_y, muted, layout.content_w - PAD_X * 2);
                 // editable line with a trailing caret
                 var line_buf: [600]u8 = undefined;
                 const shown = std.fmt.bufPrint(&line_buf, "{s}_", .{iv.text}) catch iv.text;
-                const text_y = bar_y + (rowHeight(draw.cell_h) - draw.cell_h) / 2;
-                _ = draw.renderTextLimited(shown, content_x + PAD_X, text_y, fg, content_w - PAD_X * 2);
+                const text_y = bar.y + (layout.row_h - draw.cell_h) / 2;
+                _ = draw.renderTextLimited(shown, layout.content_x + PAD_X, text_y, fg, layout.content_w - PAD_X * 2);
                 return; // input replaces the legend line
             }
         },
     }
 
-    renderLegend(draw, view.legend, content_x, content_w, muted, line);
+    renderLegend(draw, view.legend, layout, muted, line);
 }
 
 fn renderSkillList(
     draw: DrawContext,
     view: View,
-    content_x: f32,
-    content_w: f32,
+    layout: PanelLayout,
     window_height: f32,
-    top: f32,
-    body_top: f32,
     fg: [3]f32,
     muted: [3]f32,
     accent: [3]f32,
@@ -253,27 +410,24 @@ fn renderSkillList(
     selected_bg: [3]f32,
 ) void {
     if (view.skills_len == 0) {
-        _ = draw.renderTextLimited(view.status, content_x + PAD_X, yTextFromTop(draw, window_height, body_top + 24), muted, content_w - PAD_X * 2);
+        const empty_y = yTextFromTop(window_height, layout.body_top + 24, draw.cell_h);
+        _ = draw.renderTextLimited(view.status, layout.content_x + PAD_X, empty_y, muted, layout.content_w - PAD_X * 2);
         return;
     }
-    const row_h = rowHeight(draw.cell_h);
-    const cap = bodyVisibleCapacity(window_height, top, draw.cell_h);
-    const scroll = clampScroll(view.scroll, view.skills_len, cap);
+    const list = layout.mainListWindow(view.skills_len, view.scroll);
     var rendered: usize = 0;
-    var ri: usize = scroll;
-    while (ri < view.skills_len and rendered < cap) : (ri += 1) {
-        const row_top_px = body_top + @as(f32, @floatFromInt(rendered)) * row_h;
-        const row_y = yFromTop(window_height, row_top_px, row_h);
+    var ri: usize = list.first_visible;
+    while (ri < view.skills_len and rendered < list.visible_rows) : (ri += 1) {
+        const slot = layout.rowSlot(window_height, list.top_px, rendered, draw.cell_h);
         if (ri == view.sel_row) {
-            draw.fillQuadAlpha(content_x, row_y, content_w, row_h, selected_bg, 0.55);
-            draw.fillQuad(content_x, row_y, 3, row_h, accent);
+            draw.fillQuadAlpha(slot.rect.x, slot.rect.y, slot.rect.w, slot.rect.h, selected_bg, 0.55);
+            draw.fillQuad(slot.rect.x, slot.rect.y, 3, slot.rect.h, accent);
         }
-        draw.fillQuadAlpha(content_x, row_y, content_w, 1, line, 0.4);
-        const text_y = yTextFromTop(draw, window_height, row_top_px + (row_h - draw.cell_h) / 2);
+        draw.fillQuadAlpha(slot.rect.x, slot.rect.y, slot.rect.w, 1, line, 0.4);
         const item = view.itemAt(view.ctx, ri);
         const meta_w: f32 = if (item.kind.len > 0 or item.enabled.len > 0) metaLayout(draw.glyphAdvance('M')).band_w else 0;
-        _ = draw.renderTextLimited(item.label, content_x + PAD_X, text_y, fg, @max(0, content_w - PAD_X * 2 - meta_w));
-        renderListMetadata(draw, item, content_x, content_w, text_y, muted);
+        _ = draw.renderTextLimited(item.label, layout.content_x + PAD_X, slot.text_y, fg, @max(0, layout.content_w - PAD_X * 2 - meta_w));
+        renderListMetadata(draw, item, layout.content_x, layout.content_w, slot.text_y, muted);
         rendered += 1;
     }
 }
@@ -281,10 +435,8 @@ fn renderSkillList(
 fn renderList(
     draw: DrawContext,
     lv: ListView,
-    content_x: f32,
-    content_w: f32,
+    layout: PanelLayout,
     window_height: f32,
-    body_top: f32,
     fg: [3]f32,
     muted: [3]f32,
     accent: [3]f32,
@@ -292,56 +444,35 @@ fn renderList(
     selected_bg: [3]f32,
 ) void {
     // Title line.
-    const title_y = yTextFromTop(draw, window_height, body_top + 8);
-    _ = draw.renderTextLimited(lv.title, content_x + PAD_X, title_y, muted, content_w - PAD_X * 2);
-    const row_h = rowHeight(draw.cell_h);
-    const list_top = body_top + row_h;
-
-    // Clamp rows to what fits below the title and above the legend, then scroll
-    // to keep the selected row visible (the list is keyboard navigable).
-    const usable = window_height - list_top - legendHeight(draw.cell_h);
-    const cap: usize = if (usable <= 0) 0 else @intFromFloat(@max(0.0, @floor(usable / row_h)));
-    const scroll = firstVisibleForSelection(lv.sel, cap, lv.len);
+    const title_y = yTextFromTop(window_height, layout.body_top + 8, draw.cell_h);
+    _ = draw.renderTextLimited(lv.title, layout.content_x + PAD_X, title_y, muted, layout.content_w - PAD_X * 2);
+    const list = layout.overlayListWindow(window_height, lv.len, lv.sel);
 
     const marker_w: f32 = 110;
     const meta_w: f32 = metaLayout(draw.glyphAdvance('M')).band_w;
     var rendered: usize = 0;
-    var i: usize = scroll;
-    while (i < lv.len and rendered < cap) : (i += 1) {
-        const row_top_px = list_top + @as(f32, @floatFromInt(rendered)) * row_h;
-        const row_y = yFromTop(window_height, row_top_px, row_h);
+    var i: usize = list.first_visible;
+    while (i < lv.len and rendered < list.visible_rows) : (i += 1) {
+        const slot = layout.rowSlot(window_height, list.top_px, rendered, draw.cell_h);
         if (i == lv.sel) {
-            draw.fillQuadAlpha(content_x, row_y, content_w, row_h, selected_bg, 0.55);
-            draw.fillQuad(content_x, row_y, 3, row_h, accent);
+            draw.fillQuadAlpha(slot.rect.x, slot.rect.y, slot.rect.w, slot.rect.h, selected_bg, 0.55);
+            draw.fillQuad(slot.rect.x, slot.rect.y, 3, slot.rect.h, accent);
         }
-        draw.fillQuadAlpha(content_x, row_y, content_w, 1, line, 0.4);
-        const text_y = yTextFromTop(draw, window_height, row_top_px + (row_h - draw.cell_h) / 2);
+        draw.fillQuadAlpha(slot.rect.x, slot.rect.y, slot.rect.w, 1, line, 0.4);
         const item = lv.itemAt(lv.ctx, i);
         const reserved_w = (if (item.kind.len > 0 or item.enabled.len > 0) meta_w else 0) + (if (item.marker.len > 0) marker_w else 0);
-        _ = draw.renderTextLimited(item.label, content_x + PAD_X, text_y, fg, @max(0, content_w - PAD_X * 2 - reserved_w));
-        renderListMetadata(draw, item, content_x - (if (item.marker.len > 0) marker_w else 0), content_w, text_y, muted);
+        _ = draw.renderTextLimited(item.label, layout.content_x + PAD_X, slot.text_y, fg, @max(0, layout.content_w - PAD_X * 2 - reserved_w));
+        renderListMetadata(draw, item, layout.content_x - (if (item.marker.len > 0) marker_w else 0), layout.content_w, slot.text_y, muted);
         if (item.marker.len > 0) {
-            const mx = content_x + content_w - PAD_X - marker_w;
-            _ = draw.renderTextLimited(item.marker, mx, text_y, item.marker_color, marker_w);
+            const mx = layout.content_x + layout.content_w - PAD_X - marker_w;
+            _ = draw.renderTextLimited(item.marker, mx, slot.text_y, item.marker_color, marker_w);
         }
         rendered += 1;
     }
 
-    // Scrollbar thumb when the list is taller than the visible area.
-    if (lv.len > cap and cap > 0) {
-        const total_f: f32 = @floatFromInt(lv.len);
-        const vis_f: f32 = @floatFromInt(cap);
-        const track_h = row_h * vis_f;
-        const sb_w: f32 = 3;
-        const sb_x = content_x + content_w - sb_w - 4;
-        const track_gl_y = yFromTop(window_height, list_top, track_h);
-        draw.fillQuadAlpha(sb_x, track_gl_y, sb_w, track_h, mixColor(muted, fg, 0.2), 0.30);
-        const thumb_h = @max(24.0, @round(track_h * vis_f / total_f));
-        const max_scroll_f: f32 = @floatFromInt(lv.len - cap);
-        const scroll_f: f32 = @floatFromInt(scroll);
-        const thumb_offset = if (max_scroll_f > 0) @round((track_h - thumb_h) * (scroll_f / max_scroll_f)) else 0;
-        const thumb_gl_y = yFromTop(window_height, list_top + thumb_offset, thumb_h);
-        draw.fillQuadAlpha(sb_x, thumb_gl_y, sb_w, thumb_h, accent, 0.55);
+    if (listScrollbar(layout, window_height, list, lv.len)) |sb| {
+        draw.fillQuadAlpha(sb.track.x, sb.track.y, sb.track.w, sb.track.h, mixColor(muted, fg, 0.2), 0.30);
+        draw.fillQuadAlpha(sb.thumb.x, sb.thumb.y, sb.thumb.w, sb.thumb.h, accent, 0.55);
     }
 }
 
@@ -401,31 +532,27 @@ pub fn wrappedLineCount(content: []const u8, cols: usize) usize {
 fn renderTextPreview(
     draw: DrawContext,
     tv: TextView,
-    content_x: f32,
-    content_w: f32,
+    layout: PanelLayout,
     window_height: f32,
-    top: f32,
-    body_top: f32,
     fg: [3]f32,
     muted: [3]f32,
     accent: [3]f32,
     line: [3]f32,
 ) void {
-    const row_h = rowHeight(draw.cell_h);
     // Title row.
-    const title_y = yTextFromTop(draw, window_height, body_top + 8);
-    _ = draw.renderTextLimited(tv.title, content_x + PAD_X, title_y, accent, content_w - PAD_X * 2);
-    draw.fillQuad(content_x, yFromTop(window_height, body_top + row_h, 1), content_w, 1, line);
+    const title_y = yTextFromTop(window_height, layout.body_top + 8, draw.cell_h);
+    _ = draw.renderTextLimited(tv.title, layout.content_x + PAD_X, title_y, accent, layout.content_w - PAD_X * 2);
+    const title_rule = layout.topRule(window_height, layout.body_top + layout.row_h);
+    draw.fillQuad(title_rule.x, title_rule.y, title_rule.w, title_rule.h, line);
 
-    const text_top = body_top + row_h;
-    const footer_h = legendHeight(draw.cell_h);
+    const text_top = layout.body_top + layout.row_h;
     const line_pitch = draw.cell_h + 6;
-    const avail_h = window_height - top - text_top - footer_h - 6;
+    const avail_h = window_height - layout.top - text_top - layout.legend_h - 6;
 
     if (avail_h > line_pitch) {
         const visible: usize = @intFromFloat(@floor(avail_h / line_pitch));
         const advance = draw.glyphAdvance('M');
-        const cols = wrapCols(content_w - PAD_X * 2, advance);
+        const cols = wrapCols(layout.content_w - PAD_X * 2, advance);
         const total = wrappedLineCount(tv.content, cols);
         const scroll = clampScroll(tv.scroll, total, visible);
         if (tv.scroll_out) |p| p.* = scroll;
@@ -437,23 +564,21 @@ fn renderTextPreview(
         while (rendered < visible) : (rendered += 1) {
             const dl = it.next() orelse break;
             const top_px = text_top + @as(f32, @floatFromInt(rendered)) * line_pitch + 4;
-            const ly = yTextFromTop(draw, window_height, top_px);
-            if (dl.len > 0) _ = draw.renderTextLimited(dl, content_x + PAD_X, ly, fg, content_w - PAD_X * 2);
+            const ly = yTextFromTop(window_height, top_px, draw.cell_h);
+            if (dl.len > 0) _ = draw.renderTextLimited(dl, layout.content_x + PAD_X, ly, fg, layout.content_w - PAD_X * 2);
         }
     }
 
     // Footer hint replaces the action legend.
-    const legend_h = legendHeight(draw.cell_h);
-    draw.fillQuad(content_x, legend_h, content_w, 1, line);
-    const hint_y = (legend_h - draw.cell_h) / 2;
-    _ = draw.renderTextLimited(tv.hint, content_x + PAD_X, hint_y, muted, content_w - PAD_X * 2);
+    const footer = layout.footer(draw.cell_h);
+    draw.fillQuad(footer.rule.x, footer.rule.y, footer.rule.w, footer.rule.h, line);
+    _ = draw.renderTextLimited(tv.hint, layout.content_x + PAD_X, footer.text_y, muted, layout.content_w - PAD_X * 2);
 }
 
-fn renderLegend(draw: DrawContext, legend: []const u8, content_x: f32, content_w: f32, muted: [3]f32, line: [3]f32) void {
-    const legend_h = legendHeight(draw.cell_h);
-    draw.fillQuad(content_x, legend_h, content_w, 1, line);
-    const text_y = (legend_h - draw.cell_h) / 2;
-    _ = draw.renderTextLimited(legend, content_x + PAD_X, text_y, muted, content_w - PAD_X * 2);
+fn renderLegend(draw: DrawContext, legend: []const u8, layout: PanelLayout, muted: [3]f32, line: [3]f32) void {
+    const footer = layout.footer(draw.cell_h);
+    draw.fillQuad(footer.rule.x, footer.rule.y, footer.rule.w, footer.rule.h, line);
+    _ = draw.renderTextLimited(legend, layout.content_x + PAD_X, footer.text_y, muted, layout.content_w - PAD_X * 2);
 }
 
 // --- Tests ---
@@ -475,6 +600,51 @@ test "skill_center_renderer: bodyVisibleCapacity grows with height" {
     const cell_h: f32 = 16;
     try std.testing.expect(bodyVisibleCapacity(800, 40, cell_h) >= bodyVisibleCapacity(200, 40, cell_h));
     try std.testing.expectEqual(@as(usize, 0), bodyVisibleCapacity(40, 40, cell_h));
+}
+
+test "skill_center_renderer: panel layout exposes backend-neutral chrome bands" {
+    const layout = panelLayout(720, 40, 16, 24.2, 320.8).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 24), layout.content_x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 321), layout.content_w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 680), layout.content_h, 0.001);
+
+    const bg = layout.background();
+    try std.testing.expectApproxEqAbs(@as(f32, 0), bg.y, 0.001);
+    try std.testing.expectApproxEqAbs(layout.content_h, bg.h, 0.001);
+
+    const header = layout.header(720, 16);
+    try std.testing.expectApproxEqAbs(@as(f32, 626), header.band.y, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 625), header.rule.y, 0.001);
+    try std.testing.expect(header.rule.y + header.rule.h <= header.band.y);
+
+    const footer = layout.footer(16);
+    try std.testing.expectApproxEqAbs(layout.legend_h, footer.rule.y, 0.001);
+    try std.testing.expect(footer.text_y >= 0);
+}
+
+test "skill_center_renderer: row slot geometry is stable across visible rows" {
+    const layout = panelLayout(800, 50, 20, 10, 300).?;
+    const row0 = layout.rowSlot(800, layout.body_top, 0, 20);
+    const row1 = layout.rowSlot(800, layout.body_top, 1, 20);
+
+    try std.testing.expectApproxEqAbs(row0.rect.x, row1.rect.x, 0.001);
+    try std.testing.expectApproxEqAbs(row0.rect.w, row1.rect.w, 0.001);
+    try std.testing.expectApproxEqAbs(row0.rect.y - layout.row_h, row1.rect.y, 0.001);
+    try std.testing.expectApproxEqAbs(row0.rect.y + (layout.row_h - 20) / 2, row0.text_y, 0.001);
+}
+
+test "skill_center_renderer: overlay scrollbar stays inside list track" {
+    const layout = panelLayout(420, 40, 16, 0, 300).?;
+    const list = layout.overlayListWindow(420, 20, 15);
+    try std.testing.expect(list.visible_rows > 0);
+    try std.testing.expect(list.first_visible <= 15);
+    try std.testing.expect(15 < list.first_visible + list.visible_rows);
+
+    const sb = listScrollbar(layout, 420, list, 20).?;
+    try std.testing.expect(sb.thumb.y >= sb.track.y);
+    try std.testing.expect(sb.thumb.y + sb.thumb.h <= sb.track.y + sb.track.h + 0.001);
+    try std.testing.expectApproxEqAbs(sb.track.x, sb.thumb.x, 0.001);
+    try std.testing.expectApproxEqAbs(sb.track.w, sb.thumb.w, 0.001);
 }
 
 test "skill_center_renderer: list item carries kind and enabled marker" {
