@@ -181,6 +181,19 @@ recovery request in the healthy path. It is a Phase IV and Phase V
 diagnostics/policy/recovery-coordination evidence tool only; it does not change
 the Windows default renderer.
 
+To exercise the controlled Phase V device-recreate path, run the same smoke
+with `-RecreateSmoke` after building the D3D11 executable:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\debug\test-d3d11-normal-session.ps1 -RecreateSmoke
+```
+
+This sets `WISPTERM_D3D11_RECREATE_SMOKE=1`, asks the backend to latch one
+recreate-class recovery request, and verifies that diagnostics record the
+recreate request, a successful single-shot device/swapchain recreate attempt,
+and restored feature resources. It still leaves automatic fallback and the
+Windows default backend unchanged.
+
 ## macOS UI Smoke Tests
 
 macOS UI debugging is native-target first. Unless a task explicitly asks for

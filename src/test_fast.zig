@@ -195,6 +195,7 @@ test {
     _ = @import("renderer/qr_panel_layout.zig");
     _ = @import("renderer/file_explorer_layout.zig");
     _ = @import("renderer/post_process_policy.zig");
+    _ = @import("renderer/d3d11_recreate_smoke.zig");
     _ = @import("renderer/gpu/gl_backend_guard.zig");
     _ = @import("renderer/gpu/types.zig");
     _ = @import("renderer/gpu/d3d11/present_policy.zig");
