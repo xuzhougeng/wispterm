@@ -2510,24 +2510,28 @@ fn openMcpServersFromCommandPalette() void {
     mcpState().open(allocator);
 }
 
-/// Re-read mcp.json into the panel list AND refresh the runtime MCP tool cache,
-/// so an edit made directly to the file (by hand or by the Copilot) takes effect
-/// without a restart. Bound to `r` in the list view.
-fn reloadMcpServersInPanel() void {
+/// Persist the panel's servers to mcp.json AND refresh the runtime MCP tool
+/// cache, so every edit (add/edit/delete/toggle) takes effect immediately with
+/// no separate save or reload step. This is the panel's whole save story now —
+/// there is no Ctrl-S and no manual reload key.
+fn persistMcp() void {
     const allocator = AppWindow.g_allocator orelse return;
+    mcpState().save(allocator) catch {};
     ai_chat.reloadMcpTools(allocator);
-    mcpState().open(allocator); // re-load the on-disk servers into the panel
 }
 
 /// Open `<config-dir>/mcp.json` in the OS default text editor (creating an empty
-/// template first if it doesn't exist). Bound to `o` in the list view — the
-/// panel intentionally has no in-app JSON editor.
+/// template first if it doesn't exist), then close the panel. Closing avoids the
+/// stale in-memory list clobbering the file the user is about to hand-edit: on
+/// reopen the panel re-reads mcp.json from disk. Bound to the "Edit mcp.json"
+/// action row — the panel intentionally has no in-app JSON editor.
 fn openMcpJsonInEditor() void {
     const allocator = AppWindow.g_allocator orelse return;
     mcp_registry.ensureConfigFile(allocator) catch return;
     const path = mcp_registry.configPath(allocator) catch return;
     defer allocator.free(path);
     _ = platform_editor.openTextFile(allocator, .{ .path = path });
+    mcpState().visible = false;
 }
 
 pub fn mcpServersVisible() bool {
@@ -2555,97 +2559,143 @@ fn backspaceMcpFormField(field: mcp_servers.Field) void {
     mcpState().setFormField(field, buf[0 .. current.len - 1]);
 }
 
-/// Typed-character input into the MCP form's focused field. Only the form
-/// view accepts free text (the list view is navigation-only); mirrors
-/// sessionLauncherInsertChar's per-overlay gating.
-/// Paste clipboard text into the focused form field (⌘V). Only in form view;
-/// keeps printable ASCII, matching `mcpServersInsertChar`.
-pub fn mcpServersPasteText(text: []const u8) bool {
-    if (mcpState().view != .form) return false;
-    const field = mcpState().form_focus;
-    for (text) |ch| {
-        if (ch < 0x20 or ch >= 0x7f) continue;
-        appendMcpFormChar(field, ch);
-    }
-    return true;
-}
-
+/// Typed-character input. In the list view it feeds the search filter (like the
+/// SSH picker); in the form view it types into the focused text field (action
+/// rows ignore it). Space is reserved as the list's enable/disable toggle, so it
+/// never enters the filter.
 pub fn mcpServersInsertChar(codepoint: u21) void {
-    if (mcpState().view != .form) return;
-    // Drop the shortcut letter ('a'/'e') that just opened the form: its KeyEvent
-    // switched the view to .form, and its own CharEvent follows here.
-    if (mcpState().takeConsumeChar()) return;
-    if (codepoint < 0x20 or codepoint >= 0x7f) return; // printable ASCII only, like appendSshFormText
-    appendMcpFormChar(mcpState().form_focus, @intCast(codepoint));
+    if (codepoint < 0x20 or codepoint >= 0x7f) return; // printable ASCII only
+    const st = mcpState();
+    switch (st.view) {
+        .list => {
+            if (codepoint == 0x20) return; // space toggles the selected server, not filter
+            st.appendListFilter(@intCast(codepoint));
+        },
+        .form => {
+            const field = st.form_focus.field() orelse return; // action rows take no text
+            appendMcpFormChar(field, @intCast(codepoint));
+        },
+    }
 }
 
-/// Keyboard handling for the MCP servers panel. Navigation/control keys only
-/// (arrows, tab, enter, escape, backspace, and the list's letter shortcuts);
-/// free-text typing into form fields arrives separately via
-/// mcpServersInsertChar. `t` kicks off a background "Test" probe against the
-/// selected server (see `mcpProbeDone`); rendering the probe result is a
-/// separate follow-up task.
+/// Paste (⌘V): into the list search filter or the focused form field.
+pub fn mcpServersPasteText(text: []const u8) bool {
+    const st = mcpState();
+    switch (st.view) {
+        .list => {
+            for (text) |ch| {
+                if (ch > 0x20 and ch < 0x7f) st.appendListFilter(ch);
+            }
+            return true;
+        },
+        .form => {
+            const field = st.form_focus.field() orelse return false;
+            for (text) |ch| {
+                if (ch < 0x20 or ch >= 0x7f) continue;
+                appendMcpFormChar(field, ch);
+            }
+            return true;
+        },
+    }
+}
+
+/// Enter on a list row: edit the highlighted server, or run the highlighted
+/// action row (new server / edit mcp.json / close).
+fn mcpRunListRow() AppWindow.UiEffect {
+    const st = mcpState();
+    switch (st.listActionForRow(st.list_selected)) {
+        .server => if (st.selectedServerIndex()) |i| st.beginEdit(i),
+        .new_server => st.beginAdd(),
+        .edit_json => openMcpJsonInEditor(),
+        .close => st.visible = false,
+    }
+    return .repaint;
+}
+
+/// Kick off a background "Test" probe against the command/args currently typed
+/// in the form — so it tests exactly what you see, whether adding or editing.
+fn mcpStartProbeFromForm() AppWindow.UiEffect {
+    const st = mcpState();
+    // ponytail: single in-flight probe — re-pressing Test while one runs just
+    // repaints instead of racing a second probe thread against `probe`.
+    if (st.probe.status == .running) return .repaint;
+    const command = st.formField(.command);
+    if (command.len == 0) {
+        st.form_error = error.EmptyCommand;
+        return .repaint;
+    }
+    const allocator = AppWindow.g_allocator orelse return .none;
+    var args_buf: [64][]const u8 = undefined;
+    var args_len: usize = 0;
+    var it = std.mem.tokenizeAny(u8, st.formField(.args), " \t");
+    while (it.next()) |tok| {
+        if (args_len >= args_buf.len) break;
+        args_buf[args_len] = tok;
+        args_len += 1;
+    }
+    st.form_error = null;
+    st.probe.status = .running;
+    st.probe.target_index = st.editing_index;
+    mcp_probe.start(allocator, command, args_buf[0..args_len], mcpProbeDone, @ptrCast(st));
+    return .repaint;
+}
+
+/// Enter/activation on a form row: save (any field row or the Save row), test,
+/// delete, or cancel. Save and delete auto-persist + reload (see `persistMcp`).
+fn mcpRunFormRow() AppWindow.UiEffect {
+    const st = mcpState();
+    switch (st.form_focus) {
+        .name, .command, .args, .save => {
+            st.commitForm() catch |err| {
+                st.form_error = err;
+                return .repaint;
+            };
+            st.form_error = null;
+            st.view = .list;
+            persistMcp();
+        },
+        .test_conn => return mcpStartProbeFromForm(),
+        .delete => {
+            if (st.editing_index != mcp_servers.EDIT_INDEX_NONE) {
+                st.removeAt(st.editing_index);
+                persistMcp();
+            }
+            st.view = .list;
+        },
+        .cancel => st.view = .list,
+    }
+    return .repaint;
+}
+
+/// Keyboard handling for the MCP servers panel. The list view is a filterable
+/// picker: type to filter, ↑↓/Tab to move, Enter to activate the highlighted
+/// row, Space to enable/disable the highlighted server, Esc to clear the filter
+/// or close. The form view walks its rows with Tab/↑↓ and activates with Enter.
+/// There is no Ctrl-S or reload key — every mutation persists immediately.
 pub fn mcpServersHandleKey(ev: input_key.KeyEvent) AppWindow.UiEffect {
     const st = mcpState();
     switch (st.view) {
         .list => switch (ev.key) {
             .arrow_up => st.moveSelection(-1),
-            .arrow_down => st.moveSelection(1),
-            .enter => if (st.count > 0) st.beginEdit(st.list_selected),
-            .key_e => if (st.count > 0) {
-                st.beginEdit(st.list_selected);
-                st.consume_next_char = true; // don't type 'e' into the field
+            .arrow_down, .tab => st.moveSelection(1),
+            .backspace => st.backspaceListFilter(),
+            .enter => return mcpRunListRow(),
+            .space => {
+                if (st.selectedServerIndex()) |i| {
+                    st.toggleAt(i);
+                    persistMcp();
+                } else return .none;
             },
-            .key_a => {
-                st.beginAdd();
-                st.consume_next_char = true; // don't type 'a' into the field
+            .escape => {
+                if (st.list_filter_len > 0) st.clearListFilter() else st.visible = false;
             },
-            .key_d => st.removeSelected(),
-            .key_t => {
-                if (st.count == 0) return .none;
-                // ponytail: single in-flight probe — re-pressing `t` while
-                // one is already running just repaints instead of racing a
-                // second probe thread against `probe`.
-                if (st.probe.status == .running) return .repaint;
-                const allocator = AppWindow.g_allocator orelse return .none;
-                const idx = st.list_selected;
-                const command = st.servers[idx].command[0..st.servers[idx].command_len];
-                var args_buf: [64][]const u8 = undefined;
-                var args_len: usize = 0;
-                var it = std.mem.tokenizeAny(u8, st.serverArgs(idx), " \t");
-                while (it.next()) |tok| {
-                    if (args_len >= args_buf.len) break;
-                    args_buf[args_len] = tok;
-                    args_len += 1;
-                }
-                st.probe.status = .running;
-                st.probe.target_index = idx;
-                mcp_probe.start(allocator, command, args_buf[0..args_len], mcpProbeDone, @ptrCast(st));
-            },
-            .space => st.toggleSelected(),
-            .key_r => reloadMcpServersInPanel(),
-            .key_o => openMcpJsonInEditor(),
-            .key_s => {
-                if (!ev.ctrlOnly(.key_s)) return .none;
-                const allocator = AppWindow.g_allocator orelse return .none;
-                st.save(allocator) catch {};
-                ai_chat.reloadMcpTools(allocator);
-            },
-            .escape => st.visible = false,
             else => return .none,
         },
         .form => switch (ev.key) {
-            .tab, .arrow_down => st.form_focus = st.form_focus.next(),
-            .arrow_up => st.form_focus = st.form_focus.prev(),
-            .backspace => backspaceMcpFormField(st.form_focus),
-            .enter => {
-                st.commitForm() catch |err| {
-                    st.form_error = err;
-                    return .repaint;
-                };
-                st.form_error = null;
-                st.view = .list;
-            },
+            .tab, .arrow_down => st.formFocusNext(),
+            .arrow_up => st.formFocusPrev(),
+            .backspace => if (st.form_focus.field()) |f| backspaceMcpFormField(f) else return .none,
+            .enter => return mcpRunFormRow(),
             .escape => st.view = .list,
             else => return .none,
         },
@@ -5885,6 +5935,9 @@ const McpLayout = struct {
     box_w: f32,
     box_h: f32,
     header_h: f32,
+    /// Height of the search-box band between header and rows (list view only;
+    /// 0 in the form view). Rows start at `first_row_top_px`, already past it.
+    filter_h: f32,
     first_row_top_px: f32,
     row_h: f32,
     row_count: usize,
@@ -5892,15 +5945,16 @@ const McpLayout = struct {
     scroll: usize,
 };
 
-fn mcpLayout(window_width: f32, window_height: f32, top_offset: f32, row_count: usize, selected: usize) McpLayout {
+fn mcpLayout(window_width: f32, window_height: f32, top_offset: f32, row_count: usize, selected: usize, with_filter: bool) McpLayout {
     const content_height = @max(1, window_height - top_offset);
     const box_w: f32 = @round(@min(@max(420.0, window_width - 48.0), 860.0));
     const row_h = overlayRowHeight(38);
     const header_h = @round(18 + overlayLineHeight() * 2 + 12);
+    const filter_h: f32 = if (with_filter) row_h else 0;
     const bottom_pad = @round(@max(20.0, overlayTextHeight() * 0.55));
-    const visible_rows = sessionRowCapacity(content_height, header_h + bottom_pad, row_h, row_count);
+    const visible_rows = sessionRowCapacity(content_height, header_h + filter_h + bottom_pad, row_h, row_count);
     const scroll = sessionFirstVisibleRow(selected, visible_rows, row_count);
-    const box_h = @round(clampOverlayBoxHeight(header_h + row_h * @as(f32, @floatFromInt(visible_rows)) + bottom_pad, content_height));
+    const box_h = @round(clampOverlayBoxHeight(header_h + filter_h + row_h * @as(f32, @floatFromInt(visible_rows)) + bottom_pad, content_height));
     const box_x = @round(@max(16, (window_width - box_w) / 2));
     const box_top_px = @round(top_offset + @max(16, (content_height - box_h) / 2));
     return .{
@@ -5909,7 +5963,8 @@ fn mcpLayout(window_width: f32, window_height: f32, top_offset: f32, row_count: 
         .box_w = box_w,
         .box_h = box_h,
         .header_h = header_h,
-        .first_row_top_px = box_top_px + header_h,
+        .filter_h = filter_h,
+        .first_row_top_px = box_top_px + header_h + filter_h,
         .row_h = row_h,
         .row_count = row_count,
         .visible_rows = visible_rows,
@@ -5975,10 +6030,6 @@ fn mcpEnabledMark(enabled: bool) []const u8 {
     return if (enabled) "\u{2713}" else "\u{2717}"; // checkmark / cross
 }
 
-// Two short lines so the hint fits the panel width at the overlay font size.
-const MCP_LIST_FOOTER1 = "a add \u{00b7} e edit \u{00b7} d del \u{00b7} space toggle \u{00b7} t test";
-const MCP_LIST_FOOTER2 = "o edit mcp.json \u{00b7} r reload \u{00b7} Ctrl-S save \u{00b7} Esc";
-const MCP_FORM_FOOTER = "Tab/\u{2191}\u{2193} field \u{00b7} Enter save \u{00b7} Esc back";
 const MCP_ERROR_COLOR = [3]f32{ 0.92, 0.35, 0.32 };
 
 fn mcpFormErrorText(err: mcp_servers.FormError) []const u8 {
@@ -5990,16 +6041,33 @@ fn mcpFormErrorText(err: mcp_servers.FormError) []const u8 {
     };
 }
 
+/// The search box drawn between the header and the rows (list view only).
+fn renderMcpSearchBox(layout: McpLayout, window_height: f32) void {
+    if (layout.filter_h <= 0) return;
+    const st = mcpState();
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const field_border = mixColor(bg, accent, 0.30);
+    const field_color = mixColor(bg, fg, 0.05);
+    const dim_color = mixColor(bg, fg, 0.42);
+    const filter_x = @round(layout.box_x + 18);
+    const filter_box_y = @round(window_height - (layout.box_top_px + layout.header_h + layout.filter_h));
+    const filter_w = layout.box_w - 36;
+    const inner_y = filter_box_y + 4;
+    const inner_h = layout.filter_h - 8;
+    renderRoundedQuadAlpha(filter_x - 1, inner_y - 1, filter_w + 2, inner_h + 2, 6, field_border, 0.42);
+    renderRoundedQuadAlpha(filter_x, inner_y, filter_w, inner_h, 5, field_color, 0.92);
+    const filter = st.listFilter();
+    const text = if (filter.len > 0) filter else i18n.s().mcp_search;
+    const color = if (filter.len > 0) fg else dim_color;
+    renderTitlebarTextLimited(text, filter_x + 12, rowTextY(inner_y, inner_h), color, filter_w - 24);
+}
+
 fn renderMcpListView(window_width: f32, window_height: f32, top_offset: f32) void {
     const st = mcpState();
-    // Rows: one per server, a status line for the selected server, a blank
-    // spacer, then the footer hint — all laid out on the same row grid so
-    // scroll/highlight math stays in one place.
-    const status_row = st.count;
-    const footer_row = status_row + 1;
-    const footer_row2 = footer_row + 1;
-    const row_count = footer_row2 + 1;
-    const layout = mcpLayout(window_width, window_height, top_offset, row_count, st.list_selected);
+    const row_count = st.listRowCount(); // visible servers + 3 action rows
+    const layout = mcpLayout(window_width, window_height, top_offset, row_count, st.list_selected, true);
     const box_y = @round(window_height - layout.box_top_px - layout.box_h);
 
     const bg = AppWindow.g_theme.background;
@@ -6016,22 +6084,84 @@ fn renderMcpListView(window_width: f32, window_height: f32, top_offset: f32) voi
 
     const title_y = textYFromTop(window_height, layout.box_top_px + 18);
     const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
-    renderTitlebarTextStrong("MCP Servers", layout.box_x + 24, title_y, title_color);
-    const hint = if (st.count == 0) "No servers yet — press a to add." else "Configured MCP tool servers.";
-    renderTitlebarTextStrongLimited(hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
+    renderTitlebarTextStrong(i18n.s().mcp_servers_title, layout.box_x + 24, title_y, title_color);
+    renderTitlebarTextStrongLimited(i18n.s().mcp_list_hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
 
+    renderMcpSearchBox(layout, window_height);
+
+    // Visible (filtered) server rows, then the trailing action rows.
+    var row: usize = 0;
     for (0..st.count) |i| {
+        if (!st.serverMatchesFilter(i)) continue;
         var left_buf: [mcp_servers.FIELD_MAX + 4]u8 = undefined;
         const left = std.fmt.bufPrint(&left_buf, "{s} {s}", .{ mcpEnabledMark(st.servers[i].enabled), st.serverName(i) }) catch st.serverName(i);
         const command = st.servers[i].command[0..st.servers[i].command_len];
-        renderMcpRow(layout, window_height, i, left, command, st.list_selected == i);
+        renderMcpRow(layout, window_height, row, left, command, st.list_selected == row);
+        row += 1;
     }
+    renderMcpRow(layout, window_height, row, i18n.s().mcp_new_server, i18n.s().sl_v_add, st.list_selected == row);
+    row += 1;
+    renderMcpRow(layout, window_height, row, i18n.s().mcp_edit_json, i18n.s().mcp_v_file, st.list_selected == row);
+    row += 1;
+    renderMcpRow(layout, window_height, row, i18n.s().mcp_close, "Esc", st.list_selected == row);
+}
 
-    if (st.count > 0 and st.probe.target_index == st.list_selected) {
+fn renderMcpFormView(window_width: f32, window_height: f32, top_offset: f32) void {
+    const st = mcpState();
+    const editing = st.editing_index != mcp_servers.EDIT_INDEX_NONE;
+
+    const name_row = 0;
+    const command_row = 1;
+    const args_row = 2;
+    const hint_row = 3;
+    const status_row = 4;
+    const save_row = 5;
+    const test_row = 6;
+    const delete_row = 7; // shown only when editing
+    const cancel_row: usize = if (editing) 8 else 7;
+    const row_count = cancel_row + 1;
+
+    // Grid row that currently holds focus (drives scroll math).
+    const focus_row: usize = switch (st.form_focus) {
+        .name => name_row,
+        .command => command_row,
+        .args => args_row,
+        .save => save_row,
+        .test_conn => test_row,
+        .delete => delete_row,
+        .cancel => cancel_row,
+    };
+    const layout = mcpLayout(window_width, window_height, top_offset, row_count, focus_row, false);
+    const box_y = @round(window_height - layout.box_top_px - layout.box_h);
+
+    const bg = AppWindow.g_theme.background;
+    const fg = AppWindow.g_theme.foreground;
+    const accent = AppWindow.g_theme.cursor_color;
+    const panel_color = mixColor(bg, fg, 0.035);
+    const border_color = mixColor(bg, accent, 0.24);
+    const title_color = mixColor(fg, accent, 0.14);
+    const muted_color = mixColor(bg, fg, 0.58);
+
+    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.18);
+    renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
+    renderRoundedQuadAlpha(layout.box_x, box_y, layout.box_w, layout.box_h, 10, panel_color, 0.96);
+
+    const title_y = textYFromTop(window_height, layout.box_top_px + 18);
+    const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
+    renderTitlebarTextStrong(if (editing) i18n.s().mcp_edit_title else i18n.s().mcp_add_title, layout.box_x + 24, title_y, title_color);
+    renderTitlebarTextStrongLimited(i18n.s().mcp_form_hint, layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
+
+    renderMcpRow(layout, window_height, name_row, "Name", st.formField(.name), st.form_focus == .name);
+    renderMcpRow(layout, window_height, command_row, "Command", st.formField(.command), st.form_focus == .command);
+    renderMcpRow(layout, window_height, args_row, "Args", st.formField(.args), st.form_focus == .args);
+    renderMcpLine(layout, window_height, hint_row, "Args are space-separated, e.g.  -y mcp-remote https://...", muted_color);
+
+    // Probe result (or the last form error) shares one status line.
+    if (st.probe.status != .idle) {
         var status_buf: [320]u8 = undefined;
         const status_text: []const u8 = switch (st.probe.status) {
             .idle => "",
-            .running => "probing...",
+            .running => "Testing...",
             .ok => blk: {
                 var w = std.io.fixedBufferStream(&status_buf);
                 const writer = w.writer();
@@ -6051,50 +6181,16 @@ fn renderMcpListView(window_width: f32, window_height: f32, top_offset: f32) voi
             else => muted_color,
         };
         if (status_text.len > 0) renderMcpLine(layout, window_height, status_row, status_text, status_color);
+    } else if (st.form_error) |err| {
+        renderMcpLine(layout, window_height, status_row, mcpFormErrorText(err), MCP_ERROR_COLOR);
     }
 
-    renderMcpLine(layout, window_height, footer_row, MCP_LIST_FOOTER1, muted_color);
-    renderMcpLine(layout, window_height, footer_row2, MCP_LIST_FOOTER2, muted_color);
-}
-
-fn renderMcpFormView(window_width: f32, window_height: f32, top_offset: f32) void {
-    const st = mcpState();
-    const name_row = 0;
-    const command_row = 1;
-    const args_row = 2;
-    const hint_row = 3;
-    const error_row = 4;
-    const footer_row = 5;
-    const row_count = footer_row + 1;
-    const layout = mcpLayout(window_width, window_height, top_offset, row_count, @intFromEnum(st.form_focus));
-    const box_y = @round(window_height - layout.box_top_px - layout.box_h);
-
-    const bg = AppWindow.g_theme.background;
-    const fg = AppWindow.g_theme.foreground;
-    const accent = AppWindow.g_theme.cursor_color;
-    const panel_color = mixColor(bg, fg, 0.035);
-    const border_color = mixColor(bg, accent, 0.24);
-    const title_color = mixColor(fg, accent, 0.14);
-    const muted_color = mixColor(bg, fg, 0.58);
-
-    ui_pipeline.fillQuadAlpha(0, 0, window_width, window_height, .{ 0.0, 0.0, 0.0 }, 0.18);
-    renderRoundedQuadAlpha(layout.box_x - 1, box_y - 1, layout.box_w + 2, layout.box_h + 2, 11, border_color, 0.24);
-    renderRoundedQuadAlpha(layout.box_x, box_y, layout.box_w, layout.box_h, 10, panel_color, 0.96);
-
-    const title_y = textYFromTop(window_height, layout.box_top_px + 18);
-    const hint_y = textYFromTop(window_height, layout.box_top_px + 18 + overlayLineHeight());
-    const title = if (st.editing_index != mcp_servers.EDIT_INDEX_NONE) "Edit MCP Server" else "Add MCP Server";
-    renderTitlebarTextStrong(title, layout.box_x + 24, title_y, title_color);
-    renderTitlebarTextStrongLimited("Fill in the fields below.", layout.box_x + 24, hint_y, muted_color, layout.box_w - 48);
-
-    renderMcpRow(layout, window_height, name_row, "Name", st.formField(.name), st.form_focus == .name);
-    renderMcpRow(layout, window_height, command_row, "Command", st.formField(.command), st.form_focus == .command);
-    renderMcpRow(layout, window_height, args_row, "Args", st.formField(.args), st.form_focus == .args);
-    renderMcpLine(layout, window_height, hint_row, "space-separated \u{00b7} o edits mcp.json for advanced setups", muted_color);
-    if (st.form_error) |err| {
-        renderMcpLine(layout, window_height, error_row, mcpFormErrorText(err), MCP_ERROR_COLOR);
+    renderMcpRow(layout, window_height, save_row, i18n.s().sl_save, "Enter", st.form_focus == .save);
+    renderMcpRow(layout, window_height, test_row, i18n.s().mcp_test, i18n.s().sl_v_choose, st.form_focus == .test_conn);
+    if (editing) {
+        renderMcpRow(layout, window_height, delete_row, i18n.s().mcp_delete, i18n.s().sl_v_choose, st.form_focus == .delete);
     }
-    renderMcpLine(layout, window_height, footer_row, MCP_FORM_FOOTER, muted_color);
+    renderMcpRow(layout, window_height, cancel_row, i18n.s().sl_cancel, "Esc", st.form_focus == .cancel);
 }
 
 pub fn renderMcpServers(window_width: f32, window_height: f32, top_offset: f32) void {

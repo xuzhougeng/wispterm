@@ -715,6 +715,7 @@ pub fn builtinToolNameReserved(name: []const u8) bool {
         "tab_close",
         "skill_info",
         "wispterm_docs",
+        "mcp_config",
         "websearch",
         "webread",
         "pubmed",
@@ -790,6 +791,7 @@ fn forEachToolSpec(
     try Filtered.emitTool(ctx, opts, "tab_close", "Close a terminal tab by tab_number (the one-based `tab` shown by terminal_list, matching the tab number the user sees), surface_id, title, or the active terminal tab when no selector is provided. Cannot close the AI chat tab running the agent.", "{\"tab_number\":{\"type\":\"integer\",\"description\":\"One-based UI tab number — the `tab` value shown by terminal_list and what the user sees.\"},\"tab_index\":{\"type\":\"integer\",\"description\":\"Zero-based tab index (tab_number minus one). Prefer tab_number.\"},\"surface_id\":{\"type\":\"string\",\"description\":\"Surface id from terminal_list.\"},\"title\":{\"type\":\"string\",\"description\":\"Terminal tab title to close, such as CPU2.\"}}");
     try Filtered.emitTool(ctx, opts, "skill_info", "Load a WispTerm skill by stable name. Use when the user explicitly names a skill or asks for specialized skill instructions.", "{\"skill_name\":{\"type\":\"string\",\"description\":\"Skill name or skill directory name.\"}}");
     try Filtered.emitTool(ctx, opts, "wispterm_docs", "Read WispTerm's own documentation (features, configuration, shortcuts, AI agent, file explorer, media). Call with no topic to list available topics, then call again with a topic to read its full text.", "{\"topic\":{\"type\":\"string\",\"description\":\"Topic name from the list. Omit to list available topics.\"}}");
+    try Filtered.emitTool(ctx, opts, "mcp_config", "List or configure the user's MCP (Model Context Protocol) servers — the same mcp.json the MCP Servers panel edits. Use action=list (default) to show configured servers and whether each is enabled; action=add to add or update one (name and command required, args optional); action=remove/enable/disable to manage an existing server by name. Changes are saved to mcp.json and reloaded immediately. Example remote server: name=jina, command=npx, args=[\"-y\",\"mcp-remote\",\"https://mcp.jina.ai/v1\"].", "{\"action\":{\"type\":\"string\",\"description\":\"One of: list (default), add, remove, enable, disable.\"},\"name\":{\"type\":\"string\",\"description\":\"Server name. Required for add/remove/enable/disable.\"},\"command\":{\"type\":\"string\",\"description\":\"Executable to launch the server over stdio, e.g. npx. Required for add.\"},\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Command arguments for add, e.g. [\\\"-y\\\",\\\"mcp-remote\\\",\\\"https://mcp.jina.ai/v1\\\"].\"},\"enabled\":{\"type\":\"boolean\",\"description\":\"Whether the server is enabled when added. Default true.\"}}");
     try Filtered.emitTool(ctx, opts, "websearch", "Search the web for current information via Jina. Returns the top results with titles, URLs, and page content. Use when you need facts newer than your training or to look something up online.", "{\"query\":{\"type\":\"string\",\"description\":\"The search query.\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Optional max number of results (default 10, max 20).\"}}");
     try Filtered.emitTool(ctx, opts, "webread", "Read a web page or local file into clean markdown via Jina Reader. Pass an http(s):// URL to fetch a page, or a local file path (PDF, Word, Excel, PowerPoint) to upload and convert it. Use when you need the full content of one source, not a search.", "{\"url\":{\"type\":\"string\",\"description\":\"An http(s):// URL, or a local file path to upload.\"}}");
     try Filtered.emitTool(ctx, opts, "pubmed", "Search PubMed (NCBI) for biomedical and life-sciences literature and return matching articles with title, authors, journal, year, PMID, DOI, and abstract. Before calling, decompose the user's academic question into English keywords joined with PubMed boolean operators (AND/OR), then pass that as `query`. Use for scholarly/medical literature questions, not general web search.", "{\"query\":{\"type\":\"string\",\"description\":\"PubMed query: English keywords joined with AND/OR, e.g. metformin AND type 2 diabetes AND cardiovascular events.\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Optional max number of articles (default 10, max 20).\"}}");
@@ -1827,9 +1829,10 @@ test "buildRequestJson advertises MCP tools with their own schema (anthropic)" {
     const json = try buildRequestJson(a, params, &.{}, true);
     defer a.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"add\"") != null);
-    // its OWN schema, not the fixed dynamic-binary {"args":...} shape
+    // the MCP tool carries its OWN schema (x:integer), proving MCP specs aren't
+    // forced into a fixed shape. (A general "no \"args\" anywhere" check would be
+    // wrong now that the builtin mcp_config tool legitimately advertises `args`.)
     try std.testing.expect(std.mem.indexOf(u8, json, "\"x\":{\"type\":\"integer\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"args\"") == null);
 }
 
 test "MCP tool whose name collides with a builtin is not advertised" {
